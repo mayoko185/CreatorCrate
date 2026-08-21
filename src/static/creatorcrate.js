@@ -64,6 +64,7 @@ import {
   createLiveRegionEngine,
   enhanceAssetLibraryLiveFiltering,
   enhanceProjectAssetsLiveFiltering,
+  enhanceReleaseAssetsLiveFiltering,
   enhanceProjectsLiveFiltering,
   enhanceReleasesLiveFiltering,
   refreshProjectAssetsLiveRegion,
@@ -114,6 +115,7 @@ export {
   createLiveRegionEngine,
   enhanceAssetLibraryLiveFiltering,
   enhanceProjectAssetsLiveFiltering,
+  enhanceReleaseAssetsLiveFiltering,
   enhanceProjectsLiveFiltering,
   enhanceReleasesLiveFiltering,
   refreshProjectAssetsLiveRegion,
@@ -149,6 +151,7 @@ if (typeof document !== 'undefined') {
     enhanceProjectAssetCategoryManagement(document);
     enhanceProjectsLiveFiltering(document);
     enhanceReleasesLiveFiltering(document);
+    enhanceReleaseAssetsLiveFiltering(document);
     enhanceProjectAssetsLiveFiltering(document);
     enhanceAssetLibraryLiveFiltering(document);
     enhanceAssetViewerInfoCards(document);

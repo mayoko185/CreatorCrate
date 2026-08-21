@@ -900,6 +900,7 @@ function handleReleaseListOrBoard(
         pageUrl,
         clearUrl,
         basePath,
+        releasesLiveFiltering: true,
         releasesSurface: pageDefaultsKey === RELEASES_PAGE_DEFAULTS,
         ...buildReleasesRenderExtras({
           pageDefaultsService,
@@ -950,6 +951,7 @@ function handleReleaseListOrBoard(
       query,
       sortOptions: SORT_OPTIONS,
       basePath,
+      releasesLiveFiltering: true,
       releasesSurface: pageDefaultsKey === RELEASES_PAGE_DEFAULTS,
       ...buildReleasesRenderExtras({
         pageDefaultsService,

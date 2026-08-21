@@ -70,7 +70,7 @@
         </form>
         <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
            href="{{ resetFiltersUrl }}" aria-label="Reset filters"
-           data-tooltip="Reset filters">
+           data-tooltip="Reset filters" data-projects-reset>
           {{ icons.icon('reset') }}
         </a>
       </div>
@@ -213,6 +213,7 @@
     {% else %}
     {% if filtersActive and hasAnyProjects %}
       {% set emptyActionDialogId = "" %}
+      {% set emptyActionAttributes = [["data-projects-reset", true]] %}
       {% set emptyHeading = "No projects found" %}
         {% set emptyDescription = "No projects match the current filters." %}
         {% set emptyActionUrl = resetFiltersUrl %}
@@ -220,6 +221,7 @@
         {% set emptyHeadingLevel = "h2" %}
     {% else %}
       {% set emptyActionDialogId = "project-create-dialog" %}
+      {% set emptyActionAttributes = [] %}
       {% set emptyHeading = "No projects yet" %}
         {% set emptyDescription = "Create your first project to get started." %}
         {% set emptyActionUrl = "/projects/new" %}

@@ -166,7 +166,8 @@
   </section>
 
   {# ── Selected Assets ──────────────────────────────────────────────── #}
-  <section>
+  <section data-release-assets-live-region>
+    <span class="sr-only" data-release-assets-live-status aria-live="polite" aria-atomic="true"></span>
     <h2>Selected Assets</h2>
     {% set selectedAssets = assetPresentation.selected or [] %}
     {% set pageAssets = assetPresentation.assets or [] %}
@@ -222,11 +223,11 @@
         </div>
 
         {% if not readOnly %}
-          <form method="get" action="/releases/{{ release.id }}/assets" class="filters release-asset-filters">
+          <form method="get" action="/releases/{{ release.id }}/assets" class="filters release-asset-filters" data-release-assets-live-filter>
             <input type="hidden" name="view" value="{{ view }}">
             <div class="field">
               <label for="asset-search">Find project assets</label>
-              <input type="search" id="asset-search" name="search" value="{{ activeFilters.search or '' }}" placeholder="Filter by filename…" autocomplete="off">
+              <input type="search" id="asset-search" name="search" value="{{ activeFilters.search or '' }}" placeholder="Filter by filename…" autocomplete="off" data-release-assets-live-search>
             </div>
             <fieldset class="field asset-viewer-filter-field asset-filter-multiselect-field">
               <legend>Extension</legend>
@@ -247,14 +248,14 @@
                 <div id="release-asset-extension-filter-options" class="asset-filter-multiselect-panel" role="radiogroup" aria-label="Extension options">
                   <div class="asset-filter-multiselect-option">
                     <label for="release-asset-extension-option-all">
-                      <input id="release-asset-extension-option-all" name="extension" type="radio" value=""{% if not activeFilters.extension %} checked{% endif %}>
+                      <input id="release-asset-extension-option-all" name="extension" type="radio" value="" data-release-assets-live-filter-control{% if not activeFilters.extension %} checked{% endif %}>
                       <span>All extensions</span>
                     </label>
                   </div>
                   {% for ext in extensionOptions %}
                     <div class="asset-filter-multiselect-option">
                       <label for="release-asset-extension-option-{{ loop.index }}">
-                        <input id="release-asset-extension-option-{{ loop.index }}" name="extension" type="radio" value="{{ ext }}"{% if activeFilters.extension == ext %} checked{% endif %}>
+                        <input id="release-asset-extension-option-{{ loop.index }}" name="extension" type="radio" value="{{ ext }}" data-release-assets-live-filter-control{% if activeFilters.extension == ext %} checked{% endif %}>
                         <span>.{{ ext }}</span>
                       </label>
                     </div>
@@ -285,7 +286,7 @@
                 <div id="release-asset-category-filter-options" class="asset-filter-multiselect-panel" role="radiogroup" aria-label="Category options">
                   <div class="asset-filter-multiselect-option">
                     <label for="release-asset-category-option-all">
-                      <input id="release-asset-category-option-all" name="category" type="radio" value=""{% if activeCategoryId == null %} checked{% endif %}>
+                      <input id="release-asset-category-option-all" name="category" type="radio" value="" data-release-assets-live-filter-control{% if activeCategoryId == null %} checked{% endif %}>
                       {% if categoryTotalCount is not none %}
                         <span>All categories ({{ categoryTotalCount }})</span>
                       {% else %}
@@ -296,7 +297,7 @@
                   {% for category in categoryFilterOptions %}
                     <div class="asset-filter-multiselect-option">
                       <label for="release-asset-category-option-{{ category.id }}">
-                        <input id="release-asset-category-option-{{ category.id }}" name="category" type="radio" value="{{ category.id }}"{% if activeCategoryId == category.id %} checked{% endif %}>
+                        <input id="release-asset-category-option-{{ category.id }}" name="category" type="radio" value="{{ category.id }}" data-release-assets-live-filter-control{% if activeCategoryId == category.id %} checked{% endif %}>
                         <span>{{ category.displayName }} ({{ category.assetCount }})</span>
                       </label>
                     </div>
@@ -306,18 +307,17 @@
             </fieldset>
             <div class="field">
               <label for="asset-page-size">Page size</label>
-              <select id="asset-page-size" name="pageSize">
+              <select id="asset-page-size" name="pageSize" data-release-assets-live-page-size>
+                <option value="10" {% if currentPageSize == 10 %}selected{% endif %}>10</option>
                 <option value="25" {% if currentPageSize == 25 %}selected{% endif %}>25</option>
                 <option value="50" {% if currentPageSize == 50 %}selected{% endif %}>50</option>
                 <option value="100" {% if currentPageSize == 100 %}selected{% endif %}>100</option>
               </select>
             </div>
-            <div class="field">
-              <button class="button" type="submit">Filter</button>
-            </div>
+            <noscript><button class="button" type="submit">Filter</button></noscript>
             {% if activeFilters.search or activeFilters.extension or activeCategoryId != null %}
               <div class="field">
-                <a class="button button-secondary" href="{{ pageUrl({ search: '', extension: '', category: '', page: 1 }) }}">Clear</a>
+                <a class="button button-secondary" href="{{ pageUrl({ search: '', extension: '', category: '', page: 1 }) }}" data-release-assets-reset>Clear</a>
               </div>
             {% endif %}
           </form>
@@ -355,9 +355,9 @@
           {% endif %}
 
           {% if not readOnly and totalPages > 1 %}
-            <form class="page-size-form" method="get" action="/releases/{{ release.id }}/assets">
+            <form class="page-size-form" method="get" action="/releases/{{ release.id }}/assets" data-release-assets-live-page-size-form>
               <label for="pageSize">Assets per page:</label>
-              <select id="pageSize" name="pageSize" data-autosubmit>
+              <select id="pageSize" name="pageSize" data-autosubmit data-release-assets-live-page-size>
                 <option value="10" {% if currentPageSize == 10 %}selected{% endif %}>10</option>
                 <option value="25" {% if currentPageSize == 25 %}selected{% endif %}>25</option>
                 <option value="50" {% if currentPageSize == 50 %}selected{% endif %}>50</option>
@@ -375,7 +375,7 @@
               {% if view == 'list' %}
                 <input type="hidden" name="view" value="list">
               {% endif %}
-              <button class="button button-small" type="submit">Apply</button>
+              <noscript><button class="button button-small" type="submit">Apply</button></noscript>
             </form>
           {% endif %}
         {% else %}

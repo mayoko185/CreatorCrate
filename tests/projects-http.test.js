@@ -440,6 +440,7 @@ describe('project HTTP workflow', () => {
     expect(resetLink).toContain('href="/projects"');
     expect(resetLink).toContain('aria-label="Reset filters"');
     expect(resetLink).toContain('data-tooltip="Reset filters"');
+    expect(resetLink).toContain('data-projects-reset');
     expect(resetLink).not.toContain('title=');
     expect(resetLink).toContain('<svg');
     expect(resetLink).not.toContain('>Reset</a>');
@@ -1801,7 +1802,7 @@ describe('project HTTP workflow', () => {
 
     const res = await agent.get('/projects?search=no-match').expect(200);
 
-    expect(res.text).toContain('<a class="button button-primary" href="/projects">Reset</a>');
+    expect(res.text).toContain('<a class="button button-primary" href="/projects" data-projects-reset>Reset</a>');
     expect(res.text).not.toContain('<a class="button button-primary" href="/projects" data-dialog-open=');
   });
 

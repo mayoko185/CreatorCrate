@@ -865,7 +865,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(response.text).toContain('href="/assets?pageSize=10&amp;view=list"');
     expect(response.text).toContain('href="/assets?page=2&amp;pageSize=10&amp;view=grid"');
     expect(response.text).toMatch(/<noscript><button class="button" type="submit">Filter<\/button><\/noscript>/);
-    expect(response.text).toMatch(/<a\b(?=[^>]*href="\/assets\?pageSize=10&amp;view=list")(?=[^>]*data-asset-library-reset)(?=[^>]*aria-label="Reset filters")[^>]*>[\s\S]*?<span class="sr-only">Reset<\/span><\/a>/);
+    expect(response.text).toMatch(/<a\b(?=[^>]*href="\/assets\?view=list")(?=[^>]*data-asset-library-reset)(?=[^>]*aria-label="Reset filters")[^>]*>[\s\S]*?<span class="sr-only">Reset<\/span><\/a>/);
   });
 
   it('canonicalizes clamped pagination together with effective saved defaults in one redirect', async () => {
@@ -891,7 +891,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(final.headers.location).toBeUndefined();
   });
 
-  it('preserves effective presentation values through view, pagination, and clear-filter URLs', async () => {
+  it('resets filter and sort state while preserving the current view', async () => {
     writeAssetViewerDefaults({ view: 'list', sort: 'project', order: 'desc', pageSize: '50' });
     const project = createProject('URL Context Project');
     const contextAssets = [];
@@ -905,23 +905,34 @@ describe('cross-project Asset Viewer HTTP route', () => {
     for (const asset of contextAssets) tagRepository.assignToAsset(asset.id, tag.id);
 
     const response = await request(app).get(
-      `/assets?project=${project.id}&tag=${tag.id}&sort=project&order=desc&page=2&pageSize=50&view=list`,
+      `/assets?project=${project.id}&tag=${tag.id}&sort=modified&order=desc&page=2&pageSize=50&view=list`,
     ).expect(200);
 
     expect(response.text).toContain(
-      'href="/assets?project=' + project.id + '&amp;tag=' + tag.id + '&amp;sort=project&amp;order=desc&amp;page=2&amp;pageSize=50&amp;view=grid"',
+      'href="/assets?project=' + project.id + '&amp;tag=' + tag.id + '&amp;sort=modified&amp;order=desc&amp;page=2&amp;pageSize=50&amp;view=grid"',
     );
     expect(response.text).toContain(
-      'href="/assets?project=' + project.id + '&amp;tag=' + tag.id + '&amp;sort=project&amp;order=desc&amp;pageSize=50&amp;view=list"',
+      'href="/assets?project=' + project.id + '&amp;tag=' + tag.id + '&amp;sort=modified&amp;order=desc&amp;pageSize=50&amp;view=list"',
     );
     expect(response.text).toMatch(new RegExp(
       `<input id="${project.id}" name="project" type="radio" value="${project.id}" checked>`,
     ));
     expect(response.text).toContain('aria-label="Project filter: URL Context Project"');
-    expect(response.text).toMatch(/<a\b(?=[^>]*href="\/assets\?sort=project&amp;order=desc&amp;pageSize=50&amp;view=list")(?=[^>]*data-asset-library-reset)(?=[^>]*aria-label="Reset filters")[^>]*>[\s\S]*?<span class="sr-only">Reset<\/span><\/a>/);
-    expect(response.text).toMatch(/<input[^>]+name="sort"[^>]+type="radio"[^>]+value="project" checked>/);
+    expect(response.text).toMatch(/<a\b(?=[^>]*href="\/assets\?view=list")(?=[^>]*data-asset-library-reset)(?=[^>]*aria-label="Reset filters")[^>]*>[\s\S]*?<span class="sr-only">Reset<\/span><\/a>/);
+    expect(response.text).toMatch(/<input[^>]+name="sort"[^>]+type="radio"[^>]+value="modified" checked>/);
     expect(response.text).toMatch(/<input[^>]+name="order"[^>]+type="radio"[^>]+value="desc" checked>/);
     expect(response.text).toMatch(/<input[^>]+name="pageSize"[^>]+type="radio"[^>]+value="50" checked>/);
+  });
+
+  it('does not retain explicit fallback sort, order, or page-size values in reset URLs', async () => {
+    const project = createProject('Reset URL Project');
+    createAsset(project.id, 'reset-url.png', { filename: 'reset-url.png', extension: 'png' });
+
+    const response = await request(app).get(
+      `/assets?project=${project.id}&category=uncategorized&search=reset&extension=png&presence=present&usage=unused&sort=filename&order=asc&pageSize=25&view=list`,
+    ).expect(200);
+
+    expect(response.text).toMatch(/<a\b(?=[^>]*href="\/assets\?view=list")(?=[^>]*data-asset-library-reset)(?=[^>]*aria-label="Reset filters")[^>]*>[\s\S]*?<span class="sr-only">Reset<\/span><\/a>/);
   });
 
   it('discards unknown parameters while retaining effective saved presentation values', async () => {
@@ -947,6 +958,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(filtered.text).toContain('No assets match the current filters');
     expect(filtered.text).not.toContain('No assets across active projects');
     expect(filtered.text).toMatch(/<a\b(?=[^>]*data-asset-library-reset)(?=[^>]*aria-label="Reset filters")[^>]*>[\s\S]*?<span class="sr-only">Reset<\/span><\/a>/);
+    expect(filtered.text).toMatch(/<div class="empty-state-actions">\s*<a\b(?=[^>]*href="\/assets\?view=grid")(?=[^>]*data-asset-library-reset)[^>]*>Reset<\/a>/);
   });
 
   it('leaves the existing project-scoped asset detail route available', async () => {

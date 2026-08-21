@@ -7,7 +7,6 @@
 
 {% set page_title = "Asset Viewer" %}
 {% set currentView = presentation.view or filters.view %}
-{% set clearFiltersUrl = pageUrl({ projectId: null, categories: null, tags: null, search: null, extensions: null, presence: 'all', usage: 'all', page: 1 }) %}
 {% set projectFilterHasSelection = false %}
 {% set projectFilterSummary = 'All projects' %}
 {% for project in projectOptions %}
@@ -577,6 +576,7 @@
     {% endif %}
   {% else %}
     {% set filtersActive = filters.projectId or filters.categories.length > 0 or filters.tags.length > 0 or filters.search or filters.extensions.length > 0 or filters.presence != 'all' or filters.usage != 'all' %}
+    {% set emptyActionAttributes = [] %}
     {% set noAssetsAcrossProjects = false %}
     {% if hasAnyAssets is defined %}
       {% set noAssetsAcrossProjects = not hasAnyAssets %}
@@ -594,6 +594,7 @@
       {% set emptyDescription = "No assets in active projects match the selected filters." %}
       {% set emptyActionUrl = clearFiltersUrl %}
       {% set emptyActionLabel = "Reset" %}
+      {% set emptyActionAttributes = [["data-asset-library-reset", true]] %}
     {% endif %}
     {% set emptyHeadingLevel = "h2" %}
     {% include "partials/empty-state.njk" %}

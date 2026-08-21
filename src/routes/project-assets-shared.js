@@ -814,6 +814,11 @@ function buildProjectAssetCategoryFilterOptions(categoryNavigation, filters) {
 function hasNonDefaultCategoryBrowserControls(rawQuery = {}) {
   return (
     (typeof rawQuery.search === 'string' && rawQuery.search.trim() !== '')
+    || (typeof rawQuery.extension === 'string' && rawQuery.extension.trim() !== '')
+    || rawQuery.presence === 'present'
+    || rawQuery.presence === 'missing'
+    || rawQuery.usage === 'used'
+    || rawQuery.usage === 'unused'
     || rawQuery.sort === 'modified'
     || rawQuery.sort === 'size'
     || rawQuery.sort === 'category'

@@ -938,7 +938,7 @@
             {% if filters.view == 'list' or preserveViewQuery %}
               <input type="hidden" name="view" value="{{ filters.view }}">
             {% endif %}
-            <button class="button button-small" type="submit">Apply</button>
+            <noscript><button class="button button-small" type="submit">Apply</button></noscript>
           </form>
         {% endif %}
       {% elseif emptyState %}

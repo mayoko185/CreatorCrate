@@ -104,6 +104,20 @@ describe('release-management HTTP route (Phase 2A)', () => {
     expect(res.text).not.toContain('id="list-status"');
   });
 
+  it('renders the shared live region with a no-JavaScript Filter fallback', async () => {
+    const res = await agent.get('/release-management?project=7&schedule=today&includeArchived=1').expect(200);
+    const enhancedMarkup = res.text.replace(/<noscript>[\s\S]*?<\/noscript>/g, '');
+
+    expect(res.text).toContain('data-releases-live-region');
+    expect(res.text).toContain('data-releases-filter');
+    expect(res.text).toContain('data-releases-search');
+    expect(res.text).toContain('data-releases-view-link');
+    expect(res.text).toContain('data-releases-reset');
+    expect(res.text).toContain('action="/release-management"');
+    expect(res.text).toMatch(/<noscript><button class="button" type="submit">Filter<\/button><\/noscript>/);
+    expect(enhancedMarkup).not.toContain('>Filter</button>');
+  });
+
   it('GET /release-management?view=board renders the release-record board', async () => {
     const projectId = await createProject('Mgmt Board Project');
     const publishedLocation = await createRelease(projectId, 'Mgmt Board Published Release', 'planned');
@@ -326,7 +340,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
     expect(res.text).toContain('<input type="hidden" name="view" value="list">');
     expect(res.text).toContain('<input type="hidden" name="pageSize" value="10">');
 
-    const boardHref = res.text.match(/<a class="view-switcher-option" href="([^"]+)"[^>]*>Board<\/a>/)?.[1];
+    const boardHref = res.text.match(/<a class="view-switcher-option"[^>]* href="([^"]+)"[^>]*>Board<\/a>/)?.[1];
     expect(boardHref).toBeDefined();
     const boardUrl = new URL(boardHref.replace(/&amp;/g, '&'), 'http://localhost');
     expect(boardUrl.searchParams.get('view')).toBe('board');
@@ -339,7 +353,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
     expect(boardUrl.searchParams.get('pageSize')).toBe('10');
     expect(boardUrl.searchParams.has('page')).toBe(false);
 
-    const clearHref = res.text.match(/<a class="button button-secondary" href="([^"]+)">Clear<\/a>/)?.[1];
+    const clearHref = res.text.match(/<a class="button button-secondary" href="([^"]+)"(?: data-releases-reset)?>Clear<\/a>/)?.[1];
     expect(clearHref).toBeDefined();
     const clearUrl = new URL(clearHref.replace(/&amp;/g, '&'), 'http://localhost');
     expect(clearUrl.searchParams.get('view')).toBe('list');
@@ -358,7 +372,7 @@ describe('release-management HTTP route (Phase 2A)', () => {
     expect(board.text).toContain('<input type="hidden" name="order" value="asc">');
     expect(board.text).toContain('<input type="hidden" name="pageSize" value="10">');
 
-    const listHref = board.text.match(/<a class="view-switcher-option" href="([^"]+)"[^>]*>List<\/a>/)?.[1];
+    const listHref = board.text.match(/<a class="view-switcher-option"[^>]* href="([^"]+)"[^>]*>List<\/a>/)?.[1];
     expect(listHref).toBeDefined();
     const listUrl = new URL(listHref.replace(/&amp;/g, '&'), 'http://localhost');
     expect(listUrl.searchParams.get('view')).toBe('list');
@@ -371,22 +385,22 @@ describe('release-management HTTP route (Phase 2A)', () => {
 
   it('list/board view switching stays under /release-management', async () => {
     const res = await agent.get('/release-management').expect(200);
-    const boardMatch = res.text.match(/<a class="view-switcher-option" href="([^"]+)"[^>]*>Board<\/a>/);
+    const boardMatch = res.text.match(/<a class="view-switcher-option"[^>]* href="([^"]+)"[^>]*>Board<\/a>/);
     expect(boardMatch).not.toBeNull();
     expect(boardMatch[1]).toMatch(/^\/release-management/);
 
     const boardRes = await agent.get('/release-management?view=board').expect(200);
-    const listMatch = boardRes.text.match(/<a class="view-switcher-option" href="([^"]+)"[^>]*>List<\/a>/);
+    const listMatch = boardRes.text.match(/<a class="view-switcher-option"[^>]* href="([^"]+)"[^>]*>List<\/a>/);
     expect(listMatch).not.toBeNull();
     expect(listMatch[1]).toMatch(/^\/release-management/);
   });
 
   it('filter forms submit to /release-management', async () => {
     const listRes = await agent.get('/release-management').expect(200);
-    expect(listRes.text).toContain('<form class="filters" method="get" action="/release-management">');
+    expect(listRes.text).toContain('<form id="list-releases-filter" data-releases-filter class="filters" method="get" action="/release-management">');
 
     const boardRes = await agent.get('/release-management?view=board').expect(200);
-    expect(boardRes.text).toContain('<form method="get" action="/release-management">');
+    expect(boardRes.text).toContain('<form id="board-releases-filter" data-releases-filter method="get" action="/release-management">');
   });
 
   it('release-detail links still point to /releases/:id', async () => {

@@ -2505,6 +2505,22 @@
         background: var(--surface-card);
         box-shadow: var(--shadow-lg);
         overscroll-behavior: contain;
+        scrollbar-color: var(--border-strong) transparent;
+        scrollbar-width: thin;
+      }
+      .asset-filter-multiselect-panel::-webkit-scrollbar {
+        width: 0.5rem;
+      }
+      .asset-filter-multiselect-panel::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .asset-filter-multiselect-panel::-webkit-scrollbar-thumb {
+        background: var(--border-strong);
+        border: 2px solid var(--surface-card);
+        border-radius: 999px;
+      }
+      .asset-filter-multiselect-panel::-webkit-scrollbar-thumb:hover {
+        background: var(--muted);
       }
       .asset-filter-multiselect-option {
         display: flex;

@@ -12,6 +12,7 @@
   - emptyActionUrl: URL for the primary next action
   - emptyActionLabel: visible text for the action link
   - emptyActionDialogId: optional dialog ID opened by the action link
+  - emptyActionAttributes: optional [[name, value]] pairs emitted on the action link
   - emptyHeadingLevel: h2, h3, or h4; defaults to h2
 #}
 <div class="empty-state">
@@ -27,7 +28,7 @@
   {% endif %}
   {% if emptyActionUrl and emptyActionLabel %}
     <div class="empty-state-actions">
-      <a class="button button-primary" href="{{ emptyActionUrl }}"{% if emptyActionDialogId %} data-dialog-open="{{ emptyActionDialogId }}"{% endif %}>{{ emptyActionLabel }}</a>
+      <a class="button button-primary" href="{{ emptyActionUrl }}"{% if emptyActionDialogId %} data-dialog-open="{{ emptyActionDialogId }}"{% endif %}{% if emptyActionAttributes %}{% for attribute, value in emptyActionAttributes %}{% if value is not none and value != false %} {{ attribute }}{% if value != true %}="{{ value }}"{% endif %}{% endif %}{% endfor %}{% endif %}>{{ emptyActionLabel }}</a>
     </div>
   {% endif %}
 </div>

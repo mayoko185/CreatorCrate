@@ -13,6 +13,7 @@ import {
   enhanceAssetRenames,
   enhanceAssetSelection,
 } from './asset-ordering.js';
+import { enhanceAutoSubmit } from './app-dialogs.js';
 import { enhanceAppConfirmationControls } from './confirm-dialog.js';
 import {
   enhanceAssetViewerInfoCards,
@@ -47,6 +48,17 @@ const RELEASES_SEARCH_SELECTOR = '[data-releases-search]';
 const RELEASES_LIVE_STATUS_SELECTOR = '[data-releases-live-status]';
 const RELEASES_LIVE_STATE_ATTRIBUTE = 'data-releases-live-state';
 const RELEASES_LIVE_DEBOUNCE_MS = 350;
+const RELEASE_ASSETS_LIVE_REGION_SELECTOR = '[data-release-assets-live-region]';
+const RELEASE_ASSETS_LIVE_FILTER_SELECTOR = '[data-release-assets-live-filter]';
+const RELEASE_ASSETS_LIVE_FILTER_CONTROL_SELECTOR = [
+  '[data-release-assets-live-filter-control]',
+  '[data-release-assets-live-page-size]',
+].join(', ');
+const RELEASE_ASSETS_PAGE_SIZE_FORM_SELECTOR = '.page-size-form[data-release-assets-live-page-size-form]';
+const RELEASE_ASSETS_LIVE_SEARCH_SELECTOR = '[data-release-assets-live-search]';
+const RELEASE_ASSETS_LIVE_STATUS_SELECTOR = '[data-release-assets-live-status]';
+const RELEASE_ASSETS_LIVE_STATE_ATTRIBUTE = 'data-release-assets-live-state';
+const RELEASE_ASSETS_LIVE_DEBOUNCE_MS = 350;
 
 function projectLiveNsfwForm(region) {
   return region?.querySelector?.(PROJECTS_NSFW_FORM_SELECTOR) || null;
@@ -146,6 +158,7 @@ export function createLiveRegionEngine(config) {
     formSelector,
     linkSelector = null,
     searchSelector = null,
+    changeSelector = null,
     debounceMs = 0,
     defaultAction = '/',
     stateKey = '__creatorCrateLiveRegion',
@@ -437,6 +450,7 @@ export function createLiveRegionEngine(config) {
 
       form.addEventListener?.('change', (event) => {
         if (searchSelector && event.target?.matches?.(searchSelector)) return;
+        if (changeSelector && !event.target?.matches?.(changeSelector)) return;
         if (!event.target?.name && !event.target?.getAttribute?.('name')) return;
         schedule(state, form);
       });
@@ -651,6 +665,7 @@ function bindProjectsNsfwForm(state, region) {
 const projectsLiveEngine = createLiveRegionEngine({
   regionSelector: PROJECTS_LIVE_REGION_SELECTOR,
   formSelector: PROJECTS_FILTER_SELECTOR,
+  linkSelector: 'nav.view-switcher a, .pagination a, [data-projects-reset]',
   defaultAction: '/projects',
   stateKey: '__creatorCrateProjectsLiveFiltering',
   historyState: { projects: true },
@@ -736,7 +751,42 @@ const releasesLiveEngine = createLiveRegionEngine({
   missingRegionMessage: 'Releases response did not contain the live region.',
   enhanceRegion() {},
   isCurrentUrl(url) {
-    return url.pathname === '/releases';
+    return url.pathname === '/releases' || url.pathname === '/release-management';
+  },
+});
+
+function enhanceReleaseAssetsLiveRegion(region) {
+  enhancePreviewMedia(region);
+  enhanceNumberInputs(region);
+  enhanceAssetSelection(region);
+  enhanceAssetGridSize(region);
+  enhanceAssetListSize(region);
+  enhanceAutoSubmit(region);
+  enhanceAssetViewerFilterDisclosures(region);
+  enhanceDropdowns(liveRegionDocument(region));
+}
+
+// WP5B opts only the actual filter controls into the WP5A region engine;
+// page size, pagination, clear, and presentation controls remain native for WP5C.
+const releaseAssetsLiveEngine = createLiveRegionEngine({
+  regionSelector: RELEASE_ASSETS_LIVE_REGION_SELECTOR,
+  formSelector: [RELEASE_ASSETS_LIVE_FILTER_SELECTOR, RELEASE_ASSETS_PAGE_SIZE_FORM_SELECTOR],
+  linkSelector: 'nav.view-switcher a, .pagination a, [data-release-assets-reset]',
+  searchSelector: RELEASE_ASSETS_LIVE_SEARCH_SELECTOR,
+  changeSelector: RELEASE_ASSETS_LIVE_FILTER_CONTROL_SELECTOR,
+  debounceMs: RELEASE_ASSETS_LIVE_DEBOUNCE_MS,
+  defaultAction: '/releases',
+  stateKey: '__creatorCrateReleaseAssetsLiveFiltering',
+  historyState: { releaseAssets: true },
+  statusSelector: RELEASE_ASSETS_LIVE_STATUS_SELECTOR,
+  statusStateAttribute: RELEASE_ASSETS_LIVE_STATE_ATTRIBUTE,
+  loadingMessage: 'Loading Release Assets.',
+  fallbackMessage: 'Release Assets are loading as a full page.',
+  responseErrorMessage: 'Release Assets response failed.',
+  missingRegionMessage: 'Release Assets response did not contain the live region.',
+  enhanceRegion: enhanceReleaseAssetsLiveRegion,
+  isCurrentUrl(url) {
+    return /^\/releases\/[1-9]\d*\/assets$/.test(url.pathname);
   },
 });
 
@@ -1056,6 +1106,10 @@ export function enhanceProjectsLiveFiltering(scope = globalThis.document) {
 
 export function enhanceReleasesLiveFiltering(scope = globalThis.document) {
   return releasesLiveEngine.enhance(scope);
+}
+
+export function enhanceReleaseAssetsLiveFiltering(scope = globalThis.document) {
+  return releaseAssetsLiveEngine.enhance(scope);
 }
 
 const ASSET_LIBRARY_LIVE_REGION_SELECTOR = '[data-asset-library-live-region]';

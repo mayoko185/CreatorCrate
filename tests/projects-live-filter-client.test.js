@@ -346,6 +346,26 @@ function makePage(values = {}) {
   };
 }
 
+function addLiveLink(page, kind, href) {
+  const link = makeNode({
+    tagName: 'a',
+    attrs: {
+      href,
+      ...(kind === 'reset' ? { 'data-projects-reset': '' } : {}),
+    },
+  });
+  const container = kind === 'view'
+    ? makeNode({ tagName: 'nav', attrs: { class: 'view-switcher' } })
+    : kind === 'pagination'
+      ? makeNode({ attrs: { class: 'pagination' } })
+      : kind === 'reset'
+        ? makeNode({ attrs: { class: 'empty-state-actions' } })
+      : page.region;
+  container.appendChild(link);
+  if (container !== page.region) page.region.appendChild(container);
+  return link;
+}
+
 function addProjectGridSizeControls(page) {
   const displayControls = makeNode({ attrs: { 'data-project-grid-size-controls': '' } });
   const group = makeNode({
@@ -511,6 +531,35 @@ describe('Projects live filtering enhancement', () => {
     expect(initial.document.activeElement?.name).toBe('status');
     expect(initial.document.activeElement?.value).toBe('planned');
     expect(next.projectCurrentSummary.textContent).toBe('Project 7');
+  });
+
+  it.each([
+    ['empty-state Reset', 'reset', 'list', 'list', '/projects', 'http://creatorcrate.test/projects'],
+    ['pagination', 'pagination', 'list', 'list', '/projects?page=5&view=list', 'http://creatorcrate.test/projects?page=5&view=list'],
+    ['Grid view switcher', 'view', 'list', 'grid', '/projects?view=grid', 'http://creatorcrate.test/projects?view=grid'],
+    ['List view switcher', 'view', 'grid', 'list', '/projects?view=list', 'http://creatorcrate.test/projects?view=list'],
+  ])('uses the live region for %s links', async (_label, kind, initialView, nextView, href, responseUrl) => {
+    const initial = makePage({ view: initialView });
+    const next = makePage({ view: nextView });
+    const pages = new Map([['next', next.document]]);
+    const windowObject = makeWindow(initial.document, pages);
+    windowObject.fetch.mockResolvedValue(responseFor(next, 'next', responseUrl));
+    const link = addLiveLink(initial, kind, href);
+    enhanceProjectsLiveFiltering(initial.document);
+
+    const event = link.dispatch('click', { button: 0 });
+    await flush();
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(windowObject.fetch).toHaveBeenCalledWith(
+      new URL(href, 'http://creatorcrate.test/projects?page=4').href,
+      expect.objectContaining({ method: 'GET', headers: { Accept: 'text/html' } }),
+    );
+    expect(initial.document.querySelector('[data-projects-live-region]')).toBe(next.region);
+    expect(windowObject.history.pushes).toEqual([
+      expect.objectContaining({ url: responseUrl }),
+    ]);
+    expect(initial.form.submit).not.toHaveBeenCalled();
   });
 
   it('submits once when the shared Project selector changes', async () => {

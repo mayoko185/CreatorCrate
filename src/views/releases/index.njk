@@ -6,6 +6,8 @@
 {% set page_title = "Releases" %}
 
 {% block content %}
+  <div data-releases-live-region>
+    <span class="sr-only" data-releases-live-status aria-live="polite" aria-atomic="true"></span>
   {% if releasesSurface %}
     {% call pageHeading.render() %}
       <a class="button button-primary" href="/releases/new">New Release</a>
@@ -19,12 +21,10 @@
       <p data-dialog-feedback-text></p>
     </div>
 
-    <div data-releases-live-region>
-      <span class="sr-only" data-releases-live-status aria-live="polite" aria-atomic="true"></span>
       <div class="asset-viewer-display-controls">
         <nav class="view-switcher" aria-label="View">
-          <a class="view-switcher-option" data-releases-view-link href="{{ pageUrl({ view: 'list' }) }}"{% if view !== 'board' %} aria-current="page"{% endif %}>List</a>
-          <a class="view-switcher-option" data-releases-view-link href="{{ pageUrl({ view: 'board' }) }}"{% if view === 'board' %} aria-current="page"{% endif %}>Board</a>
+          <a class="view-switcher-option"{% if releasesLiveFiltering %} data-releases-view-link{% endif %} href="{{ pageUrl({ view: 'list' }) }}"{% if view !== 'board' %} aria-current="page"{% endif %}>List</a>
+          <a class="view-switcher-option"{% if releasesLiveFiltering %} data-releases-view-link{% endif %} href="{{ pageUrl({ view: 'board' }) }}"{% if view === 'board' %} aria-current="page"{% endif %}>Board</a>
           <a class="view-switcher-option" href="/calendar{% if query.month %}?month={{ query.month }}{% endif %}">Calendar</a>
         </nav>
         <div class="project-filter-actions project-filter-actions--projects">
@@ -42,8 +42,8 @@
   {% else %}
     {% call pageHeading.render() %}
       <nav class="view-switcher" aria-label="View">
-        <a class="view-switcher-option" href="{{ pageUrl({ view: 'list' }) }}"{% if view !== 'board' %} aria-current="page"{% endif %}>List</a>
-        <a class="view-switcher-option" href="{{ pageUrl({ view: 'board' }) }}"{% if view === 'board' %} aria-current="page"{% endif %}>Board</a>
+        <a class="view-switcher-option"{% if releasesLiveFiltering %} data-releases-view-link{% endif %} href="{{ pageUrl({ view: 'list' }) }}"{% if view !== 'board' %} aria-current="page"{% endif %}>List</a>
+        <a class="view-switcher-option"{% if releasesLiveFiltering %} data-releases-view-link{% endif %} href="{{ pageUrl({ view: 'board' }) }}"{% if view === 'board' %} aria-current="page"{% endif %}>Board</a>
         <a class="view-switcher-option" href="/calendar{% if query.month %}?month={{ query.month }}{% endif %}">Calendar</a>
       </nav>
       <a class="button button-primary" href="/releases/new">New Release</a>
@@ -53,7 +53,7 @@
   {% if view === 'board' %}
     {# ─── Board View ─── #}
     <div class="board-filters">
-      <form{% if releasesSurface %} id="board-releases-filter" data-releases-filter{% endif %} method="get" action="{{ basePath }}">
+      <form{% if releasesLiveFiltering %} id="board-releases-filter" data-releases-filter{% endif %} method="get" action="{{ basePath }}">
         <input type="hidden" name="view" value="board">
         <input type="hidden" name="sort" value="{{ query.sort }}">
         <input type="hidden" name="order" value="{{ query.order }}">
@@ -62,7 +62,7 @@
         {% endif %}
         <div class="field">
           <label for="board-search">Search releases</label>
-          <input type="search" id="board-search" name="search" value="{{ query.search or '' }}"{% if releasesSurface %} data-releases-search{% endif %}>
+          <input type="search" id="board-search" name="search" value="{{ query.search or '' }}"{% if releasesLiveFiltering %} data-releases-search{% endif %}>
         </div>
         <div class="field">
           <label for="board-project">Project</label>
@@ -82,8 +82,11 @@
           <input type="checkbox" id="board-includeArchived" name="includeArchived" value="1" {% if query.includeArchived == '1' %}checked{% endif %}>
           <label for="board-includeArchived">Include archived releases</label>
         </div>
-        {% if releasesSurface %}
+        {% if releasesLiveFiltering %}
           <noscript><button class="button" type="submit">Filter</button></noscript>
+          {% if not releasesSurface %}
+            <a class="button button-secondary" href="{{ clearUrl }}" data-releases-reset>Clear</a>
+          {% endif %}
         {% else %}
           <button class="button" type="submit">Filter</button>
           <a class="button button-secondary" href="{{ clearUrl }}">Clear</a>
@@ -132,14 +135,14 @@
     </div>
   {% else %}
     {# ─── List View ─── #}
-    <form{% if releasesSurface %} id="list-releases-filter" data-releases-filter{% endif %} class="filters" method="get" action="{{ basePath }}">
+    <form{% if releasesLiveFiltering %} id="list-releases-filter" data-releases-filter{% endif %} class="filters" method="get" action="{{ basePath }}">
       <input type="hidden" name="view" value="{{ query.view }}">
       {% if query.pageSize != 25 %}
         <input type="hidden" name="pageSize" value="{{ query.pageSize }}">
       {% endif %}
       <div class="field">
         <label for="list-search">Search releases</label>
-        <input type="search" id="list-search" name="search" value="{{ query.search or '' }}"{% if releasesSurface %} data-releases-search{% endif %}>
+        <input type="search" id="list-search" name="search" value="{{ query.search or '' }}"{% if releasesLiveFiltering %} data-releases-search{% endif %}>
       </div>
       <div class="field">
         <label for="list-project">Project</label>
@@ -172,8 +175,11 @@
         <input type="checkbox" id="list-includeArchived" name="includeArchived" value="1" {% if query.includeArchived == '1' %}checked{% endif %}>
         <label for="list-includeArchived">Include archived releases</label>
       </div>
-      {% if releasesSurface %}
+      {% if releasesLiveFiltering %}
         <noscript><button class="button" type="submit">Filter</button></noscript>
+        {% if not releasesSurface %}
+          <a class="button button-secondary" href="{{ clearUrl }}" data-releases-reset>Clear</a>
+        {% endif %}
       {% else %}
         <button class="button" type="submit">Filter</button>
         <a class="button button-secondary" href="{{ clearUrl }}">Clear</a>
@@ -236,6 +242,9 @@
         {% set emptyDescription = "Reset the filters to return to the full release list." %}
         {% set emptyActionUrl = clearUrl %}
         {% set emptyActionLabel = "Reset Filters" %}
+        {% if releasesLiveFiltering %}
+          {% set emptyActionAttributes = [['data-releases-reset', true]] %}
+        {% endif %}
       {% else %}
         {% set emptyHeading = "No releases yet" %}
         {% set emptyDescription = "Create a release to start tracking publication workflow." %}
@@ -247,7 +256,7 @@
     {% endif %}
   {% endif %}
 
-  {% if releasesSurface %}</div>{% endif %}
+  </div>
 {% endblock %}
 
 {% block overlay %}

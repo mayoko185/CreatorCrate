@@ -31,6 +31,16 @@ function extractPageHeading(html) {
   return html.match(/<header class="page-heading">[\s\S]*?<\/header>/)?.[0] || '';
 }
 
+function sliceSelect(html, id) {
+  const start = html.indexOf(`<select id="${id}"`);
+  if (start < 0) return '';
+  return html.slice(start, html.indexOf('</select>', start));
+}
+
+function optionValues(selectHtml) {
+  return [...selectHtml.matchAll(/<option value="([^"]*)"/g)].map(([, value]) => value);
+}
+
 function expectReleaseFormSectionCards(html) {
   const cards = html.match(/<div class="settings-section(?: release-project-section| scheduling-section)?">\s*<h3>[^<]+<\/h3>/g) || [];
   expect(cards).toHaveLength(4);
@@ -6918,6 +6928,34 @@ describe('release HTTP workflow', () => {
       expect(res.text).toContain('<label for="asset-page-size">Page size</label>');
     });
 
+    // The live filter form is serialized wholesale on every filter change, so any
+    // page size it cannot represent is silently rewritten to its first option.
+    it('live filter page-size control offers every supported page size', async () => {
+      const { releaseLocation } = await setupBasicRelease();
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
+      const filterSelect = sliceSelect(res.text, 'asset-page-size');
+
+      expect(optionValues(filterSelect)).toEqual(['10', '25', '50', '100']);
+    });
+
+    it('live filter page-size control marks an active pageSize=10 as selected', async () => {
+      const { releaseLocation } = await setupBasicRelease();
+      const res = await agent.get(`${releaseLocation}/assets?pageSize=10`).expect(200);
+      const filterSelect = sliceSelect(res.text, 'asset-page-size');
+
+      expect(filterSelect).toMatch(/<option value="10"\s+selected>/);
+      expect(filterSelect).not.toMatch(/<option value="25"\s+selected>/);
+    });
+
+    it('live filter page-size control still marks the default pageSize=25 as selected', async () => {
+      const { releaseLocation } = await setupBasicRelease();
+      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
+      const filterSelect = sliceSelect(res.text, 'asset-page-size');
+
+      expect(filterSelect).toMatch(/<option value="25"\s+selected>/);
+      expect(filterSelect).not.toMatch(/<option value="10"\s+selected>/);
+    });
+
     it('asset selection controls have accessible membership labels', async () => {
       const { releaseLocation } = await setupBasicRelease();
       const res = await agent.get(`${releaseLocation}/assets`).expect(200);
@@ -8578,6 +8616,36 @@ describe('release HTTP workflow', () => {
         }
       }
 
+      function releaseAssetsLiveRegion(html) {
+        const start = html.indexOf('<section data-release-assets-live-region>');
+        const end = html.indexOf('</main>', start);
+        return start < 0 || end < 0 ? '' : html.slice(start, end);
+      }
+
+      it('renders immediate Release Assets filter controls with a native GET fallback', async () => {
+        const { releaseLocation } = await setupReleaseWithAssets();
+        const res = await agent.get(`${releaseLocation}/assets?pageSize=1`).expect(200);
+        const region = releaseAssetsLiveRegion(res.text);
+
+        expect(region).toContain('data-release-assets-live-status');
+        expect(region).toContain('class="results-meta release-asset-results-meta"');
+        expect(region).toContain('class="filters release-asset-filters" data-release-assets-live-filter');
+        expect(region).toContain('data-release-assets-live-search');
+        expect(region).toContain('data-release-assets-live-filter-control');
+        expect(region).toContain('class="view-switcher"');
+        expect(region).toContain('class="pagination"');
+        expect(region).toContain('class="page-size-form" method="get" action="/releases/');
+        expect(region).toContain('data-release-assets-live-page-size-form');
+        expect(region).toContain('data-release-assets-live-page-size');
+        expect(region).toContain('<noscript><button class="button" type="submit">Filter</button></noscript>');
+        expect(region).toContain('<noscript><button class="button button-small" type="submit">Apply</button></noscript>');
+        expect(region.replace(/<noscript>[\s\S]*?<\/noscript>/g, '')).not.toContain('>Apply</button>');
+        expect(res.text.indexOf('Back to Release')).toBeLessThan(res.text.indexOf(region));
+
+        const filtered = await agent.get(`${releaseLocation}/assets?search=alpha`).expect(200);
+        expect(releaseAssetsLiveRegion(filtered.text)).toContain('data-release-assets-reset>Clear</a>');
+      });
+
       it('Next link pathname and query on page 1', async () => {
         const { releaseLocation, releaseId } = await setupReleaseWithAssets();
         const res = await agent.get(`${releaseLocation}/assets?pageSize=1`).expect(200);
@@ -8949,7 +9017,7 @@ describe('release HTTP workflow', () => {
       expect(extensionDisclosure).toContain('>All extensions</span>');
       expect(extensionDisclosure).toContain('>.txt</span>');
 
-      const form = res.text.match(/<form method="get" action="\/releases\/\d+\/assets" class="filters release-asset-filters">[\s\S]*?<\/form>/)?.[0] || '';
+      const form = res.text.match(/<form method="get" action="\/releases\/\d+\/assets" class="filters release-asset-filters"[^>]*>[\s\S]*?<\/form>/)?.[0] || '';
       expect(form).toContain('<input type="hidden" name="view" value="list">');
       expect(form).not.toContain('name="page"');
       expect(res.text).not.toMatch(/<select[^>]+id="asset-(category|extension)"/);

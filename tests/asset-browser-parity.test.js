@@ -365,6 +365,16 @@ describe('asset-browser structural parity: releases vs projects', () => {
         expect(formSection).toContain('value="10"');
       }
     });
+
+    it('keeps the Project Assets Apply fallback inside noscript', async () => {
+      const response = await agent.get(`/projects/${projectId}/assets?pageSize=1`).expect(200);
+      const pageSizeFormStart = response.text.indexOf('page-size-form');
+      const pageSizeFormEnd = response.text.indexOf('</form>', pageSizeFormStart);
+      const pageSizeForm = response.text.slice(pageSizeFormStart, pageSizeFormEnd);
+
+      expect(pageSizeForm).toContain('<noscript><button class="button button-small" type="submit">Apply</button></noscript>');
+      expect(pageSizeForm.replace(/<noscript>[\s\S]*?<\/noscript>/g, '')).not.toContain('>Apply</button>');
+    });
   });
 
   // ── Pagination link contract ───────────────────────────────────────────

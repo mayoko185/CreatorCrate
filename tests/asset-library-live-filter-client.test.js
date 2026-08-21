@@ -375,6 +375,40 @@ describe('Asset Viewer Project live filtering enhancement', () => {
     expect(next.form.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
   });
 
+  it('uses the live region for the empty-state Reset link', async () => {
+    const initial = makePage('1');
+    const next = makePage();
+    const pages = new Map([['reset', next.document]]);
+    const windowObject = makeWindow(initial.document, pages);
+    windowObject.fetch.mockResolvedValue({
+      ok: true,
+      url: 'http://creatorcrate.test/assets',
+      text: vi.fn(async () => 'reset'),
+    });
+    const emptyActions = makeNode({ attrs: { class: 'empty-state-actions' } });
+    const reset = makeNode({
+      tagName: 'a',
+      attrs: { href: '/assets', 'data-asset-library-reset': '' },
+    });
+    emptyActions.appendChild(reset);
+    initial.region.appendChild(emptyActions);
+
+    enhanceAssetLibraryLiveFiltering(initial.document);
+    const event = reset.dispatch('click', { button: 0 });
+    await flush();
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(windowObject.fetch).toHaveBeenCalledWith(
+      'http://creatorcrate.test/assets',
+      expect.objectContaining({ method: 'GET', headers: { Accept: 'text/html' } }),
+    );
+    expect(initial.document.querySelector('[data-asset-library-live-region]')).toBe(next.region);
+    expect(windowObject.history.pushes).toEqual([
+      expect.objectContaining({ url: 'http://creatorcrate.test/assets' }),
+    ]);
+    expect(initial.form.submit).not.toHaveBeenCalled();
+  });
+
   it('re-binds replaced preview links to the existing slideshow', async () => {
     const initial = makePage();
     const next = makePage('1');

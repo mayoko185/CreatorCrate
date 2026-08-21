@@ -1,5 +1,26 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { enhanceReleasesLiveFiltering } from '../src/static/creatorcrate.js';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import {
+  enhanceReleaseAssetsLiveFiltering,
+  enhanceReleasesLiveFiltering,
+} from '../src/static/creatorcrate.js';
+
+// The live engine serializes the whole filter form, so preserving the active page
+// size depends on the template's own option set. Read it instead of restating it.
+const RELEASE_ASSETS_TEMPLATE = fs.readFileSync(
+  fileURLToPath(new URL('../src/views/releases/assets.njk', import.meta.url)),
+  'utf8',
+);
+
+function templatePageSizeOptions(id) {
+  const start = RELEASE_ASSETS_TEMPLATE.indexOf(`<select id="${id}"`);
+  const markup = RELEASE_ASSETS_TEMPLATE.slice(start, RELEASE_ASSETS_TEMPLATE.indexOf('</select>', start));
+  return [...markup.matchAll(/<option value="(\d+)"/g)].map(([, value]) => value);
+}
+
+const FILTER_PAGE_SIZE_OPTIONS = templatePageSizeOptions('asset-page-size');
+const PAGE_SIZE_FORM_OPTIONS = templatePageSizeOptions('pageSize');
 
 function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } = {}) {
   const attributes = new Map();
@@ -130,10 +151,33 @@ function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } =
   return node;
 }
 
-function makeForm(view = 'list') {
+// Mirrors browser selectedness: a single select whose value matches no option
+// exposes its first option instead, which is how an unrepresentable page size is lost.
+function makeSelect(attrs, options, selectedValue) {
+  const select = makeNode({ tagName: 'select', attrs });
+  const optionNodes = options.map((optionValue) => {
+    const option = makeNode({ tagName: 'option', attrs: { value: optionValue } });
+    option.selected = optionValue === String(selectedValue);
+    return option;
+  });
+  optionNodes.forEach((option) => select.appendChild(option));
+  Object.defineProperty(select, 'value', {
+    configurable: true,
+    get() {
+      const active = optionNodes.find((option) => option.selected) || optionNodes[0];
+      return active ? active.getAttribute('value') : '';
+    },
+    set(next) {
+      optionNodes.forEach((option) => { option.selected = option.getAttribute('value') === String(next); });
+    },
+  });
+  return select;
+}
+
+function makeForm(view = 'list', action = '/releases') {
   const form = makeNode({
     tagName: 'form',
-    attrs: { action: '/releases', method: 'get', 'data-releases-filter': '' },
+    attrs: { action, method: 'get', 'data-releases-filter': '' },
   });
   form.submit = vi.fn();
   const add = (attrs, fieldValue = '', fieldChecked = false) => {
@@ -152,26 +196,135 @@ function makeForm(view = 'list') {
   return { form, search, project, page, schedule, archived, sort, order };
 }
 
-function makePage(view = 'list') {
+function makePage(view = 'list', action = '/releases') {
   const document = makeNode({ tagName: 'document' });
   document.nodeType = 9;
   document.ownerDocument = document;
   document.activeElement = null;
   const region = makeNode({ attrs: { 'data-releases-live-region': '' } });
   const status = makeNode({ attrs: { 'data-releases-live-status': '' } });
-  const formParts = makeForm(view);
+  const formParts = makeForm(view, action);
   const nav = makeNode({ tagName: 'nav', attrs: { 'aria-label': 'View' } });
-  const list = makeNode({ tagName: 'a', attrs: { href: '/releases?view=list', 'data-releases-view-link': '' } });
-  const board = makeNode({ tagName: 'a', attrs: { href: '/releases?view=board', 'data-releases-view-link': '' } });
+  const list = makeNode({ tagName: 'a', attrs: { href: `${action}?view=list`, 'data-releases-view-link': '' } });
+  const board = makeNode({ tagName: 'a', attrs: { href: `${action}?view=board`, 'data-releases-view-link': '' } });
   nav.appendChild(list);
   nav.appendChild(board);
-  const reset = makeNode({ tagName: 'a', attrs: { href: '/releases', 'data-releases-reset': '' } });
+  const reset = makeNode({ tagName: 'a', attrs: { href: action, 'data-releases-reset': '' } });
+  const pagination = makeNode({ tagName: 'nav', attrs: { class: 'pagination' } });
+  const next = makeNode({ tagName: 'a', attrs: { href: `${action}?view=${view}&page=2` } });
+  pagination.appendChild(next);
   region.appendChild(status);
   region.appendChild(nav);
   region.appendChild(formParts.form);
   region.appendChild(reset);
+  region.appendChild(pagination);
   document.appendChild(region);
-  return { document, region, status, nav, list, board, reset, ...formParts };
+  return { document, region, status, nav, list, board, reset, pagination, next, ...formParts };
+}
+
+function makeReleaseAssetsPage({
+  extension = 'png', category = '3', search = '', view = 'grid', pageSize: selectedPageSize = '50',
+} = {}) {
+  const document = makeNode({ tagName: 'document' });
+  document.nodeType = 9;
+  document.ownerDocument = document;
+  document.activeElement = null;
+  const region = makeNode({ attrs: { 'data-release-assets-live-region': '' } });
+  const status = makeNode({ attrs: { 'data-release-assets-live-status': '' } });
+  const filter = makeNode({
+    tagName: 'form',
+    attrs: {
+      action: '/releases/7/assets',
+      method: 'get',
+      class: 'release-asset-filters',
+      'data-release-assets-live-filter': '',
+    },
+  });
+  const add = (attrs, fieldValue = '', fieldChecked = false) => {
+    const field = makeNode({ tagName: attrs.tagName || 'input', attrs, value: fieldValue, checked: fieldChecked });
+    filter.appendChild(field);
+    return field;
+  };
+  const viewField = add({ name: 'view', type: 'hidden' }, view);
+  const page = add({ name: 'page', type: 'hidden' }, '4');
+  const filterPageSize = makeSelect(
+    { name: 'pageSize', 'data-release-assets-live-page-size': '' },
+    FILTER_PAGE_SIZE_OPTIONS,
+    selectedPageSize,
+  );
+  filter.appendChild(filterPageSize);
+  const searchInput = add({ name: 'search', type: 'search', 'data-release-assets-live-search': '' }, search);
+  const extensionPng = add({ name: 'extension', type: 'radio', value: 'png', 'data-release-assets-live-filter-control': '' }, 'png', extension === 'png');
+  const extensionJpg = add({ name: 'extension', type: 'radio', value: 'jpg', 'data-release-assets-live-filter-control': '' }, 'jpg', extension === 'jpg');
+  const categoryThree = add({ name: 'category', type: 'radio', value: '3', 'data-release-assets-live-filter-control': '' }, '3', category === '3');
+  const categoryFour = add({ name: 'category', type: 'radio', value: '4', 'data-release-assets-live-filter-control': '' }, '4', category === '4');
+  const selection = makeNode({
+    tagName: 'form',
+    attrs: { action: '/releases/7/assets', method: 'post', id: 'release-assets-form' },
+  });
+  selection.appendChild(makeNode({
+    tagName: 'input',
+    attrs: { name: 'selectedAssetIds', type: 'checkbox', value: '99' },
+    value: '99',
+    checked: true,
+  }));
+  const disclosure = makeNode({
+    tagName: 'details',
+    attrs: { 'data-asset-viewer-filter-disclosure': '' },
+  });
+  disclosure.appendChild(makeNode({ tagName: 'summary' }));
+  const viewNav = makeNode({ tagName: 'nav', attrs: { class: 'view-switcher', 'aria-label': 'Asset display' } });
+  const grid = makeNode({
+    tagName: 'a',
+    attrs: { href: `/releases/7/assets?view=grid&pageSize=${selectedPageSize}`, 'data-release-assets-view-link': '' },
+  });
+  const list = makeNode({
+    tagName: 'a',
+    attrs: { href: `/releases/7/assets?view=list&pageSize=${selectedPageSize}`, 'data-release-assets-view-link': '' },
+  });
+  viewNav.appendChild(grid);
+  viewNav.appendChild(list);
+  const pagination = makeNode({ tagName: 'nav', attrs: { class: 'pagination', 'aria-label': 'Release asset pages' } });
+  const next = makeNode({
+    tagName: 'a',
+    attrs: { href: `/releases/7/assets?view=${view}&pageSize=${selectedPageSize}&search=${search}&extension=${extension}&category=${category}&page=2` },
+  });
+  pagination.appendChild(next);
+  const pageSizeForm = makeNode({
+    tagName: 'form',
+    attrs: {
+      action: '/releases/7/assets', method: 'get', class: 'page-size-form',
+      'data-release-assets-live-page-size-form': '',
+    },
+  });
+  const pageSize = makeSelect(
+    { name: 'pageSize', 'data-release-assets-live-page-size': '', 'data-autosubmit': '' },
+    PAGE_SIZE_FORM_OPTIONS,
+    selectedPageSize,
+  );
+  pageSizeForm.appendChild(pageSize);
+  if (search) pageSizeForm.appendChild(makeNode({ tagName: 'input', attrs: { name: 'search', type: 'hidden' }, value: search }));
+  if (extension) pageSizeForm.appendChild(makeNode({ tagName: 'input', attrs: { name: 'extension', type: 'hidden' }, value: extension }));
+  if (category) pageSizeForm.appendChild(makeNode({ tagName: 'input', attrs: { name: 'category', type: 'hidden' }, value: category }));
+  if (view === 'list') pageSizeForm.appendChild(makeNode({ tagName: 'input', attrs: { name: 'view', type: 'hidden' }, value: view }));
+  const reset = makeNode({
+    tagName: 'a',
+    attrs: { href: `/releases/7/assets?view=${view}&pageSize=${selectedPageSize}`, 'data-release-assets-reset': '' },
+  });
+  region.appendChild(status);
+  region.appendChild(selection);
+  region.appendChild(viewNav);
+  region.appendChild(filter);
+  region.appendChild(pagination);
+  region.appendChild(pageSizeForm);
+  region.appendChild(reset);
+  region.appendChild(disclosure);
+  document.appendChild(region);
+  return {
+    document, region, status, filter, disclosure, view: viewField, page, filterPageSize, pageSize,
+    searchInput, extensionPng, extensionJpg, categoryThree, categoryFour, selection, viewNav,
+    grid, list, pagination, next, pageSizeForm, reset,
+  };
 }
 
 function makeWindow(document, pages = new Map()) {
@@ -230,6 +383,199 @@ describe('Releases live filtering enhancement', () => {
   beforeEach(() => { vi.useRealTimers(); });
   afterEach(() => { vi.useRealTimers(); });
 
+  it('filters Release Assets immediately, preserves sibling state, and rebinds once per replacement', async () => {
+    vi.useFakeTimers();
+    const initial = makeReleaseAssetsPage();
+    const afterExtension = makeReleaseAssetsPage({ extension: 'jpg', category: '3' });
+    const afterCategory = makeReleaseAssetsPage({ extension: 'jpg', category: '4' });
+    const afterSearch = makeReleaseAssetsPage({ extension: 'jpg', category: '4', search: 'needle' });
+    const pages = new Map([
+      ['after-extension', afterExtension.document],
+      ['after-category', afterCategory.document],
+      ['after-search', afterSearch.document],
+    ]);
+    const windowObject = makeWindow(initial.document, pages);
+    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets?page=4';
+    windowObject.location.pathname = '/releases/7/assets';
+    windowObject.fetch
+      .mockResolvedValueOnce(responseFor('after-extension', 'http://creatorcrate.test/releases/7/assets?view=grid&pageSize=50&extension=jpg&category=3'))
+      .mockResolvedValueOnce(responseFor('after-category', 'http://creatorcrate.test/releases/7/assets?view=grid&pageSize=50&extension=jpg&category=4'))
+      .mockResolvedValueOnce(responseFor('after-search', 'http://creatorcrate.test/releases/7/assets?view=grid&pageSize=50&search=needle&extension=jpg&category=4'))
+      .mockResolvedValue(responseFor('after-search', 'http://creatorcrate.test/releases/7/assets?view=grid&pageSize=50&search=needle&extension=jpg&category=3'));
+
+    expect(enhanceReleaseAssetsLiveFiltering(initial.document)).toBe(2);
+    expect(initial.filter.listeners).toHaveLength(2);
+    expect(initial.region.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
+    expect(enhanceReleaseAssetsLiveFiltering(initial.document)).toBe(2);
+    expect(initial.filter.listeners).toHaveLength(2);
+
+    initial.extensionPng.checked = false;
+    initial.extensionJpg.checked = true;
+    initial.filter.dispatch('change', { target: initial.extensionJpg });
+    await flush();
+
+    expect(windowObject.fetch).toHaveBeenCalledTimes(1);
+    let requested = new URL(windowObject.fetch.mock.calls[0][0]);
+    expect(requested.pathname).toBe('/releases/7/assets');
+    expect(requested.searchParams.get('extension')).toBe('jpg');
+    expect(requested.searchParams.get('category')).toBe('3');
+    expect(requested.searchParams.get('pageSize')).toBe('50');
+    expect(requested.searchParams.has('page')).toBe(false);
+    expect(requested.searchParams.has('selectedAssetIds')).toBe(false);
+    expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(afterExtension.region);
+    expect(afterExtension.filter.listeners).toHaveLength(2);
+    expect(afterExtension.region.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
+
+    afterExtension.categoryThree.checked = false;
+    afterExtension.categoryFour.checked = true;
+    afterExtension.filter.dispatch('change', { target: afterExtension.categoryFour });
+    await flush();
+
+    expect(windowObject.fetch).toHaveBeenCalledTimes(2);
+    requested = new URL(windowObject.fetch.mock.calls[1][0]);
+    expect(requested.searchParams.get('extension')).toBe('jpg');
+    expect(requested.searchParams.get('category')).toBe('4');
+    expect(requested.searchParams.has('selectedAssetIds')).toBe(false);
+
+    afterCategory.searchInput.value = 'needle';
+    afterCategory.searchInput.dispatch('input');
+    vi.advanceTimersByTime(349);
+    expect(windowObject.fetch).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(1);
+    await flush();
+
+    expect(windowObject.fetch).toHaveBeenCalledTimes(3);
+    requested = new URL(windowObject.fetch.mock.calls[2][0]);
+    expect(requested.searchParams.get('search')).toBe('needle');
+    expect(requested.searchParams.get('extension')).toBe('jpg');
+    expect(requested.searchParams.get('category')).toBe('4');
+    expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(afterSearch.region);
+    expect(enhanceReleaseAssetsLiveFiltering(initial.document)).toBe(2);
+    expect(afterSearch.filter.listeners).toHaveLength(2);
+
+    afterSearch.categoryFour.checked = false;
+    afterSearch.categoryThree.checked = true;
+    afterSearch.filter.dispatch('change', { target: afterSearch.categoryThree });
+    await flush();
+    expect(windowObject.fetch).toHaveBeenCalledTimes(4);
+  });
+
+  it('preserves an active pageSize=10 across Extension, Category, and Search changes', async () => {
+    vi.useFakeTimers();
+    const initial = makeReleaseAssetsPage({ pageSize: '10' });
+    const afterExtension = makeReleaseAssetsPage({ extension: 'jpg', category: '3', pageSize: '10' });
+    const afterCategory = makeReleaseAssetsPage({ extension: 'jpg', category: '4', pageSize: '10' });
+    const afterSearch = makeReleaseAssetsPage({
+      extension: 'jpg', category: '4', search: 'needle', pageSize: '10',
+    });
+    const pages = new Map([
+      ['after-extension', afterExtension.document],
+      ['after-category', afterCategory.document],
+      ['after-search', afterSearch.document],
+    ]);
+    const windowObject = makeWindow(initial.document, pages);
+    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets?pageSize=10';
+    windowObject.location.pathname = '/releases/7/assets';
+    windowObject.fetch
+      .mockResolvedValueOnce(responseFor('after-extension', 'http://creatorcrate.test/releases/7/assets?view=grid&pageSize=10&extension=jpg&category=3'))
+      .mockResolvedValueOnce(responseFor('after-category', 'http://creatorcrate.test/releases/7/assets?view=grid&pageSize=10&extension=jpg&category=4'))
+      .mockResolvedValueOnce(responseFor('after-search', 'http://creatorcrate.test/releases/7/assets?view=grid&pageSize=10&search=needle&extension=jpg&category=4'));
+
+    expect(enhanceReleaseAssetsLiveFiltering(initial.document)).toBe(2);
+    expect(initial.filterPageSize.value).toBe('10');
+
+    initial.extensionPng.checked = false;
+    initial.extensionJpg.checked = true;
+    initial.filter.dispatch('change', { target: initial.extensionJpg });
+    await flush();
+
+    let requested = new URL(windowObject.fetch.mock.calls[0][0]);
+    expect(requested.searchParams.get('pageSize')).toBe('10');
+    expect(requested.searchParams.get('extension')).toBe('jpg');
+    expect(requested.searchParams.has('page')).toBe(false);
+    expect(requested.searchParams.has('selectedAssetIds')).toBe(false);
+
+    afterExtension.categoryThree.checked = false;
+    afterExtension.categoryFour.checked = true;
+    afterExtension.filter.dispatch('change', { target: afterExtension.categoryFour });
+    await flush();
+
+    requested = new URL(windowObject.fetch.mock.calls[1][0]);
+    expect(requested.searchParams.get('pageSize')).toBe('10');
+    expect(requested.searchParams.get('category')).toBe('4');
+
+    afterCategory.searchInput.value = 'needle';
+    afterCategory.searchInput.dispatch('input');
+    vi.advanceTimersByTime(350);
+    await flush();
+
+    expect(windowObject.fetch).toHaveBeenCalledTimes(3);
+    requested = new URL(windowObject.fetch.mock.calls[2][0]);
+    expect(requested.searchParams.get('pageSize')).toBe('10');
+    expect(requested.searchParams.get('search')).toBe('needle');
+  });
+
+  it('handles Release Assets page size, pagination, reset, and views as live anchor/form navigation', async () => {
+    const initial = makeReleaseAssetsPage({ extension: 'jpg', category: '4', search: 'needle', view: 'list' });
+    const afterPageSize = makeReleaseAssetsPage({ extension: 'jpg', category: '4', search: 'needle', view: 'list', pageSize: '100' });
+    const afterPagination = makeReleaseAssetsPage({ extension: 'jpg', category: '4', search: 'needle', view: 'list', pageSize: '100' });
+    const afterReset = makeReleaseAssetsPage({ view: 'list', pageSize: '100' });
+    const afterView = makeReleaseAssetsPage({ pageSize: '100' });
+    const pages = new Map([
+      ['after-page-size', afterPageSize.document],
+      ['after-pagination', afterPagination.document],
+      ['after-reset', afterReset.document],
+      ['after-view', afterView.document],
+    ]);
+    const windowObject = makeWindow(initial.document);
+    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets?page=4';
+    windowObject.location.pathname = '/releases/7/assets';
+    windowObject.fetch
+      .mockResolvedValueOnce(responseFor('after-page-size', 'http://creatorcrate.test/releases/7/assets?pageSize=100&search=needle&extension=jpg&category=4&view=list'))
+      .mockResolvedValueOnce(responseFor('after-pagination', 'http://creatorcrate.test/releases/7/assets?view=list&pageSize=100&search=needle&extension=jpg&category=4&page=2'))
+      .mockResolvedValueOnce(responseFor('after-reset', 'http://creatorcrate.test/releases/7/assets?view=list&pageSize=100'))
+      .mockResolvedValueOnce(responseFor('after-view', 'http://creatorcrate.test/releases/7/assets?view=grid&pageSize=100'));
+    windowObject.DOMParser = class DOMParserMock {
+      parseFromString(text) { return pages.get(text) || makeNode({ tagName: 'document' }); }
+    };
+
+    expect(enhanceReleaseAssetsLiveFiltering(initial.document)).toBe(2);
+    expect(initial.pageSizeForm.listeners).toHaveLength(2);
+    initial.pageSize.value = '100';
+    initial.pageSizeForm.dispatch('change', { target: initial.pageSize });
+    await flush();
+
+    let requested = new URL(windowObject.fetch.mock.calls[0][0]);
+    expect(requested.searchParams.get('pageSize')).toBe('100');
+    expect([...requested.searchParams.entries()]).toEqual([
+      ['pageSize', '100'], ['search', 'needle'], ['extension', 'jpg'], ['category', '4'], ['view', 'list'],
+    ]);
+    expect(requested.searchParams.has('page')).toBe(false);
+    expect(requested.searchParams.has('selectedAssetIds')).toBe(false);
+    expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(afterPageSize.region);
+
+    const paginationEvent = afterPageSize.next.dispatch('click');
+    await flush();
+    expect(paginationEvent.defaultPrevented).toBe(true);
+    expect(windowObject.fetch.mock.calls[1][0]).toBe(new URL(afterPageSize.next.getAttribute('href'), windowObject.location.href).href);
+    expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(afterPagination.region);
+
+    const resetEvent = afterPagination.reset.dispatch('click');
+    await flush();
+    expect(resetEvent.defaultPrevented).toBe(true);
+    expect(windowObject.fetch.mock.calls[2][0]).toBe(new URL(afterPagination.reset.getAttribute('href'), windowObject.location.href).href);
+    expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(afterReset.region);
+
+    const viewEvent = afterReset.grid.dispatch('click');
+    await flush();
+    expect(viewEvent.defaultPrevented).toBe(true);
+    expect(windowObject.fetch.mock.calls[3][0]).toBe(new URL(afterReset.grid.getAttribute('href'), windowObject.location.href).href);
+    expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(afterView.region);
+    expect(afterView.pageSizeForm.listeners).toHaveLength(2);
+    expect(afterView.region.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
+    expect(windowObject.history.pushes).toHaveLength(4);
+  });
+
   it('updates filters without navigation, resets pagination, and serializes archived state', async () => {
     const initial = makePage();
     const next = makePage();
@@ -252,6 +598,84 @@ describe('Releases live filtering enhancement', () => {
     expect(requested.searchParams.has('page')).toBe(false);
     expect(windowObject.history.pushes).toHaveLength(1);
     expect(initial.form.submit).not.toHaveBeenCalled();
+  });
+
+  it('uses the shared engine for Release Management filters, links, and replacement rebinding', async () => {
+    vi.useFakeTimers();
+    const initial = makePage('list', '/release-management');
+    const filtered = makePage('list', '/release-management');
+    const paged = makePage('list', '/release-management');
+    const reset = makePage('list', '/release-management');
+    const board = makePage('board', '/release-management');
+    const searched = makePage('board', '/release-management');
+    const pages = new Map([
+      ['filtered', filtered.document],
+      ['paged', paged.document],
+      ['reset', reset.document],
+      ['board', board.document],
+      ['searched', searched.document],
+    ]);
+    const windowObject = makeWindow(initial.document, pages);
+    windowObject.location.href = 'http://creatorcrate.test/release-management?page=4';
+    windowObject.location.pathname = '/release-management';
+    windowObject.fetch
+      .mockResolvedValueOnce(responseFor('filtered', 'http://creatorcrate.test/release-management?view=list&project=7&schedule=today&includeArchived=1&sort=title&order=asc'))
+      .mockResolvedValueOnce(responseFor('paged', 'http://creatorcrate.test/release-management?view=list&page=2'))
+      .mockResolvedValueOnce(responseFor('reset', 'http://creatorcrate.test/release-management'))
+      .mockResolvedValueOnce(responseFor('board', 'http://creatorcrate.test/release-management?view=board'))
+      .mockResolvedValueOnce(responseFor('searched', 'http://creatorcrate.test/release-management?view=board&search=needle'));
+
+    expect(enhanceReleasesLiveFiltering(initial.document)).toBe(1);
+    initial.archived.checked = true;
+    initial.schedule.value = 'today';
+    initial.sort.value = 'title';
+    initial.order.value = 'asc';
+    initial.form.dispatch('change', { target: initial.schedule });
+    await flush();
+
+    let requested = new URL(windowObject.fetch.mock.calls[0][0]);
+    expect(requested.pathname).toBe('/release-management');
+    expect(requested.searchParams.get('project')).toBe('7');
+    expect(requested.searchParams.get('schedule')).toBe('today');
+    expect(requested.searchParams.get('includeArchived')).toBe('1');
+    expect(requested.searchParams.get('sort')).toBe('title');
+    expect(requested.searchParams.get('order')).toBe('asc');
+    expect(requested.searchParams.has('page')).toBe(false);
+    expect(initial.document.querySelector('[data-releases-live-region]')).toBe(filtered.region);
+
+    const pageEvent = filtered.next.dispatch('click');
+    await flush();
+    expect(pageEvent.defaultPrevented).toBe(true);
+    expect(windowObject.fetch.mock.calls[1][0]).toBe(new URL(filtered.next.getAttribute('href'), windowObject.location.href).href);
+    expect(initial.document.querySelector('[data-releases-live-region]')).toBe(paged.region);
+
+    const resetEvent = paged.reset.dispatch('click');
+    await flush();
+    expect(resetEvent.defaultPrevented).toBe(true);
+    expect(windowObject.fetch.mock.calls[2][0]).toBe(new URL(paged.reset.getAttribute('href'), windowObject.location.href).href);
+    expect(initial.document.querySelector('[data-releases-live-region]')).toBe(reset.region);
+
+    const boardEvent = reset.board.dispatch('click');
+    await flush();
+    expect(boardEvent.defaultPrevented).toBe(true);
+    requested = new URL(windowObject.fetch.mock.calls[3][0]);
+    expect(requested.pathname).toBe('/release-management');
+    expect(requested.searchParams.get('view')).toBe('board');
+    expect(initial.document.querySelector('[data-releases-live-region]')).toBe(board.region);
+    expect(board.form.listeners).toHaveLength(2);
+    expect(board.board.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
+    expect(windowObject.history.pushes).toHaveLength(4);
+
+    board.search.value = 'needle';
+    board.search.dispatch('input');
+    vi.advanceTimersByTime(349);
+    expect(windowObject.fetch).toHaveBeenCalledTimes(4);
+    vi.advanceTimersByTime(1);
+    await flush();
+    requested = new URL(windowObject.fetch.mock.calls[4][0]);
+    expect(requested.pathname).toBe('/release-management');
+    expect(requested.searchParams.get('search')).toBe('needle');
+    expect(initial.document.querySelector('[data-releases-live-region]')).toBe(searched.region);
   });
 
   it('debounces Search and rebinds the Board form after a view switch', async () => {

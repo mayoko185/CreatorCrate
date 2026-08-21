@@ -96,6 +96,7 @@ describe('asset browser HTTP workflow', () => {
       mimeType: options.mimeType ?? defaultMime(extension),
       sizeBytes: options.sizeBytes ?? buffer.length,
       modifiedAt: options.modifiedAt ?? '2026-07-28 10:00:00',
+      categoryId: options.categoryId,
     });
   }
 
@@ -726,6 +727,54 @@ describe('asset browser HTTP workflow', () => {
     expect(response.text).toContain('Used Asset Release');
   });
 
+  it('uses ordinary filtered results for concrete-category extension, presence, and usage controls', async () => {
+    const res = await createProject('Concrete Category Filter Controls');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Concrete Category Filter Controls');
+    const [category] = assetCategoryRepo.listProjectCategories(id);
+    if (!category) throw new Error('project has no category');
+
+    writeIndexedAsset(id, projectDir, 'matching.png', 'matching', { categoryId: category.id });
+    writeIndexedAsset(id, projectDir, 'wrong.jpg', 'wrong', { categoryId: category.id });
+    const missingPng = writeIndexedAsset(id, projectDir, 'missing.png', 'missing', { categoryId: category.id });
+    writeIndexedAsset(id, projectDir, 'unused.png', 'unused', { categoryId: category.id });
+    const usedPng = writeIndexedAsset(id, projectDir, 'used.png', 'used', { categoryId: category.id });
+    db.prepare("UPDATE assets SET is_present = 0, missing_since = datetime('now') WHERE id = ?").run(missingPng.id);
+    await createReleaseUsingAsset(id, usedPng.id, 'Concrete Category Used Asset');
+
+    const extension = await agent
+      .get(`/projects/${id}/assets?category=${category.id}&extension=png`)
+      .expect(200);
+    expect(extension.text).toContain('matching.png');
+    expect(extension.text).toContain('missing.png');
+    expect(extension.text).toContain('unused.png');
+    expect(extension.text).toContain('used.png');
+    expect(extension.text).not.toContain('wrong.jpg');
+    expect(assetExtensionFilterHtml(extension.text)).toContain('aria-label="Extension filter: .png"');
+    expect(extension.text).not.toContain('data-auto-rename-surface');
+
+    const present = await agent
+      .get(`/projects/${id}/assets?category=${category.id}&presence=present`)
+      .expect(200);
+    expect(present.text).toContain('matching.png');
+    expect(present.text).not.toContain('missing.png');
+    expect(present.text).toContain('Present at last scan');
+
+    const used = await agent
+      .get(`/projects/${id}/assets?category=${category.id}&usage=used`)
+      .expect(200);
+    expect(used.text).toContain('used.png');
+    expect(used.text).not.toContain('matching.png');
+    expect(used.text).not.toContain('unused.png');
+    expect(used.text).toContain('Used by a release');
+
+    const completeCategory = await agent
+      .get(`/projects/${id}/assets?category=${category.id}`)
+      .expect(200);
+    expect(completeCategory.text).toContain('data-auto-rename-surface');
+    expect(completeCategory.text).toContain('wrong.jpg');
+  });
+
   it('canonicalizes empty, malformed, nonexistent, and deleted tag values without selecting another tag', async () => {
     const res = await createProject('Invalid Asset Tag Values');
     const id = Number(res.headers.location.replace('/projects/', ''));
@@ -847,6 +896,23 @@ describe('asset browser HTTP workflow', () => {
 
       const response = await agent.get(`/projects/${id}/assets`).expect(302);
       expect(response.headers.location).toBe(`/projects/${id}/assets?category=${category.id}`);
+    });
+
+    it('filters after a project category preference canonicalizes a bare request', async () => {
+      const id = await projectIdFor('Bare Specific Default Filter');
+      const category = firstProjectCategory(id);
+      const projectDir = getProjectDir('Bare Specific Default Filter');
+      writeIndexedAsset(id, projectDir, 'preferred.png', 'png', { categoryId: category.id });
+      writeIndexedAsset(id, projectDir, 'preferred.jpg', 'jpg', { categoryId: category.id });
+      assetBrowserPreferenceRepo.upsertProjectPreference(id, 'category', category.id);
+
+      const redirect = await agent.get(`/projects/${id}/assets`).expect(302);
+      expect(redirect.headers.location).toBe(`/projects/${id}/assets?category=${category.id}`);
+
+      const filtered = await agent.get(`${redirect.headers.location}&extension=png`).expect(200);
+      expect(filtered.text).toContain('preferred.png');
+      expect(filtered.text).not.toContain('preferred.jpg');
+      expect(filtered.text).not.toContain('data-auto-rename-surface');
     });
 
     it('redirects an inherited matching global slug to the project category ID', async () => {

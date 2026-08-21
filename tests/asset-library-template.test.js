@@ -134,6 +134,7 @@ function makeModel(overrides = {}) {
     ],
     nsfwFilterEnabled: false,
     _csrf: '',
+    clearFiltersUrl: overrides.clearFiltersUrl ?? buildAssetLibraryUrl({}, { view: filters.view }),
     assetViewerDefaults: { fields: [] },
     assetViewerDefaultsDialogOpen: false,
     assetViewerDefaultsReturnUrl: '/assets',
@@ -754,6 +755,7 @@ describe('cross-project Asset Viewer template', () => {
     expect(assetViewerFiltersBorderRule).toMatch(/border:\s*1px solid var\(--border\)/);
     expect(assetViewerFiltersBorderRule).toMatch(/border-radius:\s*var\(--radius-lg\)/);
     expect(css).toMatch(/\.asset-filter-multiselect-panel\s*\{[\s\S]*?max-height:\s*20rem[\s\S]*?overflow-y:\s*auto/);
+    expect(css).toMatch(/\.asset-filter-multiselect-panel\s*\{[\s\S]*?scrollbar-width:\s*thin/);
     expect(css).toMatch(/\.asset-filter-multiselect summary:focus-visible\s*\{[\s\S]*?outline:\s*2px solid var\(--focus-ring\)/);
     expect(css).toMatch(/\.asset-filter-multiselect-option input:focus-visible\s*\{[\s\S]*?outline:\s*2px solid var\(--focus-ring\)/);
     expect(css).toMatch(/@media \(max-width: 540px\)[\s\S]*?\.asset-filter-multiselect-panel\s*\{[\s\S]*?width:\s*100%/);
@@ -831,7 +833,8 @@ describe('cross-project Asset Viewer template', () => {
       hasNextPage: true,
       tagOptions: [{ value: '7', displayName: 'Context Tag', selected: true }],
     };
-    const html = renderPage(model);
+    const clearUrl = '/assets?view=list';
+    const html = renderPage({ ...model, clearFiltersUrl: clearUrl });
     const state = {
       ...model.filters,
       page: model.page,
@@ -845,16 +848,6 @@ describe('cross-project Asset Viewer template', () => {
     };
     const previousUrl = buildAssetLibraryUrl(state, { page: 1 });
     const nextUrl = buildAssetLibraryUrl(state, { page: 3 });
-    const clearUrl = buildAssetLibraryUrl(state, {
-      projectId: null,
-      categories: null,
-      search: null,
-      extensions: null,
-      tags: null,
-      presence: 'all',
-      usage: 'all',
-      page: 1,
-    });
 
     expect(html).toContain(`href="${href(previousUrl)}"`);
     expect(html).toContain(`href="${href(nextUrl)}"`);
