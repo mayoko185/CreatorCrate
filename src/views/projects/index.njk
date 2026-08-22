@@ -252,7 +252,8 @@
       <input type="hidden" name="_csrf" value="{{ _csrf }}">
 
       <div class="app-dialog-body">
-        {% for field in projectsDefaults.fields %}
+        <div class="page-defaults-grid">
+          {% for field in projectsDefaults.fields %}
           {% set submittedOption = none %}
           {% set nativeAttributes = [["required", true]] %}
           {% set summaryAttributes = [] %}
@@ -286,7 +287,8 @@
             }) }}
             {% if field.error %}<span class="field-error-message" id="{{ field.id }}-error">{{ field.error }}</span>{% endif %}
           </div>
-        {% endfor %}
+          {% endfor %}
+        </div>
       </div>
 
       <div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>

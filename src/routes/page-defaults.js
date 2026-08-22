@@ -1,4 +1,5 @@
 import {
+  getPageDefaultOptionCatalogue,
   PageDefaultValidationError,
   PAGE_DEFAULT_DEFINITIONS,
 } from '../services/page-defaults-service.js';
@@ -13,21 +14,31 @@ function getPageDefaultDefinition(page) {
   return definition;
 }
 
+function hasOptionCatalogues(optionCatalogues) {
+  return Boolean(optionCatalogues && typeof optionCatalogues === 'object'
+    && Object.keys(optionCatalogues).length > 0);
+}
+
 export function buildPageDefaultsDialogModel({
   pageDefaultsService,
   page,
   labels,
   submittedValues = null,
   errors = {},
+  optionCatalogues = {},
 } = {}) {
   const pageDefinition = getPageDefaultDefinition(page);
-  const values = submittedValues || pageDefaultsService.resolvePageDefaults(page);
+  const values = submittedValues || (hasOptionCatalogues(optionCatalogues)
+    ? pageDefaultsService.resolvePageDefaults(page, {}, optionCatalogues)
+    : pageDefaultsService.resolvePageDefaults(page));
   const fields = Object.keys(pageDefinition).map((option) => {
     const definition = pageDefinition[option];
+    const optionCatalogue = getPageDefaultOptionCatalogue(definition, optionCatalogues?.[option]);
     const value = values?.[option];
     const error = errors[option] || null;
     const showSubmittedValue = Boolean(
-      error && typeof value === 'string' && !definition.values.includes(value)
+      error && typeof value === 'string'
+        && !optionCatalogue.some((candidate) => candidate.value === value)
     );
 
     return {
@@ -35,9 +46,9 @@ export function buildPageDefaultsDialogModel({
       name: option,
       label: labels.fields[option],
       selectedValue: value,
-      options: definition.values.map((candidate) => ({
-        value: candidate,
-        label: labels.options[option][candidate],
+      options: optionCatalogue.map((candidate) => ({
+        value: candidate.value,
+        label: candidate.label ?? labels.options[option]?.[candidate.value] ?? candidate.value,
       })),
       error,
       showSubmittedValue,
@@ -57,6 +68,9 @@ export function handlePageDefaultsPost(req, res, next, {
   saveErrorMessage,
   onValidationError,
   onSuccess,
+  optionCatalogues = {},
+  validateSubmission = null,
+  saveValidatedValues = null,
 } = {}) {
   const pageDefinition = getPageDefaultDefinition(page);
   const rawBody = req.body && typeof req.body === 'object' ? req.body : {};
@@ -64,10 +78,17 @@ export function handlePageDefaultsPost(req, res, next, {
     Object.keys(pageDefinition).map((option) => [option, rawBody[option]])
   );
   const enhanced = String(req.get?.('Accept') || '').toLowerCase().includes('application/json');
+  const useOptionCatalogues = hasOptionCatalogues(optionCatalogues);
   let validatedValues;
+  let submission;
 
   try {
-    validatedValues = pageDefaultsService.validatePageDefaults(page, submittedValues);
+    submission = typeof validateSubmission === 'function'
+      ? validateSubmission({ rawBody, submittedValues })
+      : undefined;
+    validatedValues = useOptionCatalogues
+      ? pageDefaultsService.validatePageDefaults(page, submittedValues, optionCatalogues)
+      : pageDefaultsService.validatePageDefaults(page, submittedValues);
   } catch (err) {
     if (!(err instanceof PageDefaultValidationError)) return next(err);
 
@@ -81,14 +102,23 @@ export function handlePageDefaultsPost(req, res, next, {
       return;
     }
 
-    onValidationError({ submittedValues, errors });
+    onValidationError({ submittedValues, errors, submission });
     return;
   }
 
   try {
     const save = () => {
+      if (typeof saveValidatedValues === 'function') {
+        return saveValidatedValues({ validatedValues, submission });
+      }
+
       for (const option of Object.keys(pageDefinition)) {
-        pageDefaultsService.saveDefault(page, option, validatedValues[option]);
+        const optionCatalogue = optionCatalogues?.[option];
+        if (optionCatalogue !== undefined) {
+          pageDefaultsService.saveDefault(page, option, validatedValues[option], optionCatalogue);
+        } else {
+          pageDefaultsService.saveDefault(page, option, validatedValues[option]);
+        }
       }
     };
     if (typeof db?.transaction === 'function') db.transaction(save)();
@@ -114,5 +144,7 @@ export function handlePageDefaultsPost(req, res, next, {
     return;
   }
 
-  onSuccess({ validatedValues });
+  onSuccess(submission === undefined
+    ? { validatedValues }
+    : { validatedValues, submission });
 }

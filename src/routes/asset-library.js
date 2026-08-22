@@ -2,6 +2,7 @@ import express from 'express';
 import {
   ASSET_LIBRARY_PAGE_SIZE_VALUES,
   buildAssetLibraryUrl,
+  isBareAssetLibraryRequest,
   parseAssetLibraryQuery,
 } from './asset-library-query.js';
 import { NSFW_TAG_NAME } from '../services/nsfw-filter-settings-service.js';
@@ -35,6 +36,10 @@ const ASSET_VIEWER_DEFAULT_LABELS = Object.freeze({
     sort: 'Sort',
     order: 'Order',
     pageSize: 'Page size',
+    extension: 'Extension',
+    category: 'Category',
+    presence: 'Presence',
+    tag: 'Tag',
   }),
   options: Object.freeze({
     view: Object.freeze({ grid: 'Grid', list: 'List' }),
@@ -47,6 +52,10 @@ const ASSET_VIEWER_DEFAULT_LABELS = Object.freeze({
     }),
     order: Object.freeze({ asc: 'Ascending', desc: 'Descending' }),
     pageSize: Object.freeze(Object.fromEntries(ASSET_LIBRARY_PAGE_SIZE_VALUES.map((v) => [String(v), String(v)]))),
+    extension: Object.freeze({ all: 'All extensions' }),
+    category: Object.freeze({ all: 'All categories' }),
+    presence: Object.freeze({ all: 'All assets', present: 'Present', missing: 'Missing' }),
+    tag: Object.freeze({ all: 'All tags' }),
   }),
 });
 
@@ -75,6 +84,14 @@ function buildOrderOptions(selectedValue) {
 
 function getRequestUrl(req) {
   return typeof req.originalUrl === 'string' ? req.originalUrl : req.url;
+}
+
+function getExplicitNeutralAssetLibraryFilters(query) {
+  if (!query || typeof query !== 'object') return [];
+  return ['category', 'tag', 'extension', 'presence'].filter((key) => {
+    const values = Array.isArray(query[key]) ? query[key] : [query[key]];
+    return values.some((value) => typeof value === 'string' && value.trim() === 'all');
+  });
 }
 
 function getPageDefaultsService(req) {
@@ -124,6 +141,66 @@ function readAssetViewerNsfwReturnUrl(req) {
 
 function normalizeSavedPresentationValue(key, value) {
   return key === 'pageSize' ? Number(value) : value;
+}
+
+function buildAssetViewerOptionCatalogues(page, extensions) {
+  return {
+    extension: [
+      { value: 'all', label: 'All extensions' },
+      ...(extensions || []).map((value) => ({
+        value,
+        label: `.${value}`,
+      })),
+    ],
+    category: (page.categoryOptions || []).map((option) => ({
+      value: option.value,
+      label: option.label,
+    })),
+    presence: (page.presenceOptions || []).map((option) => ({
+      value: option.value,
+      label: option.label,
+    })),
+    tag: [
+      { value: 'all', label: 'All tags' },
+      ...(page.tagOptions || []).map((option) => ({
+        value: option.value,
+        label: option.displayName,
+      })),
+    ],
+  };
+}
+
+function resolveAssetViewerFilterDefaults(pageDefaultsService, optionCatalogues) {
+  const category = pageDefaultsService.resolve(
+    ASSET_VIEWER_PAGE_DEFAULTS,
+    'category',
+    undefined,
+    optionCatalogues.category,
+  );
+  const tag = pageDefaultsService.resolve(
+    ASSET_VIEWER_PAGE_DEFAULTS,
+    'tag',
+    undefined,
+    optionCatalogues.tag,
+  );
+  const extension = pageDefaultsService.resolve(
+    ASSET_VIEWER_PAGE_DEFAULTS,
+    'extension',
+    undefined,
+    optionCatalogues.extension,
+  );
+
+  return {
+    categories: category === 'all' ? [] : [category],
+    tags: tag === 'all' ? [] : [Number(tag)],
+    extensions: extension === 'all' ? [] : [extension],
+    presence: pageDefaultsService.resolve(
+      ASSET_VIEWER_PAGE_DEFAULTS,
+      'presence',
+      undefined,
+      optionCatalogues.presence,
+    ),
+  };
 }
 
 function resolveAssetLibraryPresentation(parsed, pageDefaultsService) {
@@ -236,12 +313,23 @@ function renderAssetLibraryPage(req, res, {
     ...resolvedPresentation.values,
     page: parsed.page,
   };
-  const page = workflowQueryService.getAssetLibraryPage(input);
+  let page = workflowQueryService.getAssetLibraryPage(input);
+  const optionCatalogues = buildAssetViewerOptionCatalogues(
+    page,
+    workflowQueryService.getAssetLibraryExtensions(),
+  );
+
+  if (isBareAssetLibraryRequest(query)) {
+    Object.assign(input, resolveAssetViewerFilterDefaults(pageDefaultsService, optionCatalogues));
+    page = workflowQueryService.getAssetLibraryPage(input);
+  }
+
   const state = {
     ...input,
     categories: page.filters?.categories ?? input.categories,
     tags: page.filters?.tags ?? input.tags,
     extensions: page.filters?.extensions ?? input.extensions,
+    explicitNeutralFilters: getExplicitNeutralAssetLibraryFilters(query),
     presentation: resolvedPresentation.presentation,
   };
   const canonicalUrl = buildAssetLibraryUrl(state, { page: page.page });
@@ -256,6 +344,7 @@ function renderAssetLibraryPage(req, res, {
     labels: ASSET_VIEWER_DEFAULT_LABELS,
     submittedValues: assetViewerDefaultsSubmittedValues,
     errors: assetViewerDefaultsErrors,
+    optionCatalogues,
   });
 
   res.status(status).render('assets/index.njk', {
@@ -286,12 +375,30 @@ export function createAssetLibraryRouter({ appName, db, workflowQueryService } =
   });
 
   router.post('/defaults', (req, res, next) => {
+    const returnQuery = readAssetViewerReturnQuery(req);
+    const parsedReturnQuery = parseAssetLibraryQuery(returnQuery);
+    const optionCatalogues = buildAssetViewerOptionCatalogues(
+      workflowQueryService.getAssetLibraryPage({
+        projectId: parsedReturnQuery.projectId,
+        categories: parsedReturnQuery.categories,
+        tags: parsedReturnQuery.tags,
+        search: parsedReturnQuery.search,
+        extensions: parsedReturnQuery.extensions,
+        presence: parsedReturnQuery.presence,
+        usage: parsedReturnQuery.usage,
+        ...resolveAssetLibraryPresentation(parsedReturnQuery, getPageDefaultsService(req)).values,
+        page: parsedReturnQuery.page,
+      }),
+      workflowQueryService.getAssetLibraryExtensions(),
+    );
+
     handlePageDefaultsPost(req, res, next, {
       db,
       pageDefaultsService: getPageDefaultsService(req),
       page: ASSET_VIEWER_PAGE_DEFAULTS,
       successMessage: ASSET_VIEWER_NOTICES.defaultsSaved,
       saveErrorMessage: 'Asset Viewer defaults could not be saved. No changes were made.',
+      optionCatalogues,
       onValidationError: ({ submittedValues, errors }) => {
         renderAssetLibraryPage(req, res, {
           appName,
@@ -306,14 +413,13 @@ export function createAssetLibraryRouter({ appName, db, workflowQueryService } =
         });
       },
       onSuccess: ({ validatedValues }) => {
-        const params = new URLSearchParams({
-          view: validatedValues.view,
-          sort: validatedValues.sort,
-          order: validatedValues.order,
-          pageSize: validatedValues.pageSize,
-          notice: 'asset_viewer_defaults_saved',
+        const defaultsUrl = buildAssetLibraryUrl({
+          ...validatedValues,
+          categories: validatedValues.category === 'all' ? [] : [validatedValues.category],
+          tags: validatedValues.tag === 'all' ? [] : [validatedValues.tag],
+          extensions: validatedValues.extension === 'all' ? [] : [validatedValues.extension],
         });
-        res.redirect(`/assets?${params.toString()}`);
+        res.redirect(`${defaultsUrl}${defaultsUrl.includes('?') ? '&' : '?'}notice=asset_viewer_defaults_saved`);
       },
     });
   });

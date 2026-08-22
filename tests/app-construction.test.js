@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 
 const dependencyInstrumentation = vi.hoisted(() => ({
   appMetaRepositories: [],
+  projectPageDefaultRepositories: [],
   bookRepositories: [],
   bookServices: [],
   bookContentRepositories: [],
@@ -63,6 +64,18 @@ vi.mock('../src/data/app-meta-repository.js', async (importOriginal) => {
     createAppMetaRepository(...args) {
       const repository = actual.createAppMetaRepository(...args);
       dependencyInstrumentation.appMetaRepositories.push({ args, repository });
+      return repository;
+    },
+  };
+});
+
+vi.mock('../src/data/project-page-default-repository.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createProjectPageDefaultRepository(...args) {
+      const repository = actual.createProjectPageDefaultRepository(...args);
+      dependencyInstrumentation.projectPageDefaultRepositories.push({ args, repository });
       return repository;
     },
   };
@@ -520,17 +533,22 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     const app = buildApp();
 
     expect(dependencyInstrumentation.appMetaRepositories).toHaveLength(1);
+    expect(dependencyInstrumentation.projectPageDefaultRepositories).toHaveLength(1);
     expect(dependencyInstrumentation.pageDefaultsServices).toHaveLength(1);
 
     const { args: appMetaRepositoryArgs, repository: appMetaRepository } =
       dependencyInstrumentation.appMetaRepositories[0];
+    const { args: projectPageDefaultRepositoryArgs, repository: projectPageDefaultRepository } =
+      dependencyInstrumentation.projectPageDefaultRepositories[0];
     const { args: preferenceRepositoryArgs } = dependencyInstrumentation.preferenceRepositories[0];
     const { args: pageDefaultsServiceArgs, service } = dependencyInstrumentation.pageDefaultsServices[0];
 
     expect(appMetaRepositoryArgs[0]).toBe(db);
+    expect(projectPageDefaultRepositoryArgs[0]).toBe(db);
     expect(preferenceRepositoryArgs[1]).toEqual({ appMetaRepository });
-    expect(pageDefaultsServiceArgs[0]).toEqual({ appMetaRepository });
+    expect(pageDefaultsServiceArgs[0]).toEqual({ appMetaRepository, projectPageDefaultRepository });
     expect(app.locals.appMetaRepository).toBe(appMetaRepository);
+    expect(app.locals.projectPageDefaultRepository).toBe(projectPageDefaultRepository);
     expect(app.locals.pageDefaultsService).toBe(service);
     expect(dependencyInstrumentation.settingsRouters[0].args[0].appMetaRepository)
       .toBe(appMetaRepository);

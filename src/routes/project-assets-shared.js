@@ -25,6 +25,17 @@ export const ASSET_PRESENTATION_OPTIONS = Object.freeze([
 
 export const ASSET_BROWSER_CONTEXT_FIELDS = ASSET_BROWSER_QUERY_KEYS;
 
+const PROJECT_ASSETS_DEFAULT_VALUE_KEYS = Object.freeze([
+  'view',
+  'gridSize',
+  'listSize',
+  'sort',
+  'order',
+  'pageSize',
+  'extension',
+  'tag',
+]);
+
 const PROJECT_ASSETS_DEFAULT_LABELS = Object.freeze({
   fields: Object.freeze({
     view: 'View',
@@ -33,6 +44,8 @@ const PROJECT_ASSETS_DEFAULT_LABELS = Object.freeze({
     sort: 'Sort',
     order: 'Order',
     pageSize: 'Page Size',
+    extension: 'Extension',
+    tag: 'Tag',
   }),
   options: Object.freeze({
     view: Object.freeze({ grid: 'Grid', list: 'List' }),
@@ -53,6 +66,43 @@ const PROJECT_ASSETS_DEFAULT_LABELS = Object.freeze({
     }),
   }),
 });
+
+function buildProjectAssetsDefaultValuesJson(globalDefaults, projectDefaults) {
+  const values = { global: {}, project: {} };
+
+  for (const key of PROJECT_ASSETS_DEFAULT_VALUE_KEYS) {
+    values.global[key] = globalDefaults[key];
+    values.project[key] = projectDefaults[key];
+  }
+
+  return JSON.stringify(values).replace(/</g, '\\u003c');
+}
+
+function normalizeProjectAssetsDefaultsScope(scope) {
+  return scope === 'project' ? 'project' : 'global';
+}
+
+export function buildProjectAssetsDefaultOptionCatalogues(workflowQueryService) {
+  const extensionValues = workflowQueryService?.getProjectAssetsDefaultExtensions?.() || [];
+  const tags = workflowQueryService?.getProjectTagFilterOptions?.() || [];
+
+  return {
+    extension: [
+      { value: 'all', label: 'All extensions' },
+      ...extensionValues.map((value) => ({
+        value,
+        label: '.' + value,
+      })),
+    ],
+    tag: [
+      { value: 'all', label: 'All tags' },
+      ...tags.map((tag) => ({
+        value: tag.value,
+        label: tag.displayName,
+      })),
+    ],
+  };
+}
 
 export const PROJECT_ASSETS_NOTICES = Object.freeze({
   defaultsSaved: 'Project Assets defaults saved successfully.',
@@ -140,6 +190,7 @@ export function renderProjectAssetsPage(req, res, {
   removeMissingAssetsDialogOpen = req.query?.remove_missing === '1',
   projectAssetsDefaultsSubmittedValues = null,
   projectAssetsDefaultsErrors = {},
+  projectAssetsDefaultsSelectedScope = null,
   projectAssetsNsfwError = null,
   autoRenameConfirmationDialogOpen = false,
   autoRenameConfirmationPlan = null,
@@ -163,10 +214,28 @@ export function renderProjectAssetsPage(req, res, {
   if (!project) return next ? next(createNotFound()) : null;
 
   const pageDefaultsService = getPageDefaultsService(req);
+  const projectAssetsDefaultOptionCatalogues = buildProjectAssetsDefaultOptionCatalogues(
+    workflowQueryService,
+  );
   const query = rawQuery && typeof rawQuery === 'object'
     ? rawQuery
     : (req.query && typeof req.query === 'object' ? req.query : {});
-  const presentation = resolveAssetBrowserPresentation(query, pageDefaultsService);
+  const projectPageDefaultContext = { projectId: id };
+  const projectAssetsScopedDefaults = resolveProjectAssetsScopedDefaults(
+    pageDefaultsService,
+    projectAssetsDefaultOptionCatalogues,
+    projectPageDefaultContext,
+  );
+  const presentation = resolveAssetBrowserPresentation(
+    query,
+    pageDefaultsService,
+    projectPageDefaultContext,
+  );
+  const filterDefaults = resolveProjectAssetsFilterDefaults(
+    pageDefaultsService,
+    projectAssetsDefaultOptionCatalogues,
+    projectPageDefaultContext,
+  );
 
   // Only a completely bare request may activate the existing category
   // preference redirect. All non-bare requests remain authoritative GETs.
@@ -186,15 +255,20 @@ export function renderProjectAssetsPage(req, res, {
         categoryId,
         presentation,
         pageDefaultsService,
+        filterDefaults,
       ));
     }
 
-    if (hasNonFallbackAssetPresentation(presentation, pageDefaultsService)) {
+    if (
+      hasNonFallbackAssetPresentation(presentation, pageDefaultsService)
+      || hasNonNeutralProjectAssetsFilterDefaults(filterDefaults)
+    ) {
       return res.redirect(buildAssetDefaultsRedirectUrl(
         id,
         null,
         presentation,
         pageDefaultsService,
+        filterDefaults,
       ));
     }
   }
@@ -203,7 +277,17 @@ export function renderProjectAssetsPage(req, res, {
   if (!data) return next ? next(createNotFound()) : null;
 
   const nsfwFilterEnabled = getNsfwFilterSettingsService(req).isEnabled();
-  const renderModel = buildBrowserRenderModel(project, data, pageDefaultsService, req, nsfwFilterEnabled);
+  const renderModel = buildBrowserRenderModel(
+    project,
+    data,
+    pageDefaultsService,
+    req,
+    workflowQueryService,
+    nsfwFilterEnabled,
+  );
+  const selectedProjectAssetsDefaultsScope = projectAssetsDefaultsSelectedScope === null
+    ? normalizeProjectAssetsDefaultsScope(projectAssetsScopedDefaults.scope)
+    : normalizeProjectAssetsDefaultsScope(projectAssetsDefaultsSelectedScope);
   const pageUrl = renderModel.pageUrl({});
   const defaultsUrl = appendQueryValue(pageUrl, 'defaults', '1');
   const queryNotice = buildProjectAssetsQueryNotice(query);
@@ -261,9 +345,21 @@ export function renderProjectAssetsPage(req, res, {
       pageDefaultsService,
       page: ASSET_PAGE_DEFAULTS_PAGE,
       labels: PROJECT_ASSETS_DEFAULT_LABELS,
-      submittedValues: projectAssetsDefaultsSubmittedValues,
+      submittedValues: projectAssetsDefaultsSubmittedValues || projectAssetsScopedDefaults.effective,
       errors: projectAssetsDefaultsErrors,
+      optionCatalogues: projectAssetsDefaultOptionCatalogues,
     }),
+    projectAssetsDefaultsScope: projectAssetsScopedDefaults.scope,
+    projectAssetsDefaultsSelectedScope: selectedProjectAssetsDefaultsScope,
+    projectAssetsDefaultsLoadedScope: selectedProjectAssetsDefaultsScope,
+    projectAssetsDefaultsErrors,
+    projectAssetsGlobalDefaults: projectAssetsScopedDefaults.global,
+    projectAssetsProjectDefaults: projectAssetsScopedDefaults.project,
+    projectAssetsDefaultValuesJson: buildProjectAssetsDefaultValuesJson(
+      projectAssetsScopedDefaults.global,
+      projectAssetsScopedDefaults.project,
+    ),
+    projectAssetsEffectiveDefaults: projectAssetsScopedDefaults.effective,
     projectAssetsDefaultsDialogOpen: Boolean(projectAssetsDefaultsDialogOpen),
     removeMissingAssetsDialogOpen: Boolean(removeMissingAssetsDialogOpen),
     projectAssetsDefaultsReturnUrl: pageUrl,
@@ -370,7 +466,7 @@ function parseAssetBrowserPageSize(value, fallback) {
   return Math.min(parsed, 100);
 }
 
-export function resolveAssetBrowserPresentation(rawQuery, pageDefaultsService) {
+export function resolveAssetBrowserPresentation(rawQuery, pageDefaultsService, context = undefined) {
   const safeRawQuery = rawQuery && typeof rawQuery === 'object' ? rawQuery : {};
   const query = { ...safeRawQuery };
   const saved = {};
@@ -378,7 +474,7 @@ export function resolveAssetBrowserPresentation(rawQuery, pageDefaultsService) {
 
   for (const { key, option } of ASSET_PRESENTATION_OPTIONS) {
     const fallback = pageDefaultsService.getFallback(ASSET_PAGE_DEFAULTS_PAGE, option);
-    const savedValue = pageDefaultsService.resolve(ASSET_PAGE_DEFAULTS_PAGE, option);
+    const savedValue = pageDefaultsService.resolve(ASSET_PAGE_DEFAULTS_PAGE, option, undefined, undefined, context);
     const isExplicit = Object.hasOwn(safeRawQuery, key);
     const explicitValue = safeRawQuery[key];
     const resolvedValue = key === 'pageSize'
@@ -386,7 +482,13 @@ export function resolveAssetBrowserPresentation(rawQuery, pageDefaultsService) {
         ? parseAssetBrowserPageSize(explicitValue, fallback)
         : Number(savedValue))
       : (isExplicit
-        ? pageDefaultsService.resolve(ASSET_PAGE_DEFAULTS_PAGE, option, explicitValue)
+        ? pageDefaultsService.resolve(
+          ASSET_PAGE_DEFAULTS_PAGE,
+          option,
+          explicitValue,
+          undefined,
+          context,
+        )
         : savedValue);
 
     saved[key] = savedValue;
@@ -412,12 +514,64 @@ function hasNonFallbackAssetPresentation(presentation, pageDefaultsService) {
   ));
 }
 
-function buildAssetDefaultsRedirectUrl(projectId, categoryId, presentation, pageDefaultsService) {
+function resolveProjectAssetsScopedDefaults(pageDefaultsService, optionCatalogues, context) {
+  return {
+    scope: pageDefaultsService.getPageDefaultScope(ASSET_PAGE_DEFAULTS_PAGE, context),
+    global: pageDefaultsService.resolveGlobalPageDefaults(
+      ASSET_PAGE_DEFAULTS_PAGE,
+      optionCatalogues,
+    ),
+    project: pageDefaultsService.resolveProjectPageDefaults(
+      ASSET_PAGE_DEFAULTS_PAGE,
+      optionCatalogues,
+      context,
+    ),
+    effective: pageDefaultsService.resolvePageDefaults(
+      ASSET_PAGE_DEFAULTS_PAGE,
+      {},
+      optionCatalogues,
+      context,
+    ),
+  };
+}
+
+function resolveProjectAssetsFilterDefaults(pageDefaultsService, optionCatalogues, context) {
+  return {
+    extension: pageDefaultsService.resolve(
+      ASSET_PAGE_DEFAULTS_PAGE,
+      'extension',
+      undefined,
+      optionCatalogues.extension,
+      context,
+    ),
+    tag: pageDefaultsService.resolve(
+      ASSET_PAGE_DEFAULTS_PAGE,
+      'tag',
+      undefined,
+      optionCatalogues.tag,
+      context,
+    ),
+  };
+}
+
+function hasNonNeutralProjectAssetsFilterDefaults(filterDefaults) {
+  return filterDefaults.extension !== 'all' || filterDefaults.tag !== 'all';
+}
+
+function buildAssetDefaultsRedirectUrl(
+  projectId,
+  categoryId,
+  presentation,
+  pageDefaultsService,
+  filterDefaults,
+) {
   const context = {
     category: categoryId === null ? 'all' : String(categoryId),
     categoryWasSupplied: categoryId !== null,
     categorySelection: categoryId === null ? undefined : 'explicit-specific',
     queryWasNonBare: false,
+    tag: filterDefaults.tag === 'all' ? undefined : filterDefaults.tag,
+    extension: filterDefaults.extension === 'all' ? undefined : filterDefaults.extension,
     sort: presentation.saved.sort,
     order: presentation.saved.order,
     page: 1,
@@ -425,7 +579,14 @@ function buildAssetDefaultsRedirectUrl(projectId, categoryId, presentation, page
     view: presentation.saved.view,
   };
   const query = buildCanonicalAssetBrowserQuery(context, 1);
-  appendForcedAssetPresentationQuery(query, context, presentation, {}, pageDefaultsService);
+  appendForcedAssetPresentationQuery(
+    query,
+    context,
+    presentation,
+    {},
+    pageDefaultsService,
+    { projectId },
+  );
   const search = buildAssetBrowserQueryString(query);
   return search ? `/projects/${projectId}/assets?${search}` : `/projects/${projectId}/assets`;
 }
@@ -436,6 +597,7 @@ function appendForcedAssetPresentationQuery(
   presentation,
   overrides,
   pageDefaultsService,
+  pageDefaultContext = undefined,
 ) {
   if (!pageDefaultsService) return;
 
@@ -444,7 +606,13 @@ function appendForcedAssetPresentationQuery(
 
   for (const { key, option } of ASSET_PRESENTATION_OPTIONS) {
     const fallback = pageDefaultsService.getFallback(ASSET_PAGE_DEFAULTS_PAGE, option);
-    const saved = metadata.saved?.[key] ?? pageDefaultsService.resolve(ASSET_PAGE_DEFAULTS_PAGE, option);
+    const saved = metadata.saved?.[key] ?? pageDefaultsService.resolve(
+      ASSET_PAGE_DEFAULTS_PAGE,
+      option,
+      undefined,
+      undefined,
+      pageDefaultContext,
+    );
     const hasOverride = Object.hasOwn(rawOverrides, key);
     const value = hasOverride ? rawOverrides[key] : context?.[key];
     const shouldPreserveExplicitFallback = metadata.forceFallback?.[key] === true;
@@ -473,18 +641,34 @@ function buildAssetsPageUrl(projectId, allowedParams, pageDefaultsService) {
       allowedParams.assetPresentation,
       overrides,
       pageDefaultsService,
+      { projectId },
     );
     const search = buildAssetBrowserQueryString(query);
     return search ? `${basePath}?${search}` : basePath;
   };
 }
 
-export function buildBrowserRenderModel(project, data, pageDefaultsService, req, nsfwFilterEnabled = null) {
+export function buildBrowserRenderModel(
+  project,
+  data,
+  pageDefaultsService,
+  req,
+  workflowQueryService = null,
+  nsfwFilterEnabled = null,
+) {
+  const projectAssetsDefaultOptionCatalogues = buildProjectAssetsDefaultOptionCatalogues(
+    workflowQueryService,
+  );
   const effectiveNsfwFilterEnabled = nsfwFilterEnabled === null
     ? Boolean(req?.app?.locals?.nsfwFilterSettingsService?.isEnabled?.())
     : nsfwFilterEnabled;
-  const projectAssetsGridSizeDefault = pageDefaultsService.resolve(ASSET_PAGE_DEFAULTS_PAGE, 'gridSize');
-  const projectAssetsListSizeDefault = pageDefaultsService.resolve(ASSET_PAGE_DEFAULTS_PAGE, 'listSize');
+  const projectAssetsScopedDefaults = resolveProjectAssetsScopedDefaults(
+    pageDefaultsService,
+    projectAssetsDefaultOptionCatalogues,
+    { projectId: project.id },
+  );
+  const projectAssetsGridSizeDefault = projectAssetsScopedDefaults.effective.gridSize;
+  const projectAssetsListSizeDefault = projectAssetsScopedDefaults.effective.listSize;
   const context = {
     ...(data.context || data.filters),
     page: data.page,
@@ -581,7 +765,19 @@ export function buildBrowserRenderModel(project, data, pageDefaultsService, req,
       pageDefaultsService,
       page: ASSET_PAGE_DEFAULTS_PAGE,
       labels: PROJECT_ASSETS_DEFAULT_LABELS,
+      submittedValues: projectAssetsScopedDefaults.effective,
+      optionCatalogues: projectAssetsDefaultOptionCatalogues,
     }),
+    projectAssetsDefaultsScope: projectAssetsScopedDefaults.scope,
+    projectAssetsDefaultsSelectedScope: normalizeProjectAssetsDefaultsScope(projectAssetsScopedDefaults.scope),
+    projectAssetsDefaultsLoadedScope: normalizeProjectAssetsDefaultsScope(projectAssetsScopedDefaults.scope),
+    projectAssetsGlobalDefaults: projectAssetsScopedDefaults.global,
+    projectAssetsProjectDefaults: projectAssetsScopedDefaults.project,
+    projectAssetsDefaultValuesJson: buildProjectAssetsDefaultValuesJson(
+      projectAssetsScopedDefaults.global,
+      projectAssetsScopedDefaults.project,
+    ),
+    projectAssetsEffectiveDefaults: projectAssetsScopedDefaults.effective,
     projectAssetsGridSizeDefault,
     projectAssetsListSizeDefault,
     projectAssetsDefaultsDialogOpen: false,
@@ -624,7 +820,7 @@ export function buildCanonicalContextQuery(
   pageDefaultsService = null,
 ) {
   const presentation = pageDefaultsService
-    ? resolveAssetBrowserPresentation(rawContext, pageDefaultsService)
+    ? resolveAssetBrowserPresentation(rawContext, pageDefaultsService, { projectId })
     : null;
   const normalizedRawContext = presentation ? presentation.query : rawContext;
   const contextResult = workflowQueryService.getProjectAssetBrowserContext(projectId, normalizedRawContext);
@@ -647,7 +843,14 @@ export function buildCanonicalContextQuery(
     };
 
   const query = buildCanonicalAssetBrowserQuery(context, context.page);
-  appendForcedAssetPresentationQuery(query, context, presentation, {}, pageDefaultsService);
+  appendForcedAssetPresentationQuery(
+    query,
+    context,
+    presentation,
+    {},
+    pageDefaultsService,
+    { projectId },
+  );
   for (const [key, value] of Object.entries(extraQuery)) {
     if (value === undefined || value === null || value === '') continue;
     query[key] = String(value);

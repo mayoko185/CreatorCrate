@@ -7,6 +7,7 @@ import {
   enhanceDashboardDefaultsDialog,
   enhanceDropdowns,
   enhanceProjectAssetCategoryManagement,
+  enhanceProjectAssetsDefaultsScope,
   openAppDialogById,
 } from '../src/static/creatorcrate.js';
 
@@ -191,8 +192,9 @@ function makeElement(tagName = 'div', attrs = {}) {
   return node;
 }
 
-function addOption(select, value, selected = false) {
+function addOption(select, value, selected = false, label = value) {
   const option = makeElement('option', { value });
+  option.textContent = label;
   option.selected = selected;
   select.appendChild(option);
   return option;
@@ -224,16 +226,20 @@ function addStandardDropdown(
   summary.appendChild(current);
   const panel = makeElement('div', { class: 'asset-filter-multiselect-panel', 'data-cc-dropdown-option-list': '' });
   options.forEach((option) => {
+    const optionValue = typeof option === 'string' ? option : option.value;
+    const optionLabel = typeof option === 'string'
+      ? ({ compact: 'Compact', default: 'Default', large: 'Large' }[option] || option)
+      : option.label;
     const wrapper = makeElement('div', { class: 'asset-filter-multiselect-option' });
     const label = makeElement('label');
     const input = makeElement('input', {
       type: mode === 'single' ? 'radio' : 'checkbox',
-      value: option,
+      value: optionValue,
     });
-    input.checked = mode === 'multiple' ? selectedValues.includes(option) : option === value;
+    input.checked = mode === 'multiple' ? selectedValues.includes(optionValue) : optionValue === value;
     label.appendChild(input);
     const optionText = makeElement('span');
-    optionText.textContent = ({ compact: 'Compact', default: 'Default', large: 'Large' }[option] || option);
+    optionText.textContent = optionLabel;
     label.appendChild(optionText);
     wrapper.appendChild(label);
     panel.appendChild(wrapper);
@@ -272,12 +278,35 @@ function styledDropdownLabels(dropdown) {
     .map((input) => String(input.closest('label')?.textContent || '').trim());
 }
 
+const PROJECT_ASSETS_DEFAULT_KEYS = [
+  'view', 'gridSize', 'listSize', 'sort', 'order', 'pageSize', 'extension', 'tag',
+];
+
+function projectAssetsDefaultValues(fields) {
+  return Object.fromEntries(PROJECT_ASSETS_DEFAULT_KEYS.map((key) => [key, fields[key].value]));
+}
+
+function setProjectAssetsDefaultValues(fields, values) {
+  PROJECT_ASSETS_DEFAULT_KEYS.forEach((key) => {
+    fields[key].value = values[key];
+  });
+}
+
+function changeProjectAssetsScope(page, scope) {
+  page.scopeControls.global.checked = scope === 'global';
+  page.scopeControls.project.checked = scope === 'project';
+  page.scopeControls[scope].dispatch('change');
+}
+
 function makeDialogPage({
   standardDropdowns = false,
   scrollableDialog = false,
   projectEditDialog = false,
   liveDefault = false,
   projectAssetsDefaults = false,
+  projectAssetsScope = false,
+  projectAssetsScopeValues = null,
+  loadedScope = 'global',
 } = {}) {
   const document = makeElement('document');
   document.nodeType = 9;
@@ -332,6 +361,19 @@ function makeDialogPage({
   error.appendChild(errorList);
   form.appendChild(error);
   form.appendChild(makeElement('input', { name: '_csrf', value: 'csrf-token', type: 'hidden' }));
+  let scopeControls = null;
+  if (projectAssetsScope) {
+    const scope = makeElement('fieldset', { 'data-project-assets-defaults-scope': '' });
+    const global = makeElement('input', { type: 'radio', name: 'scope', value: 'global' });
+    const project = makeElement('input', { type: 'radio', name: 'scope', value: 'project' });
+    global.checked = loadedScope !== 'project';
+    project.checked = loadedScope === 'project';
+    scope.appendChild(global);
+    scope.appendChild(project);
+    form.appendChild(makeElement('input', { type: 'hidden', name: 'loadedScope', value: loadedScope }));
+    form.appendChild(scope);
+    scopeControls = { scope, global, project };
+  }
   const fields = {};
   const dropdowns = {};
   const dialogBody = standardDropdowns ? makeElement('div') : null;
@@ -350,13 +392,22 @@ function makeDialogPage({
     }
   }
   const defaultFields = projectAssetsDefaults
-    ? [
+    ? (projectAssetsScope ? [
       ['view', 'grid', ['grid', 'list']],
       ['gridSize', 'default', ['compact', 'default', 'large']],
       ['listSize', 'large', ['compact', 'large']],
       ['sort', 'filename', ['filename', 'modified', 'size', 'category']],
       ['order', 'asc', ['asc', 'desc']],
-    ]
+      ['pageSize', '25', ['10', '25', '50', '100']],
+      ['extension', 'jpg', [{ value: 'jpg', label: '.JPG' }, { value: 'png', label: '.PNG' }]],
+      ['tag', '1', [{ value: '1', label: 'Landscape' }, { value: '2', label: 'Portrait' }]],
+    ] : [
+      ['view', 'grid', ['grid', 'list']],
+      ['gridSize', 'default', ['compact', 'default', 'large']],
+      ['listSize', 'large', ['compact', 'large']],
+      ['sort', 'filename', ['filename', 'modified', 'size', 'category']],
+      ['order', 'asc', ['asc', 'desc']],
+    ])
     : [
       ['view', 'grid', ['grid', 'list']],
       ['sort', 'created', ['updated', 'created', 'title', 'published']],
@@ -365,12 +416,24 @@ function makeDialogPage({
   for (const [name, value, options] of defaultFields) {
     const field = makeElement('div', { 'data-dialog-field': name });
     const select = makeElement('select', { id: `projects-default-${name}`, name });
-    options.forEach((option) => addOption(select, option, option === value));
+    options.forEach((option) => {
+      const optionValue = typeof option === 'string' ? option : option.value;
+      addOption(select, optionValue, optionValue === value, typeof option === 'string' ? option : option.label);
+    });
     select.value = value;
     if (standardDropdowns) dropdowns[name] = addStandardDropdown(field, select, name, options, value);
     else field.appendChild(select);
     (dialogBody || form).appendChild(field);
     fields[name] = select;
+  }
+  if (projectAssetsScope) {
+    const values = projectAssetsScopeValues || {
+      global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
+      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'png', tag: '2' },
+    };
+    const serializedValues = makeElement('script', { type: 'application/json', 'data-project-assets-default-values': '' });
+    serializedValues.textContent = JSON.stringify(values);
+    form.appendChild(serializedValues);
   }
   if (liveDefault) {
     const field = makeElement('div', { 'data-dialog-field': 'defaultCategory' });
@@ -466,6 +529,9 @@ function makeDialogPage({
       [Symbol.iterator]() { return this.entries(); }
     },
     URLSearchParams,
+    Event: class EventMock {
+      constructor(type, properties = {}) { Object.assign(this, properties, { type }); }
+    },
   };
   document.defaultView = windowObject;
 
@@ -480,6 +546,7 @@ function makeDialogPage({
     save,
     fields,
     dropdowns,
+    scopeControls,
     dialogBody,
     feedback,
     liveError,
@@ -849,6 +916,353 @@ describe('Reusable app dialog enhancement', () => {
 
     page.close.dispatch('click');
     expect(page.dialog.open).toBe(false);
+  });
+
+  it('binds scope switching only for Project Assets defaults and preserves initial rendered values', () => {
+    const otherDialog = makeDialogPage({ standardDropdowns: true });
+    expect(enhanceProjectAssetsDefaultsScope(otherDialog.document)).toBe(0);
+
+    const page = makeDialogPage({ standardDropdowns: true, projectAssetsDefaults: true, projectAssetsScope: true });
+    enhanceDropdowns(page.document);
+    const initial = projectAssetsDefaultValues(page.fields);
+
+    expect(enhanceProjectAssetsDefaultsScope(page.document)).toBe(1);
+    expect(enhanceProjectAssetsDefaultsScope(page.document)).toBe(0);
+    expect(projectAssetsDefaultValues(page.fields)).toEqual(initial);
+    expect(page.form.querySelector('input[name="loadedScope"]').value).toBe('global');
+    expect(page.scopeControls.global.checked).toBe(true);
+    expect(page.scopeControls.project.checked).toBe(false);
+  });
+
+  it('atomically synchronizes all Project Assets defaults through native selects and dropdowns', () => {
+    const page = makeDialogPage({ standardDropdowns: true, projectAssetsDefaults: true, projectAssetsScope: true });
+    enhanceDropdowns(page.document);
+    enhanceProjectAssetsDefaultsScope(page.document);
+
+    const scopeError = makeElement('span', { class: 'field-error-message' });
+    page.scopeControls.scope.appendChild(scopeError);
+    page.scopeControls.global.setAttribute('aria-invalid', 'true');
+    page.form.querySelector('[data-dialog-error]').hidden = false;
+    page.form.querySelector('[data-dialog-error-text]').textContent = 'The selected scope does not match the loaded scope.';
+
+    changeProjectAssetsScope(page, 'project');
+
+    expect(projectAssetsDefaultValues(page.fields)).toEqual({
+      view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc',
+      pageSize: '50', extension: 'png', tag: '2',
+    });
+    expect(page.form.querySelector('input[name="loadedScope"]').value).toBe('project');
+    expect(page.scopeControls.project.checked).toBe(true);
+    expect(page.scopeControls.global.checked).toBe(false);
+    expect(page.dropdowns.extension.panel.querySelector('input[type="radio"]:checked').value).toBe('png');
+    expect(page.dropdowns.tag.panel.querySelector('input[type="radio"]:checked').value).toBe('2');
+    expect(page.dropdowns.extension.summary.querySelector('[data-cc-dropdown-summary-current]').textContent).toBe('.PNG');
+    expect(page.dropdowns.tag.summary.querySelector('[data-cc-dropdown-summary-current]').textContent).toBe('Portrait');
+    expect(page.scopeControls.scope.querySelector('.field-error-message')).toBe(null);
+    expect(page.scopeControls.global.getAttribute('aria-invalid')).toBe(null);
+    expect(page.form.querySelector('[data-dialog-error]').hidden).toBe(true);
+    expect(page.windowObject.fetch).not.toHaveBeenCalled();
+  });
+
+  it('keeps separate unsaved drafts for Global and Project only, including HTTP 422 rendered values', () => {
+    const page = makeDialogPage({ standardDropdowns: true, projectAssetsDefaults: true, projectAssetsScope: true });
+    enhanceDropdowns(page.document);
+    enhanceProjectAssetsDefaultsScope(page.document);
+
+    page.fields.view.value = 'list';
+    page.fields.view.dispatch('change');
+    page.fields.extension.value = 'png';
+    page.fields.extension.dispatch('change');
+    changeProjectAssetsScope(page, 'project');
+
+    page.fields.sort.value = 'modified';
+    page.fields.sort.dispatch('change');
+    page.fields.tag.value = '1';
+    page.fields.tag.dispatch('change');
+    changeProjectAssetsScope(page, 'global');
+    expect(projectAssetsDefaultValues(page.fields)).toMatchObject({ view: 'list', extension: 'png' });
+
+    changeProjectAssetsScope(page, 'project');
+    expect(projectAssetsDefaultValues(page.fields)).toMatchObject({ sort: 'modified', tag: '1' });
+
+    const failedPage = makeDialogPage({ standardDropdowns: true, projectAssetsDefaults: true, projectAssetsScope: true });
+    failedPage.fields.view.value = 'list';
+    failedPage.fields.extension.value = 'png';
+    enhanceDropdowns(failedPage.document);
+    enhanceProjectAssetsDefaultsScope(failedPage.document);
+    changeProjectAssetsScope(failedPage, 'project');
+    changeProjectAssetsScope(failedPage, 'global');
+    expect(projectAssetsDefaultValues(failedPage.fields)).toMatchObject({ view: 'list', extension: 'png' });
+    expect(failedPage.windowObject.fetch).not.toHaveBeenCalled();
+  });
+
+  it('commits a successful Project-only JSON save without promoting an unsaved Global draft', async () => {
+    const page = makeDialogPage({ standardDropdowns: true, projectAssetsDefaults: true, projectAssetsScope: true });
+    const initial = JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent);
+    const submitted = {
+      view: 'grid', gridSize: 'compact', listSize: 'large', sort: 'modified', order: 'asc',
+      pageSize: '100', extension: 'jpg', tag: '1',
+    };
+    page.region.appendChild(page.trigger);
+    page.windowObject.fetch.mockImplementation(() => {
+      setProjectAssetsDefaultValues(page.fields, initial.project);
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ status: 'success', values: submitted }),
+      });
+    });
+    enhanceDropdowns(page.document);
+    enhanceProjectAssetsDefaultsScope(page.document);
+    enhanceAppDialogs(page.document);
+    page.document.dispatch('click', { target: page.trigger });
+
+    setProjectAssetsDefaultValues(page.fields, {
+      ...initial.global, view: 'list', extension: 'png',
+    });
+    changeProjectAssetsScope(page, 'project');
+    setProjectAssetsDefaultValues(page.fields, submitted);
+    const scopeError = makeElement('span', { class: 'field-error-message' });
+    page.scopeControls.scope.appendChild(scopeError);
+    page.scopeControls.project.setAttribute('aria-invalid', 'true');
+    page.form.querySelector('[data-dialog-error]').hidden = false;
+    page.form.querySelector('[data-dialog-error-text]').textContent = 'The selected scope does not match the loaded scope.';
+    page.form.dispatch('submit', { submitter: page.save });
+    await flush();
+
+    expect(page.dialog.open).toBe(false);
+    expect(Object.fromEntries(
+      [...page.windowObject.fetch.mock.calls[0][1].body.entries()]
+        .filter(([key]) => PROJECT_ASSETS_DEFAULT_KEYS.includes(key)),
+    )).toEqual(submitted);
+    expect(page.form.querySelector('input[name="loadedScope"]').value).toBe('project');
+    expect(page.scopeControls.project.checked).toBe(true);
+    expect(page.form.querySelector('[data-dialog-error]').hidden).toBe(true);
+    expect(JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent)).toEqual({
+      global: initial.global,
+      project: submitted,
+    });
+    expect(enhanceProjectAssetsDefaultsScope(page.document)).toBe(0);
+
+    page.document.dispatch('click', { target: page.trigger });
+    expect(projectAssetsDefaultValues(page.fields)).toEqual(submitted);
+    changeProjectAssetsScope(page, 'global');
+    expect(projectAssetsDefaultValues(page.fields)).toEqual(initial.global);
+
+    closeAppDialogById(page.document, page.dialog.id);
+    page.document.dispatch('click', { target: page.trigger });
+    expect(page.scopeControls.project.checked).toBe(true);
+    expect(page.form.querySelector('input[name="loadedScope"]').value).toBe('project');
+    expect(projectAssetsDefaultValues(page.fields)).toEqual(submitted);
+  });
+
+  it('commits a successful Global JSON save to both scopes and discards an old Project-only draft', async () => {
+    const initialValues = {
+      global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
+      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'png', tag: '2' },
+    };
+    const page = makeDialogPage({
+      standardDropdowns: true,
+      projectAssetsDefaults: true,
+      projectAssetsScope: true,
+      projectAssetsScopeValues: initialValues,
+    });
+    const submitted = {
+      view: 'list', gridSize: 'compact', listSize: 'large', sort: 'modified', order: 'asc',
+      pageSize: '100', extension: 'jpg', tag: '1',
+    };
+    expect(submitted).not.toEqual(initialValues.global);
+    expect(submitted).not.toEqual(initialValues.project);
+    page.region.appendChild(page.trigger);
+    page.windowObject.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ status: 'success', values: submitted }),
+    });
+    enhanceDropdowns(page.document);
+    enhanceProjectAssetsDefaultsScope(page.document);
+    enhanceAppDialogs(page.document);
+    page.document.dispatch('click', { target: page.trigger });
+
+    changeProjectAssetsScope(page, 'project');
+    page.fields.sort.value = 'modified';
+    page.fields.sort.dispatch('change');
+    changeProjectAssetsScope(page, 'global');
+    setProjectAssetsDefaultValues(page.fields, submitted);
+    page.form.dispatch('submit', { submitter: page.save });
+    await flush();
+
+    expect(page.form.querySelector('input[name="loadedScope"]').value).toBe('global');
+    expect(page.scopeControls.global.checked).toBe(true);
+    expect(JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent)).toEqual({
+      global: submitted,
+      project: submitted,
+    });
+
+    page.document.dispatch('click', { target: page.trigger });
+    expect(projectAssetsDefaultValues(page.fields)).toEqual(submitted);
+    changeProjectAssetsScope(page, 'project');
+    expect(projectAssetsDefaultValues(page.fields)).toEqual(submitted);
+    expect(projectAssetsDefaultValues(page.fields)).not.toEqual(initialValues.project);
+
+    page.fields.sort.value = 'filename';
+    page.fields.sort.dispatch('change');
+    closeAppDialogById(page.document, page.dialog.id);
+    page.document.dispatch('click', { target: page.trigger });
+    expect(page.scopeControls.global.checked).toBe(true);
+    expect(page.form.querySelector('input[name="loadedScope"]').value).toBe('global');
+    expect(projectAssetsDefaultValues(page.fields)).toEqual(submitted);
+  });
+
+  it('restores Global committed values, radio state, and both drafts after cancel/reopen', () => {
+    const page = makeDialogPage({ standardDropdowns: true, projectAssetsDefaults: true, projectAssetsScope: true });
+    const initial = JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent);
+    page.region.appendChild(page.trigger);
+    enhanceDropdowns(page.document);
+    enhanceProjectAssetsDefaultsScope(page.document);
+    enhanceAppDialogs(page.document);
+    page.document.dispatch('click', { target: page.trigger });
+
+    setProjectAssetsDefaultValues(page.fields, { ...initial.global, view: 'list', sort: 'size' });
+    page.fields.view.dispatch('change');
+    page.fields.sort.dispatch('change');
+    changeProjectAssetsScope(page, 'project');
+    setProjectAssetsDefaultValues(page.fields, { ...initial.project, sort: 'modified', tag: '1' });
+    page.fields.sort.dispatch('change');
+    page.fields.tag.dispatch('change');
+
+    closeAppDialogById(page.document, page.dialog.id);
+    page.document.dispatch('click', { target: page.trigger });
+
+    expect(page.scopeControls.global.checked).toBe(true);
+    expect(page.scopeControls.project.checked).toBe(false);
+    expect(page.form.querySelector('input[name="loadedScope"]').value).toBe('global');
+    expect(projectAssetsDefaultValues(page.fields)).toEqual(initial.global);
+    changeProjectAssetsScope(page, 'project');
+    expect(projectAssetsDefaultValues(page.fields)).toEqual(initial.project);
+  });
+
+  it('restores Project-only committed values after cancel/reopen and immediately saves with matching scope', async () => {
+    const initialValues = {
+      global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
+      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'png', tag: '2' },
+    };
+    const page = makeDialogPage({
+      standardDropdowns: true,
+      projectAssetsDefaults: true,
+      projectAssetsScope: true,
+      projectAssetsScopeValues: initialValues,
+      loadedScope: 'project',
+    });
+    setProjectAssetsDefaultValues(page.fields, initialValues.project);
+    page.region.appendChild(page.trigger);
+    page.windowObject.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ status: 'success', values: initialValues.project }),
+    });
+    enhanceDropdowns(page.document);
+    enhanceProjectAssetsDefaultsScope(page.document);
+    enhanceAppDialogs(page.document);
+    page.document.dispatch('click', { target: page.trigger });
+
+    setProjectAssetsDefaultValues(page.fields, { ...initialValues.project, sort: 'modified', tag: '1' });
+    page.fields.sort.dispatch('change');
+    page.fields.tag.dispatch('change');
+    changeProjectAssetsScope(page, 'global');
+    page.fields.view.value = 'list';
+    page.fields.view.dispatch('change');
+
+    closeAppDialogById(page.document, page.dialog.id);
+    page.document.dispatch('click', { target: page.trigger });
+
+    expect(page.scopeControls.project.checked).toBe(true);
+    expect(page.scopeControls.global.checked).toBe(false);
+    expect(page.form.querySelector('input[name="loadedScope"]').value).toBe('project');
+    expect(projectAssetsDefaultValues(page.fields)).toEqual(initialValues.project);
+
+    page.form.dispatch('submit', { submitter: page.save });
+    await flush();
+
+    expect(page.windowObject.fetch).toHaveBeenCalledTimes(1);
+    expect(page.dialog.open).toBe(false);
+    expect(page.form.querySelector('input[name="loadedScope"]').value).toBe('project');
+    expect(page.scopeControls.project.checked).toBe(true);
+  });
+
+  it('keeps Project Assets committed snapshots and drafts after failed or malformed enhanced saves', async () => {
+    const initialValues = {
+      global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
+      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'png', tag: '2' },
+    };
+    const responses = [
+      {
+        ok: false,
+        json: async () => ({
+          status: 'error',
+          values: { ...initialValues.project, sort: 'modified' },
+        }),
+      },
+      new Error('network unavailable'),
+      { ok: true, json: async () => ({ status: 'success', values: { view: 'grid' } }) },
+    ];
+
+    for (const response of responses) {
+      const page = makeDialogPage({
+        standardDropdowns: true,
+        projectAssetsDefaults: true,
+        projectAssetsScope: true,
+        projectAssetsScopeValues: initialValues,
+      });
+      page.region.appendChild(page.trigger);
+      page.windowObject.fetch.mockImplementationOnce(() => (
+        response instanceof Error ? Promise.reject(response) : Promise.resolve(response)
+      ));
+      enhanceDropdowns(page.document);
+      enhanceProjectAssetsDefaultsScope(page.document);
+      enhanceAppDialogs(page.document);
+      page.document.dispatch('click', { target: page.trigger });
+      changeProjectAssetsScope(page, 'project');
+      page.fields.sort.value = 'modified';
+      page.fields.sort.dispatch('change');
+      page.form.dispatch('submit', { submitter: page.save });
+      await flush();
+
+      expect(JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent))
+        .toEqual(initialValues);
+      changeProjectAssetsScope(page, 'global');
+      expect(projectAssetsDefaultValues(page.fields)).toEqual(initialValues.global);
+      changeProjectAssetsScope(page, 'project');
+      expect(projectAssetsDefaultValues(page.fields)).toMatchObject({ sort: 'modified' });
+    }
+  });
+
+  it('fails closed for malformed or unrepresentable Project Assets scope values', () => {
+    const malformed = makeDialogPage({ standardDropdowns: true, projectAssetsDefaults: true, projectAssetsScope: true });
+    malformed.form.querySelector('script[type="application/json"][data-project-assets-default-values]').textContent = '{';
+    const malformedInitial = projectAssetsDefaultValues(malformed.fields);
+    expect(enhanceProjectAssetsDefaultsScope(malformed.document)).toBe(0);
+    changeProjectAssetsScope(malformed, 'project');
+    expect(projectAssetsDefaultValues(malformed.fields)).toEqual(malformedInitial);
+    expect(malformed.form.querySelector('input[name="loadedScope"]').value).toBe('global');
+
+    const values = {
+      global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
+      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'gif', tag: '2' },
+    };
+    const invalidTarget = makeDialogPage({
+      standardDropdowns: true,
+      projectAssetsDefaults: true,
+      projectAssetsScope: true,
+      projectAssetsScopeValues: values,
+    });
+    enhanceDropdowns(invalidTarget.document);
+    enhanceProjectAssetsDefaultsScope(invalidTarget.document);
+    const initial = projectAssetsDefaultValues(invalidTarget.fields);
+    changeProjectAssetsScope(invalidTarget, 'project');
+
+    expect(projectAssetsDefaultValues(invalidTarget.fields)).toEqual(initial);
+    expect(invalidTarget.form.querySelector('input[name="loadedScope"]').value).toBe('global');
+    expect(invalidTarget.scopeControls.global.checked).toBe(true);
+    expect(invalidTarget.scopeControls.project.checked).toBe(false);
+    expect(invalidTarget.form.querySelector('[data-dialog-error]').hidden).toBe(false);
   });
 
   it('cancels Project Assets defaults without submitting or changing size storage', () => {

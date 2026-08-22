@@ -14,6 +14,7 @@ import { createReleaseService } from '../src/services/release-service.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { AssetActionError } from '../src/services/asset-action-service.js';
 import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
+import { buildBrowserRenderModel } from '../src/routes/project-assets-shared.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 import { makeZip } from './helpers/zip-fixture.js';
 import slugify from '@sindresorhus/slugify';
@@ -118,6 +119,10 @@ describe('asset browser HTTP workflow', () => {
       VALUES (?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value
     `).run(key, value);
+  }
+
+  function saveProjectAssetDefault(projectId, option, value) {
+    return app.locals.projectPageDefaultRepository.setOption(projectId, 'projectAssets', option, value);
   }
 
   async function setupOrderedImageAssets(projectTitle) {
@@ -1018,6 +1023,8 @@ describe('asset browser HTTP workflow', () => {
           sort: 'category',
           order: 'desc',
           pageSize: '50',
+          extension: 'all',
+          tag: 'all',
           returnTo: `/projects/${id}/assets`,
           _csrf: csrfToken,
         })
@@ -1054,9 +1061,547 @@ describe('asset browser HTTP workflow', () => {
       expect(rendered.text).toMatch(/name="order"[^>]+value="desc"[^>]+checked/);
     });
 
+    it('resolves Project Assets presentation and dialog defaults per project while inheriting Global values', async () => {
+      const first = await createProject('Scoped Project Assets First');
+      const firstId = Number(first.headers.location.replace('/projects/', ''));
+      const second = await createProject('Scoped Project Assets Second');
+      const secondId = Number(second.headers.location.replace('/projects/', ''));
+      saveAssetDefault('view', 'grid');
+      saveAssetDefault('gridSize', 'large');
+      saveAssetDefault('listSize', 'compact');
+      saveAssetDefault('sort', 'modified');
+      saveAssetDefault('order', 'desc');
+      saveAssetDefault('pageSize', '50');
+      saveProjectAssetDefault(firstId, 'view', 'list');
+      saveProjectAssetDefault(firstId, 'sort', 'size');
+      saveProjectAssetDefault(firstId, 'gridSize', 'compact');
+
+      const firstBare = await agent.get(`/projects/${firstId}/assets`).expect(302);
+      expect(firstBare.headers.location).toBe(
+        `/projects/${firstId}/assets?sort=size&order=desc&pageSize=50&view=list`,
+      );
+      const secondBare = await agent.get(`/projects/${secondId}/assets`).expect(302);
+      expect(secondBare.headers.location).toBe(
+        `/projects/${secondId}/assets?sort=modified&order=desc&pageSize=50`,
+      );
+
+      const rendered = await agent.get(`/projects/${firstId}/assets?defaults=1`).expect(200);
+      expect(rendered.text).toContain('data-project-assets-grid-size-default="compact"');
+      expect(rendered.text).toContain('data-project-assets-list-size-default="compact"');
+      const defaultsDialog = rendered.text.match(/<dialog id="project-assets-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      expect(defaultsDialog).toMatch(/name="view"[\s\S]*?value="list" selected/);
+      expect(defaultsDialog).toMatch(/name="sort"[\s\S]*?value="size" selected/);
+      expect(defaultsDialog).toMatch(/name="order"[\s\S]*?value="desc" selected/);
+      expect(defaultsDialog).toMatch(/name="pageSize"[\s\S]*?value="50" selected/);
+    });
+
+    it('renders the Project Assets defaults scope control with safe selected-state binding', async () => {
+      const project = await createProject('Project Assets Defaults Scope Control');
+      const id = Number(project.headers.location.replace('/projects/', ''));
+      const values = {
+        view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc',
+        pageSize: '50', extension: 'all', tag: 'all', returnTo: `/projects/${id}/assets`, _csrf: csrfToken,
+      };
+      const readDefaultsDialog = (html) => (
+        html.match(/<dialog id="project-assets-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || ''
+      );
+      const checkedScope = (dialog, value) => new RegExp(
+        `<input[^>]*name="scope"[^>]*value="${value}"[^>]*checked`,
+      ).test(dialog);
+
+      const globalResponse = await agent.get(`/projects/${id}/assets?defaults=1`).expect(200);
+      const globalDialog = readDefaultsDialog(globalResponse.text);
+      const scopeStart = globalDialog.indexOf('data-project-assets-defaults-scope');
+      const gridStart = globalDialog.indexOf('<div class="page-defaults-grid">');
+      const statusStart = globalDialog.indexOf('<div class="app-dialog-status"');
+      const footerStart = globalDialog.indexOf('<footer class="app-dialog-footer">');
+
+      expect(scopeStart).toBeGreaterThan(globalDialog.indexOf('name="returnTo"'));
+      expect(scopeStart).toBeLessThan(gridStart);
+      expect(globalDialog.slice(scopeStart, gridStart)).toContain('<legend class="sr-only">Defaults scope</legend>');
+      expect(globalDialog.slice(scopeStart, gridStart)).toContain('>Global</label>');
+      expect(globalDialog.slice(scopeStart, gridStart)).toContain('>Project only</label>');
+      expect(globalDialog.slice(scopeStart, gridStart).indexOf('>Global</label>'))
+        .toBeLessThan(globalDialog.slice(scopeStart, gridStart).indexOf('>Project only</label>'));
+      expect((globalDialog.match(/name="scope"/g) || [])).toHaveLength(2);
+      expect(globalDialog).toMatch(/<input[^>]*name="scope"[^>]*value="global"/);
+      expect(globalDialog).toMatch(/<input[^>]*name="scope"[^>]*value="project"/);
+      expect(checkedScope(globalDialog, 'global')).toBe(true);
+      expect(checkedScope(globalDialog, 'project')).toBe(false);
+      expect((globalDialog.match(/name="scope"[^>]*checked/g) || []).length
+        + (globalDialog.match(/checked[^>]*name="scope"/g) || []).length).toBe(1);
+      expect(globalDialog.slice(gridStart, statusStart)).not.toContain('data-project-assets-defaults-scope');
+      expect(statusStart).toBeGreaterThan(gridStart);
+      expect(footerStart).toBeGreaterThan(statusStart);
+
+      saveProjectAssetDefault(id, 'view', 'list');
+      const projectResponse = await agent.get(`/projects/${id}/assets?defaults=1`).expect(200);
+      const projectDialog = readDefaultsDialog(projectResponse.text);
+      expect(checkedScope(projectDialog, 'global')).toBe(false);
+      expect(checkedScope(projectDialog, 'project')).toBe(true);
+
+      const validScopeFailure = await agent.post(`/projects/${id}/assets/defaults`).type('form').send({
+        ...values, scope: 'project', loadedScope: 'project', listSize: 'default',
+      }).expect(422);
+      expect(checkedScope(readDefaultsDialog(validScopeFailure.text), 'project')).toBe(true);
+
+      const invalidScopeFailure = await agent.post(`/projects/${id}/assets/defaults`).type('form').send({
+        ...values, scope: 'invalid',
+      }).expect(422);
+      const invalidScopeDialog = readDefaultsDialog(invalidScopeFailure.text);
+      expect(invalidScopeDialog).toContain('Choose either Global or Project-only defaults.');
+      expect(checkedScope(invalidScopeDialog, 'global')).toBe(true);
+      expect(checkedScope(invalidScopeDialog, 'project')).toBe(false);
+
+      const projectsDefaults = await agent.get('/projects?defaults=1').expect(200);
+      const assetViewerDefaults = await agent.get('/assets?defaults=1').expect(200);
+      expect(projectsDefaults.text).not.toContain('data-project-assets-defaults-scope');
+      expect(assetViewerDefaults.text).not.toContain('data-project-assets-defaults-scope');
+    });
+
+    it('serializes only the two resolved eight-value scope sets and aligns loadedScope', async () => {
+      const project = await createProject('Project Assets Defaults Scope Data');
+      const id = Number(project.headers.location.replace('/projects/', ''));
+      const globalValues = {
+        view: 'grid', gridSize: 'large', listSize: 'compact', sort: 'modified', order: 'desc',
+        pageSize: '50', extension: 'all', tag: 'all',
+      };
+      for (const [option, value] of Object.entries(globalValues)) saveAssetDefault(option, value);
+
+      const readPayload = (html) => JSON.parse(
+        html.match(/<script type="application\/json" data-project-assets-default-values>([\s\S]*?)<\/script>/)?.[1] || '{}',
+      );
+      const globalResponse = await agent.get(`/projects/${id}/assets?defaults=1`).expect(200);
+      const globalPayload = readPayload(globalResponse.text);
+      expect(globalResponse.text).toContain('name="loadedScope" value="global"');
+      expect(Object.keys(globalPayload)).toEqual(['global', 'project']);
+      expect(Object.keys(globalPayload.global)).toEqual(Object.keys(globalValues));
+      expect(Object.keys(globalPayload.project)).toEqual(Object.keys(globalValues));
+      expect(globalPayload.global).toEqual(globalValues);
+      expect(globalPayload.project).toEqual(globalValues);
+      expect(JSON.stringify(globalPayload)).not.toContain('Grid size');
+      expect(JSON.stringify(globalPayload)).not.toContain('All extensions');
+
+      saveProjectAssetDefault(id, 'view', 'list');
+      saveProjectAssetDefault(id, 'extension', 'stale-extension');
+      const projectResponse = await agent.get(`/projects/${id}/assets?defaults=1`).expect(200);
+      const projectPayload = readPayload(projectResponse.text);
+      expect(projectResponse.text).toContain('name="loadedScope" value="project"');
+      expect(projectPayload.global).toEqual(globalValues);
+      expect(projectPayload.project).toEqual({ ...globalValues, view: 'list' });
+    });
+
+    it('guards loaded scope changes before validation or writes for HTML, JSON, active, and archived submissions', async () => {
+      const values = {
+        view: 'list', gridSize: 'compact', listSize: 'compact', sort: 'size', order: 'desc',
+        pageSize: '50', extension: 'all', tag: 'all',
+      };
+      const project = await createProject('Project Assets Loaded Scope Guard');
+      const id = Number(project.headers.location.replace('/projects/', ''));
+      saveAssetDefault('view', 'grid');
+      saveProjectAssetDefault(id, 'view', 'list');
+      const globalBefore = app.locals.pageDefaultsService.resolveGlobalPageDefaults('projectAssets');
+      const projectBefore = app.locals.projectPageDefaultRepository.getPageOptions(id, 'projectAssets');
+
+      const globalMismatch = await agent.post(`/projects/${id}/assets/defaults`).type('form').send({
+        ...values, scope: 'global', loadedScope: 'project', returnTo: `/projects/${id}/assets`, _csrf: csrfToken,
+      }).expect(422);
+      expect(globalMismatch.text).toContain('The selected defaults scope does not match the loaded values.');
+      expect(globalMismatch.text).toContain('name="loadedScope" value="global"');
+      expect(globalMismatch.text).toMatch(/name="view"[\s\S]*?value="list" selected/);
+      expect(globalMismatch.text).toMatch(/name="scope"[^>]*value="global"[^>]*aria-describedby="project-assets-defaults-scope-error"/);
+      expect(app.locals.pageDefaultsService.resolveGlobalPageDefaults('projectAssets')).toEqual(globalBefore);
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(id, 'projectAssets')).toEqual(projectBefore);
+
+      const projectMismatch = await agent.post(`/projects/${id}/assets/defaults`).set('Accept', 'application/json').type('form').send({
+        ...values, scope: 'project', loadedScope: 'global', _csrf: csrfToken,
+      }).expect(422);
+      expect(projectMismatch.body.errors.scope).toContain('does not match');
+      expect(app.locals.pageDefaultsService.resolveGlobalPageDefaults('projectAssets')).toEqual(globalBefore);
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(id, 'projectAssets')).toEqual(projectBefore);
+
+      const invalidMarker = await agent.post(`/projects/${id}/assets/defaults`).set('Accept', 'application/json').type('form').send({
+        ...values, scope: 'global', loadedScope: 'other', _csrf: csrfToken,
+      }).expect(422);
+      expect(invalidMarker.body.errors.scope).toContain('loaded defaults scope is invalid');
+      await agent.post(`/projects/${id}/assets/defaults`).set('Accept', 'application/json').type('form').send({
+        ...values, scope: 'project', _csrf: csrfToken,
+      }).expect(422);
+      expect(app.locals.pageDefaultsService.resolveGlobalPageDefaults('projectAssets')).toEqual(globalBefore);
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(id, 'projectAssets')).toEqual(projectBefore);
+
+      await agent.post(`/projects/${id}/assets/defaults`).type('form').send({
+        ...values, scope: 'project', loadedScope: 'project', returnTo: `/projects/${id}/assets`, _csrf: csrfToken,
+      }).expect(302);
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(id, 'projectAssets')).toEqual(values);
+      await agent.post(`/projects/${id}/assets/defaults`).type('form').send({
+        ...values, scope: 'global', loadedScope: 'global', returnTo: `/projects/${id}/assets`, _csrf: csrfToken,
+      }).expect(302);
+      expect(app.locals.pageDefaultsService.resolveGlobalPageDefaults('projectAssets')).toEqual(values);
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(id, 'projectAssets')).toEqual({});
+
+      const archived = await createProject('Archived Project Assets Loaded Scope Guard');
+      const archivedId = Number(archived.headers.location.replace('/projects/', ''));
+      saveProjectAssetDefault(archivedId, 'view', 'grid');
+      db.prepare("UPDATE projects SET archived_at = datetime('now') WHERE id = ?").run(archivedId);
+      const archivedBefore = app.locals.projectPageDefaultRepository.getPageOptions(archivedId, 'projectAssets');
+      await agent.post(`/projects/${archivedId}/assets/defaults`).type('form').send({
+        ...values, scope: 'project', loadedScope: 'global', returnTo: `/projects/${archivedId}/assets`, _csrf: csrfToken,
+      }).expect(422);
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(archivedId, 'projectAssets')).toEqual(archivedBefore);
+    });
+
+    it('exposes scoped Global, Project, and effective defaults in the Project Assets render model', async () => {
+      const project = await createProject('Scoped Project Assets Render Model');
+      const id = Number(project.headers.location.replace('/projects/', ''));
+      const globalTag = app.locals.tagService.createTag({ name: 'Render global tag' });
+      const projectTag = app.locals.tagService.createTag({ name: 'Render project tag' });
+      saveAssetDefault('view', 'grid');
+      writeStoredAssetDefault('extension', 'jpg');
+      writeStoredAssetDefault('tag', String(globalTag.id));
+      saveProjectAssetDefault(id, 'view', 'list');
+      saveProjectAssetDefault(id, 'extension', 'png');
+      saveProjectAssetDefault(id, 'tag', String(projectTag.id));
+
+      const model = buildBrowserRenderModel(
+        { id, project_dir: null },
+        {
+          assets: [], total: 0, page: 1, pageSize: 25, pageCount: 1, filters: {},
+          extensionChoices: [], tagOptions: [], categoryNavigation: { enabled: [], disabled: [] },
+          emptyState: null, isArchived: false, releaseTargets: [], searchMaxLength: 100,
+        },
+        app.locals.pageDefaultsService,
+        null,
+        {
+          getProjectAssetsDefaultExtensions: () => ['jpg', 'png'],
+          getProjectTagFilterOptions: () => [
+            { value: String(globalTag.id), displayName: 'Render global tag' },
+            { value: String(projectTag.id), displayName: 'Render project tag' },
+          ],
+        },
+      );
+
+      expect(model.projectAssetsDefaultsScope).toBe('project');
+      expect(model.projectAssetsDefaultsSelectedScope).toBe('project');
+      expect(model.projectAssetsDefaultsLoadedScope).toBe('project');
+      expect(model.projectAssetsGlobalDefaults).toMatchObject({ view: 'grid', extension: 'jpg', tag: String(globalTag.id) });
+      expect(model.projectAssetsProjectDefaults).toMatchObject({ view: 'list', extension: 'png', tag: String(projectTag.id) });
+      expect(model.projectAssetsEffectiveDefaults).toEqual(model.projectAssetsProjectDefaults);
+      expect(JSON.parse(model.projectAssetsDefaultValuesJson)).toEqual({
+        global: model.projectAssetsGlobalDefaults,
+        project: model.projectAssetsProjectDefaults,
+      });
+    });
+
+    it('applies project filter rows on bare requests while explicit and neutral requests stay authoritative', async () => {
+      const project = await createProject('Scoped Project Assets Filters');
+      const id = Number(project.headers.location.replace('/projects/', ''));
+      const projectDir = getProjectDir('Scoped Project Assets Filters');
+      writeIndexedAsset(id, projectDir, 'default.jpg', 'jpg');
+      writeIndexedAsset(id, projectDir, 'override.png', 'png');
+      const globalTag = app.locals.tagService.createTag({ name: 'Scoped global tag' });
+      const projectTag = app.locals.tagService.createTag({ name: 'Scoped project tag' });
+      writeStoredAssetDefault('extension', 'jpg');
+      writeStoredAssetDefault('tag', String(globalTag.id));
+      saveProjectAssetDefault(id, 'extension', 'png');
+      saveProjectAssetDefault(id, 'tag', String(projectTag.id));
+
+      const bare = await agent.get(`/projects/${id}/assets`).expect(302);
+      expect(bare.headers.location).toBe(`/projects/${id}/assets?tag=${projectTag.id}&extension=png`);
+      await agent.get(`/projects/${id}/assets?extension=all&tag=all`).expect(200);
+      await agent.get(`/projects/${id}/assets?category=all`).expect(200);
+
+      saveProjectAssetDefault(id, 'extension', 'stale-project-extension');
+      saveProjectAssetDefault(id, 'tag', '999999');
+      const inherited = await agent.get(`/projects/${id}/assets`).expect(302);
+      expect(inherited.headers.location).toBe(`/projects/${id}/assets?tag=${globalTag.id}&extension=jpg`);
+      expect(app.locals.projectPageDefaultRepository.getOption(id, 'projectAssets', 'extension'))
+        .toBe('stale-project-extension');
+      expect(app.locals.projectPageDefaultRepository.getOption(id, 'projectAssets', 'tag')).toBe('999999');
+
+      writeStoredAssetDefault('extension', 'stale-global-extension');
+      writeStoredAssetDefault('tag', '999998');
+      await agent.get(`/projects/${id}/assets`).expect(200);
+      expect(app.locals.projectPageDefaultRepository.getOption(id, 'projectAssets', 'extension'))
+        .toBe('stale-project-extension');
+      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
+        .get(PAGE_DEFAULT_DEFINITIONS.projectAssets.extension.key).value).toBe('stale-global-extension');
+    });
+
+    it('uses project defaults for archived pages and makes a missing scope save Global', async () => {
+      const archived = await createProject('Scoped Archived Project Assets');
+      const archivedId = Number(archived.headers.location.replace('/projects/', ''));
+      saveProjectAssetDefault(archivedId, 'view', 'list');
+      db.prepare("UPDATE projects SET archived_at = datetime('now') WHERE id = ?").run(archivedId);
+      const archivedBare = await agent.get(`/projects/${archivedId}/assets`).expect(302);
+      expect(archivedBare.headers.location).toBe(`/projects/${archivedId}/assets?view=list`);
+
+      const archivedValues = {
+        view: 'list', gridSize: 'compact', listSize: 'compact', sort: 'size', order: 'desc',
+        pageSize: '50', extension: 'all', tag: 'all',
+      };
+      await agent.post(`/projects/${archivedId}/assets/defaults`).type('form').send({
+        ...archivedValues, scope: 'project', loadedScope: 'project', returnTo: `/projects/${archivedId}/assets`, _csrf: csrfToken,
+      }).expect(302);
+      expect(app.locals.pageDefaultsService.getPageDefaultScope('projectAssets', { projectId: archivedId })).toBe('project');
+      await agent.post(`/projects/${archivedId}/assets/defaults`).type('form').send({
+        ...archivedValues, scope: 'global', returnTo: `/projects/${archivedId}/assets`, _csrf: csrfToken,
+      }).expect(302);
+      expect(app.locals.pageDefaultsService.getPageDefaultScope('projectAssets', { projectId: archivedId })).toBe('global');
+
+      const active = await createProject('Scoped Project Assets Global POST');
+      const activeId = Number(active.headers.location.replace('/projects/', ''));
+      saveProjectAssetDefault(activeId, 'view', 'list');
+      await agent.post(`/projects/${activeId}/assets/defaults`).type('form').send({
+        view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc',
+        pageSize: '25', extension: 'all', tag: 'all', returnTo: `/projects/${activeId}/assets`,
+        _csrf: csrfToken,
+      }).expect(302);
+      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
+        .get(PAGE_DEFAULT_DEFINITIONS.projectAssets.view.key).value).toBe('grid');
+      expect(app.locals.projectPageDefaultRepository.getOption(activeId, 'projectAssets', 'view')).toBeUndefined();
+      expect(app.locals.pageDefaultsService.getPageDefaultScope('projectAssets', { projectId: activeId })).toBe('global');
+    });
+
+    it('uses global Extension and Tag catalogues without broadening the project filters', async () => {
+      const source = await createProject('Global Project Assets Default Source');
+      const sourceId = Number(source.headers.location.replace('/projects/', ''));
+      const target = await createProject('Global Project Assets Default Target');
+      const targetId = Number(target.headers.location.replace('/projects/', ''));
+      writeIndexedAsset(sourceId, getProjectDir('Global Project Assets Default Source'), 'source.jpg', 'jpg');
+      writeIndexedAsset(targetId, getProjectDir('Global Project Assets Default Target'), 'target.png', 'png');
+      const tag = app.locals.tagService.createTag({ name: 'Global default tag' });
+      const values = {
+        view: 'grid',
+        gridSize: 'default',
+        listSize: 'large',
+        sort: 'filename',
+        order: 'asc',
+        pageSize: '25',
+        extension: 'jpg',
+        tag: String(tag.id),
+        _csrf: csrfToken,
+      };
+
+      const saved = await agent
+        .post('/projects/' + sourceId + '/assets/defaults')
+        .type('form')
+        .send({ ...values, returnTo: '/projects/' + sourceId + '/assets' })
+        .expect(302);
+
+      const savedUrl = new URL(saved.headers.location, 'http://localhost');
+      expect(savedUrl.searchParams.get('tag')).toBe(String(tag.id));
+      expect(savedUrl.searchParams.get('extension')).toBe('jpg');
+      await agent.get(saved.headers.location).expect(200);
+
+      const rendered = await agent.get('/projects/' + targetId + '/assets?defaults=1').expect(200);
+      const defaultsDialog = rendered.text.match(/<dialog id="project-assets-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      expect(defaultsDialog).toContain('<option value="jpg" selected>.jpg</option>');
+      expect(defaultsDialog).toContain('<option value="' + tag.id + '" selected>Global default tag</option>');
+      expect(defaultsDialog).toContain('value="jpg"');
+      expect(defaultsDialog).toContain('>.jpg</span>');
+      expect(defaultsDialog).toContain('>Global default tag</span>');
+
+      const projectExtensionFilter = assetExtensionFilterHtml(rendered.text);
+      expect(projectExtensionFilter).toContain('>.png</span>');
+      expect(projectExtensionFilter).not.toContain('>.jpg</span>');
+
+      const bare = await agent.get('/projects/' + targetId + '/assets').expect(302);
+      expect(bare.headers.location).toBe(
+        '/projects/' + targetId + '/assets?tag=' + tag.id + '&extension=jpg',
+      );
+
+      const canonical = await agent.get(bare.headers.location).expect(200);
+      expect(canonical.headers.location).toBeUndefined();
+      const selectedExtensionFilter = assetExtensionFilterHtml(canonical.text);
+      expectCheckedAssetFilter(selectedExtensionFilter, 'extension', 'jpg');
+      expect(selectedExtensionFilter).toContain('>.png</span>');
+      expect(selectedExtensionFilter).toContain('>.jpg</span>');
+      expect(assetTagFilterHtml(canonical.text)).toMatch(
+        new RegExp('name="tag"[^>]+type="checkbox"[^>]+value="' + tag.id + '"[^>]*checked'),
+      );
+
+      const resetAnchor = canonical.text.match(/<a\b[^>]*data-project-assets-reset[^>]*>/)?.[0] || '';
+      const resetHref = resetAnchor.match(/\bhref="([^"]+)"/)?.[1];
+      expect(decodeHtmlHref(resetHref)).toBe('/projects/' + targetId + '/assets?category=all');
+      const reset = await agent.get(decodeHtmlHref(resetHref)).expect(200);
+      expect(reset.headers.location).toBeUndefined();
+      expect(assetExtensionFilterHtml(reset.text)).not.toContain('>.jpg</span>');
+
+      await agent
+        .post('/projects/' + targetId + '/assets/defaults')
+        .type('form')
+        .send({ ...values, returnTo: '/projects/' + targetId + '/assets' })
+        .expect(302);
+
+      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
+        .get(PAGE_DEFAULT_DEFINITIONS.projectAssets.extension.key).value).toBe('jpg');
+      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
+        .get(PAGE_DEFAULT_DEFINITIONS.projectAssets.tag.key).value).toBe(String(tag.id));
+    });
+
+    it('keeps explicit filter values authoritative and leaves stale global filters in storage', async () => {
+      const source = await createProject('Project Assets Explicit Source');
+      const sourceId = Number(source.headers.location.replace('/projects/', ''));
+      const target = await createProject('Project Assets Explicit Target');
+      const targetId = Number(target.headers.location.replace('/projects/', ''));
+      writeIndexedAsset(sourceId, getProjectDir('Project Assets Explicit Source'), 'source.jpg', 'jpg');
+      writeIndexedAsset(targetId, getProjectDir('Project Assets Explicit Target'), 'target.png', 'png');
+      const savedTag = app.locals.tagService.createTag({ name: 'Saved filter tag' });
+      const explicitTag = app.locals.tagService.createTag({ name: 'Explicit filter tag' });
+      writeStoredAssetDefault('extension', 'jpg');
+      writeStoredAssetDefault('tag', String(savedTag.id));
+
+      const explicit = await agent
+        .get('/projects/' + targetId + '/assets?extension=png&tag=' + explicitTag.id)
+        .expect(200);
+      expect(explicit.headers.location).toBeUndefined();
+      expectCheckedAssetFilter(assetExtensionFilterHtml(explicit.text), 'extension', 'png');
+      expect(assetExtensionFilterHtml(explicit.text)).not.toContain('>.jpg</span>');
+      expect(assetTagFilterHtml(explicit.text)).toMatch(
+        new RegExp('name="tag"[^>]+type="checkbox"[^>]+value="' + explicitTag.id + '"[^>]*checked'),
+      );
+
+      const explicitNeutral = await agent
+        .get('/projects/' + targetId + '/assets?extension=all&tag=all')
+        .expect(200);
+      expect(explicitNeutral.headers.location).toBeUndefined();
+      expect(assetExtensionFilterHtml(explicitNeutral.text)).not.toContain('>.jpg</span>');
+
+      writeStoredAssetDefault('extension', 'deleted-extension');
+      writeStoredAssetDefault('tag', '999999');
+      const stale = await agent.get('/projects/' + targetId + '/assets').expect(200);
+      expect(stale.headers.location).toBeUndefined();
+      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
+        .get(PAGE_DEFAULT_DEFINITIONS.projectAssets.extension.key).value).toBe('deleted-extension');
+      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
+        .get(PAGE_DEFAULT_DEFINITIONS.projectAssets.tag.key).value).toBe('999999');
+    });
+
+    it('saves complete Project-only defaults without touching Global values or another project', async () => {
+      const first = await createProject('Scoped Save Project A');
+      const firstId = Number(first.headers.location.replace('/projects/', ''));
+      const second = await createProject('Scoped Save Project B');
+      const secondId = Number(second.headers.location.replace('/projects/', ''));
+      const globalValues = {
+        view: 'grid', gridSize: 'large', listSize: 'large', sort: 'filename', order: 'asc',
+        pageSize: '25', extension: 'all', tag: 'all',
+      };
+      const projectValues = {
+        view: 'list', gridSize: 'compact', listSize: 'compact', sort: 'modified', order: 'desc',
+        pageSize: '50', extension: 'all', tag: 'all',
+      };
+      for (const [option, value] of Object.entries(globalValues)) saveAssetDefault(option, value);
+      saveProjectAssetDefault(secondId, 'view', 'list');
+
+      const save = await agent.post(`/projects/${firstId}/assets/defaults`).type('form').send({
+        ...projectValues,
+        scope: 'project',
+        loadedScope: 'project',
+        returnTo: `/projects/${firstId}/assets`,
+        _csrf: csrfToken,
+      }).expect(302);
+
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(firstId, 'projectAssets')).toEqual(projectValues);
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(secondId, 'projectAssets')).toEqual({ view: 'list' });
+      expect(app.locals.pageDefaultsService.resolveGlobalPageDefaults('projectAssets')).toEqual(globalValues);
+      expect(app.locals.pageDefaultsService.getPageDefaultScope('projectAssets', { projectId: firstId })).toBe('project');
+      const converged = await agent.get(save.headers.location).expect(200);
+      expect(converged.headers.location).toBeUndefined();
+    });
+
+    it('applies Project-only persistence for enhanced JSON submissions', async () => {
+      const project = await createProject('Scoped JSON Save');
+      const id = Number(project.headers.location.replace('/projects/', ''));
+      const values = {
+        view: 'list', gridSize: 'compact', listSize: 'compact', sort: 'modified', order: 'desc',
+        pageSize: '50', extension: 'all', tag: 'all',
+      };
+
+      const response = await agent.post(`/projects/${id}/assets/defaults`).set('Accept', 'application/json').type('form').send({
+        ...values, scope: 'project', loadedScope: 'project', _csrf: csrfToken,
+      }).expect(200);
+
+      expect(response.body).toMatchObject({ status: 'success', values });
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(id, 'projectAssets')).toEqual(values);
+      expect(app.locals.pageDefaultsService.getPageDefaultScope('projectAssets', { projectId: id })).toBe('project');
+    });
+
+    it('saves Global defaults and clears only the current project scope', async () => {
+      const first = await createProject('Scoped Global Save Project A');
+      const firstId = Number(first.headers.location.replace('/projects/', ''));
+      const second = await createProject('Scoped Global Save Project B');
+      const secondId = Number(second.headers.location.replace('/projects/', ''));
+      const values = {
+        view: 'list', gridSize: 'compact', listSize: 'compact', sort: 'size', order: 'desc',
+        pageSize: '100', extension: 'all', tag: 'all',
+      };
+      saveProjectAssetDefault(firstId, 'view', 'grid');
+      saveProjectAssetDefault(secondId, 'view', 'list');
+
+      const save = await agent.post(`/projects/${firstId}/assets/defaults`).type('form').send({
+        ...values,
+        scope: 'global',
+        returnTo: `/projects/${firstId}/assets`,
+        _csrf: csrfToken,
+      }).expect(302);
+
+      expect(app.locals.pageDefaultsService.resolveGlobalPageDefaults('projectAssets')).toEqual(values);
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(firstId, 'projectAssets')).toEqual({});
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(secondId, 'projectAssets')).toEqual({ view: 'list' });
+      expect(app.locals.pageDefaultsService.resolvePageDefaults(
+        'projectAssets', {}, {}, { projectId: firstId },
+      )).toEqual(values);
+      expect(app.locals.pageDefaultsService.getPageDefaultScope('projectAssets', { projectId: firstId })).toBe('global');
+      const converged = await agent.get(save.headers.location).expect(200);
+      expect(converged.headers.location).toBeUndefined();
+    });
+
+    it('rejects an invalid scope before either persistence branch writes', async () => {
+      const project = await createProject('Scoped Invalid Scope');
+      const id = Number(project.headers.location.replace('/projects/', ''));
+      saveAssetDefault('view', 'grid');
+      saveProjectAssetDefault(id, 'view', 'list');
+
+      const response = await agent.post(`/projects/${id}/assets/defaults`).set('Accept', 'application/json').type('form').send({
+        view: 'list', gridSize: 'compact', listSize: 'compact', sort: 'size', order: 'desc',
+        pageSize: '50', extension: 'all', tag: 'all', scope: 'other',
+        returnTo: `/projects/${id}/assets`, _csrf: csrfToken,
+      }).expect(422);
+
+      expect(response.body.errors.scope).toContain('Global');
+      expect(app.locals.pageDefaultsService.resolveGlobalPageDefaults('projectAssets').view).toBe('grid');
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(id, 'projectAssets')).toEqual({ view: 'list' });
+    });
+
+    it('rolls back Global writes and the current-project clear when clearing fails', async () => {
+      const project = await createProject('Scoped Global Rollback');
+      const id = Number(project.headers.location.replace('/projects/', ''));
+      saveAssetDefault('view', 'grid');
+      saveProjectAssetDefault(id, 'view', 'list');
+      const service = app.locals.pageDefaultsService;
+      const clearProjectPageDefaults = service.clearProjectPageDefaults;
+      const clearSpy = vi.spyOn(service, 'clearProjectPageDefaults').mockImplementation((...args) => {
+        clearProjectPageDefaults(...args);
+        throw new Error('simulated project default clear failure');
+      });
+
+      await agent.post(`/projects/${id}/assets/defaults`).set('Accept', 'application/json').type('form').send({
+        view: 'list', gridSize: 'compact', listSize: 'compact', sort: 'size', order: 'desc',
+        pageSize: '50', extension: 'all', tag: 'all', scope: 'global',
+        returnTo: `/projects/${id}/assets`, _csrf: csrfToken,
+      }).expect(500);
+
+      clearSpy.mockRestore();
+      expect(app.locals.pageDefaultsService.resolveGlobalPageDefaults('projectAssets').view).toBe('grid');
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(id, 'projectAssets')).toEqual({ view: 'list' });
+    });
+
     it.each([
       ['gridSize', 'invalid-grid-size'],
       ['listSize', 'default'],
+      ['extension', 'invalid-extension'],
+      ['tag', '999999'],
     ])('rejects invalid Project Assets %s values without saving', async (option, invalidValue) => {
       const res = await createProject(`Project Assets Invalid ${option}`);
       const id = Number(res.headers.location.replace('/projects/', ''));
@@ -1067,6 +1612,10 @@ describe('asset browser HTTP workflow', () => {
         sort: 'category',
         order: 'desc',
         pageSize: '50',
+        extension: 'all',
+        tag: 'all',
+        scope: 'project',
+        loadedScope: 'project',
         [option]: invalidValue,
         returnTo: `/projects/${id}/assets`,
         _csrf: csrfToken,
@@ -1083,10 +1632,11 @@ describe('asset browser HTTP workflow', () => {
       expect(response.body.errors[option]).toContain(invalidValue);
       expect(response.body.values[option]).toBe(invalidValue);
       expect(app.locals.pageDefaultsService.resolve('projectAssets', option)).toBe(
-        option === 'gridSize' ? 'default' : 'large',
+        option === 'gridSize' ? 'default' : (option === 'listSize' ? 'large' : 'all'),
       );
       expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
         .get(PAGE_DEFAULT_DEFINITIONS.projectAssets[option].key)).toBeUndefined();
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(id, 'projectAssets')).toEqual({});
     });
 
     it('combines saved category and all four saved presentation defaults in one canonical redirect', async () => {
@@ -2306,7 +2856,7 @@ describe('asset browser HTTP workflow', () => {
     expect(extensionFilter).toContain('>All extensions</span>');
     expect(extensionFilter).toContain('>.png</span>');
     expect(extensionFilter).toContain('>.kra</span>');
-    expect(res2.text).not.toMatch(/<select[^>]+(?:id="extension"|name="extension")/);
+    expect(extensionFilter).not.toMatch(/<select[^>]+(?:id="extension"|name="extension")/);
   });
 
   it('keeps extension choices stable when another filter returns no rows', async () => {
@@ -2500,6 +3050,22 @@ describe('asset browser HTTP workflow', () => {
 
     const defaultsDialog = response.text.match(/<dialog id="project-assets-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
     expect(defaultsDialog).toContain('data-app-dialog');
+    const defaultsGridMatch = defaultsDialog.match(
+      /<div class="page-defaults-grid">([\s\S]*?)<\/div>\s*<\/div>\s*<div class="app-dialog-status"/,
+    );
+    expect(defaultsGridMatch).not.toBeNull();
+    const defaultsGrid = defaultsGridMatch?.[1] || '';
+    const gridStart = defaultsGridMatch?.index ?? -1;
+    const statusIndex = defaultsDialog.indexOf('<div class="app-dialog-status"', gridStart);
+    expect((defaultsGrid.match(/data-dialog-field="/g) || [])).toHaveLength(8);
+    expect(defaultsDialog.indexOf('data-dialog-error')).toBeLessThan(gridStart);
+    expect(defaultsDialog.indexOf('name="_csrf"')).toBeLessThan(gridStart);
+    expect(statusIndex).toBeGreaterThan(gridStart);
+    expect(defaultsDialog.indexOf('<footer class="app-dialog-footer">')).toBeGreaterThan(statusIndex);
+    expect(defaultsGrid).not.toContain('data-dialog-error');
+    expect(defaultsGrid).not.toContain('data-dialog-status');
+    expect(defaultsGrid).not.toContain('app-dialog-footer');
+    expect(defaultsGrid).not.toContain('name="_csrf"');
     const defaultFields = [
       {
         name: 'view',
@@ -2548,35 +3114,71 @@ describe('asset browser HTTP workflow', () => {
         selected: '25',
         options: [['10', '10 assets'], ['25', '25 assets'], ['50', '50 assets'], ['100', '100 assets']],
       },
+      {
+        name: 'extension',
+        label: 'Extension',
+        id: 'projectAssets-default-extension',
+        selected: 'all',
+        options: [['all', 'All extensions']],
+      },
+      {
+        name: 'tag',
+        label: 'Tag',
+        id: 'projectAssets-default-tag',
+        selected: 'all',
+        options: [['all', 'All tags']],
+      },
     ];
     for (const field of defaultFields) {
-      expect(defaultsDialog).toMatch(new RegExp(`<select[^>]*name="${field.name}"[^>]*data-cc-dropdown-native-select`));
-      expect(defaultsDialog).toContain(`data-dialog-field="${field.name}"`);
-      expect(defaultsDialog).toContain(`<legend>${field.label}</legend>`);
-      const nativeSelect = defaultsDialog.match(new RegExp(`<select id="${field.id}"[\\s\\S]*?<\\/select>`))?.[0] || '';
+      expect(defaultsGrid).toMatch(new RegExp(`<select[^>]*name="${field.name}"[^>]*data-cc-dropdown-native-select`));
+      expect(defaultsGrid).toContain(`data-dialog-field="${field.name}"`);
+      expect(defaultsGrid).toContain(`<legend>${field.label}</legend>`);
+      const nativeSelect = defaultsGrid.match(new RegExp(`<select id="${field.id}"[\\s\\S]*?<\\/select>`))?.[0] || '';
       expect(nativeSelect).not.toBe('');
       for (const [value, label] of field.options) {
         expect(nativeSelect).toContain(`<option value="${value}"${value === field.selected ? ' selected' : ''}>${label}</option>`);
       }
-      expect(defaultsDialog).toMatch(new RegExp(
+      expect(defaultsGrid).toMatch(new RegExp(
         `id="${field.id}-dropdown"[^>]*data-cc-dropdown data-cc-dropdown-mode="single"`,
       ));
-      expect(defaultsDialog).toMatch(new RegExp(
+      expect(defaultsGrid).toMatch(new RegExp(
         `<input[^>]*type="radio" value="${field.selected}"[^>]*checked`,
       ));
-      expect(defaultsDialog).not.toMatch(new RegExp(`<input[^>]*name="${field.name}"`));
-      expect((defaultsDialog.match(new RegExp(`name="${field.name}"`, 'g')) || [])).toHaveLength(1);
+      expect(defaultsGrid).not.toMatch(new RegExp(`<input[^>]*name="${field.name}"`));
+      expect((defaultsGrid.match(new RegExp(`name="${field.name}"`, 'g')) || [])).toHaveLength(1);
     }
     for (let index = 1; index < defaultFields.length; index += 1) {
-      expect(defaultsDialog.indexOf(`data-dialog-field="${defaultFields[index - 1].name}"`))
-        .toBeLessThan(defaultsDialog.indexOf(`data-dialog-field="${defaultFields[index].name}"`));
+      expect(defaultsGrid.indexOf(`data-dialog-field="${defaultFields[index - 1].name}"`))
+        .toBeLessThan(defaultsGrid.indexOf(`data-dialog-field="${defaultFields[index].name}"`));
     }
-    expect((defaultsDialog.match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(6);
+    expect((defaultsGrid.match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(8);
     const defaultsFooter = defaultsDialog.match(/<footer class="app-dialog-footer">[\s\S]*?<\/footer>/)?.[0] || '';
     expect((defaultsFooter.match(/<button\b[^>]*type="submit"/g) || [])).toHaveLength(1);
     expect(defaultsFooter).toContain('data-dialog-submit');
     expect(defaultsFooter).toContain('>Save defaults</button>');
     expect(defaultsFooter).not.toContain('>Cancel</button>');
+
+    const invalidDefaults = await agent
+      .post(`/projects/${id}/assets/defaults`)
+      .type('form')
+      .send({
+        view: 'list',
+        gridSize: 'large',
+        listSize: 'default',
+        sort: 'category',
+        order: 'desc',
+        pageSize: '25',
+        extension: 'all',
+        tag: 'all',
+        returnTo: `/projects/${id}/assets`,
+        _csrf: csrfToken,
+      })
+      .expect(422);
+    const invalidListSize = invalidDefaults.text.match(
+      /<select id="projectAssets-default-listSize"[\s\S]*?<\/select>/,
+    )?.[0] || '';
+    expect(invalidListSize).not.toContain('data-dialog-submitted-value');
+    expect(invalidListSize).not.toContain('value="default"');
 
     const speedSelect = response.text.match(/<select[^>]*data-slideshow-speed[^>]*>/)?.[0] || '';
     expect(speedSelect).toContain('data-cc-dropdown-native-select');
@@ -7676,8 +8278,18 @@ describe('asset browser HTTP workflow', () => {
         expect(res.text).toContain('<input type="hidden" name="view" value="list">');
       });
 
-      it('rejects Copy selected for archived projects', async () => {
+      it("rejects Copy selected for archived projects with that project's presentation defaults", async () => {
         const { id, asset, projectDir } = await setupProjectWithAsset('Bulk Copy Archived', 'a.png');
+        for (const [option, value] of Object.entries({
+          view: 'grid', sort: 'filename', order: 'asc', pageSize: '25',
+        })) {
+          saveAssetDefault(option, value);
+        }
+        for (const [option, value] of Object.entries({
+          view: 'list', sort: 'modified', order: 'desc', pageSize: '50',
+        })) {
+          saveProjectAssetDefault(id, option, value);
+        }
         await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
         // Archiving is a database transition only — the flat project
         // directory is preserved in place.
@@ -7688,6 +8300,10 @@ describe('asset browser HTTP workflow', () => {
           .expect(409);
 
         expect(res.text).toContain('This project is archived and read-only.');
+        expect(res.text).toContain('<ul class="asset-list asset-list--project"');
+        expectCheckedAssetFilter(res.text, 'sort', 'modified');
+        expectCheckedAssetFilter(res.text, 'order', 'desc');
+        expect(res.text).toContain('<option value="50" selected>50 assets</option>');
         expect(fs.existsSync(path.join(archivedProjectDir, 'a.png'))).toBe(true);
         expect(assetRepo.findByProjectIdAndPath(id, 'a.png')).toBeDefined();
       });
@@ -7756,6 +8372,82 @@ describe('asset browser HTTP workflow', () => {
         expect(fs.existsSync(path.join(projectDir, 'bulk-target', 'a.png'))).toBe(true);
         expect(fs.existsSync(path.join(projectDir, 'bulk-target', 'b.png'))).toBe(true);
         expect((await agent.get(res.headers.location).expect(200)).text).toContain('Moved 2 assets.');
+      });
+
+      it('preserves explicit fallback presentation values and filters through scoped action redirects', async () => {
+        const { id, projectDir, asset } = await setupProjectWithAsset('Scoped Redirect Preservation', 'a.png');
+        const category = makeEnabledCategory(id, projectDir, 'scoped-target', 'Scoped Target');
+        const tag = app.locals.tagService.createTag({ name: 'Scoped redirect tag' });
+        app.locals.assetTagService.replaceAssetTags(asset.id, [tag.id]);
+
+        for (const [option, value] of Object.entries({
+          view: 'grid', sort: 'filename', order: 'asc', pageSize: '25',
+        })) {
+          saveAssetDefault(option, value);
+        }
+        for (const [option, value] of Object.entries({
+          view: 'list', sort: 'modified', order: 'desc', pageSize: '50',
+        })) {
+          saveProjectAssetDefault(id, option, value);
+        }
+
+        const res = await agent.post(`/projects/${id}/assets/move-selected`).type('form')
+          .send({
+            selectedAssetIds: String(asset.id), destinationCategory: String(category.id), category: 'all',
+            extension: 'png', tag: String(tag.id), sort: 'filename', order: 'asc',
+            pageSize: '25', view: 'grid', _csrf: csrfToken,
+          }).expect(302);
+
+        const location = new URL(res.headers.location, 'http://localhost');
+        expect(location.searchParams.get('extension')).toBe('png');
+        expect(location.searchParams.get('tag')).toBe(String(tag.id));
+        expect(location.searchParams.get('view')).toBe('grid');
+        expect(location.searchParams.get('sort')).toBe('filename');
+        expect(location.searchParams.get('order')).toBe('asc');
+        expect(location.searchParams.get('pageSize')).toBe('25');
+        expect((await agent.get(res.headers.location).expect(200)).headers.location).toBeUndefined();
+      });
+
+      it('omits values matching Project-only defaults without changing Global-project redirects', async () => {
+        const scoped = await setupProjectWithAsset('Scoped Redirect Omission', 'scoped.png');
+        const global = await setupProjectWithAsset('Global Redirect Isolation', 'global.png');
+        const scopedCategory = makeEnabledCategory(scoped.id, scoped.projectDir, 'scoped-target', 'Scoped Target');
+        const globalCategory = makeEnabledCategory(global.id, global.projectDir, 'global-target', 'Global Target');
+
+        for (const [option, value] of Object.entries({
+          view: 'list', sort: 'modified', order: 'desc', pageSize: '50',
+        })) {
+          saveAssetDefault(option, value);
+        }
+        for (const [option, value] of Object.entries({
+          view: 'grid', sort: 'filename', order: 'asc', pageSize: '25',
+        })) {
+          saveProjectAssetDefault(scoped.id, option, value);
+        }
+
+        const explicitFallback = {
+          category: 'all', sort: 'filename', order: 'asc', pageSize: '25', view: 'grid', _csrf: csrfToken,
+        };
+        const scopedRedirect = await agent.post(`/projects/${scoped.id}/assets/move-selected`).type('form')
+          .send({
+            ...explicitFallback,
+            selectedAssetIds: String(scoped.asset.id), destinationCategory: String(scopedCategory.id),
+          }).expect(302);
+        const scopedLocation = new URL(scopedRedirect.headers.location, 'http://localhost');
+        for (const key of ['view', 'sort', 'order', 'pageSize']) {
+          expect(scopedLocation.searchParams.has(key)).toBe(false);
+        }
+
+        const globalRedirect = await agent.post(`/projects/${global.id}/assets/move-selected`).type('form')
+          .send({
+            ...explicitFallback,
+            selectedAssetIds: String(global.asset.id), destinationCategory: String(globalCategory.id),
+          }).expect(302);
+        const globalLocation = new URL(globalRedirect.headers.location, 'http://localhost');
+        expect(globalLocation.searchParams.get('view')).toBe('grid');
+        expect(globalLocation.searchParams.get('sort')).toBe('filename');
+        expect(globalLocation.searchParams.get('order')).toBe('asc');
+        expect(globalLocation.searchParams.get('pageSize')).toBe('25');
       });
 
       it('returns 409 for database and filesystem destination conflicts without mutation', async () => {

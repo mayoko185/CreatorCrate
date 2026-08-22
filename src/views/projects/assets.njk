@@ -996,9 +996,28 @@
 
        <input type="hidden" name="_csrf" value="{{ _csrf }}">
        <input type="hidden" name="returnTo" value="{{ projectAssetsDefaultsReturnUrl }}">
+       <input type="hidden" name="loadedScope" value="{{ projectAssetsDefaultsLoadedScope }}">
 
       <div class="app-dialog-body">
-        {% for field in projectAssetsDefaults.fields %}
+        <fieldset class="page-defaults-scope" data-project-assets-defaults-scope>
+          <legend class="sr-only">Defaults scope</legend>
+          <div class="page-defaults-scope-options">
+            <div class="page-defaults-scope-option">
+              <input id="project-assets-defaults-scope-global" type="radio" name="scope" value="global"{% if projectAssetsDefaultsSelectedScope != 'project' %} checked{% endif %}{% if projectAssetsDefaultsErrors.scope %} aria-describedby="project-assets-defaults-scope-error" aria-invalid="true"{% endif %}>
+              <label for="project-assets-defaults-scope-global">Global</label>
+            </div>
+            <div class="page-defaults-scope-option">
+              <input id="project-assets-defaults-scope-project" type="radio" name="scope" value="project"{% if projectAssetsDefaultsSelectedScope == 'project' %} checked{% endif %}{% if projectAssetsDefaultsErrors.scope %} aria-describedby="project-assets-defaults-scope-error" aria-invalid="true"{% endif %}>
+              <label for="project-assets-defaults-scope-project">Project only</label>
+            </div>
+          </div>
+          {% if projectAssetsDefaultsErrors.scope %}<span class="field-error-message" id="project-assets-defaults-scope-error">{{ projectAssetsDefaultsErrors.scope }}</span>{% endif %}
+        </fieldset>
+
+        <script type="application/json" data-project-assets-default-values>{{ projectAssetsDefaultValuesJson | default('{"global":{},"project":{}}') | safe }}</script>
+
+        <div class="page-defaults-grid">
+          {% for field in projectAssetsDefaults.fields %}
           {% set submittedOption = none %}
           {% set nativeAttributes = [["required", true]] %}
           {% set summaryAttributes = [] %}
@@ -1032,7 +1051,8 @@
             }) }}
             {% if field.error %}<span class="field-error-message" id="{{ field.id }}-error">{{ field.error }}</span>{% endif %}
           </div>
-        {% endfor %}
+          {% endfor %}
+        </div>
       </div>
 
       <div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>

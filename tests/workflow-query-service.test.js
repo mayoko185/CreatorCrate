@@ -175,6 +175,36 @@ describe('workflow query service', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  describe('getAssetLibraryExtensions', () => {
+    it('returns extensions from the active global asset population', () => {
+      const alpha = insertProject(db, { title: 'Global extensions Alpha' });
+      const beta = insertProject(db, { title: 'Global extensions Beta' });
+      const archived = insertProject(db, {
+        title: 'Global extensions Archived',
+        status: 'archived',
+      });
+
+      insertAsset(db, { projectId: alpha.id, relativePath: 'alpha.png', filename: 'alpha.png', extension: 'png' });
+      insertAsset(db, { projectId: beta.id, relativePath: 'beta.jpg', filename: 'beta.jpg', extension: 'jpg' });
+      insertAsset(db, { projectId: archived.id, relativePath: 'archived.gif', filename: 'archived.gif', extension: 'gif' });
+
+      expect(service.getAssetLibraryExtensions()).toEqual(['jpg', 'png']);
+    });
+
+    it('returns extensions from every Project Assets defaults population, including archived projects', () => {
+      const active = insertProject(db, { title: 'Project Assets defaults active' });
+      const archived = insertProject(db, {
+        title: 'Project Assets defaults archived',
+        status: 'archived',
+      });
+
+      insertAsset(db, { projectId: active.id, relativePath: 'active.png', filename: 'active.png', extension: 'png' });
+      insertAsset(db, { projectId: archived.id, relativePath: 'archived.gif', filename: 'archived.gif', extension: 'gif' });
+
+      expect(service.getProjectAssetsDefaultExtensions()).toEqual(['gif', 'png']);
+    });
+  });
+
   // ─── getDashboardData: empty state ─────────────────────────────────
 
   describe('getDashboardData — empty state', () => {

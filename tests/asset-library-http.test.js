@@ -201,7 +201,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(filterForm).not.toContain('data-asset-project-filter');
     expect(filterForm).not.toContain('data-asset-viewer-filter-disclosure');
     const defaultsForm = response.text.match(/<form id="asset-viewer-defaults-form"[\s\S]*?<\/form>/)?.[0] || '';
-    for (const name of ['view', 'sort', 'order', 'pageSize']) {
+    for (const name of ['view', 'sort', 'order', 'pageSize', 'extension', 'category', 'presence', 'tag']) {
       expect(defaultsForm).toMatch(new RegExp(`<select[^>]*name="${name}"[^>]*data-cc-dropdown-native-select`));
       expect((defaultsForm.match(new RegExp(`<input[^>]*name="${name}"`, 'g')) || [])).toHaveLength(0);
     }
@@ -653,7 +653,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     await agent
       .post('/assets/defaults')
       .type('form')
-      .send({ _csrf: defaultsToken, view: 'list', sort: 'project', order: 'desc', pageSize: '50' })
+      .send({ _csrf: defaultsToken, view: 'list', sort: 'project', order: 'desc', pageSize: '50', extension: 'all', category: 'all', presence: 'all', tag: 'all' })
       .expect(302);
   });
 
@@ -661,11 +661,11 @@ describe('cross-project Asset Viewer HTTP route', () => {
     const save = await request(app)
       .post('/assets/defaults')
       .type('form')
-      .send({ view: 'list', sort: 'project', order: 'desc', pageSize: '50' })
+      .send({ view: 'list', sort: 'project', order: 'desc', pageSize: '50', extension: 'all', category: 'all', presence: 'all', tag: 'all' })
       .expect(302);
 
     expect(save.headers.location).toBe(
-      '/assets?view=list&sort=project&order=desc&pageSize=50&notice=asset_viewer_defaults_saved',
+      '/assets?sort=project&order=desc&pageSize=50&view=list&notice=asset_viewer_defaults_saved',
     );
 
     const redirected = await request(app).get(save.headers.location).expect(200);
@@ -673,11 +673,161 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(redirected.text).toContain('Asset Viewer defaults saved successfully.');
   });
 
+  it('renders, stores, and canonically applies live Asset Viewer filter defaults', async () => {
+    const project = createProject('Live Defaults Project');
+    createCategory({ displayName: 'Reference artwork', directorySlug: 'reference-artwork' });
+    const category = assignCategory(project.id, {
+      displayName: 'Reference artwork',
+      directorySlug: 'reference-artwork',
+    });
+    const asset = createAsset(project.id, 'reference.png', { categoryId: category.id, extension: 'png' });
+    const tag = tagRepository.create({ displayName: 'Featured artwork', normalizedName: 'featured-artwork' });
+    tagRepository.assignToAsset(asset.id, tag.id);
+
+    const dialog = await request(app).get('/assets?defaults=1').expect(200);
+    const defaultsForm = dialog.text.match(/<form id="asset-viewer-defaults-form"[\s\S]*?<\/form>/)?.[0] || '';
+    const defaultsGrid = defaultsForm.match(/<div class="page-defaults-grid">([\s\S]*?)<\/div>\s*<\/div>\s*<div class="app-dialog-status"/)?.[1] || '';
+    const defaultsFieldNames = ['view', 'sort', 'order', 'pageSize', 'extension', 'category', 'presence', 'tag'];
+    const defaultsFieldLabels = ['View', 'Sort', 'Order', 'Page size', 'Extension', 'Category', 'Presence', 'Tag'];
+
+    expect(defaultsGrid).not.toBe('');
+    expect((defaultsForm.match(/data-dialog-field=/g) || [])).toHaveLength(8);
+    expect([...defaultsGrid.matchAll(/data-dialog-field="([^"]+)"/g)].map(([, name]) => name)).toEqual(defaultsFieldNames);
+    expect([...defaultsGrid.matchAll(/<legend>([^<]+)<\/legend>/g)].map(([, label]) => label)).toEqual(defaultsFieldLabels);
+    expect(defaultsForm.indexOf('data-dialog-error')).toBeLessThan(defaultsForm.indexOf('<div class="page-defaults-grid">'));
+    expect(defaultsForm.indexOf('<div class="app-dialog-status')).toBeGreaterThan(defaultsForm.indexOf('<div class="page-defaults-grid">'));
+    expect(defaultsForm.indexOf('<footer class="app-dialog-footer">')).toBeGreaterThan(defaultsForm.indexOf('<div class="page-defaults-grid">'));
+    expect(defaultsGrid).not.toContain('data-dialog-error');
+    expect(defaultsGrid).not.toContain('app-dialog-status');
+    expect(defaultsGrid).not.toContain('app-dialog-footer');
+    expect(defaultsForm).toContain('All extensions');
+    expect(defaultsForm).toContain('.png');
+    expect(defaultsForm).toContain('All categories');
+    expect(defaultsForm).toContain('Reference artwork');
+    expect(defaultsForm).toContain('All assets');
+    expect(defaultsForm).toContain('Featured artwork');
+
+    const save = await request(app)
+      .post('/assets/defaults')
+      .type('form')
+      .send({
+        view: 'grid',
+        sort: 'filename',
+        order: 'asc',
+        pageSize: '25',
+        extension: 'png',
+        category: 'reference-artwork',
+        presence: 'present',
+        tag: String(tag.id),
+      })
+      .expect(302);
+
+    expect(save.headers.location).toBe(
+      `/assets?category=reference-artwork&tag=${tag.id}&extension=png&presence=present&notice=asset_viewer_defaults_saved`,
+    );
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.extension.key).value).toBe('png');
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.category.key).value).toBe('reference-artwork');
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.presence.key).value).toBe('present');
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.tag.key).value).toBe(String(tag.id));
+
+    const bare = await request(app).get('/assets').expect(302);
+    expect(bare.headers.location).toBe(
+      `/assets?category=reference-artwork&tag=${tag.id}&extension=png&presence=present`,
+    );
+    const canonical = await request(app).get(bare.headers.location).expect(200);
+    expect(canonical.headers.location).toBeUndefined();
+
+    createAsset(project.id, 'other.jpg', { extension: 'jpg' });
+    const explicit = await request(app).get('/assets?extension=jpg').expect(200);
+    expect(explicit.headers.location).toBeUndefined();
+    expect(explicit.text).toContain('other.jpg');
+    expect(explicit.text).not.toContain('reference.png');
+
+    const explicitNeutral = await request(app).get('/assets?presence=all').expect(200);
+    expect(explicitNeutral.headers.location).toBeUndefined();
+    expect(explicitNeutral.text).toMatch(/name="presence"[^>]+value="all" checked/);
+
+    const reset = await request(app).get('/assets?view=grid').expect(200);
+    expect(reset.headers.location).toBeUndefined();
+    expect(reset.text).toContain('reference.png');
+  });
+
+  it('keeps global Extension defaults available while the page is filtered to another project', async () => {
+    const alpha = createProject('Global extension Alpha');
+    const beta = createProject('Global extension Beta');
+    createAsset(alpha.id, 'alpha.png', { extension: 'png' });
+    createAsset(beta.id, 'beta.jpg', { extension: 'jpg' });
+    writeAssetViewerDefaults({ extension: 'png' });
+
+    const returnTo = `/assets?project=${beta.id}&defaults=1`;
+    const dialog = await request(app).get(returnTo).expect(200);
+    const defaultsForm = dialog.text.match(/<form id="asset-viewer-defaults-form"[\s\S]*?<\/form>/)?.[0] || '';
+    const filterForm = dialog.text.match(/<form id="asset-filters"[\s\S]*?<\/form>/)?.[0] || '';
+
+    expect(defaultsForm).toMatch(/<option value="png" selected>\.png<\/option>/);
+    expect(defaultsForm).not.toMatch(/<option value="all" selected>All extensions<\/option>/);
+    expect(filterForm).toMatch(/name="extension"[^>]+value="jpg"/);
+    expect(filterForm).not.toMatch(/name="extension"[^>]+value="png"/);
+
+    await request(app)
+      .post('/assets/defaults')
+      .type('form')
+      .send({
+        returnTo,
+        view: 'grid',
+        sort: 'filename',
+        order: 'asc',
+        pageSize: '25',
+        extension: 'png',
+        category: 'all',
+        presence: 'all',
+        tag: 'all',
+      })
+      .expect(302);
+
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.extension.key).value).toBe('png');
+  });
+
+  it('rejects invalid dynamic defaults and leaves stale dynamic defaults neutral without rewriting storage', async () => {
+    const invalid = await request(app)
+      .post('/assets/defaults')
+      .type('form')
+      .send({
+        view: 'grid',
+        sort: 'filename',
+        order: 'asc',
+        pageSize: '25',
+        extension: 'retired',
+        category: 'retired',
+        presence: 'unknown',
+        tag: '999',
+      })
+      .expect(422);
+    expect(invalid.text).toContain('not supported for assetViewer.extension');
+
+    writeAssetViewerDefaults({
+      extension: 'retired',
+      category: 'retired',
+      presence: 'unknown',
+      tag: '999',
+    });
+    const rendered = await request(app).get('/assets?defaults=1').expect(200);
+    const defaultsForm = rendered.text.match(/<form id="asset-viewer-defaults-form"[\s\S]*?<\/form>/)?.[0] || '';
+    expect(defaultsForm).toMatch(/<option value="all" selected>All extensions<\/option>/);
+    expect(defaultsForm).toMatch(/<option value="all" selected>All categories<\/option>/);
+    expect(defaultsForm).toMatch(/<option value="all" selected>All assets<\/option>/);
+    expect(defaultsForm).toMatch(/<option value="all" selected>All tags<\/option>/);
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.extension.key).value).toBe('retired');
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.category.key).value).toBe('retired');
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.presence.key).value).toBe('unknown');
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.tag.key).value).toBe('999');
+  });
+
   it('applies page-local Asset Viewer defaults on a later bare render', async () => {
     await request(app)
       .post('/assets/defaults')
       .type('form')
-      .send({ view: 'list', sort: 'project', order: 'desc', pageSize: '50' })
+      .send({ view: 'list', sort: 'project', order: 'desc', pageSize: '50', extension: 'all', category: 'all', presence: 'all', tag: 'all' })
       .expect(302);
 
     const bare = await request(app).get('/assets').expect(302);

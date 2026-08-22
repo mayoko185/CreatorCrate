@@ -38,6 +38,9 @@ const PROJECTS_DEFAULT_LABELS = Object.freeze({
     view: 'View',
     sort: 'Sort',
     order: 'Order',
+    status: 'Status',
+    projectType: 'Project Type',
+    tag: 'Tag',
   }),
   options: Object.freeze({
     view: Object.freeze({ grid: 'Grid', list: 'List' }),
@@ -90,14 +93,11 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
           notice: null,
         });
       },
+      optionCatalogues: buildProjectsDefaultOptionCatalogues(
+        getProjectTagFilterOptions(workflowQueryService),
+      ),
       onSuccess: ({ validatedValues }) => {
-        const params = new URLSearchParams({
-          view: validatedValues.view,
-          sort: validatedValues.sort,
-          order: validatedValues.order,
-          notice: 'projects_defaults_saved',
-        });
-        res.redirect(`/projects?${params.toString()}`);
+        res.redirect(buildProjectsDefaultsSuccessUrl(validatedValues));
       },
     });
   });
@@ -473,7 +473,13 @@ function renderProjectsPage(req, res, {
 } = {}) {
   const pageDefaultsService = getPageDefaultsService(req);
   const availableTagOptions = getProjectTagFilterOptions(workflowQueryService);
-  const parsedQuery = parseListQuery(req.query, pageDefaultsService, availableTagOptions);
+  const projectsDefaultOptionCatalogues = buildProjectsDefaultOptionCatalogues(availableTagOptions);
+  const parsedQuery = parseListQuery(
+    req.query,
+    pageDefaultsService,
+    availableTagOptions,
+    projectsDefaultOptionCatalogues,
+  );
   const tagOptions = availableTagOptions.map((option) => ({
     ...option,
     selected: parsedQuery.tagIds.includes(Number(option.value)),
@@ -504,7 +510,7 @@ function renderProjectsPage(req, res, {
     total,
     hasAnyProjects: totalProjects > 0,
     filtersActive,
-    resetFiltersUrl: '/projects',
+    resetFiltersUrl: '/projects?status=all&type=all&tag=all',
     page: currentPage,
     pageSize: PAGE_SIZE,
     pageCount,
@@ -537,6 +543,7 @@ function renderProjectsPage(req, res, {
       labels: PROJECTS_DEFAULT_LABELS,
       submittedValues: projectsDefaultsSubmittedValues,
       errors: projectsDefaultsErrors,
+      optionCatalogues: projectsDefaultOptionCatalogues,
     }),
     projectsDefaultsDialogOpen: Boolean(projectsDefaultsDialogOpen),
     projectCreateDialogOpen: Boolean(projectCreateDialogOpen),
@@ -600,6 +607,38 @@ function getProjectTagFilterOptions(workflowQueryService) {
     throw new Error('Projects list requires workflowQueryService.getProjectTagFilterOptions.');
   }
   return workflowQueryService.getProjectTagFilterOptions();
+}
+
+function buildProjectsDefaultOptionCatalogues(tagOptions) {
+  return {
+    status: [
+      { value: 'all', label: 'All active' },
+      ...buildStatusFilterOptions([]).map(({ value, label }) => ({ value, label })),
+    ],
+    projectType: [
+      { value: 'all', label: 'All types' },
+      ...buildProjectTypeFilterOptions([]).map(({ value, label }) => ({ value, label })),
+    ],
+    tag: [
+      { value: 'all', label: 'All tags' },
+      ...(Array.isArray(tagOptions) ? tagOptions : []).map(({ value, label, displayName }) => ({
+        value,
+        label: label ?? displayName,
+      })),
+    ],
+  };
+}
+
+function buildProjectsDefaultsSuccessUrl(validatedValues) {
+  const params = new URLSearchParams();
+  if (validatedValues.status !== 'all') params.set('status', validatedValues.status);
+  if (validatedValues.projectType !== 'all') params.set('type', validatedValues.projectType);
+  if (validatedValues.tag !== 'all') params.set('tag', validatedValues.tag);
+  params.set('sort', validatedValues.sort);
+  params.set('order', validatedValues.order);
+  params.set('view', validatedValues.view);
+  params.set('notice', 'projects_defaults_saved');
+  return `/projects?${params.toString()}`;
 }
 
 function buildStatusFilterOptions(selectedStatuses) {
@@ -777,13 +816,32 @@ function persistProjectTags(req, projectId, parsedTags) {
   }
 }
 
-function parseListQuery(raw, pageDefaultsService, tagOptions = []) {
+function parseListQuery(raw, pageDefaultsService, tagOptions = [], optionCatalogues = {}) {
   const rawQuery = raw && typeof raw === 'object' ? raw : {};
-  const resolvedPresentation = pageDefaultsService.resolvePageDefaults('projects', rawQuery);
-  const statuses = parseStatusFilterValues(rawQuery.status);
-  const projectTypes = parseProjectTypeFilterValues(rawQuery.type);
+  const resolvedPresentation = {
+    view: pageDefaultsService.resolve('projects', 'view', rawQuery.view),
+    sort: pageDefaultsService.resolve('projects', 'sort', rawQuery.sort),
+    order: pageDefaultsService.resolve('projects', 'order', rawQuery.order),
+  };
+  const useSavedFilterDefaults = isProjectsDefaultNavigation(rawQuery);
+  const resolvedFilters = useSavedFilterDefaults
+    ? pageDefaultsService.resolvePageDefaults('projects', {}, optionCatalogues)
+    : null;
+  const statuses = parseStatusFilterValues(
+    useSavedFilterDefaults && resolvedFilters.status !== 'all'
+      ? resolvedFilters.status
+      : rawQuery.status,
+  );
+  const projectTypes = parseProjectTypeFilterValues(
+    useSavedFilterDefaults && resolvedFilters.projectType !== 'all'
+      ? resolvedFilters.projectType
+      : rawQuery.type,
+  );
   const search = typeof rawQuery.search === 'string' ? rawQuery.search.trim() : '';
-  const tagIds = parseTagFilterIds(rawQuery.tag, tagOptions);
+  const tagIds = parseTagFilterIds(
+    useSavedFilterDefaults && resolvedFilters.tag !== 'all' ? resolvedFilters.tag : rawQuery.tag,
+    tagOptions,
+  );
   const projectId = parseProjectFilterId(rawQuery.project);
   const sortBy = resolvedPresentation.sort;
   const order = resolvedPresentation.order;
@@ -858,12 +916,28 @@ function hasPresentationQuery(raw) {
   return ['view', 'sort', 'order'].some((option) => Object.hasOwn(rawQuery, option));
 }
 
+function isProjectsDefaultNavigation(raw) {
+  const rawQuery = raw && typeof raw === 'object' ? raw : {};
+  return !['search', 'status', 'type', 'tag', 'project', 'sort', 'order', 'view', 'page']
+    .some((option) => Object.hasOwn(rawQuery, option));
+}
+
+function isExplicitAllFilterValue(value) {
+  const values = Array.isArray(value) ? value : [value];
+  return values.length === 1 && values[0] === 'all';
+}
+
 function shouldRedirectToSavedDefaults(raw, parsedQuery, pageDefaultsService) {
   if (hasPresentationQuery(raw)) return false;
 
   return parsedQuery.view !== pageDefaultsService.getFallback('projects', 'view')
     || parsedQuery.sortBy !== pageDefaultsService.getFallback('projects', 'sort')
-    || parsedQuery.order !== pageDefaultsService.getFallback('projects', 'order');
+    || parsedQuery.order !== pageDefaultsService.getFallback('projects', 'order')
+    || (isProjectsDefaultNavigation(raw) && (
+      parsedQuery.statuses.length > 0
+      || parsedQuery.projectTypes.length > 0
+      || parsedQuery.tagIds.length > 0
+    ));
 }
 
 function buildSavedDefaultsUrl(req, parsedQuery, currentPage, pageDefaultsService) {
@@ -947,8 +1021,11 @@ function buildCanonicalPageQuery(req, parsedQuery, currentPage, pageDefaultsServ
 
   if (parsedQuery.search) query.search = parsedQuery.search;
   if (parsedQuery.statuses.length > 0) query.status = parsedQuery.statuses;
+  else if (isExplicitAllFilterValue(rawQuery.status)) query.status = 'all';
   if (parsedQuery.projectTypes.length > 0) query.type = parsedQuery.projectTypes;
+  else if (isExplicitAllFilterValue(rawQuery.type)) query.type = 'all';
   if (parsedQuery.tagIds.length > 0) query.tag = parsedQuery.tagIds.map(String);
+  else if (isExplicitAllFilterValue(rawQuery.tag)) query.tag = 'all';
   if (parsedQuery.projectId != null) query.project = String(parsedQuery.projectId);
 
   if (

@@ -655,6 +655,44 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       expect(css).toMatch(/@media\s*\(max-width:\s*540px\)[^}]*\.field-row\s*\{[^}]*flex-direction:\s*column/);
     });
 
+    it('page defaults grid uses shrinkable two-column fields and stacks at the dialog mobile breakpoint', async () => {
+      const res = await request(app).get('/projects').expect(200);
+      const css = await extractStyle(app, res.text);
+      const gridRule = css.match(/\.page-defaults-grid\s*\{[^}]*\}/)?.[0] || '';
+      const gridFieldRule = css.match(/\.page-defaults-grid > \.app-dialog-field\s*\{[^}]*\}/)?.[0] || '';
+
+      expect(gridRule).toContain('display: grid');
+      expect(gridRule).toContain('grid-template-columns: repeat(2, minmax(0, 1fr));');
+      expect(gridRule).toContain('gap: var(--space-lg);');
+      expect(gridRule).toContain('min-width: 0;');
+      expect(gridFieldRule).toContain('min-width: 0;');
+      expect(css).toMatch(/@media\s*\(max-width:\s*540px\)[\s\S]*?\.page-defaults-grid\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/);
+      for (const templatePath of [
+        'projects/index.njk',
+        'assets/index.njk',
+        'projects/assets.njk',
+      ]) {
+        expect(fs.readFileSync(path.join(VIEWS_DIR, templatePath), 'utf8'))
+          .toContain('<div class="page-defaults-grid">');
+      }
+      expect(css).not.toMatch(/\.project-assets-defaults-grid\b/);
+    });
+
+    it('Project Assets defaults scope control is a narrow, focus-visible segmented toggle', async () => {
+      const res = await request(app).get('/projects').expect(200);
+      const css = await extractStyle(app, res.text);
+      const optionsRule = css.match(/#project-assets-defaults-dialog \.page-defaults-scope-options\s*\{[^}]*\}/)?.[0] || '';
+      const labelRule = css.match(/#project-assets-defaults-dialog \.page-defaults-scope-option label\s*\{[^}]*\}/)?.[0] || '';
+
+      expect(optionsRule).toContain('grid-template-columns: repeat(2, minmax(0, 1fr));');
+      expect(optionsRule).toContain('min-width: 0;');
+      expect(optionsRule).toContain('overflow: hidden;');
+      expect(labelRule).toContain('min-width: 0;');
+      expect(labelRule).toContain('overflow-wrap: anywhere;');
+      expect(css).toMatch(/#project-assets-defaults-dialog \.page-defaults-scope-option input:checked \+ label\s*\{[^}]*background:\s*var\(--accent\)/);
+      expect(css).toMatch(/#project-assets-defaults-dialog \.page-defaults-scope-option input:focus-visible \+ label\s*\{[^}]*outline:/);
+    });
+
     it('calendar release font-size on very narrow screens', async () => {
       const res = await request(app).get('/calendar').expect(200);
       const css = await extractStyle(app, res.text);

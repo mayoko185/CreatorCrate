@@ -271,6 +271,19 @@ describe('Asset Viewer query foundation', () => {
     }))).toBe('/assets');
   });
 
+  it('retains route-marked neutral filters so saved defaults cannot reappear', () => {
+    expect(buildAssetLibraryUrl({
+      presence: 'all',
+      explicitNeutralFilters: ['presence'],
+    })).toBe('/assets?presence=all');
+    expect(buildAssetLibraryUrl({
+      categories: [],
+      tags: [],
+      extensions: [],
+      explicitNeutralFilters: ['category', 'tag', 'extension'],
+    })).toBe('/assets?category=all&tag=all&extension=all');
+  });
+
   it('omits null, malformed, and unsafe tag values from generated URLs', () => {
     const state = parseAssetLibraryQuery({ tag: '42', search: 'keep' });
 

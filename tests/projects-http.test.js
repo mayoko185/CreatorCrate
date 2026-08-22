@@ -409,6 +409,7 @@ describe('project HTTP workflow', () => {
   });
 
   it('renders Projects defaults, the NSFW toggle, and icon-only Reset in order', async () => {
+    const projectTag = app.locals.tagService.createTag({ name: 'Projects Defaults Tag' });
     const response = await agent.get('/projects').expect(200);
     const filterActions = response.text.match(/<div class="project-filter-actions(?: [^"]*)?">[\s\S]*?<\/div>/)?.[0] || '';
     const defaultsLink = filterActions.match(/<a class="[^"]*\basset-viewer-defaults-link\b[^"]*"[\s\S]*?<\/a>/)?.[0];
@@ -437,7 +438,7 @@ describe('project HTTP workflow', () => {
     expect(nsfwForm).toContain('project-filter-control asset-tooltip asset-tooltip--left');
     expect(nsfwForm).toMatch(/<button[^>]*>\s*<svg[\s\S]*<\/svg>\s*<\/button>/);
     expect(resetLink).toContain('class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"');
-    expect(resetLink).toContain('href="/projects"');
+    expect(resetLink).toContain('href="/projects?status=all&amp;type=all&amp;tag=all"');
     expect(resetLink).toContain('aria-label="Reset filters"');
     expect(resetLink).toContain('data-tooltip="Reset filters"');
     expect(resetLink).toContain('data-projects-reset');
@@ -453,20 +454,58 @@ describe('project HTTP workflow', () => {
     expect(response.text).toContain('name="_csrf"');
 
     const defaultsDialog = response.text.match(/<dialog id="projects-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
-    expect((defaultsDialog.match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(3);
+    const defaultsGridStart = defaultsDialog.indexOf('<div class="page-defaults-grid">');
+    const defaultsGrid = defaultsGridStart >= 0 ? extractHtmlElement(defaultsDialog, defaultsGridStart) : '';
+
+    expect(defaultsGrid).toContain('<div class="page-defaults-grid">');
+    expect((defaultsGrid.match(/class="field app-dialog-field/g) || [])).toHaveLength(6);
+    expect((defaultsGrid.match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(6);
+    expect(defaultsGrid).not.toContain('app-dialog-error');
+    expect(defaultsGrid).not.toContain('app-dialog-status');
+    expect(defaultsGrid).not.toContain('app-dialog-footer');
+    expect(defaultsDialog.indexOf('app-dialog-error')).toBeLessThan(defaultsGridStart);
+    expect(defaultsDialog.indexOf('app-dialog-status')).toBeGreaterThan(defaultsGridStart + defaultsGrid.length);
+    expect(defaultsDialog.indexOf('app-dialog-footer')).toBeGreaterThan(defaultsGridStart + defaultsGrid.length);
+
     for (const field of [
-      { name: 'view', id: 'projects-default-view', values: ['grid', 'list'], selected: 'grid', summary: 'Grid' },
+      { name: 'view', label: 'View', id: 'projects-default-view', values: ['grid', 'list'], selected: 'grid', summary: 'Grid' },
       {
         name: 'sort',
+        label: 'Sort',
         id: 'projects-default-sort',
         values: ['updated', 'created', 'title', 'published'],
         selected: 'created',
         summary: 'Recently created',
       },
-      { name: 'order', id: 'projects-default-order', values: ['asc', 'desc'], selected: 'desc', summary: 'Descending' },
+      { name: 'order', label: 'Order', id: 'projects-default-order', values: ['asc', 'desc'], selected: 'desc', summary: 'Descending' },
+      {
+        name: 'status',
+        label: 'Status',
+        id: 'projects-default-status',
+        values: ['all', 'tbd', 'planned', 'in-progress', 'ready', 'completed', 'archived'],
+        selected: 'all',
+        summary: 'All active',
+      },
+      {
+        name: 'projectType',
+        label: 'Project Type',
+        id: 'projects-default-projectType',
+        values: ['all', 'images', 'comic', 'animation', 'wallpaper'],
+        selected: 'all',
+        summary: 'All types',
+      },
+      {
+        name: 'tag',
+        label: 'Tag',
+        id: 'projects-default-tag',
+        values: ['all', String(projectTag.id)],
+        selected: 'all',
+        summary: 'All tags',
+      },
     ]) {
-      expect(defaultsDialog).toContain(`data-dialog-field="${field.name}"`);
-      const nativeSelect = defaultsDialog.match(new RegExp(`<select id="${field.id}"[\\s\\S]*?<\\/select>`))?.[0] || '';
+      expect(defaultsGrid).toContain(`data-dialog-field="${field.name}"`);
+      expect(defaultsGrid).toContain(`<legend>${field.label}</legend>`);
+      const nativeSelect = defaultsGrid.match(new RegExp(`<select id="${field.id}"[\\s\\S]*?<\\/select>`))?.[0] || '';
       expect(nativeSelect).not.toBe('');
       for (const value of field.values) expect(nativeSelect).toContain(`value="${value}"`);
       expect(nativeSelect).toMatch(new RegExp(`value="${field.selected}" selected`));
@@ -486,12 +525,18 @@ describe('project HTTP workflow', () => {
       expect(defaultsDialog).not.toMatch(new RegExp(`<input[^>]*name="${field.name}"`));
       expect((defaultsDialog.match(new RegExp(`name="${field.name}"`, 'g')) || [])).toHaveLength(1);
     }
+    const tagDefaultsSelect = defaultsGrid.match(/<select id="projects-default-tag"[\s\S]*?<\/select>/)?.[0] || '';
+    expect(tagDefaultsSelect).toContain(`<option value="${projectTag.id}">Projects Defaults Tag</option>`);
+    expect(tagDefaultsSelect).not.toContain(`>${projectTag.id}</option>`);
     expect(defaultsDialog).not.toContain('field-error');
     expect(defaultsDialog).not.toMatch(/<select[^>]*aria-describedby/);
     expect(defaultsDialog).not.toContain('aria-invalid');
     expect(defaultsDialog).not.toContain('data-dialog-submitted-value');
     expect(defaultsDialog.indexOf('data-dialog-field="view"')).toBeLessThan(defaultsDialog.indexOf('data-dialog-field="sort"'));
     expect(defaultsDialog.indexOf('data-dialog-field="sort"')).toBeLessThan(defaultsDialog.indexOf('data-dialog-field="order"'));
+    expect(defaultsDialog.indexOf('data-dialog-field="order"')).toBeLessThan(defaultsDialog.indexOf('data-dialog-field="status"'));
+    expect(defaultsDialog.indexOf('data-dialog-field="status"')).toBeLessThan(defaultsDialog.indexOf('data-dialog-field="projectType"'));
+    expect(defaultsDialog.indexOf('data-dialog-field="projectType"')).toBeLessThan(defaultsDialog.indexOf('data-dialog-field="tag"'));
   });
 
   it('renders the persisted enabled NSFW state accessibly', async () => {
@@ -605,6 +650,9 @@ describe('project HTTP workflow', () => {
     expect(dialog).toMatch(/name="view"[^>]*>[\s\S]*?value="list" selected/);
     expect(dialog).toMatch(/name="sort"[^>]*>[\s\S]*?value="title" selected/);
     expect(dialog).toMatch(/name="order"[^>]*>[\s\S]*?value="asc" selected/);
+    expect(dialog).toMatch(/name="status"[^>]*>[\s\S]*?value="all" selected/);
+    expect(dialog).toMatch(/name="projectType"[^>]*>[\s\S]*?value="all" selected/);
+    expect(dialog).toMatch(/name="tag"[^>]*>[\s\S]*?value="all" selected/);
   });
 
   it('saves all Projects defaults atomically through the enhanced JSON contract', async () => {
@@ -612,19 +660,80 @@ describe('project HTTP workflow', () => {
       .post('/projects/defaults')
       .set('Accept', 'application/json')
       .type('form')
-      .send({ view: 'list', sort: 'published', order: 'asc', _csrf: csrfToken })
+      .send({
+        view: 'list',
+        sort: 'published',
+        order: 'asc',
+        status: 'ready',
+        projectType: 'comic',
+        tag: 'all',
+        _csrf: csrfToken,
+      })
       .expect(200);
 
     expect(response.body).toEqual({
       status: 'success',
       message: 'Projects defaults saved successfully.',
-      values: { view: 'list', sort: 'published', order: 'asc' },
+      values: {
+        view: 'list',
+        sort: 'published',
+        order: 'asc',
+        status: 'ready',
+        projectType: 'comic',
+        tag: 'all',
+      },
     });
     expect(app.locals.pageDefaultsService.resolvePageDefaults('projects')).toEqual({
       view: 'list',
       sort: 'published',
       order: 'asc',
+      status: 'ready',
+      projectType: 'comic',
+      tag: 'all',
     });
+  });
+
+  it('accepts a live Tag default and rejects a stale Tag without partial persistence', async () => {
+    const tag = app.locals.tagService.createTag({ name: 'Live Projects Default Tag' });
+    const accepted = await agent
+      .post('/projects/defaults')
+      .set('Accept', 'application/json')
+      .type('form')
+      .send({
+        view: 'grid',
+        sort: 'created',
+        order: 'desc',
+        status: 'all',
+        projectType: 'all',
+        tag: String(tag.id),
+        _csrf: csrfToken,
+      })
+      .expect(200);
+
+    expect(accepted.body.values.tag).toBe(String(tag.id));
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').pluck().get(
+      PAGE_DEFAULT_DEFINITIONS.projects.tag.key,
+    )).toBe(String(tag.id));
+
+    const stale = await agent
+      .post('/projects/defaults')
+      .set('Accept', 'application/json')
+      .type('form')
+      .send({
+        view: 'list',
+        sort: 'title',
+        order: 'asc',
+        status: 'ready',
+        projectType: 'comic',
+        tag: String(tag.id + 1),
+        _csrf: csrfToken,
+      })
+      .expect(422);
+
+    expect(stale.body.errors.tag).toContain(String(tag.id + 1));
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').pluck().get(
+      PAGE_DEFAULT_DEFINITIONS.projects.tag.key,
+    )).toBe(String(tag.id));
   });
 
   it('rejects invalid Projects defaults without partially saving', async () => {
@@ -636,16 +745,34 @@ describe('project HTTP workflow', () => {
       .post('/projects/defaults')
       .set('Accept', 'application/json')
       .type('form')
-      .send({ view: 'list', sort: 'not-valid', order: 'asc', _csrf: csrfToken })
+      .send({
+        view: 'list',
+        sort: 'not-valid',
+        order: 'asc',
+        status: 'all',
+        projectType: 'all',
+        tag: 'all',
+        _csrf: csrfToken,
+      })
       .expect(422);
 
     expect(response.body.status).toBe('error');
     expect(response.body.errors.sort).toContain('not-valid');
-    expect(response.body.values).toEqual({ view: 'list', sort: 'not-valid', order: 'asc' });
+    expect(response.body.values).toEqual({
+      view: 'list',
+      sort: 'not-valid',
+      order: 'asc',
+      status: 'all',
+      projectType: 'all',
+      tag: 'all',
+    });
     expect(app.locals.pageDefaultsService.resolvePageDefaults('projects')).toEqual({
       view: 'grid',
       sort: 'created',
       order: 'desc',
+      status: 'all',
+      projectType: 'all',
+      tag: 'all',
     });
   });
 
@@ -653,7 +780,15 @@ describe('project HTTP workflow', () => {
     const response = await agent
       .post('/projects/defaults')
       .type('form')
-      .send({ view: 'list', sort: 'not-valid', order: 'asc', _csrf: csrfToken })
+      .send({
+        view: 'list',
+        sort: 'not-valid',
+        order: 'asc',
+        status: 'all',
+        projectType: 'all',
+        tag: 'all',
+        _csrf: csrfToken,
+      })
       .expect(422);
     const dialog = response.text.match(/<dialog id="projects-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
     const temporaryOptions = dialog.match(/<option[^>]*data-dialog-submitted-value[^>]*>[\s\S]*?<\/option>/g) || [];
@@ -678,18 +813,36 @@ describe('project HTTP workflow', () => {
   });
 
   it('keeps the normal Projects defaults POST fallback and rejects missing CSRF', async () => {
+    const tag = app.locals.tagService.createTag({ name: 'Redirect Projects Default Tag' });
     const fallback = await agent
       .post('/projects/defaults')
       .type('form')
-      .send({ view: 'list', sort: 'title', order: 'asc', _csrf: csrfToken })
+      .send({
+        view: 'list',
+        sort: 'title',
+        order: 'asc',
+        status: 'ready',
+        projectType: 'comic',
+        tag: String(tag.id),
+        _csrf: csrfToken,
+      })
       .expect(302);
-    expect(fallback.headers.location).toBe('/projects?view=list&sort=title&order=asc&notice=projects_defaults_saved');
+    expect(fallback.headers.location).toBe(
+      `/projects?status=ready&type=comic&tag=${tag.id}&sort=title&order=asc&view=list&notice=projects_defaults_saved`,
+    );
 
     await agent
       .post('/projects/defaults')
       .set('Accept', 'application/json')
       .type('form')
-      .send({ view: 'grid', sort: 'created', order: 'desc' })
+      .send({
+        view: 'grid',
+        sort: 'created',
+        order: 'desc',
+        status: 'all',
+        projectType: 'all',
+        tag: 'all',
+      })
       .expect(403);
   });
 
@@ -708,7 +861,7 @@ describe('project HTTP workflow', () => {
     expect(res.text).not.toContain('id="project-search"');
     expect(res.text).not.toContain('data-projects-search');
     expect(res.text.indexOf('<div class="asset-viewer-display-controls"')).toBeLessThan(res.text.indexOf('<form id="project-filters"'));
-    expect(res.text).toMatch(/project-filter-actions[^>]*>[\s\S]*?<a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"[\s\S]*?href="\/projects"[\s\S]*?aria-label="Reset filters"/);
+    expect(res.text).toMatch(/project-filter-actions[^>]*>[\s\S]*?<a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"[\s\S]*?href="\/projects\?status=all&amp;type=all&amp;tag=all"[\s\S]*?aria-label="Reset filters"/);
     expect((res.text.match(/data-asset-viewer-filter-disclosure/g) || [])).toHaveLength(0);
 
     const css = await fetchProjectCss(app);
@@ -754,7 +907,8 @@ describe('project HTTP workflow', () => {
     expect(tagFilter).toMatch(new RegExp(`name="tag"[^>]+value="${firstTag.id}" checked`));
     expect(tagFilter).toMatch(new RegExp(`name="tag"[^>]+value="${secondTag.id}" checked`));
     expect((tagFilter.match(/name="tag"/g) || [])).toHaveLength(2);
-    expect(res.text).not.toMatch(/<select[^>]+(?:id="status"|id="tag"|name="status"|name="tag")/);
+    expect(statusFilter).not.toMatch(/<select[^>]+(?:id="status"|name="status")/);
+    expect(tagFilter).not.toMatch(/<select[^>]+(?:id="tag"|name="tag")/);
 
     const projectFilter = extractProjectFilter(res.text);
     expect(projectFilter).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
@@ -823,21 +977,29 @@ describe('project HTTP workflow', () => {
     expect(liveRegion).not.toMatch(/<select[^>]+(?:id="sort"|id="order"|name="sort"|name="order")/);
   });
 
-  it('reset removes all selected status, Project Type, tag, and project values', async () => {
+  it('reset removes selected filters without reapplying saved filter defaults', async () => {
     const tag = app.locals.tagService.createTag({ name: 'Reset Filter Tag' });
     const projectId = await createProject({ title: 'Reset Filter Project', status: 'planned' });
+    saveProjectDefault('status', 'ready');
+    saveProjectDefault('projectType', 'comic');
+    writeStoredProjectDefault('tag', String(tag.id));
     const selected = await agent
       .get(`/projects?status=planned&status=ready&type=wallpaper&tag=${tag.id}&project=${projectId}`)
       .expect(200);
 
-    expect(selected.text).toContain('href="/projects"');
+    expect(selected.text).toContain('href="/projects?status=all&amp;type=all&amp;tag=all"');
     expect(selected.text).toContain('aria-label="Reset filters"');
     const selectedFilterActions = selected.text.match(/<div class="project-filter-actions(?: [^"]*)?">[\s\S]*?<\/div>/)?.[0] || '';
     expect(selectedFilterActions).not.toContain('>Reset</a>');
     expect(selected.text).not.toContain('Reset Filters');
     expect(extractProjectFilter(selected.text)).toContain(`value="${projectId}" checked`);
 
-    const cleared = await agent.get('/projects').expect(200);
+    saveProjectDefault('view', 'list');
+    saveProjectDefault('sort', 'title');
+    saveProjectDefault('order', 'asc');
+    const clearedRedirect = await agent.get('/projects?status=all&type=all&tag=all').expect(302);
+    expect(clearedRedirect.headers.location).toBe('/projects?status=all&type=all&tag=all&sort=title&order=asc&view=list');
+    const cleared = await agent.get(clearedRedirect.headers.location).expect(200);
     expect(extractStatusFilter(cleared.text)).toContain('aria-label="Status filter: All active"');
     expect(extractStatusFilter(cleared.text)).not.toMatch(/name="status"[^>]+checked/);
     expect(extractProjectTypeFilter(cleared.text)).toContain('aria-label="Project Type filter: All types"');
@@ -884,17 +1046,26 @@ describe('project HTTP workflow', () => {
     expect(list.text).not.toMatch(/<a class="[^"]*view-switcher-option[^"]*" href="[^"]+"[^>]*aria-current="page"[^>]*aria-label="Grid view"/);
   });
 
-  it('redirects a bare request to valid saved non-fallback Projects defaults', async () => {
+  it('redirects a bare request to valid saved Projects defaults', async () => {
+    const tag = app.locals.tagService.createTag({ name: 'Bare Projects Default Tag' });
     saveProjectDefault('view', 'list');
     saveProjectDefault('sort', 'title');
     saveProjectDefault('order', 'asc');
+    saveProjectDefault('status', 'ready');
+    saveProjectDefault('projectType', 'comic');
+    writeStoredProjectDefault('tag', String(tag.id));
 
     const redirect = await agent.get('/projects').expect(302);
-    expect(redirect.headers.location).toBe('/projects?sort=title&order=asc&view=list');
+    expect(redirect.headers.location).toBe(
+      `/projects?status=ready&type=comic&tag=${tag.id}&sort=title&order=asc&view=list`,
+    );
 
     const rendered = await agent.get(redirect.headers.location).expect(200);
     expect(rendered.text).toContain('<input type="hidden" name="view" value="list">');
     expectProjectSortOrderSelection(rendered.text, 'title', 'asc');
+    expect(extractStatusFilter(rendered.text)).toContain('aria-label="Status filter: Ready"');
+    expect(extractProjectTypeFilter(rendered.text)).toContain('aria-label="Project Type filter: Comic"');
+    expect(extractTagFilter(rendered.text)).toContain('aria-label="Tag filter: Bare Projects Default Tag"');
   });
 
   it('uses application fallbacks for invalid stored Projects defaults', async () => {
@@ -964,6 +1135,45 @@ describe('project HTTP workflow', () => {
     expectProjectSortOrderSelection(res.text, 'updated', 'asc');
     expect(res.text).toContain('<input type="hidden" name="view" value="grid">');
     expect(res.text).toContain('href="/projects?sort=updated&amp;order=asc&amp;view=grid"');
+  });
+
+  it('keeps explicit Projects filter query precedence without injecting omitted saved defaults', async () => {
+    const tag = app.locals.tagService.createTag({ name: 'Explicit Projects Default Tag' });
+    saveProjectDefault('status', 'ready');
+    saveProjectDefault('projectType', 'comic');
+    writeStoredProjectDefault('tag', String(tag.id));
+
+    const explicitStatus = await agent.get('/projects?status=planned').expect(200);
+    expect(extractStatusFilter(explicitStatus.text)).toContain('aria-label="Status filter: Planned"');
+    expect(extractProjectTypeFilter(explicitStatus.text)).toContain('aria-label="Project Type filter: All types"');
+    expect(extractTagFilter(explicitStatus.text)).toContain('aria-label="Tag filter: All tags"');
+
+    const explicitType = await agent.get('/projects?type=wallpaper').expect(200);
+    expect(extractStatusFilter(explicitType.text)).toContain('aria-label="Status filter: All active"');
+    expect(extractProjectTypeFilter(explicitType.text)).toContain('aria-label="Project Type filter: Wallpaper"');
+    expect(extractTagFilter(explicitType.text)).toContain('aria-label="Tag filter: All tags"');
+
+    const explicitTag = await agent.get(`/projects?tag=${tag.id}`).expect(200);
+    expect(extractStatusFilter(explicitTag.text)).toContain('aria-label="Status filter: All active"');
+    expect(extractProjectTypeFilter(explicitTag.text)).toContain('aria-label="Project Type filter: All types"');
+    expect(extractTagFilter(explicitTag.text)).toContain('aria-label="Tag filter: Explicit Projects Default Tag"');
+
+    const explicitView = await agent.get('/projects?view=list').expect(200);
+    expect(extractStatusFilter(explicitView.text)).toContain('aria-label="Status filter: All active"');
+    expect(extractProjectTypeFilter(explicitView.text)).toContain('aria-label="Project Type filter: All types"');
+    expect(extractTagFilter(explicitView.text)).toContain('aria-label="Tag filter: All tags"');
+  });
+
+  it('uses all for a stale saved Tag without rewriting its stored value', async () => {
+    writeStoredProjectDefault('tag', '999999');
+
+    const res = await agent.get('/projects').expect(200);
+
+    expect(res.headers.location).toBeUndefined();
+    expect(extractTagFilter(res.text)).toContain('aria-label="Tag filter: All tags"');
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').pluck().get(
+      PAGE_DEFAULT_DEFINITIONS.projects.tag.key,
+    )).toBe('999999');
   });
 
   it('keeps invalid explicit presentation values on application fallbacks instead of saved values', async () => {
@@ -1802,8 +2012,8 @@ describe('project HTTP workflow', () => {
 
     const res = await agent.get('/projects?search=no-match').expect(200);
 
-    expect(res.text).toContain('<a class="button button-primary" href="/projects" data-projects-reset>Reset</a>');
-    expect(res.text).not.toContain('<a class="button button-primary" href="/projects" data-dialog-open=');
+    expect(res.text).toContain('<a class="button button-primary" href="/projects?status=all&amp;type=all&amp;tag=all" data-projects-reset>Reset</a>');
+    expect(res.text).not.toContain('<a class="button button-primary" href="/projects?status=all&amp;type=all&amp;tag=all" data-dialog-open=');
   });
 
   it('new-project form uses the tbd fallback when no status default is saved', async () => {

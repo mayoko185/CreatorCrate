@@ -1,4 +1,4 @@
-import { WORKFLOW_STATUSES } from '../data/project-repository.js';
+import { PROJECT_TYPES, STATUSES, WORKFLOW_STATUSES } from '../data/project-repository.js';
 import {
   ASSET_LIBRARY_DEFAULTS,
   ASSET_LIBRARY_PAGE_SIZE_VALUES,
@@ -24,6 +24,9 @@ export const PAGE_DEFAULT_DEFINITIONS = Object.freeze({
     view: definition('page_defaults.projects.view', ['grid', 'list'], 'grid'),
     sort: definition('page_defaults.projects.sort', ['updated', 'created', 'title', 'published'], 'created'),
     order: definition('page_defaults.projects.order', ['asc', 'desc'], 'desc'),
+    status: definition('page_defaults.projects.status', ['all', ...STATUSES], 'all'),
+    projectType: definition('page_defaults.projects.project_type', ['all', ...PROJECT_TYPES], 'all'),
+    tag: definition('page_defaults.projects.tag', ['all'], 'all'),
   }),
   [RELEASES]: Object.freeze({
     view: definition('page_defaults.releases.view', ['list', 'board'], 'list'),
@@ -42,6 +45,8 @@ export const PAGE_DEFAULT_DEFINITIONS = Object.freeze({
     sort: definition('page_defaults.project_assets.sort', ['filename', 'modified', 'size', 'category'], 'filename'),
     order: definition('page_defaults.project_assets.order', ['asc', 'desc'], 'asc'),
     pageSize: definition('page_defaults.project_assets.page_size', ['10', '25', '50', '100'], '25'),
+    extension: definition('page_defaults.project_assets.extension', ['all'], 'all'),
+    tag: definition('page_defaults.project_assets.tag', ['all'], 'all'),
   }),
   [ASSET_VIEWER]: Object.freeze({
     view: definition('page_defaults.asset_viewer.view', ['grid', 'list'], ASSET_LIBRARY_DEFAULTS.view),
@@ -56,6 +61,10 @@ export const PAGE_DEFAULT_DEFINITIONS = Object.freeze({
       ASSET_LIBRARY_PAGE_SIZE_VALUES.map(String),
       String(ASSET_LIBRARY_DEFAULTS.pageSize),
     ),
+    extension: definition('page_defaults.asset_viewer.extension', ['all'], 'all'),
+    category: definition('page_defaults.asset_viewer.category', ['all'], 'all'),
+    presence: definition('page_defaults.asset_viewer.presence', ['all', 'present', 'missing'], 'all'),
+    tag: definition('page_defaults.asset_viewer.tag', ['all'], 'all'),
   }),
   [NEW_PROJECT]: Object.freeze({
     status: definition('page_defaults.new_project.status', WORKFLOW_STATUSES, WORKFLOW_STATUSES[0]),
@@ -74,79 +83,178 @@ function invalid(errors) {
   throw new PageDefaultValidationError(errors);
 }
 
-function requireDefinition(page, option) {
+function requirePageDefinition(page) {
   const pageDefinition = typeof page === 'string' && Object.hasOwn(PAGE_DEFAULT_DEFINITIONS, page)
     ? PAGE_DEFAULT_DEFINITIONS[page]
     : null;
-  if (!pageDefinition || typeof option !== 'string' || !Object.hasOwn(pageDefinition, option)) {
+  if (!pageDefinition) {
+    invalid({ page: `Page "${page}" is not supported.` });
+  }
+  return pageDefinition;
+}
+
+function requireDefinition(page, option) {
+  const pageDefinition = requirePageDefinition(page);
+  if (typeof option !== 'string' || !Object.hasOwn(pageDefinition, option)) {
     invalid({ option: `Option "${option}" is not supported for page "${page}".` });
   }
   return pageDefinition[option];
 }
 
-function isValidValue(pageDefinition, value) {
-  return typeof value === 'string' && pageDefinition.values.includes(value);
+export function getPageDefaultOptionCatalogue(pageDefinition, optionCatalogue) {
+  const source = Array.isArray(optionCatalogue) ? optionCatalogue : pageDefinition.values;
+  const seen = new Set();
+
+  return source.flatMap((candidate) => {
+    const value = typeof candidate === 'string' ? candidate : candidate?.value;
+    if (typeof value !== 'string' || seen.has(value)) return [];
+    seen.add(value);
+    return [{
+      value,
+      label: typeof candidate === 'object' && typeof candidate?.label === 'string'
+        ? candidate.label
+        : null,
+    }];
+  });
 }
 
-export function createPageDefaultsService({ appMetaRepository, preferenceRepository } = {}) {
+function isValidValue(pageDefinition, value, optionCatalogue) {
+  return typeof value === 'string'
+    && getPageDefaultOptionCatalogue(pageDefinition, optionCatalogue)
+      .some((candidate) => candidate.value === value);
+}
+
+function requireProjectId(context) {
+  const projectId = context?.projectId;
+  if (!Number.isInteger(projectId) || projectId <= 0) {
+    invalid({ projectId: 'A valid project ID is required for project page defaults.' });
+  }
+  return projectId;
+}
+
+function getProjectId(context) {
+  if (context === undefined) return undefined;
+  return requireProjectId(context);
+}
+
+export function createPageDefaultsService({
+  appMetaRepository,
+  preferenceRepository,
+  projectPageDefaultRepository,
+} = {}) {
   const repository = appMetaRepository ?? preferenceRepository;
 
   if (!repository || typeof repository.getValue !== 'function' || typeof repository.setValue !== 'function') {
     throw new Error('createPageDefaultsService requires an appMetaRepository dependency.');
   }
 
-  function getSavedDefault(page, option) {
+  function requireProjectRepository() {
+    if (!projectPageDefaultRepository
+      || typeof projectPageDefaultRepository.getOption !== 'function'
+      || typeof projectPageDefaultRepository.setOption !== 'function'
+      || typeof projectPageDefaultRepository.deletePageOptions !== 'function'
+      || typeof projectPageDefaultRepository.hasPageOptions !== 'function') {
+      throw new Error(
+        'createPageDefaultsService requires a projectPageDefaultRepository for project-scoped defaults.'
+      );
+    }
+    return projectPageDefaultRepository;
+  }
+
+  function getSavedDefault(page, option, optionCatalogue) {
     const pageDefinition = requireDefinition(page, option);
     const storedValue = repository.getValue(pageDefinition.key);
-    return isValidValue(pageDefinition, storedValue) ? storedValue : undefined;
+    return isValidValue(pageDefinition, storedValue, optionCatalogue) ? storedValue : undefined;
   }
 
   function getFallback(page, option) {
     return requireDefinition(page, option).fallback;
   }
 
-  function resolve(page, option, explicitValue) {
+  function resolveGlobalDefault(page, option, optionCatalogue) {
     const pageDefinition = requireDefinition(page, option);
-
-    if (explicitValue !== undefined) {
-      return isValidValue(pageDefinition, explicitValue)
-        ? explicitValue
-        : pageDefinition.fallback;
-    }
-
     const savedValue = repository.getValue(pageDefinition.key);
-    return isValidValue(pageDefinition, savedValue)
+    return isValidValue(pageDefinition, savedValue, optionCatalogue)
       ? savedValue
       : pageDefinition.fallback;
   }
 
-  function resolvePageDefaults(page, query = {}) {
-    const pageDefinition = typeof page === 'string' && Object.hasOwn(PAGE_DEFAULT_DEFINITIONS, page)
-      ? PAGE_DEFAULT_DEFINITIONS[page]
-      : null;
-    if (!pageDefinition) {
-      invalid({ page: `Page "${page}" is not supported.` });
+  function resolveProjectDefault(page, option, optionCatalogue, context) {
+    const pageDefinition = requireDefinition(page, option);
+    const projectId = requireProjectId(context);
+    const projectRepository = requireProjectRepository();
+    const projectValue = projectRepository.getOption(projectId, page, option);
+
+    return isValidValue(pageDefinition, projectValue, optionCatalogue)
+      ? projectValue
+      : resolveGlobalDefault(page, option, optionCatalogue);
+  }
+
+  function resolve(page, option, explicitValue, optionCatalogue, context) {
+    const pageDefinition = requireDefinition(page, option);
+    const projectId = getProjectId(context);
+
+    if (isValidValue(pageDefinition, explicitValue, optionCatalogue)) {
+      return explicitValue;
     }
 
+    if (explicitValue !== undefined) {
+      return pageDefinition.fallback;
+    }
+
+    return projectId === undefined
+      ? resolveGlobalDefault(page, option, optionCatalogue)
+      : resolveProjectDefault(page, option, optionCatalogue, context);
+  }
+
+  function resolvePageDefaults(page, query = {}, optionCatalogues = {}, context) {
+    const pageDefinition = requirePageDefinition(page);
     const rawQuery = query && typeof query === 'object' ? query : {};
+
     return Object.fromEntries(
-      Object.keys(pageDefinition).map((option) => [option, resolve(page, option, rawQuery[option])])
+      Object.keys(pageDefinition).map((option) => [
+        option,
+        resolve(page, option, rawQuery[option], optionCatalogues?.[option], context),
+      ])
     );
   }
 
-  function validatePageDefaults(page, values = {}) {
-    const pageDefinition = typeof page === 'string' && Object.hasOwn(PAGE_DEFAULT_DEFINITIONS, page)
-      ? PAGE_DEFAULT_DEFINITIONS[page]
-      : null;
-    if (!pageDefinition) {
-      invalid({ page: `Page "${page}" is not supported.` });
-    }
+  function resolveGlobalPageDefaults(page, optionCatalogues = {}) {
+    const pageDefinition = requirePageDefinition(page);
+    return Object.fromEntries(
+      Object.keys(pageDefinition).map((option) => [
+        option,
+        resolveGlobalDefault(page, option, optionCatalogues?.[option]),
+      ])
+    );
+  }
 
+  function resolveProjectPageDefaults(page, optionCatalogues = {}, context) {
+    const pageDefinition = requirePageDefinition(page);
+    requireProjectId(context);
+    requireProjectRepository();
+
+    return Object.fromEntries(
+      Object.keys(pageDefinition).map((option) => [
+        option,
+        resolveProjectDefault(page, option, optionCatalogues?.[option], context),
+      ])
+    );
+  }
+
+  function getPageDefaultScope(page, context) {
+    requirePageDefinition(page);
+    const projectId = requireProjectId(context);
+    return requireProjectRepository().hasPageOptions(projectId, page) ? 'project' : 'global';
+  }
+
+  function validatePageDefaults(page, values = {}, optionCatalogues = {}) {
+    const pageDefinition = requirePageDefinition(page);
     const rawValues = values && typeof values === 'object' && !Array.isArray(values) ? values : {};
     const errors = {};
     for (const option of Object.keys(pageDefinition)) {
       const definition = pageDefinition[option];
-      if (!isValidValue(definition, rawValues[option])) {
+      if (!isValidValue(definition, rawValues[option], optionCatalogues?.[option])) {
         errors[option] = `Value "${rawValues[option]}" is not supported for ${page}.${option}.`;
       }
     }
@@ -159,12 +267,27 @@ export function createPageDefaultsService({ appMetaRepository, preferenceReposit
     );
   }
 
-  function saveDefault(page, option, value) {
+  function saveDefault(page, option, value, optionCatalogue) {
     const pageDefinition = requireDefinition(page, option);
-    if (!isValidValue(pageDefinition, value)) {
+    if (!isValidValue(pageDefinition, value, optionCatalogue)) {
       invalid({ value: `Value "${value}" is not supported for ${page}.${option}.` });
     }
     return repository.setValue(pageDefinition.key, value);
+  }
+
+  function saveProjectDefault(page, option, value, optionCatalogue, context) {
+    const pageDefinition = requireDefinition(page, option);
+    const projectId = requireProjectId(context);
+    if (!isValidValue(pageDefinition, value, optionCatalogue)) {
+      invalid({ value: `Value "${value}" is not supported for ${page}.${option}.` });
+    }
+    return requireProjectRepository().setOption(projectId, page, option, value);
+  }
+
+  function clearProjectPageDefaults(page, context) {
+    requirePageDefinition(page);
+    const projectId = requireProjectId(context);
+    return requireProjectRepository().deletePageOptions(projectId, page);
   }
 
   return {
@@ -172,7 +295,13 @@ export function createPageDefaultsService({ appMetaRepository, preferenceReposit
     getFallback,
     resolve,
     resolvePageDefaults,
+    resolveGlobalPageDefaults,
+    resolveProjectPageDefaults,
+    getPageDefaultScope,
     validatePageDefaults,
     saveDefault,
+    saveGlobalDefault: saveDefault,
+    saveProjectDefault,
+    clearProjectPageDefaults,
   };
 }

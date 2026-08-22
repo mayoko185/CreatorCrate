@@ -32,6 +32,7 @@ import { createBookContentRepository } from './data/book-content-repository.js';
 import { createAssetCategoryService } from './services/asset-category-service.js';
 import { createAssetBrowserPreferenceRepository } from './data/asset-browser-preference-repository.js';
 import { createAppMetaRepository } from './data/app-meta-repository.js';
+import { createProjectPageDefaultRepository } from './data/project-page-default-repository.js';
 import { createTagRepository } from './data/tag-repository.js';
 import { createProjectPrimaryImageRepository } from './data/project-primary-image-repository.js';
 import { createAssetBrowserPreferenceService } from './services/asset-browser-preference-service.js';
@@ -213,8 +214,14 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     });
   app.locals.previewCategorySettingsService = previewCategorySettingsService;
 
-  const pageDefaultsService =
-    opts.pageDefaultsService || createPageDefaultsService({ appMetaRepository });
+  const projectPageDefaultRepository =
+    opts.projectPageDefaultRepository || createProjectPageDefaultRepository(db);
+  app.locals.projectPageDefaultRepository = projectPageDefaultRepository;
+
+  const pageDefaultsService = opts.pageDefaultsService || createPageDefaultsService({
+    appMetaRepository,
+    projectPageDefaultRepository,
+  });
   app.locals.pageDefaultsService = pageDefaultsService;
 
   const dashboardDefaultsService =

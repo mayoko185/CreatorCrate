@@ -10,6 +10,7 @@ import {
   parseEnabledField,
 } from '../services/asset-category-validation.js';
 import { handlePageDefaultsPost } from './page-defaults.js';
+import { PageDefaultValidationError } from '../services/page-defaults-service.js';
 import {
   buildAssetBrowserQueryString,
   isPrimaryImageAssetUsable,
@@ -30,6 +31,7 @@ import {
   getNsfwFilterSettingsService,
   getOpenLocallySettingsService,
   getPageDefaultsService,
+  buildProjectAssetsDefaultOptionCatalogues,
   isEnhancedAssetRequest,
   parseCanonicalPositiveId,
   parseId,
@@ -51,6 +53,63 @@ import {
 // each call site even though the values are identical today.
 
 const ASSET_RENAME_ORIGINS = new Set(['assets', 'viewer']);
+
+function validateProjectAssetsDefaultsScope({ rawBody }) {
+  const scope = rawBody.scope;
+  const selectedScope = scope === undefined || scope === 'global'
+    ? 'global'
+    : (scope === 'project' ? 'project' : null);
+
+  if (selectedScope === null) {
+    throw new PageDefaultValidationError({
+      scope: 'Choose either Global or Project-only defaults.',
+    });
+  }
+
+  const loadedScope = rawBody.loadedScope;
+  if (loadedScope === undefined && selectedScope === 'global') return { scope: selectedScope };
+
+  if (loadedScope !== 'global' && loadedScope !== 'project') {
+    throw new PageDefaultValidationError({
+      scope: 'The loaded defaults scope is invalid. Reload the page before saving.',
+    });
+  }
+
+  if (loadedScope !== selectedScope) {
+    throw new PageDefaultValidationError({
+      scope: 'The selected defaults scope does not match the loaded values. Reload the page before saving.',
+    });
+  }
+
+  return { scope: selectedScope };
+}
+
+function saveProjectAssetsDefaults({
+  pageDefaultsService,
+  validatedValues,
+  optionCatalogues,
+  projectId,
+  scope,
+}) {
+  for (const [option, value] of Object.entries(validatedValues)) {
+    const optionCatalogue = optionCatalogues?.[option];
+    if (scope === 'project') {
+      pageDefaultsService.saveProjectDefault(
+        ASSET_PAGE_DEFAULTS_PAGE,
+        option,
+        value,
+        optionCatalogue,
+        { projectId },
+      );
+    } else {
+      pageDefaultsService.saveDefault(ASSET_PAGE_DEFAULTS_PAGE, option, value, optionCatalogue);
+    }
+  }
+
+  if (scope === 'global') {
+    pageDefaultsService.clearProjectPageDefaults(ASSET_PAGE_DEFAULTS_PAGE, { projectId });
+  }
+}
 
 
 
@@ -269,13 +328,25 @@ export function createAssetsRouter({
     const id = parseId(req.params.id);
     if (id === null || !projectService.findById(id)) return next(createNotFound());
 
+    const pageDefaultsService = getPageDefaultsService(req);
+    const optionCatalogues = buildProjectAssetsDefaultOptionCatalogues(workflowQueryService);
+
     handlePageDefaultsPost(req, res, next, {
       db,
-      pageDefaultsService: getPageDefaultsService(req),
+      pageDefaultsService,
       page: ASSET_PAGE_DEFAULTS_PAGE,
       successMessage: PROJECT_ASSETS_NOTICES.defaultsSaved,
       saveErrorMessage: 'Project Assets defaults could not be saved. No changes were made.',
-      onValidationError: ({ submittedValues, errors }) => {
+      optionCatalogues,
+      validateSubmission: validateProjectAssetsDefaultsScope,
+      saveValidatedValues: ({ validatedValues, submission }) => saveProjectAssetsDefaults({
+        pageDefaultsService,
+        validatedValues,
+        optionCatalogues,
+        projectId: id,
+        scope: submission.scope,
+      }),
+      onValidationError: ({ submittedValues, errors, submission }) => {
         renderProjectAssetsPage(req, res, {
           appName,
           projectService,
@@ -286,6 +357,7 @@ export function createAssetsRouter({
           projectAssetsDefaultsDialogOpen: true,
           projectAssetsDefaultsSubmittedValues: submittedValues,
           projectAssetsDefaultsErrors: errors,
+          projectAssetsDefaultsSelectedScope: submission?.scope || (req.body?.scope === 'project' ? 'project' : 'global'),
           rawQuery: readProjectAssetsReturnQuery(req, id),
           allowSavedDefaultsRedirect: false,
         });
@@ -934,7 +1006,7 @@ export function createAssetsRouter({
       if (status !== null) {
         try {
           const pageDefaultsService = getPageDefaultsService(req);
-          const presentation = resolveAssetBrowserPresentation(req.body, pageDefaultsService);
+          const presentation = resolveAssetBrowserPresentation(req.body, pageDefaultsService, { projectId: id });
           const data = buildAssetBrowserPageData(workflowQueryService, id, project, presentation);
           if (!data) return next(createNotFound());
 
@@ -943,7 +1015,7 @@ export function createAssetsRouter({
 
           return res.status(status).render('projects/assets.njk', {
             appName,
-            ...buildBrowserRenderModel(project, data, pageDefaultsService, req),
+            ...buildBrowserRenderModel(project, data, pageDefaultsService, req, workflowQueryService),
             query: {},
             error: null,
             archivedError: null,
@@ -1016,14 +1088,14 @@ export function createAssetsRouter({
       if (status !== null) {
         try {
           const pageDefaultsService = getPageDefaultsService(req);
-          const presentation = resolveAssetBrowserPresentation(body, pageDefaultsService);
+          const presentation = resolveAssetBrowserPresentation(body, pageDefaultsService, { projectId: id });
           const data = buildAssetBrowserPageData(workflowQueryService, id, project, presentation);
           if (!data) return next(createNotFound());
 
           const normalizedSelection = normalizeSelectedAssetIds(body.selectedAssetIds);
           return res.status(status).render('projects/assets.njk', {
             appName,
-            ...buildBrowserRenderModel(project, data, pageDefaultsService, req),
+            ...buildBrowserRenderModel(project, data, pageDefaultsService, req, workflowQueryService),
             query: {},
             error: null,
             archivedError: null,
@@ -1060,12 +1132,12 @@ export function createAssetsRouter({
 
       const renderMoveError = (status, message, selectedIds = []) => {
         try {
-          const presentation = resolveAssetBrowserPresentation(req.body, pageDefaultsService);
+          const presentation = resolveAssetBrowserPresentation(req.body, pageDefaultsService, { projectId: id });
           const data = buildAssetBrowserPageData(workflowQueryService, id, project, presentation);
           if (!data) return next(createNotFound());
           return res.status(status).render('projects/assets.njk', {
             appName,
-            ...buildBrowserRenderModel(project, data, pageDefaultsService, req),
+            ...buildBrowserRenderModel(project, data, pageDefaultsService, req, workflowQueryService),
             query: {},
             error: null,
             archivedError: null,
@@ -1147,12 +1219,12 @@ export function createAssetsRouter({
 
       const renderCopyError = (status, message, selectedIds = []) => {
         try {
-          const presentation = resolveAssetBrowserPresentation(req.body, pageDefaultsService);
+          const presentation = resolveAssetBrowserPresentation(req.body, pageDefaultsService, { projectId: id });
           const data = buildAssetBrowserPageData(workflowQueryService, id, project, presentation);
           if (!data) return next(createNotFound());
           return res.status(status).render('projects/assets.njk', {
             appName,
-            ...buildBrowserRenderModel(project, data, pageDefaultsService, req),
+            ...buildBrowserRenderModel(project, data, pageDefaultsService, req, workflowQueryService),
             query: {},
             error: null,
             archivedError: null,
@@ -1234,12 +1306,12 @@ export function createAssetsRouter({
 
       const renderDeleteError = (status, message, selectedIds = []) => {
         try {
-          const presentation = resolveAssetBrowserPresentation(body, pageDefaultsService);
+          const presentation = resolveAssetBrowserPresentation(body, pageDefaultsService, { projectId: id });
           const data = buildAssetBrowserPageData(workflowQueryService, id, project, presentation);
           if (!data) return next(createNotFound());
           return res.status(status).render('projects/assets.njk', {
             appName,
-            ...buildBrowserRenderModel(project, data, pageDefaultsService, req),
+            ...buildBrowserRenderModel(project, data, pageDefaultsService, req, workflowQueryService),
             query: {},
             error: null,
             archivedError: null,
@@ -1337,6 +1409,11 @@ function buildProjectAssetsDefaultsSuccessUrl(req, projectId, values) {
   for (const { key } of ASSET_PRESENTATION_OPTIONS) {
     const value = values?.[key];
     if (value !== undefined) url.searchParams.set(key, String(value));
+  }
+  for (const key of ['tag', 'extension']) {
+    url.searchParams.delete(key);
+    const value = values?.[key];
+    if (value !== undefined && value !== 'all') url.searchParams.set(key, String(value));
   }
   url.searchParams.set('notice', 'project_assets_defaults_saved');
   return `${url.pathname}?${url.searchParams.toString()}`;
@@ -1742,7 +1819,11 @@ function renderAutoRenameBrowserError({
 
   let data;
   try {
-    const presentation = resolveAssetBrowserPresentation(returnContext || {}, pageDefaultsService);
+    const presentation = resolveAssetBrowserPresentation(
+      returnContext || {},
+      pageDefaultsService,
+      { projectId },
+    );
     data = buildAssetBrowserPageData(workflowQueryService, projectId, project, presentation);
   } catch {
     const fallback = new Error('Auto Rename could not be completed. Please try again.');
@@ -1753,7 +1834,7 @@ function renderAutoRenameBrowserError({
 
   return res.status(status).render('projects/assets.njk', {
     appName,
-    ...buildBrowserRenderModel(project, data, pageDefaultsService, req),
+    ...buildBrowserRenderModel(project, data, pageDefaultsService, req, workflowQueryService),
     query: {},
     error: null,
     archivedError: null,
@@ -2389,7 +2470,7 @@ function handleAssetBrowserActionFailure(err, {
 
   let data;
   try {
-    const presentation = resolveAssetBrowserPresentation(req.body, pageDefaultsService);
+    const presentation = resolveAssetBrowserPresentation(req.body, pageDefaultsService, { projectId });
     data = buildAssetBrowserPageData(workflowQueryService, projectId, project, presentation);
   } catch (renderErr) {
     return next(renderErr);
@@ -2400,7 +2481,7 @@ function handleAssetBrowserActionFailure(err, {
 
   return res.status(status).render('projects/assets.njk', {
     appName,
-    ...buildBrowserRenderModel(project, data, pageDefaultsService, req),
+    ...buildBrowserRenderModel(project, data, pageDefaultsService, req, workflowQueryService),
     query: {},
     error: null,
     archivedError: null,

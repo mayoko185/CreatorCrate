@@ -4560,6 +4560,65 @@
       }
       .app-dialog-field { min-width: 0; }
       .app-dialog-field select { width: 100%; }
+      .page-defaults-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: var(--space-lg);
+        min-width: 0;
+      }
+      .page-defaults-grid > .app-dialog-field { min-width: 0; }
+      #project-assets-defaults-dialog .page-defaults-scope {
+        min-width: 0;
+        margin: 0;
+        padding: 0;
+        border: 0;
+      }
+      #project-assets-defaults-dialog .page-defaults-scope-options {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1px;
+        min-width: 0;
+        overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-md);
+        background: var(--border);
+      }
+      #project-assets-defaults-dialog .page-defaults-scope-option {
+        position: relative;
+        min-width: 0;
+      }
+      #project-assets-defaults-dialog .page-defaults-scope-option input {
+        position: absolute;
+        inline-size: 1px;
+        block-size: 1px;
+        margin: -1px;
+        opacity: 0;
+      }
+      #project-assets-defaults-dialog .page-defaults-scope-option label {
+        display: block;
+        min-width: 0;
+        padding: var(--space-sm) var(--space-md);
+        color: var(--muted);
+        background: var(--surface-card);
+        font-weight: 600;
+        text-align: center;
+        overflow-wrap: anywhere;
+        cursor: pointer;
+      }
+      #project-assets-defaults-dialog .page-defaults-scope-option label:hover {
+        color: var(--text);
+        background: var(--surface-hover);
+      }
+      #project-assets-defaults-dialog .page-defaults-scope-option input:checked + label {
+        color: #0d0f13;
+        background: var(--accent);
+      }
+      #project-assets-defaults-dialog .page-defaults-scope-option input:focus-visible + label {
+        position: relative;
+        z-index: 1;
+        outline: 3px solid var(--focus-ring);
+        outline-offset: -3px;
+      }
       .app-dialog-error {
         margin-top: var(--space-lg);
         margin-bottom: 0;
@@ -4595,6 +4654,7 @@
           max-width: calc(100vw - 1rem);
         }
         .app-dialog-card { max-height: calc(100vh - 1rem); }
+        .page-defaults-grid { grid-template-columns: minmax(0, 1fr); }
         .app-dialog-header,
         .app-dialog-footer { padding-left: var(--space-md); padding-right: var(--space-md); }
         .app-dialog-description,

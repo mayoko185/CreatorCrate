@@ -13,10 +13,39 @@ import {
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
+function createInMemoryProjectPageDefaultRepository() {
+  const values = new Map();
+  const keyFor = (projectId, page, option) => `${projectId}:${page}:${option}`;
+
+  return {
+    getOption(projectId, page, option) {
+      return values.get(keyFor(projectId, page, option));
+    },
+    setOption(projectId, page, option, value) {
+      values.set(keyFor(projectId, page, option), value);
+      return value;
+    },
+    deletePageOptions(projectId, page) {
+      let deleted = false;
+      for (const key of values.keys()) {
+        if (key.startsWith(`${projectId}:${page}:`)) {
+          values.delete(key);
+          deleted = true;
+        }
+      }
+      return deleted;
+    },
+    hasPageOptions(projectId, page) {
+      return [...values.keys()].some((key) => key.startsWith(`${projectId}:${page}:`));
+    },
+  };
+}
+
 describe('page defaults service', () => {
   let tmpDir;
   let db;
   let repository;
+  let projectPageDefaultRepository;
   let service;
 
   beforeEach(() => {
@@ -24,7 +53,8 @@ describe('page defaults service', () => {
     db = openDatabase(path.join(tmpDir, 'test.db'));
     runMigrations(db, MIGRATIONS_DIR);
     repository = createAppMetaRepository(db);
-    service = createPageDefaultsService({ appMetaRepository: repository });
+    projectPageDefaultRepository = createInMemoryProjectPageDefaultRepository();
+    service = createPageDefaultsService({ appMetaRepository: repository, projectPageDefaultRepository });
   });
 
   afterEach(() => {
@@ -48,10 +78,16 @@ describe('page defaults service', () => {
     expect(service.resolve('projectAssets', 'sort')).toBe('filename');
     expect(service.resolve('projectAssets', 'order')).toBe('asc');
     expect(service.resolve('projectAssets', 'pageSize')).toBe('25');
+    expect(service.resolve('projectAssets', 'extension')).toBe('all');
+    expect(service.resolve('projectAssets', 'tag')).toBe('all');
     expect(service.resolve('assetViewer', 'view')).toBe('grid');
     expect(service.resolve('assetViewer', 'sort')).toBe('filename');
     expect(service.resolve('assetViewer', 'order')).toBe('asc');
     expect(service.resolve('assetViewer', 'pageSize')).toBe('25');
+    expect(service.resolve('assetViewer', 'extension')).toBe('all');
+    expect(service.resolve('assetViewer', 'category')).toBe('all');
+    expect(service.resolve('assetViewer', 'presence')).toBe('all');
+    expect(service.resolve('assetViewer', 'tag')).toBe('all');
     expect(service.resolve('new_project', 'status')).toBe('tbd');
   });
 
@@ -87,6 +123,16 @@ describe('page defaults service', () => {
         values: ['10', '25', '50', '100'],
         fallback: '25',
       },
+      extension: {
+        key: 'page_defaults.project_assets.extension',
+        values: ['all'],
+        fallback: 'all',
+      },
+      tag: {
+        key: 'page_defaults.project_assets.tag',
+        values: ['all'],
+        fallback: 'all',
+      },
     });
   });
 
@@ -111,6 +157,26 @@ describe('page defaults service', () => {
         key: 'page_defaults.asset_viewer.page_size',
         values: ['10', '25', '50', '100'],
         fallback: '25',
+      },
+      extension: {
+        key: 'page_defaults.asset_viewer.extension',
+        values: ['all'],
+        fallback: 'all',
+      },
+      category: {
+        key: 'page_defaults.asset_viewer.category',
+        values: ['all'],
+        fallback: 'all',
+      },
+      presence: {
+        key: 'page_defaults.asset_viewer.presence',
+        values: ['all', 'present', 'missing'],
+        fallback: 'all',
+      },
+      tag: {
+        key: 'page_defaults.asset_viewer.tag',
+        values: ['all'],
+        fallback: 'all',
       },
     });
   });
@@ -145,6 +211,21 @@ describe('page defaults service', () => {
         key: 'page_defaults.projects.order',
         values: ['asc', 'desc'],
         fallback: 'desc',
+      },
+      status: {
+        key: 'page_defaults.projects.status',
+        values: ['all', 'tbd', 'planned', 'in-progress', 'ready', 'completed', 'archived'],
+        fallback: 'all',
+      },
+      projectType: {
+        key: 'page_defaults.projects.project_type',
+        values: ['all', 'images', 'comic', 'animation', 'wallpaper'],
+        fallback: 'all',
+      },
+      tag: {
+        key: 'page_defaults.projects.tag',
+        values: ['all'],
+        fallback: 'all',
       },
     });
   });
@@ -229,6 +310,8 @@ describe('page defaults service', () => {
       sort: 'category',
       order: 'desc',
       pageSize: '100',
+      extension: 'all',
+      tag: 'all',
     });
   });
 
@@ -243,6 +326,10 @@ describe('page defaults service', () => {
       sort: 'project',
       order: 'desc',
       pageSize: '100',
+      extension: 'all',
+      category: 'all',
+      presence: 'all',
+      tag: 'all',
     });
   });
 
@@ -256,6 +343,13 @@ describe('page defaults service', () => {
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projects.view.key, 'list');
 
     expect(service.resolve('projects', 'view', 'board')).toBe('grid');
+  });
+
+  it('keeps invalid explicit values at the fallback when resolving a project context', () => {
+    repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.view.key, 'list');
+    projectPageDefaultRepository.setOption(1, 'projectAssets', 'view', 'list');
+
+    expect(service.resolve('projectAssets', 'view', 'board', undefined, { projectId: 1 })).toBe('grid');
   });
 
   it('ignores an invalid saved value without rewriting it', () => {
@@ -325,6 +419,8 @@ describe('page defaults service', () => {
       sort: 'filename',
       order: 'asc',
       pageSize: '25',
+      extension: 'all',
+      tag: 'all',
     });
     for (const [option, value] of Object.entries(invalidValues)) {
       expect(repository.getValue(PAGE_DEFAULT_DEFINITIONS.projectAssets[option].key)).toBe(value);
@@ -338,6 +434,10 @@ describe('page defaults service', () => {
       sort: 'title',
       order: 'forwards',
       pageSize: '20',
+      extension: 'retired',
+      category: 'retired',
+      presence: 'unknown',
+      tag: 'retired',
     };
     for (const [option, value] of Object.entries(invalidValues)) {
       repository.setValue(PAGE_DEFAULT_DEFINITIONS.assetViewer[option].key, value);
@@ -348,6 +448,10 @@ describe('page defaults service', () => {
       sort: 'filename',
       order: 'asc',
       pageSize: '25',
+      extension: 'all',
+      category: 'all',
+      presence: 'all',
+      tag: 'all',
     });
     for (const [option, value] of Object.entries(invalidValues)) {
       expect(repository.getValue(PAGE_DEFAULT_DEFINITIONS.assetViewer[option].key)).toBe(value);
@@ -400,6 +504,9 @@ describe('page defaults service', () => {
       view: 'grid',
       sort: 'title',
       order: 'desc',
+      status: 'all',
+      projectType: 'all',
+      tag: 'all',
     });
 
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.view.key, 'list');
@@ -421,6 +528,8 @@ describe('page defaults service', () => {
       sort: 'size',
       order: 'desc',
       pageSize: '10',
+      extension: 'all',
+      tag: 'all',
     });
   });
 
@@ -458,6 +567,8 @@ describe('page defaults service', () => {
       sort: 'modified',
       order: 'desc',
       pageSize: '50',
+      extension: 'all',
+      tag: 'all',
     })).toEqual({
       view: 'grid',
       gridSize: 'large',
@@ -465,6 +576,8 @@ describe('page defaults service', () => {
       sort: 'modified',
       order: 'desc',
       pageSize: '50',
+      extension: 'all',
+      tag: 'all',
     });
 
     expect(service.validatePageDefaults('assetViewer', {
@@ -472,11 +585,203 @@ describe('page defaults service', () => {
       sort: 'project',
       order: 'desc',
       pageSize: '100',
+      extension: 'all',
+      category: 'all',
+      presence: 'all',
+      tag: 'all',
     })).toEqual({
       view: 'list',
       sort: 'project',
       order: 'desc',
       pageSize: '100',
+      extension: 'all',
+      category: 'all',
+      presence: 'all',
+      tag: 'all',
     });
+  });
+
+
+  it('uses a supplied live catalogue for dynamic validation, persistence, and resolution', () => {
+    const catalogue = [
+      { value: 'all', label: 'All projects' },
+      { value: 'recent', label: 'Recently updated' },
+    ];
+    const values = {
+      view: 'grid',
+      sort: 'recent',
+      order: 'desc',
+      status: 'all',
+      projectType: 'all',
+      tag: 'all',
+    };
+
+    expect(service.validatePageDefaults('projects', values, { sort: catalogue })).toEqual(values);
+    expect(service.saveDefault('projects', 'sort', 'recent', catalogue)).toBe('recent');
+    expect(service.resolve('projects', 'sort', undefined, catalogue)).toBe('recent');
+    expect(() => service.validatePageDefaults('projects', {
+      ...values,
+      sort: 'title',
+    }, { sort: catalogue })).toThrow(PageDefaultValidationError);
+  });
+
+  it('uses the dynamic fallback for stale stored values without rewriting storage', () => {
+    const key = PAGE_DEFAULT_DEFINITIONS.projects.sort.key;
+    const catalogue = [{ value: 'all', label: 'All projects' }];
+    repository.setValue(key, 'retired');
+
+    expect(service.getSavedDefault('projects', 'sort', catalogue)).toBeUndefined();
+    expect(service.resolve('projects', 'sort', undefined, catalogue)).toBe('created');
+    expect(repository.getValue(key)).toBe('retired');
+  });
+
+  it('uses dynamic Project Assets catalogues for live values and stale fallbacks without rewriting storage', () => {
+    const extensionKey = PAGE_DEFAULT_DEFINITIONS.projectAssets.extension.key;
+    const tagKey = PAGE_DEFAULT_DEFINITIONS.projectAssets.tag.key;
+    const optionCatalogues = {
+      extension: [{ value: 'all', label: 'All extensions' }, { value: 'png', label: '.png' }],
+      tag: [{ value: 'all', label: 'All tags' }, { value: '42', label: 'Design' }],
+    };
+    repository.setValue(extensionKey, 'retired');
+    repository.setValue(tagKey, '99');
+
+    expect(service.resolvePageDefaults('projectAssets', {}, optionCatalogues)).toMatchObject({
+      extension: 'all',
+      tag: 'all',
+    });
+    expect(repository.getValue(extensionKey)).toBe('retired');
+    expect(repository.getValue(tagKey)).toBe('99');
+    expect(service.validatePageDefaults('projectAssets', {
+      view: 'grid',
+      gridSize: 'default',
+      listSize: 'large',
+      sort: 'filename',
+      order: 'asc',
+      pageSize: '25',
+      extension: 'png',
+      tag: '42',
+    }, optionCatalogues)).toMatchObject({ extension: 'png', tag: '42' });
+    expect(() => service.validatePageDefaults('projectAssets', {
+      view: 'grid',
+      gridSize: 'default',
+      listSize: 'large',
+      sort: 'filename',
+      order: 'asc',
+      pageSize: '25',
+      extension: 'jpg',
+      tag: '99',
+    }, optionCatalogues)).toThrow(PageDefaultValidationError);
+  });
+
+  it('keeps static definitions unchanged when no live catalogue is supplied', () => {
+    repository.setValue(PAGE_DEFAULT_DEFINITIONS.projects.sort.key, 'title');
+
+    expect(service.resolve('projects', 'sort')).toBe('title');
+    expect(service.validatePageDefaults('projects', {
+      view: 'grid',
+      sort: 'published',
+      order: 'desc',
+      status: 'all',
+      projectType: 'all',
+      tag: 'all',
+    })).toEqual({
+      view: 'grid',
+      sort: 'published',
+      order: 'desc',
+      status: 'all',
+      projectType: 'all',
+      tag: 'all',
+    });
+  });
+
+  it('keeps no-context reads and writes global without a project repository', () => {
+    const globalOnlyService = createPageDefaultsService({ appMetaRepository: repository });
+
+    expect(globalOnlyService.resolvePageDefaults('projects')).toEqual({
+      view: 'grid',
+      sort: 'created',
+      order: 'desc',
+      status: 'all',
+      projectType: 'all',
+      tag: 'all',
+    });
+    expect(globalOnlyService.saveDefault('projects', 'view', 'list')).toBe('list');
+    expect(repository.getValue(PAGE_DEFAULT_DEFINITIONS.projects.view.key)).toBe('list');
+  });
+
+  it('follows global defaults for projects without rows and isolates valid project overrides', () => {
+    repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.sort.key, 'modified');
+
+    expect(service.getPageDefaultScope('projectAssets', { projectId: 1 })).toBe('global');
+    expect(service.resolveProjectPageDefaults('projectAssets', {}, { projectId: 1 }).sort).toBe('modified');
+
+    expect(service.saveProjectDefault('projectAssets', 'view', 'list', undefined, { projectId: 1 }))
+      .toBe('list');
+    expect(service.resolveProjectPageDefaults('projectAssets', {}, { projectId: 1 }).sort).toBe('modified');
+
+    expect(service.saveProjectDefault('projectAssets', 'sort', 'size', undefined, { projectId: 1 }))
+      .toBe('size');
+
+    expect(service.getPageDefaultScope('projectAssets', { projectId: 1 })).toBe('project');
+    expect(service.resolveProjectPageDefaults('projectAssets', {}, { projectId: 1 }).sort).toBe('size');
+    expect(service.resolveProjectPageDefaults('projectAssets', {}, { projectId: 2 }).sort).toBe('modified');
+    expect(service.resolvePageDefaults(
+      'projectAssets', { sort: 'category' }, {}, { projectId: 1 }
+    ).sort).toBe('category');
+  });
+
+  it('inherits global values for missing or stale project options without rewriting either scope', () => {
+    const key = PAGE_DEFAULT_DEFINITIONS.projectAssets.sort.key;
+    repository.setValue(key, 'modified');
+    projectPageDefaultRepository.setOption(1, 'projectAssets', 'sort', 'retired');
+
+    expect(service.resolveProjectPageDefaults('projectAssets', {}, { projectId: 1 }).sort).toBe('modified');
+    expect(projectPageDefaultRepository.getOption(1, 'projectAssets', 'sort')).toBe('retired');
+    expect(repository.getValue(key)).toBe('modified');
+
+    repository.setValue(key, 'removed-global');
+    expect(service.resolveProjectPageDefaults('projectAssets', {}, { projectId: 1 }).sort).toBe('filename');
+    expect(projectPageDefaultRepository.getOption(1, 'projectAssets', 'sort')).toBe('retired');
+    expect(repository.getValue(key)).toBe('removed-global');
+  });
+
+  it('honors live catalogues for global and project resolution', () => {
+    const catalogue = [{ value: 'recent', label: 'Recent' }];
+    repository.setValue(PAGE_DEFAULT_DEFINITIONS.projects.sort.key, 'retired');
+    projectPageDefaultRepository.setOption(1, 'projects', 'sort', 'recent');
+    projectPageDefaultRepository.setOption(2, 'projects', 'sort', 'retired');
+
+    expect(service.resolveGlobalPageDefaults('projects', { sort: catalogue }).sort).toBe('created');
+    expect(service.resolveProjectPageDefaults('projects', { sort: catalogue }, { projectId: 1 }).sort)
+      .toBe('recent');
+    expect(service.resolveProjectPageDefaults('projects', { sort: catalogue }, { projectId: 2 }).sort)
+      .toBe('created');
+
+    repository.setValue(PAGE_DEFAULT_DEFINITIONS.projects.sort.key, 'recent');
+    expect(service.resolveGlobalPageDefaults('projects', { sort: catalogue }).sort).toBe('recent');
+    expect(service.resolveProjectPageDefaults('projects', { sort: catalogue }, { projectId: 2 }).sort)
+      .toBe('recent');
+  });
+
+  it('writes global and project scopes independently and clears project following', () => {
+    expect(service.saveProjectDefault('projects', 'view', 'list', undefined, { projectId: 1 }))
+      .toBe('list');
+    expect(service.saveGlobalDefault('projects', 'view', 'grid')).toBe('grid');
+
+    expect(projectPageDefaultRepository.getOption(1, 'projects', 'view')).toBe('list');
+    expect(repository.getValue(PAGE_DEFAULT_DEFINITIONS.projects.view.key)).toBe('grid');
+    expect(service.clearProjectPageDefaults('projects', { projectId: 1 })).toBe(true);
+    expect(service.getPageDefaultScope('projects', { projectId: 1 })).toBe('global');
+    expect(service.resolveProjectPageDefaults('projects', {}, { projectId: 1 }).view).toBe('grid');
+  });
+
+  it('rejects invalid project contexts and project writes without a configured repository', () => {
+    const globalOnlyService = createPageDefaultsService({ appMetaRepository: repository });
+
+    expect(() => service.saveProjectDefault('projects', 'view', 'list', undefined, { projectId: 0 }))
+      .toThrow(PageDefaultValidationError);
+    expect(() => globalOnlyService.saveProjectDefault(
+      'projects', 'view', 'list', undefined, { projectId: 1 }
+    )).toThrow('projectPageDefaultRepository');
   });
 });

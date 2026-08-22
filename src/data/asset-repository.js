@@ -1793,9 +1793,14 @@ export function createAssetRepository(db) {
      * @param {{ projectId?: number|null }} [filters]
      * @returns {string[]}
      */
-    listAllAssetExtensions({ projectId } = {}) {
-      const conditions = ['p.archived_at IS NULL', 'p.status <> ?', 'a.extension <> ?'];
-      const params = ['archived', ''];
+    listAllAssetExtensions({ projectId, includeArchived = false } = {}) {
+      const conditions = ['a.extension <> ?'];
+      const params = [''];
+
+      if (!includeArchived) {
+        conditions.unshift('p.archived_at IS NULL', 'p.status <> ?');
+        params.unshift('archived');
+      }
 
       if (projectId !== undefined && projectId !== null) {
         conditions.push('a.project_id = ?');

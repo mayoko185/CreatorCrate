@@ -883,6 +883,28 @@ export function createWorkflowQueryService({
    *   viewOptions: Array<{ value: string, label: string, selected: boolean }>,
    * }}
    */
+  /**
+   * Return stable extension choices for the global Asset Viewer defaults.
+   * Unlike getAssetLibraryPage(), this deliberately does not apply a project
+   * filter or compose a page model.
+   *
+   * @returns {string[]}
+   */
+  function getAssetLibraryExtensions() {
+    return assetRepository.listAllAssetExtensions();
+  }
+
+  /**
+   * Return extension choices for global Project Assets defaults. Project Assets
+   * is available for archived projects too, so this source deliberately spans
+   * every project rather than the active-only Asset Viewer population.
+   *
+   * @returns {string[]}
+   */
+  function getProjectAssetsDefaultExtensions() {
+    return assetRepository.listAllAssetExtensions({ includeArchived: true });
+  }
+
   function getAssetLibraryPage(input = {}) {
     const projectId = input.projectId ?? null;
     const tagCatalog = tagRepository.list();
@@ -1534,6 +1556,22 @@ export function createWorkflowQueryService({
     return extensionChoices.includes(normalized) ? normalized : null;
   }
 
+  function getProjectAssetBrowserExtensionChoices(projectId, rawQuery) {
+    const projectExtensions = assetRepository.listProjectAssetExtensions(projectId);
+    const requested = typeof rawQuery?.extension === 'string'
+      ? rawQuery.extension.trim().replace(/^\./, '').toLowerCase()
+      : '';
+    if (
+      requested === ''
+      || projectExtensions.includes(requested)
+      || !getProjectAssetsDefaultExtensions().includes(requested)
+    ) {
+      return projectExtensions;
+    }
+
+    return [...projectExtensions, requested];
+  }
+
   function attachReleasePreviewUrls(entries) {
     if (!Array.isArray(entries) || entries.length === 0) return [];
 
@@ -1913,7 +1951,7 @@ export function createWorkflowQueryService({
     if (!project) return null;
 
     const projectCategories = assetCategoryRepository.listProjectCategories(projectId);
-    const extensions = assetRepository.listProjectAssetExtensions(projectId);
+    const extensions = getProjectAssetBrowserExtensionChoices(projectId, rawQuery);
     const navCounts = assetRepository.getProjectAssetNavigationCounts(projectId);
     const tagCatalog = tagRepository.list();
 
@@ -2222,7 +2260,7 @@ export function createWorkflowQueryService({
     if (!project) return null;
 
     const projectCategories = assetCategoryRepository.listProjectCategories(projectId);
-    const extensions = assetRepository.listProjectAssetExtensions(projectId);
+    const extensions = getProjectAssetBrowserExtensionChoices(projectId, rawQuery);
     const tagCatalog = Object.prototype.hasOwnProperty.call(rawQuery || {}, 'tag')
       ? tagRepository.list()
       : [];
@@ -2333,6 +2371,8 @@ export function createWorkflowQueryService({
     getProjectList,
     getProjectTagFilterOptions,
     getProjectsPageFilterOptions,
+    getAssetLibraryExtensions,
+    getProjectAssetsDefaultExtensions,
     getAssetLibraryPage,
     getReleaseList,
     getReleaseBoard,

@@ -32,6 +32,7 @@ import {
   enhanceTimePickers,
 } from './client/pickers.js';
 import { enhanceNumberInputs } from './client/number-input.js';
+import { enhanceProjectAssetsDefaultsScope } from './client/project-assets-defaults-scope.js';
 import {
   enhanceAssetViewerFilterDisclosures,
   enhanceDropdowns,
@@ -88,6 +89,7 @@ export {
   enhanceCategoryDetails,
   enhanceAppConfirmationControls as enhanceConfirmations,
   enhanceNumberInputs,
+  enhanceProjectAssetsDefaultsScope,
   enhanceAssetGridSize,
   enhanceAssetListSize,
   enhanceProjectGridSize,
@@ -144,6 +146,7 @@ if (typeof document !== 'undefined') {
     enhanceProjectGridSize(document);
     enhanceProjectAssetCategoryFilter(document);
     enhanceDropdowns(document);
+    enhanceProjectAssetsDefaultsScope(document);
     enhanceAssetViewerFilterDisclosures(document);
     enhanceAppDialogs(document);
     enhanceAppConfirmationControls(document);

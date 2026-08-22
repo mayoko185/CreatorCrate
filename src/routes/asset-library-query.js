@@ -283,6 +283,15 @@ function appendQueryValues(query, key, value, normalizeValue, compareValues) {
   }
 }
 
+function appendExplicitNeutralFilters(query, state) {
+  const filters = Array.isArray(state.explicitNeutralFilters)
+    ? state.explicitNeutralFilters
+    : [];
+  for (const key of ['category', 'tag', 'extension', 'presence']) {
+    if (filters.includes(key) && !query.has(key)) query.append(key, 'all');
+  }
+}
+
 /**
  * Build a deterministic canonical `/assets` URL from normalized state.
  * Unknown state fields and override keys are ignored. Overrides are applied
@@ -330,6 +339,8 @@ export function buildAssetLibraryUrl(normalizedState = {}, overrides = {}) {
 
   const normalizedUsage = normalizeEnum(usage.value, USAGE_VALUES, ASSET_LIBRARY_DEFAULTS.usage);
   if (normalizedUsage !== ASSET_LIBRARY_DEFAULTS.usage) appendQueryValue(query, 'usage', normalizedUsage);
+
+  appendExplicitNeutralFilters(query, state);
 
   for (const key of ['sort', 'order', 'pageSize', 'view']) {
     const normalized = normalizedPresentation[key];
