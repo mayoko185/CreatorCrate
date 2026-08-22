@@ -178,6 +178,8 @@ export function createLiveRegionEngine(config) {
     onRegionReplaced = null,
     onLoadComplete = null,
     onLoadError = null,
+    onFormChange = null,
+    transformParams = null,
     isCurrentUrl = () => true,
   } = config || {};
 
@@ -215,6 +217,7 @@ export function createLiveRegionEngine(config) {
     const action = form?.action || form?.getAttribute?.('action') || defaultAction;
     const url = new URL(action, windowObject.location?.href || defaultAction);
     const params = new windowObject.URLSearchParams(new windowObject.FormData(form));
+    transformParams?.(params, form);
     if (preservePage) {
       const currentUrl = new URL(windowObject.location?.href || url.href, url.href);
       if (!params.has('page') && currentUrl.searchParams.has('page')) {
@@ -452,6 +455,7 @@ export function createLiveRegionEngine(config) {
         if (searchSelector && event.target?.matches?.(searchSelector)) return;
         if (changeSelector && !event.target?.matches?.(changeSelector)) return;
         if (!event.target?.name && !event.target?.getAttribute?.('name')) return;
+        onFormChange?.(state, form, event, engine);
         schedule(state, form);
       });
       if (searchSelector) {
@@ -949,6 +953,32 @@ function bindProjectAssetsNsfwForm(state, region) {
   form.addEventListener?.('submit', (event) => submitProjectAssetsNsfwToggle(state, form, event));
 }
 
+function inheritedProjectAssetsFilterDefaults(form) {
+  const input = form?.querySelector?.('[data-project-assets-inherited-filter-defaults]');
+  if (!input || input.disabled) return [];
+  return [...new Set(String(input.value || '').split(',')
+    .map((value) => value.trim())
+    .filter((value) => value === 'tag' || value === 'extension'))];
+}
+
+function updateInheritedProjectAssetsFilterDefaults(form, event) {
+  const name = event?.target?.name || event?.target?.getAttribute?.('name');
+  if (name !== 'tag' && name !== 'extension') return;
+
+  const input = form?.querySelector?.('[data-project-assets-inherited-filter-defaults]');
+  if (!input) return;
+  const remaining = inheritedProjectAssetsFilterDefaults(form).filter((key) => key !== name);
+  input.value = remaining.join(',');
+  input.disabled = remaining.length === 0;
+}
+
+function omitInheritedProjectAssetsFiltersForCategory(params, form) {
+  const category = params.get('category');
+  if (!/^[1-9]\d*$/.test(category || '')) return;
+
+  inheritedProjectAssetsFilterDefaults(form).forEach((key) => params.delete(key));
+}
+
 function enhanceProjectAssetsLiveRegion(region) {
   enhancePreviewMedia(region);
   enhanceNumberInputs(region);
@@ -980,6 +1010,10 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
   responseErrorMessage: 'Project Assets response failed.',
   missingRegionMessage: 'Project Assets response did not contain the live region.',
   enhanceRegion: enhanceProjectAssetsLiveRegion,
+  onFormChange(state, form, event) {
+    updateInheritedProjectAssetsFilterDefaults(form, event);
+  },
+  transformParams: omitInheritedProjectAssetsFiltersForCategory,
   onResponseParsed(state, parsed) {
     const nextSequence = parsed.querySelector?.(`${SLIDESHOW_SCAFFOLD_SELECTOR} ${SLIDESHOW_SEQUENCE_SELECTOR}`);
     const currentSequence = state.document.querySelector?.(

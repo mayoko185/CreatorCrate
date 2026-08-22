@@ -545,6 +545,9 @@
         {% if pageSize != 25 or preservePageSizeQuery %}
           <input type="hidden" name="pageSize" value="{{ pageSize }}">
         {% endif %}
+        {% if inheritedProjectAssetsFilterDefaults %}
+          <input type="hidden" name="inheritedFilterDefaults" value="{{ inheritedProjectAssetsFilterDefaults }}" data-project-assets-inherited-filter-defaults>
+        {% endif %}
         {{ dropdown.singleSelect({
           id: "asset-category-filter",
           name: "category",

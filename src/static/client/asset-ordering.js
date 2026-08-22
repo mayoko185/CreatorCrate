@@ -853,7 +853,6 @@ export function enhanceAssetSelection(scope = globalThis.document) {
   if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
 
   const forms = scope.querySelectorAll(ASSET_SELECTION_FORM_SELECTOR);
-  if (forms.length === 0) return 0;
   forms.forEach((form) => {
     // Missing-asset rows render a disabled checkbox (or none at all) — the
     // selector above already excludes disabled checkboxes, so Select All /

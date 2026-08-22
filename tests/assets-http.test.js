@@ -871,6 +871,21 @@ describe('asset browser HTTP workflow', () => {
       return category;
     }
 
+    async function expectCategorySurfaceWithSavedDefaults(title, configureDefaults) {
+      const id = await projectIdFor(title);
+      const category = firstProjectCategory(id);
+      writeIndexedAsset(id, getProjectDir(title), 'category.png', 'png', { categoryId: category.id });
+      assetBrowserPreferenceRepo.upsertProjectPreference(id, 'category', category.id);
+      await configureDefaults({ id, category });
+
+      const redirected = await agent.get(`/projects/${id}/assets`).expect(302);
+      const rendered = await agent.get(redirected.headers.location).expect(200);
+      expect(rendered.text).toContain('data-auto-rename-surface');
+      expect(rendered.text).toMatch(/data-auto-rename-asset[^>]*draggable="true"/);
+      expect(rendered.text).toContain('data-asset-selection-form');
+      return { id, category, redirectUrl: redirected.headers.location };
+    }
+
     async function expectBareAll(title, configure) {
       const id = await projectIdFor(title);
       await configure(id);
@@ -918,6 +933,217 @@ describe('asset browser HTTP workflow', () => {
       expect(filtered.text).toContain('preferred.png');
       expect(filtered.text).not.toContain('preferred.jpg');
       expect(filtered.text).not.toContain('data-auto-rename-surface');
+    });
+
+    it('keeps the complete category surface and a canonical category URL for a saved Global Extension default', async () => {
+      const { id, category, redirectUrl } = await expectCategorySurfaceWithSavedDefaults(
+        'Category Surface Global Extension Default',
+        async () => writeStoredAssetDefault('extension', 'png'),
+      );
+      expect(redirectUrl).toBe(`/projects/${id}/assets?category=${category.id}&inheritedFilterDefaults=extension`);
+    });
+
+    it('keeps the complete category surface and a canonical category URL for a saved Global Tag default', async () => {
+      const tag = app.locals.tagService.createTag({ name: 'Category surface global default tag' });
+      const { id, category, redirectUrl } = await expectCategorySurfaceWithSavedDefaults(
+        'Category Surface Global Tag Default',
+        async () => writeStoredAssetDefault('tag', String(tag.id)),
+      );
+      expect(redirectUrl).toBe(`/projects/${id}/assets?category=${category.id}&inheritedFilterDefaults=tag`);
+    });
+
+    it('keeps the complete category surface and a canonical category URL for a Project-only Extension default', async () => {
+      const { category, id, redirectUrl } = await expectCategorySurfaceWithSavedDefaults(
+        'Category Surface Project Extension Default',
+        async ({ id: projectId }) => saveProjectAssetDefault(projectId, 'extension', 'png'),
+      );
+      expect(redirectUrl).toBe(`/projects/${id}/assets?category=${category.id}&inheritedFilterDefaults=extension`);
+    });
+    it.each(['extension', 'tag'])('suspends saved %s defaults for a saved category preference and restores them on All Categories', async (key) => {
+      const title = 'Saved category preference ' + key + ' restoration';
+      const id = await projectIdFor(title);
+      const category = firstProjectCategory(id);
+      const projectDir = getProjectDir(title);
+      let includedAsset;
+      let excludedAsset;
+      let expectedValue;
+
+      if (key === 'extension') {
+        includedAsset = writeIndexedAsset(id, projectDir, 'included.png', 'png', { categoryId: category.id });
+        excludedAsset = writeIndexedAsset(id, projectDir, 'excluded.jpg', 'jpg', { categoryId: category.id });
+        writeStoredAssetDefault('extension', 'png');
+        expectedValue = 'png';
+      } else {
+        const tag = app.locals.tagService.createTag({ name: 'Saved category preference default tag' });
+        excludedAsset = writeIndexedAsset(id, projectDir, 'excluded.png', 'png', { categoryId: category.id });
+        includedAsset = writeIndexedAsset(id, projectDir, 'included.jpg', 'jpg', { categoryId: category.id });
+        app.locals.assetTagService.replaceAssetTags(includedAsset.id, [tag.id]);
+        saveProjectAssetDefault(id, 'tag', String(tag.id));
+        expectedValue = String(tag.id);
+      }
+      assetBrowserPreferenceRepo.upsertProjectPreference(id, 'category', category.id);
+
+      const redirected = await agent.get('/projects/' + id + '/assets').expect(302);
+      const redirectUrl = new URL(redirected.headers.location, 'http://localhost');
+      expect(redirectUrl.searchParams.get('category')).toBe(String(category.id));
+      expect(redirectUrl.searchParams.has(key)).toBe(false);
+      expect(redirectUrl.searchParams.getAll('inheritedFilterDefaults')).toEqual([key]);
+
+      const categoryPage = await agent.get(redirected.headers.location).expect(200);
+      expect(categoryPage.text).toContain('data-auto-rename-surface');
+      expect(categoryPage.text).toMatch(/data-auto-rename-asset[^>]*draggable="true"/);
+      expect(categoryPage.text).toContain('data-asset-selection-form');
+      expect(categoryPage.text).toContain('name="inheritedFilterDefaults" value="' + key + '"');
+
+      const restored = await agent
+        .get('/projects/' + id + '/assets?category=all&inheritedFilterDefaults=' + key)
+        .expect(200);
+      expect(restored.text).toContain(includedAsset.filename);
+      expect(restored.text).not.toContain(excludedAsset.filename);
+      expect(restored.text).toContain('name="inheritedFilterDefaults" value="' + key + '"');
+      expect(restored.text).toContain('name="' + key + '" value="' + expectedValue + '"');
+    });
+
+    it('treats explicit Extension and Tag values equal to saved defaults as filters on a category page', async () => {
+      const title = 'Category Surface Explicit Default Filters';
+      const id = await projectIdFor(title);
+      const category = firstProjectCategory(id);
+      const selectedTag = app.locals.tagService.createTag({ name: 'Category surface explicit default tag' });
+      const matching = writeIndexedAsset(id, getProjectDir(title), 'matching.png', 'png', { categoryId: category.id });
+      writeIndexedAsset(id, getProjectDir(title), 'other.png', 'png', { categoryId: category.id });
+      writeIndexedAsset(id, getProjectDir(title), 'other.jpg', 'jpg', { categoryId: category.id });
+      app.locals.assetTagService.replaceAssetTags(matching.id, [selectedTag.id]);
+      writeStoredAssetDefault('extension', 'png');
+      writeStoredAssetDefault('tag', String(selectedTag.id));
+
+      const explicitExtension = await agent
+        .get(`/projects/${id}/assets?category=${category.id}&extension=png`)
+        .expect(200);
+      expect(explicitExtension.text).toContain('matching.png');
+      expect(explicitExtension.text).toContain('other.png');
+      expect(explicitExtension.text).not.toContain('other.jpg');
+      expect(explicitExtension.text).not.toContain('data-auto-rename-surface');
+
+      const explicitTag = await agent
+        .get(`/projects/${id}/assets?category=${category.id}&tag=${selectedTag.id}`)
+        .expect(200);
+      expect(explicitTag.text).toContain('matching.png');
+      expect(explicitTag.text).not.toContain('other.png');
+      expect(explicitTag.text).not.toContain('other.jpg');
+      expect(explicitTag.text).not.toContain('data-auto-rename-surface');
+
+      const neutralTag = await agent
+        .get(`/projects/${id}/assets?category=${category.id}&tag=all`)
+        .expect(200);
+      expect(neutralTag.text).toContain('data-auto-rename-surface');
+      expect(neutralTag.text).toMatch(/data-auto-rename-asset[^>]*draggable="true"/);
+      expect(neutralTag.text).toContain('data-asset-selection-form');
+    });
+
+    it('continues to materialize and apply saved Tag and Extension defaults on a non-category asset-browser page', async () => {
+      const title = 'Non-category Filter Defaults';
+      const id = await projectIdFor(title);
+      const selectedTag = app.locals.tagService.createTag({ name: 'Non-category default tag' });
+      const matching = writeIndexedAsset(id, getProjectDir(title), 'matching.png', 'png');
+      writeIndexedAsset(id, getProjectDir(title), 'untagged.png', 'png');
+      const tagged = writeIndexedAsset(id, getProjectDir(title), 'tagged.jpg', 'jpg');
+      app.locals.assetTagService.replaceAssetTags(matching.id, [selectedTag.id]);
+      app.locals.assetTagService.replaceAssetTags(tagged.id, [selectedTag.id]);
+      writeStoredAssetDefault('extension', 'png');
+      writeStoredAssetDefault('tag', String(selectedTag.id));
+
+      const redirected = await agent.get(`/projects/${id}/assets`).expect(302);
+      expect(redirected.headers.location).toBe(
+        `/projects/${id}/assets?tag=${selectedTag.id}&extension=png&inheritedFilterDefaults=tag%2Cextension`,
+      );
+
+      const rendered = await agent.get(redirected.headers.location).expect(200);
+      expect(rendered.text).toContain('matching.png');
+      expect(rendered.text).not.toContain('untagged.png');
+      expect(rendered.text).not.toContain('tagged.jpg');
+    });
+
+    it('strips an inherited Extension filter for a category and restores it on return to All Categories', async () => {
+      const title = 'Bare Extension Default Live Category Navigation';
+      const id = await projectIdFor(title);
+      const category = firstProjectCategory(id);
+      const projectDir = getProjectDir(title);
+      const categoryPng = writeIndexedAsset(id, projectDir, 'category.png', 'png', {
+        categoryId: category.id,
+      });
+      const categoryJpg = writeIndexedAsset(id, projectDir, 'category.jpg', 'jpg', {
+        categoryId: category.id,
+      });
+      writeIndexedAsset(id, projectDir, 'elsewhere.jpg', 'jpg');
+      writeStoredAssetDefault('extension', 'png');
+
+      const redirected = await agent.get(`/projects/${id}/assets`).expect(302);
+      expect(redirected.headers.location).toBe(
+        `/projects/${id}/assets?extension=png&inheritedFilterDefaults=extension`,
+      );
+
+      const categoryPage = await agent
+        .get(`/projects/${id}/assets?category=${category.id}&extension=png&inheritedFilterDefaults=extension`)
+        .expect(200);
+      expect(categoryPage.text).toContain('category.png');
+      expect(categoryPage.text).toContain('category.jpg');
+      expect(categoryPage.text).toContain('data-auto-rename-surface');
+      expect(categoryPage.text).toContain(`data-auto-rename-asset-id="${categoryPng.id}"`);
+      expect(categoryPage.text).toContain(`data-auto-rename-asset-id="${categoryJpg.id}"`);
+      expect(categoryPage.text).toMatch(/data-auto-rename-asset[^>]*draggable="true"/);
+      expect(categoryPage.text).toContain('data-asset-selection-form');
+      expect(categoryPage.text).toContain('name="inheritedFilterDefaults" value="extension"');
+
+      const restored = await agent
+        .get(`/projects/${id}/assets?category=all&inheritedFilterDefaults=extension`)
+        .expect(200);
+      expect(restored.text).toContain('category.png');
+      expect(restored.text).not.toContain('category.jpg');
+      expect(restored.text).not.toContain('elsewhere.jpg');
+      expect(restored.text).toContain('name="inheritedFilterDefaults" value="extension"');
+    });
+
+    it('strips an inherited Tag filter for a category and restores it on return to All Categories', async () => {
+      const title = 'Bare Tag Default Live Category Navigation';
+      const id = await projectIdFor(title);
+      const category = firstProjectCategory(id);
+      const projectDir = getProjectDir(title);
+      const selectedTag = app.locals.tagService.createTag({ name: 'Bare live navigation tag default' });
+      const categoryUntagged = writeIndexedAsset(id, projectDir, 'category.png', 'png', {
+        categoryId: category.id,
+      });
+      const categoryTagged = writeIndexedAsset(id, projectDir, 'category-tagged.jpg', 'jpg', {
+        categoryId: category.id,
+      });
+      const taggedElsewhere = writeIndexedAsset(id, projectDir, 'elsewhere.jpg', 'jpg');
+      app.locals.assetTagService.replaceAssetTags(categoryTagged.id, [selectedTag.id]);
+      app.locals.assetTagService.replaceAssetTags(taggedElsewhere.id, [selectedTag.id]);
+      writeStoredAssetDefault('tag', String(selectedTag.id));
+
+      const redirected = await agent.get(`/projects/${id}/assets`).expect(302);
+      expect(redirected.headers.location).toBe(
+        `/projects/${id}/assets?tag=${selectedTag.id}&inheritedFilterDefaults=tag`,
+      );
+
+      const categoryPage = await agent
+        .get(`/projects/${id}/assets?category=${category.id}&tag=${selectedTag.id}&inheritedFilterDefaults=tag`)
+        .expect(200);
+      expect(categoryPage.text).toContain('category.png');
+      expect(categoryPage.text).toContain('category-tagged.jpg');
+      expect(categoryPage.text).toContain('data-auto-rename-surface');
+      expect(categoryPage.text).toContain(`data-auto-rename-asset-id="${categoryUntagged.id}"`);
+      expect(categoryPage.text).toContain(`data-auto-rename-asset-id="${categoryTagged.id}"`);
+      expect(categoryPage.text).toMatch(/data-auto-rename-asset[^>]*draggable="true"/);
+      expect(categoryPage.text).toContain('data-asset-selection-form');
+      expect(categoryPage.text).toContain('name="inheritedFilterDefaults" value="tag"');
+
+      const restored = await agent
+        .get(`/projects/${id}/assets?category=all&inheritedFilterDefaults=tag`)
+        .expect(200);
+      expect(restored.text).not.toContain('category.png');
+      expect(restored.text).toContain('category-tagged.jpg');
+      expect(restored.text).toContain('elsewhere.jpg');
+      expect(restored.text).toContain('name="inheritedFilterDefaults" value="tag"');
     });
 
     it('redirects an inherited matching global slug to the project category ID', async () => {
@@ -1307,14 +1533,18 @@ describe('asset browser HTTP workflow', () => {
       saveProjectAssetDefault(id, 'tag', String(projectTag.id));
 
       const bare = await agent.get(`/projects/${id}/assets`).expect(302);
-      expect(bare.headers.location).toBe(`/projects/${id}/assets?tag=${projectTag.id}&extension=png`);
+      expect(bare.headers.location).toBe(
+        `/projects/${id}/assets?tag=${projectTag.id}&extension=png&inheritedFilterDefaults=tag%2Cextension`,
+      );
       await agent.get(`/projects/${id}/assets?extension=all&tag=all`).expect(200);
       await agent.get(`/projects/${id}/assets?category=all`).expect(200);
 
       saveProjectAssetDefault(id, 'extension', 'stale-project-extension');
       saveProjectAssetDefault(id, 'tag', '999999');
       const inherited = await agent.get(`/projects/${id}/assets`).expect(302);
-      expect(inherited.headers.location).toBe(`/projects/${id}/assets?tag=${globalTag.id}&extension=jpg`);
+      expect(inherited.headers.location).toBe(
+        `/projects/${id}/assets?tag=${globalTag.id}&extension=jpg&inheritedFilterDefaults=tag%2Cextension`,
+      );
       expect(app.locals.projectPageDefaultRepository.getOption(id, 'projectAssets', 'extension'))
         .toBe('stale-project-extension');
       expect(app.locals.projectPageDefaultRepository.getOption(id, 'projectAssets', 'tag')).toBe('999999');
@@ -1363,6 +1593,37 @@ describe('asset browser HTTP workflow', () => {
       expect(app.locals.pageDefaultsService.getPageDefaultScope('projectAssets', { projectId: activeId })).toBe('global');
     });
 
+    it('marks concrete saved filter defaults and clears stale provenance for neutral saves', async () => {
+      const project = await createProject('Saved Filter Default Provenance');
+      const id = Number(project.headers.location.replace('/projects/', ''));
+      const tag = app.locals.tagService.createTag({ name: 'Saved filter provenance tag' });
+      writeIndexedAsset(id, getProjectDir('Saved Filter Default Provenance'), 'available.png', 'png');
+      const values = {
+        view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc',
+        pageSize: '25', extension: 'png', tag: String(tag.id), scope: 'global', loadedScope: 'global', _csrf: csrfToken,
+      };
+
+      const saved = await agent.post(`/projects/${id}/assets/defaults`).type('form').send({
+        ...values,
+        returnTo: `/projects/${id}/assets?inheritedFilterDefaults=extension`,
+      }).expect(302);
+      const savedUrl = new URL(saved.headers.location, 'http://localhost');
+      expect(savedUrl.searchParams.get('extension')).toBe('png');
+      expect(savedUrl.searchParams.get('tag')).toBe(String(tag.id));
+      expect(savedUrl.searchParams.get('inheritedFilterDefaults')).toBe('tag,extension');
+
+      const rendered = await agent.get(saved.headers.location).expect(200);
+      expect(rendered.text).toContain('name="inheritedFilterDefaults" value="tag,extension"');
+
+      const neutral = await agent.post(`/projects/${id}/assets/defaults`).type('form').send({
+        ...values,
+        extension: 'all',
+        tag: 'all',
+        returnTo: saved.headers.location,
+      }).expect(302);
+      expect(new URL(neutral.headers.location, 'http://localhost').searchParams.has('inheritedFilterDefaults')).toBe(false);
+    });
+
     it('uses global Extension and Tag catalogues without broadening the project filters', async () => {
       const source = await createProject('Global Project Assets Default Source');
       const sourceId = Number(source.headers.location.replace('/projects/', ''));
@@ -1408,7 +1669,7 @@ describe('asset browser HTTP workflow', () => {
 
       const bare = await agent.get('/projects/' + targetId + '/assets').expect(302);
       expect(bare.headers.location).toBe(
-        '/projects/' + targetId + '/assets?tag=' + tag.id + '&extension=jpg',
+        '/projects/' + targetId + '/assets?tag=' + tag.id + '&extension=jpg&inheritedFilterDefaults=tag%2Cextension',
       );
 
       const canonical = await agent.get(bare.headers.location).expect(200);
@@ -2192,6 +2453,60 @@ describe('asset browser HTTP workflow', () => {
     expect(nextUrl.pathname).toBe(`/projects/${id}/assets`);
     expect(nextUrl.searchParams.get('presence')).toBe('present');
     expect(nextUrl.searchParams.get('page')).toBe('2');
+  });
+
+  it('preserves inherited filter provenance through Project Assets pagination and view navigation', async () => {
+    const res = await createProject('Inherited Filter Navigation');
+    const id = res.headers.location.replace('/projects/', '');
+    const projectDir = getProjectDir('Inherited Filter Navigation');
+    if (!projectDir) throw new Error('projectDir not found for Inherited Filter Navigation');
+
+    for (let i = 0; i < 35; i++) {
+      fs.writeFileSync(path.join(projectDir, `default-${String(i).padStart(2, '0')}.png`), `content${i}`);
+    }
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+
+    const response = await agent
+      .get(`/projects/${id}/assets?extension=png&inheritedFilterDefaults=extension&page=1`)
+      .expect(200);
+
+    const nextHref = response.text.match(/<a href="([^"]+)" class="pagination-next">Next/)?.[1];
+    expect(nextHref).toBeDefined();
+    const nextUrl = new URL(decodeHtmlHref(nextHref), 'http://localhost');
+    expect(nextUrl.searchParams.get('extension')).toBe('png');
+    expect(nextUrl.searchParams.get('inheritedFilterDefaults')).toBe('extension');
+
+    const gridHref = response.text.match(/<a class="[^"]*view-switcher-option[^"]*" href="([^"]+)"[\s\S]*?aria-label="Grid view"/)?.[1];
+    expect(gridHref).toBeDefined();
+    const gridUrl = new URL(decodeHtmlHref(gridHref), 'http://localhost');
+    expect(gridUrl.searchParams.get('extension')).toBe('png');
+    expect(gridUrl.searchParams.get('inheritedFilterDefaults')).toBe('extension');
+  });
+
+  it('preserves inherited filter provenance through action redirects and validation re-renders', async () => {
+    const res = await createProject('Inherited Filter Action Context');
+    const id = res.headers.location.replace('/projects/', '');
+    const projectDir = getProjectDir('Inherited Filter Action Context');
+    if (!projectDir) throw new Error('projectDir not found for Inherited Filter Action Context');
+    fs.writeFileSync(path.join(projectDir, 'default.png'), 'content');
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+    const returnTo = `/projects/${id}/assets?extension=png&inheritedFilterDefaults=extension`;
+
+    const action = await agent.post(`/projects/${id}/assets/remove-missing`).type('form').send({
+      returnTo,
+      _csrf: csrfToken,
+    }).expect(302);
+    const actionUrl = new URL(action.headers.location, 'http://localhost');
+    expect(actionUrl.searchParams.get('extension')).toBe('png');
+    expect(actionUrl.searchParams.get('inheritedFilterDefaults')).toBe('extension');
+
+    const validation = await agent.post(`/projects/${id}/assets/move-selected`).type('form').send({
+      extension: 'png',
+      inheritedFilterDefaults: 'extension',
+      destinationCategory: 'uncategorized',
+      _csrf: csrfToken,
+    }).expect(422);
+    expect(validation.text).toContain('name="inheritedFilterDefaults" value="extension"');
   });
 
   it('preserves explicit All through browser links, forms, viewer navigation, and pagination', async () => {

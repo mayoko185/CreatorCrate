@@ -512,6 +512,78 @@ export function createAssetProcessingService({
     }
   }
 
+  function verifyWatermarkHardLink({
+    projectDir,
+    referencePath,
+    referenceIdentity,
+    referenceStats,
+    outputPath,
+    outputSha256,
+  }) {
+    const outputStats = inspectGeneratedFile(outputPath, 'RECOVERY_REQUIRED');
+    if (sameIdentity(outputStats, referenceIdentity)) {
+      return {
+        mode: 'strict',
+        identity: { dev: outputStats.dev, ino: outputStats.ino },
+        stats: outputStats,
+      };
+    }
+
+    const expectedLinkCount = Number.isSafeInteger(referenceStats?.nlink) && referenceStats.nlink >= 1
+      ? referenceStats.nlink + 1 : null;
+    if (!expectedLinkCount
+      || outputStats.dev !== referenceStats.dev
+      || outputStats.size !== referenceStats.size
+      || outputStats.nlink !== expectedLinkCount) {
+      return null;
+    }
+
+    let currentReference;
+    try {
+      currentReference = inspectGeneratedFile(referencePath, 'RECOVERY_REQUIRED');
+    } catch {
+      return null;
+    }
+    if (!sameIdentity(currentReference, referenceIdentity)
+      || currentReference.dev !== referenceStats.dev
+      || currentReference.size !== referenceStats.size
+      || currentReference.nlink !== expectedLinkCount) {
+      return null;
+    }
+
+    try {
+      if (hashRegularFileInProject(projectDir, outputPath) !== outputSha256) return null;
+    } catch {
+      return null;
+    }
+
+    return {
+      mode: 'verified-hard-link',
+      identity: { dev: outputStats.dev, ino: outputStats.ino },
+      stats: outputStats,
+    };
+  }
+
+  function watermarkOutputMatchesPublication(item, currentStats, projectDir) {
+    if (item.outputVerification?.mode !== 'verified-hard-link') {
+      return Boolean(item.outputIdentity && sameIdentity(currentStats, item.outputIdentity));
+    }
+    if (!item.stageOutput || !item.stageOutputStats) return false;
+    try {
+      const verification = verifyWatermarkHardLink({
+        projectDir,
+        referencePath: item.stageOutput,
+        referenceIdentity: item.stageOutputIdentity,
+        referenceStats: item.stageOutputStats,
+        outputPath: item.outputAbsPath,
+        outputSha256: item.outputSha256,
+      });
+      return Boolean(verification);
+    } catch {
+      return false;
+    }
+  }
+
   function resolveTrustedWatermarkPath(watermarkId) {
     if (watermarkService) {
       try {
@@ -937,6 +1009,10 @@ export function createAssetProcessingService({
         clean = false;
       }
       if (item.destinationBackupPath
+        && item.destinationRestoreAttempted
+        && item.destinationRemoved) {
+        clean = false;
+      } else if (item.destinationBackupPath
         && !removeFileIfIdentityMatches(item.destinationBackupPath, item.destinationBackupIdentity)) {
         clean = false;
       }
@@ -994,6 +1070,12 @@ export function createAssetProcessingService({
       fs.chmodSync(stageOutputPath, currentStats.mode & 0o7777);
       const stageStats = inspectGeneratedFile(stageOutputPath, 'WATERMARK_OUTPUT_INVALID');
       item.stageOutputIdentity = { dev: stageStats.dev, ino: stageStats.ino };
+      item.stageOutputStats = {
+        dev: stageStats.dev,
+        ino: stageStats.ino,
+        size: stageStats.size,
+        nlink: stageStats.nlink,
+      };
       item.outputStats = stageStats;
       item.outputSha256 = hashRegularFileInProject(projectDir, stageOutputPath);
       const metadata = await sharpImplementation(rendered.buffer).metadata();
@@ -1048,11 +1130,16 @@ export function createAssetProcessingService({
         item.destinationBackupPath = path.join(item.stagingDirectory, `${item.stageIndex}.destination`);
         try {
           fs.linkSync(item.outputAbsPath, item.destinationBackupPath);
-          const backupStats = inspectGeneratedFile(item.destinationBackupPath, 'RECOVERY_REQUIRED');
-          if (!sameIdentity(backupStats, item.destinationIdentity)) {
-            throw new Error('Watermark destination backup identity mismatch.');
-          }
-          item.destinationBackupIdentity = { dev: backupStats.dev, ino: backupStats.ino };
+          const backupVerification = verifyWatermarkHardLink({
+            projectDir,
+            referencePath: item.outputAbsPath,
+            referenceIdentity: item.destinationIdentity,
+            referenceStats: currentStats,
+            outputPath: item.destinationBackupPath,
+            outputSha256: item.destinationAsset.generated_output_sha256.toLowerCase(),
+          });
+          if (!backupVerification) throw new Error('Watermark destination backup identity mismatch.');
+          item.destinationBackupIdentity = backupVerification.identity;
           const beforeDelete = inspectOptionalDestination(item.outputAbsPath);
           if (!beforeDelete || !sameIdentity(beforeDelete, item.destinationIdentity)) {
             throw new AssetProcessingError('The watermark output destination changed during processing.', {
@@ -1082,15 +1169,25 @@ export function createAssetProcessingService({
       });
     }
 
-    const outputStats = inspectGeneratedFile(item.outputAbsPath, 'RECOVERY_REQUIRED');
-    if (!sameIdentity(outputStats, item.stageOutputIdentity)) {
+    item.outputPublication = 'linked';
+    item.outputIdentity = { ...item.stageOutputIdentity };
+
+    const outputVerification = verifyWatermarkHardLink({
+      projectDir,
+      referencePath: item.stageOutput,
+      referenceIdentity: item.stageOutputIdentity,
+      referenceStats: item.stageOutputStats,
+      outputPath: item.outputAbsPath,
+      outputSha256: item.outputSha256,
+    });
+    if (!outputVerification) {
       throw new AssetProcessingError('Watermark output identity could not be verified.', {
         code: 'RECOVERY_REQUIRED',
       });
     }
-    item.outputCommitted = true;
-    item.outputIdentity = { dev: outputStats.dev, ino: outputStats.ino };
-    item.outputStats = outputStats;
+    item.outputVerification = outputVerification;
+    item.outputIdentity = outputVerification.identity;
+    item.outputStats = outputVerification.stats;
     let publishedHash;
     try {
       publishedHash = hashRegularFileInProject(projectDir, item.outputAbsPath);
@@ -1106,21 +1203,25 @@ export function createAssetProcessingService({
       });
     }
 
-    try {
-      fs.unlinkSync(item.stageOutput);
-      item.stageOutput = null;
-    } catch (err) {
-      throw new AssetProcessingError('Watermark output staging cleanup failed.', {
-        code: 'RECOVERY_REQUIRED',
-        cause: err,
-      });
+    if (outputVerification.mode === 'strict') {
+      try {
+        fs.unlinkSync(item.stageOutput);
+        item.stageOutput = null;
+      } catch (err) {
+        throw new AssetProcessingError('Watermark output staging cleanup failed.', {
+          code: 'RECOVERY_REQUIRED',
+          cause: err,
+        });
+      }
     }
+    item.outputPublication = 'committed';
   }
 
-  function restoreWatermarkOutputs(items) {
+  function restoreWatermarkOutputs(items, projectDir) {
     let restored = true;
     for (const item of [...items].reverse()) {
-      if (!item.outputCommitted && !item.destinationRemoved) continue;
+      if (item.destinationBackupPath) item.destinationRestoreAttempted = true;
+      if (item.outputPublication === 'unlinked' && !item.destinationRemoved) continue;
 
       let current = null;
       try {
@@ -1134,7 +1235,7 @@ export function createAssetProcessingService({
 
       if (current) {
         if (current.isSymbolicLink() || !current.isFile()
-          || !item.outputIdentity || !sameIdentity(current, item.outputIdentity)) {
+          || !watermarkOutputMatchesPublication(item, current, projectDir)) {
           restored = false;
           continue;
         }
@@ -1154,8 +1255,15 @@ export function createAssetProcessingService({
             continue;
           }
           fs.linkSync(item.destinationBackupPath, item.outputAbsPath);
-          const restoredStats = inspectGeneratedFile(item.outputAbsPath, 'RECOVERY_REQUIRED');
-          if (!sameIdentity(restoredStats, item.destinationIdentity)) {
+          const restoredVerification = verifyWatermarkHardLink({
+            projectDir,
+            referencePath: item.destinationBackupPath,
+            referenceIdentity: item.destinationBackupIdentity,
+            referenceStats: backupStats,
+            outputPath: item.outputAbsPath,
+            outputSha256: item.destinationAsset.generated_output_sha256.toLowerCase(),
+          });
+          if (!restoredVerification) {
             restored = false;
             continue;
           }
@@ -1167,15 +1275,15 @@ export function createAssetProcessingService({
           continue;
         }
       }
-      item.outputCommitted = false;
+      item.outputPublication = 'unlinked';
     }
     return restored;
   }
 
-  function recoverWatermarkAfterFailure(staging, items) {
+  function recoverWatermarkAfterFailure(staging, items, projectDir) {
     const artifactsRestored = restoreArchiveArtifacts(staging.artifacts || []);
-    const outputsRestored = restoreWatermarkOutputs(items);
-    const deletesRestored = restoreStagedDeletes(items);
+    const outputsRestored = restoreWatermarkOutputs(items, projectDir);
+    const deletesRestored = restoreStagedDeletes(items, projectDir);
     const artifactsClean = cleanupArchiveStaging(staging.artifacts || []);
     const stagingClean = cleanupWatermarkStaging(staging);
     const dirsClean = cleanupCreatedOutputDirs(staging.createdOutputDirs);
@@ -1233,7 +1341,7 @@ export function createAssetProcessingService({
     return clean;
   }
 
-  function restoreStagedDeletes(items) {
+  function restoreStagedDeletes(items, projectDir) {
     let restored = true;
     for (const item of [...items].reverse()) {
       if (!item.stagedDeletePath) continue;
@@ -1260,7 +1368,17 @@ export function createAssetProcessingService({
 
         fs.linkSync(item.stagedDeletePath, item.sourceAbsPath);
         const restoredStats = inspectSource(item.sourceAbsPath);
-        if (!sameIdentity(restoredStats, item.stagedDeleteIdentity)) {
+        const restoredVerification = item.stagedDeleteSha256
+          ? verifyWatermarkHardLink({
+            projectDir,
+            referencePath: item.stagedDeletePath,
+            referenceIdentity: item.stagedDeleteIdentity,
+            referenceStats: stagedStats,
+            outputPath: item.sourceAbsPath,
+            outputSha256: item.stagedDeleteSha256,
+          })
+          : (sameIdentity(restoredStats, item.stagedDeleteIdentity) ? { mode: 'strict' } : null);
+        if (!restoredVerification) {
           restored = false;
           continue;
         }
@@ -1610,7 +1728,7 @@ export function createAssetProcessingService({
     item.originalStats = originalStats;
   }
 
-  function stageOriginalForDelete(item, staging, index) {
+  function stageOriginalForDelete(item, staging, index, projectDir) {
     const currentStats = inspectSource(item.sourceAbsPath);
     if (!sameIdentity(currentStats, item.sourceIdentity)) {
       throw new AssetProcessingError('A selected source changed during conversion.', {
@@ -1621,15 +1739,36 @@ export function createAssetProcessingService({
     const stagedDeletePath = path.join(staging.directory, `${index}.original`);
     item.stagedDeletePath = stagedDeletePath;
     try {
+      const sourceSha256 = projectDir
+        ? hashRegularFileInProject(projectDir, item.sourceAbsPath) : null;
       fs.linkSync(item.sourceAbsPath, stagedDeletePath);
       const stagedStats = inspectGeneratedFile(stagedDeletePath, 'RECOVERY_REQUIRED');
-      if (!sameIdentity(stagedStats, item.sourceIdentity)) {
-        throw new Error('Staged original identity mismatch.');
-      }
       item.stagedDeleteIdentity = { dev: stagedStats.dev, ino: stagedStats.ino };
+      const stagedVerification = sourceSha256
+        ? verifyWatermarkHardLink({
+          projectDir,
+          referencePath: item.sourceAbsPath,
+          referenceIdentity: item.sourceIdentity,
+          referenceStats: currentStats,
+          outputPath: stagedDeletePath,
+          outputSha256: sourceSha256,
+        })
+        : (sameIdentity(stagedStats, item.sourceIdentity) ? { mode: 'strict' } : null);
+      if (!stagedVerification) throw new Error('Staged original identity mismatch.');
+      item.stagedDeleteSha256 = sourceSha256;
       fs.unlinkSync(item.sourceAbsPath);
     } catch (err) {
-      const cleaned = removeFileIfIdentityMatches(stagedDeletePath, item.sourceIdentity);
+      let cleaned;
+      if (item.stagedDeleteIdentity) {
+        cleaned = removeFileIfIdentityMatches(stagedDeletePath, item.stagedDeleteIdentity);
+      } else {
+        try {
+          fs.lstatSync(stagedDeletePath);
+          cleaned = false;
+        } catch (cleanupErr) {
+          cleaned = cleanupErr.code === 'ENOENT';
+        }
+      }
       if (!cleaned) {
         throw new AssetProcessingError(
           'The original was staged but could not be safely restored.',
@@ -2278,7 +2417,7 @@ export function createAssetProcessingService({
           outputDirectoryAbsPath: path.dirname(outputAbsPath), outputFormat: output.outputFormat,
           destinationAsset: destinationAsset || null, destinationStats,
           destinationIdentity: destinationStats ? { dev: destinationStats.dev, ino: destinationStats.ino } : null,
-          destinationRemoved: false, outputCommitted: false,
+          destinationRemoved: false, outputPublication: 'unlinked',
         };
         items.push(item);
         source.outputs.push({ ...output, status: 'planned', item });
@@ -2319,10 +2458,10 @@ export function createAssetProcessingService({
       }
       for (let index = 0; index < sources.length; index++) {
         const source = sources[index];
-        if (source.deleteEligible) stageOriginalForDelete(source.outputs[0].item, staging, items.length + index);
+        if (source.deleteEligible) stageOriginalForDelete(source.outputs[0].item, staging, items.length + index, projectDir);
       }
     } catch (err) {
-      const recoverable = recoverWatermarkAfterFailure(staging, items);
+      const recoverable = recoverWatermarkAfterFailure(staging, items, projectDir);
       if (!recoverable) {
         throw new AssetProcessingError(
           'Watermarking changed the filesystem but could not safely complete or clean up. Inspect the project folder before scanning.',
@@ -2350,7 +2489,7 @@ export function createAssetProcessingService({
         throw new Error('Asset watermark repository returned an unexpected result.');
       }
     } catch (err) {
-      const recoverable = recoverWatermarkAfterFailure(staging, items);
+      const recoverable = recoverWatermarkAfterFailure(staging, items, projectDir);
       if (!recoverable) {
         throw new AssetProcessingError(
           'Watermarked files were written but CreatorCrate could not restore the filesystem after an index failure. Inspect the project folder before scanning.',

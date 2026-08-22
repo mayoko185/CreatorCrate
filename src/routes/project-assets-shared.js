@@ -9,6 +9,8 @@ import { buildCanonicalAssetBrowserQuery, buildAssetBrowserQueryString } from '.
 import { buildOpenLocallyUri } from '../util/open-locally.js';
 
 const ASSET_BROWSER_QUERY_KEYS = ['category', 'tag', 'search', 'extension', 'presence', 'usage', 'sort', 'order', 'page', 'pageSize', 'view'];
+const INHERITED_FILTER_DEFAULTS_QUERY_KEY = 'inheritedFilterDefaults';
+const INHERITED_FILTER_DEFAULT_KEYS = new Set(['tag', 'extension']);
 
 export const ASSET_PAGE_DEFAULTS_PAGE = 'projectAssets';
 
@@ -226,14 +228,15 @@ export function renderProjectAssetsPage(req, res, {
     projectAssetsDefaultOptionCatalogues,
     projectPageDefaultContext,
   );
-  const presentation = resolveAssetBrowserPresentation(
-    query,
-    pageDefaultsService,
-    projectPageDefaultContext,
-  );
   const filterDefaults = resolveProjectAssetsFilterDefaults(
     pageDefaultsService,
     projectAssetsDefaultOptionCatalogues,
+    projectPageDefaultContext,
+  );
+  const inheritedFilterDefaults = getProjectAssetsInheritedFilterDefaults(query);
+  const presentation = resolveAssetBrowserPresentation(
+    materializeSuspendedInheritedFilterDefaults(query, filterDefaults, inheritedFilterDefaults),
+    pageDefaultsService,
     projectPageDefaultContext,
   );
 
@@ -273,7 +276,12 @@ export function renderProjectAssetsPage(req, res, {
     }
   }
 
-  const data = buildAssetBrowserPageData(workflowQueryService, id, project, presentation);
+  const data = buildAssetBrowserPageData(
+    workflowQueryService,
+    id,
+    project,
+    presentation,
+  );
   if (!data) return next ? next(createNotFound()) : null;
 
   const nsfwFilterEnabled = getNsfwFilterSettingsService(req).isEnabled();
@@ -284,6 +292,7 @@ export function renderProjectAssetsPage(req, res, {
     req,
     workflowQueryService,
     nsfwFilterEnabled,
+    inheritedFilterDefaults,
   );
   const selectedProjectAssetsDefaultsScope = projectAssetsDefaultsSelectedScope === null
     ? normalizeProjectAssetsDefaultsScope(projectAssetsScopedDefaults.scope)
@@ -565,13 +574,23 @@ function buildAssetDefaultsRedirectUrl(
   pageDefaultsService,
   filterDefaults,
 ) {
+  const inheritedFilterDefaults = [];
+  const tag = categoryId === null && filterDefaults.tag !== 'all'
+    ? filterDefaults.tag
+    : undefined;
+  const extension = categoryId === null && filterDefaults.extension !== 'all'
+    ? filterDefaults.extension
+    : undefined;
+  if (filterDefaults.tag !== undefined && filterDefaults.tag !== 'all') inheritedFilterDefaults.push('tag');
+  if (filterDefaults.extension !== undefined && filterDefaults.extension !== 'all') inheritedFilterDefaults.push('extension');
+
   const context = {
     category: categoryId === null ? 'all' : String(categoryId),
     categoryWasSupplied: categoryId !== null,
     categorySelection: categoryId === null ? undefined : 'explicit-specific',
     queryWasNonBare: false,
-    tag: filterDefaults.tag === 'all' ? undefined : filterDefaults.tag,
-    extension: filterDefaults.extension === 'all' ? undefined : filterDefaults.extension,
+    tag,
+    extension,
     sort: presentation.saved.sort,
     order: presentation.saved.order,
     page: 1,
@@ -579,6 +598,9 @@ function buildAssetDefaultsRedirectUrl(
     view: presentation.saved.view,
   };
   const query = buildCanonicalAssetBrowserQuery(context, 1);
+  if (inheritedFilterDefaults.length > 0) {
+    query[INHERITED_FILTER_DEFAULTS_QUERY_KEY] = inheritedFilterDefaults.join(',');
+  }
   appendForcedAssetPresentationQuery(
     query,
     context,
@@ -631,7 +653,12 @@ function appendForcedAssetPresentationQuery(
   }
 }
 
-function buildAssetsPageUrl(projectId, allowedParams, pageDefaultsService) {
+function buildAssetsPageUrl(
+  projectId,
+  allowedParams,
+  pageDefaultsService,
+  inheritedFilterDefaults = [],
+) {
   const basePath = `/projects/${projectId}/assets`;
   return function pageUrl(overrides = {}) {
     const query = buildCanonicalAssetBrowserQuery(allowedParams, allowedParams.page, overrides);
@@ -643,6 +670,7 @@ function buildAssetsPageUrl(projectId, allowedParams, pageDefaultsService) {
       pageDefaultsService,
       { projectId },
     );
+    appendInheritedFilterDefaults(query, allowedParams, overrides, inheritedFilterDefaults);
     const search = buildAssetBrowserQueryString(query);
     return search ? `${basePath}?${search}` : basePath;
   };
@@ -655,6 +683,7 @@ export function buildBrowserRenderModel(
   req,
   workflowQueryService = null,
   nsfwFilterEnabled = null,
+  inheritedFilterDefaults = [],
 ) {
   const projectAssetsDefaultOptionCatalogues = buildProjectAssetsDefaultOptionCatalogues(
     workflowQueryService,
@@ -675,7 +704,12 @@ export function buildBrowserRenderModel(
     pageSize: data.pageSize,
   };
   const presentation = context.assetPresentation || null;
-  const pageUrl = buildAssetsPageUrl(project.id, context, pageDefaultsService);
+  const pageUrl = buildAssetsPageUrl(
+    project.id,
+    context,
+    pageDefaultsService,
+    inheritedFilterDefaults,
+  );
   const defaultsUrl = appendQueryValue(pageUrl({}), 'defaults', '1');
 
   return {
@@ -780,6 +814,7 @@ export function buildBrowserRenderModel(
     projectAssetsEffectiveDefaults: projectAssetsScopedDefaults.effective,
     projectAssetsGridSizeDefault,
     projectAssetsListSizeDefault,
+    inheritedProjectAssetsFilterDefaults: inheritedFilterDefaults.join(','),
     projectAssetsDefaultsDialogOpen: false,
     projectAssetsDefaultsReturnUrl: pageUrl({}),
     projectAssetsDefaultsUrl: defaultsUrl,
@@ -800,7 +835,12 @@ export function buildAssetBrowserPageData(
   project,
   presentation,
 ) {
-  const data = buildAssetsPageData(workflowQueryService, projectId, project, presentation.query);
+  const data = buildAssetsPageData(
+    workflowQueryService,
+    projectId,
+    project,
+    presentation.query,
+  );
   if (!data) return data;
 
   return {
@@ -818,6 +858,7 @@ export function buildCanonicalContextQuery(
   rawContext,
   extraQuery = {},
   pageDefaultsService = null,
+  { preserveInheritedFilterDefaults = false } = {},
 ) {
   const presentation = pageDefaultsService
     ? resolveAssetBrowserPresentation(rawContext, pageDefaultsService, { projectId })
@@ -855,6 +896,9 @@ export function buildCanonicalContextQuery(
     if (value === undefined || value === null || value === '') continue;
     query[key] = String(value);
   }
+  if (preserveInheritedFilterDefaults) {
+    appendInheritedFilterDefaults(query, rawContext, extraQuery);
+  }
   return query;
 }
 
@@ -871,6 +915,7 @@ export function buildAssetsRedirectUrl(
     rawContext,
     extraQuery,
     pageDefaultsService,
+    { preserveInheritedFilterDefaults: true },
   );
   const search = buildAssetBrowserQueryString(query);
   return search ? `/projects/${projectId}/assets?${search}` : `/projects/${projectId}/assets`;
@@ -886,31 +931,37 @@ function isSmallNonNegativeInt(value) {
   return typeof value === 'string' && /^\d{1,7}$/.test(value);
 }
 
-function buildAssetsPageData(workflowQueryService, projectId, project, rawQuery = {}) {
-  const hasExplicitCategory = Object.prototype.hasOwnProperty.call(rawQuery || {}, 'category');
-  const hasTagQuery = Object.prototype.hasOwnProperty.call(rawQuery || {}, 'tag');
-  const hasConcreteCategory = parseCanonicalPositiveId(rawQuery.category) !== null;
+function buildAssetsPageData(
+  workflowQueryService,
+  projectId,
+  project,
+  rawQuery = {},
+) {
+  const categoryQuery = omitInheritedFilterDefaultsForCategory(rawQuery);
+  const hasExplicitCategory = Object.prototype.hasOwnProperty.call(categoryQuery || {}, 'category');
+  const hasTagQuery = hasConcreteTagQuery(categoryQuery);
+  const hasConcreteCategory = parseCanonicalPositiveId(categoryQuery.category) !== null;
   if (
     hasTagQuery
-    || (hasConcreteCategory && hasNonDefaultCategoryBrowserControls(rawQuery))
+    || (hasConcreteCategory && hasNonDefaultCategoryBrowserControls(categoryQuery))
     || (hasExplicitCategory && (
-      rawQuery.category === 'all'
-      || rawQuery.category === 'uncategorized'
-      || parseCanonicalPositiveId(rawQuery.category) === null
+      categoryQuery.category === 'all'
+      || categoryQuery.category === 'uncategorized'
+      || parseCanonicalPositiveId(categoryQuery.category) === null
     ))
   ) {
-    const ordinary = workflowQueryService.getProjectAssetBrowser(projectId, rawQuery);
+    const ordinary = workflowQueryService.getProjectAssetBrowser(projectId, categoryQuery);
     return ordinary
       ? { ...ordinary, completeCategorySurface: false, autoRenameSurface: false, autoRenameCategory: null }
       : ordinary;
   }
 
-  const categorySurface = workflowQueryService.getProjectAutoRenameCategory(projectId, rawQuery);
+  const categorySurface = workflowQueryService.getProjectAutoRenameCategory(projectId, categoryQuery);
   const category = categorySurface?.effectiveCategory;
   const canRenderCompleteCategory = Boolean(category && !project.archived_at && categorySurface);
 
   if (!canRenderCompleteCategory) {
-    const ordinary = workflowQueryService.getProjectAssetBrowser(projectId, rawQuery);
+    const ordinary = workflowQueryService.getProjectAssetBrowser(projectId, categoryQuery);
     return ordinary
       ? { ...ordinary, completeCategorySurface: false, autoRenameSurface: false, autoRenameCategory: null }
       : ordinary;
@@ -1014,10 +1065,76 @@ function buildProjectAssetCategoryFilterOptions(categoryNavigation, filters) {
   ];
 }
 
+export function getProjectAssetsInheritedFilterDefaults(rawQuery = {}) {
+  return parseInheritedFilterDefaults(rawQuery);
+}
+
+function materializeSuspendedInheritedFilterDefaults(
+  rawQuery = {},
+  filterDefaults = {},
+  inheritedFilterDefaults = parseInheritedFilterDefaults(rawQuery),
+) {
+  if (parseCanonicalPositiveId(rawQuery?.category) !== null) return rawQuery;
+
+  const query = { ...rawQuery };
+  inheritedFilterDefaults.forEach((key) => {
+    if (Object.hasOwn(query, key)) return;
+
+    const value = filterDefaults[key];
+    if (value !== undefined && value !== 'all') query[key] = String(value);
+  });
+  return query;
+}
+
+function parseInheritedFilterDefaults(rawQuery = {}) {
+  const rawValue = rawQuery?.[INHERITED_FILTER_DEFAULTS_QUERY_KEY];
+  const values = Array.isArray(rawValue) ? rawValue : [rawValue];
+  return [...new Set(values
+    .flatMap((value) => String(value || '').split(','))
+    .map((value) => value.trim())
+    .filter((value) => INHERITED_FILTER_DEFAULT_KEYS.has(value)))];
+}
+
+function appendInheritedFilterDefaults(query, rawContext = {}, overrides = {}, inheritedDefaults = null) {
+  const source = rawContext && typeof rawContext === 'object' ? rawContext : {};
+  const explicitOverrides = overrides && typeof overrides === 'object' ? overrides : {};
+  const inheritedFilterDefaults = inheritedDefaults ?? parseInheritedFilterDefaults(source);
+  const concreteCategory = parseCanonicalPositiveId(source.category) !== null;
+  const carried = inheritedFilterDefaults.filter((key) => (
+    !Object.hasOwn(explicitOverrides, key)
+    && (
+      (Object.hasOwn(source, key) && Object.hasOwn(query, key))
+      || concreteCategory
+    )
+  ));
+
+  if (carried.length > 0) {
+    query[INHERITED_FILTER_DEFAULTS_QUERY_KEY] = carried.join(',');
+  } else {
+    delete query[INHERITED_FILTER_DEFAULTS_QUERY_KEY];
+  }
+}
+
+function omitInheritedFilterDefaultsForCategory(rawQuery = {}) {
+  if (parseCanonicalPositiveId(rawQuery.category) === null) return rawQuery;
+
+  const inheritedFilterDefaults = parseInheritedFilterDefaults(rawQuery);
+  if (inheritedFilterDefaults.length === 0) return rawQuery;
+
+  const query = { ...rawQuery };
+  inheritedFilterDefaults.forEach((key) => delete query[key]);
+  delete query[INHERITED_FILTER_DEFAULTS_QUERY_KEY];
+  return query;
+}
+
 function hasNonDefaultCategoryBrowserControls(rawQuery = {}) {
+  const extension = typeof rawQuery.extension === 'string'
+    ? rawQuery.extension.trim().replace(/^\./, '').toLowerCase()
+    : '';
+
   return (
     (typeof rawQuery.search === 'string' && rawQuery.search.trim() !== '')
-    || (typeof rawQuery.extension === 'string' && rawQuery.extension.trim() !== '')
+    || extension !== ''
     || rawQuery.presence === 'present'
     || rawQuery.presence === 'missing'
     || rawQuery.usage === 'used'
@@ -1027,6 +1144,15 @@ function hasNonDefaultCategoryBrowserControls(rawQuery = {}) {
     || rawQuery.sort === 'category'
     || rawQuery.order === 'desc'
   );
+}
+
+function hasConcreteTagQuery(rawQuery = {}) {
+  if (!Object.hasOwn(rawQuery || {}, 'tag')) return false;
+
+  const tags = (Array.isArray(rawQuery.tag) ? rawQuery.tag : [rawQuery.tag])
+    .map((value) => String(value).trim())
+    .filter((value) => value !== '');
+  return !(tags.length === 1 && tags[0] === 'all');
 }
 
 export function createNotFound() {

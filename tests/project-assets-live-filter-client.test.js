@@ -178,6 +178,9 @@ function addInput(parent, attrs, value = '', checked = false) {
 
 function makePage({
   presence = 'all',
+  tag = '',
+  extension = '',
+  inheritedFilterDefaults = '',
   nsfwEnabled = false,
   page = '2',
   view = 'list',
@@ -205,6 +208,15 @@ function makePage({
   addInput(form, { name: 'page', type: 'hidden' }, page);
   addInput(form, { name: 'view', type: 'hidden' }, view);
   addInput(form, { name: 'pageSize', type: 'hidden' }, '25');
+  const tagInput = addInput(form, { name: 'tag', type: 'hidden' }, tag);
+  const extensionInput = addInput(form, { name: 'extension', type: 'hidden' }, extension);
+  const inheritedFilterDefaultsInput = inheritedFilterDefaults
+    ? addInput(form, {
+      name: 'inheritedFilterDefaults',
+      type: 'hidden',
+      'data-project-assets-inherited-filter-defaults': '',
+    }, inheritedFilterDefaults)
+    : null;
 
   const categoryFilter = makeNode({ attrs: { 'data-asset-category-filter': '' } });
   const categoryDetails = makeNode({
@@ -339,6 +351,9 @@ function makePage({
     status,
     form,
     search,
+    tagInput,
+    extensionInput,
+    inheritedFilterDefaultsInput,
     categoryAll: categoryAll.input,
     categoryRenders: categoryRenders.input,
     categoryMissing: categoryMissing.input,
@@ -589,6 +604,146 @@ describe('Project Assets live filtering enhancement', () => {
       expect(page.grid.getAttribute('data-grid-size')).toBeNull();
       expect(page.list.getAttribute('data-list-size')).toBe('large');
     });
+  });
+
+  it('suspends inherited defaults through live category navigation and preserves provenance for All Categories', async () => {
+    const initial = makePage({ tag: '8', extension: 'png', inheritedFilterDefaults: 'tag,extension' });
+    const category = makePage({ inheritedFilterDefaults: 'tag,extension' });
+    const restored = makePage({ tag: '8', extension: 'png', inheritedFilterDefaults: 'tag,extension' });
+    const pages = new Map([
+      ['category', category.document],
+      ['restored', restored.document],
+    ]);
+    const { windowObject } = makeWindow(initial.document, pages);
+    windowObject.fetch
+      .mockResolvedValueOnce(htmlResponse(
+        'category',
+        'http://creatorcrate.test/projects/1/assets?category=7&inheritedFilterDefaults=tag%2Cextension&view=list&pageSize=25',
+      ))
+      .mockResolvedValueOnce(htmlResponse(
+        'restored',
+        'http://creatorcrate.test/projects/1/assets?category=all&tag=8&extension=png&inheritedFilterDefaults=tag%2Cextension&view=list&pageSize=25',
+      ));
+
+    expect(enhanceProjectAssetsLiveFiltering(initial.document)).toBe(1);
+    initial.categoryAll.checked = false;
+    initial.categoryRenders.checked = true;
+    initial.categoryRenders.dispatch('change');
+    await flush();
+
+    const categoryRequest = new URL(windowObject.fetch.mock.calls[0][0]);
+    expect(categoryRequest.searchParams.get('category')).toBe('7');
+    expect(categoryRequest.searchParams.has('tag')).toBe(false);
+    expect(categoryRequest.searchParams.has('extension')).toBe(false);
+    expect(categoryRequest.searchParams.get('inheritedFilterDefaults')).toBe('tag,extension');
+
+    category.categoryRenders.checked = false;
+    category.categoryAll.checked = true;
+    category.categoryAll.dispatch('change');
+    await flush();
+
+    const restoredRequest = new URL(windowObject.fetch.mock.calls[1][0]);
+    expect(restoredRequest.searchParams.get('category')).toBe('all');
+    expect(restoredRequest.searchParams.has('tag')).toBe(false);
+    expect(restoredRequest.searchParams.has('extension')).toBe(false);
+    expect(restoredRequest.searchParams.get('inheritedFilterDefaults')).toBe('tag,extension');
+  });
+
+
+  it('does not restore an explicitly changed extension after category navigation', async () => {
+    const initial = makePage({ extension: 'png', inheritedFilterDefaults: 'extension' });
+    const afterExtension = makePage({ extension: 'jpg' });
+    const afterCategory = makePage();
+    const afterAll = makePage();
+    const pages = new Map([
+      ['extension', afterExtension.document],
+      ['category', afterCategory.document],
+      ['all', afterAll.document],
+    ]);
+    const { windowObject } = makeWindow(initial.document, pages);
+    windowObject.fetch
+      .mockResolvedValueOnce(htmlResponse(
+        'extension',
+        'http://creatorcrate.test/projects/1/assets?extension=jpg&view=list&pageSize=25',
+      ))
+      .mockResolvedValueOnce(htmlResponse(
+        'category',
+        'http://creatorcrate.test/projects/1/assets?category=7&extension=jpg&view=list&pageSize=25',
+      ))
+      .mockResolvedValueOnce(htmlResponse(
+        'all',
+        'http://creatorcrate.test/projects/1/assets?category=all&view=list&pageSize=25',
+      ));
+
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    initial.extensionInput.value = 'jpg';
+    initial.extensionInput.dispatch('change');
+    await flush();
+    afterExtension.categoryAll.checked = false;
+    afterExtension.categoryRenders.checked = true;
+    afterExtension.categoryRenders.dispatch('change');
+    await flush();
+    afterCategory.categoryRenders.checked = false;
+    afterCategory.categoryAll.checked = true;
+    afterCategory.categoryAll.dispatch('change');
+    await flush();
+
+    const categoryRequest = new URL(windowObject.fetch.mock.calls[1][0]);
+    expect(categoryRequest.searchParams.get('extension')).toBe('jpg');
+    expect(categoryRequest.searchParams.has('inheritedFilterDefaults')).toBe(false);
+
+    const allRequest = new URL(windowObject.fetch.mock.calls[2][0]);
+    expect(allRequest.searchParams.get('category')).toBe('all');
+    expect(allRequest.searchParams.has('extension')).toBe(false);
+    expect(allRequest.searchParams.has('inheritedFilterDefaults')).toBe(false);
+  });
+
+  it('does not restore an explicitly changed tag after category navigation', async () => {
+    const initial = makePage({ tag: '8', inheritedFilterDefaults: 'tag' });
+    const afterTag = makePage({ tag: '9' });
+    const afterCategory = makePage();
+    const afterAll = makePage();
+    const pages = new Map([
+      ['tag', afterTag.document],
+      ['category', afterCategory.document],
+      ['all', afterAll.document],
+    ]);
+    const { windowObject } = makeWindow(initial.document, pages);
+    windowObject.fetch
+      .mockResolvedValueOnce(htmlResponse(
+        'tag',
+        'http://creatorcrate.test/projects/1/assets?tag=9&view=list&pageSize=25',
+      ))
+      .mockResolvedValueOnce(htmlResponse(
+        'category',
+        'http://creatorcrate.test/projects/1/assets?category=7&tag=9&view=list&pageSize=25',
+      ))
+      .mockResolvedValueOnce(htmlResponse(
+        'all',
+        'http://creatorcrate.test/projects/1/assets?category=all&view=list&pageSize=25',
+      ));
+
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    initial.tagInput.value = '9';
+    initial.tagInput.dispatch('change');
+    await flush();
+    afterTag.categoryAll.checked = false;
+    afterTag.categoryRenders.checked = true;
+    afterTag.categoryRenders.dispatch('change');
+    await flush();
+    afterCategory.categoryRenders.checked = false;
+    afterCategory.categoryAll.checked = true;
+    afterCategory.categoryAll.dispatch('change');
+    await flush();
+
+    const categoryRequest = new URL(windowObject.fetch.mock.calls[1][0]);
+    expect(categoryRequest.searchParams.get('tag')).toBe('9');
+    expect(categoryRequest.searchParams.has('inheritedFilterDefaults')).toBe(false);
+
+    const allRequest = new URL(windowObject.fetch.mock.calls[2][0]);
+    expect(allRequest.searchParams.get('category')).toBe('all');
+    expect(allRequest.searchParams.has('tag')).toBe(false);
+    expect(allRequest.searchParams.has('inheritedFilterDefaults')).toBe(false);
   });
 
   it('serializes category and presence changes, resets page, pushes the server URL, and rebinds the replacement', async () => {

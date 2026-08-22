@@ -132,6 +132,50 @@ function sha256For(filePath) {
   return createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
 }
 
+function mockCifsLikeOutputStats(outputPaths, {
+  deviceMismatch = false,
+  includeStagedOriginal = false,
+} = {}) {
+  const resolvedOutputPaths = new Set(outputPaths.map((outputPath) => path.resolve(outputPath)));
+  const isOutputPath = (filePath) => typeof filePath === 'string'
+    && (resolvedOutputPaths.has(path.resolve(filePath))
+      || (includeStagedOriginal
+        && filePath.includes('.creatorcrate-watermark-')
+        && filePath.endsWith('.original')));
+  const realLstat = fs.lstatSync.bind(fs);
+  const realOpen = fs.openSync.bind(fs);
+  const realFstat = fs.fstatSync.bind(fs);
+  const realClose = fs.closeSync.bind(fs);
+  const outputDescriptors = new Set();
+  const divergentStats = (stats) => Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, {
+    dev: deviceMismatch ? (stats.dev === 0 ? 1 : 0) : stats.dev,
+    ino: stats.ino + 1000000,
+  });
+  const lstatSpy = vi.spyOn(fs, 'lstatSync').mockImplementation((filePath, ...args) => {
+    const stats = realLstat(filePath, ...args);
+    return isOutputPath(filePath) ? divergentStats(stats) : stats;
+  });
+  const openSpy = vi.spyOn(fs, 'openSync').mockImplementation((filePath, ...args) => {
+    const descriptor = realOpen(filePath, ...args);
+    if (isOutputPath(filePath)) outputDescriptors.add(descriptor);
+    return descriptor;
+  });
+  const fstatSpy = vi.spyOn(fs, 'fstatSync').mockImplementation((descriptor, ...args) => {
+    const stats = realFstat(descriptor, ...args);
+    return outputDescriptors.has(descriptor) ? divergentStats(stats) : stats;
+  });
+  const closeSpy = vi.spyOn(fs, 'closeSync').mockImplementation((descriptor, ...args) => {
+    outputDescriptors.delete(descriptor);
+    return realClose(descriptor, ...args);
+  });
+  return () => {
+    closeSpy.mockRestore();
+    fstatSpy.mockRestore();
+    openSpy.mockRestore();
+    lstatSpy.mockRestore();
+  };
+}
+
 function symlinksSupported() {
   let probeDir;
   try {
@@ -1036,6 +1080,454 @@ describe('watermark asset processing', () => {
     expect(fs.existsSync(path.join(projectDir, 'Final', 'failure.png'))).toBe(true);
     expect(fs.existsSync(path.join(projectDir, 'wm', 'failure_wm.png'))).toBe(false);
     expect(assetRepository.findByProjectIdAndPath(project.id, 'wm/failure_wm.png')).toBeUndefined();
+  });
+
+  it('removes a fresh linked output when identity verification fails before publication commits', async () => {
+    const source = await writeIndexedImage('Final/fresh-linked-rollback.png');
+    const output = path.join(projectDir, 'wm', 'fresh-linked-rollback_wm.png');
+    const outputRelativePath = 'wm/fresh-linked-rollback_wm.png';
+    const resolvedOutput = path.resolve(output);
+    const isOutputPath = (filePath) => typeof filePath === 'string'
+      && path.resolve(filePath) === resolvedOutput;
+    expect(fs.existsSync(output)).toBe(false);
+    expect(assetRepository.findByProjectIdAndPath(project.id, outputRelativePath)).toBeUndefined();
+
+    const realLink = fs.linkSync.bind(fs);
+    const realLstat = fs.lstatSync.bind(fs);
+    let outputLinked = false;
+    let outputLstatCalls = 0;
+    let verificationIdentitySpoofed = false;
+    let recoveryObservedRealIdentity = false;
+    let linkedOutputIdentity = null;
+    const linkSpy = vi.spyOn(fs, 'linkSync').mockImplementation((sourcePath, targetPath) => {
+      const result = realLink(sourcePath, targetPath);
+      if (isOutputPath(targetPath)) outputLinked = true;
+      return result;
+    });
+    const lstatSpy = vi.spyOn(fs, 'lstatSync').mockImplementation((filePath, ...args) => {
+      const stats = realLstat(filePath, ...args);
+      if (!outputLinked || !isOutputPath(filePath)) return stats;
+
+      outputLstatCalls += 1;
+      if (!verificationIdentitySpoofed) {
+        verificationIdentitySpoofed = true;
+        linkedOutputIdentity = { dev: stats.dev, ino: stats.ino };
+        return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, {
+          dev: stats.dev === 0 ? 1 : 0,
+        });
+      }
+
+      recoveryObservedRealIdentity = stats.dev === linkedOutputIdentity.dev
+        && stats.ino === linkedOutputIdentity.ino;
+      return stats;
+    });
+
+    try {
+      await expect(processingService.watermarkAssets(project.id, [source.id], {
+        mode: 'patreon',
+        outputFormat: 'png',
+        deleteSource: false,
+      })).rejects.toMatchObject({
+        code: 'RECOVERY_REQUIRED',
+        message: 'Watermark output identity could not be verified.',
+      });
+    } finally {
+      lstatSpy.mockRestore();
+      linkSpy.mockRestore();
+    }
+
+    expect(outputLinked).toBe(true);
+    expect(verificationIdentitySpoofed).toBe(true);
+    expect(outputLstatCalls).toBe(2);
+    expect(recoveryObservedRealIdentity).toBe(true);
+    expect(fs.existsSync(output)).toBe(false);
+    expect(fs.existsSync(path.join(projectDir, 'Final', 'fresh-linked-rollback.png'))).toBe(true);
+    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-watermark-'))).toEqual([]);
+  });
+
+  it('rejects a same-content copied output with insufficient fallback link counts', async () => {
+    const source = await writeIndexedImage('Final/cifs-link-count-copy.png');
+    const output = path.join(projectDir, 'wm', 'cifs-link-count-copy_wm.png');
+    const restoreCifsStats = mockCifsLikeOutputStats([output]);
+    const realLink = fs.linkSync.bind(fs);
+    const realUnlink = fs.unlinkSync.bind(fs);
+    let copiedOutput = false;
+    let copiedOutputHash = null;
+    const linkSpy = vi.spyOn(fs, 'linkSync').mockImplementation((sourcePath, targetPath) => {
+      const result = realLink(sourcePath, targetPath);
+      if (targetPath === output && sourcePath.includes('.creatorcrate-watermark-')) {
+        realUnlink(output);
+        fs.copyFileSync(sourcePath, output);
+        copiedOutputHash = sha256For(output);
+        copiedOutput = true;
+      }
+      return result;
+    });
+
+    try {
+      await expect(processingService.watermarkAssets(project.id, [source.id], {
+        mode: 'patreon',
+        outputFormat: 'png',
+        deleteSource: false,
+      })).rejects.toMatchObject({
+        code: 'RECOVERY_REQUIRED',
+        message: 'Watermarking changed the filesystem but could not safely complete or clean up. Inspect the project folder before scanning.',
+      });
+    } finally {
+      linkSpy.mockRestore();
+      restoreCifsStats();
+    }
+
+    expect(copiedOutput).toBe(true);
+    expect(fs.existsSync(output)).toBe(true);
+    expect(fs.lstatSync(output).nlink).toBe(1);
+    expect(sha256For(output)).toBe(copiedOutputHash);
+    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-watermark-'))).toEqual([]);
+  });
+
+  it('restores an existing destination after CIFS-like fallback overwrite recovery', async () => {
+    const source = await writeIndexedImage('Final/cifs-overwrite-recovery.png');
+    await processingService.watermarkAssets(project.id, [source.id], {
+      mode: 'patreon',
+      outputFormat: 'png',
+      deleteSource: false,
+    });
+
+    const output = path.join(projectDir, 'wm', 'cifs-overwrite-recovery_wm.png');
+    const before = fs.readFileSync(output);
+    const restoreCifsStats = mockCifsLikeOutputStats([output]);
+    const applySpy = vi.spyOn(assetRepository, 'applyAssetWatermarks')
+      .mockImplementation(() => { throw new Error('injected overwrite database failure'); });
+
+    try {
+      await expect(processingService.watermarkAssets(project.id, [source.id], {
+        mode: 'patreon',
+        outputFormat: 'png',
+        deleteSource: false,
+        overwrite: true,
+      })).rejects.toMatchObject({ code: 'DATABASE_OPERATION_FAILED' });
+    } finally {
+      applySpy.mockRestore();
+      restoreCifsStats();
+    }
+
+    expect(fs.readFileSync(output)).toEqual(before);
+    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-watermark-'))).toEqual([]);
+  });
+
+  it('publishes multiple outputs through verified hard-link fallback when output inodes diverge', async () => {
+    const first = await writeIndexedImage('Final/cifs-first.png');
+    const second = await writeIndexedImage('Final/cifs-second.png');
+    const firstOutput = path.join(projectDir, 'wm', 'cifs-first_wm.png');
+    const secondOutput = path.join(projectDir, 'wm', 'cifs-second_wm.png');
+    const restoreCifsStats = mockCifsLikeOutputStats([firstOutput, secondOutput]);
+
+    try {
+      const result = await processingService.watermarkAssets(project.id, [first.id, second.id], {
+        mode: 'patreon',
+        outputFormat: 'png',
+        deleteSource: false,
+      });
+      expect(result.generatedPaths).toEqual([
+        'wm/cifs-first_wm.png',
+        'wm/cifs-second_wm.png',
+      ]);
+    } finally {
+      restoreCifsStats();
+    }
+
+    expect(fs.existsSync(firstOutput)).toBe(true);
+    expect(fs.existsSync(secondOutput)).toBe(true);
+    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-watermark-'))).toEqual([]);
+  });
+
+  it('deletes the source through verified hard-link fallback on CIFS-like inode divergence', async () => {
+    const source = await writeIndexedImage('Final/cifs-delete-source.png');
+    const output = path.join(projectDir, 'wm', 'cifs-delete-source_wm.png');
+    const sourcePath = path.join(projectDir, 'Final', 'cifs-delete-source.png');
+    const restoreCifsStats = mockCifsLikeOutputStats([output], { includeStagedOriginal: true });
+
+    try {
+      const result = await processingService.watermarkAssets(project.id, [source.id], {
+        mode: 'patreon',
+        outputFormat: 'png',
+        deleteSource: true,
+      });
+      expect(result.deletedSourceAssetIds).toEqual([source.id]);
+    } finally {
+      restoreCifsStats();
+    }
+
+    expect(fs.existsSync(sourcePath)).toBe(false);
+    expect(fs.existsSync(output)).toBe(true);
+    expect(assetRepository.findById(source.id)).toBeUndefined();
+    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-watermark-'))).toEqual([]);
+  });
+
+  it('restores a source staged through verified hard-link fallback after indexing fails', async () => {
+    const source = await writeIndexedImage('Final/cifs-delete-rollback.png');
+    const output = path.join(projectDir, 'wm', 'cifs-delete-rollback_wm.png');
+    const sourcePath = path.join(projectDir, 'Final', 'cifs-delete-rollback.png');
+    const restoreCifsStats = mockCifsLikeOutputStats([output], { includeStagedOriginal: true });
+    const applySpy = vi.spyOn(assetRepository, 'applyAssetWatermarks')
+      .mockImplementation(() => { throw new Error('injected watermark database failure'); });
+
+    try {
+      await expect(processingService.watermarkAssets(project.id, [source.id], {
+        mode: 'patreon',
+        outputFormat: 'png',
+        deleteSource: true,
+      })).rejects.toMatchObject({ code: 'DATABASE_OPERATION_FAILED' });
+    } finally {
+      applySpy.mockRestore();
+      restoreCifsStats();
+    }
+
+    expect(fs.existsSync(sourcePath)).toBe(true);
+    expect(fs.existsSync(output)).toBe(false);
+    expect(assetRepository.findById(source.id)).toBeTruthy();
+    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-watermark-'))).toEqual([]);
+  });
+
+  it('uses strict identity verification on a normal filesystem', async () => {
+    const source = await writeIndexedImage('Final/strict-identity.png');
+    const output = path.join(projectDir, 'wm', 'strict-identity_wm.png');
+    const realUnlink = fs.unlinkSync.bind(fs);
+    let stageOutputRemoved = false;
+    const unlinkSpy = vi.spyOn(fs, 'unlinkSync').mockImplementation((filePath, ...args) => {
+      if (typeof filePath === 'string' && filePath.includes('.creatorcrate-watermark-')
+        && filePath.endsWith('0.output')) {
+        stageOutputRemoved = true;
+      }
+      return realUnlink(filePath, ...args);
+    });
+
+    try {
+      await processingService.watermarkAssets(project.id, [source.id], {
+        mode: 'patreon',
+        outputFormat: 'png',
+        deleteSource: false,
+      });
+    } finally {
+      unlinkSpy.mockRestore();
+    }
+
+    expect(stageOutputRemoved).toBe(true);
+    expect(fs.existsSync(output)).toBe(true);
+    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-watermark-'))).toEqual([]);
+  });
+
+  it('rolls back a verified hard-link fallback output when a later publication fails', async () => {
+    const first = await writeIndexedImage('Final/cifs-rollback-first.png');
+    const second = await writeIndexedImage('Final/cifs-rollback-second.png');
+    const firstOutput = path.join(projectDir, 'wm', 'cifs-rollback-first_wm.png');
+    const secondOutput = path.join(projectDir, 'wm', 'cifs-rollback-second_wm.png');
+    const restoreCifsStats = mockCifsLikeOutputStats([firstOutput, secondOutput]);
+    const realLink = fs.linkSync.bind(fs);
+    const linkSpy = vi.spyOn(fs, 'linkSync').mockImplementation((sourcePath, targetPath) => {
+      if (targetPath === secondOutput && sourcePath.includes('.creatorcrate-watermark-')) {
+        const error = new Error('injected later publication failure');
+        error.code = 'EIO';
+        throw error;
+      }
+      return realLink(sourcePath, targetPath);
+    });
+
+    try {
+      await expect(processingService.watermarkAssets(project.id, [first.id, second.id], {
+        mode: 'patreon',
+        outputFormat: 'png',
+        deleteSource: false,
+      })).rejects.toMatchObject({ code: 'FILESYSTEM_OPERATION_FAILED' });
+    } finally {
+      linkSpy.mockRestore();
+      restoreCifsStats();
+    }
+
+    expect(fs.existsSync(firstOutput)).toBe(false);
+    expect(fs.existsSync(secondOutput)).toBe(false);
+    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-watermark-'))).toEqual([]);
+  });
+
+  it('rejects inode-divergent output verification when the reported device differs', async () => {
+    const source = await writeIndexedImage('Final/cifs-device-mismatch.png');
+    const output = path.join(projectDir, 'wm', 'cifs-device-mismatch_wm.png');
+    const restoreCifsStats = mockCifsLikeOutputStats([output], { deviceMismatch: true });
+
+    try {
+      await expect(processingService.watermarkAssets(project.id, [source.id], {
+        mode: 'patreon',
+        outputFormat: 'png',
+        deleteSource: false,
+      })).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+    } finally {
+      restoreCifsStats();
+    }
+
+    expect(fs.existsSync(output)).toBe(true);
+    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-watermark-'))).toEqual([]);
+  });
+
+  it('rejects inode-divergent output verification when the output size changes', async () => {
+    const source = await writeIndexedImage('Final/cifs-size-mismatch.png');
+    const output = path.join(projectDir, 'wm', 'cifs-size-mismatch_wm.png');
+    const resolvedOutput = path.resolve(output);
+    const realLstat = fs.lstatSync.bind(fs);
+    let spoofVerification = true;
+    const lstatSpy = vi.spyOn(fs, 'lstatSync').mockImplementation((filePath, ...args) => {
+      const stats = realLstat(filePath, ...args);
+      if (spoofVerification && typeof filePath === 'string' && path.resolve(filePath) === resolvedOutput) {
+        spoofVerification = false;
+        return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, {
+          ino: stats.ino + 1000000,
+          size: stats.size + 1,
+        });
+      }
+      return stats;
+    });
+
+    try {
+      await expect(processingService.watermarkAssets(project.id, [source.id], {
+        mode: 'patreon',
+        outputFormat: 'png',
+        deleteSource: false,
+      })).rejects.toMatchObject({
+        code: 'RECOVERY_REQUIRED',
+        message: 'Watermark output identity could not be verified.',
+      });
+    } finally {
+      lstatSpy.mockRestore();
+    }
+
+    expect(fs.existsSync(output)).toBe(false);
+    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-watermark-'))).toEqual([]);
+  });
+
+  it('rejects inode-divergent output verification when the output hash changes', async () => {
+    const source = await writeIndexedImage('Final/cifs-hash-mismatch.png');
+    const output = path.join(projectDir, 'wm', 'cifs-hash-mismatch_wm.png');
+    const replacementAnchor = path.join(projectDir, 'replacement-anchor');
+    const restoreCifsStats = mockCifsLikeOutputStats([output]);
+    const realLink = fs.linkSync.bind(fs);
+    let expectedHash;
+    const realUnlink = fs.unlinkSync.bind(fs);
+    const linkSpy = vi.spyOn(fs, 'linkSync').mockImplementation((sourcePath, targetPath) => {
+      const result = realLink(sourcePath, targetPath);
+      if (targetPath === output && sourcePath.includes('.creatorcrate-watermark-')) {
+        const size = fs.lstatSync(output).size;
+        expectedHash = sha256For(output);
+        realUnlink(output);
+        fs.writeFileSync(replacementAnchor, Buffer.alloc(size, 0x7f));
+        realLink(replacementAnchor, output);
+        realLink(sourcePath, sourcePath + '.reference');
+      }
+      return result;
+    });
+
+    try {
+      await expect(processingService.watermarkAssets(project.id, [source.id], {
+        mode: 'patreon',
+        outputFormat: 'png',
+        deleteSource: false,
+      })).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+    } finally {
+      linkSpy.mockRestore();
+      restoreCifsStats();
+    }
+
+    expect(fs.existsSync(output)).toBe(true);
+    expect(sha256For(output)).not.toBe(expectedHash);
+    expect(fs.readdirSync(projectDir).some((name) => name.startsWith('.creatorcrate-watermark-'))).toBe(true);
+  });
+
+  it('does not remove a replacement after verified hard-link fallback publication fails later', async () => {
+    const first = await writeIndexedImage('Final/cifs-replacement-first.png');
+    const second = await writeIndexedImage('Final/cifs-replacement-second.png');
+    const firstOutput = path.join(projectDir, 'wm', 'cifs-replacement-first_wm.png');
+    const secondOutput = path.join(projectDir, 'wm', 'cifs-replacement-second_wm.png');
+    const unexpectedReplacement = Buffer.from('unexpected replacement after fallback publication');
+    const restoreCifsStats = mockCifsLikeOutputStats([firstOutput, secondOutput]);
+    const realLink = fs.linkSync.bind(fs);
+    const realUnlink = fs.unlinkSync.bind(fs);
+    const linkSpy = vi.spyOn(fs, 'linkSync').mockImplementation((sourcePath, targetPath) => {
+      if (targetPath === secondOutput && sourcePath.includes('.creatorcrate-watermark-')) {
+        realUnlink(firstOutput);
+        fs.writeFileSync(firstOutput, unexpectedReplacement);
+        const error = new Error('injected later publication failure');
+        error.code = 'EIO';
+        throw error;
+      }
+      return realLink(sourcePath, targetPath);
+    });
+
+    try {
+      await expect(processingService.watermarkAssets(project.id, [first.id, second.id], {
+        mode: 'patreon',
+        outputFormat: 'png',
+        deleteSource: false,
+      })).rejects.toMatchObject({
+        code: 'RECOVERY_REQUIRED',
+        message: 'Watermarking changed the filesystem but could not safely complete or clean up. Inspect the project folder before scanning.',
+      });
+    } finally {
+      linkSpy.mockRestore();
+      restoreCifsStats();
+    }
+
+    expect(fs.readFileSync(firstOutput)).toEqual(unexpectedReplacement);
+    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-watermark-'))).toEqual([]);
+  });
+
+  it('preserves an overwrite backup when an unexpected replacement prevents restoration', async () => {
+    const source = await writeIndexedImage('Final/failed-restore-backup.png');
+    await processingService.watermarkAssets(project.id, [source.id], {
+      mode: 'patreon',
+      outputFormat: 'png',
+      deleteSource: false,
+    });
+
+    const output = path.join(projectDir, 'wm', 'failed-restore-backup_wm.png');
+    const previousOutput = fs.readFileSync(output);
+    const previousStats = fs.lstatSync(output);
+    const previousIdentity = { dev: previousStats.dev, ino: previousStats.ino };
+    const unexpectedReplacement = Buffer.from('unexpected replacement after watermark publication');
+    const realLink = fs.linkSync.bind(fs);
+    const realUnlink = fs.unlinkSync.bind(fs);
+    const realWriteFile = fs.writeFileSync.bind(fs);
+    let outputLinked = false;
+    const linkSpy = vi.spyOn(fs, 'linkSync').mockImplementation((sourcePath, targetPath) => {
+      const result = realLink(sourcePath, targetPath);
+      if (targetPath === output && sourcePath.includes('.creatorcrate-watermark-')) {
+        outputLinked = true;
+        realUnlink(output);
+        realWriteFile(output, unexpectedReplacement);
+      }
+      return result;
+    });
+
+    try {
+      await expect(processingService.watermarkAssets(project.id, [source.id], {
+        mode: 'patreon',
+        outputFormat: 'png',
+        deleteSource: false,
+        overwrite: true,
+      })).rejects.toMatchObject({
+        code: 'RECOVERY_REQUIRED',
+        message: 'Watermarking changed the filesystem but could not safely complete or clean up. Inspect the project folder before scanning.',
+      });
+    } finally {
+      linkSpy.mockRestore();
+    }
+
+    expect(outputLinked).toBe(true);
+    expect(fs.readFileSync(output)).toEqual(unexpectedReplacement);
+    const stagingDirs = fs.readdirSync(projectDir)
+      .filter((name) => name.startsWith('.creatorcrate-watermark-'));
+    expect(stagingDirs).toHaveLength(1);
+    const backup = path.join(projectDir, stagingDirs[0], '0.destination');
+    expect(fs.readFileSync(backup)).toEqual(previousOutput);
+    const backupStats = fs.lstatSync(backup);
+    expect({ dev: backupStats.dev, ino: backupStats.ino }).toEqual(previousIdentity);
   });
 
   it('restores an existing generated destination when overwrite indexing fails', async () => {

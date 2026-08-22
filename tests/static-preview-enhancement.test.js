@@ -1602,10 +1602,41 @@ function makeAssetSelectionForm({ enabledCheckboxes = [], selectedCount, release
 function makeAssetSelectionScope(form, cards = []) {
   return {
     querySelectorAll(selector) {
-      if (selector === '[data-asset-selection-form]') return [form];
-      if (selector.includes('selectedAssetIds')) return form.querySelectorAll(selector);
+      if (selector === '[data-asset-selection-form]') return form ? [form] : [];
+      if (selector.includes('selectedAssetIds')) return form?.querySelectorAll(selector) || [];
       if (selector === '[data-asset-selectable-card]') return cards;
       return [];
+    },
+  };
+}
+
+function makeSelectableAssetCard(checkbox) {
+  const listeners = [];
+  const attributes = {};
+  const classes = new Set();
+
+  return {
+    dataset: {},
+    listeners,
+    attributes,
+    classList: {
+      toggle(name, enabled) {
+        if (enabled) classes.add(name);
+        else classes.delete(name);
+      },
+    },
+    addEventListener(type, handler) {
+      listeners.push({ type, handler });
+    },
+    setAttribute(name, value) {
+      attributes[name] = String(value);
+    },
+    querySelector(selector) {
+      if (selector.includes('selectedAssetIds') && !checkbox.disabled) return checkbox;
+      return null;
+    },
+    contains(element) {
+      return element === this || element === checkbox;
     },
   };
 }
@@ -1715,16 +1746,73 @@ describe('category details in-place save enhancement', () => {
 });
 
 describe('page-local asset selection enhancement', () => {
-  it('is scoped to [data-asset-selection-form] and no-ops when absent', () => {
+  it('returns zero and no-ops when neither selection forms nor cards are present', () => {
     const scope = {
       querySelectorAll(selector) {
-        expect(selector).toBe('[data-asset-selection-form]');
+        expect([
+          '[data-asset-selection-form]',
+          '[data-asset-selectable-card]',
+        ]).toContain(selector);
         return [];
       },
     };
 
     expect(() => enhanceAssetSelection(scope)).not.toThrow();
     expect(enhanceAssetSelection(scope)).toBe(0);
+  });
+
+  it('binds eligible cards without a selection form and preserves a zero return count', () => {
+    const checkbox = makeCheckbox();
+    const card = makeSelectableAssetCard(checkbox);
+    const scope = makeAssetSelectionScope(null, [card]);
+
+    expect(enhanceAssetSelection(scope)).toBe(0);
+
+    card.listeners.find((entry) => entry.type === 'click').handler({ target: card });
+    expect(checkbox.checked).toBe(true);
+    expect(card.attributes['aria-selected']).toBe('true');
+  });
+
+  it('binds keyboard selection for eligible cards without a selection form', () => {
+    const checkbox = makeCheckbox();
+    const card = makeSelectableAssetCard(checkbox);
+    const scope = makeAssetSelectionScope(null, [card]);
+    let prevented = false;
+
+    enhanceAssetSelection(scope);
+
+    card.listeners.find((entry) => entry.type === 'keydown').handler({
+      target: card,
+      key: 'Enter',
+      preventDefault() { prevented = true; },
+    });
+
+    expect(prevented).toBe(true);
+    expect(checkbox.checked).toBe(true);
+  });
+
+  it('binds standalone cards only once across repeated enhancement', () => {
+    const checkbox = makeCheckbox();
+    const card = makeSelectableAssetCard(checkbox);
+    const scope = makeAssetSelectionScope(null, [card]);
+
+    enhanceAssetSelection(scope);
+    enhanceAssetSelection(scope);
+
+    expect(card.listeners.filter((entry) => entry.type === 'click')).toHaveLength(1);
+    expect(card.listeners.filter((entry) => entry.type === 'keydown')).toHaveLength(1);
+    card.listeners.find((entry) => entry.type === 'click').handler({ target: card });
+    expect(checkbox.checked).toBe(true);
+  });
+
+  it('leaves disabled card selection checkboxes non-interactive without a selection form', () => {
+    const checkbox = makeCheckbox({ disabled: true });
+    const card = makeSelectableAssetCard(checkbox);
+    const scope = makeAssetSelectionScope(null, [card]);
+
+    expect(enhanceAssetSelection(scope)).toBe(0);
+    expect(card.listeners).toHaveLength(0);
+    expect(checkbox.checked).toBe(false);
   });
 
   it('Select All checks only the enabled (present-asset) checkboxes', () => {

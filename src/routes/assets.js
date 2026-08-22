@@ -31,6 +31,7 @@ import {
   getNsfwFilterSettingsService,
   getOpenLocallySettingsService,
   getPageDefaultsService,
+  getProjectAssetsInheritedFilterDefaults,
   buildProjectAssetsDefaultOptionCatalogues,
   isEnhancedAssetRequest,
   parseCanonicalPositiveId,
@@ -1015,7 +1016,7 @@ export function createAssetsRouter({
 
           return res.status(status).render('projects/assets.njk', {
             appName,
-            ...buildBrowserRenderModel(project, data, pageDefaultsService, req, workflowQueryService),
+            ...buildBrowserRenderModel(project, data, pageDefaultsService, req, workflowQueryService, null, getProjectAssetsInheritedFilterDefaults(req.body)),
             query: {},
             error: null,
             archivedError: null,
@@ -1095,7 +1096,7 @@ export function createAssetsRouter({
           const normalizedSelection = normalizeSelectedAssetIds(body.selectedAssetIds);
           return res.status(status).render('projects/assets.njk', {
             appName,
-            ...buildBrowserRenderModel(project, data, pageDefaultsService, req, workflowQueryService),
+            ...buildBrowserRenderModel(project, data, pageDefaultsService, req, workflowQueryService, null, getProjectAssetsInheritedFilterDefaults(body)),
             query: {},
             error: null,
             archivedError: null,
@@ -1137,7 +1138,7 @@ export function createAssetsRouter({
           if (!data) return next(createNotFound());
           return res.status(status).render('projects/assets.njk', {
             appName,
-            ...buildBrowserRenderModel(project, data, pageDefaultsService, req, workflowQueryService),
+            ...buildBrowserRenderModel(project, data, pageDefaultsService, req, workflowQueryService, null, getProjectAssetsInheritedFilterDefaults(req.body)),
             query: {},
             error: null,
             archivedError: null,
@@ -1224,7 +1225,7 @@ export function createAssetsRouter({
           if (!data) return next(createNotFound());
           return res.status(status).render('projects/assets.njk', {
             appName,
-            ...buildBrowserRenderModel(project, data, pageDefaultsService, req, workflowQueryService),
+            ...buildBrowserRenderModel(project, data, pageDefaultsService, req, workflowQueryService, null, getProjectAssetsInheritedFilterDefaults(req.body)),
             query: {},
             error: null,
             archivedError: null,
@@ -1311,7 +1312,7 @@ export function createAssetsRouter({
           if (!data) return next(createNotFound());
           return res.status(status).render('projects/assets.njk', {
             appName,
-            ...buildBrowserRenderModel(project, data, pageDefaultsService, req, workflowQueryService),
+            ...buildBrowserRenderModel(project, data, pageDefaultsService, req, workflowQueryService, null, getProjectAssetsInheritedFilterDefaults(body)),
             query: {},
             error: null,
             archivedError: null,
@@ -1410,10 +1411,18 @@ function buildProjectAssetsDefaultsSuccessUrl(req, projectId, values) {
     const value = values?.[key];
     if (value !== undefined) url.searchParams.set(key, String(value));
   }
+  const inheritedFilterDefaults = [];
   for (const key of ['tag', 'extension']) {
     url.searchParams.delete(key);
     const value = values?.[key];
-    if (value !== undefined && value !== 'all') url.searchParams.set(key, String(value));
+    if (value !== undefined && value !== 'all') {
+      url.searchParams.set(key, String(value));
+      inheritedFilterDefaults.push(key);
+    }
+  }
+  url.searchParams.delete('inheritedFilterDefaults');
+  if (inheritedFilterDefaults.length > 0) {
+    url.searchParams.set('inheritedFilterDefaults', inheritedFilterDefaults.join(','));
   }
   url.searchParams.set('notice', 'project_assets_defaults_saved');
   return `${url.pathname}?${url.searchParams.toString()}`;
@@ -1834,7 +1843,7 @@ function renderAutoRenameBrowserError({
 
   return res.status(status).render('projects/assets.njk', {
     appName,
-    ...buildBrowserRenderModel(project, data, pageDefaultsService, req, workflowQueryService),
+    ...buildBrowserRenderModel(project, data, pageDefaultsService, req, workflowQueryService, null, getProjectAssetsInheritedFilterDefaults(returnContext)),
     query: {},
     error: null,
     archivedError: null,
@@ -2481,7 +2490,7 @@ function handleAssetBrowserActionFailure(err, {
 
   return res.status(status).render('projects/assets.njk', {
     appName,
-    ...buildBrowserRenderModel(project, data, pageDefaultsService, req, workflowQueryService),
+    ...buildBrowserRenderModel(project, data, pageDefaultsService, req, workflowQueryService, null, getProjectAssetsInheritedFilterDefaults(req.body)),
     query: {},
     error: null,
     archivedError: null,
