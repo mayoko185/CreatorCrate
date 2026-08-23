@@ -1,7 +1,10 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
+{% import "partials/icons.njk" as icons %}
 {% import "partials/asset-presentation.njk" as assetCards %}
 {% import "partials/view-switcher.njk" as viewSwitcher %}
+{% import "partials/release-edit-dialog.njk" as releaseEditDialog %}
+{% import "partials/release-publish-dialog.njk" as releasePublishDialog %}
 
 {% set page_title = "Releases — " ~ release.title %}
 
@@ -30,7 +33,7 @@
 {% endmacro %}
 
 {% macro releaseListCard(asset) %}
-  {% call(slot) assetCards.listCard(asset) %}
+  {% call(slot) assetCards.listCard(asset, { cardClass: 'asset-list-card--release', headerStatusDetails: true, hideActions: true }) %}
     {% if slot == 'associations' %}
       {{ releaseAssetMetadata(asset, false) }}
     {% endif %}
@@ -42,23 +45,17 @@
   {% set releaseArchived = release and release.archived_at %}
   {% set isPublished = release and release.published_date %}
   {% set isArchived = projectArchived or releaseArchived %}
-  {% if not projectArchived and not releaseArchived %}
-    {% call pageHeading.render("Release record") %}
-      {% if not isPublished %}
-        <a class="button button-primary" href="/releases/{{ release.id }}/publish">Review &amp; Publish</a>
-        <a class="button" href="/releases/{{ release.id }}/assets">Manage Assets</a>
-      {% endif %}
-      <a class="button" href="/releases/{{ release.id }}/edit">Edit</a>
-      {% if project and project.id %}
-        <a class="button button-secondary" href="/projects/{{ project.id }}">Back to Project</a>
-      {% endif %}
-    {% endcall %}
+  {% set projectLeadHref = "/projects/" ~ project.id if project and project.id else "" %}
+  {% set projectLeadLabel = "Project: " ~ project.title if project else "" %}
+  {% if isArchived %}
+    {{ pageHeading.render("", "archived", "Archived", projectLeadHref, projectLeadLabel) }}
   {% else %}
-    {% call pageHeading.render("Release record", "archived", "Archived") %}
-      {% if project and project.id %}
-        <a class="button button-secondary" href="/projects/{{ project.id }}">Back to Project</a>
+    {% call pageHeading.render("", "", "", projectLeadHref, projectLeadLabel) %}
+      {% if not isPublished %}
+        <a class="button button-primary" href="/releases/{{ release.id }}/publish" data-dialog-open="release-publish-dialog">Review &amp; Publish</a>
       {% endif %}
     {% endcall %}
+
   {% endif %}
 
   {% if projectArchived %}
@@ -85,131 +82,161 @@
     </div>
   {% endif %}
 
-  {# ─── Release identity ───────────────────────────────────────────── #}
-  <section>
-    <dl class="detail-list">
-      {% if project %}
-        <dt>Project</dt>
-        <dd><a href="/projects/{{ project.id }}">{{ project.title }}</a></dd>
-      {% endif %}
+  <div class="project-detail-summary">
+    {% if not isArchived %}
+      <div class="project-detail-meta">
+        <nav class="project-detail-action-toolbar" aria-label="Release actions">
+          {% if not isPublished %}
+            <a class="button button-small button-secondary project-detail-action asset-tooltip asset-tooltip--right"
+               href="/releases/{{ release.id }}/assets" aria-label="Manage Assets" data-tooltip="Manage Assets">
+              {{ icons.icon('assets') }}
+            </a>
+          {% endif %}
+          <a class="button button-small button-secondary project-detail-action asset-tooltip asset-tooltip--right"
+             href="/releases/{{ release.id }}/edit" data-dialog-open="release-edit-dialog" aria-label="Edit release" data-tooltip="Edit release">
+            {{ icons.icon('edit') }}
+          </a>
+        </nav>
+      </div>
+    {% endif %}
 
-      <dt>Project status</dt>
-      <dd>{% set status = project.status if project else release.project_status %}{% include "partials/status-badge.njk" %}</dd>
+  {# ─── Release details ───────────────────────────────────────────── #}
+  <section class="project-detail-info project-detail-section">
+    <h2>Release details</h2>
+    <div class="project-detail-section-body">
+      <div class="project-detail-meta">
+        {% set status = project.status if project else release.project_status %}{% include "partials/status-badge.njk" %}
+        {% if isPublished %}
+          <span class="status-badge status-badge--success">Published</span>
+        {% endif %}
+      </div>
+      <dl class="detail-list release-detail-list">
+        {% if project %}
+          <dt>Project</dt>
+          <dd><a href="/projects/{{ project.id }}">{{ project.title }}</a></dd>
+        {% endif %}
 
-      {% if release.planned_date %}
-        <dt>Planned date</dt>
-        <dd>{{ release.planned_date }} <small>(release target)</small></dd>
-      {% endif %}
+        {% if release.planned_date %}
+          <dt>Planned date</dt>
+          <dd>{{ release.planned_date }} <small>(release target)</small></dd>
+        {% endif %}
 
-      {% if release.published_date %}
-        <dt>Published date</dt>
-        <dd>{{ release.published_date }} <small>(release published)</small></dd>
-      {% endif %}
+        {% if release.published_date %}
+          <dt>Published date</dt>
+          <dd>{{ release.published_date }} <small>(release published)</small></dd>
+        {% endif %}
 
-      {% if release.patreon_url %}
-        <dt>Release link</dt>
-        <dd><a href="{{ release.patreon_url }}" target="_blank" rel="noopener">{{ release.patreon_url }}</a> <small>(release link)</small></dd>
-      {% endif %}
+        {% if release.patreon_url %}
+          <dt>Release link</dt>
+          <dd><a href="{{ release.patreon_url }}" target="_blank" rel="noopener">{{ release.patreon_url }}</a> <small>(release link)</small></dd>
+        {% endif %}
 
-      <dt>Created</dt>
-      <dd>{{ release.created_at }}</dd>
+        <dt>Created</dt>
+        <dd>{{ release.created_at }}</dd>
 
-      <dt>Updated</dt>
-      <dd>{{ release.updated_at }}</dd>
+        <dt>Updated</dt>
+        <dd>{{ release.updated_at }}</dd>
 
-      {% if release.archived_at %}
-        <dt>Archived</dt>
-        <dd>{{ release.archived_at }}</dd>
-      {% endif %}
-    </dl>
-  </section>
+        {% if release.archived_at %}
+          <dt>Archived</dt>
+          <dd>{{ release.archived_at }}</dd>
+        {% endif %}
 
-  {# ─── Assets ──────────────────────────────────────────────────────── #}
-  <section>
-    <h2>Assets</h2>
-    <p>
-      <span class="meta">{{ assetCount }} asset{% if assetCount != 1 %}s{% endif %} selected</span>
-    </p>
+        <dt>Selected assets</dt>
+        <dd>{{ assetCount }}</dd>
+      </dl>
+    </div>
   </section>
 
   {% if release.description %}
-    <section>
+    <section class="project-detail-section">
       <h2>Description</h2>
-      <p class="description">{{ release.description }}</p>
+      <div class="project-detail-section-body">
+        <p class="description">{{ release.description }}</p>
+      </div>
     </section>
   {% endif %}
 
   {% if release.notes %}
-    <section>
+    <section class="project-detail-section">
       <h2>Notes</h2>
-      <p class="notes">{{ release.notes }}</p>
+      <div class="project-detail-section-body">
+        <p class="notes">{{ release.notes }}</p>
+      </div>
     </section>
   {% endif %}
 
   <section>
     <h2>Selected Assets</h2>
-    {% set selectedAssets = assetPresentation.selected or [] %}
-    {% if selectedAssets.length > 0 %}
-      <div class="asset-viewer-display-controls">
-        {{ viewSwitcher.render(view, pageUrl, "Asset display") }}
-      </div>
-      {% if view == 'grid' %}
-        <ul class="asset-grid" role="listbox" aria-label="Selected release assets">
-          {% for asset in selectedAssets %}
-            <li class="asset-grid-item{% if not asset.is_present %} is-missing{% endif %}">
-              {{ releaseGridCard(asset) }}
-            </li>
-          {% endfor %}
-        </ul>
+    <div class="project-detail-section-body">
+      {% set selectedAssets = assetPresentation.selected or [] %}
+      {% if selectedAssets.length > 0 %}
+        <div class="asset-viewer-display-controls">
+          {{ viewSwitcher.render(view, pageUrl, "Asset display") }}
+        </div>
+        {% if view == 'grid' %}
+          <ul class="asset-grid" role="listbox" aria-label="Selected release assets">
+            {% for asset in selectedAssets %}
+              <li class="asset-grid-item{% if not asset.is_present %} is-missing{% endif %}">
+                {{ releaseGridCard(asset) }}
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <ul class="asset-list asset-list--release" role="list" aria-label="Selected release assets">
+            {% for asset in selectedAssets %}
+              <li class="asset-list-item{% if not asset.is_present %} is-missing{% endif %}">
+                {{ releaseListCard(asset) }}
+              </li>
+            {% endfor %}
+          </ul>
+        {% endif %}
       {% else %}
-        <ul class="asset-list asset-list--release" role="list" aria-label="Selected release assets">
-          {% for asset in selectedAssets %}
-            <li class="asset-list-item{% if not asset.is_present %} is-missing{% endif %}">
-              {{ releaseListCard(asset) }}
-            </li>
-          {% endfor %}
-        </ul>
+        {% set emptyHeading = "No assets selected" %}
+        {% set emptyDescription = "No assets are associated with this release." %}
+        {% set emptyHeadingLevel = "h3" %}
+        {% include "partials/empty-state.njk" %}
       {% endif %}
-    {% else %}
-      {% set emptyHeading = "No assets selected" %}
-      {% set emptyDescription = "No assets are associated with this release." %}
-      {% set emptyHeadingLevel = "h3" %}
-      {% include "partials/empty-state.njk" %}
-    {% endif %}
+    </div>
   </section>
 
   {# ─── Published summary ──────────────────────────────────────────── #}
   {% if isPublished and not isArchived %}
-    <section class="panel panel--summary">
+    <section class="project-detail-section">
       <h2>Publication Summary</h2>
-      <p class="publication-summary-badge publication-summary-published">Published</p>
-      <ul class="publication-summary-checks">
-        <li class="publication-summary-check publication-summary-check-passed">
-          <span class="publication-summary-check-icon">&#10003;</span>
-          <span class="publication-summary-check-label">Asset selection locked</span>
-          <span class="publication-summary-check-detail">The selected assets, roles, and order are final</span>
-        </li>
-        <li class="publication-summary-check publication-summary-check-passed">
-          <span class="publication-summary-check-icon">&#10003;</span>
-          <span class="publication-summary-check-label">Published date</span>
-          <span class="publication-summary-check-detail">{{ release.published_date }}</span>
-        </li>
-      </ul>
-      <p class="publication-summary-note">
-        Asset presence reflects the last completed scan. This page is not performing a live filesystem check.
-      </p>
+      <div class="project-detail-section-body">
+        <p class="publication-summary-badge publication-summary-published">Published</p>
+        <ul class="publication-summary-checks">
+          <li class="publication-summary-check publication-summary-check-passed">
+            <span class="publication-summary-check-icon">&#10003;</span>
+            <span class="publication-summary-check-label">Asset selection locked</span>
+            <span class="publication-summary-check-detail">The selected assets, roles, and order are final</span>
+          </li>
+          <li class="publication-summary-check publication-summary-check-passed">
+            <span class="publication-summary-check-icon">&#10003;</span>
+            <span class="publication-summary-check-label">Published date</span>
+            <span class="publication-summary-check-detail">{{ release.published_date }}</span>
+          </li>
+        </ul>
+        <p class="publication-summary-note">
+          Asset presence reflects the last completed scan. This page is not performing a live filesystem check.
+        </p>
+      </div>
     </section>
   {% endif %}
 
-  {# ─── Destructive action separated from primary actions ──────────── #}
-  {% if not projectArchived and not releaseArchived and not isPublished %}
-    <section class="destructive-section">
-      <h3>Danger zone</h3>
-      <p>Archiving a release makes it read-only. This cannot be undone.</p>
-      <form method="post" action="/releases/{{ release.id }}/archive" class="inline-form">
-        <input type="hidden" name="_csrf" value="{{ _csrf }}">
-        <button class="button button-danger" type="submit" data-confirm="Archive this release? This cannot be undone.">Archive release</button>
-      </form>
-    </section>
+  </div>
+{% endblock %}
+
+{% block overlay %}
+  {% set overlayIsArchived = release.archived_at or (project and project.archived_at) %}
+  {% set overlayIsPublished = release.published_date %}
+
+  {% if not overlayIsArchived %}
+    {{ releaseEditDialog.render(release, editDialogForm, _csrf, editDialogOpen) }}
+  {% endif %}
+
+  {% if not overlayIsArchived and not overlayIsPublished %}
+    {{ releasePublishDialog.render(release, project, releaseAssets, publishDialogForm, _csrf, publishDialogOpen) }}
   {% endif %}
 {% endblock %}

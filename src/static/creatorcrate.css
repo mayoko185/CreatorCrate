@@ -1961,6 +1961,14 @@
         overflow-wrap: anywhere;
         word-break: break-word;
       }
+      .asset-card-title-text.asset-file-link,
+      .asset-card-title-text.asset-file-link:visited {
+        color: var(--text);
+      }
+      .asset-card-title-text.asset-file-link:hover,
+      .asset-card-title-text.asset-file-link:focus-visible {
+        color: var(--accent);
+      }
       .asset-card-location,
       .asset-card-meta,
       .asset-card-usage {
@@ -2277,14 +2285,9 @@
         z-index: 20;
       }
       .asset-viewer-filters--project-assets,
-      .asset-viewer-filters--asset-viewer {
+      .asset-viewer-filters--asset-viewer,
+      .asset-viewer-filters--releases {
         padding-inline-end: calc(var(--space-lg) + 1.6rem);
-      }
-      .asset-viewer-filters--project-assets {
-        border: 1px solid var(--border);
-        border-radius: var(--radius-lg);
-      }
-      .asset-viewer-filters--asset-viewer {
         border: 1px solid var(--border);
         border-radius: var(--radius-lg);
       }
@@ -4274,7 +4277,10 @@
         padding-bottom: var(--space-lg);
       }
       #project-edit-dialog,
-      #project-create-dialog {
+      #project-create-dialog,
+      #release-create-dialog,
+      #release-edit-dialog,
+      #release-publish-dialog {
         width: min(51rem, calc(100vw - 2rem));
         max-width: calc(100vw - 2rem);
       }
@@ -4780,12 +4786,6 @@
         gap: var(--space-md);
         justify-content: center;
         flex-wrap: wrap;
-      }
-      .board-column .empty-state {
-        padding: var(--space-md);
-      }
-      .board-column .empty-state .empty-state-heading {
-        font-size: 0.875rem;
       }
 
       /* ── Data tables ── */
@@ -5482,17 +5482,6 @@
         outline: 2px solid var(--focus-ring);
         outline-offset: -2px;
       }
-      .board-scroll {
-        overflow-x: auto;
-        overflow-y: hidden;
-        -webkit-overflow-scrolling: touch;
-        contain: inline-size;
-        margin: var(--space-lg) 0;
-      }
-      .board-scroll:focus-visible {
-        outline: 2px solid var(--focus-ring);
-        outline-offset: -2px;
-      }
       .calendar-scroll {
         overflow-x: auto;
         overflow-y: hidden;
@@ -5505,25 +5494,11 @@
         outline-offset: -2px;
       }
       .table-scroll,
-      .board-scroll,
       .calendar-scroll {
         min-width: 0;
         max-width: 100%;
       }
 
-      /* ═══ Phase 10.5C: Release list and board ═══ */
-      .board-filters {
-        margin-bottom: var(--space-lg);
-        padding: var(--space-lg);
-        background: var(--surface);
-        border-radius: var(--radius-lg);
-      }
-      .board-filters form {
-        display: flex;
-        gap: var(--space-lg);
-        align-items: flex-end;
-        flex-wrap: wrap;
-      }
       .field--checkbox {
         flex-direction: row;
         align-items: center;
@@ -5532,88 +5507,6 @@
       }
       .field--checkbox label {
         min-width: auto;
-      }
-      .board-container {
-        display: grid;
-        grid-template-columns: repeat(6, 1fr);
-        gap: var(--space-lg);
-        min-width: 72rem;
-      }
-      .board-column {
-        background: var(--surface);
-        border-radius: var(--radius-lg);
-        padding: var(--space-md);
-        min-width: 12rem;
-      }
-      .board-column-header {
-        margin: 0 0 var(--space-md) 0;
-        padding: var(--space-xs) var(--space-sm);
-        border-radius: var(--radius-sm);
-        font-size: 0.875rem;
-        display: flex;
-        align-items: center;
-        gap: var(--space-xs);
-      }
-      .board-column-header .count {
-        color: var(--muted);
-        font-weight: normal;
-      }
-      .board-column-content {
-        display: flex;
-        flex-direction: column;
-        gap: var(--space-sm);
-      }
-      .board-card {
-        background: var(--bg);
-        border-radius: var(--radius-md);
-        padding: var(--space-sm);
-        font-size: 0.8rem;
-      }
-      .board-card.archived {
-        opacity: 0.65;
-      }
-      .card-title {
-        font-weight: 600;
-        margin-bottom: 0.25rem;
-        overflow-wrap: anywhere;
-        word-break: break-word;
-      }
-      .card-title a {
-        color: var(--text);
-        text-decoration: none;
-      }
-      .card-title a:visited {
-        color: var(--text);
-      }
-      .card-title a:hover {
-        color: var(--accent);
-      }
-      .card-project {
-        color: var(--muted);
-        font-size: 0.75rem;
-        margin-bottom: 0.25rem;
-      }
-      .card-meta {
-        display: flex;
-        flex-direction: column;
-        gap: 0.25rem;
-        color: var(--muted);
-        font-size: 0.75rem;
-      }
-      .card-date.unspecified {
-        font-style: italic;
-        opacity: 0.7;
-      }
-      .card-assets {
-        display: flex;
-        gap: 0.25rem;
-        align-items: center;
-      }
-      .board-empty {
-        color: var(--muted);
-        font-size: 0.8rem;
-        text-align: center;
-        padding: var(--space-lg);
       }
       /* ═══ Phase 13.3: Release calendar — dense console grid (Concept D) ═══ */
       .calendar-nav {
@@ -5868,32 +5761,6 @@
       }
 
       /* ═══ Phase 10.5C: Release asset curation ═══ */
-      .role-guidance {
-        margin-bottom: var(--space-xl);
-      }
-      .role-guidance h2 {
-        margin-top: 0;
-      }
-      .role-descriptions {
-        display: grid;
-        grid-template-columns: minmax(0, 8rem) minmax(0, 1fr);
-        gap: var(--space-sm) var(--space-lg);
-      }
-      .role-descriptions dt {
-        font-weight: 600;
-        color: var(--text);
-        min-width: 0;
-      }
-      .role-descriptions dd {
-        margin: 0;
-        color: var(--muted);
-        min-width: 0;
-        overflow-wrap: anywhere;
-        word-break: break-word;
-      }
-      .role-entry {
-        display: contents;
-      }
       .release-asset-actions {
         justify-content: flex-start;
         flex-wrap: wrap;
@@ -5976,24 +5843,8 @@
         }
       }
       @media (max-width: 540px) {
-        .board-filters form {
-          flex-direction: column;
-        }
-        .board-filters .field {
-          min-width: 0;
-          width: 100%;
-        }
         .release-asset-actions .button-small {
           min-height: 2rem;
-        }
-        .role-descriptions {
-          grid-template-columns: minmax(0, 1fr);
-        }
-        .role-entry {
-          display: block;
-        }
-        .role-entry + .role-entry {
-          margin-top: var(--space-sm);
         }
       }
 
@@ -6871,6 +6722,9 @@
       .project-detail-info .detail-list {
         margin: 0;
       }
+      .release-detail-list {
+        grid-template-columns: minmax(0, 8rem) minmax(0, 1fr) minmax(0, 8rem) minmax(0, 1fr);
+      }
       .project-detail-releases {
         margin-bottom: var(--space-xl);
       }
@@ -6920,6 +6774,11 @@
       @media (max-width: 767px) {
         .project-detail-hero {
           grid-template-columns: 1fr;
+        }
+      }
+      @media (max-width: 767px) {
+        .release-detail-list {
+          grid-template-columns: minmax(0, 1fr);
         }
       }
 
@@ -7234,12 +7093,6 @@
         outline-offset: 2px;
       }
 
-      /* ── Long-content containment ── */
-      .board-card {
-        min-width: 0;
-        overflow-wrap: anywhere;
-        word-break: break-word;
-      }
 
       /* ── Form error state does not shift layout ── */
       .field-error input,
@@ -7263,14 +7116,6 @@
         word-break: break-word;
       }
 
-      /* ── Board column overflow ── */
-      .board-column {
-        min-width: 0;
-        overflow-wrap: anywhere;
-      }
-      .board-column-content {
-        min-width: 0;
-      }
 
       /* ── Attention group headings ── */
       .attention-group h3 {

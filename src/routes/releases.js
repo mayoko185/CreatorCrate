@@ -18,16 +18,13 @@ import {
 const SORT_OPTIONS = ['updated', 'created', 'planned', 'title'];
 const PAGE_SIZE = 25;
 const RELEASES_PAGE_DEFAULTS = 'releases';
-const RELEASE_MANAGEMENT_PAGE_DEFAULTS = 'releaseManagement';
 const RELEASE_ASSET_DEFAULT_VIEW = 'grid';
 const RELEASES_DEFAULT_LABELS = Object.freeze({
   fields: Object.freeze({
-    view: 'View',
     sort: 'Sort',
     order: 'Order',
   }),
   options: Object.freeze({
-    view: Object.freeze({ list: 'List', board: 'Board' }),
     sort: Object.freeze({
       planned: 'Planned',
       updated: 'Updated',
@@ -41,17 +38,17 @@ const RELEASES_NOTICES = Object.freeze({
   defaultsSaved: 'Releases defaults saved successfully.',
 });
 
-export { handleReleaseListOrBoard, buildPageUrl, buildCreateReleaseFormModel };
+export { handleReleaseList, buildPageUrl, buildCreateReleaseFormModel };
 
 export function createReleasesRouter({ appName, db, releaseService, projectService, workflowQueryService }) {
   const router = express.Router();
 
-  // GET /releases — release-record list or board.
+  // GET /releases — release-record list.
   router.get('/', (req, res, next) => {
-    handleReleaseListOrBoard(req, res, next, {
+    handleReleaseList(req, res, next, {
       appName,
+      projectService,
       workflowQueryService,
-      pageDefaultsKey: RELEASES_PAGE_DEFAULTS,
     });
   });
 
@@ -63,10 +60,10 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
       successMessage: RELEASES_NOTICES.defaultsSaved,
       saveErrorMessage: 'Releases defaults could not be saved. No changes were made.',
       onValidationError: ({ submittedValues, errors }) => {
-        handleReleaseListOrBoard(req, res, next, {
+        handleReleaseList(req, res, next, {
           appName,
+          projectService,
           workflowQueryService,
-          pageDefaultsKey: RELEASES_PAGE_DEFAULTS,
           status: 422,
           defaultsDialogOpen: true,
           defaultsSubmittedValues: submittedValues,
@@ -78,7 +75,6 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
       },
       onSuccess: ({ validatedValues }) => {
         const params = new URLSearchParams({
-          view: validatedValues.view,
           sort: validatedValues.sort,
           order: validatedValues.order,
           notice: 'releases_defaults_saved',
@@ -159,12 +155,12 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
           errors.general = selectedAssetError;
         }
 
-        res.status(422).render('releases/form.njk', buildCreateReleaseFormModel({
+        renderReleaseCreateError(req, res, next, {
           appName,
           projectService,
-          values: body,
+          workflowQueryService,
           errors,
-        }));
+        });
         return;
       }
       next(err);
@@ -215,18 +211,7 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
       return res.redirect(`/releases/${id}`);
     }
 
-    const { rows: projects } = projectService.list({ includeArchived: false, limit: 100 });
-
-    res.render('releases/form.njk', {
-      appName,
-      release,
-      values: releaseToFormValues(release),
-      errors: {},
-      projects,
-      selectedProjectId: release.project_id,
-      action: 'Edit',
-      submitUrl: `/releases/${id}`,
-    });
+    return res.redirect(`/releases/${id}?edit=1`);
   });
 
   // POST /releases/:id — Update a release
@@ -249,17 +234,24 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
       }
       if (err instanceof ReleaseValidationError) {
         const existing = releaseService.findRelease(id);
-        const { rows: projects } = projectService.list({ includeArchived: false, limit: 100 });
-        res.status(422).render('releases/form.njk', {
+        if (!existing) {
+          return next(createNotFound());
+        }
+        const project = projectService.findById(existing.project_id);
+        const releaseAssets = releaseService.listReleaseAssets(id);
+        res.status(422).render('releases/detail.njk', buildReleaseDetailRenderModel({
           appName,
-          release: existing || { id },
-          values: omitLegacyStatusField(req.body),
-          errors: err.errors || { general: err.message },
-          projects,
-          selectedProjectId: req.body.projectId || (existing ? existing.project_id : null),
-          action: 'Edit',
-          submitUrl: `/releases/${id}`,
-        });
+          releaseService,
+          release: existing,
+          project,
+          releaseAssets,
+          req,
+          editDialogOpen: true,
+          editDialogForm: {
+            values: omitLegacyStatusField(req.body),
+            errors: err.errors || { general: err.message },
+          },
+        }));
         return;
       }
       if (err instanceof ReleaseArchivedError || err instanceof ReleaseParentArchivedError) {
@@ -284,7 +276,7 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
     }
   });
 
-  // GET /releases/:id/publish — Publication review page (Phase 8-3)
+  // GET /releases/:id/publish — Open the detail-hosted publication dialog.
   router.get('/:id/publish', (req, res, next) => {
     const id = parseId(req.params.id);
     if (id === null) {
@@ -306,21 +298,7 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
       return res.redirect(`/releases/${id}`);
     }
 
-    const releaseAssets = releaseService.listReleaseAssets(id);
-
-    // Resolve publication date for prefill: persisted date, otherwise local today
-    const today = getLocalTodayIso();
-    const prefillDate = release.published_date || today;
-
-    res.render('releases/publish.njk', {
-      appName,
-      release,
-      project,
-      releaseAssets,
-      assetCount: releaseAssets.length,
-      prefillDate,
-      errors: {},
-    });
+    return res.redirect(`/releases/${id}?publish=1`);
   });
 
   // POST /releases/:id/publish — Publish a release
@@ -357,15 +335,33 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
         const today = getLocalTodayIso();
         const prefillDate = submittedDate || release.published_date || today;
 
-        res.status(422).render('releases/publish.njk', {
+        const errors = err.errors || { general: err.message };
+        if (release.published_date != null) {
+          res.status(422).render('releases/detail.njk', buildReleaseDetailRenderModel({
+            appName,
+            releaseService,
+            release,
+            project,
+            releaseAssets,
+            req,
+            errors,
+          }));
+          return;
+        }
+
+        res.status(422).render('releases/detail.njk', buildReleaseDetailRenderModel({
           appName,
+          releaseService,
           release,
           project,
           releaseAssets,
-          assetCount: releaseAssets.length,
-          prefillDate,
-          errors: err.errors || { general: err.message },
-        });
+          req,
+          publishDialogOpen: true,
+          publishDialogForm: {
+            prefillDate,
+            errors,
+          },
+        }));
         return;
       }
       if (err instanceof ReleaseArchivedError || err instanceof ReleaseParentArchivedError) {
@@ -463,17 +459,17 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
         if (!existing) {
           return next(createNotFound());
         }
-        const { rows: projects } = projectService.list({ includeArchived: false, limit: 100 });
-        res.status(422).render('releases/form.njk', {
+        const project = projectService.findById(existing.project_id);
+        const releaseAssets = releaseService.listReleaseAssets(id);
+        res.status(422).render('releases/detail.njk', buildReleaseDetailRenderModel({
           appName,
+          releaseService,
           release: existing,
-          values: releaseToFormValues(existing),
+          project,
+          releaseAssets,
+          req,
           errors: { general: err.message },
-          projects,
-          selectedProjectId: existing.project_id,
-          action: 'Edit',
-          submitUrl: `/releases/${id}`,
-        });
+        }));
         return;
       }
       next(err);
@@ -574,8 +570,7 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
       }
 
       releaseService.selectAssets(id, selections, { membershipOnly });
-      const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query);
-      res.redirect(buildAssetRedirectUrl(id, viewModel, req.query));
+      res.redirect(`/releases/${id}`);
     } catch (err) {
       if (err instanceof ReleaseNotFoundError) {
         return next(createNotFound());
@@ -827,99 +822,90 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
   return router;
 }
 
+function readReleaseCreateDialogHost(body) {
+  return body?.returnTo === '/releases' ? '/releases' : null;
+}
+
+function renderReleaseCreateError(req, res, next, {
+  appName,
+  projectService,
+  workflowQueryService,
+  errors,
+}) {
+  const releaseCreateForm = buildCreateReleaseFormModel({
+    appName,
+    projectService,
+    values: req.body,
+    errors,
+  });
+
+  if (readReleaseCreateDialogHost(req.body)) {
+    handleReleaseList(req, res, next, {
+      appName,
+      projectService,
+      workflowQueryService,
+      status: 422,
+      releaseCreateDialogOpen: true,
+      releaseCreateForm,
+      allowSavedDefaultsRedirect: false,
+      notice: null,
+      pagePath: '/',
+    });
+    return;
+  }
+
+  res.status(422).render('releases/form.njk', releaseCreateForm);
+}
+
 /**
- * Shared GET / handler for the release list/board view. Reused by both the
- * /releases router and the /release-management router so the filtering,
- * sorting, pagination, and board-grouping contract stays identical across
- * both mount points — only the mount point and page-default key differ.
+ * GET /releases list handler.
  * @param {import('express').Request} req
  * @param {import('express').Response} res
  * @param {import('express').NextFunction} next
- * @param {object} deps - { appName, workflowQueryService, pageDefaultsKey }
+ * @param {object} deps - { appName, projectService, workflowQueryService }
  */
-function handleReleaseListOrBoard(
+function handleReleaseList(
   req,
   res,
   next,
   {
     appName,
+    projectService,
     workflowQueryService,
-    pageDefaultsKey = RELEASE_MANAGEMENT_PAGE_DEFAULTS,
     status = 200,
-    defaultsDialogOpen = pageDefaultsKey === RELEASES_PAGE_DEFAULTS && req.query?.defaults === '1',
+    releaseCreateDialogOpen = false,
+    releaseCreateForm = null,
+    defaultsDialogOpen = req.query?.defaults === '1',
     defaultsSubmittedValues = null,
     defaultsErrors = {},
-    allowSavedDefaultsRedirect = pageDefaultsKey !== RELEASES_PAGE_DEFAULTS || req.query?.defaults !== '1',
-    notice = pageDefaultsKey === RELEASES_PAGE_DEFAULTS ? resolveReleasesNotice(req.query?.notice) : null,
+    allowSavedDefaultsRedirect = req.query?.defaults !== '1',
+    notice = resolveReleasesNotice(req.query?.notice),
     pagePath = req.path,
   },
 ) {
   try {
-    const pageDefaultsService = getReleasePageDefaultsService(req, pageDefaultsKey);
+    const pageDefaultsService = getReleasePageDefaultsService(req, RELEASES_PAGE_DEFAULTS);
     const rawQuery = req.query && typeof req.query === 'object' ? req.query : {};
     const normalizedRawQuery = omitLegacyStatusField(rawQuery);
-    const presentation = resolveReleasePresentation(normalizedRawQuery, pageDefaultsService, pageDefaultsKey);
+    const presentation = resolveReleasePresentation(normalizedRawQuery, pageDefaultsService, RELEASES_PAGE_DEFAULTS);
     const effectiveQuery = {
       ...normalizedRawQuery,
       sort: presentation.sort,
       order: presentation.order,
     };
     const normalizedFilters = workflowQueryService.normalizeListFilters(effectiveQuery);
+    const projectOptions = workflowQueryService.getProjectsPageFilterOptions(normalizedFilters.projectId);
     const basePath = req.baseUrl;
     const pageUrlRequest = pagePath === req.path ? req : { baseUrl: req.baseUrl, path: pagePath };
 
-    if (presentation.view === 'board') {
-      const { columns, today } = workflowQueryService.getReleaseBoard(effectiveQuery);
-      const urlQuery = buildReleaseManagementUrlQuery(normalizedRawQuery, normalizedFilters, presentation);
-      if (allowSavedDefaultsRedirect && shouldRedirectToSavedReleaseManagementDefaults(
-        normalizedRawQuery,
-        presentation,
-        { preserveDefaultsDialog: pageDefaultsKey === RELEASES_PAGE_DEFAULTS },
-      )) {
-        return res.redirect(buildPageUrl(pageUrlRequest, urlQuery)({}));
-      }
-      const pageUrl = buildPageUrl(pageUrlRequest, urlQuery);
-      const query = buildReleaseManagementRenderQuery(normalizedFilters, presentation);
-      const clearUrl = buildPageUrl(
-        pageUrlRequest,
-        buildReleaseManagementUrlQuery(
-          normalizedRawQuery,
-          normalizedFilters,
-          presentation,
-          normalizedFilters.page,
-          { includeImplicitView: false },
-        ),
-      )(buildReleaseManagementClearOverrides());
-
-      return res.status(status).render('releases/index.njk', {
-        appName,
-        view: 'board',
-        columns,
-        today,
-        query,
-        pageUrl,
-        clearUrl,
-        basePath,
-        releasesLiveFiltering: true,
-        releasesSurface: pageDefaultsKey === RELEASES_PAGE_DEFAULTS,
-        ...buildReleasesRenderExtras({
-          pageDefaultsService,
-          pageDefaultsKey,
-          defaultsDialogOpen,
-          defaultsSubmittedValues,
-          defaultsErrors,
-          notice,
-        }),
-      });
-    }
-
-    // List view
+    // Release lists always use the list presentation; legacy view query values
+    // are intentionally ignored so existing board URLs remain safe.
     const { releases, total, page, pageSize, pageCount, today, hasAnyReleases } = workflowQueryService.getReleaseList(effectiveQuery);
-    const urlQuery = buildReleaseManagementUrlQuery(normalizedRawQuery, normalizedFilters, presentation, page);
+    const urlQuery = buildReleaseManagementUrlQuery(normalizedFilters, presentation, page);
     if (allowSavedDefaultsRedirect && shouldRedirectToSavedReleaseManagementDefaults(
       normalizedRawQuery,
       presentation,
-      { preserveDefaultsDialog: pageDefaultsKey === RELEASES_PAGE_DEFAULTS },
+      { preserveDefaultsDialog: true },
     )) {
       return res.redirect(buildPageUrl(pageUrlRequest, urlQuery)({}));
     }
@@ -928,17 +914,14 @@ function handleReleaseListOrBoard(
     const clearUrl = buildPageUrl(
       pageUrlRequest,
       buildReleaseManagementUrlQuery(
-        normalizedRawQuery,
         normalizedFilters,
         presentation,
         page,
-        { includeImplicitView: false },
       ),
     )(buildReleaseManagementClearOverrides());
 
     res.status(status).render('releases/index.njk', {
       appName,
-      view: 'list',
       releases,
       total,
       page,
@@ -949,13 +932,18 @@ function handleReleaseListOrBoard(
       pageUrl,
       clearUrl,
       query,
+      projectOptions,
+      selectedProjectId: normalizedFilters.projectId,
       sortOptions: SORT_OPTIONS,
       basePath,
       releasesLiveFiltering: true,
-      releasesSurface: pageDefaultsKey === RELEASES_PAGE_DEFAULTS,
+      releaseCreateDialogOpen: Boolean(releaseCreateDialogOpen),
+      releaseCreateForm: releaseCreateForm || buildCreateReleaseFormModel({
+        appName,
+        projectService,
+      }),
       ...buildReleasesRenderExtras({
         pageDefaultsService,
-        pageDefaultsKey,
         defaultsDialogOpen,
         defaultsSubmittedValues,
         defaultsErrors,
@@ -973,14 +961,11 @@ function resolveReleasesNotice(code) {
 
 function buildReleasesRenderExtras({
   pageDefaultsService,
-  pageDefaultsKey,
   defaultsDialogOpen,
   defaultsSubmittedValues,
   defaultsErrors,
   notice,
 }) {
-  if (pageDefaultsKey !== RELEASES_PAGE_DEFAULTS) return {};
-
   return {
     releasesDefaults: buildPageDefaultsDialogModel({
       pageDefaultsService,
@@ -1006,7 +991,7 @@ function resolveReleasePresentation(rawQuery, pageDefaultsService, pageDefaultsK
   const query = rawQuery && typeof rawQuery === 'object' ? rawQuery : {};
   const presentation = {};
 
-  for (const option of ['view', 'sort', 'order']) {
+  for (const option of ['sort', 'order']) {
     const fallback = pageDefaultsService.getFallback(pageDefaultsKey, option);
     const savedValue = pageDefaultsService.resolve(pageDefaultsKey, option);
     const explicit = Object.hasOwn(query, option);
@@ -1015,36 +1000,26 @@ function resolveReleasePresentation(rawQuery, pageDefaultsService, pageDefaultsK
       ? pageDefaultsService.resolve(pageDefaultsKey, option, explicitValue)
       : savedValue;
 
-    presentation[option] = {
-      value,
-      fallback,
-      savedValue,
-      explicit,
-    };
+    presentation[option] = { value, fallback, savedValue, explicit };
   }
 
   return {
-    view: presentation.view.value,
     sort: presentation.sort.value,
     order: presentation.order.value,
     options: presentation,
   };
 }
 
-function shouldIncludeReleaseManagementOption(rawQuery, presentation, option) {
+function shouldIncludeReleaseManagementOption(presentation, option) {
   const setting = presentation.options[option];
-  const explicitValue = rawQuery[option];
   return setting.value !== setting.fallback
-    || (setting.explicit && setting.savedValue !== setting.fallback)
-    || (option === 'view' && setting.explicit && explicitValue === setting.value);
+    || (setting.explicit && setting.savedValue !== setting.fallback);
 }
 
 function buildReleaseManagementUrlQuery(
-  rawQuery,
   normalizedFilters,
   presentation,
   currentPage = normalizedFilters.page,
-  { includeImplicitView = true } = {},
 ) {
   const query = {};
 
@@ -1052,15 +1027,8 @@ function buildReleaseManagementUrlQuery(
   if (normalizedFilters.projectId !== null) query.project = String(normalizedFilters.projectId);
   if (normalizedFilters.schedule !== null) query.schedule = normalizedFilters.schedule;
   if (normalizedFilters.includeArchived) query.includeArchived = '1';
-  if (includeImplicitView || shouldIncludeReleaseManagementOption(rawQuery, presentation, 'view')) {
-    query.view = presentation.view;
-  }
-  if (shouldIncludeReleaseManagementOption(rawQuery, presentation, 'sort')) {
-    query.sort = presentation.sort;
-  }
-  if (shouldIncludeReleaseManagementOption(rawQuery, presentation, 'order')) {
-    query.order = presentation.order;
-  }
+  if (shouldIncludeReleaseManagementOption(presentation, 'sort')) query.sort = presentation.sort;
+  if (shouldIncludeReleaseManagementOption(presentation, 'order')) query.order = presentation.order;
   if (currentPage > 1) query.page = String(currentPage);
   if (normalizedFilters.pageSize !== PAGE_SIZE) query.pageSize = String(normalizedFilters.pageSize);
   return query;
@@ -1068,7 +1036,6 @@ function buildReleaseManagementUrlQuery(
 
 function buildReleaseManagementRenderQuery(normalizedFilters, presentation, currentPage = normalizedFilters.page) {
   return {
-    view: presentation.view,
     search: normalizedFilters.search || undefined,
     project: normalizedFilters.projectId === null ? undefined : String(normalizedFilters.projectId),
     schedule: normalizedFilters.schedule || undefined,
@@ -1086,12 +1053,14 @@ function buildReleaseManagementClearOverrides() {
     project: null,
     schedule: null,
     includeArchived: null,
+    sort: null,
+    order: null,
     page: null,
   };
 }
 
 function hasReleaseManagementPresentationQuery(rawQuery) {
-  return ['view', 'sort', 'order'].some((option) => Object.hasOwn(rawQuery, option));
+  return ['sort', 'order'].some((option) => Object.hasOwn(rawQuery, option));
 }
 
 function shouldRedirectToSavedReleaseManagementDefaults(
@@ -1102,7 +1071,7 @@ function shouldRedirectToSavedReleaseManagementDefaults(
   if (preserveDefaultsDialog && rawQuery.defaults === '1') return false;
   if (hasReleaseManagementPresentationQuery(rawQuery)) return false;
 
-  return ['view', 'sort', 'order'].some((option) => {
+  return ['sort', 'order'].some((option) => {
     const setting = presentation.options[option];
     return setting.value !== setting.fallback;
   });
@@ -1184,8 +1153,24 @@ function buildReleaseDetailRenderModel({
   releaseAssets,
   req,
   errors = {},
+  editDialogOpen = false,
+  editDialogForm = null,
+  publishDialogOpen = false,
+  publishDialogForm = null,
 }) {
   const selectedAssets = Array.isArray(releaseAssets) ? releaseAssets : [];
+  const editAvailable = !release.archived_at && !(project && project.archived_at);
+  const publishAvailable = editAvailable && release.published_date == null;
+  const resolvedEditDialogForm = editDialogForm || {
+    values: releaseToFormValues(release),
+    errors: {},
+  };
+  const resolvedEditDialogOpen = editAvailable && (editDialogOpen || req?.query?.edit === '1');
+  const resolvedPublishDialogForm = publishDialogForm || {
+    prefillDate: release.published_date || getLocalTodayIso(),
+    errors: {},
+  };
+
   return {
     appName,
     release,
@@ -1196,6 +1181,10 @@ function buildReleaseDetailRenderModel({
     view: resolveReleaseAssetView(req?.query),
     pageUrl: buildReleaseDetailPageUrl(release.id, req?.query),
     errors,
+    editDialogOpen: resolvedEditDialogOpen,
+    editDialogForm: resolvedEditDialogForm,
+    publishDialogOpen: publishAvailable && !resolvedEditDialogOpen && (publishDialogOpen || req?.query?.publish === '1'),
+    publishDialogForm: resolvedPublishDialogForm,
   };
 }
 
@@ -1646,10 +1635,8 @@ function buildReleaseAssetActionUrl(releaseId, viewModel, rawQuery, assetId, act
 
 function buildPageUrl(req, baseQuery = req.query) {
   // Use req.baseUrl + req.path to get the full path for pagination URLs.
-  // req.path is relative to the router mount point, so we need baseUrl (e.g.
-  // /releases or /release-management). When req.path is '/', we get a
-  // trailing slash which we strip — this must work for any mount point, not
-  // just /releases, since this handler is shared with /release-management.
+  // req.path is relative to the router mount point, so we need baseUrl. When
+  // req.path is '/', strip the trailing slash.
   const rawPath = req.baseUrl + req.path;
   const cleanPath = rawPath.length > 1 && rawPath.endsWith('/') ? rawPath.slice(0, -1) : rawPath;
   return function pageUrl(overrides) {

@@ -2,17 +2,14 @@
 {% import "partials/page-heading.njk" as pageHeading %}
 {% import "partials/dropdown.njk" as dropdown %}
 
-{% set title = action ~ ' Release' %}
-{% set page_title = "Releases — Edit " ~ release.title if action == 'Edit' else "Releases — " ~ title %}
-{% set formDescription = "Create a tracked release record." if action == 'Create' else "Update release metadata and scheduling fields." %}
+{% set title = 'Create Release' %}
+{% set page_title = "Releases — " ~ title %}
+{% set formDescription = "Create a tracked release record." %}
 
 {% block content %}
   {% call pageHeading.render(formDescription) %}
-    <button class="button button-primary" type="submit" form="release-form">{{ action }}</button>
-    <a class="button button-secondary" href="{% if release %}/releases/{{ release.id }}{% elif selectedProjectId %}/projects/{{ selectedProjectId }}{% else %}/release-management{% endif %}">Cancel</a>
-    {% if release and release.project_id %}
-      <a class="button button-secondary" href="/projects/{{ release.project_id }}">Back to Project</a>
-    {% endif %}
+    <button class="button button-primary" type="submit" form="release-form">Create</button>
+    <a class="button button-secondary" href="{% if selectedProjectId %}/projects/{{ selectedProjectId }}{% else %}/releases{% endif %}">Cancel</a>
   {% endcall %}
 
   {% if errors.general %}
@@ -26,143 +23,8 @@
     {% for assetId in values.selectedAssetIds %}
       <input type="hidden" name="selectedAssetIds" value="{{ assetId }}">
     {% endfor %}
-    {% if not release %}
-      {% set projectSummary = 'Select a project' %}
-      {% for project in projects %}
-        {% if selectedProjectId == project.id %}
-          {% set projectSummary = project.title %}
-        {% endif %}
-      {% endfor %}
-
-      <div class="settings-section release-project-section">
-        <h3>Project</h3>
-        {{ dropdown.searchableSingleSelect({
-          id: "release-project-filter",
-          name: "projectId",
-          label: "Project",
-          required: true,
-          options: projects,
-          valueKey: "id",
-          labelKey: "title",
-          selected: selectedProjectId,
-          summary: projectSummary,
-          summaryAttributes: [
-            ["aria-describedby", "projectId-error" if errors.projectId else none],
-            ["aria-invalid", "true" if errors.projectId else none]
-          ],
-          panelLabel: "Project options",
-          searchLabel: "Search projects",
-          searchInputId: "release-project-filter-search",
-          optionListId: "release-project-filter-option-list",
-          noResultsText: "No matching projects",
-          optionListLabel: "Project choices",
-          optionIdPrefix: "release-project",
-          inputAttributes: [
-            ["required", true],
-            ["aria-describedby", "projectId-error" if errors.projectId else none],
-            ["aria-invalid", "true" if errors.projectId else none]
-          ],
-          fieldClasses: "asset-viewer-filter-field asset-viewer-project-filter{% if errors.projectId %} field-error{% endif %}",
-          classes: "asset-project-filter-disclosure"
-        }) }}
-        {% if errors.projectId %}<span class="field-error-message" id="projectId-error">{{ errors.projectId }}</span>{% endif %}
-      </div>
-    {% endif %}
-
-    <div class="settings-section">
-      <h3>Basic information</h3>
-
-      <div class="field {% if errors.title %}field-error{% endif %}">
-        <label for="title">Title <span class="required" aria-label="required">*</span></label>
-        <input type="text" id="title" name="title" value="{{ values.title or '' }}" maxlength="200" required{% if errors.title %} aria-describedby="title-error" aria-invalid="true"{% endif %}>
-        {% if errors.title %}<span class="field-error-message" id="title-error">{{ errors.title }}</span>{% endif %}
-      </div>
-
-      <div class="field {% if errors.description %}field-error{% endif %}">
-        <label for="description">Description</label>
-        <textarea id="description" name="description" rows="4" maxlength="4000"{% if errors.description %} aria-describedby="description-error" aria-invalid="true"{% endif %}>{{ values.description or '' }}</textarea>
-        {% if errors.description %}<span class="field-error-message" id="description-error">{{ errors.description }}</span>{% endif %}
-      </div>
-
-      <div class="field {% if errors.notes %}field-error{% endif %}">
-        <label for="notes">Notes</label>
-        <textarea id="notes" name="notes" rows="6" maxlength="10000"{% if errors.notes %} aria-describedby="notes-error" aria-invalid="true"{% endif %}>{{ values.notes or '' }}</textarea>
-        {% if errors.notes %}<span class="field-error-message" id="notes-error">{{ errors.notes }}</span>{% endif %}
-      </div>
-    </div>
-
-    <div class="settings-section scheduling-section">
-      <h3>Scheduling</h3>
-
-      <div class="field-row scheduling-row">
-        <div class="field scheduling-field {% if errors.plannedDate or errors.plannedTime %}field-error{% endif %}" data-date-picker-field>
-          <label for="plannedDate">Scheduled date</label>
-          <div class="picker-control">
-            <div class="picker-input-row">
-              <input class="picker-input" type="date" id="plannedDate" name="plannedDate" value="{{ values.plannedDate or '' }}" aria-describedby="plannedDate-help{% if errors.plannedDate %} plannedDate-error{% endif %}{% if errors.plannedTime %} plannedTime-error{% endif %}"{% if errors.plannedDate or errors.plannedTime %} aria-invalid="true"{% endif %} data-date-picker-input>
-              <button type="button" class="picker-trigger date-picker-trigger" aria-haspopup="dialog" aria-expanded="false" aria-controls="plannedDate-calendar" aria-label="Open calendar for scheduled date">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
-              </button>
-            </div>
-            <div id="plannedDate-calendar" class="date-picker-panel" role="dialog" aria-label="Scheduled date calendar" hidden data-date-picker-panel data-date-picker-for="plannedDate"></div>
-          </div>
-          <span class="help-text" id="plannedDate-help">Target publication date for this release</span>
-          {% if errors.plannedDate %}<span class="field-error-message" id="plannedDate-error">{{ errors.plannedDate }}</span>{% endif %}
-        </div>
-
-        <div class="field scheduling-field {% if errors.plannedTime %}field-error{% endif %}" data-time-picker-field>
-          <label for="plannedTime">Scheduled time</label>
-          <div class="picker-control">
-            <div class="picker-input-row">
-              <input class="picker-input" type="time" id="plannedTime" name="plannedTime" value="{{ values.plannedTime or '' }}" aria-describedby="plannedTime-help{% if errors.plannedTime %} plannedTime-error{% endif %}"{% if errors.plannedTime %} aria-invalid="true"{% endif %} data-time-picker-input>
-              <button type="button" class="picker-trigger time-picker-trigger" aria-haspopup="dialog" aria-expanded="false" aria-controls="plannedTime-picker" aria-label="Open time picker for scheduled time" data-time-picker-trigger>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"></circle><polyline points="12 7 12 12 15 14"></polyline></svg>
-              </button>
-            </div>
-            <div id="plannedTime-picker" class="date-picker-panel time-picker-panel" role="dialog" aria-label="Scheduled time picker" hidden data-time-picker-panel data-time-picker-for="plannedTime"></div>
-          </div>
-          <span class="help-text" id="plannedTime-help">Local time this release is scheduled to go live</span>
-          {% if errors.plannedTime %}<span class="field-error-message" id="plannedTime-error">{{ errors.plannedTime }}</span>{% endif %}
-        </div>
-
-        <div class="field scheduling-field {% if errors.publishedDate %}field-error{% endif %}" data-date-picker-field>
-          <label for="publishedDate">Published date</label>
-          <div class="picker-control">
-            <div class="picker-input-row">
-              <input class="picker-input" type="date" id="publishedDate" name="publishedDate" value="{{ values.publishedDate or '' }}" aria-describedby="publishedDate-help{% if errors.publishedDate %} publishedDate-error{% endif %}"{% if errors.publishedDate %} aria-invalid="true"{% endif %} data-date-picker-input>
-              <button type="button" class="picker-trigger date-picker-trigger" aria-haspopup="dialog" aria-expanded="false" aria-controls="publishedDate-calendar" aria-label="Open calendar for published date">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
-              </button>
-            </div>
-            <div id="publishedDate-calendar" class="date-picker-panel" role="dialog" aria-label="Published date calendar" hidden data-date-picker-panel data-date-picker-for="publishedDate"></div>
-          </div>
-          <span class="help-text" id="publishedDate-help">When this release was published</span>
-          {% if errors.publishedDate %}<span class="field-error-message" id="publishedDate-error">{{ errors.publishedDate }}</span>{% endif %}
-        </div>
-      </div>
-    </div>
-
-    <div class="settings-section">
-      <h3>Links</h3>
-
-      <div class="field {% if errors.patreonUrl %}field-error{% endif %}">
-        <label for="patreonUrl">Release link</label>
-        <input type="url" id="patreonUrl" name="patreonUrl" value="{{ values.patreonUrl or '' }}" aria-describedby="patreonUrl-help{% if errors.patreonUrl %} patreonUrl-error{% endif %}"{% if errors.patreonUrl %} aria-invalid="true"{% endif %}>
-        <span class="help-text" id="patreonUrl-help">Optional absolute HTTP or HTTPS URL for this release.</span>
-        {% if errors.patreonUrl %}<span class="field-error-message" id="patreonUrl-error">{{ errors.patreonUrl }}</span>{% endif %}
-      </div>
-    </div>
+    {% include "partials/release-form-fields.njk" %}
 
   </form>
 
-  {% if release %}
-    <section class="destructive-section">
-      <h2>Danger zone</h2>
-      <p>Deleting this release is permanent and cannot be undone. The release record and its asset associations will be removed; the underlying project assets will not be affected.</p>
-      <form method="post" action="/releases/{{ release.id }}/delete" class="inline-form">
-        <input type="hidden" name="_csrf" value="{{ _csrf }}">
-        <button class="button button-danger" type="submit" data-confirm="Delete this release permanently? This action is irreversible and cannot be undone.">Delete Release</button>
-      </form>
-    </section>
-  {% endif %}
 {% endblock %}

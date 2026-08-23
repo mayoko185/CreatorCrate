@@ -66,12 +66,8 @@ describe('page defaults service', () => {
     expect(service.resolve('projects', 'view')).toBe('grid');
     expect(service.resolve('projects', 'sort')).toBe('created');
     expect(service.resolve('projects', 'order')).toBe('desc');
-    expect(service.resolve('releases', 'view')).toBe('list');
     expect(service.resolve('releases', 'sort')).toBe('planned');
     expect(service.resolve('releases', 'order')).toBe('asc');
-    expect(service.resolve('releaseManagement', 'view')).toBe('list');
-    expect(service.resolve('releaseManagement', 'sort')).toBe('updated');
-    expect(service.resolve('releaseManagement', 'order')).toBe('desc');
     expect(service.resolve('projectAssets', 'view')).toBe('grid');
     expect(service.resolve('projectAssets', 'gridSize')).toBe('default');
     expect(service.resolve('projectAssets', 'listSize')).toBe('large');
@@ -237,24 +233,8 @@ describe('page defaults service', () => {
     expect(service.resolve('projects', 'sort')).toBe('published');
   });
 
-  it('defines the exact Release Management allowlists, keys, and fallbacks', () => {
-    expect(PAGE_DEFAULT_DEFINITIONS.releaseManagement).toEqual({
-      view: {
-        key: 'page_defaults.release_management.view',
-        values: ['list', 'board'],
-        fallback: 'list',
-      },
-      sort: {
-        key: 'page_defaults.release_management.sort',
-        values: ['updated', 'created', 'planned', 'title'],
-        fallback: 'updated',
-      },
-      order: {
-        key: 'page_defaults.release_management.order',
-        values: ['asc', 'desc'],
-        fallback: 'desc',
-      },
-    });
+  it('does not expose a second Release Management defaults namespace', () => {
+    expect(PAGE_DEFAULT_DEFINITIONS).not.toHaveProperty('releaseManagement');
   });
 
   it('accepts a valid saved value', () => {
@@ -283,16 +263,15 @@ describe('page defaults service', () => {
     expect(repository.getValue(legacyKey)).toBe('high');
   });
 
-  it('accepts valid Release Management saved values', () => {
-    repository.setValue(PAGE_DEFAULT_DEFINITIONS.releaseManagement.view.key, 'board');
-    repository.setValue(PAGE_DEFAULT_DEFINITIONS.releaseManagement.sort.key, 'planned');
-    repository.setValue(PAGE_DEFAULT_DEFINITIONS.releaseManagement.order.key, 'asc');
+  it('ignores stale Release Management values while resolving canonical Releases defaults', () => {
+    repository.setValue('page_defaults.release_management.sort', 'updated');
+    repository.setValue('page_defaults.release_management.order', 'desc');
+    repository.setValue(PAGE_DEFAULT_DEFINITIONS.releases.sort.key, 'title');
+    repository.setValue(PAGE_DEFAULT_DEFINITIONS.releases.order.key, 'desc');
 
-    expect(service.resolvePageDefaults('releaseManagement')).toEqual({
-      view: 'board',
-      sort: 'planned',
-      order: 'asc',
-    });
+    expect(service.resolvePageDefaults('releases')).toEqual({ sort: 'title', order: 'desc' });
+    expect(repository.getValue('page_defaults.release_management.sort')).toBe('updated');
+    expect(repository.getValue('page_defaults.release_management.order')).toBe('desc');
   });
 
   it('accepts valid Project Assets saved values', () => {
@@ -378,24 +357,16 @@ describe('page defaults service', () => {
     expect(repository.getValue(key)).toBe('cancelled');
   });
 
-  it('uses Release Management fallbacks for invalid stored values without rewriting them', () => {
-    const invalidValues = {
-      view: 'grid',
-      sort: 'published',
-      order: 'forwards',
-    };
+  it('uses Releases fallbacks for invalid stored values without rewriting them', () => {
+    const invalidValues = { sort: 'published', order: 'forwards' };
     for (const [option, value] of Object.entries(invalidValues)) {
-      repository.setValue(PAGE_DEFAULT_DEFINITIONS.releaseManagement[option].key, value);
+      repository.setValue(PAGE_DEFAULT_DEFINITIONS.releases[option].key, value);
     }
 
-    expect(service.resolvePageDefaults('releaseManagement')).toEqual({
-      view: 'list',
-      sort: 'updated',
-      order: 'desc',
-    });
+    expect(service.resolvePageDefaults('releases')).toEqual({ sort: 'planned', order: 'asc' });
     for (const [option, value] of Object.entries(invalidValues)) {
-      expect(repository.getValue(PAGE_DEFAULT_DEFINITIONS.releaseManagement[option].key)).toBe(value);
-      expect(service.getSavedDefault('releaseManagement', option)).toBeUndefined();
+      expect(repository.getValue(PAGE_DEFAULT_DEFINITIONS.releases[option].key)).toBe(value);
+      expect(service.getSavedDefault('releases', option)).toBeUndefined();
     }
   });
 
@@ -551,11 +522,9 @@ describe('page defaults service', () => {
 
   it('returns definition-backed values when every submitted option is valid', () => {
     expect(service.validatePageDefaults('releases', {
-      view: 'list',
       sort: 'updated',
       order: 'asc',
     })).toEqual({
-      view: 'list',
       sort: 'updated',
       order: 'asc',
     });

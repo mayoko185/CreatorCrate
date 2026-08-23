@@ -318,12 +318,6 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
   // ─── 3. Typography and hierarchy ────────────────────────────────────────
 
   describe('typography consistency', () => {
-    it('board card project and meta text is at least 0.75rem', async () => {
-      const res = await request(app).get('/release-management?view=board').expect(200);
-      const css = await extractStyle(app, res.text);
-      expect(css).toMatch(/\.card-project\s*\{[^}]*font-size:\s*0\.75rem/);
-      expect(css).toMatch(/\.card-meta\s*\{[^}]*font-size:\s*0\.75rem/);
-    });
 
     it('the page-title header (the page\'s sole h1) has consistent sizing across pages', async () => {
       const res = await request(app).get('/').expect(200);
@@ -539,12 +533,12 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       expect(css).toMatch(/\.calendar-release\s*\{[^}]*overflow-wrap/);
     });
 
-    it('table-scroll containers have max-width: 100%', async () => {
+    it('keeps list and calendar scroll containers while removing Board-only CSS', async () => {
       const res = await request(app).get('/').expect(200);
       const css = await extractStyle(app, res.text);
       expect(css).toMatch(/\.table-scroll[^{]*\{[^}]*max-width:\s*100%/);
-      expect(css).toMatch(/\.board-scroll[^{]*\{[^}]*max-width:\s*100%/);
       expect(css).toMatch(/\.calendar-scroll[^{]*\{[^}]*max-width:\s*100%/);
+      expect(css).not.toMatch(/\.board-(?:scroll|container|column|card|filters)\b/);
     });
 
     it('release asset cards expose full-target membership controls and selected styling', async () => {
@@ -723,11 +717,6 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       expect(css).toMatch(/\.mobile-nav-section\s*\{[^}]*white-space:\s*nowrap/);
     });
 
-    it('board cards have overflow containment', async () => {
-      const res = await request(app).get('/release-management?view=board').expect(200);
-      const css = await extractStyle(app, res.text);
-      expect(css).toMatch(/\.board-card\s*\{[^}]*overflow-wrap/);
-    });
 
     it('detail list dd has overflow-wrap', async () => {
       const res = await request(app).get('/').expect(200);
@@ -817,7 +806,7 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
     });
 
     it('release list links use --link colour', async () => {
-      const res = await request(app).get('/release-management').expect(200);
+      const res = await request(app).get('/releases').expect(200);
       const css = await extractStyle(app, res.text);
       expect(css).toMatch(/\.release-list a\s*\{[^}]*color:\s*var\(--link\)/);
     });
@@ -861,12 +850,5 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       expect(parseFloat(opacityMatch[1])).toBeGreaterThanOrEqual(0.6);
     });
 
-    it('board-card archived opacity is at least 0.6', async () => {
-      const res = await request(app).get('/release-management?view=board').expect(200);
-      const css = await extractStyle(app, res.text);
-      const opacityMatch = css.match(/\.board-card\.archived\s*\{[^}]*opacity:\s*([0-9.]+)/);
-      expect(opacityMatch).not.toBeNull();
-      expect(parseFloat(opacityMatch[1])).toBeGreaterThanOrEqual(0.6);
-    });
   });
 });

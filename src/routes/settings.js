@@ -97,7 +97,7 @@ function resolveNotice(code) {
 
 const PAGE_DEFAULT_SECTIONS = Object.freeze([
   Object.freeze({ page: 'new_project', title: 'New Projects', anchor: 'defaults-new-projects' }),
-  Object.freeze({ page: 'releaseManagement', title: 'Release Management', anchor: 'defaults-release-management' }),
+  Object.freeze({ page: 'releases', title: 'Releases', anchor: 'defaults-releases' }),
 ]);
 
 const DEFAULT_OPTION_LABELS = Object.freeze({
@@ -130,14 +130,8 @@ const DEFAULT_VALUE_LABELS = Object.freeze({
     order: Object.freeze({ asc: 'Ascending', desc: 'Descending' }),
   }),
   releases: Object.freeze({
-    view: Object.freeze({ list: 'List', board: 'Board' }),
     sort: Object.freeze({ planned: 'Planned', updated: 'Updated', created: 'Created', title: 'Title' }),
     order: Object.freeze({ asc: 'Ascending', desc: 'Descending' }),
-  }),
-  releaseManagement: Object.freeze({
-    view: Object.freeze({ list: 'List', board: 'Board' }),
-    sort: Object.freeze({ updated: 'Updated', created: 'Created', planned: 'Planned', title: 'Title' }),
-    order: Object.freeze({ asc: 'Asc', desc: 'Desc' }),
   }),
   projectAssets: Object.freeze({
     view: Object.freeze({ grid: 'Grid', list: 'List' }),

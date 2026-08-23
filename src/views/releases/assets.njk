@@ -105,11 +105,19 @@
   {% set isPublished = release and release.published_date %}
   {% set isArchived = projectArchived or releaseArchived %}
   {% set readOnly = isArchived or isPublished %}
-  {% call pageHeading.render() %}
-    <a class="button button-secondary" href="/releases/{{ release.id }}">Back to Release</a>
-    {% if project and project.id %}
-      <a class="button button-secondary" href="/projects/{{ project.id }}">Back to Project</a>
+  {% set projectLeadHref = "/projects/" ~ project.id if project and project.id else "" %}
+  {% set projectLeadLabel = "Project: " ~ project.title if project else "" %}
+  {% call pageHeading.render("", "", "", projectLeadHref, projectLeadLabel) %}
+    {% if not readOnly %}
+      <form id="release-assets-form" method="post" action="{{ pageUrl({}) }}" class="inline-form" data-asset-selection-form>
+        <input type="hidden" name="_csrf" value="{{ _csrf }}">
+        {% for assetId in offPageSelectedAssetIds or [] %}
+          <input type="hidden" name="selectedAssetIds" value="{{ assetId }}">
+        {% endfor %}
+        <button class="button button-primary" type="submit">Save Selection</button>
+      </form>
     {% endif %}
+    <a class="button button-secondary" href="/releases/{{ release.id }}">Back to Release</a>
   {% endcall %}
 
   {% if isArchived %}
@@ -142,33 +150,27 @@
     </div>
   {% endif %}
 
-  {# ── Role Guidance ────────────────────────────────────────────────── #}
-  <section class="role-guidance panel panel--info" aria-label="Asset role descriptions">
-    <h2>Asset Roles</h2>
-    <dl class="role-descriptions">
-      <div class="role-entry">
+  {# ── Asset Roles ──────────────────────────────────────────────────── #}
+  <section class="settings-section role-guidance" aria-labelledby="asset-roles-heading">
+    <h3 id="asset-roles-heading">Asset Roles</h3>
+    <div class="asset-viewer-section-body">
+      <dl class="detail-list">
         <dt>Primary</dt>
         <dd>The main asset for this release — typically the primary deliverable such as the final image, video, or document that the release is built around.</dd>
-      </div>
-      <div class="role-entry">
         <dt>Preview</dt>
         <dd>A preview or teaser asset shown before the release is fully consumed — for example, a thumbnail, excerpt, or sample clip.</dd>
-      </div>
-      <div class="role-entry">
         <dt>Attachment</dt>
         <dd>A supporting asset bundled with the release — such as a PSD source, a PDF, a ZIP archive, or supplementary material.</dd>
-      </div>
-      <div class="role-entry">
         <dt>Source</dt>
         <dd>The editable or original source file from which the primary asset was derived — for example, a .blend, .psd, .ai, or .xcf file.</dd>
-      </div>
-    </dl>
+      </dl>
+    </div>
   </section>
 
-  {# ── Selected Assets ──────────────────────────────────────────────── #}
+  {# ── Release Assets ───────────────────────────────────────────────── #}
   <section data-release-assets-live-region>
     <span class="sr-only" data-release-assets-live-status aria-live="polite" aria-atomic="true"></span>
-    <h2>Selected Assets</h2>
+    <h2>Release Assets</h2>
     {% set selectedAssets = assetPresentation.selected or [] %}
     {% set pageAssets = assetPresentation.assets or [] %}
     {% set selectedCount = selectedAssets.length %}
@@ -200,17 +202,6 @@
         {{ totalAssets }} project asset{% if totalAssets != 1 %}s{% endif %} {% if totalAssets == 1 %}matches{% else %}match{% endif %} the current filters.
       </p>
 
-      <form id="release-assets-form" method="post" action="{{ pageUrl({}) }}" class="release-assets-form" data-asset-selection-form>
-        <input type="hidden" name="_csrf" value="{{ _csrf }}">
-        {% for assetId in offPageSelectedAssetIds or [] %}
-          <input type="hidden" name="selectedAssetIds" value="{{ assetId }}">
-        {% endfor %}
-
-        <div class="form-actions">
-          <button class="button button-primary" type="submit">Save Selection</button>
-          <a class="button button-secondary" href="/releases/{{ release.id }}">Back</a>
-        </div>
-      </form>
     {% endif %}
 
     <div class="asset-browser-layout">

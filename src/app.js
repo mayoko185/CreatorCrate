@@ -702,10 +702,9 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
 
   app.use('/releases', createReleasesRouter({ appName, db, releaseService, projectService, workflowQueryService }));
 
-  // Phase 2A: dedicated release-management route, reusing the release-record
-  // list/board handler unchanged. Mounted after /releases so route order
-  // does not affect either — the two mount points do not overlap.
-  app.use('/release-management', createReleaseManagementRouter({ appName, workflowQueryService }));
+  // Compatibility route for bookmarks and integrations using the former
+  // release-management URL. It redirects to canonical /releases.
+  app.use('/release-management', createReleaseManagementRouter());
 
   // Phase 2D: canonical project-backed calendar route. Mounted after
   // /releases so /releases/calendar's compatibility redirect and this route

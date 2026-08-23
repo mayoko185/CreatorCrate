@@ -2381,7 +2381,7 @@ describe('project HTTP workflow', () => {
     expect(summary.indexOf('project-detail-action-toolbar')).toBeGreaterThanOrEqual(0);
     expect(summary.indexOf('project-detail-action-toolbar')).toBeLessThan(summary.indexOf('project-detail-health'));
     const css = await fetchProjectCss(app);
-    const projectFormDialogWidthRule = css.match(/#project-edit-dialog,\s*#project-create-dialog\s*\{[^}]*\}/)?.[0] || '';
+    const projectFormDialogWidthRule = css.match(/#project-edit-dialog,\s*#project-create-dialog,\s*#release-create-dialog,\s*#release-edit-dialog,\s*#release-publish-dialog\s*\{[^}]*\}/)?.[0] || '';
     expect(projectFormDialogWidthRule).toContain('width: min(51rem, calc(100vw - 2rem));');
     expect(projectFormDialogWidthRule).toContain('max-width: calc(100vw - 2rem);');
     expect(css).toMatch(/#project-asset-category-management-dialog\s*\{[^}]*width:\s*min\(68rem,\s*calc\(100vw - 2rem\)\)/);
@@ -4155,7 +4155,7 @@ describe('project HTTP workflow', () => {
     expect(releases).toContain('<section class="release-summary project-detail-releases project-detail-section">');
     expect(releases).toContain('<h2>Releases</h2>');
     expect(releases).toContain('<div class="project-detail-section-body">');
-    expect(releases).toContain('href="/release-management?project=' + projectId + '"');
+    expect(releases).toContain('href="/releases?project=' + projectId + '"');
     expect(releases).toContain('href="/releases/new?projectId=' + projectId + '"');
     expect(releases).toContain('<ul class="release-list">');
     const releaseList = extractReleaseList(res.text);

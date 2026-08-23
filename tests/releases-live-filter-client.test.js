@@ -174,52 +174,99 @@ function makeSelect(attrs, options, selectedValue) {
   return select;
 }
 
-function makeForm(view = 'list', action = '/releases') {
+function makeReleaseDropdown(form, name, value, { searchable = false } = {}) {
+  const dropdown = makeNode({
+    tagName: 'details',
+    attrs: { 'data-cc-dropdown': '', 'data-cc-dropdown-mode': 'single' },
+  });
+  const summary = makeNode({ tagName: 'summary' });
+  const option = makeNode({
+    tagName: 'input',
+    attrs: { name, type: 'radio', value },
+    value,
+    checked: true,
+  });
+  dropdown.appendChild(summary);
+  dropdown.appendChild(option);
+
+  let search = null;
+  if (searchable) {
+    search = makeNode({
+      tagName: 'input',
+      attrs: { type: 'search', 'data-cc-dropdown-search': '' },
+    });
+    dropdown.setAttribute('data-cc-dropdown-searchable', '');
+    dropdown.appendChild(search);
+  }
+
+  form.appendChild(dropdown);
+  return { dropdown, summary, option, search };
+}
+
+function makeForm(action = '/releases', {
+  projectValue = '7',
+  scheduleValue = '',
+  sortValue = 'planned',
+  orderValue = 'asc',
+  includeArchived = false,
+} = {}) {
   const form = makeNode({
     tagName: 'form',
     attrs: { action, method: 'get', 'data-releases-filter': '' },
   });
   form.submit = vi.fn();
-  const add = (attrs, fieldValue = '', fieldChecked = false) => {
-    const field = makeNode({ tagName: 'input', attrs, value: fieldValue, checked: fieldChecked });
-    form.appendChild(field);
-    return field;
+  const project = makeReleaseDropdown(form, 'project', projectValue, { searchable: true });
+  const schedule = makeReleaseDropdown(form, 'schedule', scheduleValue);
+  const sort = makeReleaseDropdown(form, 'sort', sortValue);
+  const order = makeReleaseDropdown(form, 'order', orderValue);
+  const page = makeNode({
+    tagName: 'input',
+    attrs: { name: 'page', type: 'hidden' },
+    value: '4',
+  });
+  const archived = makeNode({
+    tagName: 'input',
+    attrs: { name: 'includeArchived', type: 'checkbox', value: '1' },
+    value: '1',
+    checked: includeArchived,
+  });
+  form.appendChild(page);
+  form.appendChild(archived);
+  return {
+    form,
+    project: project.option,
+    projectDropdown: project.dropdown,
+    projectSummary: project.summary,
+    projectSearch: project.search,
+    page,
+    schedule: schedule.option,
+    scheduleDropdown: schedule.dropdown,
+    sort: sort.option,
+    sortDropdown: sort.dropdown,
+    order: order.option,
+    orderDropdown: order.dropdown,
+    archived,
   };
-  const search = add({ name: 'search', type: 'search', 'data-releases-search': '' });
-  const project = add({ name: 'project', type: 'text' }, '7');
-  const page = add({ name: 'page', type: 'hidden' }, '4');
-  add({ name: 'view', type: 'hidden' }, view);
-  const schedule = add({ name: 'schedule', type: 'select-one' }, '');
-  const archived = add({ name: 'includeArchived', type: 'checkbox', value: '1' }, '1', false);
-  const sort = add({ name: 'sort', type: 'hidden' }, 'planned');
-  const order = add({ name: 'order', type: 'hidden' }, 'asc');
-  return { form, search, project, page, schedule, archived, sort, order };
 }
 
-function makePage(view = 'list', action = '/releases') {
+function makePage(action = '/releases', options = {}) {
   const document = makeNode({ tagName: 'document' });
   document.nodeType = 9;
   document.ownerDocument = document;
   document.activeElement = null;
   const region = makeNode({ attrs: { 'data-releases-live-region': '' } });
   const status = makeNode({ attrs: { 'data-releases-live-status': '' } });
-  const formParts = makeForm(view, action);
-  const nav = makeNode({ tagName: 'nav', attrs: { 'aria-label': 'View' } });
-  const list = makeNode({ tagName: 'a', attrs: { href: `${action}?view=list`, 'data-releases-view-link': '' } });
-  const board = makeNode({ tagName: 'a', attrs: { href: `${action}?view=board`, 'data-releases-view-link': '' } });
-  nav.appendChild(list);
-  nav.appendChild(board);
+  const formParts = makeForm(action, options);
   const reset = makeNode({ tagName: 'a', attrs: { href: action, 'data-releases-reset': '' } });
   const pagination = makeNode({ tagName: 'nav', attrs: { class: 'pagination' } });
-  const next = makeNode({ tagName: 'a', attrs: { href: `${action}?view=${view}&page=2` } });
+  const next = makeNode({ tagName: 'a', attrs: { href: action + '?page=2' } });
   pagination.appendChild(next);
   region.appendChild(status);
-  region.appendChild(nav);
   region.appendChild(formParts.form);
   region.appendChild(reset);
   region.appendChild(pagination);
   document.appendChild(region);
-  return { document, region, status, nav, list, board, reset, pagination, next, ...formParts };
+  return { document, region, status, reset, pagination, next, ...formParts };
 }
 
 function makeReleaseAssetsPage({
@@ -576,13 +623,76 @@ describe('Releases live filtering enhancement', () => {
     expect(windowObject.history.pushes).toHaveLength(4);
   });
 
-  it('updates filters without navigation, resets pagination, and serializes archived state', async () => {
+  it('serializes Schedule All by removing an active Schedule parameter', async () => {
+    const initial = makePage('/releases', { scheduleValue: 'today' });
+    const cleared = makePage();
+    const pages = new Map([['cleared', cleared.document]]);
+    const windowObject = makeWindow(initial.document, pages);
+    windowObject.fetch.mockResolvedValue(responseFor('cleared', 'http://creatorcrate.test/releases?project=7&sort=planned&order=asc'));
+
+    enhanceReleasesLiveFiltering(initial.document);
+    initial.schedule.value = '';
+    initial.form.dispatch('change', { target: initial.schedule });
+    await flush();
+
+    const requested = new URL(windowObject.fetch.mock.calls[0][0]);
+    expect(requested.searchParams.has('schedule')).toBe(false);
+    expect(initial.document.querySelector('[data-releases-live-region]')).toBe(cleared.region);
+  });
+
+  it('serializes direct Archived toggles and preserves the checked state across replacement', async () => {
+    const initial = makePage();
+    const checked = makePage('/releases', { includeArchived: true });
+    const unchecked = makePage();
+    const pages = new Map([
+      ['checked', checked.document],
+      ['unchecked', unchecked.document],
+    ]);
+    const windowObject = makeWindow(initial.document, pages);
+    windowObject.fetch
+      .mockResolvedValueOnce(responseFor('checked', 'http://creatorcrate.test/releases?project=7&sort=planned&order=asc&includeArchived=1'))
+      .mockResolvedValueOnce(responseFor('unchecked', 'http://creatorcrate.test/releases?project=7&sort=planned&order=asc'));
+
+    expect(enhanceReleasesLiveFiltering(initial.document)).toBe(1);
+
+    initial.archived.checked = true;
+    initial.form.dispatch('change', { target: initial.archived });
+    await flush();
+
+    let requested = new URL(windowObject.fetch.mock.calls[0][0]);
+    expect(requested.searchParams.get('includeArchived')).toBe('1');
+    expect(initial.document.querySelector('[data-releases-live-region]')).toBe(checked.region);
+    expect(checked.archived.checked).toBe(true);
+
+    checked.archived.checked = false;
+    checked.form.dispatch('change', { target: checked.archived });
+    await flush();
+
+    requested = new URL(windowObject.fetch.mock.calls[1][0]);
+    expect(requested.searchParams.has('includeArchived')).toBe(false);
+    expect(initial.document.querySelector('[data-releases-live-region]')).toBe(unchecked.region);
+    expect(unchecked.archived.checked).toBe(false);
+  });
+
+  it('preserves an already-selected Project while another release filter changes and ignores Project search input events', async () => {
     const initial = makePage();
     const next = makePage();
     const pages = new Map([['next', next.document]]);
     const windowObject = makeWindow(initial.document, pages);
     windowObject.fetch.mockResolvedValue(responseFor('next', 'http://creatorcrate.test/releases?project=7&schedule=today&includeArchived=1'));
-    enhanceReleasesLiveFiltering(initial.document);
+
+    expect(enhanceReleasesLiveFiltering(initial.document)).toBe(1);
+    [initial.projectSummary, initial.scheduleDropdown, initial.sortDropdown, initial.orderDropdown]
+      .forEach((control) => {
+        const summary = control === initial.projectSummary ? control : control.querySelector('summary');
+        expect(summary.getAttribute('aria-expanded')).toBe('false');
+      });
+
+    initial.projectSearch.value = 'alpha';
+    initial.projectSearch.dispatch('input');
+    initial.form.dispatch('change', { target: initial.projectSearch });
+    await flush();
+    expect(windowObject.fetch).not.toHaveBeenCalled();
 
     initial.archived.checked = true;
     initial.schedule.value = 'today';
@@ -598,32 +708,31 @@ describe('Releases live filtering enhancement', () => {
     expect(requested.searchParams.has('page')).toBe(false);
     expect(windowObject.history.pushes).toHaveLength(1);
     expect(initial.form.submit).not.toHaveBeenCalled();
+    expect(initial.document.querySelector('[data-releases-live-region]')).toBe(next.region);
+    [next.projectSummary, next.scheduleDropdown, next.sortDropdown, next.orderDropdown]
+      .forEach((control) => {
+        const summary = control === next.projectSummary ? control : control.querySelector('summary');
+        expect(summary.getAttribute('aria-expanded')).toBe('false');
+      });
   });
 
-  it('uses the shared engine for Release Management filters, links, and replacement rebinding', async () => {
-    vi.useFakeTimers();
-    const initial = makePage('list', '/release-management');
-    const filtered = makePage('list', '/release-management');
-    const paged = makePage('list', '/release-management');
-    const reset = makePage('list', '/release-management');
-    const board = makePage('board', '/release-management');
-    const searched = makePage('board', '/release-management');
+  it('uses the shared engine for Release Management filters, pagination, and reset rebinding', async () => {
+    const initial = makePage('/release-management');
+    const filtered = makePage('/release-management');
+    const paged = makePage('/release-management');
+    const reset = makePage('/release-management');
     const pages = new Map([
       ['filtered', filtered.document],
       ['paged', paged.document],
       ['reset', reset.document],
-      ['board', board.document],
-      ['searched', searched.document],
     ]);
     const windowObject = makeWindow(initial.document, pages);
     windowObject.location.href = 'http://creatorcrate.test/release-management?page=4';
     windowObject.location.pathname = '/release-management';
     windowObject.fetch
-      .mockResolvedValueOnce(responseFor('filtered', 'http://creatorcrate.test/release-management?view=list&project=7&schedule=today&includeArchived=1&sort=title&order=asc'))
-      .mockResolvedValueOnce(responseFor('paged', 'http://creatorcrate.test/release-management?view=list&page=2'))
-      .mockResolvedValueOnce(responseFor('reset', 'http://creatorcrate.test/release-management'))
-      .mockResolvedValueOnce(responseFor('board', 'http://creatorcrate.test/release-management?view=board'))
-      .mockResolvedValueOnce(responseFor('searched', 'http://creatorcrate.test/release-management?view=board&search=needle'));
+      .mockResolvedValueOnce(responseFor('filtered', 'http://creatorcrate.test/release-management?project=7&schedule=today&includeArchived=1&sort=title&order=asc'))
+      .mockResolvedValueOnce(responseFor('paged', 'http://creatorcrate.test/release-management?page=2'))
+      .mockResolvedValueOnce(responseFor('reset', 'http://creatorcrate.test/release-management'));
 
     expect(enhanceReleasesLiveFiltering(initial.document)).toBe(1);
     initial.archived.checked = true;
@@ -654,58 +763,9 @@ describe('Releases live filtering enhancement', () => {
     expect(resetEvent.defaultPrevented).toBe(true);
     expect(windowObject.fetch.mock.calls[2][0]).toBe(new URL(paged.reset.getAttribute('href'), windowObject.location.href).href);
     expect(initial.document.querySelector('[data-releases-live-region]')).toBe(reset.region);
-
-    const boardEvent = reset.board.dispatch('click');
-    await flush();
-    expect(boardEvent.defaultPrevented).toBe(true);
-    requested = new URL(windowObject.fetch.mock.calls[3][0]);
-    expect(requested.pathname).toBe('/release-management');
-    expect(requested.searchParams.get('view')).toBe('board');
-    expect(initial.document.querySelector('[data-releases-live-region]')).toBe(board.region);
-    expect(board.form.listeners).toHaveLength(2);
-    expect(board.board.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
-    expect(windowObject.history.pushes).toHaveLength(4);
-
-    board.search.value = 'needle';
-    board.search.dispatch('input');
-    vi.advanceTimersByTime(349);
-    expect(windowObject.fetch).toHaveBeenCalledTimes(4);
-    vi.advanceTimersByTime(1);
-    await flush();
-    requested = new URL(windowObject.fetch.mock.calls[4][0]);
-    expect(requested.pathname).toBe('/release-management');
-    expect(requested.searchParams.get('search')).toBe('needle');
-    expect(initial.document.querySelector('[data-releases-live-region]')).toBe(searched.region);
-  });
-
-  it('debounces Search and rebinds the Board form after a view switch', async () => {
-    vi.useFakeTimers();
-    const initial = makePage('list');
-    const board = makePage('board');
-    const filtered = makePage('board');
-    const pages = new Map([['board', board.document], ['filtered', filtered.document]]);
-    const windowObject = makeWindow(initial.document, pages);
-    windowObject.fetch
-      .mockResolvedValueOnce(responseFor('board', 'http://creatorcrate.test/releases?view=board&project=7'))
-      .mockResolvedValueOnce(responseFor('filtered', 'http://creatorcrate.test/releases?view=board&search=needle'));
-    enhanceReleasesLiveFiltering(initial.document);
-
-    const switchEvent = initial.board.dispatch('click');
-    expect(switchEvent.defaultPrevented).toBe(true);
-    await flush();
-    expect(initial.document.querySelector('[data-releases-live-region]')).toBe(board.region);
-    expect(windowObject.history.pushes).toHaveLength(1);
-
-    board.search.value = 'needle';
-    board.document?.activeElement;
-    board.search.dispatch('input');
-    vi.advanceTimersByTime(349);
-    expect(windowObject.fetch).toHaveBeenCalledTimes(1);
-    vi.advanceTimersByTime(1);
-    await flush();
-    expect(windowObject.fetch).toHaveBeenCalledTimes(2);
-    expect(new URL(windowObject.fetch.mock.calls[1][0]).searchParams.get('search')).toBe('needle');
-    expect(initial.form.submit).not.toHaveBeenCalled();
+    expect(reset.form.listeners).toHaveLength(2);
+    expect(reset.next.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
+    expect(windowObject.history.pushes).toHaveLength(3);
   });
 
   it('suppresses stale responses, handles Back/Forward, and falls back on failure', async () => {

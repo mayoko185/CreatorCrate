@@ -44,10 +44,8 @@ const PROJECTS_NSFW_FORM_SELECTOR = '[data-projects-nsfw-filter]';
 const PROJECTS_NSFW_TOGGLE_SELECTOR = '[data-projects-nsfw-toggle]';
 const RELEASES_LIVE_REGION_SELECTOR = '[data-releases-live-region]';
 const RELEASES_FILTER_SELECTOR = '[data-releases-filter]';
-const RELEASES_SEARCH_SELECTOR = '[data-releases-search]';
 const RELEASES_LIVE_STATUS_SELECTOR = '[data-releases-live-status]';
 const RELEASES_LIVE_STATE_ATTRIBUTE = 'data-releases-live-state';
-const RELEASES_LIVE_DEBOUNCE_MS = 350;
 const RELEASE_ASSETS_LIVE_REGION_SELECTOR = '[data-release-assets-live-region]';
 const RELEASE_ASSETS_LIVE_FILTER_SELECTOR = '[data-release-assets-live-filter]';
 const RELEASE_ASSETS_LIVE_FILTER_CONTROL_SELECTOR = [
@@ -738,12 +736,14 @@ const projectsLiveEngine = createLiveRegionEngine({
   },
 });
 
+function enhanceReleasesLiveRegion(region) {
+  enhanceDropdowns(liveRegionDocument(region));
+}
+
 const releasesLiveEngine = createLiveRegionEngine({
   regionSelector: RELEASES_LIVE_REGION_SELECTOR,
   formSelector: RELEASES_FILTER_SELECTOR,
-  linkSelector: 'nav[aria-label="View"] a[data-releases-view-link], .pagination a, [data-releases-reset]',
-  searchSelector: RELEASES_SEARCH_SELECTOR,
-  debounceMs: RELEASES_LIVE_DEBOUNCE_MS,
+  linkSelector: '.pagination a, [data-releases-reset]',
   defaultAction: '/releases',
   stateKey: '__creatorCrateReleasesLiveFiltering',
   historyState: { releases: true },
@@ -753,7 +753,7 @@ const releasesLiveEngine = createLiveRegionEngine({
   fallbackMessage: 'Releases are loading as a full page.',
   responseErrorMessage: 'Releases response failed.',
   missingRegionMessage: 'Releases response did not contain the live region.',
-  enhanceRegion() {},
+  enhanceRegion: enhanceReleasesLiveRegion,
   isCurrentUrl(url) {
     return url.pathname === '/releases' || url.pathname === '/release-management';
   },

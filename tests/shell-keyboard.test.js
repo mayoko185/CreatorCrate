@@ -48,8 +48,9 @@ function positiveTabindexMatches(html) {
 
 /**
  * Collect hidden regions that still contain active interactive descendants.
- * Inert regions and disabled form controls are intentionally excluded because
- * both remove those descendants from the keyboard/accessibility surface.
+ * Inert regions, disabled form controls, and hidden CreatorCrate dropdown
+ * replicas are intentionally excluded because none expose those descendants to
+ * the keyboard/accessibility surface; the paired native select remains visible.
  */
 function hiddenFocusableOffenders(html) {
   const offenders = [];
@@ -58,6 +59,7 @@ function hiddenFocusableOffenders(html) {
   while ((m = hiddenRe.exec(html)) !== null) {
     const regionAttributes = `${m[2]} ${m[3]}`;
     if (/\binert(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/i.test(regionAttributes)) continue;
+    if (/\bdata-cc-dropdown\b/i.test(regionAttributes)) continue;
     const inner = m[4];
     const interactive = [...inner.matchAll(/<(?:a|button|input|select|textarea)\b([^>]*)>/gi)]
       .some(([, attributes]) => !/\bdisabled(?:\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+))?/i.test(attributes));
@@ -154,7 +156,7 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
         `/projects/${projectId}/assets/${assetIds[1]}`,
         '/releases',
         '/calendar',
-        '/release-management',
+        '/releases',
         '/releases/new',
         releaseLocation,
         `${releaseLocation}/edit`,
@@ -169,7 +171,7 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
     });
 
     it('scrollable regions carry tabindex="0" and a name (not positive)', async () => {
-      const res = await agent.get('/release-management').expect(200);
+      const res = await agent.get('/releases').expect(200);
       // The release list table is an intrinsically wide scroll region.
       expect(res.text).toMatch(
         /<div class="table-scroll" tabindex="0" aria-label="Release list">/,
@@ -242,7 +244,6 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
       '.summary-card',
       '.field input',
       '.table-scroll',
-      '.board-scroll',
       '.calendar-scroll',
     ];
 
@@ -265,7 +266,7 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
       css = extractStyle((await agent.get('/').expect(200)).text);
     });
 
-    const wrappers = ['.table-scroll', '.board-scroll', '.calendar-scroll'];
+    const wrappers = ['.table-scroll', '.calendar-scroll'];
 
     for (const wrapper of wrappers) {
       it(`${wrapper} uses :focus-visible`, () => {

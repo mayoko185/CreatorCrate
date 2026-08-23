@@ -1,0 +1,35 @@
+{% import "partials/dialog.njk" as dialog %}
+
+{% macro render(releaseCreateForm, csrfToken, open=false) %}
+  {% set values = releaseCreateForm.values %}
+  {% set errors = releaseCreateForm.errors %}
+  {% set projects = releaseCreateForm.projects %}
+  {% set selectedProjectId = releaseCreateForm.selectedProjectId %}
+  {% set release = none %}
+  {% set releaseFormDialog = true %}
+  {% set releaseProjectDropdownId = 'release-create-project' %}
+  {% call dialog.render('release-create-dialog', 'New Release', open, 'release-create-description', 'release-create-form', 'project-form-dialog') %}
+    <p id="release-create-description" class="app-dialog-description">
+      Create a tracked release record.
+    </p>
+    <div class="app-dialog-body project-edit-dialog-body">
+      <form id="release-create-form" method="post" action="/releases" class="app-dialog-form project-form project-edit-dialog-form"
+            data-dialog-form data-dialog-async="false" novalidate>
+        <input type="hidden" name="_csrf" value="{{ csrfToken }}">
+        <input type="hidden" name="returnTo" value="/releases">
+        {% for assetId in values.selectedAssetIds %}
+          <input type="hidden" name="selectedAssetIds" value="{{ assetId }}">
+        {% endfor %}
+        {% if errors.general %}
+          <div class="error-summary" role="alert"><p>{{ errors.general }}</p></div>
+        {% endif %}
+        {% include "partials/release-form-fields.njk" %}
+      </form>
+    </div>
+    <div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>
+    <footer class="app-dialog-footer">
+      <button class="button button-secondary" type="submit" formmethod="dialog" data-dialog-close>Cancel</button>
+      <button class="button button-primary" type="submit" form="release-create-form" data-dialog-submit>Create release</button>
+    </footer>
+  {% endcall %}
+{% endmacro %}

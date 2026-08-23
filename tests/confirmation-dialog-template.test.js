@@ -14,8 +14,7 @@ const CONFIRMATION_TEMPLATES = [
   'notes/form.njk',
   'partials/asset-edit-dialog.njk',
   'partials/project-asset-category-management.njk',
-  'releases/detail.njk',
-  'releases/form.njk',
+  'partials/release-edit-dialog.njk',
   'settings/asset-categories.njk',
 ];
 

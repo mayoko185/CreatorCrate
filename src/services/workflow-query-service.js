@@ -814,11 +814,17 @@ export function createWorkflowQueryService({
    *
    * @returns {Array<{ id: number, title: string }>}
    */
-  function getProjectsPageFilterOptions() {
-    return projectRepository
+  function getProjectsPageFilterOptions(selectedProjectId = null) {
+    const projectOptions = projectRepository
       .listActiveAssetFilterOptions()
-      .map((project) => ({ id: project.id, title: project.title }))
-      .sort(compareProjectOptions);
+      .map((project) => ({ id: project.id, title: project.title }));
+    const selectedProject = selectedProjectId === null ? null : projectRepository.findById(selectedProjectId);
+
+    if (selectedProject && !projectOptions.some((project) => project.id === selectedProject.id)) {
+      projectOptions.push({ id: selectedProject.id, title: selectedProject.title });
+    }
+
+    return projectOptions.sort(compareProjectOptions);
   }
 
   /**
@@ -1132,42 +1138,6 @@ export function createWorkflowQueryService({
     return { releases, total, page, pageSize: filters.pageSize, pageCount, today, hasAnyReleases };
   }
 
-  /**
-   * Board-ready release data grouped by project workflow status, with a
-   * separate Published grouping derived from published_date.
-   * @param {Object} rawFilters - raw query parameters
-   * @param {Object} [options]
-   * @param {string} [options.today] - ISO date YYYY-MM-DD override
-   * @returns {{ columns: Object, today: string }} columns keyed by project status or publication
-   */
-  function getReleaseBoard(rawFilters, options = {}) {
-    const filters = normalizeListFilters(rawFilters);
-    const today = options.today || defaultToday();
-
-    // Board always excludes archived-parent releases for active workflow view
-    const activeScheduleFilter = true;
-
-    const rows = releaseRepository.findBoard({
-      ...filters,
-      today,
-      activeScheduleFilter,
-    });
-
-    // Group by project workflow status. Publication is a separate data axis,
-    // so published releases take the Published grouping regardless of the
-    // owning project's workflow status.
-    const boardGroups = ['tbd', 'planned', 'in-progress', 'ready', 'published'];
-    const columns = Object.fromEntries(boardGroups.map((group) => [group, []]));
-
-    for (const release of rows) {
-      const group = release.published_date != null ? 'published' : release.project_status;
-      if (columns[group]) {
-        columns[group].push(release);
-      }
-    }
-
-    return { columns, today };
-  }
 
   /**
    * Validate and parse a YYYY-MM month string.
@@ -2375,7 +2345,6 @@ export function createWorkflowQueryService({
     getProjectAssetsDefaultExtensions,
     getAssetLibraryPage,
     getReleaseList,
-    getReleaseBoard,
     getProjectCalendar,
     getReleaseCalendar,
     getProjectAssetBrowser,

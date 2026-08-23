@@ -6,7 +6,6 @@ import {
 
 const PROJECTS = 'projects';
 const RELEASES = 'releases';
-const RELEASE_MANAGEMENT = 'releaseManagement';
 const PROJECT_ASSETS = 'projectAssets';
 const ASSET_VIEWER = 'assetViewer';
 const NEW_PROJECT = 'new_project';
@@ -29,14 +28,8 @@ export const PAGE_DEFAULT_DEFINITIONS = Object.freeze({
     tag: definition('page_defaults.projects.tag', ['all'], 'all'),
   }),
   [RELEASES]: Object.freeze({
-    view: definition('page_defaults.releases.view', ['list', 'board'], 'list'),
     sort: definition('page_defaults.releases.sort', ['planned', 'updated', 'created', 'title'], 'planned'),
     order: definition('page_defaults.releases.order', ['asc', 'desc'], 'asc'),
-  }),
-  [RELEASE_MANAGEMENT]: Object.freeze({
-    view: definition('page_defaults.release_management.view', ['list', 'board'], 'list'),
-    sort: definition('page_defaults.release_management.sort', ['updated', 'created', 'planned', 'title'], 'updated'),
-    order: definition('page_defaults.release_management.order', ['asc', 'desc'], 'desc'),
   }),
   [PROJECT_ASSETS]: Object.freeze({
     view: definition('page_defaults.project_assets.view', ['grid', 'list'], 'grid'),

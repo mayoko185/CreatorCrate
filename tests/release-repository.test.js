@@ -1135,55 +1135,10 @@ describe('release repository', () => {
       expect(db.prepare(`SELECT id FROM releases WHERE id = ?`).get(overdue.id)).toBeTruthy();
     });
   });
-
-  // ─── Phase 6C: Release Planning Views — findBoard ─────────────────────────
-
-  describe('findBoard', () => {
-    it('returns releases ordered by planned_date asc', () => {
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Later', status: 'tbd', plannedDate: '2025-07-01' }) });
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Earlier', status: 'tbd', plannedDate: '2025-06-01' }) });
-
-      const rows = releaseRepo.findBoard({ today: '2025-06-15' });
-      expect(rows[0].title).toBe('Earlier');
-      expect(rows[1].title).toBe('Later');
-      expect(rows.every((row) => row.project_status === 'tbd')).toBe(true);
-      expect(rows.every((row) => !Object.hasOwn(row, 'status'))).toBe(true);
-    });
-
-    it('releases with NULL planned_date sort last', () => {
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Has Date', status: 'tbd', plannedDate: '2025-06-01' }) });
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'No Date', status: 'tbd', plannedDate: null }) });
-
-      const rows = releaseRepo.findBoard({ today: '2025-06-15' });
-      expect(rows[0].title).toBe('Has Date');
-      expect(rows[rows.length - 1].title).toBe('No Date');
-    });
-
-    it('excludes archived parent releases from board by default', () => {
-      releaseRepo.create({ projectId, ...sampleRelease({ title: 'Hidden', status: 'planned', plannedDate: '2025-06-20' }) });
-      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(projectId);
-
-      const rows = releaseRepo.findBoard({ today: '2025-06-15' });
-      expect(rows.map((r) => r.title)).toEqual([]);
-    });
-
-    it('id DESC is the deterministic tie-breaker when status, planned_date, and updated_at all match', () => {
-      // Three releases sharing the same status, the same planned_date, and
-      // the same updated_at — the only meaningful difference is the row id.
-      // The board view must produce a deterministic order across runs by
-      // appending releases.id DESC as the final tie-breaker.
-      const r1 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'First Created', status: 'planned', plannedDate: '2025-06-15' }) });
-      const r2 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Second Created', status: 'planned', plannedDate: '2025-06-15' }) });
-      const r3 = releaseRepo.create({ projectId, ...sampleRelease({ title: 'Third Created', status: 'planned', plannedDate: '2025-06-15' }) });
-
-      // Force identical updated_at via direct SQL update.
-      db.prepare(`UPDATE releases SET updated_at = '2025-06-01 00:00:00' WHERE id IN (?, ?, ?)`).run(r1.id, r2.id, r3.id);
-
-      const rows = releaseRepo.findBoard({ today: '2025-06-15' });
-      // With id DESC tie-breaker: r3 (highest id) first, then r2, then r1.
-      expect(rows.map((r) => r.id)).toEqual([r3.id, r2.id, r1.id]);
-    });
+  it('does not expose the removed Release Board repository query', () => {
+    expect(releaseRepo).not.toHaveProperty('findBoard');
   });
+
 
   // ─── Phase 6D: Asset Browser Queries ─────────────────────────────────
 

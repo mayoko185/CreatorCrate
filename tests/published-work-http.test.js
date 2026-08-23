@@ -91,8 +91,9 @@ describe('Releases HTTP route', () => {
     expect(res.text).toContain('<h1 class="app-section-title">Releases</h1>');
     expect(res.text).toContain('>Releases</span>');
     expect(res.text).not.toContain('Published Work');
-    expect(res.text).toContain('<option value="planned" selected>Planned</option>');
-    expect(res.text).toContain('<option value="asc" selected>Asc</option>');
+    const filters = res.text.match(/<form[^>]*id="list-releases-filter"[\s\S]*?<\/form>/)?.[0] || '';
+    expect(filters).toMatch(/name="sort" type="radio" value="planned" checked/);
+    expect(filters).toMatch(/name="order" type="radio" value="asc" checked/);
     expect(res.text).toContain('Context Release');
     expect(res.text).toContain('Release Context Project');
   });
@@ -157,7 +158,7 @@ describe('Releases HTTP route', () => {
     const search = await agent.get('/releases?search=Findable').expect(200);
     expect(search.text).toContain('Findable Release');
     expect(search.text).not.toContain('Other Release');
-    expect(search.text).toContain('value="Findable"');
+    expect(search.text).not.toMatch(/<input[^>]*name="search"/);
 
     for (let index = 0; index < 26; index += 1) {
       await createRelease({
@@ -173,13 +174,9 @@ describe('Releases HTTP route', () => {
     expect(pageTwo.text).not.toContain('Paged Release 00');
   });
 
-  it('keeps the release-management route available as a separate release-record surface', async () => {
-    const projectId = await createProject('Management Surface Project');
-    await createRelease({ projectId, title: 'Management Surface Release' });
+  it('keeps the release-management route as a canonical redirect', async () => {
+    const res = await agent.get('/release-management?project=12').expect(302);
 
-    const res = await agent.get('/release-management').expect(200);
-
-    expect(res.text).toContain('Management Surface Release');
-    expect(res.text).toContain('<h1 class="app-section-title">Releases</h1>');
+    expect(res.headers.location).toBe('/releases?project=12');
   });
 });

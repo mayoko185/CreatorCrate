@@ -114,11 +114,11 @@ describe('release calendar HTTP', () => {
       expect(countTags(res.text, 'h1')).toBe(1);
     });
 
-    it('calendar has view-switcher links back to list and board', async () => {
+    it('calendar links only to canonical Releases navigation', async () => {
       const res = await agent.get('/calendar').expect(200);
       expect(res.text).toContain('view-switcher-option');
-      expect(res.text).toMatch(/href="\/release-management"/);
-      expect(res.text).toMatch(/href="\/release-management\?view=board"/);
+      expect(res.text).toContain('href="/releases"');
+      expect(res.text).not.toContain('/release-management');
     });
 
     it('calendar renders a named bounded scroll container for narrow screens', async () => {

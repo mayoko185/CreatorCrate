@@ -2065,109 +2065,10 @@ describe('workflow query service', () => {
       expect(count).toBe(RELEASE_LIST_FIXED_STATEMENT_EXECUTIONS);
     });
   });
-
-  // ─── Phase 6C: Release Planning Views — getReleaseBoard ─────────────────────
-
-  describe('getReleaseBoard', () => {
-    it('groups releases into columns by project status', () => {
-      const tbdProject = insertProject(db, { title: 'Board TBD Project', status: 'tbd' });
-      const plannedProject = insertProject(db, { title: 'Board Planned Project', status: 'planned' });
-      insertRelease(db, { projectId: tbdProject.id, title: 'Idea R' });
-      insertRelease(db, { projectId: plannedProject.id, title: 'Planned R' });
-
-      const { columns } = service.getReleaseBoard({}, { today: '2025-06-15' });
-      expect(columns.tbd).toHaveLength(1);
-      expect(columns.planned).toHaveLength(1);
-      expect(columns['in-progress']).toHaveLength(0);
-    });
-
-    it('groups published releases from published_date without changing project workflow status', () => {
-      const project = insertProject(db, { title: 'Published Board Project', status: 'ready' });
-      const published = insertRelease(db, {
-        projectId: project.id,
-        title: 'Published Release',
-        publishedDate: '2025-01-01',
-      });
-      const unpublished = insertRelease(db, { projectId: project.id, title: 'Unpublished Release' });
-
-      const { columns } = service.getReleaseBoard({}, { today: '2025-06-15' });
-      expect(columns.published.map((release) => release.id)).toEqual([published.id]);
-      expect(columns.ready.map((release) => release.id)).toEqual([unpublished.id]);
-      expect(columns.published[0].published_date).toBe('2025-01-01');
-      expect(columns.published[0]).not.toHaveProperty('status');
-    });
-
-    it('keeps archived releases out of workflow groupings unless included, without a Cancelled group', () => {
-      const project = insertProject(db, { title: 'Archived Board Project', status: 'planned' });
-      const archived = insertRelease(db, {
-        projectId: project.id,
-        title: 'Archived Release',
-        archivedAt: '2025-01-01 00:00:00',
-      });
-
-      const defaultBoard = service.getReleaseBoard({}, { today: '2025-06-15' });
-      const includedBoard = service.getReleaseBoard({ includeArchived: '1' }, { today: '2025-06-15' });
-      expect(Object.keys(defaultBoard.columns)).not.toContain('cancelled');
-      expect(includedBoard.columns.planned.map((release) => release.id)).toEqual([archived.id]);
-    });
-
-    it('returns five coherent board groups with exact keys and no extras', () => {
-      const { columns } = service.getReleaseBoard({}, { today: '2025-06-15' });
-      const keys = Object.keys(columns).sort();
-      // Exact keys, sorted alphabetically — verifies workflow groups plus publication.
-      expect(keys).toEqual(['in-progress', 'planned', 'published', 'ready', 'tbd']);
-      // Every column value must be an array.
-      for (const key of keys) {
-        expect(Array.isArray(columns[key])).toBe(true);
-      }
-    });
-
-    it('exposes empty arrays for columns with no releases', () => {
-      const { columns } = service.getReleaseBoard({}, { today: '2025-06-15' });
-      expect(Array.isArray(columns.tbd)).toBe(true);
-      expect(Array.isArray(columns.published)).toBe(true);
-    });
-
-    it('board includes project_title and asset counts', () => {
-      const project = insertProject(db, { title: 'Board Assets Project' });
-      const release = insertRelease(db, { projectId: project.id, title: 'Board Release', status: 'planned' });
-      const asset = insertAsset(db, { projectId: project.id, relativePath: 'a.txt', filename: 'a.txt', isPresent: 1 });
-      linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
-
-      const { columns } = service.getReleaseBoard({}, { today: '2025-06-15' });
-      const row = columns.tbd.find((r) => r.id === release.id);
-      expect(row.project_title).toBe('Board Assets Project');
-      expect(row.project_status).toBe('tbd');
-      expect(row).not.toHaveProperty('status');
-      expect(row.selected_asset_count).toBe(1);
-    });
-
-    it('does not include archived parent releases', () => {
-      const project = insertProject(db, { title: 'Board Archived Parent' });
-      insertRelease(db, { projectId: project.id, title: 'Should Not Appear', status: 'planned', plannedDate: '2025-06-20' });
-      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(project.id);
-
-      const { columns } = service.getReleaseBoard({}, { today: '2025-06-15' });
-      const allIds = Object.values(columns).flatMap((c) => c.map((r) => r.id));
-      expect(allIds).toHaveLength(0);
-    });
-
-    it('ignores an obsolete status query instead of filtering by project status', () => {
-      const tbdProject = insertProject(db, { title: 'Board TBD Filter Project', status: 'tbd' });
-      const plannedProject = insertProject(db, { title: 'Board Planned Filter Project', status: 'planned' });
-      insertRelease(db, { projectId: tbdProject.id, title: 'Idea R' });
-      insertRelease(db, { projectId: plannedProject.id, title: 'Planned R' });
-
-      const { columns } = service.getReleaseBoard({ status: 'tbd' }, { today: '2025-06-15' });
-      expect(columns.tbd).toHaveLength(1);
-      expect(columns.planned).toHaveLength(1);
-    });
-
-    it('uses one shared today for classification', () => {
-      const { columns, today } = service.getReleaseBoard({}, { today: '2025-06-15' });
-      expect(today).toBe('2025-06-15');
-    });
+  it('does not expose the removed Release Board query path', () => {
+    expect(service).not.toHaveProperty('getReleaseBoard');
   });
+
 
   // ─── Calendar month utilities — parseMonth/prevMonth/nextMonth ─────────────
   // Shared by getReleaseCalendar (the canonical /calendar data source).
@@ -4628,13 +4529,6 @@ describe('workflow query service', () => {
       expect(result.releases.length).toBeLessThanOrEqual(5);
     });
 
-    it('getReleaseBoard returns all releases (no pagination) but bounded by data volume', () => {
-      // Board has no pagination, but the data volume is naturally bounded
-      // by the number of active releases in the system
-      const { columns } = service.getReleaseBoard({}, { today: '2099-01-01' });
-      const total = Object.values(columns).reduce((sum, col) => sum + col.length, 0);
-      expect(total).toBeGreaterThanOrEqual(20);
-    });
   });
 
   describe('getDashboardData — configured section sorting', () => {

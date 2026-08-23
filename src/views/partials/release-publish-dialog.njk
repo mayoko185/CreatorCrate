@@ -1,0 +1,102 @@
+{% import "partials/dialog.njk" as dialog %}
+
+{% macro render(release, project, releaseAssets, publishDialogForm, csrfToken, open=false) %}
+  {% set errors = publishDialogForm.errors %}
+  {% call dialog.render('release-publish-dialog', 'Review & Publish', open, 'release-publish-description', 'release-publish-form', 'project-form-dialog') %}
+    <p id="release-publish-description" class="app-dialog-description">
+      Review the selected assets and choose the publication date.
+    </p>
+
+    <div class="app-dialog-body project-edit-dialog-body">
+      <section class="settings-section project-edit-dialog-section" aria-labelledby="release-publish-summary-heading">
+        <h3 id="release-publish-summary-heading">Release details</h3>
+        <div class="project-edit-dialog-section-body">
+          <dl class="detail-list">
+            <dt>Project</dt>
+            <dd><a href="/projects/{{ project.id }}">{{ project.title }}</a></dd>
+            <dt>Title</dt>
+            <dd>{{ release.title }}</dd>
+            <dt>Project status</dt>
+            <dd>{% set status = project.status if project else release.project_status %}{% include "partials/status-badge.njk" %}</dd>
+            {% if release.planned_date %}
+              <dt>Planned date</dt>
+              <dd>{{ release.planned_date }}</dd>
+            {% endif %}
+          </dl>
+        </div>
+      </section>
+
+      <section class="settings-section project-edit-dialog-section" aria-labelledby="release-publish-assets-heading">
+        <h3 id="release-publish-assets-heading">Selected Assets</h3>
+        <div class="project-edit-dialog-section-body">
+          {% if releaseAssets.length > 0 %}
+            <div class="table-scroll" tabindex="0" aria-label="Selected release assets for publication">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th class="num">#</th>
+                    <th>Filename</th>
+                    <th>Role</th>
+                    <th class="num">Order</th>
+                    <th>Status</th>
+                    <th>Last seen</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for ra in releaseAssets %}
+                    <tr>
+                      <td class="num">{{ loop.index }}</td>
+                      <td class="asset-filename">{{ ra.filename }}</td>
+                      <td>{{ ra.role | title }}</td>
+                      <td class="num">{{ ra.sort_order }}</td>
+                      <td>
+                        {% if ra.is_present == 1 %}
+                          {% set status = 'present' %}{% include "partials/status-badge.njk" %}
+                        {% else %}
+                          {% set status = 'missing' %}{% include "partials/status-badge.njk" %}
+                        {% endif %}
+                      </td>
+                      <td class="asset-date">{% if ra.last_seen_at %}{{ ra.last_seen_at }}{% else %}&mdash;{% endif %}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            </div>
+          {% else %}
+            {% set emptyHeading = "No assets selected" %}
+            {% set emptyDescription = "Select assets before publishing this release." %}
+            {% set emptyHeadingLevel = "h4" %}
+            {% include "partials/empty-state.njk" %}
+          {% endif %}
+        </div>
+      </section>
+
+      <form id="release-publish-form" method="post" action="/releases/{{ release.id }}/publish" class="app-dialog-form project-form project-edit-dialog-form" data-dialog-form data-dialog-async="false" novalidate>
+        <input type="hidden" name="_csrf" value="{{ csrfToken }}">
+        {% if errors.general %}
+          <div class="error-summary" role="alert"><p>{{ errors.general }}</p></div>
+        {% endif %}
+        <section class="settings-section project-edit-dialog-section" aria-labelledby="release-publish-publication-heading">
+          <h3 id="release-publish-publication-heading">Publication</h3>
+          <div class="project-edit-dialog-section-body">
+            <div class="field scheduling-field {% if errors.publishedDate %}field-error{% endif %}" data-date-picker-field>
+              <label for="release-publish-date">Publication date <span class="required" aria-label="required">*</span></label>
+              <div class="picker-control"><div class="picker-input-row">
+                <input class="picker-input" type="date" id="release-publish-date" name="publishedDate" value="{{ publishDialogForm.prefillDate }}" required aria-describedby="release-publish-date-help{% if errors.publishedDate %} release-publish-date-error{% endif %}"{% if errors.publishedDate %} aria-invalid="true"{% endif %} data-date-picker-input>
+                <button type="button" class="picker-trigger date-picker-trigger" aria-haspopup="dialog" aria-expanded="false" aria-controls="release-publish-date-calendar" aria-label="Open calendar for publication date"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="18" rx="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg></button>
+              </div><div id="release-publish-date-calendar" class="date-picker-panel" role="dialog" aria-label="Publication date calendar" hidden data-date-picker-panel data-date-picker-for="release-publish-date"></div></div>
+              <span class="help-text" id="release-publish-date-help">The date this release was published. Must be a valid date (YYYY-MM-DD).</span>
+              {% if errors.publishedDate %}<span class="field-error-message" id="release-publish-date-error">{{ errors.publishedDate }}</span>{% endif %}
+            </div>
+          </div>
+        </section>
+      </form>
+    </div>
+
+    <div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>
+    <footer class="app-dialog-footer">
+      <button class="button button-secondary" type="button" data-dialog-close>Cancel</button>
+      <button class="button button-primary" type="submit" form="release-publish-form" data-dialog-submit>Publish</button>
+    </footer>
+  {% endcall %}
+{% endmacro %}

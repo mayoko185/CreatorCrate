@@ -1,0 +1,56 @@
+{% import "partials/dialog.njk" as dialog %}
+
+{% macro render(release, releaseEditForm, csrfToken, open=false) %}
+  {% set values = releaseEditForm.values %}
+  {% set errors = releaseEditForm.errors %}
+  {% call dialog.render('release-edit-dialog', 'Edit Release', open, 'release-edit-description', 'release-edit-form', 'project-form-dialog') %}
+    <p id="release-edit-description" class="app-dialog-description">
+      Update release metadata and scheduling fields.
+    </p>
+    <div class="app-dialog-body project-edit-dialog-body">
+      <form id="release-edit-form" method="post" action="/releases/{{ release.id }}" class="app-dialog-form project-form project-edit-dialog-form"
+            data-dialog-form data-dialog-async="false" novalidate>
+        <input type="hidden" name="_csrf" value="{{ csrfToken }}">
+        {% if errors.general %}
+          <div class="error-summary" role="alert"><p>{{ errors.general }}</p></div>
+        {% endif %}
+        {% set releaseFormDialog = true %}
+        {% include "partials/release-form-fields.njk" %}
+      </form>
+
+      <section class="settings-section project-edit-dialog-section project-actions project-edit-dialog-actions" aria-labelledby="release-actions-heading">
+        <h3 id="release-actions-heading">Release actions</h3>
+        <div class="project-edit-dialog-section-body project-edit-dialog-actions-body">
+          {% if not release.published_date %}
+            <details class="notes-workspace-disclosure notes-workspace-disclosure--archive">
+              <summary>Archive release</summary>
+              <div class="notes-workspace-disclosure-content">
+                <p class="notes-workspace-warning">Archiving a release makes it read-only. This cannot be undone.</p>
+                <form method="post" action="/releases/{{ release.id }}/archive">
+                  <input type="hidden" name="_csrf" value="{{ csrfToken }}">
+                  <button class="button button-small button-secondary" type="submit" data-confirm="Archive this release? This cannot be undone.">Archive release</button>
+                </form>
+              </div>
+            </details>
+          {% endif %}
+
+          <details class="notes-workspace-disclosure notes-workspace-disclosure--delete">
+            <summary>Delete Release</summary>
+            <div class="notes-workspace-disclosure-content">
+              <p class="notes-workspace-warning">Deleting this release is permanent and cannot be undone. The release record and its asset associations will be removed; the underlying project assets will not be affected.</p>
+              <form method="post" action="/releases/{{ release.id }}/delete">
+                <input type="hidden" name="_csrf" value="{{ csrfToken }}">
+                <button class="button button-small button-danger" type="submit" data-confirm="Delete this release permanently? This action is irreversible and cannot be undone.">Delete Release</button>
+              </form>
+            </div>
+          </details>
+        </div>
+      </section>
+    </div>
+    <div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>
+    <footer class="app-dialog-footer">
+      <button class="button button-secondary" type="button" data-dialog-close>Cancel</button>
+      <button class="button button-primary" type="submit" form="release-edit-form" data-dialog-submit>Save changes</button>
+    </footer>
+  {% endcall %}
+{% endmacro %}

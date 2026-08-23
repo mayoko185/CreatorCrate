@@ -812,7 +812,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
 
-      const res = await agent.get('/release-management').expect(200);
+      const res = await agent.get('/releases').expect(200);
       expect(res.text).toMatch(/<div class="table-scroll" tabindex="0" aria-label="Release list">/);
     });
   });

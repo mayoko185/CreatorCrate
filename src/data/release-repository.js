@@ -1230,59 +1230,6 @@ export function createReleaseRepository(db) {
       return row.c;
     },
 
-    /**
-     * Board-ready release data grouped by project workflow status.
-     * Returns flat array — service layer performs the grouping into columns.
-     * @param {Object} filters
-     * @param {number|null} filters.projectId
-     * @param {string|null} filters.schedule
-     * @param {boolean} filters.includeArchived
-     * @param {string} filters.today
-     * @param {boolean} filters.activeScheduleFilter
-     * @returns {Array<ReleaseRecord & {project_title: string, selected_asset_count: number, missing_asset_count: number}>}
-     */
-    findBoard(filters) {
-      const {
-        search,
-        projectId,
-        schedule,
-        includeArchived = false,
-        today,
-        activeScheduleFilter = true, // Board view excludes archived parent releases by default
-      } = filters;
-
-      const { conditions, params } = this._buildFilterConditions({
-        search, projectId, schedule, includeArchived, today, activeScheduleFilter,
-      });
-      const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-
-      const selectedCountSubquery = `(SELECT COUNT(DISTINCT a.id) FROM release_assets ra JOIN assets a ON a.id = ra.asset_id AND a.project_id = releases.project_id WHERE ra.release_id = releases.id)`;
-      const missingCountSubquery = `(SELECT COUNT(DISTINCT a.id) FROM release_assets ra JOIN assets a ON a.id = ra.asset_id AND a.project_id = releases.project_id WHERE ra.release_id = releases.id AND a.is_present = 0)`;
-
-      // Board: sort by planned_date ascending (NULLs last), then updated_at desc,
-      // then releases.id DESC as the final deterministic tie-breaker.
-      const sql = `
-        SELECT releases.id, releases.project_id, projects.title AS project_title,
-               projects.status AS project_status,
-               releases.title, releases.description, releases.notes,
-               releases.planned_date, releases.planned_time, releases.published_date,
-               releases.patreon_url, releases.created_at, releases.updated_at,
-               releases.archived_at,
-               ${selectedCountSubquery} AS selected_asset_count,
-               ${missingCountSubquery} AS missing_asset_count
-        FROM releases
-        JOIN projects ON projects.id = releases.project_id
-        ${where}
-        ORDER BY (releases.planned_date IS NULL) ASC,
-                 date(releases.planned_date) ASC,
-                 (releases.planned_time IS NULL) ASC,
-                 releases.planned_time ASC,
-                 releases.updated_at DESC,
-                 releases.id DESC
-      `;
-
-      return db.prepare(sql).all(...params);
-    },
 
     // ─── Phase 6D: Asset Browser Queries ─────────────────────────────────
 

@@ -140,7 +140,7 @@
 
     <div class="project-detail-section-body">
       <div class="workflow-actions">
-        <a class="button" href="/release-management?project={{ project.id }}">View release records</a>
+        <a class="button" href="/releases?project={{ project.id }}">View release records</a>
         {% if not project.archived_at %}
           <a class="button button-secondary" href="/releases/new?projectId={{ project.id }}">Create release record</a>
         {% endif %}
