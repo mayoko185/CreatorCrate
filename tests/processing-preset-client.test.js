@@ -390,15 +390,54 @@ function buildConvertRoot(doc, projectId = '1') {
 function buildRuleRowTemplate() {
   const template = makeNode('template', { 'data-processing-rule-row-template': '' });
   const row = makeNode('li', { 'data-processing-rule-row': '' });
-  const typeFieldset = makeNode('fieldset', { 'data-processing-rule-type': '' });
-  ['remove', 'replace', 'prepend', 'append'].forEach((value, index) => {
-    const label = makeNode('label');
-    const radio = makeNode('input', { type: 'radio', name: 'rule-type', value });
-    radio.checked = index === 0;
-    label.appendChild(radio);
-    typeFieldset.appendChild(label);
+  const type = makeNode('div', { 'data-processing-rule-type': '' });
+  const fieldset = makeNode('fieldset');
+  const nativeSelect = makeNode('select', {
+    id: 'workflow-rule-operation',
+    'data-cc-dropdown-native-select': '',
+    'data-processing-rule-operation': '',
   });
-  row.appendChild(typeFieldset);
+  const dropdown = makeNode('details', {
+    id: 'workflow-rule-operation-dropdown',
+    'data-cc-dropdown': '',
+    'data-cc-dropdown-mode': 'single',
+    'data-cc-dropdown-dispatch-native-change': '',
+    hidden: '',
+  });
+  const summary = makeNode('summary', {
+    id: 'workflow-rule-operation-dropdown-trigger',
+    'aria-controls': 'workflow-rule-operation-dropdown-options',
+    'aria-label': 'Operation filter: Remove',
+  });
+  const summaryCurrent = makeNode('span', { 'data-cc-dropdown-summary-current': '' });
+  summaryCurrent.textContent = 'Remove';
+  summary.appendChild(summaryCurrent);
+  const panel = makeNode('div', {
+    id: 'workflow-rule-operation-dropdown-options',
+    class: 'asset-filter-multiselect-panel',
+  });
+
+  ['remove', 'replace', 'prepend', 'append'].forEach((value, index) => {
+    addOption(nativeSelect, value, value[0].toUpperCase() + value.slice(1));
+    const option = makeNode('div', { class: 'asset-filter-multiselect-option' });
+    const label = makeNode('label', { for: `workflow-rule-operation-option-${index + 1}` });
+    label.textContent = value[0].toUpperCase() + value.slice(1);
+    const input = makeNode('input', {
+      id: `workflow-rule-operation-option-${index + 1}`,
+      type: 'radio',
+      value,
+    });
+    input.checked = index === 0;
+    label.appendChild(input);
+    option.appendChild(label);
+    panel.appendChild(option);
+  });
+
+  nativeSelect.value = 'remove';
+  dropdown.append(summary, panel);
+  fieldset.append(nativeSelect, dropdown);
+  type.appendChild(fieldset);
+  row.appendChild(type);
   row.appendChild(makeNode('input', { type: 'text', 'data-processing-rule-text': '' }));
   const search = makeNode('input', { type: 'text', 'data-processing-rule-search': '', hidden: '' });
   const replacement = makeNode('input', { type: 'text', 'data-processing-rule-replacement': '', hidden: '' });
@@ -1025,12 +1064,9 @@ describe('Processing dialog preset management', () => {
     function addRule(fixture, side, { type, text, search, replacement }) {
       fixture.sides[side].addButton.dispatch('click');
       const row = fixture.sides[side].list.children[fixture.sides[side].list.children.length - 1];
-      const typeRadio = row.querySelector(`[data-processing-rule-type] input[value="${type}"]`);
-      // The fake DOM has no native radio-group exclusivity, so uncheck siblings by hand.
-      row.querySelectorAll('[data-processing-rule-type] input[type="radio"]').forEach((radio) => {
-        radio.checked = radio === typeRadio;
-      });
-      row.querySelector('[data-processing-rule-type]').dispatch('change', { target: typeRadio });
+      const operation = row.querySelector('[data-processing-rule-operation]');
+      operation.value = type;
+      operation.dispatch('change', { target: operation });
       if (type === 'replace') {
         row.querySelector('[data-processing-rule-search]').value = search ?? '';
         row.querySelector('[data-processing-rule-replacement]').value = replacement ?? '';
@@ -1075,7 +1111,7 @@ describe('Processing dialog preset management', () => {
       reload.preset.select.dispatch('change', { target: reload.preset.select });
 
       const collectSide = (fixtureRef, side) => fixtureRef.sides[side].list.children.map((row) => {
-        const type = row.querySelector('[data-processing-rule-type] input:checked').value;
+        const type = row.querySelector('[data-processing-rule-operation]').value;
         if (type === 'replace') {
           return { type, search: row.querySelector('[data-processing-rule-search]').value, replacement: row.querySelector('[data-processing-rule-replacement]').value };
         }
@@ -1083,6 +1119,9 @@ describe('Processing dialog preset management', () => {
       });
       expect(collectSide(reload, 'positive')).toEqual(expectedConfig.positive.rules);
       expect(collectSide(reload, 'negative')).toEqual(expectedConfig.negative.rules);
+      const restoredReplace = reload.sides.positive.list.children[1];
+      expect(restoredReplace.querySelector('[data-processing-rule-operation]').value).toBe('replace');
+      expect(restoredReplace.querySelector('[data-cc-dropdown-summary-current]').textContent).toBe('Replace');
 
       // Modify and Update: change the prepend rule's text.
       reload.sides.negative.list.children[0].querySelector('[data-processing-rule-text]').value = 'changed abs, ';
@@ -1094,6 +1133,60 @@ describe('Processing dialog preset management', () => {
       const replaceCall = fetchState.calls.find((c) => c.url === '/processing/presets/100/replace');
       expect(replaceCall.body.config.negative.rules[0]).toEqual({ type: 'prepend', text: 'changed abs, ' });
       expect(Object.keys(replaceCall.body)).not.toContain('scope');
+    });
+
+    it('creates native operation-select rows with unique dropdown IDs and references', async () => {
+      const fixture = buildWorkflowRoot(doc);
+      enhanceProcessingDialogs(doc);
+      await openDialog(fixture);
+      fixture.sides.positive.list.children.slice().forEach((row) => row.remove());
+
+      const first = addRule(fixture, 'positive', { type: 'prepend', text: 'first' });
+      const second = addRule(fixture, 'positive', { type: 'replace', search: 'old', replacement: 'new' });
+
+      expect(first.querySelector('[data-processing-rule-operation]')).toBeTruthy();
+      expect(first.querySelector('[data-processing-rule-type]').tagName).toBe('DIV');
+      expect(first.querySelector('[data-processing-rule-text]').hidden).toBe(false);
+      expect(second.querySelector('[data-processing-rule-text]').hidden).toBe(true);
+      expect(second.querySelector('[data-processing-rule-search]').hidden).toBe(false);
+      expect(second.querySelector('[data-processing-rule-replacement]').hidden).toBe(false);
+
+      const firstIds = first.querySelectorAll('[id]').map((element) => element.id);
+      const secondIds = second.querySelectorAll('[id]').map((element) => element.id);
+      expect(new Set([...firstIds, ...secondIds]).size).toBe(firstIds.length + secondIds.length);
+
+      [first, second].forEach((row) => {
+        row.querySelectorAll('[for], [aria-controls]').forEach((element) => {
+          element.getAttribute(element.hasAttribute('for') ? 'for' : 'aria-controls')
+            .split(/\s+/)
+            .forEach((id) => expect(row.querySelector(`#${id}`)).toBeTruthy());
+        });
+      });
+    });
+
+    it('keeps each native operation select independent when a later row changes', async () => {
+      const fixture = buildWorkflowRoot(doc);
+      enhanceProcessingDialogs(doc);
+      await openDialog(fixture);
+      fixture.sides.positive.list.children.slice().forEach((row) => row.remove());
+
+      const first = addRule(fixture, 'positive', { type: 'prepend', text: 'first' });
+      const second = addRule(fixture, 'positive', { type: 'append', text: 'second' });
+      const secondOperation = second.querySelector('[data-processing-rule-operation]');
+      secondOperation.value = 'remove';
+      secondOperation.dispatch('change', { target: secondOperation });
+
+      fixture.preset.saveBtn.dispatch('click');
+      fixture.preset.nameInput.value = 'Independent operations';
+      fixture.preset.nameForm.dispatch('submit', { target: fixture.preset.nameForm });
+      await flush();
+
+      const createCall = fetchState.calls.find((call) => call.url === '/processing/presets' && call.method === 'POST');
+      expect(first.querySelector('[data-processing-rule-operation]').value).toBe('prepend');
+      expect(createCall.body.config.positive.rules).toEqual([
+        { type: 'prepend', text: 'first' },
+        { type: 'remove', text: 'second' },
+      ]);
     });
 
     it('exports all Workflow rules faithfully, including order and an empty Replace search', async () => {

@@ -218,6 +218,60 @@ describe('Processing dialog preset-management markup', () => {
     expect(presetSection).not.toContain('data-processing-category-select');
   });
 
+  it('renders workflow prompt rules with the shared operation dropdown and settings-card sections', async () => {
+    const res = await agent.get('/projects/' + projectId + '/assets').expect(200);
+    const body = dialogBody(res.text, 'processing-workflow-dialog');
+    const ruleTemplate = body.match(/<template data-processing-rule-row-template>[\s\S]*?<\/template>/)?.[0] || '';
+
+    expect(body).toMatch(/class="[^"]*\bapp-dialog--processing-workflow\b[^"]*"/);
+    expect(ruleTemplate).toMatch(/<details[^>]*data-cc-dropdown[^>]*data-cc-dropdown-mode="single"/);
+    expect((ruleTemplate.match(/data-cc-dropdown-mode="single"/g) || [])).toHaveLength(1);
+
+    const operationSelect = ruleTemplate.match(/<select[^>]*data-cc-dropdown-native-select[^>]*data-processing-rule-operation[^>]*>[\s\S]*?<\/select>/)?.[0] || '';
+    expect(operationSelect).not.toBe('');
+    expect(operationSelect).toMatch(/<option value="remove" selected>Remove<\/option>/);
+    expect(operationSelect).toMatch(/<option value="replace">Replace<\/option>/);
+    expect(operationSelect).toMatch(/<option value="prepend">Prepend<\/option>/);
+    expect(operationSelect).toMatch(/<option value="append">Append<\/option>/);
+    expect(operationSelect.indexOf('>Remove<')).toBeLessThan(operationSelect.indexOf('>Replace<'));
+    expect(operationSelect.indexOf('>Replace<')).toBeLessThan(operationSelect.indexOf('>Prepend<'));
+    expect(operationSelect.indexOf('>Prepend<')).toBeLessThan(operationSelect.indexOf('>Append<'));
+    expect(ruleTemplate).not.toContain('name="rule-type"');
+    expect(ruleTemplate).not.toMatch(/<label><input type="radio"[^>]*> (?:Remove|Replace|Prepend|Append)<\/label>/);
+    expect(ruleTemplate).toMatch(/<button[^>]*data-processing-remove-rule[^>]*aria-label="Remove rule"[^>]*>X<\/button>/);
+    expect(ruleTemplate).toMatch(/<input[^>]*data-processing-rule-text[^>]*aria-label="Rule text"/);
+    expect(ruleTemplate).toMatch(/<input[^>]*data-processing-rule-search[^>]*aria-label="Search text"/);
+    expect(ruleTemplate).toMatch(/<input[^>]*data-processing-rule-replacement[^>]*aria-label="Replacement text"/);
+
+    for (const [side, heading] of [['positive', 'Positive prompt rules'], ['negative', 'Negative prompt rules']]) {
+      const section = sectionByData(body, 'data-processing-rules="' + side + '"');
+      expect(section).toMatch(/class="settings-section processing-dialog-section processing-rule-section"/);
+      expect(section).toContain('<h3>' + heading + '</h3>');
+      expect(section).toContain('class="processing-dialog-section-body"');
+      expect(section).toContain('data-processing-rule-list');
+    }
+  });
+
+  it('keeps stacked workflow rule controls content-height at narrow widths', () => {
+    const css = fs.readFileSync(CSS_PATH, 'utf8');
+    const stackedControls = css.match(
+      /@media \(max-width: 40rem\) \{[\s\S]*?\.app-dialog--processing-workflow \.processing-rule-row \{[\s\S]*?flex-direction:\s*column;[\s\S]*?\}[\s\S]*?(\.app-dialog--processing-workflow \.processing-rule-type,[\s\S]*?\.app-dialog--processing-workflow \.processing-rule-row input\[type="text"\] \{[\s\S]*?\})/,
+    )?.[1] || '';
+
+    expect(stackedControls).toMatch(/flex:\s*0 0 auto;/);
+    expect(stackedControls).toMatch(/width:\s*100%;/);
+    expect(stackedControls).toMatch(/max-width:\s*none;/);
+  });
+
+  it('keeps workflow rule action buttons content-width in flexible section bodies', () => {
+    const css = fs.readFileSync(CSS_PATH, 'utf8');
+    const addRuleAction = css.match(
+      /\.app-dialog--processing-workflow \[data-processing-add-rule\]\s*\{([\s\S]*?)\}/,
+    )?.[1] || '';
+
+    expect(addRuleAction).toMatch(/align-self:\s*flex-start;/);
+  });
+
   it('widens all four main processing dialogs with a scoped class', async () => {
     const res = await agent.get(`/projects/${projectId}/assets`).expect(200);
     const html = res.text;
@@ -225,8 +279,9 @@ describe('Processing dialog preset-management markup', () => {
 
     for (const dialogId of ['processing-convert-dialog', 'processing-workflow-dialog', 'processing-watermark-dialog', 'processing-archive-dialog']) {
       const body = dialogBody(html, dialogId);
-      expect(body).toContain('class="app-dialog app-dialog--processing"');
+      expect(body).toMatch(/class="[^"]*\bapp-dialog--processing\b[^"]*"/);
     }
+    expect(dialogBody(html, 'processing-workflow-dialog')).toMatch(/class="[^"]*\bapp-dialog--processing-workflow\b[^"]*"/);
 
     const manageWatermarks = dialogBody(html, 'processing-manage-watermarks-dialog');
     const manageScaleMap = dialogBody(html, 'processing-manage-scale-map-dialog');
@@ -311,10 +366,21 @@ describe('Processing dialog preset-management markup', () => {
       expect(scope).toContain('data-processing-category-select');
       expect(processingJs).toContain("root.querySelector('[data-processing-scope-option]:checked')");
       expect(scope).not.toContain('[data-processing-scope] input[type="radio"]:checked');
-      if (dialogId === 'processing-watermark-dialog') {
+      if (['processing-workflow-dialog', 'processing-watermark-dialog'].includes(dialogId)) {
         expect(scope).toContain('processing-watermark-scope-row');
         expect(scope).toContain('processing-watermark-scope-body');
+        expect(scope).toContain('processing-watermark-choice-control');
+      }
+      if (['processing-workflow-dialog', 'processing-watermark-dialog'].includes(dialogId)) {
+        expect(scope).toContain('Selected (<span data-processing-selected-count>0</span> selected)');
+        expect(scope).toContain('All categories');
         expect(scope).not.toContain('>Category</span>');
+        expect(scope).toMatch(/class="sr-only" type="radio"[^>]*value="category"/);
+      }
+      if (dialogId === 'processing-workflow-dialog') {
+        expect((scope.match(/processing-watermark-choice-control/g) || [])).toHaveLength(2);
+        expect((scope.match(/data-processing-scope-option="project"/g) || [])).toHaveLength(1);
+        expect(scope).not.toContain('Entire project');
       }
     }
   });
@@ -526,11 +592,12 @@ describe('Processing dialog preset-management markup', () => {
       expect(scope).toContain('data-processing-scope-option="category"');
       expect(scope).toContain('data-processing-scope-option="project"');
       expect(scope).toContain('data-processing-category-select');
-      if (dialogId === 'processing-watermark-dialog') {
+      if (['processing-workflow-dialog', 'processing-watermark-dialog'].includes(dialogId)) {
         expect(scope).toContain('Selected (<span data-processing-selected-count>0</span> selected)');
         expect(scope).toContain('All categories');
         expect(scope).not.toMatch(/class="field field--checkbox processing-scope-option">\s*<input[^>]*value="category"/);
         expect(scope).toContain('class="sr-only" type="radio"');
+        expect(scope).not.toContain('Entire project');
       } else {
         expect(scope).toContain('>Category<');
         expect(scope).toContain('Entire project');

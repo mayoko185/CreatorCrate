@@ -52,30 +52,31 @@
 {% endmacro %}
 
 {% macro scopeSection(prefix, categoryOptions=[]) %}
+  {% set usesWatermarkScopePattern = prefix == 'watermark' or prefix == 'workflow' %}
   <section class="settings-section processing-dialog-section" data-processing-scope role="radiogroup" aria-labelledby="{{ prefix }}-scope-heading">
     <h3 id="{{ prefix }}-scope-heading">Scope</h3>
-    <div class="processing-dialog-section-body processing-scope-body{% if prefix == 'watermark' %} processing-watermark-scope-body{% endif %}">
-      {% if prefix == 'watermark' %}<div class="processing-watermark-scope-row">{% endif %}
-      <label class="field field--checkbox processing-scope-option{% if prefix == 'watermark' %} processing-watermark-choice-control{% endif %}">
+    <div class="processing-dialog-section-body processing-scope-body{% if usesWatermarkScopePattern %} processing-watermark-scope-body{% endif %}">
+      {% if usesWatermarkScopePattern %}<div class="processing-watermark-scope-row">{% endif %}
+      <label class="field field--checkbox processing-scope-option{% if usesWatermarkScopePattern %} processing-watermark-choice-control{% endif %}">
         <input type="radio" name="{{ prefix }}-scope-type" value="selected" data-processing-scope-option="selected" checked>
-        <span>{% if prefix == 'watermark' %}Selected{% else %}Selected assets{% endif %} (<span data-processing-selected-count>0</span> selected)</span>
+        <span>{% if usesWatermarkScopePattern %}Selected{% else %}Selected assets{% endif %} (<span data-processing-selected-count>0</span> selected)</span>
       </label>
-      {% if prefix != 'watermark' %}<p class="processing-scope-hint help-text" data-processing-selected-hint hidden>Select assets in the browser list to use this scope.</p>{% endif %}
+      {% if not usesWatermarkScopePattern %}<p class="processing-scope-hint help-text" data-processing-selected-hint hidden>Select assets in the browser list to use this scope.</p>{% endif %}
 
-      {% if prefix == 'watermark' %}
+      {% if usesWatermarkScopePattern %}
         <label class="field field--checkbox processing-scope-option processing-watermark-choice-control">
           <input type="radio" name="{{ prefix }}-scope-type" value="project" data-processing-scope-option="project">
           <span>All categories</span>
         </label>
       {% endif %}
-      {% if prefix != 'watermark' %}
+      {% if not usesWatermarkScopePattern %}
         <label class="field field--checkbox processing-scope-option">
           <input type="radio" name="{{ prefix }}-scope-type" value="category" data-processing-scope-option="category">
           <span>Category</span>
         </label>
       {% endif %}
       <div class="processing-scope-category-field">
-        {% if prefix == 'watermark' %}
+        {% if usesWatermarkScopePattern %}
           <input class="sr-only" type="radio" name="{{ prefix }}-scope-type" value="category" data-processing-scope-option="category" aria-label="Category scope">
         {% endif %}
         {% set processingSelectedCategoryValue = '' %}
@@ -102,16 +103,10 @@
         }) }}
       </div>
 
-      {% if prefix == 'watermark' %}
+
+      {% if usesWatermarkScopePattern %}
         </div>
         <p class="processing-scope-hint help-text" data-processing-selected-hint hidden>Select assets in the browser list to use this scope.</p>
-      {% endif %}
-
-      {% if prefix != 'watermark' %}
-        <label class="field field--checkbox processing-scope-option">
-          <input type="radio" name="{{ prefix }}-scope-type" value="project" data-processing-scope-option="project">
-          <span>Entire project</span>
-        </label>
       {% endif %}
     </div>
   </section>
@@ -256,7 +251,7 @@
 {% endcall %}
 
 {# ─── Workflow Prompt Editor ──────────────────────────────────────────── #}
-{% call dialog.render('processing-workflow-dialog', 'Edit workflow prompts', false, 'processing-workflow-description', '', 'app-dialog--processing', [
+{% call dialog.render('processing-workflow-dialog', 'Edit workflow prompts', false, 'processing-workflow-description', '', 'app-dialog--processing app-dialog--processing-workflow', [
   ['data-processing-root', true],
   ['data-processing-operation', 'workflow-prompt'],
   ['data-project-id', project.id],
@@ -274,30 +269,49 @@
 
     <template data-processing-rule-row-template>
       <li class="processing-rule-row" data-processing-rule-row>
-        <fieldset class="processing-rule-type" data-processing-rule-type>
-          <legend class="sr-only">Rule type</legend>
-          <label><input type="radio" name="rule-type" value="remove" checked> Remove</label>
-          <label><input type="radio" name="rule-type" value="replace"> Replace</label>
-          <label><input type="radio" name="rule-type" value="prepend"> Prepend</label>
-          <label><input type="radio" name="rule-type" value="append"> Append</label>
-        </fieldset>
-        <input type="text" data-processing-rule-text placeholder="Text" autocomplete="off">
-        <input type="text" data-processing-rule-search placeholder="Search (may be left empty)" autocomplete="off" hidden>
-        <input type="text" data-processing-rule-replacement placeholder="Replacement" autocomplete="off" hidden>
-        <button type="button" class="button button-small button-secondary" data-processing-remove-rule aria-label="Remove rule">Remove</button>
+        <div class="processing-rule-type" data-processing-rule-type>
+          {{ dropdown.singleSelect({
+            id: 'workflow-rule-operation-dropdown',
+            label: 'Operation',
+            visuallyHiddenLabel: true,
+            fieldClasses: 'processing-select-field',
+            dispatchNativeChange: true,
+            selected: 'remove',
+            options: [
+              { value: 'remove', label: 'Remove', selected: true },
+              { value: 'replace', label: 'Replace' },
+              { value: 'prepend', label: 'Prepend' },
+              { value: 'append', label: 'Append' }
+            ],
+            optionIdPrefix: 'workflow-rule-operation',
+            panelLabel: 'Rule operation options',
+            nativeSelect: {
+              id: 'workflow-rule-operation',
+              attributes: [['data-processing-rule-operation', true]]
+            }
+          }) }}
+        </div>
+        <input type="text" data-processing-rule-text aria-label="Rule text" placeholder="Text" autocomplete="off">
+        <input type="text" data-processing-rule-search aria-label="Search text" placeholder="Search (may be left empty)" autocomplete="off" hidden>
+        <input type="text" data-processing-rule-replacement aria-label="Replacement text" placeholder="Replacement" autocomplete="off" hidden>
+        <button type="button" class="button button-small button-secondary" data-processing-remove-rule aria-label="Remove rule">X</button>
       </li>
     </template>
 
-    <div class="processing-rule-section" data-processing-rules="positive">
+    <section class="settings-section processing-dialog-section processing-rule-section" data-processing-rules="positive">
       <h3>Positive prompt rules</h3>
-      <ul class="processing-rule-list" data-processing-rule-list aria-label="Positive prompt rules"></ul>
-      <button type="button" class="button button-small" data-processing-add-rule="positive">Add rule</button>
-    </div>
-    <div class="processing-rule-section" data-processing-rules="negative">
+      <div class="processing-dialog-section-body">
+        <ul class="processing-rule-list" data-processing-rule-list aria-label="Positive prompt rules"></ul>
+        <button type="button" class="button button-small" data-processing-add-rule="positive">Add rule</button>
+      </div>
+    </section>
+    <section class="settings-section processing-dialog-section processing-rule-section" data-processing-rules="negative">
       <h3>Negative prompt rules</h3>
-      <ul class="processing-rule-list" data-processing-rule-list aria-label="Negative prompt rules"></ul>
-      <button type="button" class="button button-small" data-processing-add-rule="negative">Add rule</button>
-    </div>
+      <div class="processing-dialog-section-body">
+        <ul class="processing-rule-list" data-processing-rule-list aria-label="Negative prompt rules"></ul>
+        <button type="button" class="button button-small" data-processing-add-rule="negative">Add rule</button>
+      </div>
+    </section>
 
     {{ processingOutputSections() }}
   </div>

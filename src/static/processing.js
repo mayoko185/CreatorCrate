@@ -4,7 +4,10 @@ import {
   requestAppConfirmation,
   syncCreatorCrateDropdownFromNative,
 } from './creatorcrate.js';
-import { creatorCrateDropdownSummaryForNativeSelect } from './client/dropdowns.js';
+import {
+  creatorCrateDropdownSummaryForNativeSelect,
+  initializeCreatorCrateDropdown,
+} from './client/dropdowns.js';
 
 /**
  * Processing actions: Convert, Workflow Prompt Editor, Watermark, and Archives
@@ -1780,8 +1783,12 @@ function bindDeleteSourceWarning(root) {
 
 let ruleRowCounter = 0;
 
+function ruleOperationSelect(row) {
+  return row.querySelector('[data-processing-rule-operation]');
+}
+
 function syncRuleRowFields(row) {
-  const type = row.querySelector('[data-processing-rule-type] input:checked')?.value || 'remove';
+  const type = ruleOperationSelect(row)?.value || 'remove';
   const text = row.querySelector('[data-processing-rule-text]');
   const search = row.querySelector('[data-processing-rule-search]');
   const replacement = row.querySelector('[data-processing-rule-replacement]');
@@ -1791,15 +1798,36 @@ function syncRuleRowFields(row) {
   if (replacement) replacement.hidden = !isReplace;
 }
 
+function makeRuleRowDropdownIdsUnique(row, rowNumber) {
+  const ids = new Map();
+  row.querySelectorAll('[id]').forEach((element) => {
+    const currentId = element.id;
+    if (!currentId) return;
+    const nextId = `${currentId}-${rowNumber}`;
+    ids.set(currentId, nextId);
+    element.id = nextId;
+  });
+
+  ['for', 'aria-controls', 'aria-labelledby', 'aria-describedby'].forEach((attribute) => {
+    row.querySelectorAll(`[${attribute}]`).forEach((element) => {
+      const currentValue = element.getAttribute(attribute);
+      if (!currentValue) return;
+      const nextValue = currentValue.split(/\s+/).map((id) => ids.get(id) || id).join(' ');
+      if (nextValue !== currentValue) element.setAttribute(attribute, nextValue);
+    });
+  });
+}
+
 function createRuleRow(root, side) {
   const template = root.querySelector('[data-processing-rule-row-template]');
   const fragment = template.content.cloneNode(true);
   const row = fragment.querySelector('[data-processing-rule-row]');
   ruleRowCounter += 1;
-  row.querySelectorAll('[data-processing-rule-type] input[type="radio"]').forEach((radio) => {
-    radio.name = `rule-type-${side}-${ruleRowCounter}`;
-  });
-  row.querySelector('[data-processing-rule-type]').addEventListener('change', () => syncRuleRowFields(row));
+  makeRuleRowDropdownIdsUnique(row, ruleRowCounter);
+
+  const operation = ruleOperationSelect(row);
+  initializeCreatorCrateDropdown(row.querySelector('[data-cc-dropdown]'));
+  operation?.addEventListener('change', () => syncRuleRowFields(row));
   row.querySelector('[data-processing-remove-rule]').addEventListener('click', () => {
     row.remove();
     invalidatePreview(root);
@@ -1825,7 +1853,7 @@ function bindRuleAdders(root) {
 }
 
 function serializeRuleRow(row) {
-  const type = row.querySelector('[data-processing-rule-type] input:checked')?.value || 'remove';
+  const type = ruleOperationSelect(row)?.value || 'remove';
   if (type === 'replace') {
     return {
       type,
@@ -1851,8 +1879,11 @@ function applyWorkflowRulesToForm(root, side, ruleList) {
   const rules = Array.isArray(ruleList) ? ruleList : (ruleList?.rules || []);
   rules.forEach((rule) => {
     const row = createRuleRow(root, side);
-    const typeRadio = row.querySelector(`[data-processing-rule-type] input[value="${rule.type}"]`);
-    if (typeRadio) typeRadio.checked = true;
+    const operation = ruleOperationSelect(row);
+    if (operation?.querySelector(`option[value="${rule.type}"]`)) {
+      operation.value = rule.type;
+      syncCreatorCrateDropdownFromNative(operation);
+    }
     if (rule.type === 'replace') {
       const search = row.querySelector('[data-processing-rule-search]');
       const replacement = row.querySelector('[data-processing-rule-replacement]');

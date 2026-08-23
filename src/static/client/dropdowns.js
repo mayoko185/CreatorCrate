@@ -614,7 +614,7 @@ function updateCreatorCrateDropdownSummary(dropdown) {
   );
 }
 
-function initializeCreatorCrateDropdown(dropdown) {
+export function initializeCreatorCrateDropdown(dropdown) {
   const nativeSelect = creatorCrateDropdownNativeSelect(dropdown);
   if (nativeSelect) {
     dropdown.removeAttribute?.('hidden');
