@@ -781,6 +781,15 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     expect(app.locals.projectAssetCategoryService).toBeNull();
     expect(app.locals.projectPrimaryImageService).toBeTruthy();
     expect(typeof app.locals.projectPrimaryImageService.getPrimaryImage).toBe('function');
+    expect(app.locals.assetWorkflowMetadataService).toBeNull();
+  });
+
+  it('constructs and injects workflow inspection for the rooted Assets router', () => {
+    const app = buildApp();
+    const dependencies = dependencyInstrumentation.assetRouters[0].args[0];
+
+    expect(typeof app.locals.assetWorkflowMetadataService.getWorkflowMetadata).toBe('function');
+    expect(dependencies.assetWorkflowMetadataService).toBe(app.locals.assetWorkflowMetadataService);
   });
 
   it('constructs the rooted Assets router once with non-null dependencies', () => {

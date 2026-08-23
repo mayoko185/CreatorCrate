@@ -1264,29 +1264,43 @@ describe('Phase 10.5A: Shared page-level components', () => {
       expect(assetViewerTemplate).toContain('asset-metadata--summary');
       expect(assetViewerTemplate).toContain('/{{ project.slug }}/{% if asset.category %}{{ asset.category.directorySlug }}/{% endif %}');
       expect(assetViewerTemplate).toMatch(/<dl class="detail-list asset-metadata asset-metadata--summary">[\s\S]*?<dt>Filename<\/dt>\s*<dd><code>\{\{ asset\.filename \}\}<\/code><\/dd>[\s\S]*?<dt>Location<\/dt>\s*<dd>\/\{\{ project\.slug/);
-      for (const heading of ['File details', 'State and history']) {
+      for (const heading of ['File details', 'State and history', 'ComfyUI Workflow']) {
         expect(assetViewerTemplate).toContain(`asset-metadata-group-title">${heading}</h4>`);
       }
-      expect(assetViewerTemplate.match(/asset-metadata-group asset-metadata-group--panel/g)).toHaveLength(2);
+      expect(assetViewerTemplate.match(/asset-metadata-group asset-metadata-group--panel/g)).toHaveLength(3);
       expect(assetViewerTemplate).toMatch(/asset-metadata-file-details-heading[\s\S]*?<dl class="detail-list asset-metadata">[\s\S]*?<dt>Category<\/dt>\s*<dd>/);
       expect(assetViewerTemplate).toMatch(/asset-metadata-state-heading[\s\S]*?<dl class="detail-list asset-metadata">[\s\S]*?<dt>Presence<\/dt>\s*<dd>[\s\S]*?status-badge\.njk/);
       expect(creatorCrateCss).toMatch(/\.asset-metadata-group--panel\s*\{[^}]*padding:\s*var\(--space-md\)[^}]*background:\s*var\(--surface-hover\)[^}]*border:\s*1px solid var\(--border\)[^}]*border-radius:\s*var\(--radius-md\)/);
+      expect(assetViewerTemplate).toContain('asset-metadata-group--workflow');
+      expect(creatorCrateCss).toMatch(/\.asset-metadata-group--workflow\s*\{[^}]*grid-column:\s*1\s*\/\s*-1[^}]*min-width:\s*0/);
+      expect(creatorCrateCss).toMatch(/\.asset-workflow-json\s*\{[^}]*overflow-x:\s*auto/);
+      expect(creatorCrateCss).toMatch(/\.asset-workflow-json\s*\{[^}]*scrollbar-color:\s*var\(--border-strong\)\s+transparent[^}]*scrollbar-width:\s*thin/);
+      expect(creatorCrateCss).toMatch(/\.asset-workflow-json::\-webkit-scrollbar\s*\{\s*height:\s*0\.45rem/);
+      expect(creatorCrateCss).toMatch(/\.asset-workflow-json::\-webkit-scrollbar-thumb\s*\{[^}]*background:\s*var\(--border-strong\)[^}]*border-radius:\s*999px/);
+      expect(assetViewerTemplate).toMatch(/\{% if asset\.imageDimensions %\}[\s\S]*?<dt>Width<\/dt>\s*<dd>\{\{ asset\.imageDimensions\.width \}\}<\/dd>[\s\S]*?<dt>Height<\/dt>\s*<dd>\{\{ asset\.imageDimensions\.height \}\}<\/dd>[\s\S]*?\{% endif %\}/);
       for (const label of [
         'Filename',
         'Location',
         'Category',
         'Extension',
-        'Recorded MIME type',
+        'MIME type',
+        'Width',
+        'Height',
         'Size',
-        'Recorded modified time',
+        'Modified time',
         'Presence',
         'Last seen',
         'Missing since'
       ]) {
         expect(assetViewerTemplate).toContain(`<dt>${label}</dt>`);
       }
+      expect(assetViewerTemplate).not.toContain('<dt>Recorded MIME type</dt>');
+      expect(assetViewerTemplate).not.toContain('<dt>Recorded modified time</dt>');
       expect(assetViewerTemplate.indexOf('asset-metadata-file-details-heading')).toBeLessThan(
         assetViewerTemplate.indexOf('asset-metadata-state-heading')
+      );
+      expect(assetViewerTemplate.indexOf('asset-metadata-state-heading')).toBeLessThan(
+        assetViewerTemplate.indexOf('asset-metadata-workflow-heading')
       );
 
       const assetViewerHelpTextSelector = '.settings-section .asset-viewer-section-body .help-text';

@@ -5,6 +5,7 @@ import {
   createPngChunk,
   crc32,
   editWorkflowPromptsInPng,
+  extractWorkflowMetadataFromPng,
   parsePngChunks,
   PNG_SIGNATURE,
   PNG_TEXT_CHUNK_MAX_INPUT_BYTES,
@@ -113,6 +114,232 @@ function graphWithPositivePrompt(value) {
   return JSON.stringify(graph);
 }
 
+function a1111ParametersFixture() {
+  return [
+    'cinematic portrait <lora:portrait-style:0.8>, <lora:studio-light:0.5>, <lora:detailer:1.0>',
+    'Negative prompt: lowres, blurry',
+    'Steps: 30, Sampler: Direct 1024px - Euler a / normal, CFG scale: 4.0, Seed: 944442803, Size: 832x1248, Model: models/checkpoints/realistic/portrait.safetensors, Version: v1.10.1',
+  ].join('\n');
+}
+
+function a1111FallbackFixture() {
+  return {
+    format: 'creatorcrate.comfyui-a1111-import-metadata/v1',
+    source: 'parameters',
+    native_workflow: false,
+    positive_prompt: 'cinematic portrait <lora:portrait-style:0.8>, <lora:studio-light:0.5>, <lora:detailer:1.0>',
+    negative_prompt: 'lowres, blurry',
+    settings_suffix: 'Steps: 30, Sampler: Direct 1024px - Euler a / normal, CFG scale: 4.0, Seed: 944442803, Size: 832x1248, Model: models/checkpoints/realistic/portrait.safetensors, Version: v1.10.1',
+    settings: {
+      steps: 30,
+      sampler: 'Direct 1024px - Euler a / normal',
+      cfg_scale: 4,
+      seed: 944442803,
+      width: 832,
+      height: 1248,
+      model: 'models/checkpoints/realistic/portrait.safetensors',
+    },
+    loras: [
+      { name: 'portrait-style', weight: 0.8 },
+      { name: 'studio-light', weight: 0.5 },
+      { name: 'detailer', weight: 1 },
+    ],
+  };
+}
+
+describe('workflow metadata extraction', () => {
+  it('extracts a ComfyUI execution graph from native prompt metadata', () => {
+    const workflow = JSON.parse(graphMetadata());
+
+    expect(extractWorkflowMetadataFromPng(makePng([
+      textChunk('prompt', JSON.stringify(workflow)),
+    ]))).toEqual({ metadataKey: 'prompt', workflow });
+  });
+
+  it('extracts a native ComfyUI UI workflow from compressed zTXt metadata', () => {
+    const workflow = JSON.parse(graphMetadata());
+
+    expect(extractWorkflowMetadataFromPng(makePng([
+      ztextChunk('workflow', JSON.stringify(workflow)),
+    ]))).toEqual({ metadataKey: 'workflow', workflow });
+  });
+
+  it('detects a UI workflow without prompt-editable text nodes', () => {
+    const workflow = {
+      nodes: [
+        { id: 1, type: 'KSampler', inputs: [{ name: 'positive', link: 10 }] },
+        { id: 2, type: 'EmptyLatentImage', widgets_values: [512, 512] },
+      ],
+      links: [[10, 2, 0, 1, 0]],
+    };
+
+    expect(extractWorkflowMetadataFromPng(makePng([
+      textChunk('workflow', JSON.stringify(workflow)),
+    ]))).toEqual({ metadataKey: 'workflow', workflow });
+  });
+
+  it('rejects a UI-shaped workflow whose nodes lack ComfyUI node structure', () => {
+    expect(extractWorkflowMetadataFromPng(makePng([
+      textChunk('workflow', JSON.stringify({ nodes: [{}] })),
+    ]))).toBeNull();
+  });
+
+  it('falls through an invalid workflow source to validated A1111 parameters', () => {
+    expect(extractWorkflowMetadataFromPng(makePng([
+      textChunk('workflow', JSON.stringify({ nodes: [{}] })),
+      itextChunk('parameters', a1111ParametersFixture()),
+    ]))).toEqual({
+      metadataKey: 'parameters',
+      workflow: a1111FallbackFixture(),
+    });
+  });
+
+  it('extracts validated A1111 parameters from uncompressed iTXt metadata', () => {
+    expect(extractWorkflowMetadataFromPng(makePng([
+      itextChunk('parameters', a1111ParametersFixture()),
+    ]))).toEqual({
+      metadataKey: 'parameters',
+      workflow: a1111FallbackFixture(),
+    });
+  });
+
+  it('extracts a ComfyUI wrapper graph for viewer display', () => {
+    const workflow = JSON.parse(graphMetadata());
+
+    expect(extractWorkflowMetadataFromPng(makePng([
+      textChunk('comfyui', JSON.stringify({ prompt: workflow })),
+    ]))).toEqual({ metadataKey: 'comfyui', workflow });
+  });
+
+  it('skips an invalid ComfyUI wrapper before a later valid source', () => {
+    expect(extractWorkflowMetadataFromPng(makePng([
+      textChunk('comfyui', JSON.stringify({ prompt: {} })),
+      itextChunk('parameters', a1111ParametersFixture()),
+    ]))).toEqual({
+      metadataKey: 'parameters',
+      workflow: a1111FallbackFixture(),
+    });
+  });
+
+  it('extracts Windows drive-letter LoRA paths from A1111 parameters', () => {
+    const parameters = a1111ParametersFixture()
+      .replace('<lora:portrait-style:0.8>', '<lora:C:\\models\\style.safetensors:0.8>');
+
+    expect(extractWorkflowMetadataFromPng(makePng([
+      itextChunk('parameters', parameters),
+    ]))).toMatchObject({
+      metadataKey: 'parameters',
+      workflow: {
+        loras: [
+          { name: 'C:\\models\\style.safetensors', weight: 0.8 },
+          { name: 'studio-light', weight: 0.5 },
+          { name: 'detailer', weight: 1 },
+        ],
+      },
+    });
+  });
+
+  it('preserves literal A1111 prompt and settings text while deriving LoRAs', () => {
+    const positivePrompt = '  masterpiece,, <lora:C:\\models\\style.safetensors:0.8>,, subject  ';
+    const negativePrompt = ' lowres,, <lora:negative\\style.safetensors:0.25>,, ';
+    const settingsSuffix = 'Steps: 30, Sampler: Euler a, CFG scale: 4.0, Seed: 42, Size: 832x1248, Model: C:\\models\\base.safetensors, Version: v1.10.1  ';
+    const parameters = `${positivePrompt}\r\nNegative prompt: ${negativePrompt}\r\n${settingsSuffix}`;
+
+    const workflow = extractWorkflowMetadataFromPng(makePng([
+      itextChunk('parameters', parameters),
+    ])).workflow;
+
+    expect(workflow).toMatchObject({
+      positive_prompt: positivePrompt,
+      negative_prompt: negativePrompt,
+      settings_suffix: settingsSuffix,
+      settings: { model: 'C:\\models\\base.safetensors' },
+      loras: [
+        { name: 'C:\\models\\style.safetensors', weight: 0.8 },
+        { name: 'negative\\style.safetensors', weight: 0.25 },
+      ],
+    });
+  });
+
+  it.each([
+    '<lora:portrait-style>',
+    '<lora:portrait-style:strong>',
+  ])('ignores malformed A1111 LoRA tags: %s', (malformedTag) => {
+    const parameters = a1111ParametersFixture()
+      .replace('<lora:portrait-style:0.8>', malformedTag);
+
+    expect(extractWorkflowMetadataFromPng(makePng([
+      itextChunk('parameters', parameters),
+    ]))).toMatchObject({
+      metadataKey: 'parameters',
+      workflow: {
+        loras: [
+          { name: 'studio-light', weight: 0.5 },
+          { name: 'detailer', weight: 1 },
+        ],
+      },
+    });
+  });
+
+  it.each([
+    ['workflow first', ['workflow', 'prompt', 'parameters']],
+    ['workflow last', ['parameters', 'prompt', 'workflow']],
+  ])('prioritizes native workflow over prompt and parameters when %s', (_description, order) => {
+    const workflow = {
+      nodes: [{ id: 1, type: 'EmptyLatentImage', widgets_values: [512, 512] }],
+    };
+    const chunks = order.map((source) => ({
+      workflow: textChunk('workflow', JSON.stringify(workflow)),
+      prompt: textChunk('prompt', graphMetadata()),
+      parameters: itextChunk('parameters', a1111ParametersFixture()),
+    }[source]));
+
+    expect(extractWorkflowMetadataFromPng(makePng(chunks))).toEqual({
+      metadataKey: 'workflow',
+      workflow,
+    });
+  });
+
+  it.each([
+    ['prompt first', ['prompt', 'parameters']],
+    ['prompt last', ['parameters', 'prompt']],
+  ])('prioritizes native prompt over parameters when %s', (_description, order) => {
+    const workflow = JSON.parse(graphMetadata());
+    const chunks = order.map((source) => ({
+      prompt: textChunk('prompt', JSON.stringify(workflow)),
+      parameters: itextChunk('parameters', a1111ParametersFixture()),
+    }[source]));
+
+    expect(extractWorkflowMetadataFromPng(makePng(chunks))).toEqual({
+      metadataKey: 'prompt',
+      workflow,
+    });
+  });
+
+  it.each([
+    ['arbitrary text', 'an unrelated note'],
+    ['incomplete settings', 'Positive prompt: a cat\nNegative prompt: blurry\nSteps: 30'],
+    ['malformed size', 'Positive prompt: a cat\nNegative prompt: blurry\nSteps: 30, Sampler: Euler, CFG scale: 4, Seed: 42, Size: wide'],
+  ])('rejects %s parameters metadata', (_description, value) => {
+    expect(extractWorkflowMetadataFromPng(makePng([
+      itextChunk('parameters', value),
+    ]))).toBeNull();
+  });
+
+  it.each([
+    ['no textual metadata', []],
+    ['non-JSON prompt metadata', [textChunk('prompt', 'not JSON')]],
+  ])('returns null for %s', (_description, chunks) => {
+    expect(extractWorkflowMetadataFromPng(makePng(chunks))).toBeNull();
+  });
+
+  it('preserves malformed-PNG error behavior', () => {
+    expect(() => extractWorkflowMetadataFromPng(Buffer.from('not png'))).toThrow(
+      expect.objectContaining({ code: 'INVALID_PNG_SIGNATURE' }),
+    );
+  });
+});
+
 describe('workflow prompt PNG editor', () => {
   it('validates the PNG signature and safely parses ordered chunks', () => {
     const ancillary = createPngChunk('pHYs', Buffer.from([1, 2, 3, 4]));
@@ -124,6 +351,24 @@ describe('workflow prompt PNG editor', () => {
     expect(() => parsePngChunks(Buffer.from('not png'))).toThrow(
       expect.objectContaining({ code: 'INVALID_PNG_SIGNATURE' }),
     );
+  });
+
+
+  it('keeps Edit Workflow Prompts selecting a usable prompt graph over display-only workflow metadata', () => {
+    const displayOnlyWorkflow = {
+      nodes: [{ id: 1, type: 'EmptyLatentImage', widgets_values: [512, 512] }],
+    };
+    const edited = editWorkflowPromptsInPng(makePng([
+      textChunk('workflow', JSON.stringify(displayOnlyWorkflow)),
+      textChunk('prompt', graphWithPositivePrompt('editable prompt')),
+    ]), {
+      positive: { rules: [{ type: 'append', text: ' edited' }] },
+    });
+    const values = textValues(edited.buffer);
+
+    expect(JSON.parse(values[0][1])).toEqual(displayOnlyWorkflow);
+    expect(JSON.parse(values[1][1])['2'].inputs.text).toBe('editable prompt edited');
+    expect(edited.metadataKey).toBe('prompt');
   });
 
   it.each([

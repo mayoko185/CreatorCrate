@@ -111,8 +111,16 @@
           <dt>Extension</dt>
           <dd><code>{{ asset.extension or '—' }}</code></dd>
 
-          <dt>Recorded MIME type</dt>
+          <dt>MIME type</dt>
           <dd><code>{{ asset.mime_type or '—' }}</code></dd>
+
+          {% if asset.imageDimensions %}
+            <dt>Width</dt>
+            <dd>{{ asset.imageDimensions.width }}</dd>
+
+            <dt>Height</dt>
+            <dd>{{ asset.imageDimensions.height }}</dd>
+          {% endif %}
 
           <dt>Size</dt>
           <dd>
@@ -123,7 +131,7 @@
             {% endif %}
           </dd>
 
-          <dt>Recorded modified time</dt>
+          <dt>Modified time</dt>
           <dd>{{ asset.modified_at or '—' }}</dd>
         </dl>
       </section>
@@ -146,6 +154,29 @@
           <dt>Missing since</dt>
           <dd>{{ asset.missing_since or '—' }}</dd>
         </dl>
+      </section>
+
+
+      <section class="asset-metadata-group asset-metadata-group--panel asset-metadata-group--workflow" aria-labelledby="asset-metadata-workflow-heading">
+        <h4 id="asset-metadata-workflow-heading" class="asset-metadata-group-title">ComfyUI Workflow</h4>
+        {% if workflowInspection.status == 'detected' %}
+          <pre class="asset-workflow-json" aria-label="Embedded ComfyUI workflow JSON">{%- for token in workflowInspection.tokens -%}
+            {%- if token.kind == 'key' -%}<span class="asset-workflow-json-token asset-workflow-json-token--key">{{ token.text }}</span>
+            {%- elif token.kind == 'string' -%}<span class="asset-workflow-json-token asset-workflow-json-token--string">{{ token.text }}</span>
+            {%- elif token.kind == 'number' -%}<span class="asset-workflow-json-token asset-workflow-json-token--number">{{ token.text }}</span>
+            {%- elif token.kind == 'boolean' -%}<span class="asset-workflow-json-token asset-workflow-json-token--boolean">{{ token.text }}</span>
+            {%- elif token.kind == 'null' -%}<span class="asset-workflow-json-token asset-workflow-json-token--null">{{ token.text }}</span>
+            {%- elif token.kind == 'punctuation' -%}<span class="asset-workflow-json-token asset-workflow-json-token--punctuation">{{ token.text }}</span>
+            {%- else -%}{{ token.text }}
+            {%- endif -%}
+          {%- endfor -%}</pre>
+        {% elif workflowInspection.status == 'none' %}
+          <p class="help-text">No ComfyUI workflow was detected for this asset.</p>
+        {% elif workflowInspection.status == 'inspection-failure' %}
+          {% set noticeVariant = "warning" %}
+          {% set noticeText = "ComfyUI workflow metadata could not be inspected." %}
+          {% include "partials/notice.njk" %}
+        {% endif %}
       </section>
     </div>
   </section>

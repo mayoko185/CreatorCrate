@@ -32,6 +32,10 @@ const PARAMETER_LINE_PATTERN = new RegExp(
   'i',
 );
 
+const A1111_PARAMETERS_FORMAT = 'creatorcrate.comfyui-a1111-import-metadata/v1';
+const A1111_MAX_LORAS = 64;
+const A1111_NUMBER_PATTERN = /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/;
+
 let crcTable;
 
 export class WorkflowPromptMetadataError extends Error {
@@ -68,14 +72,26 @@ function getCrcTable() {
   return crcTable;
 }
 
-export function crc32(input) {
+function updateCrc32(value, input) {
   const bytes = Buffer.isBuffer(input) ? input : Buffer.from(input);
   const table = getCrcTable();
-  let value = 0xffffffff;
+  let next = value;
   for (const byte of bytes) {
-    value = table[(value ^ byte) & 0xff] ^ (value >>> 8);
+    next = table[(next ^ byte) & 0xff] ^ (next >>> 8);
+  }
+  return next;
+}
+
+function crc32Parts(parts) {
+  let value = 0xffffffff;
+  for (const part of parts) {
+    value = updateCrc32(value, part);
   }
   return (value ^ 0xffffffff) >>> 0;
+}
+
+export function crc32(input) {
+  return crc32Parts([input]);
 }
 
 export function createPngChunk(type, data = Buffer.alloc(0)) {
@@ -149,6 +165,119 @@ export function parsePngChunks(input) {
     if (type === 'IEND') {
       if (length !== 0) fail('PNG IEND chunk must be empty.');
       if (offset !== buffer.length) fail('PNG contains data after IEND.');
+      foundIend = true;
+      break;
+    }
+  }
+
+  if (!foundIhdr) fail('PNG is missing its IHDR chunk.');
+  if (!foundIend) fail('PNG is missing its IEND chunk.');
+  return chunks;
+}
+
+const PNG_CHUNK_READ_BUFFER_BYTES = 64 * 1024;
+
+function readPngRange(readAt, offset, length, errorMessage) {
+  const bytes = readAt(offset, length);
+  if (!Buffer.isBuffer(bytes) || bytes.length !== length) {
+    fail(errorMessage);
+  }
+  return bytes;
+}
+
+function validatePngReaderChunkCrc(readAt, { type, length, data, offset }) {
+  let value = updateCrc32(0xffffffff, Buffer.from(type, 'ascii'));
+  if (data) {
+    value = updateCrc32(value, data);
+  } else {
+    let remaining = length;
+    let dataOffset = offset + 8;
+    while (remaining > 0) {
+      const byteCount = Math.min(remaining, PNG_CHUNK_READ_BUFFER_BYTES);
+      value = updateCrc32(
+        value,
+        readPngRange(readAt, dataOffset, byteCount, 'PNG chunk data is truncated.')
+      );
+      dataOffset += byteCount;
+      remaining -= byteCount;
+    }
+  }
+
+  const storedCrc = readPngRange(
+    readAt,
+    offset + 8 + length,
+    4,
+    'PNG chunk header or trailer is truncated.'
+  ).readUInt32BE(0);
+  if (storedCrc !== ((value ^ 0xffffffff) >>> 0)) {
+    fail(`PNG chunk ${type} has an invalid CRC.`, { code: 'INVALID_PNG_CRC' });
+  }
+}
+
+function readPngTextChunks(readAt, byteLength) {
+  if (typeof readAt !== 'function' || !Number.isSafeInteger(byteLength) || byteLength < 0) {
+    fail('PNG reader input is invalid.', { code: 'INVALID_PNG_INPUT' });
+  }
+
+  const signature = readPngRange(
+    readAt,
+    0,
+    Math.min(byteLength, PNG_SIGNATURE.length),
+    'PNG signature is missing or invalid.'
+  );
+  if (signature.length < PNG_SIGNATURE.length || !signature.equals(PNG_SIGNATURE)) {
+    fail('PNG signature is missing or invalid.', { code: 'INVALID_PNG_SIGNATURE' });
+  }
+
+  const chunks = [];
+  let chunkCount = 0;
+  let offset = PNG_SIGNATURE.length;
+  let foundIhdr = false;
+  let foundIend = false;
+
+  while (offset < byteLength) {
+    if (byteLength - offset < 12) {
+      fail('PNG chunk header or trailer is truncated.');
+    }
+
+    const header = readPngRange(readAt, offset, 8, 'PNG chunk header or trailer is truncated.');
+    const length = header.readUInt32BE(0);
+    const remainingAfterHeader = byteLength - offset - 8;
+    if (length > remainingAfterHeader - 4) {
+      fail('PNG chunk data is truncated.');
+    }
+
+    const type = header.toString('ascii', 4, 8);
+    if (!/^[A-Za-z]{4}$/.test(type)) {
+      fail('PNG contains an invalid chunk type.');
+    }
+    if (chunkCount === 0 && type !== 'IHDR') {
+      fail('PNG first chunk must be IHDR.');
+    }
+    if (type === 'IHDR') {
+      if (foundIhdr) fail('PNG contains a duplicate IHDR chunk.');
+      if (length !== 13) fail('PNG IHDR chunk must contain 13 bytes.');
+      foundIhdr = true;
+    }
+
+    if (TEXT_CHUNK_TYPES.has(type) && length > PNG_TEXT_CHUNK_MAX_INPUT_BYTES) {
+      fail('PNG textual metadata chunk exceeds the maximum input size.', {
+        code: 'OVERSIZED_PNG_METADATA',
+      });
+    }
+
+    const data = TEXT_CHUNK_TYPES.has(type)
+      ? readPngRange(readAt, offset + 8, length, 'PNG chunk data is truncated.')
+      : null;
+    validatePngReaderChunkCrc(readAt, { type, length, data, offset });
+
+    if (data) chunks.push({ type, length, data, offset });
+
+    offset += 12 + length;
+    chunkCount += 1;
+    if (type === 'IEND') {
+      if (length !== 0) fail('PNG IEND chunk must be empty.');
+      if (offset !== byteLength) fail('PNG contains data after IEND.');
       foundIend = true;
       break;
     }
@@ -514,11 +643,23 @@ function extractNodeReference(value) {
   return null;
 }
 
+function hasValidNodeId(value) {
+  return (typeof value === 'string' && value.trim().length > 0)
+    || (typeof value === 'number' && Number.isFinite(value));
+}
+
+function hasNodeType(node, keys) {
+  return keys.some((key) => typeof node?.[key] === 'string' && node[key].trim().length > 0);
+}
+
 function executionGraphEntries(graph) {
   if (!graph || typeof graph !== 'object' || Array.isArray(graph)) return [];
-  return Object.entries(graph).filter(([, node]) => node && typeof node === 'object'
+  return Object.entries(graph).filter(([id, node]) => hasValidNodeId(id)
+    && node && typeof node === 'object'
     && !Array.isArray(node)
-    && (node.class_type !== undefined || node.inputs !== undefined));
+    && hasNodeType(node, ['class_type'])
+    && node.inputs && typeof node.inputs === 'object'
+    && !Array.isArray(node.inputs));
 }
 
 function textInputKeys(node) {
@@ -596,7 +737,10 @@ function editExecutionGraph(graph, rules) {
 
 function workflowNodeEntries(graph) {
   return Array.isArray(graph?.nodes)
-    ? graph.nodes.filter((node) => node && typeof node === 'object')
+    ? graph.nodes.filter((node) => node && typeof node === 'object'
+      && !Array.isArray(node)
+      && hasValidNodeId(node.id)
+      && hasNodeType(node, ['class_type', 'type', 'name']))
     : [];
 }
 
@@ -740,13 +884,21 @@ function editComfyJson(value, rules) {
   return firstResult;
 }
 
-function hasUsableWorkflowGraph(value) {
-  return graphCandidates(value).some((candidate) => {
+function findUsableWorkflowGraph(value) {
+  return graphCandidates(value).find((candidate) => {
     const result = Array.isArray(candidate.nodes)
       ? editWorkflowGraph(candidate, EMPTY_PROMPT_RULES)
       : editExecutionGraph(candidate, EMPTY_PROMPT_RULES);
     return result.usable;
-  });
+  }) ?? null;
+}
+
+function findWorkflowGraph(value) {
+  return graphCandidates(value).find((candidate) => (
+    Array.isArray(candidate.nodes)
+      ? workflowNodeEntries(candidate).length > 0
+      : executionGraphEntries(candidate).length > 0
+  )) ?? null;
 }
 
 function metadataChunks(chunks) {
@@ -771,7 +923,7 @@ function metadataChunks(chunks) {
   return metadata;
 }
 
-function findWorkflowMetadata(metadata) {
+function findWorkflowMetadata(metadata, findGraph = findUsableWorkflowGraph) {
   for (const candidate of metadata) {
     let parsed;
     try {
@@ -780,10 +932,12 @@ function findWorkflowMetadata(metadata) {
       continue;
     }
 
-    if (hasUsableWorkflowGraph(parsed)) {
+    const workflow = findGraph(parsed);
+    if (workflow) {
       return {
         target: candidate,
         parsed,
+        workflow,
         metadataKey: SUPPORTED_METADATA_KEYS.includes(candidate.normalizedKey)
           ? candidate.normalizedKey
           : candidate.key,
@@ -791,6 +945,141 @@ function findWorkflowMetadata(metadata) {
     }
   }
   return null;
+}
+
+function parameterSettingValue(settingsSuffix, name) {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = new RegExp(`(?:^|,[\\t ]*)${escapedName}[\\t ]*:[\\t ]?([^,\\r\\n]+)`, 'i')
+    .exec(settingsSuffix);
+  return match?.[1] ?? null;
+}
+
+function parseA1111Number(value) {
+  if (typeof value !== 'string') return null;
+  const normalized = value.trim();
+  if (!normalized || !A1111_NUMBER_PATTERN.test(normalized)) return null;
+  const parsed = Number(normalized);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseA1111Loras(...prompts) {
+  const loras = [];
+  const loraPattern = /<lora:([^\r\n<>]+):([+-]?(?:\d+(?:\.\d+)?|\.\d+))>/gi;
+  for (const prompt of prompts) {
+    loraPattern.lastIndex = 0;
+    let match;
+    while ((match = loraPattern.exec(prompt)) && loras.length < A1111_MAX_LORAS) {
+      const name = match[1];
+      const weight = parseA1111Number(match[2]);
+      if (name.trim() && weight !== null) loras.push({ name, weight });
+    }
+    if (loras.length === A1111_MAX_LORAS) break;
+  }
+  return loras;
+}
+
+function withoutSectionTerminator(value) {
+  if (value.endsWith('\r\n')) return value.slice(0, -2);
+  return value.endsWith('\n') ? value.slice(0, -1) : value;
+}
+
+function parseA1111Parameters(value) {
+  if (typeof value !== 'string' || value.length === 0) return null;
+
+  const negativeMarker = /^[\t ]*Negative prompt[\t ]*:[\t ]?/im.exec(value);
+  const settingsMarker = /^[\t ]*Steps[\t ]*:[\t ]*\d+\b.*$/im.exec(value);
+  if (!negativeMarker || !settingsMarker || settingsMarker.index <= negativeMarker.index) return null;
+
+  const positivePrompt = withoutSectionTerminator(
+    value.slice(0, negativeMarker.index)
+      .replace(/^[\t ]*Positive prompt[\t ]*:[\t ]?/i, '')
+  );
+  const negativePrompt = withoutSectionTerminator(
+    value.slice(negativeMarker.index + negativeMarker[0].length, settingsMarker.index)
+  );
+  const settingsSuffix = value.slice(settingsMarker.index);
+  const steps = parseA1111Number(parameterSettingValue(settingsSuffix, 'Steps'));
+  const sampler = parameterSettingValue(settingsSuffix, 'Sampler');
+  const cfgScale = parseA1111Number(parameterSettingValue(settingsSuffix, 'CFG scale'));
+  const seed = parseA1111Number(parameterSettingValue(settingsSuffix, 'Seed'));
+  const size = /^([1-9]\d*)\s*x\s*([1-9]\d*)$/i.exec(
+    parameterSettingValue(settingsSuffix, 'Size')?.trim() ?? ''
+  );
+  const width = size ? Number(size[1]) : null;
+  const height = size ? Number(size[2]) : null;
+
+  if (!positivePrompt
+    || !Number.isSafeInteger(steps) || steps <= 0
+    || !sampler?.trim()
+    || cfgScale === null
+    || !Number.isSafeInteger(seed)
+    || !Number.isSafeInteger(width) || !Number.isSafeInteger(height)) {
+    return null;
+  }
+
+  const model = parameterSettingValue(settingsSuffix, 'Model');
+  return {
+    format: A1111_PARAMETERS_FORMAT,
+    source: 'parameters',
+    native_workflow: false,
+    positive_prompt: positivePrompt,
+    negative_prompt: negativePrompt,
+    settings_suffix: settingsSuffix,
+    settings: {
+      steps,
+      sampler,
+      cfg_scale: cfgScale,
+      seed,
+      width,
+      height,
+      ...(model?.trim() ? { model } : {}),
+    },
+    loras: parseA1111Loras(positivePrompt, negativePrompt),
+  };
+}
+
+function findWorkflowMetadataByKey(metadata, normalizedKey) {
+  return findWorkflowMetadata(
+    metadata.filter((candidate) => candidate.normalizedKey === normalizedKey),
+    findWorkflowGraph
+  );
+}
+
+function findA1111ParametersMetadata(metadata) {
+  for (const candidate of metadata) {
+    if (candidate.normalizedKey !== 'parameters') continue;
+    const workflow = parseA1111Parameters(candidate.text);
+    if (workflow) return { metadataKey: 'parameters', workflow };
+  }
+  return null;
+}
+
+function extractWorkflowMetadataFromChunks(chunks) {
+  const metadata = metadataChunks(chunks);
+  const native = findWorkflowMetadataByKey(metadata, 'workflow')
+    ?? findWorkflowMetadataByKey(metadata, 'prompt')
+    ?? findWorkflowMetadataByKey(metadata, 'comfyui');
+  const match = native ?? findA1111ParametersMetadata(metadata);
+
+  return match
+    ? { metadataKey: match.metadataKey, workflow: match.workflow }
+    : null;
+}
+
+export function extractWorkflowMetadataFromPng(input) {
+  const buffer = asBuffer(input);
+  return extractWorkflowMetadataFromChunks(parsePngChunks(buffer));
+}
+
+/**
+ * Inspect PNG textual metadata through a bounded positional reader.
+ *
+ * @param {(offset: number, length: number) => Buffer} readAt
+ * @param {number} byteLength
+ * @returns {{ metadataKey: string, workflow: object }|null}
+ */
+export function extractWorkflowMetadataFromPngReader(readAt, byteLength) {
+  return extractWorkflowMetadataFromChunks(readPngTextChunks(readAt, byteLength));
 }
 
 function rewriteMetadataChunk(chunks, target, text) {

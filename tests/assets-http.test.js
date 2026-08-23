@@ -18,6 +18,7 @@ import { buildBrowserRenderModel } from '../src/routes/project-assets-shared.js'
 import { getDisabledModeCsrf } from './helpers/auth.js';
 import { makeZip } from './helpers/zip-fixture.js';
 import slugify from '@sindresorhus/slugify';
+import { createPngChunk } from '../src/services/workflow-prompt-editor.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -66,6 +67,35 @@ describe('asset browser HTTP workflow', () => {
         background: { r: 80, g: 120, b: 200 },
       },
     }).png().toBuffer();
+  }
+
+  function textChunk(key, value) {
+    return createPngChunk('tEXt', Buffer.concat([
+      Buffer.from(key, 'latin1'),
+      Buffer.from([0]),
+      Buffer.from(value, 'latin1'),
+    ]));
+  }
+
+  function uncompressedITextChunk(key, value) {
+    return createPngChunk('iTXt', Buffer.concat([
+      Buffer.from(key, 'ascii'),
+      Buffer.from([0, 0, 0, 0, 0]),
+      Buffer.from(value, 'utf8'),
+    ]));
+  }
+
+  async function makePngWithMetadata(chunks) {
+    const png = await makePng();
+    return Buffer.concat([png.subarray(0, -12), ...chunks, png.subarray(-12)]);
+  }
+
+  function a1111ParametersMetadata() {
+    return [
+      'cinematic portrait <lora:portrait-style:0.8>',
+      'Negative prompt: lowres, blurry',
+      'Steps: 30, Sampler: Euler a, CFG scale: 4.0, Seed: 944442803, Size: 832x1248, Model: portrait.safetensors',
+    ].join('\n');
   }
 
   function defaultMime(extension) {
@@ -3645,8 +3675,8 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).toMatch(
       /<a\b[^>]*class="[^"]*\basset-preview-link\b[^"]*"[^>]*aria-label="View original hero\.png"/
     );
-    expect(res2.text).toContain('<dt>Filename</dt>\n        <dd><code>hero.png</code></dd>');
-    expect(res2.text).toContain(`<dt>Location</dt>\n        <dd>/${slugify('Viewer Previewable', { lowercase: true })}/</dd>`);
+    expect(res2.text).toMatch(/<dt>Filename<\/dt>\s*<dd><code>hero\.png<\/code><\/dd>/);
+    expect(res2.text).toMatch(new RegExp(`<dt>Location</dt>\\s*<dd>/${slugify('Viewer Previewable', { lowercase: true })}/</dd>`));
     expect(res2.text).toContain('<code>png</code>');
     expect(res2.text).toContain('<code>image/png</code>');
     expect(res2.text).toContain(`${png.length} bytes`);
@@ -3961,8 +3991,8 @@ describe('asset browser HTTP workflow', () => {
       .get(`/projects/${id}/assets/${asset.id}`)
       .expect(200);
 
-    expect(res2.text).toContain('<dt>Filename</dt>\n        <dd><code>blob.bin</code></dd>');
-    expect(res2.text).toContain(`<dt>Location</dt>\n        <dd>/${slugify('Viewer No Leaks', { lowercase: true })}/</dd>`);
+    expect(res2.text).toMatch(/<dt>Filename<\/dt>\s*<dd><code>blob\.bin<\/code><\/dd>/);
+    expect(res2.text).toMatch(new RegExp(`<dt>Location</dt>\\s*<dd>/${slugify('Viewer No Leaks', { lowercase: true })}/</dd>`));
     expect(res2.text).not.toContain(secret);
     expect(res2.text).not.toContain(tmpDir);
     expect(res2.text).not.toContain(projectsRoot);
@@ -4337,9 +4367,9 @@ describe('asset browser HTTP workflow', () => {
       'Location',
       'Category',
       'Extension',
-      'Recorded MIME type',
+      'MIME type',
       'Size',
-      'Recorded modified time',
+      'Modified time',
       'Presence',
       'Last seen',
       'Missing since'
@@ -4420,10 +4450,10 @@ describe('asset browser HTTP workflow', () => {
       return page.text.match(/<section class="settings-section asset-viewer-section asset-metadata-section"[\s\S]*?<\/section>/)?.[0] || '';
     };
 
-    expect(await metadata(categorized)).toContain(`<dt>Location</dt>\n        <dd>/${project.slug}/persisted-final/</dd>`);
-    expect(await metadata(disabled)).toContain(`<dt>Location</dt>\n        <dd>/${project.slug}/persisted-disabled/</dd>`);
-    expect(await metadata(missing)).toContain(`<dt>Location</dt>\n        <dd>/${project.slug}/persisted-final/</dd>`);
-    expect(await metadata(root)).toContain(`<dt>Location</dt>\n        <dd>/${project.slug}/</dd>`);
+    expect(await metadata(categorized)).toMatch(new RegExp(`<dt>Location</dt>\\s*<dd>/${project.slug}/persisted-final/</dd>`));
+    expect(await metadata(disabled)).toMatch(new RegExp(`<dt>Location</dt>\\s*<dd>/${project.slug}/persisted-disabled/</dd>`));
+    expect(await metadata(missing)).toMatch(new RegExp(`<dt>Location</dt>\\s*<dd>/${project.slug}/persisted-final/</dd>`));
+    expect(await metadata(root)).toMatch(new RegExp(`<dt>Location</dt>\\s*<dd>/${project.slug}/</dd>`));
   });
 
   it('renders long viewer filenames, paths, MIME types, and release usage without truncation', async () => {
@@ -4448,6 +4478,126 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).toContain(`<dd>/${slugify('Viewer Long Content', { lowercase: true })}/</dd>`);
     expect(res2.text).toContain('<code>application/vnd.example.extremely-long-mime-type</code>');
     expect(res2.text).toContain('Long Viewer Release');
+  });
+
+
+  it('renders ComfyUI workflow inspection states with syntax markup and escaped tokens', async () => {
+    const projectResponse = await createProject('Viewer Workflow Inspection');
+    const projectId = Number(projectResponse.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Viewer Workflow Inspection');
+    if (!projectDir) throw new Error('projectDir not found for Viewer Workflow Inspection');
+    const detected = writeIndexedAsset(projectId, projectDir, 'detected.png', await makePng());
+    const none = writeIndexedAsset(projectId, projectDir, 'plain.txt', 'plain asset');
+    const failure = writeIndexedAsset(projectId, projectDir, 'failure.png', await makePng());
+    const workflowApp = createApp(
+      { appName: 'CreatorCrate', db, projectsRoot, previewRoot },
+      {
+        assetWorkflowMetadataService: {
+          getWorkflowMetadata(assetId) {
+            if (assetId === detected.id) {
+              return {
+                metadataKey: 'workflow',
+                workflow: {
+                  prompt: '<script>alert(1)</script>',
+                  lora: '<lora:Mayoko\\max\\model.safetensors:0.8>',
+                  modelPath: 'C:\\models\\style.safetensors',
+                  seed: 42,
+                  enabled: true,
+                  optional: null,
+                },
+              };
+            }
+            if (assetId === failure.id) throw new Error('storage inspection secret');
+            return null;
+          },
+        },
+      }
+    );
+    const workflowAgent = request(workflowApp);
+
+    const detectedPage = await workflowAgent.get(`/projects/${projectId}/assets/${detected.id}`).expect(200);
+    expect(detectedPage.text).toContain('>ComfyUI Workflow</h4>');
+    expect(detectedPage.text).toContain('asset-workflow-json-token--key');
+    expect(detectedPage.text).toContain('asset-workflow-json-token--string');
+    expect(detectedPage.text).toContain('asset-workflow-json-token--number');
+    expect(detectedPage.text).toContain('asset-workflow-json-token--boolean');
+    expect(detectedPage.text).toContain('asset-workflow-json-token--null');
+    expect(detectedPage.text).toContain('asset-workflow-json-token--punctuation');
+    expect(detectedPage.text).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+    expect(detectedPage.text).not.toContain('<script>alert(1)</script>');
+    expect(detectedPage.text).toContain('&quot;&lt;lora:Mayoko&#92;max&#92;model.safetensors:0.8&gt;&quot;');
+    expect(detectedPage.text).not.toContain('&quot;&lt;lora:Mayoko&#92;&#92;max&#92;&#92;model.safetensors:0.8&gt;&quot;');
+    expect(detectedPage.text).toContain('&quot;C:&#92;models&#92;style.safetensors&quot;');
+    expect(detectedPage.text).not.toContain('&quot;C:&#92;&#92;models&#92;&#92;style.safetensors&quot;');
+
+    const nonePage = await workflowAgent.get(`/projects/${projectId}/assets/${none.id}`).expect(200);
+    expect(nonePage.text).toContain('No ComfyUI workflow was detected for this asset.');
+
+    const failurePage = await workflowAgent.get(`/projects/${projectId}/assets/${failure.id}`).expect(200);
+    expect(failurePage.text).toContain('notice notice--warning');
+    expect(failurePage.text).toContain('ComfyUI workflow metadata could not be inspected.');
+    expect(failurePage.text).not.toContain('No ComfyUI workflow was detected for this asset.');
+    expect(failurePage.text).not.toContain('storage inspection secret');
+  });
+
+  it('renders validated A1111 parameters metadata through the asset viewer and preserves native precedence', async () => {
+    const projectResponse = await createProject('Viewer A1111 Parameters');
+    const projectId = Number(projectResponse.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Viewer A1111 Parameters');
+    if (!projectDir) throw new Error('projectDir not found for Viewer A1111 Parameters');
+    const parameters = a1111ParametersMetadata();
+    const a1111 = writeIndexedAsset(projectId, projectDir, 'a1111-parameters.png', await makePngWithMetadata([
+      uncompressedITextChunk('parameters', parameters),
+    ]));
+    const native = writeIndexedAsset(projectId, projectDir, 'native-wins.png', await makePngWithMetadata([
+      textChunk('workflow', JSON.stringify({
+        '1': { class_type: 'KSampler', inputs: { positive: ['2', 0], negative: ['3', 0], seed: 7 } },
+        '2': { class_type: 'CLIPTextEncode', inputs: { text: 'native positive workflow wins' } },
+        '3': { class_type: 'CLIPTextEncode', inputs: { text: 'native negative workflow wins' } },
+      })),
+      uncompressedITextChunk('parameters', parameters),
+    ]));
+    const noWorkflow = writeIndexedAsset(projectId, projectDir, 'no-workflow.png', await makePng());
+
+    const a1111Page = await agent.get(`/projects/${projectId}/assets/${a1111.id}`).expect(200);
+    expect(a1111Page.text).toContain('>ComfyUI Workflow</h4>');
+    expect(a1111Page.text).not.toContain('No ComfyUI workflow was detected for this asset.');
+    expect(a1111Page.text).toContain('asset-workflow-json-token--key');
+    expect(a1111Page.text).toContain('asset-workflow-json-token--string');
+    expect(a1111Page.text).toContain('asset-workflow-json-token--number');
+    expect(a1111Page.text).toContain('asset-workflow-json-token--boolean');
+    expect(a1111Page.text).toContain('asset-workflow-json-token--punctuation');
+    expect(a1111Page.text).toContain('&quot;format&quot;');
+    expect(a1111Page.text).toContain('&quot;source&quot;');
+    expect(a1111Page.text).toContain('&quot;parameters&quot;');
+    expect(a1111Page.text).toContain('&quot;native_workflow&quot;');
+    expect(a1111Page.text).toContain('&quot;positive_prompt&quot;');
+    expect(a1111Page.text).toContain('&quot;negative_prompt&quot;');
+    expect(a1111Page.text).toContain('&quot;steps&quot;');
+    expect(a1111Page.text).toContain('&quot;seed&quot;');
+    expect(a1111Page.text).toContain('&quot;width&quot;');
+    expect(a1111Page.text).toContain('&quot;height&quot;');
+    expect(a1111Page.text).toContain('&quot;model&quot;');
+    expect(a1111Page.text).toContain('&quot;name&quot;');
+    expect(a1111Page.text).toContain('&quot;weight&quot;');
+    expect(a1111Page.text).toContain('cinematic portrait');
+    expect(a1111Page.text).toContain('lowres, blurry');
+    expect(a1111Page.text).toContain('&lt;lora:portrait-style:0.8&gt;');
+    expect(a1111Page.text).not.toContain('<lora:portrait-style:0.8>');
+    expect(a1111Page.text).toContain('944442803');
+    expect(a1111Page.text).toContain('832');
+    expect(a1111Page.text).toContain('1248');
+    expect(a1111Page.text).toContain('portrait.safetensors');
+    expect(a1111Page.text).toContain('portrait-style');
+    expect(a1111Page.text).toContain('0.8');
+
+    const nativePage = await agent.get(`/projects/${projectId}/assets/${native.id}`).expect(200);
+    expect(nativePage.text).toContain('native positive workflow wins');
+    expect(nativePage.text).not.toContain('cinematic portrait');
+    expect(nativePage.text).not.toContain('&quot;source&quot;');
+
+    const noWorkflowPage = await agent.get(`/projects/${projectId}/assets/${noWorkflow.id}`).expect(200);
+    expect(noWorkflowPage.text).toContain('No ComfyUI workflow was detected for this asset.');
   });
 
   // ─── Phase 15.2: category-aware compact file browser ────────────────

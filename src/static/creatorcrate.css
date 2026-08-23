@@ -3792,6 +3792,40 @@
         text-transform: uppercase;
       }
       .asset-metadata { margin: 0; }
+
+      .asset-metadata-group--workflow {
+        grid-column: 1 / -1;
+        min-width: 0;
+      }
+      .asset-workflow-json {
+        min-width: 0;
+        max-width: 100%;
+        margin: 0;
+        padding: var(--space-md);
+        overflow-x: auto;
+        scrollbar-color: var(--border-strong) transparent;
+        scrollbar-width: thin;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-sm);
+        color: var(--text);
+        font-family: var(--mono);
+        font-size: 0.8125rem;
+        line-height: 1.5;
+        white-space: pre;
+      }
+      .asset-workflow-json::-webkit-scrollbar { height: 0.45rem; }
+      .asset-workflow-json::-webkit-scrollbar-track { background: transparent; }
+      .asset-workflow-json::-webkit-scrollbar-thumb {
+        background: var(--border-strong);
+        border-radius: 999px;
+      }
+      .asset-workflow-json-token--key { color: var(--accent); }
+      .asset-workflow-json-token--string { color: var(--success); }
+      .asset-workflow-json-token--number { color: var(--warning); }
+      .asset-workflow-json-token--boolean { color: var(--link); }
+      .asset-workflow-json-token--null { color: var(--muted); }
+      .asset-workflow-json-token--punctuation { color: var(--text); }
       .asset-action-group { display: flex; flex-direction: column; gap: var(--space-md); }
       .asset-action-group h3 { margin: 0; font-size: 1rem; font-weight: 600; }
       .asset-action-description { margin: 0; font-size: 0.875rem; color: var(--muted); }

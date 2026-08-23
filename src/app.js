@@ -60,6 +60,7 @@ import { createProjectPrimaryImageService } from './services/project-primary-ima
 import { createProjectOperationCoordinator } from './services/project-operation-coordinator.js';
 import { createReleaseService } from './services/release-service.js';
 import { createWorkflowQueryService } from './services/workflow-query-service.js';
+import { createAssetWorkflowMetadataService } from './services/asset-workflow-metadata-service.js';
 import { createPreviewService } from './services/preview-service.js';
 import { createMediaService } from './services/media-service.js';
 import { createBackupService } from './services/backup-service.js';
@@ -482,6 +483,10 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.locals.projectPrimaryImageService = projectPrimaryImageService;
 
   const releaseService = opts.releaseService || createReleaseService({ db });
+  const assetWorkflowMetadataService = opts.assetWorkflowMetadataService || (projectsRoot
+    ? createAssetWorkflowMetadataService({ db, projectsRoot })
+    : null);
+  app.locals.assetWorkflowMetadataService = assetWorkflowMetadataService;
   const workflowQueryService = opts.workflowQueryService || createWorkflowQueryService({
     db,
     projectPrimaryImageRepository,
@@ -653,6 +658,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       projectService,
       assetScanner,
       workflowQueryService,
+      assetWorkflowMetadataService,
       releaseService,
       projectAssetCategoryService,
       assetActionService,

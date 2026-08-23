@@ -180,6 +180,7 @@ async function renderAssetTagsPageOrNext(req, res, next, data, options = {}) {
         req,
         data,
         workflowQueryService: options.workflowQueryService,
+        assetWorkflowMetadataService: req.app?.locals?.assetWorkflowMetadataService,
         projectPrimaryImageService: getProjectPrimaryImageService(req),
         submittedTagIds: options.submittedTagIds,
         errors: options.errors,

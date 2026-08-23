@@ -16,6 +16,7 @@ import {
   isPrimaryImageAssetUsable,
 } from '../services/workflow-query-service.js';
 import { buildAssetRevisionToken, classifyPreviewable } from '../services/preview-service.js';
+import { presentWorkflowJson } from '../services/workflow-json-presenter.js';
 import { buildOpenLocallyUri } from '../util/open-locally.js';
 import {
   ASSET_ACTION_NOTICE_MESSAGES,
@@ -247,6 +248,7 @@ export function createAssetsRouter({
   projectService,
   assetScanner,
   workflowQueryService,
+  assetWorkflowMetadataService,
   releaseService,
   projectAssetCategoryService,
   assetActionService,
@@ -634,7 +636,13 @@ export function createAssetsRouter({
 
       res.render('projects/asset-viewer.njk', {
         appName,
-        ...buildAssetViewerRenderModel(data, buildPrimaryImageViewerState(data, primaryImage, viewerEligibility), req, workflowQueryService),
+        ...await buildAssetViewerRenderModel(
+          data,
+          buildPrimaryImageViewerState(data, primaryImage, viewerEligibility),
+          req,
+          workflowQueryService,
+          assetWorkflowMetadataService,
+        ),
         ...assetTagEditor,
         notice,
         noticeMessage: notice ? ASSET_ACTION_NOTICE_MESSAGES[notice] : null,
@@ -660,7 +668,7 @@ export function createAssetsRouter({
         assetActionService.deleteAssets(projectId, [assetId]);
       } catch (err) {
         return handleAssetActionFailure(err, {
-          appName, workflowQueryService, projectPrimaryImageService, req, res, next,
+          appName, workflowQueryService, assetWorkflowMetadataService, projectPrimaryImageService, req, res, next,
           projectId, assetId, action: 'delete', previewProbe,
         }).catch(next);
       }
@@ -691,7 +699,7 @@ export function createAssetsRouter({
         await projectPrimaryImageService.setPrimaryImage(projectId, assetId);
       } catch (err) {
         return handlePrimaryImageFailure(err, {
-          appName, workflowQueryService, projectPrimaryImageService, req, res, next,
+          appName, workflowQueryService, assetWorkflowMetadataService, projectPrimaryImageService, req, res, next,
           projectId, assetId, previewProbe,
         }).catch(next);
       }
@@ -722,7 +730,7 @@ export function createAssetsRouter({
         projectPrimaryImageService.clearPrimaryImage(projectId, assetId);
       } catch (err) {
         return handlePrimaryImageFailure(err, {
-          appName, workflowQueryService, projectPrimaryImageService, req, res, next,
+          appName, workflowQueryService, assetWorkflowMetadataService, projectPrimaryImageService, req, res, next,
           projectId, assetId, previewProbe,
         }).catch(next);
       }
@@ -761,7 +769,7 @@ export function createAssetsRouter({
 
       if (origin === null) {
         return handleAssetActionFailure({ code: 'INVALID_ORIGIN' }, {
-          appName, workflowQueryService, projectPrimaryImageService, req, res, next,
+          appName, workflowQueryService, assetWorkflowMetadataService, projectPrimaryImageService, req, res, next,
           pageDefaultsService,
           project, projectId, assetId, action: 'rename', origin: 'viewer',
           submittedFilename: typeof filename === 'string' ? filename : '',
@@ -776,7 +784,7 @@ export function createAssetsRouter({
           : assetActionService.renameAsset(projectId, assetId, filename);
       } catch (err) {
         return handleAssetActionFailure(err, {
-          appName, workflowQueryService, projectPrimaryImageService, req, res, next,
+          appName, workflowQueryService, assetWorkflowMetadataService, projectPrimaryImageService, req, res, next,
           pageDefaultsService,
           project, projectId, assetId, action: 'rename', origin,
           submittedFilename: typeof filename === 'string' ? filename : '',
@@ -824,7 +832,7 @@ export function createAssetsRouter({
 
       if (!parsedDestination.ok) {
         return handleAssetActionFailure({ code: 'DESTINATION_CATEGORY_MALFORMED' }, {
-          appName, workflowQueryService, projectPrimaryImageService, req, res, next,
+          appName, workflowQueryService, assetWorkflowMetadataService, projectPrimaryImageService, req, res, next,
           projectId, assetId, action: 'move',
           submittedDestinationCategory, previewProbe,
         }).catch(next);
@@ -835,7 +843,7 @@ export function createAssetsRouter({
         moved = assetActionService.moveAsset(projectId, assetId, parsedDestination.value);
       } catch (err) {
         return handleAssetActionFailure(err, {
-          appName, workflowQueryService, projectPrimaryImageService, req, res, next,
+          appName, workflowQueryService, assetWorkflowMetadataService, projectPrimaryImageService, req, res, next,
           projectId, assetId, action: 'move',
           submittedDestinationCategory, previewProbe,
         }).catch(next);
@@ -1479,6 +1487,7 @@ export async function buildAssetViewerTagFailureRenderModel({
   req,
   data,
   workflowQueryService,
+  assetWorkflowMetadataService,
   projectPrimaryImageService,
   submittedTagIds,
   errors,
@@ -1505,7 +1514,7 @@ export async function buildAssetViewerTagFailureRenderModel({
         ...errorMessages,
       ].join(' '),
     },
-  }, req, workflowQueryService);
+  }, req, workflowQueryService, assetWorkflowMetadataService);
 }
 
 
@@ -1999,7 +2008,7 @@ const PRIMARY_IMAGE_ERROR_MESSAGES = Object.freeze({
 });
 
 async function handlePrimaryImageFailure(err, {
-  appName, workflowQueryService, projectPrimaryImageService, req, res, next,
+  appName, workflowQueryService, assetWorkflowMetadataService, projectPrimaryImageService, req, res, next,
   projectId, assetId, previewProbe,
 }) {
   const code = err && err.code;
@@ -2044,12 +2053,12 @@ async function handlePrimaryImageFailure(err, {
 
   return res.status(status).render('projects/asset-viewer.njk', {
     appName,
-    ...buildAssetViewerRenderModel(data, {
+    ...await buildAssetViewerRenderModel(data, {
       ...primaryImageState,
       ...assetTagEditor,
       assetEditDialogOpen: true,
       formError: { message },
-    }, req, workflowQueryService),
+    }, req, workflowQueryService, assetWorkflowMetadataService),
   });
 }
 
@@ -2320,6 +2329,37 @@ function buildPrimaryImageViewerState(data, selectedAsset, isEligiblePresentImag
 
 
 
+async function buildAssetWorkflowInspectionRenderModel(asset, assetWorkflowMetadataService) {
+  if (typeof assetWorkflowMetadataService?.getWorkflowMetadata !== 'function') {
+    return { status: 'inspection-failure' };
+  }
+
+  try {
+    const metadata = await assetWorkflowMetadataService.getWorkflowMetadata(asset.id);
+    if (!metadata) return { status: 'none' };
+
+    return {
+      status: 'detected',
+      metadataKey: metadata.metadataKey,
+      tokens: presentWorkflowJson(metadata.workflow),
+    };
+  } catch {
+    // Inspection errors are intentionally distinguishable from a successful
+    // inspection that found no workflow, without exposing storage details.
+    return { status: 'inspection-failure' };
+  }
+}
+
+async function buildAssetImageDimensionsRenderModel(asset, assetWorkflowMetadataService) {
+  if (typeof assetWorkflowMetadataService?.getImageDimensions !== 'function') return null;
+
+  try {
+    return await assetWorkflowMetadataService.getImageDimensions(asset.id);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Shared render-model fields for the asset viewer — used by the GET route
  * and by every controlled-failure re-render, so both stay in sync as the
@@ -2328,14 +2368,30 @@ function buildPrimaryImageViewerState(data, selectedAsset, isEligiblePresentImag
  * @param {object} data - workflowQueryService.getProjectAssetViewer(...) result
  * @param {object} [overrides]
  */
-function buildAssetViewerRenderModel(data, overrides = {}, req, workflowQueryService) {
+export async function buildAssetViewerRenderModel(
+  data,
+  overrides = {},
+  req,
+  workflowQueryService,
+  assetWorkflowMetadataService,
+) {
+  const workflowInspection = await buildAssetWorkflowInspectionRenderModel(
+    data.asset,
+    assetWorkflowMetadataService,
+  );
+  const imageDimensions = await buildAssetImageDimensionsRenderModel(
+    data.asset,
+    assetWorkflowMetadataService,
+  );
+
   return {
     project: data.project,
-    asset: data.asset,
+    asset: { ...data.asset, imageDimensions },
     assetTags: [],
     assetTagOptions: [],
     selectedAssetTagIds: [],
     context: data.context,
+    workflowInspection,
     assetEditDialogOpen: req?.query?.edit === '1',
     assetEditDialogUrl: buildAssetViewerRedirectUrl(
       workflowQueryService,
@@ -2404,7 +2460,7 @@ function buildAssetViewerRenderModel(data, overrides = {}, req, workflowQuerySer
  * @param {string} [ctx.submittedDestinationCategory]
  */
 async function handleAssetActionFailure(err, {
-  appName, workflowQueryService, projectPrimaryImageService, req, res, next,
+  appName, workflowQueryService, assetWorkflowMetadataService, projectPrimaryImageService, req, res, next,
   pageDefaultsService,
   project, projectId, assetId, action, origin = 'viewer',
   submittedFilename, submittedDestinationCategory, previewProbe,
@@ -2458,7 +2514,13 @@ async function handleAssetActionFailure(err, {
 
   res.status(status).render('projects/asset-viewer.njk', {
     appName,
-    ...buildAssetViewerRenderModel(data, { ...primaryImageState, ...assetTagEditor, ...overrides }, req, workflowQueryService),
+    ...await buildAssetViewerRenderModel(
+      data,
+      { ...primaryImageState, ...assetTagEditor, ...overrides },
+      req,
+      workflowQueryService,
+      assetWorkflowMetadataService,
+    ),
   });
 }
 
