@@ -59,6 +59,8 @@ import { createAutoRenameService } from './services/auto-rename-service.js';
 import { createProjectPrimaryImageService } from './services/project-primary-image-service.js';
 import { createProjectOperationCoordinator } from './services/project-operation-coordinator.js';
 import { createProcessingJobService } from './services/processing-job-service.js';
+import { createProcessingConcurrencyService } from './services/processing-concurrency-service.js';
+import { sharpRuntime as defaultSharpRuntime } from './services/sharp-runtime.js';
 import { createReleaseService } from './services/release-service.js';
 import { createWorkflowQueryService } from './services/workflow-query-service.js';
 import { createAssetWorkflowMetadataService } from './services/asset-workflow-metadata-service.js';
@@ -118,6 +120,14 @@ function resolveAppAssetMode(opts) {
 }
 
 export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {}) {
+  const sharpRuntime = opts.sharpRuntime || defaultSharpRuntime;
+  if (!sharpRuntime || typeof sharpRuntime.initialize !== 'function') {
+    throw new TypeError('createApp requires sharpRuntime.initialize() when sharpRuntime is provided.');
+  }
+  // Configure Sharp before constructing any service graph that can start an
+  // image pipeline. The default runtime is process-wide and idempotent.
+  sharpRuntime.initialize();
+
   const app = express();
   const databasePath = opts.databasePath || db.name;
   const appDataRoot = opts.appDataRoot || path.dirname(databasePath);
@@ -430,6 +440,10 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // coordinator keeps conversion, scanning, archive generation, and other asset
   // actions mutually exclusive for one project across application rebuilds.
   const processingJobExecutionCapability = Object.freeze({});
+  // The application context supplies this process-wide instance across app
+  // rebuilds; direct createApp callers still receive one app-owned pool.
+  const processingConcurrencyService = opts.processingConcurrencyService
+    || createProcessingConcurrencyService({ concurrency: opts.processingConcurrency });
   const assetProcessingService = opts.assetProcessingService || (projectsRoot
     ? createAssetProcessingService({
       projectRepository: projectService.repository,
@@ -438,6 +452,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       assetCategoryService,
       projectsRoot,
       projectOperationCoordinator,
+      processingConcurrencyService,
       watermarkService,
       scaleMapService: watermarkScaleMapService,
       watermarkScaleMap: opts.watermarkScaleMap,
@@ -447,6 +462,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   const alreadyCoordinatedProcessingExecutor = opts.alreadyCoordinatedProcessingExecutor
     || assetProcessingService?.createAlreadyCoordinatedExecutor?.(processingJobExecutionCapability);
   app.locals.assetProcessingService = assetProcessingService;
+  app.locals.processingConcurrencyService = processingConcurrencyService;
 
   // Phase H3: Auto Rename is one application-scoped service per rooted app
   // build. It reuses the already-constructed project repository, asset

@@ -18,6 +18,7 @@ import { createAssetProcessingScopeService } from '../src/services/asset-process
 import { createAssetProcessingPlanner } from '../src/services/asset-processing-planner.js';
 import { createAssetProcessingService } from '../src/services/asset-processing-service.js';
 import { createProjectOperationCoordinator } from '../src/services/project-operation-coordinator.js';
+import { createProcessingConcurrencyService } from '../src/services/processing-concurrency-service.js';
 import { read7zArchiveEntries } from '../src/services/watermark-7z.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -98,6 +99,7 @@ describe('standalone archive processing', () => {
   let projectDir;
   let finalCategory;
   let processingService;
+  let processingConcurrencyService;
   let planner;
 
   function makeProcessingService(overrides = {}) {
@@ -108,6 +110,7 @@ describe('standalone archive processing', () => {
       assetCategoryService,
       projectsRoot,
       projectOperationCoordinator: createProjectOperationCoordinator(),
+      processingConcurrencyService,
       watermarkPath: path.join(tmpDir, 'watermark.png'),
       watermarkRoot: tmpDir,
       ...overrides,
@@ -134,6 +137,7 @@ describe('standalone archive processing', () => {
     finalCategory = categoryRepository.listProjectCategories(project.id)
       .find((category) => category.directory_slug === 'final');
 
+    processingConcurrencyService = createProcessingConcurrencyService({ concurrency: 1 });
     processingService = makeProcessingService();
     fs.writeFileSync(path.join(tmpDir, 'watermark.png'), await makeWatermark());
 
@@ -297,6 +301,166 @@ describe('standalone archive processing', () => {
     }
   });
 
+  it('uses the shared bounded pool for archive-entry staging and keeps member order deterministic', async () => {
+    const first = await writeIndexedImage('Final/first.png');
+    const second = await writeIndexedImage('Final/second.png');
+    const bounded = createProcessingConcurrencyService({ concurrency: 2 });
+    let mapBoundedCalls = 0;
+    const injectedPool = {
+      mapBounded(...args) {
+        mapBoundedCalls += 1;
+        return bounded.mapBounded(...args);
+      },
+    };
+    const deferred = [];
+    let resolveBothStarted;
+    const bothStarted = new Promise((resolve) => { resolveBothStarted = resolve; });
+    let started = 0;
+    let active = 0;
+    let observedConcurrency = 0;
+    const stageEntry = () => {
+      const entryIndex = started;
+      started += 1;
+      active += 1;
+      observedConcurrency = Math.max(observedConcurrency, active);
+      return new Promise((resolve) => {
+        deferred[entryIndex] = () => {
+          active -= 1;
+          resolve(Buffer.from(`entry-${entryIndex}`));
+        };
+        if (entryIndex === 1) resolveBothStarted();
+      });
+    };
+    const controlledSharp = () => ({
+      rotate() {
+        return {
+          jpeg() { return { toBuffer: stageEntry }; },
+          webp() { return { toBuffer: stageEntry }; },
+        };
+      },
+    });
+    const service = makeProcessingService({
+      processingConcurrencyService: injectedPool,
+      sharpImplementation: controlledSharp,
+    });
+    const progress = [];
+    const operation = service.createArchives(project.id, [first.id, second.id], {
+      makeArchives: false,
+      makeCbz: true,
+      setName: 'Ordered',
+    }, (snapshot) => progress.push(snapshot));
+
+    await bothStarted;
+    expect(mapBoundedCalls).toBe(1);
+    expect(observedConcurrency).toBe(2);
+    expect(observedConcurrency).toBeLessThanOrEqual(2);
+
+    deferred[1]();
+    deferred[0]();
+    const result = await operation;
+    const entries = await readZipEntries(path.join(projectDir, result.artifacts[0].relativePath));
+
+    expect(progress).toEqual([{ completed: 0, total: 1 }, { completed: 1, total: 1 }]);
+    expect(entries.map((entry) => entry.name)).toEqual(['Final/first.jpg', 'Final/second.jpg']);
+    expect(entries.map((entry) => entry.data.toString())).toEqual(['entry-0', 'entry-1']);
+  });
+
+  it('keeps archive-entry staging serial and in plan order with concurrency one', async () => {
+    const first = await writeIndexedImage('Final/first.png');
+    const second = await writeIndexedImage('Final/second.png');
+    const bounded = createProcessingConcurrencyService({ concurrency: 1 });
+    const calls = [];
+    let active = 0;
+    let observedConcurrency = 0;
+    const stageEntry = async () => {
+      const entryIndex = calls.filter((call) => call.startsWith('start')).length;
+      calls.push(`start-${entryIndex}`);
+      active += 1;
+      observedConcurrency = Math.max(observedConcurrency, active);
+      await Promise.resolve();
+      active -= 1;
+      calls.push(`finish-${entryIndex}`);
+      return Buffer.from(`entry-${entryIndex}`);
+    };
+    const service = makeProcessingService({
+      processingConcurrencyService: bounded,
+      sharpImplementation: () => ({
+        rotate() {
+          return {
+            jpeg() { return { toBuffer: stageEntry }; },
+            webp() { return { toBuffer: stageEntry }; },
+          };
+        },
+      }),
+    });
+
+    const result = await service.createArchives(project.id, [first.id, second.id], {
+      makeArchives: false,
+      makeCbz: true,
+      setName: 'Serial',
+    });
+    const entries = await readZipEntries(path.join(projectDir, result.artifacts[0].relativePath));
+
+    expect(observedConcurrency).toBe(1);
+    expect(calls).toEqual(['start-0', 'finish-0', 'start-1', 'finish-1']);
+    expect(entries.map((entry) => entry.data.toString())).toEqual(['entry-0', 'entry-1']);
+  });
+
+  it('drains active archive-entry staging workers before rollback and preserves the original failure', async () => {
+    const failing = await writeIndexedImage('Final/failing.png');
+    const active = await writeIndexedImage('Final/active.png');
+    const unstarted = await writeIndexedImage('Final/unstarted.png');
+    const bounded = createProcessingConcurrencyService({ concurrency: 2 });
+    const deferred = [];
+    let resolveInitialWorkers;
+    const initialWorkers = new Promise((resolve) => { resolveInitialWorkers = resolve; });
+    const started = [];
+    let settled = false;
+    const stageEntry = () => {
+      const entryIndex = started.length;
+      started.push(entryIndex);
+      return new Promise((resolve, reject) => {
+        deferred[entryIndex] = { resolve, reject };
+        if (entryIndex === 1) resolveInitialWorkers();
+      });
+    };
+    const service = makeProcessingService({
+      processingConcurrencyService: bounded,
+      sharpImplementation: () => ({
+        rotate() {
+          return {
+            jpeg() { return { toBuffer: stageEntry }; },
+            webp() { return { toBuffer: stageEntry }; },
+          };
+        },
+      }),
+    });
+    const operation = service.createArchives(project.id, [failing.id, active.id, unstarted.id], {
+      makeArchives: false,
+      makeCbz: true,
+      setName: 'Failure',
+    });
+    operation.finally(() => { settled = true; }).catch(() => {});
+
+    await initialWorkers;
+    deferred[0].reject(new Error('original archive entry failure'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(started).toEqual([0, 1]);
+    expect(settled).toBe(false);
+
+    deferred[1].resolve(Buffer.from('active entry'));
+    await expect(operation).rejects.toMatchObject({
+      code: 'ARCHIVE_BUILD_FAILED',
+      cause: expect.objectContaining({ message: 'original archive entry failure' }),
+    });
+
+    expect(started).toEqual([0, 1]);
+    expect(generatedArtifactRepository.listByProjectId(project.id)).toEqual([]);
+    expect(fs.existsSync(path.join(projectDir, 'Failure_jpg_q85.cbz'))).toBe(false);
+  });
+
   it('keeps ZIP and real 7z logical membership identical', async () => {
     const source = await writeIndexedImage('Final/-cover.png');
     const zipResult = await processingService.createArchives(project.id, [source.id], {
@@ -341,6 +505,7 @@ describe('standalone archive processing', () => {
       assetCategoryService,
       projectsRoot,
       projectOperationCoordinator: createProjectOperationCoordinator(),
+      processingConcurrencyService,
       watermarkPath: path.join(tmpDir, 'watermark.png'),
       watermarkRoot: tmpDir,
     });

@@ -595,9 +595,34 @@ permanent: it stops polling, clears its active/busy state, and reports that
 the processing result is no longer available. Other transient polling errors
 remain retryable.
 
-This milestone changes request lifetime and same-project scheduling, not the
-processing engine's internal execution model: each processing operation
-remains serial, with no bounded intra-operation parallelism yet.
+### Bounded staging concurrency
+
+Processing is **not fully serial anymore**. The application context owns one
+shared [`processing-concurrency-service.js`](src/services/processing-concurrency-service.js)
+limiter for all processing operations, including concurrent batches from
+different projects. Its default capacity is `availableParallelism()`, clamped
+to a minimum of 1 and a maximum of 4; every batch draws from that same
+application-wide capacity rather than creating an independent pool.
+
+Only selected staging and preparation work is bounded concurrently. Convert
+stages outputs per asset. Watermark stages per source, keeping all outputs for
+one source together and in their required order. Archive staging bounds each
+entry's read, render, and buffer preparation. The limiter returns results in
+input order even when workers complete out of order. On a worker failure, the
+failed batch drains its already-running workers before it rejects, so rollback
+cannot begin while another staging worker is still mutating temporary state.
+
+Safety-critical phases remain serial and deterministic: operation
+planning/preflight; final publication; repository and result mapping where
+order matters; rollback/restoration; identity-sensitive publication and
+rollback checks; and final archive compression, verification, and publication.
+`7z-wasm` compression remains serial on the current path. Sharp/libvips is
+configured once per process before application services are constructed:
+Sharp concurrency is fixed at `1`, while its cache is explicitly pinned to
+the installed Sharp 0.35.3 defaults of 50 MB memory, 20 files, and 100 items.
+This keeps the shared `1..4` application pool as the owner of independent
+image-pipeline parallelism instead of multiplying it by another CPU-sized
+libvips pool. Worker-thread/C2 behavior has not been implemented.
 
 ### Plan then apply
 

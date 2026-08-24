@@ -350,6 +350,30 @@ describe('application context — coordinator persistence across reconstruction'
     }
   });
 
+  it('passes the same processing concurrency service to every buildApp call', () => {
+    const initialDb = makeFakeDb('initial');
+    const receivedServices = [];
+    const fakeFactory = (_appDeps, opts) => {
+      receivedServices.push(opts.processingConcurrencyService);
+      return { db: _appDeps.db };
+    };
+
+    const appContext = createApplicationContext(
+      { appName: APP_NAME, appOpts: { processingConcurrency: 1 } },
+      initialDb,
+      fakeFactory
+    );
+
+    appContext.replaceDatabase(makeFakeDb('replacement-1'));
+    appContext.replaceAuthConfig({ fakeAuthConfig: true });
+
+    expect(appContext.processingConcurrencyService.concurrency).toBe(1);
+    const [first, ...rest] = receivedServices;
+    for (const service of rest) {
+      expect(service).toBe(first);
+    }
+  });
+
   it('owns one processing job service and refuses context rebuilds until queued, running, and cancelled jobs are terminal', async () => {
     const initialDb = makeFakeDb('initial');
     const receivedServices = [];

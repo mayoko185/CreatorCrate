@@ -22,6 +22,7 @@ import {
 } from '../src/services/asset-processing-service.js';
 import { createProjectOperationCoordinator } from '../src/services/project-operation-coordinator.js';
 import { createProcessingJobService } from '../src/services/processing-job-service.js';
+import { createProcessingConcurrencyService } from '../src/services/processing-concurrency-service.js';
 import { createProcessingPresetService } from '../src/services/processing-preset-service.js';
 import { createWatermarkScaleMapService } from '../src/services/watermark-scale-map-service.js';
 import { createAssetScanner } from '../src/services/asset-scanner.js';
@@ -56,6 +57,7 @@ describe('asset processing service', () => {
   let processingService;
   let planner;
   let projectOperationCoordinator;
+  let processingConcurrencyService;
   let processingExecutionCapability;
   let project;
   let projectDir;
@@ -93,6 +95,7 @@ describe('asset processing service', () => {
     }).png().toBuffer();
 
     projectOperationCoordinator = createProjectOperationCoordinator();
+    processingConcurrencyService = createProcessingConcurrencyService({ concurrency: 1 });
     processingExecutionCapability = Object.freeze({});
     const scopeService = createAssetProcessingScopeService({ projectRepository, assetRepository });
     planner = createAssetProcessingPlanner({
@@ -102,14 +105,7 @@ describe('asset processing service', () => {
       assetCategoryService,
       projectsRoot,
     });
-    processingService = createAssetProcessingService({
-      projectRepository,
-      assetRepository,
-      assetCategoryService,
-      projectsRoot,
-      projectOperationCoordinator,
-      alreadyCoordinatedCapability: processingExecutionCapability,
-    });
+    processingService = createProcessingService();
   });
 
   afterEach(() => {
@@ -209,6 +205,36 @@ describe('asset processing service', () => {
       .run(releaseId, assetId, 'attachment', 0);
   }
 
+  function createProcessingService(overrides = {}) {
+    return createAssetProcessingService({
+      projectRepository,
+      assetRepository,
+      assetCategoryService,
+      projectsRoot,
+      projectOperationCoordinator,
+      processingConcurrencyService,
+      alreadyCoordinatedCapability: processingExecutionCapability,
+      ...overrides,
+    });
+  }
+
+  function createControlledSharp(onStage) {
+    return (input) => {
+      const label = input.toString();
+      if (label.startsWith('source:')) {
+        return {
+          webp() {
+            return { toBuffer: () => onStage(label) };
+          },
+        };
+      }
+      if (label.startsWith('output:')) {
+        return { metadata: async () => ({ format: 'webp' }) };
+      }
+      throw new Error(`Unexpected controlled Sharp input: ${label}`);
+    };
+  }
+
   it('converts a selected image to WebP and keeps the original indexed row', async () => {
     const source = writeIndexedImage('Final/render.png');
     const progress = [];
@@ -247,6 +273,131 @@ describe('asset processing service', () => {
     });
     expect((await sharp(fs.readFileSync(path.join(projectDir, 'Final', 'render.webp'))).metadata()).format)
       .toBe('webp');
+  });
+
+  it('uses the injected bounded pool for disjoint Convert staging while preserving plan order', async () => {
+    const first = writeIndexedBuffer('Final/first.png', Buffer.from('source:first'), 'image/png');
+    const second = writeIndexedBuffer('Final/second.png', Buffer.from('source:second'), 'image/png');
+    const bounded = createProcessingConcurrencyService({ concurrency: 2 });
+    const injectedPool = {
+      concurrency: bounded.concurrency,
+      mapBounded: vi.fn((items, worker) => bounded.mapBounded(items, worker)),
+    };
+    const deferred = new Map();
+    const started = [];
+    let activeWorkers = 0;
+    let maxActive = 0;
+    let resolveBothStarted;
+    const bothStarted = new Promise((resolve) => { resolveBothStarted = resolve; });
+
+    processingService = createProcessingService({
+      processingConcurrencyService: injectedPool,
+      sharpImplementation: createControlledSharp((label) => new Promise((resolve) => {
+        started.push(label);
+        activeWorkers += 1;
+        maxActive = Math.max(maxActive, activeWorkers);
+        deferred.set(label, (output) => {
+          deferred.delete(label);
+          activeWorkers -= 1;
+          resolve(output);
+        });
+        if (started.length === 2) resolveBothStarted();
+      })),
+    });
+
+    const progress = [];
+    const operation = processingService.convertAssets(project.id, [first.id, second.id], {
+      format: 'webp', quality: 85, originalHandling: 'keep',
+    }, (snapshot) => progress.push(snapshot));
+
+    await bothStarted;
+    expect(injectedPool.mapBounded).toHaveBeenCalledTimes(1);
+    expect(started).toEqual(['source:first', 'source:second']);
+    expect(maxActive).toBe(2);
+    expect(maxActive).toBeLessThanOrEqual(injectedPool.concurrency);
+
+    deferred.get('source:second')(Buffer.from('output:second'));
+    deferred.get('source:first')(Buffer.from('output:first'));
+
+    const result = await operation;
+    expect(result.assets.map((asset) => asset.relative_path)).toEqual([
+      'Final/first.webp',
+      'Final/second.webp',
+    ]);
+    expect(result.convertedAssetIds).toEqual(result.assets.map((asset) => asset.id));
+    expect(progress).toEqual([
+      { completed: 0, total: 2 },
+      { completed: 1, total: 2 },
+      { completed: 2, total: 2 },
+    ]);
+  });
+
+  it('keeps Convert staging serial and in plan order with concurrency one', async () => {
+    const first = writeIndexedBuffer('Final/serial-first.png', Buffer.from('source:serial-first'), 'image/png');
+    const second = writeIndexedBuffer('Final/serial-second.png', Buffer.from('source:serial-second'), 'image/png');
+    const staged = [];
+
+    processingService = createProcessingService({
+      sharpImplementation: createControlledSharp(async (label) => {
+        staged.push(label);
+        return Buffer.from(`output:${label.slice('source:'.length)}`);
+      }),
+    });
+
+    const result = await processingService.convertAssets(project.id, [first.id, second.id], {
+      format: 'webp', quality: 85, originalHandling: 'keep',
+    });
+
+    expect(processingConcurrencyService.concurrency).toBe(1);
+    expect(staged).toEqual(['source:serial-first', 'source:serial-second']);
+    expect(result.assets.map((asset) => asset.relative_path)).toEqual([
+      'Final/serial-first.webp',
+      'Final/serial-second.webp',
+    ]);
+  });
+
+  it('drains active Convert staging workers before rollback after a staging failure', async () => {
+    const failing = writeIndexedBuffer('Final/failing.png', Buffer.from('source:failing'), 'image/png');
+    const active = writeIndexedBuffer('Final/active.png', Buffer.from('source:active'), 'image/png');
+    const unstarted = writeIndexedBuffer('Final/unstarted.png', Buffer.from('source:unstarted'), 'image/png');
+    const bounded = createProcessingConcurrencyService({ concurrency: 2 });
+    const deferred = new Map();
+    const started = [];
+    let resolveInitialWorkers;
+    const initialWorkers = new Promise((resolve) => { resolveInitialWorkers = resolve; });
+
+    processingService = createProcessingService({
+      processingConcurrencyService: bounded,
+      sharpImplementation: createControlledSharp((label) => new Promise((resolve, reject) => {
+        started.push(label);
+        if (started.length === 2) resolveInitialWorkers();
+        deferred.set(label, { resolve, reject });
+      })),
+    });
+
+    const operation = processingService.convertAssets(project.id, [failing.id, active.id, unstarted.id], {
+      format: 'webp', quality: 85, originalHandling: 'keep',
+    });
+    let settled = false;
+    operation.finally(() => { settled = true; }).catch(() => {});
+
+    await initialWorkers;
+    expect(started).toEqual(['source:failing', 'source:active']);
+    deferred.get('source:failing').reject(new Error('injected staging failure'));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(started).toEqual(['source:failing', 'source:active']);
+    expect(settled).toBe(false);
+    expect(fs.readdirSync(projectDir).some((entry) => entry.startsWith('.creatorcrate-convert-'))).toBe(true);
+    expect(fs.existsSync(path.join(projectDir, 'Final', 'active.webp'))).toBe(false);
+
+    deferred.get('source:active').resolve(Buffer.from('output:active'));
+    await expect(operation).rejects.toMatchObject({ code: 'CONVERSION_FAILED' });
+    expect(started).toEqual(['source:failing', 'source:active']);
+    expect(fs.existsSync(path.join(projectDir, 'Final', 'failing.webp'))).toBe(false);
+    expect(fs.existsSync(path.join(projectDir, 'Final', 'active.webp'))).toBe(false);
+    expect(fs.existsSync(path.join(projectDir, 'Final', 'unstarted.webp'))).toBe(false);
+    expect(fs.readdirSync(projectDir).some((entry) => entry.startsWith('.creatorcrate-convert-'))).toBe(false);
   });
 
   it('defaults WebP quality to 85 and accepts the 1..95 range only', async () => {

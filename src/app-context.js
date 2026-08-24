@@ -3,6 +3,7 @@ import { createApp } from './app.js';
 import { closeDatabase } from './db.js';
 import { createProjectOperationCoordinator } from './services/project-operation-coordinator.js';
 import { createProcessingJobService } from './services/processing-job-service.js';
+import { createProcessingConcurrencyService } from './services/processing-concurrency-service.js';
 
 /**
  * Phase 11.2 live-restore fix — the mutable application context that owns
@@ -69,6 +70,10 @@ export function createApplicationContext(
   // Processing jobs outlive a single app build: database and auth-context
   // reconstruction must keep routing to this same lifecycle service.
   const processingJobService = createProcessingJobService({ projectOperationCoordinator });
+  // Like processing jobs, the pool must survive every app-graph rebuild so
+  // later processing operations across projects share one process-wide cap.
+  const processingConcurrencyService = activeAppOpts.processingConcurrencyService
+    || createProcessingConcurrencyService({ concurrency: activeAppOpts.processingConcurrency });
 
   function assertNoActiveProcessingJobs() {
     if (processingJobService.hasActiveJobs()) {
@@ -84,6 +89,7 @@ export function createApplicationContext(
         autoRenameSigningKey,
         projectOperationCoordinator,
         processingJobService,
+        processingConcurrencyService,
         assertNoActiveProcessingJobs,
         onDatabaseReplaced: replaceDatabase,
         onAuthConfigReplaced: replaceAuthConfig,
@@ -145,6 +151,9 @@ export function createApplicationContext(
     },
     get processingJobService() {
       return processingJobService;
+    },
+    get processingConcurrencyService() {
+      return processingConcurrencyService;
     },
     replaceDatabase,
     replaceAuthConfig,

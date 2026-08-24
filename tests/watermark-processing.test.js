@@ -23,6 +23,7 @@ import {
   createAssetProcessingService as createAssetProcessingServiceRaw,
 } from '../src/services/asset-processing-service.js';
 import { createProjectOperationCoordinator } from '../src/services/project-operation-coordinator.js';
+import { createProcessingConcurrencyService } from '../src/services/processing-concurrency-service.js';
 import { createAssetProcessingPlanner as createAssetProcessingPlannerRaw } from '../src/services/asset-processing-planner.js';
 import { createAssetProcessingScopeService } from '../src/services/asset-processing-scope-service.js';
 import { createAssetScanner } from '../src/services/asset-scanner.js';
@@ -30,7 +31,10 @@ import { resolveProjectDir } from '../src/storage/project-storage.js';
 import { read7zArchiveEntries } from '../src/services/watermark-7z.js';
 
 function createAssetProcessingService(dependencies) {
-  const service = createAssetProcessingServiceRaw(dependencies);
+  const service = createAssetProcessingServiceRaw({
+    processingConcurrencyService: createProcessingConcurrencyService({ concurrency: 1 }),
+    ...dependencies,
+  });
   const watermarkAssets = service.watermarkAssets.bind(service);
   return {
     ...service,
@@ -217,6 +221,7 @@ describe('watermark asset processing', () => {
     configuredWatermarkPath,
     configuredWatermarkRoot,
     operationCoordinator = createProjectOperationCoordinator(),
+    overrides = {},
   ) {
     return createAssetProcessingService({
       projectRepository,
@@ -227,6 +232,7 @@ describe('watermark asset processing', () => {
       projectOperationCoordinator: operationCoordinator,
       watermarkPath: configuredWatermarkPath,
       watermarkRoot: configuredWatermarkRoot,
+      ...overrides,
     });
   }
 
@@ -299,6 +305,19 @@ describe('watermark asset processing', () => {
     });
   }
 
+  function createDeferredSourceSharp(sourceBuffers, onStage) {
+    const sourceLabels = new Map(sourceBuffers.map(([label, buffer]) => [buffer.toString('base64'), label]));
+    return (input, ...args) => {
+      const label = Buffer.isBuffer(input) ? sourceLabels.get(input.toString('base64')) : null;
+      const image = sharp(input, ...args);
+      if (!label) return image;
+      const toBuffer = image.toBuffer.bind(image);
+      image.toBuffer = (...toBufferArgs) => Promise.resolve(onStage(label))
+        .then(() => toBuffer(...toBufferArgs));
+      return image;
+    };
+  }
+
   async function expectInvalidTrustedWatermark(configuredPath, configuredRoot, sourceName) {
     const source = await writeIndexedImage(`Final/${sourceName}.png`);
     const service = createConfiguredService(configuredPath, configuredRoot);
@@ -369,6 +388,183 @@ describe('watermark asset processing', () => {
     expect(fs.existsSync(path.join(projectDir, 'Final', 'patreon.png'))).toBe(true);
     expect(fs.existsSync(path.join(projectDir, 'wm', 'patreon_wm.png'))).toBe(true);
     expect((await metadataFor(path.join(projectDir, 'wm', 'patreon_wm.png'))).format).toBe('png');
+  });
+
+  it('uses the injected shared limiter for bounded Watermark staging and preserves plan order', async () => {
+    const first = await writeIndexedImage('Final/parallel-first.png', { width: 101 });
+    const second = await writeIndexedImage('Final/parallel-second.png', { width: 102 });
+    const sourceBuffers = [
+      ['first', fs.readFileSync(path.join(projectDir, 'Final', 'parallel-first.png'))],
+      ['second', fs.readFileSync(path.join(projectDir, 'Final', 'parallel-second.png'))],
+    ];
+    const bounded = createProcessingConcurrencyService({ concurrency: 2 });
+    const injectedPool = { mapBounded: vi.fn(bounded.mapBounded) };
+    const deferred = new Map();
+    let active = 0;
+    let maxActive = 0;
+    let resolveBothStarted;
+    const bothStarted = new Promise((resolve) => { resolveBothStarted = resolve; });
+    const controlledSharp = createDeferredSourceSharp(sourceBuffers, (label) => {
+      if (deferred.has(label)) return undefined;
+      return new Promise((resolve) => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        deferred.set(label, () => {
+          active -= 1;
+          resolve();
+        });
+        if (deferred.size === 2) resolveBothStarted();
+      });
+    });
+    const service = createConfiguredService(watermarkPath, tmpDir, coordinator, {
+      processingConcurrencyService: injectedPool,
+      sharpImplementation: controlledSharp,
+    });
+    const progress = [];
+    const resultPromise = service.watermarkAssets(project.id, [first.id, second.id], {
+      mode: 'patreon',
+      outputFormat: 'png',
+      deleteSource: false,
+    }, (snapshot) => progress.push(snapshot));
+
+    await bothStarted;
+    expect(maxActive).toBe(2);
+    expect(injectedPool.mapBounded).toHaveBeenCalledTimes(1);
+    expect(deferred.has('first')).toBe(true);
+    expect(deferred.has('second')).toBe(true);
+
+    deferred.get('second')();
+    await Promise.resolve();
+    deferred.get('first')();
+    const result = await resultPromise;
+
+    expect(result.generatedPaths).toEqual([
+      'wm/parallel-first_wm.png',
+      'wm/parallel-second_wm.png',
+    ]);
+    expect(result.sourceResults.map((source) => source.assetId)).toEqual([first.id, second.id]);
+    expect(progress).toEqual([
+      { completed: 0, total: 2 },
+      { completed: 1, total: 2 },
+      { completed: 2, total: 2 },
+    ]);
+  });
+
+  it('counts a multi-output Watermark source only after all of its staging completes', async () => {
+    const source = await writeIndexedImage('Final/multi-output.png');
+    const sourceBuffer = fs.readFileSync(path.join(projectDir, 'Final', 'multi-output.png'));
+    const deferred = [];
+    let releaseFirst;
+    let releaseSecond;
+    const firstStage = new Promise((resolve) => { releaseFirst = resolve; });
+    const secondStage = new Promise((resolve) => { releaseSecond = resolve; });
+    const service = createConfiguredService(watermarkPath, tmpDir, coordinator, {
+      processingConcurrencyService: createProcessingConcurrencyService({ concurrency: 2 }),
+      sharpImplementation: createDeferredSourceSharp([['source', sourceBuffer]], () => {
+        const next = deferred.length;
+        deferred.push(next);
+        return next === 0 ? firstStage : secondStage;
+      }),
+    });
+    const progress = [];
+    const resultPromise = service.watermarkAssets(project.id, [source.id], {
+      mode: 'patreon',
+      primaryFormat: 'png',
+      secondaryFormat: 'jpeg',
+      resizedFormat: null,
+      deleteSource: false,
+    }, (snapshot) => progress.push(snapshot));
+
+    await vi.waitFor(() => expect(deferred).toEqual([0]));
+    expect(progress).toEqual([{ completed: 0, total: 1 }]);
+    releaseFirst();
+    await vi.waitFor(() => expect(deferred).toEqual([0, 1]));
+    expect(progress).toEqual([{ completed: 0, total: 1 }]);
+    releaseSecond();
+    const result = await resultPromise;
+
+    expect(result.generatedPaths).toEqual([
+      'wm/multi-output_wm.png',
+      'wm/multi-output_wm.jpg',
+    ]);
+    expect(progress).toEqual([{ completed: 0, total: 1 }, { completed: 1, total: 1 }]);
+  });
+
+  it('keeps Watermark source staging serial in input order with concurrency one', async () => {
+    const first = await writeIndexedImage('Final/serial-first.png', { width: 103 });
+    const second = await writeIndexedImage('Final/serial-second.png', { width: 104 });
+    const sourceBuffers = [
+      ['first', fs.readFileSync(path.join(projectDir, 'Final', 'serial-first.png'))],
+      ['second', fs.readFileSync(path.join(projectDir, 'Final', 'serial-second.png'))],
+    ];
+    const stages = [];
+    const service = createConfiguredService(watermarkPath, tmpDir, coordinator, {
+      processingConcurrencyService: createProcessingConcurrencyService({ concurrency: 1 }),
+      sharpImplementation: createDeferredSourceSharp(sourceBuffers, async (label) => {
+        stages.push(label);
+      }),
+    });
+
+    const result = await service.watermarkAssets(project.id, [first.id, second.id], {
+      mode: 'patreon',
+      outputFormat: 'png',
+      deleteSource: false,
+    });
+
+    const firstSecondStage = stages.indexOf('second');
+    expect(firstSecondStage).toBeGreaterThan(0);
+    expect(stages.slice(0, firstSecondStage)).toEqual(expect.arrayContaining(['first']));
+    expect(stages.slice(0, firstSecondStage)).not.toContain('second');
+    expect(stages.slice(firstSecondStage)).not.toContain('first');
+    expect(result.generatedPaths).toEqual([
+      'wm/serial-first_wm.png',
+      'wm/serial-second_wm.png',
+    ]);
+  });
+
+  it('drains active Watermark staging before rollback and preserves the processing error', async () => {
+    const first = await writeIndexedImage('Final/failing-first.png', { width: 105 });
+    const second = await writeIndexedImage('Final/active-second.png', { width: 106 });
+    const third = await writeIndexedImage('Final/queued-third.png', { width: 107 });
+    const sourceBuffers = [
+      ['first', fs.readFileSync(path.join(projectDir, 'Final', 'failing-first.png'))],
+      ['second', fs.readFileSync(path.join(projectDir, 'Final', 'active-second.png'))],
+      ['third', fs.readFileSync(path.join(projectDir, 'Final', 'queued-third.png'))],
+    ];
+    let releaseSecond;
+    const secondStage = new Promise((resolve) => { releaseSecond = resolve; });
+    const started = [];
+    const service = createConfiguredService(watermarkPath, tmpDir, coordinator, {
+      processingConcurrencyService: createProcessingConcurrencyService({ concurrency: 2 }),
+      sharpImplementation: createDeferredSourceSharp(sourceBuffers, (label) => {
+        started.push(label);
+        if (label === 'first') return Promise.reject(new Error('first staging failure'));
+        if (label === 'second') return secondStage;
+        throw new Error('Queued third worker started after failure.');
+      }),
+    });
+    let settled = false;
+    const operation = service.watermarkAssets(project.id, [first.id, second.id, third.id], {
+      mode: 'patreon',
+      outputFormat: 'png',
+      deleteSource: false,
+    });
+    operation.finally(() => { settled = true; }).catch(() => {});
+
+    await vi.waitFor(() => expect(started).toEqual(expect.arrayContaining(['first', 'second'])));
+    await vi.waitFor(() => expect(started).not.toContain('third'));
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(fs.existsSync(path.join(projectDir, 'wm', 'active-second_wm.png'))).toBe(false);
+
+    releaseSecond();
+    await expect(operation).rejects.toMatchObject({
+      code: 'WATERMARK_PROCESSING_FAILED',
+      cause: expect.objectContaining({ code: 'WATERMARK_PROCESSING_FAILED' }),
+    });
+    expect(started).not.toContain('third');
+    expect(fs.existsSync(path.join(projectDir, 'wm', 'failing-first_wm.png'))).toBe(false);
+    expect(fs.existsSync(path.join(projectDir, 'wm', 'active-second_wm.png'))).toBe(false);
   });
 
   it('rejects unavailable and path-like output category values during Apply', async () => {

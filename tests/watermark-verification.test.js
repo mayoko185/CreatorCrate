@@ -19,13 +19,17 @@ import {
 import { createAssetProcessingPlanner as createAssetProcessingPlannerRaw } from '../src/services/asset-processing-planner.js';
 import { createAssetProcessingScopeService } from '../src/services/asset-processing-scope-service.js';
 import { createProjectOperationCoordinator } from '../src/services/project-operation-coordinator.js';
+import { createProcessingConcurrencyService } from '../src/services/processing-concurrency-service.js';
 import { createAssetScanner } from '../src/services/asset-scanner.js';
 import { resolveProjectDir } from '../src/storage/project-storage.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
 function createAssetProcessingService(dependencies) {
-  const service = createAssetProcessingServiceRaw(dependencies);
+  const service = createAssetProcessingServiceRaw({
+    processingConcurrencyService: createProcessingConcurrencyService({ concurrency: 1 }),
+    ...dependencies,
+  });
   const watermarkAssets = service.watermarkAssets.bind(service);
   return {
     ...service,

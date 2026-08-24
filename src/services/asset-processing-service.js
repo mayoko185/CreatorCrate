@@ -292,6 +292,7 @@ export function createAssetProcessingService({
   scaleMapService,
   watermarkScaleMap = WATERMARK_WINDOW_SCALE_MAP,
   alreadyCoordinatedCapability,
+  processingConcurrencyService,
 } = {}) {
   if (!projectRepository || typeof projectRepository.findById !== 'function') {
     throw new Error('createAssetProcessingService requires a projectRepository dependency.');
@@ -313,6 +314,9 @@ export function createAssetProcessingService({
   }
   if (!projectOperationCoordinator || typeof projectOperationCoordinator.runAsync !== 'function') {
     throw new Error('createAssetProcessingService requires an asynchronous projectOperationCoordinator dependency.');
+  }
+  if (!processingConcurrencyService || typeof processingConcurrencyService.mapBounded !== 'function') {
+    throw new Error('createAssetProcessingService requires a processingConcurrencyService dependency.');
   }
   if (typeof sharpImplementation !== 'function') {
     throw new Error('createAssetProcessingService requires a Sharp implementation.');
@@ -877,15 +881,14 @@ export function createAssetProcessingService({
     plan.stageIndex = index;
     plan.stagingDirectory = staging.directory;
     try {
-      const entries = [];
-      for (const entry of plan.entries) {
+      const entries = await processingConcurrencyService.mapBounded(plan.entries, async (entry) => {
         const rendered = await renderEntry(entry, plan);
         const buffer = Buffer.isBuffer(rendered) ? rendered : rendered?.buffer;
         if (!Buffer.isBuffer(buffer) || buffer.length === 0) {
           throw new Error('Archive renderer returned invalid bytes.');
         }
-        entries.push({ name: entry.name, buffer });
-      }
+        return { name: entry.name, buffer };
+      });
       await writeArchiveFile(stageOutput, plan.format, entries);
       const stats = inspectGeneratedFile(stageOutput, 'ARCHIVE_OUTPUT_INVALID');
       if (stats.size <= 0) throw new Error('Generated archive is empty.');
@@ -1057,8 +1060,17 @@ export function createAssetProcessingService({
 
   function cleanupWatermarkStaging(staging) {
     let clean = true;
+    const cleanupStagedFile = (filePath, identity) => {
+      if (identity) return removeFileIfIdentityMatches(filePath, identity);
+      try {
+        fs.lstatSync(filePath);
+        return false;
+      } catch (err) {
+        return err.code === 'ENOENT';
+      }
+    };
     for (const item of staging.items) {
-      if (item.stageOutput && !removeFileIfIdentityMatches(item.stageOutput, item.stageOutputIdentity)) {
+      if (item.stageOutput && !cleanupStagedFile(item.stageOutput, item.stageOutputIdentity)) {
         clean = false;
       }
       if (item.stagedDeletePath
@@ -2052,10 +2064,10 @@ export function createAssetProcessingService({
     staging.createdOriginalDirs = [];
 
     try {
-      for (let index = 0; index < items.length; index++) {
-        await stageOutput(items[index], staging, options, index);
+      await processingConcurrencyService.mapBounded(items, async (item, index) => {
+        await stageOutput(item, staging, options, index);
         progress.advance();
-      }
+      });
 
       if (options.originalHandling === 'move') {
         ensureOriginalDirectories(items, staging);
@@ -2511,19 +2523,23 @@ export function createAssetProcessingService({
     staging.artifacts = archivePlans;
     try {
       ensureWatermarkOutputDirectories([...items, ...archivePlans], staging);
-      const stagedOutputCounts = new Map(sources.map((source) => [
-        source.asset.id,
-        source.outputs.filter((output) => output.item).length,
-      ]));
-      for (const remaining of stagedOutputCounts.values()) {
-        if (remaining === 0) progress.advance();
-      }
-      for (let index = 0; index < items.length; index++) {
-        await stageWatermarkOutput(items[index], staging, index, watermarkInput, options, projectDir);
-        const remaining = stagedOutputCounts.get(items[index].asset.id) - 1;
-        stagedOutputCounts.set(items[index].asset.id, remaining);
-        if (remaining === 0) progress.advance();
-      }
+      const stageIndexByItem = new Map(items.map((item, index) => [item, index]));
+      await processingConcurrencyService.mapBounded(sources, async (source) => {
+        const sourceItems = source.outputs
+          .filter((output) => output.item)
+          .map((output) => output.item);
+        for (const item of sourceItems) {
+          await stageWatermarkOutput(
+            item,
+            staging,
+            stageIndexByItem.get(item),
+            watermarkInput,
+            options,
+            projectDir,
+          );
+        }
+        progress.advance();
+      });
       for (let index = 0; index < archivePlans.length; index++) {
         await stageArchiveArtifact(archivePlans[index], staging, index, watermarkInput, options, projectDir);
       }
