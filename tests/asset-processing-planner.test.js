@@ -280,10 +280,12 @@ describe('asset processing planner', () => {
     }, { format: 'webp', originalHandling: 'keep' });
 
     expect(selectedPlan.operation).toBe('convert');
+    expect(selectedPlan.assetIds).toEqual([png.id, jpg.id, bmp.id, gif.id, unsupported.id]);
     expect(selectedPlan.options.quality).toBe(85);
     expect(selectedPlan.counts).toMatchObject({ total: 5, eligible: 4, skipped: 1, changed: 4 });
     expect(selectedPlan.items.find((item) => item.assetId === unsupported.id)).toMatchObject({
       status: 'skipped',
+      operationEligibility: 'unsupported',
       reasonCode: 'UNSUPPORTED_SOURCE_TYPE',
     });
     expect(selectedPlan.items.find((item) => item.assetId === png.id)).toMatchObject({
@@ -293,6 +295,7 @@ describe('asset processing planner', () => {
         action: 'create-output',
       },
     });
+    expect(directoryPlan.assetIds).toEqual(directoryPlan.items.map((item) => item.assetId));
     expect(directoryPlan.items.map((item) => item.relativePath)).toEqual([
       'Final/animation.gif',
       'Final/bitmap.bmp',
@@ -418,6 +421,7 @@ describe('asset processing planner', () => {
     });
     expect(plan.items.find((item) => item.assetId === jpg.id)).toMatchObject({
       status: 'skipped',
+      operationEligibility: 'unsupported',
       reasonCode: 'UNSUPPORTED_SOURCE_TYPE',
     });
     expect(snapshotTree(projectDir)).toEqual(beforeTree);
@@ -552,6 +556,7 @@ describe('asset processing planner', () => {
     });
     expect(patreonPlan.items.find((item) => item.assetId === unsupported.id)).toMatchObject({
       status: 'skipped',
+      operationEligibility: 'unsupported',
       reasonCode: 'UNSUPPORTED_SOURCE_TYPE',
     });
     expect(socialPlan.items.find((item) => item.assetId === social.id)).toMatchObject({

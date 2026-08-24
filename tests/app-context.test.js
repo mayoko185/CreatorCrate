@@ -350,6 +350,59 @@ describe('application context — coordinator persistence across reconstruction'
     }
   });
 
+  it('owns one processing job service and refuses context rebuilds until queued, running, and cancelled jobs are terminal', async () => {
+    const initialDb = makeFakeDb('initial');
+    const receivedServices = [];
+    const receivedBuildOptions = [];
+    const fakeFactory = (_appDeps, opts) => {
+      receivedServices.push(opts.processingJobService);
+      receivedBuildOptions.push(opts);
+      return { db: _appDeps.db };
+    };
+    const appContext = createApplicationContext(
+      { appName: APP_NAME, appOpts: {} },
+      initialDb,
+      fakeFactory
+    );
+    const service = appContext.processingJobService;
+    let releaseRunningJob;
+    const runningJobId = service.enqueue({
+      projectId: 1,
+      execute: () => new Promise((resolve) => { releaseRunningJob = resolve; }),
+    });
+    const cancelledJobId = service.enqueue({ projectId: 1, execute: () => undefined });
+
+    // The second same-project job remains queued behind the first one, and
+    // either queued or running work must prevent a context/database swap.
+    expect(service.getJob(cancelledJobId).state).toBe('queued');
+    expect(() => receivedBuildOptions[0].assertNoActiveProcessingJobs()).toThrow(/processing jobs are active/);
+    const queuedCandidate = makeFakeDb('queued-candidate');
+    expect(() => appContext.replaceDatabase(queuedCandidate)).toThrow(/processing jobs are active/);
+    expect(appContext.db).toBe(initialDb);
+    expect(queuedCandidate.closed).toBe(true);
+    expect(receivedServices).toHaveLength(1);
+
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(service.getJob(runningJobId).state).toBe('running');
+    expect(() => receivedBuildOptions[0].assertNoActiveProcessingJobs()).toThrow(/processing jobs are active/);
+    expect(() => appContext.replaceAuthConfig({ enabled: true })).toThrow(/processing jobs are active/);
+    expect(service.cancel(cancelledJobId)).toBe(true);
+    releaseRunningJob();
+
+    for (let attempt = 0; attempt < 20 && service.getJob(runningJobId).state !== 'succeeded'; attempt += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    expect(service.getJob(runningJobId).state).toBe('succeeded');
+    expect(service.getJob(cancelledJobId).state).toBe('cancelled');
+    expect(() => receivedBuildOptions[0].assertNoActiveProcessingJobs()).not.toThrow();
+
+    const replacementDb = makeFakeDb('replacement');
+    expect(() => appContext.replaceDatabase(replacementDb)).not.toThrow();
+    expect(appContext.db).toBe(replacementDb);
+    expect(receivedServices).toHaveLength(2);
+    expect(receivedServices[1]).toBe(service);
+  });
+
   it('does not let a stray opts.projectOperationCoordinator override the shared instance', () => {
     const initialDb = makeFakeDb('initial');
     const receivedCoordinators = [];

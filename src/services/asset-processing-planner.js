@@ -144,11 +144,12 @@ function itemBlocked(item, reasonCode, reason) {
   };
 }
 
-function completePlan(operation, projectId, scope, items, options) {
+function completePlan(operation, projectId, scope, assetIds, items, options) {
   return {
     operation,
     projectId,
     scope,
+    assetIds: [...assetIds],
     options,
     counts: {
       total: items.length,
@@ -731,7 +732,7 @@ export function createAssetProcessingPlanner({
       items[index] = result;
     }
 
-    return completePlan('convert', projectId, resolved.scope, items, options);
+    return completePlan('convert', projectId, resolved.scope, resolved.assetIds, items, options);
   }
 
   async function planWorkflowPromptEdit(projectId, scope, rawOptions) {
@@ -819,7 +820,7 @@ export function createAssetProcessingPlanner({
       }
     }
 
-    return completePlan('workflowPromptEdit', projectId, resolved.scope, items, options);
+    return completePlan('workflowPromptEdit', projectId, resolved.scope, resolved.assetIds, items, options);
   }
 
   function planArchives(projectId, scope, rawOptions) {
@@ -972,7 +973,7 @@ export function createAssetProcessingPlanner({
     }
 
     return {
-      ...completePlan('archive', projectId, resolved.scope, items, options),
+      ...completePlan('archive', projectId, resolved.scope, resolved.assetIds, items, options),
       sourceCount: sources.length,
       entryCount: archives.reduce((total, archive) => total + archive.entryCount, 0),
       archives,
@@ -1232,7 +1233,7 @@ export function createAssetProcessingPlanner({
       } : item))
       : items;
     return {
-      ...completePlan('watermark', projectId, resolved.scope, finalItems, options),
+      ...completePlan('watermark', projectId, resolved.scope, resolved.assetIds, finalItems, options),
       watermark: watermarkSelection.metadata,
       archives: archivePlan.archives,
       operationBlockers: archivePlan.blockers,

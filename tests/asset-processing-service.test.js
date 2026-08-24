@@ -21,6 +21,7 @@ import {
   AssetProcessingError,
 } from '../src/services/asset-processing-service.js';
 import { createProjectOperationCoordinator } from '../src/services/project-operation-coordinator.js';
+import { createProcessingJobService } from '../src/services/processing-job-service.js';
 import { createProcessingPresetService } from '../src/services/processing-preset-service.js';
 import { createWatermarkScaleMapService } from '../src/services/watermark-scale-map-service.js';
 import { createAssetScanner } from '../src/services/asset-scanner.js';
@@ -55,6 +56,7 @@ describe('asset processing service', () => {
   let processingService;
   let planner;
   let projectOperationCoordinator;
+  let processingExecutionCapability;
   let project;
   let projectDir;
   let imageBuffer;
@@ -91,6 +93,7 @@ describe('asset processing service', () => {
     }).png().toBuffer();
 
     projectOperationCoordinator = createProjectOperationCoordinator();
+    processingExecutionCapability = Object.freeze({});
     const scopeService = createAssetProcessingScopeService({ projectRepository, assetRepository });
     planner = createAssetProcessingPlanner({
       scopeService,
@@ -105,6 +108,7 @@ describe('asset processing service', () => {
       assetCategoryService,
       projectsRoot,
       projectOperationCoordinator,
+      alreadyCoordinatedCapability: processingExecutionCapability,
     });
   });
 
@@ -207,12 +211,15 @@ describe('asset processing service', () => {
 
   it('converts a selected image to WebP and keeps the original indexed row', async () => {
     const source = writeIndexedImage('Final/render.png');
+    const progress = [];
 
     const result = await processingService.convertAssets(project.id, [source.id], {
       format: 'webp',
       quality: 85,
       originalHandling: 'keep',
-    });
+    }, (snapshot) => progress.push(snapshot));
+
+    expect(progress).toEqual([{ completed: 0, total: 1 }, { completed: 1, total: 1 }]);
 
     expect(result).toMatchObject({
       convertedCount: 1,
@@ -770,15 +777,85 @@ describe('asset processing service', () => {
     })).rejects.toMatchObject({ code: 'ASSET_NOT_FOUND' });
   });
 
-  it('uses the shared project lock for the full asynchronous conversion operation', async () => {
+  it('keeps background coordination bypass behind an unforgeable composition capability', async () => {
+    const directSource = writeIndexedImage('Final/direct-capability.png');
+    const backgroundSource = writeIndexedImage('Final/background-capability.png');
+    const runAsync = vi.spyOn(projectOperationCoordinator, 'runAsync');
+
+    expect(processingService).not.toHaveProperty('convertAssetsAlreadyCoordinated');
+    expect(() => processingService.createAlreadyCoordinatedExecutor()).toThrow(/capability/i);
+    expect(() => processingService.createAlreadyCoordinatedExecutor({})).toThrow(/capability/i);
+    expect(() => processingService.createAlreadyCoordinatedExecutor(Symbol('lookalike'))).toThrow(/capability/i);
+    await expect(processingService.convertAssets(project.id, [directSource.id], {
+      format: 'webp', quality: 85, originalHandling: 'keep',
+    }, undefined, {})).rejects.toMatchObject({ code: 'INVALID_PROCESSING_COORDINATION_CAPABILITY' });
+    expect(runAsync).not.toHaveBeenCalled();
+
+    await processingService.convertAssets(project.id, [directSource.id], {
+      format: 'webp', quality: 85, originalHandling: 'keep',
+    });
+    expect(runAsync).toHaveBeenCalledTimes(1);
+
+    const backgroundExecutor = processingService.createAlreadyCoordinatedExecutor(processingExecutionCapability);
+    await backgroundExecutor.convertAssets(project.id, [backgroundSource.id], {
+      format: 'webp', quality: 85, originalHandling: 'keep',
+    });
+    expect(runAsync).toHaveBeenCalledTimes(1);
+    expect(projectOperationCoordinator.isActive(project.id)).toBe(false);
+  });
+
+  it('serializes direct processing behind the legitimate background execution path', async () => {
+    const backgroundSource = writeIndexedImage('Final/background-queue.png');
+    const directSource = writeIndexedImage('Final/direct-queue.png');
+    const backgroundExecutor = processingService.createAlreadyCoordinatedExecutor(processingExecutionCapability);
+    const processingJobService = createProcessingJobService({ projectOperationCoordinator });
+    let releaseBackground;
+    const backgroundGate = new Promise((resolve) => { releaseBackground = resolve; });
+    const jobId = processingJobService.enqueue({
+      projectId: project.id,
+      execute: async ({ updateProgress }) => {
+        await backgroundGate;
+        return backgroundExecutor.convertAssets(project.id, [backgroundSource.id], {
+          format: 'webp', quality: 85, originalHandling: 'keep',
+        }, updateProgress);
+      },
+    });
+    await Promise.resolve();
+
+    let directSettled = false;
+    const direct = processingService.convertAssets(project.id, [directSource.id], {
+      format: 'webp', quality: 85, originalHandling: 'keep',
+    });
+    void direct.then(() => { directSettled = true; }, () => { directSettled = true; });
+    await Promise.resolve();
+    expect(directSettled).toBe(false);
+    expect(projectOperationCoordinator.isActive(project.id)).toBe(true);
+
+    releaseBackground();
+    await expect(direct).resolves.toMatchObject({ convertedCount: 1 });
+    expect(processingJobService.getJob(jobId)).toMatchObject({ state: 'succeeded' });
+    expect(projectOperationCoordinator.isActive(project.id)).toBe(false);
+  });
+
+  it('queues conversion behind an active same-project operation without overlapping execution', async () => {
     const source = writeIndexedImage('Final/locked.png');
 
-    await projectOperationCoordinator.runAsync(project.id, async () => {
-      await expect(processingService.convertAssets(project.id, [source.id], {
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const holder = projectOperationCoordinator.runAsync(project.id, () => gate);
+    const queued = processingService.convertAssets(project.id, [source.id], {
         format: 'webp', quality: 85, originalHandling: 'keep',
-      })).rejects.toMatchObject({ code: 'PROJECT_BUSY' });
+      });
       expect(fs.existsSync(path.join(projectDir, 'Final', 'locked.png'))).toBe(true);
-    });
+    let settled = false;
+    void queued.then(() => { settled = true; }, () => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(projectOperationCoordinator.isActive(project.id)).toBe(true);
+    release();
+    await holder;
+    await expect(queued).resolves.toMatchObject({ convertedCount: 1 });
+    expect(projectOperationCoordinator.isActive(project.id)).toBe(false);
   });
 
   it('edits ComfyUI positive and negative prompts in place without changing asset identity', async () => {
@@ -933,9 +1010,16 @@ describe('asset processing service', () => {
     const noWorkflowBytes = fs.readFileSync(noWorkflowTarget);
     const noWorkflowMtime = fs.statSync(noWorkflowTarget).mtimeMs;
 
+    const progress = [];
     const result = await processingService.editWorkflowPrompts(project.id, [source.id, noWorkflow.id], {
       positive: { rules: [{ type: 'remove', text: 'not present' }] },
-    });
+    }, (snapshot) => progress.push(snapshot));
+
+    expect(progress).toEqual([
+      { completed: 0, total: 2 },
+      { completed: 1, total: 2 },
+      { completed: 2, total: 2 },
+    ]);
 
     expect(result).toMatchObject({
       status: 'completed',
@@ -1078,14 +1162,24 @@ describe('asset processing service', () => {
     expect(fs.existsSync(path.join(projectDir, 'Final', 'second.png'))).toBe(false);
   });
 
-  it('uses the shared async project lock for prompt editing', async () => {
+  it('queues prompt editing behind an active same-project operation without overlapping execution', async () => {
     const source = writeIndexedPromptPng('Final/prompt-lock.png', 'parameters', 'locked');
 
-    await projectOperationCoordinator.runAsync(project.id, async () => {
-      await expect(processingService.editWorkflowPrompts(project.id, [source.id], {
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const holder = projectOperationCoordinator.runAsync(project.id, () => gate);
+    const queued = processingService.editWorkflowPrompts(project.id, [source.id], {
         positive: { rules: [{ type: 'append', text: 'x' }] },
-      })).rejects.toMatchObject({ code: 'PROJECT_BUSY' });
+      });
       expect(fs.existsSync(path.join(projectDir, 'Final', 'prompt-lock.png'))).toBe(true);
-    });
+    let settled = false;
+    void queued.then(() => { settled = true; }, () => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(projectOperationCoordinator.isActive(project.id)).toBe(true);
+    release();
+    await holder;
+    await expect(queued).resolves.toMatchObject({ status: 'completed', changedCount: 1 });
+    expect(projectOperationCoordinator.isActive(project.id)).toBe(false);
   });
 });

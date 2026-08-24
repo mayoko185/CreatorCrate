@@ -595,6 +595,7 @@ export function createSettingsRouter({
   assetCategoryService,
   backupService,
   maintenanceState,
+  processingJobService,
   authService,
   cookieOptions,
   onDatabaseReplaced,
@@ -1002,7 +1003,11 @@ export function createSettingsRouter({
     // near-simultaneous submissions could both reach here before either
     // flips it. Checking both this flag and the service's own guard closes
     // that window without weakening either boundary.
-    if (maintenanceState.active || backupService.isRestoreInProgress()) {
+    if (
+      maintenanceState.active
+      || backupService.isRestoreInProgress()
+      || processingJobService?.hasActiveJobs?.()
+    ) {
       return res.redirect('/settings/backups?notice=restore_conflict');
     }
 

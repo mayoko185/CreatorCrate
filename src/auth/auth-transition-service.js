@@ -73,8 +73,19 @@ const USERNAME_HELP =
  *   the currently-live auth service, required for `disable()`'s password check;
  *   null/undefined while auth is disabled
  */
-export function createAuthTransitionService({ appDataRoot, db, replaceAuthConfig, authSettings, csrfPepper, authService }) {
+export function createAuthTransitionService({
+  appDataRoot, db, replaceAuthConfig, assertNoActiveProcessingJobs, authSettings, csrfPepper, authService,
+}) {
   let busy = false;
+
+  function refuseWhenProcessingJobsAreActive() {
+    try {
+      assertNoActiveProcessingJobs?.();
+      return null;
+    } catch (error) {
+      return { ok: false, conflict: true, error };
+    }
+  }
 
   function withLock(fn) {
     if (busy) return { ok: false, conflict: true };
@@ -106,6 +117,9 @@ export function createAuthTransitionService({ appDataRoot, db, replaceAuthConfig
       if (currentState.enabled) {
         return { ok: false, alreadyEnabled: true };
       }
+
+      const processingConflict = refuseWhenProcessingJobsAreActive();
+      if (processingConflict) return processingConflict;
 
       const credentialPath = credentialFilePathForRoot(appDataRoot);
       const authStatePath = authStateFilePathForRoot(appDataRoot);
@@ -176,6 +190,9 @@ export function createAuthTransitionService({ appDataRoot, db, replaceAuthConfig
       if (!authService.verifyCredentials(username, currentPassword)) {
         return { ok: false, currentPasswordError: 'Current password is incorrect.' };
       }
+
+      const processingConflict = refuseWhenProcessingJobsAreActive();
+      if (processingConflict) return processingConflict;
 
       const authStatePath = authStateFilePathForRoot(appDataRoot);
       const authStateSnapshot = snapshotFile(authStatePath);

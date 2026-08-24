@@ -171,11 +171,18 @@ key in the options object can never shadow it:
 
 - the **Auto Rename signing key**, so a database restore does not invalidate
   outstanding plan tokens mid-session;
-- the **project operation coordinator**, so the scanner and the mutation
-  services keep sharing one lock across a rebuild;
+- the **project operation coordinator** and the **processing-job service**,
+  so scanners and mutation services retain the same per-project exclusion and
+  any later permitted rebuild keeps the same process-local job registry;
 - the `onDatabaseReplaced` / `onAuthConfigReplaced` hooks, so a restore
   triggered by a request always adopts back into the same context that
   served it.
+
+Before either database or auth-context replacement, the context refuses the
+rebuild while the processing-job service has queued or running work. That
+prevents maintenance from replacing dependencies that a job still needs.
+Processing job state is process-local and in-memory, so it is intentionally
+lost on a process restart.
 
 Anything else — repositories, services, routers, the Nunjucks environment —
 is rebuilt from scratch. If you add state that must outlive a restore, it
@@ -211,6 +218,10 @@ The wiring style is deliberate and consistent:
 - Constructed services are published on `app.locals` so out-of-band callers
   (the scan scheduler in `server.js`, tests) can reach the *currently built*
   instances after a rebuild.
+- The processing-job service is injected into each processing router. The
+  application context owns its instance so that a permitted later rebuild
+  keeps the same process-local job registry and project coordinator; a direct
+  `createApp` caller receives a fresh in-memory instance instead.
 
 **Rooted vs rootless builds.** `projectsRoot` and `previewRoot` are optional.
 When `projectsRoot` is absent, the filesystem-backed services
@@ -550,14 +561,47 @@ is created per application context and shared by the scanner, the asset
 action service, the processing service, and Auto Rename — which is precisely
 what makes a scan and a mutation mutually exclusive for one project.
 
-Its deliberate limitations are part of the contract: it is not distributed,
-does not persist, and **does not queue**. A second operation on the same
-project while one is running is rejected immediately with
-`PROJECT_OPERATION_IN_PROGRESS`, surfaced to the user as a conflict rather
-than a wait. Different projects proceed independently. The project ID is
-always released in a `finally`.
+Its deliberate limitations are part of the contract: it is not distributed
+and does not persist across process restarts. The synchronous `run()` path
+remains fail-fast: a same-project conflict is rejected immediately with
+`PROJECT_OPERATION_IN_PROGRESS`. The asynchronous `runAsync()` path instead
+queues same-project callbacks FIFO; a rejected callback does not prevent the
+next queued callback from running. Different projects still proceed
+independently. A project remains active until its asynchronous queue drains,
+and synchronous callers release it in `finally`.
+
+### Background processing jobs
+
+Processing Apply validates the request and resolves its concrete asset scope,
+then submits an in-memory job rather than waiting for the mutation to finish.
+It returns HTTP `202 Accepted` with an opaque job ID. The process-local
+processing-job service schedules each job through `runAsync()` and exposes a
+snapshot lifecycle of `queued`, `running`, `succeeded`, `failed`, or
+`cancelled`, plus coarse `{ completed, total }` progress once the work is
+running. Only `queued` jobs are cancellable; a running job always runs to its
+existing completion or failure path.
+
+The browser polls `GET /processing/jobs/:id` for status and may request
+`POST /processing/jobs/:id/cancel` while the job is queued. This is HTTP
+polling, not SSE or WebSockets. Queued and running jobs also block backup
+maintenance and application-context database or auth replacement. The job
+registry is intentionally in-memory and restart-volatile. Terminal jobs are
+retained for up to five minutes, with at most 100 terminal completions kept;
+queued and running jobs are never retention-eviction candidates, and the
+oldest terminal completions are evicted first when the cap is exceeded. An
+expired or evicted job is no longer available from the status endpoint and
+returns the existing job-not-found `404` condition. The client treats that as
+permanent: it stops polling, clears its active/busy state, and reports that
+the processing result is no longer available. Other transient polling errors
+remain retryable.
+
+This milestone changes request lifetime and same-project scheduling, not the
+processing engine's internal execution model: each processing operation
+remains serial, with no bounded intra-operation parallelism yet.
 
 ### Plan then apply
+
+Apply reserves a pending submission before awaiting planner work. The processing-job service counts that reservation as active work, then transfers it synchronously to the queued job when enqueue succeeds. Validation or planning failures release the reservation, so database restore and auth-context replacement cannot slip through the planning-to-enqueue boundary.
 
 Processing is a two-phase contract, visible in the route surface as
 `.../processing/<operation>/plan` and `.../processing/<operation>/apply`.
@@ -681,8 +725,10 @@ are counted and logged without aborting the cycle; and cycle timestamps are
 persisted to `app_meta` through the same fresh-resolution path, with
 persistence failures logged rather than thrown.
 
-The only other automatic behavior at startup is the one-shot global
-watermark scan, which is best-effort and never blocks the server from
+Request-created processing jobs (§11) are separate from this scheduler: they
+are in-memory, process-local work submitted by Apply rather than recurring
+background tasks. The only other automatic behavior at startup is the one-shot
+global watermark scan, which is best-effort and never blocks the server from
 listening.
 
 ---
@@ -799,10 +845,11 @@ contract:
 
 The **maintenance boundary** is the caller's responsibility, and the
 settings route drives it: it sets `maintenanceState.active` before starting
-and clears it in a `finally`. It also checks both that flag *and* the
-service's own `isRestoreInProgress()` guard, because the flag is only set
-after the handler begins — two near-simultaneous submissions could otherwise
-both get past a single check.
+and clears it in a `finally`. It also checks that flag, the service's own
+`isRestoreInProgress()` guard, and whether the processing-job service has
+queued or running work. The first two checks close the near-simultaneous
+restore-submission window; the job check refuses maintenance until active
+processing is no longer using the current context.
 
 Finally, the route adopts the connection: it wipes session rows on the
 connection about to become live (a restored database may carry stale,
@@ -837,6 +884,15 @@ delegated events, and a no-op when the relevant markup is absent. Shared DOM
 helpers live in [`dom.js`](src/static/client/dom.js). Styling is one
 stylesheet, [`creatorcrate.css`](src/static/creatorcrate.css), built on CSS
 custom properties; inline presentation styles are actively tested against.
+
+The processing enhancement turns an Apply `202` response into a centralized
+HTTP polling loop for that dialog. It renders queued/running progress and
+terminal success, failure, or cancellation from job snapshots. Closing a
+dialog requests cancellation only when its locally known job is `queued`, never
+when it is known to be `running`. If close precedes the Apply `202`, the client
+makes the initial queued-cancellation attempt; a `409` means the job started in
+the race, so it is retained and polling resumes when the dialog reopens. No
+SSE/WebSocket transport is used for processing progress.
 
 **Three asset modes**, resolved once by `resolveAssetMode(nodeEnv)` and
 exposed to templates as `assetMode`:

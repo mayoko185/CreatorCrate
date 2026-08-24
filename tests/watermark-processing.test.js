@@ -334,12 +334,15 @@ describe('watermark asset processing', () => {
 
   it('creates a Patreon output at the selected category root and preserves the source', async () => {
     const source = await writeIndexedImage('Final/patreon.png', { width: 1000, height: 600 });
+    const progress = [];
 
     const result = await processingService.watermarkAssets(project.id, [source.id], {
       mode: 'patreon',
       opacity: 100,
       margin: 0.02,
-    });
+    }, (snapshot) => progress.push(snapshot));
+
+    expect(progress).toEqual([{ completed: 0, total: 1 }, { completed: 1, total: 1 }]);
 
     const output = assetRepository.findByProjectIdAndPath(project.id, 'wm/patreon_wm.png');
     const wmCategory = assetCategoryService.listProjectCategories(project.id)
@@ -1559,15 +1562,25 @@ describe('watermark asset processing', () => {
       .toBe(destinationAsset.id);
   });
 
-  it('uses the same asynchronous project lock as the other asset operations', async () => {
+  it('queues watermarking behind an active same-project operation without overlapping execution', async () => {
     const source = await writeIndexedImage('Final/locked.png');
-    await coordinator.runAsync(project.id, async () => {
-      await expect(processingService.watermarkAssets(project.id, [source.id], {
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const holder = coordinator.runAsync(project.id, () => gate);
+    const queued = processingService.watermarkAssets(project.id, [source.id], {
         mode: 'patreon',
         outputFormat: 'png',
         deleteSource: false,
-      })).rejects.toMatchObject({ code: 'PROJECT_BUSY' });
-    });
+      });
+    let settled = false;
+    void queued.then(() => { settled = true; }, () => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(coordinator.isActive(project.id)).toBe(true);
+    release();
+    await holder;
+    await expect(queued).resolves.toMatchObject({ status: 'completed' });
+    expect(coordinator.isActive(project.id)).toBe(false);
   });
 
   it('accepts a nested trusted watermark path and uses it for processing', async () => {

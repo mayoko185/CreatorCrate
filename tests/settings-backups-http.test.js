@@ -6,7 +6,7 @@
  * only where the service-level behavior is already covered by
  * backup-service.test.js and what matters here is the HTTP layer.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -15,6 +15,8 @@ import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createBackupService, BackupError } from '../src/services/backup-service.js';
+import { createProcessingJobService } from '../src/services/processing-job-service.js';
+import { createProjectOperationCoordinator } from '../src/services/project-operation-coordinator.js';
 import {
   AUTO_SCAN_LAST_COMPLETED_AT_KEY,
   AUTO_SCAN_NEXT_SCHEDULED_AT_KEY,
@@ -568,6 +570,153 @@ describe('settings — backup management HTTP', () => {
   // ─── Restore POST — concurrent restore prevention ─────────────────────────
 
   describe('restore POST — concurrent restore prevention', () => {
+    it('transfers a live Apply reservation into its queued job and unblocks restore after terminal completion', async () => {
+      const projectId = Number(insertProject(db, 'Reservation transfer'));
+      const backup = await backupService.createBackup(db);
+      const coordinator = createProjectOperationCoordinator();
+      const processingJobService = createProcessingJobService({ projectOperationCoordinator: coordinator });
+      const reserveSubmission = vi.spyOn(processingJobService, 'reserveSubmission');
+      const enqueue = vi.spyOn(processingJobService, 'enqueue');
+      let beginPlanning;
+      let releasePlanning;
+      const planningStarted = new Promise((resolve) => { beginPlanning = resolve; });
+      const planningGate = new Promise((resolve) => { releasePlanning = resolve; });
+      const assetProcessingPlanner = {
+        planConvert: vi.fn(() => {
+          beginPlanning();
+          return planningGate;
+        }),
+      };
+      let beginExecution;
+      let releaseExecution;
+      const executionStarted = new Promise((resolve) => { beginExecution = resolve; });
+      const executionGate = new Promise((resolve) => { releaseExecution = resolve; });
+      const convertAssets = vi.fn(async (_id, _assetIds, _options, updateProgress) => {
+        updateProgress({ completed: 0, total: 1 });
+        beginExecution();
+        await executionGate;
+        updateProgress({ completed: 1, total: 1 });
+        return { changedCount: 1 };
+      });
+      const restoreBackup = vi.fn(async () => ({ db }));
+      const onDatabaseReplaced = vi.fn();
+      const appWithLiveApply = createApp(
+        { appName: APP_NAME, db, projectsRoot },
+        {
+          backupService: { ...backupService, isRestoreInProgress: () => false, restoreBackup },
+          maintenanceState: { active: false },
+          processingJobService,
+          projectOperationCoordinator: coordinator,
+          assetProcessingPlanner,
+          alreadyCoordinatedProcessingExecutor: { convertAssets },
+          onDatabaseReplaced,
+          appDataRoot,
+          databasePath,
+          authConfig: AUTH_CONFIG,
+          authSettings: AUTH_SETTINGS,
+          autoScanIntervalMinutes: null,
+        },
+      );
+      const { agent: liveAgent, csrfToken: liveCsrf } = await authenticate(appWithLiveApply);
+      const applyPromise = new Promise((resolve, reject) => {
+        liveAgent
+          .post(`/projects/${projectId}/assets/processing/convert/apply`)
+          .set('x-csrf-token', liveCsrf)
+          .send({
+            scope: { type: 'selected', assetIds: [9] },
+            options: { format: 'webp', quality: 85, originalHandling: 'keep' },
+          })
+          .end((error, response) => (error ? reject(error) : resolve(response)));
+      });
+
+      await planningStarted;
+      expect(processingJobService.hasActiveJobs()).toBe(true);
+
+      const blockedRestore = await liveAgent
+        .post(`/settings/backups/${backup.filename}/restore`)
+        .type('form').send({ _csrf: liveCsrf })
+        .expect(302);
+      expect(blockedRestore.headers.location).toBe('/settings/backups?notice=restore_conflict');
+      expect(restoreBackup).not.toHaveBeenCalled();
+      expect(onDatabaseReplaced).not.toHaveBeenCalled();
+
+      releasePlanning({
+        scope: { type: 'selected', assetIds: [9] },
+        options: { format: 'webp', quality: 85, originalHandling: 'keep' },
+        assetIds: [9],
+        items: [],
+      });
+
+      const applied = await applyPromise;
+      expect(applied.status).toBe(202);
+      const reservation = reserveSubmission.mock.results[0].value;
+      expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ projectId, reservation }));
+      expect(processingJobService.getJob(applied.body.jobId)?.state).toMatch(/queued|running/);
+      expect(processingJobService.hasActiveJobs()).toBe(true);
+
+      await executionStarted;
+      expect(processingJobService.getJob(applied.body.jobId)?.state).toBe('running');
+      expect(processingJobService.hasActiveJobs()).toBe(true);
+
+      releaseExecution();
+      for (let index = 0; index < 12 && processingJobService.hasActiveJobs(); index += 1) {
+        await Promise.resolve();
+      }
+
+      expect(processingJobService.getJob(applied.body.jobId)?.state).toBe('succeeded');
+      expect(processingJobService.hasActiveJobs()).toBe(false);
+
+      const allowedRestore = await liveAgent
+        .post(`/settings/backups/${backup.filename}/restore`)
+        .type('form').send({ _csrf: liveCsrf })
+        .expect(302);
+      expect(allowedRestore.headers.location).toBe('/settings/backups?notice=restore_success');
+      expect(restoreBackup).toHaveBeenCalledOnce();
+      expect(onDatabaseReplaced).toHaveBeenCalledWith(db);
+    });
+
+    it('redirects with restore_conflict before mutation when processing work or a pending Apply submission is active', async () => {
+      const result = await backupService.createBackup(db);
+      let restoreCalls = 0;
+      let replacementCalls = 0;
+      const stubbedService = {
+        ...backupService,
+        isRestoreInProgress: () => false,
+        restoreBackup: async () => {
+          restoreCalls += 1;
+          throw new Error('restore should not start while processing jobs are active');
+        },
+      };
+      const activeProcessingJobService = createProcessingJobService({
+        projectOperationCoordinator: { runAsync: () => Promise.resolve() },
+      });
+      const pendingSubmission = activeProcessingJobService.reserveSubmission(1);
+      expect(activeProcessingJobService.hasActiveJobs()).toBe(true);
+      const appWithActiveJob = createApp(
+        { appName: APP_NAME, db, projectsRoot },
+        {
+          backupService: stubbedService,
+          maintenanceState: { active: false },
+          processingJobService: activeProcessingJobService,
+          onDatabaseReplaced: () => { replacementCalls += 1; },
+          appDataRoot,
+          databasePath,
+          authConfig: AUTH_CONFIG,
+        }
+      );
+
+      const { agent: activeJobAgent, csrfToken: activeJobCsrf } = await authenticate(appWithActiveJob);
+      const res = await activeJobAgent
+        .post(`/settings/backups/${result.filename}/restore`)
+        .type('form').send({ _csrf: activeJobCsrf })
+        .expect(302);
+
+      expect(res.headers.location).toBe('/settings/backups?notice=restore_conflict');
+      expect(restoreCalls).toBe(0);
+      expect(replacementCalls).toBe(0);
+      expect(pendingSubmission.release()).toBe(true);
+    });
+
     it('redirects with restore_conflict when isRestoreInProgress returns true', async () => {
       const result = await backupService.createBackup(db);
       const stubbedService = {

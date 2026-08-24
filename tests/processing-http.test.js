@@ -1,13 +1,61 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import express from 'express';
 import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
 import { createProcessingRouter } from '../src/routes/processing.js';
+import { createAssetProcessingPlanner } from '../src/services/asset-processing-planner.js';
+import { AssetProcessingError } from '../src/services/asset-processing-service.js';
+import { createProcessingJobService } from '../src/services/processing-job-service.js';
+import { createProjectOperationCoordinator } from '../src/services/project-operation-coordinator.js';
 import {
   WatermarkScaleMapServiceError,
 } from '../src/services/watermark-scale-map-service.js';
 
+async function settle() {
+  for (let index = 0; index < 6; index += 1) await Promise.resolve();
+}
+
+function createRealPlannerForAsset(relativePath) {
+  const projectsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-processing-http-'));
+  const projectDirectory = 'project-1';
+  fs.mkdirSync(path.join(projectsRoot, projectDirectory));
+  const asset = { id: 9, project_id: 1, relative_path: relativePath, is_present: 1 };
+  const assetProcessingPlanner = createAssetProcessingPlanner({
+    scopeService: {
+      resolveAssetProcessingScope: (_projectId, scope) => ({
+        projectId: 1,
+        scope,
+        assetIds: [asset.id],
+        assets: [asset],
+      }),
+    },
+    projectRepository: {
+      findById: () => ({ id: 1, status: 'active', archived_at: null, project_dir: projectDirectory }),
+    },
+    assetRepository: {
+      findByProjectIdAndPath: () => null,
+      findPublishedReleaseAssetIds: () => [],
+    },
+    assetCategoryService: { listProjectCategories: () => [] },
+    projectsRoot,
+  });
+  return {
+    assetProcessingPlanner,
+    cleanup: () => fs.rmSync(projectsRoot, { recursive: true, force: true }),
+  };
+}
+
 function createHarness(overrides = {}) {
   const project = { id: 1, status: 'active', archived_at: null };
+  const processingJobService = createProcessingJobService({
+    projectOperationCoordinator: createProjectOperationCoordinator(),
+  });
+  const convertAssets = vi.fn(async () => ({ changedCount: 1 }));
+  const editWorkflowPrompts = vi.fn(async () => ({ changedCount: 1 }));
+  const watermarkAssets = vi.fn(async () => ({ changedCount: 1 }));
+  const createArchives = vi.fn(async () => ({ changedCount: 2 }));
   const services = {
     projectService: { findById: vi.fn((id) => (id === 1 ? project : null)) },
     assetRepository: {
@@ -24,19 +72,25 @@ function createHarness(overrides = {}) {
       })),
     },
     assetProcessingPlanner: {
-      planConvert: vi.fn(async (_id, scope, options) => ({ scope, options, items: [] })),
-      planWorkflowPromptEdit: vi.fn(async (_id, scope, options) => ({ scope, options, items: [] })),
-      planWatermark: vi.fn(async (_id, scope, options) => ({ scope, options, items: [] })),
+      planConvert: vi.fn(async (_id, scope, options) => ({ scope, options, assetIds: scope.assetIds || [9], items: [] })),
+      planWorkflowPromptEdit: vi.fn(async (_id, scope, options) => ({ scope, options, assetIds: scope.assetIds || [9], items: [] })),
+      planWatermark: vi.fn(async (_id, scope, options) => ({ scope, options, assetIds: scope.assetIds || [9], items: [] })),
       renderWatermarkPreview: vi.fn(async () => ({
         buffer: Buffer.from('preview-bytes'), contentType: 'image/png', filename: 'source.png', eligibleCount: 2, variant: 'resized',
       })),
-      planArchives: vi.fn(async (_id, scope, options) => ({ scope, options, items: [], archives: [] })),
+      planArchives: vi.fn(async (_id, scope, options) => ({ scope, options, assetIds: scope.assetIds || [9], items: [], archives: [{ status: 'ready' }] })),
     },
     assetProcessingService: {
-      convertAssets: vi.fn(async () => ({ changedCount: 1 })),
-      editWorkflowPrompts: vi.fn(async () => ({ changedCount: 1 })),
-      watermarkAssets: vi.fn(async () => ({ changedCount: 1 })),
-      createArchives: vi.fn(async () => ({ changedCount: 2 })),
+      convertAssets,
+      editWorkflowPrompts,
+      watermarkAssets,
+      createArchives,
+    },
+    alreadyCoordinatedProcessingExecutor: {
+      convertAssets,
+      editWorkflowPrompts,
+      watermarkAssets,
+      createArchives,
     },
     watermarkService: {
       listWatermarks: vi.fn(() => [{ id: 10, filename: 'mark.png', relativePath: 'mark.png', width: 1, height: 1 }]),
@@ -51,6 +105,7 @@ function createHarness(overrides = {}) {
       getScaleMap: vi.fn(() => ({ definition: { '1024x1024': 0.37, default: 0.1 } })),
       replaceScaleMap: vi.fn((definition) => ({ definition })),
     },
+    processingJobService,
     processingPresetService: {
       listPresets: vi.fn(() => []),
       createPreset: vi.fn((input) => ({ id: 12, ...input })),
@@ -117,8 +172,10 @@ describe('processing HTTP routes', () => {
         options,
       });
 
-    expect(apply.status).toBe(200);
-    expect(services.assetProcessingService.watermarkAssets).toHaveBeenCalledWith(1, [9], options);
+    expect(apply.status).toBe(202);
+    expect(apply.body.jobId).toEqual(expect.any(String));
+    await settle();
+    expect(services.assetProcessingService.watermarkAssets).toHaveBeenCalledWith(1, [9], options, expect.any(Function));
 
   });
 
@@ -165,20 +222,15 @@ describe('processing HTTP routes', () => {
         options: { makeCbz: true },
       });
 
-    expect(apply.status).toBe(200);
-    expect(apply.body).toMatchObject({
-      ok: true,
-      operation: 'archive',
-      refreshUrl: '/projects/1/assets',
-    });
-    expect(services.assetProcessingScopeService.resolveAssetProcessingScope).toHaveBeenCalledWith(
-      1,
-      { type: 'selected', assetIds: [4] },
-    );
+    expect(apply.status).toBe(202);
+    expect(apply.body).toMatchObject({ ok: true, operation: 'archive', jobId: expect.any(String) });
+    await settle();
+    expect(services.assetProcessingScopeService.resolveAssetProcessingScope).not.toHaveBeenCalled();
     expect(services.assetProcessingService.createArchives).toHaveBeenCalledWith(
       1,
       [4],
       { makeCbz: true },
+      expect.any(Function),
     );
   });
 
@@ -188,17 +240,16 @@ describe('processing HTTP routes', () => {
       .post('/projects/1/assets/processing/convert/apply')
       .send({ scope: { type: 'project' }, presetId: 12 });
 
-    expect(response.status).toBe(200);
-    expect(response.body).toMatchObject({ ok: true, operation: 'convert', refreshUrl: '/projects/1/assets' });
+    expect(response.status).toBe(202);
+    expect(response.body).toMatchObject({ ok: true, operation: 'convert', jobId: expect.any(String) });
+    await settle();
     expect(services.processingPresetService.resolvePresetForExecution).toHaveBeenCalledWith(12, {});
-    expect(services.assetProcessingScopeService.resolveAssetProcessingScope).toHaveBeenCalledWith(
-      1,
-      { type: 'directory', relativePath: '', recursive: true },
-    );
+    expect(services.assetProcessingScopeService.resolveAssetProcessingScope).not.toHaveBeenCalled();
     expect(services.assetProcessingService.convertAssets).toHaveBeenCalledWith(
       1,
       [9],
       { format: 'webp', quality: 85, originalHandling: 'keep' },
+      expect.any(Function),
     );
   });
 
@@ -344,14 +395,620 @@ describe('processing HTTP routes', () => {
     }
   });
 
-  it('does not turn unexpected failures into successful JSON responses', async () => {
+  it('accepts an apply request before execution and exposes queued, running, and succeeded status snapshots', async () => {
     const { app, services } = createHarness();
-    services.assetProcessingService.convertAssets.mockRejectedValue(new Error('C:/secret/staging'));
-    const response = await request(app)
-      .post('/projects/1/assets/processing/convert/apply')
-      .send({ scope: { type: 'project' }, options: { format: 'webp', quality: 85, originalHandling: 'keep' } });
+    let releaseBlocker;
+    const blocker = new Promise((resolve) => { releaseBlocker = resolve; });
+    services.processingJobService.enqueue({ projectId: 1, execute: () => blocker });
+    await settle();
 
-    expect(response.status).toBe(500);
-    expect(response.body).toEqual({ status: 'error', message: 'Internal server error.' });
+    let beginProcessing;
+    const processingStarted = new Promise((resolve) => { beginProcessing = resolve; });
+    let releaseProcessing;
+    const processingGate = new Promise((resolve) => { releaseProcessing = resolve; });
+    services.assetProcessingService.convertAssets.mockImplementation(async (_projectId, _assetIds, _options, updateProgress) => {
+      updateProgress({ completed: 0, total: 1 });
+      beginProcessing();
+      await processingGate;
+      updateProgress({ completed: 1, total: 1 });
+      return { changedCount: 3 };
+    });
+
+    const submitted = await request(app)
+      .post('/projects/1/assets/processing/convert/apply')
+      .send({ scope: { type: 'selected', assetIds: [9] }, options: { format: 'webp', quality: 85, originalHandling: 'keep' } })
+      .expect(202);
+
+    expect(submitted.body).toEqual({ ok: true, operation: 'convert', jobId: expect.any(String) });
+    expect(services.assetProcessingService.convertAssets).not.toHaveBeenCalled();
+    const queued = await request(app).get(`/processing/jobs/${submitted.body.jobId}`).expect(200);
+    expect(queued.body.job).toMatchObject({ id: submitted.body.jobId, state: 'queued', progress: null, result: null, error: null });
+
+    releaseBlocker();
+    await processingStarted;
+    const running = await request(app).get(`/processing/jobs/${submitted.body.jobId}`).expect(200);
+    expect(running.body.job).toMatchObject({ id: submitted.body.jobId, state: 'running', progress: { completed: 0, total: 1 }, result: null, error: null });
+    expect(services.assetProcessingService.convertAssets).toHaveBeenCalledWith(
+      1,
+      [9],
+      { format: 'webp', quality: 85, originalHandling: 'keep' },
+      expect.any(Function),
+    );
+
+    releaseProcessing();
+    await settle();
+    const succeeded = await request(app).get(`/processing/jobs/${submitted.body.jobId}`).expect(200);
+    expect(succeeded.body.job).toEqual({
+      id: submitted.body.jobId,
+      state: 'succeeded',
+      progress: { completed: 1, total: 1 },
+      result: { result: { changedCount: 3 }, refreshUrl: '/projects/1/assets' },
+      error: null,
+    });
+  });
+
+  it('completes two same-project jobs in FIFO order without nested coordinator acquisition', async () => {
+    const coordinator = createProjectOperationCoordinator();
+    const processingJobService = createProcessingJobService({
+      projectOperationCoordinator: coordinator,
+    });
+    const { app, services } = createHarness({ processingJobService });
+    let releaseFirst;
+    const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+    let firstStarted;
+    const firstStartedPromise = new Promise((resolve) => { firstStarted = resolve; });
+    const order = [];
+
+    // This is the old apply-path behavior: acquiring the coordinator inside a
+    // job callback. The route must not invoke it for background jobs.
+    const apply = async (_projectId, _assetIds, _options, updateProgress) => {
+      const position = order.filter((entry) => entry.endsWith('-start')).length + 1;
+      order.push(`job-${position}-start`);
+      updateProgress({ completed: 0, total: 1 });
+      if (position === 1) {
+        firstStarted();
+        await firstGate;
+      }
+      updateProgress({ completed: 1, total: 1 });
+      order.push(`job-${position}-end`);
+      return { changedCount: position };
+    };
+    services.assetProcessingService.convertAssets.mockImplementation((...args) => (
+      coordinator.runAsync(1, () => apply(...args))
+    ));
+    services.alreadyCoordinatedProcessingExecutor.convertAssets = vi.fn(apply);
+
+    const first = await request(app)
+      .post('/projects/1/assets/processing/convert/apply')
+      .send({ scope: { type: 'selected', assetIds: [9] }, options: { format: 'webp', quality: 85, originalHandling: 'keep' } })
+      .expect(202);
+    await firstStartedPromise;
+    const second = await request(app)
+      .post('/projects/1/assets/processing/convert/apply')
+      .send({ scope: { type: 'selected', assetIds: [9] }, options: { format: 'webp', quality: 85, originalHandling: 'keep' } })
+      .expect(202);
+
+    expect(services.assetProcessingService.convertAssets).not.toHaveBeenCalled();
+    expect(processingJobService.getJob(second.body.jobId)?.state).toBe('queued');
+    expect(coordinator.isActive(1)).toBe(true);
+
+    releaseFirst();
+    for (let index = 0; index < 12 && processingJobService.hasActiveJobs(); index += 1) {
+      await Promise.resolve();
+    }
+    await settle();
+
+    expect(processingJobService.getJob(first.body.jobId)?.state).toBe('succeeded');
+    expect(processingJobService.getJob(second.body.jobId)?.state).toBe('succeeded');
+    expect(order).toEqual(['job-1-start', 'job-1-end', 'job-2-start', 'job-2-end']);
+    expect(services.alreadyCoordinatedProcessingExecutor.convertAssets).toHaveBeenCalledTimes(2);
+    expect(coordinator.isActive(1)).toBe(false);
+  });
+
+  it('cancels only queued jobs and prevents their processing execution', async () => {
+    const { app, services } = createHarness();
+    let releaseBlocker;
+    const blocker = new Promise((resolve) => { releaseBlocker = resolve; });
+    services.processingJobService.enqueue({ projectId: 1, execute: () => blocker });
+    await settle();
+
+    const queued = await request(app)
+      .post('/projects/1/assets/processing/convert/apply')
+      .send({ scope: { type: 'selected', assetIds: [9] }, options: { format: 'webp', quality: 85, originalHandling: 'keep' } })
+      .expect(202);
+    const cancelled = await request(app).post(`/processing/jobs/${queued.body.jobId}/cancel`).send({}).expect(200);
+    expect(cancelled.body.job).toMatchObject({ id: queued.body.jobId, state: 'cancelled' });
+
+    releaseBlocker();
+    await settle();
+    expect(services.assetProcessingService.convertAssets).not.toHaveBeenCalled();
+
+    let beginProcessing;
+    const started = new Promise((resolve) => { beginProcessing = resolve; });
+    let releaseProcessing;
+    const processingGate = new Promise((resolve) => { releaseProcessing = resolve; });
+    services.assetProcessingService.convertAssets.mockImplementation(async () => {
+      beginProcessing();
+      await processingGate;
+      return { changedCount: 1 };
+    });
+    const running = await request(app)
+      .post('/projects/1/assets/processing/convert/apply')
+      .send({ scope: { type: 'selected', assetIds: [9] }, options: { format: 'webp', quality: 85, originalHandling: 'keep' } })
+      .expect(202);
+    await started;
+    const refused = await request(app).post(`/processing/jobs/${running.body.jobId}/cancel`).send({}).expect(409);
+    expect(refused.body.error).toEqual({
+      code: 'PROCESSING_JOB_NOT_CANCELLABLE',
+      message: 'Only queued processing jobs can be cancelled.',
+    });
+    releaseProcessing();
+  });
+
+  it('uses normal not-found errors for unknown jobs and validates before submission', async () => {
+    const { app, services } = createHarness();
+    const enqueue = vi.spyOn(services.processingJobService, 'enqueue');
+    const unknown = 'not-a-real-job';
+    for (const response of [
+      await request(app).get(`/processing/jobs/${unknown}`),
+      await request(app).post(`/processing/jobs/${unknown}/cancel`).send({}),
+    ]) {
+      expect(response.status).toBe(404);
+      expect(response.body).toEqual({
+        ok: false,
+        error: { code: 'PROCESSING_JOB_NOT_FOUND', message: 'Processing job not found.' },
+      });
+    }
+
+    const invalid = await request(app)
+      .post('/projects/1/assets/processing/convert/apply')
+      .send({ scope: { type: 'selected', assetIds: [9] }, runtimeResources: {} })
+      .expect(400);
+    expect(invalid.body.error.field).toBe('runtimeResources');
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+
+  it('rejects operation-specific invalid Apply data before it allocates a job', async () => {
+    const { app, services } = createHarness();
+    const enqueue = vi.spyOn(services.processingJobService, 'enqueue');
+    services.assetProcessingPlanner.planConvert.mockRejectedValueOnce(
+      new AssetProcessingError('Quality must be an integer from 1 to 100.', { code: 'INVALID_QUALITY' }),
+    );
+    services.assetProcessingPlanner.planWorkflowPromptEdit.mockRejectedValueOnce(
+      new AssetProcessingError('Prompt editing options are required.', { code: 'INVALID_PROMPT_OPTIONS' }),
+    );
+
+    const invalidConvert = await request(app)
+      .post('/projects/1/assets/processing/convert/apply')
+      .send({ scope: { type: 'selected', assetIds: [9] }, options: { format: 'webp', quality: 999, originalHandling: 'keep' } })
+      .expect(400);
+    expect(invalidConvert.body).toEqual({
+      ok: false,
+      error: { code: 'INVALID_QUALITY', message: 'Quality must be an integer from 1 to 100.' },
+    });
+
+    const invalidWorkflow = await request(app)
+      .post('/projects/1/assets/processing/workflow-prompt/apply')
+      .send({ scope: { type: 'selected', assetIds: [9] }, options: { positive: 'invalid', negative: [] } })
+      .expect(400);
+    expect(invalidWorkflow.body).toEqual({
+      ok: false,
+      error: { code: 'INVALID_PROMPT_OPTIONS', message: 'Prompt editing options are required.' },
+    });
+
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(services.assetProcessingScopeService.resolveAssetProcessingScope).not.toHaveBeenCalled();
+    expect(services.alreadyCoordinatedProcessingExecutor.convertAssets).not.toHaveBeenCalled();
+    expect(services.alreadyCoordinatedProcessingExecutor.editWorkflowPrompts).not.toHaveBeenCalled();
+  });
+
+  it('rejects the real planner unsupported representation before it allocates or executes a job', async () => {
+    const realPlanner = createRealPlannerForAsset('Final/readme.txt');
+    try {
+      const planConvert = vi.spyOn(realPlanner.assetProcessingPlanner, 'planConvert');
+      const { app, services } = createHarness({ assetProcessingPlanner: realPlanner.assetProcessingPlanner });
+      const enqueue = vi.spyOn(services.processingJobService, 'enqueue');
+
+      const unsupportedConvert = await request(app)
+        .post('/projects/1/assets/processing/convert/apply')
+        .send({ scope: { type: 'selected', assetIds: [9] }, options: { format: 'webp', quality: 85, originalHandling: 'keep' } })
+        .expect(400);
+
+      expect(unsupportedConvert.body).toEqual({
+        ok: false,
+        error: { code: 'UNSUPPORTED_SOURCE_TYPE', message: 'The source type is not supported by this operation.' },
+      });
+      expect(planConvert).toHaveBeenCalledOnce();
+      expect(enqueue).not.toHaveBeenCalled();
+      expect(services.processingJobService.hasActiveJobs()).toBe(false);
+      expect(services.alreadyCoordinatedProcessingExecutor.convertAssets).not.toHaveBeenCalled();
+      expect(services.alreadyCoordinatedProcessingExecutor.editWorkflowPrompts).not.toHaveBeenCalled();
+      expect(services.alreadyCoordinatedProcessingExecutor.watermarkAssets).not.toHaveBeenCalled();
+      expect(services.alreadyCoordinatedProcessingExecutor.createArchives).not.toHaveBeenCalled();
+    } finally {
+      realPlanner.cleanup();
+    }
+  });
+
+  it('rejects direct blocking and operation-blocker planner output before it enqueues a job', async () => {
+    const { app, services } = createHarness();
+    const enqueue = vi.spyOn(services.processingJobService, 'enqueue');
+
+    services.assetProcessingPlanner.planWorkflowPromptEdit.mockResolvedValueOnce({
+      scope: { type: 'selected', assetIds: [9] },
+      options: { positive: [], negative: [] },
+      items: [{ status: 'blocked', reasonCode: 'NO_WORKFLOW_METADATA', reason: 'No editable workflow metadata was found.' }],
+    });
+    await request(app)
+      .post('/projects/1/assets/processing/workflow-prompt/apply')
+      .send({ scope: { type: 'selected', assetIds: [9] }, options: { positive: [], negative: [] } })
+      .expect(400);
+
+    services.assetProcessingPlanner.planWatermark.mockResolvedValueOnce({
+      scope: { type: 'selected', assetIds: [9] },
+      options: { mode: 'patreon', outputFormat: 'png', deleteSource: false, watermarkId: 10 },
+      items: [{ status: 'conflict', reasonCode: 'DESTINATION_EXISTS', reason: 'The output destination already exists.' }],
+    });
+    await request(app)
+      .post('/projects/1/assets/processing/watermark/apply')
+      .send({ scope: { type: 'selected', assetIds: [9] }, options: { mode: 'patreon', outputFormat: 'png', deleteSource: false, watermarkId: 10 } })
+      .expect(400);
+
+    services.assetProcessingPlanner.planArchives.mockResolvedValueOnce({
+      scope: { type: 'selected', assetIds: [9] },
+      options: { makeArchives: true },
+      items: [],
+      archives: [{ status: 'ready' }],
+      operationBlockers: [{ code: 'ARCHIVE_DESTINATION_CONFLICT', reason: 'The archive destination already exists.' }],
+    });
+    await request(app)
+      .post('/projects/1/assets/processing/archive/apply')
+      .send({ scope: { type: 'selected', assetIds: [9] }, options: { makeArchives: true } })
+      .expect(409);
+
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(services.assetProcessingService.convertAssets).not.toHaveBeenCalled();
+    expect(services.assetProcessingService.editWorkflowPrompts).not.toHaveBeenCalled();
+    expect(services.assetProcessingService.watermarkAssets).not.toHaveBeenCalled();
+    expect(services.assetProcessingService.createArchives).not.toHaveBeenCalled();
+  });
+
+  it('rejects non-ready watermark archive output before enqueueing while allowing valid and absent archive output', async () => {
+    const { app, services } = createHarness();
+    const enqueue = vi.spyOn(services.processingJobService, 'enqueue');
+    const watermarkOptions = { mode: 'patreon', outputFormat: 'png', deleteSource: false, watermarkId: 10, makeArchives: true };
+
+    services.assetProcessingPlanner.planWatermark.mockResolvedValueOnce({
+      scope: { type: 'selected', assetIds: [9] },
+      options: watermarkOptions,
+      assetIds: [9],
+      items: [],
+      archives: [{ status: 'conflict', reasonCode: 'ARCHIVE_DESTINATION_CONFLICT', reason: 'The archive destination already exists.' }],
+    });
+    const conflict = await request(app)
+      .post('/projects/1/assets/processing/watermark/apply')
+      .send({ scope: { type: 'selected', assetIds: [9] }, options: watermarkOptions })
+      .expect(409);
+    expect(conflict.body).toEqual({
+      ok: false,
+      error: { code: 'ARCHIVE_DESTINATION_CONFLICT', message: 'The archive destination already exists.' },
+    });
+
+    services.assetProcessingPlanner.planWatermark.mockResolvedValueOnce({
+      scope: { type: 'selected', assetIds: [9] },
+      options: watermarkOptions,
+      assetIds: [9],
+      items: [],
+      archives: [],
+    });
+    const noArchiveOutput = await request(app)
+      .post('/projects/1/assets/processing/watermark/apply')
+      .send({ scope: { type: 'selected', assetIds: [9] }, options: watermarkOptions })
+      .expect(400);
+    expect(noArchiveOutput.body).toEqual({
+      ok: false,
+      error: {
+        code: 'NO_ARCHIVE_OUTPUT',
+        message: 'The processing plan does not contain an archive to create.',
+      },
+    });
+
+    expect(enqueue).not.toHaveBeenCalled();
+
+    services.assetProcessingPlanner.planWatermark.mockResolvedValueOnce({
+      scope: { type: 'selected', assetIds: [9] },
+      options: watermarkOptions,
+      assetIds: [9],
+      items: [],
+      archives: [{ status: 'ready' }],
+    });
+    const validArchive = await request(app)
+      .post('/projects/1/assets/processing/watermark/apply')
+      .send({ scope: { type: 'selected', assetIds: [9] }, options: watermarkOptions })
+      .expect(202);
+
+    const noArchiveOptions = { mode: 'patreon', outputFormat: 'png', deleteSource: false, watermarkId: 10 };
+    services.assetProcessingPlanner.planWatermark.mockResolvedValueOnce({
+      scope: { type: 'selected', assetIds: [9] },
+      options: noArchiveOptions,
+      assetIds: [9],
+      items: [],
+      archives: [],
+    });
+    const noArchive = await request(app)
+      .post('/projects/1/assets/processing/watermark/apply')
+      .send({ scope: { type: 'selected', assetIds: [9] }, options: noArchiveOptions })
+      .expect(202);
+    await settle();
+
+    expect(enqueue).toHaveBeenCalledTimes(2);
+    expect(services.processingJobService.getJob(validArchive.body.jobId)).toMatchObject({ state: 'succeeded' });
+    expect(services.processingJobService.getJob(noArchive.body.jobId)).toMatchObject({ state: 'succeeded' });
+  });
+
+  it('gives empty Watermark plans asset-selection precedence over archive output validation', async () => {
+    const { app, services } = createHarness();
+    const enqueue = vi.spyOn(services.processingJobService, 'enqueue');
+    const watermarkOptions = { mode: 'patreon', outputFormat: 'png', deleteSource: false, watermarkId: 10 };
+    const emptyWatermarkCases = [
+      watermarkOptions,
+      { ...watermarkOptions, makeArchives: true },
+      { ...watermarkOptions, makeCbz: true },
+    ];
+
+    for (const options of emptyWatermarkCases) {
+      services.assetProcessingPlanner.planWatermark.mockResolvedValueOnce({
+        scope: { type: 'project' },
+        options,
+        assetIds: [],
+        items: [],
+        archives: [],
+      });
+      const response = await request(app)
+        .post('/projects/1/assets/processing/watermark/apply')
+        .send({ scope: { type: 'project' }, options })
+        .expect(400);
+      expect(response.body).toEqual({
+        ok: false,
+        error: { code: 'NO_ASSETS_SELECTED', message: 'No assets selected.' },
+      });
+    }
+
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(services.alreadyCoordinatedProcessingExecutor.watermarkAssets).not.toHaveBeenCalled();
+
+    services.assetProcessingPlanner.planArchives.mockResolvedValueOnce({
+      scope: { type: 'project' },
+      options: { makeArchives: true },
+      assetIds: [],
+      items: [],
+      archives: [],
+    });
+    const standaloneArchive = await request(app)
+      .post('/projects/1/assets/processing/archive/apply')
+      .send({ scope: { type: 'project' }, options: { makeArchives: true } })
+      .expect(400);
+
+    expect(standaloneArchive.body).toEqual({
+      ok: false,
+      error: {
+        code: 'NO_ARCHIVE_OUTPUT',
+        message: 'The processing plan does not contain an archive to create.',
+      },
+    });
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(services.alreadyCoordinatedProcessingExecutor.createArchives).not.toHaveBeenCalled();
+  });
+
+  it('accepts informational planner items that do not block Apply', async () => {
+    const { app, services } = createHarness();
+    services.assetProcessingPlanner.planConvert.mockResolvedValueOnce({
+      scope: { type: 'selected', assetIds: [9] },
+      options: { format: 'webp', quality: 85, originalHandling: 'keep' },
+      assetIds: [9],
+      items: [{ status: 'skipped', operationEligibility: 'generated-output', reasonCode: 'INSIDE_OUTPUT_DIRECTORY' }],
+    });
+
+    const submitted = await request(app)
+      .post('/projects/1/assets/processing/convert/apply')
+      .send({ scope: { type: 'selected', assetIds: [9] }, options: { format: 'webp', quality: 85, originalHandling: 'keep' } })
+      .expect(202);
+    await settle();
+
+    expect(services.processingJobService.getJob(submitted.body.jobId)).toMatchObject({ state: 'succeeded' });
+    expect(services.assetProcessingService.convertAssets).toHaveBeenCalledOnce();
+  });
+
+  it('enqueues the planner-normalized Apply options and executes them successfully', async () => {
+    const { app, services } = createHarness();
+    services.assetProcessingPlanner.planConvert.mockResolvedValueOnce({
+      scope: { type: 'selected', assetIds: [9] },
+      options: { format: 'webp', quality: 85, originalHandling: 'keep' },
+      assetIds: [9],
+      items: [],
+    });
+
+    const submitted = await request(app)
+      .post('/projects/1/assets/processing/convert/apply')
+      .send({ scope: { type: 'selected', assetIds: [9] }, options: { format: 'webp', quality: '85', originalHandling: 'keep' } })
+      .expect(202);
+    await settle();
+
+    expect(services.alreadyCoordinatedProcessingExecutor.convertAssets).toHaveBeenCalledWith(
+      1,
+      [9],
+      { format: 'webp', quality: 85, originalHandling: 'keep' },
+      expect.any(Function),
+    );
+    expect(services.processingJobService.getJob(submitted.body.jobId)).toMatchObject({ state: 'succeeded' });
+  });
+
+  it('executes exactly the planner-resolved IDs without re-resolving a dynamic scope', async () => {
+    const { app, services } = createHarness();
+    let currentAssetIds = [1];
+    services.assetProcessingScopeService.resolveAssetProcessingScope.mockImplementation((projectId, scope) => ({
+      projectId,
+      scope,
+      assetIds: currentAssetIds,
+    }));
+    services.assetProcessingPlanner.planConvert.mockImplementation(async (projectId, scope, options) => {
+      const resolved = services.assetProcessingScopeService.resolveAssetProcessingScope(projectId, scope);
+      currentAssetIds = [1, 2];
+      return { scope, options, assetIds: resolved.assetIds, items: [] };
+    });
+
+    const submitted = await request(app)
+      .post('/projects/1/assets/processing/convert/apply')
+      .send({ scope: { type: 'project' }, options: { format: 'webp', quality: 85, originalHandling: 'keep' } })
+      .expect(202);
+    await settle();
+
+    expect(services.assetProcessingScopeService.resolveAssetProcessingScope).toHaveBeenCalledTimes(1);
+    expect(services.assetProcessingScopeService.resolveAssetProcessingScope).toHaveBeenCalledWith(
+      1,
+      { type: 'directory', relativePath: '', recursive: true },
+    );
+    expect(services.alreadyCoordinatedProcessingExecutor.convertAssets).toHaveBeenCalledWith(
+      1,
+      [1],
+      { format: 'webp', quality: 85, originalHandling: 'keep' },
+      expect.any(Function),
+    );
+    expect(services.alreadyCoordinatedProcessingExecutor.convertAssets).not.toHaveBeenCalledWith(
+      1,
+      [1, 2],
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(services.processingJobService.getJob(submitted.body.jobId)).toMatchObject({ state: 'succeeded' });
+  });
+
+  it.each([
+    ['convert project scope', 'convert', 'planConvert', { type: 'project' }, { format: 'webp', quality: 85, originalHandling: 'keep' }],
+    ['convert directory scope', 'convert', 'planConvert', { type: 'directory', relativePath: 'Final', recursive: true }, { format: 'webp', quality: 85, originalHandling: 'keep' }],
+    ['watermark scope', 'watermark', 'planWatermark', { type: 'project' }, { mode: 'patreon', outputFormat: 'png', deleteSource: false, watermarkId: 10 }],
+    ['workflow-prompt scope', 'workflow-prompt', 'planWorkflowPromptEdit', { type: 'project' }, { positive: [], negative: [] }],
+  ])('rejects an empty concrete plan for %s before job allocation', async (_label, operation, plannerMethod, scope, options) => {
+    const { app, services } = createHarness();
+    const enqueue = vi.spyOn(services.processingJobService, 'enqueue');
+    services.assetProcessingPlanner[plannerMethod].mockResolvedValueOnce({
+      scope,
+      options,
+      assetIds: [],
+      items: [],
+    });
+
+    const response = await request(app)
+      .post(`/projects/1/assets/processing/${operation}/apply`)
+      .send({ scope, options })
+      .expect(400);
+
+    expect(response.body).toEqual({
+      ok: false,
+      error: { code: 'NO_ASSETS_SELECTED', message: 'No assets selected.' },
+    });
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(services.alreadyCoordinatedProcessingExecutor.convertAssets).not.toHaveBeenCalled();
+    expect(services.alreadyCoordinatedProcessingExecutor.watermarkAssets).not.toHaveBeenCalled();
+    expect(services.alreadyCoordinatedProcessingExecutor.editWorkflowPrompts).not.toHaveBeenCalled();
+  });
+
+  it('reports failed jobs with only the stable B2 error', async () => {
+    const { app, services } = createHarness();
+    services.assetProcessingService.convertAssets.mockImplementation(async (_projectId, _assetIds, _options, updateProgress) => {
+      updateProgress({ completed: 1, total: 2 });
+      throw new Error('C:/secret/staging');
+    });
+    const submitted = await request(app)
+      .post('/projects/1/assets/processing/convert/apply')
+      .send({ scope: { type: 'project' }, options: { format: 'webp', quality: 85, originalHandling: 'keep' } })
+      .expect(202);
+
+    await settle();
+    const status = await request(app).get(`/processing/jobs/${submitted.body.jobId}`).expect(200);
+    expect(status.body).toEqual({
+      ok: true,
+      job: {
+        id: submitted.body.jobId,
+        state: 'failed',
+        progress: { completed: 1, total: 2 },
+        result: null,
+        error: { code: 'PROCESSING_FAILED', message: 'Processing failed.' },
+      },
+    });
+  });
+
+  it('returns the existing not-found response for an evicted job after normal completion polling', async () => {
+    const callbacks = [];
+    const processingJobService = createProcessingJobService({
+      projectOperationCoordinator: {
+        runAsync: (_projectId, callback) => {
+          callbacks.push(callback);
+          return Promise.resolve();
+        },
+      },
+      terminalJobTtlMs: 100,
+      maxTerminalJobs: 1,
+    });
+    const { app } = createHarness({ processingJobService });
+
+    const firstJobId = processingJobService.enqueue({ projectId: 1, execute: () => ({ changedCount: 1 }) });
+    await callbacks.shift()();
+    await request(app).get(`/processing/jobs/${firstJobId}`).expect(200);
+
+    processingJobService.enqueue({ projectId: 1, execute: () => ({ changedCount: 1 }) });
+    await callbacks.shift()();
+
+    const response = await request(app).get(`/processing/jobs/${firstJobId}`).expect(404);
+    expect(response.body).toEqual({
+      ok: false,
+      error: { code: 'PROCESSING_JOB_NOT_FOUND', message: 'Processing job not found.' },
+    });
+  });
+  it('reserves a deferred Apply submission during planning and releases an invalid plan without enqueueing', async () => {
+    const { app, services } = createHarness();
+    const enqueue = vi.spyOn(services.processingJobService, 'enqueue');
+    let beginPlanning;
+    let releasePlanning;
+    const planningStarted = new Promise((resolve) => { beginPlanning = resolve; });
+    const deferredPlan = new Promise((resolve) => { releasePlanning = resolve; });
+    services.assetProcessingPlanner.planConvert.mockImplementationOnce(() => {
+      beginPlanning();
+      return deferredPlan;
+    });
+
+    const submitted = request(app)
+      .post('/projects/1/assets/processing/convert/apply')
+      .send({ scope: { type: 'selected', assetIds: [9] }, options: { format: 'webp', quality: 85, originalHandling: 'keep' } });
+
+    const responsePromise = submitted.then((response) => response);
+
+    await planningStarted;
+    expect(services.processingJobService.hasActiveJobs()).toBe(true);
+
+    releasePlanning({
+      scope: { type: 'selected', assetIds: [9] },
+      options: { format: 'webp', quality: 85, originalHandling: 'keep' },
+      assetIds: [],
+      items: [],
+    });
+
+    const response = await responsePromise;
+    expect(response.body).toEqual({
+      ok: false,
+      error: { code: 'NO_ASSETS_SELECTED', message: 'No assets selected.' },
+    });
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(services.processingJobService.hasActiveJobs()).toBe(false);
+    services.assetProcessingPlanner.planConvert.mockRejectedValueOnce(
+      new AssetProcessingError('Planner failed.', { code: 'PLANNER_FAILED' }),
+    );
+    const plannerFailure = await request(app)
+      .post('/projects/1/assets/processing/convert/apply')
+      .send({ scope: { type: 'selected', assetIds: [9] }, options: { format: 'webp', quality: 85, originalHandling: 'keep' } });
+
+    expect(plannerFailure.status).toBeGreaterThanOrEqual(400);
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(services.processingJobService.hasActiveJobs()).toBe(false);
   });
 });

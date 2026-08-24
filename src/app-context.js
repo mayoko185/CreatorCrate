@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import { createApp } from './app.js';
 import { closeDatabase } from './db.js';
 import { createProjectOperationCoordinator } from './services/project-operation-coordinator.js';
+import { createProcessingJobService } from './services/processing-job-service.js';
 
 /**
  * Phase 11.2 live-restore fix — the mutable application context that owns
@@ -65,6 +66,15 @@ export function createApplicationContext(
   // with an independent one — exactly like onDatabaseReplaced/
   // onAuthConfigReplaced below.
   const projectOperationCoordinator = createProjectOperationCoordinator();
+  // Processing jobs outlive a single app build: database and auth-context
+  // reconstruction must keep routing to this same lifecycle service.
+  const processingJobService = createProcessingJobService({ projectOperationCoordinator });
+
+  function assertNoActiveProcessingJobs() {
+    if (processingJobService.hasActiveJobs()) {
+      throw new Error('Cannot replace the application context while processing jobs are active.');
+    }
+  }
 
   function buildApp(db, opts) {
     return appFactory(
@@ -73,6 +83,8 @@ export function createApplicationContext(
         ...opts,
         autoRenameSigningKey,
         projectOperationCoordinator,
+        processingJobService,
+        assertNoActiveProcessingJobs,
         onDatabaseReplaced: replaceDatabase,
         onAuthConfigReplaced: replaceAuthConfig,
       }
@@ -97,6 +109,7 @@ export function createApplicationContext(
   function replaceDatabase(newDb) {
     let newApp;
     try {
+      assertNoActiveProcessingJobs();
       newApp = buildApp(newDb, activeAppOpts);
     } catch (err) {
       try { closeDatabase(newDb); } catch { /* best-effort */ }
@@ -116,6 +129,7 @@ export function createApplicationContext(
    * whatever managed-state files it had already written.
    */
   function replaceAuthConfig(newAuthConfig) {
+    assertNoActiveProcessingJobs();
     const candidateOpts = { ...activeAppOpts, authConfig: newAuthConfig };
     const newApp = buildApp(current.db, candidateOpts);
     activeAppOpts = candidateOpts;
@@ -128,6 +142,9 @@ export function createApplicationContext(
     },
     get app() {
       return current.app;
+    },
+    get processingJobService() {
+      return processingJobService;
     },
     replaceDatabase,
     replaceAuthConfig,

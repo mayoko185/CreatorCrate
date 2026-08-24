@@ -93,6 +93,33 @@ function isPresent(asset) {
   return asset?.is_present === 1 || asset?.is_present === true;
 }
 
+function createProgressReporter(total, onProgress) {
+  if (!Number.isSafeInteger(total) || total < 0) {
+    throw new TypeError('Processing progress total must be a non-negative integer.');
+  }
+  if (onProgress !== undefined && typeof onProgress !== 'function') {
+    throw new TypeError('Processing progress reporter must be a function.');
+  }
+
+  let completed = 0;
+  const report = () => onProgress?.({ completed, total });
+  report();
+  return {
+    advance() {
+      if (completed < total) {
+        completed += 1;
+        report();
+      }
+    },
+    finish() {
+      if (completed !== total) {
+        completed = total;
+        report();
+      }
+    },
+  };
+}
+
 export function isSupportedConversionSource(extension) {
   return SOURCE_IMAGE_EXTENSIONS.has(extension);
 }
@@ -264,6 +291,7 @@ export function createAssetProcessingService({
   watermarkService,
   scaleMapService,
   watermarkScaleMap = WATERMARK_WINDOW_SCALE_MAP,
+  alreadyCoordinatedCapability,
 } = {}) {
   if (!projectRepository || typeof projectRepository.findById !== 'function') {
     throw new Error('createAssetProcessingService requires a projectRepository dependency.');
@@ -294,6 +322,35 @@ export function createAssetProcessingService({
   }
   if (watermarkRoot !== undefined && typeof watermarkRoot !== 'string') {
     throw new Error('createAssetProcessingService watermarkRoot must be a trusted directory path.');
+  }
+
+  function assertAlreadyCoordinatedCapability(capability) {
+    if (capability === undefined
+      || alreadyCoordinatedCapability === undefined
+      || capability !== alreadyCoordinatedCapability) {
+      throw new AssetProcessingError(
+        'Already-coordinated processing requires the background execution capability.',
+        { code: 'INVALID_PROCESSING_COORDINATION_CAPABILITY' },
+      );
+    }
+  }
+
+  function createAlreadyCoordinatedExecutor(capability) {
+    assertAlreadyCoordinatedCapability(capability);
+    return Object.freeze({
+      convertAssets: (projectId, assetIds, rawOptions, onProgress) => convertAssets(
+        projectId, assetIds, rawOptions, onProgress, capability,
+      ),
+      watermarkAssets: (projectId, assetIds, rawOptions, onProgress) => watermarkAssets(
+        projectId, assetIds, rawOptions, onProgress, capability,
+      ),
+      createArchives: (projectId, assetIds, rawOptions, onProgress) => createArchives(
+        projectId, assetIds, rawOptions, onProgress, capability,
+      ),
+      editWorkflowPrompts: (projectId, assetIds, rawOptions, onProgress) => editWorkflowPrompts(
+        projectId, assetIds, rawOptions, onProgress, capability,
+      ),
+    });
   }
 
   function requireMutableProject(projectId) {
@@ -1850,7 +1907,7 @@ export function createAssetProcessingService({
     return { moves, deletes, outputs, reencodes };
   }
 
-  async function convertAssetsLocked(projectId, assetIds, options) {
+  async function convertAssetsLocked(projectId, assetIds, options, progress) {
     const project = requireMutableProject(projectId);
     const projectDir = resolveProjectAbsPath(project);
     const categories = assetCategoryService.listProjectCategories(projectId);
@@ -1997,6 +2054,7 @@ export function createAssetProcessingService({
     try {
       for (let index = 0; index < items.length; index++) {
         await stageOutput(items[index], staging, options, index);
+        progress.advance();
       }
 
       if (options.originalHandling === 'move') {
@@ -2104,7 +2162,7 @@ export function createAssetProcessingService({
     };
   }
 
-  async function convertAssets(projectId, assetIds, rawOptions) {
+  async function convertAssets(projectId, assetIds, rawOptions, onProgress, coordinationToken) {
     if (!isPositiveSafeInteger(projectId)) {
       throw new AssetProcessingError('projectId must be a positive integer.', { code: 'INVALID_PROJECT_ID' });
     }
@@ -2131,11 +2189,19 @@ export function createAssetProcessingService({
     }
 
     const options = normalizeConversionOptions(rawOptions);
+    const execute = async () => {
+      const progress = createProgressReporter(assetIds.length, onProgress);
+      const result = await convertAssetsLocked(projectId, assetIds, options, progress);
+      progress.finish();
+      return result;
+    };
+    if (coordinationToken !== undefined) {
+      assertAlreadyCoordinatedCapability(coordinationToken);
+      return execute();
+    }
+
     try {
-      return await projectOperationCoordinator.runAsync(
-        projectId,
-        () => convertAssetsLocked(projectId, assetIds, options),
-      );
+      return await projectOperationCoordinator.runAsync(projectId, execute);
     } catch (err) {
       if (err instanceof ProjectOperationError
         && err.code === 'PROJECT_OPERATION_IN_PROGRESS') {
@@ -2147,6 +2213,7 @@ export function createAssetProcessingService({
       throw err;
     }
   }
+
 
   function isOwnedWatermarkDestination({
     watermarkId,
@@ -2303,7 +2370,7 @@ export function createAssetProcessingService({
     };
   }
 
-  async function watermarkAssetsLocked(projectId, assetIds, options, watermarkIdentity = {}) {
+  async function watermarkAssetsLocked(projectId, assetIds, options, watermarkIdentity = {}, progress) {
     const { watermarkId } = watermarkIdentity;
     const project = requireMutableProject(projectId);
     const projectDir = resolveProjectAbsPath(project);
@@ -2444,8 +2511,18 @@ export function createAssetProcessingService({
     staging.artifacts = archivePlans;
     try {
       ensureWatermarkOutputDirectories([...items, ...archivePlans], staging);
+      const stagedOutputCounts = new Map(sources.map((source) => [
+        source.asset.id,
+        source.outputs.filter((output) => output.item).length,
+      ]));
+      for (const remaining of stagedOutputCounts.values()) {
+        if (remaining === 0) progress.advance();
+      }
       for (let index = 0; index < items.length; index++) {
         await stageWatermarkOutput(items[index], staging, index, watermarkInput, options, projectDir);
+        const remaining = stagedOutputCounts.get(items[index].asset.id) - 1;
+        stagedOutputCounts.set(items[index].asset.id, remaining);
+        if (remaining === 0) progress.advance();
       }
       for (let index = 0; index < archivePlans.length; index++) {
         await stageArchiveArtifact(archivePlans[index], staging, index, watermarkInput, options, projectDir);
@@ -2581,7 +2658,7 @@ export function createAssetProcessingService({
     };
   }
 
-  async function watermarkAssets(projectId, assetIds, rawOptions) {
+  async function watermarkAssets(projectId, assetIds, rawOptions, onProgress, coordinationToken) {
     if (!isPositiveSafeInteger(projectId)) {
       throw new AssetProcessingError('projectId must be a positive integer.', { code: 'INVALID_PROJECT_ID' });
     }
@@ -2610,11 +2687,19 @@ export function createAssetProcessingService({
     const resolvedScaleMap = resolveManagedScaleMap();
     const options = normalizeWatermarkServiceOptions(rawOptions, resolvedScaleMap.definition);
     const watermarkId = rawOptions?.watermarkId;
+    const execute = async () => {
+      const progress = createProgressReporter(assetIds.length, onProgress);
+      const result = await watermarkAssetsLocked(projectId, assetIds, options, { watermarkId }, progress);
+      progress.finish();
+      return result;
+    };
+    if (coordinationToken !== undefined) {
+      assertAlreadyCoordinatedCapability(coordinationToken);
+      return execute();
+    }
+
     try {
-      return await projectOperationCoordinator.runAsync(
-        projectId,
-        () => watermarkAssetsLocked(projectId, assetIds, options, { watermarkId }),
-      );
+      return await projectOperationCoordinator.runAsync(projectId, execute);
     } catch (err) {
       if (err instanceof ProjectOperationError
         && err.code === 'PROJECT_OPERATION_IN_PROGRESS') {
@@ -2627,7 +2712,8 @@ export function createAssetProcessingService({
     }
   }
 
-  async function createArchivesLocked(projectId, assetIds, options) {
+
+  async function createArchivesLocked(projectId, assetIds, options, onProgress) {
     const project = requireMutableProject(projectId);
     const projectDir = resolveProjectAbsPath(project);
     const sources = [];
@@ -2686,6 +2772,7 @@ export function createAssetProcessingService({
     const staging = createWatermarkStaging(projectDir);
     staging.items = [];
     staging.artifacts = archivePlans;
+    const progress = createProgressReporter(archivePlans.length, onProgress);
 
     try {
       ensureWatermarkOutputDirectories(archivePlans, staging);
@@ -2705,6 +2792,7 @@ export function createAssetProcessingService({
           },
           'CreatorCrate could not build a standalone archive.',
         );
+        progress.advance();
       }
       for (const archivePlan of archivePlans) {
         publishArchiveArtifact(archivePlan, projectDir);
@@ -2766,6 +2854,7 @@ export function createAssetProcessingService({
         { code: 'RECOVERY_REQUIRED' },
       );
     }
+    progress.finish();
 
     let artifactReplacedIndex = 0;
     let artifactOutputIndex = 0;
@@ -2806,7 +2895,7 @@ export function createAssetProcessingService({
     };
   }
 
-  async function createArchives(projectId, assetIds, rawOptions) {
+  async function createArchives(projectId, assetIds, rawOptions, onProgress, coordinationToken) {
     if (!isPositiveSafeInteger(projectId)) {
       throw new AssetProcessingError('projectId must be a positive integer.', { code: 'INVALID_PROJECT_ID' });
     }
@@ -2842,11 +2931,14 @@ export function createAssetProcessingService({
       });
     }
 
+    const execute = async () => createArchivesLocked(projectId, assetIds, options, onProgress);
+    if (coordinationToken !== undefined) {
+      assertAlreadyCoordinatedCapability(coordinationToken);
+      return execute();
+    }
+
     try {
-      return await projectOperationCoordinator.runAsync(
-        projectId,
-        () => createArchivesLocked(projectId, assetIds, options),
-      );
+      return await projectOperationCoordinator.runAsync(projectId, execute);
     } catch (err) {
       if (err instanceof ProjectOperationError
         && err.code === 'PROJECT_OPERATION_IN_PROGRESS') {
@@ -2858,6 +2950,7 @@ export function createAssetProcessingService({
       throw err;
     }
   }
+
 
   function createPromptStaging(projectDir) {
     let directory;
@@ -3106,7 +3199,7 @@ export function createAssetProcessingService({
     });
   }
 
-  async function editWorkflowPromptsLocked(projectId, assetIds, options) {
+  async function editWorkflowPromptsLocked(projectId, assetIds, options, progress) {
     const project = requireMutableProject(projectId);
     const projectDir = resolveProjectAbsPath(project);
     const items = [];
@@ -3176,6 +3269,7 @@ export function createAssetProcessingService({
         unchangedAssetIds.push(assetId);
         if (edited.metadataKey) noChangeAssetIds.push(assetId);
         else noWorkflowAssetIds.push(assetId);
+        progress.advance();
         continue;
       }
 
@@ -3221,6 +3315,7 @@ export function createAssetProcessingService({
     try {
       for (let index = 0; index < items.length; index++) {
         stagePromptOutput(items[index], staging, index);
+        progress.advance();
       }
       for (let index = 0; index < items.length; index++) {
         stagePromptBackup(items[index], staging, index);
@@ -3290,7 +3385,7 @@ export function createAssetProcessingService({
     };
   }
 
-  async function editWorkflowPrompts(projectId, assetIds, rawOptions) {
+  async function editWorkflowPrompts(projectId, assetIds, rawOptions, onProgress, coordinationToken) {
     if (!isPositiveSafeInteger(projectId)) {
       throw new AssetProcessingError('projectId must be a positive integer.', { code: 'INVALID_PROJECT_ID' });
     }
@@ -3321,11 +3416,19 @@ export function createAssetProcessingService({
       throw wrapPromptMetadataError(err);
     }
 
+    const execute = async () => {
+      const progress = createProgressReporter(assetIds.length, onProgress);
+      const result = await editWorkflowPromptsLocked(projectId, assetIds, options, progress);
+      progress.finish();
+      return result;
+    };
+    if (coordinationToken !== undefined) {
+      assertAlreadyCoordinatedCapability(coordinationToken);
+      return execute();
+    }
+
     try {
-      return await projectOperationCoordinator.runAsync(
-        projectId,
-        () => editWorkflowPromptsLocked(projectId, assetIds, options),
-      );
+      return await projectOperationCoordinator.runAsync(projectId, execute);
     } catch (err) {
       if (err instanceof ProjectOperationError
         && err.code === 'PROJECT_OPERATION_IN_PROGRESS') {
@@ -3338,6 +3441,7 @@ export function createAssetProcessingService({
     }
   }
 
+
   return {
     convertAssets,
     convertSelectedAssets: convertAssets,
@@ -3347,5 +3451,6 @@ export function createAssetProcessingService({
     createArchiveAssets: createArchives,
     editWorkflowPrompts,
     editSelectedWorkflowPrompts: editWorkflowPrompts,
+    createAlreadyCoordinatedExecutor,
   };
 }

@@ -6,7 +6,7 @@
  * minimal DOM shim: default-scope precedence, manual-scope stability,
  * request serialization, and preview invalidation.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { enhanceDropdowns } from '../src/static/creatorcrate.js';
 import { enhanceProcessingDialogs } from '../src/static/processing.js';
 
@@ -358,7 +358,7 @@ function buildDialogRoot(doc, { operation = 'convert', categories = [], projectI
   doc.appendChild(dialog);
   doc.appendChild(trigger);
 
-  return { dialog, root, trigger, scope, previewBtn, applyBtn, status, errorText, resultBody };
+  return { dialog, root, trigger, scope, previewBtn, applyBtn, status, errorText, result, resultBody };
 }
 
 async function flush() {
@@ -484,6 +484,596 @@ describe('Processing dialog scope defaults', () => {
     await flush();
     expect(scope.categoryRadio.checked).toBe(true);
     expect(scope.categorySelect.value).toBe('8');
+  });
+});
+
+describe('Processing background-job polling', () => {
+  let doc;
+  let fetchMock;
+
+  const ok = (body, status = 200) => ({ ok: true, status, json: async () => body });
+  const failed = (status, message, code = 'PROCESSING_JOB_STATE') => ({
+    ok: false,
+    status,
+    json: async () => ({ ok: false, error: { code, message } }),
+  });
+  const job = (id, state, { progress = null, result = null, error = null } = {}) => ({
+    ok: true,
+    job: { id, state, progress, result, error },
+  });
+  const deferred = () => {
+    let resolve;
+    const promise = new Promise((resolvePromise) => { resolve = resolvePromise; });
+    return { promise, resolve };
+  };
+
+  beforeEach(() => {
+    doc = makeDocument();
+    vi.stubGlobal('document', doc);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  async function previewAndApply(fixture) {
+    fixture.scope.projectRadio.checked = true;
+    enhanceProcessingDialogs(doc);
+    fixture.trigger.dispatch('click', { target: fixture.trigger });
+    await flush();
+    fixture.previewBtn.dispatch('click', { target: fixture.previewBtn });
+    await flush();
+    fixture.applyBtn.dispatch('click', { target: fixture.applyBtn });
+    await flush();
+  }
+
+  it('accepts 202 work, polls queued/running progress, blocks duplicate Apply, and keeps one poll loop', async () => {
+    vi.useFakeTimers();
+    const calls = [];
+    let polls = 0;
+    fetchMock = vi.fn(async (url, init = {}) => {
+      calls.push({ url, method: init.method || 'POST' });
+      if (url.endsWith('/plan')) return ok({ ok: true, plan: { counts: { total: 1, eligible: 1 }, items: [] } });
+      if (url.endsWith('/apply')) return ok({ ok: true, operation: 'convert', jobId: 'job-1' }, 202);
+      if (url === '/processing/jobs/job-1') {
+        polls += 1;
+        if (polls === 1) return ok(job('job-1', 'queued'));
+        if (polls === 2) return ok(job('job-1', 'running', { progress: { completed: 1, total: 3 } }));
+        return ok(job('job-1', 'running', { progress: { completed: 2, total: 3 } }));
+      }
+      if (url === '/projects/1/scan') return ok({ ok: true });
+      throw new Error(`Unhandled fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const fixture = buildDialogRoot(doc, { operation: 'convert' });
+
+    await previewAndApply(fixture);
+    fixture.applyBtn.dispatch('click', { target: fixture.applyBtn });
+    await flush();
+    expect(calls.filter((call) => call.url.endsWith('/apply'))).toHaveLength(1);
+    expect(fixture.status.textContent).toBe('Processing queued.');
+    expect(fixture.result.hidden).toBe(true);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flush();
+    expect(fixture.status.textContent).toBe('Processing… 1 of 3.');
+
+    expect(polls).toBe(2);
+    expect(fixture.result.hidden).toBe(true);
+    expect(vi.getTimerCount()).toBe(1);
+
+    fixture.dialog.dispatch('close', { target: fixture.dialog });
+    await flush();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('completes succeeded jobs from job.result.result and uses job.result.refreshUrl for the normal refresh flow', async () => {
+    const calls = [];
+    fetchMock = vi.fn(async (url) => {
+      calls.push(url);
+      if (url.endsWith('/plan')) return ok({ ok: true, plan: { counts: { total: 1, eligible: 1 }, items: [] } });
+      if (url.endsWith('/apply')) return ok({ ok: true, operation: 'convert', jobId: 'job-succeeded' }, 202);
+      if (url === '/processing/jobs/job-succeeded') {
+        return ok(job('job-succeeded', 'succeeded', {
+          result: { result: { convertedCount: 1, requestedCount: 1, format: 'webp' }, refreshUrl: '/projects/1/assets' },
+        }));
+      }
+      if (url === '/projects/1/scan') return ok({ ok: true });
+      throw new Error(`Unhandled fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const fixture = buildDialogRoot(doc, { operation: 'convert' });
+
+    await previewAndApply(fixture);
+    await flush();
+
+    expect(fixture.result.hidden).toBe(false);
+    expect(fixture.resultBody.children[0].textContent).toContain('Converted 1 of 1 asset');
+    expect(calls).toContain('/projects/1/scan');
+  });
+
+  it('lets only the first succeeded poll own completion while its rescan is pending across reopen', async () => {
+    vi.useFakeTimers();
+    const firstStatus = deferred();
+    const rescan = deferred();
+    let polls = 0;
+    let rescans = 0;
+    fetchMock = vi.fn(async (url) => {
+      if (url.endsWith('/plan')) return ok({ ok: true, plan: { counts: { total: 1, eligible: 1 }, items: [] } });
+      if (url.endsWith('/apply')) return ok({ ok: true, operation: 'convert', jobId: 'job-terminal-owner' }, 202);
+      if (url === '/processing/jobs/job-terminal-owner') {
+        polls += 1;
+        if (polls === 1) return firstStatus.promise;
+        return ok(job('job-terminal-owner', 'succeeded', {
+          result: { result: { convertedCount: 1, requestedCount: 1, format: 'webp' }, refreshUrl: '/projects/1/assets' },
+        }));
+      }
+      if (url === '/projects/1/scan') {
+        rescans += 1;
+        return rescan.promise;
+      }
+      throw new Error(`Unhandled fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const fixture = buildDialogRoot(doc, { operation: 'convert' });
+    let resultRenders = 0;
+    const appendResult = fixture.resultBody.append.bind(fixture.resultBody);
+    fixture.resultBody.append = (...nodes) => {
+      resultRenders += 1;
+      return appendResult(...nodes);
+    };
+
+    await previewAndApply(fixture);
+    expect(polls).toBe(1);
+
+    firstStatus.resolve(ok(job('job-terminal-owner', 'succeeded', {
+      result: { result: { convertedCount: 1, requestedCount: 1, format: 'webp' }, refreshUrl: '/projects/1/assets' },
+    })));
+    await flush();
+
+    expect(rescans).toBe(1);
+    expect(resultRenders).toBe(1);
+
+    fixture.dialog.dispatch('close', { target: fixture.dialog });
+    fixture.trigger.dispatch('click', { target: fixture.trigger });
+    await flush();
+
+    expect(polls).toBe(2);
+    expect(rescans).toBe(1);
+    expect(resultRenders).toBe(1);
+    expect(vi.getTimerCount()).toBe(0);
+
+    rescan.resolve(ok({ ok: true }));
+    await flush();
+
+    expect(rescans).toBe(1);
+    expect(resultRenders).toBe(1);
+    expect(fixture.root.__ccProcessingJob).toBeNull();
+    expect(fixture.root.__ccProcessingBusy).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('does not let an older succeeded completion clear a newer active job', async () => {
+    vi.useFakeTimers();
+    const rescan = deferred();
+    let newerPolls = 0;
+    fetchMock = vi.fn(async (url) => {
+      if (url.endsWith('/plan')) return ok({ ok: true, plan: { counts: { total: 1, eligible: 1 }, items: [] } });
+      if (url.endsWith('/apply')) return ok({ ok: true, operation: 'convert', jobId: 'job-older' }, 202);
+      if (url === '/processing/jobs/job-older') {
+        return ok(job('job-older', 'succeeded', {
+          result: { result: { convertedCount: 1, requestedCount: 1, format: 'webp' }, refreshUrl: '/projects/1/assets' },
+        }));
+      }
+      if (url === '/processing/jobs/job-newer') {
+        newerPolls += 1;
+        return ok(job('job-newer', 'running', { progress: { completed: 1, total: 2 } }));
+      }
+      if (url === '/projects/1/scan') return rescan.promise;
+      throw new Error(`Unhandled fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const fixture = buildDialogRoot(doc, { operation: 'convert' });
+
+    await previewAndApply(fixture);
+    await flush();
+
+    const newerJob = { id: 'job-newer', state: 'running', progress: null };
+    fixture.root.__ccProcessingJob = newerJob;
+    fixture.root.__ccProcessingBusy = true;
+    rescan.resolve(ok({ ok: true }));
+    await flush();
+
+    expect(fixture.root.__ccProcessingJob).toBe(newerJob);
+    expect(fixture.root.__ccProcessingBusy).toBe(true);
+
+    fixture.dialog.dispatch('close', { target: fixture.dialog });
+    fixture.trigger.dispatch('click', { target: fixture.trigger });
+    await flush();
+
+    expect(newerPolls).toBe(1);
+    expect(fixture.root.__ccProcessingJob).toBe(newerJob);
+    expect(fixture.status.textContent).toBe('Processing… 1 of 2.');
+    expect(vi.getTimerCount()).toBe(1);
+
+    fixture.dialog.dispatch('close', { target: fixture.dialog });
+    await flush();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('surfaces the sanitized failed-job error and stops polling', async () => {
+    vi.useFakeTimers();
+    fetchMock = vi.fn(async (url) => {
+      if (url.endsWith('/plan')) return ok({ ok: true, plan: { counts: { total: 1, eligible: 1 }, items: [] } });
+      if (url.endsWith('/apply')) return ok({ ok: true, operation: 'archive', jobId: 'job-failed' }, 202);
+      if (url === '/processing/jobs/job-failed') {
+        return ok(job('job-failed', 'failed', { error: { code: 'PROCESSING_FAILED', message: 'Processing could not be completed.' } }));
+      }
+      throw new Error(`Unhandled fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const fixture = buildDialogRoot(doc, { operation: 'archive' });
+
+    await previewAndApply(fixture);
+
+    expect(fixture.errorText.textContent).toBe('Processing could not be completed.');
+    expect(fixture.status.textContent).toBe('');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('terminates cancelled jobs without leaving a poll timer', async () => {
+    vi.useFakeTimers();
+    let polls = 0;
+    fetchMock = vi.fn(async (url) => {
+      if (url.endsWith('/plan')) return ok({ ok: true, plan: { counts: { total: 1, eligible: 1 }, items: [] } });
+      if (url.endsWith('/apply')) return ok({ ok: true, operation: 'archive', jobId: 'job-cancelled' }, 202);
+      if (url === '/processing/jobs/job-cancelled') {
+        polls += 1;
+        return ok(job('job-cancelled', 'cancelled'));
+      }
+      throw new Error(`Unhandled fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const fixture = buildDialogRoot(doc, { operation: 'archive' });
+
+    await previewAndApply(fixture);
+
+    expect(fixture.status.textContent).toBe('Processing cancelled.');
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(polls).toBe(1);
+  });
+
+  it('uses the existing dialog close affordance to cancel a queued job', async () => {
+    vi.useFakeTimers();
+    let polls = 0;
+    fetchMock = vi.fn(async (url) => {
+      if (url.endsWith('/plan')) return ok({ ok: true, plan: { counts: { total: 1, eligible: 1 }, items: [] } });
+      if (url.endsWith('/apply')) return ok({ ok: true, operation: 'archive', jobId: 'job-queued' }, 202);
+      if (url === '/processing/jobs/job-queued') {
+        polls += 1;
+        return ok(job('job-queued', 'queued'));
+      }
+      if (url === '/processing/jobs/job-queued/cancel') return ok(job('job-queued', 'cancelled'));
+      throw new Error(`Unhandled fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const fixture = buildDialogRoot(doc, { operation: 'archive' });
+
+    await previewAndApply(fixture);
+    fixture.dialog.dispatch('close', { target: fixture.dialog });
+    await flush();
+
+    expect(fixture.status.textContent).toBe('Processing cancelled.');
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(polls).toBe(1);
+  });
+
+  it('retains a queued job when it becomes running before the close cancellation reaches the server', async () => {
+    vi.useFakeTimers();
+    fetchMock = vi.fn(async (url) => {
+      if (url.endsWith('/plan')) return ok({ ok: true, plan: { counts: { total: 1, eligible: 1 }, items: [] } });
+      if (url.endsWith('/apply')) return ok({ ok: true, operation: 'archive', jobId: 'job-queued-race' }, 202);
+      if (url === '/processing/jobs/job-queued-race') return ok(job('job-queued-race', 'queued'));
+      if (url === '/processing/jobs/job-queued-race/cancel') return failed(409, 'Processing has already started.');
+      throw new Error(`Unhandled fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const fixture = buildDialogRoot(doc, { operation: 'archive' });
+
+    await previewAndApply(fixture);
+    fixture.dialog.dispatch('close', { target: fixture.dialog });
+    await flush();
+
+    expect(fetchMock).toHaveBeenCalledWith('/processing/jobs/job-queued-race/cancel', expect.objectContaining({ method: 'POST' }));
+    expect(fixture.root.__ccProcessingJob?.id).toBe('job-queued-race');
+    expect(fixture.status.textContent).toBe('Processing queued.');
+    expect(fixture.errorText.textContent).toBe('');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('does not request cancellation when closing a job already known to be running', async () => {
+    vi.useFakeTimers();
+    fetchMock = vi.fn(async (url) => {
+      if (url.endsWith('/plan')) return ok({ ok: true, plan: { counts: { total: 1, eligible: 1 }, items: [] } });
+      if (url.endsWith('/apply')) return ok({ ok: true, operation: 'archive', jobId: 'job-running' }, 202);
+      if (url === '/processing/jobs/job-running') return ok(job('job-running', 'running', { progress: { completed: 1, total: 2 } }));
+      throw new Error(`Unhandled fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const fixture = buildDialogRoot(doc, { operation: 'archive' });
+
+    await previewAndApply(fixture);
+    fixture.dialog.dispatch('close', { target: fixture.dialog });
+    await flush();
+
+    expect(fetchMock).not.toHaveBeenCalledWith('/processing/jobs/job-running/cancel', expect.anything());
+    expect(fixture.root.__ccProcessingJob?.state).toBe('running');
+    expect(fixture.status.textContent).toBe('Processing… 1 of 2.');
+    expect(fixture.errorText.textContent).toBe('');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('cancels a queued job returned after close without starting a hidden poll loop', async () => {
+    vi.useFakeTimers();
+    const applyResponse = deferred();
+    fetchMock = vi.fn(async (url) => {
+      if (url.endsWith('/plan')) return ok({ ok: true, plan: { counts: { total: 1, eligible: 1 }, items: [] } });
+      if (url.endsWith('/apply')) return applyResponse.promise;
+      if (url === '/processing/jobs/job-after-close/cancel') return ok(job('job-after-close', 'cancelled'));
+      throw new Error(`Unhandled fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const fixture = buildDialogRoot(doc, { operation: 'archive' });
+
+    await previewAndApply(fixture);
+    fixture.dialog.dispatch('close', { target: fixture.dialog });
+    applyResponse.resolve(ok({ ok: true, operation: 'archive', jobId: 'job-after-close' }, 202));
+    await flush();
+
+    expect(fetchMock).toHaveBeenCalledWith('/processing/jobs/job-after-close/cancel', expect.objectContaining({ method: 'POST' }));
+    expect(fetchMock).not.toHaveBeenCalledWith('/processing/jobs/job-after-close', expect.anything());
+    expect(fixture.root.__ccProcessingJob).toBeNull();
+    expect(fixture.status.textContent).toBe('Processing cancelled.');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('reopens a pending Apply submission before a late 202 and starts polling without cancellation', async () => {
+    vi.useFakeTimers();
+    const applyResponse = deferred();
+    let polls = 0;
+    fetchMock = vi.fn(async (url) => {
+      if (url.endsWith('/plan')) return ok({ ok: true, plan: { counts: { total: 1, eligible: 1 }, items: [] } });
+      if (url.endsWith('/apply')) return applyResponse.promise;
+      if (url === '/processing/jobs/job-reopened') {
+        polls += 1;
+        if (polls === 1) return ok(job('job-reopened', 'running', { progress: { completed: 1, total: 2 } }));
+        return ok(job('job-reopened', 'succeeded'));
+      }
+      throw new Error(`Unhandled fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const fixture = buildDialogRoot(doc, { operation: 'archive' });
+
+    await previewAndApply(fixture);
+    const submission = fixture.root.__ccProcessingSubmission;
+    fixture.dialog.dispatch('close', { target: fixture.dialog });
+    expect(submission.closed).toBe(true);
+
+    fixture.trigger.dispatch('click', { target: fixture.trigger });
+    await flush();
+    expect(fixture.root.__ccProcessingSubmission).toBe(submission);
+    expect(submission.closed).toBe(false);
+
+    applyResponse.resolve(ok({ ok: true, operation: 'archive', jobId: 'job-reopened' }, 202));
+    await flush();
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls.filter(([url]) => url.endsWith('/apply'))).toHaveLength(1);
+    expect(fetchMock).not.toHaveBeenCalledWith('/processing/jobs/job-reopened/cancel', expect.anything());
+    expect(fixture.root.__ccProcessingJob?.id).toBe('job-reopened');
+    expect(fixture.root.__ccProcessingJob?.state).toBe('running');
+    expect(fixture.status.textContent).toBe('Processing… 1 of 2.');
+    expect(vi.getTimerCount()).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flush();
+
+    expect(polls).toBe(2);
+    expect(fixture.root.__ccProcessingJob).toBeNull();
+    expect(fixture.root.__ccProcessingBusy).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('retains a late returned running job after cancellation 409 and resumes its single poll on reopen', async () => {
+    vi.useFakeTimers();
+    const applyResponse = deferred();
+    let cancels = 0;
+    fetchMock = vi.fn(async (url) => {
+      if (url.endsWith('/plan')) return ok({ ok: true, plan: { counts: { total: 1, eligible: 1 }, items: [] } });
+      if (url.endsWith('/apply')) return applyResponse.promise;
+      if (url === '/processing/jobs/job-racing/cancel') {
+        cancels += 1;
+        return failed(409, 'Processing has already started.');
+      }
+      if (url === '/processing/jobs/job-racing') {
+        return ok(job('job-racing', 'running', { progress: { completed: 1, total: 2 } }));
+      }
+      throw new Error(`Unhandled fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const fixture = buildDialogRoot(doc, { operation: 'archive' });
+
+    await previewAndApply(fixture);
+    fixture.dialog.dispatch('close', { target: fixture.dialog });
+    applyResponse.resolve(ok({ ok: true, operation: 'archive', jobId: 'job-racing' }, 202));
+    await flush();
+
+    expect(cancels).toBe(1);
+    expect(fetchMock).not.toHaveBeenCalledWith('/processing/jobs/job-racing', expect.anything());
+    expect(fixture.root.__ccProcessingJob?.id).toBe('job-racing');
+    expect(vi.getTimerCount()).toBe(0);
+
+    fixture.trigger.dispatch('click', { target: fixture.trigger });
+    await flush();
+    fixture.applyBtn.dispatch('click', { target: fixture.applyBtn });
+    await flush();
+
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fixture.status.textContent).toBe('Processing… 1 of 2.');
+    expect(vi.getTimerCount()).toBe(1);
+
+    fixture.dialog.dispatch('close', { target: fixture.dialog });
+    await flush();
+    expect(cancels).toBe(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('lets a reopened generation poll while a stale generation request remains unresolved', async () => {
+    vi.useFakeTimers();
+    const stalePoll = deferred();
+    const currentPoll = deferred();
+    let polls = 0;
+    fetchMock = vi.fn(async (url) => {
+      if (url.endsWith('/plan')) return ok({ ok: true, plan: { counts: { total: 1, eligible: 1 }, items: [] } });
+      if (url.endsWith('/apply')) return ok({ ok: true, operation: 'archive', jobId: 'job-generation' }, 202);
+      if (url === '/processing/jobs/job-generation') {
+        polls += 1;
+        if (polls === 1) return stalePoll.promise;
+        if (polls === 2) return currentPoll.promise;
+        return ok(job('job-generation', 'running', { progress: { completed: 1, total: 2 } }));
+      }
+      throw new Error(`Unhandled fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const fixture = buildDialogRoot(doc, { operation: 'archive' });
+
+    await previewAndApply(fixture);
+    expect(polls).toBe(1);
+    fixture.root.__ccProcessingJob.state = 'running';
+
+    fixture.dialog.dispatch('close', { target: fixture.dialog });
+    fixture.trigger.dispatch('click', { target: fixture.trigger });
+    await flush();
+
+    expect(polls).toBe(2);
+    expect(fixture.root.__ccProcessingJobPolling.generation).toBe(fixture.root.__ccProcessingJobPollGeneration);
+
+    stalePoll.resolve(ok(job('job-generation', 'queued')));
+    await flush();
+
+    expect(fixture.root.__ccProcessingJob.state).toBe('running');
+    expect(fixture.root.__ccProcessingJobPolling.generation).toBe(fixture.root.__ccProcessingJobPollGeneration);
+
+    currentPoll.resolve(ok(job('job-generation', 'running', { progress: { completed: 1, total: 2 } })));
+    await flush();
+    expect(vi.getTimerCount()).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flush();
+    expect(polls).toBe(3);
+    expect(vi.getTimerCount()).toBe(1);
+
+    fixture.dialog.dispatch('close', { target: fixture.dialog });
+    await flush();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('stops permanently when an evicted processing job is no longer found', async () => {
+    vi.useFakeTimers();
+    fetchMock = vi.fn(async (url) => {
+      if (url.endsWith('/plan')) return ok({ ok: true, plan: { counts: { total: 1, eligible: 1 }, items: [] } });
+      if (url.endsWith('/apply')) return ok({ ok: true, operation: 'archive', jobId: 'job-evicted' }, 202);
+      if (url === '/processing/jobs/job-evicted') {
+        return failed(404, 'Processing job not found.', 'PROCESSING_JOB_NOT_FOUND');
+      }
+      throw new Error(`Unhandled fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const fixture = buildDialogRoot(doc, { operation: 'archive' });
+
+    await previewAndApply(fixture);
+
+    expect(fixture.root.__ccProcessingJob).toBeNull();
+    expect(fixture.root.__ccProcessingBusy).toBe(false);
+    expect(fixture.applyBtn.disabled).toBe(false);
+    expect(fixture.errorText.textContent).toBe('The processing result is no longer available.');
+    expect(fixture.status.textContent).toBe('');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('retries transient processing job polling errors without releasing Apply', async () => {
+    vi.useFakeTimers();
+    let polls = 0;
+    fetchMock = vi.fn(async (url) => {
+      if (url.endsWith('/plan')) return ok({ ok: true, plan: { counts: { total: 1, eligible: 1 }, items: [] } });
+      if (url.endsWith('/apply')) return ok({ ok: true, operation: 'archive', jobId: 'job-transient' }, 202);
+      if (url === '/processing/jobs/job-transient') {
+        polls += 1;
+        throw new Error('Temporary network failure.');
+      }
+      throw new Error(`Unhandled fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const fixture = buildDialogRoot(doc, { operation: 'archive' });
+
+    await previewAndApply(fixture);
+
+    expect(fixture.root.__ccProcessingJob?.id).toBe('job-transient');
+    expect(fixture.root.__ccProcessingBusy).toBe(true);
+    expect(fixture.status.textContent).toBe('Could not check processing status. Retrying…');
+    expect(vi.getTimerCount()).toBe(1);
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    await flush();
+    expect(polls).toBe(2);
+    expect(fixture.root.__ccProcessingJob?.id).toBe('job-transient');
+    expect(fixture.root.__ccProcessingBusy).toBe(true);
+
+    fixture.dialog.dispatch('close', { target: fixture.dialog });
+    await flush();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('reopens only the active pending submission generation', async () => {
+    const fixture = buildDialogRoot(doc, { operation: 'archive' });
+    const staleSubmission = { generation: 1, closed: true };
+    const activeSubmission = { generation: 2, closed: true };
+    fixture.root.__ccProcessingSubmissionGeneration = activeSubmission.generation;
+    fixture.root.__ccProcessingSubmission = activeSubmission;
+
+    enhanceProcessingDialogs(doc);
+    fixture.trigger.dispatch('click', { target: fixture.trigger });
+    await flush();
+
+    expect(activeSubmission.closed).toBe(false);
+    expect(staleSubmission.closed).toBe(true);
+    expect(fixture.root.__ccProcessingSubmission).toBe(activeSubmission);
+  });
+
+  it('ignores a stale late 202 that belongs to an earlier submission generation', async () => {
+    const applyResponse = deferred();
+    fetchMock = vi.fn(async (url) => {
+      if (url.endsWith('/plan')) return ok({ ok: true, plan: { counts: { total: 1, eligible: 1 }, items: [] } });
+      if (url.endsWith('/apply')) return applyResponse.promise;
+      throw new Error(`Unhandled fetch: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const fixture = buildDialogRoot(doc, { operation: 'archive' });
+
+    await previewAndApply(fixture);
+    const newerJob = { id: 'job-newer', state: 'running', progress: null };
+    fixture.root.__ccProcessingSubmissionGeneration = 2;
+    fixture.root.__ccProcessingSubmission = { generation: 2, closed: false };
+    fixture.root.__ccProcessingJob = newerJob;
+    applyResponse.resolve(ok({ ok: true, operation: 'archive', jobId: 'job-stale' }, 202));
+    await flush();
+
+    expect(fixture.root.__ccProcessingJob).toBe(newerJob);
+    expect(fetchMock).not.toHaveBeenCalledWith('/processing/jobs/job-stale/cancel', expect.anything());
+    expect(fetchMock).not.toHaveBeenCalledWith('/processing/jobs/job-stale', expect.anything());
   });
 });
 

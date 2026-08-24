@@ -16,6 +16,7 @@ const OPERATION_METHODS = Object.freeze({
   [PROCESSING_PRESET_OPERATION_TYPES.WATERMARK]: { plan: 'planWatermark', apply: 'watermarkAssets' },
   archive: { plan: 'planArchives', apply: 'createArchives' },
 });
+const NON_APPLYABLE_ITEM_STATUSES = new Set(['unsupported', 'error', 'conflict', 'blocked']);
 
 class ProcessingRouteError extends Error {
   constructor(message, { code = 'INVALID_REQUEST', field, status = 400 } = {}) {
@@ -119,6 +120,16 @@ function isExpectedError(error) {
 function handleError(error, res, next) {
   if (!isExpectedError(error)) return next(error);
   return sendError(res, errorStatus(error), error.code, error.message, error.field);
+}
+
+function clientJobSnapshot(job) {
+  return {
+    id: job.id,
+    state: job.state,
+    progress: job.progress,
+    result: job.result,
+    error: job.error,
+  };
 }
 
 function parseJsonObject(value, field) {
@@ -225,9 +236,41 @@ function assertResourceRequest(body, allowed) {
   return input;
 }
 
-function createExecutionHandler({ operation, mode, projectService, assetRepository, assetProcessingScopeService, assetProcessingPlanner, assetProcessingService, processingPresetService }) {
+function planApplyError(entry, fallbackCode = 'PLAN_NOT_APPLYABLE', fallbackMessage = 'The processing plan cannot be applied.') {
+  return new AssetProcessingError(entry?.reason || fallbackMessage, { code: entry?.reasonCode || entry?.code || fallbackCode });
+}
+
+function assertApplyablePlan(plan, operation) {
+  const item = Array.isArray(plan?.items)
+    ? plan.items.find((candidate) => NON_APPLYABLE_ITEM_STATUSES.has(candidate?.status)
+      || (candidate?.status === 'skipped' && candidate?.operationEligibility === 'unsupported'))
+    : null;
+  if (item) throw planApplyError(item);
+
+  const blocker = Array.isArray(plan?.operationBlockers) ? plan.operationBlockers[0] : null;
+  if (blocker) throw planApplyError(blocker);
+
+  const archives = Array.isArray(plan?.archives) ? plan.archives : [];
+  const archiveOutputRequested = operation === 'archive' || plan?.options?.makeArchives || plan?.options?.makeCbz;
+  const assetIds = Array.isArray(plan?.assetIds) ? plan.assetIds : [];
+  if (operation !== 'archive' && assetIds.length === 0) {
+    throw new AssetProcessingError('No assets selected.', { code: 'NO_ASSETS_SELECTED' });
+  }
+
+  if (archiveOutputRequested || archives.length > 0) {
+    if (archiveOutputRequested && archives.length === 0) {
+      throw planApplyError(null, 'NO_ARCHIVE_OUTPUT', 'The processing plan does not contain an archive to create.');
+    }
+    const archive = archives.find((candidate) => candidate?.status !== 'ready');
+    if (archive) throw planApplyError(archive);
+  }
+  return assetIds;
+}
+
+function createExecutionHandler({ operation, mode, projectService, assetRepository, assetProcessingPlanner, assetProcessingService, processingPresetService, processingJobService, alreadyCoordinatedProcessingExecutor }) {
   const methods = OPERATION_METHODS[operation];
   return async (req, res, next) => {
+    let reservation = null;
     try {
       const projectId = parsePositiveId(req.params.id, 'projectId');
       const project = projectService.findById(projectId);
@@ -236,19 +279,39 @@ function createExecutionHandler({ operation, mode, projectService, assetReposito
         return sendError(res, 409, 'PROJECT_ARCHIVED', 'Archived projects cannot be processed.');
       }
 
-      const { scope, options } = parseExecutionRequest(req.body, {
+      let { scope, options } = parseExecutionRequest(req.body, {
         operation, projectId, assetRepository, processingPresetService,
       });
+
+      reservation = mode === 'apply' ? processingJobService.reserveSubmission(projectId) : null;
+      const plan = await assetProcessingPlanner[methods.plan](projectId, scope, options);
       if (mode === 'plan') {
-        const plan = await assetProcessingPlanner[methods.plan](projectId, scope, options);
         return res.json({ ok: true, operation, plan });
       }
+      const assetIds = assertApplyablePlan(plan, operation);
 
-      const resolved = assetProcessingScopeService.resolveAssetProcessingScope(projectId, scope);
-      const result = await assetProcessingService[methods.apply](projectId, resolved.assetIds, options);
-      return res.json({ ok: true, operation, result, refreshUrl: `/projects/${projectId}/assets` });
+      // The planner owns each operation's normalization/validation contract.
+      // Reuse its normalized options and resolved asset IDs so the queued
+      // execution receives the exact data that was synchronously accepted.
+      options = plan.options;
+      const refreshUrl = `/projects/${projectId}/assets`;
+      const jobId = processingJobService.enqueue({
+        projectId,
+        reservation,
+        execute: async ({ updateProgress }) => ({
+          result: await alreadyCoordinatedProcessingExecutor[methods.apply](
+            projectId, assetIds, options, updateProgress,
+          ),
+          refreshUrl,
+        }),
+      });
+
+      reservation = null;
+      return res.status(202).json({ ok: true, operation, jobId });
     } catch (error) {
       return handleError(error, res, next);
+    } finally {
+      reservation?.release();
     }
   };
 }
@@ -268,6 +331,8 @@ export function createProcessingRouter({
   watermarkDefaultService,
   watermarkScaleMapService,
   processingPresetService,
+  processingJobService,
+  alreadyCoordinatedProcessingExecutor,
 } = {}) {
   if (!watermarkService || typeof watermarkService.listWatermarks !== 'function') throw new TypeError('watermarkService is required');
   if (!watermarkDefaultService || typeof watermarkDefaultService.getDefaultWatermarkId !== 'function'
@@ -287,14 +352,26 @@ export function createProcessingRouter({
     && typeof assetProcessingScopeService.resolveAssetProcessingScope === 'function';
 
   if (hasExecutionSurface) {
+    if (!processingJobService
+      || typeof processingJobService.enqueue !== 'function'
+      || typeof processingJobService.getJob !== 'function'
+      || typeof processingJobService.cancel !== 'function'
+      || typeof processingJobService.reserveSubmission !== 'function') {
+      throw new TypeError('processingJobService is required for processing execution routes');
+    }
+    if (!alreadyCoordinatedProcessingExecutor
+      || typeof alreadyCoordinatedProcessingExecutor !== 'object') {
+      throw new TypeError('alreadyCoordinatedProcessingExecutor is required for processing execution routes');
+    }
     for (const [operation, methods] of Object.entries(OPERATION_METHODS)) {
       if (typeof assetProcessingPlanner[methods.plan] !== 'function'
-        || typeof assetProcessingService[methods.apply] !== 'function') continue;
+        || typeof assetProcessingService[methods.apply] !== 'function'
+        || typeof alreadyCoordinatedProcessingExecutor[methods.apply] !== 'function') continue;
       router.post(`/projects/:id/assets/processing/${operation}/plan`, createExecutionHandler({
-        operation, mode: 'plan', projectService, assetRepository, assetProcessingScopeService, assetProcessingPlanner, assetProcessingService, processingPresetService,
+        operation, mode: 'plan', projectService, assetRepository, assetProcessingPlanner, assetProcessingService, processingPresetService,
       }));
       router.post(`/projects/:id/assets/processing/${operation}/apply`, createExecutionHandler({
-        operation, mode: 'apply', projectService, assetRepository, assetProcessingScopeService, assetProcessingPlanner, assetProcessingService, processingPresetService,
+        operation, mode: 'apply', projectService, assetRepository, assetProcessingPlanner, assetProcessingService, processingPresetService, processingJobService, alreadyCoordinatedProcessingExecutor,
       }));
     }
 
@@ -324,6 +401,23 @@ export function createProcessingRouter({
         }
       });
     }
+  }
+
+  if (processingJobService) {
+    router.get('/processing/jobs/:id', (req, res) => {
+      const job = processingJobService.getJob(req.params.id);
+      if (!job) return sendError(res, 404, 'PROCESSING_JOB_NOT_FOUND', 'Processing job not found.');
+      return res.json({ ok: true, job: clientJobSnapshot(job) });
+    });
+
+    router.post('/processing/jobs/:id/cancel', (req, res) => {
+      const job = processingJobService.getJob(req.params.id);
+      if (!job) return sendError(res, 404, 'PROCESSING_JOB_NOT_FOUND', 'Processing job not found.');
+      if (!processingJobService.cancel(req.params.id)) {
+        return sendError(res, 409, 'PROCESSING_JOB_NOT_CANCELLABLE', 'Only queued processing jobs can be cancelled.');
+      }
+      return res.json({ ok: true, job: clientJobSnapshot(processingJobService.getJob(req.params.id)) });
+    });
   }
 
   router.get('/processing/watermarks', (_req, res, next) => {

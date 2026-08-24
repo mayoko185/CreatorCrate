@@ -26,7 +26,11 @@ const MANAGE_SCALE_MAP_SELECTOR = '[data-processing-manage-scale-map]';
 const ASSET_CHECKBOX_SELECTOR = '.asset-select-checkbox';
 const OPERATION_PLAN_PATH = (projectId, operation) => `/projects/${projectId}/assets/processing/${operation}/plan`;
 const OPERATION_APPLY_PATH = (projectId, operation) => `/projects/${projectId}/assets/processing/${operation}/apply`;
+const PROCESSING_JOB_PATH = (jobId) => `/processing/jobs/${encodeURIComponent(jobId)}`;
+const PROCESSING_JOB_POLL_INTERVAL_MS = 1_000;
 const AUTO_RESCAN_OPERATIONS = new Set(['convert', 'watermark']);
+const ACTIVE_PROCESSING_JOB_STATES = new Set(['queued', 'running']);
+const TERMINAL_PROCESSING_JOB_STATES = new Set(['succeeded', 'failed', 'cancelled']);
 const LEGACY_WATERMARK_ARCHIVE_FIELDS = new Set([
   'makeArchives', 'archiveIncludeResized', 'replaceExistingArchives', 'archiveFormat',
   'zipJpgQuality', 'zipWebpQuality', 'setName', 'archivePrefix', 'zipBaseName',
@@ -94,10 +98,12 @@ function liveDocument(scope) {
 // ─── Fetch / envelope handling ──────────────────────────────────────────
 
 class ProcessingRequestError extends Error {
-  constructor(message, { field } = {}) {
+  constructor(message, { field, status, code } = {}) {
     super(message);
     this.name = 'ProcessingRequestError';
     this.field = field;
+    this.status = status;
+    this.code = code;
   }
 }
 
@@ -464,7 +470,11 @@ async function parseEnvelope(response) {
   }
   if (!response.ok || payload?.ok !== true) {
     const message = payload?.error?.message || 'The request could not be completed.';
-    throw new ProcessingRequestError(message, { field: payload?.error?.field });
+    throw new ProcessingRequestError(message, {
+      field: payload?.error?.field,
+      status: response.status,
+      code: payload?.error?.code,
+    });
   }
   return payload;
 }
@@ -490,11 +500,16 @@ async function processingFetchJson(url, { method = 'POST', csrf, body } = {}) {
 
 export async function rescanProjectAssetsAfterApply(root, {
   refreshAssets = refreshProjectAssetsLiveRegion,
+  refreshUrl,
 } = {}) {
   const projectId = root?.dataset?.projectId;
   if (!projectId) throw new ProcessingRequestError('Could not refresh the asset index.');
 
-  await processingFetchJson(`/projects/${encodeURIComponent(projectId)}/scan`, {
+  const expectedRefreshUrl = `/projects/${encodeURIComponent(projectId)}/assets`;
+  const scanUrl = refreshUrl === expectedRefreshUrl
+    ? `${expectedRefreshUrl.slice(0, -'/assets'.length)}/scan`
+    : `/projects/${encodeURIComponent(projectId)}/scan`;
+  await processingFetchJson(scanUrl, {
     csrf: root.dataset.csrf,
   });
   if (!refreshAssets(liveDocument(root))) {
@@ -1976,8 +1991,166 @@ async function runPreview(root) {
   }
 }
 
+function stopProcessingJobPolling(root) {
+  if (root.__ccProcessingJobPollTimer) clearTimeout(root.__ccProcessingJobPollTimer);
+  root.__ccProcessingJobPollTimer = null;
+  root.__ccProcessingJobPollGeneration = (root.__ccProcessingJobPollGeneration || 0) + 1;
+}
+
+function claimProcessingJobCompletion(root, job) {
+  if (root.__ccProcessingJobCompletion?.job === job) return null;
+  const completion = { job };
+  root.__ccProcessingJobCompletion = completion;
+  return completion;
+}
+
+function processingJobStatus(job) {
+  if (job.state === 'queued') return 'Processing queued.';
+  if (job.state === 'running') {
+    const { completed, total } = job.progress || {};
+    if (Number.isFinite(completed) && Number.isFinite(total)) return `Processing… ${completed} of ${total}.`;
+    return 'Processing…';
+  }
+  return '';
+}
+
+async function completeApply(root, { result, refreshUrl } = {}) {
+  renderResult(root, root.dataset.processingOperation, result);
+  invalidatePreview(root);
+  if (AUTO_RESCAN_OPERATIONS.has(root.dataset.processingOperation)) {
+    setStatus(root, 'Processing completed. Refreshing the asset index…');
+    try {
+      await rescanProjectAssetsAfterApply(root, { refreshUrl });
+      setStatus(root, 'Applied. Assets refreshed.');
+    } catch {
+      setStatus(root, 'Processing completed, but CreatorCrate could not refresh the asset index.');
+    }
+  } else {
+    setStatus(root, 'Applied.');
+  }
+}
+
+function scheduleProcessingJobPoll(root, job, generation) {
+  if (root.__ccProcessingJob !== job || root.__ccProcessingJobPollGeneration !== generation) return;
+  if (root.__ccProcessingJobPollTimer) clearTimeout(root.__ccProcessingJobPollTimer);
+  root.__ccProcessingJobPollTimer = setTimeout(() => {
+    root.__ccProcessingJobPollTimer = null;
+    void pollProcessingJob(root);
+  }, PROCESSING_JOB_POLL_INTERVAL_MS);
+}
+
+async function pollProcessingJob(root) {
+  const job = root.__ccProcessingJob;
+  const generation = root.__ccProcessingJobPollGeneration || 0;
+  const polling = root.__ccProcessingJobPolling;
+  if (!job || (polling?.job === job && polling.generation === generation)) return;
+  const attempt = { job, generation };
+  root.__ccProcessingJobPolling = attempt;
+  try {
+    const payload = await processingFetchJson(PROCESSING_JOB_PATH(job.id), {
+      method: 'GET',
+      csrf: root.dataset.csrf,
+    });
+    if (root.__ccProcessingJob !== job || root.__ccProcessingJobPollGeneration !== generation) return;
+
+    const nextJob = payload?.job;
+    if (!nextJob || nextJob.id !== job.id || typeof nextJob.state !== 'string') {
+      throw new ProcessingRequestError('The processing job returned an unexpected response. Try again.');
+    }
+    job.state = nextJob.state;
+    job.progress = nextJob.progress || null;
+
+    if (ACTIVE_PROCESSING_JOB_STATES.has(job.state)) {
+      setStatus(root, processingJobStatus(job));
+      scheduleProcessingJobPoll(root, job, generation);
+      return;
+    }
+
+    if (!TERMINAL_PROCESSING_JOB_STATES.has(job.state)) {
+      throw new ProcessingRequestError('The processing job returned an unexpected status. Try again.');
+    }
+
+    const completion = job.state === 'succeeded' ? claimProcessingJobCompletion(root, job) : null;
+    if (job.state === 'succeeded' && !completion) return;
+
+    stopProcessingJobPolling(root);
+    try {
+      if (job.state === 'succeeded') {
+        await completeApply(root, nextJob.result);
+      } else if (job.state === 'failed') {
+        showError(root, nextJob.error?.message || 'Processing could not be completed.');
+        setStatus(root, '');
+      } else {
+        setStatus(root, 'Processing cancelled.');
+      }
+    } catch (error) {
+      showError(root, error.message);
+      setStatus(root, '');
+    }
+    if (completion && root.__ccProcessingJobCompletion !== completion) return;
+    if (completion) root.__ccProcessingJobCompletion = null;
+    if (root.__ccProcessingJob !== job) return;
+    root.__ccProcessingJob = null;
+    setBusy(root, false);
+  } catch (error) {
+    if (root.__ccProcessingJob === job && root.__ccProcessingJobPollGeneration === generation) {
+      if (error.code === 'PROCESSING_JOB_NOT_FOUND') {
+        stopProcessingJobPolling(root);
+        root.__ccProcessingJob = null;
+        setBusy(root, false);
+        showError(root, 'The processing result is no longer available.');
+        setStatus(root, '');
+      } else {
+        showError(root, error.message);
+        setStatus(root, 'Could not check processing status. Retrying…');
+        scheduleProcessingJobPoll(root, job, generation);
+      }
+    }
+  } finally {
+    if (root.__ccProcessingJobPolling === attempt) root.__ccProcessingJobPolling = null;
+  }
+}
+
+function startProcessingJobPolling(root, jobId) {
+  stopProcessingJobPolling(root);
+  root.__ccProcessingJob = { id: jobId, state: 'queued', progress: null };
+  setStatus(root, processingJobStatus(root.__ccProcessingJob));
+  void pollProcessingJob(root);
+}
+
+async function cancelProcessingJob(root) {
+  const job = root.__ccProcessingJob;
+  if (!job || job.state !== 'queued') return;
+  stopProcessingJobPolling(root);
+  try {
+    const payload = await processingFetchJson(`${PROCESSING_JOB_PATH(job.id)}/cancel`, {
+      csrf: root.dataset.csrf,
+    });
+    if (root.__ccProcessingJob !== job || payload?.job?.state !== 'cancelled') return;
+    root.__ccProcessingJob = null;
+    setBusy(root, false);
+    setStatus(root, 'Processing cancelled.');
+  } catch {
+    // A queued job can start between the last poll and this request. The backend
+    // rejects that race with 409; retain the job so reopening the dialog resumes polling.
+  }
+}
+
+function bindProcessingJobLifecycle(root) {
+  if (isBound(root, 'jobLifecycle')) return;
+  markBound(root, 'jobLifecycle');
+  const dialog = root.closest?.('dialog');
+  dialog?.addEventListener('close', () => {
+    const submission = root.__ccProcessingSubmission;
+    if (submission) submission.closed = true;
+    const job = root.__ccProcessingJob;
+    stopProcessingJobPolling(root);
+    if (job?.state === 'queued') void cancelProcessingJob(root);
+  });
+}
+
 async function runApply(root) {
-  if (root.__ccProcessingBusy || !root.__ccPreviewValid) return;
+  if (root.__ccProcessingBusy || root.__ccProcessingJob || !root.__ccPreviewValid) return;
   showError(root, '');
   let body;
   try {
@@ -1986,6 +2159,13 @@ async function runApply(root) {
     showError(root, error.message);
     return;
   }
+
+  const submission = {
+    generation: (root.__ccProcessingSubmissionGeneration || 0) + 1,
+    closed: false,
+  };
+  root.__ccProcessingSubmissionGeneration = submission.generation;
+  root.__ccProcessingSubmission = submission;
   setBusy(root, true);
   setStatus(root, 'Applying…');
   try {
@@ -1993,24 +2173,28 @@ async function runApply(root) {
       OPERATION_APPLY_PATH(root.dataset.projectId, root.dataset.processingOperation),
       { csrf: root.dataset.csrf, body },
     );
-    renderResult(root, root.dataset.processingOperation, payload.result);
-    invalidatePreview(root);
-    if (AUTO_RESCAN_OPERATIONS.has(root.dataset.processingOperation)) {
-      setStatus(root, 'Processing completed. Refreshing the asset index…');
-      try {
-        await rescanProjectAssetsAfterApply(root);
-        setStatus(root, 'Applied. Assets refreshed.');
-      } catch {
-        setStatus(root, 'Processing completed, but CreatorCrate could not refresh the asset index.');
+    if (root.__ccProcessingSubmission !== submission) return;
+
+    if (typeof payload.jobId === 'string' && payload.jobId) {
+      if (submission.closed) {
+        root.__ccProcessingJob = { id: payload.jobId, state: 'queued', progress: null };
+        root.__ccProcessingSubmission = null;
+        void cancelProcessingJob(root);
+      } else {
+        root.__ccProcessingSubmission = null;
+        startProcessingJobPolling(root, payload.jobId);
       }
     } else {
-      setStatus(root, 'Applied.');
+      await completeApply(root, payload);
     }
   } catch (error) {
+    if (root.__ccProcessingSubmission !== submission) return;
     showError(root, error.message);
     setStatus(root, '');
   } finally {
-    setBusy(root, false);
+    if (root.__ccProcessingSubmission !== submission) return;
+    root.__ccProcessingSubmission = null;
+    if (!root.__ccProcessingJob) setBusy(root, false);
   }
 }
 
@@ -2054,12 +2238,18 @@ function bindWatermarkPreviewLifecycle(root) {
 }
 
 function onDialogOpen(root) {
+  const submission = root.__ccProcessingSubmission;
+  if (submission && submission.generation === root.__ccProcessingSubmissionGeneration) submission.closed = false;
   applyDefaultScope(root);
   updateScopeDisplay(root);
   resetDialogState(root);
   loadPresets(root);
   loadWatermarkResourceSelects(root);
   if (root.dataset.processingOperation === 'workflow-prompt') ensureInitialWorkflowRow(root);
+  if (root.__ccProcessingJob) {
+    setBusy(root, true);
+    void pollProcessingJob(root);
+  }
 }
 
 function bindDialogOpenTriggers(document) {
@@ -2345,6 +2535,7 @@ export function enhanceProcessingDialogs(scope = globalThis.document) {
     bindScopeControls(root);
     bindDirtyTracking(root);
     bindPreviewApply(root);
+    bindProcessingJobLifecycle(root);
     bindWatermarkResourceSelect(root);
     bindWatermarkDefault(root);
     bindWatermarkPreviewLifecycle(root);

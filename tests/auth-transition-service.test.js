@@ -59,13 +59,14 @@ describe('auth-transition-service', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  function buildService({ replaceAuthConfig = vi.fn(), authService = null } = {}) {
+  function buildService({ replaceAuthConfig = vi.fn(), assertNoActiveProcessingJobs, authService = null } = {}) {
     return {
       replaceAuthConfig,
       service: createAuthTransitionService({
         appDataRoot,
         db: fakeDb(),
         replaceAuthConfig,
+        assertNoActiveProcessingJobs,
         authSettings: AUTH_SETTINGS,
         authService,
       }),
@@ -143,6 +144,41 @@ describe('auth-transition-service', () => {
     expect(invalidateSpy).toHaveBeenCalledTimes(1);
     expect(credentialFileExists(appDataRoot)).toBe(false);
     expect(readAuthEnablement(appDataRoot)).toEqual({ enabled: false, csrfPepper: expect.any(String) });
+  });
+
+  it('refuses enable and disable before auth files, sessions, or context can change when maintenance is blocked', () => {
+    const activeProcessingError = new Error('Cannot replace the application context while processing jobs are active.');
+    const assertNoActiveProcessingJobs = vi.fn(() => { throw activeProcessingError; });
+    const replaceAuthConfig = vi.fn();
+    const { service } = buildService({
+      replaceAuthConfig,
+      assertNoActiveProcessingJobs,
+      authService: fakeAuthService(PASSWORD),
+    });
+    const disabledBefore = readAuthEnablement(appDataRoot);
+
+    expect(service.enable({ username: USERNAME, password: PASSWORD, confirmation: PASSWORD }))
+      .toEqual({ ok: false, conflict: true, error: activeProcessingError });
+    expect(readAuthEnablement(appDataRoot)).toEqual(disabledBefore);
+    expect(credentialFileExists(appDataRoot)).toBe(false);
+    expect(invalidateSpy).not.toHaveBeenCalled();
+    expect(replaceAuthConfig).not.toHaveBeenCalled();
+
+    assertNoActiveProcessingJobs.mockImplementation(() => {});
+    expect(service.enable({ username: USERNAME, password: PASSWORD, confirmation: PASSWORD })).toEqual({ ok: true });
+    invalidateSpy.mockClear();
+    replaceAuthConfig.mockClear();
+    const enabledBefore = readAuthEnablement(appDataRoot);
+    assertNoActiveProcessingJobs.mockImplementation(() => { throw activeProcessingError; });
+
+    expect(service.disable({ username: USERNAME, currentPassword: PASSWORD }))
+      .toEqual({ ok: false, conflict: true, error: activeProcessingError });
+    expect(readAuthEnablement(appDataRoot)).toEqual(enabledBefore);
+    expect(invalidateSpy).not.toHaveBeenCalled();
+    expect(replaceAuthConfig).not.toHaveBeenCalled();
+
+    assertNoActiveProcessingJobs.mockImplementation(() => {});
+    expect(service.disable({ username: USERNAME, currentPassword: PASSWORD })).toEqual({ ok: true });
   });
 
   it('enable() always overwrites a stale leftover credential file from a previous enabled period', () => {

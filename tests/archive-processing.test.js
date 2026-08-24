@@ -225,13 +225,21 @@ describe('standalone archive processing', () => {
       ['Final/second/image.webp', fs.readFileSync(path.join(projectDir, 'Final/second/image.webp'))],
     ]);
 
+    const progress = [];
     const result = await processingService.createArchives(project.id, [png.id, webp.id], {
       makeCbz: true,
       setName: 'Standalone',
       zipJpgQuality: 71,
       zipWebpQuality: 83,
       cbzJpgQuality: 65,
-    });
+    }, (snapshot) => progress.push(snapshot));
+
+    expect(progress).toEqual([
+      { completed: 0, total: 3 },
+      { completed: 1, total: 3 },
+      { completed: 2, total: 3 },
+      { completed: 3, total: 3 },
+    ]);
 
     expect(result).toMatchObject({
       status: 'completed',

@@ -58,6 +58,7 @@ import { createProcessingPresetService } from './services/processing-preset-serv
 import { createAutoRenameService } from './services/auto-rename-service.js';
 import { createProjectPrimaryImageService } from './services/project-primary-image-service.js';
 import { createProjectOperationCoordinator } from './services/project-operation-coordinator.js';
+import { createProcessingJobService } from './services/processing-job-service.js';
 import { createReleaseService } from './services/release-service.js';
 import { createWorkflowQueryService } from './services/workflow-query-service.js';
 import { createAssetWorkflowMetadataService } from './services/asset-workflow-metadata-service.js';
@@ -258,6 +259,8 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // survives reconstruction; this fallback only matters for callers (tests,
   // ad-hoc scripts) that construct createApp directly without app-context.
   const projectOperationCoordinator = opts.projectOperationCoordinator || createProjectOperationCoordinator();
+  const processingJobService = opts.processingJobService
+    || createProcessingJobService({ projectOperationCoordinator });
 
   const projectPrimaryImageRepository = createProjectPrimaryImageRepository(db);
   const assetScanner = createAssetScanner(db, projectsRoot, {
@@ -426,6 +429,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // action service and exposed through the processing router below. The shared
   // coordinator keeps conversion, scanning, archive generation, and other asset
   // actions mutually exclusive for one project across application rebuilds.
+  const processingJobExecutionCapability = Object.freeze({});
   const assetProcessingService = opts.assetProcessingService || (projectsRoot
     ? createAssetProcessingService({
       projectRepository: projectService.repository,
@@ -437,8 +441,11 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       watermarkService,
       scaleMapService: watermarkScaleMapService,
       watermarkScaleMap: opts.watermarkScaleMap,
+      alreadyCoordinatedCapability: processingJobExecutionCapability,
     })
     : null);
+  const alreadyCoordinatedProcessingExecutor = opts.alreadyCoordinatedProcessingExecutor
+    || assetProcessingService?.createAlreadyCoordinatedExecutor?.(processingJobExecutionCapability);
   app.locals.assetProcessingService = assetProcessingService;
 
   // Phase H3: Auto Rename is one application-scoped service per rooted app
@@ -570,6 +577,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     appDataRoot,
     db,
     replaceAuthConfig: opts.onAuthConfigReplaced || (() => {}),
+    assertNoActiveProcessingJobs: opts.assertNoActiveProcessingJobs,
     authSettings: opts.authSettings || {},
     csrfPepper: opts.authState?.csrfPepper,
     authService,
@@ -635,6 +643,8 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     watermarkDefaultService,
     watermarkScaleMapService,
     processingPresetService,
+    processingJobService,
+    alreadyCoordinatedProcessingExecutor,
   }));
 
   // Media routes stay before the asset browser/viewer router. The media
@@ -727,6 +737,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     assetCategoryService,
     backupService,
     maintenanceState,
+    processingJobService,
     authService,
     cookieOptions,
     onDatabaseReplaced: opts.onDatabaseReplaced,

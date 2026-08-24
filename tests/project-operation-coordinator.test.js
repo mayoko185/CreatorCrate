@@ -83,32 +83,39 @@ describe('project operation coordinator', () => {
     }
   });
 
-  it('holds an async lock across awaited work and releases it after success', async () => {
+  it('queues same-project async operations in submission order and releases state after completion', async () => {
     const coordinator = createProjectOperationCoordinator();
     let entered;
     const enteredPromise = new Promise((resolve) => { entered = resolve; });
     let release;
     const gate = new Promise((resolve) => { release = resolve; });
+    const order = [];
 
     const operation = coordinator.runAsync(1, async () => {
+      order.push('first-start');
       entered();
       await gate;
+      order.push('first-end');
       return 'async-done';
+    });
+    const queued = coordinator.runAsync(1, () => {
+      order.push('second');
+      return 'queued-done';
     });
 
     await enteredPromise;
     expect(coordinator.isActive(1)).toBe(true);
     expect(() => coordinator.run(1, () => 'blocked')).toThrow(ProjectOperationError);
-    await expect(coordinator.runAsync(1, () => 'blocked')).rejects.toMatchObject({
-      code: 'PROJECT_OPERATION_IN_PROGRESS',
-    });
+    expect(order).toEqual(['first-start']);
 
     release();
     await expect(operation).resolves.toBe('async-done');
+    await expect(queued).resolves.toBe('queued-done');
+    expect(order).toEqual(['first-start', 'first-end', 'second']);
     expect(coordinator.isActive(1)).toBe(false);
   });
 
-  it('mutually blocks run and runAsync for one project while allowing another', async () => {
+  it('runs asynchronous operations for different projects independently', async () => {
     const coordinator = createProjectOperationCoordinator();
     let release;
     const gate = new Promise((resolve) => { release = resolve; });
@@ -120,21 +127,50 @@ describe('project operation coordinator', () => {
 
     expect(() => coordinator.run(1, () => 'blocked')).toThrow(ProjectOperationError);
     await expect(coordinator.runAsync(2, () => 'project-2-done')).resolves.toBe('project-2-done');
+    expect(coordinator.isActive(2)).toBe(false);
 
     release();
     await expect(operation).resolves.toBe('project-1-done');
     expect(coordinator.isActive(1)).toBe(false);
   });
 
-  it('releases an async lock after a rejected callback', async () => {
+  it('rejects an async contender while a synchronous owner is active', async () => {
     const coordinator = createProjectOperationCoordinator();
+    let asyncOperation;
+    let asyncStarted = false;
 
-    await expect(coordinator.runAsync(1, async () => {
+    coordinator.run(1, () => {
+      asyncOperation = coordinator.runAsync(1, () => {
+        asyncStarted = true;
+      });
+      expect(coordinator.isActive(1)).toBe(true);
+      expect(asyncStarted).toBe(false);
+    });
+
+    await expect(asyncOperation).rejects.toMatchObject({
+      code: 'PROJECT_OPERATION_IN_PROGRESS',
+    });
+    expect(asyncStarted).toBe(false);
+    expect(coordinator.isActive(1)).toBe(false);
+  });
+
+  it('continues the same-project async queue after a rejected callback', async () => {
+    const coordinator = createProjectOperationCoordinator();
+    const order = [];
+
+    const failed = coordinator.runAsync(1, async () => {
+      order.push('failed');
       await Promise.resolve();
       throw new Error('async boom');
-    })).rejects.toThrow('async boom');
+    });
+    const recovered = coordinator.runAsync(1, () => {
+      order.push('recovered');
+      return 'recovered';
+    });
 
+    await expect(failed).rejects.toThrow('async boom');
+    await expect(recovered).resolves.toBe('recovered');
+    expect(order).toEqual(['failed', 'recovered']);
     expect(coordinator.isActive(1)).toBe(false);
-    await expect(coordinator.runAsync(1, () => 'recovered')).resolves.toBe('recovered');
   });
 });
