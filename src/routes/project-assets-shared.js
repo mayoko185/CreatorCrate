@@ -1166,6 +1166,8 @@ export const ASSET_ACTION_NOTICE_MESSAGES = {
   'asset-moved': 'The file was moved.',
   'primary-image-set': 'The primary image was set.',
   'primary-image-removed': 'The primary image was removed.',
+  'book-primary-image-set': 'The book primary image was set.',
+  'book-primary-image-removed': 'The book primary image was removed.',
   asset_tags_updated: 'Asset tags updated successfully.',
 };
 

@@ -86,6 +86,67 @@
       </section>
     {% endif %}
 
+    {% if canSetAsBookPrimaryImage or bookPrimaryImageUsages.length > 0 %}
+      <section class="settings-section asset-edit-dialog-section asset-book-primary-image-section" aria-labelledby="asset-book-primary-image-heading">
+        <h3 id="asset-book-primary-image-heading">Book primary image</h3>
+        <div class="asset-edit-dialog-section-body asset-book-primary-image-section-body">
+          {% if canSetAsBookPrimaryImage %}
+            <p class="asset-action-description">Choose the Book this image represents.</p>
+            {% if bookPrimaryImageOptions.length > 0 %}
+              <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/book-primary-image" class="asset-action-form asset-book-primary-image-set-form">
+                <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                {% for key in contextFields %}
+                  {% if context[key] is not none and context[key] != '' %}
+                    <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
+                  {% endif %}
+                {% endfor %}
+                {{ dropdown.singleSelect({
+                  id: "book-primary-image-book",
+                  name: "bookId",
+                  label: "Book",
+                  options: bookPrimaryImageOptions,
+                  placeholder: "Choose a Book",
+                  panelLabel: "Book options",
+                  nativeSelect: {
+                    id: "book-primary-image-book-native",
+                    attributes: { required: true }
+                  }
+                }) }}
+                <div>
+                  <button class="button button-primary" type="submit">Set as book primary image</button>
+                </div>
+              </form>
+            {% else %}
+              <p class="asset-filter-multiselect-empty">No Books available. <a href="/notes/books/new">New Book</a>.</p>
+            {% endif %}
+          {% endif %}
+
+          {% if bookPrimaryImageUsages.length > 0 %}
+            <p class="asset-primary-image-status">Currently used as the primary image for:</p>
+            <ul class="asset-book-primary-image-usage-list">
+              {% for usage in bookPrimaryImageUsages %}
+                <li>
+                  <strong>{{ usage.title }}</strong>
+                  <form method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/book-primary-image/remove" class="asset-action-form asset-book-primary-image-remove-form">
+                    <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                    <input type="hidden" name="bookId" value="{{ usage.id }}">
+                    {% for key in contextFields %}
+                      {% if context[key] is not none and context[key] != '' %}
+                        <input type="hidden" name="{{ key }}" value="{{ context[key] }}">
+                      {% endif %}
+                    {% endfor %}
+                    <div>
+                      <button class="button button-danger" type="submit" aria-label="Remove book primary image from {{ usage.title }}">Remove book primary image</button>
+                    </div>
+                  </form>
+                </li>
+              {% endfor %}
+            </ul>
+          {% endif %}
+        </div>
+      </section>
+    {% endif %}
+
     {% if canMutate %}
       <section class="settings-section asset-edit-dialog-section asset-actions-section" aria-labelledby="asset-actions-heading">
         <h3 id="asset-actions-heading">File actions</h3>

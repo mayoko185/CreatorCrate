@@ -1056,8 +1056,13 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).not.toContain('<script>alert');
     expect(response.text).toContain('<h1>Markdown <strong>text</strong></h1>');
     expect(response.text).toContain('<p>line two</p>');
+    expect(response.text).toContain('<section class="notes-detail-panel notes-detail-details" aria-labelledby="notes-detail-details-heading">');
+    expect(response.text).toContain('<h2 id="notes-detail-details-heading">Details</h2>');
+    expect(response.text).toContain('<dl class="detail-list">');
     expect(response.text).toContain('<dt>Created</dt>');
+    expect(response.text).toContain(`<dd>${note.created_at}</dd>`);
     expect(response.text).toContain('<dt>Updated</dt>');
+    expect(response.text).toContain(`<dd>${note.updated_at}</dd>`);
     const pageSidebarStart = response.text.indexOf('<div class="notes-page-sidebar">');
     const pageContentStart = response.text.indexOf('<div class="notes-page-detail-content">');
     const pageSidebar = response.text.slice(pageSidebarStart, pageContentStart);

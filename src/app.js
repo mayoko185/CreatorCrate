@@ -29,6 +29,7 @@ import { createNoteRepository } from './data/note-repository.js';
 import { createChapterRepository } from './data/chapter-repository.js';
 import { createBookRepository } from './data/book-repository.js';
 import { createBookContentRepository } from './data/book-content-repository.js';
+import { createBookPrimaryImageRepository } from './data/book-primary-image-repository.js';
 import { createAssetCategoryService } from './services/asset-category-service.js';
 import { createAssetBrowserPreferenceRepository } from './data/asset-browser-preference-repository.js';
 import { createAppMetaRepository } from './data/app-meta-repository.js';
@@ -57,6 +58,7 @@ import { createWatermarkScaleMapService } from './services/watermark-scale-map-s
 import { createProcessingPresetService } from './services/processing-preset-service.js';
 import { createAutoRenameService } from './services/auto-rename-service.js';
 import { createProjectPrimaryImageService } from './services/project-primary-image-service.js';
+import { createBookPrimaryImageService } from './services/book-primary-image-service.js';
 import { createProjectOperationCoordinator } from './services/project-operation-coordinator.js';
 import { createProcessingJobService } from './services/processing-job-service.js';
 import { createProcessingConcurrencyService } from './services/processing-concurrency-service.js';
@@ -283,6 +285,8 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.locals.assetScanner = assetScanner;
 
   const bookRepository = opts.bookRepository || createBookRepository(db);
+  const bookPrimaryImageRepository = opts.bookPrimaryImageRepository
+    || createBookPrimaryImageRepository(db);
   const noteRepository = opts.noteRepository || createNoteRepository(db);
   const chapterRepository = opts.chapterRepository || createChapterRepository(db);
   const bookContentRepository = opts.bookContentRepository || createBookContentRepository(db);
@@ -505,6 +509,16 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.locals.projectPrimaryImageRepository = projectPrimaryImageRepository;
   app.locals.projectPrimaryImageService = projectPrimaryImageService;
 
+  const bookPrimaryImageService = opts.bookPrimaryImageService || createBookPrimaryImageService({
+    db,
+    bookRepository,
+    assetRepository: assetScanner.repository,
+    bookPrimaryImageRepository,
+    previewProbe: previewService?.inspectKritaPreviewSource,
+  });
+  app.locals.bookPrimaryImageRepository = bookPrimaryImageRepository;
+  app.locals.bookPrimaryImageService = bookPrimaryImageService;
+
   const releaseService = opts.releaseService || createReleaseService({ db });
   const assetWorkflowMetadataService = opts.assetWorkflowMetadataService || (projectsRoot
     ? createAssetWorkflowMetadataService({ db, projectsRoot })
@@ -691,6 +705,8 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       assetBrowserPreferenceService,
       autoRenameService,
       projectPrimaryImageService,
+      bookService,
+      bookPrimaryImageService,
       previewProbe: previewService?.inspectKritaPreviewSource,
     }));
     app.use('/projects', createProjectAssetCategoryManagementRouter({
@@ -740,11 +756,14 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.use('/notes', createNotesRouter({
     appName,
     bookService,
+    bookPrimaryImageService,
     chapterService,
     noteService,
     markdownRenderer,
     projectService,
     assetRepository: assetScanner.repository,
+    tagRepository,
+    nsfwFilterSettingsService,
   }));
 
   app.use('/settings', createSettingsRouter({

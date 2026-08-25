@@ -1,0 +1,17 @@
+{% macro render(book, size = 'thumbnail') %}
+  {% set image = book.primaryImage %}
+  {% set imageUrl = image.thumbnailUrl if size == 'thumbnail' else image.previewUrl %}
+  <div class="notes-book-cover{% if image.state == 'available' %} notes-book-cover--image{% else %} notes-book-cover--fallback{% endif %}"
+       {% if image.state == 'available' %}data-preview-enhancement data-preview-state="loading"{% else %}data-primary-image-state="{{ image.state }}"{% endif %}>
+    <a class="notes-book-cover-link{% if image.state != 'available' %} notes-book-cover-link--fallback{% endif %}" href="/notes/books/{{ book.id }}" aria-label="View Book {{ book.title }}">
+      {% if image.state == 'available' %}
+        <img class="notes-book-cover-image{% if book.nsfwBlur %} asset-image--nsfw-blurred{% endif %}{% if image.mediaModifier %} notes-book-cover-image--{{ image.mediaModifier }}{% endif %}" data-preview-image src="{{ imageUrl }}" alt="{{ image.alt }}" loading="lazy" decoding="async">
+        <span class="notes-book-cover-fallback" data-preview-fallback hidden>Image unavailable</span>
+      {% elif image.state == 'unavailable' %}
+        <span>Image unavailable</span>
+      {% else %}
+        <span>No image</span>
+      {% endif %}
+    </a>
+  </div>
+{% endmacro %}

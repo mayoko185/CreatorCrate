@@ -4,6 +4,7 @@ import { ReleaseValidationError } from '../services/release-service.js';
 import { buildCreateReleaseFormModel } from './releases.js';
 import { UNCATEGORIZED } from '../services/asset-action-service.js';
 import { PRIMARY_IMAGE_ERROR_CODES } from '../services/project-primary-image-service.js';
+import { BOOK_PRIMARY_IMAGE_ERROR_CODES } from '../services/book-primary-image-service.js';
 import { AUTO_RENAME_ERROR_CODES } from '../services/auto-rename-service.js';
 import {
   AssetCategoryValidationError,
@@ -237,6 +238,8 @@ const AUTO_RENAME_BLOCK_REASON_MESSAGES = Object.freeze({
  * @param {ReturnType<import('../services/project-primary-image-service.js').createProjectPrimaryImageService>} deps.projectPrimaryImageService
  *   Application-scoped primary-image service used by the viewer and its
  *   mutation routes.
+ * @param {import('../services/book-service.js').BookService} deps.bookService
+ * @param {ReturnType<import('../services/book-primary-image-service.js').createBookPrimaryImageService>} deps.bookPrimaryImageService
  * @param {ReturnType<import('../services/auto-rename-service.js').createAutoRenameService>} deps.autoRenameService
  *   Application-scoped Auto Rename planner/executor.
  * @param {Function} [deps.previewProbe]
@@ -255,6 +258,8 @@ export function createAssetsRouter({
   assetBrowserPreferenceService,
   autoRenameService,
   projectPrimaryImageService,
+  bookService,
+  bookPrimaryImageService,
   previewProbe,
 } = {}) {
   if (!assetBrowserPreferenceService || typeof assetBrowserPreferenceService.resolveEffectiveCategory !== 'function') {
@@ -267,6 +272,14 @@ export function createAssetsRouter({
     || typeof projectPrimaryImageService.setPrimaryImage !== 'function'
     || typeof projectPrimaryImageService.clearPrimaryImage !== 'function') {
     throw new Error('createAssetsRouter requires a projectPrimaryImageService dependency.');
+  }
+  if (!bookService || typeof bookService.listBooks !== 'function') {
+    throw new Error('createAssetsRouter requires a bookService dependency.');
+  }
+  if (!bookPrimaryImageService || typeof bookPrimaryImageService.setPrimaryImage !== 'function'
+    || typeof bookPrimaryImageService.clearPrimaryImage !== 'function'
+    || typeof bookPrimaryImageService.listBooksForAsset !== 'function') {
+    throw new Error('createAssetsRouter requires a bookPrimaryImageService dependency.');
   }
   if (!autoRenameService || typeof autoRenameService.buildPlan !== 'function'
     || typeof autoRenameService.applyPlan !== 'function') {
@@ -741,6 +754,86 @@ export function createAssetsRouter({
         assetId,
         req.body,
         { notice: 'primary-image-removed', edit: 1 },
+      ));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // POST /projects/:projectId/assets/:assetId/book-primary-image — Set the displayed
+  // asset as a book primary image after confirming the viewer URL owns it.
+  router.post('/:projectId/assets/:assetId/book-primary-image', async (req, res, next) => {
+    try {
+      const projectId = parseId(req.params.projectId);
+      const assetId = parseId(req.params.assetId);
+      if (projectId === null || assetId === null) {
+        return next(createNotFound());
+      }
+      if (!workflowQueryService.getProjectAssetViewer(projectId, assetId, req.body)) {
+        return next(createNotFound());
+      }
+
+      const bookId = parseId(req.body?.bookId);
+      try {
+        if (bookId === null) {
+          const error = new Error('Invalid book primary image request.');
+          error.code = BOOK_PRIMARY_IMAGE_ERROR_CODES.INVALID_ID;
+          throw error;
+        }
+        await bookPrimaryImageService.setPrimaryImage(bookId, assetId);
+      } catch (err) {
+        return handleBookPrimaryImageFailure(err, {
+          appName, workflowQueryService, assetWorkflowMetadataService, projectPrimaryImageService, req, res, next,
+          projectId, assetId, previewProbe,
+        }).catch(next);
+      }
+
+      return res.redirect(buildAssetViewerRedirectUrl(
+        workflowQueryService,
+        projectId,
+        assetId,
+        req.body,
+        { notice: 'book-primary-image-set', edit: 1 },
+      ));
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  // POST /projects/:projectId/assets/:assetId/book-primary-image/remove — Remove
+  // only a selection that still points at the displayed asset.
+  router.post('/:projectId/assets/:assetId/book-primary-image/remove', async (req, res, next) => {
+    try {
+      const projectId = parseId(req.params.projectId);
+      const assetId = parseId(req.params.assetId);
+      if (projectId === null || assetId === null) {
+        return next(createNotFound());
+      }
+      if (!workflowQueryService.getProjectAssetViewer(projectId, assetId, req.body)) {
+        return next(createNotFound());
+      }
+
+      const bookId = parseId(req.body?.bookId);
+      try {
+        if (bookId === null) {
+          const error = new Error('Invalid book primary image request.');
+          error.code = BOOK_PRIMARY_IMAGE_ERROR_CODES.INVALID_ID;
+          throw error;
+        }
+        await bookPrimaryImageService.clearPrimaryImage(bookId, assetId);
+      } catch (err) {
+        return handleBookPrimaryImageFailure(err, {
+          appName, workflowQueryService, assetWorkflowMetadataService, projectPrimaryImageService, req, res, next,
+          projectId, assetId, previewProbe,
+        }).catch(next);
+      }
+
+      return res.redirect(buildAssetViewerRedirectUrl(
+        workflowQueryService,
+        projectId,
+        assetId,
+        req.body,
+        { notice: 'book-primary-image-removed', edit: 1 },
       ));
     } catch (err) {
       next(err);
@@ -1478,6 +1571,29 @@ function getAssetTagEditorData(req, assetId) {
   };
 }
 
+function getBookPrimaryImageEditorData(req, assetId) {
+  const bookService = req?.app?.locals?.bookService;
+  const bookPrimaryImageService = req?.app?.locals?.bookPrimaryImageService;
+  if (!bookService || !bookPrimaryImageService) {
+    return {
+      bookPrimaryImageOptions: [],
+      bookPrimaryImageUsages: [],
+    };
+  }
+
+  return {
+    bookPrimaryImageOptions: bookService.listBooks().map((book) => ({
+      id: book.id,
+      value: String(book.id),
+      label: book.title,
+    })),
+    bookPrimaryImageUsages: bookPrimaryImageService.listBooksForAsset(assetId).map((book) => ({
+      id: book.id,
+      title: book.title,
+    })),
+  };
+}
+
 /**
  * Build the normal viewer model for a controlled tag failure submitted by its
  * Edit Asset dialog. Kept here so tag routing does not duplicate the viewer
@@ -1981,6 +2097,8 @@ const ASSET_ACTION_NOTICE_CODES = new Set([
   'asset-moved',
   'primary-image-set',
   'primary-image-removed',
+  'book-primary-image-set',
+  'book-primary-image-removed',
   'asset_tags_updated',
 ]);
 
@@ -2029,6 +2147,73 @@ async function handlePrimaryImageFailure(err, {
     controlled.status = status;
     return next(controlled);
   }
+
+  let data;
+  let primaryImageState;
+  let assetTagEditor;
+  try {
+    data = workflowQueryService.getProjectAssetViewer(projectId, assetId, req.body);
+    if (data) {
+      const viewerEligibility = await probePrimaryImageViewerEligibility(data, previewProbe);
+      primaryImageState = buildPrimaryImageViewerState(
+        data,
+        projectPrimaryImageService.getPrimaryImage(projectId),
+        viewerEligibility,
+      );
+      assetTagEditor = getAssetTagEditorData(req, data.asset.id);
+    }
+  } catch (renderErr) {
+    return next(renderErr);
+  }
+  if (!data) {
+    return next(createNotFound());
+  }
+
+  return res.status(status).render('projects/asset-viewer.njk', {
+    appName,
+    ...await buildAssetViewerRenderModel(data, {
+      ...primaryImageState,
+      ...assetTagEditor,
+      assetEditDialogOpen: true,
+      formError: { message },
+    }, req, workflowQueryService, assetWorkflowMetadataService),
+  });
+}
+
+const BOOK_PRIMARY_IMAGE_ERROR_STATUS = Object.freeze({
+  [BOOK_PRIMARY_IMAGE_ERROR_CODES.INVALID_ID]: 422,
+  [BOOK_PRIMARY_IMAGE_ERROR_CODES.BOOK_NOT_FOUND]: 404,
+  [BOOK_PRIMARY_IMAGE_ERROR_CODES.ASSET_NOT_FOUND]: 404,
+  [BOOK_PRIMARY_IMAGE_ERROR_CODES.ASSET_MISSING]: 422,
+  [BOOK_PRIMARY_IMAGE_ERROR_CODES.ASSET_UNSUPPORTED]: 422,
+  [BOOK_PRIMARY_IMAGE_ERROR_CODES.STALE_CLEAR]: 409,
+  [BOOK_PRIMARY_IMAGE_ERROR_CODES.DATABASE_ERROR]: 500,
+});
+
+const BOOK_PRIMARY_IMAGE_ERROR_MESSAGES = Object.freeze({
+  [BOOK_PRIMARY_IMAGE_ERROR_CODES.INVALID_ID]: 'Choose a valid book.',
+  [BOOK_PRIMARY_IMAGE_ERROR_CODES.ASSET_MISSING]: 'This asset is missing from the last scan and cannot be selected as a book primary image.',
+  [BOOK_PRIMARY_IMAGE_ERROR_CODES.ASSET_UNSUPPORTED]: 'This asset type cannot be selected as a book primary image.',
+  [BOOK_PRIMARY_IMAGE_ERROR_CODES.STALE_CLEAR]: 'The book primary image changed before it could be removed.',
+  [BOOK_PRIMARY_IMAGE_ERROR_CODES.DATABASE_ERROR]: 'The book primary image operation could not be completed. Please try again.',
+});
+
+async function handleBookPrimaryImageFailure(err, {
+  appName, workflowQueryService, assetWorkflowMetadataService, projectPrimaryImageService, req, res, next,
+  projectId, assetId, previewProbe,
+}) {
+  const code = err && err.code;
+  const status = code ? BOOK_PRIMARY_IMAGE_ERROR_STATUS[code] : undefined;
+
+  if (status === undefined) {
+    return next(err);
+  }
+  if (status === 404) {
+    return next(createNotFound());
+  }
+
+  const message = BOOK_PRIMARY_IMAGE_ERROR_MESSAGES[code]
+    || 'The book primary image operation could not be completed. Please try again.';
 
   let data;
   let primaryImageState;
@@ -2281,11 +2466,9 @@ function parseDestinationCategoryField(raw) {
 async function probePrimaryImageViewerEligibility(data, previewProbe) {
   if (isPrimaryImageAssetUsable(data.asset)) return true;
 
-  const projectIsArchived = Boolean(data.project.archived_at) || data.project.status === 'archived';
   const classification = classifyPreviewable(data.asset);
   if (
-    projectIsArchived
-    || !data.asset?.is_present
+    !data.asset?.is_present
     || !classification.supported
     || classification.kind !== 'krita'
     || classification.extension !== 'kra'
@@ -2315,6 +2498,7 @@ function buildPrimaryImageViewerState(data, selectedAsset, isEligiblePresentImag
     isPrimaryImageAvailable: isPrimaryImage && isEligible,
     canSetAsPrimaryImage: !projectIsArchived && !isPrimaryImage && isEligible,
     canRemovePrimaryImage: !projectIsArchived && isPrimaryImage,
+    canSetAsBookPrimaryImage: isEligible,
   };
 }
 
@@ -2390,6 +2574,7 @@ export async function buildAssetViewerRenderModel(
     assetTags: [],
     assetTagOptions: [],
     selectedAssetTagIds: [],
+    ...getBookPrimaryImageEditorData(req, data.asset.id),
     context: data.context,
     workflowInspection,
     assetEditDialogOpen: req?.query?.edit === '1',

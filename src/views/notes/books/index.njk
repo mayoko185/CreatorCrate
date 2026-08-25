@@ -1,5 +1,6 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
+{% import "partials/book-primary-image.njk" as bookPrimaryImage %}
 
 {% set page_title = "Notes" %}
 
@@ -19,16 +20,19 @@
 
   <section class="notes-books-index" aria-label="Books">
     {% if books.length > 0 %}
-      <ul class="notes-book-content-list" aria-label="Books">
+      <ul class="notes-book-shelf" aria-label="Books">
         {% for book in books %}
-          <li class="notes-book-content-row">
-            <div class="notes-book-content-copy">
-              <span class="notes-book-content-kind">Book</span>
-              <h2 class="notes-book-content-title"><a href="/notes/books/{{ book.id }}">{{ book.title }}</a></h2>
-            </div>
-            <div class="notes-book-content-actions">
-              <a class="button button-small button-secondary" href="/notes/books/{{ book.id }}/edit" aria-label="Edit Book: {{ book.title }}">Edit Book</a>
-            </div>
+          <li class="notes-book-card">
+            <article class="notes-book-card-surface">
+              {{ bookPrimaryImage.render(book) }}
+              <div class="notes-book-card-body">
+                <span class="notes-book-content-kind">Book</span>
+                <h2 class="notes-book-card-title"><a href="/notes/books/{{ book.id }}">{{ book.title }}</a></h2>
+                <div class="notes-book-content-actions">
+                  <a class="button button-small button-secondary" href="/notes/books/{{ book.id }}/edit" aria-label="Edit Book: {{ book.title }}">Edit Book</a>
+                </div>
+              </div>
+            </article>
           </li>
         {% endfor %}
       </ul>

@@ -7,6 +7,7 @@ import { createApp } from '../src/app.js';
 import { closeDatabase, openDatabase, runMigrations } from '../src/db.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { BookContentIntegrityError } from '../src/services/book-service.js';
+import { createTagRepository } from '../src/data/tag-repository.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -29,12 +30,54 @@ function captureBookDetailLocals(app) {
   };
 }
 
+function captureBooksIndexLocals(app) {
+  let locals = null;
+  const originalRender = app.response.render;
+  app.response.render = function captureRender(view, renderLocals, callback) {
+    if (view === 'notes/books/index.njk') locals = renderLocals;
+    return originalRender.call(this, view, renderLocals, callback);
+  };
+
+  return {
+    get() {
+      return locals;
+    },
+    restore() {
+      app.response.render = originalRender;
+    },
+  };
+}
+
+function insertProject(db, title) {
+  return Number(db.prepare(
+    `INSERT INTO projects (title, slug, description, notes, status, planned_date, published_date, patreon_url)
+     VALUES (?, ?, '', '', 'tbd', NULL, NULL, NULL)`
+  ).run(title, title.toLowerCase().replace(/\s+/g, '-')).lastInsertRowid);
+}
+
+function insertPreviewAsset(db, projectId, filename = 'book-cover.png') {
+  return Number(db.prepare(
+    `INSERT INTO assets (
+       project_id, relative_path, filename, extension, mime_type, size_bytes,
+       modified_at, is_present, last_seen_at
+     ) VALUES (?, ?, ?, 'png', 'image/png', 1, '2026-08-24 12:00:00', 1, datetime('now'))
+       RETURNING id`
+  ).get(projectId, `covers/${filename}`, filename).id);
+}
+
+function findBookCoverImage(html, assetId, size) {
+  return html.match(new RegExp(
+    `<img\\b[^>]*src="/projects/\\d+/assets/${assetId}/${size}\\?v=[^"]*"[^>]*>`,
+  ))?.[0] || '';
+}
+
 describe('Book HTTP routes', () => {
   let db;
   let app;
   let tmpDir;
   let agent;
   let csrfToken;
+  let tagRepository;
 
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-books-http-'));
@@ -44,10 +87,11 @@ describe('Book HTTP routes', () => {
     fs.mkdirSync(appDataRoot, { recursive: true });
     db = openDatabase(path.join(tmpDir, 'test.db'));
     runMigrations(db, MIGRATIONS_DIR);
+    tagRepository = createTagRepository(db);
     const { csrfPepper } = ensureAuthEnablement(appDataRoot);
     app = createApp(
       { appName: 'CreatorCrate', db, projectsRoot },
-      { appDataRoot, authState: { csrfPepper } },
+      { appDataRoot, authState: { csrfPepper }, tagRepository },
     );
     ({ agent, csrfToken } = await getDisabledModeCsrf(app, appDataRoot));
   });
@@ -99,7 +143,7 @@ describe('Book HTTP routes', () => {
     app.locals.bookService.reorderBooks([second.id, first.id]);
 
     const response = await agent.get('/notes').expect(200);
-    const booksList = response.text.match(/<ul class="notes-book-content-list" aria-label="Books">[\s\S]*?<\/ul>/)?.[0] || '';
+    const booksList = response.text.match(/<ul class="notes-book-shelf" aria-label="Books">[\s\S]*?<\/ul>/)?.[0] || '';
 
     expect(booksList.indexOf('Second Book')).toBeLessThan(booksList.indexOf('First Book'));
     expect(booksList).toContain(`<a href="/notes/books/${second.id}">Second Book</a>`);
@@ -114,6 +158,139 @@ describe('Book HTTP routes', () => {
     expect(response.text).not.toContain('Move up');
     expect(response.text).not.toContain('Move down');
     expect(response.text).not.toContain('Legacy Flat Note');
+  });
+
+  it('renders available, unavailable, and absent Book covers without changing Book order', async () => {
+    const availableBook = app.locals.bookService.createBook({ title: 'Available Cover' });
+    const unavailableBook = app.locals.bookService.createBook({ title: 'Unavailable Cover' });
+    const noCoverBook = app.locals.bookService.createBook({ title: 'No Cover' });
+    const availableProjectId = insertProject(db, 'Available Cover Project');
+    const unavailableProjectId = insertProject(db, 'Unavailable Cover Project');
+    const availableAssetId = insertPreviewAsset(db, availableProjectId, 'available-cover.png');
+    const unavailableAssetId = insertPreviewAsset(db, unavailableProjectId, 'unavailable-cover.png');
+
+    app.locals.bookPrimaryImageService.setPrimaryImage(availableBook.id, availableAssetId);
+    app.locals.bookPrimaryImageService.setPrimaryImage(unavailableBook.id, unavailableAssetId);
+    db.prepare('UPDATE assets SET is_present = 0, missing_since = datetime(\'now\') WHERE id = ?')
+      .run(unavailableAssetId);
+
+    const attachPrimaryImages = vi.spyOn(app.locals.bookPrimaryImageService, 'attachPrimaryImages');
+    const renderCapture = captureBooksIndexLocals(app);
+    const response = await agent.get('/notes').expect(200);
+    const locals = renderCapture.get();
+    renderCapture.restore();
+
+    expect(attachPrimaryImages).toHaveBeenCalledTimes(1);
+    expect(locals.books.map((book) => book.id)).toEqual([
+      availableBook.id,
+      unavailableBook.id,
+      noCoverBook.id,
+    ]);
+    expect(locals.books.map((book) => book.primaryImage.state)).toEqual([
+      'available',
+      'unavailable',
+      'none',
+    ]);
+    expect(response.text).toMatch(
+      new RegExp(`src="/projects/${availableProjectId}/assets/${availableAssetId}/thumbnail\\?v=`),
+    );
+    expect(response.text).toContain('Image unavailable');
+    expect(response.text).toContain('data-primary-image-state="unavailable"');
+    expect(response.text).toContain('data-primary-image-state="none"');
+    expect(response.text).not.toMatch(
+      new RegExp(`<img[^>]*src="/projects/${unavailableProjectId}/assets/${unavailableAssetId}/thumbnail`),
+    );
+    expect(response.text).toContain(`<a href="/notes/books/${availableBook.id}">Available Cover</a>`);
+    expect(response.text).toContain(`href="/notes/books/${noCoverBook.id}/edit"`);
+  });
+
+
+  it('applies the existing effective-asset NSFW blur policy to Book covers in one batch', async () => {
+    const nsfwTag = app.locals.tagService.createTag({ name: 'NSFW' });
+    const directBook = app.locals.bookService.createBook({ title: 'Direct NSFW cover' });
+    const inheritedBook = app.locals.bookService.createBook({ title: 'Inherited NSFW cover' });
+    const safeBook = app.locals.bookService.createBook({ title: 'Safe cover' });
+    const unavailableBook = app.locals.bookService.createBook({ title: 'Unavailable NSFW cover' });
+    const noImageBook = app.locals.bookService.createBook({ title: 'No image cover' });
+    const directProjectId = insertProject(db, 'Direct NSFW project');
+    const inheritedProjectId = insertProject(db, 'Inherited NSFW project');
+    const safeProjectId = insertProject(db, 'Safe project');
+    const unavailableProjectId = insertProject(db, 'Unavailable NSFW project');
+    const directAssetId = insertPreviewAsset(db, directProjectId, 'direct-nsfw.png');
+    const inheritedAssetId = insertPreviewAsset(db, inheritedProjectId, 'inherited-nsfw.png');
+    const safeAssetId = insertPreviewAsset(db, safeProjectId, 'safe.png');
+    const unavailableAssetId = insertPreviewAsset(db, unavailableProjectId, 'unavailable-nsfw.png');
+
+    app.locals.bookPrimaryImageService.setPrimaryImage(directBook.id, directAssetId);
+    app.locals.bookPrimaryImageService.setPrimaryImage(inheritedBook.id, inheritedAssetId);
+    app.locals.bookPrimaryImageService.setPrimaryImage(safeBook.id, safeAssetId);
+    app.locals.bookPrimaryImageService.setPrimaryImage(unavailableBook.id, unavailableAssetId);
+    app.locals.assetTagService.replaceAssetTags(directAssetId, [nsfwTag.id]);
+    app.locals.projectTagService.replaceProjectTags(inheritedProjectId, [nsfwTag.id]);
+    db.prepare('UPDATE assets SET is_present = 0, missing_since = datetime(\'now\') WHERE id = ?')
+      .run(unavailableAssetId);
+    app.locals.nsfwFilterSettingsService.setEnabled(true);
+
+    const assetTagLookups = vi.spyOn(tagRepository, 'listForAssetIds');
+    const projectTagLookups = vi.spyOn(tagRepository, 'listForProjectIds');
+    const renderCapture = captureBooksIndexLocals(app);
+    const response = await agent.get('/notes').expect(200);
+    const locals = renderCapture.get();
+    renderCapture.restore();
+
+    expect(assetTagLookups).toHaveBeenCalledTimes(1);
+    expect(assetTagLookups).toHaveBeenCalledWith([directAssetId, inheritedAssetId, safeAssetId]);
+    expect(projectTagLookups).toHaveBeenCalledTimes(1);
+    expect(projectTagLookups).toHaveBeenCalledWith([directProjectId, inheritedProjectId, safeProjectId]);
+
+    expect(findBookCoverImage(response.text, directAssetId, 'thumbnail')).toContain('asset-image--nsfw-blurred');
+    expect(findBookCoverImage(response.text, inheritedAssetId, 'thumbnail')).toContain('asset-image--nsfw-blurred');
+    expect(findBookCoverImage(response.text, safeAssetId, 'thumbnail')).not.toContain('asset-image--nsfw-blurred');
+    expect(locals.books.find((book) => book.id === directBook.id)?.nsfwBlur).toBe(true);
+    expect(locals.books.find((book) => book.id === inheritedBook.id)?.nsfwBlur).toBe(true);
+    expect(locals.books.find((book) => book.id === safeBook.id)?.nsfwBlur).toBe(false);
+    expect(locals.books.find((book) => book.id === unavailableBook.id)).not.toHaveProperty('nsfwBlur');
+    expect(locals.books.find((book) => book.id === noImageBook.id)).not.toHaveProperty('nsfwBlur');
+
+    assetTagLookups.mockClear();
+    projectTagLookups.mockClear();
+    app.locals.nsfwFilterSettingsService.setEnabled(false);
+
+    const disabled = await agent.get('/notes').expect(200);
+
+    expect(assetTagLookups).not.toHaveBeenCalled();
+    expect(projectTagLookups).not.toHaveBeenCalled();
+    expect(findBookCoverImage(disabled.text, directAssetId, 'thumbnail')).not.toContain('asset-image--nsfw-blurred');
+  });
+
+  it('keeps Book detail primary-image NSFW blur consistent with the Books index', async () => {
+    const nsfwTag = app.locals.tagService.createTag({ name: 'NSFW' });
+    const book = app.locals.bookService.createBook({ title: 'Detail NSFW cover' });
+    const projectId = insertProject(db, 'Detail NSFW project');
+    const assetId = insertPreviewAsset(db, projectId, 'detail-nsfw.png');
+
+    app.locals.bookPrimaryImageService.setPrimaryImage(book.id, assetId);
+    app.locals.assetTagService.replaceAssetTags(assetId, [nsfwTag.id]);
+    app.locals.nsfwFilterSettingsService.setEnabled(true);
+
+    const indexCapture = captureBooksIndexLocals(app);
+    const index = await agent.get('/notes').expect(200);
+    const indexLocals = indexCapture.get();
+    indexCapture.restore();
+    const detailCapture = captureBookDetailLocals(app);
+    const detail = await agent.get(`/notes/books/${book.id}`).expect(200);
+    const detailLocals = detailCapture.get();
+    detailCapture.restore();
+
+    expect(indexLocals.books.find((candidate) => candidate.id === book.id)?.nsfwBlur).toBe(true);
+    expect(detailLocals.book.nsfwBlur).toBe(true);
+    expect(findBookCoverImage(index.text, assetId, 'thumbnail')).toContain('asset-image--nsfw-blurred');
+    expect(findBookCoverImage(detail.text, assetId, 'preview')).toContain('asset-image--nsfw-blurred');
+
+    app.locals.nsfwFilterSettingsService.setEnabled(false);
+    const disabled = await agent.get(`/notes/books/${book.id}`).expect(200);
+
+    expect(findBookCoverImage(disabled.text, assetId, 'preview')).not.toContain('asset-image--nsfw-blurred');
   });
 
   it('renders the dedicated top-level Book reorder page before dynamic Book detail routing', async () => {
@@ -200,6 +377,18 @@ describe('Book HTTP routes', () => {
     expect(response.text).toContain(`<title>CreatorCrate — Notes — ${book.title}</title>`);
     expect(response.text).toContain(`<h1 class="app-section-title">Notes — ${book.title}</h1>`);
     expect((response.text.match(/<h1\b/g) || [])).toHaveLength(1);
+    expect(response.text).toContain('<div class="notes-page-detail-layout">');
+    expect(response.text).toContain('<aside class="notes-page-detail-sidebar notes-surface notes-surface--compact">');
+    expect(response.text).toContain(`<nav class="notes-book-nav" aria-label="Contents of ${book.title}">`);
+    expect(response.text).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">${book.title}</a>`);
+    expect(response.text).toContain('<section class="notes-detail-panel notes-detail-details" aria-labelledby="notes-book-details-heading">');
+    expect(response.text).toContain('<h2 id="notes-book-details-heading">Details</h2>');
+    expect(response.text).toContain('<dl class="detail-list">');
+    expect(response.text).toContain('<dt>Created</dt>');
+    expect(response.text).toContain(`<dd>${book.created_at}</dd>`);
+    expect(response.text).toContain('<dt>Updated</dt>');
+    expect(response.text).toContain(`<dd>${book.updated_at}</dd>`);
+    expect(response.text).toContain('data-primary-image-state="none"');
     expect((response.text.match(/class="notes-surface"/g) || [])).toHaveLength(1);
     expect(response.text).toMatch(/<div class="notes-surface">\s*<nav class="book-outline"[\s\S]*?<\/nav>\s*<\/div>/);
     expect(response.text).toContain(`<nav class="book-outline" aria-label="Contents of ${book.title}">`);
@@ -223,6 +412,8 @@ describe('Book HTTP routes', () => {
     expect(response.text).not.toContain('Danger zone');
     expect(response.text).not.toContain(`/notes/books/${book.id}/delete`);
     expect(locals.contents).toEqual([]);
+    expect(locals.bookContents).toBe(locals.contents);
+    expect(locals.book.primaryImage).toMatchObject({ state: 'none', previewUrl: null });
     expect(locals.chapters).toEqual([]);
     expect(locals.pages).toEqual([]);
     expect(locals.canChangeOrder).toBe(false);
@@ -231,6 +422,68 @@ describe('Book HTTP routes', () => {
     await agent.get('/notes/books/01').expect(404);
     await agent.get('/notes/books/999999/order').expect(404);
     await agent.get('/notes/books/01/order').expect(404);
+  });
+
+  it('renders the primary-image preview and shared Book contents sidebar without replacing the outline', async () => {
+    const book = app.locals.bookService.createBook({ title: 'Sidebar Book' });
+    const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Sidebar Chapter' });
+    const chapterPage = app.locals.noteService.createNote({
+      chapterId: chapter.id,
+      title: 'Sidebar Chapter Page',
+      content: 'Nested content',
+    });
+    const directPage = app.locals.noteService.createNote({
+      bookId: book.id,
+      title: 'Sidebar Direct Page',
+      content: 'Direct content',
+    });
+    const projectId = insertProject(db, 'Sidebar Cover Project');
+    const assetId = insertPreviewAsset(db, projectId, 'sidebar-cover.png');
+    app.locals.bookPrimaryImageService.setPrimaryImage(book.id, assetId);
+
+    const attachPrimaryImages = vi.spyOn(app.locals.bookPrimaryImageService, 'attachPrimaryImages');
+    const renderCapture = captureBookDetailLocals(app);
+    const response = await agent.get(`/notes/books/${book.id}`).expect(200);
+    const locals = renderCapture.get();
+    renderCapture.restore();
+
+    expect(attachPrimaryImages).toHaveBeenCalledTimes(1);
+    expect(locals.contents).toBe(locals.bookContents);
+    expect(locals.book.primaryImage).toMatchObject({
+      state: 'available',
+      selectedAssetId: assetId,
+    });
+    expect(response.text).toMatch(new RegExp(
+      `src="/projects/${projectId}/assets/${assetId}/preview\\?v=`,
+    ));
+    expect(response.text).toContain(`<nav class="notes-book-nav" aria-label="Contents of ${book.title}">`);
+    expect(response.text).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">${book.title}</a>`);
+    expect(response.text).toContain(`<a class="notes-book-nav-chapter-link" href="/notes/chapters/${chapter.id}">${chapter.title}</a>`);
+    expect(response.text).toContain(`<a class="notes-book-nav-page-link" href="/notes/${chapterPage.id}">${chapterPage.title}</a>`);
+    expect(response.text).toContain(`<a class="notes-book-nav-page-link" href="/notes/${directPage.id}">${directPage.title}</a>`);
+    expect(response.text).toContain(`<nav class="book-outline" aria-label="Contents of ${book.title}">`);
+    expect(response.text).toContain(`<a class="book-outline-title" href="/notes/chapters/${chapter.id}">${chapter.title}</a>`);
+    expect(response.text).toContain(`<a class="book-outline-title" href="/notes/${directPage.id}">${directPage.title}</a>`);
+  });
+
+  it('renders unavailable and absent Book primary-image fallbacks in the detail sidebar', async () => {
+    const unavailableBook = app.locals.bookService.createBook({ title: 'Unavailable Sidebar Cover' });
+    const noImageBook = app.locals.bookService.createBook({ title: 'No Sidebar Cover' });
+    const projectId = insertProject(db, 'Unavailable Sidebar Cover Project');
+    const assetId = insertPreviewAsset(db, projectId, 'unavailable-sidebar-cover.png');
+    app.locals.bookPrimaryImageService.setPrimaryImage(unavailableBook.id, assetId);
+    db.prepare('UPDATE assets SET is_present = 0, missing_since = datetime(\'now\') WHERE id = ?')
+      .run(assetId);
+
+    const unavailable = await agent.get(`/notes/books/${unavailableBook.id}`).expect(200);
+    expect(unavailable.text).toContain('data-primary-image-state="unavailable"');
+    expect(unavailable.text).toContain('Image unavailable');
+    expect(unavailable.text).not.toMatch(/<img class="notes-book-cover-image/);
+
+    const none = await agent.get(`/notes/books/${noImageBook.id}`).expect(200);
+    expect(none.text).toContain('data-primary-image-state="none"');
+    expect(none.text).toContain('>No image</span>');
+    expect(none.text).not.toMatch(/<img class="notes-book-cover-image/);
   });
 
   it('renders a Book with Chapters and no direct Pages', async () => {

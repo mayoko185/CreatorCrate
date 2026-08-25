@@ -40,6 +40,7 @@ import {
   createAssetBrowserPreferenceService,
 } from './asset-browser-preference-service.js';
 import { classifyPreviewable } from './preview-service.js';
+import { buildPrimaryImageModelForAsset } from './primary-image-presenter.js';
 import {
   buildAssetLocationLabel,
   buildAssetOriginalUrl,
@@ -564,60 +565,12 @@ export function createWorkflowQueryService({
     };
   }
 
-  function buildEmptyPrimaryImageModel() {
-    return {
-      selectedAssetId: null,
-      provenance: null,
-      state: 'none',
-      kind: null,
-      mediaModifier: null,
-      previewUrl: null,
-      thumbnailUrl: null,
-      revision: null,
-      alt: null,
-    };
-  }
-
   function buildPrimaryImageModel(projectId, selection, asset) {
-    const selectedAssetId = selection?.asset_id ?? null;
-    if (selectedAssetId === null) return buildEmptyPrimaryImageModel();
-
-    const provenance = selection.provenance ?? PRIMARY_IMAGE_PROVENANCE.MANUAL;
-
     const ownedAsset = asset && asset.project_id === projectId ? asset : null;
-    const classification = ownedAsset ? classifyPreviewable(ownedAsset) : null;
-    const kind = classification?.kind ?? null;
-    const mediaModifier = kind === 'krita' ? 'krita' : null;
-    const supportedPrimaryKind = classification?.supported === true
-      && (classification.kind === 'image'
-        || (classification.kind === 'krita' && classification.extension === 'kra'));
-
-    if (!ownedAsset || !ownedAsset.is_present || !supportedPrimaryKind) {
-      return {
-        selectedAssetId,
-        provenance,
-        state: 'unavailable',
-        kind,
-        mediaModifier,
-        previewUrl: null,
-        thumbnailUrl: null,
-        revision: null,
-        alt: ownedAsset ? buildPreviewAltText(ownedAsset) : null,
-      };
-    }
-
-    const preview = buildAssetPreviewModel(ownedAsset);
-    return {
-      selectedAssetId,
-      provenance,
-      state: 'available',
-      kind,
-      mediaModifier,
-      previewUrl: preview.urls.preview,
-      thumbnailUrl: preview.urls.thumbnail,
-      revision: preview.revision,
-      alt: buildPreviewAltText(ownedAsset),
-    };
+    const projectSelection = selection
+      ? { ...selection, provenance: selection.provenance ?? PRIMARY_IMAGE_PROVENANCE.MANUAL }
+      : selection;
+    return buildPrimaryImageModelForAsset(projectSelection, ownedAsset);
   }
 
   function attachPrimaryImages(projects) {

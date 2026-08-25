@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 const DETAIL_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/notes/detail.njk', import.meta.url));
+const DETAILS_PANEL_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/partials/notes-details-panel.njk', import.meta.url));
 const CHAPTER_DETAIL_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/notes/chapters/detail.njk', import.meta.url));
 const CHAPTER_FORM_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/notes/chapters/form.njk', import.meta.url));
 const BOOK_FORM_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/notes/books/form.njk', import.meta.url));
@@ -12,6 +13,7 @@ const NOTE_FORM_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/notes/form.n
 const HIERARCHY_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/partials/notes-hierarchy.njk', import.meta.url));
 const CSS_PATH = fileURLToPath(new URL('../src/static/creatorcrate.css', import.meta.url));
 const detailTemplate = fs.readFileSync(DETAIL_TEMPLATE_PATH, 'utf8');
+const detailsPanelTemplate = fs.readFileSync(DETAILS_PANEL_TEMPLATE_PATH, 'utf8');
 const chapterDetailTemplate = fs.readFileSync(CHAPTER_DETAIL_TEMPLATE_PATH, 'utf8');
 const chapterFormTemplate = fs.readFileSync(CHAPTER_FORM_TEMPLATE_PATH, 'utf8');
 const bookFormTemplate = fs.readFileSync(BOOK_FORM_TEMPLATE_PATH, 'utf8');
@@ -196,6 +198,30 @@ describe('Notes Page detail hierarchy and layout contract', () => {
     expect(deleteFormStart).toBeGreaterThan(bookFormEnd);
   });
 
+  it('extracts reusable Details markup without changing its visual contract', () => {
+    expect(detailTemplate).toContain('{% set detailsHeadingId = "notes-detail-details-heading" %}');
+    expect(detailTemplate).toContain('{% set detailsCreated = note.created_at %}');
+    expect(detailTemplate).toContain('{% set detailsUpdated = note.updated_at %}');
+    expect(detailTemplate).toContain('{% include "partials/notes-details-panel.njk" %}');
+    expect(bookDetailTemplate).toContain('{% set detailsHeadingId = "notes-book-details-heading" %}');
+    expect(bookDetailTemplate).toContain('{% set detailsCreated = book.created_at %}');
+    expect(bookDetailTemplate).toContain('{% set detailsUpdated = book.updated_at %}');
+    expect(bookDetailTemplate).toContain('{% include "partials/notes-details-panel.njk" %}');
+    expect(detailsPanelTemplate).toContain('<section class="notes-detail-panel notes-detail-details" aria-labelledby="{{ detailsHeadingId }}">');
+    expect(detailsPanelTemplate).toContain('<h2 id="{{ detailsHeadingId }}">Details</h2>');
+    expect(detailsPanelTemplate).toContain('<dl class="detail-list">');
+    expect(detailsPanelTemplate).toContain('<dt>Created</dt>');
+    expect(detailsPanelTemplate).toContain('<dd>{{ detailsCreated }}</dd>');
+    expect(detailsPanelTemplate).toContain('<dt>Updated</dt>');
+    expect(detailsPanelTemplate).toContain('<dd>{{ detailsUpdated }}</dd>');
+
+    const bookPrimaryImageStart = bookDetailTemplate.indexOf("{{ bookPrimaryImage.render(book, 'preview') }}");
+    const bookNavigatorStart = bookDetailTemplate.indexOf('{% include "partials/book-navigator.njk" %}');
+    const bookDetailsStart = bookDetailTemplate.indexOf('{% include "partials/notes-details-panel.njk" %}');
+    expect(bookPrimaryImageStart).toBeLessThan(bookNavigatorStart);
+    expect(bookNavigatorStart).toBeLessThan(bookDetailsStart);
+  });
+
   it('keeps the detail layout content-dominant and stacks at narrow widths', () => {
     expect(detailTemplate).toContain('<div class="notes-page-detail-layout">');
     expect(detailTemplate).toContain('<div class="notes-page-sidebar">');
@@ -206,7 +232,7 @@ describe('Notes Page detail hierarchy and layout contract', () => {
     const pageLayoutStart = detailTemplate.indexOf('<div class="notes-page-detail-layout">');
     const sidebarStart = detailTemplate.indexOf('<div class="notes-page-sidebar">');
     const navigatorStart = detailTemplate.indexOf('<aside class="notes-page-detail-sidebar');
-    const detailsStart = detailTemplate.indexOf('<section class="notes-detail-panel notes-detail-details"');
+    const detailsStart = detailTemplate.indexOf('{% include "partials/notes-details-panel.njk" %}');
     const contentStart = detailTemplate.indexOf('<div class="notes-page-detail-content">');
     const contentSurfaceStart = detailTemplate.indexOf('<section class="notes-detail-content"');
     const projectsStart = detailTemplate.indexOf('notes-detail-projects');
@@ -247,7 +273,7 @@ describe('Notes Page detail hierarchy and layout contract', () => {
     expect(detailTemplate).toContain('<p class="notes-detail-kicker" id="notes-detail-content-heading">{{ note.title }}</p>');
     expect(detailTemplate).not.toContain('Reading view');
     expect(detailTemplate).not.toContain('<h2 id="notes-detail-content-heading">Content</h2>');
-    expect(detailTemplate).toContain('<h2 id="notes-detail-details-heading">Details</h2>');
+    expect(detailsPanelTemplate).toContain('<h2 id="{{ detailsHeadingId }}">Details</h2>');
     expect(detailTemplate).toContain('<h2 id="notes-detail-projects-heading">Projects</h2>');
     expect(detailTemplate).toContain('<h2 id="notes-detail-assets-heading">Assets</h2>');
     expect(noteFormTemplate).toContain('<h2 id="notes-connections-heading">Connections</h2>');

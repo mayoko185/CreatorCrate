@@ -469,6 +469,7 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     const { args: repositoryArgs, repository: noteRepository } = dependencyInstrumentation.noteRepositories[0];
     const { args: serviceArgs, service: noteService } = dependencyInstrumentation.noteServices[0];
     const { args: routerArgs } = dependencyInstrumentation.noteRouters[0];
+    const { repository: tagRepository } = dependencyInstrumentation.tagRepositories[0];
     const { repository: bookRepository } = dependencyInstrumentation.bookRepositories[0];
     const { args: bookServiceArgs, service: bookService } = dependencyInstrumentation.bookServices[0];
     const { args: bookContentRepositoryArgs, repository: bookContentRepository } =
@@ -513,12 +514,18 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     expect(routerArgs[0]).toEqual({
       appName: 'CreatorCrate',
       bookService: app.locals.bookService,
+      bookPrimaryImageService: app.locals.bookPrimaryImageService,
       chapterService: app.locals.chapterService,
       noteService,
       markdownRenderer: app.locals.markdownRenderer,
       projectService: dependencyInstrumentation.projectServices[0].service,
       assetRepository: app.locals.assetScanner.repository,
+      tagRepository,
+      nsfwFilterSettingsService: app.locals.nsfwFilterSettingsService,
     });
+    expect(routerArgs[0].tagRepository).toBe(tagRepository);
+    expect(routerArgs[0].nsfwFilterSettingsService)
+      .toBe(app.locals.nsfwFilterSettingsService);
   });
 
   it('constructs the preference service once and keeps it available without route wiring', () => {
@@ -587,7 +594,7 @@ describe('app construction — asset actions chunk 3 wiring', () => {
       setValue: () => undefined,
     };
     const pageDefaultsService = { resolve: () => 'grid' };
-    const nsfwFilterSettingsService = {};
+    const nsfwFilterSettingsService = { isEnabled: () => false };
     const assetBrowserPreferenceService = {
       getProjectPreference: () => ({ mode: 'inherit', categoryId: null }),
       resolveEffectiveCategory: () => null,
@@ -651,11 +658,14 @@ describe('app construction — asset actions chunk 3 wiring', () => {
   });
 
   it('preserves explicit tag repository and service overrides', () => {
-    const tagRepository = {};
+    const tagRepository = {
+      listForAssetIds: () => [],
+      listForProjectIds: () => [],
+    };
     const tagService = {};
     const projectTagService = {};
     const assetTagService = {};
-    const nsfwFilterSettingsService = {};
+    const nsfwFilterSettingsService = { isEnabled: () => false };
 
     const app = buildApp({
       tagRepository,

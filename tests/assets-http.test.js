@@ -7461,6 +7461,38 @@ describe('asset browser HTTP workflow', () => {
         expect(res.text).not.toContain(`action="/projects/${id}/assets/${asset.id}/move"`);
       });
 
+      it('keeps archived eligible assets Book-primary eligible without changing project-primary eligibility', async () => {
+        const archived = await setupProjectWithKrita(
+          'Archived Book Primary Eligibility',
+          'kra',
+          { merged: Buffer.from('merged-preview') },
+        );
+        const unsupported = await setupProjectWithAsset('Book Primary Unsupported', 'source.kra');
+        const missing = await setupProjectWithAsset('Book Primary Missing', 'gone.png');
+        fs.rmSync(path.join(missing.projectDir, 'gone.png'));
+        await agent.post(`/projects/${missing.id}/scan`).send({ _csrf: csrfToken }).type('form').expect(302);
+        await agent.post(`/projects/${archived.id}/archive`).send({ _csrf: csrfToken }).type('form').expect(302);
+
+        const originalRender = app.response.render;
+        const viewerLocalsByAssetId = new Map();
+        app.response.render = function captureAssetViewerRender(view, locals, ...args) {
+          if (view === 'projects/asset-viewer.njk') viewerLocalsByAssetId.set(locals.asset.id, locals);
+          return originalRender.call(this, view, locals, ...args);
+        };
+        try {
+          await agent.get(`/projects/${archived.id}/assets/${archived.asset.id}`).expect(200);
+          await agent.get(`/projects/${unsupported.id}/assets/${unsupported.asset.id}`).expect(200);
+          await agent.get(`/projects/${missing.id}/assets/${missing.asset.id}`).expect(200);
+        } finally {
+          app.response.render = originalRender;
+        }
+
+        expect(viewerLocalsByAssetId.get(archived.asset.id).canSetAsBookPrimaryImage).toBe(true);
+        expect(viewerLocalsByAssetId.get(archived.asset.id).canSetAsPrimaryImage).toBe(false);
+        expect(viewerLocalsByAssetId.get(unsupported.asset.id).canSetAsBookPrimaryImage).toBe(false);
+        expect(viewerLocalsByAssetId.get(missing.asset.id).canSetAsBookPrimaryImage).toBe(false);
+      });
+
       it('keeps a present merged .kra Primary-image eligible across every controlled-rerender origin (D2 regression)', async () => {
         const merged = await setupProjectWithKrita('D2 Merged KRA Rerender', 'kra', { merged: Buffer.from('merged-preview') });
 
@@ -7757,6 +7789,158 @@ describe('asset browser HTTP workflow', () => {
           .send({})
           .expect(403);
         expect(app.locals.projectPrimaryImageService.getPrimaryImage(id).id).toBe(asset.id);
+      });
+    });
+
+    // ─── Book primary image POST ─────────────────────────────────────────
+    describe('book primary image actions', () => {
+      it('sets, shares, replaces, and exposes Edit Assets render-model data', async () => {
+        const first = await setupProjectWithAsset('Book Primary Set', 'first.png');
+        const second = writeIndexedAsset(first.id, first.projectDir, 'second.png', await makePng());
+        const firstBook = app.locals.bookService.createBook({ title: 'First book' });
+        const secondBook = app.locals.bookService.createBook({ title: 'Second book' });
+
+        const setFirst = await agent
+          .post(`/projects/${first.id}/assets/${first.asset.id}/book-primary-image`)
+          .type('form')
+          .send({ bookId: String(firstBook.id), _csrf: csrfToken })
+          .expect(302);
+        const firstLocation = new URL(setFirst.headers.location, 'http://localhost');
+        expect(firstLocation.pathname).toBe(`/projects/${first.id}/assets/${first.asset.id}`);
+        expect(firstLocation.searchParams.get('notice')).toBe('book-primary-image-set');
+        expect(firstLocation.searchParams.get('edit')).toBe('1');
+        expect(app.locals.bookPrimaryImageService.getPrimaryImage(firstBook.id).id).toBe(first.asset.id);
+
+        await agent
+          .post(`/projects/${first.id}/assets/${first.asset.id}/book-primary-image`)
+          .type('form')
+          .send({ bookId: String(secondBook.id), _csrf: csrfToken })
+          .expect(302);
+        expect(app.locals.bookPrimaryImageService.getPrimaryImage(secondBook.id).id).toBe(first.asset.id);
+
+        const originalRender = app.response.render;
+        let viewerLocals;
+        app.response.render = function captureAssetViewerRender(view, locals, ...args) {
+          if (view === 'projects/asset-viewer.njk') viewerLocals = locals;
+          return originalRender.call(this, view, locals, ...args);
+        };
+        try {
+          await agent.get(`/projects/${first.id}/assets/${first.asset.id}?edit=1`).expect(200);
+        } finally {
+          app.response.render = originalRender;
+        }
+        expect(viewerLocals.bookPrimaryImageOptions).toEqual(expect.arrayContaining([
+          { id: firstBook.id, value: String(firstBook.id), label: 'First book' },
+          { id: secondBook.id, value: String(secondBook.id), label: 'Second book' },
+        ]));
+        expect(viewerLocals.bookPrimaryImageUsages).toEqual(expect.arrayContaining([
+          { id: firstBook.id, title: 'First book' },
+          { id: secondBook.id, title: 'Second book' },
+        ]));
+        expect(viewerLocals.canSetAsBookPrimaryImage).toBe(true);
+
+        await agent
+          .post(`/projects/${first.id}/assets/${second.id}/book-primary-image`)
+          .type('form')
+          .send({ bookId: String(firstBook.id), _csrf: csrfToken })
+          .expect(302);
+        expect(app.locals.bookPrimaryImageService.getPrimaryImage(firstBook.id).id).toBe(second.id);
+        expect(app.locals.bookPrimaryImageService.getPrimaryImage(secondBook.id).id).toBe(first.asset.id);
+      });
+
+      it('removes only the matching book primary image and preserves a newer selection', async () => {
+        const first = await setupProjectWithAsset('Book Primary Remove', 'first.png');
+        const second = writeIndexedAsset(first.id, first.projectDir, 'second.png', await makePng());
+        const book = app.locals.bookService.createBook({ title: 'Remove book' });
+        await app.locals.bookPrimaryImageService.setPrimaryImage(book.id, first.asset.id);
+
+        const removed = await agent
+          .post(`/projects/${first.id}/assets/${first.asset.id}/book-primary-image/remove`)
+          .type('form')
+          .send({ bookId: String(book.id), _csrf: csrfToken })
+          .expect(302);
+        const location = new URL(removed.headers.location, 'http://localhost');
+        expect(location.searchParams.get('notice')).toBe('book-primary-image-removed');
+        expect(location.searchParams.get('edit')).toBe('1');
+        expect(app.locals.bookPrimaryImageService.getPrimaryImage(book.id)).toBeUndefined();
+
+        await app.locals.bookPrimaryImageService.setPrimaryImage(book.id, second.id);
+        const stale = await agent
+          .post(`/projects/${first.id}/assets/${first.asset.id}/book-primary-image/remove`)
+          .type('form')
+          .send({ bookId: String(book.id), _csrf: csrfToken })
+          .expect(409);
+        expect(stale.text).toContain('The book primary image changed before it could be removed.');
+        expect(app.locals.bookPrimaryImageService.getPrimaryImage(book.id).id).toBe(second.id);
+      });
+
+      it('handles invalid books, ineligible assets, wrong project URLs, and CSRF without writing', async () => {
+        const owner = await setupProjectWithAsset('Book Primary Owner', 'owner.png');
+        const other = await setupProjectWithAsset('Book Primary Other', 'other.png');
+        const book = app.locals.bookService.createBook({ title: 'Protected book' });
+
+        const originalRender = app.response.render;
+        let failureLocals;
+        app.response.render = function captureBookPrimaryImageFailure(view, locals, ...args) {
+          if (view === 'projects/asset-viewer.njk') failureLocals = locals;
+          return originalRender.call(this, view, locals, ...args);
+        };
+        let invalid;
+        try {
+          invalid = await agent
+            .post(`/projects/${owner.id}/assets/${owner.asset.id}/book-primary-image`)
+            .type('form')
+            .send({ bookId: 'not-an-id', _csrf: csrfToken })
+            .expect(422);
+        } finally {
+          app.response.render = originalRender;
+        }
+        expect(invalid.text).toContain('Choose a valid book.');
+        expect(failureLocals.bookPrimaryImageOptions).toEqual(expect.arrayContaining([
+          { id: book.id, value: String(book.id), label: 'Protected book' },
+        ]));
+        expect(failureLocals.bookPrimaryImageUsages).toEqual([]);
+        expect(app.locals.bookPrimaryImageService.getPrimaryImage(book.id)).toBeUndefined();
+
+        await agent
+          .post(`/projects/${owner.id}/assets/${owner.asset.id}/book-primary-image`)
+          .type('form')
+          .send({ bookId: '999999', _csrf: csrfToken })
+          .expect(404);
+        expect(app.locals.bookPrimaryImageService.getPrimaryImage(book.id)).toBeUndefined();
+
+        await agent
+          .post(`/projects/${owner.id}/assets/${other.asset.id}/book-primary-image`)
+          .type('form')
+          .send({ bookId: String(book.id), _csrf: csrfToken })
+          .expect(404);
+        expect(app.locals.bookPrimaryImageService.getPrimaryImage(book.id)).toBeUndefined();
+
+        await agent
+          .post(`/projects/${owner.id}/assets/${owner.asset.id}/book-primary-image`)
+          .type('form')
+          .send({ bookId: String(book.id) })
+          .expect(403);
+        expect(app.locals.bookPrimaryImageService.getPrimaryImage(book.id)).toBeUndefined();
+
+        const unsupported = await setupProjectWithAsset('Book Primary Unsupported', 'source.kra');
+        const unsupportedRes = await agent
+          .post(`/projects/${unsupported.id}/assets/${unsupported.asset.id}/book-primary-image`)
+          .type('form')
+          .send({ bookId: String(book.id), _csrf: csrfToken })
+          .expect(422);
+        expect(unsupportedRes.text).toContain('This asset type cannot be selected as a book primary image.');
+        expect(app.locals.bookPrimaryImageService.getPrimaryImage(book.id)).toBeUndefined();
+
+        fs.rmSync(path.join(owner.projectDir, 'owner.png'));
+        await agent.post(`/projects/${owner.id}/scan`).type('form').send({ _csrf: csrfToken }).expect(302);
+        const missingRes = await agent
+          .post(`/projects/${owner.id}/assets/${owner.asset.id}/book-primary-image`)
+          .type('form')
+          .send({ bookId: String(book.id), _csrf: csrfToken })
+          .expect(422);
+        expect(missingRes.text).toContain('This asset is missing from the last scan and cannot be selected as a book primary image.');
+        expect(app.locals.bookPrimaryImageService.getPrimaryImage(book.id)).toBeUndefined();
       });
     });
 

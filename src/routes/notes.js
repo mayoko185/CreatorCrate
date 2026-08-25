@@ -4,8 +4,10 @@ import { NoteNotFoundError, NoteValidationError } from '../services/note-service
 import { BookNotEmptyError, BookNotFoundError, BookValidationError } from '../services/book-service.js';
 import { ChapterNotFoundError, ChapterValidationError } from '../services/chapter-service.js';
 import { buildAssetViewerUrl } from '../services/asset-presentation.js';
+import { NSFW_TAG_NAME } from '../services/nsfw-filter-settings-service.js';
 
 const NOTE_EXCERPT_MAX_LENGTH = 160;
+const NSFW_TAG_NORMALIZED_NAME = NSFW_TAG_NAME.toLowerCase();
 
 const NOTICES = {
   book_reordered: { variant: 'success', text: 'Book order updated.' },
@@ -34,9 +36,69 @@ function resolveNotice(code) {
   return Object.prototype.hasOwnProperty.call(NOTICES, code) ? NOTICES[code] : null;
 }
 
-export function createNotesRouter({ appName, bookService, chapterService, noteService, markdownRenderer, projectService, assetRepository } = {}) {
+function isNsfwTag(tag) {
+  return [tag?.displayName, tag?.display_name, tag?.normalizedName, tag?.normalized_name].some((value) => (
+    typeof value === 'string' && value.trim().toLowerCase() === NSFW_TAG_NORMALIZED_NAME
+  ));
+}
+
+function withBookPrimaryImageNsfwBlur(books, {
+  assetRepository, tagRepository, filterEnabled,
+}) {
+  const availableAssetIds = [...new Set(books
+    .filter((book) => book.primaryImage?.state === 'available')
+    .map((book) => book.primaryImage.selectedAssetId)
+    .filter((assetId) => Number.isSafeInteger(assetId) && assetId > 0))];
+
+  if (!filterEnabled || availableAssetIds.length === 0) {
+    return books.map((book) => (
+      book.primaryImage?.state === 'available' ? { ...book, nsfwBlur: false } : book
+    ));
+  }
+
+  const assetsById = new Map(
+    assetRepository.findByIds(availableAssetIds).map((asset) => [asset.id, asset]),
+  );
+  const projectIds = [...new Set(
+    [...assetsById.values()]
+      .map((asset) => asset.project_id)
+      .filter((projectId) => Number.isSafeInteger(projectId) && projectId > 0),
+  )];
+  const nsfwAssetIds = new Set(
+    tagRepository.listForAssetIds(availableAssetIds)
+      .filter(isNsfwTag)
+      .map((tag) => tag.asset_id),
+  );
+  const nsfwProjectIds = new Set(
+    projectIds.length > 0
+      ? tagRepository.listForProjectIds(projectIds)
+        .filter(isNsfwTag)
+        .map((tag) => tag.project_id)
+      : [],
+  );
+
+  return books.map((book) => {
+    if (book.primaryImage?.state !== 'available') return book;
+
+    const asset = assetsById.get(book.primaryImage.selectedAssetId);
+    return {
+      ...book,
+      nsfwBlur: Boolean(asset && (
+        nsfwAssetIds.has(asset.id) || nsfwProjectIds.has(asset.project_id)
+      )),
+    };
+  });
+}
+
+export function createNotesRouter({
+  appName, bookService, bookPrimaryImageService, chapterService, noteService, markdownRenderer,
+  projectService, assetRepository, tagRepository, nsfwFilterSettingsService,
+} = {}) {
   if (!bookService || typeof bookService.listBooks !== 'function') {
     throw new Error('createNotesRouter requires a bookService dependency.');
+  }
+  if (!bookPrimaryImageService || typeof bookPrimaryImageService.attachPrimaryImages !== 'function') {
+    throw new Error('createNotesRouter requires bookPrimaryImageService.attachPrimaryImages support.');
   }
   if (typeof bookService.listBookContents !== 'function') {
     throw new Error('createNotesRouter requires bookService.listBookContents support.');
@@ -53,8 +115,16 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
   if (!projectService.repository || typeof projectService.repository.searchAssetPickerProjects !== 'function') {
     throw new Error('createNotesRouter requires a projectService repository with asset-picker search support.');
   }
-  if (!assetRepository || typeof assetRepository.findAssetsForNoteAssociation !== 'function') {
+  if (!assetRepository || typeof assetRepository.findAssetsForNoteAssociation !== 'function'
+    || typeof assetRepository.findByIds !== 'function') {
     throw new Error('createNotesRouter requires an assetRepository dependency.');
+  }
+  if (!tagRepository || typeof tagRepository.listForAssetIds !== 'function'
+    || typeof tagRepository.listForProjectIds !== 'function') {
+    throw new Error('createNotesRouter requires a tagRepository dependency.');
+  }
+  if (!nsfwFilterSettingsService || typeof nsfwFilterSettingsService.isEnabled !== 'function') {
+    throw new Error('createNotesRouter requires an nsfwFilterSettingsService dependency.');
   }
   if (!markdownRenderer || typeof markdownRenderer.renderMarkdown !== 'function') {
     throw new Error('createNotesRouter requires a markdownRenderer dependency.');
@@ -63,12 +133,50 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
   const router = express.Router();
   const projectRepository = projectService.repository;
 
+  function renderBooksIndex(res, { appName: pageAppName, bookService: pageBookService, bookPrimaryImageService: pagePrimaryImageService, notice = null, status = 200 }) {
+    const books = withBookPrimaryImageNsfwBlur(
+      pagePrimaryImageService.attachPrimaryImages(pageBookService.listBooks()),
+      {
+        assetRepository,
+        tagRepository,
+        filterEnabled: nsfwFilterSettingsService.isEnabled(),
+      },
+    );
+    res.status(status).render('notes/books/index.njk', { appName: pageAppName, books, notice });
+  }
+
+  function renderBookDetail(res, {
+    appName: pageAppName, bookService: pageBookService, bookPrimaryImageService: pagePrimaryImageService,
+    bookId, notice = null, status = 200,
+  }) {
+    const [book] = withBookPrimaryImageNsfwBlur(
+      pagePrimaryImageService.attachPrimaryImages([pageBookService.getBook(bookId)]),
+      {
+        assetRepository,
+        tagRepository,
+        filterEnabled: nsfwFilterSettingsService.isEnabled(),
+      },
+    );
+    const contents = pageBookService.listBookContents(bookId);
+    const chapters = contents
+      .filter(({ type }) => type === 'chapter')
+      .map(({ chapter }) => chapter);
+    const pages = contents
+      .filter(({ type }) => type === 'page')
+      .map(({ page }) => page);
+    const canChangeOrder = contents.length >= 2;
+    res.status(status).render('notes/books/detail.njk', {
+      appName: pageAppName, book, contents, bookContents: contents, chapters, pages, canChangeOrder, notice,
+    });
+  }
+
   // GET /notes — ordered Books landing
   router.get('/', (req, res, next) => {
     try {
       renderBooksIndex(res, {
         appName,
         bookService,
+        bookPrimaryImageService,
         notice: resolveNotice(req.query.notice),
       });
     } catch (err) {
@@ -122,6 +230,7 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
             status: 422,
             appName,
             bookService,
+            bookPrimaryImageService,
             notice: resolveNotice('book_reorder_invalid'),
           });
           return;
@@ -276,6 +385,7 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
             status: 422,
             appName,
             bookService,
+            bookPrimaryImageService,
             chapterService,
             noteService,
             bookId,
@@ -307,6 +417,7 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
             status: 422,
             appName,
             bookService,
+            bookPrimaryImageService,
             bookId,
             notice: resolveNotice('book_content_reorder_invalid'),
           });
@@ -341,7 +452,9 @@ export function createNotesRouter({ appName, bookService, chapterService, noteSe
     if (id === null) return next(createNotFound());
 
     try {
-      renderBookDetail(res, { appName, bookService, chapterService, noteService, bookId: id });
+      renderBookDetail(res, {
+        appName, bookService, bookPrimaryImageService, chapterService, noteService, bookId: id,
+      });
       return;
     } catch (err) {
       if (err instanceof BookNotFoundError) return next(createNotFound());
@@ -1113,32 +1226,11 @@ function buildNoteListItem(note) {
   };
 }
 
-function renderBooksIndex(res, { appName, bookService, notice = null, status = 200 }) {
-  const books = bookService.listBooks();
-  res.status(status).render('notes/books/index.njk', { appName, books, notice });
-}
-
 function renderBooksOrder(res, { appName, bookService, status = 200 }) {
   const books = bookService.listBooks();
   res.status(status).render('notes/books/order-index.njk', { appName, books });
 }
 
-function renderBookDetail(res, {
-  appName, bookService, bookId, notice = null, status = 200,
-}) {
-  const book = bookService.getBook(bookId);
-  const contents = bookService.listBookContents(bookId);
-  const chapters = contents
-    .filter(({ type }) => type === 'chapter')
-    .map(({ chapter }) => chapter);
-  const pages = contents
-    .filter(({ type }) => type === 'page')
-    .map(({ page }) => page);
-  const canChangeOrder = contents.length >= 2;
-  res.status(status).render('notes/books/detail.njk', {
-    appName, book, contents, chapters, pages, canChangeOrder, notice,
-  });
-}
 
 function renderBookOrder(res, {
   appName, bookService, bookId, status = 200,

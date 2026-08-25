@@ -14,16 +14,10 @@
         {% include "partials/book-navigator.njk" %}
       </aside>
 
-      <section class="notes-detail-panel notes-detail-details" aria-labelledby="notes-detail-details-heading">
-        <h2 id="notes-detail-details-heading">Details</h2>
-        <dl class="detail-list">
-          <dt>Created</dt>
-          <dd>{{ note.created_at }}</dd>
-
-          <dt>Updated</dt>
-          <dd>{{ note.updated_at }}</dd>
-        </dl>
-      </section>
+      {% set detailsHeadingId = "notes-detail-details-heading" %}
+      {% set detailsCreated = note.created_at %}
+      {% set detailsUpdated = note.updated_at %}
+      {% include "partials/notes-details-panel.njk" %}
     </div>
 
     <div class="notes-page-detail-content">
