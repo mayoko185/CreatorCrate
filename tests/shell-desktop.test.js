@@ -206,6 +206,43 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
       ]);
     });
 
+    it('renders Settings children as a normal nested list with the exact current child', async () => {
+      const expectedHrefs = [
+        '/settings',
+        '/settings/security',
+        '/settings/backups',
+        '/settings/logs',
+        '/settings/defaults',
+        '/settings/nsfw-filter',
+        '/settings/asset-categories',
+        '/settings/tags',
+        '/settings/open-locally',
+      ];
+
+      for (const [url, currentKey] of [['/settings', 'overview'], ['/settings/security', 'security']]) {
+        const res = await agent.get(url).expect(200);
+        const children = res.text.match(/<ul class="app-nav-children">([\s\S]*?)<\/ul>/);
+        expect(children).not.toBeNull();
+        expect(navHrefs(res.text)).toEqual([
+          '/', '/projects', '/assets', '/releases', '/calendar', '/notes', '/settings',
+        ]);
+        expect(
+          [...children[1].matchAll(/<a href="([^"]+)" class="app-nav-child-link"/g)].map((match) => match[1]),
+        ).toEqual(expectedHrefs);
+        expect(children[1].match(/aria-current="page"/g) || []).toHaveLength(1);
+        expect(children[1]).toMatch(
+          new RegExp(`<a\\b(?=[^>]*\\bdata-nav-key="settings-${currentKey}")(?=[^>]*\\baria-current="page")[^>]*>`),
+        );
+        expect(res.text).toMatch(
+          /<li class="app-nav-item app-nav-item--active app-nav-item--has-children">/,
+        );
+        expect(res.text).toContain(
+          '<a href="/settings" class="app-nav-link" data-nav-key="settings">',
+        );
+        expect(children[1]).not.toMatch(/role="menu"|role="menuitem"|aria-expanded|\son\w+=/);
+      }
+    });
+
     it('renders a decorative icon + label span for every nav link', async () => {
       const res = await agent.get('/').expect(200);
       // Each link carries an aria-hidden svg and a non-hidden label span.
@@ -225,6 +262,71 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
       const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
       expect(css).toMatch(/\.app-sidebar:hover \.app-nav-label[\s\S]*?opacity:\s*1/);
       expect(css).toMatch(/\.app-sidebar:hover \.app-nav-label[\s\S]*?width:\s*auto/);
+    });
+  });
+
+  describe('Settings submenu CSS', () => {
+    it('expands Settings children only when the sidebar is expanded by hover or keyboard focus', async () => {
+      const css = await extractStyle(agent, (await agent.get('/settings').expect(200)).text);
+      expect(css).toMatch(
+        /\.app-sidebar:hover \.app-nav-item--has-children:hover \.app-nav-children,[\s\S]*?max-height:\s*20rem/,
+      );
+      expect(css).toMatch(
+        /\.app-sidebar:focus-within \.app-nav-item--has-children:focus-within \.app-nav-children,[\s\S]*?\.app-sidebar:hover \.app-nav-item--active > \.app-nav-children,[\s\S]*?\.app-sidebar:focus-within \.app-nav-item--active > \.app-nav-children\s*\{[\s\S]*?max-height:\s*20rem/,
+      );
+      expect(css).not.toMatch(/(?<!\.app-sidebar:hover |\.app-sidebar:focus-within )\.app-nav-item--active > \.app-nav-children\s*\{/);
+
+      const childrenRule = css.match(/\.app-nav-children\s*\{[^}]*\}/);
+      expect(childrenRule).not.toBeNull();
+      expect(childrenRule[0]).toMatch(/max-height:\s*0/);
+      expect(childrenRule[0]).toMatch(/overflow:\s*hidden/);
+      expect(childrenRule[0]).not.toMatch(/display:\s*none/);
+      expect(childrenRule[0]).not.toMatch(/visibility:\s*hidden/);
+    });
+
+    it('animates submenu size and visibility with the shared shell timing token', async () => {
+      const css = await extractStyle(agent, (await agent.get('/settings').expect(200)).text);
+      const childrenRule = css.match(/\.app-nav-children\s*\{[^}]*\}/);
+      expect(childrenRule).not.toBeNull();
+      expect(childrenRule[0]).toMatch(/transition:[^;]*max-height\s+var\(--shell-transition\)/);
+      expect(childrenRule[0]).toMatch(/opacity:\s*0/);
+    });
+
+    it('keeps child links compact, modestly indented, and free of a cyan current-page edge treatment', async () => {
+      const css = await extractStyle(agent, (await agent.get('/settings').expect(200)).text);
+      const childRule = css.match(/\.app-nav-child-link\s*\{[^}]*\}/);
+      expect(childRule).not.toBeNull();
+      expect(childRule[0]).toMatch(/min-height:\s*0/);
+      expect(childRule[0]).toMatch(/padding:\s*0\.3125rem 0\.5rem 0\.3125rem var\(--space-sm\)/);
+      expect(childRule[0]).toMatch(/line-height:\s*1\.25/);
+      expect(childRule[0]).toMatch(/font-size:\s*0\.8125rem/);
+      expect(css).toMatch(/\.app-nav-child-link:hover[\s\S]*?background:\s*var\(--surface-hover\)/);
+      expect(css).toMatch(/\.app-nav-child-link:focus-visible[\s\S]*?outline/);
+      const currentChildRule = css.match(/\.app-nav-child-link\[aria-current="page"\]\s*\{[^}]*\}/);
+      expect(currentChildRule).not.toBeNull();
+      expect(currentChildRule[0]).toMatch(/background:\s*var\(--surface-hover\)/);
+      expect(currentChildRule[0]).not.toMatch(/box-shadow|border(?:-left)?|::before/);
+    });
+
+
+    it('keeps active child highlights narrow and inset while retaining the sidebar scrollbar', async () => {
+      const css = await extractStyle(agent, (await agent.get('/settings').expect(200)).text);
+
+      expect(css).toMatch(/\.app-nav-children\s*\{[^}]*transform:\s*translateX\(-0\.5rem\);[^}]*transition:[^}]*transform\s+var\(--shell-transition\)\s+ease;/s);
+      expect(css).toMatch(/\.app-nav-child-link\s*\{[^}]*width:\s*calc\(100% - var\(--space-2xl\) - var\(--space-2xl\)\);[^}]*margin:\s*0\.125rem var\(--space-md\) 0\.125rem calc\(var\(--space-xl\) \+ var\(--space-xl\) \+ var\(--space-xs\)\);[^}]*padding:\s*0\.3125rem 0\.5rem 0\.3125rem var\(--space-sm\);/s);
+      expect(css).toMatch(/\.app-nav\s*\{[^}]*scrollbar-color:\s*var\(--border-strong\) transparent;[^}]*scrollbar-width:\s*thin;/s);
+      expect(css).toMatch(/\.app-nav::-webkit-scrollbar-thumb\s*\{[^}]*border-radius:\s*999px;/s);
+    });
+
+    it('keeps the top-level navigation in the sidebar flow while styling only its scrollbar', async () => {
+      const css = await extractStyle(agent, (await agent.get('/settings').expect(200)).text);
+      const navRules = [...css.matchAll(/\.app-nav\s*\{([^}]*)\}/g)];
+
+      expect(navRules).toHaveLength(1);
+      expect(navRules[0][1]).toMatch(/flex:\s*1 1 auto/);
+      expect(navRules[0][1]).toMatch(/overflow-y:\s*auto/);
+      expect(navRules[0][1]).toMatch(/scrollbar-width:\s*thin/);
+      expect(navRules[0][1]).not.toMatch(/position:\s*absolute|max-height:\s*20rem|(?:^|;)\s*(?:top|left|z-index|width|min-width|max-width)\s*:/);
     });
   });
 
@@ -381,7 +483,7 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
       // earlier ::before accent-bar treatment was dropped to match the
       // approved design; icon recoloring is a bonus cue, not load-bearing.
       const activeBlock = css.match(
-        /\.app-nav-link\[aria-current="page"\]\s*\{[\s\S]*?\}/,
+        /\.app-nav-link\[aria-current="page"\],\s*\.app-nav-item--active\s*>\s*\.app-nav-link\s*\{[\s\S]*?\}/,
       );
       expect(activeBlock).not.toBeNull();
       expect(activeBlock[0]).toMatch(/background:\s*var\(--surface-hover\)/);
@@ -483,6 +585,8 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
       expect(block).toMatch(/\.app-sidebar\b/);
       expect(block).toMatch(/\.app-sidebar-brand\b/);
       expect(block).toMatch(/\.app-nav-label\b/);
+      expect(block).toMatch(/\.app-nav-children\b/);
+      expect(block).toMatch(/\.app-nav-child-link\b/);
       expect(block).toMatch(/\.skip-link\b/);
       expect(block).toMatch(/transition:\s*none !important/);
     });

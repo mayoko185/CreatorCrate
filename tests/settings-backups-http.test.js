@@ -50,14 +50,22 @@ function navHrefs(html) {
   return hrefs;
 }
 
-function activeNavKeys(html) {
-  // Scoped to .app-nav-link (desktop nav) only; mobile nav items also carry
-  // aria-current="page" but the attribute order differs.
-  const re = /class="app-nav-link" data-nav-key="([^"]+)" aria-current="page"/g;
-  const keys = [];
-  let m;
-  while ((m = re.exec(html)) !== null) keys.push(m[1]);
-  return keys;
+function activeNavKeys(html, expectedCurrentSettingsChild) {
+  expect(html).not.toContain('<nav class="settings-nav"');
+  expect(html).toContain('class="app-nav-item app-nav-item--active app-nav-item--has-children"');
+  expect(html).toContain('class="mobile-nav-item mobile-nav-item--active mobile-nav-item--has-children"');
+  expect(html).not.toMatch(/<a\b(?=[^>]*\bdata-nav-key="settings")(?=[^>]*\baria-current="page")[^>]*>/);
+
+  const currentChildren = [...html.matchAll(
+    /<a\b(?=[^>]*\bclass="(?:app-nav-child-link|mobile-nav-child-link)")(?=[^>]*\bdata-nav-key="(settings-[^"]+)")(?=[^>]*\baria-current="page")[^>]*>([^<]+)<\/a>/g,
+  )];
+  expect(currentChildren).toHaveLength(2);
+  expect(new Set(currentChildren.map((match) => match[1]))).toEqual(new Set([expectedCurrentSettingsChild]));
+
+  const activeParents = [...html.matchAll(
+    /<li class="(?:app-nav-item|mobile-nav-item)[^"]*--active[^"]*">[\s\S]*?<a href="[^"]+" class="(?:app-nav-link|mobile-nav-link)" data-nav-key="([^"]+)"/g,
+  )];
+  return [...new Set(activeParents.map((match) => match[1]))];
 }
 
 function insertProject(db, title) {
@@ -240,30 +248,30 @@ describe('settings — backup management HTTP', () => {
   describe('navigation active state', () => {
     it('Settings nav item is active on /settings', async () => {
       const res = await agent.get('/settings').expect(200);
-      expect(activeNavKeys(res.text)).toContain('settings');
+      expect(activeNavKeys(res.text, 'settings-overview')).toContain('settings');
     });
 
     it('Settings nav item is active on /settings/backups', async () => {
       const res = await agent.get('/settings/backups').expect(200);
-      expect(activeNavKeys(res.text)).toContain('settings');
+      expect(activeNavKeys(res.text, 'settings-backups')).toContain('settings');
     });
 
     it('Settings nav item is active on the restore confirmation page', async () => {
       const result = await backupService.createBackup(db);
       const res = await agent.get(`/settings/backups/${result.filename}/restore`)
         .expect(200);
-      expect(activeNavKeys(res.text)).toContain('settings');
+      expect(activeNavKeys(res.text, 'settings-backups')).toContain('settings');
     });
 
     it('Projects and Releases are not active on settings pages', async () => {
       const res = await agent.get('/settings/backups').expect(200);
-      expect(activeNavKeys(res.text)).not.toContain('projects');
-      expect(activeNavKeys(res.text)).not.toContain('releases');
+      expect(activeNavKeys(res.text, 'settings-backups')).not.toContain('projects');
+      expect(activeNavKeys(res.text, 'settings-backups')).not.toContain('releases');
     });
 
     it('exactly one nav item is active on settings pages', async () => {
       const res = await agent.get('/settings/backups').expect(200);
-      expect(activeNavKeys(res.text)).toHaveLength(1);
+      expect(activeNavKeys(res.text, 'settings-backups')).toHaveLength(1);
     });
 
     it('settings nav renders in the shell alongside other destinations', async () => {

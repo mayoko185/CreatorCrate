@@ -11,21 +11,26 @@ import { authenticate, AUTH_CONFIG } from './helpers/auth.js';
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const APP_NAME = 'CreatorCrate';
 
-function activeNavKeys(html) {
-  const keys = [];
-  const re = /class="app-nav-link" data-nav-key="([^"]+)" aria-current="page"/g;
-  let match;
-  while ((match = re.exec(html)) !== null) keys.push(match[1]);
-  return keys;
+function activeNavKeys(html, expectedCurrentSettingsChild) {
+  activeSettingsNavLabels(html, expectedCurrentSettingsChild);
+  const activeParents = [...html.matchAll(
+    /<li class="(?:app-nav-item|mobile-nav-item)[^"]*--active[^"]*">[\s\S]*?<a href="[^"]+" class="(?:app-nav-link|mobile-nav-link)" data-nav-key="([^"]+)"/g,
+  )];
+  return [...new Set(activeParents.map((match) => match[1]))];
 }
 
-function activeSettingsNavLabels(html) {
-  const settingsNav = html.match(/<nav class="settings-nav"[\s\S]*?<\/nav>/)?.[0] || '';
-  const labels = [];
-  const re = /<a href="[^"]+" aria-current="page">([^<]+)<\/a>/g;
-  let match;
-  while ((match = re.exec(settingsNav)) !== null) labels.push(match[1]);
-  return labels;
+function activeSettingsNavLabels(html, expectedCurrentSettingsChild) {
+  expect(html).not.toContain('<nav class="settings-nav"');
+  expect(html).toContain('class="app-nav-item app-nav-item--active app-nav-item--has-children"');
+  expect(html).toContain('class="mobile-nav-item mobile-nav-item--active mobile-nav-item--has-children"');
+  expect(html).not.toMatch(/<a\b(?=[^>]*\bdata-nav-key="settings")(?=[^>]*\baria-current="page")[^>]*>/);
+
+  const currentChildren = [...html.matchAll(
+    /<a\b(?=[^>]*\bclass="(?:app-nav-child-link|mobile-nav-child-link)")(?=[^>]*\bdata-nav-key="(settings-[^"]+)")(?=[^>]*\baria-current="page")[^>]*>([^<]+)<\/a>/g,
+  )];
+  expect(currentChildren).toHaveLength(2);
+  expect(new Set(currentChildren.map((match) => match[1]))).toEqual(new Set([expectedCurrentSettingsChild]));
+  return [...new Set(currentChildren.map((match) => match[2]))];
 }
 
 function listedTagNames(html) {
@@ -82,8 +87,8 @@ describe('settings — tags HTTP', () => {
     const res = await agent.get('/settings/tags').expect(200);
 
     expect(res.text).toContain('<h1 class="app-section-title">Settings — Tags</h1>');
-    expect(activeNavKeys(res.text)).toEqual(['settings']);
-    expect(activeSettingsNavLabels(res.text)).toEqual(['Tags']);
+    expect(activeNavKeys(res.text, 'settings-tags')).toEqual(['settings']);
+    expect(activeSettingsNavLabels(res.text, 'settings-tags')).toEqual(['Tags']);
     expect(res.text).toContain('No tags yet');
     expect(res.text).toContain('<label for="tag-name">Tag name');
     expect(res.text).toContain(`id="tag-name" name="name"`);
@@ -142,8 +147,8 @@ describe('settings — tags HTTP', () => {
     const res = await agent.get(`/settings/tags/${tag.id}/edit`).expect(200);
 
     expect(res.text).toContain('<h1 class="app-section-title">Settings — Rename Tag</h1>');
-    expect(activeNavKeys(res.text)).toEqual(['settings']);
-    expect(activeSettingsNavLabels(res.text)).toEqual(['Tags']);
+    expect(activeNavKeys(res.text, 'settings-tags')).toEqual(['settings']);
+    expect(activeSettingsNavLabels(res.text, 'settings-tags')).toEqual(['Tags']);
     expect(res.text).toContain('Current tag: <strong>Current Display Name</strong>');
     expect(res.text).toContain('<label for="tag-name">Tag name');
     expect(res.text).toContain(`id="tag-name" name="name"`);
@@ -162,8 +167,8 @@ describe('settings — tags HTTP', () => {
     const res = await agent.get(`/settings/tags/${tag.id}/delete`).expect(200);
 
     expect(res.text).toContain('<h1 class="app-section-title">Settings — Delete Tag</h1>');
-    expect(activeNavKeys(res.text)).toEqual(['settings']);
-    expect(activeSettingsNavLabels(res.text)).toEqual(['Tags']);
+    expect(activeNavKeys(res.text, 'settings-tags')).toEqual(['settings']);
+    expect(activeSettingsNavLabels(res.text, 'settings-tags')).toEqual(['Tags']);
     expect(res.text).toContain('<h2>Delete this tag?</h2>');
     expect(res.text).toContain('Tag: <strong>Tag To Delete</strong>');
     expect(res.text).toContain('Deleting this tag removes it from all assigned projects and assets.');
@@ -266,7 +271,7 @@ describe('settings — tags HTTP', () => {
     expect(res.text).toContain('Tag name is required.');
     expect(res.text).toContain(`value="${name}"`);
     expect(res.text).toContain('aria-invalid="true"');
-    expect(activeSettingsNavLabels(res.text)).toEqual(['Tags']);
+    expect(activeSettingsNavLabels(res.text, 'settings-tags')).toEqual(['Tags']);
     expect(db.prepare('SELECT * FROM tags WHERE id = ?').get(tag.id)).toEqual(before);
   });
 
@@ -463,11 +468,11 @@ describe('settings — tags HTTP', () => {
   it('keeps existing Settings Defaults and Asset Categories routes unaffected', async () => {
     const defaults = await agent.get('/settings/defaults').expect(200);
     expect(defaults.text).toContain('Settings — Defaults');
-    expect(activeSettingsNavLabels(defaults.text)).toEqual(['Defaults']);
+    expect(activeSettingsNavLabels(defaults.text, 'settings-defaults')).toEqual(['Defaults']);
 
     const categories = await agent.get('/settings/asset-categories').expect(200);
     expect(categories.text).toContain('Settings — Asset Categories');
-    expect(activeSettingsNavLabels(categories.text)).toEqual(['Asset Categories']);
+    expect(activeSettingsNavLabels(categories.text, 'settings-asset-categories')).toEqual(['Asset Categories']);
   });
 
   it('does not expose assignment controls or usage-count UI', async () => {

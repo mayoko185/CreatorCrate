@@ -234,33 +234,112 @@ describe('navigation model — calendar active state', () => {
   });
 });
 
-describe('navigation model — settings active state', () => {
-  it('is active on the settings landing', () => {
-    expect(activeKeys('/settings')).toEqual(['settings']);
+describe('navigation model — Settings hierarchy', () => {
+  function settingsItem(path, opts = {}) {
+    return buildShellModel({ appName: APP_NAME, path, ...opts })
+      .navigation.find((item) => item.key === 'settings');
+  }
+
+  function currentSettingsChildKeys(path, opts = {}) {
+    return settingsItem(path, opts).children
+      .filter((child) => child.current)
+      .map((child) => child.key);
+  }
+
+  it('owns the nine Settings destinations in the required order', () => {
+    const settings = NAVIGATION_ITEMS.find((item) => item.key === 'settings');
+
+    expect(settings.children.map(({ key, label, href }) => ({ key, label, href }))).toEqual([
+      { key: 'overview', label: 'Overview', href: '/settings' },
+      { key: 'security', label: 'Security', href: '/settings/security' },
+      { key: 'backups', label: 'Backups', href: '/settings/backups' },
+      { key: 'logs', label: 'Logs', href: '/settings/logs' },
+      { key: 'defaults', label: 'Defaults', href: '/settings/defaults' },
+      { key: 'nsfw-filter', label: 'NSFW Filter', href: '/settings/nsfw-filter' },
+      { key: 'asset-categories', label: 'Asset Categories', href: '/settings/asset-categories' },
+      { key: 'tags', label: 'Tags', href: '/settings/tags' },
+      { key: 'open-locally', label: 'Open locally', href: '/settings/open-locally' },
+    ]);
   });
 
-  it('is active on the backup list', () => {
-    expect(activeKeys('/settings/backups')).toEqual(['settings']);
+  it('keeps Settings section-active while mapping each direct and secondary route to one current child', () => {
+    const routesByChild = {
+      overview: ['/settings', '/settings?notice=maintenance_mode_enabled'],
+      security: [
+        '/settings/security',
+        '/settings/security/password',
+        '/settings/security/disable',
+        '/settings/security/enable',
+      ],
+      backups: [
+        '/settings/backups',
+        '/settings/backups/creatorcrate-2026-01-01T000000Z.sqlite/restore',
+        '/settings/backups/creatorcrate-2026-01-01T000000Z.sqlite/delete',
+      ],
+      logs: ['/settings/logs', '/settings/logs/defaults', '/settings/logs/clear'],
+      defaults: ['/settings/defaults'],
+      'nsfw-filter': ['/settings/nsfw-filter'],
+      'asset-categories': [
+        '/settings/asset-categories',
+        '/settings/asset-categories/browser-default',
+        '/settings/asset-categories/preview-category',
+        '/settings/asset-categories/reorder',
+        '/settings/asset-categories/7',
+        '/settings/asset-categories/7/enabled',
+        '/settings/asset-categories/7/delete',
+        '/settings/asset-categories/7/move-up',
+        '/settings/asset-categories/7/move-down',
+      ],
+      tags: [
+        '/settings/tags',
+        '/settings/tags/7/edit',
+        '/settings/tags/7/delete',
+      ],
+      'open-locally': ['/settings/open-locally', '/settings/open-locally/clear'],
+    };
+
+    for (const [childKey, paths] of Object.entries(routesByChild)) {
+      for (const path of paths) {
+        const settings = settingsItem(path);
+        expect(settings.active).toBe(true);
+        expect(currentSettingsChildKeys(path)).toEqual([childKey]);
+      }
+    }
   });
 
-  it('is active on the restore confirmation route', () => {
-    expect(activeKeys('/settings/backups/creatorcrate-2026-01-01T000000Z.sqlite/restore')).toEqual(['settings']);
+  it('represents Settings as section-active and its child as current', () => {
+    const settings = settingsItem('/settings');
+
+    expect(settings.active).toBe(true);
+    expect(settings).not.toHaveProperty('current');
+    expect(currentSettingsChildKeys('/settings')).toEqual(['overview']);
   });
 
-  it('is active on the delete confirmation route', () => {
-    expect(activeKeys('/settings/backups/creatorcrate-2026-01-01T000000Z.sqlite/delete')).toEqual(['settings']);
+  it('does not activate Settings or any child for unrelated paths and sibling-prefix collisions', () => {
+    for (const path of [
+      '/settings-old',
+      '/settingss',
+      '/settings/security-old',
+      '/settings/backups-old',
+      '/settings/logs-old',
+      '/settings/defaults-old',
+      '/settings/nsfw-filtered',
+      '/settings/asset-categories-old',
+      '/settings/tags-old',
+      '/settings/open-locally-old',
+      '/settings/unknown',
+      '/settings/backups/creatorcrate.sqlite/restore-old',
+    ]) {
+      expect(settingsItem(path).active).toBe(false);
+      expect(currentSettingsChildKeys(path)).toEqual([]);
+    }
   });
 
-  it('is active on the security page', () => {
-    expect(activeKeys('/settings/security')).toEqual(['settings']);
-  });
+  it('suppresses both Settings section-active and child-current state when noActive is set', () => {
+    const settings = settingsItem('/settings/logs/clear', { noActive: true });
 
-  it('is active on the disable-authentication confirmation route', () => {
-    expect(activeKeys('/settings/security/disable')).toEqual(['settings']);
-  });
-
-  it('is not activated by /settings-old', () => {
-    expect(activeKeys('/settings-old')).toEqual([]);
+    expect(settings.active).toBe(false);
+    expect(currentSettingsChildKeys('/settings/logs/clear', { noActive: true })).toEqual([]);
   });
 });
 

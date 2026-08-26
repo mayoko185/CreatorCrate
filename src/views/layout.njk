@@ -44,10 +44,19 @@
         <nav class="app-nav" aria-label="Primary">
           <ul class="app-nav-list">
             {% for item in shell.navigation %}
-              <li class="app-nav-item">
-                <a href="{{ item.href }}" class="app-nav-link" data-nav-key="{{ item.key }}"{% if item.active %} aria-current="page"{% endif %}>
+              <li class="app-nav-item{% if item.active %} app-nav-item--active{% endif %}{% if item.children.length %} app-nav-item--has-children{% endif %}">
+                <a href="{{ item.href }}" class="app-nav-link" data-nav-key="{{ item.key }}"{% if item.active and not item.children.length %} aria-current="page"{% endif %}>
                   {{ icons.icon(item.icon) }}<span class="app-nav-label">{{ item.label }}</span>
                 </a>
+                {% if item.children.length %}
+                  <ul class="app-nav-children">
+                    {% for child in item.children %}
+                      <li class="app-nav-child-item">
+                        <a href="{{ child.href }}" class="app-nav-child-link" data-nav-key="{{ item.key }}-{{ child.key }}"{% if child.current %} aria-current="page"{% endif %}>{{ child.label }}</a>
+                      </li>
+                    {% endfor %}
+                  </ul>
+                {% endif %}
               </li>
             {% endfor %}
           </ul>
@@ -74,8 +83,17 @@
         <nav class="mobile-nav-primary" aria-label="Primary">
           <ul class="mobile-nav-list">
             {% for item in shell.navigation %}
-              <li class="mobile-nav-item">
-                <a href="{{ item.href }}" class="mobile-nav-link" data-nav-key="{{ item.key }}"{% if item.active %} aria-current="page"{% endif %}>{{ item.label }}</a>
+              <li class="mobile-nav-item{% if item.active %} mobile-nav-item--active{% endif %}{% if item.children.length %} mobile-nav-item--has-children{% endif %}">
+                <a href="{{ item.href }}" class="mobile-nav-link" data-nav-key="{{ item.key }}"{% if item.active and not item.children.length %} aria-current="page"{% endif %}>{{ item.label }}</a>
+                {% if item.children.length %}
+                  <ul class="mobile-nav-children">
+                    {% for child in item.children %}
+                      <li class="mobile-nav-child-item">
+                        <a href="{{ child.href }}" class="mobile-nav-child-link" data-nav-key="{{ item.key }}-{{ child.key }}"{% if child.current %} aria-current="page"{% endif %}>{{ child.label }}</a>
+                      </li>
+                    {% endfor %}
+                  </ul>
+                {% endif %}
               </li>
             {% endfor %}
           </ul>

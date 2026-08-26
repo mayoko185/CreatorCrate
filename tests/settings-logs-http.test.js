@@ -11,11 +11,18 @@ import { authenticate, AUTH_CONFIG } from './helpers/auth.js';
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const APP_NAME = 'CreatorCrate';
 
-function activeSettingsNavLabels(html) {
-  const settingsNav = html.match(/<nav class="settings-nav"[\s\S]*?<\/nav>/)?.[0] || '';
-  return [...settingsNav.matchAll(/<a href="[^"]+"(?: aria-current="page")?>([^<]+)<\/a>/g)]
-    .filter((match) => match[0].includes('aria-current="page"'))
-    .map((match) => match[1]);
+function activeSettingsNavLabels(html, expectedCurrentSettingsChild) {
+  expect(html).not.toContain('<nav class="settings-nav"');
+  expect(html).toContain('class="app-nav-item app-nav-item--active app-nav-item--has-children"');
+  expect(html).toContain('class="mobile-nav-item mobile-nav-item--active mobile-nav-item--has-children"');
+  expect(html).not.toMatch(/<a\b(?=[^>]*\bdata-nav-key="settings")(?=[^>]*\baria-current="page")[^>]*>/);
+
+  const currentChildren = [...html.matchAll(
+    /<a\b(?=[^>]*\bclass="(?:app-nav-child-link|mobile-nav-child-link)")(?=[^>]*\bdata-nav-key="(settings-[^"]+)")(?=[^>]*\baria-current="page")[^>]*>([^<]+)<\/a>/g,
+  )];
+  expect(currentChildren).toHaveLength(2);
+  expect(new Set(currentChildren.map((match) => match[1]))).toEqual(new Set([expectedCurrentSettingsChild]));
+  return [...new Set(currentChildren.map((match) => match[2]))];
 }
 
 function expectLogFilterOption(html, name, value) {
@@ -69,8 +76,7 @@ describe('settings — logs HTTP', () => {
   it('adds Logs to Settings navigation and renders the authenticated server-rendered viewer', async () => {
     const res = await agent.get('/settings/logs').expect(200);
 
-    expect(res.text).toContain('href="/settings/logs" aria-current="page">Logs</a>');
-    expect(activeSettingsNavLabels(res.text)).toEqual(['Logs']);
+    expect(activeSettingsNavLabels(res.text, 'settings-logs')).toEqual(['Logs']);
     expect(res.text).toContain('method="get" action="/settings/logs"');
     expect(res.text).toContain('<nav class="project-filter-actions project-filter-actions--projects" aria-label="Log actions">');
     expect(res.text).toContain('aria-label="Refresh logs" data-tooltip="Refresh logs"');
@@ -89,6 +95,12 @@ describe('settings — logs HTTP', () => {
     expect(res.text).toContain('data-logs-results');
     expect(res.text).toContain('aria-live="polite"');
     await request(app).get('/settings/logs').expect(302);
+  });
+
+  it('maps the Clear Logs confirmation to the Logs shell navigation child', async () => {
+    const response = await agent.get('/settings/logs/clear').expect(200);
+
+    expect(activeSettingsNavLabels(response.text, 'settings-logs')).toEqual(['Logs']);
   });
 
   it('renders distinct manual and automatic refresh toolbar icons without changing control contracts', async () => {

@@ -15,9 +15,20 @@ const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const APP_NAME = 'CreatorCrate';
 
 function settingsNavLabels(html) {
-  const settingsNav = html.match(/<nav class="settings-nav"[\s\S]*?<\/nav>/)?.[0] || '';
-  return [...settingsNav.matchAll(/<a href="[^"]+"(?: aria-current="page")?>([^<]+)<\/a>/g)]
-    .map((match) => match[1]);
+  expect(html).not.toContain('<nav class="settings-nav"');
+  expect(html).toContain('class="app-nav-item app-nav-item--active app-nav-item--has-children"');
+  expect(html).toContain('class="mobile-nav-item mobile-nav-item--active mobile-nav-item--has-children"');
+  expect(html).not.toMatch(/<a\b(?=[^>]*\bdata-nav-key="settings")(?=[^>]*\baria-current="page")[^>]*>/);
+
+  const currentChildren = [...html.matchAll(
+    /<a\b(?=[^>]*\bclass="(?:app-nav-child-link|mobile-nav-child-link)")(?=[^>]*\bdata-nav-key="settings-([^"]+)")(?=[^>]*\baria-current="page")[^>]*>([^<]+)<\/a>/g,
+  )];
+  expect(currentChildren).toHaveLength(2);
+  expect(new Set(currentChildren.map((match) => match[1]))).toEqual(new Set(['nsfw-filter']));
+
+  return [...new Set([...html.matchAll(
+    /<a\b(?=[^>]*\bclass="(?:app-nav-child-link|mobile-nav-child-link)")(?=[^>]*\bdata-nav-key="settings-[^"]+")[^>]*>([^<]+)<\/a>/g,
+  )].map((match) => match[1]))];
 }
 
 function nsfwControl(html) {

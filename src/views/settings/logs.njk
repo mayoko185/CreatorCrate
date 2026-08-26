@@ -17,8 +17,6 @@
        data-logs-timezone="{{ timezone }}"
        data-logs-auto-refresh-enabled="{{ 'true' if autoRefreshEnabled else 'false' }}"
        data-logs-auto-refresh-preference="{{ 'true' if autoRefreshPreferenceEnabled else 'false' }}">
-    {% set activeSettingsSection = "logs" %}
-    {% include "partials/settings-nav.njk" %}
 
     <div class="settings-content">
       <div class="asset-viewer-display-controls">

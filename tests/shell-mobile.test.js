@@ -230,6 +230,39 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
       expect(desktopNavHrefs(res.text)).toHaveLength(7);
     });
 
+    it('renders the ordered Settings children in the mobile nested list', async () => {
+      const res = await agent.get('/settings/logs').expect(200);
+      const expectedHrefs = [
+        '/settings',
+        '/settings/security',
+        '/settings/backups',
+        '/settings/logs',
+        '/settings/defaults',
+        '/settings/nsfw-filter',
+        '/settings/asset-categories',
+        '/settings/tags',
+        '/settings/open-locally',
+      ];
+      const children = res.text.match(/<ul class="mobile-nav-children">([\s\S]*?)<\/ul>/);
+      expect(children).not.toBeNull();
+      expect(mobileNavHrefs(res.text)).toEqual([
+        '/', '/projects', '/assets', '/releases', '/calendar', '/notes', '/settings',
+      ]);
+      expect(desktopNavHrefs(res.text)).toEqual(mobileNavHrefs(res.text));
+      expect(
+        [...children[1].matchAll(/<a href="([^"]+)" class="mobile-nav-child-link"/g)].map((match) => match[1]),
+      ).toEqual(expectedHrefs);
+      expect(children[1].match(/aria-current="page"/g) || []).toHaveLength(1);
+      expect(children[1]).toContain('data-nav-key="settings-logs" aria-current="page"');
+      expect(res.text).toMatch(
+        /<li class="mobile-nav-item mobile-nav-item--active mobile-nav-item--has-children">/,
+      );
+      expect(res.text).toContain(
+        '<a href="/settings" class="mobile-nav-link" data-nav-key="settings">',
+      );
+      expect(children[1]).not.toMatch(/role="menu"|role="menuitem"|aria-expanded|\son\w+=/);
+    });
+
     it('renders exactly one Calendar link in the mobile nav', async () => {
       const res = await agent.get('/').expect(200);
       const calendarLinks = (res.text.match(/class="mobile-nav-link" data-nav-key="calendar"/g) || []);
@@ -571,7 +604,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
         /\.mobile-nav-link\[aria-current="page"\]::before/,
       );
       const beforeBlock = css.match(
-        /\.mobile-nav-link\[aria-current="page"\]::before\s*\{[\s\S]*?\}/,
+        /\.mobile-nav-link\[aria-current="page"\]::before,\s*\.mobile-nav-item--active\s*>\s*\.mobile-nav-link::before\s*\{[\s\S]*?\}/,
       );
       expect(beforeBlock).not.toBeNull();
       expect(beforeBlock[0]).toMatch(/content:\s*""/);
@@ -586,6 +619,21 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
       const navItemHeight = css.match(/--shell-nav-item-height:\s*(\d+)px/);
       expect(navItemHeight).not.toBeNull();
       expect(Number(navItemHeight[1])).toBeGreaterThanOrEqual(44);
+    });
+
+    it('keeps Settings children touch-sized and the open drawer vertically usable', async () => {
+      const css = await extractStyle(agent, (await agent.get('/settings').expect(200)).text);
+      const childRule = css.match(/\.mobile-nav-child-link\s*\{[\s\S]*?\}/);
+      expect(childRule).not.toBeNull();
+      expect(childRule[0]).toMatch(/min-height:\s*var\(--shell-nav-item-height\)/);
+      expect(childRule[0]).toMatch(/font-size:\s*0\.875rem/);
+      expect(childRule[0]).toMatch(/padding:[^;]*calc\(var\(--space-lg\) \+ var\(--space-md\)\)/);
+      expect(css).toMatch(/\.mobile-nav-child-link\[aria-current="page"\][\s\S]*?box-shadow:\s*inset 3px 0 0 var\(--accent\)/);
+
+      const panelRule = css.match(/\.mobile-nav-primary\s*\{[\s\S]*?\}/);
+      expect(panelRule).not.toBeNull();
+      expect(panelRule[0]).toMatch(/max-height:\s*calc\(100vh - var\(--shell-header-height\)\)/);
+      expect(panelRule[0]).toMatch(/overflow-y:\s*auto/);
     });
 
     it('the open panel has clear separation from page content', async () => {

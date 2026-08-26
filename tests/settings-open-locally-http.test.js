@@ -11,21 +11,26 @@ const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const APP_NAME = 'CreatorCrate';
 const WINDOWS_PROJECTS_PATH_KEY = 'open_locally.windows_projects_path';
 
-function activeNavKeys(html) {
-  const keys = [];
-  const re = /class="app-nav-link" data-nav-key="([^"]+)" aria-current="page"/g;
-  let match;
-  while ((match = re.exec(html)) !== null) keys.push(match[1]);
-  return keys;
+function activeNavKeys(html, expectedCurrentSettingsChild) {
+  activeSettingsNavLabels(html, expectedCurrentSettingsChild);
+  const activeParents = [...html.matchAll(
+    /<li class="(?:app-nav-item|mobile-nav-item)[^"]*--active[^"]*">[\s\S]*?<a href="[^"]+" class="(?:app-nav-link|mobile-nav-link)" data-nav-key="([^"]+)"/g,
+  )];
+  return [...new Set(activeParents.map((match) => match[1]))];
 }
 
-function activeSettingsNavLabels(html) {
-  const settingsNav = html.match(/<nav class="settings-nav"[\s\S]*?<\/nav>/)?.[0] || '';
-  const labels = [];
-  const re = /<a href="[^"]+" aria-current="page">([^<]+)<\/a>/g;
-  let match;
-  while ((match = re.exec(settingsNav)) !== null) labels.push(match[1]);
-  return labels;
+function activeSettingsNavLabels(html, expectedCurrentSettingsChild) {
+  expect(html).not.toContain('<nav class="settings-nav"');
+  expect(html).toContain('class="app-nav-item app-nav-item--active app-nav-item--has-children"');
+  expect(html).toContain('class="mobile-nav-item mobile-nav-item--active mobile-nav-item--has-children"');
+  expect(html).not.toMatch(/<a\b(?=[^>]*\bdata-nav-key="settings")(?=[^>]*\baria-current="page")[^>]*>/);
+
+  const currentChildren = [...html.matchAll(
+    /<a\b(?=[^>]*\bclass="(?:app-nav-child-link|mobile-nav-child-link)")(?=[^>]*\bdata-nav-key="(settings-[^"]+)")(?=[^>]*\baria-current="page")[^>]*>([^<]+)<\/a>/g,
+  )];
+  expect(currentChildren).toHaveLength(2);
+  expect(new Set(currentChildren.map((match) => match[1]))).toEqual(new Set([expectedCurrentSettingsChild]));
+  return [...new Set(currentChildren.map((match) => match[2]))];
 }
 
 function readMeta(db, key) {
@@ -71,8 +76,8 @@ describe('settings — open locally HTTP', () => {
     expect(res.text).toContain('Windows only: the Open locally buttons rely on the Open locally helper app.');
     expect(res.text).toContain('<h3>Projects path</h3>');
     expect(res.text).toContain('CreatorCrate cannot open files on your Windows machine directly.');
-    expect(activeNavKeys(res.text)).toEqual(['settings']);
-    expect(activeSettingsNavLabels(res.text)).toEqual(['Open locally']);
+    expect(activeNavKeys(res.text, 'settings-open-locally')).toEqual(['settings']);
+    expect(activeSettingsNavLabels(res.text, 'settings-open-locally')).toEqual(['Open locally']);
     expect(res.text).toContain(`<code>${projectsRoot.replaceAll('\\', '&#92;')}</code>`);
     expect(res.text).toContain('Not configured');
     expect(res.text).toContain('name="windowsProjectsPath"');
@@ -177,7 +182,7 @@ describe('settings — open locally HTTP', () => {
     expect(res.text).toContain('Windows projects path must be an absolute Windows drive path.');
     expect(res.text).toContain('value="relative/path"');
     expect(res.text).toContain('aria-invalid="true"');
-    expect(activeSettingsNavLabels(res.text)).toEqual(['Open locally']);
+    expect(activeSettingsNavLabels(res.text, 'settings-open-locally')).toEqual(['Open locally']);
     expect(readMeta(db, WINDOWS_PROJECTS_PATH_KEY)).toBe(before);
   });
 
@@ -244,6 +249,6 @@ describe('settings — open locally HTTP', () => {
     expect(overview.text).toContain('href="/settings/open-locally"');
 
     const tags = await agent.get('/settings/tags').expect(200);
-    expect(activeSettingsNavLabels(tags.text)).toEqual(['Tags']);
+    expect(activeSettingsNavLabels(tags.text, 'settings-tags')).toEqual(['Tags']);
   });
 });

@@ -24,11 +24,99 @@
  *   href    — destination URL (must resolve to a real GET page route)
  *   icon    — semantic icon key consumed by the icon partial
  *   matches — array of ":param" path patterns that activate this item
+ *   children — optional nested destinations with their own exact current-state rules
  *
  * A pattern segment of ":name" matches exactly one non-empty path segment.
  * Matching requires equal segment counts (no partial match), which is what
  * keeps "/projects-old" from matching "/projects".
  */
+const SETTINGS_CHILDREN = [
+  {
+    key: 'overview',
+    label: 'Overview',
+    href: '/settings',
+    matches: ['/settings'],
+  },
+  {
+    key: 'security',
+    label: 'Security',
+    href: '/settings/security',
+    matches: [
+      '/settings/security',
+      '/settings/security/password',
+      '/settings/security/disable',
+      '/settings/security/enable',
+    ],
+  },
+  {
+    key: 'backups',
+    label: 'Backups',
+    href: '/settings/backups',
+    matches: [
+      '/settings/backups',
+      '/settings/backups/:filename/restore',
+      '/settings/backups/:filename/delete',
+    ],
+  },
+  {
+    key: 'logs',
+    label: 'Logs',
+    href: '/settings/logs',
+    matches: [
+      '/settings/logs',
+      '/settings/logs/defaults',
+      '/settings/logs/clear',
+    ],
+  },
+  {
+    key: 'defaults',
+    label: 'Defaults',
+    href: '/settings/defaults',
+    matches: ['/settings/defaults'],
+  },
+  {
+    key: 'nsfw-filter',
+    label: 'NSFW Filter',
+    href: '/settings/nsfw-filter',
+    matches: ['/settings/nsfw-filter'],
+  },
+  {
+    key: 'asset-categories',
+    label: 'Asset Categories',
+    href: '/settings/asset-categories',
+    matches: [
+      '/settings/asset-categories',
+      '/settings/asset-categories/browser-default',
+      '/settings/asset-categories/preview-category',
+      '/settings/asset-categories/reorder',
+      '/settings/asset-categories/:id',
+      '/settings/asset-categories/:id/enabled',
+      '/settings/asset-categories/:id/delete',
+      '/settings/asset-categories/:id/move-up',
+      '/settings/asset-categories/:id/move-down',
+    ],
+  },
+  {
+    key: 'tags',
+    label: 'Tags',
+    href: '/settings/tags',
+    matches: [
+      '/settings/tags',
+      '/settings/tags/:tagId/edit',
+      '/settings/tags/:tagId/delete',
+    ],
+  },
+  {
+    key: 'open-locally',
+    label: 'Open locally',
+    href: '/settings/open-locally',
+    matches: [
+      '/settings/open-locally',
+      '/settings/open-locally/clear',
+    ],
+  },
+];
+
 const NAVIGATION_ITEMS = [
   {
     key: 'dashboard',
@@ -113,19 +201,8 @@ const NAVIGATION_ITEMS = [
     label: 'Settings',
     href: '/settings',
     icon: 'settings',
-    matches: [
-      '/settings',
-      '/settings/backups',
-      '/settings/backups/:filename/restore',
-      '/settings/backups/:filename/delete',
-      '/settings/security',
-      '/settings/security/disable',
-      '/settings/defaults',
-      '/settings/tags',
-      '/settings/tags/:tagId/edit',
-      '/settings/tags/:tagId/delete',
-      '/settings/open-locally',
-    ],
+    children: SETTINGS_CHILDREN,
+    matches: SETTINGS_CHILDREN.flatMap((child) => child.matches),
   },
 ];
 
@@ -197,17 +274,27 @@ export function isPathActive(matchPatterns, requestPath) {
  *   pageTitle: string,
  *   activeSection: string|null,
  *   currentPath: string,
- *   navigation: Array<{ key: string, label: string, href: string, icon: string, active: boolean }>
+ *   navigation: Array<{ key: string, label: string, href: string, icon: string, active: boolean, children: Array<{ key: string, label: string, href: string, current: boolean }> }>
  * }}
  */
 export function buildShellModel({ appName, path, noActive = false }) {
-  const navigation = NAVIGATION_ITEMS.map((item) => ({
-    key: item.key,
-    label: item.label,
-    href: item.href,
-    icon: item.icon,
-    active: noActive ? false : isPathActive(item.matches, path),
-  }));
+  const navigation = NAVIGATION_ITEMS.map((item) => {
+    const children = (item.children || []).map((child) => ({
+      key: child.key,
+      label: child.label,
+      href: child.href,
+      current: noActive ? false : isPathActive(child.matches, path),
+    }));
+
+    return {
+      key: item.key,
+      label: item.label,
+      href: item.href,
+      icon: item.icon,
+      active: noActive ? false : isPathActive(item.matches, path),
+      children,
+    };
+  });
 
   // Phase 10.4B: the active item's label feeds the desktop shell header as a
   // section title. Computed here (not in the template) so Nunjucks never has
