@@ -2291,3 +2291,87 @@ describe('Live project category mutations', () => {
     vi.unstubAllGlobals();
   });
 });
+describe('Project Assets multi-select defaults scope', () => {
+  function selectedValues(select) {
+    return Array.from(select.options || [])
+      .filter((option) => option.selected)
+      .map((option) => option.value);
+  }
+
+  function selectValues(select, values) {
+    const selected = new Set(values);
+    Array.from(select.options || []).forEach((option) => {
+      option.selected = selected.has(option.value);
+    });
+    select.dispatch('change');
+  }
+
+  it('preserves complete Extension and Tag drafts independently for each scope', () => {
+    const values = {
+      global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: ['jpg', 'png'], tag: ['1', '2'] },
+      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: ['png'], tag: ['2'] },
+    };
+    const page = makeDialogPage({ projectAssetsDefaults: true, projectAssetsScope: true, projectAssetsScopeValues: values });
+    page.fields.extension.multiple = true;
+    page.fields.tag.multiple = true;
+    enhanceAppDialogs(page.document);
+    enhanceProjectAssetsDefaultsScope(page.document);
+
+    page.document.dispatch('click', { target: page.trigger });
+    expect(selectedValues(page.fields.extension)).toEqual(['jpg', 'png']);
+    expect(selectedValues(page.fields.tag)).toEqual(['1', '2']);
+
+    selectValues(page.fields.extension, ['jpg']);
+    selectValues(page.fields.tag, ['1']);
+    changeProjectAssetsScope(page, 'project');
+    expect(selectedValues(page.fields.extension)).toEqual(['png']);
+    expect(selectedValues(page.fields.tag)).toEqual(['2']);
+
+    selectValues(page.fields.extension, ['jpg', 'png']);
+    selectValues(page.fields.tag, ['1', '2']);
+    changeProjectAssetsScope(page, 'global');
+    expect(selectedValues(page.fields.extension)).toEqual(['jpg']);
+    expect(selectedValues(page.fields.tag)).toEqual(['1']);
+    changeProjectAssetsScope(page, 'project');
+    expect(selectedValues(page.fields.extension)).toEqual(['jpg', 'png']);
+    expect(selectedValues(page.fields.tag)).toEqual(['1', '2']);
+  });
+
+  it('fails closed when a committed multi-select member is unavailable', () => {
+    const values = {
+      global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: ['jpg'], tag: 'all' },
+      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: ['gif', 'png'], tag: ['2'] },
+    };
+    const page = makeDialogPage({ projectAssetsDefaults: true, projectAssetsScope: true, projectAssetsScopeValues: values });
+    page.fields.extension.multiple = true;
+    page.fields.tag.multiple = true;
+    enhanceAppDialogs(page.document);
+    enhanceProjectAssetsDefaultsScope(page.document);
+
+    page.document.dispatch('click', { target: page.trigger });
+    changeProjectAssetsScope(page, 'project');
+
+    expect(selectedValues(page.fields.extension)).toEqual(['jpg']);
+    expect(page.form.querySelector('[data-dialog-error-text]').textContent).toMatch(/could not be changed safely/i);
+  });
+
+  it('clears concrete Extension and Tag selections when restoring neutral all values', () => {
+    const values = {
+      global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: ['jpg', 'png'], tag: ['1', '2'] },
+      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'all', tag: 'all' },
+    };
+    const page = makeDialogPage({ projectAssetsDefaults: true, projectAssetsScope: true, projectAssetsScopeValues: values });
+    page.fields.extension.multiple = true;
+    page.fields.tag.multiple = true;
+    enhanceAppDialogs(page.document);
+    enhanceProjectAssetsDefaultsScope(page.document);
+
+    page.document.dispatch('click', { target: page.trigger });
+    expect(selectedValues(page.fields.extension)).toEqual(['jpg', 'png']);
+    expect(selectedValues(page.fields.tag)).toEqual(['1', '2']);
+
+    changeProjectAssetsScope(page, 'project');
+    expect(selectedValues(page.fields.extension)).toEqual([]);
+    expect(selectedValues(page.fields.tag)).toEqual([]);
+  });
+});

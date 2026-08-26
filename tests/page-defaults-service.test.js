@@ -123,11 +123,13 @@ describe('page defaults service', () => {
         key: 'page_defaults.project_assets.extension',
         values: ['all'],
         fallback: 'all',
+        multi: true,
       },
       tag: {
         key: 'page_defaults.project_assets.tag',
         values: ['all'],
         fallback: 'all',
+        multi: true,
       },
     });
   });
@@ -629,7 +631,7 @@ describe('page defaults service', () => {
       pageSize: '25',
       extension: 'png',
       tag: '42',
-    }, optionCatalogues)).toMatchObject({ extension: 'png', tag: '42' });
+    }, optionCatalogues)).toMatchObject({ extension: ['png'], tag: ['42'] });
     expect(() => service.validatePageDefaults('projectAssets', {
       view: 'grid',
       gridSize: 'default',
@@ -640,6 +642,127 @@ describe('page defaults service', () => {
       extension: 'jpg',
       tag: '99',
     }, optionCatalogues)).toThrow(PageDefaultValidationError);
+  });
+
+  it('normalizes Project Assets Extension and Tag selections with neutral all semantics', () => {
+    const optionCatalogues = {
+      extension: [
+        { value: 'all', label: 'All extensions' },
+        { value: 'png', label: '.png' },
+        { value: 'jpg', label: '.jpg' },
+      ],
+      tag: [
+        { value: 'all', label: 'All tags' },
+        { value: '42', label: 'Design' },
+        { value: '77', label: 'Reference' },
+      ],
+    };
+    const values = {
+      view: 'grid',
+      gridSize: 'default',
+      listSize: 'large',
+      sort: 'filename',
+      order: 'asc',
+      pageSize: '25',
+      extension: ['png', 'jpg', 'png'],
+      tag: ['42', '77', '42'],
+    };
+
+    expect(service.validatePageDefaults('projectAssets', values, optionCatalogues)).toMatchObject({
+      extension: ['png', 'jpg'],
+      tag: ['42', '77'],
+    });
+    expect(service.validatePageDefaults('projectAssets', {
+      ...values,
+      extension: ['all'],
+      tag: ['all'],
+    }, optionCatalogues)).toMatchObject({ extension: 'all', tag: 'all' });
+    expect(() => service.validatePageDefaults('projectAssets', {
+      ...values,
+      extension: ['all', 'png'],
+      tag: ['all'],
+    }, optionCatalogues)).toThrow(PageDefaultValidationError);
+    expect(() => service.saveDefault(
+      'projectAssets',
+      'extension',
+      ['png', 'unsupported'],
+      optionCatalogues.extension,
+    )).toThrow(PageDefaultValidationError);
+    expect(() => service.saveProjectDefault(
+      'projectAssets',
+      'tag',
+      ['42', '99'],
+      optionCatalogues.tag,
+      { projectId: 1 },
+    )).toThrow(PageDefaultValidationError);
+  });
+
+  it('persists Project Assets multi selections as JSON arrays and reads legacy scalar selections', () => {
+    const extensionKey = PAGE_DEFAULT_DEFINITIONS.projectAssets.extension.key;
+    const tagKey = PAGE_DEFAULT_DEFINITIONS.projectAssets.tag.key;
+    const optionCatalogues = {
+      extension: [
+        { value: 'all', label: 'All extensions' },
+        { value: 'png', label: '.png' },
+        { value: 'jpg', label: '.jpg' },
+      ],
+      tag: [
+        { value: 'all', label: 'All tags' },
+        { value: '42', label: 'Design' },
+        { value: '77', label: 'Reference' },
+      ],
+    };
+
+    expect(service.saveDefault('projectAssets', 'extension', ['png', 'jpg'], optionCatalogues.extension))
+      .toEqual(['png', 'jpg']);
+    expect(repository.getValue(extensionKey)).toBe('["png","jpg"]');
+    expect(service.resolve('projectAssets', 'extension', undefined, optionCatalogues.extension))
+      .toEqual(['png', 'jpg']);
+
+    expect(service.saveProjectDefault(
+      'projectAssets',
+      'tag',
+      ['42', '77'],
+      optionCatalogues.tag,
+      { projectId: 1 },
+    )).toEqual(['42', '77']);
+    expect(projectPageDefaultRepository.getOption(1, 'projectAssets', 'tag')).toBe('["42","77"]');
+    expect(service.resolve(
+      'projectAssets',
+      'tag',
+      undefined,
+      optionCatalogues.tag,
+      { projectId: 1 },
+    )).toEqual(['42', '77']);
+
+    repository.setValue(extensionKey, 'png');
+    projectPageDefaultRepository.setOption(1, 'projectAssets', 'tag', '42');
+    expect(service.resolve('projectAssets', 'extension', undefined, optionCatalogues.extension))
+      .toEqual(['png']);
+    expect(service.resolve(
+      'projectAssets',
+      'tag',
+      undefined,
+      optionCatalogues.tag,
+      { projectId: 1 },
+    )).toEqual(['42']);
+    expect(service.saveDefault('projectAssets', 'extension', 'all', optionCatalogues.extension)).toBe('all');
+    expect(repository.getValue(extensionKey)).toBe('all');
+    expect(service.resolve('projectAssets', 'extension', undefined, optionCatalogues.extension)).toBe('all');
+  });
+
+  it('keeps unrelated page-default options scalar', () => {
+    expect(service.saveDefault('projects', 'view', 'list')).toBe('list');
+    expect(repository.getValue(PAGE_DEFAULT_DEFINITIONS.projects.view.key)).toBe('list');
+    expect(service.resolve('projects', 'view')).toBe('list');
+    expect(service.validatePageDefaults('projects', {
+      view: 'grid',
+      sort: 'created',
+      order: 'desc',
+      status: 'all',
+      projectType: 'all',
+      tag: 'all',
+    }).view).toBe('grid');
   });
 
   it('keeps static definitions unchanged when no live catalogue is supplied', () => {

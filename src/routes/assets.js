@@ -1539,7 +1539,10 @@ function buildProjectAssetsDefaultsSuccessUrl(req, projectId, values) {
   for (const key of ['tag', 'extension']) {
     url.searchParams.delete(key);
     const value = values?.[key];
-    if (value !== undefined && value !== 'all') {
+    if (Array.isArray(value) && value.length > 0) {
+      value.forEach((member) => url.searchParams.append(key, String(member)));
+      inheritedFilterDefaults.push(key);
+    } else if (value !== undefined && value !== 'all') {
       url.searchParams.set(key, String(value));
       inheritedFilterDefaults.push(key);
     }

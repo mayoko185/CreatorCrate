@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import {
   createWorkflowQueryService,
+  buildAssetBrowserQueryString,
   buildCanonicalAssetBrowserQuery,
 } from '../src/services/workflow-query-service.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
@@ -2489,7 +2490,7 @@ describe('workflow query service', () => {
       expect(result.pageCount).toBe(1);
       expect(result.filters).toEqual({
         search: null,
-        extension: null,
+        extension: [],
         presence: 'all',
         usage: 'all',
         category: 'all',
@@ -2508,7 +2509,7 @@ describe('workflow query service', () => {
 
       expect(result.filters).toEqual({
         search: null,
-        extension: null,
+        extension: [],
         presence: 'all',
         usage: 'all',
         category: 'all',
@@ -2530,7 +2531,7 @@ describe('workflow query service', () => {
 
       expect(result.filters).toEqual({
         search: null,
-        extension: null,
+        extension: [],
         presence: 'all',
         usage: 'all',
         category: 'all',
@@ -2602,7 +2603,7 @@ describe('workflow query service', () => {
 
       const result = service.getProjectAssetBrowser(project.id, { extension: '.PNG' });
 
-      expect(result.filters.extension).toBe('png');
+      expect(result.filters.extension).toEqual(['png']);
       expect(result.total).toBe(1);
       expect(result.assets.map((a) => a.filename)).toEqual(['render.png']);
     });
@@ -2614,9 +2615,29 @@ describe('workflow query service', () => {
       const invalid = service.getProjectAssetBrowser(project.id, { extension: 'jpg' });
       const empty = service.getProjectAssetBrowser(project.id, { extension: '.' });
 
-      expect(invalid.filters.extension).toBeNull();
+      expect(invalid.filters.extension).toEqual([]);
       expect(invalid.total).toBe(1);
-      expect(empty.filters.extension).toBeNull();
+      expect(empty.filters.extension).toEqual([]);
+    });
+
+    it('normalizes repeated extensions, deduplicates them, and filters by either selected extension', () => {
+      const project = insertProject(db, { title: 'Multiple Extensions' });
+      insertAsset(db, { projectId: project.id, relativePath: 'render.png', filename: 'render.png', extension: 'png', mimeType: 'image/png', isPresent: 1 });
+      insertAsset(db, { projectId: project.id, relativePath: 'photo.jpg', filename: 'photo.jpg', extension: 'jpg', mimeType: 'image/jpeg', isPresent: 1 });
+      insertAsset(db, { projectId: project.id, relativePath: 'notes.txt', filename: 'notes.txt', extension: 'txt', mimeType: 'text/plain', isPresent: 1 });
+
+      const result = service.getProjectAssetBrowser(project.id, {
+        extension: ['.JPG', 'png', 'jpg', 'unknown'],
+      });
+
+      expect(result.filters.extension).toEqual(['jpg', 'png']);
+      expect(result.total).toBe(2);
+      expect(result.assets.map((asset) => asset.filename)).toEqual(['photo.jpg', 'render.png']);
+      expect(result.extensionChoices).toEqual([
+        { value: 'jpg', label: 'jpg', selected: true },
+        { value: 'png', label: 'png', selected: true },
+        { value: 'txt', label: 'txt', selected: false },
+      ]);
     });
 
     it('filters by a valid reusable asset tag, returns numeric deterministic options, and keeps rows unique', () => {
@@ -2744,7 +2765,7 @@ describe('workflow query service', () => {
       expect(result.filters).toMatchObject({
          tags: [tag.id],
         search: 'hero',
-        extension: 'png',
+        extension: ['png'],
         presence: 'present',
         usage: 'used',
       });
@@ -2930,7 +2951,7 @@ describe('workflow query service', () => {
       expect(result.assets.map((a) => a.id)).toEqual([target.id]);
       expect(result.filters).toMatchObject({
         search: 'hero',
-        extension: 'png',
+        extension: ['png'],
         presence: 'present',
         usage: 'used',
       });
@@ -3968,7 +3989,7 @@ describe('workflow query service', () => {
 
       expect(result.filters).toEqual({
         search: 'hero',
-        extension: null, // no assets/extensions exist yet, so .png is not a valid choice
+        extension: [], // no assets/extensions exist yet, so .png is not a valid choice
         presence: 'missing',
         usage: 'used',
         category: 'all', // unknown category id normalizes to All
@@ -4038,6 +4059,16 @@ describe('workflow query service', () => {
       expect(buildCanonicalAssetBrowserQuery(filtered.context, filtered.context.page)).toEqual({
         search: 'hero',
       });
+      insertAsset(db, { projectId: project.id, relativePath: 'context.png', filename: 'context.png', extension: 'png', isPresent: 1 });
+      insertAsset(db, { projectId: project.id, relativePath: 'context.jpg', filename: 'context.jpg', extension: 'jpg', isPresent: 1 });
+      const repeatedExtensions = service.getProjectAssetBrowserContext(project.id, {
+        extension: ['png', 'jpg', 'png'],
+      }).context;
+      expect(buildCanonicalAssetBrowserQuery(repeatedExtensions, 1)).toEqual({
+        extension: ['jpg', 'png'],
+      });
+      expect(buildAssetBrowserQueryString(buildCanonicalAssetBrowserQuery(repeatedExtensions, 1)))
+        .toBe('extension=jpg&extension=png');
       expect(buildCanonicalAssetBrowserQuery(
         service.getProjectAssetBrowserContext(project.id, { category: 'all' }).context,
         1,
@@ -4292,6 +4323,20 @@ describe('workflow query service', () => {
         expect(result.nextAssetLink).toBeNull();
         expectLocalUrl(result.backToAssetsLink.href, `/projects/${testCase.project.id}/assets`, testCase.query);
       }
+    });
+
+    it('keeps repeated extension query values unsupported in the Asset Viewer', () => {
+      const project = insertProject(db, { title: 'Viewer Repeated Extensions' });
+      const first = addViewerAsset(project, 'first.png', { extension: 'png', mimeType: 'image/png' });
+      const second = addViewerAsset(project, 'second.jpg', { extension: 'jpg', mimeType: 'image/jpeg' });
+
+      const result = service.getProjectAssetViewer(project.id, first.id, {
+        extension: ['png', 'jpg'],
+      });
+
+      expect(result.context.extension).toBeNull();
+      expect(result.filteredTotal).toBe(2);
+      expect(result.nextAssetLink.assetId).toBe(second.id);
     });
 
     it('keeps archived projects readable in the viewer model', () => {

@@ -193,7 +193,14 @@ function appDialogClose(state) {
 function appDialogValues(form) {
   const values = {};
   Array.from(form?.querySelectorAll?.('select, input, textarea') || []).forEach((control) => {
-    if (control.name && !Object.hasOwn(values, control.name)) values[control.name] = control.value;
+    if (!control.name || Object.hasOwn(values, control.name)) return;
+    if (control.tagName === 'SELECT' && control.multiple) {
+      values[control.name] = Array.from(control.options || [])
+        .filter((option) => option.selected)
+        .map((option) => String(option.value));
+      return;
+    }
+    values[control.name] = control.value;
   });
   return values;
 }
@@ -225,6 +232,17 @@ function appDialogApplyValues(form, values = {}) {
     const control = form?.querySelector?.(`[name="${name}"]`);
     if (!control) return;
     const stringValue = String(value ?? '');
+    if (control.tagName === 'SELECT' && control.multiple) {
+      const selectedValues = Array.isArray(value) ? value : [value];
+      const stringValues = selectedValues.map((member) => String(member ?? ''));
+      if (!stringValues.every((member) => appDialogAllowsSubmittedValue(form, name, member))) return;
+      const selected = new Set(stringValues);
+      Array.from(control.options || []).forEach((option) => {
+        option.selected = selected.has(String(option.value));
+      });
+      syncCreatorCrateDropdownFromNative(control);
+      return;
+    }
     if (!appDialogAllowsSubmittedValue(form, name, stringValue)) {
       syncCreatorCrateDropdownFromNative(control);
       return;

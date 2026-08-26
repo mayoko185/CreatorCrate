@@ -158,8 +158,17 @@ function buildSharedAssetBrowserConditions(filters = {}) {
   }
 
   if (filters.extension) {
-    conditions.push('LOWER(a.extension) = ?');
-    params.push(filters.extension);
+    const values = Array.isArray(filters.extension) ? filters.extension : [filters.extension];
+    const selected = [...new Set(values
+      .filter((value) => typeof value === 'string')
+      .map((value) => value.trim().replace(/^\./, '').toLowerCase())
+      .filter((value) => value !== '' && !value.startsWith('.')))]
+      .sort();
+    if (selected.length > 0) {
+      const placeholders = selected.map(() => '?').join(',');
+      conditions.push(`LOWER(a.extension) IN (${placeholders})`);
+      params.push(...selected);
+    }
   }
 
   if (filters.presence === 'present') {

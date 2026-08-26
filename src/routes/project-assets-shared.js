@@ -564,7 +564,10 @@ function resolveProjectAssetsFilterDefaults(pageDefaultsService, optionCatalogue
 }
 
 function hasNonNeutralProjectAssetsFilterDefaults(filterDefaults) {
-  return filterDefaults.extension !== 'all' || filterDefaults.tag !== 'all';
+  return ['extension', 'tag'].some((key) => {
+    const value = filterDefaults[key];
+    return Array.isArray(value) ? value.length > 0 : value !== 'all';
+  });
 }
 
 function buildAssetDefaultsRedirectUrl(
@@ -1081,7 +1084,11 @@ function materializeSuspendedInheritedFilterDefaults(
     if (Object.hasOwn(query, key)) return;
 
     const value = filterDefaults[key];
-    if (value !== undefined && value !== 'all') query[key] = String(value);
+    if (Array.isArray(value) && value.length > 0) {
+      query[key] = [...value];
+    } else if (value !== undefined && value !== 'all') {
+      query[key] = String(value);
+    }
   });
   return query;
 }
@@ -1128,13 +1135,14 @@ function omitInheritedFilterDefaultsForCategory(rawQuery = {}) {
 }
 
 function hasNonDefaultCategoryBrowserControls(rawQuery = {}) {
-  const extension = typeof rawQuery.extension === 'string'
-    ? rawQuery.extension.trim().replace(/^\./, '').toLowerCase()
-    : '';
+  const extensions = (Array.isArray(rawQuery.extension) ? rawQuery.extension : [rawQuery.extension])
+    .filter((value) => typeof value === 'string')
+    .map((value) => value.trim().replace(/^\./, '').toLowerCase())
+    .filter((value) => value !== '');
 
   return (
     (typeof rawQuery.search === 'string' && rawQuery.search.trim() !== '')
-    || extension !== ''
+    || extensions.length > 0
     || rawQuery.presence === 'present'
     || rawQuery.presence === 'missing'
     || rawQuery.usage === 'used'

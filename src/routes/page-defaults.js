@@ -36,8 +36,12 @@ export function buildPageDefaultsDialogModel({
     const optionCatalogue = getPageDefaultOptionCatalogue(definition, optionCatalogues?.[option]);
     const value = values?.[option];
     const error = errors[option] || null;
+    const multi = definition.multi === true;
+    const renderedOptionCatalogue = multi
+      ? optionCatalogue.filter((candidate) => candidate.value !== 'all')
+      : optionCatalogue;
     const showSubmittedValue = Boolean(
-      error && typeof value === 'string'
+      !multi && error && typeof value === 'string'
         && !optionCatalogue.some((candidate) => candidate.value === value)
     );
 
@@ -46,7 +50,8 @@ export function buildPageDefaultsDialogModel({
       name: option,
       label: labels.fields[option],
       selectedValue: value,
-      options: optionCatalogue.map((candidate) => ({
+      ...(multi ? { multi: true, selectedValues: Array.isArray(value) ? value : [] } : {}),
+      options: renderedOptionCatalogue.map((candidate) => ({
         value: candidate.value,
         label: candidate.label ?? labels.options[option]?.[candidate.value] ?? candidate.value,
       })),
@@ -75,7 +80,12 @@ export function handlePageDefaultsPost(req, res, next, {
   const pageDefinition = getPageDefaultDefinition(page);
   const rawBody = req.body && typeof req.body === 'object' ? req.body : {};
   const submittedValues = Object.fromEntries(
-    Object.keys(pageDefinition).map((option) => [option, rawBody[option]])
+    Object.keys(pageDefinition).map((option) => [
+      option,
+      pageDefinition[option].multi === true && rawBody[option] === undefined
+        ? 'all'
+        : rawBody[option],
+    ])
   );
   const enhanced = String(req.get?.('Accept') || '').toLowerCase().includes('application/json');
   const useOptionCatalogues = hasOptionCatalogues(optionCatalogues);

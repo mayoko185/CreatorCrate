@@ -1,6 +1,8 @@
 import { isEnhancementBound, markEnhancementBound } from './dom.js';
 import { syncCreatorCrateDropdownFromNative } from './dropdowns.js';
 
+const MULTI_VALUE_KEYS = new Set(['extension', 'tag']);
+
 const FORM_SELECTOR = '#project-assets-defaults-form';
 const SCOPE_SELECTOR = '[data-project-assets-defaults-scope]';
 const VALUES_SELECTOR = 'script[type="application/json"][data-project-assets-default-values]';
@@ -25,8 +27,14 @@ function scopeValues(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const result = {};
   for (const key of VALUE_KEYS) {
-    if (typeof value[key] !== 'string') return null;
-    result[key] = value[key];
+    const fieldValue = value[key];
+    if (MULTI_VALUE_KEYS.has(key) && Array.isArray(fieldValue)) {
+      if (fieldValue.some((member) => typeof member !== 'string')) return null;
+      result[key] = [...fieldValue];
+      continue;
+    }
+    if (typeof fieldValue !== 'string') return null;
+    result[key] = fieldValue;
   }
   return result;
 }
@@ -55,22 +63,40 @@ function formFields(form) {
 }
 
 function captureDraft(fields) {
-  return Object.fromEntries(VALUE_KEYS.map((key) => [key, String(fields[key].value ?? '')]));
+  return Object.fromEntries(VALUE_KEYS.map((key) => {
+    const field = fields[key];
+    if (MULTI_VALUE_KEYS.has(key) && field?.multiple) {
+      const selected = Array.from(field.options || [])
+        .filter((option) => option.selected)
+        .map((option) => String(option.value ?? ''))
+        .filter((value) => value !== 'all');
+      return [key, selected.length > 0 ? selected : 'all'];
+    }
+    return [key, String(field?.value ?? '')];
+  }));
 }
 
 function captureSubmittedValues(fields) {
-  const values = {};
-  for (const key of VALUE_KEYS) {
-    const value = fields[key]?.value;
-    if (typeof value !== 'string') return null;
-    values[key] = value;
-  }
-  return values;
+  const values = captureDraft(fields);
+  return VALUE_KEYS.every((key) => (
+    MULTI_VALUE_KEYS.has(key)
+      ? values[key] === 'all' || Array.isArray(values[key]) || typeof values[key] === 'string'
+      : typeof values[key] === 'string'
+  )) ? values : null;
 }
 
 function draftIsRepresentable(fields, draft) {
-  return VALUE_KEYS.every((key) => Array.from(fields[key].options || [])
-    .some((option) => String(option.value ?? '') === draft[key]));
+  return VALUE_KEYS.every((key) => {
+    const value = draft[key];
+    if (MULTI_VALUE_KEYS.has(key) && fields[key]?.multiple) {
+      if (value === 'all') return true;
+      if (!Array.isArray(value)) return false;
+      const available = new Set(Array.from(fields[key].options || []).map((option) => String(option.value ?? '')));
+      return value.every((member) => available.has(String(member)));
+    }
+    return Array.from(fields[key].options || [])
+      .some((option) => String(option.value ?? '') === value);
+  });
 }
 
 function dispatchNativeEvent(select, type) {
@@ -139,10 +165,10 @@ function writeCommittedValues(state) {
 function reconcileSuccessfulSubmission(state, payload) {
   const submitted = state.pendingSubmission;
   state.pendingSubmission = null;
-  if (!submitted || !scopeValues(payload?.values)) return;
-
-  const global = submitted.scope === 'global' ? submitted.values : state.committed.global;
-  const project = submitted.values;
+  const values = scopeValues(payload?.values);
+  if (!submitted || !values) return;
+  const global = submitted.scope === 'global' ? values : state.committed.global;
+  const project = values;
   state.committed = {
     global: { ...global },
     project: { ...project },
@@ -201,23 +227,31 @@ function applyDraft(state, targetScope) {
 
   const previousValues = captureDraft(state.fields);
   state.applying = true;
-  try {
+  const applyValues = (draft) => {
     VALUE_KEYS.forEach((key) => {
       const select = state.fields[key];
-      select.value = targetDraft[key];
+      const value = draft[key];
+      if (MULTI_VALUE_KEYS.has(key) && select.multiple) {
+        const selected = new Set(value === 'all' ? [] : value);
+        Array.from(select.options || []).forEach((option) => {
+          option.selected = selected.has(String(option.value ?? ''));
+        });
+      } else {
+        select.value = value;
+      }
       syncCreatorCrateDropdownFromNative(select);
       dispatchNativeEvent(select, 'input');
       dispatchNativeEvent(select, 'change');
     });
+  };
+
+  try {
+    applyValues(targetDraft);
     state.loadedScope.value = targetScope;
     clearScopeError(state.form);
     return true;
   } catch {
-    VALUE_KEYS.forEach((key) => {
-      const select = state.fields[key];
-      select.value = previousValues[key];
-      syncCreatorCrateDropdownFromNative(select);
-    });
+    applyValues(previousValues);
     return false;
   } finally {
     state.applying = false;

@@ -136,4 +136,111 @@ describe('page defaults dialog model', () => {
     ]);
     expect(success).toEqual({ validatedValues: values });
   });
+
+  it('marks only Project Assets Extension and Tag as multi-select fields', () => {
+    const optionCatalogues = {
+      extension: [
+        { value: 'all', label: 'All extensions' },
+        { value: 'jpg', label: '.jpg' },
+        { value: 'png', label: '.png' },
+      ],
+      tag: [
+        { value: 'all', label: 'All tags' },
+        { value: '1', label: 'First tag' },
+        { value: '2', label: 'Second tag' },
+      ],
+    };
+    const model = buildPageDefaultsDialogModel({
+      pageDefaultsService: {
+        resolvePageDefaults: () => ({
+          view: 'grid',
+          gridSize: 'default',
+          listSize: 'large',
+          sort: 'filename',
+          order: 'asc',
+          pageSize: '25',
+          extension: ['jpg', 'png'],
+          tag: ['1', '2'],
+        }),
+      },
+      page: 'projectAssets',
+      labels: {
+        fields: {
+          view: 'View', gridSize: 'Grid size', listSize: 'List size', sort: 'Sort',
+          order: 'Order', pageSize: 'Page size', extension: 'Extension', tag: 'Tag',
+        },
+        options: {},
+      },
+      optionCatalogues,
+    });
+
+    expect(model.fields.find((field) => field.name === 'extension')).toMatchObject({
+      multi: true,
+      selectedValues: ['jpg', 'png'],
+      options: [{ value: 'jpg', label: '.jpg' }, { value: 'png', label: '.png' }],
+    });
+    expect(model.fields.find((field) => field.name === 'tag')).toMatchObject({
+      multi: true,
+      selectedValues: ['1', '2'],
+      options: [{ value: '1', label: 'First tag' }, { value: '2', label: 'Second tag' }],
+    });
+    expect(model.fields.find((field) => field.name === 'view')).toMatchObject({
+      selectedValue: 'grid',
+    });
+    expect(model.fields.find((field) => field.name === 'view')).not.toHaveProperty('multi');
+  });
+
+  it('preserves repeated Project Assets values and maps an omitted multi-select to all', () => {
+    const values = {
+      view: 'grid',
+      gridSize: 'default',
+      listSize: 'large',
+      sort: 'filename',
+      order: 'asc',
+      pageSize: '25',
+      extension: ['jpg', 'png'],
+      tag: ['1', '2'],
+    };
+    const validationCalls = [];
+
+    handlePageDefaultsPost({ body: values }, {}, expect.unreachable, {
+      page: 'projectAssets',
+      optionCatalogues: {
+        extension: [{ value: 'jpg' }, { value: 'png' }],
+        tag: [{ value: '1' }, { value: '2' }],
+      },
+      pageDefaultsService: {
+        validatePageDefaults(...args) {
+          validationCalls.push(args);
+          return args[1];
+        },
+        saveDefault() {},
+      },
+      onSuccess() {},
+    });
+
+    handlePageDefaultsPost({ body: {
+      view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename',
+      order: 'asc', pageSize: '25',
+    } }, {}, expect.unreachable, {
+      page: 'projectAssets',
+      pageDefaultsService: {
+        validatePageDefaults(...args) {
+          validationCalls.push(args);
+          return args[1];
+        },
+        saveDefault() {},
+      },
+      onSuccess() {},
+    });
+
+    expect(validationCalls[0][1]).toMatchObject({
+      extension: ['jpg', 'png'],
+      tag: ['1', '2'],
+    });
+    expect(validationCalls[1][1]).toMatchObject({
+      extension: 'all',
+      tag: 'all',
+    });
+  });
 });

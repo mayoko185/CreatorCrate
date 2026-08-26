@@ -580,17 +580,20 @@
           emptyOptionText: "No tags available"
         }) }}
 
-        {{ dropdown.singleSelect({
+        {% set extensionFilterSelection = filters.extension or [] %}
+        {{ dropdown.multiSelect({
           id: "asset-extension-filter",
           name: "extension",
           label: "Extension",
           fieldClasses: "asset-viewer-filter-field",
           options: extensionChoices,
           optionIdPrefix: "asset-extension",
-          selected: filters.extension or '',
-          placeholder: "All extensions",
+          selectedValues: extensionFilterSelection,
+          emptySummary: "All extensions",
+          countLabel: "extensions",
           optionPrefix: ".",
-          panelLabel: "Extension options"
+          panelLabel: "Extension options",
+          emptyOptionText: "No extensions available"
         }) }}
 
         {% set presenceFilterSummary = "All assets" %}
@@ -924,7 +927,9 @@
               {% endfor %}
             {% endif %}
             {% if filters.extension %}
-              <input type="hidden" name="extension" value="{{ filters.extension }}">
+              {% for extension in filters.extension %}
+                <input type="hidden" name="extension" value="{{ extension }}">
+              {% endfor %}
             {% endif %}
             {% if filters.presence != 'all' %}
               <input type="hidden" name="presence" value="{{ filters.presence }}">
@@ -1022,7 +1027,7 @@
         <div class="page-defaults-grid">
           {% for field in projectAssetsDefaults.fields %}
           {% set submittedOption = none %}
-          {% set nativeAttributes = [["required", true]] %}
+          {% set nativeAttributes = [] if field.multi else [["required", true]] %}
           {% set summaryAttributes = [] %}
           {% if field.showSubmittedValue and not (field.name == 'listSize' and field.submittedOptionValue == 'default') %}
             {% set submittedOption = {
@@ -1034,24 +1039,42 @@
             } %}
           {% endif %}
           {% if field.error %}
-            {% set nativeAttributes = [["required", true], ["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] %}
+            {% set nativeAttributes = ([] if field.multi else [["required", true]]) + [["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] %}
             {% set summaryAttributes = [["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] %}
           {% endif %}
           <div class="field app-dialog-field{% if field.error %} field-error{% endif %}" data-dialog-field="{{ field.name }}">
-            {{ dropdown.singleSelect({
-              id: field.id ~ '-dropdown',
-              name: field.name,
-              label: field.label,
-              options: field.options,
-              selected: field.selectedValue,
-              optionIdPrefix: field.id,
-              leadingOption: submittedOption,
-              summaryAttributes: summaryAttributes,
-              nativeSelect: {
-                id: field.id,
-                attributes: nativeAttributes
-              }
-            }) }}
+            {% if field.multi %}
+              {{ dropdown.multiSelect({
+                id: field.id ~ '-dropdown',
+                name: field.name,
+                label: field.label,
+                options: field.options,
+                selectedValues: field.selectedValues,
+                emptySummary: 'All extensions' if field.name == 'extension' else 'All tags',
+                countLabel: 'values',
+                optionIdPrefix: field.id,
+                summaryAttributes: summaryAttributes,
+                nativeSelect: {
+                  id: field.id,
+                  attributes: nativeAttributes
+                }
+              }) }}
+            {% else %}
+              {{ dropdown.singleSelect({
+                id: field.id ~ '-dropdown',
+                name: field.name,
+                label: field.label,
+                options: field.options,
+                selected: field.selectedValue,
+                optionIdPrefix: field.id,
+                leadingOption: submittedOption,
+                summaryAttributes: summaryAttributes,
+                nativeSelect: {
+                  id: field.id,
+                  attributes: nativeAttributes
+                }
+              }) }}
+            {% endif %}
             {% if field.error %}<span class="field-error-message" id="{{ field.id }}-error">{{ field.error }}</span>{% endif %}
           </div>
           {% endfor %}

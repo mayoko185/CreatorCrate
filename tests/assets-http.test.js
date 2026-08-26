@@ -359,7 +359,8 @@ describe('asset browser HTTP workflow', () => {
     expect((res2.text.match(/<h1\b/g) || []).length).toBe(1);
     expect(res2.text).not.toContain('asset-tag-option-all');
     expect(res2.text).toContain('No tags available');
-    expect(res2.text).toMatch(/<input id="asset-extension-option-all" name="extension" type="radio" value="" checked>/);
+    expect(assetExtensionFilterHtml(res2.text)).toContain('data-cc-dropdown-mode="multiple"');
+    expect(assetExtensionFilterHtml(res2.text)).not.toMatch(/name="extension"[^>]*checked/);
   });
 
   it('does not expose the obsolete project Watermark discovery route', async () => {
@@ -1664,8 +1665,8 @@ describe('asset browser HTTP workflow', () => {
       expect(model.projectAssetsDefaultsScope).toBe('project');
       expect(model.projectAssetsDefaultsSelectedScope).toBe('project');
       expect(model.projectAssetsDefaultsLoadedScope).toBe('project');
-      expect(model.projectAssetsGlobalDefaults).toMatchObject({ view: 'grid', extension: 'jpg', tag: String(globalTag.id) });
-      expect(model.projectAssetsProjectDefaults).toMatchObject({ view: 'list', extension: 'png', tag: String(projectTag.id) });
+      expect(model.projectAssetsGlobalDefaults).toMatchObject({ view: 'grid', extension: ['jpg'], tag: [String(globalTag.id)] });
+      expect(model.projectAssetsProjectDefaults).toMatchObject({ view: 'list', extension: ['png'], tag: [String(projectTag.id)] });
       expect(model.projectAssetsEffectiveDefaults).toEqual(model.projectAssetsProjectDefaults);
       expect(JSON.parse(model.projectAssetsDefaultValuesJson)).toEqual({
         global: model.projectAssetsGlobalDefaults,
@@ -1778,6 +1779,106 @@ describe('asset browser HTTP workflow', () => {
       expect(new URL(neutral.headers.location, 'http://localhost').searchParams.has('inheritedFilterDefaults')).toBe(false);
     });
 
+    it('redirects multi-value Project Assets defaults as repeated filter parameters', async () => {
+      const project = await createProject('Multi-value Project Assets Default Redirect');
+      const id = Number(project.headers.location.replace('/projects/', ''));
+      const firstTag = app.locals.tagService.createTag({ name: 'First multi-value default tag' });
+      const secondTag = app.locals.tagService.createTag({ name: 'Second multi-value default tag' });
+      writeIndexedAsset(id, getProjectDir('Multi-value Project Assets Default Redirect'), 'available.png', 'png');
+      writeIndexedAsset(id, getProjectDir('Multi-value Project Assets Default Redirect'), 'available.jpg', 'jpg');
+
+      const saved = await agent.post(`/projects/${id}/assets/defaults`).type('form').send({
+        view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25',
+        extension: ['jpg', 'png'], tag: [String(firstTag.id), String(secondTag.id)],
+        scope: 'global', loadedScope: 'global', returnTo: `/projects/${id}/assets`, _csrf: csrfToken,
+      }).expect(302);
+      const savedUrl = new URL(saved.headers.location, 'http://localhost');
+
+      expect(savedUrl.searchParams.getAll('extension')).toEqual(['jpg', 'png']);
+      expect(savedUrl.searchParams.getAll('tag')).toEqual([String(firstTag.id), String(secondTag.id)]);
+      expect(savedUrl.searchParams.get('inheritedFilterDefaults')).toBe('tag,extension');
+    });
+
+    it('applies multi-value saved defaults to bare requests without overriding explicit filters', async () => {
+      const project = await createProject('Bare Multi-value Project Assets Defaults');
+      const id = Number(project.headers.location.replace('/projects/', ''));
+      const firstTag = app.locals.tagService.createTag({ name: 'Bare multi-value default first tag' });
+      const secondTag = app.locals.tagService.createTag({ name: 'Bare multi-value default second tag' });
+      const projectDir = getProjectDir('Bare Multi-value Project Assets Defaults');
+      const first = writeIndexedAsset(id, projectDir, 'first.jpg', 'jpg');
+      const second = writeIndexedAsset(id, projectDir, 'second.png', 'png');
+      const excluded = writeIndexedAsset(id, projectDir, 'excluded.gif', 'gif');
+      app.locals.assetTagService.replaceAssetTags(first.id, [firstTag.id]);
+      app.locals.assetTagService.replaceAssetTags(second.id, [secondTag.id]);
+      app.locals.assetTagService.replaceAssetTags(excluded.id, [firstTag.id]);
+
+      await agent.post(`/projects/${id}/assets/defaults`).type('form').send({
+        view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25',
+        extension: ['jpg', 'png'], tag: [String(firstTag.id), String(secondTag.id)],
+        scope: 'global', loadedScope: 'global', returnTo: `/projects/${id}/assets`, _csrf: csrfToken,
+      }).expect(302);
+
+      const bare = await agent.get(`/projects/${id}/assets`).expect(302);
+      const bareUrl = new URL(bare.headers.location, 'http://localhost');
+      expect(bareUrl.searchParams.getAll('extension')).toEqual(['jpg', 'png']);
+      expect(bareUrl.searchParams.getAll('tag')).toEqual([String(firstTag.id), String(secondTag.id)]);
+      expect(bareUrl.searchParams.get('inheritedFilterDefaults')).toBe('tag,extension');
+
+      const inherited = await agent.get(bare.headers.location).expect(200);
+      expect(inherited.text).toContain(first.filename);
+      expect(inherited.text).toContain(second.filename);
+      expect(inherited.text).not.toContain(excluded.filename);
+
+      const explicit = await agent
+        .get(`/projects/${id}/assets?extension=png&tag=${secondTag.id}`)
+        .expect(200);
+      expect(explicit.headers.location).toBeUndefined();
+      expect(explicit.text).toContain(second.filename);
+      expect(explicit.text).not.toContain(first.filename);
+      expect(explicit.text).not.toContain(excluded.filename);
+    });
+
+    it('restores every inherited multi-value filter default after category suppression', async () => {
+      const project = await createProject('Restore Multi-value Project Assets Defaults');
+      const id = Number(project.headers.location.replace('/projects/', ''));
+      const [category] = assetCategoryRepo.listProjectCategories(id);
+      const firstTag = app.locals.tagService.createTag({ name: 'Restore multi-value default first tag' });
+      const secondTag = app.locals.tagService.createTag({ name: 'Restore multi-value default second tag' });
+      const unrelatedTag = app.locals.tagService.createTag({ name: 'Restore multi-value unrelated tag' });
+      const projectDir = getProjectDir('Restore Multi-value Project Assets Defaults');
+      const first = writeIndexedAsset(id, projectDir, 'restored-first.jpg', 'jpg', { categoryId: category.id });
+      const second = writeIndexedAsset(id, projectDir, 'restored-second.png', 'png', { categoryId: category.id });
+      const wrongExtension = writeIndexedAsset(id, projectDir, 'restored-wrong.gif', 'gif', { categoryId: category.id });
+      const wrongTag = writeIndexedAsset(id, projectDir, 'restored-wrong.jpg', 'jpg', { categoryId: category.id });
+      app.locals.assetTagService.replaceAssetTags(first.id, [firstTag.id]);
+      app.locals.assetTagService.replaceAssetTags(second.id, [secondTag.id]);
+      app.locals.assetTagService.replaceAssetTags(wrongExtension.id, [firstTag.id]);
+      app.locals.assetTagService.replaceAssetTags(wrongTag.id, [unrelatedTag.id]);
+
+      await agent.post(`/projects/${id}/assets/defaults`).type('form').send({
+        view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25',
+        extension: ['jpg', 'png'], tag: [String(firstTag.id), String(secondTag.id)],
+        scope: 'global', loadedScope: 'global', returnTo: `/projects/${id}/assets`, _csrf: csrfToken,
+      }).expect(302);
+      assetBrowserPreferenceRepo.upsertProjectPreference(id, 'category', category.id);
+
+      const suspended = await agent.get(`/projects/${id}/assets`).expect(302);
+      const suspendedUrl = new URL(suspended.headers.location, 'http://localhost');
+      expect(suspendedUrl.searchParams.get('category')).toBe(String(category.id));
+      expect(suspendedUrl.searchParams.has('extension')).toBe(false);
+      expect(suspendedUrl.searchParams.has('tag')).toBe(false);
+      expect(suspendedUrl.searchParams.get('inheritedFilterDefaults')).toBe('tag,extension');
+
+      const restored = await agent
+        .get(`/projects/${id}/assets?category=all&inheritedFilterDefaults=tag,extension`)
+        .expect(200);
+      expect(restored.text).toContain(first.filename);
+      expect(restored.text).toContain(second.filename);
+      expect(restored.text).not.toContain(wrongExtension.filename);
+      expect(restored.text).not.toContain(wrongTag.filename);
+      expect(restored.text).toContain('name="inheritedFilterDefaults" value="tag,extension"');
+    });
+
     it('uses global Extension and Tag catalogues without broadening the project filters', async () => {
       const source = await createProject('Global Project Assets Default Source');
       const sourceId = Number(source.headers.location.replace('/projects/', ''));
@@ -1829,7 +1930,7 @@ describe('asset browser HTTP workflow', () => {
       const canonical = await agent.get(bare.headers.location).expect(200);
       expect(canonical.headers.location).toBeUndefined();
       const selectedExtensionFilter = assetExtensionFilterHtml(canonical.text);
-      expectCheckedAssetFilter(selectedExtensionFilter, 'extension', 'jpg');
+      expect(selectedExtensionFilter).toMatch(/name="extension"[^>]+type="checkbox"[^>]+value="jpg"[^>]*checked/);
       expect(selectedExtensionFilter).toContain('>.png</span>');
       expect(selectedExtensionFilter).toContain('>.jpg</span>');
       expect(assetTagFilterHtml(canonical.text)).toMatch(
@@ -1849,10 +1950,10 @@ describe('asset browser HTTP workflow', () => {
         .send({ ...values, returnTo: '/projects/' + targetId + '/assets' })
         .expect(302);
 
-      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
-        .get(PAGE_DEFAULT_DEFINITIONS.projectAssets.extension.key).value).toBe('jpg');
-      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
-        .get(PAGE_DEFAULT_DEFINITIONS.projectAssets.tag.key).value).toBe(String(tag.id));
+      expect(JSON.parse(db.prepare('SELECT value FROM app_meta WHERE key = ?')
+        .get(PAGE_DEFAULT_DEFINITIONS.projectAssets.extension.key).value)).toEqual(['jpg']);
+      expect(JSON.parse(db.prepare('SELECT value FROM app_meta WHERE key = ?')
+        .get(PAGE_DEFAULT_DEFINITIONS.projectAssets.tag.key).value)).toEqual([String(tag.id)]);
     });
 
     it('keeps explicit filter values authoritative and leaves stale global filters in storage', async () => {
@@ -1871,7 +1972,7 @@ describe('asset browser HTTP workflow', () => {
         .get('/projects/' + targetId + '/assets?extension=png&tag=' + explicitTag.id)
         .expect(200);
       expect(explicit.headers.location).toBeUndefined();
-      expectCheckedAssetFilter(assetExtensionFilterHtml(explicit.text), 'extension', 'png');
+      expect(assetExtensionFilterHtml(explicit.text)).toMatch(/name="extension"[^>]+type="checkbox"[^>]+value="png"[^>]*checked/);
       expect(assetExtensionFilterHtml(explicit.text)).not.toContain('>.jpg</span>');
       expect(assetTagFilterHtml(explicit.text)).toMatch(
         new RegExp('name="tag"[^>]+type="checkbox"[^>]+value="' + explicitTag.id + '"[^>]*checked'),
@@ -3317,15 +3418,41 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).not.toContain('other.png');
     expect(res2.text).toContain('value="hero"');
     const extensionFilter = assetExtensionFilterHtml(res2.text);
-    expect(extensionFilter).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
+    expect(extensionFilter).toContain('data-cc-dropdown data-cc-dropdown-mode="multiple"');
     expect(extensionFilter).toContain('asset-filter-multiselect--sized');
     expect(extensionFilter).toContain('class="asset-filter-multiselect-summary-current">.png</span>');
     expect(extensionFilter).toContain('class="asset-filter-multiselect-summary-width" aria-hidden="true"');
-    expect(extensionFilter).toMatch(/<label for="[^"]+">\s*<input[^>]+name="extension"[^>]+value="png"[^>]*checked/);
-    expect(extensionFilter).toContain('>All extensions</span>');
+    expect(extensionFilter).toMatch(/<label for="[^"]+">\s*<input[^>]+name="extension"[^>]+type="checkbox"[^>]+value="png"[^>]*checked/);
+    expect(extensionFilter).toContain('data-cc-dropdown-empty-summary="All extensions"');
     expect(extensionFilter).toContain('>.png</span>');
     expect(extensionFilter).toContain('>.kra</span>');
     expect(extensionFilter).not.toMatch(/<select[^>]+(?:id="extension"|name="extension")/);
+  });
+
+  it('filters Project Assets by repeated extensions and renders both selected states', async () => {
+    const res = await createProject('Multiple Extension Filter');
+    const id = res.headers.location.replace('/projects/', '');
+    const projectDir = getProjectDir('Multiple Extension Filter');
+
+    fs.writeFileSync(path.join(projectDir, 'render.png'), 'png');
+    fs.writeFileSync(path.join(projectDir, 'photo.jpg'), 'jpg');
+    fs.writeFileSync(path.join(projectDir, 'notes.txt'), 'txt');
+    await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+
+    const page = await agent
+      .get(`/projects/${id}/assets?extension=png&extension=.JPG&extension=png`)
+      .expect(200);
+    const filter = assetExtensionFilterHtml(page.text);
+
+    expect(page.text).toContain('render.png');
+    expect(page.text).toContain('photo.jpg');
+    expect(page.text).not.toContain('notes.txt');
+    expect(filter).toContain('data-cc-dropdown data-cc-dropdown-mode="multiple"');
+    expect(filter).toContain('aria-label="Extension filter: 2 extensions selected"');
+    for (const extension of ['jpg', 'png']) {
+      expect(filter).toMatch(new RegExp(`name="extension"[^>]+type="checkbox"[^>]+value="${extension}"[^>]*checked`));
+    }
+    expect(filter).toMatch(/name="extension"[^>]+type="checkbox"[^>]+value="txt"(?![^>]*checked)/);
   });
 
   it('keeps extension choices stable when another filter returns no rows', async () => {
@@ -3482,6 +3609,33 @@ describe('asset browser HTTP workflow', () => {
     expect(submittedUrl.searchParams.has('view')).toBe(false);
   });
 
+  it('re-renders valid Project Assets multi selections when one member is invalid', async () => {
+    const project = await createProject('Project Assets Defaults Multi Validation');
+    const id = Number(project.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Project Assets Defaults Multi Validation');
+    writeIndexedAsset(id, projectDir, 'available.jpg', 'jpg');
+    writeIndexedAsset(id, projectDir, 'available.png', 'png');
+    const firstTag = app.locals.tagService.createTag({ name: 'Project Assets defaults first tag' });
+    const secondTag = app.locals.tagService.createTag({ name: 'Project Assets defaults second tag' });
+
+    const response = await agent.post(`/projects/${id}/assets/defaults`).type('form').send({
+      view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25',
+      extension: ['jpg', 'unsupported'], tag: [String(firstTag.id), String(secondTag.id)],
+      returnTo: `/projects/${id}/assets`, _csrf: csrfToken,
+    }).expect(422);
+
+    const dialog = response.text.match(/<dialog id="project-assets-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    const extensionSelect = dialog.match(/<select id="projectAssets-default-extension"[\s\S]*?<\/select>/)?.[0] || '';
+    const tagSelect = dialog.match(/<select id="projectAssets-default-tag"[\s\S]*?<\/select>/)?.[0] || '';
+
+    expect(extensionSelect).toContain(' multiple');
+    expect(extensionSelect).toContain('<option value="jpg" selected>.jpg</option>');
+    expect(extensionSelect).not.toContain('value="unsupported"');
+    expect(tagSelect).toContain(`<option value="${firstTag.id}" selected>Project Assets defaults first tag</option>`);
+    expect(tagSelect).toContain(`<option value="${secondTag.id}" selected>Project Assets defaults second tag</option>`);
+    expect(dialog).toContain('id="projectAssets-default-extension-error"');
+  });
+
   it('renders every Project Assets choice selector through the shared dropdown component', async () => {
     const res = await createProject('Project Assets Dropdown Audit');
     const id = res.headers.location.replace('/projects/', '');
@@ -3587,15 +3741,17 @@ describe('asset browser HTTP workflow', () => {
         name: 'extension',
         label: 'Extension',
         id: 'projectAssets-default-extension',
-        selected: 'all',
-        options: [['all', 'All extensions']],
+        multi: true,
+        selectedValues: [],
+        options: [['png', '.png']],
       },
       {
         name: 'tag',
         label: 'Tag',
         id: 'projectAssets-default-tag',
-        selected: 'all',
-        options: [['all', 'All tags']],
+        multi: true,
+        selectedValues: [],
+        options: [],
       },
     ];
     for (const field of defaultFields) {
@@ -3605,22 +3761,37 @@ describe('asset browser HTTP workflow', () => {
       const nativeSelect = defaultsGrid.match(new RegExp(`<select id="${field.id}"[\\s\\S]*?<\\/select>`))?.[0] || '';
       expect(nativeSelect).not.toBe('');
       for (const [value, label] of field.options) {
-        expect(nativeSelect).toContain(`<option value="${value}"${value === field.selected ? ' selected' : ''}>${label}</option>`);
+        const selected = field.multi
+          ? field.selectedValues.includes(value)
+          : value === field.selected;
+        expect(nativeSelect).toContain(`<option value="${value}"${selected ? ' selected' : ''}>${label}</option>`);
       }
+      expect(defaultsGrid).not.toMatch(new RegExp(`<input[^>]*name="${field.name}"`));
+      expect((defaultsGrid.match(new RegExp(`name="${field.name}"`, 'g')) || []).length).toBe(1);
+
+      if (field.multi) {
+        expect(nativeSelect).toContain(' multiple');
+        expect(nativeSelect).not.toContain('value="all"');
+        expect(nativeSelect).not.toMatch(/<option[^>]*\sselected(?:[\s>])/);
+        expect(defaultsGrid).toMatch(new RegExp(
+          `id="${field.id}-dropdown"[^>]*data-cc-dropdown data-cc-dropdown-mode="multiple"`,
+        ));
+        continue;
+      }
+
       expect(defaultsGrid).toMatch(new RegExp(
         `id="${field.id}-dropdown"[^>]*data-cc-dropdown data-cc-dropdown-mode="single"`,
       ));
       expect(defaultsGrid).toMatch(new RegExp(
         `<input[^>]*type="radio" value="${field.selected}"[^>]*checked`,
       ));
-      expect(defaultsGrid).not.toMatch(new RegExp(`<input[^>]*name="${field.name}"`));
-      expect((defaultsGrid.match(new RegExp(`name="${field.name}"`, 'g')) || [])).toHaveLength(1);
     }
     for (let index = 1; index < defaultFields.length; index += 1) {
       expect(defaultsGrid.indexOf(`data-dialog-field="${defaultFields[index - 1].name}"`))
         .toBeLessThan(defaultsGrid.indexOf(`data-dialog-field="${defaultFields[index].name}"`));
     }
-    expect((defaultsGrid.match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(8);
+    expect((defaultsGrid.match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(6);
+    expect((defaultsGrid.match(/data-cc-dropdown data-cc-dropdown-mode="multiple"/g) || [])).toHaveLength(2);
     const defaultsFooter = defaultsDialog.match(/<footer class="app-dialog-footer">[\s\S]*?<\/footer>/)?.[0] || '';
     expect((defaultsFooter.match(/<button\b[^>]*type="submit"/g) || [])).toHaveLength(1);
     expect(defaultsFooter).toContain('data-dialog-submit');
@@ -6635,7 +6806,7 @@ describe('asset browser HTTP workflow', () => {
         expect(style).toMatch(/\.asset-filter-multiselect summary:focus-visible\s*\{[\s\S]*?outline:\s*2px solid var\(--focus-ring\)/);
 
         const extensionFilter = assetExtensionFilterHtml(res2.text);
-        expect(extensionFilter).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
+        expect(extensionFilter).toContain('data-cc-dropdown data-cc-dropdown-mode="multiple"');
         expect(extensionFilter).toContain('aria-controls="asset-extension-filter-options"');
         expect(extensionFilter).toContain('class="asset-filter-multiselect-panel"');
       }

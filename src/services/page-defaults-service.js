@@ -22,11 +22,12 @@ export const LOGS_TIMEZONE_VALUES = Object.freeze([
   'America/Los_Angeles',
 ]);
 
-function definition(key, values, fallback) {
+function definition(key, values, fallback, { multi = false } = {}) {
   return Object.freeze({
     key,
     values: Object.freeze([...values]),
     fallback,
+    ...(multi ? { multi: true } : {}),
   });
 }
 
@@ -50,8 +51,8 @@ export const PAGE_DEFAULT_DEFINITIONS = Object.freeze({
     sort: definition('page_defaults.project_assets.sort', ['filename', 'modified', 'size', 'category'], 'filename'),
     order: definition('page_defaults.project_assets.order', ['asc', 'desc'], 'asc'),
     pageSize: definition('page_defaults.project_assets.page_size', ['10', '25', '50', '100'], '25'),
-    extension: definition('page_defaults.project_assets.extension', ['all'], 'all'),
-    tag: definition('page_defaults.project_assets.tag', ['all'], 'all'),
+    extension: definition('page_defaults.project_assets.extension', ['all'], 'all', { multi: true }),
+    tag: definition('page_defaults.project_assets.tag', ['all'], 'all', { multi: true }),
   }),
   [ASSET_VIEWER]: Object.freeze({
     view: definition('page_defaults.asset_viewer.view', ['grid', 'list'], ASSET_LIBRARY_DEFAULTS.view),
@@ -132,10 +133,67 @@ export function getPageDefaultOptionCatalogue(pageDefinition, optionCatalogue) {
   });
 }
 
+const PROJECT_ASSET_MULTI_VALUE_OPTIONS = new Set(['extension', 'tag']);
+
+function isProjectAssetMultiValueOption(page, option) {
+  return page === PROJECT_ASSETS && PROJECT_ASSET_MULTI_VALUE_OPTIONS.has(option);
+}
+
 function isValidValue(pageDefinition, value, optionCatalogue) {
   return typeof value === 'string'
     && getPageDefaultOptionCatalogue(pageDefinition, optionCatalogue)
       .some((candidate) => candidate.value === value);
+}
+
+function normalizeProjectAssetMultiValue(value, pageDefinition, optionCatalogue) {
+  const values = Array.isArray(value) ? value : [value];
+  const catalogue = getPageDefaultOptionCatalogue(pageDefinition, optionCatalogue);
+  const allowedValues = new Set(catalogue.map((candidate) => candidate.value));
+  const normalized = [...new Set(values)];
+
+  if (normalized.length === 1 && normalized[0] === 'all') return 'all';
+  if (normalized.length === 0
+    || normalized.includes('all')
+    || normalized.some((candidate) => typeof candidate !== 'string' || !allowedValues.has(candidate))) {
+    return undefined;
+  }
+
+  return normalized;
+}
+
+function deserializeProjectAssetMultiValue(value) {
+  if (typeof value !== 'string') return undefined;
+  if (value === 'all') return 'all';
+
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : value;
+  } catch {
+    return value;
+  }
+}
+
+function serializeProjectAssetMultiValue(value) {
+  return Array.isArray(value) ? JSON.stringify(value) : value;
+}
+
+function normalizeValue(page, option, pageDefinition, value, optionCatalogue) {
+  if (isProjectAssetMultiValueOption(page, option)) {
+    return normalizeProjectAssetMultiValue(value, pageDefinition, optionCatalogue);
+  }
+  return isValidValue(pageDefinition, value, optionCatalogue) ? value : undefined;
+}
+
+function readStoredValue(page, option, value) {
+  return isProjectAssetMultiValueOption(page, option)
+    ? deserializeProjectAssetMultiValue(value)
+    : value;
+}
+
+function persistValue(page, option, value) {
+  return isProjectAssetMultiValueOption(page, option)
+    ? serializeProjectAssetMultiValue(value)
+    : value;
 }
 
 function requireProjectId(context) {
@@ -177,8 +235,9 @@ export function createPageDefaultsService({
 
   function getSavedDefault(page, option, optionCatalogue) {
     const pageDefinition = requireDefinition(page, option);
-    const storedValue = repository.getValue(pageDefinition.key);
-    return isValidValue(pageDefinition, storedValue, optionCatalogue) ? storedValue : undefined;
+    const storedValue = readStoredValue(page, option, repository.getValue(pageDefinition.key));
+    const value = normalizeValue(page, option, pageDefinition, storedValue, optionCatalogue);
+    return value;
   }
 
   function getFallback(page, option) {
@@ -187,29 +246,38 @@ export function createPageDefaultsService({
 
   function resolveGlobalDefault(page, option, optionCatalogue) {
     const pageDefinition = requireDefinition(page, option);
-    const savedValue = repository.getValue(pageDefinition.key);
-    return isValidValue(pageDefinition, savedValue, optionCatalogue)
-      ? savedValue
-      : pageDefinition.fallback;
+    const savedValue = readStoredValue(page, option, repository.getValue(pageDefinition.key));
+    return normalizeValue(page, option, pageDefinition, savedValue, optionCatalogue)
+      ?? pageDefinition.fallback;
   }
 
   function resolveProjectDefault(page, option, optionCatalogue, context) {
     const pageDefinition = requireDefinition(page, option);
     const projectId = requireProjectId(context);
     const projectRepository = requireProjectRepository();
-    const projectValue = projectRepository.getOption(projectId, page, option);
+    const projectValue = readStoredValue(
+      page,
+      option,
+      projectRepository.getOption(projectId, page, option),
+    );
 
-    return isValidValue(pageDefinition, projectValue, optionCatalogue)
-      ? projectValue
-      : resolveGlobalDefault(page, option, optionCatalogue);
+    return normalizeValue(page, option, pageDefinition, projectValue, optionCatalogue)
+      ?? resolveGlobalDefault(page, option, optionCatalogue);
   }
 
   function resolve(page, option, explicitValue, optionCatalogue, context) {
     const pageDefinition = requireDefinition(page, option);
     const projectId = getProjectId(context);
 
-    if (isValidValue(pageDefinition, explicitValue, optionCatalogue)) {
-      return explicitValue;
+    const normalizedExplicitValue = normalizeValue(
+      page,
+      option,
+      pageDefinition,
+      explicitValue,
+      optionCatalogue,
+    );
+    if (normalizedExplicitValue !== undefined) {
+      return normalizedExplicitValue;
     }
 
     if (explicitValue !== undefined) {
@@ -266,35 +334,47 @@ export function createPageDefaultsService({
     const pageDefinition = requirePageDefinition(page);
     const rawValues = values && typeof values === 'object' && !Array.isArray(values) ? values : {};
     const errors = {};
+    const normalizedValues = {};
+
     for (const option of Object.keys(pageDefinition)) {
       const definition = pageDefinition[option];
-      if (!isValidValue(definition, rawValues[option], optionCatalogues?.[option])) {
+      const value = normalizeValue(
+        page,
+        option,
+        definition,
+        rawValues[option],
+        optionCatalogues?.[option],
+      );
+      if (value === undefined) {
         errors[option] = `Value "${rawValues[option]}" is not supported for ${page}.${option}.`;
+      } else {
+        normalizedValues[option] = value;
       }
     }
     if (Object.keys(errors).length > 0) {
       invalid(errors);
     }
 
-    return Object.fromEntries(
-      Object.keys(pageDefinition).map((option) => [option, rawValues[option]])
-    );
+    return normalizedValues;
   }
 
   function saveDefault(page, option, value, optionCatalogue) {
     const pageDefinition = requireDefinition(page, option);
-    if (!isValidValue(pageDefinition, value, optionCatalogue)) {
+    const normalizedValue = normalizeValue(page, option, pageDefinition, value, optionCatalogue);
+    if (normalizedValue === undefined) {
       invalid({ value: `Value "${value}" is not supported for ${page}.${option}.` });
     }
-    return repository.setValue(pageDefinition.key, value);
+    repository.setValue(pageDefinition.key, persistValue(page, option, normalizedValue));
+    return normalizedValue;
   }
 
   function saveDefaultWithOutcome(page, option, value, optionCatalogue) {
     const pageDefinition = requireDefinition(page, option);
-    if (!isValidValue(pageDefinition, value, optionCatalogue)) {
+    const normalizedValue = normalizeValue(page, option, pageDefinition, value, optionCatalogue);
+    if (normalizedValue === undefined) {
       invalid({ value: `Value "${value}" is not supported for ${page}.${option}.` });
     }
-    return repository.setValueWithOutcome(pageDefinition.key, value, {
+    return repository.setValueWithOutcome(pageDefinition.key, persistValue(page, option, normalizedValue), {
       fallbackValue: pageDefinition.fallback,
     });
   }
@@ -302,10 +382,17 @@ export function createPageDefaultsService({
   function saveProjectDefault(page, option, value, optionCatalogue, context) {
     const pageDefinition = requireDefinition(page, option);
     const projectId = requireProjectId(context);
-    if (!isValidValue(pageDefinition, value, optionCatalogue)) {
+    const normalizedValue = normalizeValue(page, option, pageDefinition, value, optionCatalogue);
+    if (normalizedValue === undefined) {
       invalid({ value: `Value "${value}" is not supported for ${page}.${option}.` });
     }
-    return requireProjectRepository().setOption(projectId, page, option, value);
+    requireProjectRepository().setOption(
+      projectId,
+      page,
+      option,
+      persistValue(page, option, normalizedValue),
+    );
+    return normalizedValue;
   }
 
   function clearProjectPageDefaults(page, context) {

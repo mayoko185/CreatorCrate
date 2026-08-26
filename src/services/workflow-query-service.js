@@ -128,7 +128,7 @@ function hasOwn(object, key) {
 }
 
 function appendCanonicalAssetBrowserParam(query, key, value) {
-  if (key === 'tag' && Array.isArray(value)) {
+  if ((key === 'tag' || key === 'extension') && Array.isArray(value)) {
     const values = value
       .filter((item) => item !== undefined && item !== null && item !== '')
       .map((item) => String(item));
@@ -1346,9 +1346,15 @@ export function createWorkflowQueryService({
    * @param {string[]} extensionChoices - normalized extensions available in the project scope
    * @param {Array<{id: number}>} projectCategories - the requesting project's own category rows
    * @param {Array<{id: number}>} tagCatalog - the global reusable tag rows
-   * @returns {{ search: string|null, tag: number[], extension: string|null, presence: 'all'|'present'|'missing', usage: 'all'|'used'|'unused', category: 'all'|'uncategorized'|number, categorySelection: string, categoryWasSupplied: boolean, sort: 'filename'|'modified'|'size'|'category', order: 'asc'|'desc', page: number, pageSize: number, view: 'list'|'grid', queryWasNonBare: boolean }}
+   * @returns {{ search: string|null, tag: number[], extension: string|string[]|null, presence: 'all'|'present'|'missing', usage: 'all'|'used'|'unused', category: 'all'|'uncategorized'|number, categorySelection: string, categoryWasSupplied: boolean, sort: 'filename'|'modified'|'size'|'category', order: 'asc'|'desc', page: number, pageSize: number, view: 'list'|'grid', queryWasNonBare: boolean }}
    */
-  function normalizeAssetBrowserQuery(raw = {}, extensionChoices = [], projectCategories = [], tagCatalog = []) {
+function normalizeAssetBrowserQuery(
+    raw = {},
+    extensionChoices = [],
+    projectCategories = [],
+    tagCatalog = [],
+    { allowMultipleExtensions = false } = {},
+  ) {
     const safeRaw = raw && typeof raw === 'object' ? raw : {};
     const presenceValues = ['all', 'present', 'missing'];
     const usageValues = ['all', 'used', 'unused'];
@@ -1358,7 +1364,11 @@ export function createWorkflowQueryService({
 
     const search = normalizeAssetBrowserSearch(safeRaw.search);
     const tag = normalizeAssetBrowserTags(safeRaw.tag, tagCatalog, hasOwn(safeRaw, 'tag'));
-    const extension = normalizeAssetBrowserExtension(safeRaw.extension, extensionChoices);
+    const extension = normalizeAssetBrowserExtension(
+      safeRaw.extension,
+      extensionChoices,
+      { allowMultiple: allowMultipleExtensions },
+    );
     const category = normalizeAssetBrowserCategory(
       safeRaw.category,
       projectCategories,
@@ -1472,27 +1482,40 @@ export function createWorkflowQueryService({
     return trimmed.slice(0, ASSET_BROWSER_SEARCH_MAX_LENGTH);
   }
 
-  function normalizeAssetBrowserExtension(value, extensionChoices) {
-    if (typeof value !== 'string') return null;
-    const normalized = value.trim().replace(/^\./, '').toLowerCase();
-    if (normalized === '') return null;
-    return extensionChoices.includes(normalized) ? normalized : null;
+  function normalizeAssetBrowserExtension(value, extensionChoices, { allowMultiple = false } = {}) {
+    if (!allowMultiple && typeof value !== 'string') return null;
+
+    const values = Array.isArray(value) ? value : [value];
+    const selected = new Set();
+    for (const candidate of values) {
+      if (typeof candidate !== 'string') continue;
+      const normalized = candidate.trim().replace(/^\./, '').toLowerCase();
+      if (normalized !== '' && extensionChoices.includes(normalized)) selected.add(normalized);
+    }
+
+    const normalized = [...selected].sort();
+    return allowMultiple ? normalized : (normalized[0] || null);
   }
 
   function getProjectAssetBrowserExtensionChoices(projectId, rawQuery) {
     const projectExtensions = assetRepository.listProjectAssetExtensions(projectId);
-    const requested = typeof rawQuery?.extension === 'string'
-      ? rawQuery.extension.trim().replace(/^\./, '').toLowerCase()
-      : '';
-    if (
-      requested === ''
-      || projectExtensions.includes(requested)
-      || !getProjectAssetsDefaultExtensions().includes(requested)
-    ) {
-      return projectExtensions;
-    }
+    const requestedValues = Array.isArray(rawQuery?.extension)
+      ? rawQuery.extension
+      : [rawQuery?.extension];
+    const requested = [...new Set(requestedValues
+      .filter((value) => typeof value === 'string')
+      .map((value) => value.trim().replace(/^\./, '').toLowerCase())
+      .filter((value) => value !== ''))]
+      .sort();
+    const missing = requested.filter((extension) => !projectExtensions.includes(extension));
+    if (missing.length === 0) return projectExtensions;
 
-    return [...projectExtensions, requested];
+    const defaultExtensions = getProjectAssetsDefaultExtensions();
+    const additional = missing.filter((extension) => defaultExtensions.includes(extension));
+
+    return additional.length > 0
+      ? [...projectExtensions, ...additional].sort()
+      : projectExtensions;
   }
 
   function attachReleasePreviewUrls(entries) {
@@ -1889,7 +1912,13 @@ export function createWorkflowQueryService({
         project_status: release.project_status,
       }));
 
-    const filters = normalizeAssetBrowserQuery(rawQuery, extensions, projectCategories, tagCatalog);
+    const filters = normalizeAssetBrowserQuery(
+      rawQuery,
+      extensions,
+      projectCategories,
+      tagCatalog,
+      { allowMultipleExtensions: true },
+    );
     const tagOptions = tagCatalog.map((tag) => ({
       value: tag.id,
       displayName: tag.display_name,
@@ -1987,7 +2016,9 @@ export function createWorkflowQueryService({
       extensionChoices: extensions.map((extension) => ({
         value: extension,
         label: extension,
-        selected: extension === filters.extension,
+        selected: Array.isArray(filters.extension)
+          ? filters.extension.includes(extension)
+          : extension === filters.extension,
       })),
       tagOptions,
       categoryNavigation: buildCategoryNavigationModel(projectCategories, navCounts, filters),
@@ -2187,7 +2218,13 @@ export function createWorkflowQueryService({
     const tagCatalog = Object.prototype.hasOwnProperty.call(rawQuery || {}, 'tag')
       ? tagRepository.list()
       : [];
-    const context = normalizeAssetBrowserQuery(rawQuery, extensions, projectCategories, tagCatalog);
+    const context = normalizeAssetBrowserQuery(
+      rawQuery,
+      extensions,
+      projectCategories,
+      tagCatalog,
+      { allowMultipleExtensions: true },
+    );
 
     return {
       filters: {
@@ -2272,7 +2309,9 @@ export function createWorkflowQueryService({
       extensionChoices: extensions.map((extension) => ({
         value: extension,
         label: extension,
-        selected: extension === context.extension,
+        selected: Array.isArray(context.extension)
+          ? context.extension.includes(extension)
+          : extension === context.extension,
       })),
       ordering: ASSET_BROWSER_ORDERING,
       searchMaxLength: ASSET_BROWSER_SEARCH_MAX_LENGTH,
