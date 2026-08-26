@@ -3,12 +3,24 @@ import {
   ASSET_LIBRARY_DEFAULTS,
   ASSET_LIBRARY_PAGE_SIZE_VALUES,
 } from '../routes/asset-library-query.js';
+import { APPLICATION_LOG_LEVELS } from './application-logger.js';
 
 const PROJECTS = 'projects';
 const RELEASES = 'releases';
 const PROJECT_ASSETS = 'projectAssets';
 const ASSET_VIEWER = 'assetViewer';
 const NEW_PROJECT = 'new_project';
+const LOGS = 'logs';
+
+export const LOGS_PAGE_SIZE_VALUES = Object.freeze(['25', '50', '75', '100']);
+export const LOGS_TIMEZONE_VALUES = Object.freeze([
+  'local',
+  'UTC',
+  'America/New_York',
+  'America/Chicago',
+  'America/Denver',
+  'America/Los_Angeles',
+]);
 
 function definition(key, values, fallback) {
   return Object.freeze({
@@ -61,6 +73,15 @@ export const PAGE_DEFAULT_DEFINITIONS = Object.freeze({
   }),
   [NEW_PROJECT]: Object.freeze({
     status: definition('page_defaults.new_project.status', WORKFLOW_STATUSES, WORKFLOW_STATUSES[0]),
+  }),
+  [LOGS]: Object.freeze({
+    level: definition('page_defaults.logs.level', ['', ...APPLICATION_LOG_LEVELS], ''),
+    kind: definition('page_defaults.logs.kind', ['', 'activity', 'diagnostic'], ''),
+    subsystem: definition('page_defaults.logs.subsystem', [''], ''),
+    time: definition('page_defaults.logs.time', ['', 'hour', 'day', '7d', '30d'], ''),
+    pageSize: definition('page_defaults.logs.page_size', LOGS_PAGE_SIZE_VALUES, '50'),
+    timezone: definition('page_defaults.logs.timezone', LOGS_TIMEZONE_VALUES, 'local'),
+    autoRefresh: definition('page_defaults.logs.auto_refresh', ['enabled', 'disabled'], 'enabled'),
   }),
 });
 
@@ -268,6 +289,16 @@ export function createPageDefaultsService({
     return repository.setValue(pageDefinition.key, value);
   }
 
+  function saveDefaultWithOutcome(page, option, value, optionCatalogue) {
+    const pageDefinition = requireDefinition(page, option);
+    if (!isValidValue(pageDefinition, value, optionCatalogue)) {
+      invalid({ value: `Value "${value}" is not supported for ${page}.${option}.` });
+    }
+    return repository.setValueWithOutcome(pageDefinition.key, value, {
+      fallbackValue: pageDefinition.fallback,
+    });
+  }
+
   function saveProjectDefault(page, option, value, optionCatalogue, context) {
     const pageDefinition = requireDefinition(page, option);
     const projectId = requireProjectId(context);
@@ -293,6 +324,7 @@ export function createPageDefaultsService({
     getPageDefaultScope,
     validatePageDefaults,
     saveDefault,
+    saveDefaultWithOutcome,
     saveGlobalDefault: saveDefault,
     saveProjectDefault,
     clearProjectPageDefaults,

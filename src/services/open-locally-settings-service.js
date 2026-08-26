@@ -133,6 +133,14 @@ export function createOpenLocallySettingsService({ appMetaRepository } = {}) {
       return appMetaRepository.setValue(OPEN_LOCALLY_WINDOWS_PROJECTS_PATH_KEY, normalized);
     },
 
+    setWindowsProjectsPathWithOutcome(value) {
+      const normalized = validateWindowsProjectsPath(value);
+      return appMetaRepository.setValueWithOutcome(
+        OPEN_LOCALLY_WINDOWS_PROJECTS_PATH_KEY,
+        normalized,
+      );
+    },
+
     /**
      * Remove the configured Windows projects root. Returns true when a value
      * was present, false when nothing was stored.
@@ -144,6 +152,16 @@ export function createOpenLocallySettingsService({ appMetaRepository } = {}) {
         appMetaRepository.setValue(OPEN_LOCALLY_WINDOWS_PROJECTS_PATH_KEY, '');
       }
       return hadValue;
+    },
+
+    clearWindowsProjectsPathWithOutcome() {
+      const previousValue = appMetaRepository.getValue(OPEN_LOCALLY_WINDOWS_PROJECTS_PATH_KEY);
+      if (!previousValue) {
+        return { value: '', changed: false };
+      }
+
+      appMetaRepository.setValue(OPEN_LOCALLY_WINDOWS_PROJECTS_PATH_KEY, '');
+      return { value: '', changed: true };
     },
   };
 }

@@ -27,6 +27,7 @@ function isPromiseLike(value) {
  * @param {typeof setInterval} [deps.setIntervalFn]
  * @param {typeof clearInterval} [deps.clearIntervalFn]
  * @param {Console} [deps.logger]
+ * @param {object|null} [deps.applicationLogger]
  * @param {() => Date|number|string} [deps.now]
  * @returns {{ start(): boolean, stop(): boolean, runCycle(): Promise<object> }}
  */
@@ -36,6 +37,7 @@ export function createAutomaticProjectScanScheduler({
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
   logger = console,
+  applicationLogger = null,
   now = () => new Date(),
 } = {}) {
   if (intervalMinutes !== null && (!Number.isSafeInteger(intervalMinutes) || intervalMinutes <= 0)) {
@@ -62,6 +64,21 @@ export function createAutomaticProjectScanScheduler({
   let timerHandle = null;
   let cycleRunning = false;
   let stopped = false;
+
+  function logPartialProjectScan(projectId, error) {
+    try {
+      applicationLogger?.warn?.({
+        event: 'project.scan.partial',
+        kind: 'diagnostic',
+        subsystem: 'projects',
+        message: 'Scheduled project asset scan completed with an error.',
+        projectId,
+        error,
+      });
+    } catch {
+      // Scheduler diagnostics must never alter cycle recovery behavior.
+    }
+  }
 
   function resolveAppMetaRepository() {
     const repository = getScanDependencies()?.appMetaRepository;
@@ -149,11 +166,12 @@ export function createAutomaticProjectScanScheduler({
           // Resolve the scanner again for each project so a context rebuild
           // between projects cannot leave this cycle using a closed database.
           const { assetScanner } = getScanDependencies();
-          const scanResult = assetScanner.scanProjectAssets(project.id);
+          const scanResult = assetScanner.scanProjectAssets(project.id, { kind: 'diagnostic' });
           if (isPromiseLike(scanResult)) await scanResult;
           summary.scanned += 1;
         } catch (error) {
           summary.failed += 1;
+          logPartialProjectScan(project.id, error);
           logger.error(
             `[CreatorCrate] Automatic scan failed for project ${project.id}: ${formatError(error)}`
           );

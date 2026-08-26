@@ -23,6 +23,8 @@ import {
 import { createProjectOperationCoordinator } from '../src/services/project-operation-coordinator.js';
 import { createProcessingJobService } from '../src/services/processing-job-service.js';
 import { createProcessingConcurrencyService } from '../src/services/processing-concurrency-service.js';
+import { createApplicationLogger } from '../src/services/application-logger.js';
+import { createApplicationLogRepository } from '../src/data/application-log-repository.js';
 import { createProcessingPresetService } from '../src/services/processing-preset-service.js';
 import { createWatermarkScaleMapService } from '../src/services/watermark-scale-map-service.js';
 import { createAssetScanner } from '../src/services/asset-scanner.js';
@@ -902,13 +904,18 @@ describe('asset processing service', () => {
   });
 
   it('cleans a published output when the post-write index update fails', async () => {
+    const applicationLogger = createApplicationLogger({ repository: createApplicationLogRepository(db) });
+    processingService = createProcessingService({ applicationLogger });
     const source = writeIndexedImage('Final/recovery.png');
     const applySpy = vi.spyOn(assetRepository, 'applyAssetConversions')
       .mockImplementation(() => { throw new Error('injected database failure'); });
 
-    await expect(processingService.convertAssets(project.id, [source.id], {
+    const executor = processingService.createAlreadyCoordinatedExecutor(processingExecutionCapability);
+    const onProgress = vi.fn();
+    onProgress.jobId = 'job-recovery';
+    await expect(executor.convertAssets(project.id, [source.id], {
       format: 'webp', quality: 85, originalHandling: 'keep',
-    })).rejects.toMatchObject({
+    }, onProgress)).rejects.toMatchObject({
       name: 'AssetProcessingError',
       code: 'DATABASE_OPERATION_FAILED',
     });
@@ -917,6 +924,43 @@ describe('asset processing service', () => {
     expect(fs.existsSync(path.join(projectDir, 'Final', 'recovery.png'))).toBe(true);
     expect(fs.existsSync(path.join(projectDir, 'Final', 'recovery.webp'))).toBe(false);
     expect(assetRepository.findByProjectIdAndPath(project.id, 'Final/recovery.webp')).toBeUndefined();
+    const recoveryLog = db.prepare("SELECT subsystem, event, project_id, correlation_id, context_json FROM application_logs WHERE event = 'processing.recovery.succeeded'").get();
+    expect(recoveryLog).toMatchObject({
+      subsystem: 'processing', event: 'processing.recovery.succeeded', project_id: project.id,
+      correlation_id: 'job-recovery',
+    });
+    expect(JSON.parse(recoveryLog.context_json)).toEqual({ operation: 'convert', assetCount: 1, phase: 'rollback' });
+  });
+
+  it('records a failed recovery without allowing diagnostic persistence to change the result', async () => {
+    const applicationLogger = { warn: vi.fn(), error: vi.fn(() => { throw new Error('diagnostic sink unavailable'); }) };
+    processingService = createProcessingService({ applicationLogger });
+    const source = writeIndexedImage('Final/recovery-failed.png');
+    const applySpy = vi.spyOn(assetRepository, 'applyAssetConversions')
+      .mockImplementation(() => { throw new Error('injected database failure'); });
+    const originalUnlink = fs.unlinkSync;
+    const unlinkSpy = vi.spyOn(fs, 'unlinkSync').mockImplementation((target, ...args) => {
+      if (String(target).endsWith('recovery-failed.webp')) throw new Error('injected recovery cleanup failure');
+      return originalUnlink.call(fs, target, ...args);
+    });
+    const onProgress = vi.fn();
+    onProgress.jobId = 'job-recovery-failed';
+
+    try {
+      const executor = processingService.createAlreadyCoordinatedExecutor(processingExecutionCapability);
+      await expect(executor.convertAssets(project.id, [source.id], {
+        format: 'webp', quality: 85, originalHandling: 'keep',
+      }, onProgress)).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+    } finally {
+      unlinkSpy.mockRestore();
+      applySpy.mockRestore();
+    }
+
+    expect(applicationLogger.error).toHaveBeenCalledWith(expect.objectContaining({
+      event: 'processing.recovery.failed', level: 'error', kind: 'diagnostic', projectId: project.id,
+      correlationId: 'job-recovery-failed', context: { operation: 'convert', assetCount: 1, phase: 'recovery' },
+    }));
+    expect(JSON.stringify(applicationLogger.error.mock.calls)).not.toMatch(/creatorcrate-processing|recovery-failed\.png|quality|originalHandling/i);
   });
 
   it('reports controlled domain errors for invalid selection and exposes the error type', async () => {

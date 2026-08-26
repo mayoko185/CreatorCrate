@@ -51,8 +51,28 @@ function resolveLoginNotice(code) {
  * @param {ReturnType<import('../services/auth-service.js').createAuthService>} opts.authService
  * @param {{name: string, path: string, secure: boolean, maxAgeMs: number}} opts.cookieOptions
  */
-export function createAuthRouter({ appName, authService, cookieOptions, loginThrottler, trustProxy = false }) {
+export function createAuthRouter({
+  appName,
+  authService,
+  cookieOptions,
+  loginThrottler,
+  trustProxy = false,
+  applicationLogger = null,
+}) {
   const router = express.Router();
+
+  function logAuth(level, event, kind) {
+    try {
+      applicationLogger?.[level]?.({
+        event,
+        kind,
+        subsystem: 'authentication',
+        message: 'Authentication outcome recorded.',
+      });
+    } catch {
+      // Audit persistence must never alter authentication behavior.
+    }
+  }
 
   // GET /login — render login form with anonymous CSRF token
   router.get('/login', (req, res) => {
@@ -96,6 +116,7 @@ export function createAuthRouter({ appName, authService, cookieOptions, loginThr
       if (!throttle.limited && loginThrottler) {
         loginThrottler.recordFailure(username, clientAddress);
       }
+      logAuth('warn', throttle.limited ? 'auth.login.throttled' : 'auth.login.failed', 'diagnostic');
       // Regenerate anonymous CSRF for the re-rendered form
       const { secret, token } = generateAnonCsrf();
       setAnonCsrfCookie(res, secret, cookieOptions);
@@ -110,16 +131,16 @@ export function createAuthRouter({ appName, authService, cookieOptions, loginThr
     // Clear anonymous CSRF cookie now that login succeeded
     clearAnonCsrfCookie(res, cookieOptions);
     setSessionCookie(res, result.token, cookieOptions);
+    logAuth('info', 'auth.login.succeeded', 'activity');
     res.redirect(nextPath || '/');
   });
 
   // POST /logout — revoke session, clear cookie, redirect to login
   router.post('/logout', (req, res) => {
     const token = getSessionToken(req, cookieOptions);
-    if (token) {
-      authService.logout(token);
-    }
+    const loggedOut = token ? authService.logout(token) : false;
     clearSessionCookie(res, cookieOptions);
+    if (loggedOut) logAuth('info', 'auth.logout', 'activity');
     res.redirect('/login');
   });
 

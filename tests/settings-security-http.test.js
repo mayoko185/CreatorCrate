@@ -123,6 +123,13 @@ describe('settings security — password rotation', () => {
       .send({ username: 'admin', password: NEW_PASSWORD, _csrf: newCsrf })
       .expect(302);
     await newAgent.get('/projects').expect(200);
+
+    const rows = db.prepare("SELECT event, level, kind, context_json FROM application_logs WHERE event = 'security.password_changed'").all();
+    expect(rows).toEqual([expect.objectContaining({
+      event: 'security.password_changed', level: 'info', kind: 'activity', context_json: '{}',
+    })]);
+    expect(JSON.stringify(rows)).not.toContain(NEW_PASSWORD);
+    expect(JSON.stringify(rows)).not.toContain(TEST_PASSWORD);
   });
 
   it('requires CSRF for password rotation', async () => {
@@ -276,6 +283,8 @@ describe('settings security — enable authentication workflow', () => {
       .send({ username: NEW_USERNAME, password, _csrf: extractCsrfToken(loginPage.text) })
       .expect(302);
     await loginAgent.get('/projects').expect(200);
+    expect(appContext.db.prepare("SELECT event FROM application_logs WHERE event = 'security.enabled'").all())
+      .toEqual([{ event: 'security.enabled' }]);
   });
 
   it('CSRF is required for the enable form', async () => {
@@ -370,6 +379,8 @@ describe('settings security — disable authentication workflow', () => {
     const res2 = await request(appContext.handleRequest).get('/login');
     expect(res2.status).toBe(302);
     expect(res2.headers.location).toBe('/settings/security');
+    expect(appContext.db.prepare("SELECT event FROM application_logs WHERE event = 'security.disabled'").all())
+      .toEqual([{ event: 'security.disabled' }]);
   });
 
   it('requires CSRF for the disable form', async () => {

@@ -395,6 +395,7 @@
         background: var(--surface);
         border-radius: 0.5rem;
       }
+      .filters > .form-help { margin-block: 0; }
       .field { display: flex; flex-direction: column; gap: 0.25rem; min-width: 10rem; }
       .field-row { display: flex; gap: 1rem; flex-wrap: wrap; }
       .field label { font-size: 0.875rem; color: var(--muted); }
@@ -2286,10 +2287,15 @@
       }
       .asset-viewer-filters--project-assets,
       .asset-viewer-filters--asset-viewer,
-      .asset-viewer-filters--releases {
-        padding-inline-end: calc(var(--space-lg) + 1.6rem);
+      .asset-viewer-filters--releases,
+      .logs-filter-form {
         border: 1px solid var(--border);
         border-radius: var(--radius-lg);
+      }
+      .asset-viewer-filters--project-assets,
+      .asset-viewer-filters--asset-viewer,
+      .asset-viewer-filters--releases {
+        padding-inline-end: calc(var(--space-lg) + 1.6rem);
       }
       .asset-viewer-filters--project-assets > .asset-viewer-defaults-link,
       .asset-viewer-filters--asset-viewer > .asset-viewer-defaults-link {
@@ -6097,6 +6103,82 @@
       .settings-content .data-table th,
       .settings-content .data-table td {
         font-family: var(--mono);
+      }
+      .logs-count {
+        margin: var(--space-sm) 0;
+        color: var(--muted);
+        font-size: 0.8125rem;
+      }
+      .logs-table-scroll {
+        margin: var(--space-sm) 0;
+        scrollbar-color: var(--border-strong) transparent;
+        scrollbar-width: thin;
+      }
+      .logs-table-scroll::-webkit-scrollbar {
+        height: 0.5rem;
+      }
+      .logs-table-scroll::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .logs-table-scroll::-webkit-scrollbar-thumb {
+        border: 2px solid var(--surface-card);
+        border-radius: 999px;
+        background: var(--border-strong);
+      }
+      .logs-table-scroll::-webkit-scrollbar-thumb:hover {
+        background: var(--muted);
+      }
+      .logs-table {
+        min-width: 72rem;
+        margin: 0;
+      }
+      .logs-table th,
+      .logs-table td {
+        padding: var(--space-xs) var(--space-sm);
+      }
+      .logs-table td {
+        font-size: 0.8125rem;
+        line-height: 1.4;
+      }
+      .logs-table th {
+        font-size: 0.75rem;
+      }
+      .logs-message-cell {
+        min-width: 18rem;
+        max-width: 32rem;
+      }
+      .logs-message-cell code,
+      .logs-message-cell span,
+      .logs-context-list dd {
+        display: block;
+        overflow-wrap: anywhere;
+      }
+      .logs-context {
+        min-width: 12rem;
+        font-size: 0.8125rem;
+      }
+      .logs-context[open] {
+        padding: var(--space-xs);
+        border-radius: var(--radius-sm);
+        background: var(--surface-hover);
+      }
+      .logs-context summary {
+        cursor: pointer;
+      }
+      .logs-context-list {
+        margin-top: var(--space-xs);
+      }
+      .logs-context-list dt,
+      .logs-context-list dd {
+        font-size: 0.8125rem;
+      }
+      .logs-pagination {
+        display: flex;
+        align-items: center;
+        gap: var(--space-sm);
+        justify-content: space-between;
+        margin-top: var(--space-sm);
+        font-size: 0.8125rem;
       }
 
       /* ── Asset-category management rows ── */

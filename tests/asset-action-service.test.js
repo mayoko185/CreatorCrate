@@ -1572,6 +1572,173 @@ describe('asset action service', () => {
     });
   });
 
+  describe('bulk move activity logging', () => {
+    function createLoggingActionService(applicationLogger) {
+      return createAssetActionService({
+        projectRepository,
+        assetRepository,
+        assetCategoryRepository,
+        projectsRoot,
+        projectOperationCoordinator,
+        applicationLogger,
+      });
+    }
+
+    function captureError(callback) {
+      try {
+        callback();
+      } catch (err) {
+        return err;
+      }
+      throw new Error('Expected operation to throw.');
+    }
+
+    function expectCommittedBatchLog(logger, destinationCategoryId) {
+      expect(logger.info).toHaveBeenCalledTimes(1);
+      expect(logger.info).toHaveBeenCalledWith(expect.objectContaining({
+        event: 'asset.bulk_moved',
+        projectId: project.id,
+        context: {
+          assetCount: 1,
+          destinationCategoryId,
+        },
+      }));
+    }
+
+    it('logs committed work once when a later move fails before commit', () => {
+      writeFile('first.png');
+      writeFile('second.png');
+      const first = createAsset('first.png');
+      const second = createAsset('second.png');
+      const destination = createEnabledCategory('Renders', 'renders');
+      const logger = { info: vi.fn() };
+      const service = createLoggingActionService(logger);
+      const renameSync = fs.renameSync;
+      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation((source, target) => {
+        if (String(source).endsWith(`${path.sep}second.png`)) {
+          throw new Error('simulated move failure');
+        }
+        return renameSync(source, target);
+      });
+
+      try {
+        const err = captureError(() => service.moveAssets(project.id, [first.id, second.id], destination.id));
+        expect(err).toMatchObject({
+          code: 'BATCH_PARTIAL_FAILURE',
+          batchContext: { movedCount: 1, requestedCount: 2 },
+        });
+      } finally {
+        renameSpy.mockRestore();
+      }
+
+      expectCommittedBatchLog(logger, destination.id);
+    });
+
+    it('logs committed work once when a later move requires recovery', () => {
+      writeFile('first.png');
+      writeFile('second.png');
+      const first = createAsset('first.png');
+      const second = createAsset('second.png');
+      const destination = createEnabledCategory('Renders', 'renders');
+      const logger = { info: vi.fn() };
+      const service = createLoggingActionService(logger);
+      const updateAssetLocation = assetRepository.updateAssetLocation;
+      const updateSpy = vi.spyOn(assetRepository, 'updateAssetLocation').mockImplementation((...args) => {
+        if (args[1] === second.id) {
+          throw new Error('simulated repository failure');
+        }
+        return updateAssetLocation(...args);
+      });
+
+      try {
+        const err = captureError(() => service.moveAssets(project.id, [first.id, second.id], destination.id));
+        expect(err).toMatchObject({
+          code: 'BATCH_RECOVERY_REQUIRED',
+          batchContext: { movedCount: 1, requestedCount: 2 },
+        });
+      } finally {
+        updateSpy.mockRestore();
+      }
+
+      expectCommittedBatchLog(logger, destination.id);
+    });
+
+    it('does not log when the first move fails before a commit', () => {
+      writeFile('first.png');
+      writeFile('second.png');
+      const first = createAsset('first.png');
+      const second = createAsset('second.png');
+      const destination = createEnabledCategory('Renders', 'renders');
+      const logger = { info: vi.fn() };
+      const service = createLoggingActionService(logger);
+      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementationOnce(() => {
+        throw new Error('simulated move failure');
+      });
+
+      try {
+        const err = captureError(() => service.moveAssets(project.id, [first.id, second.id], destination.id));
+        expect(err).toMatchObject({
+          code: 'BATCH_PARTIAL_FAILURE',
+          batchContext: { movedCount: 0, requestedCount: 2 },
+        });
+      } finally {
+        renameSpy.mockRestore();
+      }
+
+      expect(logger.info).not.toHaveBeenCalled();
+    });
+
+    it('logs a successful batch only once', () => {
+      writeFile('first.png');
+      writeFile('second.png');
+      const first = createAsset('first.png');
+      const second = createAsset('second.png');
+      const destination = createEnabledCategory('Renders', 'renders');
+      const logger = { info: vi.fn() };
+      const result = createLoggingActionService(logger).moveAssets(project.id, [first.id, second.id], destination.id);
+
+      expect(result).toMatchObject({ movedCount: 2, requestedCount: 2 });
+      expect(logger.info).toHaveBeenCalledTimes(1);
+      expect(logger.info).toHaveBeenCalledWith(expect.objectContaining({
+        event: 'asset.bulk_moved',
+        projectId: project.id,
+        context: {
+          assetCount: 2,
+          destinationCategoryId: destination.id,
+        },
+      }));
+    });
+
+    it('preserves the original batch error when activity logging fails', () => {
+      writeFile('first.png');
+      writeFile('second.png');
+      const first = createAsset('first.png');
+      const second = createAsset('second.png');
+      const destination = createEnabledCategory('Renders', 'renders');
+      const logger = { info: vi.fn(() => { throw new Error('logger unavailable'); }) };
+      const service = createLoggingActionService(logger);
+      const renameSync = fs.renameSync;
+      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation((source, target) => {
+        if (String(source).endsWith(`${path.sep}second.png`)) {
+          throw new Error('simulated move failure');
+        }
+        return renameSync(source, target);
+      });
+
+      try {
+        const err = captureError(() => service.moveAssets(project.id, [first.id, second.id], destination.id));
+        expect(err).toMatchObject({
+          code: 'BATCH_PARTIAL_FAILURE',
+          batchContext: { movedCount: 1, requestedCount: 2 },
+        });
+      } finally {
+        renameSpy.mockRestore();
+      }
+
+      expect(logger.info).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('copyAssets', () => {
     it('rejects an empty selection and an unknown destination category', () => {
       expect(() => actionService.copyAssets(project.id, [], UNCATEGORIZED)).toThrowError(

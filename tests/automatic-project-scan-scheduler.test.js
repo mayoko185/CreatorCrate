@@ -277,7 +277,7 @@ describe('automatic project scan scheduler', () => {
     await expect(scheduler.runCycle()).resolves.toEqual({ scanned: 0, failed: 0 });
     shouldFail = false;
     await expect(scheduler.runCycle()).resolves.toEqual({ scanned: 1, failed: 0 });
-    expect(scanner.scanProjectAssets).toHaveBeenCalledWith(1);
+    expect(scanner.scanProjectAssets).toHaveBeenCalledWith(1, { kind: 'diagnostic' });
     expect(logger.error).toHaveBeenCalledWith(
       '[CreatorCrate] Automatic project scan cycle failed: database temporarily unavailable'
     );
@@ -332,8 +332,8 @@ describe('automatic project scan scheduler', () => {
     appContext.replaceDatabase({ close: vi.fn() });
     await scheduler.runCycle();
 
-    expect(firstScanner.scanProjectAssets).toHaveBeenCalledWith(1);
-    expect(secondScanner.scanProjectAssets).toHaveBeenCalledWith(2);
+    expect(firstScanner.scanProjectAssets).toHaveBeenCalledWith(1, { kind: 'diagnostic' });
+    expect(secondScanner.scanProjectAssets).toHaveBeenCalledWith(2, { kind: 'diagnostic' });
     expect(firstScanner.scanProjectAssets).toHaveBeenCalledTimes(1);
     expect(secondScanner.scanProjectAssets).toHaveBeenCalledTimes(1);
     expect(apps[0].locals.appMetaRepository.setValue).toHaveBeenCalledTimes(2);
@@ -387,5 +387,30 @@ describe('automatic project scan scheduler', () => {
     expect(scheduler.stop()).toBe(false);
     expect(timer.clearIntervalFn).toHaveBeenCalledOnce();
     expect(appMetaRepository.setValue.mock.calls).toEqual(persistedAtStart);
+  });
+
+  it('records one safe project diagnostic when a scheduled scan degrades and continues the cycle', async () => {
+    const applicationLogger = { warn: vi.fn() };
+    const scheduler = createAutomaticProjectScanScheduler({
+      intervalMinutes: 1,
+      getScanDependencies: () => makeDependencies({
+        scanProjectAssets: vi.fn(() => {
+          throw new Error('C:\\private\\project directory unavailable');
+        }),
+      }, {
+        listScanEligibleProjects: () => [{ id: 42 }],
+      }),
+      applicationLogger,
+      logger: makeLogger(),
+    });
+
+    await expect(scheduler.runCycle()).resolves.toEqual({ scanned: 0, failed: 1 });
+    expect(applicationLogger.warn).toHaveBeenCalledOnce();
+    expect(applicationLogger.warn).toHaveBeenCalledWith(expect.objectContaining({
+      event: 'project.scan.partial',
+      kind: 'diagnostic',
+      projectId: 42,
+      error: expect.any(Error),
+    }));
   });
 });

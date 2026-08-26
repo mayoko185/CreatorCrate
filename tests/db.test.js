@@ -114,6 +114,7 @@ describe('database and migrations', () => {
          '021_clear_processing_preset_scale_map_bindings.sql',
          '022_add_project_type.sql',
          '023_drop_generated_watermark_asset_id.sql',
+         '026_add_application_logs.sql',
        ]);
   });
 
@@ -130,6 +131,7 @@ describe('database and migrations', () => {
 
     expect(tables).toEqual([
       'app_meta',
+      'application_logs',
       'asset_category_defaults',
       'asset_tags',
       'assets',

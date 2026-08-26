@@ -131,6 +131,7 @@ function isNoteRepositoryError(error) {
  * @param {object} [deps.bookRepository]
  * @param {import('better-sqlite3').Database} [deps.db]
  * @param {object} [deps.bookContentRepository]
+ * @param {object} [deps.applicationLogger]
  */
 export function createNoteService({
   db,
@@ -140,6 +141,7 @@ export function createNoteService({
   chapterRepository,
   bookRepository,
   bookContentRepository,
+  applicationLogger = null,
 } = {}) {
   if (!noteRepository) {
     throw new Error('createNoteService requires a noteRepository dependency.');
@@ -152,6 +154,28 @@ export function createNoteService({
   }
   if (!chapterRepository) {
     throw new Error('createNoteService requires a chapterRepository dependency.');
+  }
+
+  function logActivity(event, context) {
+    try {
+      applicationLogger?.info?.({
+        event,
+        kind: 'activity',
+        subsystem: 'notes',
+        message: 'Note activity completed.',
+        context,
+      });
+    } catch {
+      // Activity logging must never alter the completed Note operation.
+    }
+  }
+
+  function noteContext(note) {
+    return {
+      bookId: note.book_id,
+      ...(note.chapter_id === null ? {} : { chapterId: note.chapter_id }),
+      noteId: note.id,
+    };
   }
 
   function requireNote(id) {
@@ -265,7 +289,7 @@ export function createNoteService({
     };
   }
 
-  function normalizeUpdateInput(input, existing) {
+  function normalizeUpdateInput(input) {
     assertPlainObject(input, 'input');
     const errors = {};
     if (Object.hasOwn(input, 'bookId')) {
@@ -274,17 +298,21 @@ export function createNoteService({
     if (Object.hasOwn(input, 'chapterId')) {
       errors.chapterId = 'chapterId cannot be changed by updating a Note.';
     }
-    const title = normalizeTitle(input.title, errors, existing.title);
-    const content = normalizeContent(input.content, errors, existing.content);
+    const title = Object.hasOwn(input, 'title')
+      ? normalizeTitle(input.title, errors)
+      : undefined;
+    const content = Object.hasOwn(input, 'content')
+      ? normalizeContent(input.content, errors)
+      : undefined;
     const projectIds = Object.hasOwn(input, 'projectIds')
       ? normalizeAssociationIds(input.projectIds, 'projectIds', errors)
-      : noteRepository.listProjectsForNote(existing.id);
+      : undefined;
     const assetIds = Object.hasOwn(input, 'assetIds')
       ? normalizeAssociationIds(input.assetIds, 'assetIds', errors)
-      : noteRepository.listAssetsForNote(existing.id);
+      : undefined;
 
     throwValidationIfNeeded(errors);
-    validateAssociationReferences(projectIds, assetIds);
+    validateAssociationReferences(projectIds ?? [], assetIds ?? []);
     return { title, content, projectIds, assetIds };
   }
 
@@ -302,7 +330,7 @@ export function createNoteService({
       if (!result) {
         throw new NoteNotFoundError(id);
       }
-      return detail(result.note, result);
+      return { note: detail(result.note, result), changed: result.changed };
     } catch (error) {
       if (error instanceof NoteNotFoundError) {
         throw error;
@@ -318,9 +346,9 @@ export function createNoteService({
 
   const createDirectBookPageTx = db && typeof db.transaction === 'function'
     ? db.transaction((values) => {
-      const created = persistWithAssociations(undefined, values);
-      bookContentRepository.append(values.bookId, 'page', created.id);
-      return created;
+      const outcome = persistWithAssociations(undefined, values);
+      bookContentRepository.append(values.bookId, 'page', outcome.note.id);
+      return outcome;
     })
     : null;
 
@@ -502,14 +530,14 @@ export function createNoteService({
 
     try {
       if (sourceNote.chapter_id !== null && normalizedTarget.chapterId === null) {
-        return moveChapterPageToDirectBook(sourceNote, normalizedTarget);
+        return { sourceNote, moved: moveChapterPageToDirectBook(sourceNote, normalizedTarget) };
       }
       if (sourceNote.chapter_id === null && normalizedTarget.chapterId !== null) {
-        return moveDirectBookPageToChapter(sourceNote, normalizedTarget);
+        return { sourceNote, moved: moveDirectBookPageToChapter(sourceNote, normalizedTarget) };
       }
       if (sourceNote.chapter_id === null && normalizedTarget.chapterId === null) {
         if (sourceNote.book_id !== normalizedTarget.bookId) {
-          return moveDirectBookPageToDirectBook(sourceNote, normalizedTarget);
+          return { sourceNote, moved: moveDirectBookPageToDirectBook(sourceNote, normalizedTarget) };
         }
       }
 
@@ -517,7 +545,7 @@ export function createNoteService({
       if (!moved) {
         throw new NoteNotFoundError(noteId);
       }
-      return moved;
+      return { sourceNote, moved };
     } catch (error) {
       if (error instanceof NoteNotFoundError) {
         throw error;
@@ -543,9 +571,11 @@ export function createNoteService({
   return {
     createNote(input) {
       const values = normalizeCreateInput(input);
-      return values.chapterId === null
+      const { note: created } = values.chapterId === null
         ? persistDirectBookPage(values)
         : persistWithAssociations(undefined, values);
+      logActivity('note.created', noteContext(created));
+      return created;
     },
 
     getNote(id) {
@@ -567,21 +597,27 @@ export function createNoteService({
     },
 
     updateNote(id, input) {
-      const existing = requireNote(id);
-      const values = normalizeUpdateInput(input, existing);
-      return persistWithAssociations(id, values);
+      const values = normalizeUpdateInput(input);
+      const { note: updated, changed } = persistWithAssociations(id, values);
+      if (changed) {
+        logActivity('note.updated', noteContext(updated));
+      }
+      return updated;
     },
 
     deleteNote(id) {
       const note = requireNote(id);
       if (note.chapter_id === null) {
-        return deleteDirectBookPage(note);
+        const deleted = deleteDirectBookPage(note);
+        logActivity('note.deleted', noteContext(note));
+        return deleted;
       }
 
       const deleted = noteRepository.deleteById(id);
       if (!deleted) {
         throw new NoteNotFoundError(id);
       }
+      logActivity('note.deleted', noteContext(note));
       return deleted;
     },
 
@@ -589,7 +625,11 @@ export function createNoteService({
       requireChapter(chapterId);
       validateReorderInput(orderedIds);
       try {
-        return noteRepository.reorder(chapterId, orderedIds);
+        const reordered = noteRepository.reorder(chapterId, orderedIds);
+        if (reordered.changed) {
+          logActivity('note.reordered', { chapterId, affectedCount: reordered.length });
+        }
+        return reordered;
       } catch (error) {
         if (isNoteRepositoryError(error) && REORDER_VALIDATION_CODES.has(error.code)) {
           throw new NoteValidationError({
@@ -604,7 +644,11 @@ export function createNoteService({
       requireBook(bookId);
       validateReorderInput(orderedIds);
       try {
-        return noteRepository.reorderForBook(bookId, orderedIds);
+        const reordered = noteRepository.reorderForBook(bookId, orderedIds);
+        if (reordered.changed) {
+          logActivity('note.reordered', { bookId, affectedCount: reordered.length });
+        }
+        return reordered;
       } catch (error) {
         if (isNoteRepositoryError(error) && REORDER_VALIDATION_CODES.has(error.code)) {
           throw new NoteValidationError({
@@ -619,17 +663,32 @@ export function createNoteService({
     },
 
     moveNote(noteId, target) {
-      return moveNoteToContainer(noteId, target);
+      const { sourceNote, moved } = moveNoteToContainer(noteId, target);
+      if (sourceNote.book_id !== moved.book_id || sourceNote.chapter_id !== moved.chapter_id) {
+        logActivity('note.moved', {
+          ...noteContext(sourceNote),
+          destinationBookId: moved.book_id,
+          ...(moved.chapter_id === null ? {} : { destinationChapterId: moved.chapter_id }),
+        });
+      }
+      return moved;
     },
 
     moveNoteToChapter(noteId, targetChapterId) {
-      requireNote(noteId);
       const targetChapter = requireChapter(targetChapterId, 'targetChapterId');
-      return moveNoteToContainer(
+      const { sourceNote, moved } = moveNoteToContainer(
         noteId,
         { bookId: targetChapter.book_id, chapterId: targetChapterId },
         { knownTargetChapter: targetChapter },
       );
+      if (sourceNote.book_id !== moved.book_id || sourceNote.chapter_id !== moved.chapter_id) {
+        logActivity('note.moved', {
+          ...noteContext(sourceNote),
+          destinationBookId: moved.book_id,
+          ...(moved.chapter_id === null ? {} : { destinationChapterId: moved.chapter_id }),
+        });
+      }
+      return moved;
     },
   };
 }

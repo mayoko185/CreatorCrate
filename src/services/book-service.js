@@ -115,12 +115,14 @@ function isBookContentRepositoryError(error) {
  * @param {object} deps.bookContentRepository
  * @param {object} deps.chapterRepository
  * @param {object} deps.noteRepository
+ * @param {object} [deps.applicationLogger]
  */
 export function createBookService({
   bookRepository,
   bookContentRepository,
   chapterRepository,
   noteRepository,
+  applicationLogger = null,
 } = {}) {
   if (!bookRepository) {
     throw new Error('createBookService requires a bookRepository dependency.');
@@ -164,6 +166,20 @@ export function createBookService({
 
   function unexpectedRepositoryError(error) {
     return new BookOperationError('Book operation could not be completed.', { cause: error });
+  }
+
+  function logActivity(event, context) {
+    try {
+      applicationLogger?.info?.({
+        event,
+        kind: 'activity',
+        subsystem: 'notes',
+        message: 'Book activity completed.',
+        context,
+      });
+    } catch {
+      // Activity logging must never alter the completed Book operation.
+    }
   }
 
   function listBookContents(bookId) {
@@ -251,7 +267,11 @@ export function createBookService({
     reorderBookContents(bookId, orderedItems) {
       requireBook(bookId);
       try {
-        return bookContentRepository.reorder(bookId, orderedItems);
+        const reordered = bookContentRepository.reorder(bookId, orderedItems);
+        if (reordered.changed) {
+          logActivity('book.content.reordered', { bookId, affectedCount: reordered.length });
+        }
+        return reordered;
       } catch (error) {
         if (isBookContentRepositoryError(error)
           && BOOK_CONTENT_REORDER_VALIDATION_CODES.has(error.code)) {
@@ -267,7 +287,9 @@ export function createBookService({
     },
 
     createBook(input) {
-      return bookRepository.create(normalizeInput(input));
+      const created = bookRepository.create(normalizeInput(input));
+      logActivity('book.created', { bookId: created.id });
+      return created;
     },
 
     updateBook(id, input) {
@@ -276,13 +298,18 @@ export function createBookService({
       if (!updated) {
         throw new BookNotFoundError(id);
       }
+      if (updated.title !== existing.title) logActivity('book.updated', { bookId: updated.id });
       return updated;
     },
 
     reorderBooks(orderedIds) {
       validateReorderInput(orderedIds);
       try {
-        return bookRepository.reorder(orderedIds);
+        const reordered = bookRepository.reorder(orderedIds);
+        if (reordered.changed) {
+          logActivity('book.reordered', { affectedCount: reordered.length });
+        }
+        return reordered;
       } catch (error) {
         if (isBookRepositoryError(error) && REORDER_VALIDATION_CODES.has(error.code)) {
           throw new BookValidationError({
@@ -303,6 +330,7 @@ export function createBookService({
         if (!deleted) {
           throw new BookNotFoundError(id);
         }
+        logActivity('book.deleted', { bookId: id });
         return deleted;
       } catch (error) {
         if (error instanceof BookNotFoundError) {

@@ -297,13 +297,19 @@ function createExecutionHandler({ operation, mode, projectService, assetReposito
       const refreshUrl = `/projects/${projectId}/assets`;
       const jobId = processingJobService.enqueue({
         projectId,
+        operation,
+        assetCount: assetIds.length,
         reservation,
-        execute: async ({ updateProgress }) => ({
+        execute: async ({ jobId, updateProgress }) => {
+          const jobProgress = (progress) => updateProgress(progress);
+          jobProgress.jobId = jobId;
+          return {
           result: await alreadyCoordinatedProcessingExecutor[methods.apply](
-            projectId, assetIds, options, updateProgress,
+            projectId, assetIds, options, jobProgress,
           ),
           refreshUrl,
-        }),
+          };
+        },
       });
 
       reservation = null;
@@ -333,6 +339,7 @@ export function createProcessingRouter({
   processingPresetService,
   processingJobService,
   alreadyCoordinatedProcessingExecutor,
+  applicationLogger = null,
 } = {}) {
   if (!watermarkService || typeof watermarkService.listWatermarks !== 'function') throw new TypeError('watermarkService is required');
   if (!watermarkDefaultService || typeof watermarkDefaultService.getDefaultWatermarkId !== 'function'
@@ -342,6 +349,20 @@ export function createProcessingRouter({
   if (!processingPresetService || typeof processingPresetService.listPresets !== 'function') throw new TypeError('processingPresetService is required');
 
   const router = express.Router();
+  const logAction = (level, event, context = {}, kind = 'activity') => {
+    try {
+      applicationLogger?.[level]?.({
+        subsystem: 'processing',
+        event,
+        level,
+        kind,
+        message: `Processing ${event.slice('processing.'.length).replaceAll('.', ' ')}.`,
+        context,
+      });
+    } catch {
+      // Logging is observational and cannot change processing command results.
+    }
+  };
   const hasExecutionSurface = projectService
     && assetRepository
     && assetProcessingScopeService
@@ -426,6 +447,10 @@ export function createProcessingRouter({
   router.post('/processing/watermarks/scan', async (_req, res, next) => {
     try {
       const scan = await watermarkService.scanWatermarks();
+      const scanContext = Object.fromEntries(['added', 'updated', 'restored', 'removed', 'failed', 'total']
+        .filter((key) => Number.isSafeInteger(scan?.[key]))
+        .map((key) => [key, scan[key]]));
+      logAction(Number.isSafeInteger(scan?.failed) && scan.failed > 0 ? 'warn' : 'info', 'processing.watermark.scan.completed', scanContext, 'diagnostic');
       return res.json({ ok: true, scan });
     } catch (error) { return handleError(error, res, next); }
   });
@@ -435,7 +460,13 @@ export function createProcessingRouter({
   router.post('/processing/watermarks/default', (req, res, next) => {
     try {
       const body = assertResourceRequest(req.body, ['watermarkId']);
-      return res.json({ ok: true, watermarkId: watermarkDefaultService.setDefaultWatermarkId(parsePositiveId(body.watermarkId, 'watermarkId')) });
+      const requestedWatermarkId = parsePositiveId(body.watermarkId, 'watermarkId');
+      const outcome = watermarkDefaultService.setDefaultWatermarkIdWithOutcome
+        ? watermarkDefaultService.setDefaultWatermarkIdWithOutcome(requestedWatermarkId)
+        : { watermarkId: watermarkDefaultService.setDefaultWatermarkId(requestedWatermarkId), changed: true };
+      const { watermarkId } = outcome;
+      if (outcome.changed) logAction('info', 'processing.watermark.default.changed', { watermarkId });
+      return res.json({ ok: true, watermarkId });
     } catch (error) { return handleError(error, res, next); }
   });
   router.get('/processing/watermarks/:id/image', (req, res, next) => {
@@ -452,7 +483,12 @@ export function createProcessingRouter({
   router.post('/processing/scale-map/replace', (req, res, next) => {
     try {
       const body = assertResourceRequest(req.body, ['definition']);
-      return res.json({ ok: true, definition: watermarkScaleMapService.replaceScaleMap(body.definition).definition });
+      const outcome = watermarkScaleMapService.replaceScaleMapWithOutcome
+        ? watermarkScaleMapService.replaceScaleMapWithOutcome(body.definition)
+        : { scaleMap: watermarkScaleMapService.replaceScaleMap(body.definition), changed: true };
+      const { scaleMap } = outcome;
+      if (outcome.changed) logAction('info', 'processing.scale_map.updated', { entryCount: Object.keys(scaleMap.definition).length });
+      return res.json({ ok: true, definition: scaleMap.definition });
     } catch (error) { return handleError(error, res, next); }
   });
 
@@ -470,6 +506,7 @@ export function createProcessingRouter({
       const body = assertResourceRequest(req.body, ['operationType', 'displayName', 'config', 'watermarkId']);
       assertNoForbiddenPathKeys(body.config);
       const preset = processingPresetService.createPreset(body);
+      logAction('info', 'processing.preset.created', { presetId: preset.id, operationType: preset.operationType });
       return res.status(201).json({ ok: true, preset });
     } catch (error) { return handleError(error, res, next); }
   });
@@ -477,13 +514,21 @@ export function createProcessingRouter({
     try {
       const body = assertResourceRequest(req.body, ['creatorcrate', 'version', 'operationType', 'presets']);
       const result = processingPresetService.importPresetBundle(body);
+      if (result.imported > 0) {
+        logAction('info', 'processing.preset.imported', { imported: result.imported, renamed: result.renamed, operationType: body.operationType });
+      }
       return res.json({ ok: true, ...result });
     } catch (error) { return handleError(error, res, next); }
   });
   router.post('/processing/presets/:id/rename', (req, res, next) => {
     try {
       const body = assertResourceRequest(req.body, ['displayName']);
-      const preset = processingPresetService.renamePreset(parsePositiveId(req.params.id, 'presetId'), body.displayName);
+      const presetId = parsePositiveId(req.params.id, 'presetId');
+      const outcome = processingPresetService.renamePresetWithOutcome
+        ? processingPresetService.renamePresetWithOutcome(presetId, body.displayName)
+        : { preset: processingPresetService.renamePreset(presetId, body.displayName), changed: true };
+      const { preset } = outcome;
+      if (outcome.changed) logAction('info', 'processing.preset.renamed', { presetId: preset.id, operationType: preset.operationType });
       return res.json({ ok: true, preset });
     } catch (error) { return handleError(error, res, next); }
   });
@@ -491,7 +536,12 @@ export function createProcessingRouter({
     try {
       const body = assertResourceRequest(req.body, ['config', 'watermarkId']);
       assertNoForbiddenPathKeys(body.config);
-      const preset = processingPresetService.replacePreset(parsePositiveId(req.params.id, 'presetId'), body);
+      const presetId = parsePositiveId(req.params.id, 'presetId');
+      const outcome = processingPresetService.replacePresetWithOutcome
+        ? processingPresetService.replacePresetWithOutcome(presetId, body)
+        : { preset: processingPresetService.replacePreset(presetId, body), changed: true };
+      const { preset } = outcome;
+      if (outcome.changed) logAction('info', 'processing.preset.updated', { presetId: preset.id, operationType: preset.operationType });
       return res.json({ ok: true, preset });
     } catch (error) { return handleError(error, res, next); }
   });
@@ -499,6 +549,7 @@ export function createProcessingRouter({
     try {
       const id = parsePositiveId(req.params.id, 'presetId');
       processingPresetService.deletePreset(id);
+      logAction('info', 'processing.preset.deleted', { presetId: id });
       return res.json({ ok: true, id });
     } catch (error) { return handleError(error, res, next); }
   });

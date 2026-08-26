@@ -6,6 +6,8 @@ import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createBookPrimaryImageRepository } from '../src/data/book-primary-image-repository.js';
 import { createBookRepository } from '../src/data/book-repository.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
+import { createApplicationLogRepository } from '../src/data/application-log-repository.js';
+import { createApplicationLogger } from '../src/services/application-logger.js';
 import {
   BookPrimaryImageError,
   BOOK_PRIMARY_IMAGE_ERROR_CODES,
@@ -89,6 +91,14 @@ describe('book primary-image service', () => {
       expect(err.code).toBe(code);
       return err;
     }
+  }
+
+  function createDeferred() {
+    let resolve;
+    const promise = new Promise((nextResolve) => {
+      resolve = nextResolve;
+    });
+    return { promise, resolve };
   }
 
   it('sets a present supported image and retrieves the selected asset', () => {
@@ -212,6 +222,137 @@ describe('book primary-image service', () => {
     expect(service.getPrimaryImage(book.id).id).toBe(secondAsset.id);
     expect(service.clearPrimaryImage(book.id, secondAsset.id)).toBe(true);
     expect(service.getPrimaryImage(book.id)).toBeUndefined();
+  });
+
+  it('logs only effective primary-image selections and clears through the central logger', () => {
+    const book = createBook('Activity book title must not be logged');
+    const asset = createAsset(project.id, 'activity.png');
+    const applicationLogRepository = createApplicationLogRepository(db);
+    const loggingService = createBookPrimaryImageService({
+      db,
+      assetRepository,
+      bookRepository,
+      bookPrimaryImageRepository: primaryImageRepository,
+      applicationLogger: createApplicationLogger({
+        repository: applicationLogRepository,
+        console: { error: vi.fn() },
+        now: () => 1,
+      }),
+    });
+
+    loggingService.setPrimaryImage(book.id, asset.id);
+    loggingService.setPrimaryImage(book.id, asset.id);
+    loggingService.clearPrimaryImage(book.id, asset.id);
+
+    const records = applicationLogRepository.findPage({ kind: 'activity' });
+    expect(records.map((record) => record.event)).toEqual([
+      'book.primary_image.cleared',
+      'book.primary_image.set',
+    ]);
+    const setRecord = records.find((record) => record.event === 'book.primary_image.set');
+    expect(setRecord).toMatchObject({
+      level: 'info',
+      kind: 'activity',
+      subsystem: 'notes',
+      project_id: project.id,
+    });
+    expect(JSON.parse(setRecord.context_json)).toEqual({ bookId: book.id, assetId: asset.id });
+    expect(`${setRecord.message}${setRecord.context_json}`).not.toContain('Activity book title');
+  });
+
+  it('does not let the retired logging snapshot lookup block a valid selection', () => {
+    const book = createBook('Snapshot lookup failure');
+    const asset = createAsset(project.id, 'snapshot.png');
+    vi.spyOn(primaryImageRepository, 'findByBookId').mockImplementation(() => {
+      throw new Error('forced logging snapshot failure');
+    });
+
+    expect(service.setPrimaryImage(book.id, asset.id)).toEqual({
+      book_id: book.id,
+      asset_id: asset.id,
+    });
+    expect(primaryImageRepository.findByBookId).not.toHaveBeenCalled();
+    expect(db.prepare('SELECT asset_id FROM book_primary_images WHERE book_id = ?')
+      .pluck().get(book.id)).toBe(asset.id);
+  });
+
+  it('logs only authoritative changes across overlapping asynchronous primary-image sets', async () => {
+    const book = createBook('Overlapping selections');
+    const asset = createAsset(project.id, 'cover.kra', 'kra', 'application/x-krita');
+    const logRepository = createApplicationLogRepository(db);
+    const firstProbe = createDeferred();
+    let probeCount = 0;
+    const loggingService = createBookPrimaryImageService({
+      db,
+      assetRepository,
+      bookRepository,
+      bookPrimaryImageRepository: primaryImageRepository,
+      previewProbe: () => {
+        probeCount += 1;
+        return probeCount === 1 ? firstProbe.promise : { quality: 'merged' };
+      },
+      applicationLogger: createApplicationLogger({
+        repository: logRepository,
+        console: { error: vi.fn() },
+        now: () => 1,
+      }),
+    });
+
+    const firstSet = loggingService.setPrimaryImage(book.id, asset.id);
+    loggingService.setPrimaryImage(book.id, asset.id);
+    firstProbe.resolve({ quality: 'merged' });
+    await firstSet;
+
+    expect(logRepository.findPage({ kind: 'activity' }).filter((record) => (
+      record.event === 'book.primary_image.set'
+    ))).toHaveLength(1);
+
+    const replacement = createAsset(project.id, 'replacement.png');
+    const delayedRestore = createDeferred();
+    let restoreProbeCount = 0;
+    const restoringService = createBookPrimaryImageService({
+      db,
+      assetRepository,
+      bookRepository,
+      bookPrimaryImageRepository: primaryImageRepository,
+      previewProbe: () => {
+        restoreProbeCount += 1;
+        return restoreProbeCount === 1 ? delayedRestore.promise : { quality: 'merged' };
+      },
+      applicationLogger: createApplicationLogger({
+        repository: logRepository,
+        console: { error: vi.fn() },
+        now: () => 2,
+      }),
+    });
+
+    const delayedSet = restoringService.setPrimaryImage(book.id, asset.id);
+    restoringService.setPrimaryImage(book.id, replacement.id);
+    delayedRestore.resolve({ quality: 'merged' });
+    await delayedSet;
+
+    expect(logRepository.findPage({ kind: 'activity' }).filter((record) => (
+      record.event === 'book.primary_image.set'
+    ))).toHaveLength(3);
+    expect(service.getPrimaryImage(book.id).id).toBe(asset.id);
+  });
+
+  it('isolates logger failures from an authoritative primary-image selection', () => {
+    const book = createBook('Logger isolation');
+    const asset = createAsset(project.id, 'logger.png');
+    const loggingService = createBookPrimaryImageService({
+      db,
+      assetRepository,
+      bookRepository,
+      bookPrimaryImageRepository: primaryImageRepository,
+      applicationLogger: { info: vi.fn(() => { throw new Error('forced logger failure'); }) },
+    });
+
+    expect(loggingService.setPrimaryImage(book.id, asset.id)).toEqual({
+      book_id: book.id,
+      asset_id: asset.id,
+    });
+    expect(service.getPrimaryImage(book.id).id).toBe(asset.id);
   });
 
   it('attaches none, available, and unavailable primary-image models in input order without per-book lookups', () => {

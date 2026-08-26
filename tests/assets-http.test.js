@@ -456,6 +456,130 @@ describe('asset browser HTTP workflow', () => {
     expect(rendered.text).toContain('Kept 1 missing asset record protected by published-release rules.');
   });
 
+  it('logs successful missing-asset cleanup with safe aggregate context only', async () => {
+    const res = await createProject('Missing Cleanup Activity Log');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    assetRepo.upsert(id, 'private-source.png', {
+      filename: 'private-source.png', extension: 'png', mimeType: 'image/png', sizeBytes: 10, modifiedAt: null,
+    });
+    assetRepo.markAllMissing(id);
+    app.locals.applicationLogRepository.clear();
+
+    await agent.post(`/projects/${id}/assets/remove-missing`).type('form').send({
+      _csrf: csrfToken,
+      returnTo: `/projects/${id}/assets`,
+    }).expect(302);
+
+    const [record] = app.locals.applicationLogRepository.findPage({ kind: 'activity' });
+    expect(record).toMatchObject({
+      event: 'project.missing_assets.removed',
+      level: 'info',
+      kind: 'activity',
+      subsystem: 'projects',
+      project_id: id,
+    });
+    expect(record.context_json).toBe(JSON.stringify({
+      removedCount: 1,
+      protectedCount: 0,
+      missingCandidateCount: 1,
+    }));
+    expect(record.context_json).not.toContain('private-source.png');
+    expect(record.context_json).not.toContain(projectsRoot);
+  });
+
+  it('logs one safe aggregate activity for one manual project scan', async () => {
+    const res = await createProject('Manual Scan Activity Log');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Manual Scan Activity Log');
+    fs.writeFileSync(path.join(projectDir, 'private-source.png'), 'png');
+    app.locals.applicationLogRepository.clear();
+
+    await agent.post(`/projects/${id}/scan`).type('form').send({
+      _csrf: csrfToken,
+    }).expect(302);
+
+    expect(app.locals.applicationLogRepository.count({ kind: 'activity' })).toBe(1);
+    const [record] = app.locals.applicationLogRepository.findPage({ kind: 'activity' });
+    expect(record).toMatchObject({
+      event: 'project.scan.completed',
+      level: 'info',
+      kind: 'activity',
+      subsystem: 'projects',
+      project_id: id,
+    });
+    expect(record.context_json).toBe(JSON.stringify({
+      discoveredCount: 1,
+      addedCount: 1,
+      updatedCount: 0,
+      missingCount: 0,
+    }));
+    expect(record.context_json).not.toContain('private-source.png');
+    expect(record.context_json).not.toContain(projectsRoot);
+  });
+
+  it('persists one primary-image activity per committed mutation through the real app logger', async () => {
+    const res = await createProject('Primary Image Activity Log');
+    const projectId = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Primary Image Activity Log');
+    const asset = writeIndexedAsset(projectId, projectDir, 'primary.png', await makePng());
+
+    app.locals.applicationLogRepository.clear();
+
+    await agent.post(`/projects/${projectId}/assets/${asset.id}/primary-image`).type('form').send({
+      _csrf: csrfToken,
+    }).expect(302);
+
+    let changed = db.prepare(`
+      SELECT level, kind, subsystem, event, project_id, context_json
+      FROM application_logs
+      WHERE event = 'asset.primary_image.changed'
+    `).all();
+    expect(changed).toEqual([{
+      level: 'info',
+      kind: 'activity',
+      subsystem: 'assets',
+      event: 'asset.primary_image.changed',
+      project_id: projectId,
+      context_json: JSON.stringify({ primaryImageSet: true }),
+    }]);
+
+    await agent.post(`/projects/${projectId}/assets/${asset.id}/primary-image`).type('form').send({
+      _csrf: csrfToken,
+    }).expect(302);
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM application_logs
+      WHERE event = 'asset.primary_image.changed'
+    `).get().count).toBe(1);
+
+    await agent.post(`/projects/${projectId}/assets/${asset.id}/primary-image/remove`).type('form').send({
+      _csrf: csrfToken,
+    }).expect(302);
+
+    let cleared = db.prepare(`
+      SELECT level, kind, subsystem, event, project_id, context_json
+      FROM application_logs
+      WHERE event = 'asset.primary_image.cleared'
+    `).all();
+    expect(cleared).toEqual([{
+      level: 'info',
+      kind: 'activity',
+      subsystem: 'assets',
+      event: 'asset.primary_image.cleared',
+      project_id: projectId,
+      context_json: JSON.stringify({ primaryImageSet: false }),
+    }]);
+
+    await agent.post(`/projects/${projectId}/assets/${asset.id}/primary-image/remove`).type('form').send({
+      _csrf: csrfToken,
+    }).expect(409);
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM application_logs
+      WHERE event = 'asset.primary_image.cleared'
+    `).get().count).toBe(1);
+  });
+
   it('rejects missing cleanup without CSRF, for unknown or archived projects, and on GET', async () => {
     const res = await createProject('Missing Cleanup Validation');
     const id = Number(res.headers.location.replace('/projects/', ''));

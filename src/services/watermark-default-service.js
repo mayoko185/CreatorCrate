@@ -34,14 +34,18 @@ export function createWatermarkDefaultService({ appMetaRepository, watermarkServ
     }
   }
 
+  function setDefaultWatermarkIdWithOutcome(value) {
+    const id = parseWatermarkId(value);
+    watermarkService.resolveForProcessing(id);
+    const previousWatermarkId = getDefaultWatermarkId();
+    if (previousWatermarkId === id) return { watermarkId: id, changed: false };
+    appMetaRepository.setValue(DEFAULT_WATERMARK_META_KEY, String(id));
+    return { watermarkId: getDefaultWatermarkId(), changed: true };
+  }
+
   return {
     getDefaultWatermarkId,
-
-    setDefaultWatermarkId(value) {
-      const id = parseWatermarkId(value);
-      watermarkService.resolveForProcessing(id);
-      appMetaRepository.setValue(DEFAULT_WATERMARK_META_KEY, String(id));
-      return getDefaultWatermarkId();
-    },
+    setDefaultWatermarkId(value) { return setDefaultWatermarkIdWithOutcome(value).watermarkId; },
+    setDefaultWatermarkIdWithOutcome,
   };
 }

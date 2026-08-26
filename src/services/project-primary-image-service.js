@@ -68,6 +68,7 @@ export function createProjectPrimaryImageService({
   assetRepository,
   projectPrimaryImageRepository,
   previewProbe,
+  applicationLogger = null,
 } = {}) {
   if (!db || typeof db.transaction !== 'function') {
     throw new Error('createProjectPrimaryImageService requires a db dependency.');
@@ -154,6 +155,7 @@ export function createProjectPrimaryImageService({
   const setPrimaryImageTx = db.transaction((projectId, assetId, kritaQuality = null) => {
     requireMutableProject(projectId);
     const asset = requireEligiblePresentAsset(projectId, assetId, { kritaQuality });
+    const previous = primaryImages.findByProjectId(projectId);
     const stored = primaryImages.setPrimaryImage(
       projectId,
       asset.id,
@@ -167,8 +169,31 @@ export function createProjectPrimaryImageService({
     ) {
       throw new Error('Primary image repository returned an invalid selection.');
     }
-    return stored;
+    return {
+      stored,
+      changed: previous?.asset_id !== assetId || previous?.provenance !== PRIMARY_IMAGE_PROVENANCE.MANUAL,
+    };
   });
+
+  function logActivity(event, projectId, context = {}) {
+    try {
+      applicationLogger?.info?.({
+        event,
+        kind: 'activity',
+        subsystem: 'assets',
+        message: 'Primary image activity completed.',
+        projectId,
+        context,
+      });
+    } catch {
+      // Activity logging must never alter a completed primary-image mutation.
+    }
+  }
+
+  function completeSet(projectId, result) {
+    if (result.changed) logActivity('asset.primary_image.changed', projectId, { primaryImageSet: true });
+    return result.stored;
+  }
 
   function setPrimaryImage(projectId, assetId) {
     assertCanonicalPositiveId(projectId, 'projectId');
@@ -179,7 +204,7 @@ export function createProjectPrimaryImageService({
     if (asset.is_present !== 1 && asset.is_present !== true) {
       // Preserve the domain-specific missing-asset error and avoid probing a
       // path that the authoritative asset record already says is absent.
-      return setPrimaryImageTx(projectId, assetId);
+      return completeSet(projectId, setPrimaryImageTx(projectId, assetId));
     }
     const classification = classifyPreviewable(asset);
     const isMergedKraCandidate = classification.supported
@@ -187,7 +212,7 @@ export function createProjectPrimaryImageService({
       && classification.extension === 'kra';
 
     if (!isMergedKraCandidate) {
-      return setPrimaryImageTx(projectId, assetId);
+      return completeSet(projectId, setPrimaryImageTx(projectId, assetId));
     }
 
     if (typeof previewProbe !== 'function') {
@@ -199,7 +224,7 @@ export function createProjectPrimaryImageService({
         throw unsupportedAsset(assetId);
       }
       try {
-        return setPrimaryImageTx(projectId, assetId, 'merged');
+        return completeSet(projectId, setPrimaryImageTx(projectId, assetId, 'merged'));
       } catch (err) {
         throw databaseFailure(err);
       }
@@ -290,7 +315,9 @@ export function createProjectPrimaryImageService({
       assertCanonicalPositiveId(projectId, 'projectId');
       assertCanonicalPositiveId(expectedAssetId, 'expectedAssetId');
       try {
-        return clearPrimaryImageTx(projectId, expectedAssetId);
+        const cleared = clearPrimaryImageTx(projectId, expectedAssetId);
+        logActivity('asset.primary_image.cleared', projectId, { primaryImageSet: false });
+        return cleared;
       } catch (err) {
         throw databaseFailure(err);
       }

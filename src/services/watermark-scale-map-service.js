@@ -77,13 +77,21 @@ export function createWatermarkScaleMapService({ repository } = {}) {
     }
   }
 
+  function replaceScaleMapWithOutcome(definition) {
+    const current = requireCanonicalRecord();
+    const definitionJson = normalizeInputDefinition(definition);
+    if (canonicalDefinitionJson(publicRecord(current).definition) === definitionJson) {
+      return { scaleMap: publicRecord(current), changed: false };
+    }
+    const record = repository.replaceDefinition(current.id, definitionJson);
+    if (!record) throw new WatermarkScaleMapServiceError('Canonical scale map not found.', { code: 'SCALE_MAP_NOT_FOUND' });
+    return { scaleMap: publicRecord(record), changed: true };
+  }
+
   return {
     getScaleMap() { return publicRecord(requireCanonicalRecord()); },
-    replaceScaleMap(definition) {
-      const record = repository.replaceDefinition(requireCanonicalRecord().id, normalizeInputDefinition(definition));
-      if (!record) throw new WatermarkScaleMapServiceError('Canonical scale map not found.', { code: 'SCALE_MAP_NOT_FOUND' });
-      return publicRecord(record);
-    },
+    replaceScaleMap(definition) { return replaceScaleMapWithOutcome(definition).scaleMap; },
+    replaceScaleMapWithOutcome,
     resolveForProcessing() {
       const scaleMap = publicRecord(requireCanonicalRecord());
       return { scaleMap, definition: scaleMap.definition };

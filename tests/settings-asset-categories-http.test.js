@@ -1229,6 +1229,56 @@ describe('settings — asset category defaults HTTP', () => {
 
   // ─── Auth / CSRF ────────────────────────────────────────────────────────
 
+  it('records only effective global preference changes without storing category slugs in activity context', async () => {
+    ctx = setupTmp();
+    const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+    const { agent, csrfToken } = await authenticate(app);
+
+    await agent.post('/settings/asset-categories/browser-default').type('form')
+      .send({ defaultCategory: 'wip', _csrf: csrfToken }).expect(302);
+    await agent.post('/settings/asset-categories/browser-default').type('form')
+      .send({ defaultCategory: 'wip', _csrf: csrfToken }).expect(302);
+    await agent.post('/settings/asset-categories/preview-category').type('form')
+      .send({ previewCategory: 'wip', _csrf: csrfToken }).expect(302);
+    await agent.post('/settings/asset-categories/preview-category').type('form')
+      .send({ previewCategory: 'wip', _csrf: csrfToken }).expect(302);
+    await agent.post('/settings/asset-categories/preview-category').type('form')
+      .send({ previewCategory: PREVIEW_CATEGORY_DISABLED_VALUE, _csrf: csrfToken }).expect(302);
+
+    const rows = ctx.db.prepare("SELECT event, level, kind, context_json FROM application_logs WHERE event IN ('settings.asset_browser_default.updated', 'settings.preview_category.updated') ORDER BY id").all();
+    expect(rows.map(({ event, level, kind, context_json: contextJson }) => ({
+      event, level, kind, context: JSON.parse(contextJson),
+    }))).toEqual([
+      { event: 'settings.asset_browser_default.updated', level: 'info', kind: 'activity', context: { mode: 'category' } },
+      { event: 'settings.preview_category.updated', level: 'info', kind: 'activity', context: { enabled: true } },
+      { event: 'settings.preview_category.updated', level: 'info', kind: 'activity', context: { enabled: false } },
+    ]);
+    expect(JSON.stringify(rows)).not.toContain('wip');
+  });
+
+  it('records committed defaults when legacy preference snapshots are unavailable', async () => {
+    ctx = setupTmp();
+    const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+    const { agent, csrfToken } = await authenticate(app);
+    app.locals.assetBrowserPreferenceService.getGlobalPreference = () => {
+      throw new Error('legacy snapshot unavailable');
+    };
+    app.locals.previewCategorySettingsService.getPreviewCategory = () => {
+      throw new Error('legacy snapshot unavailable');
+    };
+
+    await agent.post('/settings/asset-categories/browser-default').type('form')
+      .send({ defaultCategory: 'wip', _csrf: csrfToken }).expect(302);
+    await agent.post('/settings/asset-categories/preview-category').type('form')
+      .send({ previewCategory: 'wip', _csrf: csrfToken }).expect(302);
+
+    const rows = ctx.db.prepare("SELECT event FROM application_logs WHERE event IN ('settings.asset_browser_default.updated', 'settings.preview_category.updated') ORDER BY id").all();
+    expect(rows).toEqual([
+      { event: 'settings.asset_browser_default.updated' },
+      { event: 'settings.preview_category.updated' },
+    ]);
+  });
+
   describe('authentication and CSRF', () => {
     it('requires authentication to view the page', async () => {
       ctx = setupTmp();

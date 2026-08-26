@@ -15,6 +15,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import Database from 'better-sqlite3';
 import { createApplicationContext } from '../src/app-context.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createBackupService } from '../src/services/backup-service.js';
@@ -88,6 +89,10 @@ describe('live restore — same-process application context', () => {
     const backups = backupService.listBackups();
     expect(backups).toHaveLength(1);
     const backupFilename = backups[0].filename;
+    const backupPath = path.join(appDataRoot, 'backups', backupFilename);
+    expect(
+      db.prepare("SELECT COUNT(*) AS c FROM application_logs WHERE event = 'backup.restored'").get().c
+    ).toBe(0);
 
     // 3. Mutate the live database to state B through a normal application route.
     await request(appContext.handleRequest)
@@ -107,6 +112,23 @@ describe('live restore — same-process application context', () => {
     // The context adopted a genuinely new connection — proof the swap happened.
     expect(appContext.db).not.toBe(dbBeforeRestore);
     expect(maintenanceState.active).toBe(false);
+    expect(appContext.app.locals.applicationLogger.getRepository())
+      .toBe(appContext.app.locals.applicationLogRepository);
+    expect(
+      appContext.db.prepare("SELECT COUNT(*) AS c FROM application_logs WHERE event = 'backup.restored'").get().c
+    ).toBe(1);
+
+    // The immutable restore source is the pre-replacement database state. Its
+    // lack of the event proves the record was written only after the shared
+    // logger had rebound to the restored, published application context.
+    const restoreSource = new Database(backupPath, { readonly: true, fileMustExist: true });
+    try {
+      expect(
+        restoreSource.prepare("SELECT COUNT(*) AS c FROM application_logs WHERE event = 'backup.restored'").get().c
+      ).toBe(0);
+    } finally {
+      restoreSource.close();
+    }
 
     // 5. Without restarting or reconstructing the application: dashboard,
     //    project pages, a new write, and /health must all use the restored

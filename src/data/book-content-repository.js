@@ -74,11 +74,17 @@ export function createBookContentRepository(db) {
     const current = listForBookStmt.all(bookId);
     const normalizedItems = validateExactOrder({ bookId, orderedItems, current });
 
+    const changed = !current.every((row, index) => (
+      row.item_type === normalizedItems[index].type && row.item_id === normalizedItems[index].id
+    ));
+
     if (normalizedItems.length > 0) {
       rewriteOrders(bookId, current, normalizedItems);
     }
 
-    return listForBookStmt.all(bookId);
+    const rows = listForBookStmt.all(bookId);
+    Object.defineProperty(rows, 'changed', { value: changed });
+    return rows;
   });
 
   function rewriteOrders(bookId, current, orderedItems) {

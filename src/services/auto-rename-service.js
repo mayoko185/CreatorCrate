@@ -1027,6 +1027,7 @@ export function createAutoRenameService({
   projectsRoot,
   projectOperationCoordinator,
   signingKey,
+  applicationLogger = null,
   _hooks,
 } = {}) {
   if (!projectRepository || typeof projectRepository.findById !== 'function') {
@@ -1053,6 +1054,22 @@ export function createAutoRenameService({
 
   function runHook(name, payload) {
     if (typeof hooks[name] === 'function') hooks[name](payload);
+  }
+
+  function logActivity(projectId, renamedCount) {
+    if (renamedCount < 1) return;
+    try {
+      applicationLogger?.info?.({
+        event: 'asset.bulk_renamed',
+        kind: 'activity',
+        subsystem: 'assets',
+        message: 'Assets renamed.',
+        projectId,
+        context: { assetCount: renamedCount },
+      });
+    } catch {
+      // Activity logging must never alter a completed Auto Rename operation.
+    }
   }
 
   function requireMutableProject(projectId) {
@@ -2071,7 +2088,7 @@ export function createAutoRenameService({
       }
       databaseState = 'committed';
 
-      return {
+      const result = {
         renamed: plan.counts.rename,
         unchanged: plan.counts.unchanged,
         selected: plan.counts.selected,
@@ -2082,6 +2099,8 @@ export function createAutoRenameService({
           status: item.status,
         })),
       };
+      logActivity(projectId, result.renamed);
+      return result;
     } catch (err) {
       const compensation = compensateFilesystem(
         projectId,

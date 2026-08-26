@@ -84,6 +84,7 @@ describe('settings — NSFW Filter HTTP', () => {
       'Overview',
       'Security',
       'Backups',
+      'Logs',
       'Defaults',
       'NSFW Filter',
       'Asset Categories',
@@ -177,6 +178,31 @@ describe('settings — NSFW Filter HTTP', () => {
       display_name: existing.display_name,
       normalized_name: existing.normalized_name,
     })]);
+  });
+
+  it('records only effective NSFW filter changes while retaining the existing tag event ownership', async () => {
+    await setFilter(true);
+    await setFilter(true);
+    await setFilter(false);
+
+    const rows = db.prepare("SELECT event, level, kind, context_json FROM application_logs WHERE event = 'settings.nsfw_filter.updated' ORDER BY id").all();
+    expect(rows.map(({ event, level, kind, context_json: contextJson }) => ({
+      event, level, kind, context: JSON.parse(contextJson),
+    }))).toEqual([
+      { event: 'settings.nsfw_filter.updated', level: 'info', kind: 'activity', context: { enabled: true } },
+      { event: 'settings.nsfw_filter.updated', level: 'info', kind: 'activity', context: { enabled: false } },
+    ]);
+  });
+
+  it('records a committed change when the legacy enabled-state snapshot is unavailable', async () => {
+    app.locals.nsfwFilterSettingsService.isEnabled = () => {
+      throw new Error('legacy snapshot unavailable');
+    };
+
+    await setFilter(true);
+
+    const rows = db.prepare("SELECT event FROM application_logs WHERE event = 'settings.nsfw_filter.updated'").all();
+    expect(rows).toEqual([{ event: 'settings.nsfw_filter.updated' }]);
   });
 
   it('requires CSRF for the setting mutation', async () => {

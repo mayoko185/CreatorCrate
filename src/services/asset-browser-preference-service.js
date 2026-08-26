@@ -237,6 +237,26 @@ export function createAssetBrowserPreferenceService({
       return repository.setGlobalDefault(value);
     },
 
+    setGlobalPreferenceWithOutcome(value) {
+      if (value === 'all') {
+        return repository.setGlobalDefaultWithOutcome(value);
+      }
+
+      if (isMalformedGlobalValue(value)) {
+        invalid({ value: 'Global preference must be all or an enabled global category slug.' });
+      }
+
+      const category = findGlobalCategory(value);
+      if (!category) {
+        invalid({ value: 'Global preference must be all or an enabled global category slug.' });
+      }
+      if (!isEnabled(category)) {
+        invalid({ value: 'The selected global category is disabled.' });
+      }
+
+      return repository.setGlobalDefaultWithOutcome(value);
+    },
+
     /**
      * Resolve a project's effective browser category without mutating either
      * preference store. All results carry the stored state and an explicit

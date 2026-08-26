@@ -82,7 +82,7 @@ function isValidDate(value) {
 export function createProjectService(
   db,
   projectsRoot,
-  { assetCategoryService, assetBrowserPreferenceRepository } = {}
+  { assetCategoryService, assetBrowserPreferenceRepository, applicationLogger = null } = {}
 ) {
   if (!assetCategoryService) {
     throw new Error('createProjectService requires an assetCategoryService dependency.');
@@ -93,6 +93,21 @@ export function createProjectService(
 
   const repository = createProjectRepository(db);
   const releaseRepository = createReleaseRepository(db);
+
+  function logActivity(event, project, context = {}) {
+    try {
+      applicationLogger?.info?.({
+        event,
+        kind: 'activity',
+        subsystem: 'projects',
+        message: 'Project activity completed.',
+        projectId: project.id,
+        context,
+      });
+    } catch {
+      // Activity logging must never alter the completed project operation.
+    }
+  }
 
   function validate(input, options = {}) {
     const { existingId, existingProjectType = DEFAULT_PROJECT_TYPE } = options;
@@ -305,7 +320,12 @@ export function createProjectService(
       });
 
       try {
-        return runCreate();
+        const created = runCreate();
+        logActivity('project.created', created, {
+          status: created.status,
+          projectType: created.project_type,
+        });
+        return created;
       } catch (err) {
         // ── Compensation ──────────────────────────────────────────
         // By the time we reach here, SQLite has already rolled back the
@@ -366,6 +386,9 @@ export function createProjectService(
         ['patreon_url', 'patreonUrl'],
       ].some(([dbField, inputField]) => normalized[inputField] !== project[dbField]);
       const manifestNeedsRewrite = dirNeedsChange || metadataChanged;
+      const persistedChanged = metadataChanged
+        || normalized.status !== project.status
+        || normalized.projectType !== project.project_type;
 
       let currentAbsPath = null;
       let newRelPath = null;
@@ -472,6 +495,14 @@ export function createProjectService(
           updated = repository.setProjectDir(id, newRelPath);
         }
 
+        if (persistedChanged) {
+          logActivity('project.updated', updated, {
+            previousStatus: project.status,
+            status: updated.status,
+            previousProjectType: project.project_type,
+            projectType: updated.project_type,
+          });
+        }
         return updated;
       } catch (err) {
         // ── Compensation ─────────────────────────────────────────
@@ -510,6 +541,10 @@ export function createProjectService(
         if (!archived) {
           throw new Error('Failed to archive project in database.');
         }
+        logActivity('project.archived', archived, {
+          status: archived.status,
+          projectType: archived.project_type,
+        });
         return archived;
       } catch (err) {
         // Log the primary failure (safe relative path, no absolute paths)
@@ -572,6 +607,7 @@ export function createProjectService(
           }
           staged = null;
         }
+        logActivity('project.deleted', project);
         return deleted;
       } catch (err) {
         if (databaseDeleted) {

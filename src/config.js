@@ -20,6 +20,7 @@ const DEFAULTS = {
   COOKIE_SECURE: 'false',
   TRUST_PROXY: 'false',
   HSTS_ENABLED: 'false',
+  PERSIST_DEBUG_LOGS: 'false',
 };
 
 const MAX_SESSION_TTL_HOURS = 720; // 30 days
@@ -168,6 +169,12 @@ export function createConfig(rawEnv = process.env) {
   }
   const hstsEnabled = hstsEnabledRaw === 'true';
 
+  const persistDebugLogsRaw = getEnv(rawEnv, 'PERSIST_DEBUG_LOGS').trim().toLowerCase();
+  if (persistDebugLogsRaw !== 'true' && persistDebugLogsRaw !== 'false') {
+    throw new ConfigError(`Invalid PERSIST_DEBUG_LOGS "${persistDebugLogsRaw}". Expected "true" or "false".`);
+  }
+  const persistDebugLogs = persistDebugLogsRaw === 'true';
+
   const managedCredentialPath = credentialFilePathForRoot(appDataRoot);
 
   return Object.freeze({
@@ -181,6 +188,7 @@ export function createConfig(rawEnv = process.env) {
     backupDir,
     backupRetentionCount,
     autoScanIntervalMinutes,
+    persistDebugLogs,
     auth: Object.freeze({
       sessionTtlHours,
       cookieSecure,

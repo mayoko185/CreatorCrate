@@ -44,6 +44,7 @@ describe('settings — open locally HTTP', () => {
   let tmpDir;
   let projectsRoot;
   let db;
+  let app;
   let agent;
   let csrfToken;
 
@@ -53,7 +54,7 @@ describe('settings — open locally HTTP', () => {
     fs.mkdirSync(projectsRoot, { recursive: true });
     db = openDatabase(path.join(tmpDir, 'test.db'));
     runMigrations(db, MIGRATIONS_DIR);
-    const app = createApp({ appName: APP_NAME, db, projectsRoot }, { authConfig: AUTH_CONFIG });
+    app = createApp({ appName: APP_NAME, db, projectsRoot }, { authConfig: AUTH_CONFIG });
     ({ agent, csrfToken } = await authenticate(app));
   });
 
@@ -132,6 +133,37 @@ describe('settings — open locally HTTP', () => {
     expect(redirected.text).toContain('<code>D:&#92;example</code>');
   });
 
+  it('records path-setting changes without persisting the Windows path', async () => {
+    await agent.post('/settings/open-locally').type('form')
+      .send({ windowsProjectsPath: 'D:\\example\\', _csrf: csrfToken })
+      .expect(302);
+    await agent.post('/settings/open-locally').type('form')
+      .send({ windowsProjectsPath: 'D:\\example', _csrf: csrfToken })
+      .expect(302);
+    await agent.post('/settings/open-locally/clear').type('form').send({ _csrf: csrfToken }).expect(302);
+
+    const rows = db.prepare("SELECT event, level, kind, context_json FROM application_logs WHERE event LIKE 'settings.open_locally.%' ORDER BY id").all();
+    expect(rows.map(({ event, level, kind, context_json: contextJson }) => ({
+      event, level, kind, context: JSON.parse(contextJson),
+    }))).toEqual([
+      { event: 'settings.open_locally.updated', level: 'info', kind: 'activity', context: { configured: true } },
+      { event: 'settings.open_locally.cleared', level: 'info', kind: 'activity', context: { configured: false } },
+    ]);
+    expect(JSON.stringify(rows)).not.toContain('D:\\example');
+  });
+
+  it('records a committed mapping change when the legacy mapping snapshot is unavailable', async () => {
+    app.locals.openLocallySettingsService.getWindowsProjectsPath = () => {
+      throw new Error('legacy snapshot unavailable');
+    };
+
+    await agent.post('/settings/open-locally').type('form')
+      .send({ windowsProjectsPath: 'D:\\example', _csrf: csrfToken }).expect(302);
+
+    const rows = db.prepare("SELECT event FROM application_logs WHERE event = 'settings.open_locally.updated'").all();
+    expect(rows).toEqual([{ event: 'settings.open_locally.updated' }]);
+  });
+
   it('rejects an invalid path with 422, retains the submitted value, and does not save', async () => {
     const before = readMeta(db, WINDOWS_PROJECTS_PATH_KEY);
 
@@ -179,6 +211,32 @@ describe('settings — open locally HTTP', () => {
     expect(redirected.text).toContain('Open locally mapping removed.');
     expect(redirected.text).toContain('Not configured');
     expect(redirected.text).not.toContain('Clear mapping');
+  });
+
+
+  it('does not materialize or log an absent mapping when clearing', async () => {
+    await agent.post('/settings/open-locally/clear').type('form')
+      .send({ _csrf: csrfToken })
+      .expect(302);
+
+    expect(readMeta(db, 'open_locally.windows_projects_path')).toBeUndefined();
+    expect(db.prepare('SELECT event FROM application_logs WHERE event = ?').all('settings.open_locally.cleared')).toEqual([]);
+  });
+
+
+  it('persists a real clear and does not re-log a repeated clear', async () => {
+    writeMeta(db, 'open_locally.windows_projects_path', 'D:\\example');
+
+    await agent.post('/settings/open-locally/clear').type('form')
+      .send({ _csrf: csrfToken })
+      .expect(302);
+    await agent.post('/settings/open-locally/clear').type('form')
+      .send({ _csrf: csrfToken })
+      .expect(302);
+
+    expect(readMeta(db, 'open_locally.windows_projects_path')).toBe('');
+    expect(db.prepare('SELECT event FROM application_logs WHERE event = ?').all('settings.open_locally.cleared'))
+      .toEqual([{ event: 'settings.open_locally.cleared' }]);
   });
 
   it('keeps existing Settings routes unaffected and lists the Open locally link in the sub-navigation', async () => {

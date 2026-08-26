@@ -34,7 +34,7 @@ function assertTagIdArray(tagIds) {
  * @param {ReturnType<import('../data/tag-repository.js').createTagRepository>} deps.tagRepository
  * @param {ReturnType<import('../data/project-repository.js').createProjectRepository>} deps.projectRepository
  */
-export function createProjectTagService({ tagRepository, projectRepository } = {}) {
+export function createProjectTagService({ tagRepository, projectRepository, applicationLogger = null } = {}) {
   if (!tagRepository) {
     throw new Error('createProjectTagService requires a tagRepository dependency.');
   }
@@ -58,6 +58,21 @@ export function createProjectTagService({ tagRepository, projectRepository } = {
     return tag;
   }
 
+  function logActivity(event, projectId, tagId, assignmentCount) {
+    try {
+      applicationLogger?.info?.({
+        event,
+        kind: 'activity',
+        subsystem: 'tags',
+        message: 'Project tag activity completed.',
+        projectId,
+        context: { tagId, assignmentCount },
+      });
+    } catch {
+      // Activity logging must never alter a completed project-tag mutation.
+    }
+  }
+
   return {
     listProjectTags(projectId) {
       assertPositiveIntegerId(projectId, 'projectId');
@@ -70,7 +85,9 @@ export function createProjectTagService({ tagRepository, projectRepository } = {
       assertPositiveIntegerId(tagId, 'tagId');
       requireProject(projectId);
       requireTag(tagId);
-      return tagRepository.assignToProject(projectId, tagId);
+      const assigned = tagRepository.assignToProject(projectId, tagId);
+      if (assigned) logActivity('project.tags.assigned', projectId, tagId, 1);
+      return assigned;
     },
 
     removeTagFromProject(projectId, tagId) {
@@ -78,7 +95,9 @@ export function createProjectTagService({ tagRepository, projectRepository } = {
       assertPositiveIntegerId(tagId, 'tagId');
       requireProject(projectId);
       requireTag(tagId);
-      return tagRepository.removeFromProject(projectId, tagId);
+      const removed = tagRepository.removeFromProject(projectId, tagId);
+      if (removed) logActivity('project.tags.removed', projectId, tagId, 1);
+      return removed;
     },
 
     replaceProjectTags(projectId, tagIds) {
@@ -91,7 +110,15 @@ export function createProjectTagService({ tagRepository, projectRepository } = {
         requireTag(tagId);
       }
 
-      return tagRepository.replaceForProject(projectId, uniqueTagIds);
+      const currentTagIds = tagRepository.listForProject(projectId).map((tag) => tag.id);
+      const currentTagIdSet = new Set(currentTagIds);
+      const desiredTagIdSet = new Set(uniqueTagIds);
+      const assignedCount = uniqueTagIds.filter((tagId) => !currentTagIdSet.has(tagId)).length;
+      const removedCount = currentTagIds.filter((tagId) => !desiredTagIdSet.has(tagId)).length;
+      const resultingTags = tagRepository.replaceForProject(projectId, uniqueTagIds);
+      if (assignedCount > 0) logActivity('project.tags.assigned', projectId, null, assignedCount);
+      if (removedCount > 0) logActivity('project.tags.removed', projectId, null, removedCount);
+      return resultingTags;
     },
   };
 }

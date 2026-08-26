@@ -98,5 +98,11 @@ export function createAssetBrowserPreferenceRepository(db, { appMetaRepository }
     setGlobalDefault(value) {
       return sharedAppMetaRepository.setValue(GLOBAL_DEFAULT_KEY, value);
     },
+
+    setGlobalDefaultWithOutcome(value) {
+      return sharedAppMetaRepository.setValueWithOutcome(GLOBAL_DEFAULT_KEY, value, {
+        fallbackValue: 'all',
+      });
+    },
   };
 }

@@ -486,6 +486,7 @@ describe('app construction — asset actions chunk 3 wiring', () => {
       bookContentRepository,
       chapterRepository,
       noteRepository,
+      applicationLogger: app.locals.applicationLogger,
     });
     expect(app.locals.bookService).toBe(bookService);
     expect(chapterServiceArgs[0]).toEqual({
@@ -493,6 +494,7 @@ describe('app construction — asset actions chunk 3 wiring', () => {
       chapterRepository,
       bookRepository,
       bookContentRepository,
+      applicationLogger: app.locals.applicationLogger,
     });
     expect(app.locals.chapterService).toBe(chapterService);
     expect(serviceArgs[0]).toEqual({
@@ -503,6 +505,7 @@ describe('app construction — asset actions chunk 3 wiring', () => {
       chapterRepository,
       bookRepository,
       bookContentRepository,
+      applicationLogger: app.locals.applicationLogger,
     });
     expect(serviceArgs[0].bookContentRepository).toBe(bookContentRepository);
     expect(serviceArgs[0].bookContentRepository)
@@ -636,9 +639,20 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     const assetRepository = app.locals.assetScanner.repository;
 
     expect(repositoryArgs[0]).toBe(db);
-    expect(tagServiceArgs[0]).toEqual({ tagRepository: repository });
-    expect(projectTagServiceArgs[0]).toEqual({ tagRepository: repository, projectRepository });
-    expect(assetTagServiceArgs[0]).toEqual({ tagRepository: repository, assetRepository });
+    expect(tagServiceArgs[0]).toEqual({
+      tagRepository: repository,
+      applicationLogger: app.locals.applicationLogger,
+    });
+    expect(projectTagServiceArgs[0]).toEqual({
+      tagRepository: repository,
+      projectRepository,
+      applicationLogger: app.locals.applicationLogger,
+    });
+    expect(assetTagServiceArgs[0]).toEqual({
+      tagRepository: repository,
+      assetRepository,
+      applicationLogger: app.locals.applicationLogger,
+    });
     expect(app.locals.tagService).toBe(tagService);
     expect(app.locals.projectTagService).toBe(projectTagService);
     expect(app.locals.assetTagService).toBe(assetTagService);

@@ -174,6 +174,14 @@ key in the options object can never shadow it:
 - the **project operation coordinator** and the **processing-job service**,
   so scanners and mutation services retain the same per-project exclusion and
   any later permitted rebuild keeps the same process-local job registry;
+- the **application logger and its active `application-log-repository`**. The
+  logger retains one process-local identity; an auth-only rebuild reuses the
+  repository already bound to the unchanged database, while a database
+  replacement constructs a new repository and rebinds the logger only for that
+  candidate. This preserves per-repository daily prune eligibility across
+  same-database rebuilds without sending retained workers to a closed/restored
+  database. The logger owns redaction and persistence policy, and sink failures
+  remain non-fatal;
 - the `onDatabaseReplaced` / `onAuthConfigReplaced` hooks, so a restore
   triggered by a request always adopts back into the same context that
   served it.
@@ -446,6 +454,73 @@ save atomic; neither introduces SQL of its own. Treat that as the shape a
 route-level transaction is allowed to take (see §6), not as licence for a
 route to own domain logic.
 
+### Application logging
+
+Application logging is a process/application-context concern, not a service-local
+one. The context creates one `applicationLogger` and the composition root
+injects that identity into the services and routers that record it. The logger
+owns record shaping, redaction, persistence selection, fallback, and retention;
+callers supply only a bounded, domain-relevant event. Services do not construct
+loggers of their own.
+
+A log has a **level** — `debug`, `info`, `warn`, `error`, or `fatal` —
+and a separate **kind**: `activity` for a committed user-visible/domain
+outcome and `diagnostic` for operational state or failure information.
+`info` and above persist by default. `debug` persistence is controlled only
+by the deployment setting `PERSIST_DEBUG_LOGS`: it defaults to `false`, and
+configuration accepts `true` and `false` case-insensitively after trimming
+surrounding whitespace; other values are rejected. There is no mutable UI
+logging-level setting.
+
+Migration 026 adds the SQLite `application_logs` table, using the existing
+`better-sqlite3` connection. Its optional project ID deliberately has no
+foreign key, so historical records survive project deletion. Records contain
+bounded structured context and are retrieved deterministically newest first.
+The repository keeps at most 90 days and 50,000 rows. The logger attempts a
+prune when an application graph is built and, after a successfully persisted
+record, no more than once per 24 hours for each active repository identity.
+An auth-only rebuild reuses the same repository and therefore its eligibility;
+a genuine database replacement creates and rebinds a replacement repository.
+
+Logging is observational: a repository/sink failure must not alter primary
+application behavior. Persistence failures use the logger's direct console
+fallback where available; optional context gathering is likewise isolated from
+the operation it describes. Critical dependency-injection boundaries, including
+the final unhandled-5xx diagnostic, additionally contain a throwing injected
+logger. Failures that happen before persistent logging exists, such as migration
+startup failures, remain console-visible.
+
+Privacy is an explicit boundary, not a compliance claim. The logger persists
+bounded structured context built from safe numeric IDs, aggregate counts, enums,
+and (where useful) sanitized error identity/message. It intentionally excludes
+credentials, authentication/token/CSRF/session/cookie values, request bodies,
+raw processing options, stack traces, absolute local paths, and arbitrary
+user-authored content when an ID or count suffices. The resulting viewer is an
+operational/activity log, not a tamper-resistant audit system.
+
+The same logger identity survives an application-context database replacement.
+It is rebound while a candidate app is built; a failed candidate restores the
+previous repository/state. A restored backup runs migrations before publication,
+and `backup.restored` is recorded only after the restored app and database are
+active, so that record belongs to the restored database.
+
+Instrumentation records committed outcomes rather than endpoint receipt:
+semantic no-ops are normally silent, bulk operations use aggregate committed
+counts, and cascades/internal maintenance avoid activity spam. There is no
+blanket per-request, polling, or progress logging. High-value coverage spans
+processing; projects and scans; assets, categories, and tags; releases;
+Books, chapters, and notes; Settings, security, and authentication; backups;
+and runtime diagnostics.
+
+The `processing-job-service` is the central owner of processing job lifecycle
+entries — queued, started, succeeded, failed, cancelled, and rejected
+cancellation. Recovery and resource events remain separate so they do not
+duplicate the job lifecycle. Runtime diagnostics cover completed migrations,
+the initial Watermark scan outcome, server readiness, requested/completed
+shutdown, and the final unhandled 5xx boundary. The initial Watermark scan is
+distinct from user-triggered Watermark processing; migration failures before a
+logger exists remain console-only.
+
 ---
 
 ## 9. Filesystem and storage architecture
@@ -579,7 +654,7 @@ processing-job service schedules each job through `runAsync()` and exposes a
 snapshot lifecycle of `queued`, `running`, `succeeded`, `failed`, or
 `cancelled`, plus coarse `{ completed, total }` progress once the work is
 running. Only `queued` jobs are cancellable; a running job always runs to its
-existing completion or failure path.
+existing completion or failure path. The job service is also the sole owner of the correlated application-log lifecycle: it records queued, started, succeeded, failed, queued-cancelled, and running-cancellation-rejected events through the context-scoped logger. Route and lower-level processing services do not duplicate those entries; log-sink failures cannot change a job result.
 
 The browser polls `GET /processing/jobs/:id` for status and may request
 `POST /processing/jobs/:id/cancel` while the job is queued. This is HTTP

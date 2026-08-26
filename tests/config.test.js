@@ -273,6 +273,24 @@ describe('createConfig', () => {
     expect(config.auth.cookieSecure).toBe(false);
   });
 
+  it('normalizes PERSIST_DEBUG_LOGS boolean forms and rejects unsupported values', () => {
+    expect(createConfig(env()).persistDebugLogs).toBe(false);
+
+    for (const value of ['true', 'TRUE', '  true  ']) {
+      expect(createConfig(env({ PERSIST_DEBUG_LOGS: value })).persistDebugLogs).toBe(true);
+    }
+
+    for (const value of ['false', 'FALSE', '  false  ']) {
+      expect(createConfig(env({ PERSIST_DEBUG_LOGS: value })).persistDebugLogs).toBe(false);
+    }
+
+    for (const value of ['1', 'yes', 'arbitrary text']) {
+      const create = () => createConfig(env({ PERSIST_DEBUG_LOGS: value }));
+      expect(create).toThrow(ConfigError);
+      expect(create).toThrow(`Invalid PERSIST_DEBUG_LOGS "${value}". Expected "true" or "false".`);
+    }
+  });
+
   it.each(['yes', '1', 'always'])('rejects ambiguous HSTS_ENABLED %s', (value) => {
     expect(() => createConfig(env({ HSTS_ENABLED: value }))).toThrow(ConfigError);
   });

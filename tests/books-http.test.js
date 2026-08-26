@@ -793,12 +793,102 @@ describe('Book HTTP routes', () => {
     const listChapters = vi.spyOn(app.locals.chapterService, 'listChapters');
     const listPages = vi.spyOn(app.locals.noteService, 'listNotesForBook');
 
+    await agent.get('/not-found').expect(404);
     const response = await agent.get(`/notes/books/${book.id}`).expect(500);
 
     expect(response.text).toContain('<p class="error-status">500</p>');
+    const logs = app.locals.applicationLogRepository
+      .findPage({ level: 'error', kind: 'diagnostic', subsystem: 'http' })
+      .filter((entry) => entry.event === 'runtime.http.unhandled_error');
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatchObject({
+      level: 'error',
+      kind: 'diagnostic',
+      subsystem: 'http',
+      event: 'runtime.http.unhandled_error',
+    });
+    expect(JSON.parse(logs[0].context_json)).toEqual({
+      method: 'GET',
+      status: 500,
+      error: {
+        name: 'BookContentIntegrityError',
+        message: 'Book contents are inconsistent.',
+        code: 'CONTENT_ITEM_NOT_FOUND',
+      },
+    });
     expect(listBookContents).toHaveBeenCalledWith(book.id);
     expect(listChapters).not.toHaveBeenCalled();
     expect(listPages).not.toHaveBeenCalled();
+  });
+
+
+  it('preserves final 500 responses when an injected runtime logger throws', async () => {
+    const normalBook = app.locals.bookService.createBook({ title: 'Normal logger failure' });
+    const normalError = new BookContentIntegrityError('Book contents are inconsistent.', {
+      bookId: normalBook.id,
+    });
+    vi.spyOn(app.locals.bookService, 'listBookContents')
+      .mockImplementation(() => { throw normalError; });
+
+    const normalResponse = await agent
+      .get(`/notes/books/${normalBook.id}`)
+      .set('Accept', 'application/json')
+      .expect(500);
+    const normalLogs = app.locals.applicationLogRepository
+      .findPage({ level: 'error', kind: 'diagnostic', subsystem: 'http' })
+      .filter((entry) => entry.event === 'runtime.http.unhandled_error');
+    expect(normalLogs).toHaveLength(1);
+
+    await agent
+      .post('/notes/books/999999')
+      .type('form')
+      .send({ _csrf: csrfToken, title: 'Missing' })
+      .expect(404);
+    const logsAfter4xx = app.locals.applicationLogRepository
+      .findPage({ level: 'error', kind: 'diagnostic', subsystem: 'http' })
+      .filter((entry) => entry.event === 'runtime.http.unhandled_error');
+    expect(logsAfter4xx).toHaveLength(1);
+
+    const loggerFailure = new Error('simulated injected logger failure');
+    const applicationLogger = {
+      error: vi.fn(() => { throw loggerFailure; }),
+      info: vi.fn(),
+      warn: vi.fn(),
+      rebindRepository: vi.fn(),
+      prune: vi.fn(),
+    };
+    const failingProjectsRoot = path.join(tmpDir, 'projects');
+    const failingAppDataRoot = path.join(tmpDir, 'app');
+    const failingTagRepository = createTagRepository(db);
+    const { csrfPepper } = ensureAuthEnablement(failingAppDataRoot);
+    const failingApp = createApp(
+      { appName: 'CreatorCrate', db, projectsRoot: failingProjectsRoot },
+      {
+        appDataRoot: failingAppDataRoot,
+        authState: { csrfPepper },
+        tagRepository: failingTagRepository,
+        applicationLogger,
+      },
+    );
+    const { agent: failingAgent } = await getDisabledModeCsrf(failingApp, failingAppDataRoot);
+    const failingBook = failingApp.locals.bookService.createBook({ title: 'Throwing logger failure' });
+    const failingError = new BookContentIntegrityError('Book contents are inconsistent.', {
+      bookId: failingBook.id,
+    });
+    vi.spyOn(failingApp.locals.bookService, 'listBookContents')
+      .mockImplementation(() => { throw failingError; });
+
+    const failingResponse = await failingAgent
+      .get(`/notes/books/${failingBook.id}`)
+      .set('Accept', 'application/json')
+      .expect(500);
+
+    expect(applicationLogger.error).toHaveBeenCalledTimes(1);
+    expect(failingResponse.status).toBe(normalResponse.status);
+    expect(failingResponse.text).toBe(normalResponse.text);
+    expect(failingResponse.headers['content-type']).toBe(normalResponse.headers['content-type']);
+    expect(failingResponse.headers['cache-control']).toBe(normalResponse.headers['cache-control']);
+    expect(failingResponse.text).not.toContain(loggerFailure.message);
   });
 
   it('renders and updates the Book edit form', async () => {

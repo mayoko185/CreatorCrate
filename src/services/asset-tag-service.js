@@ -34,7 +34,7 @@ function assertTagIdArray(tagIds) {
  * @param {ReturnType<import('../data/tag-repository.js').createTagRepository>} deps.tagRepository
  * @param {ReturnType<import('../data/asset-repository.js').createAssetRepository>} deps.assetRepository
  */
-export function createAssetTagService({ tagRepository, assetRepository } = {}) {
+export function createAssetTagService({ tagRepository, assetRepository, applicationLogger = null } = {}) {
   if (!tagRepository) {
     throw new Error('createAssetTagService requires a tagRepository dependency.');
   }
@@ -58,6 +58,21 @@ export function createAssetTagService({ tagRepository, assetRepository } = {}) {
     return tag;
   }
 
+  function logActivity(event, asset, tagId, assignmentCount) {
+    try {
+      applicationLogger?.info?.({
+        event,
+        kind: 'activity',
+        subsystem: 'tags',
+        message: 'Asset tag activity completed.',
+        projectId: asset.project_id,
+        context: { tagId, assetCount: 1, assignmentCount },
+      });
+    } catch {
+      // Activity logging must never alter a completed asset-tag mutation.
+    }
+  }
+
   return {
     listAssetTags(assetId) {
       assertPositiveIntegerId(assetId, 'assetId');
@@ -68,17 +83,21 @@ export function createAssetTagService({ tagRepository, assetRepository } = {}) {
     assignTagToAsset(assetId, tagId) {
       assertPositiveIntegerId(assetId, 'assetId');
       assertPositiveIntegerId(tagId, 'tagId');
-      requireAsset(assetId);
+      const asset = requireAsset(assetId);
       requireTag(tagId);
-      return tagRepository.assignToAsset(assetId, tagId);
+      const assigned = tagRepository.assignToAsset(assetId, tagId);
+      if (assigned) logActivity('asset.tags.assigned', asset, tagId, 1);
+      return assigned;
     },
 
     removeTagFromAsset(assetId, tagId) {
       assertPositiveIntegerId(assetId, 'assetId');
       assertPositiveIntegerId(tagId, 'tagId');
-      requireAsset(assetId);
+      const asset = requireAsset(assetId);
       requireTag(tagId);
-      return tagRepository.removeFromAsset(assetId, tagId);
+      const removed = tagRepository.removeFromAsset(assetId, tagId);
+      if (removed) logActivity('asset.tags.removed', asset, tagId, 1);
+      return removed;
     },
 
     replaceAssetTags(assetId, tagIds) {
@@ -86,12 +105,20 @@ export function createAssetTagService({ tagRepository, assetRepository } = {}) {
       assertTagIdArray(tagIds);
 
       const uniqueTagIds = [...new Set(tagIds)];
-      requireAsset(assetId);
+      const asset = requireAsset(assetId);
       for (const tagId of uniqueTagIds) {
         requireTag(tagId);
       }
 
-      return tagRepository.replaceForAsset(assetId, uniqueTagIds);
+      const currentTagIds = tagRepository.listForAsset(assetId).map((tag) => tag.id);
+      const currentTagIdSet = new Set(currentTagIds);
+      const desiredTagIdSet = new Set(uniqueTagIds);
+      const assignedCount = uniqueTagIds.filter((tagId) => !currentTagIdSet.has(tagId)).length;
+      const removedCount = currentTagIds.filter((tagId) => !desiredTagIdSet.has(tagId)).length;
+      const resultingTags = tagRepository.replaceForAsset(assetId, uniqueTagIds);
+      if (assignedCount > 0) logActivity('asset.tags.assigned', asset, null, assignedCount);
+      if (removedCount > 0) logActivity('asset.tags.removed', asset, null, removedCount);
+      return resultingTags;
     },
   };
 }

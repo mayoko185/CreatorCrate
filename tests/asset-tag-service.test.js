@@ -350,4 +350,18 @@ describe('asset tag service', () => {
     expect(service.listAssetTags(assetId)).toEqual([second]);
     expect(assetRepository.findById(assetId)).toMatchObject({ id: assetId, is_present: 0 });
   });
+
+  it('keeps a committed assignment when activity logging fails', () => {
+    const projectId = createProject();
+    const assetId = createAsset(projectId);
+    const tag = createTag('Logger isolation');
+    service = createAssetTagService({
+      tagRepository,
+      assetRepository,
+      applicationLogger: { info() { throw new Error('log persistence unavailable'); } },
+    });
+
+    expect(service.assignTagToAsset(assetId, tag.id)).toBe(true);
+    expect(assignmentRows(assetId)).toHaveLength(1);
+  });
 });

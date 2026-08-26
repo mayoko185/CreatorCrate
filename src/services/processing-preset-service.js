@@ -289,6 +289,28 @@ export function createProcessingPresetService({ repository, watermarkService } =
     throw cause;
   }
 
+  function renamePresetWithOutcome(id, displayName) {
+    const current = requireRecord(id);
+    const normalizedDisplayName = normalizeDisplayName(displayName);
+    if (current.display_name === normalizedDisplayName) return { preset: publicRecord(current), changed: false };
+    try {
+      const record = repository.rename(id, normalizedDisplayName);
+      if (!record) throw new ProcessingPresetServiceError('Processing preset not found.', { code: 'PRESET_NOT_FOUND' });
+      return { preset: publicRecord(record), changed: true };
+    } catch (cause) { mapRepositoryError(cause); }
+  }
+
+  function replacePresetWithOutcome(id, { config } = {}) {
+    const current = requireRecord(id);
+    const normalizedConfig = normalizeConfig(current.operation_type, config);
+    if (stableJson(parseStoredConfig(current)) === stableJson(normalizedConfig)) {
+      return { preset: publicRecord(current), changed: false };
+    }
+    try {
+      return { preset: publicRecord(repository.replace(id, { configJson: stableJson(normalizedConfig), watermarkId: null })), changed: true };
+    } catch (cause) { mapRepositoryError(cause); }
+  }
+
   return {
     listPresets({ operationType } = {}) {
       if (operationType !== undefined) normalizeOperationType(operationType);
@@ -328,20 +350,13 @@ export function createProcessingPresetService({ repository, watermarkService } =
       } catch (cause) { mapRepositoryError(cause); }
     },
     renamePreset(id, displayName) {
-      requireRecord(id);
-      try {
-        const record = repository.rename(id, normalizeDisplayName(displayName));
-        if (!record) throw new ProcessingPresetServiceError('Processing preset not found.', { code: 'PRESET_NOT_FOUND' });
-        return publicRecord(record);
-      } catch (cause) { mapRepositoryError(cause); }
+      return renamePresetWithOutcome(id, displayName).preset;
     },
+    renamePresetWithOutcome,
     replacePreset(id, { config } = {}) {
-      const current = requireRecord(id);
-      const normalizedConfig = normalizeConfig(current.operation_type, config);
-      try {
-        return publicRecord(repository.replace(id, { configJson: stableJson(normalizedConfig), watermarkId: null }));
-      } catch (cause) { mapRepositoryError(cause); }
+      return replacePresetWithOutcome(id, { config }).preset;
     },
+    replacePresetWithOutcome,
     deletePreset(id) {
       requireRecord(id);
       const record = repository.delete(id);

@@ -5,6 +5,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createTagRepository } from '../src/data/tag-repository.js';
+import { createApplicationLogRepository } from '../src/data/application-log-repository.js';
+import { createApplicationLogger } from '../src/services/application-logger.js';
 import {
   createTagService,
   isDuplicateTagNameError,
@@ -243,6 +245,79 @@ describe('tag service', () => {
       normalized_name: 'landscape',
     });
     expect(service.listTags()).toHaveLength(1);
+  });
+
+  it('logs a capitalization-only rename after persisting its display-name change', () => {
+    const applicationLogger = { info: vi.fn() };
+    const tag = service.createTag({ name: 'Landscape' });
+    const loggingService = createTagService({ tagRepository: repository, applicationLogger });
+
+    const renamed = loggingService.renameTag(tag.id, { name: ' LANDSCAPE ' });
+
+    expect(renamed.display_name).toBe('LANDSCAPE');
+    expect(applicationLogger.info).toHaveBeenCalledOnce();
+    expect(applicationLogger.info).toHaveBeenCalledWith(expect.objectContaining({
+      event: 'tag.renamed',
+      context: { tagId: tag.id },
+    }));
+  });
+
+  it('does not log a true semantic no-op rename', () => {
+    const applicationLogger = { info: vi.fn() };
+    const tag = service.createTag({ name: 'Landscape' });
+    const loggingService = createTagService({ tagRepository: repository, applicationLogger });
+
+    loggingService.renameTag(tag.id, { name: ' Landscape ' });
+
+    expect(applicationLogger.info).not.toHaveBeenCalled();
+  });
+
+  it('logs an ordinary rename', () => {
+    const applicationLogger = { info: vi.fn() };
+    const tag = service.createTag({ name: 'Landscape' });
+    const loggingService = createTagService({ tagRepository: repository, applicationLogger });
+
+    loggingService.renameTag(tag.id, { name: 'Published Landscape' });
+
+    expect(applicationLogger.info).toHaveBeenCalledOnce();
+    expect(applicationLogger.info).toHaveBeenCalledWith(expect.objectContaining({
+      event: 'tag.renamed',
+      context: { tagId: tag.id },
+    }));
+  });
+
+  it('does not log a failed rename', () => {
+    const applicationLogger = { info: vi.fn() };
+    const fakeRepository = makeFakeRepository({
+      update: vi.fn(() => { throw new Error('Database unavailable'); }),
+    });
+    const failingService = createTagService({ tagRepository: fakeRepository, applicationLogger });
+
+    expect(() => failingService.renameTag(1, { name: 'Renamed' })).toThrow('Database unavailable');
+    expect(applicationLogger.info).not.toHaveBeenCalled();
+  });
+
+  it('keeps a successful rename successful when activity logging fails', () => {
+    const tag = service.createTag({ name: 'Landscape' });
+    const applicationLogger = { info: vi.fn(() => { throw new Error('Log sink unavailable'); }) };
+    const loggingService = createTagService({ tagRepository: repository, applicationLogger });
+
+    expect(loggingService.renameTag(tag.id, { name: 'Published Landscape' })).toMatchObject({
+      display_name: 'Published Landscape',
+    });
+  });
+
+  it('persists a capitalization-only rename through the real application logger', () => {
+    const applicationLogRepository = createApplicationLogRepository(db);
+    const applicationLogger = createApplicationLogger({ repository: applicationLogRepository });
+    const tag = service.createTag({ name: 'Landscape' });
+    const loggingService = createTagService({ tagRepository: repository, applicationLogger });
+
+    loggingService.renameTag(tag.id, { name: ' LANDSCAPE ' });
+
+    expect(applicationLogRepository.findPage().filter((record) => record.event === 'tag.renamed')).toEqual([
+      expect.objectContaining({ context_json: JSON.stringify({ tagId: tag.id }) }),
+    ]);
   });
 
   it('rejects a rename collision without modifying either tag', () => {

@@ -75,6 +75,22 @@ export function createBookPrimaryImageRepository(db) {
     },
 
     /**
+     * Set or replace a selection and report whether its effective value changed.
+     * The caller must compose this operation in its authoritative transaction.
+     * @param {number} bookId
+     * @param {number} assetId
+     * @returns {{selection: {book_id: number, asset_id: number}, changed: boolean}}
+     */
+    setPrimaryImageWithOutcome(bookId, assetId) {
+      const previous = findByBookStmt.get(bookId);
+      const selection = upsertStmt.get(bookId, assetId);
+      return {
+        selection,
+        changed: previous?.asset_id !== selection?.asset_id,
+      };
+    },
+
+    /**
      * Remove a selection only when it still points at the expected asset.
      * @param {number} bookId
      * @param {number} expectedAssetId

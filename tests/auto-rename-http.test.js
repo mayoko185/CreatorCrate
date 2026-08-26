@@ -540,6 +540,7 @@ describe('category-scoped Auto Rename HTTP integration', () => {
     expect(response.text).not.toContain('raw failure');
     expect(response.text).not.toContain(tmpDir);
     expect(response.text).not.toContain('SQLITE');
+
   });
 
   it('keeps render-model media/path safety independent of filesystem reads', () => {

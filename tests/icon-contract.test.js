@@ -22,7 +22,7 @@ function renderIcon(name) {
 }
 
 describe('icon contract — known keys', () => {
-  for (const key of ['dashboard', 'projects', 'assets', 'edit', 'open-locally', 'releases', 'settings', 'sort', 'notes', 'slideshow', 'chevron-left', 'chevron-right', 'close', 'original-size', 'pause', 'fullscreen', 'fullscreen-exit', 'reset', 'nsfw-filter', 'grid', 'list']) {
+  for (const key of ['dashboard', 'projects', 'assets', 'edit', 'open-locally', 'releases', 'calendar', 'settings', 'sort', 'notes', 'slideshow', 'chevron-left', 'chevron-right', 'close', 'original-size', 'pause', 'fullscreen', 'fullscreen-exit', 'reset', 'nsfw-filter', 'grid', 'list']) {
     it(`"${key}" resolves to a decorative inline svg`, () => {
       const out = renderIcon(key);
       expect(out).toContain('<svg');

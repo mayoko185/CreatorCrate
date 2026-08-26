@@ -113,6 +113,7 @@ export function createProjectAssetCategoryService({
   assetBrowserPreferenceRepository,
   projectsRoot,
   logger = console,
+  applicationLogger = null,
 } = {}) {
   if (!db) throw new Error('createProjectAssetCategoryService requires a db dependency.');
   if (!projectRepository) throw new Error('createProjectAssetCategoryService requires a projectRepository dependency.');
@@ -145,6 +146,21 @@ export function createProjectAssetCategoryService({
       throw new AssetCategoryNotFoundError(categoryId);
     }
     return category;
+  }
+
+  function logActivity(event, projectId, context = {}) {
+    try {
+      applicationLogger?.info?.({
+        event,
+        kind: 'activity',
+        subsystem: 'assets',
+        message: 'Asset category activity completed.',
+        projectId,
+        context,
+      });
+    } catch {
+      // Activity logging must never alter a completed category mutation.
+    }
   }
 
   function resolveProjectAbsPath(project) {
@@ -339,7 +355,9 @@ export function createProjectAssetCategoryService({
       });
 
       try {
-        return runAdd();
+        const category = runAdd();
+        logActivity('asset_category.created', projectId, { categoryId: category.id, enabled: Boolean(category.enabled) });
+        return category;
       } catch (err) {
         restorePriorManifest({
           absPath, project, categoriesBefore, priorManifestExisted,
@@ -367,7 +385,7 @@ export function createProjectAssetCategoryService({
       }
 
       const project = requireMutableProject(projectId);
-      requireCategory(projectId, categoryId);
+      const category = requireCategory(projectId, categoryId);
 
       const absPath = resolveProjectAbsPath(project);
       const priorManifestExisted = manifestExists(absPath);
@@ -385,7 +403,9 @@ export function createProjectAssetCategoryService({
       });
 
       try {
-        return runEdit();
+        const updated = runEdit();
+        if (category.display_name !== name) logActivity('asset_category.renamed', projectId, { categoryId });
+        return updated;
       } catch (err) {
         restorePriorManifest({
           absPath, project, categoriesBefore, priorManifestExisted,
@@ -423,7 +443,9 @@ export function createProjectAssetCategoryService({
           return updated;
         });
         try {
-          return runDisable();
+          const updated = runDisable();
+          if (Boolean(category.enabled)) logActivity('asset_category.disabled', projectId, { categoryId, enabled: false });
+          return updated;
         } catch (err) {
           restorePriorManifest({
             absPath, project, categoriesBefore, priorManifestExisted,
@@ -465,7 +487,9 @@ export function createProjectAssetCategoryService({
       });
 
       try {
-        return runEnable();
+        const updated = runEnable();
+        if (!Boolean(category.enabled)) logActivity('asset_category.enabled', projectId, { categoryId, enabled: true });
+        return updated;
       } catch (err) {
         restorePriorManifest({
           absPath, project, categoriesBefore, priorManifestExisted,
@@ -517,7 +541,11 @@ export function createProjectAssetCategoryService({
       });
 
       try {
-        return runReorder();
+        const reordered = runReorder();
+        if (!categoriesBefore.every((category, index) => category.id === orderedIds[index])) {
+          logActivity('asset_category.reordered', projectId, { categoryCount: reordered.length });
+        }
+        return reordered;
       } catch (err) {
         restorePriorManifest({
           absPath, project, categoriesBefore, priorManifestExisted,
@@ -729,6 +757,7 @@ export function createProjectAssetCategoryService({
         throw err;
       }
 
+      logActivity('asset_category.deleted', projectId, { categoryId });
       return true;
     },
   };

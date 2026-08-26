@@ -1,0 +1,30 @@
+{% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
+
+{% set page_title = "Settings — Clear Logs" %}
+
+{% block content %}
+  {% call pageHeading.render() %}
+    <a class="button button-secondary" href="{{ returnUrl }}">Cancel</a>
+  {% endcall %}
+
+  <div class="settings-layout">
+    {% set activeSettingsSection = "logs" %}
+    {% include "partials/settings-nav.njk" %}
+
+    <div class="settings-content">
+      <div class="destructive-section">
+        <h2>Clear all application logs?</h2>
+        <p>This permanently deletes every current application log. It cannot be undone.</p>
+        <p>A single activity marker will be kept to record that the log was cleared.</p>
+        <form method="post" action="/settings/logs/clear">
+          <input type="hidden" name="_csrf" value="{{ _csrf }}">
+          <div class="form-actions">
+            <button type="submit" class="button button-danger">Clear Logs</button>
+            <a class="button button-secondary" href="{{ returnUrl }}">Cancel</a>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+{% endblock %}

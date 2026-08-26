@@ -13,6 +13,8 @@ import { createAssetCategoryRepository } from '../src/data/asset-category-reposi
 import { AssetCategoryNotFoundError } from '../src/services/asset-category-service.js';
 import { AssetCategoryValidationError } from '../src/services/asset-category-validation.js';
 import { getLocalTodayIso } from '../src/util/date.js';
+import { createApplicationLogger } from '../src/services/application-logger.js';
+import { createApplicationLogRepository } from '../src/data/application-log-repository.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -3291,5 +3293,206 @@ describe('release service', () => {
       expect(instrumentedService.listReleaseAssets(smallRelease.id)).toHaveLength(0);
       expect(instrumentedService.listReleaseAssets(largeRelease.id)).toHaveLength(0);
     });
+  });
+});
+
+describe('release activity logging', () => {
+  let tmpDir;
+  let db;
+  let projectId;
+  let assetRepo;
+  let applicationLogRepository;
+  let service;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-release-activity-'));
+    db = openDatabase(path.join(tmpDir, 'test.db'));
+    runMigrations(db, MIGRATIONS_DIR);
+    const project = createProjectRepository(db).create(sampleProject({ title: 'Release Activity Project' }));
+    projectId = project.id;
+    assetRepo = createAssetRepository(db);
+    applicationLogRepository = createApplicationLogRepository(db);
+    service = createReleaseService({
+      db,
+      applicationLogger: createApplicationLogger({
+        repository: applicationLogRepository,
+        console: { error: vi.fn() },
+        now: () => 1,
+      }),
+    });
+  });
+
+  afterEach(() => {
+    closeDatabase(db);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function activityRecords(event) {
+    return applicationLogRepository.findPage({ kind: 'activity' })
+      .filter((record) => !event || record.event === event);
+  }
+
+  it('persists lifecycle activity only after effective successful mutations', () => {
+    const created = service.createRelease(projectId, validInput({ title: 'C:\\private\\release' }));
+    service.updateRelease(created.id, validInput({ title: 'Updated Release' }));
+    service.updateRelease(created.id, validInput({ title: 'Updated Release' }));
+    service.publishRelease(created.id, '2025-06-15');
+    expect(() => service.publishRelease(created.id, '2025-06-15')).toThrow(ReleaseValidationError);
+
+    const archived = service.createRelease(projectId, validInput({ title: 'Archive Release' }));
+    service.archiveRelease(archived.id);
+    expect(() => service.archiveRelease(archived.id)).toThrow(ReleaseArchivedError);
+
+    const deleted = service.createRelease(projectId, validInput({ title: 'Delete Release' }));
+    service.deleteRelease(deleted.id);
+
+    expect(activityRecords().map(({ event }) => event).sort()).toEqual([
+      'release.archived',
+      'release.created',
+      'release.created',
+      'release.created',
+      'release.deleted',
+      'release.published',
+      'release.updated',
+    ]);
+    expect(activityRecords('release.updated')).toHaveLength(1);
+    expect(activityRecords('release.published')).toHaveLength(1);
+    expect(activityRecords('release.archived')).toHaveLength(1);
+    expect(activityRecords('release.deleted')).toHaveLength(1);
+
+    const createdRecord = activityRecords('release.created').find((record) => record.context_json.includes(`\"releaseId\":${created.id}`));
+    expect(createdRecord).toMatchObject({
+      level: 'info',
+      kind: 'activity',
+      subsystem: 'releases',
+      project_id: projectId,
+    });
+    expect(JSON.parse(createdRecord.context_json)).toEqual({ releaseId: created.id, assetCount: 0 });
+    expect(String(createdRecord.message) + createdRecord.context_json).not.toContain('C:\\private');
+  });
+
+  it('logs committed membership deltas and role changes without asset IDs or raw mappings', () => {
+    const release = service.createRelease(projectId, validInput());
+    const first = assetRepo.upsert(projectId, 'first.txt', sampleAsset(projectId, { relativePath: 'first.txt' }));
+    const second = assetRepo.upsert(projectId, 'second.txt', sampleAsset(projectId, { relativePath: 'second.txt' }));
+
+    service.selectAssets(release.id, [{ assetId: first.id, role: 'attachment', sortOrder: 0 }]);
+    service.selectAssets(release.id, [{ assetId: first.id, role: 'attachment', sortOrder: 0 }]);
+    service.updateAssetRole(release.id, first.id, 'primary');
+    service.updateAssetRole(release.id, first.id, 'primary');
+    service.selectAssets(release.id, [{ assetId: second.id, role: 'preview', sortOrder: 0 }]);
+
+    expect(activityRecords('release.assets.added')).toHaveLength(2);
+    expect(activityRecords('release.assets.removed')).toHaveLength(1);
+    expect(activityRecords('release.asset_role.changed')).toHaveLength(1);
+
+    const records = activityRecords().filter((record) => record.event.startsWith('release.'));
+    for (const record of records) {
+      const context = JSON.parse(record.context_json);
+      expect(context).not.toHaveProperty('assetIds');
+      expect(context).not.toHaveProperty('assets');
+      expect(context).not.toHaveProperty('mapping');
+    }
+    expect(activityRecords('release.assets.added').map((record) => JSON.parse(record.context_json))).toEqual([
+      { releaseId: release.id, affectedCount: 1 },
+      { releaseId: release.id, affectedCount: 1 },
+    ]);
+    expect(JSON.parse(activityRecords('release.assets.removed')[0].context_json)).toEqual({ releaseId: release.id, affectedCount: 1 });
+    expect(JSON.parse(activityRecords('release.asset_role.changed')[0].context_json)).toEqual({
+      releaseId: release.id,
+      role: 'primary',
+      affectedCount: 1,
+    });
+  });
+
+
+  it('logs direct candidate membership changes exactly once after commit', () => {
+    const release = service.createRelease(projectId, validInput());
+    const asset = assetRepo.upsert(projectId, 'candidate.txt', sampleAsset(projectId, { relativePath: 'candidate.txt' }));
+
+    service.addCandidateAsset(release.id, asset.id);
+    expect(() => service.addCandidateAsset(release.id, asset.id)).toThrow(ReleaseValidationError);
+    expect(activityRecords('release.assets.added')).toHaveLength(1);
+
+    service.removeSelectedAsset(release.id, asset.id);
+    expect(() => service.removeSelectedAsset(release.id, asset.id)).toThrow(ReleaseValidationError);
+    expect(activityRecords('release.assets.removed')).toHaveLength(1);
+  });
+
+  function createCountFailingService() {
+    const originalPrepare = db.prepare.bind(db);
+    const prepareSpy = vi.spyOn(db, 'prepare').mockImplementation((sql) => {
+      if (sql.includes('SELECT COUNT(*) AS c FROM release_assets ra')) {
+        return { get: () => { throw new Error('asset count unavailable'); } };
+      }
+      return originalPrepare(sql);
+    });
+    const countFailingService = createReleaseService({
+      db,
+      applicationLogger: createApplicationLogger({
+        repository: applicationLogRepository,
+        console: { error: vi.fn() },
+        now: () => 1,
+      }),
+    });
+    prepareSpy.mockRestore();
+    return countFailingService;
+  }
+
+  it('publishes and persists one event without assetCount when count context fails', () => {
+    const release = service.createRelease(projectId, validInput());
+    const countFailingService = createCountFailingService();
+
+    const published = countFailingService.publishRelease(release.id, '2025-06-15');
+
+    expect(published).toMatchObject({ id: release.id, published_date: '2025-06-15' });
+    const records = activityRecords('release.published');
+    expect(records).toHaveLength(1);
+    expect(JSON.parse(records[0].context_json)).toEqual({ releaseId: release.id });
+  });
+
+  it('deletes and persists one event without assetCount when count context fails', () => {
+    const release = service.createRelease(projectId, validInput());
+    const countFailingService = createCountFailingService();
+
+    expect(countFailingService.deleteRelease(release.id)).toBe(true);
+    expect(countFailingService.findRelease(release.id)).toBeUndefined();
+    const records = activityRecords('release.deleted');
+    expect(records).toHaveLength(1);
+    expect(JSON.parse(records[0].context_json)).toEqual({ releaseId: release.id });
+  });
+
+  it('does not emit publish or delete success events when their mutations fail', () => {
+    const publishable = service.createRelease(projectId, validInput());
+    db.exec(`CREATE TRIGGER fail_activity_publish
+      BEFORE UPDATE OF published_date ON releases
+      WHEN NEW.id = ${publishable.id}
+      BEGIN SELECT RAISE(ABORT, 'publish unavailable'); END;`);
+
+    expect(() => service.publishRelease(publishable.id, '2025-06-15')).toThrow('publish unavailable');
+    expect(activityRecords('release.published')).toHaveLength(0);
+
+    const deletable = service.createRelease(projectId, validInput());
+    db.exec(`CREATE TRIGGER fail_activity_delete
+      BEFORE DELETE ON releases
+      WHEN OLD.id = ${deletable.id}
+      BEGIN SELECT RAISE(ABORT, 'delete unavailable'); END;`);
+
+    expect(() => service.deleteRelease(deletable.id)).toThrow('delete unavailable');
+    expect(activityRecords('release.deleted')).toHaveLength(0);
+  });
+
+  it('does not emit success for failures and isolates logger failures', () => {
+    const failingLogger = { info: vi.fn(() => { throw new Error('log persistence unavailable'); }) };
+    const isolatedService = createReleaseService({ db, applicationLogger: failingLogger });
+
+    expect(() => isolatedService.updateRelease(99999, validInput())).toThrow(ReleaseNotFoundError);
+    expect(failingLogger.info).not.toHaveBeenCalled();
+
+    const publishable = service.createRelease(projectId, validInput());
+    expect(isolatedService.publishRelease(publishable.id, '2025-06-15')).toMatchObject({ id: publishable.id });
+    const deletable = service.createRelease(projectId, validInput());
+    expect(isolatedService.deleteRelease(deletable.id)).toBe(true);
+    expect(failingLogger.info).toHaveBeenCalledTimes(2);
   });
 });

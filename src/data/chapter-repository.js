@@ -44,6 +44,8 @@ export function createChapterRepository(db) {
 
     validateExactOrder({ bookId, orderedIds, currentIds });
 
+    const changed = !currentIds.every((id, index) => id === orderedIds[index]);
+
     if (orderedIds.length > 0) {
       const maxSortOrder = Math.max(...current.map((row) => row.sort_order));
       const temporaryOffset = maxSortOrder + current.length + 1;
@@ -76,7 +78,9 @@ export function createChapterRepository(db) {
       }
     }
 
-    return listForBookStmt.all(bookId);
+    const rows = listForBookStmt.all(bookId);
+    Object.defineProperty(rows, 'changed', { value: changed });
+    return rows;
   });
 
   const deleteAndCompactTx = db.transaction((id) => {

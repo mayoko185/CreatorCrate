@@ -47,16 +47,48 @@ function snapshot(job) {
   };
 }
 
+const SAFE_RESULT_COUNT_FIELDS = Object.freeze([
+  'convertedCount',
+  'requestedCount',
+  'generatedCount',
+  'changedCount',
+  'unchangedCount',
+  'sourceCount',
+]);
+
+function isPlainObject(value) {
+  return Boolean(value) && typeof value === 'object' && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function safeResultSummary(result) {
+  const source = isPlainObject(result?.result) ? result.result : result;
+  if (!isPlainObject(source)) return null;
+  const summary = {};
+  for (const field of SAFE_RESULT_COUNT_FIELDS) {
+    if (Number.isSafeInteger(source[field]) && source[field] >= 0) summary[field] = source[field];
+  }
+  return Object.keys(summary).length > 0 ? summary : null;
+}
+
+function errorForLog(error) {
+  if (error && typeof error === 'object') return error;
+  return {
+    name: 'Error',
+    message: typeof error === 'string' ? error : 'Unknown processing failure.',
+  };
+}
+
 /**
  * Process-local lifecycle registry for later background processing execution.
  * Scheduling is delegated to the B1 coordinator, which remains the sole owner
  * of same-project serialization.
  *
- * @param {{ projectOperationCoordinator: { runAsync(projectId: number, callback: () => Promise<any> | any): Promise<any> } }} deps
- * @returns {{ reserveSubmission(projectId: number): { projectId: number, release(): boolean }, enqueue(input: { projectId: number, execute(context: { jobId: string, updateProgress(progress: { completed: number, total: number }): boolean }): Promise<any> | any, reservation?: object }): string, getJob(jobId: string): object | null, updateProgress(jobId: string, progress: { completed: number, total: number }): boolean, cancel(jobId: string): boolean, hasActiveJobs(): boolean }}
+ * @param {{ projectOperationCoordinator: { runAsync(projectId: number, callback: () => Promise<any> | any): Promise<any> }, applicationLogger?: object }} deps
+ * @returns {{ reserveSubmission(projectId: number): { projectId: number, release(): boolean }, enqueue(input: { projectId: number, operation?: string, assetCount?: number, execute(context: { jobId: string, updateProgress(progress: { completed: number, total: number }): boolean }): Promise<any> | any, reservation?: object }): string, getJob(jobId: string): object | null, updateProgress(jobId: string, progress: { completed: number, total: number }): boolean, cancel(jobId: string): boolean, hasActiveJobs(): boolean }}
  */
 export function createProcessingJobService({
   projectOperationCoordinator,
+  applicationLogger = null,
   now = Date.now,
   terminalJobTtlMs = 5 * 60 * 1000,
   maxTerminalJobs = 100,
@@ -79,6 +111,28 @@ export function createProcessingJobService({
   const jobs = new Map();
   const activeJobIds = new Set();
   const terminalJobIds = new Map();
+
+  function logLifecycle(level, event, job, { error, resultSummary } = {}) {
+    if (!applicationLogger || typeof applicationLogger[level] !== 'function') return;
+    try {
+      applicationLogger[level]({
+        kind: 'activity',
+        subsystem: 'processing',
+        event,
+        message: `Processing job ${event.slice('processing.job.'.length).replaceAll('_', ' ')}.`,
+        projectId: job.projectId,
+        correlationId: job.id,
+        context: {
+          ...(job.operation ? { operation: job.operation } : {}),
+          ...(job.assetCount !== null ? { assetCount: job.assetCount } : {}),
+          ...(resultSummary ? { resultSummary } : {}),
+        },
+        ...(error ? { error: errorForLog(error) } : {}),
+      });
+    } catch {
+      // Lifecycle logging is diagnostic only; processing state remains authoritative.
+    }
+  }
 
   function cleanupTerminalJobs() {
     const cutoff = now() - terminalJobTtlMs;
@@ -112,8 +166,15 @@ export function createProcessingJobService({
 
   function cancel(jobId) {
     const job = jobs.get(jobId);
-    if (!job || job.state !== PROCESSING_JOB_STATES.QUEUED) return false;
+    if (!job || job.state !== PROCESSING_JOB_STATES.QUEUED) {
+      if (job?.state === PROCESSING_JOB_STATES.RUNNING && !job.cancelRejectedLogged) {
+        job.cancelRejectedLogged = true;
+        logLifecycle('warn', 'processing.job.cancel_rejected', job);
+      }
+      return false;
+    }
     completeJob(job, PROCESSING_JOB_STATES.CANCELLED);
+    logLifecycle('info', 'processing.job.cancelled', job);
     return true;
   }
 
@@ -129,7 +190,7 @@ export function createProcessingJobService({
     return reservation;
   }
 
-  function enqueue({ projectId, execute, reservation } = {}) {
+  function enqueue({ projectId, operation, assetCount, execute, reservation } = {}) {
     if (reservation !== undefined) {
       assertPositiveProjectId(projectId);
       if (!pendingSubmissionReservations.has(reservation) || reservation.projectId !== projectId) {
@@ -144,37 +205,45 @@ export function createProcessingJobService({
     const job = {
       id: randomUUID(),
       projectId,
+      operation: typeof operation === 'string' && operation.length > 0 ? operation : null,
+      assetCount: Number.isSafeInteger(assetCount) && assetCount >= 0 ? assetCount : null,
       state: PROCESSING_JOB_STATES.QUEUED,
       progress: null,
       result: null,
     };
     jobs.set(job.id, job);
     activeJobIds.add(job.id);
+    logLifecycle('info', 'processing.job.queued', job);
 
     if (reservation) pendingSubmissionReservations.delete(reservation);
 
     const executeJob = async () => {
       if (job.state === PROCESSING_JOB_STATES.CANCELLED) return;
       job.state = PROCESSING_JOB_STATES.RUNNING;
+      logLifecycle('info', 'processing.job.started', job);
       try {
         job.result = await execute({
           jobId: job.id,
           updateProgress: (progress) => updateProgress(job.id, progress),
         });
         completeJob(job, PROCESSING_JOB_STATES.SUCCEEDED);
-      } catch {
+        logLifecycle('info', 'processing.job.succeeded', job, { resultSummary: safeResultSummary(job.result) });
+      } catch (error) {
         completeJob(job, PROCESSING_JOB_STATES.FAILED);
+        logLifecycle('error', 'processing.job.failed', job, { error });
       }
     };
 
     try {
-      Promise.resolve(projectOperationCoordinator.runAsync(projectId, executeJob)).catch(() => {
+      Promise.resolve(projectOperationCoordinator.runAsync(projectId, executeJob)).catch((error) => {
         if (job.state === PROCESSING_JOB_STATES.QUEUED) {
           completeJob(job, PROCESSING_JOB_STATES.FAILED);
+          logLifecycle('error', 'processing.job.failed', job, { error });
         }
       });
-    } catch {
+    } catch (error) {
       completeJob(job, PROCESSING_JOB_STATES.FAILED);
+      logLifecycle('error', 'processing.job.failed', job, { error });
     }
 
     return job.id;

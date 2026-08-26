@@ -95,6 +95,12 @@ describe('authenticated app — login/logout/CSRF/routes', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  function logRows(events) {
+    const placeholders = events.map(() => '?').join(', ');
+    return db.prepare(`SELECT event, level, kind, message, context_json FROM application_logs WHERE event IN (${placeholders}) ORDER BY id`)
+      .all(...events);
+  }
+
   // ─── Login page semantics ──────────────────────────────────────────────
 
   describe('GET /login', () => {
@@ -388,6 +394,63 @@ describe('authenticated app — login/logout/CSRF/routes', () => {
       // Unauthenticated POST gets 401 from CSRF middleware (defense in depth)
       expect(res.status).toBe(401);
     });
+  });
+
+  it('records privacy-safe authoritative login, failed-login, throttle, and logout outcomes once', async () => {
+    const events = ['auth.login.succeeded', 'auth.login.failed', 'auth.login.throttled', 'auth.logout'];
+    const successful = await loginWithCsrf(app);
+    await successful.agent.post('/logout').type('form').send({ _csrf: successful.csrfToken }).expect(302);
+
+    const failed = request.agent(app);
+    const failedPage = await failed.get('/login').expect(200);
+    await failed.post('/login').type('form')
+      .send({ username: 'admin', password: 'not-the-password', _csrf: extractCsrfToken(failedPage.text) })
+      .expect(401);
+
+    let now = 1_000;
+    const throttledApp = createApp(
+      { appName: 'CreatorCrate', db },
+      { authConfig: AUTH_CONFIG, loginThrottler: createLoginThrottler({ now: () => now, baseDelayMs: 500, maxDelayMs: 500 }) },
+    );
+    const throttled = request.agent(throttledApp);
+    let page = await throttled.get('/login').expect(200);
+    await throttled.post('/login').type('form')
+      .send({ username: 'admin', password: 'not-the-password', _csrf: extractCsrfToken(page.text) })
+      .expect(401);
+    page = await throttled.get('/login').expect(200);
+    await throttled.post('/login').type('form')
+      .send({ username: 'admin', password: TEST_PASSWORD, _csrf: extractCsrfToken(page.text) })
+      .expect(401);
+
+    const rows = logRows(events);
+    expect(rows.map(({ event, level, kind }) => ({ event, level, kind }))).toEqual([
+      { event: 'auth.login.succeeded', level: 'info', kind: 'activity' },
+      { event: 'auth.logout', level: 'info', kind: 'activity' },
+      { event: 'auth.login.failed', level: 'warn', kind: 'diagnostic' },
+      { event: 'auth.login.failed', level: 'warn', kind: 'diagnostic' },
+      { event: 'auth.login.throttled', level: 'warn', kind: 'diagnostic' },
+    ]);
+    expect(JSON.stringify(rows)).not.toContain('not-the-password');
+    expect(JSON.stringify(rows)).not.toContain(TEST_PASSWORD);
+    expect(JSON.stringify(rows)).not.toMatch(/cookie|session|csrf|authorization|request body/i);
+  });
+
+  it('preserves login responses when audit logging fails', async () => {
+    const failingLogger = {
+      info() { throw new Error('logger unavailable'); },
+      warn() { throw new Error('logger unavailable'); },
+      rebindRepository() {},
+      prune() {},
+    };
+    const isolatedApp = createApp(
+      { appName: 'CreatorCrate', db },
+      { authConfig: AUTH_CONFIG, applicationLogger: failingLogger },
+    );
+    const agent = request.agent(isolatedApp);
+    const loginPage = await agent.get('/login').expect(200);
+    await agent.post('/login').type('form')
+      .send({ username: 'admin', password: TEST_PASSWORD, _csrf: extractCsrfToken(loginPage.text) })
+      .expect(302);
   });
 
   describe('GET /logout (must not exist)', () => {

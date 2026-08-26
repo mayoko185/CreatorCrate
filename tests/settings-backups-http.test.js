@@ -73,6 +73,20 @@ function countProjects(db) {
   return db.prepare('SELECT COUNT(*) AS c FROM projects').get().c;
 }
 
+function backupActivityRecords(db) {
+  return db.prepare(
+    "SELECT level, kind, subsystem, event, context_json FROM application_logs WHERE event LIKE 'backup.%' ORDER BY id"
+  ).all();
+}
+
+function createRejectingLogger() {
+  return {
+    info() { throw new Error('simulated activity logger failure'); },
+    rebindRepository() {},
+    prune() {},
+  };
+}
+
 describe('settings — backup management HTTP', () => {
   let tmpDir;
   let appDataRoot;
@@ -326,6 +340,15 @@ describe('settings — backup management HTTP', () => {
       const files = fs.readdirSync(backupDir);
       expect(files).toHaveLength(1);
       expect(files[0]).toMatch(/^creatorcrate-.*\.sqlite$/);
+      expect(backupActivityRecords(db)).toEqual([
+        {
+          level: 'info',
+          kind: 'activity',
+          subsystem: 'settings',
+          event: 'backup.created',
+          context_json: '{}',
+        },
+      ]);
     });
 
     it('shows success notice on the list page after creation', async () => {
@@ -348,6 +371,7 @@ describe('settings — backup management HTTP', () => {
       const { agent: stubAgent, csrfToken: stubCsrf } = await authenticate(appWithStub);
       const res = await stubAgent.post('/settings/backups').type('form').send({ _csrf: stubCsrf }).expect(302);
       expect(res.headers.location).toBe('/settings/backups?notice=backup_failed');
+      expect(backupActivityRecords(db)).toEqual([]);
     });
 
     it('does not expose internal exception text on backup failure', async () => {
@@ -366,6 +390,25 @@ describe('settings — backup management HTTP', () => {
         .get('/settings/backups?notice=backup_failed')
         .expect(200);
       expect(res.text).not.toContain('SECRET_INTERNAL_ERROR_XYZ');
+    });
+
+    it('preserves a successful backup when activity logging fails', async () => {
+      const appWithRejectingLogger = createApp(
+        { appName: APP_NAME, db, projectsRoot },
+        {
+          backupService,
+          maintenanceState,
+          appDataRoot,
+          databasePath,
+          authConfig: AUTH_CONFIG,
+          applicationLogger: createRejectingLogger(),
+        }
+      );
+      const { agent: rejectingAgent, csrfToken: rejectingCsrf } = await authenticate(appWithRejectingLogger);
+
+      const res = await rejectingAgent.post('/settings/backups').type('form').send({ _csrf: rejectingCsrf }).expect(302);
+      expect(res.headers.location).toBe('/settings/backups?notice=backup_created');
+      expect(backupService.listBackups()).toHaveLength(1);
     });
   });
 
@@ -408,6 +451,7 @@ describe('settings — backup management HTTP', () => {
         .type('form').send({ _csrf: csrfToken })
         .expect(302);
       expect(res.headers.location).toBe('/settings/backups?notice=restore_failed');
+      expect(backupActivityRecords(db).filter(({ event }) => event === 'backup.restored')).toEqual([]);
     });
 
     it('redirects with failure notice for an unmanaged filename pattern', async () => {
@@ -502,6 +546,32 @@ describe('settings — backup management HTTP', () => {
         .expect(302);
 
       expect(maintenanceState.active).toBe(false);
+    });
+
+    it('preserves a successful restore when activity logging fails after replacement', async () => {
+      const result = await backupService.createBackup(db);
+      let replacedDb = null;
+      const appWithRejectingLogger = createApp(
+        { appName: APP_NAME, db, projectsRoot },
+        {
+          backupService,
+          maintenanceState,
+          appDataRoot,
+          databasePath,
+          onDatabaseReplaced: (newDb) => { replacedDb = newDb; },
+          authConfig: AUTH_CONFIG,
+          applicationLogger: createRejectingLogger(),
+        }
+      );
+      const { agent: rejectingAgent, csrfToken: rejectingCsrf } = await authenticate(appWithRejectingLogger);
+
+      const res = await rejectingAgent
+        .post(`/settings/backups/${result.filename}/restore`)
+        .type('form').send({ _csrf: rejectingCsrf })
+        .expect(302);
+      expect(res.headers.location).toBe('/settings/backups?notice=restore_success');
+      expect(replacedDb).not.toBeNull();
+      try { replacedDb?.close(); } catch {}
     });
   });
 
@@ -809,6 +879,15 @@ describe('settings — backup management HTTP', () => {
         .expect(302);
       expect(res.headers.location).toBe('/settings/backups?notice=backup_deleted');
       expect(fs.readdirSync(backupDir)).toEqual([]);
+      expect(backupActivityRecords(db)).toEqual([
+        {
+          level: 'info',
+          kind: 'activity',
+          subsystem: 'settings',
+          event: 'backup.deleted',
+          context_json: '{}',
+        },
+      ]);
     });
 
     it('shows success notice on the list page after deletion', async () => {
@@ -824,6 +903,7 @@ describe('settings — backup management HTTP', () => {
         .type('form').send({ _csrf: csrfToken })
         .expect(302);
       expect(res.headers.location).toBe('/settings/backups?notice=delete_failed');
+      expect(backupActivityRecords(db)).toEqual([]);
     });
 
     it('rejects traversal filenames without touching other backups', async () => {
@@ -867,6 +947,29 @@ describe('settings — backup management HTTP', () => {
         .get('/settings/backups?notice=delete_failed')
         .expect(200);
       expect(res.text).not.toContain('SECRET_INTERNAL_ERROR_XYZ');
+    });
+
+    it('preserves a completed deletion when activity logging fails', async () => {
+      const backup = await backupService.createBackup(db);
+      const appWithRejectingLogger = createApp(
+        { appName: APP_NAME, db, projectsRoot },
+        {
+          backupService,
+          maintenanceState,
+          appDataRoot,
+          databasePath,
+          authConfig: AUTH_CONFIG,
+          applicationLogger: createRejectingLogger(),
+        }
+      );
+      const { agent: rejectingAgent, csrfToken: rejectingCsrf } = await authenticate(appWithRejectingLogger);
+
+      const res = await rejectingAgent
+        .post(`/settings/backups/${backup.filename}/delete`)
+        .type('form').send({ _csrf: rejectingCsrf })
+        .expect(302);
+      expect(res.headers.location).toBe('/settings/backups?notice=backup_deleted');
+      expect(backupService.listBackups()).toEqual([]);
     });
   });
 

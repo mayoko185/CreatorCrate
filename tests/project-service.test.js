@@ -6,8 +6,10 @@ import { fileURLToPath } from 'node:url';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
 import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browser-preference-repository.js';
+import { createApplicationLogRepository } from '../src/data/application-log-repository.js';
 import { PROJECT_TYPES, DEFAULT_PROJECT_TYPE } from '../src/data/project-repository.js';
 import { createAssetCategoryService } from '../src/services/asset-category-service.js';
+import { createApplicationLogger } from '../src/services/application-logger.js';
 import {
   createProjectService,
   ProjectValidationError,
@@ -1394,6 +1396,95 @@ describe('project service', () => {
       expect(service.findById(project.id)).toBeUndefined();
       expect(fs.existsSync(projectDir)).toBe(false);
       expect(fs.readdirSync(projectsRoot).some((entry) => entry.startsWith('.cc-quarantine-'))).toBe(true);
+    });
+  });
+  describe('application activity logging', () => {
+    function makeLoggedService(applicationLogger) {
+      return createProjectService(db, projectsRoot, {
+        assetCategoryService: createAssetCategoryService(createAssetCategoryRepository(db)),
+        assetBrowserPreferenceRepository,
+        applicationLogger,
+      });
+    }
+
+    it('logs committed lifecycle changes once, skips semantic update no-ops, and keeps context safe', () => {
+      const applicationLogger = { info: vi.fn() };
+      const loggedService = makeLoggedService(applicationLogger);
+      const created = loggedService.create(validInput({ title: 'Private C:\\project-name' }));
+
+      loggedService.update(created.id, validInput({ title: 'Private C:\\project-name' }));
+      loggedService.update(created.id, validInput({
+        title: 'Private C:\\project-name',
+        status: 'in-progress',
+      }));
+      loggedService.archive(created.id);
+      loggedService.deleteProject(created.id);
+
+      expect(applicationLogger.info).toHaveBeenCalledTimes(4);
+      const records = applicationLogger.info.mock.calls.map(([record]) => record);
+      expect(records.map(({ event }) => event)).toEqual([
+        'project.created',
+        'project.updated',
+        'project.archived',
+        'project.deleted',
+      ]);
+      expect(records.every((record) => record.kind === 'activity'
+        && record.subsystem === 'projects'
+        && record.projectId === created.id)).toBe(true);
+      expect(JSON.stringify(records)).not.toContain('C:\\project-name');
+      expect(JSON.stringify(records)).not.toContain(projectsRoot);
+    });
+
+    it('does not emit successful activity for a failed mutation and ignores logger failures', () => {
+      const applicationLogger = { info: vi.fn(() => { throw new Error('log unavailable'); }) };
+      const loggedService = makeLoggedService(applicationLogger);
+
+      expect(() => loggedService.update(99999, validInput())).toThrow(ProjectNotFoundError);
+      expect(applicationLogger.info).not.toHaveBeenCalled();
+
+      const created = loggedService.create(validInput({ title: 'Logger Failure Project' }));
+      expect(created.id).toBeTypeOf('number');
+      expect(applicationLogger.info).toHaveBeenCalledOnce();
+    });
+
+    it('persists safe project lifecycle context through the real logger and SQLite repository', () => {
+      const applicationLogRepository = createApplicationLogRepository(db);
+      const applicationLogger = createApplicationLogger({
+        repository: applicationLogRepository,
+        console: { error: vi.fn() },
+        now: () => 1,
+      });
+      const loggedService = makeLoggedService(applicationLogger);
+      const created = loggedService.create(validInput({ title: 'C:\\private\\project' }));
+      loggedService.update(created.id, validInput({
+        title: 'C:\\private\\project',
+        status: 'in-progress',
+      }));
+      loggedService.archive(created.id);
+      loggedService.deleteProject(created.id);
+
+      const records = applicationLogRepository.findPage({ kind: 'activity' });
+      expect(records.map(({ event }) => event).sort()).toEqual([
+        'project.archived',
+        'project.created',
+        'project.deleted',
+        'project.updated',
+      ]);
+      const record = records.find(({ event }) => event === 'project.created');
+      expect(record).toMatchObject({
+        event: 'project.created',
+        project_id: created.id,
+        level: 'info',
+        kind: 'activity',
+        subsystem: 'projects',
+      });
+      expect(record.context_json).toBe(JSON.stringify({
+        status: 'tbd',
+        projectType: DEFAULT_PROJECT_TYPE,
+      }));
+      expect(String(record.message) + String(record.context_json)).not.toContain('C:\\private');
+      expect(String(record.message) + String(record.context_json)).not.toContain(projectsRoot);
+      expect(loggedService.findById(created.id)).toBeUndefined();
     });
   });
 });

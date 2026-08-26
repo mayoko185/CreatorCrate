@@ -176,9 +176,12 @@ export function createNoteRepository(db) {
     const currentIds = current.map((row) => row.id);
 
     validateExactOrder('Chapter', chapterId, orderedIds, currentIds);
+    const changed = !currentIds.every((id, index) => id === orderedIds[index]);
     const currentById = new Map(current.map((row) => [row.id, row]));
     rewriteChapterOrder(chapterId, orderedIds.map((id) => currentById.get(id)));
-    return listForChapterStmt.all(chapterId);
+    const rows = listForChapterStmt.all(chapterId);
+    Object.defineProperty(rows, 'changed', { value: changed });
+    return rows;
   });
 
   const reorderForBookTx = db.transaction((bookId, orderedIds) => {
@@ -190,9 +193,12 @@ export function createNoteRepository(db) {
     const currentIds = current.map((row) => row.id);
 
     validateExactOrder('Book', bookId, orderedIds, currentIds);
+    const changed = !currentIds.every((id, index) => id === orderedIds[index]);
     const currentById = new Map(current.map((row) => [row.id, row]));
     rewriteBookOrder(bookId, orderedIds.map((id) => currentById.get(id)));
-    return listForBookStmt.all(bookId);
+    const rows = listForBookStmt.all(bookId);
+    Object.defineProperty(rows, 'changed', { value: changed });
+    return rows;
   });
 
   const deleteAndCompactTx = db.transaction((id) => {
@@ -429,37 +435,61 @@ export function createNoteRepository(db) {
     return insertStmt.get(bookId, chapterId, title, content, sortOrder);
   }
 
-  function updateNote(id, input = {}) {
-    const existing = findByIdStmt.get(id);
+  function updateNote(id, input = {}, existing = findByIdStmt.get(id)) {
     if (!existing) return undefined;
     const title = typeof input.title === 'string' ? input.title : existing.title;
     const content = typeof input.content === 'string' ? input.content : existing.content;
     return updateStmt.get(title, content, id);
   }
 
+  function sameIdSet(left, right) {
+    if (left.length !== right.length) return false;
+    const leftIds = [...left].sort((a, b) => a - b);
+    const rightIds = [...right].sort((a, b) => a - b);
+    return leftIds.every((id, index) => id === rightIds[index]);
+  }
+
   const saveWithAssociationsTx = db.transaction(({
     id, bookId, chapterId, title, content, projectIds, assetIds,
   } = {}) => {
-    if (!Array.isArray(projectIds)) {
+    const existing = id === undefined ? undefined : findByIdStmt.get(id);
+    if (id !== undefined && !existing) return undefined;
+
+    if (!Array.isArray(projectIds) && (id === undefined || projectIds !== undefined)) {
       throw new NoteError('Project IDs must be an array.', { code: 'INVALID_INPUT' });
     }
-    if (!Array.isArray(assetIds)) {
+    if (!Array.isArray(assetIds) && (id === undefined || assetIds !== undefined)) {
       throw new NoteError('Asset IDs must be an array.', { code: 'INVALID_INPUT' });
     }
 
+    const currentProjectIds = existing
+      ? listNoteProjectIdsStmt.all(id).map((row) => row.project_id)
+      : [];
+    const currentAssetIds = existing
+      ? listNoteAssetIdsStmt.all(id).map((row) => row.asset_id)
+      : [];
+    const resolvedProjectIds = projectIds ?? currentProjectIds;
+    const resolvedAssetIds = assetIds ?? currentAssetIds;
     const note = id === undefined
       ? createNote(
         { bookId, chapterId, title, content },
         { allowLegacyChapterBookFallback: true },
       )
-      : updateNote(id, { title, content });
+      : updateNote(id, { title, content }, existing);
 
     if (!note) return undefined;
 
+    const persistedProjectIds = replaceProjectsInTransaction(note.id, resolvedProjectIds);
+    const persistedAssetIds = replaceAssetsInTransaction(note.id, resolvedAssetIds);
     return {
       note,
-      projectIds: replaceProjectsInTransaction(note.id, projectIds),
-      assetIds: replaceAssetsInTransaction(note.id, assetIds),
+      projectIds: persistedProjectIds,
+      assetIds: persistedAssetIds,
+      changed: id === undefined
+        || note.title !== existing.title
+        || note.content !== existing.content
+        || !sameIdSet(currentProjectIds, persistedProjectIds)
+        || !sameIdSet(currentAssetIds, persistedAssetIds),
     };
   });
 

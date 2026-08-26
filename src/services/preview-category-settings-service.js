@@ -73,5 +73,31 @@ export function createPreviewCategorySettingsService({ appMetaRepository, assetC
 
       return appMetaRepository.setValue(PREVIEW_CATEGORY_KEY, value);
     },
+
+    setPreviewCategoryWithOutcome(value) {
+      if (value === PREVIEW_CATEGORY_DISABLED_VALUE) {
+        return appMetaRepository.setValueWithOutcome(
+          PREVIEW_CATEGORY_KEY,
+          PREVIEW_CATEGORY_DISABLED_VALUE,
+          { fallbackValue: PREVIEW_CATEGORY_DISABLED_VALUE },
+        );
+      }
+
+      if (typeof value !== 'string' || value.length === 0 || validateDirectorySlug(value) !== null) {
+        invalid('Preview category must be Disabled or an enabled global category slug.');
+      }
+
+      const category = assetCategoryService.listDefaults().find((candidate) => categorySlug(candidate) === value);
+      if (!category) {
+        invalid('Preview category must be Disabled or an enabled global category slug.');
+      }
+      if (!isEnabled(category)) {
+        invalid('The selected preview category is disabled.');
+      }
+
+      return appMetaRepository.setValueWithOutcome(PREVIEW_CATEGORY_KEY, value, {
+        fallbackValue: PREVIEW_CATEGORY_DISABLED_VALUE,
+      });
+    },
   };
 }

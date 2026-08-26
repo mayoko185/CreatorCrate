@@ -61,7 +61,7 @@ function throwDuplicateTagName() {
  * @param {object} deps
  * @param {ReturnType<import('../data/tag-repository.js').createTagRepository>} deps.tagRepository
  */
-export function createTagService({ tagRepository } = {}) {
+export function createTagService({ tagRepository, applicationLogger = null } = {}) {
   if (!tagRepository) {
     throw new Error('createTagService requires a tagRepository dependency.');
   }
@@ -73,6 +73,20 @@ export function createTagService({ tagRepository } = {}) {
       throw new TagNotFoundError(id);
     }
     return tag;
+  }
+
+  function logActivity(event, tagId) {
+    try {
+      applicationLogger?.info?.({
+        event,
+        kind: 'activity',
+        subsystem: 'tags',
+        message: 'Tag activity completed.',
+        context: { tagId },
+      });
+    } catch {
+      // Activity logging must never alter a completed tag mutation.
+    }
   }
 
   function persistTagMutation(operation) {
@@ -97,21 +111,27 @@ export function createTagService({ tagRepository } = {}) {
 
     createTag(input) {
       const values = normalizeTagInput(input);
-      return persistTagMutation(() => tagRepository.create(values));
+      const created = persistTagMutation(() => tagRepository.create(values));
+      logActivity('tag.created', created.id);
+      return created;
     },
 
     renameTag(id, input) {
       assertPositiveIntegerId(id);
       const values = normalizeTagInput(input);
-      requireTag(id);
+      const current = requireTag(id);
 
-      return persistTagMutation(() => {
-        const updated = tagRepository.update(id, values);
-        if (!updated) {
+      const updated = persistTagMutation(() => {
+        const stored = tagRepository.update(id, values);
+        if (!stored) {
           throw new TagNotFoundError(id);
         }
-        return updated;
+        return stored;
       });
+      if (current.display_name !== values.displayName) {
+        logActivity('tag.renamed', id);
+      }
+      return updated;
     },
 
     deleteTag(id) {
@@ -120,6 +140,7 @@ export function createTagService({ tagRepository } = {}) {
       if (!deleted) {
         throw new TagNotFoundError(id);
       }
+      logActivity('tag.deleted', id);
       return deleted;
     },
   };

@@ -69,7 +69,7 @@ export function createApplicationRequestHandler(appContext, viteServer = null) {
   return (req, res) => viteServer.middlewares(req, res, () => appContext.handleRequest(req, res));
 }
 
-export async function runInitialWatermarkScan(appContext, logger = console) {
+export async function runInitialWatermarkScan(appContext, logger = console, applicationLogger = null) {
   const watermarkService = appContext?.app?.locals?.watermarkService;
   if (!watermarkService || typeof watermarkService.scanWatermarks !== 'function') {
     throw new TypeError('Initial startup scan requires a global Watermark service.');
@@ -82,9 +82,38 @@ export async function runInitialWatermarkScan(appContext, logger = console) {
       `${scan.total} present, ${scan.added} added, ${scan.updated} updated, ` +
       `${scan.restored} restored, ${scan.removed} removed, ${scan.failed || 0} failed.`
     );
+    try {
+      applicationLogger?.[scan.failed > 0 ? 'warn' : 'info']?.({
+        kind: 'diagnostic',
+        subsystem: 'runtime',
+        event: 'runtime.watermark.initial_scan.completed',
+        message: 'Initial global Watermark scan completed.',
+        context: {
+          total: scan.total,
+          added: scan.added,
+          updated: scan.updated,
+          restored: scan.restored,
+          removed: scan.removed,
+          failed: scan.failed || 0,
+        },
+      });
+    } catch {
+      // Runtime diagnostics must not change startup behavior.
+    }
     return scan;
   } catch (err) {
     logger.error(`[CreatorCrate] Initial global Watermark scan failed: ${err instanceof Error ? err.message : String(err)}`);
+    try {
+      applicationLogger?.error?.({
+        kind: 'diagnostic',
+        subsystem: 'runtime',
+        event: 'runtime.watermark.initial_scan.failed',
+        message: 'Initial global Watermark scan failed.',
+        error: err,
+      });
+    } catch {
+      // Runtime diagnostics must not change startup behavior.
+    }
     return null;
   }
 }
@@ -216,6 +245,7 @@ async function main() {
       backupService,
       backupRetentionCount: config.backupRetentionCount,
       autoScanIntervalMinutes: config.autoScanIntervalMinutes,
+      persistDebugLogs: config.persistDebugLogs,
       maintenanceState,
       authConfig,
       authSettings: config.auth,
@@ -224,8 +254,15 @@ async function main() {
       assetMode: resolveAssetMode(config.nodeEnv),
     },
   }, db);
+  const applicationLogger = appContext.app.locals.applicationLogger;
+  applicationLogger.info({
+    kind: 'diagnostic',
+    subsystem: 'runtime',
+    event: 'runtime.migrations.completed',
+    message: 'Database migrations completed.',
+  });
 
-  await runInitialWatermarkScan(appContext);
+  await runInitialWatermarkScan(appContext, console, applicationLogger);
 
   const server = http.createServer();
   let viteServer;
@@ -241,6 +278,7 @@ async function main() {
 
   const automaticProjectScanScheduler = createAutomaticProjectScanScheduler({
     intervalMinutes: config.autoScanIntervalMinutes,
+    applicationLogger: appContext.app.locals.applicationLogger,
     getScanDependencies: () => ({
       projectService: appContext.app.locals.projectService,
       assetScanner: appContext.app.locals.assetScanner,
@@ -252,6 +290,13 @@ async function main() {
   server.on('request', createApplicationRequestHandler(appContext, viteServer));
   server.listen(config.port, () => {
     console.log(`${config.appName} listening on port ${config.port} in ${config.nodeEnv} mode`);
+    applicationLogger.info({
+      kind: 'diagnostic',
+      subsystem: 'runtime',
+      event: 'runtime.server.ready',
+      message: 'CreatorCrate is ready to serve requests.',
+      context: { port: config.port },
+    });
     automaticProjectScanScheduler.start();
   });
 
@@ -259,11 +304,23 @@ async function main() {
   async function shutdown() {
     if (shuttingDown) return;
     shuttingDown = true;
+    applicationLogger.info({
+      kind: 'diagnostic',
+      subsystem: 'runtime',
+      event: 'runtime.shutdown.requested',
+      message: 'CreatorCrate shutdown requested.',
+    });
     automaticProjectScanScheduler.stop();
     try {
       await viteServer?.close();
     } finally {
       await new Promise((resolve) => server.close(resolve));
+      applicationLogger.info({
+        kind: 'diagnostic',
+        subsystem: 'runtime',
+        event: 'runtime.shutdown.completed',
+        message: 'CreatorCrate shutdown completed.',
+      });
       // Close whichever connection is currently active — a live restore may
       // have replaced the startup handle with a new one by now.
       closeDatabase(appContext.db);

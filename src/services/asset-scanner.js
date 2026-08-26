@@ -215,6 +215,7 @@ export function createAssetScanner(
     projectOperationCoordinator,
     previewCategorySettingsService,
     projectPrimaryImageRepository,
+    applicationLogger = null,
   }
 ) {
   if (!projectOperationCoordinator) {
@@ -230,6 +231,26 @@ export function createAssetScanner(
   }
 
   const repository = createAssetRepository(db);
+
+  function logScanCompleted(projectId, result, kind) {
+    try {
+      applicationLogger?.info?.({
+        event: 'project.scan.completed',
+        kind,
+        subsystem: 'projects',
+        message: 'Project asset scan completed.',
+        projectId,
+        context: {
+          discoveredCount: result.total,
+          addedCount: result.added,
+          updatedCount: result.updated,
+          missingCount: result.removed,
+        },
+      });
+    } catch {
+      // Scan completion logging must never alter the reconciled scan result.
+    }
+  }
 
   function isEnabledCategory(category) {
     return category?.enabled === 1 || category?.enabled === true;
@@ -286,15 +307,15 @@ export function createAssetScanner(
    * @throws {ProjectNotFoundError} if the project is unknown
    * @throws {Error} if the project directory is missing or unsafe
    */
-  function scanProjectAssets(projectId) {
-    return projectOperationCoordinator.run(projectId, () => scanProjectAssetsLocked(projectId));
+  function scanProjectAssets(projectId, { kind = 'activity' } = {}) {
+    return projectOperationCoordinator.run(projectId, () => scanProjectAssetsLocked(projectId, kind));
   }
 
   // Runs only while projectOperationCoordinator holds this project's lock —
   // covers project validation, filesystem traversal, and the reconciliation
   // transaction as a single protected region, so a rename/move can never
   // begin between traversal and reconciliation.
-  function scanProjectAssetsLocked(projectId) {
+  function scanProjectAssetsLocked(projectId, kind) {
     const project = projectService.findById(projectId);
     if (!project) {
       throw new ProjectNotFoundError(projectId);
@@ -354,6 +375,7 @@ export function createAssetScanner(
     // undiscovered paths missing.
     const result = repository.reconcileScannedAssets(projectId, classified);
     applyAutomaticPreviewSelection(projectId, categories);
+    logScanCompleted(projectId, result, kind);
     return result;
   }
 

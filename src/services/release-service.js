@@ -167,11 +167,58 @@ function matchesReleaseAssetFilters(asset, filters, categoryId) {
   return true;
 }
 
-export function createReleaseService({ db }) {
+export function createReleaseService({ db, applicationLogger = null }) {
   const repository = createReleaseRepository(db);
   const projectRepository = createProjectRepository(db);
   const assetRepository = createAssetRepository(db);
   const assetCategoryRepository = createAssetCategoryRepository(db);
+
+  function logActivity(event, release, context = {}) {
+    try {
+      applicationLogger?.info?.({
+        event,
+        kind: 'activity',
+        subsystem: 'releases',
+        message: 'Release activity completed.',
+        projectId: release.project_id,
+        context: {
+          releaseId: release.id,
+          ...context,
+        },
+      });
+    } catch {
+      // Activity logging must never alter the completed release operation.
+    }
+  }
+
+  function getAssetCountContext(releaseId) {
+    try {
+      return { assetCount: repository.countReleaseAssets(releaseId) };
+    } catch {
+      return {};
+    }
+  }
+
+  function logMembershipChanges(release, before, after) {
+    const beforeByAssetId = new Map(before.map((row) => [row.asset_id, row]));
+    const afterByAssetId = new Map(after.map((row) => [row.asset_id, row]));
+    const addedCount = [...afterByAssetId.keys()].filter((assetId) => !beforeByAssetId.has(assetId)).length;
+    const removedCount = [...beforeByAssetId.keys()].filter((assetId) => !afterByAssetId.has(assetId)).length;
+
+    if (addedCount > 0) logActivity('release.assets.added', release, { affectedCount: addedCount });
+    if (removedCount > 0) logActivity('release.assets.removed', release, { affectedCount: removedCount });
+
+    const changedRoleCounts = new Map();
+    for (const [assetId, afterRow] of afterByAssetId) {
+      const beforeRow = beforeByAssetId.get(assetId);
+      if (beforeRow && beforeRow.role !== afterRow.role) {
+        changedRoleCounts.set(afterRow.role, (changedRoleCounts.get(afterRow.role) || 0) + 1);
+      }
+    }
+    for (const [role, affectedCount] of changedRoleCounts) {
+      logActivity('release.asset_role.changed', release, { role, affectedCount });
+    }
+  }
 
   function validate(input) {
     const errors = {};
@@ -355,7 +402,9 @@ export function createReleaseService({ db }) {
     createRelease(projectId, input) {
       validateProjectExists(projectId);
       const normalized = validate(input);
-      return repository.create({ projectId, ...normalized });
+      const created = repository.create({ projectId, ...normalized });
+      logActivity('release.created', created, { assetCount: 0 });
+      return created;
     },
 
     /**
@@ -379,10 +428,12 @@ export function createReleaseService({ db }) {
         sortOrder,
       }));
 
-      return repository.createWithAssetSelections(
+      const created = repository.createWithAssetSelections(
         { projectId: project.id, ...normalized },
         selections,
       );
+      logActivity('release.created', created, { assetCount: selections.length });
+      return created;
     },
 
     /**
@@ -441,10 +492,12 @@ export function createReleaseService({ db }) {
           sortOrder,
         }));
 
-      return repository.createWithAssetSelections(
+      const created = repository.createWithAssetSelections(
         { projectId: project.id, ...normalized },
         selections,
       );
+      logActivity('release.created', created, { assetCount: selections.length });
+      return created;
     },
 
     /**
@@ -473,10 +526,12 @@ export function createReleaseService({ db }) {
         sortOrder,
       }));
 
-      return repository.createWithAssetSelections(
+      const created = repository.createWithAssetSelections(
         { projectId: project.id, ...normalized },
         selections,
       );
+      logActivity('release.created', created, { assetCount: selections.length });
+      return created;
     },
 
     /**
@@ -513,10 +568,18 @@ export function createReleaseService({ db }) {
         ...input,
       };
       const normalized = validate(inputWithDefaults);
+      const changed = release.title !== normalized.title
+        || release.description !== normalized.description
+        || release.notes !== normalized.notes
+        || release.planned_date !== normalized.plannedDate
+        || release.planned_time !== normalized.plannedTime
+        || release.published_date !== normalized.publishedDate
+        || release.patreon_url !== normalized.patreonUrl;
       const updated = repository.update(id, normalized);
       if (!updated) {
         throw new ReleaseNotFoundError(id);
       }
+      if (changed) logActivity('release.updated', updated);
       return updated;
     },
 
@@ -555,6 +618,7 @@ export function createReleaseService({ db }) {
       if (!updated) {
         throw new ReleaseNotFoundError(id);
       }
+      logActivity('release.published', updated, getAssetCountContext(id));
       return updated;
     },
 
@@ -583,6 +647,7 @@ export function createReleaseService({ db }) {
       if (!archived) {
         throw new ReleaseNotFoundError(id);
       }
+      logActivity('release.archived', archived);
       return archived;
     },
 
@@ -609,7 +674,10 @@ export function createReleaseService({ db }) {
         throw new ReleaseArchivedError(id);
       }
 
-      return repository.delete(id);
+      const assetCountContext = getAssetCountContext(id);
+      const deleted = repository.delete(id);
+      if (deleted) logActivity('release.deleted', release, assetCountContext);
+      return deleted;
     },
 
     /**
@@ -852,7 +920,9 @@ export function createReleaseService({ db }) {
         }
         throw err;
       }
-      return repository.listReleaseAssets(releaseId);
+      const updated = repository.listReleaseAssets(releaseId);
+      logMembershipChanges(release, existingReleaseAssets, updated);
+      return updated;
     },
 
     /**
@@ -914,7 +984,9 @@ export function createReleaseService({ db }) {
         });
       }
 
-      return repository.addReleaseAsset(releaseId, assetId, role, sortOrder);
+      const added = repository.addReleaseAsset(releaseId, assetId, role, sortOrder);
+      if (added) logActivity('release.assets.added', release, { affectedCount: 1 });
+      return added;
     },
 
     /**
@@ -961,7 +1033,9 @@ export function createReleaseService({ db }) {
         });
       }
 
-      return repository.removeReleaseAsset(releaseId, assetId);
+      const removed = repository.removeReleaseAsset(releaseId, assetId);
+      if (removed) logActivity('release.assets.removed', release, { affectedCount: 1 });
+      return removed;
     },
 
     // ─── Phase 9-2: Explicit Release Asset Curation Mutations ────────────
@@ -1021,7 +1095,9 @@ export function createReleaseService({ db }) {
         ? Math.max(...existing.map((a) => a.sort_order)) + 1
         : 0;
 
-      return repository.insertReleaseAsset(releaseId, assetId, 'attachment', nextOrder);
+      const added = repository.insertReleaseAsset(releaseId, assetId, 'attachment', nextOrder);
+      if (added) logActivity('release.assets.added', release, { affectedCount: 1 });
+      return added;
     },
 
     /**
@@ -1066,7 +1142,9 @@ export function createReleaseService({ db }) {
         });
       }
 
-      return repository.removeAndReindexReleaseAsset(releaseId, assetId);
+      const removed = repository.removeAndReindexReleaseAsset(releaseId, assetId);
+      if (removed) logActivity('release.assets.removed', release, { affectedCount: 1 });
+      return removed;
     },
 
     /**
@@ -1117,7 +1195,12 @@ export function createReleaseService({ db }) {
         });
       }
 
-      return repository.updateReleaseAssetRole(releaseId, assetId, normalizedRole);
+      const existingSelection = existing.find((row) => row.asset_id === assetId);
+      const updated = repository.updateReleaseAssetRole(releaseId, assetId, normalizedRole);
+      if (updated && existingSelection.role !== normalizedRole) {
+        logActivity('release.asset_role.changed', release, { role: normalizedRole, affectedCount: 1 });
+      }
+      return updated;
     },
 
     /**
@@ -1563,7 +1646,11 @@ export function createReleaseService({ db }) {
         }
       }
 
-      return repository.appendAssetsToRelease(normalizedReleaseId, normalizedAssetIds);
+      const outcome = repository.appendAssetsToRelease(normalizedReleaseId, normalizedAssetIds);
+      if (outcome.added > 0) {
+        logActivity('release.assets.added', release, { affectedCount: outcome.added });
+      }
+      return outcome;
     },
   };
 }

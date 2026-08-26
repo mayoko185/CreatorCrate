@@ -65,5 +65,18 @@ export function createNsfwFilterSettingsService({ appMetaRepository, tagService 
         enabled ? ENABLED_VALUE : DISABLED_VALUE,
       );
     },
+
+    setEnabledWithOutcome(enabled) {
+      if (typeof enabled !== 'boolean') {
+        throw new TypeError('NSFW filter enabled state must be a boolean.');
+      }
+
+      if (enabled) ensureNsfwTag();
+      return appMetaRepository.setValueWithOutcome(
+        NSFW_FILTER_ENABLED_KEY,
+        enabled ? ENABLED_VALUE : DISABLED_VALUE,
+        { fallbackValue: DISABLED_VALUE },
+      );
+    },
   };
 }

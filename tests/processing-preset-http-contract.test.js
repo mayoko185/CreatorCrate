@@ -17,8 +17,12 @@ import { fileURLToPath } from 'node:url';
 import { closeDatabase, openDatabase, runMigrations } from '../src/db.js';
 import { createProcessingPresetRepository } from '../src/data/processing-preset-repository.js';
 import { createWatermarkScaleMapRepository } from '../src/data/watermark-scale-map-repository.js';
+import { createAppMetaRepository } from '../src/data/app-meta-repository.js';
+import { createApplicationLogRepository } from '../src/data/application-log-repository.js';
 import { createWatermarkScaleMapService } from '../src/services/watermark-scale-map-service.js';
+import { createWatermarkDefaultService } from '../src/services/watermark-default-service.js';
 import { createProcessingPresetService } from '../src/services/processing-preset-service.js';
+import { createApplicationLogger } from '../src/services/application-logger.js';
 import { createProcessingRouter } from '../src/routes/processing.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -50,14 +54,20 @@ describe('Processing preset HTTP contract (seeded presets, client-shaped payload
     };
     const processingPresetService = createProcessingPresetService({ repository, watermarkService, scaleMapService });
     processingPresetService.seedReferencePresets();
+    const watermarkDefaultService = createWatermarkDefaultService({
+      appMetaRepository: createAppMetaRepository(db),
+      watermarkService,
+    });
+    const applicationLogger = createApplicationLogger({ repository: createApplicationLogRepository(db) });
 
     app = express();
     app.use(express.json());
     app.use(createProcessingRouter({
       watermarkService,
-      watermarkDefaultService: { getDefaultWatermarkId: () => null, setDefaultWatermarkId: (id) => id },
+      watermarkDefaultService,
       watermarkScaleMapService: scaleMapService,
       processingPresetService,
+      applicationLogger,
     }));
     app.use((error, _req, res, _next) => res.status(500).json({ ok: false, error: { message: error.message } }));
   });
@@ -225,6 +235,60 @@ describe('Processing preset HTTP contract (seeded presets, client-shaped payload
     }).expect(200);
     const isolatedConvert = await request(app).get('/processing/presets?operationType=convert').expect(200);
     expect(isolatedConvert.body.presets.some((preset) => preset.displayName === 'Imported Workflow')).toBe(false);
+  });
+
+  it('persists resource activity only for committed semantic changes', async () => {
+    const loggedEvents = () => db.prepare(`
+      SELECT event, context_json
+      FROM application_logs
+      WHERE event IN (
+        'processing.watermark.default.changed',
+        'processing.scale_map.updated',
+        'processing.preset.imported',
+        'processing.preset.renamed',
+        'processing.preset.updated'
+      )
+      ORDER BY id ASC
+    `).all();
+
+    await request(app).post('/processing/watermarks/default').send({ watermarkId: 1 }).expect(200);
+    await request(app).post('/processing/watermarks/default').send({ watermarkId: 1 }).expect(200);
+
+    const currentScaleMap = await request(app).get('/processing/scale-map').expect(200);
+    const changedScaleMap = Object.keys(currentScaleMap.body.definition).length === 0 ? { default: 0.17 } : {};
+    await request(app).post('/processing/scale-map/replace').send({ definition: changedScaleMap }).expect(200);
+    await request(app).post('/processing/scale-map/replace').send({ definition: changedScaleMap }).expect(200);
+
+    const imported = {
+      creatorcrate: 'processing-presets',
+      version: 1,
+      operationType: 'convert',
+      presets: [{ displayName: 'Activity import', config: { format: 'png', quality: 72, originalHandling: 'keep' } }],
+    };
+    await request(app).post('/processing/presets/import').send(imported).expect(200);
+    await request(app).post('/processing/presets/import').send({ ...imported, presets: [] }).expect(200);
+
+    const created = await request(app).post('/processing/presets').send({
+      operationType: 'convert',
+      displayName: 'Activity preset',
+      config: { format: 'webp', quality: 85, originalHandling: 'keep' },
+    }).expect(201);
+    await request(app).post(`/processing/presets/${created.body.preset.id}/rename`).send({ displayName: 'Activity renamed' }).expect(200);
+    await request(app).post(`/processing/presets/${created.body.preset.id}/rename`).send({ displayName: 'Activity renamed' }).expect(200);
+
+    const replacement = { config: { format: 'png', quality: 72, originalHandling: 'keep' } };
+    await request(app).post(`/processing/presets/${created.body.preset.id}/replace`).send(replacement).expect(200);
+    await request(app).post(`/processing/presets/${created.body.preset.id}/replace`).send(replacement).expect(200);
+
+    const events = loggedEvents();
+    expect(events.map(({ event }) => event)).toEqual([
+      'processing.watermark.default.changed',
+      'processing.scale_map.updated',
+      'processing.preset.imported',
+      'processing.preset.renamed',
+      'processing.preset.updated',
+    ]);
+    expect(JSON.stringify(events)).not.toMatch(/Activity import|Activity preset|quality|definition|0\.17/);
   });
 
   it('rejects invalid bundle metadata and portable Watermark resource fields before mutation', async () => {

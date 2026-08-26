@@ -11,6 +11,8 @@ import { AssetCategoryValidationError as PreferenceValidationError } from '../se
 import { buildGlobalAssetBrowserPreferenceModel } from '../services/asset-browser-preference-presenter.js';
 import { parseEnabledField } from '../services/asset-category-validation.js';
 import {
+  LOGS_PAGE_SIZE_VALUES,
+  LOGS_TIMEZONE_VALUES,
   PageDefaultValidationError,
   PAGE_DEFAULT_DEFINITIONS,
 } from '../services/page-defaults-service.js';
@@ -24,6 +26,11 @@ import {
   AUTO_SCAN_LAST_COMPLETED_AT_KEY,
   AUTO_SCAN_NEXT_SCHEDULED_AT_KEY,
 } from '../services/automatic-project-scan-scheduler.js';
+import { APPLICATION_LOG_LEVELS } from '../services/application-logger.js';
+import {
+  buildPageDefaultsDialogModel,
+  handlePageDefaultsPost,
+} from './page-defaults.js';
 
 function createNotFound() {
   const err = new Error('Not found');
@@ -89,6 +96,7 @@ const NOTICES = {
   nsfw_filter_disabled: { variant: 'success', text: 'NSFW Filter disabled.' },
   open_locally_saved: { variant: 'success', text: 'Open locally mapping saved.' },
   open_locally_cleared: { variant: 'success', text: 'Open locally mapping removed.' },
+  logging_cleared: { variant: 'success', text: 'Application logs cleared.' },
 };
 
 function resolveNotice(code) {
@@ -228,6 +236,294 @@ function buildAutomaticScanTiming(appMetaRepository, intervalMinutes) {
     lastScan: formatScanTimestamp(appMetaRepository.getValue(AUTO_SCAN_LAST_COMPLETED_AT_KEY)),
     nextScan: formatScanTimestamp(appMetaRepository.getValue(AUTO_SCAN_NEXT_SCHEDULED_AT_KEY)),
   };
+}
+
+const LOG_CONTEXT_SENSITIVE_KEY = /(?:authorization|cookie|credential|csrf|password|secret|session|token|watermark|(?:^|[_-])(?:request|body|headers?|options?)(?:[_-]|$)|(?:request|body|headers?|options?)(?:body|payload|data|headers?|options?)$)/i;
+const LOG_SENSITIVE_TEXT = /(?:\b(?:proxy-)?authorization\s*:\s*(?:bearer|basic|digest)\s+\S+|\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{4,}|\b(?:api[ _-]?key|access[ _-]?token|refresh[ _-]?token|session(?:[ _-]?id)?|password|secret|credential)\b(?:\s*[:=]\s*|\s+[\"'(\[<]\s*)\S+|\b(?:cookie|set-cookie)\s*:\s*[^;\r\n]+)/i;
+const LOG_GENERIC_SECRET_TEXT = /\b(?:token|csrf|auth(?:orization)?)\b\s*[:=]\s*\S+/i;
+const LOG_ABSOLUTE_PATH = /(?:^|[\s"'`([{<=,:;])(?:[A-Za-z]:[\\/]|\\\\|\/(?!\/)(?!(?:div|script)>))/i;
+const LOG_STACK_TRACE = /^[^\S\r\n]*(?:[A-Za-z_$][\w$]*(?:Error|Exception)|Error|Exception)\b[^\r\n]*(?:\r?\n[^\S\r\n]*at\s+[^\r\n]+)+/i;
+const LOG_CONTEXT_MAX_ENTRIES = 100;
+const LOG_CONTEXT_MAX_DEPTH = 4;
+
+function safeLogViewerText(value, fallback = '—') {
+  if (typeof value !== 'string') return fallback;
+  const normalized = value.replace(/[\u0000-\u001F\u007F]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (!normalized) return fallback;
+  if (LOG_STACK_TRACE.test(value)) return '[redacted stack trace]';
+  if (LOG_SENSITIVE_TEXT.test(normalized) || LOG_GENERIC_SECRET_TEXT.test(normalized)) return '[redacted secret]';
+  if (LOG_ABSOLUTE_PATH.test(normalized)) return '[redacted path]';
+  return normalized.slice(0, 2_000);
+}
+
+function isSafeWatermarkIdLogContextEntry(label, value) {
+  return label.split(/[.\[\]]/).at(-1) === 'watermarkId'
+    && typeof value === 'number'
+    && Number.isSafeInteger(value)
+    && value > 0;
+}
+
+function logSettingsActivity(applicationLogger, event, context = {}, message = 'Settings activity completed.') {
+  try {
+    applicationLogger?.info?.({
+      event,
+      kind: 'activity',
+      subsystem: 'settings',
+      message,
+      context,
+    });
+  } catch {
+    // Activity logging must never alter a completed Settings mutation.
+  }
+}
+
+function safeLogContextEntries(contextJson) {
+  let context;
+  try {
+    context = JSON.parse(contextJson);
+  } catch {
+    return [];
+  }
+  if (!context || typeof context !== 'object' || Array.isArray(context)) return [];
+
+  const entries = [];
+  const visit = (value, label, depth) => {
+    if (entries.length >= LOG_CONTEXT_MAX_ENTRIES) return;
+    const safeLabel = LOG_ABSOLUTE_PATH.test(label) ? '[redacted key]' : safeLogViewerText(label, '[unavailable key]');
+    if (LOG_CONTEXT_SENSITIVE_KEY.test(label.split(/[.\[\]]/).at(-1)) && !isSafeWatermarkIdLogContextEntry(label, value)) {
+      entries.push({ label: safeLabel, value: '[redacted]' });
+      return;
+    }
+    if (value === null || typeof value === 'boolean') {
+      entries.push({ label: safeLabel, value: String(value) });
+      return;
+    }
+    if (typeof value === 'number') {
+      entries.push({ label: safeLabel, value: Number.isFinite(value) ? String(value) : '[invalid number]' });
+      return;
+    }
+    if (typeof value === 'string') {
+      entries.push({ label: safeLabel, value: safeLogViewerText(value, '') });
+      return;
+    }
+    if (depth >= LOG_CONTEXT_MAX_DEPTH || !value || typeof value !== 'object') {
+      entries.push({ label: safeLabel, value: '[truncated]' });
+      return;
+    }
+    const children = Array.isArray(value) ? value.entries() : Object.entries(value);
+    for (const [key, child] of children) {
+      visit(child, Array.isArray(value) ? `${label}[${key}]` : `${label}.${key}`, depth + 1);
+      if (entries.length >= LOG_CONTEXT_MAX_ENTRIES) return;
+    }
+  };
+
+  for (const [key, value] of Object.entries(context)) {
+    visit(value, key, 0);
+    if (entries.length >= LOG_CONTEXT_MAX_ENTRIES) break;
+  }
+  return entries;
+}
+
+const LOG_TIME_PRESETS = Object.freeze({
+  hour: 60 * 60 * 1000,
+  day: 24 * 60 * 60 * 1000,
+  '7d': 7 * 24 * 60 * 60 * 1000,
+  '30d': 30 * 24 * 60 * 60 * 1000,
+});
+const LOG_TIME_OPTIONS = Object.freeze([
+  Object.freeze({ value: '', label: 'Any time' }),
+  Object.freeze({ value: 'hour', label: 'Last hour' }),
+  Object.freeze({ value: 'day', label: 'Last 24 hours' }),
+  Object.freeze({ value: '7d', label: 'Last 7 days' }),
+  Object.freeze({ value: '30d', label: 'Last 30 days' }),
+]);
+const LOG_TIMEZONE_LABELS = Object.freeze({
+  local: 'Local / Browser timezone',
+  UTC: 'UTC',
+  'America/New_York': 'Eastern',
+  'America/Chicago': 'Central',
+  'America/Denver': 'Mountain',
+  'America/Los_Angeles': 'Pacific',
+});
+const LOG_TIMEZONE_OPTIONS = Object.freeze(
+  LOGS_TIMEZONE_VALUES.map((value) => Object.freeze({ value, label: LOG_TIMEZONE_LABELS[value] }))
+);
+const LOGS_PAGE_DEFAULTS = 'logs';
+const LOGS_DEFAULT_LABELS = Object.freeze({
+  fields: Object.freeze({
+    level: 'Level',
+    kind: 'Kind',
+    subsystem: 'Subsystem',
+    time: 'Time range',
+    pageSize: 'Items per page',
+    timezone: 'Timezone',
+    autoRefresh: 'Auto-refresh',
+  }),
+  options: Object.freeze({
+    level: Object.freeze({ '': 'Any level' }),
+    kind: Object.freeze({ '': 'Any kind', activity: 'Activity', diagnostic: 'Diagnostic' }),
+    subsystem: Object.freeze({ '': 'Any subsystem' }),
+    time: Object.freeze({
+      '': 'Any time', hour: 'Last hour', day: 'Last 24 hours', '7d': 'Last 7 days', '30d': 'Last 30 days',
+    }),
+    pageSize: Object.freeze({ '25': '25', '50': '50', '75': '75', '100': '100' }),
+    timezone: LOG_TIMEZONE_LABELS,
+    autoRefresh: Object.freeze({ enabled: 'Enabled', disabled: 'Disabled' }),
+  }),
+});
+const LOGS_DEFAULTS_NOTICE = 'Logs defaults saved successfully.';
+
+function parseLogPage(value) {
+  if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)) return 1;
+  const page = Number(value);
+  return Number.isSafeInteger(page) ? page : 1;
+}
+
+function getLogsDefaultsQuery(query) {
+  const values = query && typeof query === 'object' ? { ...query } : {};
+  if (!LOGS_PAGE_SIZE_VALUES.includes(values.pageSize)) delete values.pageSize;
+  return values;
+}
+
+function buildLogFilters(query, options) {
+  const allowed = {
+    level: new Set([...APPLICATION_LOG_LEVELS, ...options.levels]),
+    kind: new Set(['activity', 'diagnostic', ...options.kinds]),
+    subsystem: new Set(options.subsystems),
+  };
+  const filters = Object.fromEntries(
+    ['level', 'kind', 'subsystem']
+      .filter((field) => typeof query?.[field] === 'string' && allowed[field].has(query[field]))
+      .map((field) => [field, query[field]])
+  );
+  if (typeof query?.time === 'string' && Object.hasOwn(LOG_TIME_PRESETS, query.time)) {
+    filters.time = query.time;
+  }
+  return filters;
+}
+
+function buildLogsUrl(filters, page = 1) {
+  const params = new URLSearchParams();
+  for (const field of ['level', 'kind', 'subsystem', 'time', 'pageSize']) {
+    if (filters[field]) params.set(field, filters[field]);
+  }
+  if (page > 1) params.set('page', String(page));
+  const query = params.toString();
+  return query ? '/settings/logs?' + query : '/settings/logs';
+}
+
+function formatLogRecord(record) {
+  const timestamp = new Date(record.occurred_at_ms);
+  const timestampValid = !Number.isNaN(timestamp.getTime());
+  return {
+    id: record.id,
+    timestampMs: timestampValid ? record.occurred_at_ms : null,
+    timestampIso: timestampValid ? timestamp.toISOString() : null,
+    timestamp: timestampValid ? timestamp.toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC') : 'Unknown time',
+    level: safeLogViewerText(record.level),
+    kind: safeLogViewerText(record.kind),
+    subsystem: safeLogViewerText(record.subsystem),
+    event: safeLogViewerText(record.event),
+    message: safeLogViewerText(record.message),
+    projectId: Number.isSafeInteger(record.project_id) && record.project_id > 0 ? record.project_id : null,
+    correlationId: safeLogViewerText(record.correlation_id, null),
+    contextEntries: safeLogContextEntries(record.context_json),
+  };
+}
+
+function isSafeLogFilterValue(value) {
+  return typeof value === 'string' && safeLogViewerText(value, '') === value;
+}
+
+function getLogFilterOptions(applicationLogRepository) {
+  const repositoryFilterOptions = applicationLogRepository.listFilterOptions();
+  return {
+    levels: [...APPLICATION_LOG_LEVELS].sort(),
+    kinds: ['activity', 'diagnostic'],
+    subsystems: repositoryFilterOptions.subsystems.filter(isSafeLogFilterValue),
+  };
+}
+
+function buildLogsDefaultOptionCatalogues(filterOptions) {
+  return {
+    pageSize: LOGS_PAGE_SIZE_VALUES.map((value) => ({ value, label: value })),
+    subsystem: [
+      { value: '', label: 'Any subsystem' },
+      ...filterOptions.subsystems.map((value) => ({ value, label: value })),
+    ],
+    timezone: LOG_TIMEZONE_OPTIONS,
+  };
+}
+
+function renderLogsPage(req, res, {
+  appName,
+  applicationLogRepository,
+  applicationLogDefaultPageSize,
+  status = 200,
+  logsDefaultsDialogOpen = req.query?.defaults === '1',
+  logsDefaultsSubmittedValues = null,
+  logsDefaultsErrors = {},
+} = {}) {
+  const filterOptions = getLogFilterOptions(applicationLogRepository);
+  const optionCatalogues = buildLogsDefaultOptionCatalogues(filterOptions);
+  const logFilterDropdowns = {
+    level: filterOptions.levels.map((value) => ({ value, label: value })),
+    kind: filterOptions.kinds.map((value) => ({ value, label: value })),
+    subsystem: filterOptions.subsystems.map((value) => ({ value, label: value })),
+    time: LOG_TIME_OPTIONS.slice(1),
+    pageSize: LOGS_PAGE_SIZE_VALUES.map((value) => ({ value, label: value })),
+  };
+  const pageDefaultsService = getPageDefaultsService(req);
+  const resolvedDefaults = pageDefaultsService.resolvePageDefaults(
+    LOGS_PAGE_DEFAULTS,
+    getLogsDefaultsQuery(req.query),
+    optionCatalogues,
+  );
+  const filters = {
+    ...buildLogFilters(resolvedDefaults, filterOptions),
+    pageSize: resolvedDefaults.pageSize,
+  };
+  const pageSize = Number(resolvedDefaults.pageSize) || applicationLogDefaultPageSize;
+  const sinceMs = filters.time ? Math.max(0, Date.now() - LOG_TIME_PRESETS[filters.time]) : undefined;
+  const repositoryFilters = sinceMs === undefined ? filters : { ...filters, sinceMs };
+  const totalLogs = applicationLogRepository.count(repositoryFilters);
+  const totalPages = Math.max(1, Math.ceil(totalLogs / pageSize));
+  const page = Math.min(parseLogPage(req.query?.page), totalPages);
+  const logs = applicationLogRepository.findPage({
+    ...repositoryFilters,
+    page,
+    pageSize,
+  }).map(formatLogRecord);
+  const logsDefaults = buildPageDefaultsDialogModel({
+    pageDefaultsService,
+    page: LOGS_PAGE_DEFAULTS,
+    labels: LOGS_DEFAULT_LABELS,
+    submittedValues: logsDefaultsSubmittedValues,
+    errors: logsDefaultsErrors,
+    optionCatalogues,
+  });
+
+  res.status(status).render('settings/logs.njk', {
+    appName,
+    notice: resolveNotice(req.query.notice),
+    logs,
+    filters,
+    filterOptions,
+    logFilterDropdowns,
+    logsDefaults,
+    logsDefaultsDialogOpen,
+    timezone: resolvedDefaults.timezone,
+    autoRefreshEnabled: resolvedDefaults.autoRefresh === 'enabled' && page === 1,
+    autoRefreshPreferenceEnabled: resolvedDefaults.autoRefresh === 'enabled',
+    page,
+    totalPages,
+    totalLogs,
+    refreshUrl: buildLogsUrl(filters, page),
+    clearFiltersUrl: buildLogsUrl({ pageSize: filters.pageSize }),
+    clearUrl: buildLogsUrl(filters).replace('/settings/logs', '/settings/logs/clear'),
+    previousUrl: page > 1 ? buildLogsUrl(filters, page - 1) : null,
+    nextUrl: page < totalPages ? buildLogsUrl(filters, page + 1) : null,
+  });
 }
 
 function renderTagsPage(req, res, {
@@ -609,6 +905,9 @@ export function createSettingsRouter({
   authSettings,
   assetBrowserPreferenceService,
   previewCategorySettingsService,
+  applicationLogRepository,
+  applicationLogDefaultPageSize,
+  applicationLogger,
 } = {}) {
   if (!assetBrowserPreferenceService) {
     throw new Error('createSettingsRouter requires an assetBrowserPreferenceService dependency.');
@@ -618,6 +917,12 @@ export function createSettingsRouter({
   }
   if (!appMetaRepository || typeof appMetaRepository.getValue !== 'function') {
     throw new Error('createSettingsRouter requires an appMetaRepository dependency.');
+  }
+  if (!applicationLogRepository || typeof applicationLogRepository.findPage !== 'function') {
+    throw new Error('createSettingsRouter requires an applicationLogRepository dependency.');
+  }
+  if (!applicationLogger || typeof applicationLogger.info !== 'function') {
+    throw new Error('createSettingsRouter requires an applicationLogger dependency.');
   }
 
   const router = express.Router();
@@ -660,6 +965,78 @@ export function createSettingsRouter({
     });
   });
 
+  router.get('/logs', (req, res, next) => {
+    try {
+      renderLogsPage(req, res, { appName, applicationLogRepository, applicationLogDefaultPageSize });
+    } catch (err) {
+      next(err);
+    }
+  });
+
+  router.post('/logs/defaults', (req, res, next) => {
+    const optionCatalogues = buildLogsDefaultOptionCatalogues(getLogFilterOptions(applicationLogRepository));
+    let changedOptionCount = 0;
+
+    handlePageDefaultsPost(req, res, next, {
+      db,
+      pageDefaultsService: getPageDefaultsService(req),
+      page: LOGS_PAGE_DEFAULTS,
+      successMessage: LOGS_DEFAULTS_NOTICE,
+      saveErrorMessage: 'Logs defaults could not be saved. No changes were made.',
+      optionCatalogues,
+      onValidationError: ({ submittedValues, errors }) => {
+        renderLogsPage(req, res, {
+          appName,
+          applicationLogRepository,
+          applicationLogDefaultPageSize,
+          status: 422,
+          logsDefaultsDialogOpen: true,
+          logsDefaultsSubmittedValues: submittedValues,
+          logsDefaultsErrors: errors,
+        });
+      },
+      saveValidatedValues: ({ validatedValues }) => {
+        const service = getPageDefaultsService(req);
+        for (const option of Object.keys(PAGE_DEFAULT_DEFINITIONS[LOGS_PAGE_DEFAULTS])) {
+          const outcome = service.saveDefaultWithOutcome(
+            LOGS_PAGE_DEFAULTS,
+            option,
+            validatedValues[option],
+            optionCatalogues[option],
+          );
+          if (outcome.changed) changedOptionCount += 1;
+        }
+        if (changedOptionCount > 0) {
+          logSettingsActivity(applicationLogger, 'settings.logs_defaults.updated', { changedOptionCount });
+        }
+      },
+      onSuccess: ({ validatedValues }) => {
+        res.redirect(buildLogsUrl(validatedValues));
+      },
+    });
+  });
+
+  // GET never mutates — this is the no-JavaScript confirmation fallback for
+  // the destructive clear action.
+  router.get('/logs/clear', (req, res) => {
+    res.render('settings/logs-clear-confirm.njk', {
+      appName,
+      returnUrl: buildLogsUrl(buildLogFilters(req.query, getLogFilterOptions(applicationLogRepository))),
+    });
+  });
+
+  router.post('/logs/clear', (req, res, next) => {
+    try {
+      const deletedCount = applicationLogRepository.clear();
+      logSettingsActivity(applicationLogger, 'logging.cleared', { deletedCount }, 'Application logs cleared.');
+
+      if (req.get('accept')?.includes('application/json')) return res.json({ status: 'success', deletedCount });
+      res.redirect('/settings/logs?notice=logging_cleared');
+    } catch (err) {
+      return next(err);
+    }
+  });
+
   router.get('/defaults', (req, res) => {
     renderDefaultsPage(req, res, {
       appName,
@@ -687,11 +1064,19 @@ export function createSettingsRouter({
       return;
     }
 
+    const changedOptionsByPage = new Map();
     try {
       db.transaction(() => {
         for (const { page } of PAGE_DEFAULT_SECTIONS) {
           for (const option of Object.keys(PAGE_DEFAULT_DEFINITIONS[page])) {
-            service.saveDefault(page, option, validation.validatedValues[page][option]);
+            const outcome = service.saveDefaultWithOutcome(
+              page,
+              option,
+              validation.validatedValues[page][option],
+            );
+            if (outcome.changed) {
+              changedOptionsByPage.set(page, (changedOptionsByPage.get(page) || 0) + 1);
+            }
           }
         }
       })();
@@ -699,6 +1084,15 @@ export function createSettingsRouter({
       return next(err);
     }
 
+    const changedPages = PAGE_DEFAULT_SECTIONS
+      .map(({ page }) => page)
+      .filter((page) => changedOptionsByPage.has(page));
+    if (changedPages.length > 0) {
+      logSettingsActivity(applicationLogger, 'settings.defaults.updated', {
+        changedPages,
+        changedOptionCount: [...changedOptionsByPage.values()].reduce((count, value) => count + value, 0),
+      });
+    }
     res.redirect('/settings/defaults?notice=defaults_saved');
   });
 
@@ -725,8 +1119,12 @@ export function createSettingsRouter({
       return next(err);
     }
 
+    const service = getNsfwFilterSettingsService(req);
     try {
-      getNsfwFilterSettingsService(req).setEnabled(enabled);
+      const outcome = service.setEnabledWithOutcome(enabled);
+      if (outcome.changed) {
+        logSettingsActivity(applicationLogger, 'settings.nsfw_filter.updated', { enabled });
+      }
       res.redirect(`/settings/nsfw-filter?notice=${enabled ? 'nsfw_filter_enabled' : 'nsfw_filter_disabled'}`);
     } catch (err) {
       return next(err);
@@ -846,8 +1244,12 @@ export function createSettingsRouter({
       ? req.body.windowsProjectsPath
       : '';
 
+    const service = getOpenLocallySettingsService(req);
     try {
-      getOpenLocallySettingsService(req).setWindowsProjectsPath(submittedValue);
+      const outcome = service.setWindowsProjectsPathWithOutcome(submittedValue);
+      if (outcome.changed) {
+        logSettingsActivity(applicationLogger, 'settings.open_locally.updated', { configured: true });
+      }
       res.redirect('/settings/open-locally?notice=open_locally_saved');
     } catch (err) {
       if (err instanceof OpenLocallySettingsValidationError) {
@@ -866,7 +1268,8 @@ export function createSettingsRouter({
 
   router.post('/open-locally/clear', (req, res, next) => {
     try {
-      getOpenLocallySettingsService(req).clearWindowsProjectsPath();
+      const outcome = getOpenLocallySettingsService(req).clearWindowsProjectsPathWithOutcome();
+      if (outcome.changed) logSettingsActivity(applicationLogger, 'settings.open_locally.cleared', { configured: false });
       res.redirect('/settings/open-locally?notice=open_locally_cleared');
     } catch (err) {
       return next(err);
@@ -899,6 +1302,7 @@ export function createSettingsRouter({
         });
         return;
       }
+      logSettingsActivity(applicationLogger, 'security.password_changed');
       clearSessionCookie(res, cookieOptions);
       res.redirect('/login?notice=password_rotated');
     });
@@ -931,6 +1335,7 @@ export function createSettingsRouter({
         res.redirect(`/settings/security?notice=${transitionFailureNotice(result)}`);
         return;
       }
+      logSettingsActivity(applicationLogger, 'security.disabled');
       clearSessionCookie(res, cookieOptions);
       res.redirect('/settings/security?notice=authentication_disabled');
     });
@@ -969,6 +1374,7 @@ export function createSettingsRouter({
         res.redirect(`/settings/security?notice=${transitionFailureNotice(result)}`);
         return;
       }
+      logSettingsActivity(applicationLogger, 'security.enabled');
       res.redirect('/login?notice=authentication_enabled');
     });
   }
@@ -979,6 +1385,7 @@ export function createSettingsRouter({
       const notice = result.pruneWarnings && result.pruneWarnings.length > 0
         ? 'backup_created_prune_warning'
         : 'backup_created';
+      logSettingsActivity(applicationLogger, 'backup.created');
       res.redirect(`/settings/backups?notice=${notice}`);
     } catch {
       // Never surface the internal exception text — createBackup already
@@ -1026,6 +1433,10 @@ export function createSettingsRouter({
       // adopting the connection if it somehow doesn't.
       try { invalidateAllSessionsForDb(result.db); } catch { /* best-effort */ }
       replaceDatabase(result.db);
+      // replaceDatabase rebuilds the app graph and rebinds the shared logger
+      // to the restored database before publishing it. Log only after that
+      // authoritative handoff so the activity record cannot land in the old DB.
+      logSettingsActivity(applicationLogger, 'backup.restored');
       res.redirect('/settings/backups?notice=restore_success');
     } catch (err) {
       // A BackupError carrying `.db` means the live database was already
@@ -1057,6 +1468,7 @@ export function createSettingsRouter({
       // traversal, symlink, staging/rollback, and unmanaged names are all
       // rejected there, never trusted from the URL alone.
       backupService.deleteBackup(req.params.filename);
+      logSettingsActivity(applicationLogger, 'backup.deleted');
       res.redirect('/settings/backups?notice=backup_deleted');
     } catch {
       res.redirect('/settings/backups?notice=delete_failed');
@@ -1133,7 +1545,12 @@ export function createSettingsRouter({
   router.post('/asset-categories/browser-default', (req, res) => {
     const submittedValue = typeof req.body?.defaultCategory === 'string' ? req.body.defaultCategory : '';
     try {
-      assetBrowserPreferenceService.setGlobalPreference(submittedValue);
+      const outcome = assetBrowserPreferenceService.setGlobalPreferenceWithOutcome(submittedValue);
+      if (outcome.changed) {
+        logSettingsActivity(applicationLogger, 'settings.asset_browser_default.updated', {
+          mode: outcome.value === 'all' ? 'all' : 'category',
+        });
+      }
       res.redirect('/settings/asset-categories?notice=global_default_saved');
     } catch (err) {
       if (err instanceof PreferenceValidationError) {
@@ -1151,7 +1568,12 @@ export function createSettingsRouter({
   router.post('/asset-categories/preview-category', (req, res) => {
     const submittedValue = typeof req.body?.previewCategory === 'string' ? req.body.previewCategory : '';
     try {
-      previewCategorySettingsService.setPreviewCategory(submittedValue);
+      const outcome = previewCategorySettingsService.setPreviewCategoryWithOutcome(submittedValue);
+      if (outcome.changed) {
+        logSettingsActivity(applicationLogger, 'settings.preview_category.updated', {
+          enabled: outcome.value !== PREVIEW_CATEGORY_DISABLED_VALUE,
+        });
+      }
       res.redirect('/settings/asset-categories?notice=preview_category_saved');
     } catch (err) {
       if (err instanceof PreviewCategoryValidationError) {

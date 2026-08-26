@@ -470,4 +470,36 @@ describe('asset tags — HTTP', () => {
     expect(detail.text).toContain('routes.png');
     expect(detail.text).toContain('Tags');
   });
+
+  it('persists one aggregate asset-tag activity per real change without identifier-list or path leakage', async () => {
+    const projectId = await createProject('Logging asset tags');
+    const asset = createAsset(projectId, 'log-safe.png');
+    const tag = createTag('Logging tag');
+
+    assignAssetTags(asset.id, [tag.id]);
+    assignAssetTags(asset.id, [tag.id]);
+    assignAssetTags(asset.id, []);
+
+    const rows = db.prepare(`
+      SELECT event, project_id, context_json
+      FROM application_logs
+      WHERE event IN ('asset.tags.assigned', 'asset.tags.removed')
+      ORDER BY id
+    `).all();
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        event: 'asset.tags.assigned',
+        project_id: projectId,
+        context_json: JSON.stringify({ tagId: null, assetCount: 1, assignmentCount: 1 }),
+      }),
+      expect.objectContaining({
+        event: 'asset.tags.removed',
+        project_id: projectId,
+        context_json: JSON.stringify({ tagId: null, assetCount: 1, assignmentCount: 1 }),
+      }),
+    ]);
+    expect(rows.map((row) => row.context_json).join('')).not.toContain('log-safe.png');
+    expect(rows.map((row) => row.context_json).join('')).not.toContain('assetIds');
+  });
 });

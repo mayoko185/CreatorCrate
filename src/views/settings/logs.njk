@@ -1,0 +1,277 @@
+{% extends "layout.njk" %}
+{% import "partials/icons.njk" as icons %}
+{% import "partials/dialog.njk" as dialog %}
+{% import "partials/dropdown.njk" as dropdown %}
+
+{% set page_title = "Settings — Logs" %}
+
+{% block content %}
+
+  {% if notice %}
+    {% set noticeVariant = notice.variant %}
+    {% set noticeText = notice.text %}
+    {% include "partials/notice.njk" %}
+  {% endif %}
+
+  <div class="settings-layout" data-logs-viewer data-logs-page="{{ page }}"
+       data-logs-timezone="{{ timezone }}"
+       data-logs-auto-refresh-enabled="{{ 'true' if autoRefreshEnabled else 'false' }}"
+       data-logs-auto-refresh-preference="{{ 'true' if autoRefreshPreferenceEnabled else 'false' }}">
+    {% set activeSettingsSection = "logs" %}
+    {% include "partials/settings-nav.njk" %}
+
+    <div class="settings-content">
+      <div class="asset-viewer-display-controls">
+        <nav class="project-filter-actions project-filter-actions--projects" aria-label="Log actions">
+          <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
+             href="{{ refreshUrl }}" aria-label="Refresh logs" data-tooltip="Refresh logs" data-logs-refresh>
+            {{ icons.icon('releases') }}
+          </a>
+          {% set autoRefreshLabel = "Disable auto-refresh" if autoRefreshEnabled else "Enable auto-refresh" %}
+          <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
+                  data-logs-auto-refresh aria-pressed="{{ 'true' if autoRefreshEnabled else 'false' }}"{% if page > 1 %} aria-describedby="logs-auto-refresh-help"{% endif %}
+                  aria-label="{{ autoRefreshLabel }}" data-tooltip="{{ autoRefreshLabel }}" hidden>
+            {{ icons.icon('calendar') }}<span class="sr-only" data-logs-auto-refresh-label>{{ autoRefreshLabel }}</span>
+          </button>
+          <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
+             href="/settings/logs?defaults=1" aria-label="Logs defaults" data-tooltip="Logs defaults"
+             data-dialog-open="logs-defaults-dialog" data-logs-defaults-link>
+            {{ icons.icon('settings') }}
+          </a>
+          <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
+             href="{{ clearFiltersUrl }}" aria-label="Clear filters" data-tooltip="Clear filters" data-logs-clear-filters>
+            {{ icons.icon('reset') }}<span class="sr-only">Reset</span>
+          </a>
+          <a class="button button-small button-danger project-filter-control asset-tooltip asset-tooltip--left"
+             href="{{ clearUrl }}" aria-label="Clear logs" data-tooltip="Clear logs" data-dialog-open="logs-clear-dialog">
+            {{ icons.icon('warning') }}
+          </a>
+        </nav>
+      </div>
+
+      <form method="get" action="/settings/logs" class="filters asset-viewer-filters asset-viewer-filters--projects logs-filter-form" data-logs-filter-form>
+        {{ dropdown.singleSelect({
+          id: "logs-level-filter",
+          name: "level",
+          label: "Level",
+          fieldClasses: "asset-viewer-filter-field",
+          options: logFilterDropdowns.level,
+          selected: filters.level,
+          placeholder: "All levels",
+          panelLabel: "Level options"
+        }) }}
+        {{ dropdown.singleSelect({
+          id: "logs-kind-filter",
+          name: "kind",
+          label: "Kind",
+          fieldClasses: "asset-viewer-filter-field",
+          options: logFilterDropdowns.kind,
+          selected: filters.kind,
+          placeholder: "All kinds",
+          panelLabel: "Kind options"
+        }) }}
+        {{ dropdown.singleSelect({
+          id: "logs-subsystem-filter",
+          name: "subsystem",
+          label: "Subsystem",
+          fieldClasses: "asset-viewer-filter-field",
+          options: logFilterDropdowns.subsystem,
+          selected: filters.subsystem,
+          placeholder: "All subsystems",
+          panelLabel: "Subsystem options"
+        }) }}
+        {{ dropdown.singleSelect({
+          id: "logs-time-filter",
+          name: "time",
+          label: "Time",
+          fieldClasses: "asset-viewer-filter-field",
+          options: logFilterDropdowns.time,
+          selected: filters.time,
+          placeholder: "Any time",
+          panelLabel: "Time options"
+        }) }}
+        {{ dropdown.singleSelect({
+          id: "logs-page-size-filter",
+          name: "pageSize",
+          label: "Items per page",
+          fieldClasses: "asset-viewer-filter-field",
+          options: logFilterDropdowns.pageSize,
+          selected: filters.pageSize,
+          panelLabel: "Items per page options"
+        }) }}
+        <noscript><button class="button" type="submit">Filter</button></noscript>
+        <p id="logs-auto-refresh-help" class="form-help" data-logs-auto-refresh-help{% if page == 1 %} hidden{% endif %}>Auto-refresh is available only on page 1.</p>
+        <p data-logs-live-status class="sr-only" aria-live="polite" aria-atomic="true"></p>
+      </form>
+
+      <section class="project-detail-section logs-results-section" aria-labelledby="logs-results-heading">
+        <h2 id="logs-results-heading">Log entries</h2>
+        <div class="project-detail-section-body">
+          <div data-logs-results data-logs-total="{{ totalLogs }}">
+            <p class="logs-count">{{ totalLogs }} matching log entr{{ 'y' if totalLogs == 1 else 'ies' }}</p>
+      {% if logs.length > 0 %}
+        <div class="table-scroll logs-table-scroll" tabindex="0" aria-label="Application logs">
+          <table class="data-table logs-table">
+            <thead>
+              <tr>
+                <th>Timestamp</th>
+                <th>Level</th>
+                <th>Kind</th>
+                <th>Subsystem</th>
+                <th>Event / message</th>
+                <th>Project ID</th>
+                <th>Correlation ID</th>
+                <th>Context</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for log in logs %}
+                <tr data-log-id="{{ log.id }}">
+                  <td><time{% if log.timestampMs is not none %} datetime="{{ log.timestampIso }}" data-log-timestamp-ms="{{ log.timestampMs }}"{% endif %}>{{ log.timestamp }}</time></td>
+                  <td><code>{{ log.level }}</code></td>
+                  <td><code>{{ log.kind }}</code></td>
+                  <td><code>{{ log.subsystem }}</code></td>
+                  <td class="logs-message-cell"><code>{{ log.event }}</code><span>{{ log.message }}</span></td>
+                  <td>{% if log.projectId %}<code>{{ log.projectId }}</code>{% else %}—{% endif %}</td>
+                  <td>{% if log.correlationId %}<code>{{ log.correlationId }}</code>{% else %}—{% endif %}</td>
+                  <td>
+                    <details class="logs-context">
+                      <summary>View context</summary>
+                      {% if log.contextEntries.length > 0 %}
+                        <dl class="detail-list logs-context-list">
+                          {% for entry in log.contextEntries %}
+                            <dt>{{ entry.label }}</dt>
+                            <dd>{{ entry.value }}</dd>
+                          {% endfor %}
+                        </dl>
+                      {% else %}
+                        <p>No additional safe context.</p>
+                      {% endif %}
+                    </details>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+
+        <nav class="logs-pagination" aria-label="Log pagination">
+          {% if previousUrl %}
+            <a class="button button-small button-secondary project-detail-action asset-tooltip"
+               href="{{ previousUrl }}" rel="prev" aria-label="Previous page" data-tooltip="Previous page">
+              {{ icons.icon('chevron-left') }}
+            </a>
+          {% else %}
+            <span class="button button-small button-secondary project-detail-action" aria-disabled="true">
+              {{ icons.icon('chevron-left') }}<span class="sr-only">Previous page</span>
+            </span>
+          {% endif %}
+          <span>Page {{ page }} of {{ totalPages }}</span>
+          {% if nextUrl %}
+            <a class="button button-small button-secondary project-detail-action asset-tooltip"
+               href="{{ nextUrl }}" rel="next" aria-label="Next page" data-tooltip="Next page">
+              {{ icons.icon('chevron-right') }}
+            </a>
+          {% else %}
+            <span class="button button-small button-secondary project-detail-action" aria-disabled="true">
+              {{ icons.icon('chevron-right') }}<span class="sr-only">Next page</span>
+            </span>
+          {% endif %}
+        </nav>
+      {% else %}
+        {% if totalLogs == 0 and (filters.level or filters.kind or filters.subsystem or filters.time) %}
+          {% set emptyHeading = "No logs match these filters" %}
+          {% set emptyDescription = "Adjust the filters or return to the full log view." %}
+        {% else %}
+          {% set emptyHeading = "No application logs yet" %}
+          {% set emptyDescription = "Activity and diagnostic logs will appear here when they are recorded." %}
+        {% endif %}
+        {% include "partials/empty-state.njk" %}
+      {% endif %}
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+{% endblock %}
+
+{% block overlay %}
+  {% call dialog.render('logs-defaults-dialog', 'Logs defaults', logsDefaultsDialogOpen, 'logs-defaults-description', 'logs-defaults-form') %}
+    <form id="logs-defaults-form" method="post" action="/settings/logs/defaults" class="app-dialog-form project-form"
+          data-dialog-form data-dialog-async novalidate>
+      <p id="logs-defaults-description" class="app-dialog-description">
+        Choose the filters, items per page, display timezone, and auto-refresh preference used when Logs opens without explicit options.
+      </p>
+
+      <div class="app-dialog-error" data-dialog-error role="alert" hidden>
+        <p data-dialog-error-text></p>
+        <ul data-dialog-error-list></ul>
+      </div>
+
+      <input type="hidden" name="_csrf" value="{{ _csrf }}">
+
+      <div class="app-dialog-body">
+        <div class="page-defaults-grid">
+          {% for field in logsDefaults.fields %}
+            {% set submittedOption = none %}
+            {% set nativeAttributes = [["required", true]] %}
+            {% set summaryAttributes = [] %}
+            {% if field.showSubmittedValue %}
+              {% set submittedOption = {
+                id: field.id ~ '-submitted',
+                value: field.submittedOptionValue,
+                label: 'Submitted value: ' ~ field.submittedDisplayValue,
+                attributes: [["data-dialog-submitted-value", true]],
+                selected: true
+              } %}
+            {% endif %}
+            {% if field.error %}
+              {% set nativeAttributes = [["required", true], ["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] %}
+              {% set summaryAttributes = [["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] %}
+            {% endif %}
+            <div class="field app-dialog-field{% if field.error %} field-error{% endif %}" data-dialog-field="{{ field.name }}">
+              {{ dropdown.singleSelect({
+                id: field.id ~ '-dropdown',
+                name: field.name,
+                label: field.label,
+                options: field.options,
+                selected: field.selectedValue,
+                optionIdPrefix: field.id,
+                leadingOption: submittedOption,
+                summaryAttributes: summaryAttributes,
+                nativeSelect: {
+                  id: field.id,
+                  attributes: nativeAttributes
+                }
+              }) }}
+              {% if field.error %}<span class="field-error-message" id="{{ field.id }}-error">{{ field.error }}</span>{% endif %}
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+
+      <div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>
+
+      <footer class="app-dialog-footer">
+        <button class="button button-primary" type="submit" data-dialog-submit>Save</button>
+      </footer>
+    </form>
+  {% endcall %}
+
+  {% call dialog.render('logs-clear-dialog', 'Clear logs', false, 'logs-clear-description', 'logs-clear-form', 'app-confirmation-dialog') %}
+    <form id="logs-clear-form" method="post" action="/settings/logs/clear" class="app-dialog-form"
+          data-dialog-form data-dialog-async data-dialog-pending-message="Clearing logs…"
+          data-dialog-error-message="Logs could not be cleared."
+          data-dialog-network-error-message="Could not clear logs."
+          data-dialog-success-message="Logs cleared." novalidate>
+      <input type="hidden" name="_csrf" value="{{ _csrf }}">
+      <p id="logs-clear-description" class="app-dialog-description">
+        Clear all log entries? After a successful clear, CreatorCrate leaves a <code>logging.cleared</code> marker when logging succeeds.
+      </p>
+      <div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>
+      <footer class="app-dialog-footer">
+        <button class="button button-danger" type="submit" data-dialog-submit>Clear logs</button>
+      </footer>
+    </form>
+  {% endcall %}
+{% endblock %}

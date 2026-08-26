@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import express from 'express';
 import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
@@ -9,9 +10,16 @@ import { createAssetProcessingPlanner } from '../src/services/asset-processing-p
 import { AssetProcessingError } from '../src/services/asset-processing-service.js';
 import { createProcessingJobService } from '../src/services/processing-job-service.js';
 import { createProjectOperationCoordinator } from '../src/services/project-operation-coordinator.js';
+import { createApplicationLogger } from '../src/services/application-logger.js';
+import { createApplicationLogRepository } from '../src/data/application-log-repository.js';
+import { closeDatabase, openDatabase, runMigrations } from '../src/db.js';
+import { createAppMetaRepository } from '../src/data/app-meta-repository.js';
+import { createWatermarkDefaultService } from '../src/services/watermark-default-service.js';
 import {
   WatermarkScaleMapServiceError,
 } from '../src/services/watermark-scale-map-service.js';
+
+const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
 async function settle() {
   for (let index = 0; index < 6; index += 1) await Promise.resolve();
@@ -49,7 +57,8 @@ function createRealPlannerForAsset(relativePath) {
 
 function createHarness(overrides = {}) {
   const project = { id: 1, status: 'active', archived_at: null };
-  const processingJobService = createProcessingJobService({
+  const processingJobService = overrides.processingJobService || createProcessingJobService({
+    applicationLogger: overrides.applicationLogger,
     projectOperationCoordinator: createProjectOperationCoordinator(),
   });
   const convertAssets = vi.fn(async () => ({ changedCount: 1 }));
@@ -124,6 +133,31 @@ function createHarness(overrides = {}) {
 }
 
 describe('processing HTTP routes', () => {
+  it.each([
+    ['convert', { format: 'webp', quality: 85, originalHandling: 'keep' }],
+    ['workflow-prompt', { positive: [], negative: [] }],
+    ['watermark', { mode: 'patreon', outputFormat: 'png', deleteSource: false, watermarkId: 10 }],
+    ['archive', { makeArchives: true, archiveFormat: '7z' }],
+  ])('passes safe %s lifecycle metadata through the common job service', async (operation, options) => {
+    const applicationLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const { app } = createHarness({ applicationLogger });
+    const response = await request(app)
+      .post(`/projects/1/assets/processing/${operation}/apply`)
+      .send({ scope: { type: 'selected', assetIds: [9] }, options })
+      .expect(202);
+
+    await settle();
+    const entries = applicationLogger.info.mock.calls.map(([entry]) => entry)
+      .filter((entry) => entry.correlationId === response.body.jobId);
+    expect(entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: 'processing.job.queued', projectId: 1, context: { operation, assetCount: 1 } }),
+      expect.objectContaining({ event: 'processing.job.succeeded', projectId: 1, context: expect.objectContaining({ operation, assetCount: 1 }) }),
+    ]));
+    expect(new Set(entries.map((entry) => entry.correlationId))).toEqual(new Set([response.body.jobId]));
+    expect(JSON.stringify(entries)).not.toContain('quality');
+    expect(JSON.stringify(entries)).not.toContain('watermarkId');
+  });
+
   it('plans selected custom Convert options as stable JSON without applying', async () => {
     const { app, services } = createHarness();
     const response = await request(app)
@@ -392,6 +426,100 @@ describe('processing HTTP routes', () => {
       '/processing/watermarks/10/delete',
     ]) {
       await request(app).post(route).send({}).expect(404);
+    }
+  });
+
+  it('records one safe activity entry for each processing resource mutation', async () => {
+    const applicationLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const { app, services } = createHarness({
+      applicationLogger,
+      processingPresetService: {
+        listPresets: vi.fn(() => []),
+        createPreset: vi.fn((input) => ({ id: 12, operationType: input.operationType })),
+        importPresetBundle: vi.fn(() => ({ imported: 2, renamed: 1, presets: [] })),
+        renamePreset: vi.fn(() => ({ id: 12, operationType: 'convert' })),
+        replacePreset: vi.fn(() => ({ id: 12, operationType: 'convert' })),
+        deletePreset: vi.fn(),
+        resolvePresetForExecution: vi.fn(),
+      },
+    });
+
+    await request(app).post('/processing/watermarks/scan').send({}).expect(200);
+    await request(app).post('/processing/watermarks/default').send({ watermarkId: 10 }).expect(200);
+    await request(app).post('/processing/scale-map/replace').send({ definition: { default: 0.1 } }).expect(200);
+    await request(app).post('/processing/presets').send({ operationType: 'convert', displayName: 'Safe', config: {} }).expect(201);
+    await request(app).post('/processing/presets/import').send({ operationType: 'convert', presets: [] }).expect(200);
+    await request(app).post('/processing/presets/12/rename').send({ displayName: 'Renamed' }).expect(200);
+    await request(app).post('/processing/presets/12/replace').send({ config: {} }).expect(200);
+    await request(app).post('/processing/presets/12/delete').send({}).expect(200);
+
+    const entries = applicationLogger.info.mock.calls.map(([entry]) => entry);
+    expect(entries.map((entry) => entry.event)).toEqual([
+      'processing.watermark.scan.completed',
+      'processing.watermark.default.changed',
+      'processing.scale_map.updated',
+      'processing.preset.created',
+      'processing.preset.imported',
+      'processing.preset.renamed',
+      'processing.preset.updated',
+      'processing.preset.deleted',
+    ]);
+    expect(entries).toEqual(expect.arrayContaining([
+      expect.objectContaining({ event: 'processing.watermark.scan.completed', kind: 'diagnostic', context: { added: 1, updated: 0, restored: 0, removed: 0, total: 1 } }),
+      expect.objectContaining({ event: 'processing.preset.imported', context: { imported: 2, renamed: 1, operationType: 'convert' } }),
+    ]));
+    expect(JSON.stringify(entries)).not.toMatch(/mark\.png|relativePath|config|definition/i);
+    expect(services.processingPresetService.importPresetBundle).toHaveBeenCalledOnce();
+  });
+
+  it('persists a processing resource action through the real logger and application-log repository', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-processing-resource-log-'));
+    const db = openDatabase(path.join(directory, 'logs.db'));
+    runMigrations(db, MIGRATIONS_DIR);
+    const applicationLogger = createApplicationLogger({ repository: createApplicationLogRepository(db) });
+
+    try {
+      const { app } = createHarness({ applicationLogger });
+      await request(app).post('/processing/watermarks/scan').send({}).expect(200);
+
+      expect(db.prepare("SELECT subsystem, event FROM application_logs WHERE event = 'processing.watermark.scan.completed'").get())
+        .toEqual({ subsystem: 'processing', event: 'processing.watermark.scan.completed' });
+    } finally {
+      closeDatabase(db);
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it('persists a changed Watermark default ID once through the real logger and application-log repository', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-processing-log-'));
+    const db = openDatabase(path.join(directory, 'creatorcrate.db'));
+    runMigrations(db, MIGRATIONS_DIR);
+    const applicationLogger = createApplicationLogger({ repository: createApplicationLogRepository(db) });
+    const defaultWatermarkResourceService = {
+      resolveForProcessing: vi.fn((watermarkId) => ({ watermark: { id: watermarkId } })),
+    };
+    const watermarkDefaultService = createWatermarkDefaultService({
+      appMetaRepository: createAppMetaRepository(db),
+      watermarkService: defaultWatermarkResourceService,
+    });
+
+    try {
+      const { app } = createHarness({ applicationLogger, watermarkDefaultService });
+      await request(app).post('/processing/watermarks/default').send({ watermarkId: 17 }).expect(200);
+      await request(app).post('/processing/watermarks/default').send({ watermarkId: 17 }).expect(200);
+
+      const rows = db.prepare('SELECT subsystem, level, kind, event, context_json FROM application_logs WHERE event = ?').all('processing.watermark.default.changed');
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        subsystem: 'processing',
+        level: 'info',
+        kind: 'activity',
+        event: 'processing.watermark.default.changed',
+      });
+      expect(JSON.parse(rows[0].context_json)).toEqual({ watermarkId: 17 });
+    } finally {
+      closeDatabase(db);
+      fs.rmSync(directory, { recursive: true, force: true });
     }
   });
 

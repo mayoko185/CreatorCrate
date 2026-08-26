@@ -79,6 +79,7 @@ export function createAssetActionService({
   assetCategoryRepository,
   projectsRoot,
   projectOperationCoordinator,
+  applicationLogger = null,
 } = {}) {
   if (!projectRepository) throw new Error('createAssetActionService requires a projectRepository dependency.');
   if (!assetRepository) throw new Error('createAssetActionService requires an assetRepository dependency.');
@@ -109,6 +110,21 @@ export function createAssetActionService({
         );
       }
       throw err;
+    }
+  }
+
+  function logActivity(event, projectId, context = {}) {
+    try {
+      applicationLogger?.info?.({
+        event,
+        kind: 'activity',
+        subsystem: 'assets',
+        message: 'Asset activity completed.',
+        projectId,
+        context,
+      });
+    } catch {
+      // Activity logging must never alter a completed asset mutation.
     }
   }
 
@@ -1131,7 +1147,9 @@ export function createAssetActionService({
     renameAsset(projectId, assetId, filename) {
       assertPositiveInteger(projectId, 'INVALID_PROJECT_ID', 'projectId');
       assertPositiveInteger(assetId, 'INVALID_ASSET_ID', 'assetId');
-      return runLocked(projectId, () => renameAssetLocked(projectId, assetId, filename));
+      const renamed = runLocked(projectId, () => renameAssetLocked(projectId, assetId, filename));
+      logActivity('asset.renamed', projectId);
+      return renamed;
     },
 
     /**
@@ -1149,7 +1167,9 @@ export function createAssetActionService({
     renameAssetBasename(projectId, assetId, basename) {
       assertPositiveInteger(projectId, 'INVALID_PROJECT_ID', 'projectId');
       assertPositiveInteger(assetId, 'INVALID_ASSET_ID', 'assetId');
-      return runLocked(projectId, () => renameAssetBasenameLocked(projectId, assetId, basename));
+      const renamed = runLocked(projectId, () => renameAssetBasenameLocked(projectId, assetId, basename));
+      logActivity('asset.renamed', projectId);
+      return renamed;
     },
 
     /**
@@ -1168,7 +1188,9 @@ export function createAssetActionService({
     moveAsset(projectId, assetId, destinationCategoryIdOrUncategorized) {
       assertPositiveInteger(projectId, 'INVALID_PROJECT_ID', 'projectId');
       assertPositiveInteger(assetId, 'INVALID_ASSET_ID', 'assetId');
-      return runLocked(projectId, () => moveAssetLocked(projectId, assetId, destinationCategoryIdOrUncategorized));
+      const moved = runLocked(projectId, () => moveAssetLocked(projectId, assetId, destinationCategoryIdOrUncategorized));
+      logActivity('asset.moved', projectId, { destinationCategoryId: moved.category_id ?? null });
+      return moved;
     },
 
     /**
@@ -1199,7 +1221,31 @@ export function createAssetActionService({
           throw new AssetActionError('assetIds must contain only positive integer IDs.', { code: 'INVALID_ASSET_SELECTION' });
         }
       }
-      return runLocked(projectId, () => moveAssetsLocked(projectId, assetIds, destinationCategoryIdOrUncategorized));
+      let result;
+      try {
+        result = runLocked(projectId, () => moveAssetsLocked(projectId, assetIds, destinationCategoryIdOrUncategorized));
+      } catch (err) {
+        const movedCount = err?.batchContext?.movedCount;
+        if (
+          err instanceof AssetActionError
+          && (err.code === 'BATCH_PARTIAL_FAILURE' || err.code === 'BATCH_RECOVERY_REQUIRED')
+          && Number.isSafeInteger(movedCount)
+          && movedCount > 0
+        ) {
+          logActivity('asset.bulk_moved', projectId, {
+            assetCount: movedCount,
+            destinationCategoryId: destinationCategoryIdOrUncategorized === UNCATEGORIZED ? null : destinationCategoryIdOrUncategorized,
+          });
+        }
+        throw err;
+      }
+      if (result.movedCount > 0) {
+        logActivity('asset.bulk_moved', projectId, {
+          assetCount: result.movedCount,
+          destinationCategoryId: destinationCategoryIdOrUncategorized === UNCATEGORIZED ? null : destinationCategoryIdOrUncategorized,
+        });
+      }
+      return result;
     },
 
     /**
@@ -1228,7 +1274,14 @@ export function createAssetActionService({
           throw new AssetActionError('assetIds must contain only positive integer IDs.', { code: 'INVALID_ASSET_SELECTION' });
         }
       }
-      return runLocked(projectId, () => copyAssetsLocked(projectId, assetIds, destinationCategoryIdOrUncategorized));
+      const result = runLocked(projectId, () => copyAssetsLocked(projectId, assetIds, destinationCategoryIdOrUncategorized));
+      if (result.copiedCount > 0) {
+        logActivity(result.requestedCount === 1 ? 'asset.copied' : 'asset.bulk_copied', projectId, {
+          assetCount: result.copiedCount,
+          destinationCategoryId: destinationCategoryIdOrUncategorized === UNCATEGORIZED ? null : destinationCategoryIdOrUncategorized,
+        });
+      }
+      return result;
     },
 
     /**
@@ -1259,7 +1312,11 @@ export function createAssetActionService({
           throw new AssetActionError('assetIds must contain only positive integer IDs.', { code: 'INVALID_ASSET_SELECTION' });
         }
       }
-      return runLocked(projectId, () => deleteAssetsLocked(projectId, assetIds));
+      const result = runLocked(projectId, () => deleteAssetsLocked(projectId, assetIds));
+      if (result.deletedCount > 0) {
+        logActivity(result.requestedCount === 1 ? 'asset.deleted' : 'asset.bulk_deleted', projectId, { assetCount: result.deletedCount });
+      }
+      return result;
     },
 
     /**

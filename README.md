@@ -82,6 +82,7 @@ Copy `.env.example` for local runs. The Compose file supplies the in-container p
 | `DATABASE_PATH` | SQLite database location | `./data/app/creatorcrate.db` |
 | `BACKUP_RETENTION_COUNT` | Managed database backups to retain; `0` disables pruning | `10` when unset |
 | `AUTO_SCAN_INTERVAL_MINUTES` | Optional deployment environment variable controlling the recurring scan interval for eligible projects; must be a positive whole number from `1` to `35791` minutes | Automatic scanning disabled when unset or empty; no default automatic scan interval |
+| `PERSIST_DEBUG_LOGS` | Persist internal `debug` application-log records | `false` when unset; accepts `true` and `false` case-insensitively with surrounding whitespace ignored |
 | `SESSION_TTL_HOURS` | Fixed server-side session lifetime | `24` when unset |
 | `COOKIE_SECURE` | Require HTTPS cookies | `false` when unset |
 | `TRUST_PROXY` | Trust forwarded client addresses for login throttling | `false` when unset |
@@ -117,6 +118,39 @@ The filesystem is authoritative for media contents. SQLite stores project, asset
 ### Releases, publishing, and calendar
 
 Create releases from project work, select and order the included assets, and assign their release roles. When a release is ready, use the publishing workflow to record published work. The calendar provides a date-based view of planned and published release activity.
+
+### Application logs
+
+**Settings > Logs** shows CreatorCrate's operational and activity records.
+Entries are newest first and can be filtered by level, kind (activity or
+diagnostic), subsystem, and bounded time presets (last hour, 24 hours, 7 days,
+or 30 days). Choose 25, 50, 75, or 100 items per page; this setting and a
+Logs display timezone (Local / Browser, UTC, Eastern, Central, Mountain, or
+Pacific) can be saved in **Logs defaults**. Timestamps initially render as UTC
+without JavaScript, then format in the selected timezone when JavaScript is
+available. The page supports pagination and a per-entry context/details
+disclosure. With JavaScript, filter changes and **Refresh** update the results
+in place while preserving the URL; the normal server-rendered GET form remains
+the fallback.
+
+Auto-refresh is enabled by default and is available only on page 1. When
+enabled, it refreshes every 30 seconds, pauses while the tab is hidden, and
+uses the current filters through the same request-ownership path.
+
+Use **Clear Logs** to open a confirmation page. On confirmation, existing log
+records are cleared and a new `logging.cleared` marker remains. This is an
+operational log, not an immutable or tamper-proof audit history.
+
+CreatorCrate retains application logs for 90 days and keeps at most 50,000
+records. `info`, `warn`, `error`, and `fatal` records persist by default.
+To persist internal `debug` records too, set `PERSIST_DEBUG_LOGS=true`; when
+unset it is `false`. The configuration accepts `true` and `false`
+case-insensitively and ignores surrounding whitespace; other values are rejected.
+
+The log intentionally avoids sensitive request/authentication information,
+absolute local paths, raw processing options, and stack traces. It uses bounded
+context for practical operations and diagnostics, but is not a compliance or
+immutable-audit facility.
 
 ## Authentication and security
 

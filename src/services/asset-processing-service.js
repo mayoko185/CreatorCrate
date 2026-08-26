@@ -293,6 +293,7 @@ export function createAssetProcessingService({
   watermarkScaleMap = WATERMARK_WINDOW_SCALE_MAP,
   alreadyCoordinatedCapability,
   processingConcurrencyService,
+  applicationLogger = null,
 } = {}) {
   if (!projectRepository || typeof projectRepository.findById !== 'function') {
     throw new Error('createAssetProcessingService requires a projectRepository dependency.');
@@ -355,6 +356,35 @@ export function createAssetProcessingService({
         projectId, assetIds, rawOptions, onProgress, capability,
       ),
     });
+  }
+
+  async function observeRecovery({ operation, projectId, assetCount, onProgress }, execute) {
+    try {
+      return await execute();
+    } catch (error) {
+      const event = error?.code === 'DATABASE_OPERATION_FAILED'
+        ? { level: 'warn', name: 'processing.recovery.succeeded', phase: 'rollback' }
+        : error?.code === 'RECOVERY_REQUIRED'
+          ? { level: 'error', name: 'processing.recovery.failed', phase: 'recovery' }
+          : null;
+      if (event) {
+        try {
+          applicationLogger?.[event.level]?.({
+            subsystem: 'processing',
+            event: event.name,
+            level: event.level,
+            kind: 'diagnostic',
+            message: `Processing ${event.phase} ${event.level === 'warn' ? 'completed' : 'failed'}.`,
+            projectId,
+            ...(typeof onProgress?.jobId === 'string' ? { correlationId: onProgress.jobId } : {}),
+            context: { operation, assetCount, phase: event.phase },
+          });
+        } catch {
+          // Diagnostic persistence must not alter recovery or rollback behavior.
+        }
+      }
+      throw error;
+    }
   }
 
   function requireMutableProject(projectId) {
@@ -2203,7 +2233,9 @@ export function createAssetProcessingService({
     const options = normalizeConversionOptions(rawOptions);
     const execute = async () => {
       const progress = createProgressReporter(assetIds.length, onProgress);
-      const result = await convertAssetsLocked(projectId, assetIds, options, progress);
+      const result = await observeRecovery({
+        operation: 'convert', projectId, assetCount: assetIds.length, onProgress,
+      }, () => convertAssetsLocked(projectId, assetIds, options, progress));
       progress.finish();
       return result;
     };
@@ -2705,7 +2737,9 @@ export function createAssetProcessingService({
     const watermarkId = rawOptions?.watermarkId;
     const execute = async () => {
       const progress = createProgressReporter(assetIds.length, onProgress);
-      const result = await watermarkAssetsLocked(projectId, assetIds, options, { watermarkId }, progress);
+      const result = await observeRecovery({
+        operation: 'watermark', projectId, assetCount: assetIds.length, onProgress,
+      }, () => watermarkAssetsLocked(projectId, assetIds, options, { watermarkId }, progress));
       progress.finish();
       return result;
     };
@@ -2947,7 +2981,9 @@ export function createAssetProcessingService({
       });
     }
 
-    const execute = async () => createArchivesLocked(projectId, assetIds, options, onProgress);
+    const execute = async () => observeRecovery({
+      operation: 'archive', projectId, assetCount: assetIds.length, onProgress,
+    }, () => createArchivesLocked(projectId, assetIds, options, onProgress));
     if (coordinationToken !== undefined) {
       assertAlreadyCoordinatedCapability(coordinationToken);
       return execute();
@@ -3434,7 +3470,9 @@ export function createAssetProcessingService({
 
     const execute = async () => {
       const progress = createProgressReporter(assetIds.length, onProgress);
-      const result = await editWorkflowPromptsLocked(projectId, assetIds, options, progress);
+      const result = await observeRecovery({
+        operation: 'workflow-prompt', projectId, assetCount: assetIds.length, onProgress,
+      }, () => editWorkflowPromptsLocked(projectId, assetIds, options, progress));
       progress.finish();
       return result;
     };

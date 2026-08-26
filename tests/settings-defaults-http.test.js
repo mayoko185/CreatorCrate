@@ -84,6 +84,7 @@ function seedMovedDefaults(db) {
 describe('settings — page defaults HTTP', () => {
   let tmpDir;
   let db;
+  let app;
   let agent;
   let csrfToken;
 
@@ -91,7 +92,7 @@ describe('settings — page defaults HTTP', () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-settings-defaults-'));
     db = openDatabase(path.join(tmpDir, 'test.db'));
     runMigrations(db, MIGRATIONS_DIR);
-    const app = createApp({ appName: 'CreatorCrate', db }, { authConfig: AUTH_CONFIG });
+    app = createApp({ appName: 'CreatorCrate', db }, { authConfig: AUTH_CONFIG });
     ({ agent, csrfToken } = await authenticate(app));
   });
 
@@ -176,6 +177,47 @@ describe('settings — page defaults HTTP', () => {
     expect(readMeta(db, GLOBAL_ASSET_BROWSER_DEFAULT_KEY)).toBe('wip');
     expect(readMeta(db, 'page_defaults.release_management.sort')).toBe('updated');
     expect(readMeta(db, 'page_defaults.release_management.order')).toBe('desc');
+  });
+
+  it('records only effective page-default changes with safe aggregate context', async () => {
+    await agent.post('/settings/defaults').type('form').send({ ...VALID_DEFAULTS, _csrf: csrfToken }).expect(302);
+    await agent.post('/settings/defaults').type('form').send({ ...VALID_DEFAULTS, _csrf: csrfToken }).expect(302);
+    await agent.post('/settings/defaults').type('form').send({
+      new_projectStatus: 'invalid', releasesSort: 'planned', releasesOrder: 'asc', _csrf: csrfToken,
+    }).expect(422);
+
+    const rows = db.prepare("SELECT event, level, kind, context_json FROM application_logs WHERE event = 'settings.defaults.updated'").all();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ event: 'settings.defaults.updated', level: 'info', kind: 'activity' });
+    expect(JSON.parse(rows[0].context_json)).toEqual({ changedPages: ['new_project'], changedOptionCount: 1 });
+  });
+
+  it('records a committed defaults change when the legacy snapshot API is unavailable', async () => {
+    app.locals.pageDefaultsService.resolvePageDefaults = () => {
+      throw new Error('legacy snapshot unavailable');
+    };
+
+    await agent.post('/settings/defaults').type('form').send({ ...VALID_DEFAULTS, _csrf: csrfToken }).expect(302);
+
+    const rows = db.prepare("SELECT event FROM application_logs WHERE event = 'settings.defaults.updated'").all();
+    expect(rows).toEqual([{ event: 'settings.defaults.updated' }]);
+  });
+
+  it('preserves a completed Settings mutation when activity logging fails', async () => {
+    const failingLogger = {
+      info() { throw new Error('logger unavailable'); },
+      rebindRepository() {},
+      prune() {},
+    };
+    const failingApp = createApp(
+      { appName: 'CreatorCrate', db },
+      { authConfig: AUTH_CONFIG, applicationLogger: failingLogger },
+    );
+    const authenticated = await authenticate(failingApp);
+    await authenticated.agent.post('/settings/defaults').type('form')
+      .send({ ...VALID_DEFAULTS, _csrf: authenticated.csrfToken })
+      .expect(302);
+    expect(readMeta(db, defaultKey('new_project', 'status'))).toBe('ready');
   });
 
   it('ignores invalid moved fields rather than validating or saving them', async () => {

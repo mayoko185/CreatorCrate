@@ -307,6 +307,7 @@ function makeDialogPage({
   projectAssetsScope = false,
   projectAssetsScopeValues = null,
   loadedScope = 'global',
+  dialogMessages = null,
 } = {}) {
   const document = makeElement('document');
   document.nodeType = 9;
@@ -350,6 +351,11 @@ function makeDialogPage({
     method: 'post',
     'data-dialog-form': '',
   });
+  if (dialogMessages) {
+    Object.entries(dialogMessages).forEach(([name, value]) => {
+      form.setAttribute(name, value);
+    });
+  }
   if (liveDefault) {
     form.setAttribute('data-dialog-async', 'false');
     form.setAttribute('data-asset-browser-default-live', '');
@@ -1850,15 +1856,103 @@ describe('Reusable app dialog enhancement', () => {
   it('keeps the dialog open and reports genuine network failures', async () => {
     const page = makeDialogPage();
     page.region.appendChild(page.trigger);
-    page.windowObject.fetch.mockRejectedValue(new Error('network down'));
+    let rejectRequest;
+    page.windowObject.fetch.mockImplementation(() => new Promise((resolve, reject) => {
+      rejectRequest = reject;
+    }));
     enhanceAppDialogs(page.document);
     page.document.dispatch('click', { target: page.trigger });
     page.form.dispatch('submit', { submitter: page.save });
     await flush();
 
+    expect(page.dialog.querySelector('[data-dialog-status]').textContent).toBe('Saving defaults.');
+    rejectRequest(new Error('network down'));
+    await flush();
+
     expect(page.dialog.open).toBe(true);
     expect(page.dialog.querySelector('[data-dialog-status]').textContent).toContain('Could not save defaults');
     expect(page.dialog.querySelector('[data-dialog-error-text]').textContent).toContain('Your selections were kept');
+  });
+
+  it('uses configured operation messages without invoking a failed dialog success hook', async () => {
+    const page = makeDialogPage({
+      dialogMessages: {
+        'data-dialog-pending-message': 'Clearing logs…',
+        'data-dialog-error-message': 'Logs could not be cleared.',
+        'data-dialog-network-error-message': 'Could not clear logs.',
+      },
+    });
+    page.region.appendChild(page.trigger);
+    let resolveRequest;
+    page.windowObject.fetch.mockImplementation(() => new Promise((resolve) => {
+      resolveRequest = resolve;
+    }));
+    enhanceAppDialogs(page.document);
+    const successHook = vi.fn();
+    page.dialog.__creatorCrateAppDialogState.onSuccessfulSubmit = successHook;
+    page.document.dispatch('click', { target: page.trigger });
+    page.form.dispatch('submit', { submitter: page.save });
+    await flush();
+
+    expect(page.dialog.querySelector('[data-dialog-status]').textContent).toBe('Clearing logs…');
+
+    resolveRequest({
+      ok: false,
+      status: 500,
+      json: async () => ({ status: 'error' }),
+    });
+    await flush();
+
+    expect(page.dialog.open).toBe(true);
+    expect(page.dialog.querySelector('[data-dialog-status]').textContent).toBe('Logs could not be cleared.');
+    expect(page.dialog.querySelector('[data-dialog-error-text]').textContent).toBe('Logs could not be cleared.');
+    expect(successHook).not.toHaveBeenCalled();
+  });
+
+  it('uses the configured network failure message without invoking a failed dialog success hook', async () => {
+    const page = makeDialogPage({
+      dialogMessages: {
+        'data-dialog-pending-message': 'Clearing logs…',
+        'data-dialog-error-message': 'Logs could not be cleared.',
+        'data-dialog-network-error-message': 'Could not clear logs.',
+      },
+    });
+    page.region.appendChild(page.trigger);
+    page.windowObject.fetch.mockRejectedValue(new Error('network down'));
+    enhanceAppDialogs(page.document);
+    const successHook = vi.fn();
+    page.dialog.__creatorCrateAppDialogState.onSuccessfulSubmit = successHook;
+    page.document.dispatch('click', { target: page.trigger });
+    page.form.dispatch('submit', { submitter: page.save });
+    await flush();
+
+    expect(page.dialog.open).toBe(true);
+    expect(page.dialog.querySelector('[data-dialog-status]').textContent).toBe('Could not clear logs.');
+    expect(page.dialog.querySelector('[data-dialog-error-text]').textContent).toContain('Logs could not be cleared.');
+    expect(successHook).not.toHaveBeenCalled();
+  });
+
+  it('uses the configured success feedback without changing the generic lifecycle', async () => {
+    const page = makeDialogPage({
+      dialogMessages: {
+        'data-dialog-success-message': 'Logs cleared.',
+      },
+    });
+    page.region.appendChild(page.trigger);
+    page.windowObject.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ status: 'success' }),
+    });
+    enhanceAppDialogs(page.document);
+    const successHook = vi.fn();
+    page.dialog.__creatorCrateAppDialogState.onSuccessfulSubmit = successHook;
+    page.document.dispatch('click', { target: page.trigger });
+    page.form.dispatch('submit', { submitter: page.save });
+    await flush();
+
+    expect(successHook).toHaveBeenCalledOnce();
+    expect(page.dialog.open).toBe(false);
+    expect(page.document.querySelector('[data-dialog-feedback-text]').textContent).toBe('Logs cleared.');
   });
 });
 

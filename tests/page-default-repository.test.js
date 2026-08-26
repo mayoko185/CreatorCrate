@@ -47,4 +47,17 @@ describe('app meta repository for page defaults', () => {
     expect(repository.getValue('unrelated.preference')).toBe('preserve-me');
     expect(repository.getValue('asset_browser.default_category')).toBe('all');
   });
+
+  it('materializes fallback-equivalent values without reporting an effective change', () => {
+    const key = PAGE_DEFAULT_DEFINITIONS.releases.sort.key;
+
+    expect(repository.setValueWithOutcome(key, 'planned', { fallbackValue: 'planned' }))
+      .toEqual({ value: 'planned', changed: false });
+    expect(repository.getValue(key)).toBe('planned');
+
+    expect(repository.setValueWithOutcome(key, 'release_date', { fallbackValue: 'planned' }))
+      .toEqual({ value: 'release_date', changed: true });
+    expect(repository.setValueWithOutcome(key, 'release_date', { fallbackValue: 'planned' }))
+      .toEqual({ value: 'release_date', changed: false });
+  });
 });

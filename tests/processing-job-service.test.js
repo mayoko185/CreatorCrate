@@ -1,6 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createProcessingJobService } from '../src/services/processing-job-service.js';
 import { createProjectOperationCoordinator } from '../src/services/project-operation-coordinator.js';
+import { createApplicationLogger } from '../src/services/application-logger.js';
+import { createApplicationLogRepository } from '../src/data/application-log-repository.js';
+import { closeDatabase, openDatabase, runMigrations } from '../src/db.js';
+
+const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
 function createService() {
   return createProcessingJobService({
@@ -169,6 +178,147 @@ describe('processing job service', () => {
     expect(service.getJob(jobId)?.state).toBe('running');
     release();
     await settle();
+  });
+
+  it('logs queued, started, succeeded, cancelled, and running cancellation rejection once per transition', async () => {
+    const callbacks = [];
+    const applicationLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const service = createProcessingJobService({
+      applicationLogger,
+      projectOperationCoordinator: {
+        runAsync: (_projectId, callback) => {
+          callbacks.push(callback);
+          return Promise.resolve();
+        },
+      },
+    });
+
+    const succeededJobId = service.enqueue({
+      projectId: 1,
+      operation: 'convert',
+      assetCount: 2,
+      execute: () => ({
+        result: {
+          convertedCount: 2,
+          requestedCount: 2,
+          options: { quality: 85 },
+          generatedPaths: ['C:\\private\\asset.webp'],
+        },
+      }),
+    });
+    await callbacks.shift()();
+
+    let releaseRunning;
+    const runningJobId = service.enqueue({
+      projectId: 1,
+      operation: 'workflow-prompt',
+      assetCount: 1,
+      execute: async () => { await new Promise((resolve) => { releaseRunning = resolve; }); },
+    });
+    const running = callbacks.shift()();
+    await settle();
+    expect(service.cancel(runningJobId)).toBe(false);
+    expect(service.cancel(runningJobId)).toBe(false);
+
+    const cancelledJobId = service.enqueue({
+      projectId: 1,
+      operation: 'archive',
+      assetCount: 3,
+      execute: () => ({ changedCount: 3 }),
+    });
+    expect(service.cancel(cancelledJobId)).toBe(true);
+    expect(service.cancel(cancelledJobId)).toBe(false);
+    await callbacks.shift()();
+    releaseRunning();
+    await running;
+
+    const entries = [
+      ...applicationLogger.info.mock.calls.map(([entry]) => ({ level: 'info', entry })),
+      ...applicationLogger.warn.mock.calls.map(([entry]) => ({ level: 'warn', entry })),
+      ...applicationLogger.error.mock.calls.map(([entry]) => ({ level: 'error', entry })),
+    ];
+    expect(entries.map(({ entry }) => entry.event)).toEqual(expect.arrayContaining([
+      'processing.job.queued',
+      'processing.job.started',
+      'processing.job.succeeded',
+      'processing.job.cancelled',
+      'processing.job.cancel_rejected',
+    ]));
+    expect(entries.filter(({ entry }) => entry.event === 'processing.job.cancelled')).toHaveLength(1);
+    expect(entries.filter(({ entry }) => entry.event === 'processing.job.cancel_rejected')).toHaveLength(1);
+    expect(entries.filter(({ entry }) => entry.event === 'processing.job.started' && entry.correlationId === cancelledJobId)).toHaveLength(0);
+    expect(entries.find(({ entry }) => entry.event === 'processing.job.succeeded' && entry.correlationId === succeededJobId)).toMatchObject({
+      entry: {
+        projectId: 1,
+        context: { operation: 'convert', assetCount: 2, resultSummary: { convertedCount: 2, requestedCount: 2 } },
+      },
+    });
+    expect(JSON.stringify(entries)).not.toContain('quality');
+    expect(JSON.stringify(entries)).not.toContain('C:\\private');
+  });
+
+  it('keeps the failed state authoritative when logging throws and uses central logger sanitization', async () => {
+    const repository = { insert: vi.fn() };
+    const applicationLogger = createApplicationLogger({ repository });
+    const service = createProcessingJobService({ applicationLogger, projectOperationCoordinator: createProjectOperationCoordinator() });
+    const jobId = service.enqueue({
+      projectId: 1,
+      operation: 'watermark',
+      assetCount: 1,
+      execute: () => { throw Object.assign(new Error('Failed at C:\\private\\asset.png'), { code: 'EPRIVATE' }); },
+    });
+
+    await settle();
+    expect(service.getJob(jobId)).toMatchObject({ state: 'failed', error: { code: 'PROCESSING_FAILED' } });
+    const failed = repository.insert.mock.calls.map(([entry]) => entry).find((entry) => entry.event === 'processing.job.failed');
+    expect(failed).toMatchObject({
+      level: 'error',
+      correlationId: jobId,
+      projectId: 1,
+      context: { operation: 'watermark', assetCount: 1, error: { code: 'EPRIVATE', message: '[redacted path]' } },
+    });
+    expect(failed.context.error).not.toHaveProperty('stack');
+
+    const brokenLoggerService = createProcessingJobService({
+      applicationLogger: { info: () => { throw new Error('logger unavailable'); }, error: () => { throw new Error('logger unavailable'); } },
+      projectOperationCoordinator: createProjectOperationCoordinator(),
+    });
+    const brokenLoggerJobId = brokenLoggerService.enqueue({ projectId: 1, operation: 'archive', execute: () => ({ changedCount: 1 }) });
+    await settle();
+    expect(brokenLoggerService.getJob(brokenLoggerJobId)?.state).toBe('succeeded');
+  });
+
+  it('persists requestedCount while redacting request-body data through the real logger and repository', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-processing-job-log-'));
+    const db = openDatabase(path.join(directory, 'logs.db'));
+    runMigrations(db, MIGRATIONS_DIR);
+    const applicationLogger = createApplicationLogger({ repository: createApplicationLogRepository(db) });
+    const service = createProcessingJobService({ applicationLogger, projectOperationCoordinator: createProjectOperationCoordinator() });
+
+    try {
+      const jobId = service.enqueue({
+        projectId: 1,
+        operation: 'convert',
+        assetCount: 2,
+        execute: () => ({ result: { requestedCount: 2, requestBody: { secret: 'do-not-persist' } } }),
+      });
+      await settle();
+
+      const succeeded = JSON.parse(db.prepare("SELECT context_json FROM application_logs WHERE event = 'processing.job.succeeded' AND correlation_id = ?").get(jobId).context_json);
+      expect(succeeded.resultSummary).toEqual({ requestedCount: 2 });
+      expect(applicationLogger.info({
+        kind: 'diagnostic',
+        subsystem: 'processing',
+        event: 'processing.request-body-check',
+        message: 'Processing request-body redaction check.',
+        context: { requestedCount: 2, requestBody: { secret: 'do-not-persist' }, token: 'do-not-persist' },
+      })).toBe(true);
+      const persisted = JSON.parse(db.prepare("SELECT context_json FROM application_logs WHERE event = 'processing.request-body-check'").get().context_json);
+      expect(persisted).toEqual({ requestedCount: 2, requestBody: '[redacted]', token: '[redacted]' });
+    } finally {
+      closeDatabase(db);
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it('returns null for an unknown job', () => {

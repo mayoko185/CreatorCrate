@@ -242,6 +242,7 @@ const AUTO_RENAME_BLOCK_REASON_MESSAGES = Object.freeze({
  * @param {ReturnType<import('../services/book-primary-image-service.js').createBookPrimaryImageService>} deps.bookPrimaryImageService
  * @param {ReturnType<import('../services/auto-rename-service.js').createAutoRenameService>} deps.autoRenameService
  *   Application-scoped Auto Rename planner/executor.
+ * @param {object|null} [deps.applicationLogger]
  * @param {Function} [deps.previewProbe]
  *   Application-scoped bounded Krita preview probe used only by the viewer.
  */
@@ -260,6 +261,7 @@ export function createAssetsRouter({
   projectPrimaryImageService,
   bookService,
   bookPrimaryImageService,
+  applicationLogger = null,
   previewProbe,
 } = {}) {
   if (!assetBrowserPreferenceService || typeof assetBrowserPreferenceService.resolveEffectiveCategory !== 'function') {
@@ -284,6 +286,26 @@ export function createAssetsRouter({
   if (!autoRenameService || typeof autoRenameService.buildPlan !== 'function'
     || typeof autoRenameService.applyPlan !== 'function') {
     throw new Error('createAssetsRouter requires an autoRenameService dependency.');
+  }
+
+  function logMissingAssetRemoval(projectId, result) {
+    if (result.removedCount < 1) return;
+    try {
+      applicationLogger?.info?.({
+        event: 'project.missing_assets.removed',
+        kind: 'activity',
+        subsystem: 'projects',
+        message: 'Missing project assets removed.',
+        projectId,
+        context: {
+          removedCount: result.removedCount,
+          protectedCount: result.protectedCount,
+          missingCandidateCount: result.totalMissingCandidates,
+        },
+      });
+    } catch {
+      // Activity logging must never alter completed missing-asset cleanup.
+    }
   }
 
   const router = express.Router({ mergeParams: true });
@@ -322,6 +344,7 @@ export function createAssetsRouter({
       } catch (err) {
         return handleRemoveMissingAssetsFailure(err, next);
       }
+      logMissingAssetRemoval(id, result);
 
       return res.redirect(buildAssetsRedirectUrl(
         workflowQueryService,

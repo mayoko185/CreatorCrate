@@ -34,6 +34,11 @@ import {
 import { enhanceNumberInputs } from './client/number-input.js';
 import { enhanceProjectAssetsDefaultsScope } from './client/project-assets-defaults-scope.js';
 import {
+  AUTO_REFRESH_INTERVAL_MS,
+  enhanceLogViewerAutoRefresh,
+  formatLogTimestamp,
+} from './client/log-viewer.js';
+import {
   enhanceAssetViewerFilterDisclosures,
   enhanceDropdowns,
   enhanceProjectAssetCategoryFilter,
@@ -90,6 +95,9 @@ export {
   enhanceAppConfirmationControls as enhanceConfirmations,
   enhanceNumberInputs,
   enhanceProjectAssetsDefaultsScope,
+  AUTO_REFRESH_INTERVAL_MS,
+  enhanceLogViewerAutoRefresh,
+  formatLogTimestamp,
   enhanceAssetGridSize,
   enhanceAssetListSize,
   enhanceProjectGridSize,
@@ -147,8 +155,9 @@ if (typeof document !== 'undefined') {
     enhanceProjectAssetCategoryFilter(document);
     enhanceDropdowns(document);
     enhanceProjectAssetsDefaultsScope(document);
-    enhanceAssetViewerFilterDisclosures(document);
     enhanceAppDialogs(document);
+    enhanceLogViewerAutoRefresh(document);
+    enhanceAssetViewerFilterDisclosures(document);
     enhanceAppConfirmationControls(document);
     enhanceDashboardDefaultsDialog(document);
     enhanceProjectAssetCategoryManagement(document);

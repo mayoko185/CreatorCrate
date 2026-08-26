@@ -315,6 +315,30 @@ function appDialogSaveErrorMessage(state) {
     || 'Projects defaults could not be saved.';
 }
 
+function appDialogPendingMessage(state) {
+  return state.form?.getAttribute?.('data-dialog-pending-message')
+    || state.dialog.getAttribute?.('data-dialog-pending-message')
+    || 'Saving defaults.';
+}
+
+function appDialogFailureMessage(state) {
+  return state.form?.getAttribute?.('data-dialog-error-message')
+    || state.dialog.getAttribute?.('data-dialog-error-message')
+    || 'Could not save defaults.';
+}
+
+function appDialogNetworkFailureMessage(state) {
+  return state.form?.getAttribute?.('data-dialog-network-error-message')
+    || state.dialog.getAttribute?.('data-dialog-network-error-message')
+    || 'Could not save defaults. Check your connection and try again.';
+}
+
+function appDialogSuccessMessage(state) {
+  return state.form?.getAttribute?.('data-dialog-success-message')
+    || state.dialog.getAttribute?.('data-dialog-success-message')
+    || 'Projects defaults saved successfully.';
+}
+
 function appDialogFeedback(document, message, error = false) {
   const feedback = document?.querySelector?.('[data-dialog-feedback]');
   const text = feedback?.querySelector?.('[data-dialog-feedback-text]');
@@ -737,7 +761,7 @@ function appDialogBindForm(state) {
     if (state.submitting) return;
     state.submitting = true;
     appDialogClearErrors(state);
-    appDialogStatus(state, 'Saving defaults.');
+    appDialogStatus(state, appDialogPendingMessage(state));
     form.setAttribute?.('aria-busy', 'true');
     const submitButton = form.querySelector?.('[data-dialog-submit]');
     if (submitButton) submitButton.disabled = true;
@@ -760,7 +784,7 @@ function appDialogBindForm(state) {
             appDialogApplyValues(form, payload?.values || appDialogValues(form));
           }
           appDialogShowErrors(state, payload?.errors || {}, payload?.message || appDialogSaveErrorMessage(state));
-          appDialogStatus(state, payload?.message || 'Could not save defaults.', true);
+          appDialogStatus(state, payload?.message || appDialogFailureMessage(state), true);
           return;
         }
         // A successful-submit hook that begins navigation owns the terminal lifecycle.
@@ -768,7 +792,7 @@ function appDialogBindForm(state) {
         state.savedValues = payload?.values || appDialogValues(form);
         syncProjectAssetsSizePreferences(state.dialog, state.savedValues);
         appDialogStatus(state, '');
-        appDialogFeedback(state.document, payload?.message || 'Projects defaults saved successfully.');
+        appDialogFeedback(state.document, payload?.message || appDialogSuccessMessage(state));
         appDialogClose(state);
       })
       .catch(() => {
@@ -776,7 +800,7 @@ function appDialogBindForm(state) {
         form.removeAttribute?.('aria-busy');
         if (submitButton) submitButton.disabled = false;
         appDialogShowErrors(state, {}, `${appDialogSaveErrorMessage(state)} Your selections were kept.`);
-        appDialogStatus(state, 'Could not save defaults. Check your connection and try again.', true);
+        appDialogStatus(state, appDialogNetworkFailureMessage(state), true);
       });
   });
 }

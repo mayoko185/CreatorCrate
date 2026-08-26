@@ -93,8 +93,15 @@ function isChapterRepositoryError(error) {
  * @param {object} deps.chapterRepository
  * @param {object} deps.bookRepository
  * @param {object} deps.bookContentRepository
+ * @param {object} [deps.applicationLogger]
  */
-export function createChapterService({ db, chapterRepository, bookRepository, bookContentRepository } = {}) {
+export function createChapterService({
+  db,
+  chapterRepository,
+  bookRepository,
+  bookContentRepository,
+  applicationLogger = null,
+} = {}) {
   if (!chapterRepository) {
     throw new Error('createChapterService requires a chapterRepository dependency.');
   }
@@ -159,6 +166,20 @@ export function createChapterService({ db, chapterRepository, bookRepository, bo
     return new ChapterOperationError('Chapter operation could not be completed.', { cause: error });
   }
 
+  function logActivity(event, context) {
+    try {
+      applicationLogger?.info?.({
+        event,
+        kind: 'activity',
+        subsystem: 'notes',
+        message: 'Chapter activity completed.',
+        context,
+      });
+    } catch {
+      // Activity logging must never alter the completed Chapter operation.
+    }
+  }
+
   const createChapterTx = db.transaction((values) => {
     const chapter = chapterRepository.create(values);
     bookContentRepository.append(values.bookId, 'chapter', chapter.id);
@@ -195,7 +216,9 @@ export function createChapterService({ db, chapterRepository, bookRepository, bo
     createChapter(input) {
       const values = normalizeCreateInput(input);
       requireBook(values.bookId);
-      return createChapterTx(values);
+      const created = createChapterTx(values);
+      logActivity('chapter.created', { bookId: created.book_id, chapterId: created.id });
+      return created;
     },
 
     updateChapter(id, input) {
@@ -204,6 +227,9 @@ export function createChapterService({ db, chapterRepository, bookRepository, bo
       if (!updated) {
         throw new ChapterNotFoundError(id);
       }
+      if (updated.title !== existing.title) {
+        logActivity('chapter.updated', { bookId: updated.book_id, chapterId: updated.id });
+      }
       return updated;
     },
 
@@ -211,7 +237,11 @@ export function createChapterService({ db, chapterRepository, bookRepository, bo
       requireBook(bookId);
       validateReorderInput(orderedIds);
       try {
-        return chapterRepository.reorder(bookId, orderedIds);
+        const reordered = chapterRepository.reorder(bookId, orderedIds);
+        if (reordered.changed) {
+          logActivity('chapter.reordered', { bookId, affectedCount: reordered.length });
+        }
+        return reordered;
       } catch (error) {
         if (isChapterRepositoryError(error) && REORDER_VALIDATION_CODES.has(error.code)) {
           throw new ChapterValidationError({
@@ -228,7 +258,9 @@ export function createChapterService({ db, chapterRepository, bookRepository, bo
     deleteChapter(id) {
       const chapter = requireChapter(id);
       try {
-        return deleteChapterTx(chapter);
+        const deleted = deleteChapterTx(chapter);
+        logActivity('chapter.deleted', { bookId: chapter.book_id, chapterId: id });
+        return deleted;
       } catch (error) {
         if (error instanceof ChapterNotFoundError) {
           throw error;

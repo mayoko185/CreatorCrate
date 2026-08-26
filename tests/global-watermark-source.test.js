@@ -103,23 +103,95 @@ describe('global filesystem-backed Watermark source', () => {
 
   it('runs and clearly reports the initial startup scan', async () => {
     const logger = { log: vi.fn(), error: vi.fn() };
+    const applicationLogger = { info: vi.fn(), error: vi.fn() };
     const scan = { added: 1, updated: 0, restored: 0, removed: 0, total: 1, failed: 0 };
     const serviceStub = { scanWatermarks: vi.fn(async () => scan) };
     const appContext = { app: { locals: { watermarkService: serviceStub } } };
 
-    await expect(runInitialWatermarkScan(appContext, logger)).resolves.toEqual(scan);
+    await expect(runInitialWatermarkScan(appContext, logger, applicationLogger)).resolves.toEqual(scan);
     expect(serviceStub.scanWatermarks).toHaveBeenCalledOnce();
     expect(logger.log).toHaveBeenCalledWith(expect.stringContaining('Initial global Watermark scan completed'));
     expect(logger.log).toHaveBeenLastCalledWith(expect.stringContaining('0 failed'));
+    expect(applicationLogger.info).toHaveBeenCalledWith({
+      kind: 'diagnostic',
+      subsystem: 'runtime',
+      event: 'runtime.watermark.initial_scan.completed',
+      message: 'Initial global Watermark scan completed.',
+      context: { total: 1, added: 1, updated: 0, restored: 0, removed: 0, failed: 0 },
+    });
 
     serviceStub.scanWatermarks.mockRejectedValueOnce(new Error('unreadable source'));
-    await expect(runInitialWatermarkScan(appContext, logger)).resolves.toBeNull();
+    await expect(runInitialWatermarkScan(appContext, logger, applicationLogger)).resolves.toBeNull();
     expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('Initial global Watermark scan failed'));
+    expect(applicationLogger.error).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'diagnostic',
+      subsystem: 'runtime',
+      event: 'runtime.watermark.initial_scan.failed',
+      error: expect.objectContaining({ message: 'unreadable source' }),
+    }));
 
     const partial = { ...scan, failed: 1, errors: [{ relativePath: 'broken.png', code: 'INVALID_WATERMARK_PNG' }] };
     serviceStub.scanWatermarks.mockResolvedValueOnce(partial);
-    await expect(runInitialWatermarkScan(appContext, logger)).resolves.toEqual(partial);
+    await expect(runInitialWatermarkScan(appContext, logger, applicationLogger)).resolves.toEqual(partial);
     expect(logger.log).toHaveBeenLastCalledWith(expect.stringContaining('1 failed'));
+  });
+
+
+  it('logs clean initial startup scan completion at diagnostic info severity', async () => {
+    const logger = { log: vi.fn(), error: vi.fn() };
+    const applicationLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const scan = { added: 1, updated: 0, restored: 0, removed: 0, total: 1, failed: 0 };
+    const serviceStub = { scanWatermarks: vi.fn(async () => scan) };
+    const appContext = { app: { locals: { watermarkService: serviceStub } } };
+
+    await expect(runInitialWatermarkScan(appContext, logger, applicationLogger)).resolves.toEqual(scan);
+
+    expect(applicationLogger.info).toHaveBeenCalledTimes(1);
+    expect(applicationLogger.info).toHaveBeenCalledWith({
+      event: 'runtime.watermark.initial_scan.completed',
+      kind: 'diagnostic',
+      subsystem: 'runtime',
+      message: 'Initial global Watermark scan completed.',
+      context: { total: 1, added: 1, updated: 0, restored: 0, removed: 0, failed: 0 },
+    });
+    expect(applicationLogger.warn).not.toHaveBeenCalled();
+    expect(applicationLogger.error).not.toHaveBeenCalled();
+  });
+
+  it('logs partial initial startup scan completion at diagnostic warn severity', async () => {
+    const logger = { log: vi.fn(), error: vi.fn() };
+    const applicationLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const scan = { added: 1, updated: 0, restored: 0, removed: 0, total: 1, failed: 1 };
+    const serviceStub = { scanWatermarks: vi.fn(async () => scan) };
+    const appContext = { app: { locals: { watermarkService: serviceStub } } };
+
+    await expect(runInitialWatermarkScan(appContext, logger, applicationLogger)).resolves.toEqual(scan);
+
+    expect(applicationLogger.warn).toHaveBeenCalledTimes(1);
+    expect(applicationLogger.warn).toHaveBeenCalledWith({
+      event: 'runtime.watermark.initial_scan.completed',
+      kind: 'diagnostic',
+      subsystem: 'runtime',
+      message: 'Initial global Watermark scan completed.',
+      context: { total: 1, added: 1, updated: 0, restored: 0, removed: 0, failed: 1 },
+    });
+    expect(applicationLogger.info).not.toHaveBeenCalled();
+    expect(applicationLogger.error).not.toHaveBeenCalled();
+  });
+
+
+  it('isolates application logger failures from a completed initial startup scan', async () => {
+    const logger = { log: vi.fn(), error: vi.fn() };
+    const applicationLogger = { info: vi.fn(() => { throw new Error('logger unavailable'); }) };
+    const scan = { added: 1, updated: 0, restored: 0, removed: 0, total: 1, failed: 0 };
+    const serviceStub = { scanWatermarks: vi.fn(async () => scan) };
+    const appContext = { app: { locals: { watermarkService: serviceStub } } };
+
+    await expect(runInitialWatermarkScan(appContext, logger, applicationLogger)).resolves.toEqual(scan);
+
+    expect(serviceStub.scanWatermarks).toHaveBeenCalledTimes(1);
+    expect(applicationLogger.info).toHaveBeenCalledTimes(1);
+    expect(logger.error).not.toHaveBeenCalled();
   });
 
   it('reconciles valid sources when a malformed candidate fails and reports the safe relative identifier', async () => {

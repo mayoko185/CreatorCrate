@@ -4,6 +4,7 @@ import { closeDatabase } from './db.js';
 import { createProjectOperationCoordinator } from './services/project-operation-coordinator.js';
 import { createProcessingJobService } from './services/processing-job-service.js';
 import { createProcessingConcurrencyService } from './services/processing-concurrency-service.js';
+import { createApplicationLogger } from './services/application-logger.js';
 
 /**
  * Phase 11.2 live-restore fix — the mutable application context that owns
@@ -67,9 +68,17 @@ export function createApplicationContext(
   // with an independent one — exactly like onDatabaseReplaced/
   // onAuthConfigReplaced below.
   const projectOperationCoordinator = createProjectOperationCoordinator();
+  // This logger deliberately outlives an individual app graph. createApp
+  // rebinds its repository to the candidate database before that graph is
+  // published, so surviving services never write through a closed connection.
+  const applicationLogger = activeAppOpts.applicationLogger || createApplicationLogger({
+    persistDebug: activeAppOpts.persistDebugLogs,
+    console: activeAppOpts.applicationLogConsole,
+    now: activeAppOpts.applicationLogNow,
+  });
   // Processing jobs outlive a single app build: database and auth-context
-  // reconstruction must keep routing to this same lifecycle service.
-  const processingJobService = createProcessingJobService({ projectOperationCoordinator });
+  // reconstruction must keep routing to this same lifecycle service and logger.
+  const processingJobService = createProcessingJobService({ projectOperationCoordinator, applicationLogger });
   // Like processing jobs, the pool must survive every app-graph rebuild so
   // later processing operations across projects share one process-wide cap.
   const processingConcurrencyService = activeAppOpts.processingConcurrencyService
@@ -81,7 +90,7 @@ export function createApplicationContext(
     }
   }
 
-  function buildApp(db, opts) {
+  function buildApp(db, opts, applicationLogRepository = opts.applicationLogRepository) {
     return appFactory(
       { appName, db, projectsRoot, previewRoot },
       {
@@ -90,6 +99,8 @@ export function createApplicationContext(
         projectOperationCoordinator,
         processingJobService,
         processingConcurrencyService,
+        applicationLogger,
+        ...(applicationLogRepository ? { applicationLogRepository } : {}),
         assertNoActiveProcessingJobs,
         onDatabaseReplaced: replaceDatabase,
         onAuthConfigReplaced: replaceAuthConfig,
@@ -97,7 +108,11 @@ export function createApplicationContext(
     );
   }
 
-  let current = { db: initialDb, app: buildApp(initialDb, activeAppOpts) };
+  const initialApp = buildApp(initialDb, activeAppOpts);
+  let applicationLogRepository = initialApp.locals?.applicationLogRepository
+    || applicationLogger.getRepository?.()
+    || null;
+  let current = { db: initialDb, app: initialApp };
 
   /**
    * Reconstruct every db-bound repository/service/route against `newDb` and
@@ -113,14 +128,24 @@ export function createApplicationContext(
    * here so it is never leaked.
    */
   function replaceDatabase(newDb) {
+    const previousLoggerRepository = applicationLogRepository || applicationLogger.getRepository?.();
+    const { applicationLogRepository: _previousApplicationLogRepository, ...replacementAppOpts } = activeAppOpts;
     let newApp;
+    let replacementApplicationLogRepository;
     try {
       assertNoActiveProcessingJobs();
-      newApp = buildApp(newDb, activeAppOpts);
+      newApp = buildApp(newDb, replacementAppOpts);
+      replacementApplicationLogRepository = newApp.locals?.applicationLogRepository
+        || applicationLogger.getRepository?.()
+        || null;
     } catch (err) {
+      if (previousLoggerRepository) {
+        applicationLogger.rebindRepository(previousLoggerRepository);
+      }
       try { closeDatabase(newDb); } catch { /* best-effort */ }
       throw err;
     }
+    applicationLogRepository = replacementApplicationLogRepository;
     current = { db: newDb, app: newApp };
   }
 
@@ -136,8 +161,17 @@ export function createApplicationContext(
    */
   function replaceAuthConfig(newAuthConfig) {
     assertNoActiveProcessingJobs();
+    const previousLoggerRepository = applicationLogger.getRepository?.();
     const candidateOpts = { ...activeAppOpts, authConfig: newAuthConfig };
-    const newApp = buildApp(current.db, candidateOpts);
+    let newApp;
+    try {
+      newApp = buildApp(current.db, candidateOpts, applicationLogRepository);
+    } catch (err) {
+      if (previousLoggerRepository) {
+        applicationLogger.rebindRepository(previousLoggerRepository);
+      }
+      throw err;
+    }
     activeAppOpts = candidateOpts;
     current = { db: current.db, app: newApp };
   }

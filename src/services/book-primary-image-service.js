@@ -54,6 +54,7 @@ function assertCanonicalPositiveId(value, label) {
  * @param {ReturnType<typeof createAssetRepository>} [deps.assetRepository]
  * @param {ReturnType<typeof createBookPrimaryImageRepository>} [deps.bookPrimaryImageRepository]
  * @param {(project: object|number, asset: object) => {quality?: string}|Promise<{quality?: string}>} [deps.previewProbe]
+ * @param {object} [deps.applicationLogger]
  */
 export function createBookPrimaryImageService({
   db,
@@ -61,6 +62,7 @@ export function createBookPrimaryImageService({
   assetRepository,
   bookPrimaryImageRepository,
   previewProbe,
+  applicationLogger = null,
 } = {}) {
   if (!db || typeof db.transaction !== 'function') {
     throw new Error('createBookPrimaryImageService requires a db dependency.');
@@ -129,14 +131,34 @@ export function createBookPrimaryImageService({
     );
   }
 
+  function logActivity(event, context, projectId = null) {
+    try {
+      applicationLogger?.info?.({
+        event,
+        kind: 'activity',
+        subsystem: 'notes',
+        message: 'Book primary image activity completed.',
+        projectId,
+        context,
+      });
+    } catch {
+      // Activity logging must never alter the completed primary-image operation.
+    }
+  }
+
   const setPrimaryImageTx = db.transaction((bookId, assetId, kritaQuality = null) => {
     requireBook(bookId);
     const asset = requireEligiblePresentAsset(assetId, { kritaQuality });
-    const stored = primaryImages.setPrimaryImage(bookId, asset.id);
+    const outcome = primaryImages.setPrimaryImageWithOutcome(bookId, asset.id);
+    const stored = outcome.selection;
     if (!stored || stored.book_id !== bookId || stored.asset_id !== assetId) {
       throw new Error('Primary image repository returned an invalid selection.');
     }
-    return stored;
+    return {
+      stored,
+      changed: outcome.changed,
+      projectId: asset.project_id,
+    };
   });
 
   function setPrimaryImage(bookId, assetId) {
@@ -246,7 +268,20 @@ export function createBookPrimaryImageService({
 
     setPrimaryImage(bookId, assetId) {
       try {
-        return setPrimaryImage(bookId, assetId);
+        const result = setPrimaryImage(bookId, assetId);
+        const logSelection = (outcome) => {
+          if (outcome.changed) {
+            logActivity(
+              'book.primary_image.set',
+              { bookId, assetId: outcome.stored.asset_id },
+              outcome.projectId,
+            );
+          }
+          return outcome.stored;
+        };
+        return result && typeof result.then === 'function'
+          ? result.then(logSelection)
+          : logSelection(result);
       } catch (err) {
         throw databaseFailure(err);
       }
@@ -256,7 +291,9 @@ export function createBookPrimaryImageService({
       assertCanonicalPositiveId(bookId, 'bookId');
       assertCanonicalPositiveId(expectedAssetId, 'expectedAssetId');
       try {
-        return clearPrimaryImageTx(bookId, expectedAssetId);
+        const cleared = clearPrimaryImageTx(bookId, expectedAssetId);
+        logActivity('book.primary_image.cleared', { bookId, assetId: expectedAssetId });
+        return cleared;
       } catch (err) {
         throw databaseFailure(err);
       }

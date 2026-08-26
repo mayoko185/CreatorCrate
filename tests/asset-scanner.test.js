@@ -9,7 +9,9 @@ import { createProjectRepository } from '../src/data/project-repository.js';
 import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
 import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browser-preference-repository.js';
 import { createAppMetaRepository } from '../src/data/app-meta-repository.js';
+import { createApplicationLogRepository } from '../src/data/application-log-repository.js';
 import { createAssetCategoryService } from '../src/services/asset-category-service.js';
+import { createApplicationLogger } from '../src/services/application-logger.js';
 import { createProjectService, ProjectNotFoundError } from '../src/services/project-service.js';
 import { createAssetScanner } from '../src/services/asset-scanner.js';
 import { createProjectPrimaryImageRepository } from '../src/data/project-primary-image-repository.js';
@@ -1444,6 +1446,60 @@ describe('asset scanner', () => {
       }
 
       expect(projectOperationCoordinator.isActive(project.id)).toBe(false);
+    });
+
+    it('logs one safe aggregate record for a successful manual scan and tolerates logger failure', () => {
+      const applicationLogRepository = createApplicationLogRepository(db);
+      const applicationLogger = createApplicationLogger({
+        repository: applicationLogRepository,
+        console: { error: vi.fn() },
+        now: () => 1,
+      });
+      const loggedScanner = createAssetScanner(db, projectsRoot, {
+        projectService,
+        assetCategoryService,
+        projectOperationCoordinator,
+        previewCategorySettingsService,
+        projectPrimaryImageRepository: primaryImageRepository,
+        applicationLogger,
+      });
+      const { project, absPath } = createProjectWithDir('Manual Scan Logging');
+      fs.writeFileSync(path.join(absPath, 'private-source.png'), 'png');
+
+      expect(loggedScanner.scanProjectAssets(project.id)).toMatchObject({
+        added: 1,
+        updated: 0,
+        removed: 0,
+        total: 1,
+      });
+      expect(applicationLogRepository.count({ kind: 'activity' })).toBe(1);
+      const [record] = applicationLogRepository.findPage({ kind: 'activity' });
+      expect(record).toMatchObject({
+        event: 'project.scan.completed',
+        level: 'info',
+        kind: 'activity',
+        project_id: project.id,
+      });
+      expect(record.context_json).toBe(JSON.stringify({
+        discoveredCount: 1,
+        addedCount: 1,
+        updatedCount: 0,
+        missingCount: 0,
+      }));
+      expect(record.context_json).not.toContain('private-source.png');
+      expect(record.context_json).not.toContain(absPath);
+
+      const failingLogger = { info: vi.fn(() => { throw new Error('logger failure'); }) };
+      const failingLoggerScanner = createAssetScanner(db, projectsRoot, {
+        projectService,
+        assetCategoryService,
+        projectOperationCoordinator,
+        previewCategorySettingsService,
+        projectPrimaryImageRepository: primaryImageRepository,
+        applicationLogger: failingLogger,
+      });
+      expect(failingLoggerScanner.scanProjectAssets(project.id).total).toBe(1);
+      expect(failingLogger.info).toHaveBeenCalledOnce();
     });
   });
 });

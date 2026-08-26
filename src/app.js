@@ -33,6 +33,7 @@ import { createBookPrimaryImageRepository } from './data/book-primary-image-repo
 import { createAssetCategoryService } from './services/asset-category-service.js';
 import { createAssetBrowserPreferenceRepository } from './data/asset-browser-preference-repository.js';
 import { createAppMetaRepository } from './data/app-meta-repository.js';
+import { APPLICATION_LOG_DEFAULT_PAGE_SIZE, createApplicationLogRepository } from './data/application-log-repository.js';
 import { createProjectPageDefaultRepository } from './data/project-page-default-repository.js';
 import { createTagRepository } from './data/tag-repository.js';
 import { createProjectPrimaryImageRepository } from './data/project-primary-image-repository.js';
@@ -62,6 +63,7 @@ import { createBookPrimaryImageService } from './services/book-primary-image-ser
 import { createProjectOperationCoordinator } from './services/project-operation-coordinator.js';
 import { createProcessingJobService } from './services/processing-job-service.js';
 import { createProcessingConcurrencyService } from './services/processing-concurrency-service.js';
+import { createApplicationLogger } from './services/application-logger.js';
 import { sharpRuntime as defaultSharpRuntime } from './services/sharp-runtime.js';
 import { createReleaseService } from './services/release-service.js';
 import { createWorkflowQueryService } from './services/workflow-query-service.js';
@@ -217,6 +219,20 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // instance is passed to the Settings router too.
   const appMetaRepository = opts.appMetaRepository || createAppMetaRepository(db);
   app.locals.appMetaRepository = appMetaRepository;
+  // The logger, not future worker packages, owns the database persistence
+  // contract. An app-context supplied logger keeps its identity across a live
+  // restore and is rebound here before any rebuilt app is exposed.
+  const applicationLogRepository = opts.applicationLogRepository || createApplicationLogRepository(db);
+  const applicationLogger = opts.applicationLogger || createApplicationLogger({
+    repository: applicationLogRepository,
+    persistDebug: opts.persistDebugLogs,
+    console: opts.applicationLogConsole,
+    now: opts.applicationLogNow,
+  });
+  applicationLogger.rebindRepository(applicationLogRepository);
+  applicationLogger.prune();
+  app.locals.applicationLogger = applicationLogger;
+  app.locals.applicationLogRepository = applicationLogRepository;
   const assetCategoryRepository = opts.assetCategoryRepository || createAssetCategoryRepository(db);
   const assetCategoryService = opts.assetCategoryService || createAssetCategoryService(assetCategoryRepository);
   const assetBrowserPreferenceRepository =
@@ -252,6 +268,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   const projectService = createProjectService(db, projectsRoot, {
     assetCategoryService,
     assetBrowserPreferenceRepository,
+    applicationLogger,
   });
   app.locals.projectService = projectService;
 
@@ -272,7 +289,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // ad-hoc scripts) that construct createApp directly without app-context.
   const projectOperationCoordinator = opts.projectOperationCoordinator || createProjectOperationCoordinator();
   const processingJobService = opts.processingJobService
-    || createProcessingJobService({ projectOperationCoordinator });
+    || createProcessingJobService({ projectOperationCoordinator, applicationLogger });
 
   const projectPrimaryImageRepository = createProjectPrimaryImageRepository(db);
   const assetScanner = createAssetScanner(db, projectsRoot, {
@@ -281,6 +298,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     projectOperationCoordinator,
     previewCategorySettingsService,
     projectPrimaryImageRepository,
+    applicationLogger,
   });
   app.locals.assetScanner = assetScanner;
 
@@ -295,6 +313,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     bookContentRepository,
     chapterRepository,
     noteRepository,
+    applicationLogger,
   });
   app.locals.bookRepository = bookRepository;
   app.locals.bookService = bookService;
@@ -307,12 +326,14 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     chapterRepository,
     bookRepository,
     bookContentRepository,
+    applicationLogger,
   });
   const chapterService = opts.chapterService || createChapterService({
     db,
     chapterRepository,
     bookRepository,
     bookContentRepository,
+    applicationLogger,
   });
   const markdownRenderer = opts.markdownRenderer || createMarkdownRenderer();
   app.locals.noteRepository = noteRepository;
@@ -321,14 +342,16 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.locals.markdownRenderer = markdownRenderer;
 
   const tagRepository = opts.tagRepository || createTagRepository(db);
-  const tagService = opts.tagService || createTagService({ tagRepository });
+  const tagService = opts.tagService || createTagService({ tagRepository, applicationLogger });
   const projectTagService = opts.projectTagService || createProjectTagService({
     tagRepository,
     projectRepository: projectService.repository,
+    applicationLogger,
   });
   const assetTagService = opts.assetTagService || createAssetTagService({
     tagRepository,
     assetRepository: assetScanner.repository,
+    applicationLogger,
   });
   app.locals.tagService = tagService;
   app.locals.projectTagService = projectTagService;
@@ -352,6 +375,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       assetRepository: assetScanner.repository,
       assetBrowserPreferenceRepository,
       projectsRoot,
+      applicationLogger,
     })
     : null);
   app.locals.projectAssetCategoryService = projectAssetCategoryService;
@@ -370,6 +394,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       assetCategoryRepository,
       projectsRoot,
       projectOperationCoordinator,
+      applicationLogger,
     })
     : null);
   app.locals.assetActionService = assetActionService;
@@ -461,6 +486,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       scaleMapService: watermarkScaleMapService,
       watermarkScaleMap: opts.watermarkScaleMap,
       alreadyCoordinatedCapability: processingJobExecutionCapability,
+      applicationLogger,
     })
     : null);
   const alreadyCoordinatedProcessingExecutor = opts.alreadyCoordinatedProcessingExecutor
@@ -483,6 +509,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       projectsRoot,
       projectOperationCoordinator,
       signingKey: opts.autoRenameSigningKey,
+      applicationLogger,
     }))
     : null;
   app.locals.autoRenameService = autoRenameService;
@@ -505,6 +532,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     assetRepository: assetScanner.repository,
     projectPrimaryImageRepository,
     previewProbe: previewService?.inspectKritaPreviewSource,
+    applicationLogger,
   });
   app.locals.projectPrimaryImageRepository = projectPrimaryImageRepository;
   app.locals.projectPrimaryImageService = projectPrimaryImageService;
@@ -515,11 +543,12 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     assetRepository: assetScanner.repository,
     bookPrimaryImageRepository,
     previewProbe: previewService?.inspectKritaPreviewSource,
+    applicationLogger,
   });
   app.locals.bookPrimaryImageRepository = bookPrimaryImageRepository;
   app.locals.bookPrimaryImageService = bookPrimaryImageService;
 
-  const releaseService = opts.releaseService || createReleaseService({ db });
+  const releaseService = opts.releaseService || createReleaseService({ db, applicationLogger });
   const assetWorkflowMetadataService = opts.assetWorkflowMetadataService || (projectsRoot
     ? createAssetWorkflowMetadataService({ db, projectsRoot })
     : null);
@@ -629,7 +658,14 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.use(requireCsrf);
 
   if (authService) {
-    app.use(createAuthRouter({ appName, authService, cookieOptions, loginThrottler, trustProxy: !!authConfig?.trustProxy }));
+    app.use(createAuthRouter({
+      appName,
+      authService,
+      cookieOptions,
+      loginThrottler,
+      trustProxy: !!authConfig?.trustProxy,
+      applicationLogger,
+    }));
   } else {
     // Phase 13: authentication is disabled, so there is no session/CSRF
     // machinery for a real login form. Point visitors at the one place they
@@ -659,7 +695,12 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     tagService,
   }));
   app.use('/health', createHealthRouter({ db, maintenanceState }));
-  app.use('/projects', createProjectsRouter({ appName, db, projectService, workflowQueryService }));
+  app.use('/projects', createProjectsRouter({
+    appName,
+    db,
+    projectService,
+    workflowQueryService,
+  }));
   app.use('/assets', createAssetLibraryRouter({ appName, db, workflowQueryService }));
   // Managed resources are application-global. Project execution endpoints are
   // added by the same router only when rooted processing dependencies exist.
@@ -675,6 +716,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     processingPresetService,
     processingJobService,
     alreadyCoordinatedProcessingExecutor,
+    applicationLogger,
   }));
 
   // Media routes stay before the asset browser/viewer router. The media
@@ -707,6 +749,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       projectPrimaryImageService,
       bookService,
       bookPrimaryImageService,
+      applicationLogger,
       previewProbe: previewService?.inspectKritaPreviewSource,
     }));
     app.use('/projects', createProjectAssetCategoryManagementRouter({
@@ -788,6 +831,9 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     authSettings: opts.authSettings,
     assetBrowserPreferenceService,
     previewCategorySettingsService,
+    applicationLogRepository,
+    applicationLogDefaultPageSize: APPLICATION_LOG_DEFAULT_PAGE_SIZE,
+    applicationLogger,
   }));
 
   app.use((_req, _res, next) => {
@@ -809,6 +855,17 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     // pollute a client's cache. Controlled domain statuses (4xx) are left
     // untouched — their cache policy is set by the route that handled them.
     if (status >= 500) {
+      try {
+        applicationLogger.error({
+        kind: 'diagnostic',
+        subsystem: 'http',
+        event: 'runtime.http.unhandled_error',
+        message: 'An unhandled request failed with a server error.',
+        context: { method: req.method, status },
+        error: err,
+        });
+      } catch {
+      }
       res.setHeader('Cache-Control', 'no-store');
       res.removeHeader('Content-Type');
       res.removeHeader('Content-Length');
