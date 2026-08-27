@@ -603,7 +603,7 @@ export function createAssetProcessingService({
     }
   }
 
-  function verifyWatermarkHardLink({
+  function verifyHardLinkAlias({
     projectDir,
     referencePath,
     referenceIdentity,
@@ -661,7 +661,7 @@ export function createAssetProcessingService({
     }
     if (!item.stageOutput || !item.stageOutputStats) return false;
     try {
-      const verification = verifyWatermarkHardLink({
+      const verification = verifyHardLinkAlias({
         projectDir,
         referencePath: item.stageOutput,
         referenceIdentity: item.stageOutputIdentity,
@@ -674,6 +674,26 @@ export function createAssetProcessingService({
       return false;
     }
   }
+  function promptOutputMatchesPublication(item, currentStats, projectDir) {
+    if (!item.replacementPublished) return false;
+    if (sameIdentity(currentStats, item.outputIdentity)) return true;
+    if (!item.stagePath || !item.stageIdentity || !item.stageStats || !isSha256(item.outputSha256)) {
+      return false;
+    }
+    try {
+      return Boolean(verifyHardLinkAlias({
+        projectDir,
+        referencePath: item.stagePath,
+        referenceIdentity: item.stageIdentity,
+        referenceStats: item.stageStats,
+        outputPath: item.sourceAbsPath,
+        outputSha256: item.outputSha256,
+      }));
+    } catch {
+      return false;
+    }
+  }
+
 
   function resolveTrustedWatermarkPath(watermarkId) {
     if (watermarkService) {
@@ -1229,7 +1249,7 @@ export function createAssetProcessingService({
         item.destinationBackupPath = path.join(item.stagingDirectory, `${item.stageIndex}.destination`);
         try {
           fs.linkSync(item.outputAbsPath, item.destinationBackupPath);
-          const backupVerification = verifyWatermarkHardLink({
+          const backupVerification = verifyHardLinkAlias({
             projectDir,
             referencePath: item.outputAbsPath,
             referenceIdentity: item.destinationIdentity,
@@ -1271,7 +1291,7 @@ export function createAssetProcessingService({
     item.outputPublication = 'linked';
     item.outputIdentity = { ...item.stageOutputIdentity };
 
-    const outputVerification = verifyWatermarkHardLink({
+    const outputVerification = verifyHardLinkAlias({
       projectDir,
       referencePath: item.stageOutput,
       referenceIdentity: item.stageOutputIdentity,
@@ -1354,7 +1374,7 @@ export function createAssetProcessingService({
             continue;
           }
           fs.linkSync(item.destinationBackupPath, item.outputAbsPath);
-          const restoredVerification = verifyWatermarkHardLink({
+          const restoredVerification = verifyHardLinkAlias({
             projectDir,
             referencePath: item.destinationBackupPath,
             referenceIdentity: item.destinationBackupIdentity,
@@ -1468,7 +1488,7 @@ export function createAssetProcessingService({
         fs.linkSync(item.stagedDeletePath, item.sourceAbsPath);
         const restoredStats = inspectSource(item.sourceAbsPath);
         const restoredVerification = item.stagedDeleteSha256
-          ? verifyWatermarkHardLink({
+          ? verifyHardLinkAlias({
             projectDir,
             referencePath: item.stagedDeletePath,
             referenceIdentity: item.stagedDeleteIdentity,
@@ -1844,7 +1864,7 @@ export function createAssetProcessingService({
       const stagedStats = inspectGeneratedFile(stagedDeletePath, 'RECOVERY_REQUIRED');
       item.stagedDeleteIdentity = { dev: stagedStats.dev, ino: stagedStats.ino };
       const stagedVerification = sourceSha256
-        ? verifyWatermarkHardLink({
+        ? verifyHardLinkAlias({
           projectDir,
           referencePath: item.sourceAbsPath,
           referenceIdentity: item.sourceIdentity,
@@ -3035,7 +3055,7 @@ export function createAssetProcessingService({
     return stats;
   }
 
-  function cleanupPromptStaging(staging) {
+  function cleanupPromptStaging(staging, { preserveRecoveryBackups = false } = {}) {
     function cleanupArtifact(itemPath, identity) {
       if (!itemPath) return true;
       if (identity) return removeFileIfIdentityMatches(itemPath, identity);
@@ -3052,6 +3072,11 @@ export function createAssetProcessingService({
       if (!cleanupArtifact(item.stagePath, item.stageIdentity)) {
         clean = false;
       }
+      if (preserveRecoveryBackups && (item.sourceRemoved || item.replacementPublished)) {
+        // A backup is the last trusted original until rollback has verified restoration.
+        clean = false;
+        continue;
+      }
       if (!cleanupArtifact(item.backupPath, item.backupIdentity)) {
         clean = false;
       }
@@ -3065,19 +3090,38 @@ export function createAssetProcessingService({
     return clean;
   }
 
-  function stagePromptOutput(item, staging, index) {
+  async function stagePromptOutput(item, staging, index) {
     const stagePath = path.join(staging.directory, `${index}.png`);
     item.stagePath = stagePath;
     try {
-      fs.writeFileSync(stagePath, item.editedBuffer, {
+      await fs.promises.writeFile(stagePath, item.editedBuffer, {
         flag: 'wx',
         mode: item.sourceStats.mode & 0o7777,
       });
       fs.chmodSync(stagePath, item.sourceStats.mode & 0o7777);
       const stageStats = inspectPromptFile(stagePath, 'PROMPT_STAGE_INVALID');
       item.stageIdentity = { dev: stageStats.dev, ino: stageStats.ino };
-      parsePngChunks(fs.readFileSync(stagePath));
+      item.stageStats = {
+        dev: stageStats.dev,
+        ino: stageStats.ino,
+        size: stageStats.size,
+        nlink: stageStats.nlink,
+      };
+      item.outputSha256 = createHash('sha256').update(item.editedBuffer).digest('hex');
+      parsePngChunks(await fs.promises.readFile(stagePath));
     } catch (err) {
+      if (!item.stageIdentity && err?.code !== 'EEXIST') {
+        try {
+          const stageStats = inspectPromptFile(stagePath, 'PROMPT_STAGE_INVALID');
+          item.stageIdentity = { dev: stageStats.dev, ino: stageStats.ino };
+          item.stageStats = {
+            dev: stageStats.dev,
+            ino: stageStats.ino,
+            size: stageStats.size,
+            nlink: stageStats.nlink,
+          };
+        } catch { /* staging cleanup remains identity-safe */ }
+      }
       if (err instanceof AssetProcessingError) throw err;
       if (err instanceof WorkflowPromptMetadataError) {
         throw new AssetProcessingError('CreatorCrate produced an invalid staged PNG.', {
@@ -3092,7 +3136,7 @@ export function createAssetProcessingService({
     }
   }
 
-  function stagePromptBackup(item, staging, index) {
+  function stagePromptBackup(item, staging, index, projectDir) {
     const currentStats = inspectSource(item.sourceAbsPath);
     if (!sameIdentity(currentStats, item.sourceIdentity)) {
       throw new AssetProcessingError('A selected source changed during prompt edit preflight.', {
@@ -3104,12 +3148,27 @@ export function createAssetProcessingService({
     item.backupPath = backupPath;
     try {
       fs.linkSync(item.sourceAbsPath, backupPath);
-      const backupStats = inspectPromptFile(backupPath, 'RECOVERY_REQUIRED');
-      if (!sameIdentity(backupStats, item.sourceIdentity)) {
+      const backupStats = inspectPromptFile(backupPath, 'PROMPT_BACKUP_INVALID');
+      const backupVerification = verifyHardLinkAlias({
+        projectDir,
+        referencePath: item.sourceAbsPath,
+        referenceIdentity: item.sourceIdentity,
+        referenceStats: currentStats,
+        outputPath: backupPath,
+        outputSha256: item.sourceSha256,
+      });
+      if (!backupVerification) {
         throw new Error('Prompt backup identity mismatch.');
       }
-      item.backupIdentity = { dev: backupStats.dev, ino: backupStats.ino };
+      item.backupIdentity = backupVerification.identity;
+      item.backupVerification = backupVerification;
     } catch (err) {
+      if (!item.backupIdentity && err?.code !== 'EEXIST') {
+        try {
+          const backupStats = inspectPromptFile(backupPath, 'RECOVERY_REQUIRED');
+          item.backupIdentity = { dev: backupStats.dev, ino: backupStats.ino };
+        } catch { /* staging cleanup remains identity-safe */ }
+      }
       if (err instanceof AssetProcessingError) throw err;
       throw new AssetProcessingError('CreatorCrate could not stage a prompt backup.', {
         code: 'FILESYSTEM_OPERATION_FAILED',
@@ -3118,7 +3177,7 @@ export function createAssetProcessingService({
     }
   }
 
-  function publishPromptOutput(item) {
+  function publishPromptOutput(item, projectDir) {
     const currentStats = inspectSource(item.sourceAbsPath);
     if (!sameIdentity(currentStats, item.sourceIdentity)) {
       throw new AssetProcessingError('A selected source changed during prompt editing.', {
@@ -3139,14 +3198,36 @@ export function createAssetProcessingService({
     try {
       fs.linkSync(item.stagePath, item.sourceAbsPath);
       item.replacementPublished = true;
-      const outputStats = inspectPromptFile(item.sourceAbsPath, 'RECOVERY_REQUIRED');
-      if (!sameIdentity(outputStats, item.stageIdentity)) {
+      const outputVerification = verifyHardLinkAlias({
+        projectDir,
+        referencePath: item.stagePath,
+        referenceIdentity: item.stageIdentity,
+        referenceStats: item.stageStats,
+        outputPath: item.sourceAbsPath,
+        outputSha256: item.outputSha256,
+      });
+      if (!outputVerification) {
         throw new AssetProcessingError('Prompt output identity could not be verified.', {
           code: 'RECOVERY_REQUIRED',
         });
       }
-      item.outputIdentity = { dev: outputStats.dev, ino: outputStats.ino };
-      item.outputStats = outputStats;
+      item.outputIdentity = outputVerification.identity;
+      item.outputVerification = outputVerification;
+      item.outputStats = outputVerification.stats;
+      let publishedHash;
+      try {
+        publishedHash = hashRegularFileInProject(projectDir, item.sourceAbsPath);
+      } catch (hashErr) {
+        throw new AssetProcessingError('Prompt output content could not be verified.', {
+          code: 'RECOVERY_REQUIRED',
+          cause: hashErr,
+        });
+      }
+      if (publishedHash !== item.outputSha256) {
+        throw new AssetProcessingError('Prompt output content changed during publication.', {
+          code: 'RECOVERY_REQUIRED',
+        });
+      }
     } catch (err) {
       if (err instanceof AssetProcessingError) throw err;
       if (err.code === 'EEXIST') {
@@ -3161,18 +3242,20 @@ export function createAssetProcessingService({
       });
     }
 
-    try {
-      fs.unlinkSync(item.stagePath);
-      item.stagePath = null;
-    } catch (err) {
-      throw new AssetProcessingError('Prompt output staging cleanup failed.', {
-        code: 'RECOVERY_REQUIRED',
-        cause: err,
-      });
+    if (item.outputVerification.mode === 'strict') {
+      try {
+        fs.unlinkSync(item.stagePath);
+        item.stagePath = null;
+      } catch (err) {
+        throw new AssetProcessingError('Prompt output staging cleanup failed.', {
+          code: 'RECOVERY_REQUIRED',
+          cause: err,
+        });
+      }
     }
   }
 
-  function restorePromptReplacements(items) {
+  function restorePromptReplacements(items, projectDir) {
     let restored = true;
     for (const item of [...items].reverse()) {
       if (!item.sourceRemoved && !item.replacementPublished) continue;
@@ -3195,7 +3278,8 @@ export function createAssetProcessingService({
         if (sameIdentity(current, item.sourceIdentity)) {
           continue;
         }
-        if (!item.outputIdentity || !sameIdentity(current, item.outputIdentity)) {
+        if ((!item.outputIdentity || !sameIdentity(current, item.outputIdentity))
+          && !promptOutputMatchesPublication(item, current, projectDir)) {
           // Never overwrite a file whose identity is not one of ours.
           restored = false;
           continue;
@@ -3226,8 +3310,15 @@ export function createAssetProcessingService({
           continue;
         }
         fs.linkSync(item.backupPath, item.sourceAbsPath);
-        const restoredStats = inspectSource(item.sourceAbsPath);
-        if (!sameIdentity(restoredStats, item.sourceIdentity)) {
+        const restoredVerification = verifyHardLinkAlias({
+          projectDir,
+          referencePath: item.backupPath,
+          referenceIdentity: item.backupIdentity,
+          referenceStats: backupStats,
+          outputPath: item.sourceAbsPath,
+          outputSha256: item.sourceSha256,
+        });
+        if (!restoredVerification) {
           restored = false;
           continue;
         }
@@ -3254,7 +3345,7 @@ export function createAssetProcessingService({
   async function editWorkflowPromptsLocked(projectId, assetIds, options, progress) {
     const project = requireMutableProject(projectId);
     const projectDir = resolveProjectAbsPath(project);
-    const items = [];
+    const candidates = [];
     const unchangedAssetIds = [];
     const noWorkflowAssetIds = [];
     const noChangeAssetIds = [];
@@ -3297,9 +3388,19 @@ export function createAssetProcessingService({
       }
       sourcePaths.set(sourceKey, assetId);
 
+      candidates.push({
+        asset,
+        assetId,
+        sourceRelativePath,
+        sourceAbsPath,
+        sourceIdentity: { dev: sourceStats.dev, ino: sourceStats.ino },
+      });
+    }
+
+    const prepared = await processingConcurrencyService.mapBounded(candidates, async (candidate) => {
       let sourceBuffer;
       try {
-        sourceBuffer = fs.readFileSync(sourceAbsPath);
+        sourceBuffer = await fs.promises.readFile(candidate.sourceAbsPath);
       } catch (err) {
         if (err.code === 'ENOENT') {
           throw new AssetProcessingError('Source file does not exist.', { code: 'SOURCE_MISSING' });
@@ -3317,29 +3418,32 @@ export function createAssetProcessingService({
         throw wrapPromptMetadataError(err);
       }
 
-      if (!edited.changed) {
-        unchangedAssetIds.push(assetId);
-        if (edited.metadataKey) noChangeAssetIds.push(assetId);
-        else noWorkflowAssetIds.push(assetId);
-        progress.advance();
-        continue;
-      }
-
-      const afterReadStats = inspectSource(sourceAbsPath);
-      if (!sameIdentity(afterReadStats, { dev: sourceStats.dev, ino: sourceStats.ino })) {
+      const afterReadStats = inspectSource(candidate.sourceAbsPath);
+      if (!sameIdentity(afterReadStats, candidate.sourceIdentity)) {
         throw new AssetProcessingError('A selected source changed during prompt edit preflight.', {
           code: 'SOURCE_CHANGED',
         });
       }
 
-      items.push({
-        asset,
-        assetId,
-        sourceRelativePath,
-        sourceAbsPath,
-        sourceIdentity: { dev: sourceStats.dev, ino: sourceStats.ino },
+      return {
+        ...candidate,
         sourceStats: afterReadStats,
-        editedBuffer: edited.buffer,
+        sourceSha256: createHash('sha256').update(sourceBuffer).digest('hex'),
+        ...(edited.changed ? { editedBuffer: edited.buffer } : { edited }),
+      };
+    });
+
+    const items = [];
+    for (const preparedItem of prepared) {
+      if (!preparedItem.editedBuffer) {
+        unchangedAssetIds.push(preparedItem.assetId);
+        if (preparedItem.edited.metadataKey) noChangeAssetIds.push(preparedItem.assetId);
+        else noWorkflowAssetIds.push(preparedItem.assetId);
+        progress.advance();
+        continue;
+      }
+      items.push({
+        ...preparedItem,
         sourceRemoved: false,
         replacementPublished: false,
       });
@@ -3365,19 +3469,19 @@ export function createAssetProcessingService({
     staging.items = items;
 
     try {
-      for (let index = 0; index < items.length; index++) {
-        stagePromptOutput(items[index], staging, index);
+      await processingConcurrencyService.mapBounded(items, async (item, index) => {
+        await stagePromptOutput(item, staging, index);
         progress.advance();
-      }
+      });
       for (let index = 0; index < items.length; index++) {
-        stagePromptBackup(items[index], staging, index);
+        stagePromptBackup(items[index], staging, index, projectDir);
       }
       for (const item of items) {
-        publishPromptOutput(item);
+        publishPromptOutput(item, projectDir);
       }
     } catch (err) {
-      const restored = restorePromptReplacements(items);
-      const stagingClean = cleanupPromptStaging(staging);
+      const restored = restorePromptReplacements(items, projectDir);
+      const stagingClean = cleanupPromptStaging(staging, { preserveRecoveryBackups: true });
       if (!restored || !stagingClean) {
         throw new AssetProcessingError(
           'Prompt editing changed the filesystem but could not safely restore it. Inspect the project folder before scanning.',
@@ -3401,8 +3505,8 @@ export function createAssetProcessingService({
         throw new Error('Asset prompt edit repository returned an unexpected result.');
       }
     } catch (err) {
-      const restored = restorePromptReplacements(items);
-      const stagingClean = cleanupPromptStaging(staging);
+      const restored = restorePromptReplacements(items, projectDir);
+      const stagingClean = cleanupPromptStaging(staging, { preserveRecoveryBackups: true });
       if (!restored || !stagingClean) {
         throw new AssetProcessingError(
           'Prompt edits were written but CreatorCrate could not safely restore the filesystem after an index failure. Inspect the project folder before scanning.',

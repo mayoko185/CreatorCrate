@@ -29,7 +29,11 @@ import { createProcessingPresetService } from '../src/services/processing-preset
 import { createWatermarkScaleMapService } from '../src/services/watermark-scale-map-service.js';
 import { createAssetScanner } from '../src/services/asset-scanner.js';
 import { resolveProjectDir } from '../src/storage/project-storage.js';
-import { createPngChunk, PNG_SIGNATURE } from '../src/services/workflow-prompt-editor.js';
+import {
+  createPngChunk,
+  editWorkflowPromptsInPng,
+  PNG_SIGNATURE,
+} from '../src/services/workflow-prompt-editor.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -218,6 +222,83 @@ describe('asset processing service', () => {
       alreadyCoordinatedCapability: processingExecutionCapability,
       ...overrides,
     });
+  }
+
+  function mockCifsLikePromptStats(sourcePath, {
+    deviceMismatch = false,
+    sizeMismatch = false,
+    linkCountMismatch = false,
+    replacePublishedContent = false,
+    publishedIdentityOffset = () => 2000000,
+  } = {}) {
+    const resolvedSourcePath = path.resolve(sourcePath);
+    const realLstat = fs.lstatSync.bind(fs);
+    const realOpen = fs.openSync.bind(fs);
+    const realFstat = fs.fstatSync.bind(fs);
+    const realClose = fs.closeSync.bind(fs);
+    const realLink = fs.linkSync.bind(fs);
+    const realUnlink = fs.unlinkSync.bind(fs);
+    const descriptors = new Map();
+    let published = false;
+
+    const aliasKind = (filePath) => {
+      if (typeof filePath !== 'string') return null;
+      if (filePath.includes('.creatorcrate-workflow-prompts-') && filePath.endsWith('.original')) {
+        return 'backup';
+      }
+      if (published && path.resolve(filePath) === resolvedSourcePath) return 'published';
+      return null;
+    };
+    const divergentStats = (stats, kind) => Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, {
+      dev: deviceMismatch ? (stats.dev === 0 ? 1 : 0) : stats.dev,
+      ino: stats.ino + (kind === 'backup' ? 1000000 : publishedIdentityOffset()),
+      size: sizeMismatch ? stats.size + 1 : stats.size,
+      nlink: linkCountMismatch ? Math.max(1, stats.nlink - 1) : stats.nlink,
+    });
+    const lstatSpy = vi.spyOn(fs, 'lstatSync').mockImplementation((filePath, ...args) => {
+      const stats = realLstat(filePath, ...args);
+      const kind = aliasKind(filePath);
+      return kind ? divergentStats(stats, kind) : stats;
+    });
+    const openSpy = vi.spyOn(fs, 'openSync').mockImplementation((filePath, ...args) => {
+      const descriptor = realOpen(filePath, ...args);
+      const kind = aliasKind(filePath);
+      if (kind) descriptors.set(descriptor, kind);
+      return descriptor;
+    });
+    const fstatSpy = vi.spyOn(fs, 'fstatSync').mockImplementation((descriptor, ...args) => {
+      const stats = realFstat(descriptor, ...args);
+      const kind = descriptors.get(descriptor);
+      return kind ? divergentStats(stats, kind) : stats;
+    });
+    const closeSpy = vi.spyOn(fs, 'closeSync').mockImplementation((descriptor, ...args) => {
+      descriptors.delete(descriptor);
+      return realClose(descriptor, ...args);
+    });
+    const linkSpy = vi.spyOn(fs, 'linkSync').mockImplementation((fromPath, toPath, ...args) => {
+      const result = realLink(fromPath, toPath, ...args);
+      if (typeof fromPath === 'string' && typeof toPath === 'string'
+        && fromPath.includes('.creatorcrate-workflow-prompts-')
+        && fromPath.endsWith('.png')
+        && path.resolve(toPath) === resolvedSourcePath) {
+        published = true;
+        if (replacePublishedContent) {
+          const anchor = path.join(path.dirname(resolvedSourcePath), '.prompt-cifs-content-anchor');
+          const size = realLstat(toPath).size;
+          realUnlink(toPath);
+          fs.writeFileSync(anchor, Buffer.alloc(size, 0x7f));
+          realLink(anchor, toPath);
+        }
+      }
+      return result;
+    });
+    return () => {
+      linkSpy.mockRestore();
+      closeSpy.mockRestore();
+      fstatSpy.mockRestore();
+      openSpy.mockRestore();
+      lstatSpy.mockRestore();
+    };
   }
 
   function createControlledSharp(onStage) {
@@ -1231,6 +1312,245 @@ describe('asset processing service', () => {
     expect(fs.statSync(noWorkflowTarget).mtimeMs).toBe(noWorkflowMtime);
   });
 
+  it('uses the injected bounded pool for Prompt preparation and staging with concurrency one', async () => {
+    const first = writeIndexedPromptPng('Final/prompt-serial-first.png', 'parameters', 'first');
+    const second = writeIndexedPromptPng('Final/prompt-serial-second.png', 'parameters', 'second');
+    const targets = [first, second].map((asset) => path.resolve(projectDir, ...asset.relative_path.split('/')));
+    const bounded = createProcessingConcurrencyService({ concurrency: 1 });
+    const injectedPool = {
+      concurrency: bounded.concurrency,
+      mapBounded: vi.fn((items, worker) => bounded.mapBounded(items, worker)),
+    };
+    const originalReadFile = fs.promises.readFile.bind(fs.promises);
+    const started = [];
+    let resumeFirst;
+    let resolveFirstStarted;
+    const firstStarted = new Promise((resolve) => { resolveFirstStarted = resolve; });
+    const readSpy = vi.spyOn(fs.promises, 'readFile').mockImplementation((filePath, ...args) => {
+      if (!targets.includes(path.resolve(String(filePath)))) return originalReadFile(filePath, ...args);
+      started.push(path.resolve(String(filePath)));
+      if (started.length !== 1) return originalReadFile(filePath, ...args);
+      resolveFirstStarted();
+      return new Promise((resolve, reject) => {
+        resumeFirst = () => originalReadFile(filePath, ...args).then(resolve, reject);
+      });
+    });
+    processingService = createProcessingService({ processingConcurrencyService: injectedPool });
+
+    const operation = processingService.editWorkflowPrompts(project.id, [first.id, second.id], {
+      positive: { rules: [{ type: 'append', text: ' changed' }] },
+    });
+
+    try {
+      await firstStarted;
+      await Promise.resolve();
+      expect(started).toEqual([targets[0]]);
+      resumeFirst();
+      const result = await operation;
+      expect(injectedPool.concurrency).toBe(1);
+      expect(injectedPool.mapBounded).toHaveBeenCalledTimes(2);
+      expect(result.changedAssetIds).toEqual([first.id, second.id]);
+    } finally {
+      readSpy.mockRestore();
+    }
+  });
+
+  it('overlaps independent Prompt preparation reads within the configured bound', async () => {
+    const first = writeIndexedPromptPng('Final/prompt-read-first.png', 'parameters', 'first');
+    const second = writeIndexedPromptPng('Final/prompt-read-second.png', 'parameters', 'second');
+    const targets = new Set([first, second].map((asset) => path.resolve(projectDir, ...asset.relative_path.split('/'))));
+    const bounded = createProcessingConcurrencyService({ concurrency: 2 });
+    const originalReadFile = fs.promises.readFile.bind(fs.promises);
+    const deferred = new Map();
+    const started = [];
+    let resolveBothStarted;
+    const bothStarted = new Promise((resolve) => { resolveBothStarted = resolve; });
+    const readSpy = vi.spyOn(fs.promises, 'readFile').mockImplementation((filePath, ...args) => {
+      const resolved = path.resolve(String(filePath));
+      if (!targets.has(resolved)) return originalReadFile(filePath, ...args);
+      return new Promise((resolve, reject) => {
+        started.push(resolved);
+        deferred.set(resolved, () => originalReadFile(filePath, ...args).then(resolve, reject));
+        if (started.length === 2) resolveBothStarted();
+      });
+    });
+    processingService = createProcessingService({ processingConcurrencyService: bounded });
+
+    const operation = processingService.editWorkflowPrompts(project.id, [first.id, second.id], {
+      positive: { rules: [{ type: 'append', text: ' changed' }] },
+    });
+
+    try {
+      await bothStarted;
+      expect(started).toHaveLength(2);
+      expect(started).toEqual(expect.arrayContaining([...targets]));
+      expect(started.length).toBeLessThanOrEqual(bounded.concurrency);
+      deferred.forEach((resume) => resume());
+      await expect(operation).resolves.toMatchObject({ changedAssetIds: [first.id, second.id] });
+    } finally {
+      readSpy.mockRestore();
+    }
+  });
+
+  it('waits for every bounded Prompt stage write before serial publication', async () => {
+    const first = writeIndexedPromptPng('Final/prompt-stage-first.png', 'parameters', 'first');
+    const second = writeIndexedPromptPng('Final/prompt-stage-second.png', 'parameters', 'second');
+    const targets = [first, second].map((asset) => path.resolve(projectDir, ...asset.relative_path.split('/')));
+    const bounded = createProcessingConcurrencyService({ concurrency: 2 });
+    const originalWriteFile = fs.promises.writeFile.bind(fs.promises);
+    const deferred = new Map();
+    const staged = [];
+    let resolveBothStaged;
+    const bothStaged = new Promise((resolve) => { resolveBothStaged = resolve; });
+    const writeSpy = vi.spyOn(fs.promises, 'writeFile').mockImplementation((filePath, ...args) => {
+      if (!String(filePath).includes('.creatorcrate-workflow-prompts-')) {
+        return originalWriteFile(filePath, ...args);
+      }
+      return new Promise((resolve, reject) => {
+        staged.push(String(filePath));
+        deferred.set(String(filePath), () => originalWriteFile(filePath, ...args).then(resolve, reject));
+        if (staged.length === 2) resolveBothStaged();
+      });
+    });
+    const publicationTargets = [];
+    const realLink = fs.linkSync.bind(fs);
+    const linkSpy = vi.spyOn(fs, 'linkSync').mockImplementation((fromPath, toPath, ...args) => {
+      if (targets.includes(path.resolve(toPath))) publicationTargets.push(path.resolve(toPath));
+      return realLink(fromPath, toPath, ...args);
+    });
+    const applySpy = vi.spyOn(assetRepository, 'applyAssetPromptEdits');
+    processingService = createProcessingService({ processingConcurrencyService: bounded });
+
+    const operation = processingService.editWorkflowPrompts(project.id, [first.id, second.id], {
+      positive: { rules: [{ type: 'append', text: ' changed' }] },
+    });
+
+    try {
+      await bothStaged;
+      expect(staged).toHaveLength(2);
+      expect(publicationTargets).toEqual([]);
+      expect(applySpy).not.toHaveBeenCalled();
+      deferred.forEach((resume) => resume());
+      await operation;
+    } finally {
+      applySpy.mockRestore();
+      linkSpy.mockRestore();
+      writeSpy.mockRestore();
+    }
+
+    expect(publicationTargets).toEqual(targets);
+  });
+
+  it('drains active Prompt staging workers and leaves sources untouched after a staging failure', async () => {
+    const failing = writeIndexedPromptPng('Final/prompt-stage-failing.png', 'parameters', 'failing');
+    const active = writeIndexedPromptPng('Final/prompt-stage-active.png', 'parameters', 'active');
+    const unstarted = writeIndexedPromptPng('Final/prompt-stage-unstarted.png', 'parameters', 'unstarted');
+    const targets = [failing, active, unstarted].map((asset) => path.join(projectDir, ...asset.relative_path.split('/')));
+    const before = targets.map((target) => fs.readFileSync(target));
+    const bounded = createProcessingConcurrencyService({ concurrency: 2 });
+    const originalWriteFile = fs.promises.writeFile.bind(fs.promises);
+    const stageWrites = [];
+    let resumeActive;
+    let resolveInitialWorkers;
+    const initialWorkers = new Promise((resolve) => { resolveInitialWorkers = resolve; });
+    const writeSpy = vi.spyOn(fs.promises, 'writeFile').mockImplementation((filePath, ...args) => {
+      if (!String(filePath).includes('.creatorcrate-workflow-prompts-')) {
+        return originalWriteFile(filePath, ...args);
+      }
+      const basename = path.basename(String(filePath));
+      stageWrites.push(basename);
+      if (stageWrites.length === 2) resolveInitialWorkers();
+      if (basename === '0.png') return Promise.reject(new Error('injected Prompt stage failure'));
+      if (basename === '1.png') {
+        return new Promise((resolve, reject) => {
+          resumeActive = () => originalWriteFile(filePath, ...args).then(resolve, reject);
+        });
+      }
+      return originalWriteFile(filePath, ...args);
+    });
+    const linkSpy = vi.spyOn(fs, 'linkSync');
+    const applySpy = vi.spyOn(assetRepository, 'applyAssetPromptEdits');
+    processingService = createProcessingService({ processingConcurrencyService: bounded });
+    const operation = processingService.editWorkflowPrompts(project.id, [failing.id, active.id, unstarted.id], {
+      positive: { rules: [{ type: 'append', text: ' changed' }] },
+    });
+    let settled = false;
+    operation.finally(() => { settled = true; }).catch(() => {});
+
+    try {
+      await initialWorkers;
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(stageWrites).toEqual(['0.png', '1.png']);
+      expect(settled).toBe(false);
+      expect(linkSpy).not.toHaveBeenCalled();
+      expect(applySpy).not.toHaveBeenCalled();
+      targets.forEach((target, index) => expect(fs.readFileSync(target)).toEqual(before[index]));
+      resumeActive();
+      await expect(operation).rejects.toMatchObject({ code: 'FILESYSTEM_OPERATION_FAILED' });
+    } finally {
+      applySpy.mockRestore();
+      linkSpy.mockRestore();
+      writeSpy.mockRestore();
+    }
+
+    expect(stageWrites).toEqual(['0.png', '1.png']);
+    targets.forEach((target, index) => expect(fs.readFileSync(target)).toEqual(before[index]));
+    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-workflow-prompts-')))
+      .toEqual([]);
+  });
+
+  it('keeps unchanged Prompt batches out of staging after bounded preparation', async () => {
+    const noChange = writeIndexedPromptPng('Final/prompt-no-change.png', 'parameters', 'unchanged');
+    const noWorkflow = writeIndexedPromptPng('Final/prompt-no-workflow.png', 'comment', 'plain image');
+    const bounded = createProcessingConcurrencyService({ concurrency: 2 });
+    const injectedPool = {
+      concurrency: bounded.concurrency,
+      mapBounded: vi.fn((items, worker) => bounded.mapBounded(items, worker)),
+    };
+    const mkdtempSpy = vi.spyOn(fs, 'mkdtempSync');
+    processingService = createProcessingService({ processingConcurrencyService: injectedPool });
+
+    try {
+      const result = await processingService.editWorkflowPrompts(project.id, [noChange.id, noWorkflow.id], {
+        positive: { rules: [{ type: 'remove', text: 'not present' }] },
+      });
+      expect(result).toMatchObject({ changedCount: 0, unchangedAssetIds: [noChange.id, noWorkflow.id] });
+    } finally {
+      mkdtempSpy.mockRestore();
+    }
+
+    expect(injectedPool.mapBounded).toHaveBeenCalledTimes(1);
+    expect(mkdtempSpy).not.toHaveBeenCalled();
+  });
+
+  it('preserves request order while excluding unchanged Prompt items from staging and publication', async () => {
+    const first = writeIndexedPromptPng('Final/prompt-mixed-first.png', 'parameters', 'first');
+    const unchanged = writeIndexedPromptPng('Final/prompt-mixed-unchanged.png', 'comment', 'plain image');
+    const third = writeIndexedPromptPng('Final/prompt-mixed-third.png', 'parameters', 'third');
+    const bounded = createProcessingConcurrencyService({ concurrency: 2 });
+    processingService = createProcessingService({ processingConcurrencyService: bounded });
+
+    const result = await processingService.editWorkflowPrompts(project.id, [first.id, unchanged.id, third.id], {
+      positive: { rules: [{ type: 'append', text: ' changed' }] },
+    });
+
+    expect(result.changedAssetIds).toEqual([first.id, third.id]);
+    expect(result.unchangedAssetIds).toEqual([unchanged.id]);
+    expect(result.assets.map((asset) => asset.id)).toEqual([first.id, third.id]);
+  });
+
+  it('preserves Prompt PNG output bytes while changing only scheduling and I/O', async () => {
+    const source = writeIndexedPromptPng('Final/prompt-output-parity.png', 'parameters', 'original');
+    const target = path.join(projectDir, 'Final', 'prompt-output-parity.png');
+    const options = { positive: { rules: [{ type: 'append', text: ' changed' }] } };
+    const expected = editWorkflowPromptsInPng(fs.readFileSync(target), options).buffer;
+
+    await processingService.editWorkflowPrompts(project.id, [source.id], options);
+
+    expect(fs.readFileSync(target)).toEqual(expected);
+  });
+
   it('rejects non-PNG, missing, foreign, and non-regular selections', async () => {
     const nonPng = writeIndexedImage('Final/not-png.jpg');
     await expect(processingService.editWorkflowPrompts(project.id, [nonPng.id], {
@@ -1298,12 +1618,12 @@ describe('asset processing service', () => {
     const source = writeIndexedPromptPng('Final/stage-failure.png', 'parameters', 'original');
     const target = path.join(projectDir, 'Final', 'stage-failure.png');
     const before = fs.readFileSync(target);
-    const originalWriteFile = fs.writeFileSync;
-    const writeSpy = vi.spyOn(fs, 'writeFileSync').mockImplementation((file, ...args) => {
+    const originalWriteFile = fs.promises.writeFile;
+    const writeSpy = vi.spyOn(fs.promises, 'writeFile').mockImplementation((file, ...args) => {
       if (String(file).includes('.creatorcrate-workflow-prompts-')) {
-        throw new Error('injected staged write failure');
+        return Promise.reject(new Error('injected staged write failure'));
       }
-      return originalWriteFile.call(fs, file, ...args);
+      return originalWriteFile.call(fs.promises, file, ...args);
     });
 
     try {
@@ -1333,6 +1653,518 @@ describe('asset processing service', () => {
     applySpy.mockRestore();
     expect(fs.readFileSync(target)).toEqual(before);
     expect(assetRepository.findById(source.id).size_bytes).toBe(before.length);
+  });
+
+  it('restores three Prompt publications in reverse order and removes verified rollback artifacts', async () => {
+    const sources = ['first', 'second', 'third'].map((name) => writeIndexedPromptPng(
+      `Final/multi-publication-${name}.png`,
+      'parameters',
+      `original-${name}`,
+    ));
+    const targets = sources.map((source) => path.join(projectDir, ...source.relative_path.split('/')));
+    const before = targets.map((target) => fs.readFileSync(target));
+    const metadata = sources.map((source) => ({
+      id: source.id,
+      size_bytes: source.size_bytes,
+      modified_at: source.modified_at,
+    }));
+    const realLstat = fs.lstatSync.bind(fs);
+    const realLink = fs.linkSync.bind(fs);
+    const restorationOrder = [];
+    let thirdPublished = false;
+    let verificationFailed = false;
+    const linkSpy = vi.spyOn(fs, 'linkSync').mockImplementation((fromPath, toPath, ...args) => {
+      if (path.resolve(toPath) === path.resolve(targets[2]) && String(fromPath).endsWith('.png')) {
+        thirdPublished = true;
+      }
+      if (String(fromPath).endsWith('.original') && targets.some((target) => path.resolve(target) === path.resolve(toPath))) {
+        restorationOrder.push(path.basename(toPath));
+      }
+      return realLink(fromPath, toPath, ...args);
+    });
+    const lstatSpy = vi.spyOn(fs, 'lstatSync').mockImplementation((filePath, ...args) => {
+      if (thirdPublished && !verificationFailed && path.resolve(filePath) === path.resolve(targets[2])) {
+        verificationFailed = true;
+        throw new Error('injected post-publication verification failure');
+      }
+      return realLstat(filePath, ...args);
+    });
+
+    try {
+      await expect(processingService.editWorkflowPrompts(project.id, sources.map(({ id }) => id), {
+        positive: { rules: [{ type: 'append', text: ' changed' }] },
+      })).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+    } finally {
+      lstatSpy.mockRestore();
+      linkSpy.mockRestore();
+    }
+
+    expect(restorationOrder).toEqual([
+      path.basename(targets[2]), path.basename(targets[1]), path.basename(targets[0]),
+    ]);
+    targets.forEach((target, index) => expect(fs.readFileSync(target)).toEqual(before[index]));
+    metadata.forEach((expected) => expect(assetRepository.findById(expected.id)).toMatchObject(expected));
+    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-workflow-prompts-')))
+      .toEqual([]);
+  });
+
+  it('restores every published Prompt in reverse order after a multi-asset database failure', async () => {
+    processingService = createProcessingService({
+      processingConcurrencyService: createProcessingConcurrencyService({ concurrency: 2 }),
+    });
+    const sources = ['first', 'second', 'third'].map((name) => writeIndexedPromptPng(
+      `Final/multi-database-${name}.png`,
+      'parameters',
+      `original-${name}`,
+    ));
+    const targets = sources.map((source) => path.join(projectDir, ...source.relative_path.split('/')));
+    const before = targets.map((target) => fs.readFileSync(target));
+    const metadata = sources.map((source) => ({ id: source.id, size_bytes: source.size_bytes, modified_at: source.modified_at }));
+    const realLink = fs.linkSync.bind(fs);
+    const restorationOrder = [];
+    const linkSpy = vi.spyOn(fs, 'linkSync').mockImplementation((fromPath, toPath, ...args) => {
+      if (String(fromPath).endsWith('.original') && targets.some((target) => path.resolve(target) === path.resolve(toPath))) {
+        restorationOrder.push(path.basename(toPath));
+      }
+      return realLink(fromPath, toPath, ...args);
+    });
+    const applySpy = vi.spyOn(assetRepository, 'applyAssetPromptEdits')
+      .mockImplementation(() => { throw new Error('injected multi-asset database failure'); });
+
+    try {
+      await expect(processingService.editWorkflowPrompts(project.id, sources.map(({ id }) => id), {
+        positive: { rules: [{ type: 'append', text: ' changed' }] },
+      })).rejects.toMatchObject({ code: 'DATABASE_OPERATION_FAILED' });
+    } finally {
+      applySpy.mockRestore();
+      linkSpy.mockRestore();
+    }
+
+    expect(restorationOrder).toEqual([
+      path.basename(targets[2]), path.basename(targets[1]), path.basename(targets[0]),
+    ]);
+    targets.forEach((target, index) => expect(fs.readFileSync(target)).toEqual(before[index]));
+    metadata.forEach((expected) => expect(assetRepository.findById(expected.id)).toMatchObject(expected));
+    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-workflow-prompts-')))
+      .toEqual([]);
+  });
+
+  it('preserves the trusted Prompt backup when an unexpected replacement makes restoration uncertain', async () => {
+    const source = writeIndexedPromptPng('Final/uncertain-restoration.png', 'parameters', 'original');
+    const target = path.join(projectDir, 'Final', 'uncertain-restoration.png');
+    const before = fs.readFileSync(target);
+    const unexpected = Buffer.from('unexpected replacement');
+    const applySpy = vi.spyOn(assetRepository, 'applyAssetPromptEdits').mockImplementation(() => {
+      fs.unlinkSync(target);
+      fs.writeFileSync(target, unexpected);
+      throw new Error('injected database failure after replacement changed');
+    });
+
+    try {
+      await expect(processingService.editWorkflowPrompts(project.id, [source.id], {
+        positive: { rules: [{ type: 'append', text: ' changed' }] },
+      })).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+    } finally {
+      applySpy.mockRestore();
+    }
+
+    const staging = fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-workflow-prompts-'));
+    expect(staging).toHaveLength(1);
+    expect(fs.readFileSync(target)).toEqual(unexpected);
+    expect(fs.readFileSync(path.join(projectDir, staging[0], '0.original'))).toEqual(before);
+    expect(assetRepository.findById(source.id)).toMatchObject({ size_bytes: source.size_bytes, modified_at: source.modified_at });
+  });
+
+  it('recovers a published Prompt when post-publication ownership bookkeeping fails', async () => {
+    const source = writeIndexedPromptPng('Final/published-recovery.png', 'parameters', 'original');
+    const target = path.join(projectDir, 'Final', 'published-recovery.png');
+    const before = fs.readFileSync(target);
+    const realLstat = fs.lstatSync.bind(fs);
+    const realLink = fs.linkSync.bind(fs);
+    let published = false;
+    let verificationFailed = false;
+    const linkSpy = vi.spyOn(fs, 'linkSync').mockImplementation((fromPath, toPath, ...args) => {
+      if (String(fromPath).endsWith('.png') && path.resolve(toPath) === path.resolve(target)) published = true;
+      return realLink(fromPath, toPath, ...args);
+    });
+    const lstatSpy = vi.spyOn(fs, 'lstatSync').mockImplementation((filePath, ...args) => {
+      if (published && !verificationFailed && path.resolve(filePath) === path.resolve(target)) {
+        verificationFailed = true;
+        throw new Error('injected output inspection failure');
+      }
+      return realLstat(filePath, ...args);
+    });
+
+    try {
+      await expect(processingService.editWorkflowPrompts(project.id, [source.id], {
+        positive: { rules: [{ type: 'append', text: ' changed' }] },
+      })).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+    } finally {
+      lstatSpy.mockRestore();
+      linkSpy.mockRestore();
+    }
+
+    expect(fs.readFileSync(target)).toEqual(before);
+    expect(assetRepository.findById(source.id)).toMatchObject({ size_bytes: source.size_bytes, modified_at: source.modified_at });
+    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-workflow-prompts-')))
+      .toEqual([]);
+  });
+
+  it('cleans verified Prompt artifacts and preserves the underlying error when source mutation cannot begin', async () => {
+    const source = writeIndexedPromptPng('Final/pre-mutation-failure.png', 'parameters', 'original');
+    const target = path.join(projectDir, 'Final', 'pre-mutation-failure.png');
+    const before = fs.readFileSync(target);
+    const realUnlink = fs.unlinkSync.bind(fs);
+    const unlinkSpy = vi.spyOn(fs, 'unlinkSync').mockImplementation((filePath, ...args) => {
+      if (path.resolve(filePath) === path.resolve(target)) throw new Error('injected source unlink failure');
+      return realUnlink(filePath, ...args);
+    });
+
+    try {
+      await expect(processingService.editWorkflowPrompts(project.id, [source.id], {
+        positive: { rules: [{ type: 'append', text: ' changed' }] },
+      })).rejects.toMatchObject({ code: 'FILESYSTEM_OPERATION_FAILED' });
+    } finally {
+      unlinkSpy.mockRestore();
+    }
+
+    expect(fs.readFileSync(target)).toEqual(before);
+    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-workflow-prompts-')))
+      .toEqual([]);
+  });
+
+  it('captures and cleans a Prompt stage output created before normal bookkeeping fails', async () => {
+    const source = writeIndexedPromptPng('Final/late-stage-capture.png', 'parameters', 'original');
+    const target = path.join(projectDir, 'Final', 'late-stage-capture.png');
+    const before = fs.readFileSync(target);
+    const realLstat = fs.lstatSync.bind(fs);
+    let failed = false;
+    const lstatSpy = vi.spyOn(fs, 'lstatSync').mockImplementation((filePath, ...args) => {
+      if (!failed && String(filePath).includes('.creatorcrate-workflow-prompts-') && String(filePath).endsWith('.png')) {
+        failed = true;
+        throw new Error('injected stage bookkeeping failure');
+      }
+      return realLstat(filePath, ...args);
+    });
+
+    try {
+      await expect(processingService.editWorkflowPrompts(project.id, [source.id], {
+        positive: { rules: [{ type: 'append', text: ' changed' }] },
+      })).rejects.toMatchObject({ code: 'PROMPT_STAGE_INVALID' });
+    } finally {
+      lstatSpy.mockRestore();
+    }
+
+    expect(fs.readFileSync(target)).toEqual(before);
+    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-workflow-prompts-')))
+      .toEqual([]);
+  });
+
+  it('captures and cleans a Prompt backup created before normal bookkeeping fails', async () => {
+    const source = writeIndexedPromptPng('Final/late-backup-capture.png', 'parameters', 'original');
+    const target = path.join(projectDir, 'Final', 'late-backup-capture.png');
+    const before = fs.readFileSync(target);
+    const realLstat = fs.lstatSync.bind(fs);
+    let failed = false;
+    const lstatSpy = vi.spyOn(fs, 'lstatSync').mockImplementation((filePath, ...args) => {
+      if (!failed && String(filePath).includes('.creatorcrate-workflow-prompts-') && String(filePath).endsWith('.original')) {
+        failed = true;
+        throw new Error('injected backup bookkeeping failure');
+      }
+      return realLstat(filePath, ...args);
+    });
+
+    try {
+      await expect(processingService.editWorkflowPrompts(project.id, [source.id], {
+        positive: { rules: [{ type: 'append', text: ' changed' }] },
+      })).rejects.toMatchObject({ code: 'PROMPT_BACKUP_INVALID' });
+    } finally {
+      lstatSpy.mockRestore();
+    }
+
+    expect(fs.readFileSync(target)).toEqual(before);
+    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-workflow-prompts-')))
+      .toEqual([]);
+  });
+
+  it('edits Workflow Prompt files through verified hard-link fallback when CIFS aliases diverge', async () => {
+    const source = writeIndexedPromptPng('Final/cifs-prompt.png', 'parameters', 'original');
+    const target = path.join(projectDir, 'Final', 'cifs-prompt.png');
+    const restoreCifsStats = mockCifsLikePromptStats(target);
+
+    try {
+      const result = await processingService.editWorkflowPrompts(project.id, [source.id], {
+        positive: { rules: [{ type: 'append', text: ' changed' }] },
+      });
+      expect(result).toMatchObject({ status: 'completed', changedCount: 1, changedAssetIds: [source.id] });
+    } finally {
+      restoreCifsStats();
+    }
+
+    expect(fs.readFileSync(target).includes(Buffer.from('original changed'))).toBe(true);
+    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-workflow-prompts-')))
+      .toEqual([]);
+  });
+
+  it('uses strict Prompt hard-link verification without fallback hashing when alias identities match', async () => {
+    const source = writeIndexedPromptPng('Final/strict-prompt.png', 'parameters', 'original');
+    const target = path.join(projectDir, 'Final', 'strict-prompt.png');
+    const realOpen = fs.openSync.bind(fs);
+    let sourceOpenCount = 0;
+    let backupOpenCount = 0;
+    const openSpy = vi.spyOn(fs, 'openSync').mockImplementation((filePath, ...args) => {
+      if (typeof filePath === 'string' && path.resolve(filePath) === path.resolve(target)) {
+        sourceOpenCount += 1;
+      }
+      if (typeof filePath === 'string' && filePath.endsWith('.original')) {
+        backupOpenCount += 1;
+      }
+      return realOpen(filePath, ...args);
+    });
+
+    try {
+      await processingService.editWorkflowPrompts(project.id, [source.id], {
+        positive: { rules: [{ type: 'append', text: ' changed' }] },
+      });
+    } finally {
+      openSpy.mockRestore();
+    }
+
+    expect(sourceOpenCount).toBe(1);
+    expect(backupOpenCount).toBe(0);
+    expect(fs.readFileSync(target).includes(Buffer.from('original changed'))).toBe(true);
+  });
+
+  it('retains verified-hard-link Prompt staging evidence for a later rollback after the published inode changes', async () => {
+    const sources = ['first', 'second'].map((name) => writeIndexedPromptPng(
+      `Final/cifs-retained-${name}.png`,
+      'parameters',
+      `original-${name}`,
+    ));
+    const targets = sources.map((source) => path.join(projectDir, ...source.relative_path.split('/')));
+    const before = targets.map((target) => fs.readFileSync(target));
+    const metadata = sources.map((source) => ({
+      id: source.id,
+      size_bytes: source.size_bytes,
+      modified_at: source.modified_at,
+    }));
+    let publishedIdentityOffset = 2000000;
+    const restoreCifsStats = mockCifsLikePromptStats(targets[0], {
+      publishedIdentityOffset: () => publishedIdentityOffset,
+    });
+    const applySpy = vi.spyOn(assetRepository, 'applyAssetPromptEdits').mockImplementation(() => {
+      publishedIdentityOffset = 3000000;
+      throw new Error('injected database failure after CIFS identity changed');
+    });
+
+    try {
+      await expect(processingService.editWorkflowPrompts(project.id, sources.map(({ id }) => id), {
+        positive: { rules: [{ type: 'append', text: ' changed' }] },
+      })).rejects.toMatchObject({ code: 'DATABASE_OPERATION_FAILED' });
+    } finally {
+      applySpy.mockRestore();
+      restoreCifsStats();
+    }
+
+    targets.forEach((target, index) => expect(fs.readFileSync(target)).toEqual(before[index]));
+    metadata.forEach((expected) => expect(assetRepository.findById(expected.id)).toMatchObject(expected));
+    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-workflow-prompts-')))
+      .toEqual([]);
+  });
+
+  it('does not claim or delete a foreign Prompt stage output after an EEXIST collision', async () => {
+    const source = writeIndexedPromptPng('Final/foreign-stage-collision.png', 'parameters', 'original');
+    const target = path.join(projectDir, 'Final', 'foreign-stage-collision.png');
+    const before = fs.readFileSync(target);
+    const foreign = Buffer.from('foreign staged output');
+    const realMkdtemp = fs.mkdtempSync.bind(fs);
+    let foreignPath;
+    const mkdtempSpy = vi.spyOn(fs, 'mkdtempSync').mockImplementation((prefix, ...args) => {
+      const directory = realMkdtemp(prefix, ...args);
+      foreignPath = path.join(directory, '0.png');
+      fs.writeFileSync(foreignPath, foreign);
+      return directory;
+    });
+
+    try {
+      await expect(processingService.editWorkflowPrompts(project.id, [source.id], {
+        positive: { rules: [{ type: 'append', text: ' changed' }] },
+      })).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+    } finally {
+      mkdtempSpy.mockRestore();
+    }
+
+    expect(fs.readFileSync(target)).toEqual(before);
+    expect(fs.readFileSync(foreignPath)).toEqual(foreign);
+  });
+
+  it('does not claim or delete a foreign Prompt backup after an EEXIST collision', async () => {
+    const source = writeIndexedPromptPng('Final/foreign-backup-collision.png', 'parameters', 'original');
+    const target = path.join(projectDir, 'Final', 'foreign-backup-collision.png');
+    const before = fs.readFileSync(target);
+    const foreign = Buffer.from('foreign original backup');
+    const realMkdtemp = fs.mkdtempSync.bind(fs);
+    let foreignPath;
+    const mkdtempSpy = vi.spyOn(fs, 'mkdtempSync').mockImplementation((prefix, ...args) => {
+      const directory = realMkdtemp(prefix, ...args);
+      foreignPath = path.join(directory, '0.original');
+      fs.writeFileSync(foreignPath, foreign);
+      return directory;
+    });
+
+    try {
+      await expect(processingService.editWorkflowPrompts(project.id, [source.id], {
+        positive: { rules: [{ type: 'append', text: ' changed' }] },
+      })).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+    } finally {
+      mkdtempSpy.mockRestore();
+    }
+
+    expect(fs.readFileSync(target)).toEqual(before);
+    expect(fs.readFileSync(foreignPath)).toEqual(foreign);
+  });
+
+  it('fails closed when strict Prompt publication content changes after identity verification', async () => {
+    const source = writeIndexedPromptPng('Final/strict-publication-content.png', 'parameters', 'original');
+    const target = path.join(projectDir, 'Final', 'strict-publication-content.png');
+    const before = fs.readFileSync(target);
+    const realLink = fs.linkSync.bind(fs);
+    const realOpen = fs.openSync.bind(fs);
+    let published = false;
+    let mutated = false;
+    const linkSpy = vi.spyOn(fs, 'linkSync').mockImplementation((fromPath, toPath, ...args) => {
+      const result = realLink(fromPath, toPath, ...args);
+      if (String(fromPath).endsWith('.png') && path.resolve(toPath) === path.resolve(target)) published = true;
+      return result;
+    });
+    const openSpy = vi.spyOn(fs, 'openSync').mockImplementation((filePath, ...args) => {
+      if (published && !mutated && path.resolve(filePath) === path.resolve(target)) {
+        mutated = true;
+        fs.writeFileSync(filePath, Buffer.alloc(fs.statSync(filePath).size, 0x7f));
+      }
+      return realOpen(filePath, ...args);
+    });
+    const applySpy = vi.spyOn(assetRepository, 'applyAssetPromptEdits');
+
+    try {
+      await expect(processingService.editWorkflowPrompts(project.id, [source.id], {
+        positive: { rules: [{ type: 'append', text: ' changed' }] },
+      })).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+      expect(applySpy).not.toHaveBeenCalled();
+    } finally {
+      applySpy.mockRestore();
+      openSpy.mockRestore();
+      linkSpy.mockRestore();
+    }
+
+    expect(mutated).toBe(true);
+    expect(fs.readFileSync(target)).toEqual(before);
+    expect(assetRepository.findById(source.id)).toMatchObject({
+      size_bytes: source.size_bytes,
+      modified_at: source.modified_at,
+    });
+    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-workflow-prompts-')))
+      .toEqual([]);
+  });
+
+  it('fails closed for a CIFS-like Prompt alias on the wrong device', async () => {
+    const source = writeIndexedPromptPng('Final/cifs-device-prompt.png', 'parameters', 'original');
+    const target = path.join(projectDir, 'Final', 'cifs-device-prompt.png');
+    const before = fs.readFileSync(target);
+    const restoreCifsStats = mockCifsLikePromptStats(
+      path.join(projectDir, 'Final', 'cifs-device-prompt.png'),
+      { deviceMismatch: true },
+    );
+
+    try {
+      await expect(processingService.editWorkflowPrompts(project.id, [source.id], {
+        positive: { rules: [{ type: 'append', text: ' changed' }] },
+      })).rejects.toMatchObject({ code: 'FILESYSTEM_OPERATION_FAILED' });
+    } finally {
+      restoreCifsStats();
+    }
+    expect(fs.readFileSync(target)).toEqual(before);
+    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-workflow-prompts-')))
+      .toEqual([]);
+  });
+
+  it('fails closed for a CIFS-like Prompt alias with the wrong size', async () => {
+    const source = writeIndexedPromptPng('Final/cifs-size-prompt.png', 'parameters', 'original');
+    const target = path.join(projectDir, 'Final', 'cifs-size-prompt.png');
+    const before = fs.readFileSync(target);
+    const restoreCifsStats = mockCifsLikePromptStats(
+      path.join(projectDir, 'Final', 'cifs-size-prompt.png'),
+      { sizeMismatch: true },
+    );
+
+    try {
+      await expect(processingService.editWorkflowPrompts(project.id, [source.id], {
+        positive: { rules: [{ type: 'append', text: ' changed' }] },
+      })).rejects.toMatchObject({ code: 'FILESYSTEM_OPERATION_FAILED' });
+    } finally {
+      restoreCifsStats();
+    }
+    expect(fs.readFileSync(target)).toEqual(before);
+    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-workflow-prompts-')))
+      .toEqual([]);
+  });
+
+  it('fails closed for a CIFS-like Prompt alias with the wrong link count', async () => {
+    const source = writeIndexedPromptPng('Final/cifs-link-count-prompt.png', 'parameters', 'original');
+    const target = path.join(projectDir, 'Final', 'cifs-link-count-prompt.png');
+    const before = fs.readFileSync(target);
+    const restoreCifsStats = mockCifsLikePromptStats(
+      path.join(projectDir, 'Final', 'cifs-link-count-prompt.png'),
+      { linkCountMismatch: true },
+    );
+
+    try {
+      await expect(processingService.editWorkflowPrompts(project.id, [source.id], {
+        positive: { rules: [{ type: 'append', text: ' changed' }] },
+      })).rejects.toMatchObject({ code: 'FILESYSTEM_OPERATION_FAILED' });
+    } finally {
+      restoreCifsStats();
+    }
+    expect(fs.readFileSync(target)).toEqual(before);
+    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-workflow-prompts-')))
+      .toEqual([]);
+  });
+
+  it('fails closed for a CIFS-like Prompt alias with changed content', async () => {
+    const source = writeIndexedPromptPng('Final/cifs-content-prompt.png', 'parameters', 'original');
+    const target = path.join(projectDir, 'Final', 'cifs-content-prompt.png');
+    const restoreCifsStats = mockCifsLikePromptStats(target, { replacePublishedContent: true });
+
+    try {
+      await expect(processingService.editWorkflowPrompts(project.id, [source.id], {
+        positive: { rules: [{ type: 'append', text: ' changed' }] },
+      })).rejects.toMatchObject({ code: 'RECOVERY_REQUIRED' });
+    } finally {
+      restoreCifsStats();
+      fs.rmSync(path.join(projectDir, 'Final', '.prompt-cifs-content-anchor'), { force: true });
+    }
+  });
+
+  it('uses the generalized verifier to restore a Prompt backup after a database failure', async () => {
+    const source = writeIndexedPromptPng('Final/cifs-restore-prompt.png', 'parameters', 'original');
+    const target = path.join(projectDir, 'Final', 'cifs-restore-prompt.png');
+    const before = fs.readFileSync(target);
+    const restoreCifsStats = mockCifsLikePromptStats(target);
+    const applySpy = vi.spyOn(assetRepository, 'applyAssetPromptEdits')
+      .mockImplementation(() => { throw new Error('injected database failure'); });
+
+    try {
+      await expect(processingService.editWorkflowPrompts(project.id, [source.id], {
+        positive: { rules: [{ type: 'append', text: ' changed' }] },
+      })).rejects.toMatchObject({ code: 'DATABASE_OPERATION_FAILED' });
+    } finally {
+      applySpy.mockRestore();
+      restoreCifsStats();
+    }
+
+    expect(fs.readFileSync(target)).toEqual(before);
+    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-workflow-prompts-')))
+      .toEqual([]);
   });
 
   it('preflights every selected asset before mutating any source', async () => {
@@ -1377,4 +2209,7 @@ describe('asset processing service', () => {
     await expect(queued).resolves.toMatchObject({ status: 'completed', changedCount: 1 });
     expect(projectOperationCoordinator.isActive(project.id)).toBe(false);
   });
+
+
+
 });

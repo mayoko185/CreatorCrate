@@ -1,0 +1,18 @@
+{
+  "outcomes": [
+    {
+      "session_id": "61184",
+      "language": "md",
+      "entropy_threshold": 1.3,
+      "jaccard_threshold": 0.6,
+      "total_turns": 1,
+      "tokens_saved": 0,
+      "tokens_original": 1320,
+      "cache_hits": 0,
+      "total_reads": 1,
+      "task_completed": true,
+      "timestamp": "2026-08-26T17:50:06.413441700-04:00"
+    }
+  ],
+  "learned_thresholds": {}
+}
