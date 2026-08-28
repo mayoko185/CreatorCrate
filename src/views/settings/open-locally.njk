@@ -14,76 +14,77 @@
 
   <div class="settings-layout">
 
-    <div class="settings-content">
-      <div class="settings-section">
+    <div class="settings-content settings-open-locally-content">
+      <div class="settings-section settings-open-locally-installer-section">
         <h3>Open locally helper</h3>
-        <p class="help-text">
-          Windows only: the Open locally buttons rely on the Open locally helper app.
-          Download and run the installer below to install it.
-        </p>
+        <div class="settings-open-locally-section-body settings-open-locally-installer-body">
+          <p class="help-text">
+            Windows only: the Open locally buttons rely on the Open locally helper app.
+            Download and run the installer below to install it.
+          </p>
 
-        <form class="project-form">
-          <div class="form-actions">
+          <div class="form-actions open-locally-installer-actions">
             <a href="/downloads/creatorcrate-open-locally-setup.exe" class="button button-primary" download>Download installer</a>
           </div>
-        </form>
+        </div>
       </div>
 
-      <div class="settings-section">
+      <div class="settings-section settings-open-locally-mapping-section" data-settings-open-locally-mapping-region>
         <h3>Projects path</h3>
-        <p class="help-text">
-          CreatorCrate cannot open files on your Windows machine directly.
-          Map the container's projects root to the folder that holds the same projects, and
-          Open locally buttons will appear on project and asset pages.
-        </p>
+        <div class="settings-open-locally-section-body settings-open-locally-mapping-body">
+          <p class="help-text">
+            CreatorCrate cannot open files on your Windows machine directly.
+            Map the container's projects root to the folder that holds the same projects, and
+            Open locally buttons will appear on project and asset pages.
+          </p>
 
-        <div class="kv">
-          <span class="kv-key">projects_root</span>
-          <span class="kv-value"><code>{{ projectsRoot }}</code></span>
-        </div>
-
-        <div class="kv">
-          <span class="kv-key">windows_projects_path</span>
-          <span class="kv-value">
-            {% if configuredPath %}
-              <code>{{ configuredPath }}</code>
-            {% else %}
-              Not configured
-            {% endif %}
-          </span>
-        </div>
-
-        {% if errorMessages.length > 0 %}
-          <div class="error-summary" role="alert" id="open-locally-errors">
-            <p>Could not save the Windows projects path. Fix the field below and try again.</p>
-            <ul>
-              {% for error in errorMessages %}<li>{{ error }}</li>{% endfor %}
-            </ul>
+          <div class="kv">
+            <span class="kv-key">projects_root</span>
+            <span class="kv-value"><code>{{ projectsRoot }}</code></span>
           </div>
-        {% endif %}
 
-        <form id="open-locally-save-form" method="post" action="/settings/open-locally" class="inline-form" novalidate>
-          <input type="hidden" name="_csrf" value="{{ _csrf }}">
-        </form>
-
-        <div class="field open-locally-field{% if errors.windowsProjectsPath %} field-error{% endif %}">
-          <label for="windows-projects-path">Projects path</label>
-          <div class="open-locally-path-row">
-            <input type="text" id="windows-projects-path" form="open-locally-save-form" name="windowsProjectsPath" value="{{ submittedValue or configuredPath or '' }}" placeholder="D:\example"{% if errors.windowsProjectsPath %} aria-describedby="windows-projects-path-error" aria-invalid="true"{% endif %}>
-            {% if configuredPath %}
-              <form method="post" action="/settings/open-locally/clear" class="inline-form" novalidate>
-                <input type="hidden" name="_csrf" value="{{ _csrf }}">
-                <button type="submit" class="button button-danger">Clear mapping</button>
-              </form>
-            {% endif %}
+          <div class="kv">
+            <span class="kv-key">windows_projects_path</span>
+            <span class="kv-value">
+              {% if configuredPath %}
+                <code>{{ configuredPath }}</code>
+              {% else %}
+                Not configured
+              {% endif %}
+            </span>
           </div>
-          {% if errors.windowsProjectsPath %}<span class="field-error-message" id="windows-projects-path-error">{{ errors.windowsProjectsPath }}</span>{% endif %}
-          <span class="help-text">Example: D:\example</span>
+
+          {% if errorMessages.length > 0 %}
+            <div class="error-summary" role="alert" id="open-locally-errors">
+              <p>Could not save the Windows projects path. Fix the field below and try again.</p>
+              <ul>
+                {% for error in errorMessages %}<li>{{ error }}</li>{% endfor %}
+              </ul>
+            </div>
+          {% endif %}
+
+          <div class="field open-locally-field{% if errors.windowsProjectsPath %} field-error{% endif %}">
+            <form id="open-locally-save-form" method="post" action="/settings/open-locally" class="inline-form" novalidate>
+              <input type="hidden" name="_csrf" value="{{ _csrf }}">
+              <span class="help-text" data-settings-fetch-save-status role="status" aria-live="polite" aria-atomic="true"></span>
+            </form>
+
+            <label for="windows-projects-path">Projects path</label>
+            <div class="open-locally-path-row">
+              <input type="text" id="windows-projects-path" form="open-locally-save-form" name="windowsProjectsPath" value="{{ submittedValue or configuredPath or '' }}" placeholder="D:\example" data-autosubmit="fetch" data-settings-open-locally-path{% if errors.windowsProjectsPath %} aria-describedby="windows-projects-path-error" aria-invalid="true"{% endif %}>
+              <button id="open-locally-save" type="submit" form="open-locally-save-form" class="button button-primary">Save</button>
+              {% if configuredPath %}
+                <form method="post" action="/settings/open-locally/clear" class="inline-form" novalidate>
+                  <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                  <button type="submit" class="button button-danger">Clear mapping</button>
+                </form>
+              {% endif %}
+            </div>
+            {% if errors.windowsProjectsPath %}<span class="field-error-message" id="windows-projects-path-error">{{ errors.windowsProjectsPath }}</span>{% endif %}
+            <span class="help-text">Example: D:\example</span>
+          </div>
         </div>
 
-        <div class="form-actions">
-          <button type="submit" form="open-locally-save-form" class="button button-primary">Save</button>
-        </div>
       </div>
     </div>
   </div>

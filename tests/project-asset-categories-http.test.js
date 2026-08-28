@@ -651,6 +651,10 @@ describe('project asset categories — HTTP', () => {
       ))?.[0];
 
       expect(addForm).toBeDefined();
+      expect(addForm).toContain('data-category-slug-autofill-form');
+      expect(addForm).toMatch(/id="add-displayName"[^>]*data-category-slug-autofill-display-name[^>]*aria-describedby="add-displayName-help"/);
+      expect(addForm).toContain('Press Tab to fill Directory slug from Display name.');
+      expect(addForm).toMatch(/id="add-directorySlug"[^>]*data-category-slug-autofill-directory-slug/);
       expect(addForm).toContain('class="project-category-management-add-row"');
       expect(addForm).toContain('class="project-category-management-add-submit form-actions"');
       expect(addForm.indexOf('project-category-management-add-row')).toBeLessThan(addForm.indexOf('project-category-management-add-submit'));
@@ -954,7 +958,7 @@ describe('project asset categories — HTTP', () => {
         errors: { displayName: 'Display name is required.' },
         focus: 'add-displayName',
       });
-      expect(response.body.html).toContain('aria-invalid="true"');
+      expect(response.body.html).toMatch(/id="add-displayName"[^>]*aria-describedby="add-displayName-help add-displayName-error"[^>]*aria-invalid="true"/);
       expect(response.body.html).toContain('value="drafts"');
       expect(listProjectCategories(ctx.db, projectId).some((row) => row.directory_slug === 'drafts')).toBe(false);
     });

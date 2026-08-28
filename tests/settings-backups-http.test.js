@@ -317,6 +317,16 @@ describe('settings — backup management HTTP', () => {
       expect(res.text).toContain(result.filename);
     });
 
+    it('renders the backup list in the Settings table surface', async () => {
+      await backupService.createBackup(db);
+      const res = await agent.get('/settings/backups').expect(200);
+
+      expect(res.text).toContain('class="project-detail-section backups-results-section"');
+      expect(res.text).toContain('id="backups-results-heading">Existing backups</h2>');
+      expect(res.text).toContain('class="table-scroll backups-table-scroll"');
+      expect(res.text).toContain('class="data-table backups-table"');
+    });
+
     it('does not render absolute filesystem paths', async () => {
       await backupService.createBackup(db);
       const res = await agent.get('/settings/backups').expect(200);

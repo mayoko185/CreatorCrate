@@ -59,6 +59,9 @@ describe('settings security — password rotation', () => {
     expect(res.text).toContain('<script type="module" src="/creatorcrate.js"></script>');
     expect(res.text).not.toMatch(/<script(?![^>]+src=)[^>]*>/);
     expect(res.text).not.toMatch(/type="password"[^>]*value=/);
+    expect(res.text).toMatch(/<form method="post" action="\/settings\/security\/password" class="project-form settings-security-form" novalidate>[\s\S]*?<div class="form-actions">\s*<button type="submit" class="button button-primary settings-security-save-action">Save<\/button>/);
+    expect(res.text).not.toContain('>Cancel</a>');
+    expect(res.text).toMatch(/<div class="destructive-section settings-security-destructive">[\s\S]*?<a href="\/settings\/security\/disable" class="button button-danger">Disable Authentication<\/a>/);
   });
 
   it('rejects wrong current password generically without changing credentials or echoing passwords', async () => {
@@ -241,12 +244,16 @@ describe('settings security — enable authentication workflow', () => {
     return { agent, csrfToken: extractCsrfToken(page.text) };
   }
 
-  it('shows the enable form (no login page, no rotate-password form) while disabled', async () => {
+  it('renders the enable action in the page heading and associates it with the disabled-state form', async () => {
     const { agent } = await getEnableForm();
     const res = await agent.get('/settings/security').expect(200);
     expect(res.text).toContain('Enable authentication');
     expect(res.text).toContain('Anyone who can reach this server can currently access CreatorCrate');
     expect(res.text).not.toContain('Change password');
+    expect(res.text).toMatch(/<div class="page-heading-actions">[\s\S]*?<button type="submit" class="button button-primary settings-security-enable-action" form="enable-authentication-form">Enable Authentication<\/button>/);
+    expect(res.text).toMatch(/<form id="enable-authentication-form" method="post" action="\/settings\/security\/enable" class="project-form settings-security-form" novalidate>/);
+    expect(res.text).not.toMatch(/<div class="form-actions settings-enable-action-row">[\s\S]*?Enable Authentication/);
+    expect(res.text).not.toContain('>Cancel</a>');
   });
 
   it('rejects a mismatched confirmation without writing any managed state', async () => {

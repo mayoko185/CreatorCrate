@@ -103,9 +103,13 @@ function resolveNotice(code) {
   return Object.prototype.hasOwnProperty.call(NOTICES, code) ? NOTICES[code] : null;
 }
 
-const PAGE_DEFAULT_SECTIONS = Object.freeze([
+const DEFAULTS_PAGE_SECTIONS = Object.freeze([
   Object.freeze({ page: 'new_project', title: 'New Projects', anchor: 'defaults-new-projects' }),
-  Object.freeze({ page: 'releases', title: 'Releases', anchor: 'defaults-releases' }),
+]);
+
+const DEFAULTS_POST_SECTIONS = Object.freeze([
+  ...DEFAULTS_PAGE_SECTIONS,
+  Object.freeze({ page: 'releases' }),
 ]);
 
 const DEFAULT_OPTION_LABELS = Object.freeze({
@@ -135,10 +139,6 @@ const DEFAULT_VALUE_LABELS = Object.freeze({
   projects: Object.freeze({
     view: Object.freeze({ grid: 'Grid', list: 'List' }),
     sort: Object.freeze({ updated: 'Recently updated', created: 'Recently created', title: 'Title' }),
-    order: Object.freeze({ asc: 'Ascending', desc: 'Descending' }),
-  }),
-  releases: Object.freeze({
-    sort: Object.freeze({ planned: 'Planned', updated: 'Updated', created: 'Created', title: 'Title' }),
     order: Object.freeze({ asc: 'Ascending', desc: 'Descending' }),
   }),
   projectAssets: Object.freeze({
@@ -174,20 +174,32 @@ function defaultValueLabel(page, option, value) {
   return DEFAULT_VALUE_LABELS[page][option][value] || value;
 }
 
-function readSubmittedPageDefaults(body) {
+function readSubmittedPageDefaults(body, service) {
   const rawBody = body && typeof body === 'object' ? body : {};
   const values = Object.fromEntries(
-    PAGE_DEFAULT_SECTIONS.map(({ page }) => [
+    DEFAULTS_POST_SECTIONS.map(({ page }) => [
       page,
       Object.fromEntries(
-        Object.keys(PAGE_DEFAULT_DEFINITIONS[page]).map((option) => [
-          option,
-          rawBody[pageDefaultFieldName(page, option)],
-        ])
+        Object.keys(PAGE_DEFAULT_DEFINITIONS[page]).map((option) => {
+          const fieldName = pageDefaultFieldName(page, option);
+          return [
+            option,
+            Object.hasOwn(rawBody, fieldName)
+              ? rawBody[fieldName]
+              : service.resolve(page, option),
+          ];
+        })
       ),
     ])
   );
   return values;
+}
+
+function defaultsPageWasSubmitted(body, page) {
+  if (DEFAULTS_PAGE_SECTIONS.some((section) => section.page === page)) return true;
+  const rawBody = body && typeof body === 'object' ? body : {};
+  return Object.keys(PAGE_DEFAULT_DEFINITIONS[page])
+    .some((option) => Object.hasOwn(rawBody, pageDefaultFieldName(page, option)));
 }
 
 function getPageDefaultsService(req) {
@@ -604,7 +616,7 @@ function buildDefaultsPageModel(service, {
   errors = {},
 } = {}) {
   const hasSubmittedValues = submittedValues !== null;
-  const sections = PAGE_DEFAULT_SECTIONS.map(({ page, title, anchor }) => ({
+  const sections = DEFAULTS_PAGE_SECTIONS.map(({ page, title, anchor }) => ({
     page,
     title,
     anchor,
@@ -754,11 +766,12 @@ function buildPreviewCategoryModel({
   };
 }
 
-function validateSubmittedPageDefaults(service, submittedValues) {
+function validateSubmittedPageDefaults(service, submittedValues, body) {
   const errors = {};
   const validatedValues = {};
 
-  for (const { page } of PAGE_DEFAULT_SECTIONS) {
+  for (const { page } of DEFAULTS_POST_SECTIONS) {
+    if (!defaultsPageWasSubmitted(body, page)) continue;
     try {
       validatedValues[page] = service.validatePageDefaults(page, submittedValues[page]);
     } catch (err) {
@@ -1045,11 +1058,11 @@ export function createSettingsRouter({
   });
 
   router.post('/defaults', (req, res, next) => {
-    const submittedValues = readSubmittedPageDefaults(req.body);
     const service = getPageDefaultsService(req);
+    const submittedValues = readSubmittedPageDefaults(req.body, service);
     let validation;
     try {
-      validation = validateSubmittedPageDefaults(service, submittedValues);
+      validation = validateSubmittedPageDefaults(service, submittedValues, req.body);
     } catch (err) {
       return next(err);
     }
@@ -1067,8 +1080,10 @@ export function createSettingsRouter({
     const changedOptionsByPage = new Map();
     try {
       db.transaction(() => {
-        for (const { page } of PAGE_DEFAULT_SECTIONS) {
+        for (const { page } of DEFAULTS_POST_SECTIONS) {
           for (const option of Object.keys(PAGE_DEFAULT_DEFINITIONS[page])) {
+            if (!defaultsPageWasSubmitted(req.body, page)) continue;
+
             const outcome = service.saveDefaultWithOutcome(
               page,
               option,
@@ -1084,7 +1099,7 @@ export function createSettingsRouter({
       return next(err);
     }
 
-    const changedPages = PAGE_DEFAULT_SECTIONS
+    const changedPages = DEFAULTS_POST_SECTIONS
       .map(({ page }) => page)
       .filter((page) => changedOptionsByPage.has(page));
     if (changedPages.length > 0) {

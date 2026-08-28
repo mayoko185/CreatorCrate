@@ -4,6 +4,7 @@ import {
   setHidden,
 } from './dom.js';
 import { enhanceCategoryReorder } from './category-reorder.js';
+import { enhanceCategorySlugAutofill } from './category-slug-autofill.js';
 import { enhanceAppConfirmationControls } from './confirm-dialog.js';
 import {
   cleanupScrollableCategoryDialogDropdowns,
@@ -27,6 +28,7 @@ export function enhanceAutoSubmit(scope = globalThis.document) {
     if (control.form?.matches?.('.page-size-form')) {
       return;
     }
+    if (control.dataset?.autosubmit === 'fetch') return;
     if (isEnhancementBound(control, 'autoSubmitBound')) return;
     markEnhancementBound(control, 'autoSubmitBound');
 
@@ -742,11 +744,9 @@ export function enhanceProjectAssetCategoryManagement(scope = globalThis.documen
     const body = dialog.querySelector?.(PROJECT_ASSET_CATEGORY_MANAGEMENT_BODY_SELECTOR);
     if (!state || !body) return;
 
-    bindCategoryManagementMutationForm(
-      state,
-      body.querySelector?.(PROJECT_ASSET_CATEGORY_MANAGEMENT_ADD_FORM_SELECTOR),
-      'add',
-    );
+    const addForm = body.querySelector?.(PROJECT_ASSET_CATEGORY_MANAGEMENT_ADD_FORM_SELECTOR);
+    enhanceCategorySlugAutofill(body);
+    bindCategoryManagementMutationForm(state, addForm, 'add');
     body.querySelectorAll?.(PROJECT_ASSET_CATEGORY_MANAGEMENT_RENAME_FORM_SELECTOR)
       .forEach((form) => bindCategoryManagementMutationForm(state, form, 'rename'));
     body.querySelectorAll?.(PROJECT_ASSET_CATEGORY_MANAGEMENT_DELETE_FORM_SELECTOR)

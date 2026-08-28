@@ -14,8 +14,8 @@
 
   <div class="settings-layout">
 
-    <div class="settings-content">
-      <div class="settings-section">
+    <div class="settings-content settings-tags-content">
+      <div class="settings-section settings-tags-create-section">
         <h3>Create a tag</h3>
         {% if errorMessages.length > 0 %}
           <div class="error-summary" role="alert" id="tag-errors">
@@ -26,21 +26,21 @@
           </div>
         {% endif %}
 
-        <form method="post" action="/settings/tags" class="project-form" novalidate>
+        <form id="create-tag-form" method="post" action="/settings/tags" class="project-form" novalidate>
           <input type="hidden" name="_csrf" value="{{ _csrf }}">
           <div class="field settings-tags-name-field{% if errors.name %} field-error{% endif %}">
             <label for="tag-name">Tag name <span class="required" aria-label="required">*</span></label>
-            <input type="text" id="tag-name" name="name" value="{{ submittedName or '' }}" maxlength="{{ tagNameMax }}" required{% if errors.name %} aria-describedby="tag-name-error" aria-invalid="true"{% endif %}>
+            <div class="settings-tags-create-row">
+              <input type="text" id="tag-name" name="name" value="{{ submittedName or '' }}" maxlength="{{ tagNameMax }}" required{% if errors.name %} aria-describedby="tag-name-error" aria-invalid="true"{% endif %}>
+              <button type="submit" class="button button-primary">Create Tag</button>
+            </div>
             {% if errors.name %}<span class="field-error-message" id="tag-name-error">{{ errors.name }}</span>{% endif %}
           </div>
 
-          <div class="form-actions">
-            <button type="submit" class="button button-primary">Create Tag</button>
-          </div>
         </form>
       </div>
 
-      <div class="settings-section">
+      <div class="settings-section settings-tags-list-section">
         <h3>Tags</h3>
         {% if tags.length > 0 %}
           <ul class="settings-tag-list">

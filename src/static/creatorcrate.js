@@ -12,12 +12,21 @@ import {
 } from './client/asset-ordering.js';
 import { enhanceCategoryReorder } from './client/category-reorder.js';
 import {
+  directorySlugFromDisplayName,
+  enhanceCategorySlugAutofill,
+} from './client/category-slug-autofill.js';
+import {
   enhanceBookContentReorder,
   enhanceBookReorder,
   enhanceChapterPageReorder,
   enhanceDashboardDefaultsDialog,
 } from './client/dedicated-reorder.js';
 import { enhanceCategoryDetails } from './client/category-details.js';
+import { enhanceDefaultsFetchSave } from './client/settings-defaults-fetch-save.js';
+import { enhanceAssetCategoryPreferencesFetchSave } from './client/settings-asset-category-preferences-fetch-save.js';
+import { enhanceNsfwFilterFetchSave } from './client/settings-nsfw-filter-fetch-save.js';
+import { enhanceOpenLocallyFetchSave } from './client/settings-open-locally-fetch-save.js';
+import { enhanceSettingsFetchSave } from './client/settings-fetch-save.js';
 import {
   enhanceNotesCodeBlocks,
   enhanceNotesEditor,
@@ -87,11 +96,18 @@ export {
   enhanceDatePickers,
   enhanceTimePickers,
   enhanceCategoryReorder,
+  directorySlugFromDisplayName,
+  enhanceCategorySlugAutofill,
   enhanceBookContentReorder,
   enhanceBookReorder,
   enhanceChapterPageReorder,
   enhanceDashboardDefaultsDialog,
   enhanceCategoryDetails,
+  enhanceDefaultsFetchSave,
+  enhanceAssetCategoryPreferencesFetchSave,
+  enhanceNsfwFilterFetchSave,
+  enhanceOpenLocallyFetchSave,
+  enhanceSettingsFetchSave,
   enhanceAppConfirmationControls as enhanceConfirmations,
   enhanceNumberInputs,
   enhanceProjectAssetsDefaultsScope,
@@ -139,7 +155,12 @@ if (typeof document !== 'undefined') {
     enhanceNotesCodeBlocks(document);
     enhanceProjectCards(document);
     enhanceAutoSubmit(document);
+    enhanceDefaultsFetchSave(document);
+    enhanceAssetCategoryPreferencesFetchSave(document);
+    enhanceNsfwFilterFetchSave(document);
+    enhanceOpenLocallyFetchSave(document);
     enhanceCategoryReorder(document);
+    enhanceCategorySlugAutofill(document);
     enhanceBookReorder(document);
     enhanceChapterPageReorder(document);
     enhanceBookContentReorder(document);

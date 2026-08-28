@@ -7,6 +7,7 @@
 
 {% block content %}
   {{ pageHeading.render("Global defaults copied into every new project.") }}
+  <div class="settings-asset-categories-content">
 
   {% if notice %}
     {% set noticeVariant = notice.variant %}
@@ -35,8 +36,8 @@
         _csrf
       ) }}
 
-      <div class="settings-section category-management-section category-management-add">
-        <h3>Add a default</h3>
+      <div class="settings-section category-management-section category-management-add settings-category-management-add">
+        <h3>Add category</h3>
         {% if addErrors.displayName or addErrors.directorySlug or addErrors.enabled %}
           <div class="error-summary" role="alert" id="add-category-errors">
             <p>Could not add the category. Fix the fields below and try again.</p>
@@ -44,20 +45,25 @@
         {% endif %}
         {% set addEnabled = true %}
         {% if addValues.enabled is defined %}{% set addEnabled = addValues.enabled %}{% endif %}
-        <form method="post" action="/settings/asset-categories" class="project-form category-management-form" novalidate>
+        <form method="post" action="/settings/asset-categories" class="project-form category-management-form" novalidate data-category-slug-autofill-form>
           <input type="hidden" name="_csrf" value="{{ _csrf }}">
-          <div class="field-row">
+          <div class="field-row category-management-add-row">
             <div class="field {% if addErrors.displayName %}field-error{% endif %}">
               <label for="add-displayName">Display name <span class="required" aria-label="required">*</span></label>
-              <input type="text" id="add-displayName" name="displayName" value="{{ addValues.displayName or '' }}" maxlength="100" required{% if addErrors.displayName %} aria-describedby="add-displayName-error" aria-invalid="true"{% endif %}>
+              <input type="text" id="add-displayName" name="displayName" value="{{ addValues.displayName or '' }}" maxlength="100" required data-category-slug-autofill-display-name aria-describedby="add-displayName-help{% if addErrors.displayName %} add-displayName-error{% endif %}"{% if addErrors.displayName %} aria-invalid="true"{% endif %}>
+              <span class="help-text" id="add-displayName-help">Press Tab to fill Directory slug from Display name.</span>
               {% if addErrors.displayName %}<span class="field-error-message" id="add-displayName-error">{{ addErrors.displayName }}</span>{% endif %}
             </div>
 
             <div class="field {% if addErrors.directorySlug %}field-error{% endif %}">
               <label for="add-directorySlug">Directory slug <span class="required" aria-label="required">*</span></label>
-              <input type="text" id="add-directorySlug" name="directorySlug" value="{{ addValues.directorySlug or '' }}" maxlength="100" required{% if addErrors.directorySlug %} aria-describedby="add-directorySlug-error" aria-invalid="true"{% endif %}>
+              <input type="text" id="add-directorySlug" name="directorySlug" value="{{ addValues.directorySlug or '' }}" maxlength="100" required data-category-slug-autofill-directory-slug{% if addErrors.directorySlug %} aria-describedby="add-directorySlug-error" aria-invalid="true"{% endif %}>
               <span class="help-text">Lowercase letters, numbers, and single hyphens only.</span>
               {% if addErrors.directorySlug %}<span class="field-error-message" id="add-directorySlug-error">{{ addErrors.directorySlug }}</span>{% endif %}
+            </div>
+
+            <div class="form-actions category-management-add-submit">
+              <button type="submit" class="button button-primary">Add</button>
             </div>
 
             <div class="field field--switch">
@@ -73,20 +79,11 @@
               {% if addErrors.enabled %}<span class="field-error-message" id="add-enabled-error">{{ addErrors.enabled }}</span>{% endif %}
             </div>
           </div>
-
-          <div class="form-actions category-management-action-row">
-            <button type="submit" class="button button-primary">Add Default</button>
-          </div>
         </form>
       </div>
 
       <div class="settings-section category-management-section category-management-list-section settings-category-management-section">
-        <h3>Defaults</h3>
-        {% if editingId and (editErrors.displayName or editErrors.directorySlug) %}
-          <div class="error-summary" role="alert" id="edit-category-errors">
-            <p>Could not save this category. Fix the fields below and try again.</p>
-          </div>
-        {% endif %}
+        <h3>Current defaults</h3>
         {% if categories.length > 0 %}
           <form id="settings-category-reorder-form" method="post" action="/settings/asset-categories/reorder" class="category-reorder-form" data-category-reorder-form>
             <input type="hidden" name="_csrf" value="{{ _csrf }}">
@@ -140,8 +137,13 @@
                 </button>
 
                 <div class="category-management-card-body">
-                  <form method="post" action="/settings/asset-categories/{{ category.id }}" class="category-details-form" novalidate data-category-details-form>
+                  <form method="post" action="/settings/asset-categories/{{ category.id }}" class="category-details-form" novalidate data-category-details-form data-category-details-id="{{ category.id }}">
                     <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                    {% if rowEditErrors.displayName or rowEditErrors.directorySlug %}
+                      <div class="error-summary" role="alert" id="global-category-{{ category.id }}-details-errors">
+                        <p>Could not save this category. Fix the fields below and try again.</p>
+                      </div>
+                    {% endif %}
                     <div class="category-management-card-fields">
                       <div class="category-management-card-field category-management-name{% if rowEditErrors.displayName %} field-error{% endif %}">
                         <label for="{{ rowDisplayNameId }}">Display name <span class="required" aria-label="required">*</span></label>
@@ -155,10 +157,12 @@
                         {% if rowEditErrors.directorySlug %}<span class="field-error-message" id="{{ rowDirectorySlugErrorId }}" role="alert">{{ rowEditErrors.directorySlug }}</span>{% endif %}
                       </div>
                     </div>
-                    <div class="category-management-details-actions">
-                      <button type="submit" class="button button-small button-secondary">Save details</button>
-                      <span class="sr-only" data-category-details-status aria-live="polite" aria-atomic="true"></span>
-                    </div>
+                    <span class="sr-only" data-category-details-status aria-live="polite" aria-atomic="true"></span>
+                    <noscript>
+                      <div class="category-management-details-actions">
+                        <button type="submit" class="button button-small button-secondary">Save details</button>
+                      </div>
+                    </noscript>
                   </form>
 
                   <div class="category-management-card-controls">
@@ -199,5 +203,6 @@
         {% endif %}
       </div>
     </div>
+  </div>
   </div>
 {% endblock %}

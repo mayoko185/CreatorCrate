@@ -13,8 +13,6 @@ const GLOBAL_ASSET_BROWSER_DEFAULT_KEY = 'asset_browser.default_category';
 
 const VALID_DEFAULTS = {
   new_projectStatus: 'ready',
-  releasesSort: 'planned',
-  releasesOrder: 'asc',
 };
 
 const NEW_PROJECT_STATUS_OPTIONS = [
@@ -101,17 +99,32 @@ describe('settings — page defaults HTTP', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('renders canonical Releases defaults without a Release Management namespace', async () => {
+  it('does not render obsolete Releases defaults or their anchor', async () => {
     const res = await agent.get('/settings/defaults').expect(200);
 
-    expect(res.text).toContain('<section id="defaults-releases" class="settings-section" aria-labelledby="defaults-releases-heading">');
-    expect(res.text).toContain('<h3 id="defaults-releases-heading">Releases</h3>');
-    expect(res.text).toContain('id="releasesSort" name="releasesSort"');
-    expect(res.text).toContain('id="releasesOrder" name="releasesOrder"');
-    expect(selectedValue(res.text, 'releasesSort')).toBe('planned');
-    expect(selectedValue(res.text, 'releasesOrder')).toBe('asc');
-    expect(res.text).not.toContain('defaults-release-management');
-    expect(res.text).not.toContain('releaseManagement');
+    expect(res.text).not.toContain('defaults-releases');
+    expect(res.text).not.toContain('id="releasesSort"');
+    expect(res.text).not.toContain('id="releasesOrder"');
+    expect(res.text).not.toContain('Release Management');
+  });
+
+  it('keeps the Defaults form intact without a normal Save action and with a no-JS fallback', async () => {
+    const res = await agent.get('/settings/defaults').expect(200);
+    const heading = res.text.match(/<header class="page-heading">[\s\S]*?<\/header>/)?.[0] || '';
+    const form = res.text.match(/<form id="settings-defaults-form"[\s\S]*?<\/form>/)?.[0] || '';
+
+    expect(heading).not.toContain('Save Defaults');
+    expect(form).toContain('method="post" action="/settings/defaults"');
+    expect(form).toContain('name="_csrf" value="');
+    for (const field of Object.keys(VALID_DEFAULTS)) {
+      expect(form).toContain(`name="${field}"`);
+    }
+    expect(form).toContain('id="defaults-new-projects" class="settings-section settings-defaults-section"');
+    expect(form).not.toContain('id="defaults-releases"');
+    expect(form).toContain('data-settings-fetch-save-status role="status" aria-live="polite" aria-atomic="true"');
+    expect(res.text.indexOf('data-settings-defaults-region')).toBeLessThan(res.text.indexOf('<form id="settings-defaults-form"'));
+    expect(form).toContain('<noscript>');
+    expect(form).toContain('<button type="submit" class="button button-primary">Save Defaults</button>');
   });
 
   it('uses the native-backed single select contract for New Projects Status', async () => {
@@ -120,9 +133,11 @@ describe('settings — page defaults HTTP', () => {
     const statusSelect = newProjects.match(/<select id="new_projectStatus"[\s\S]*?<\/select>/)?.[0] || '';
 
     expect(newProjects).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
+    expect(newProjects).toContain('data-cc-dropdown-dispatch-native-change');
     expect(statusSelect).toMatch(
-      /<select id="new_projectStatus" name="new_projectStatus" class="cc-dropdown-native-select" data-cc-dropdown-native-select[^>]*required>/,
+      /<select id="new_projectStatus" name="new_projectStatus" class="cc-dropdown-native-select" data-cc-dropdown-native-select[^>]*required[^>]*data-autosubmit="fetch">/,
     );
+    expect(statusSelect).not.toContain('data-autosubmit="submit"');
     expect(statusSelect).not.toBe('');
     for (const [value, label] of NEW_PROJECT_STATUS_OPTIONS) {
       expect(statusSelect).toMatch(new RegExp(`<option value="${value}"(?: selected)?>${label}</option>`));
@@ -139,9 +154,9 @@ describe('settings — page defaults HTTP', () => {
     const res = await agent.get('/settings/defaults').expect(200);
 
     expect(selectedValue(res.text, 'new_projectStatus')).toBe('tbd');
-    expect(selectedValue(res.text, 'releasesSort')).toBe('planned');
-    expect(selectedValue(res.text, 'releasesOrder')).toBe('asc');
-    expect((res.text.match(/Application fallback:/g) || [])).toHaveLength(3);
+
+
+    expect((res.text.match(/Application fallback:/g) || [])).toHaveLength(1);
     expect(res.text).toContain('These defaults apply only to new projects. Changing them does not modify existing projects.');
   });
 
@@ -158,8 +173,10 @@ describe('settings — page defaults HTTP', () => {
     expect(readMeta(db, GLOBAL_ASSET_BROWSER_DEFAULT_KEY)).toBe('wip');
   });
 
-  it('saves canonical Releases defaults without clobbering moved namespaces', async () => {
+  it('auto-saves rendered Defaults without changing persisted Releases defaults or moved namespaces', async () => {
     seedMovedDefaults(db);
+    writeMeta(db, defaultKey('releases', 'sort'), 'updated');
+    writeMeta(db, defaultKey('releases', 'order'), 'desc');
     writeMeta(db, 'page_defaults.release_management.sort', 'updated');
     writeMeta(db, 'page_defaults.release_management.order', 'desc');
 
@@ -171,12 +188,32 @@ describe('settings — page defaults HTTP', () => {
 
     expect(save.headers.location).toBe('/settings/defaults?notice=defaults_saved');
     expect(readMeta(db, defaultKey('new_project', 'status'))).toBe('ready');
-    expect(readMeta(db, defaultKey('releases', 'sort'))).toBe('planned');
-    expect(readMeta(db, defaultKey('releases', 'order'))).toBe('asc');
+    expect(readMeta(db, defaultKey('releases', 'sort'))).toBe('updated');
+    expect(readMeta(db, defaultKey('releases', 'order'))).toBe('desc');
     expect(movedStorageSnapshot(db)).toEqual(MOVED_DEFAULTS);
     expect(readMeta(db, GLOBAL_ASSET_BROWSER_DEFAULT_KEY)).toBe('wip');
     expect(readMeta(db, 'page_defaults.release_management.sort')).toBe('updated');
     expect(readMeta(db, 'page_defaults.release_management.order')).toBe('desc');
+  });
+
+  it('accepts and persists explicit legacy Releases defaults posts', async () => {
+    await agent.get('/settings/defaults').expect(200);
+
+    const save = await agent
+      .post('/settings/defaults')
+      .type('form')
+      .send({
+        new_projectStatus: 'ready',
+        releasesSort: 'updated',
+        releasesOrder: 'desc',
+        _csrf: csrfToken,
+      })
+      .expect(302);
+
+    expect(save.headers.location).toBe('/settings/defaults?notice=defaults_saved');
+    expect(readMeta(db, defaultKey('new_project', 'status'))).toBe('ready');
+    expect(readMeta(db, defaultKey('releases', 'sort'))).toBe('updated');
+    expect(readMeta(db, defaultKey('releases', 'order'))).toBe('desc');
   });
 
   it('records only effective page-default changes with safe aggregate context', async () => {
@@ -239,8 +276,8 @@ describe('settings — page defaults HTTP', () => {
     expect(save.headers.location).toBe('/settings/defaults?notice=defaults_saved');
     expect(movedStorageSnapshot(db)).toEqual(MOVED_DEFAULTS);
     expect(readMeta(db, GLOBAL_ASSET_BROWSER_DEFAULT_KEY)).toBe('wip');
-    expect(readMeta(db, defaultKey('releases', 'sort'))).toBe('planned');
-    expect(readMeta(db, defaultKey('releases', 'order'))).toBe('asc');
+    expect(readMeta(db, defaultKey('releases', 'sort'))).toBeUndefined();
+    expect(readMeta(db, defaultKey('releases', 'order'))).toBeUndefined();
   });
 
   it('rejects invalid Settings values without mutating defaults and preserves New Projects Status accessibility', async () => {
@@ -256,14 +293,12 @@ describe('settings — page defaults HTTP', () => {
       .type('form')
       .send({
         new_projectStatus: 'cancelled',
-        releasesSort: 'published',
-        releasesOrder: 'asc',
         _csrf: csrfToken,
       })
       .expect(422);
 
     expect(res.text).toContain('new_project.status');
-    expect(res.text).toContain('releases.sort');
+    expect(res.text).not.toContain('releases.sort');
     const newProjects = settingsSection(res.text, 'defaults-new-projects');
     const statusSelect = newProjects.match(/<select id="new_projectStatus"[\s\S]*?<\/select>/)?.[0] || '';
     expect(statusSelect).toContain('<option value="cancelled" selected>Submitted value: cancelled</option>');
@@ -277,8 +312,8 @@ describe('settings — page defaults HTTP', () => {
       'class="field-error-message" id="new_projectStatus-error">Value &quot;cancelled&quot; is not supported for new_project.status.</span>',
     );
     expect(readMeta(db, defaultKey('new_project', 'status'))).toBe('ready');
-    expect(readMeta(db, defaultKey('releases', 'sort'))).toBe('planned');
-    expect(readMeta(db, defaultKey('releases', 'order'))).toBe('asc');
+    expect(readMeta(db, defaultKey('releases', 'sort'))).toBeUndefined();
+    expect(readMeta(db, defaultKey('releases', 'order'))).toBeUndefined();
     expect(movedStorageSnapshot(db)).toEqual(MOVED_DEFAULTS);
   });
 
@@ -301,7 +336,7 @@ describe('settings — page defaults HTTP', () => {
     const res = await agent.get('/settings/defaults').expect(200);
 
     expect(res.text).toContain('defaults-new-projects');
-    expect(res.text).toContain('defaults-releases');
+    expect(res.text).not.toContain('defaults-releases');
     expect(res.text).not.toContain('defaults-projects');
     expect(res.text).not.toContain('projectsView');
     expect(res.text).not.toContain('new_releaseStatus');

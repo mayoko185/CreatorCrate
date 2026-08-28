@@ -92,8 +92,8 @@ describe('settings — open locally HTTP', () => {
   it('always renders the download installer action regardless of the artifact state', async () => {
     const res = await agent.get('/settings/open-locally').expect(200);
 
-    expect(res.text).toContain('Download installer');
-    expect(res.text).toContain('href="/downloads/creatorcrate-open-locally-setup.exe"');
+    expect(res.text).toContain('<div class="form-actions open-locally-installer-actions">');
+    expect(res.text).toContain('<a href="/downloads/creatorcrate-open-locally-setup.exe" class="button button-primary" download>Download installer</a>');
     expect(res.text).not.toContain('The Open locally installer is not currently available.');
     expect(res.text).not.toContain('installer is not currently available');
   });
@@ -101,15 +101,26 @@ describe('settings — open locally HTTP', () => {
   it('renders the mapping section with the standard Settings card layout', async () => {
     const res = await agent.get('/settings/open-locally').expect(200);
 
-    // Uses the standard Settings idioms (same as the Tags page): plain
-    // .settings-section cards with .project-form / .form-actions, and the
-    // primary action button flush in the card. No bespoke body wrapper.
-    expect(res.text).toContain('class="settings-section"');
-    expect(res.text).not.toContain('open-locally-section-body');
-    expect(res.text).not.toContain('open-locally-body');
-    expect(res.text).toContain('class="form-actions"');
-    expect(res.text).toContain('class="button button-primary" download>Download installer</a>');
-    expect(res.text).toContain('class="button button-primary">Save</button>');
+    expect(res.text).toContain('class="settings-content settings-open-locally-content"');
+    expect(res.text).toContain('class="settings-section settings-open-locally-installer-section"');
+    expect(res.text).toContain('class="settings-section settings-open-locally-mapping-section"');
+    expect(res.text).toContain('class="settings-open-locally-section-body settings-open-locally-installer-body"');
+    expect(res.text).toContain('class="settings-open-locally-section-body settings-open-locally-mapping-body"');
+    expect(res.text).toContain('class="form-actions open-locally-installer-actions"');
+    expect(res.text).toMatch(/id="open-locally-save-form"[\s\S]*?name="_csrf"[\s\S]*?<input[^>]*form="open-locally-save-form"[^>]*>\s*<button id="open-locally-save" type="submit" form="open-locally-save-form" class="button button-primary">Save<\/button>/);
+    expect([...res.text.matchAll(/id="open-locally-save"/g)]).toHaveLength(1);
+  });
+
+  it('keeps the C7G progressive-enhancement contract on the detached native Save form', async () => {
+    writeMeta(db, WINDOWS_PROJECTS_PATH_KEY, 'D:\\example');
+
+    const res = await agent.get('/settings/open-locally').expect(200);
+
+    expect(res.text).toMatch(/<div class="settings-section settings-open-locally-mapping-section" data-settings-open-locally-mapping-region>/);
+    expect(res.text).toMatch(/<form id="open-locally-save-form" method="post" action="\/settings\/open-locally" class="inline-form" novalidate>[\s\S]*?name="_csrf"[\s\S]*?data-settings-fetch-save-status[\s\S]*?<\/form>/);
+    expect(res.text).toMatch(/<span class="help-text" data-settings-fetch-save-status role="status" aria-live="polite" aria-atomic="true"><\/span>/);
+    expect(res.text).toMatch(/<input[^>]*id="windows-projects-path"[^>]*form="open-locally-save-form"[^>]*data-autosubmit="fetch"[^>]*data-settings-open-locally-path[^>]*>/);
+    expect(res.text).toMatch(/<div class="open-locally-path-row">\s*<input[^>]*>\s*<button id="open-locally-save" type="submit" form="open-locally-save-form" class="button button-primary">Save<\/button>\s*<form method="post" action="\/settings\/open-locally\/clear"/);
   });
 
   it('shows the saved Windows path as the configured state and pre-fills the input', async () => {
@@ -121,6 +132,8 @@ describe('settings — open locally HTTP', () => {
     expect(res.text).not.toContain('Not configured');
     expect(res.text).toContain('value="D:&#92;example"');
     expect(res.text).toContain('>Clear mapping</button>');
+    expect(res.text).toMatch(/<div class="open-locally-path-row">\s*<input[^>]*form="open-locally-save-form"[^>]*>\s*<button id="open-locally-save" type="submit" form="open-locally-save-form" class="button button-primary">Save<\/button>\s*<form method="post" action="\/settings\/open-locally\/clear" class="inline-form" novalidate>/);
+    expect(res.text).toMatch(/<form id="open-locally-save-form" method="post" action="\/settings\/open-locally" class="inline-form" novalidate>[\s\S]*?<\/form>[\s\S]*?<div class="open-locally-path-row">[\s\S]*?<form method="post" action="\/settings\/open-locally\/clear" class="inline-form" novalidate>/);
   });
 
   it('saves a valid Windows path, redirects, and shows the saved notice', async () => {
@@ -136,6 +149,9 @@ describe('settings — open locally HTTP', () => {
     const redirected = await agent.get(save.headers.location).expect(200);
     expect(redirected.text).toContain('Open locally mapping saved.');
     expect(redirected.text).toContain('<code>D:&#92;example</code>');
+    expect(redirected.text.indexOf('class="notice')).toBeLessThan(
+      redirected.text.indexOf('class="settings-content settings-open-locally-content"'),
+    );
   });
 
   it('records path-setting changes without persisting the Windows path', async () => {

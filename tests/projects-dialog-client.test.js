@@ -2,7 +2,9 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   closeAppDialogById,
   enhanceAppDialogs,
+  directorySlugFromDisplayName,
   enhanceCategoryReorder,
+  enhanceCategorySlugAutofill,
   enhanceConfirmations,
   enhanceDashboardDefaultsDialog,
   enhanceDropdowns,
@@ -572,10 +574,21 @@ function makeCategoryManagementBody({ categoryName = 'Original', invalidRename =
     id: 'project-category-management-add-form',
     action: '/projects/1/asset-categories',
     method: 'post',
+    'data-category-slug-autofill-form': '',
   });
   addForm.appendChild(makeElement('input', { type: 'hidden', name: '_csrf', value: 'csrf-token' }));
-  addForm.appendChild(makeElement('input', { name: 'displayName', id: 'add-displayName', value: '' }));
-  addForm.appendChild(makeElement('input', { name: 'directorySlug', id: 'add-directorySlug', value: '' }));
+  addForm.appendChild(makeElement('input', {
+    name: 'displayName',
+    id: 'add-displayName',
+    value: '',
+    'data-category-slug-autofill-display-name': '',
+  }));
+  addForm.appendChild(makeElement('input', {
+    name: 'directorySlug',
+    id: 'add-directorySlug',
+    value: '',
+    'data-category-slug-autofill-directory-slug': '',
+  }));
   const addSubmit = makeElement('button', { type: 'submit' });
   addForm.appendChild(addSubmit);
   body.appendChild(addForm);
@@ -2174,6 +2187,54 @@ describe('Dashboard defaults dialog client behavior', () => {
     expect(page.sections.overdue.visibleControl.checked).toBe(true);
     expect(page.sections['status:ready'].visibleControl.checked).toBe(true);
     expect(page.sections.upcoming.countControl.value).toBe('10');
+  });
+});
+
+describe('Category slug autofill', () => {
+  it('normalizes display names into valid directory slugs', () => {
+    expect(directorySlugFromDisplayName('My Cool Category')).toBe('my-cool-category');
+    expect(directorySlugFromDisplayName('  Café & WIP!  ')).toBe('cafe-wip');
+    expect(directorySlugFromDisplayName('---')).toBe('');
+    expect(directorySlugFromDisplayName('CON')).toBe('');
+  });
+
+  it('fills an empty slug on Tab without preventing normal navigation and preserves explicit values', () => {
+    const page = makeCategoryDialogPage();
+    const form = page.initial.body.querySelector('#project-category-management-add-form');
+    const displayName = form.querySelector('#add-displayName');
+    const directorySlug = form.querySelector('#add-directorySlug');
+
+    expect(enhanceCategorySlugAutofill(page.document)).toBe(1);
+    displayName.value = '  My Cool Category!  ';
+    const firstTab = displayName.dispatch('keydown', { key: 'Tab' });
+    expect(firstTab.defaultPrevented).toBe(false);
+    expect(directorySlug.value).toBe('my-cool-category');
+
+    directorySlug.value = 'cool-cat';
+    displayName.value = 'A different name';
+    const secondTab = displayName.dispatch('keydown', { key: 'Tab' });
+    expect(secondTab.defaultPrevented).toBe(false);
+    expect(directorySlug.value).toBe('cool-cat');
+
+    directorySlug.value = '';
+    const reverseTab = displayName.dispatch('keydown', { key: 'Tab', shiftKey: true });
+    expect(reverseTab.defaultPrevented).toBe(false);
+    expect(directorySlug.value).toBe('');
+  });
+
+  it('binds the shared behavior through the project category dialog enhancement', () => {
+    const page = makeCategoryDialogPage();
+    const form = page.initial.body.querySelector('#project-category-management-add-form');
+    const displayName = form.querySelector('#add-displayName');
+    const directorySlug = form.querySelector('#add-directorySlug');
+
+    enhanceAppDialogs(page.document);
+    enhanceProjectAssetCategoryManagement(page.document);
+    displayName.value = 'Project category';
+    const event = displayName.dispatch('keydown', { key: 'Tab' });
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(directorySlug.value).toBe('project-category');
   });
 });
 

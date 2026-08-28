@@ -5,7 +5,7 @@
 {% set page_title = "Settings — Defaults" %}
 
 {% block content %}
-  {{ pageHeading.render("Choose persistent defaults for new projects and Release Management.") }}
+  {{ pageHeading.render("Choose persistent defaults for new projects.") }}
 
   {% if notice %}
     {% set noticeVariant = notice.variant %}
@@ -13,9 +13,9 @@
     {% include "partials/notice.njk" %}
   {% endif %}
 
-  <div class="settings-layout">
+  <div class="settings-layout settings-defaults-layout">
 
-    <div class="settings-content">
+    <div class="settings-content settings-defaults-content" data-settings-defaults-region>
       {% if hasErrors %}
         <div class="error-summary" role="alert" id="defaults-errors">
           <p>Defaults could not be saved. Fix the highlighted fields and try again.</p>
@@ -25,15 +25,13 @@
         </div>
       {% endif %}
 
-      <form method="post" action="/settings/defaults" class="project-form" novalidate>
+      <form id="settings-defaults-form" method="post" action="/settings/defaults" class="project-form settings-defaults-form" novalidate>
         <input type="hidden" name="_csrf" value="{{ _csrf }}">
 
         {% for section in sections %}
-          <section id="{{ section.anchor }}" class="settings-section" aria-labelledby="{{ section.anchor }}-heading">
+          <section id="{{ section.anchor }}" class="settings-section settings-defaults-section" aria-labelledby="{{ section.anchor }}-heading">
             <h3 id="{{ section.anchor }}-heading">{{ section.title }}</h3>
-            {% if section.page == 'new_release' %}
-              <p class="help-text">This default applies only to newly created release records. Changing it does not modify existing releases.</p>
-            {% elseif section.page == 'new_project' %}
+            {% if section.page == 'new_project' %}
               <p class="help-text">These defaults apply only to new projects. Changing them does not modify existing projects.</p>
             {% endif %}
 
@@ -41,7 +39,7 @@
               <div class="field{% if field.error %} field-error{% endif %}">
                 {% if section.page == 'new_project' %}
                   {% set submittedOption = none %}
-                  {% set nativeAttributes = [["required", true]] %}
+                  {% set nativeAttributes = [["required", true], ["data-autosubmit", "fetch"]] %}
                   {% set summaryAttributes = [] %}
                   {% if field.showSubmittedValue %}
                     {% set submittedOption = {
@@ -52,7 +50,7 @@
                     } %}
                   {% endif %}
                   {% if field.error %}
-                    {% set nativeAttributes = [["required", true], ["aria-describedby", field.id ~ '-error'], ["aria-invalid", "true"]] %}
+                    {% set nativeAttributes = [["required", true], ["data-autosubmit", "fetch"], ["aria-describedby", field.id ~ '-error'], ["aria-invalid", "true"]] %}
                     {% set summaryAttributes = [["aria-describedby", field.id ~ '-error'], ["aria-invalid", "true"]] %}
                   {% endif %}
                   {{ dropdown.singleSelect({
@@ -65,6 +63,7 @@
                     optionIdPrefix: field.id,
                     leadingOption: submittedOption,
                     summaryAttributes: summaryAttributes,
+                    dispatchNativeChange: true,
                     nativeSelect: {
                       id: field.id,
                       attributes: nativeAttributes
@@ -84,9 +83,9 @@
                   </select>
                 {% endif %}
                 {% if field.usesFallback %}
-                  <span class="help-text">Application fallback: <strong>{{ field.fallbackLabel }}</strong></span>
+                  <span class="help-text" data-settings-defaults-effective>Application fallback: <strong>{{ field.fallbackLabel }}</strong></span>
                 {% else %}
-                  <span class="help-text">Saved default: <strong>{{ field.savedLabel }}</strong></span>
+                  <span class="help-text" data-settings-defaults-effective>Saved default: <strong>{{ field.savedLabel }}</strong></span>
                 {% endif %}
                 {% if field.error %}<span class="field-error-message" id="{{ field.id }}-error">{{ field.error }}</span>{% endif %}
               </div>
@@ -95,10 +94,13 @@
           </section>
         {% endfor %}
 
-        <div class="form-actions">
-          <button type="submit" class="button button-primary">Save Defaults</button>
-          <a href="/settings" class="button button-secondary">Cancel</a>
-        </div>
+        <span class="help-text" data-settings-fetch-save-status role="status" aria-live="polite" aria-atomic="true"></span>
+
+        <noscript>
+          <div class="form-actions">
+            <button type="submit" class="button button-primary">Save Defaults</button>
+          </div>
+        </noscript>
       </form>
     </div>
   </div>

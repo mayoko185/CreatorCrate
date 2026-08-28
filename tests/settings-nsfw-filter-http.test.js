@@ -35,6 +35,10 @@ function nsfwControl(html) {
   return html.match(/<input[^>]+id="nsfw-filter-enabled"[^>]*>/)?.[0] || '';
 }
 
+function nsfwFilterForm(html) {
+  return html.match(/<form method="post" action="\/settings\/nsfw-filter" class="project-form" novalidate>[\s\S]*?<\/form>/)?.[0] || '';
+}
+
 function readMeta(db) {
   return db.prepare('SELECT value FROM app_meta WHERE key = ?').pluck().get(NSFW_FILTER_ENABLED_KEY);
 }
@@ -68,15 +72,8 @@ describe('settings — NSFW Filter HTTP', () => {
     return agent
       .post('/settings/nsfw-filter')
       .type('form')
-      .send({ enabled: enabled ? '1' : '0', _csrf: csrfToken })
+      .send({ enabled: enabled ? ['0', '1'] : '0', _csrf: csrfToken })
       .expect(302);
-  }
-
-  function securityPageStructure(html) {
-    const settingsContent = html.match(/<div class="settings-content">([\s\S]*?)<\/div>\s*\r?\n\s*<\/main>/)?.[1] || '';
-    const match = settingsContent.match(/<form method="post" action="\/settings\/nsfw-filter" class="project-form" novalidate>[\s\S]*?<div class="settings-section">\s*<h3>([^<]+)<\/h3>\s*<p class="help-text" id="([^"]+)">([\s\S]*?)<\/p>\s*<div class="field field--switch[^"]*">[\s\S]*?<\/div>\s*<div class="form-actions">[\s\S]*?<\/div>\s*<\/div>\s*<\/form>/);
-    if (!match) return null;
-    return { heading: match[1], helpId: match[2], helpText: match[3], full: match[0] };
   }
 
   function settingsSectionCss(css) {
@@ -103,16 +100,23 @@ describe('settings — NSFW Filter HTTP', () => {
       'Open locally',
     ]);
 
-    const structure = securityPageStructure(res.text);
-    expect(structure).not.toBeNull();
-    expect(structure.heading).toBe('NSFW Filter');
-    expect(structure.helpText).toContain('Enabling the filter will add the <strong>NSFW</strong> tag as an available option if it does not already exist.');
-    expect(structure.full).toContain('<form method="post" action="/settings/nsfw-filter" class="project-form" novalidate>');
-    expect(structure.full).toContain('<div class="settings-section">');
-    expect(structure.full).toContain('<div class="field field--switch">');
-    expect(structure.full).toContain('<div class="form-actions">');
-    expect(structure.full).toContain('class="button button-primary">Save</button>');
-    expect(structure.full).toContain('class="button button-secondary">Cancel</a>');
+    const form = nsfwFilterForm(res.text);
+    expect(form).toContain('<h3>NSFW Filter</h3>');
+    expect(form).toContain('Enabling the filter will add the <strong>NSFW</strong> tag as an available option if it does not already exist.');
+    expect(form).toContain('<div class="settings-section">');
+    expect(form).toContain('<div class="field field--switch">');
+    expect(nsfwControl(form)).toContain('data-autosubmit="fetch"');
+    expect(nsfwControl(form)).not.toContain('data-autosubmit="submit"');
+    expect(form).toContain('name="_csrf"');
+    expect((form.match(/data-settings-fetch-save-status/g) || []).length).toBe(1);
+    expect(form).not.toContain('data-category-enabled-status');
+    expect(form).toContain('<input type="hidden" name="enabled" value="0" tabindex="-1">');
+    expect(nsfwControl(form)).toContain('name="enabled"');
+    expect(nsfwControl(form)).toContain('value="1"');
+    expect(form).not.toContain('<div class="form-actions">');
+    expect(form.replace(/<noscript>[\s\S]*?<\/noscript>/g, '')).not.toContain('>Save</button>');
+    expect(form).not.toContain('>Cancel</a>');
+    expect(form).toContain('<noscript><button type="submit" class="button button-small button-secondary">Save</button></noscript>');
 
     const css = (await agent.get('/creatorcrate.css').expect(200)).text;
     const padding = settingsSectionCss(css);
@@ -224,6 +228,18 @@ describe('settings — NSFW Filter HTTP', () => {
       .expect(403);
     expect(readMeta(db)).toBeUndefined();
     expect(listNsfwTags(db)).toEqual([]);
+  });
+
+  it('renders the existing validation error for malformed toggle values', async () => {
+    const res = await agent
+      .post('/settings/nsfw-filter')
+      .type('form')
+      .send({ enabled: ['0', '1', '1'], _csrf: csrfToken })
+      .expect(422);
+
+    expect(res.text).toContain('Enabled value must be 0, 1, on, off, true, or false.');
+    expect(nsfwControl(res.text)).not.toContain('checked');
+    expect(readMeta(db)).toBeUndefined();
   });
 
   describe('CSRF regression', () => {

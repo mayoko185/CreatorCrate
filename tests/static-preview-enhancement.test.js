@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import nunjucks from 'nunjucks';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,6 +8,11 @@ import {
   enhancePreviewMedia,
   enhanceProjectCards,
   enhanceAutoSubmit,
+  enhanceDefaultsFetchSave,
+  enhanceAssetCategoryPreferencesFetchSave,
+  enhanceNsfwFilterFetchSave,
+  enhanceOpenLocallyFetchSave,
+  enhanceSettingsFetchSave,
   enhanceCategoryReorder,
   enhanceBookReorder,
   enhanceChapterPageReorder,
@@ -437,6 +443,9 @@ class TestFormData {
       _csrf: [form.csrfToken || 'csrf-token'],
     };
     if (form.control) values.enabled = ['0', ...(form.control.checked ? ['1'] : [])];
+    if (form.controls) {
+      for (const control of form.controls) values[control.name] = [control.value];
+    }
     const orderInput = form.querySelector?.('[data-category-order-input]');
     if (orderInput) values.orderedCategoryIds = [orderInput.value || ''];
     const noteOrderInput = form.querySelector?.('[data-note-order-input]');
@@ -618,10 +627,12 @@ describe('native autosubmit navigation', () => {
   it('submits each declarative control once without submitting during enhancement', () => {
     const selected = makeEnabledFixture({ action: '/projects/7/assets/11/tags', checked: false });
     const deselected = makeEnabledFixture({ action: '/projects/7/assets/12/tags', checked: true });
+    const nsfw = makeEnabledFixture({ action: '/settings/nsfw-filter', checked: false });
     selected.control.dataset.autosubmit = 'submit';
     deselected.control.dataset.autosubmit = 'submit';
+    nsfw.control.dataset.autosubmit = 'submit';
 
-    const scope = { querySelectorAll: () => [selected.control, deselected.control] };
+    const scope = { querySelectorAll: () => [selected.control, deselected.control, nsfw.control] };
     enhanceAutoSubmit(scope);
 
     expect(selected.form.requestSubmitCount).toBe(0);
@@ -633,11 +644,1695 @@ describe('native autosubmit navigation', () => {
     selected.control.dispatch('change');
     deselected.control.checked = false;
     deselected.control.dispatch('change');
+    nsfw.control.checked = true;
+    nsfw.control.dispatch('change');
 
     expect(selected.form.requestSubmitCount).toBe(1);
     expect(deselected.form.requestSubmitCount).toBe(1);
+    expect(nsfw.form.requestSubmitCount).toBe(1);
     expect(selected.form.submitCount).toBe(0);
     expect(deselected.form.submitCount).toBe(0);
+    expect(nsfw.form.submitCount).toBe(0);
+  });
+});
+
+
+function makeFetchSaveFixture({ action = '/settings/defaults', values = { value: 'initial' } } = {}) {
+  const status = {
+    textContent: '',
+    attributes: new Map(),
+    setAttribute(name, value) { this.attributes.set(name, String(value)); },
+  };
+  const attributes = new Map();
+  const form = {
+    tagName: 'FORM',
+    dataset: {},
+    action,
+    method: 'post',
+    csrfToken: 'csrf-fetch-save',
+    controls: [],
+    requestSubmitCount: 0,
+    submitCount: 0,
+    querySelector(selector) {
+      return selector === '[data-settings-fetch-save-status]' ? status : null;
+    },
+    querySelectorAll(selector) {
+      return selector === 'input, select, textarea' ? controls : [];
+    },
+    setAttribute(name, value) { attributes.set(name, String(value)); },
+    removeAttribute(name) { attributes.delete(name); },
+    hasAttribute(name) { return attributes.has(name); },
+    requestSubmit() { this.requestSubmitCount += 1; },
+    submit() { this.submitCount += 1; },
+  };
+  const controls = Object.entries(values).map(([name, value]) => {
+    const control = makeCheckbox();
+    control.name = name;
+    control.value = value;
+    control.dataset.autosubmit = 'fetch';
+    control.form = form;
+    return control;
+  });
+  form.controls = controls;
+  return { form, controls, status, attributes };
+}
+
+function makeDefaultsFetchFixture({ value = 'tbd' } = {}) {
+  const fixture = makeFetchSaveFixture({ values: { new_projectStatus: value } });
+  const effective = {
+    parentNode: {},
+    replacement: null,
+    replaceWith(next) { this.replacement = next; },
+  };
+  const region = {
+    parentNode: {},
+    replacement: null,
+    replaceWith(next) { this.replacement = next; },
+    querySelector(selector) {
+      return selector === '#settings-defaults-form' ? fixture.form : null;
+    },
+    querySelectorAll(selector) {
+      if (selector === '#settings-defaults-form') return [fixture.form];
+      if (selector === '[data-cc-dropdown]') return [];
+      return [];
+    },
+  };
+  const querySelector = fixture.form.querySelector.bind(fixture.form);
+  const querySelectorAll = fixture.form.querySelectorAll.bind(fixture.form);
+  fixture.form.matches = (selector) => selector === '#settings-defaults-form';
+  fixture.form.closest = (selector) => selector === '[data-settings-defaults-region]' ? region : null;
+  fixture.form.querySelector = (selector) => {
+    if (selector === '[data-settings-defaults-effective]') return effective;
+    return querySelector(selector);
+  };
+  fixture.form.querySelectorAll = (selector) => {
+    if (selector === '[data-autosubmit="fetch"]') return fixture.controls;
+    return querySelectorAll(selector);
+  };
+  return { ...fixture, effective, region, scope: { querySelectorAll: () => [fixture.form] } };
+}
+
+async function withDefaultsDomParser(parser, callback) {
+  const originalDOMParser = globalThis.DOMParser;
+  globalThis.DOMParser = class {
+    parseFromString(html) { return parser(html); }
+  };
+  try {
+    return await callback();
+  } finally {
+    globalThis.DOMParser = originalDOMParser;
+  }
+}
+
+describe('Settings fetch autosave enhancement', () => {
+  it('uses an explicit opt-in mode without changing the existing bare or submit modes', async () => {
+    const bare = makeEnabledFixture({ action: '/settings/asset-categories/12/enabled', checked: false });
+    const submit = makeEnabledFixture({ action: '/settings/nsfw-filter', checked: false });
+    const fetchSave = makeFetchSaveFixture();
+    submit.control.dataset.autosubmit = 'submit';
+    const calls = [];
+
+    await withBrowserGlobals(async (action, options) => {
+      calls.push({ action, options });
+      return { ok: true, redirected: true, text: async () => '<html>saved</html>' };
+    }, async () => {
+      enhanceAutoSubmit({ querySelectorAll: () => [bare.control, submit.control, fetchSave.controls[0]] });
+      enhanceSettingsFetchSave({ querySelectorAll: () => fetchSave.controls });
+
+      bare.control.checked = true;
+      bare.control.dispatch('change');
+      submit.control.dispatch('change');
+      fetchSave.controls[0].value = 'changed';
+      fetchSave.controls[0].dispatch('change');
+      await flushAsync();
+
+      expect(calls).toHaveLength(2);
+      expect(bare.form.requestSubmitCount).toBe(0);
+      expect(submit.form.requestSubmitCount).toBe(1);
+      expect(fetchSave.form.requestSubmitCount).toBe(0);
+      expect(fetchSave.form.submitCount).toBe(0);
+    });
+  });
+
+  it('posts URL-encoded complete form data, preserves the control value, and exposes final response HTML', async () => {
+    const fixture = makeFetchSaveFixture({
+      action: '/settings/defaults',
+      values: { defaultProjectStatus: 'active', releasesSort: 'name' },
+    });
+    const calls = [];
+    const successes = [];
+
+    await withBrowserGlobals(async (action, options) => {
+      calls.push({ action, options });
+      return { ok: true, redirected: true, text: async () => '<main>authoritative settings</main>' };
+    }, async () => {
+      enhanceSettingsFetchSave(
+        { querySelectorAll: () => fixture.controls },
+        { onSuccess: (detail) => successes.push(detail) },
+      );
+
+      fixture.controls[0].value = 'archived';
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0].action).toBe('/settings/defaults');
+      expect(calls[0].options.method).toBe('POST');
+      expect(calls[0].options.credentials).toBe('same-origin');
+      expect(calls[0].options.redirect).toBe('follow');
+      expect(calls[0].options.headers['Content-Type']).toBe('application/x-www-form-urlencoded;charset=UTF-8');
+      expect(calls[0].options.body).toBeInstanceOf(URLSearchParams);
+      expect(calls[0].options.body.get('_csrf')).toBe('csrf-fetch-save');
+      expect(calls[0].options.body.get('defaultProjectStatus')).toBe('archived');
+      expect(calls[0].options.body.get('releasesSort')).toBe('name');
+      expect(fixture.controls[0].value).toBe('archived');
+      expect(fixture.status.textContent).toBe('Settings saved.');
+      expect(fixture.status.attributes.get('role')).toBe('status');
+      expect(fixture.status.attributes.get('aria-live')).toBe('polite');
+      expect(fixture.form.hasAttribute('aria-busy')).toBe(false);
+      expect(successes).toHaveLength(1);
+      expect(successes[0].html).toBe('<main>authoritative settings</main>');
+      expect(successes[0].payload).toContain('defaultProjectStatus=archived');
+    });
+  });
+
+  it('coalesces A → B → C to the latest complete payload and only publishes Saved after C succeeds', async () => {
+    const fixture = makeFetchSaveFixture({ values: { defaultProjectStatus: 'active', theme: 'light' } });
+    const requests = [];
+
+    await withBrowserGlobals((action, options) => new Promise((resolve) => {
+      requests.push({ action, options, resolve });
+    }), async () => {
+      enhanceSettingsFetchSave({ querySelectorAll: () => fixture.controls });
+      enhanceSettingsFetchSave({ querySelectorAll: () => fixture.controls });
+      expect(fixture.controls[0].listeners).toHaveLength(1);
+
+      fixture.controls[0].value = 'A';
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+      fixture.controls[0].value = 'B';
+      fixture.controls[0].dispatch('change');
+      fixture.controls[0].value = 'C';
+      fixture.controls[0].dispatch('change');
+
+      expect(requests).toHaveLength(1);
+      requests[0].resolve({ ok: true, redirected: true, text: async () => '<main>a</main>' });
+      await flushAsync();
+      expect(requests).toHaveLength(2);
+      expect(fixture.status.textContent).toBe('Saving settings.');
+      expect(requests[1].options.body.get('defaultProjectStatus')).toBe('C');
+      expect(requests[1].options.body.get('theme')).toBe('light');
+
+      requests[1].resolve({ ok: true, redirected: true, text: async () => '<main>b</main>' });
+      await flushAsync();
+      expect(fixture.status.textContent).toBe('Settings saved.');
+      expect(fixture.form.hasAttribute('aria-busy')).toBe(false);
+    });
+  });
+
+  it('keeps the page loaded for server validation and network failures, and retries a queued newer state', async () => {
+    const fixture = makeFetchSaveFixture();
+    const requests = [];
+    const validations = [];
+    const errors = [];
+
+    await withBrowserGlobals((action, options) => new Promise((resolve, reject) => {
+      requests.push({ action, options, resolve, reject });
+    }), async () => {
+      enhanceSettingsFetchSave(
+        { querySelectorAll: () => fixture.controls },
+        {
+          onValidationError: (detail) => validations.push(detail),
+          onError: (detail) => errors.push(detail),
+        },
+      );
+
+      fixture.controls[0].value = 'invalid';
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+      fixture.controls[0].value = 'valid';
+      fixture.controls[0].dispatch('change');
+
+      requests[0].resolve({ ok: false, status: 422, redirected: false, text: async () => '<form><p>Authoritative error</p></form>' });
+      await flushAsync();
+
+      expect(validations).toHaveLength(1);
+      expect(validations[0].html).toContain('Authoritative error');
+      expect(validations[0].superseded).toBe(true);
+      expect(errors[0].superseded).toBe(true);
+      expect(requests).toHaveLength(2);
+      expect(fixture.status.textContent).toBe('Saving settings.');
+      expect(requests[1].options.body.get('value')).toBe('valid');
+
+      requests[1].reject(new Error('offline'));
+      await flushAsync();
+      expect(fixture.status.textContent).toContain('Could not save settings');
+      expect(fixture.status.textContent).not.toContain('Saved');
+      expect(fixture.form.hasAttribute('aria-busy')).toBe(false);
+      expect(fixture.form.requestSubmitCount).toBe(0);
+      expect(fixture.form.submitCount).toBe(0);
+      expect(errors[1].type).toBe('network');
+      expect(errors[1].superseded).toBe(false);
+    });
+  });
+
+  it('clears a queued B when the user returns to in-flight A', async () => {
+    const fixture = makeFetchSaveFixture({ values: { value: 'A' } });
+    const requests = [];
+
+    await withBrowserGlobals((action, options) => new Promise((resolve) => {
+      requests.push({ action, options, resolve });
+    }), async () => {
+      enhanceSettingsFetchSave({ querySelectorAll: () => fixture.controls });
+
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+      fixture.controls[0].value = 'B';
+      fixture.controls[0].dispatch('change');
+      fixture.controls[0].value = 'A';
+      fixture.controls[0].dispatch('change');
+
+      requests[0].resolve({ ok: true, redirected: true, text: async () => '<main>a</main>' });
+      await flushAsync();
+
+      expect(requests).toHaveLength(1);
+      expect(requests[0].options.body.get('value')).toBe('A');
+      expect(fixture.status.textContent).toBe('Settings saved.');
+      expect(fixture.form.hasAttribute('aria-busy')).toBe(false);
+    });
+  });
+
+  it('leaves authoritative validation content rendered by the validation hook untouched', async () => {
+    const fixture = makeFetchSaveFixture();
+    const requests = [];
+
+    await withBrowserGlobals((action, options) => new Promise((resolve) => {
+      requests.push({ action, options, resolve });
+    }), async () => {
+      enhanceSettingsFetchSave(
+        { querySelectorAll: () => fixture.controls },
+        {
+          onValidationError: () => {
+            fixture.status.textContent = 'Server validation: choose a valid setting.';
+          },
+        },
+      );
+
+      fixture.controls[0].value = 'invalid';
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+      requests[0].resolve({ ok: false, status: 422, redirected: false, text: async () => '<form>validation</form>' });
+      await flushAsync();
+
+      expect(fixture.status.textContent).toBe('Server validation: choose a valid setting.');
+      expect(fixture.form.hasAttribute('aria-busy')).toBe(false);
+    });
+  });
+
+  it('binds only marked controls, including detached form-associated controls, and ignores fetch-marked forms and orphans', async () => {
+    const fixture = makeFetchSaveFixture();
+    const formOnly = makeFetchSaveFixture();
+    formOnly.form.dataset.autosubmit = 'fetch';
+    delete formOnly.controls[0].dataset.autosubmit;
+    const orphan = makeCheckbox();
+    orphan.dataset.autosubmit = 'fetch';
+    const scope = {
+      querySelectorAll: () => [fixture.controls[0], formOnly.form, orphan],
+    };
+    const calls = [];
+
+    expect(enhanceSettingsFetchSave({ querySelectorAll: () => [formOnly.form] })).toBe(0);
+    expect(enhanceSettingsFetchSave({ querySelectorAll: () => [orphan] })).toBe(0);
+
+    await withBrowserGlobals(async (action, options) => {
+      calls.push({ action, options });
+      return { ok: true, redirected: true, text: async () => '<main>saved</main>' };
+    }, async () => {
+      expect(enhanceSettingsFetchSave(scope)).toBe(1);
+      expect(enhanceSettingsFetchSave(scope)).toBe(0);
+      expect(fixture.controls[0].listeners).toHaveLength(1);
+      expect(formOnly.controls[0].listeners).toHaveLength(0);
+
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+      expect(calls).toHaveLength(1);
+    });
+  });
+
+  it('binds a newly replaced marked control on a surviving form', async () => {
+    const fixture = makeFetchSaveFixture();
+    const calls = [];
+
+    await withBrowserGlobals(async (action, options) => {
+      calls.push({ action, options });
+      return { ok: true, redirected: true, text: async () => '<main>saved</main>' };
+    }, async () => {
+      expect(enhanceSettingsFetchSave({ querySelectorAll: () => fixture.controls })).toBe(1);
+      const replacement = makeCheckbox();
+      replacement.name = 'value';
+      replacement.value = 'replaced';
+      replacement.dataset.autosubmit = 'fetch';
+      replacement.form = fixture.form;
+      fixture.form.controls = [replacement];
+
+      expect(enhanceSettingsFetchSave({ querySelectorAll: () => [replacement] })).toBe(1);
+      expect(replacement.listeners).toHaveLength(1);
+      replacement.dispatch('change');
+      await flushAsync();
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0].options.body.get('value')).toBe('replaced');
+    });
+  });
+});
+
+describe('Open Locally fetch-save adoption', () => {
+  function makeOpenLocallyFetchFixture() {
+    const fixture = makeFetchSaveFixture({
+      action: '/settings/open-locally',
+      values: { windowsProjectsPath: 'D:\\example' },
+    });
+    const listeners = [];
+    const region = {
+      parentNode: {},
+      querySelector(selector) {
+        return selector === '#open-locally-save-form' ? fixture.form : null;
+      },
+      querySelectorAll(selector) {
+        return selector === '#open-locally-save-form' ? [fixture.form] : [];
+      },
+    };
+    const document = {
+      querySelector(selector) {
+        return selector === '[data-settings-open-locally-path]' ? fixture.controls[0] : null;
+      },
+    };
+    fixture.form.ownerDocument = document;
+    fixture.form.closest = (selector) => selector === '[data-settings-open-locally-mapping-region]' ? region : null;
+    fixture.form.addEventListener = (type, handler) => listeners.push({ type, handler });
+    fixture.form.dispatch = (type) => {
+      const event = { defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+      listeners.filter((entry) => entry.type === type).forEach((entry) => entry.handler(event));
+      return event;
+    };
+    fixture.controls[0].dataset.settingsOpenLocallyPath = '';
+    return {
+      ...fixture,
+      clearForm: { dispatch() { return { defaultPrevented: false }; } },
+      scope: {
+        querySelector: document.querySelector,
+        querySelectorAll(selector) {
+          return selector === '#open-locally-save-form' ? [fixture.form] : [];
+        },
+      },
+    };
+  }
+
+  it('routes Save and Enter submit through the C7C queue without intercepting the independent Clear form', async () => {
+    const fixture = makeOpenLocallyFetchFixture();
+    const requests = [];
+
+    await withBrowserGlobals((action, options) => new Promise((resolve) => {
+      requests.push({ action, options, resolve });
+    }), async () => {
+      expect(enhanceOpenLocallyFetchSave(fixture.scope)).toBe(2);
+      expect(enhanceOpenLocallyFetchSave(fixture.scope)).toBe(0);
+
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+      const saveEvent = fixture.form.dispatch('submit');
+      const enterEvent = fixture.form.dispatch('submit');
+
+      expect(saveEvent.defaultPrevented).toBe(true);
+      expect(enterEvent.defaultPrevented).toBe(true);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].action).toBe('/settings/open-locally');
+      expect(fixture.clearForm.dispatch('submit').defaultPrevented).toBe(false);
+
+      requests[0].resolve({ ok: true, redirected: true, text: async () => '<html>saved</html>' });
+      await flushAsync();
+      expect(fixture.status.textContent).toBe('Settings saved.');
+    });
+  });
+});
+
+describe('Defaults fetch autosave adoption', () => {
+  it('saves the native New Project Status control in place and replaces its authoritative region', async () => {
+    const fixture = makeDefaultsFetchFixture();
+    const replacement = makeDefaultsFetchFixture({ value: 'ready' });
+
+    await withDefaultsDomParser(() => ({
+      querySelector(selector) {
+        return selector === '[data-settings-defaults-region]'
+          ? replacement.region
+          : null;
+      },
+    }), async () => withBrowserGlobals(async () => ({
+      ok: true,
+      redirected: true,
+      text: async () => '<html>success</html>',
+    }), async () => {
+      expect(enhanceDefaultsFetchSave(fixture.scope)).toBe(1);
+      fixture.controls[0].value = 'ready';
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+
+      expect(fixture.form.requestSubmitCount).toBe(0);
+      expect(fixture.form.submitCount).toBe(0);
+      expect(fixture.controls[0].value).toBe('ready');
+      expect(fixture.region.replacement).toBe(replacement.region);
+      expect(replacement.controls[0].listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+      expect(fixture.status.textContent).toBe('Settings saved.');
+    }));
+  });
+
+  it('renders authoritative validation markup in place and re-enhances its replacement control', async () => {
+    const fixture = makeDefaultsFetchFixture();
+    const replacement = makeDefaultsFetchFixture({ value: 'cancelled' });
+    const nextRegion = {
+      parentNode: {},
+      querySelectorAll(selector) {
+        if (selector === '#settings-defaults-form') return [replacement.form];
+        if (selector === '[data-cc-dropdown]') return [];
+        return [];
+      },
+    };
+
+    await withDefaultsDomParser(() => ({
+      querySelector: (selector) => selector === '[data-settings-defaults-region]' ? nextRegion : null,
+    }), async () => withBrowserGlobals(async () => ({
+      ok: false,
+      redirected: false,
+      status: 422,
+      text: async () => '<html>validation</html>',
+    }), async () => {
+      enhanceDefaultsFetchSave(fixture.scope);
+      fixture.controls[0].value = 'cancelled';
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+
+      expect(fixture.region.replacement).toBe(nextRegion);
+      expect(replacement.controls[0].listeners).toHaveLength(1);
+      expect(fixture.form.requestSubmitCount).toBe(0);
+    }));
+  });
+
+  it('does not replace Defaults markup for a superseded validation response', async () => {
+    const fixture = makeDefaultsFetchFixture();
+    const requests = [];
+    const nextRegion = { parentNode: {} };
+
+    await withDefaultsDomParser(() => ({
+      querySelector: (selector) => selector === '[data-settings-defaults-region]' ? nextRegion : null,
+    }), async () => withBrowserGlobals(() => new Promise((resolve) => requests.push(resolve)), async () => {
+      enhanceDefaultsFetchSave(fixture.scope);
+      fixture.controls[0].value = 'invalid';
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+      fixture.controls[0].value = 'ready';
+      fixture.controls[0].dispatch('change');
+
+      requests[0]({ ok: false, redirected: false, status: 422, text: async () => '<html>validation</html>' });
+      await flushAsync();
+
+      expect(fixture.region.replacement).toBe(null);
+      expect(requests).toHaveLength(2);
+      expect(fixture.status.textContent).toBe('Saving settings.');
+    }));
+  });
+});
+
+function makeNsfwFetchFixture({ checked = false } = {}) {
+  const fixture = makeEnabledFixture({ action: '/settings/nsfw-filter', checked });
+  const region = {
+    parentNode: {},
+    replacement: null,
+    replaceWith(next) { this.replacement = next; },
+    querySelector(selector) {
+      return selector === 'form' ? fixture.form : null;
+    },
+    querySelectorAll(selector) {
+      return selector === '[data-settings-nsfw-filter-region] form' ? [fixture.form] : [];
+    },
+  };
+  const querySelector = fixture.form.querySelector.bind(fixture.form);
+  fixture.control.dataset.autosubmit = 'fetch';
+  fixture.form.closest = (selector) => selector === '[data-settings-nsfw-filter-region]' ? region : null;
+  fixture.form.querySelector = (selector) => {
+    if (selector === '[data-settings-fetch-save-status]') return fixture.status;
+    return querySelector(selector);
+  };
+  fixture.form.querySelectorAll = (selector) => (
+    selector === '[data-autosubmit="fetch"]' ? [fixture.control] : []
+  );
+  return {
+    ...fixture,
+    region,
+    scope: {
+      querySelectorAll(selector) {
+        return selector === '[data-settings-nsfw-filter-region] form' ? [fixture.form] : [];
+      },
+    },
+  };
+}
+
+describe('form-switch fetch compatibility', () => {
+  it('keeps fetch markup distinct while retaining submit and bare legacy contracts', () => {
+    const viewsPath = fileURLToPath(new URL('../src/views', import.meta.url));
+    const environment = new nunjucks.Environment(new nunjucks.FileSystemLoader(viewsPath));
+    const html = environment.renderString(`{% import "partials/form-switch.njk" as formSwitch %}
+      {{ formSwitch.control("fetch-switch", "fetch", false, "Fetch", null, false, false, "fetch") }}
+      {{ formSwitch.control("labelled-fetch-switch", "fetch", false, "Fetch", null, false, false, "fetch", true, "Save") }}
+      {{ formSwitch.control("submit-switch", "submit", false, "Submit", null, false, false, "submit") }}
+      {{ formSwitch.control("legacy-switch", "legacy", false, "Legacy", null, false, false, true) }}`);
+
+    const control = (id) => html.match(new RegExp(`<input[^>]+id="${id}"[^>]*>`))?.[0] || '';
+    const switchMarkup = (id) => html.match(new RegExp(`<div class="form-switch">[\\s\\S]*?id="${id}"[\\s\\S]*?<\\/div>`))?.[0] || '';
+    expect(control('fetch-switch')).toContain('data-autosubmit="fetch"');
+    expect(switchMarkup('fetch-switch')).not.toContain('data-category-enabled-status');
+    expect(switchMarkup('fetch-switch')).not.toContain('Save status');
+    expect(switchMarkup('fetch-switch')).not.toContain('<noscript>');
+    expect(switchMarkup('labelled-fetch-switch')).toContain('>Save</button>');
+    expect(switchMarkup('labelled-fetch-switch')).not.toContain('data-category-enabled-status');
+    expect(control('submit-switch')).toContain('data-autosubmit="submit"');
+    expect(switchMarkup('submit-switch')).toContain('data-category-enabled-status');
+    expect(switchMarkup('submit-switch')).toContain('>Save status</button>');
+    expect(control('legacy-switch')).toMatch(/\sdata-autosubmit(?:\s|>)/);
+    expect(control('legacy-switch')).not.toContain('data-autosubmit="');
+    expect(switchMarkup('legacy-switch')).toContain('data-category-enabled-status');
+    expect(switchMarkup('legacy-switch')).toContain('>Save status</button>');
+  });
+});
+
+describe('NSFW Filter fetch autosave adoption', () => {
+  it('posts the browser switch payload in place without native submission', async () => {
+    const fixture = makeNsfwFetchFixture();
+    const replacement = makeNsfwFetchFixture({ checked: false });
+    const calls = [];
+
+    await withDefaultsDomParser(() => ({
+      querySelector(selector) {
+        return selector === '[data-settings-nsfw-filter-region]' ? replacement.region : null;
+      },
+    }), async () => withBrowserGlobals(async (action, options) => {
+      calls.push({ action, options });
+      return { ok: true, redirected: true, text: async () => '<html>saved</html>' };
+    }, async () => {
+      enhanceAutoSubmit({ querySelectorAll: () => [fixture.control] });
+      expect(enhanceNsfwFilterFetchSave(fixture.scope)).toBe(1);
+
+      fixture.control.checked = true;
+      fixture.control.dispatch('change');
+      await flushAsync();
+
+      fixture.control.checked = false;
+      fixture.control.dispatch('change');
+      await flushAsync();
+
+      expect(calls).toHaveLength(2);
+      expect(calls.map(({ action }) => action)).toEqual(['/settings/nsfw-filter', '/settings/nsfw-filter']);
+      expect(calls[0].options.body.getAll('enabled')).toEqual(['0', '1']);
+      expect(calls[1].options.body.getAll('enabled')).toEqual(['0']);
+      expect(fixture.form.requestSubmitCount).toBe(0);
+      expect(fixture.form.submitCount).toBe(0);
+      expect(fixture.region.replacement).toBe(replacement.region);
+      expect(replacement.control.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+      expect(fixture.status.textContent).toBe('Settings saved.');
+    }));
+  });
+
+  it('queues the latest toggle state and never replaces the DOM for a superseded validation response', async () => {
+    const fixture = makeNsfwFetchFixture();
+    const requests = [];
+
+    await withBrowserGlobals((action, options) => new Promise((resolve) => {
+      requests.push({ action, options, resolve });
+    }), async () => {
+      enhanceNsfwFilterFetchSave(fixture.scope);
+
+      fixture.control.checked = true;
+      fixture.control.dispatch('change');
+      await flushAsync();
+      fixture.control.checked = false;
+      fixture.control.dispatch('change');
+
+      requests[0].resolve({ ok: false, status: 422, redirected: false, text: async () => '<html>stale</html>' });
+      await flushAsync();
+
+      expect(fixture.region.replacement).toBeNull();
+      expect(requests).toHaveLength(2);
+      expect(requests[1].options.body.getAll('enabled')).toEqual(['0']);
+
+      requests[1].resolve({ ok: true, redirected: true, text: async () => '<html>saved</html>' });
+      await flushAsync();
+      expect(fixture.status.textContent).toBe('Settings saved.');
+    });
+  });
+
+  it('replaces and re-enhances only the authoritative NSFW region after validation', async () => {
+    const fixture = makeNsfwFetchFixture();
+    const replacement = makeNsfwFetchFixture({ checked: true });
+    const requests = [];
+
+    await withDefaultsDomParser(() => ({
+      querySelector(selector) {
+        return selector === '[data-settings-nsfw-filter-region]' ? replacement.region : null;
+      },
+    }), async () => withBrowserGlobals((action, options) => new Promise((resolve) => {
+      requests.push({ action, options, resolve });
+    }), async () => {
+      enhanceNsfwFilterFetchSave(fixture.scope);
+      fixture.control.checked = true;
+      fixture.control.dispatch('change');
+      await flushAsync();
+
+      requests[0].resolve({ ok: false, status: 422, redirected: false, text: async () => '<html>validation</html>' });
+      await flushAsync();
+
+      expect(fixture.region.replacement).toBe(replacement.region);
+      expect(replacement.control.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+      expect(enhanceNsfwFilterFetchSave(replacement.region)).toBe(0);
+    }));
+  });
+
+  it('keeps the latest visible state and reports a recoverable network error', async () => {
+    const fixture = makeNsfwFetchFixture();
+
+    await withBrowserGlobals(async () => {
+      throw new Error('offline');
+    }, async () => {
+      enhanceNsfwFilterFetchSave(fixture.scope);
+      fixture.control.checked = true;
+      fixture.control.dispatch('change');
+      await flushAsync();
+
+      expect(fixture.control.checked).toBe(true);
+      expect(fixture.status.textContent).toBe('Could not save settings. Your current changes were kept.');
+      expect(fixture.form.requestSubmitCount).toBe(0);
+      expect(fixture.form.submitCount).toBe(0);
+    });
+  });
+});
+
+function makeAssetCategoryPreferenceFetchFixture({ action = '/settings/asset-categories/browser-default', value = 'all' } = {}) {
+  const fixture = makeFetchSaveFixture({ action, values: { category: value } });
+  const secondary = {
+    parentNode: {},
+    replacement: null,
+    replaceWith(next) { this.replacement = next; },
+  };
+  const region = {
+    parentNode: {},
+    replacement: null,
+    querySelector(selector) {
+      if (selector === 'form') return fixture.form;
+      return selector === '[data-settings-asset-category-preference-secondary]' ? secondary : null;
+    },
+    querySelectorAll(selector) {
+      if (selector === 'form' || selector === '[data-settings-asset-category-preference] form') return [fixture.form];
+      if (selector === '[data-cc-dropdown]') return [];
+      return [];
+    },
+    replaceWith(next) { this.replacement = next; },
+    getAttribute(name) {
+      if (name !== 'data-settings-asset-category-preference') return null;
+      return action.endsWith('/preview-category') ? 'preview-category' : 'browser-default';
+    },
+  };
+  const querySelectorAll = fixture.form.querySelectorAll.bind(fixture.form);
+  fixture.form.closest = (selector) => selector === '[data-settings-asset-category-preference]' ? region : null;
+  fixture.form.querySelectorAll = (selector) => {
+    if (selector === '[data-autosubmit="fetch"]') return fixture.controls;
+    return querySelectorAll(selector);
+  };
+  return {
+    ...fixture,
+    region,
+    secondary,
+    scope: {
+      querySelectorAll(selector) {
+        return selector === '[data-settings-asset-category-preference] form' ? [fixture.form] : [];
+      },
+    },
+  };
+}
+
+async function withAssetCategoryPreferenceDomParser(parser, callback) {
+  const originalDOMParser = globalThis.DOMParser;
+  globalThis.DOMParser = class {
+    parseFromString(html) { return parser(html); }
+  };
+  try {
+    return await callback();
+  } finally {
+    globalThis.DOMParser = originalDOMParser;
+  }
+}
+
+describe('Asset Categories fetch autosave adoption', () => {
+  it('saves Default and Preview through independent C7C form queues without native submission', async () => {
+    const defaultFixture = makeAssetCategoryPreferenceFetchFixture();
+    const previewFixture = makeAssetCategoryPreferenceFetchFixture({
+      action: '/settings/asset-categories/preview-category',
+      value: 'wip',
+    });
+    const calls = [];
+    const scope = {
+      querySelectorAll(selector) {
+        return selector === '[data-settings-asset-category-preference] form'
+          ? [defaultFixture.form, previewFixture.form]
+          : [];
+      },
+    };
+
+    await withBrowserGlobals(async (action, options) => {
+      calls.push({ action, options });
+      return { ok: true, redirected: true, text: async () => '<html>saved</html>' };
+    }, async () => {
+      expect(enhanceAssetCategoryPreferencesFetchSave(scope)).toBe(2);
+      defaultFixture.controls[0].value = 'final';
+      previewFixture.controls[0].value = 'wip';
+      defaultFixture.controls[0].dispatch('change');
+      previewFixture.controls[0].dispatch('change');
+      await flushAsync();
+
+      expect(calls).toHaveLength(2);
+      expect(calls.map(({ action }) => action)).toEqual([
+        '/settings/asset-categories/browser-default',
+        '/settings/asset-categories/preview-category',
+      ]);
+      expect(defaultFixture.controls[0].value).toBe('final');
+      expect(previewFixture.controls[0].value).toBe('wip');
+      expect(defaultFixture.form.requestSubmitCount).toBe(0);
+      expect(previewFixture.form.requestSubmitCount).toBe(0);
+      expect(defaultFixture.form.submitCount).toBe(0);
+      expect(previewFixture.form.submitCount).toBe(0);
+    });
+  });
+
+  it('replaces and re-enhances the matching Default region after a followed redirect', async () => {
+    const fixture = makeAssetCategoryPreferenceFetchFixture();
+    const replacement = makeAssetCategoryPreferenceFetchFixture({ value: 'final' });
+
+    await withAssetCategoryPreferenceDomParser(() => ({
+      querySelectorAll(selector) {
+        return selector === '[data-settings-asset-category-preference]'
+          ? [replacement.region]
+          : [];
+      },
+    }), async () => withBrowserGlobals(async () => ({
+      ok: true,
+      redirected: true,
+      text: async () => '<html>success</html>',
+    }), async () => {
+      enhanceAssetCategoryPreferencesFetchSave(fixture.scope);
+      fixture.controls[0].value = 'final';
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+
+      expect(fixture.region.replacement).toBe(replacement.region);
+      expect(replacement.controls[0].listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+      expect(fixture.status.textContent).toBe('Settings saved.');
+      expect(fixture.form.requestSubmitCount).toBe(0);
+    }));
+  });
+
+  it('replaces only the authoritative preference card for validation and re-enhances it', async () => {
+    const fixture = makeAssetCategoryPreferenceFetchFixture();
+    const replacement = makeAssetCategoryPreferenceFetchFixture({ value: 'invalid' });
+
+    await withAssetCategoryPreferenceDomParser(() => ({
+      querySelectorAll(selector) {
+        return selector === '[data-settings-asset-category-preference]' ? [replacement.region] : [];
+      },
+    }), async () => withBrowserGlobals(async () => ({
+      ok: false,
+      redirected: false,
+      status: 422,
+      text: async () => '<html>validation</html>',
+    }), async () => {
+      enhanceAssetCategoryPreferencesFetchSave(fixture.scope);
+      fixture.controls[0].value = 'invalid';
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+
+      expect(fixture.region.replacement).toBe(replacement.region);
+      expect(replacement.controls[0].listeners).toHaveLength(1);
+      expect(fixture.form.requestSubmitCount).toBe(0);
+    }));
+  });
+
+  it('selects the same identified card from a two-region validation response', async () => {
+    const browser = makeAssetCategoryPreferenceFetchFixture();
+    const preview = makeAssetCategoryPreferenceFetchFixture({
+      action: '/settings/asset-categories/preview-category',
+      value: 'invalid',
+    });
+    const browserResponse = makeAssetCategoryPreferenceFetchFixture({ value: 'all' });
+    const previewResponse = makeAssetCategoryPreferenceFetchFixture({
+      action: '/settings/asset-categories/preview-category',
+      value: 'wip',
+    });
+    const scope = {
+      querySelectorAll(selector) {
+        return selector === '[data-settings-asset-category-preference] form'
+          ? [browser.form, preview.form]
+          : [];
+      },
+    };
+
+    await withAssetCategoryPreferenceDomParser(() => ({
+      querySelectorAll(selector) {
+        return selector === '[data-settings-asset-category-preference]'
+          ? [browserResponse.region, previewResponse.region]
+          : [];
+      },
+    }), async () => withBrowserGlobals(async () => ({
+      ok: false,
+      redirected: false,
+      status: 422,
+      text: async () => '<html>both preference regions</html>',
+    }), async () => {
+      enhanceAssetCategoryPreferencesFetchSave(scope);
+
+      preview.controls[0].dispatch('change');
+      await flushAsync();
+      expect(preview.region.replacement).toBe(previewResponse.region);
+      expect(browser.region.replacement).toBeNull();
+      expect(previewResponse.form.action).toBe('/settings/asset-categories/preview-category');
+
+      browser.controls[0].dispatch('change');
+      await flushAsync();
+      expect(browser.region.replacement).toBe(browserResponse.region);
+      expect(previewResponse.region.replacement).toBeNull();
+      expect(browserResponse.form.action).toBe('/settings/asset-categories/browser-default');
+    }));
+  });
+
+  it('does not replace stale markup for a superseded validation response', async () => {
+    const fixture = makeAssetCategoryPreferenceFetchFixture();
+    const requests = [];
+    const staleRegion = { parentNode: {} };
+
+    await withAssetCategoryPreferenceDomParser(() => ({
+      querySelectorAll(selector) {
+        return selector === '[data-settings-asset-category-preference]' ? [staleRegion] : [];
+      },
+    }), async () => withBrowserGlobals(() => new Promise((resolve) => requests.push(resolve)), async () => {
+      enhanceAssetCategoryPreferencesFetchSave(fixture.scope);
+      fixture.controls[0].value = 'invalid';
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+      fixture.controls[0].value = 'final';
+      fixture.controls[0].dispatch('change');
+
+      requests[0]({ ok: false, redirected: false, status: 422, text: async () => '<html>validation</html>' });
+      await flushAsync();
+
+      expect(fixture.region.replacement).toBe(null);
+      expect(requests).toHaveLength(2);
+      expect(fixture.status.textContent).toBe('Saving settings.');
+    }));
+  });
+});
+
+function makeOpenLocallyReviewerFixture() {
+  const fixture = makeFetchSaveFixture({
+    action: '/settings/open-locally',
+    values: { windowsProjectsPath: 'D:\\example' },
+  });
+  const listeners = [];
+  const region = {
+    parentNode: {},
+    replacement: null,
+    querySelector(selector) {
+      if (selector === '#open-locally-save-form') return fixture.form;
+      if (selector === '[data-settings-open-locally-path]') return fixture.controls[0];
+      return null;
+    },
+    querySelectorAll(selector) {
+      return selector === '#open-locally-save-form' ? [fixture.form] : [];
+    },
+  };
+  fixture.form.closest = (selector) => (
+    selector === '[data-settings-open-locally-mapping-region]' ? region : null
+  );
+  fixture.form.addEventListener = (type, handler) => listeners.push({ type, handler });
+  fixture.form.dispatch = (type) => {
+    const event = { defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+    listeners.filter((entry) => entry.type === type).forEach((entry) => entry.handler(event));
+    return event;
+  };
+  fixture.controls[0].dataset.settingsOpenLocallyPath = '';
+  return {
+    ...fixture,
+    region,
+    scope: {
+      querySelector(selector) {
+        return selector === '[data-settings-open-locally-path]' ? fixture.controls[0] : null;
+      },
+      querySelectorAll(selector) {
+        return selector === '#open-locally-save-form' ? [fixture.form] : [];
+      },
+    },
+  };
+}
+
+function makeFocusDocument() {
+  const targets = new Map();
+  return {
+    activeElement: null,
+    getElementById(id) { return targets.get(id) || null; },
+    register(...elements) {
+      targets.clear();
+      elements.forEach((element) => targets.set(element.id, element));
+    },
+  };
+}
+
+function makeFocusable(element, id, document) {
+  element.id = id;
+  element.focusCalls = [];
+  element.focus = (options) => {
+    element.focusCalls.push(options);
+    document.activeElement = element;
+  };
+  element.setSelectionRange = (start, end, direction) => {
+    element.selectionStart = start;
+    element.selectionEnd = end;
+    element.selectionDirection = direction;
+  };
+  return element;
+}
+
+function bindFocusRegion(region, document, ...elements) {
+  const querySelector = region.querySelector?.bind(region);
+  region.ownerDocument = document;
+  region.contains = (candidate) => elements.includes(candidate);
+  region.querySelector = (selector) => {
+    if (selector.startsWith('#')) {
+      const match = elements.find((element) => element.id === selector.slice(1));
+      if (match) return match;
+    }
+    return querySelector?.(selector) || null;
+  };
+}
+
+function replaceFocusedRegion(current, replacement, document, replacementElements) {
+  current.replaceWith = (next) => {
+    current.replacement = next;
+    document.register(...replacementElements);
+  };
+  bindFocusRegion(replacement, document, ...replacementElements);
+}
+
+describe('Settings no-reload reviewer regressions', () => {
+  it('restores Save focus after authoritative Open Locally success replacement', async () => {
+    const fixture = makeOpenLocallyReviewerFixture();
+    const replacement = makeOpenLocallyReviewerFixture();
+    const document = makeFocusDocument();
+    const oldSave = makeFocusable({}, 'open-locally-save', document);
+    const nextSave = makeFocusable({}, 'open-locally-save', document);
+    fixture.form.ownerDocument = document;
+    replacement.form.ownerDocument = document;
+    document.querySelector = (selector) => (
+      selector === '[data-settings-open-locally-path]' ? fixture.controls[0] : null
+    );
+    bindFocusRegion(fixture.region, document, fixture.controls[0], oldSave);
+    replaceFocusedRegion(fixture.region, replacement.region, document, [replacement.controls[0], nextSave]);
+    document.register(oldSave);
+    oldSave.focus();
+    const requests = [];
+
+    await withDefaultsDomParser(() => ({
+      querySelector: (selector) => (
+        selector === '[data-settings-open-locally-mapping-region]' ? replacement.region : null
+      ),
+    }), async () => withBrowserGlobals((action, options) => new Promise((resolve) => {
+      requests.push({ action, options, resolve });
+    }), async () => {
+      enhanceOpenLocallyFetchSave(fixture.scope);
+      fixture.form.dispatch('submit');
+      await flushAsync();
+
+      expect(requests).toHaveLength(1);
+      requests[0].resolve({ ok: true, redirected: true, text: async () => '<html>saved</html>' });
+      await flushAsync();
+    }));
+
+    expect(fixture.region.replacement).toBe(replacement.region);
+    expect(document.activeElement).toBe(nextSave);
+    expect(nextSave.focusCalls).toHaveLength(1);
+    expect(replacement.status.textContent).toBe('Settings saved.');
+  });
+
+  it('restores Save focus after authoritative Open Locally validation replacement', async () => {
+    const fixture = makeOpenLocallyReviewerFixture();
+    const replacement = makeOpenLocallyReviewerFixture();
+    const document = makeFocusDocument();
+    const oldSave = makeFocusable({}, 'open-locally-save', document);
+    const nextSave = makeFocusable({}, 'open-locally-save', document);
+    fixture.form.ownerDocument = document;
+    replacement.form.ownerDocument = document;
+    document.querySelector = (selector) => (
+      selector === '[data-settings-open-locally-path]' ? fixture.controls[0] : null
+    );
+    bindFocusRegion(fixture.region, document, fixture.controls[0], oldSave);
+    replaceFocusedRegion(fixture.region, replacement.region, document, [replacement.controls[0], nextSave]);
+    document.register(oldSave);
+    oldSave.focus();
+    const requests = [];
+
+    await withDefaultsDomParser(() => ({
+      querySelector: (selector) => (
+        selector === '[data-settings-open-locally-mapping-region]' ? replacement.region : null
+      ),
+    }), async () => withBrowserGlobals((action, options) => new Promise((resolve) => {
+      requests.push({ action, options, resolve });
+    }), async () => {
+      enhanceOpenLocallyFetchSave(fixture.scope);
+      fixture.form.dispatch('submit');
+      await flushAsync();
+
+      expect(requests).toHaveLength(1);
+      requests[0].resolve({ ok: false, redirected: false, status: 422, text: async () => '<html>invalid</html>' });
+      await flushAsync();
+    }));
+
+    expect(fixture.region.replacement).toBe(replacement.region);
+    expect(document.activeElement).toBe(nextSave);
+    expect(nextSave.focusCalls).toHaveLength(1);
+    expect(replacement.status.textContent).toBe('Could not save settings.');
+    expect(replacement.attributes.get('data-settings-fetch-save-state')).toBe('error');
+  });
+  it('preserves a newer unsent Open Locally value, focus, and selection without reporting it saved', async () => {
+    const fixture = makeOpenLocallyReviewerFixture();
+    const replacement = makeOpenLocallyReviewerFixture();
+    const document = makeFocusDocument();
+    const oldInput = makeFocusable(fixture.controls[0], 'windows-projects-path', document);
+    const newInput = makeFocusable(replacement.controls[0], 'windows-projects-path', document);
+    fixture.form.ownerDocument = document;
+    replacement.form.ownerDocument = document;
+    document.querySelector = (selector) => (
+      selector === '[data-settings-open-locally-path]' ? document.getElementById('windows-projects-path') : null
+    );
+    bindFocusRegion(fixture.region, document, oldInput);
+    replaceFocusedRegion(fixture.region, replacement.region, document, [newInput]);
+    document.register(oldInput);
+    oldInput.focus();
+    oldInput.value = 'D:\\one';
+    oldInput.selectionStart = 2;
+    oldInput.selectionEnd = 5;
+    oldInput.selectionDirection = 'forward';
+    const requests = [];
+
+    await withDefaultsDomParser(() => ({
+      querySelector: (selector) => (
+        selector === '[data-settings-open-locally-mapping-region]' ? replacement.region : null
+      ),
+    }), async () => withBrowserGlobals((action, options) => new Promise((resolve) => {
+      requests.push({ action, options, resolve });
+    }), async () => {
+      enhanceOpenLocallyFetchSave(fixture.scope);
+      fixture.form.dispatch('submit');
+      await flushAsync();
+      oldInput.value = 'D:\\onetwo';
+
+      requests[0].resolve({ ok: true, redirected: true, text: async () => '<html>saved</html>' });
+      await flushAsync();
+
+      expect(replacement.region).toBe(fixture.region.replacement);
+      expect(newInput.value).toBe('D:\\onetwo');
+      expect(document.activeElement).toBe(newInput);
+      expect(newInput.selectionStart).toBe(2);
+      expect(newInput.selectionEnd).toBe(5);
+      expect(replacement.status.textContent).toBe('Current changes have not been saved.');
+      expect(replacement.attributes.get('data-settings-fetch-save-state')).toBe('unsaved');
+
+      newInput.dispatch('change');
+      await flushAsync();
+      expect(requests).toHaveLength(2);
+      expect(requests[1].options.body.get('windowsProjectsPath')).toBe('D:\\onetwo');
+    }));
+  });
+
+  it('preserves a newer unsent Open Locally value, focus, and selection after validation', async () => {
+    const fixture = makeOpenLocallyReviewerFixture();
+    const replacement = makeOpenLocallyReviewerFixture();
+    const document = makeFocusDocument();
+    const oldInput = makeFocusable(fixture.controls[0], 'windows-projects-path', document);
+    const newInput = makeFocusable(replacement.controls[0], 'windows-projects-path', document);
+    fixture.form.ownerDocument = document;
+    replacement.form.ownerDocument = document;
+    document.querySelector = (selector) => (
+      selector === '[data-settings-open-locally-path]' ? document.getElementById('windows-projects-path') : null
+    );
+    bindFocusRegion(fixture.region, document, oldInput);
+    replaceFocusedRegion(fixture.region, replacement.region, document, [newInput]);
+    document.register(oldInput);
+    oldInput.focus();
+    oldInput.value = 'D:\\one';
+    oldInput.selectionStart = 2;
+    oldInput.selectionEnd = 5;
+    oldInput.selectionDirection = 'forward';
+    const requests = [];
+
+    await withDefaultsDomParser(() => ({
+      querySelector: (selector) => (
+        selector === '[data-settings-open-locally-mapping-region]' ? replacement.region : null
+      ),
+    }), async () => withBrowserGlobals((action, options) => new Promise((resolve) => {
+      requests.push({ action, options, resolve });
+    }), async () => {
+      enhanceOpenLocallyFetchSave(fixture.scope);
+      fixture.form.dispatch('submit');
+      await flushAsync();
+      oldInput.value = 'D:\\onetwo';
+
+      requests[0].resolve({ ok: false, redirected: false, status: 422, text: async () => '<html>invalid</html>' });
+      await flushAsync();
+
+      expect(replacement.region).toBe(fixture.region.replacement);
+      expect(newInput.value).toBe('D:\\onetwo');
+      expect(document.activeElement).toBe(newInput);
+      expect(newInput.selectionStart).toBe(2);
+      expect(newInput.selectionEnd).toBe(5);
+      expect(replacement.status.textContent).toBe('Could not save the submitted value. Current edits have not been saved.');
+      expect(replacement.attributes.get('data-settings-fetch-save-state')).toBe('error');
+
+      newInput.dispatch('change');
+      await flushAsync();
+      expect(requests).toHaveLength(2);
+      expect(requests[1].options.body.get('windowsProjectsPath')).toBe('D:\\onetwo');
+    }));
+  });
+
+  it('keeps authoritative Open Locally validation when no newer unsent value exists', async () => {
+    const fixture = makeOpenLocallyReviewerFixture();
+    const replacement = makeOpenLocallyReviewerFixture();
+    fixture.region.replaceWith = (next) => { fixture.region.replacement = next; };
+
+    await withDefaultsDomParser(() => ({
+      querySelector: (selector) => (
+        selector === '[data-settings-open-locally-mapping-region]' ? replacement.region : null
+      ),
+    }), async () => withBrowserGlobals(async () => ({
+      ok: false,
+      redirected: false,
+      status: 422,
+      text: async () => '<html>invalid</html>',
+    }), async () => {
+      enhanceOpenLocallyFetchSave(fixture.scope);
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+    }));
+
+    expect(fixture.region.replacement).toBe(replacement.region);
+    expect(replacement.controls[0].value).toBe('D:\\example');
+    expect(replacement.status.textContent).toBe('Could not save settings.');
+    expect(replacement.attributes.get('data-settings-fetch-save-state')).toBe('error');
+  });
+
+  it('restores focused Defaults, NSFW, Browser Default, and Preview controls after validation replacement', async () => {
+    const defaults = makeDefaultsFetchFixture();
+    const defaultsReplacement = makeDefaultsFetchFixture();
+    const nsfw = makeNsfwFetchFixture();
+    const nsfwReplacement = makeNsfwFetchFixture();
+    const browser = makeAssetCategoryPreferenceFetchFixture();
+    const browserReplacement = makeAssetCategoryPreferenceFetchFixture();
+    const preview = makeAssetCategoryPreferenceFetchFixture({
+      action: '/settings/asset-categories/preview-category',
+    });
+    const previewReplacement = makeAssetCategoryPreferenceFetchFixture({
+      action: '/settings/asset-categories/preview-category',
+    });
+    const document = makeFocusDocument();
+    const cases = [
+      {
+        fixture: defaults,
+        replacement: defaultsReplacement,
+        old: makeFocusable({}, 'new-project-status-dropdown-trigger', document),
+        next: makeFocusable({}, 'new-project-status-dropdown-trigger', document),
+        enhance: () => enhanceDefaultsFetchSave(defaults.scope),
+        control: defaults.controls[0],
+        selector: '[data-settings-defaults-region]',
+        parser: 'one',
+      },
+      {
+        fixture: nsfw,
+        replacement: nsfwReplacement,
+        old: makeFocusable(nsfw.control, 'nsfw-filter-enabled', document),
+        next: makeFocusable(nsfwReplacement.control, 'nsfw-filter-enabled', document),
+        enhance: () => enhanceNsfwFilterFetchSave(nsfw.scope),
+        control: nsfw.control,
+        selector: '[data-settings-nsfw-filter-region]',
+        parser: 'one',
+      },
+      {
+        fixture: browser,
+        replacement: browserReplacement,
+        old: makeFocusable({}, 'global-asset-browser-default-dropdown-trigger', document),
+        next: makeFocusable({}, 'global-asset-browser-default-dropdown-trigger', document),
+        enhance: () => enhanceAssetCategoryPreferencesFetchSave(browser.scope),
+        control: browser.controls[0],
+        selector: '[data-settings-asset-category-preference]',
+        parser: 'preferences',
+      },
+      {
+        fixture: preview,
+        replacement: previewReplacement,
+        old: makeFocusable({}, 'global-preview-category-dropdown-trigger', document),
+        next: makeFocusable({}, 'global-preview-category-dropdown-trigger', document),
+        enhance: () => enhanceAssetCategoryPreferencesFetchSave(preview.scope),
+        control: preview.controls[0],
+        selector: '[data-settings-asset-category-preference]',
+        parser: 'preferences',
+      },
+    ];
+
+    for (const testCase of cases) {
+      const { fixture, replacement, old, next, enhance, control, selector, parser } = testCase;
+      fixture.form.ownerDocument = document;
+      replacement.form.ownerDocument = document;
+      bindFocusRegion(fixture.region, document, old);
+      replaceFocusedRegion(fixture.region, replacement.region, document, [next]);
+      document.register(old);
+      old.focus();
+
+      await withDefaultsDomParser(() => ({
+        querySelector: (candidate) => (parser === 'one' && candidate === selector ? replacement.region : null),
+        querySelectorAll: (candidate) => (parser === 'preferences' && candidate === selector ? [replacement.region] : []),
+      }), async () => withBrowserGlobals(async () => ({
+        ok: false,
+        redirected: false,
+        status: 422,
+        text: async () => '<html>validation</html>',
+      }), async () => {
+        enhance();
+        control.dispatch('change');
+        await flushAsync();
+      }));
+
+      expect(document.activeElement).toBe(next);
+      expect(next.focusCalls).toHaveLength(1);
+    }
+  });
+
+  it('does not steal focus when it began outside Defaults validation replacement', async () => {
+    const fixture = makeDefaultsFetchFixture();
+    const replacement = makeDefaultsFetchFixture();
+    const document = makeFocusDocument();
+    const outside = makeFocusable({}, 'outside-control', document);
+    fixture.form.ownerDocument = document;
+    replacement.form.ownerDocument = document;
+    bindFocusRegion(fixture.region, document, fixture.controls[0]);
+    bindFocusRegion(replacement.region, document, replacement.controls[0]);
+    document.register(outside);
+    outside.focus();
+
+    await withDefaultsDomParser(() => ({
+      querySelector: (selector) => selector === '[data-settings-defaults-region]' ? replacement.region : null,
+    }), async () => withBrowserGlobals(async () => ({
+      ok: false,
+      redirected: false,
+      status: 422,
+      text: async () => '<html>validation</html>',
+    }), async () => {
+      enhanceDefaultsFetchSave(fixture.scope);
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+    }));
+
+    expect(document.activeElement).toBe(outside);
+  });
+
+  it('does not replace or move focus for superseded Open Locally validation', async () => {
+    const fixture = makeOpenLocallyReviewerFixture();
+    const replacement = makeOpenLocallyReviewerFixture();
+    const document = makeFocusDocument();
+    const input = makeFocusable(fixture.controls[0], 'windows-projects-path', document);
+    fixture.form.ownerDocument = document;
+    document.querySelector = (selector) => (
+      selector === '[data-settings-open-locally-path]' ? input : null
+    );
+    bindFocusRegion(fixture.region, document, input);
+    document.register(input);
+    input.focus();
+    const requests = [];
+
+    await withDefaultsDomParser(() => ({
+      querySelector: (selector) => (
+        selector === '[data-settings-open-locally-mapping-region]' ? replacement.region : null
+      ),
+    }), async () => withBrowserGlobals((action, options) => new Promise((resolve) => {
+      requests.push({ action, options, resolve });
+    }), async () => {
+      enhanceOpenLocallyFetchSave(fixture.scope);
+      fixture.form.dispatch('submit');
+      await flushAsync();
+      input.value = 'D:\\later';
+      input.dispatch('change');
+      requests[0].resolve({ ok: false, redirected: false, status: 422, text: async () => '<html>stale</html>' });
+      await flushAsync();
+    }));
+
+    expect(fixture.region.replacement).toBeNull();
+    expect(document.activeElement).toBe(input);
+  });
+
+  it('restores focused Defaults, NSFW, Browser Default, and Preview controls only after successful replacement', async () => {
+    const defaults = makeDefaultsFetchFixture();
+    const defaultsReplacement = makeDefaultsFetchFixture();
+    const nsfw = makeNsfwFetchFixture();
+    const nsfwReplacement = makeNsfwFetchFixture();
+    const browser = makeAssetCategoryPreferenceFetchFixture();
+    const browserReplacement = makeAssetCategoryPreferenceFetchFixture();
+    const preview = makeAssetCategoryPreferenceFetchFixture({
+      action: '/settings/asset-categories/preview-category',
+    });
+    const previewReplacement = makeAssetCategoryPreferenceFetchFixture({
+      action: '/settings/asset-categories/preview-category',
+    });
+    const document = makeFocusDocument();
+    const cases = [
+      {
+        fixture: defaults,
+        replacement: defaultsReplacement,
+        old: makeFocusable({ }, 'new-project-status-dropdown-trigger', document),
+        next: makeFocusable({ }, 'new-project-status-dropdown-trigger', document),
+        enhance: () => enhanceDefaultsFetchSave(defaults.scope),
+        control: defaults.controls[0],
+        selector: '[data-settings-defaults-region]',
+        parser: 'one',
+      },
+      {
+        fixture: nsfw,
+        replacement: nsfwReplacement,
+        old: makeFocusable(nsfw.control, 'nsfw-filter-enabled', document),
+        next: makeFocusable(nsfwReplacement.control, 'nsfw-filter-enabled', document),
+        enhance: () => enhanceNsfwFilterFetchSave(nsfw.scope),
+        control: nsfw.control,
+        selector: '[data-settings-nsfw-filter-region]',
+        parser: 'one',
+      },
+      {
+        fixture: browser,
+        replacement: browserReplacement,
+        old: makeFocusable({ }, 'global-asset-browser-default-dropdown-trigger', document),
+        next: makeFocusable({ }, 'global-asset-browser-default-dropdown-trigger', document),
+        enhance: () => enhanceAssetCategoryPreferencesFetchSave(browser.scope),
+        control: browser.controls[0],
+        selector: '[data-settings-asset-category-preference]',
+        parser: 'preferences',
+      },
+      {
+        fixture: preview,
+        replacement: previewReplacement,
+        old: makeFocusable({ }, 'global-preview-category-dropdown-trigger', document),
+        next: makeFocusable({ }, 'global-preview-category-dropdown-trigger', document),
+        enhance: () => enhanceAssetCategoryPreferencesFetchSave(preview.scope),
+        control: preview.controls[0],
+        selector: '[data-settings-asset-category-preference]',
+        parser: 'preferences',
+      },
+    ];
+
+    for (const testCase of cases) {
+      const { fixture, replacement, old, next, enhance, control, selector, parser } = testCase;
+      fixture.form.ownerDocument = document;
+      replacement.form.ownerDocument = document;
+      bindFocusRegion(fixture.region, document, old);
+      replaceFocusedRegion(fixture.region, replacement.region, document, [next]);
+      document.register(old);
+      old.focus();
+
+      await withDefaultsDomParser(() => ({
+        querySelector: (candidate) => (parser === 'one' && candidate === selector ? replacement.region : null),
+        querySelectorAll: (candidate) => (parser === 'preferences' && candidate === selector ? [replacement.region] : []),
+      }), async () => withBrowserGlobals(async () => ({
+        ok: true,
+        redirected: true,
+        text: async () => '<html>saved</html>',
+      }), async () => {
+        enhance();
+        control.dispatch('change');
+        await flushAsync();
+      }));
+
+      expect(document.activeElement).toBe(next);
+      expect(next.focusCalls).toHaveLength(1);
+    }
+  });
+
+  it('does not steal focus when it began outside the successful Defaults replacement region', async () => {
+    const fixture = makeDefaultsFetchFixture();
+    const replacement = makeDefaultsFetchFixture();
+    const document = makeFocusDocument();
+    const outside = makeFocusable({}, 'outside-control', document);
+    fixture.form.ownerDocument = document;
+    replacement.form.ownerDocument = document;
+    bindFocusRegion(fixture.region, document, fixture.controls[0]);
+    bindFocusRegion(replacement.region, document, replacement.controls[0]);
+    document.register(outside);
+    outside.focus();
+
+    await withDefaultsDomParser(() => ({
+      querySelector: (selector) => selector === '[data-settings-defaults-region]' ? replacement.region : null,
+    }), async () => withBrowserGlobals(async () => ({
+      ok: true,
+      redirected: true,
+      text: async () => '<html>saved</html>',
+    }), async () => {
+      enhanceDefaultsFetchSave(fixture.scope);
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+    }));
+
+    expect(document.activeElement).toBe(outside);
+  });
+
+  it('does not replace or move focus for a superseded successful Defaults response', async () => {
+    const fixture = makeDefaultsFetchFixture();
+    const replacement = makeDefaultsFetchFixture();
+    const document = makeFocusDocument();
+    const focused = makeFocusable(fixture.controls[0], 'new-project-status', document);
+    fixture.form.ownerDocument = document;
+    bindFocusRegion(fixture.region, document, focused);
+    document.register(focused);
+    focused.focus();
+    const requests = [];
+
+    await withDefaultsDomParser(() => ({
+      querySelector: (selector) => selector === '[data-settings-defaults-region]' ? replacement.region : null,
+    }), async () => withBrowserGlobals((action, options) => new Promise((resolve) => {
+      requests.push({ action, options, resolve });
+    }), async () => {
+      enhanceDefaultsFetchSave(fixture.scope);
+      focused.value = 'A';
+      focused.dispatch('change');
+      await flushAsync();
+      focused.value = 'B';
+      focused.dispatch('change');
+      requests[0].resolve({ ok: true, redirected: true, text: async () => '<html>stale</html>' });
+      await flushAsync();
+
+      expect(fixture.region.replacement).toBeNull();
+      expect(document.activeElement).toBe(focused);
+      requests[1].resolve({ ok: true, redirected: true, text: async () => '<html>current</html>' });
+      await flushAsync();
+    }));
+  });
+
+  it('replaces Defaults validation markup with a clean corrected-success region and one binding', async () => {
+    const initial = makeDefaultsFetchFixture();
+    const invalid = makeDefaultsFetchFixture({ value: 'invalid' });
+    const clean = makeDefaultsFetchFixture({ value: 'ready' });
+    invalid.region.errorSummary = { id: 'defaults-errors' };
+    invalid.controls[0].ariaInvalid = 'true';
+    invalid.controls[0].ariaDescribedBy = 'new-project-status-error';
+    clean.region.errorSummary = null;
+    clean.controls[0].ariaInvalid = null;
+    clean.controls[0].ariaDescribedBy = null;
+    const responses = [invalid.region, clean.region];
+    const requests = [];
+
+    await withDefaultsDomParser(() => ({
+      querySelector: (selector) => (
+        selector === '[data-settings-defaults-region]' ? responses.shift() : null
+      ),
+    }), async () => withBrowserGlobals((action, options) => new Promise((resolve) => {
+      requests.push({ action, options, resolve });
+    }), async () => {
+      enhanceDefaultsFetchSave(initial.scope);
+      initial.controls[0].dispatch('change');
+      await flushAsync();
+      requests[0].resolve({ ok: false, status: 422, redirected: false, text: async () => '<html>invalid</html>' });
+      await flushAsync();
+
+      invalid.controls[0].value = 'ready';
+      invalid.controls[0].dispatch('change');
+      await flushAsync();
+      requests[1].resolve({ ok: true, redirected: true, text: async () => '<html>clean</html>' });
+      await flushAsync();
+    }));
+
+    expect(initial.region.replacement).toBe(invalid.region);
+    expect(invalid.region.replacement).toBe(clean.region);
+    expect(clean.region.errorSummary).toBeNull();
+    expect(clean.controls[0].ariaInvalid).toBeNull();
+    expect(clean.controls[0].ariaDescribedBy).toBeNull();
+    expect(clean.controls[0].listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+  });
+
+  it('replaces NSFW validation markup with a clean corrected-success region and one binding', async () => {
+    const initial = makeNsfwFetchFixture();
+    const invalid = makeNsfwFetchFixture({ checked: true });
+    const clean = makeNsfwFetchFixture({ checked: false });
+    invalid.region.errorSummary = { id: 'nsfw-filter-errors' };
+    invalid.control.ariaInvalid = 'true';
+    invalid.control.ariaDescribedBy = 'nsfw-filter-help nsfw-filter-errors';
+    clean.region.errorSummary = null;
+    clean.control.ariaInvalid = null;
+    clean.control.ariaDescribedBy = 'nsfw-filter-help';
+    const responses = [invalid.region, clean.region];
+    const requests = [];
+
+    await withDefaultsDomParser(() => ({
+      querySelector: (selector) => (
+        selector === '[data-settings-nsfw-filter-region]' ? responses.shift() : null
+      ),
+    }), async () => withBrowserGlobals((action, options) => new Promise((resolve) => {
+      requests.push({ action, options, resolve });
+    }), async () => {
+      enhanceNsfwFilterFetchSave(initial.scope);
+      initial.control.checked = true;
+      initial.control.dispatch('change');
+      await flushAsync();
+      requests[0].resolve({ ok: false, status: 422, redirected: false, text: async () => '<html>invalid</html>' });
+      await flushAsync();
+
+      invalid.control.checked = false;
+      invalid.control.dispatch('change');
+      await flushAsync();
+      requests[1].resolve({ ok: true, redirected: true, text: async () => '<html>clean</html>' });
+      await flushAsync();
+    }));
+
+    expect(initial.region.replacement).toBe(invalid.region);
+    expect(invalid.region.replacement).toBe(clean.region);
+    expect(clean.region.errorSummary).toBeNull();
+    expect(clean.control.ariaInvalid).toBeNull();
+    expect(clean.control.ariaDescribedBy).toBe('nsfw-filter-help');
+    expect(clean.control.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+  });
+
+  it('replaces Browser Default validation markup with its clean matching card from a two-card response', async () => {
+    const initial = makeAssetCategoryPreferenceFetchFixture();
+    const invalid = makeAssetCategoryPreferenceFetchFixture({ value: 'invalid' });
+    const clean = makeAssetCategoryPreferenceFetchFixture({ value: 'all' });
+    const previewInvalid = makeAssetCategoryPreferenceFetchFixture({
+      action: '/settings/asset-categories/preview-category',
+      value: 'preview-invalid',
+    });
+    const previewClean = makeAssetCategoryPreferenceFetchFixture({
+      action: '/settings/asset-categories/preview-category',
+      value: 'preview-clean',
+    });
+    invalid.region.errorSummary = { id: 'global-asset-browser-default-error' };
+    invalid.controls[0].ariaInvalid = 'true';
+    invalid.controls[0].ariaDescribedBy = 'global-asset-browser-default-help global-asset-browser-default-error';
+    clean.region.errorSummary = null;
+    clean.controls[0].ariaInvalid = null;
+    clean.controls[0].ariaDescribedBy = 'global-asset-browser-default-help';
+    const pages = [
+      [invalid.region, previewInvalid.region],
+      [clean.region, previewClean.region],
+    ];
+    const requests = [];
+
+    await withAssetCategoryPreferenceDomParser(() => ({
+      querySelectorAll: (selector) => (
+        selector === '[data-settings-asset-category-preference]' ? pages.shift() : []
+      ),
+    }), async () => withBrowserGlobals((action, options) => new Promise((resolve) => {
+      requests.push({ action, options, resolve });
+    }), async () => {
+      enhanceAssetCategoryPreferencesFetchSave(initial.scope);
+      initial.controls[0].value = 'invalid';
+      initial.controls[0].dispatch('change');
+      await flushAsync();
+      requests[0].resolve({ ok: false, status: 422, redirected: false, text: async () => '<html>both invalid</html>' });
+      await flushAsync();
+
+      invalid.controls[0].value = 'all';
+      invalid.controls[0].dispatch('change');
+      await flushAsync();
+      requests[1].resolve({ ok: true, redirected: true, text: async () => '<html>both clean</html>' });
+      await flushAsync();
+    }));
+
+    expect(initial.region.replacement).toBe(invalid.region);
+    expect(invalid.region.replacement).toBe(clean.region);
+    expect(clean.region.errorSummary).toBeNull();
+    expect(clean.controls[0].ariaInvalid).toBeNull();
+    expect(clean.controls[0].ariaDescribedBy).toBe('global-asset-browser-default-help');
+    expect(clean.controls[0].listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+  });
+
+  it('replaces Preview validation markup with its clean matching card from a two-card response', async () => {
+    const initial = makeAssetCategoryPreferenceFetchFixture({
+      action: '/settings/asset-categories/preview-category',
+      value: 'invalid',
+    });
+    const invalid = makeAssetCategoryPreferenceFetchFixture({
+      action: '/settings/asset-categories/preview-category',
+      value: 'invalid',
+    });
+    const clean = makeAssetCategoryPreferenceFetchFixture({
+      action: '/settings/asset-categories/preview-category',
+      value: 'preview',
+    });
+    const browserInvalid = makeAssetCategoryPreferenceFetchFixture({ value: 'browser-invalid' });
+    const browserClean = makeAssetCategoryPreferenceFetchFixture({ value: 'browser-clean' });
+    invalid.region.errorSummary = { id: 'global-preview-category-error' };
+    invalid.controls[0].ariaInvalid = 'true';
+    invalid.controls[0].ariaDescribedBy = 'global-preview-category-help global-preview-category-error';
+    clean.region.errorSummary = null;
+    clean.controls[0].ariaInvalid = null;
+    clean.controls[0].ariaDescribedBy = 'global-preview-category-help';
+    const pages = [
+      [browserInvalid.region, invalid.region],
+      [browserClean.region, clean.region],
+    ];
+    const requests = [];
+
+    await withAssetCategoryPreferenceDomParser(() => ({
+      querySelectorAll: (selector) => (
+        selector === '[data-settings-asset-category-preference]' ? pages.shift() : []
+      ),
+    }), async () => withBrowserGlobals((action, options) => new Promise((resolve) => {
+      requests.push({ action, options, resolve });
+    }), async () => {
+      enhanceAssetCategoryPreferencesFetchSave(initial.scope);
+      initial.controls[0].dispatch('change');
+      await flushAsync();
+      requests[0].resolve({ ok: false, status: 422, redirected: false, text: async () => '<html>both invalid</html>' });
+      await flushAsync();
+
+      invalid.controls[0].value = 'preview';
+      invalid.controls[0].dispatch('change');
+      await flushAsync();
+      requests[1].resolve({ ok: true, redirected: true, text: async () => '<html>both clean</html>' });
+      await flushAsync();
+    }));
+
+    expect(initial.region.replacement).toBe(invalid.region);
+    expect(invalid.region.replacement).toBe(clean.region);
+    expect(browserInvalid.region.replacement).toBeNull();
+    expect(clean.region.errorSummary).toBeNull();
+    expect(clean.controls[0].ariaInvalid).toBeNull();
+    expect(clean.controls[0].ariaDescribedBy).toBe('global-preview-category-help');
+    expect(clean.controls[0].listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
   });
 });
 
@@ -1641,15 +3336,36 @@ function makeSelectableAssetCard(checkbox) {
   };
 }
 
-function makeDetailsFixture({ action = '/settings/asset-categories/1' } = {}) {
+function makeDetailsFixture({
+  action = '/settings/asset-categories/1',
+  displayNameValue = 'Final',
+  directorySlugValue = 'final',
+} = {}) {
   const status = { textContent: '' };
   const attributes = new Map();
   const listeners = [];
+  const makeControl = (name, value) => {
+    const controlListeners = [];
+    return {
+      name,
+      value,
+      listeners: controlListeners,
+      addEventListener(type, handler) { controlListeners.push({ type, handler }); },
+      dispatch(type) {
+        const event = { type, target: this };
+        controlListeners.filter((listener) => listener.type === type).forEach((listener) => listener.handler(event));
+        return event;
+      },
+    };
+  };
+  const displayName = makeControl('displayName', displayNameValue);
+  const directorySlug = makeControl('directorySlug', directorySlugValue);
   const form = {
     action,
     method: 'post',
     csrfToken: 'csrf-details',
     dataset: {},
+    controls: [displayName, directorySlug],
     submitCount: 0,
     submit() { this.submitCount += 1; },
     addEventListener(type, handler) { listeners.push({ type, handler }); },
@@ -1666,11 +3382,24 @@ function makeDetailsFixture({ action = '/settings/asset-categories/1' } = {}) {
     querySelector(selector) {
       return selector === '[data-category-details-status]' ? status : null;
     },
+    querySelectorAll(selector) {
+      return selector === 'input[name="displayName"], input[name="directorySlug"]' ? this.controls : [];
+    },
     setAttribute(name, value) { attributes.set(name, String(value)); },
     removeAttribute(name) { attributes.delete(name); },
     getAttribute(name) { return attributes.has(name) ? attributes.get(name) : null; },
   };
-  return { form, status, attributes };
+  return { form, status, attributes, displayName, directorySlug };
+}
+
+function identifyDetailsFixture(fixture, id) {
+  fixture.form.dataset.categoryDetailsId = String(id);
+  const getAttribute = fixture.form.getAttribute;
+  fixture.form.getAttribute = (name) => (
+    name === 'data-category-details-id' ? fixture.form.dataset.categoryDetailsId : getAttribute(name)
+  );
+  fixture.form.matches = (selector) => selector === '[data-category-details-form]';
+  return fixture;
 }
 
 describe('category details in-place save enhancement', () => {
@@ -1684,7 +3413,7 @@ describe('category details in-place save enhancement', () => {
     expect(enhanceCategoryDetails(scope)).toBe(0);
   });
 
-  it('saves in place on a redirected response without navigating, and binds once', async () => {
+  it('saves each detail field change in place without navigating, and binds once', async () => {
     const fixture = makeDetailsFixture({ action: '/settings/asset-categories/9' });
     const calls = [];
     await withBrowserGlobals(async (action, options) => {
@@ -1694,48 +3423,525 @@ describe('category details in-place save enhancement', () => {
       const scope = { querySelectorAll: () => [fixture.form] };
       expect(enhanceCategoryDetails(scope)).toBe(1);
       expect(enhanceCategoryDetails(scope)).toBe(1);
+      expect(fixture.displayName.listeners).toHaveLength(1);
+      expect(fixture.directorySlug.listeners).toHaveLength(1);
 
-      const event = fixture.form.dispatch('submit');
+      fixture.displayName.value = 'Raw Footage';
+      fixture.displayName.dispatch('change');
       await flushAsync();
 
-      expect(event.defaultPrevented).toBe(true);
       expect(calls).toHaveLength(1);
       expect(calls[0].action).toBe('/settings/asset-categories/9');
       expect(calls[0].options.method).toBe('POST');
       expect(calls[0].options.body).toBeInstanceOf(URLSearchParams);
       expect(calls[0].options.body.getAll('_csrf')).toEqual(['csrf-details']);
+      expect(calls[0].options.body.getAll('displayName')).toEqual(['Raw Footage']);
+      expect(calls[0].options.body.getAll('directorySlug')).toEqual(['final']);
       expect(fixture.form.submitCount).toBe(0);
       expect(fixture.status.textContent).toBe('Details saved.');
       expect(fixture.form.getAttribute('aria-busy')).toBe(null);
     });
   });
 
-  it('falls back to a native submit when the response is not a redirect (validation error)', async () => {
+  it('serializes rapid changes and saves the latest complete field state', async () => {
+    const fixture = makeDetailsFixture();
+    const requests = [];
+    await withBrowserGlobals((action, options) => new Promise((resolve) => {
+      requests.push({ action, options, resolve });
+    }), async () => {
+      enhanceCategoryDetails({ querySelectorAll: () => [fixture.form] });
+      fixture.displayName.value = 'Raw Footage';
+      fixture.displayName.dispatch('change');
+      await flushAsync();
+
+      fixture.directorySlug.value = 'raw-footage';
+      fixture.directorySlug.dispatch('change');
+      expect(requests).toHaveLength(1);
+
+      requests[0].resolve({ ok: true, redirected: true, status: 200 });
+      await flushAsync();
+      expect(requests).toHaveLength(2);
+      expect(requests[1].options.body.getAll('displayName')).toEqual(['Raw Footage']);
+      expect(requests[1].options.body.getAll('directorySlug')).toEqual(['raw-footage']);
+
+      requests[1].resolve({ ok: true, redirected: true, status: 200 });
+      await flushAsync();
+      expect(fixture.status.textContent).toBe('Details saved.');
+      expect(fixture.form.getAttribute('aria-busy')).toBe(null);
+    });
+  });
+
+  it('keeps a validation response in place when no authoritative replacement can be parsed', async () => {
     const fixture = makeDetailsFixture();
     await withBrowserGlobals(async () => ({ ok: false, redirected: false, status: 422 }), async () => {
       enhanceCategoryDetails({ querySelectorAll: () => [fixture.form] });
-      fixture.form.dispatch('submit');
+      fixture.displayName.dispatch('change');
       await flushAsync();
-      expect(fixture.form.submitCount).toBe(1);
+      expect(fixture.form.submitCount).toBe(0);
+      expect(fixture.status.textContent).toBe('Could not save category details. Your current changes were kept.');
     });
   });
 
-  it('falls back to a native submit on network failure', async () => {
+  it('replaces only the matching category details form from a validation response', async () => {
+    const categoryA = identifyDetailsFixture(makeDetailsFixture({ action: '/settings/asset-categories/1' }), 1);
+    const current = identifyDetailsFixture(makeDetailsFixture({ action: '/settings/asset-categories/2' }), 2);
+    const categoryB = identifyDetailsFixture(makeDetailsFixture({ action: '/settings/asset-categories/2' }), 2);
+    const parent = {
+      replacement: null,
+      replaceChild(next, previous) {
+        expect(previous).toBe(current.form);
+        this.replacement = next;
+      },
+    };
+    current.form.parentNode = parent;
+    const addCategory = { displayName: 'Unsaved add name', directorySlug: 'unsaved-add-slug' };
+    const originalDOMParser = globalThis.DOMParser;
+    globalThis.DOMParser = class {
+      parseFromString() {
+        return {
+          querySelectorAll: (selector) => (
+            selector === '[data-category-details-form]' ? [categoryA.form, categoryB.form] : []
+          ),
+        };
+      }
+    };
+
+    try {
+      await withBrowserGlobals(async () => ({
+        ok: false,
+        redirected: false,
+        status: 422,
+        text: async () => '<!doctype html><html></html>',
+      }), async () => {
+        enhanceCategoryDetails({ querySelectorAll: () => [current.form] });
+        current.displayName.dispatch('change');
+        await flushAsync();
+
+        expect(current.form.submitCount).toBe(0);
+        expect(parent.replacement).toBe(categoryB.form);
+        expect(parent.replacement).not.toBe(categoryA.form);
+        expect(categoryB.displayName.listeners).toHaveLength(1);
+        expect(categoryB.directorySlug.listeners).toHaveLength(1);
+        expect(categoryB.status.textContent).toBe('Could not save category details. Current changes have not been saved.');
+        expect(categoryB.form.getAttribute('data-category-details-state')).toBe('error');
+        expect(addCategory).toEqual({ displayName: 'Unsaved add name', directorySlug: 'unsaved-add-slug' });
+      });
+    } finally {
+      globalThis.DOMParser = originalDOMParser;
+    }
+  });
+
+  it('preserves an unsent slug and its focus through display-name validation before a corrected retry', async () => {
+    const current = identifyDetailsFixture(makeDetailsFixture({
+      displayNameValue: 'Raw Footage',
+      directorySlugValue: 'old-slug',
+    }), 2);
+    const invalid = identifyDetailsFixture(makeDetailsFixture({
+      displayNameValue: '',
+      directorySlugValue: 'old-slug',
+    }), 2);
+    const clean = identifyDetailsFixture(makeDetailsFixture({
+      displayNameValue: 'Raw Footage',
+      directorySlugValue: 'raw-footage',
+    }), 2);
+    const parent = {
+      replacements: [],
+      replaceChild(next) {
+        this.replacements.push(next);
+        next.parentNode = this;
+      },
+    };
+    let responseFixture = invalid;
+    const document = {
+      activeElement: current.directorySlug,
+      getElementById: (id) => (id === 'global-category-2-directory-slug' ? responseFixture.directorySlug : null),
+    };
+    for (const fixture of [current, invalid, clean]) {
+      fixture.form.parentNode = parent;
+      fixture.form.ownerDocument = document;
+      fixture.form.contains = (element) => fixture.form.controls.includes(element);
+      fixture.directorySlug.id = 'global-category-2-directory-slug';
+    }
+    current.directorySlug.selectionStart = 2;
+    current.directorySlug.selectionEnd = 5;
+    invalid.directorySlug.focus = () => { document.activeElement = invalid.directorySlug; };
+    invalid.directorySlug.setSelectionRange = (start, end) => {
+      invalid.directorySlug.selectionStart = start;
+      invalid.directorySlug.selectionEnd = end;
+    };
+    const requests = [];
+    const originalDOMParser = globalThis.DOMParser;
+    globalThis.DOMParser = class {
+      parseFromString() {
+        return { querySelectorAll: (selector) => (
+          selector === '[data-category-details-form]' ? [responseFixture.form] : []
+        ) };
+      }
+    };
+
+    try {
+      await withBrowserGlobals((action, options) => new Promise((resolve) => {
+        requests.push({ action, options, resolve });
+      }), async () => {
+        enhanceCategoryDetails({ querySelectorAll: () => [current.form] });
+        current.displayName.value = '';
+        current.displayName.dispatch('change');
+        await flushAsync();
+        current.directorySlug.value = 'raw-footage';
+
+        requests[0].resolve({ ok: false, redirected: false, status: 422, text: async () => '<!doctype html><html></html>' });
+        await flushAsync();
+
+        expect(parent.replacements).toEqual([invalid.form]);
+        expect(invalid.displayName.value).toBe('');
+        expect(invalid.directorySlug.value).toBe('raw-footage');
+        expect(invalid.status.textContent).toBe('Could not save category details. Current changes have not been saved.');
+        expect(invalid.form.getAttribute('data-category-details-state')).toBe('error');
+        expect(document.activeElement).toBe(invalid.directorySlug);
+        expect(invalid.directorySlug.selectionStart).toBe(2);
+        expect(invalid.directorySlug.selectionEnd).toBe(5);
+
+        responseFixture = clean;
+        invalid.displayName.value = 'Raw Footage';
+        invalid.displayName.dispatch('change');
+        await flushAsync();
+        requests[1].resolve({ ok: true, redirected: true, status: 200, text: async () => '<!doctype html><html></html>' });
+        await flushAsync();
+
+        expect(parent.replacements).toEqual([invalid.form, clean.form]);
+        expect(clean.status.textContent).toBe('Details saved.');
+        expect(clean.displayName.listeners).toHaveLength(1);
+      });
+    } finally {
+      globalThis.DOMParser = originalDOMParser;
+    }
+  });
+
+  it('preserves an unsent display name through directory-slug validation', async () => {
+    const current = identifyDetailsFixture(makeDetailsFixture({
+      displayNameValue: 'Old',
+      directorySlugValue: 'old-slug',
+    }), 2);
+    const invalid = identifyDetailsFixture(makeDetailsFixture({
+      displayNameValue: 'Old',
+      directorySlugValue: '',
+    }), 2);
+    const parent = {
+      replacement: null,
+      replaceChild(next) {
+        this.replacement = next;
+        next.parentNode = this;
+      },
+    };
+    current.form.parentNode = parent;
+    const requests = [];
+    const originalDOMParser = globalThis.DOMParser;
+    globalThis.DOMParser = class {
+      parseFromString() {
+        return { querySelectorAll: (selector) => (
+          selector === '[data-category-details-form]' ? [invalid.form] : []
+        ) };
+      }
+    };
+
+    try {
+      await withBrowserGlobals((action, options) => new Promise((resolve) => {
+        requests.push({ action, options, resolve });
+      }), async () => {
+        enhanceCategoryDetails({ querySelectorAll: () => [current.form] });
+        current.directorySlug.value = '';
+        current.directorySlug.dispatch('change');
+        await flushAsync();
+        current.displayName.value = 'Raw Footage';
+
+        requests[0].resolve({ ok: false, redirected: false, status: 422, text: async () => '<!doctype html><html></html>' });
+        await flushAsync();
+
+        expect(parent.replacement).toBe(invalid.form);
+        expect(invalid.directorySlug.value).toBe('');
+        expect(invalid.displayName.value).toBe('Raw Footage');
+        expect(invalid.status.textContent).toBe('Could not save category details. Current changes have not been saved.');
+        expect(invalid.form.getAttribute('data-category-details-state')).toBe('error');
+      });
+    } finally {
+      globalThis.DOMParser = originalDOMParser;
+    }
+  });
+
+  it('does not replace or publish validation status from a superseded request', async () => {
+    const current = identifyDetailsFixture(makeDetailsFixture({ action: '/settings/asset-categories/2' }), 2);
+    const invalid = identifyDetailsFixture(makeDetailsFixture({ action: '/settings/asset-categories/2' }), 2);
+    const parent = {
+      replacement: null,
+      replaceChild(next) { this.replacement = next; },
+    };
+    current.form.parentNode = parent;
+    const originalDOMParser = globalThis.DOMParser;
+    globalThis.DOMParser = class {
+      parseFromString() {
+        return { querySelectorAll: () => [invalid.form] };
+      }
+    };
+
+    try {
+      const requests = [];
+      await withBrowserGlobals((action, options) => new Promise((resolve) => {
+        requests.push({ action, options, resolve });
+      }), async () => {
+        enhanceCategoryDetails({ querySelectorAll: () => [current.form] });
+        current.displayName.value = '';
+        current.displayName.dispatch('change');
+        await flushAsync();
+        current.directorySlug.value = 'new-slug';
+        current.directorySlug.dispatch('change');
+
+        requests[0].resolve({ ok: false, redirected: false, status: 422, text: async () => '<!doctype html><html></html>' });
+        await flushAsync();
+
+        expect(requests).toHaveLength(2);
+        expect(parent.replacement).toBe(null);
+        expect(current.status.textContent).toBe('Saving category details.');
+        expect(current.form.getAttribute('data-category-details-state')).toBe('pending');
+      });
+    } finally {
+      globalThis.DOMParser = originalDOMParser;
+    }
+  });
+
+  it('preserves a newer unsent sibling value, its focus, and submits it on a later change', async () => {
+    const current = identifyDetailsFixture(makeDetailsFixture({
+      displayNameValue: 'Old',
+      directorySlugValue: 'old-slug',
+    }), 2);
+    const clean = identifyDetailsFixture(makeDetailsFixture({
+      displayNameValue: 'Raw Footage',
+      directorySlugValue: 'old-slug',
+    }), 2);
+    const final = identifyDetailsFixture(makeDetailsFixture({
+      displayNameValue: 'Raw Footage',
+      directorySlugValue: 'raw-footage',
+    }), 2);
+    const parent = {
+      replacements: [],
+      replaceChild(next) {
+        this.replacements.push(next);
+        next.parentNode = this;
+      },
+    };
+    const document = {
+      activeElement: current.directorySlug,
+      getElementById: (id) => ({
+        'global-category-2-directory-slug': clean.directorySlug,
+      })[id] || null,
+    };
+    for (const fixture of [current, clean, final]) {
+      fixture.form.parentNode = parent;
+      fixture.form.ownerDocument = document;
+      fixture.form.contains = (element) => fixture.form.controls.includes(element);
+      fixture.directorySlug.id = 'global-category-2-directory-slug';
+    }
+    current.directorySlug.selectionStart = 2;
+    current.directorySlug.selectionEnd = 5;
+    clean.directorySlug.focus = () => { document.activeElement = clean.directorySlug; };
+    clean.directorySlug.setSelectionRange = (start, end) => {
+      clean.directorySlug.selectionStart = start;
+      clean.directorySlug.selectionEnd = end;
+    };
+    const requests = [];
+    const originalDOMParser = globalThis.DOMParser;
+    let responseForm = clean.form;
+    globalThis.DOMParser = class {
+      parseFromString() {
+        return {
+          querySelectorAll: (selector) => (
+            selector === '[data-category-details-form]' ? [responseForm] : []
+          ),
+        };
+      }
+    };
+
+    try {
+      await withBrowserGlobals((action, options) => new Promise((resolve) => {
+        requests.push({ action, options, resolve });
+      }), async () => {
+        enhanceCategoryDetails({ querySelectorAll: () => [current.form] });
+        current.displayName.value = 'Raw Footage';
+        current.displayName.dispatch('change');
+        await flushAsync();
+        current.directorySlug.value = 'raw-footage';
+
+        requests[0].resolve({
+          ok: true,
+          redirected: true,
+          status: 200,
+          text: async () => '<!doctype html><html></html>',
+        });
+        await flushAsync();
+
+        expect(parent.replacements).toEqual([clean.form]);
+        expect(clean.displayName.value).toBe('Raw Footage');
+        expect(clean.directorySlug.value).toBe('raw-footage');
+        expect(clean.status.textContent).toBe('Current changes have not been saved.');
+        expect(document.activeElement).toBe(clean.directorySlug);
+        expect(clean.directorySlug.selectionStart).toBe(2);
+        expect(clean.directorySlug.selectionEnd).toBe(5);
+
+        responseForm = final.form;
+        clean.directorySlug.dispatch('change');
+        await flushAsync();
+        expect(requests).toHaveLength(2);
+        expect(requests[1].options.body.getAll('displayName')).toEqual(['Raw Footage']);
+        expect(requests[1].options.body.getAll('directorySlug')).toEqual(['raw-footage']);
+
+        requests[1].resolve({
+          ok: true,
+          redirected: true,
+          status: 200,
+          text: async () => '<!doctype html><html></html>',
+        });
+        await flushAsync();
+        expect(parent.replacements).toEqual([clean.form, final.form]);
+        expect(final.status.textContent).toBe('Details saved.');
+      });
+    } finally {
+      globalThis.DOMParser = originalDOMParser;
+    }
+  });
+
+  it('preserves a newer unsent display name while a slug save is pending', async () => {
+    const current = identifyDetailsFixture(makeDetailsFixture({
+      displayNameValue: 'Old',
+      directorySlugValue: 'old-slug',
+    }), 2);
+    const clean = identifyDetailsFixture(makeDetailsFixture({
+      displayNameValue: 'Old',
+      directorySlugValue: 'raw-footage',
+    }), 2);
+    const parent = {
+      replacement: null,
+      replaceChild(next) {
+        this.replacement = next;
+        next.parentNode = this;
+      },
+    };
+    current.form.parentNode = parent;
+    const requests = [];
+    const originalDOMParser = globalThis.DOMParser;
+    globalThis.DOMParser = class {
+      parseFromString() {
+        return {
+          querySelectorAll: (selector) => (
+            selector === '[data-category-details-form]' ? [clean.form] : []
+          ),
+        };
+      }
+    };
+
+    try {
+      await withBrowserGlobals((action, options) => new Promise((resolve) => {
+        requests.push({ action, options, resolve });
+      }), async () => {
+        enhanceCategoryDetails({ querySelectorAll: () => [current.form] });
+        current.directorySlug.value = 'raw-footage';
+        current.directorySlug.dispatch('change');
+        await flushAsync();
+        current.displayName.value = 'Raw Footage';
+
+        requests[0].resolve({
+          ok: true,
+          redirected: true,
+          status: 200,
+          text: async () => '<!doctype html><html></html>',
+        });
+        await flushAsync();
+
+        expect(parent.replacement).toBe(clean.form);
+        expect(clean.displayName.value).toBe('Raw Footage');
+        expect(clean.directorySlug.value).toBe('raw-footage');
+        expect(clean.status.textContent).toBe('Current changes have not been saved.');
+      });
+    } finally {
+      globalThis.DOMParser = originalDOMParser;
+    }
+  });
+
+  it('replaces a corrected form with the authoritative clean form and restores field focus', async () => {
+    const current = identifyDetailsFixture(makeDetailsFixture({ action: '/settings/asset-categories/2' }), 2);
+    const clean = identifyDetailsFixture(makeDetailsFixture({ action: '/settings/asset-categories/2' }), 2);
+    const parent = {
+      replacement: null,
+      replaceChild(next) { this.replacement = next; },
+    };
+    const document = {
+      activeElement: current.displayName,
+      getElementById: (id) => (id === 'global-category-2-display-name' ? clean.displayName : null),
+    };
+    current.form.parentNode = parent;
+    current.form.ownerDocument = document;
+    clean.form.ownerDocument = document;
+    current.form.contains = (element) => element === current.displayName;
+    clean.form.contains = (element) => element === clean.displayName;
+    current.displayName.id = 'global-category-2-display-name';
+    current.displayName.selectionStart = 1;
+    current.displayName.selectionEnd = 3;
+    clean.displayName.focusCount = 0;
+    clean.displayName.focus = () => { clean.displayName.focusCount += 1; };
+    clean.displayName.setSelectionRange = (start, end) => {
+      clean.displayName.selectionStart = start;
+      clean.displayName.selectionEnd = end;
+    };
+    const originalDOMParser = globalThis.DOMParser;
+    globalThis.DOMParser = class {
+      parseFromString() {
+        return {
+          querySelectorAll: (selector) => (
+            selector === '[data-category-details-form]' ? [clean.form] : []
+          ),
+        };
+      }
+    };
+
+    try {
+      await withBrowserGlobals(async () => ({
+        ok: true,
+        redirected: true,
+        status: 200,
+        text: async () => '<!doctype html><html></html>',
+      }), async () => {
+        enhanceCategoryDetails({ querySelectorAll: () => [current.form] });
+        current.displayName.dispatch('change');
+        await flushAsync();
+
+        expect(parent.replacement).toBe(clean.form);
+        expect(clean.status.textContent).toBe('Details saved.');
+        expect(clean.displayName.focusCount).toBe(1);
+        expect(clean.displayName.selectionStart).toBe(1);
+        expect(clean.displayName.selectionEnd).toBe(3);
+        expect(clean.displayName.listeners).toHaveLength(1);
+      });
+    } finally {
+      globalThis.DOMParser = originalDOMParser;
+    }
+  });
+
+  it('keeps a network failure in place', async () => {
     const fixture = makeDetailsFixture();
     await withBrowserGlobals(async () => { throw new Error('offline'); }, async () => {
       enhanceCategoryDetails({ querySelectorAll: () => [fixture.form] });
-      fixture.form.dispatch('submit');
+      fixture.directorySlug.dispatch('change');
       await flushAsync();
-      expect(fixture.form.submitCount).toBe(1);
+      expect(fixture.form.submitCount).toBe(0);
+      expect(fixture.status.textContent).toBe('Could not save category details. Your current changes were kept.');
     });
   });
 
-  it('leaves the native submit intact when fetch is unavailable', () => {
+  it('leaves the native fallback intact when fetch is unavailable', () => {
     const fixture = makeDetailsFixture();
     const originalFetch = globalThis.fetch;
     globalThis.fetch = undefined;
     try {
       enhanceCategoryDetails({ querySelectorAll: () => [fixture.form] });
+      expect(fixture.displayName.listeners).toHaveLength(0);
       const event = fixture.form.dispatch('submit');
       expect(event.defaultPrevented).toBe(false);
       expect(fixture.form.submitCount).toBe(0);

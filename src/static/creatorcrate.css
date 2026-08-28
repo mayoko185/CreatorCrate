@@ -6059,11 +6059,11 @@
         border: 1px solid var(--border);
         border-radius: var(--radius-lg);
         overflow: hidden;
-        margin-bottom: var(--space-xl);
+        margin-bottom: var(--space-lg);
       }
       .settings-stat {
         background: var(--surface);
-        padding: var(--space-lg);
+        padding: var(--space-md);
       }
       .settings-stat-label {
         display: block;
@@ -6075,8 +6075,9 @@
       }
       .settings-stat-value {
         display: block;
-        font-size: 1.375rem;
+        font-size: 1.25rem;
         font-weight: 700;
+        line-height: 1.25;
         color: var(--text);
         margin-top: var(--space-xs);
       }
@@ -6090,6 +6091,24 @@
       /* ── Section nav + content ── */
       .settings-content {
         min-width: 0;
+      }
+      .settings-content > .panel--info,
+      .settings-content > .panel--warning,
+      .settings-overview-auth-disabled-warning {
+        padding: var(--space-md);
+        margin-bottom: var(--space-md);
+        font-size: 0.875rem;
+        line-height: 1.5;
+      }
+      .settings-content > .panel--info p,
+      .settings-content > .panel--warning p,
+      .settings-overview-auth-disabled-warning p {
+        margin: 0;
+      }
+      .settings-content > .panel--info p + p,
+      .settings-content > .panel--warning p + p,
+      .settings-overview-auth-disabled-warning p + p {
+        margin-top: var(--space-sm);
       }
       .settings-section {
         border: 1px solid var(--border);
@@ -6110,6 +6129,24 @@
         color: var(--muted);
         background: var(--surface-card);
         border-bottom: 1px solid var(--border);
+      }
+      .settings-overview-content .settings-section,
+      .settings-security-content .settings-section,
+      .settings-defaults-content .settings-section,
+      .settings-nsfw-filter-content .settings-section,
+      .settings-asset-categories-content .settings-section,
+      .settings-tags-content .settings-section,
+      .settings-open-locally-content .settings-section {
+        background: var(--surface);
+      }
+      .settings-overview-content .settings-section h3,
+      .settings-security-content .settings-section h3,
+      .settings-defaults-content .settings-section h3,
+      .settings-nsfw-filter-content .settings-section h3,
+      .settings-asset-categories-content .settings-section h3,
+      .settings-tags-content .settings-section h3,
+      .settings-open-locally-content .settings-section h3 {
+        background: var(--surface-hover);
       }
       .settings-section .kv,
       .settings-section .help-text {
@@ -6141,6 +6178,115 @@
         padding: 0.0625rem 0.4rem;
         border-radius: var(--radius-sm);
         font-size: 0.8125rem;
+      }
+
+      /* ── WP11: Project Assets-derived Settings surfaces ── */
+      .settings-overview-stats {
+        grid-template-columns: repeat(auto-fit, minmax(min(12rem, 100%), 1fr));
+        gap: var(--space-md);
+        background: transparent;
+        border: 0;
+        border-radius: 0;
+        overflow: visible;
+      }
+      .settings-overview-stats .settings-stat {
+        min-width: 0;
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+        box-shadow: var(--shadow-sm);
+        transition: background var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
+      }
+      .settings-overview-stats .settings-stat:hover {
+        background: var(--surface-hover);
+        border-color: var(--border-strong);
+        box-shadow: var(--shadow-md);
+      }
+      .settings-overview-persistent-warning,
+      .settings-security-disabled-warning {
+        box-shadow: var(--shadow-sm);
+      }
+      .settings-overview-content > .settings-overview-section,
+      .settings-defaults-content .settings-defaults-section,
+      .settings-security-content .settings-security-section,
+      .settings-security-destructive {
+        box-shadow: var(--shadow-sm);
+      }
+      .settings-overview-content > .settings-overview-section:hover,
+      .settings-security-content .settings-security-section:hover {
+        border-color: var(--border-strong);
+      }
+      .settings-overview-section .kv:hover {
+        background: var(--surface-hover);
+      }
+
+      .settings-security-form > .settings-security-section {
+        overflow: hidden;
+        padding-bottom: var(--space-md);
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius-lg);
+      }
+      .settings-security-section > h2,
+      .settings-security-section > h3 {
+        margin: 0;
+        padding: var(--space-sm) var(--space-md);
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        background: var(--surface-hover);
+        border-bottom: 1px solid var(--border);
+      }
+      .settings-security-section > .help-text {
+        margin: var(--space-md) 0;
+        padding: 0 var(--space-md);
+      }
+      .settings-security-section > .field {
+        margin: 0 var(--space-md) var(--space-md);
+      }
+      .settings-security-form .form-actions {
+        margin: 0;
+      }
+      .settings-security-save-action,
+      .settings-security-enable-action {
+        box-shadow: var(--shadow-sm);
+      }
+      .settings-security-destructive {
+        margin-top: var(--space-lg);
+      }
+
+      .settings-defaults-form {
+        gap: var(--space-lg);
+      }
+      .settings-defaults-section > .help-text {
+        margin: 0;
+        padding-top: var(--space-md);
+      }
+      .settings-defaults-section > .field {
+        margin: 0;
+        padding: var(--space-md);
+        border-top: 1px solid var(--border);
+      }
+      .settings-defaults-section > .help-text + .field {
+        border-top: 0;
+      }
+      .settings-defaults-section > .field .help-text {
+        margin-top: var(--space-xs);
+        padding: 0;
+      }
+      .settings-defaults-section > .field select,
+      .settings-defaults-section > .field .cc-dropdown-field {
+        max-width: 100%;
+      }
+
+      @media (max-width: 540px) {
+        .settings-overview-stats {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .settings-security-section > .field {
+          margin-inline: var(--space-md);
+        }
       }
       /* Backups table reads as console/data output, not prose. */
       .settings-content .data-table th,
@@ -6185,6 +6331,43 @@
       }
       .logs-table th {
         font-size: 0.75rem;
+      }
+      .backups-table-scroll {
+        margin: var(--space-sm) 0;
+        scrollbar-color: var(--border-strong) transparent;
+        scrollbar-width: thin;
+      }
+      .backups-table-scroll::-webkit-scrollbar {
+        height: 0.5rem;
+      }
+      .backups-table-scroll::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .backups-table-scroll::-webkit-scrollbar-thumb {
+        border: 2px solid var(--surface-card);
+        border-radius: 999px;
+        background: var(--border-strong);
+      }
+      .backups-table-scroll::-webkit-scrollbar-thumb:hover {
+        background: var(--muted);
+      }
+      .backups-table {
+        min-width: 52rem;
+        margin: 0;
+      }
+      .backups-table th,
+      .backups-table td {
+        padding: var(--space-xs) var(--space-sm);
+      }
+      .backups-table td {
+        font-size: 0.8125rem;
+        line-height: 1.4;
+      }
+      .backups-table th {
+        font-size: 0.75rem;
+      }
+      .backups-table .row-actions {
+        white-space: nowrap;
       }
       .logs-message-cell {
         min-width: 18rem;
@@ -7372,29 +7555,35 @@
          padded help text and key/value rows above, instead of sitting flush
          against the card's left edge. Buttons are intentionally left flush in
          the card corner and are not affected. */
-      .open-locally-field {
+      .settings-open-locally-content .open-locally-field {
         padding-left: var(--space-md);
         padding-right: var(--space-md);
       }
-      .open-locally-field .help-text {
+      .settings-open-locally-content .open-locally-field .help-text {
         padding-left: 0;
         padding-right: 0;
       }
 
-      /* Projects-path input sits on its own row with the Clear mapping button
-         directly to its right; the input is capped so the line is short and
-         leaves room for the button. Save is its own action row below. */
-      .open-locally-path-row {
+      .settings-open-locally-content .settings-section .form-actions.open-locally-installer-actions {
+        justify-content: center;
+        margin-left: 0;
+        margin-bottom: 0;
+      }
+
+      /* Keep Save immediately before Clear mapping while letting the path and
+         controls wrap without overflowing narrow viewports. */
+      .settings-open-locally-content .open-locally-path-row {
         display: flex;
         align-items: center;
         gap: var(--space-md);
-        flex-wrap: nowrap;
+        flex-wrap: wrap;
       }
-      .open-locally-path-row > input {
-        flex: 0 1 24rem;
+      .settings-open-locally-content .open-locally-path-row > input {
+        flex: 1 1 16rem;
         min-width: 0;
       }
-      .open-locally-path-row > .inline-form {
+      .settings-open-locally-content .open-locally-path-row > .button,
+      .settings-open-locally-content .open-locally-path-row > .inline-form {
         flex: 0 0 auto;
       }
 
@@ -9499,6 +9688,358 @@
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   background: var(--surface-card);
+}
+
+
+/* WP12: Project Assets-derived treatment for the Settings NSFW and category management pages. */
+.settings-nsfw-filter-content,
+.settings-asset-categories-content {
+  display: grid;
+  gap: var(--space-lg);
+}
+
+.settings-nsfw-filter-content > .settings-layout,
+.settings-asset-categories-content > .settings-layout {
+  margin-bottom: 0;
+}
+
+.settings-nsfw-filter-content .settings-section,
+.settings-asset-categories-content .settings-section,
+.settings-asset-categories-content .category-management-section {
+  box-shadow: var(--shadow-sm);
+}
+
+.settings-nsfw-filter-content .settings-section {
+  margin-bottom: 0;
+}
+
+.settings-nsfw-filter-content .field--switch {
+  display: grid;
+  gap: var(--space-xs);
+  padding: var(--space-md);
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.settings-nsfw-filter-content .form-switch-label {
+  min-height: 2.5rem;
+}
+
+.settings-nsfw-filter-content .help-text,
+.settings-asset-categories-content .asset-browser-default-description,
+.settings-asset-categories-content .category-management-section-note {
+  color: var(--text-muted);
+}
+
+.settings-nsfw-filter-content .error-summary,
+.settings-asset-categories-content .error-summary {
+  margin: var(--space-md);
+  border-radius: var(--radius-md);
+}
+
+.settings-asset-categories-content .settings-content {
+  display: grid;
+  gap: var(--space-lg);
+}
+
+.settings-asset-categories-content .asset-browser-default-section {
+  margin-bottom: 0;
+}
+
+.settings-asset-categories-content .asset-browser-default-section .asset-browser-default-summary,
+.settings-asset-categories-content .asset-browser-default-section .asset-browser-default-control-row {
+  padding-inline: var(--space-md);
+}
+
+.settings-asset-categories-content .asset-browser-default-section .asset-browser-default-control-row {
+  padding-bottom: var(--space-md);
+}
+
+.settings-asset-categories-content .category-management-section {
+  margin-bottom: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.settings-asset-categories-content .category-management-section > h3,
+.settings-asset-categories-content .category-management-section > .category-management-section-note {
+  padding-inline: var(--space-md);
+}
+
+.settings-asset-categories-content .settings-category-management-add {
+  background: var(--surface);
+}
+
+.settings-asset-categories-content .category-management-add-row {
+  align-items: flex-start;
+  gap: var(--space-md);
+}
+
+.settings-asset-categories-content .category-management-add-submit {
+  display: flex;
+  flex: 0 0 auto;
+  align-self: flex-start;
+  margin: 0;
+  padding-top: calc(1.4rem + var(--space-xs));
+}
+
+.settings-asset-categories-content .category-management-add-submit > .button {
+  flex: 0 0 auto;
+  width: auto;
+}
+
+.settings-asset-categories-content .category-management-add .field--switch {
+  min-height: 2.75rem;
+  padding: var(--space-sm) var(--space-md);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.settings-asset-categories-content .category-management-list {
+  padding: var(--space-md);
+  background: var(--surface);
+}
+
+.settings-asset-categories-content .category-management-card {
+  background: var(--surface);
+  border-color: var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.settings-asset-categories-content .category-management-card:hover,
+.settings-asset-categories-content .category-management-card:focus-within {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.settings-asset-categories-content .category-management-card-controls {
+  padding: var(--space-sm);
+  background: var(--surface-hover);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.settings-asset-categories-content .category-management-actions .button-danger {
+  border-color: var(--danger);
+}
+
+.settings-asset-categories-content .category-management-details-actions,
+.settings-asset-categories-content .category-management-actions {
+  gap: var(--space-sm);
+}
+
+@media (max-width: 767px) {
+  .settings-nsfw-filter-content,
+  .settings-asset-categories-content {
+    gap: var(--space-md);
+  }
+
+  .settings-asset-categories-content .category-management-add > .category-management-form,
+  .settings-asset-categories-content .category-management-list {
+    padding: var(--space-sm);
+  }
+
+  .settings-asset-categories-content .asset-browser-default-section .asset-browser-default-summary,
+  .settings-asset-categories-content .asset-browser-default-section .asset-browser-default-control-row {
+    padding-inline: var(--space-sm);
+  }
+}
+
+@media (max-width: 540px) {
+  .settings-asset-categories-content .category-management-add-submit {
+    padding-top: 0;
+  }
+}
+
+
+.settings-asset-categories-content .settings-content > .settings-section.asset-browser-default-section {
+  overflow: visible;
+}
+
+.settings-asset-categories-content .settings-content > .settings-section.asset-browser-default-section > h3 {
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+
+.settings-asset-categories-content .settings-content > .settings-section.asset-browser-default-section .asset-browser-default-action-row {
+  margin: 0;
+}
+
+.settings-defaults-content .project-form > .settings-defaults-section {
+  overflow: visible;
+}
+
+.settings-defaults-content .project-form > .settings-defaults-section > h3 {
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+
+/* WP13: Project Assets-derived treatment for Settings Tags and Open locally. */
+.settings-tags-content,
+.settings-open-locally-content {
+  display: grid;
+  gap: var(--space-lg);
+}
+
+.settings-tags-content > *,
+.settings-open-locally-content > * {
+  margin-bottom: 0;
+}
+
+.settings-tags-content .settings-section,
+.settings-open-locally-content .settings-section {
+  margin-bottom: 0;
+  box-shadow: var(--shadow-sm);
+}
+
+.settings-tags-content :is(.notice, .error-summary),
+.settings-open-locally-content .error-summary {
+  margin: var(--space-md);
+  border-radius: var(--radius-md);
+}
+
+.settings-tags-content .settings-tags-name-field {
+  padding: var(--space-md);
+}
+
+.settings-tags-content .settings-tags-create-row {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.settings-tags-content .settings-tags-create-row > input {
+  flex: 1 1 16rem;
+  min-width: min(100%, 16rem);
+}
+
+.settings-tags-content .settings-tags-create-row > .button {
+  flex: 0 0 auto;
+}
+
+.settings-tags-content .settings-tag-list {
+  display: grid;
+  gap: var(--space-sm);
+  margin: 0;
+  padding: var(--space-md);
+  background: var(--surface);
+}
+
+.settings-tags-content .settings-tag-row {
+  padding: var(--space-sm) var(--space-md);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-sm);
+  transition: background var(--transition-fast), border-color var(--transition-fast),
+    box-shadow var(--transition-fast), transform var(--transition-fast);
+}
+
+.settings-tags-content .settings-tag-row:last-child {
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-tags-content .settings-tag-row:hover,
+.settings-tags-content .settings-tag-row:focus-within {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+
+.settings-tags-content .settings-tag-name {
+  font-weight: 600;
+}
+
+.settings-tags-content .settings-tag-actions {
+  gap: var(--space-sm);
+}
+
+.settings-tags-content .settings-tag-actions .button-danger {
+  border-color: var(--danger);
+}
+
+.settings-tags-content .settings-tags-list-section .empty-state {
+  padding: var(--space-xl) var(--space-md);
+}
+
+.settings-open-locally-content .settings-open-locally-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  min-width: 0;
+  padding: var(--space-md) var(--space-lg) var(--space-lg);
+}
+
+.settings-open-locally-content .settings-open-locally-section-body > :first-child {
+  margin-top: 0;
+}
+
+.settings-open-locally-content .settings-open-locally-section-body > :last-child {
+  margin-bottom: 0;
+}
+
+.settings-open-locally-content .settings-open-locally-section-body .help-text {
+  padding: 0;
+  color: var(--text-muted);
+}
+
+.settings-open-locally-content .open-locally-installer-actions {
+  margin-top: 0;
+}
+
+.settings-open-locally-content .settings-open-locally-mapping-section .kv {
+  margin-inline: 0;
+  padding: var(--space-sm) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-open-locally-content .open-locally-field {
+  margin-top: 0;
+  padding: 0;
+  background: transparent;
+  border-top: 0;
+}
+
+.settings-open-locally-content .settings-open-locally-mapping-body > .error-summary {
+  margin: 0;
+}
+
+.settings-open-locally-content .open-locally-path-row {
+  gap: var(--space-sm);
+}
+
+.settings-open-locally-content .open-locally-path-row > input {
+  flex: 1 1 16rem;
+  min-width: min(100%, 16rem);
+}
+
+.settings-open-locally-content .open-locally-path-row > :is(.button, .inline-form) {
+  flex: 0 0 auto;
+}
+
+.settings-open-locally-content .open-locally-field > .help-text {
+  margin-top: var(--space-sm);
+}
+
+@media (max-width: 767px) {
+  .settings-tags-content,
+  .settings-open-locally-content {
+    gap: var(--space-md);
+  }
+
+  .settings-tags-content .settings-tag-list,
+  .settings-tags-content .settings-tags-name-field,
+  .settings-open-locally-content .settings-open-locally-section-body {
+    padding: var(--space-sm);
+  }
+
+  .settings-open-locally-content .settings-open-locally-mapping-section .kv {
+    margin-inline: 0;
+  }
 }
 
 .processing-watermark-rendered-preview img {

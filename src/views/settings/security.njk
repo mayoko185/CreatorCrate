@@ -12,9 +12,9 @@
     {% include "partials/notice.njk" %}
   {% endif %}
 
-  <div class="settings-layout">
+  <div class="settings-layout settings-security-layout">
 
-    <div class="settings-content">
+    <div class="settings-content settings-security-content">
       {% if errors.length > 0 %}
         <div class="error-summary" role="alert" id="password-errors">
           <p>Password change failed. Fix the fields below and try again.</p>
@@ -24,9 +24,9 @@
         </div>
       {% endif %}
 
-      <form method="post" action="/settings/security/password" class="project-form" novalidate>
+      <form method="post" action="/settings/security/password" class="project-form settings-security-form" novalidate>
         <input type="hidden" name="_csrf" value="{{ _csrf }}">
-        <div class="form-section">
+        <div class="form-section settings-security-section">
           <h2>Change password</h2>
           <p class="help-text">Use at least 12 characters. Passwords are never displayed or stored in plaintext.</p>
 
@@ -49,12 +49,11 @@
         </div>
 
         <div class="form-actions">
-          <button type="submit" class="button button-primary">Save</button>
-          <a href="/settings" class="button button-secondary">Cancel</a>
+          <button type="submit" class="button button-primary settings-security-save-action">Save</button>
         </div>
       </form>
 
-      <div class="destructive-section">
+      <div class="destructive-section settings-security-destructive">
         <h2>Disable authentication</h2>
         <p>Anyone who can reach this server will be able to access CreatorCrate without signing in. All current sessions will be signed out immediately.</p>
         <a href="/settings/security/disable" class="button button-danger">Disable Authentication</a>

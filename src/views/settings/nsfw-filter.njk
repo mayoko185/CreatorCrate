@@ -6,6 +6,7 @@
 
 {% block content %}
   {{ pageHeading.render("Control the NSFW filter setting for future filtering behavior.") }}
+  <div class="settings-nsfw-filter-content">
 
   {% if notice %}
     {% set noticeVariant = notice.variant %}
@@ -16,39 +17,42 @@
   <div class="settings-layout">
 
     <div class="settings-content">
-      {% if errors.length > 0 %}
-        <div class="error-summary" role="alert" id="nsfw-filter-errors">
-          <p>NSFW Filter could not be saved. Fix the field below and try again.</p>
-          <ul>
-            {% for error in errors %}<li>{{ error }}</li>{% endfor %}
-          </ul>
-        </div>
-      {% endif %}
+      <div data-settings-nsfw-filter-region>
+        <form method="post" action="/settings/nsfw-filter" class="project-form" novalidate>
+          {% if errors.length > 0 %}
+            <div class="error-summary" role="alert" id="nsfw-filter-errors">
+              <p>NSFW Filter could not be saved. Fix the field below and try again.</p>
+              <ul>
+                {% for error in errors %}<li>{{ error }}</li>{% endfor %}
+              </ul>
+            </div>
+          {% endif %}
 
-      <form method="post" action="/settings/nsfw-filter" class="project-form" novalidate>
-        <input type="hidden" name="_csrf" value="{{ _csrf }}">
-        <div class="settings-section">
-          <h3>NSFW Filter</h3>
-          <p class="help-text" id="nsfw-filter-help">Enabling the filter will add the <strong>NSFW</strong> tag as an available option if it does not already exist.</p>
+          <input type="hidden" name="_csrf" value="{{ _csrf }}">
+          <div class="settings-section">
+            <h3>NSFW Filter</h3>
+            <p class="help-text" id="nsfw-filter-help">Enabling the filter will add the <strong>NSFW</strong> tag as an available option if it does not already exist.</p>
 
-          <div class="field field--switch{% if errors.length > 0 %} field-error{% endif %}">
-            <span class="field-label">Enabled</span>
-            {{ formSwitch.control(
-              "nsfw-filter-enabled",
-              "enabled",
-              enabled,
-              "NSFW filter enabled state",
-              "nsfw-filter-help nsfw-filter-errors" if errors.length > 0 else "nsfw-filter-help",
-              true if errors.length > 0 else false
-            ) }}
+            <div class="field field--switch{% if errors.length > 0 %} field-error{% endif %}">
+              <span class="field-label">Enabled</span>
+              {{ formSwitch.control(
+                "nsfw-filter-enabled",
+                "enabled",
+                enabled,
+                "NSFW filter enabled state",
+                "nsfw-filter-help nsfw-filter-errors" if errors.length > 0 else "nsfw-filter-help",
+                true if errors.length > 0 else false,
+                false,
+                "fetch",
+                true,
+                "Save"
+              ) }}
+              <p class="help-text" data-settings-fetch-save-status aria-live="polite" aria-atomic="true"></p>
+            </div>
           </div>
-
-          <div class="form-actions">
-            <button type="submit" class="button button-primary">Save</button>
-            <a href="/settings" class="button button-secondary">Cancel</a>
-          </div>
-        </div>
-      </form>
+        </form>
+      </div>
     </div>
+  </div>
   </div>
 {% endblock %}

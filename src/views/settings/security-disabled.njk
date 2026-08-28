@@ -4,7 +4,9 @@
 {% set page_title = "Settings — Security" %}
 
 {% block content %}
-  {{ pageHeading.render("Authentication is currently disabled. Choose a username and password to require login for this server.") }}
+  {% call pageHeading.render("Authentication is currently disabled. Choose a username and password to require login for this server.") %}
+    <button type="submit" class="button button-primary settings-security-enable-action" form="enable-authentication-form">Enable Authentication</button>
+  {% endcall %}
 
   {% if notice %}
     {% set noticeVariant = notice.variant %}
@@ -12,10 +14,10 @@
     {% include "partials/notice.njk" %}
   {% endif %}
 
-  <div class="settings-layout">
+  <div class="settings-layout settings-security-layout">
 
-    <div class="settings-content">
-      <div class="panel panel--warning">
+    <div class="settings-content settings-security-content">
+      <div class="panel panel--warning settings-security-disabled-warning">
         <p><strong>Anyone who can reach this server can currently access CreatorCrate</strong> — there is no login requirement. Enabling authentication requires every visitor to sign in with the credentials chosen below.</p>
       </div>
 
@@ -28,9 +30,9 @@
         </div>
       {% endif %}
 
-      <form method="post" action="/settings/security/enable" class="project-form" novalidate>
+      <form id="enable-authentication-form" method="post" action="/settings/security/enable" class="project-form settings-security-form" novalidate>
         <input type="hidden" name="_csrf" value="{{ _csrf }}">
-        <div class="settings-section">
+        <div class="settings-section settings-security-section">
           <h3>Enable authentication</h3>
           <p class="help-text">Use at least 12 characters for the password. Passwords are never displayed or stored in plaintext.</p>
 
@@ -51,10 +53,6 @@
             <input type="password" id="confirmPassword" name="confirmPassword" autocomplete="new-password" required{% if errors.length > 0 %} aria-describedby="enable-errors" aria-invalid="true"{% endif %}>
           </div>
 
-          <div class="form-actions settings-enable-action-row">
-            <button type="submit" class="button button-primary">Enable Authentication</button>
-            <a href="/settings" class="button button-secondary">Cancel</a>
-          </div>
         </div>
       </form>
     </div>

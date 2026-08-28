@@ -83,10 +83,10 @@
 {% endmacro %}
 
 {% macro globalControl(model, controlId, fieldName) %}
-  {% set nativeAttributes = [["required", true], ["aria-describedby", controlId ~ "-help"]] %}
+  {% set nativeAttributes = [["required", true], ["aria-describedby", controlId ~ "-help"], ["data-autosubmit", "fetch"]] %}
   {% set summaryAttributes = [] %}
   {% if model.errorMessage %}
-    {% set nativeAttributes = [["required", true], ["aria-describedby", controlId ~ "-help " ~ controlId ~ "-error"], ["aria-invalid", true]] %}
+    {% set nativeAttributes = [["required", true], ["aria-describedby", controlId ~ "-help " ~ controlId ~ "-error"], ["aria-invalid", true], ["data-autosubmit", "fetch"]] %}
     {% set summaryAttributes = [["aria-describedby", controlId ~ "-error"], ["aria-invalid", true]] %}
   {% endif %}
   {{ dropdown.singleSelect({
@@ -98,6 +98,7 @@
     leadingOption: model.submittedOption or model.selectionPlaceholder,
     summaryAttributes: summaryAttributes,
     panelLabel: "Default category options",
+    dispatchNativeChange: true,
     nativeSelect: {
       id: controlId,
       classes: "form-control",
@@ -107,31 +108,32 @@
 {% endmacro %}
 
 {% macro global(model, action, controlId, csrf) %}
-  <section class="settings-section asset-browser-default-section" aria-labelledby="{{ controlId }}-heading">
+  <section class="settings-section asset-browser-default-section" aria-labelledby="{{ controlId }}-heading" data-settings-asset-category-preference="browser-default">
     <h3 id="{{ controlId }}-heading">Asset browser default</h3>
     <p class="asset-browser-default-description" id="{{ controlId }}-help">
       For projects set to <strong>Inherit global default</strong>. This does not recopy project categories;
       unavailable matches fall back to <strong>All Categories</strong>.
     </p>
 
-    {% if model.warning %}
-      <div class="notice notice--warning" role="status" id="{{ controlId }}-warning">
-        <p>{{ model.warning }}</p>
-      </div>
-    {% endif %}
-
-    {% if model.errorMessage %}
-      <div class="error-summary" role="alert" id="{{ controlId }}-error">
-        <p>Could not save the global asset browser default. {{ model.errorMessage }}</p>
-      </div>
-    {% endif %}
-
-    <p class="asset-browser-default-summary">
-      <span><span class="asset-browser-default-summary-label">Saved:</span> <strong>{{ model.storedLabel }}</strong></span>
-      {% if model.fallback %}
-        <span><span class="asset-browser-default-summary-label">Effective:</span> <strong>All Categories</strong> for inheriting projects</span>
+    <div data-settings-asset-category-preference-secondary>
+      {% if model.warning %}
+        <div class="notice notice--warning" role="status" id="{{ controlId }}-warning">
+          <p>{{ model.warning }}</p>
+        </div>
       {% endif %}
-    </p>
+
+      {% if model.errorMessage %}
+        <div class="error-summary" role="alert" id="{{ controlId }}-error">
+          <p>Could not save the global asset browser default. {{ model.errorMessage }}</p>
+        </div>
+      {% endif %}
+
+      {% if model.fallback %}
+        <p class="asset-browser-default-summary">
+          <span><span class="asset-browser-default-summary-label">Effective:</span> <strong>All Categories</strong> for inheriting projects</span>
+        </p>
+      {% endif %}
+    </div>
 
     <form method="post" action="{{ action }}" class="project-form asset-browser-default-form" novalidate>
       <input type="hidden" name="_csrf" value="{{ csrf }}">
@@ -139,17 +141,19 @@
         <div class="field asset-browser-default-field-row">
           {{ globalControl(model, controlId, "defaultCategory") }}
         </div>
-        <span class="help-text">Category labels are shown here; the stable directory slug is stored.</span>
       </div>
-      <div class="form-actions asset-browser-default-action-row">
-        <button type="submit" class="button button-primary">Save default</button>
-      </div>
+      <div class="app-dialog-status" data-settings-fetch-save-status role="status" aria-live="polite"></div>
+      <noscript>
+        <div class="form-actions asset-browser-default-action-row">
+          <button type="submit" class="button button-primary">Save default</button>
+        </div>
+      </noscript>
     </form>
   </section>
 {% endmacro %}
 
 {% macro preview(model, action, controlId, csrf) %}
-  <section class="settings-section asset-browser-default-section" aria-labelledby="{{ controlId }}-heading">
+  <section class="settings-section asset-browser-default-section" aria-labelledby="{{ controlId }}-heading" data-settings-asset-category-preference="preview-category">
     <h3 id="{{ controlId }}-heading">Preview category</h3>
     <p class="asset-browser-default-description" id="{{ controlId }}-help">
       Choose the global asset category for preview selection. The stable directory slug is stored.
@@ -161,18 +165,14 @@
       </div>
     {% endif %}
 
-    <p class="asset-browser-default-summary">
-      <span><span class="asset-browser-default-summary-label">Saved:</span> <strong>{{ model.storedLabel }}</strong></span>
-    </p>
-
     <form method="post" action="{{ action }}" class="project-form asset-browser-default-form" novalidate>
       <input type="hidden" name="_csrf" value="{{ csrf }}">
         <div class="asset-browser-default-control-row">
           <div class="field asset-browser-default-field-row">
-          {% set nativeAttributes = [["required", true], ["aria-describedby", controlId ~ "-help"]] %}
+          {% set nativeAttributes = [["required", true], ["aria-describedby", controlId ~ "-help"], ["data-autosubmit", "fetch"]] %}
           {% set summaryAttributes = [] %}
           {% if model.errorMessage %}
-            {% set nativeAttributes = [["required", true], ["aria-describedby", controlId ~ "-help " ~ controlId ~ "-error"], ["aria-invalid", true]] %}
+            {% set nativeAttributes = [["required", true], ["aria-describedby", controlId ~ "-help " ~ controlId ~ "-error"], ["aria-invalid", true], ["data-autosubmit", "fetch"]] %}
             {% set summaryAttributes = [["aria-describedby", controlId ~ "-error"], ["aria-invalid", true]] %}
           {% endif %}
           {{ dropdown.singleSelect({
@@ -184,6 +184,7 @@
             leadingOption: model.submittedOption or model.selectionPlaceholder,
             summaryAttributes: summaryAttributes,
             panelLabel: "Preview category options",
+            dispatchNativeChange: true,
             nativeSelect: {
               id: controlId,
               classes: "form-control",
@@ -192,9 +193,12 @@
           }) }}
         </div>
       </div>
-      <div class="form-actions asset-browser-default-action-row">
-        <button type="submit" class="button button-primary">Save preview category</button>
-      </div>
+      <div class="app-dialog-status" data-settings-fetch-save-status role="status" aria-live="polite"></div>
+      <noscript>
+        <div class="form-actions asset-browser-default-action-row">
+          <button type="submit" class="button button-primary">Save preview category</button>
+        </div>
+      </noscript>
     </form>
   </section>
 {% endmacro %}

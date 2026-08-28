@@ -6,7 +6,7 @@
 {% block content %}
   {{ pageHeading.render("Application control center") }}
 
-  <div class="settings-stats">
+  <div class="settings-stats settings-overview-stats">
     <div class="settings-stat{% if authEnabled %} ok{% else %} warn{% endif %}">
       <span class="settings-stat-label">Authentication</span>
       <span class="settings-stat-value">{% if authEnabled %}Enabled{% else %}Disabled{% endif %}</span>
@@ -26,15 +26,15 @@
   </div>
 
   {% if not authEnabled %}
-    <div class="panel panel--warning">
+    <div class="panel panel--warning settings-overview-auth-disabled-warning settings-overview-persistent-warning">
       <p><strong>Authentication is disabled.</strong> Anyone who can reach this server can access CreatorCrate. Visit Security to enable it.</p>
     </div>
   {% endif %}
 
-  <div class="settings-layout">
+  <div class="settings-layout settings-overview-layout">
 
-    <div class="settings-content">
-      <div class="settings-section">
+    <div class="settings-content settings-overview-content">
+      <div class="settings-section settings-overview-section">
         <h3>Security</h3>
         {% if authEnabled %}
           <div class="kv"><span class="kv-key">operator_account</span><span class="kv-value">{{ username }}</span></div>
@@ -47,13 +47,13 @@
         {% endif %}
       </div>
 
-      <div class="settings-section">
+      <div class="settings-section settings-overview-section">
         <h3>Backups</h3>
         <div class="kv"><span class="kv-key">retention_count</span><span class="kv-value">{{ retentionCount }}</span></div>
         <div class="kv"><span class="kv-key">backup_dir</span><span class="kv-value"><code>{{ paths.appDataRoot }}/backups</code></span></div>
       </div>
 
-      <div class="settings-section">
+      <div class="settings-section settings-overview-section">
         <h3>Deployment-controlled</h3>
         <div class="kv"><span class="kv-key">projects_root</span><span class="kv-value"><code>{{ paths.projectsRoot }}</code></span></div>
         <div class="kv"><span class="kv-key">database_path</span><span class="kv-value"><code>{{ paths.databasePath }}</code></span></div>

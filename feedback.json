@@ -12,6 +12,19 @@
       "total_reads": 1,
       "task_completed": true,
       "timestamp": "2026-08-26T17:50:06.413441700-04:00"
+    },
+    {
+      "session_id": "47120",
+      "language": "js",
+      "entropy_threshold": 1.0,
+      "jaccard_threshold": 0.68,
+      "total_turns": 1,
+      "tokens_saved": 49512,
+      "tokens_original": 49930,
+      "cache_hits": 0,
+      "total_reads": 1,
+      "task_completed": true,
+      "timestamp": "2026-08-27T14:26:25.404527700-04:00"
     }
   ],
   "learned_thresholds": {}

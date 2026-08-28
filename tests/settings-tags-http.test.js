@@ -92,8 +92,18 @@ describe('settings — tags HTTP', () => {
     expect(res.text).toContain('No tags yet');
     expect(res.text).toContain('<label for="tag-name">Tag name');
     expect(res.text).toContain(`id="tag-name" name="name"`);
+    expect(res.text).toContain('<div class="settings-content settings-tags-content">');
+    expect(res.text).toContain('<div class="settings-section settings-tags-create-section">');
+    expect(res.text).toContain('<div class="settings-section settings-tags-list-section">');
     expect(res.text).toContain('<div class="field settings-tags-name-field">');
     expect(res.text).toContain(`maxlength="${TAG_NAME_MAX}"`);
+    expect(res.text).not.toMatch(/<header class="page-heading">[\s\S]*?<div class="page-heading-actions">[\s\S]*?Create Tag/);
+    const createTagForm = res.text.match(/<form id="create-tag-form" method="post" action="\/settings\/tags" class="project-form" novalidate>[\s\S]*?<\/form>/)?.[0] || '';
+    expect(createTagForm).not.toContain('form-actions');
+    expect(createTagForm).toMatch(/<div class="settings-tags-create-row">\s*<input[^>]*id="tag-name"[^>]*>\s*<button type="submit" class="button button-primary">Create Tag<\/button>\s*<\/div>/);
+    expect((res.text.match(/>Create Tag<\/button>/g) || [])).toHaveLength(1);
+    expect(createTagForm).toContain('name="_csrf"');
+    expect(createTagForm).toContain(`maxlength="${TAG_NAME_MAX}"`);
     expect(res.text).not.toContain('normalized_name');
     expect(res.text).not.toContain('Delete');
   });
@@ -438,6 +448,8 @@ describe('settings — tags HTTP', () => {
 
     expect(res.text).toContain('Tag name is required.');
     expect(res.text).toContain(`value="${name}"`);
+    expect(res.text).toContain('aria-describedby="tag-name-error"');
+    expect(res.text).toMatch(/<div class="settings-tags-create-row">[\s\S]*?<\/div>\s*<span class="field-error-message" id="tag-name-error">/);
     expect(db.prepare('SELECT COUNT(*) AS count FROM tags').get().count).toBe(0);
   });
 

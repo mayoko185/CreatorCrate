@@ -44,19 +44,20 @@
       {% endif %}
       {% set addEnabled = true %}
       {% if management.addValues.enabled is defined %}{% set addEnabled = management.addValues.enabled %}{% endif %}
-      <form method="post" action="/projects/{{ project.id }}/asset-categories" class="project-form category-management-form project-category-management-form" id="project-category-management-add-form" novalidate>
+      <form method="post" action="/projects/{{ project.id }}/asset-categories" class="project-form category-management-form project-category-management-form" id="project-category-management-add-form" novalidate data-category-slug-autofill-form>
         <input type="hidden" name="_csrf" value="{{ _csrf }}">
         <input type="hidden" name="returnTo" value="{{ categoryManagementReturnUrl }}">
         <div class="project-category-management-add-row">
           <div class="field {% if management.addErrors.displayName %}field-error{% endif %}">
             <label for="add-displayName">Display name <span class="required" aria-label="required">*</span></label>
-            <input type="text" id="add-displayName" name="displayName" value="{{ management.addValues.displayName or '' }}" maxlength="100" required{% if management.addErrors.displayName %} aria-describedby="add-displayName-error" aria-invalid="true"{% endif %}>
+            <input type="text" id="add-displayName" name="displayName" value="{{ management.addValues.displayName or '' }}" maxlength="100" required data-category-slug-autofill-display-name aria-describedby="add-displayName-help{% if management.addErrors.displayName %} add-displayName-error{% endif %}"{% if management.addErrors.displayName %} aria-invalid="true"{% endif %}>
+            <span class="help-text" id="add-displayName-help">Press Tab to fill Directory slug from Display name.</span>
             {% if management.addErrors.displayName %}<span class="field-error-message" id="add-displayName-error">{{ management.addErrors.displayName }}</span>{% endif %}
           </div>
 
           <div class="field {% if management.addErrors.directorySlug %}field-error{% endif %}">
             <label for="add-directorySlug">Directory slug <span class="required" aria-label="required">*</span></label>
-            <input type="text" id="add-directorySlug" name="directorySlug" value="{{ management.addValues.directorySlug or '' }}" maxlength="100" required{% if management.addErrors.directorySlug %} aria-describedby="add-directorySlug-error" aria-invalid="true"{% endif %}>
+            <input type="text" id="add-directorySlug" name="directorySlug" value="{{ management.addValues.directorySlug or '' }}" maxlength="100" required data-category-slug-autofill-directory-slug{% if management.addErrors.directorySlug %} aria-describedby="add-directorySlug-error" aria-invalid="true"{% endif %}>
             <span class="help-text">Lowercase letters, numbers, and single hyphens only.</span>
             {% if management.addErrors.directorySlug %}<span class="field-error-message" id="add-directorySlug-error">{{ management.addErrors.directorySlug }}</span>{% endif %}
           </div>

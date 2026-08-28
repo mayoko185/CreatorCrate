@@ -401,6 +401,24 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       expect(css).not.toMatch(/\.form-actions\s*\{[^}]*\bpadding(?:-(?:left|right))?\s*:/);
     });
 
+    it('keeps the Settings Tags creation controls inline and responsive', async () => {
+      const res = await request(app).get('/settings/tags').expect(200);
+      const css = await extractStyle(app, res.text);
+
+      expect(css).toMatch(/\.settings-tags-content \.settings-tags-create-row\s*\{[^}]*display:\s*flex;[^}]*gap:\s*var\(--space-sm\);[^}]*flex-wrap:\s*wrap;/);
+      expect(css).toMatch(/\.settings-tags-content \.settings-tags-create-row > input\s*\{[^}]*flex:\s*1\s+1\s+16rem;[^}]*min-width:\s*min\(100%,\s*16rem\);/);
+      expect(css).toMatch(/\.settings-tags-content \.settings-tags-create-row > \.button\s*\{[^}]*flex:\s*0\s+0\s+auto;/);
+    });
+
+    it('centers the Open locally installer action and lets its path controls wrap', async () => {
+      const res = await request(app).get('/settings/open-locally').expect(200);
+      const css = await extractStyle(app, res.text);
+
+      expect(css).toMatch(/\.settings-section\s+\.form-actions\.open-locally-installer-actions\s*\{[^}]*justify-content:\s*center;[^}]*margin-left:\s*0;[^}]*margin-bottom:\s*0;/);
+      expect(css).toMatch(/\.open-locally-path-row\s*\{[^}]*flex-wrap:\s*wrap;/);
+      expect(css).toMatch(/\.open-locally-path-row\s*>\s*input\s*\{[^}]*flex:\s*1\s+1\s+16rem;/);
+    });
+
     it('styles the populated tag list as intentional settings rows', async () => {
       const res = await request(app).get('/settings/tags').expect(200);
       const css = await extractStyle(app, res.text);
@@ -413,11 +431,117 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       expect(css).toMatch(/\.settings-tag-actions\s*\{[^}]*display:\s*flex;/);
     });
 
+    it('scopes Project Assets-derived cards to the WP13 Settings pages', async () => {
+      const [tags, openLocally] = await Promise.all([
+        request(app).get('/settings/tags').expect(200),
+        request(app).get('/settings/open-locally').expect(200),
+      ]);
+      const css = await extractStyle(app, tags.text);
+
+      expect(tags.text).toContain('settings-content settings-tags-content');
+      expect(tags.text).toContain('settings-tags-create-section');
+      expect(tags.text).toContain('settings-tags-list-section');
+      expect(openLocally.text).toContain('settings-content settings-open-locally-content');
+      expect(openLocally.text).toContain('settings-open-locally-installer-section');
+      expect(openLocally.text).toContain('settings-open-locally-mapping-section');
+      expect(openLocally.text).toContain('settings-open-locally-installer-body');
+      expect(openLocally.text).toContain('settings-open-locally-mapping-body');
+      expect(openLocally.text).toMatch(/settings-open-locally-installer-section">\s*<h3>Open locally helper<\/h3>\s*<div class="settings-open-locally-section-body/);
+      expect(openLocally.text).toMatch(/<div(?=[^>]*\bclass="[^"]*\bsettings-open-locally-mapping-section\b[^"]*")(?=[^>]*\bdata-settings-open-locally-mapping-region\b)[^>]*>\s*<h3>Projects path<\/h3>\s*<div class="settings-open-locally-section-body/);
+      expect(css).toMatch(/\.settings-tags-content\s+\.settings-tag-row\s*\{[^}]*background:\s*var\(--surface\);[^}]*border:\s*1px solid var\(--border\);[^}]*border-radius:\s*var\(--radius-md\);[^}]*box-shadow:\s*var\(--shadow-sm\);/);
+      expect(css).toMatch(/\.settings-open-locally-content\s+\.settings-open-locally-section-body\s*\{[^}]*padding:\s*var\(--space-md\)\s+var\(--space-lg\)\s+var\(--space-lg\);/);
+      expect(css).toMatch(/\.settings-open-locally-content\s+\.settings-open-locally-section-body\s+\.help-text\s*\{[^}]*padding:\s*0;/);
+      expect(css).toMatch(/\.settings-open-locally-content\s+\.settings-section\s+\.form-actions\.open-locally-installer-actions\s*\{[^}]*justify-content:\s*center;[^}]*margin-left:\s*0;[^}]*margin-bottom:\s*0;/);
+      expect(css).toMatch(/\.settings-open-locally-content\s+\.open-locally-path-row\s*>\s*input\s*\{[^}]*min-width:\s*min\(100%,\s*16rem\);/);
+      expect(css).toMatch(/\.settings-open-locally-content\s+\.open-locally-path-row\s*\{[^}]*flex-wrap:\s*wrap;/);
+      expect(css).toMatch(/\.settings-open-locally-content\s+\.settings-open-locally-mapping-body\s*>\s*\.error-summary\s*\{[^}]*margin:\s*0;/);
+      expect(css).not.toMatch(/\.settings-open-locally-content\s+:is\(\.notice/);
+      expect(css).not.toMatch(/\.settings-content\s+\.data-table[^\{]*\{[^}]*settings-(?:tags|open-locally)/);
+    });
+
     it('panels use consistent spacing tokens', async () => {
       const res = await request(app).get('/').expect(200);
       const css = await extractStyle(app, res.text);
       expect(css).toMatch(/\.panel\s*\{[^}]*padding:\s*var\(--space-lg\)/);
       expect(css).toMatch(/\.panel\s*\{[^}]*margin-bottom:\s*var\(--space-lg\)/);
+    });
+
+    it('scopes Project Assets-derived Settings cards without recoloring shared form sections', async () => {
+      const [overview, security, defaults, nsfw, categories, tags, openLocally, logs, project] = await Promise.all([
+        request(app).get('/settings').expect(200),
+        request(app).get('/settings/security').expect(200),
+        request(app).get('/settings/defaults').expect(200),
+        request(app).get('/settings/nsfw-filter').expect(200),
+        request(app).get('/settings/asset-categories').expect(200),
+        request(app).get('/settings/tags').expect(200),
+        request(app).get('/settings/open-locally').expect(200),
+        request(app).get('/settings/logs').expect(200),
+        request(app).get('/projects/new').expect(200),
+      ]);
+      const css = await extractStyle(app, overview.text);
+
+      expect(css).toMatch(/\.settings-section\s*\{(?![^}]*background:)[^}]*border:\s*1px solid var\(--border\);[^}]*border-radius:\s*var\(--radius-lg\);[^}]*overflow:\s*hidden;[^}]*margin-bottom:\s*var\(--space-lg\);/);
+      expect(css).toMatch(/\.settings-section h3\s*\{[^}]*padding:\s*var\(--space-sm\)\s+var\(--space-md\);[^}]*font-family:\s*var\(--mono\);[^}]*text-transform:\s*uppercase;[^}]*background:\s*var\(--surface-card\);[^}]*border-bottom:\s*1px solid var\(--border\);/);
+      expect(css).toMatch(/\.settings-section \.kv,\s*\.settings-section \.help-text\s*\{[^}]*padding-left:\s*var\(--space-md\);[^}]*padding-right:\s*var\(--space-md\);/);
+
+      for (const res of [overview, security, defaults, nsfw, categories, tags, openLocally]) {
+        expect(res.text).toMatch(/settings-(?:overview|security|defaults|nsfw-filter|asset-categories|tags|open-locally)-content/);
+      }
+      expect(css).toMatch(/\.settings-overview-content \.settings-section,[\s\S]*?\.settings-open-locally-content \.settings-section\s*\{[^}]*background:\s*var\(--surface\);/);
+      expect(css).toMatch(/\.settings-overview-content \.settings-section h3,[\s\S]*?\.settings-open-locally-content \.settings-section h3\s*\{[^}]*background:\s*var\(--surface-hover\);/);
+      expect(project.text).toContain('class="settings-section project-form-section"');
+      expect(project.text).not.toContain('settings-overview-content');
+      expect(project.text).not.toContain('settings-security-content');
+      expect(project.text).not.toContain('settings-defaults-content');
+      expect(logs.text).not.toContain('settings-section');
+    });
+
+    it('includes the Overview authentication warning in compact persistent-alert treatment', async () => {
+      const res = await request(app).get('/settings').expect(200);
+      const css = await extractStyle(app, res.text);
+
+      expect(res.text).toContain('panel panel--warning settings-overview-auth-disabled-warning');
+      expect(res.text).toContain('Authentication is disabled.');
+      expect(css).toMatch(/\.settings-content\s*>\s*\.panel--info,\s*\.settings-content\s*>\s*\.panel--warning,\s*\.settings-overview-auth-disabled-warning\s*\{/);
+      expect(css).toMatch(/\.settings-content\s*>\s*\.panel--warning\s+p,\s*\.settings-overview-auth-disabled-warning\s+p\s*\{/);
+    });
+
+    it('tightens Settings overview stat-card density', async () => {
+      const res = await request(app).get('/').expect(200);
+      const css = await extractStyle(app, res.text);
+      expect(css).toMatch(/\.settings-stats\s*\{[^}]*margin-bottom:\s*var\(--space-lg\)/);
+      expect(css).toMatch(/\.settings-stat\s*\{[^}]*padding:\s*var\(--space-md\)/);
+      expect(css).toMatch(/\.settings-stat-value\s*\{[^}]*font-size:\s*1\.25rem;[^}]*line-height:\s*1\.25/);
+    });
+
+    it('scopes Project Assets-derived surfaces to the WP11 Settings pages', async () => {
+      const [overview, security, defaults] = await Promise.all([
+        request(app).get('/settings').expect(200),
+        request(app).get('/settings/security').expect(200),
+        request(app).get('/settings/defaults').expect(200),
+      ]);
+      const css = await extractStyle(app, overview.text);
+
+      expect(overview.text).toContain('settings-stats settings-overview-stats');
+      expect(overview.text).toContain('settings-section settings-overview-section');
+      expect(security.text).toContain('settings-security-content');
+      expect(security.text).toContain('settings-security-section');
+      expect(defaults.text).toContain('settings-defaults-section');
+      expect(css).toMatch(/\.settings-overview-stats\s*\{[^}]*gap:\s*var\(--space-md\);[^}]*background:\s*transparent;[^}]*border:\s*0;/);
+      expect(css).toMatch(/\.settings-overview-stats \.settings-stat\s*\{[^}]*border:\s*1px solid var\(--border\);[^}]*border-radius:\s*var\(--radius-lg\);[^}]*box-shadow:\s*var\(--shadow-sm\);/);
+      expect(css).toMatch(/\.settings-security-form\s*>\s*\.settings-security-section\s*\{[^}]*background:\s*var\(--surface\);[^}]*border:\s*1px solid var\(--border\);[^}]*border-radius:\s*var\(--radius-lg\);/);
+      expect(css).toMatch(/\.settings-defaults-section\s*>\s*\.field\s*\{[^}]*padding:\s*var\(--space-md\);[^}]*border-top:\s*1px solid var\(--border\);/);
+      expect(css).not.toMatch(/\.settings-content\s+\.data-table[^\{]*\{[^}]*settings-(?:overview|security|defaults)/);
+    });
+
+    it('keeps New Projects stable on hover without removing dropdown hover or focus states', async () => {
+      const res = await request(app).get('/settings/defaults').expect(200);
+      const css = await extractStyle(app, res.text);
+
+      expect(css).not.toMatch(/\.settings-defaults-content\s+\.settings-defaults-section:hover/);
+      expect(css).not.toMatch(/\.settings-defaults-section\s*>\s*\.field:hover/);
+      expect(css).toMatch(/\.asset-filter-multiselect summary:hover\s*\{/);
+      expect(css).toMatch(/\.asset-filter-multiselect summary:focus-visible\s*\{/);
     });
 
     it('notices use consistent spacing tokens', async () => {
@@ -426,6 +550,27 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       expect(css).toMatch(/\.notice\s*\{[^}]*padding:\s*var\(--space-sm\)\s+var\(--space-md\)/);
       expect(css).toMatch(/\.notice\s*\{[^}]*font-size:\s*0\.875rem/);
       expect(css).toMatch(/\.notice\s*\{[^}]*margin-bottom:\s*var\(--space-lg\)/);
+    });
+
+    it('keeps transient Settings notices outside wrapper structural margin resets', async () => {
+      const [nsfw, categories] = await Promise.all([
+        request(app).get('/settings/nsfw-filter?notice=nsfw_filter_enabled').expect(200),
+        request(app).get('/settings/asset-categories?notice=category_reordered').expect(200),
+      ]);
+      const css = await extractStyle(app, nsfw.text);
+      const wrappers = [
+        ['settings-nsfw-filter-content', nsfw.text],
+        ['settings-asset-categories-content', categories.text],
+      ];
+      const resetSelectors = [...css.matchAll(/([^{}]+)\{[^{}]*margin-bottom:\s*0;[^{}]*\}/g)]
+        .flatMap(([, selectors]) => selectors.split(',').map((selector) => selector.trim()));
+
+      expect(css).toMatch(/\.notice\s*\{[^}]*margin-bottom:\s*var\(--space-lg\)/);
+      for (const [wrapper, html] of wrappers) {
+        expect(html).toMatch(new RegExp(`<div class="${wrapper}">\\s*<div class="notice\\b`));
+        expect(resetSelectors.filter((selector) => selector.startsWith(`.${wrapper} >`)))
+          .toEqual([`.${wrapper} > .settings-layout`]);
+      }
     });
 
     it('disabled-authentication banners use compact notification sizing', async () => {
@@ -480,6 +625,70 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
 
   // ─── 6. Form density ─────────────────────────────────────────────────────
 
+  describe('Asset Categories dropdown layering', () => {
+    it('keeps both wrapper-scoped Settings dropdown hosts visible while retaining their rounded card headers', async () => {
+      const res = await request(app).get('/settings/asset-categories').expect(200);
+      const css = await extractStyle(app, res.text);
+      const settingsHost = '.settings-asset-categories-content .settings-content > .settings-section.asset-browser-default-section';
+      const wrapperIndex = res.text.indexOf('<div class="settings-asset-categories-content">');
+      const layoutIndex = res.text.indexOf('<div class="settings-layout">', wrapperIndex);
+      const settingsContentIndex = res.text.indexOf('<div class="settings-content">', layoutIndex);
+      const firstHostIndex = res.text.indexOf('class="settings-section asset-browser-default-section"');
+
+      expect(layoutIndex).toBeGreaterThan(wrapperIndex);
+      expect(settingsContentIndex).toBeGreaterThan(layoutIndex);
+      expect(firstHostIndex).toBeGreaterThan(settingsContentIndex);
+      expect(res.text.match(/class="settings-section asset-browser-default-section"/g)).toHaveLength(2);
+      expect(css).toMatch(/\.settings-asset-categories-content\s+\.settings-content\s*>\s*\.settings-section\.asset-browser-default-section\s*\{\s*overflow:\s*visible;/);
+      expect(css).toContain(`${settingsHost} > h3 {`);
+      expect(css).toMatch(/\.settings-section\s*\{[^}]*overflow:\s*hidden/);
+    });
+
+    it('contains Settings dropdown Save rows without obsolete unwrapped host selectors', async () => {
+      const res = await request(app).get('/settings/asset-categories').expect(200);
+      const css = await extractStyle(app, res.text);
+      const settingsHost = '.settings-asset-categories-content .settings-content > .settings-section.asset-browser-default-section';
+
+      expect(css).toMatch(/\.settings-asset-categories-content\s+\.settings-content\s*>\s*\.settings-section\.asset-browser-default-section\s+\.asset-browser-default-action-row\s*\{\s*margin:\s*0;/);
+      expect(css).not.toMatch(/(^|\n)\s*\.settings-content\s*>\s*\.settings-section\.asset-browser-default-section/);
+      expect(css).not.toMatch(/(^|\n)\s*\.settings-section\.asset-browser-default-section\s*\{/);
+      expect(css).not.toMatch(/(^|\n)\s*\.settings-section\.asset-browser-default-section\s*>\s*h3\s*\{/);
+    });
+    it('spaces only Asset Categories cards through the inner content grid and keeps the Add card body below its full-width header', async () => {
+      const res = await request(app).get('/settings/asset-categories').expect(200);
+      const css = await extractStyle(app, res.text);
+      expect(css).toMatch(/\.settings-asset-categories-content \.settings-content\s*\{[^}]*display:\s*grid;[^}]*gap:\s*var\(--space-lg\);/);
+      expect(css).toMatch(/\.settings-asset-categories-content \.settings-category-management-add\s*\{[^}]*background:\s*var\(--surface\);/);
+      expect(css).toMatch(/\.settings-asset-categories-content \.category-management-add-row\s*\{[^}]*align-items:\s*flex-start;/);
+      expect(css).toMatch(/\.settings-asset-categories-content \.category-management-add-submit\s*\{[^}]*display:\s*flex;[^}]*flex:\s*0\s+0\s+auto;[^}]*align-self:\s*flex-start;[^}]*margin:\s*0;[^}]*padding-top:\s*calc\(1\.4rem\s*\+\s*var\(--space-xs\)\);/);
+      expect(css).not.toMatch(/\.settings-asset-categories-content \.category-management-add-submit\s*\{[^}]*align-self:\s*flex-end;/);
+      expect(css).toMatch(/#project-asset-category-management-dialog \.project-category-management-add-submit\s*\{[^}]*align-self:\s*start;[^}]*padding-top:\s*calc\(1\.4rem\s*\+\s*var\(--space-xs\)\);/);
+      expect(css).toMatch(/@media \(max-width: 767px\)\s*\{[\s\S]*?\.settings-asset-categories-content \.category-management-add > \.category-management-form,[\s\S]*?padding:\s*var\(--space-sm\);/);
+      expect(css).toMatch(/@media \(max-width: 540px\)\s*\{[\s\S]*?\.settings-asset-categories-content \.category-management-add-submit\s*\{[^}]*padding-top:\s*0;/);
+      expect(css).not.toMatch(/\.settings-asset-categories-content\s*>\s*\*\s*\{[^}]*margin-bottom:\s*0;/);
+    });
+  });
+
+  describe('Defaults dropdown layering', () => {
+    it('keeps the New Project Status dropdown host visible without loosening generic Settings cards', async () => {
+      const [res, logs] = await Promise.all([
+        request(app).get('/settings/defaults').expect(200),
+        request(app).get('/settings/logs').expect(200),
+      ]);
+      const css = await extractStyle(app, res.text);
+      const defaultsRegion = res.text.match(/<div(?=[^>]*\bclass="[^"]*\bsettings-content\b[^"]*\bsettings-defaults-content\b[^"]*")(?=[^>]*\bdata-settings-defaults-region\b)[^>]*>[\s\S]*?<form(?=[^>]*\bid="settings-defaults-form")(?=[^>]*\bclass="[^"]*\bproject-form\b[^"]*")[^>]*>(?:\s|<input\b[^>]*>)*<section(?=[^>]*\bclass="[^"]*\bsettings-defaults-section\b[^"]*")[^>]*>/);
+
+      expect(defaultsRegion).not.toBeNull();
+      expect(logs.text).not.toContain('settings-defaults-content');
+      expect(logs.text).not.toContain('settings-defaults-section');
+      expect(css).toMatch(/\.settings-defaults-content\s+\.project-form\s*>\s*\.settings-defaults-section\s*\{\s*overflow:\s*visible;/);
+      expect(css).toMatch(/\.settings-defaults-content\s+\.project-form\s*>\s*\.settings-defaults-section\s*>\s*h3\s*\{\s*border-radius:\s*var\(--radius-lg\)\s+var\(--radius-lg\)\s+0\s+0;/);
+      expect(css).toMatch(/\.settings-section\s*\{[^}]*overflow:\s*hidden/);
+      expect(css).not.toMatch(/(^|\n)\s*\.settings-defaults-section\s*\{[^}]*overflow:\s*visible/);
+      expect(css).not.toMatch(/(^|\n)\s*\.settings-defaults-content\s+\.settings-defaults-section\s*\{[^}]*overflow:\s*visible/);
+    });
+  });
+
   describe('form density', () => {
     it('checkbox fields have explicit min-height for touch targets', async () => {
       const res = await request(app).get('/projects/new').expect(200);
@@ -518,6 +727,16 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       const css = await extractStyle(app, res.text);
       expect(css).toMatch(/\.data-table td\s*\{[^}]*overflow-wrap/);
       expect(css).toMatch(/\.data-table td\s*\{[^}]*word-break/);
+    });
+
+    it('applies the compact Settings table treatment to backups without coupling it to Logs', async () => {
+      const res = await request(app).get('/').expect(200);
+      const css = await extractStyle(app, res.text);
+
+      expect(css).toMatch(/\.backups-table-scroll\s*\{[^}]*margin:\s*var\(--space-sm\)\s+0;[^}]*scrollbar-width:\s*thin;/);
+      expect(css).toMatch(/\.backups-table\s*\{[^}]*min-width:\s*52rem;[^}]*margin:\s*0;/);
+      expect(css).toMatch(/\.backups-table th,\s*\.backups-table td\s*\{[^}]*padding:\s*var\(--space-xs\)\s+var\(--space-sm\);/);
+      expect(css).toMatch(/\.backups-table\s+\.row-actions\s*\{[^}]*white-space:\s*nowrap;/);
     });
 
     it('calendar day cells have overflow-wrap for long content', async () => {

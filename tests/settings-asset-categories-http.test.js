@@ -206,7 +206,7 @@ describe('settings — asset category defaults HTTP', () => {
       expect(res.text).toMatch(/<input\s+type="checkbox"\s+id="global-category-enabled-\d+"[\s\S]*?checked/);
     });
 
-    it('guards each default Delete with a confirmation and marks the details form for in-place save', async () => {
+    it('keeps Add and Delete explicit while wiring category detail fields for automatic save', async () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent } = await authenticate(app);
@@ -218,8 +218,22 @@ describe('settings — asset category defaults HTTP', () => {
       for (const button of deleteButtons) {
         expect(button).toContain('data-confirm=');
       }
-      // The "Save details" form opts into the in-place (no full reload) submit.
-      expect(res.text).toContain('data-category-details-form');
+      // Only mutable detail fields participate in the automatic-save enhancement.
+      const detailsForm = res.text.match(/<form method="post" action="\/settings\/asset-categories\/\d+" class="category-details-form" novalidate data-category-details-form data-category-details-id="\d+">[\s\S]*?<\/form>/)?.[0] || '';
+      expect(detailsForm).toContain('name="displayName"');
+      expect(detailsForm).toContain('name="directorySlug"');
+      expect(detailsForm.replace(/<noscript>[\s\S]*?<\/noscript>/, '')).not.toContain('>Save details</button>');
+      expect(detailsForm).toMatch(/<noscript>[\s\S]*?>Save details<\/button>[\s\S]*?<\/noscript>/);
+      const addForm = res.text.match(/<form method="post" action="\/settings\/asset-categories" class="project-form category-management-form" novalidate data-category-slug-autofill-form>[\s\S]*?<\/form>/)?.[0] || '';
+      expect(res.text).toMatch(/<div class="settings-section category-management-section category-management-add settings-category-management-add">\s*<h3>Add category<\/h3>/);
+      expect(res.text).toContain('<h3>Current defaults</h3>');
+      expect(res.text).toContain('>Add</button>');
+      expect(res.text).not.toContain('>Add Default</button>');
+      expect(addForm).toMatch(/id="add-displayName"[^>]*data-category-slug-autofill-display-name[^>]*aria-describedby="add-displayName-help"/);
+      expect(addForm).toContain('Press Tab to fill Directory slug from Display name.');
+      expect(addForm).toMatch(/id="add-displayName"[\s\S]*?id="add-directorySlug"[^>]*data-category-slug-autofill-directory-slug[\s\S]*?>Add<\/button>[\s\S]*?id="add-enabled"/);
+      expect(addForm).toMatch(/<button type="submit" class="button button-primary">Add<\/button>/);
+      expect(res.text).toContain('>Delete</button>');
     });
 
     it('renders defaults in deterministic display_order then id order', async () => {
@@ -250,6 +264,20 @@ describe('settings — asset category defaults HTTP', () => {
   });
 
   describe('global asset-browser default control', () => {
+    it('renders distinct Settings-only identities for the browser-default and Preview preference regions', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent } = await authenticate(app);
+
+      const res = await agent.get('/settings/asset-categories').expect(200);
+      const identities = [...res.text.matchAll(/data-settings-asset-category-preference="([^"]+)"/g)]
+        .map((match) => match[1]);
+      const ids = [...res.text.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]);
+
+      expect(identities).toEqual(['browser-default', 'preview-category']);
+      expect(new Set(ids).size).toBe(ids.length);
+    });
+
     it('selects All by default and offers enabled global categories only', async () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
@@ -259,7 +287,7 @@ describe('settings — asset category defaults HTTP', () => {
 
       const res = await agent.get('/settings/asset-categories').expect(200);
       const section = res.text.match(
-        /<section class="settings-section asset-browser-default-section" aria-labelledby="global-asset-browser-default-heading">[\s\S]*?<\/section>/
+        /<section class="settings-section asset-browser-default-section" aria-labelledby="global-asset-browser-default-heading"[^>]*>[\s\S]*?<\/section>/
       )?.[0] || '';
       expect(section).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
       expect(section).toMatch(
@@ -267,13 +295,20 @@ describe('settings — asset category defaults HTTP', () => {
       );
       expect((section.match(/name="defaultCategory"/g) || [])).toHaveLength(1);
       expect(section).not.toMatch(/<input[^>]*name="defaultCategory"/);
+      expect(section).toMatch(/<select[^>]*name="defaultCategory"[^>]*data-autosubmit="fetch"/);
+      expect(section).toMatch(/<form method="post" action="\/settings\/asset-categories\/browser-default"/);
+      expect(section).toMatch(/<input type="hidden" name="_csrf" value="[^"]+">/);
+      expect(section).toContain('data-settings-fetch-save-status');
+      expect(section).toContain('data-cc-dropdown-dispatch-native-change');
+      expect(section.replace(/<noscript>[\s\S]*?<\/noscript>/, '')).not.toContain('>Save default</button>');
+      expect(section).toMatch(/<noscript>[\s\S]*>Save default<\/button>[\s\S]*<\/noscript>/);
       expect(section).not.toContain('aria-invalid');
       expect(section).toContain('type="radio" value="all" checked');
       expect(res.text).toMatch(/<option value="all" selected>All Categories/);
       expect(res.text).toContain('<option value="wip">WIP');
       expect(res.text).not.toContain('<option value="final">Final');
       expect(res.text).toMatch(/projects set to.*Inherit global default/i);
-      expect(res.text).toMatch(/stable directory slug is stored/i);
+      expect(res.text).not.toContain('Category labels are shown here; the stable directory slug is stored.');
     });
 
     it('selects an enabled global slug while displaying the category label', async () => {
@@ -285,7 +320,7 @@ describe('settings — asset category defaults HTTP', () => {
 
       const res = await agent.get('/settings/asset-categories').expect(200);
       expect(res.text).toMatch(/<option value="wip" selected>WIP/);
-      expect(res.text).toContain('Saved:</span> <strong>WIP</strong>');
+      expect(res.text).not.toContain('Saved:');
       expect(getGlobalBrowserDefault(ctx.db)).toBe('wip');
     });
 
@@ -383,7 +418,7 @@ describe('settings — asset category defaults HTTP', () => {
       const res = await agent.get('/settings/asset-categories').expect(200);
       expect(res.text).toMatch(/directory slug .*all.*reserved|reserved.*all.*sentinel/i);
       const browserDefaultSection = res.text.match(
-        /<section class="settings-section asset-browser-default-section" aria-labelledby="global-asset-browser-default-heading">[\s\S]*?<\/section>/
+        /<section class="settings-section asset-browser-default-section" aria-labelledby="global-asset-browser-default-heading"[^>]*>[\s\S]*?<\/section>/
       )?.[0] || '';
       expect((browserDefaultSection.match(/<option value="all"/g) || []).length).toBe(1);
     });
@@ -392,7 +427,7 @@ describe('settings — asset category defaults HTTP', () => {
   describe('preview category control', () => {
     function previewSection(html) {
       return html.match(
-        /<section class="settings-section asset-browser-default-section" aria-labelledby="global-preview-category-heading">[\s\S]*?<\/section>/
+        /<section class="settings-section asset-browser-default-section" aria-labelledby="global-preview-category-heading"[^>]*>[\s\S]*?<\/section>/
       )?.[0] || '';
     }
 
@@ -415,6 +450,13 @@ describe('settings — asset category defaults HTTP', () => {
       );
       expect((section.match(/name="previewCategory"/g) || [])).toHaveLength(1);
       expect(section).not.toMatch(/<input[^>]*name="previewCategory"/);
+      expect(section).toMatch(/<select[^>]*name="previewCategory"[^>]*data-autosubmit="fetch"/);
+      expect(section).toMatch(/<form method="post" action="\/settings\/asset-categories\/preview-category"/);
+      expect(section).toMatch(/<input type="hidden" name="_csrf" value="[^"]+">/);
+      expect(section).toContain('data-settings-fetch-save-status');
+      expect(section).toContain('data-cc-dropdown-dispatch-native-change');
+      expect(section.replace(/<noscript>[\s\S]*?<\/noscript>/, '')).not.toContain('>Save preview category</button>');
+      expect(section).toMatch(/<noscript>[\s\S]*>Save preview category<\/button>[\s\S]*<\/noscript>/);
       expect(section).not.toContain('aria-invalid');
       expect(section).toContain(
         `<option value="${PREVIEW_CATEGORY_DISABLED_VALUE}" selected>Disabled`
@@ -449,7 +491,7 @@ describe('settings — asset category defaults HTTP', () => {
 
       const section = previewSection((await agent.get('/settings/asset-categories').expect(200)).text);
       expect(section).toContain('<option value="wip" selected>WIP</option>');
-      expect(section).toContain('Saved:</span> <strong>WIP</strong>');
+      expect(section).not.toContain('Saved:');
       expect((await agent.get(response.headers.location).expect(200)).text).toContain('Preview category saved.');
     });
 
@@ -577,6 +619,7 @@ describe('settings — asset category defaults HTTP', () => {
         .send({ displayName: '   ', directorySlug: 'valid-slug', _csrf: csrfToken })
         .expect(422);
       expect(res.text).toContain('Display name is required');
+      expect(res.text).toMatch(/id="add-displayName"[^>]*aria-describedby="add-displayName-help add-displayName-error"[^>]*aria-invalid="true"/);
 
       const row = ctx.db.prepare('SELECT * FROM asset_category_defaults WHERE directory_slug = ?').get('valid-slug');
       expect(row).toBeUndefined();
@@ -682,13 +725,16 @@ describe('settings — asset category defaults HTTP', () => {
       const card = res.text.match(
         new RegExp(`<article\\b[^>]*data-category-id="${row.id}"[\\s\\S]*?<\\/article>`)
       )?.[0] || '';
-      expect(res.text).toContain('Could not save this category. Fix the fields below and try again.');
+      expect(card).toContain('Could not save this category. Fix the fields below and try again.');
+      expect(card).toContain(`id="global-category-${row.id}-details-errors"`);
       expect(card).toContain(`id="global-category-${row.id}-display-name-error"`);
       expect(card).toContain(`id="global-category-${row.id}-directory-slug-error"`);
+      expect(card).toContain(`data-category-details-id="${row.id}"`);
       expect(card).toContain('aria-invalid="true"');
       expect(card).toContain('value="   "');
       expect(card).toContain('value="bad slug"');
-      expect(card).toContain('>Save details</button>');
+      expect(card.replace(/<noscript>[\s\S]*?<\/noscript>/, '')).not.toContain('>Save details</button>');
+      expect(card).toMatch(/<noscript>[\s\S]*?>Save details<\/button>[\s\S]*?<\/noscript>/);
     });
 
     it('leaves already-copied project-owned categories unchanged and performs no filesystem or manifest operation', async () => {
