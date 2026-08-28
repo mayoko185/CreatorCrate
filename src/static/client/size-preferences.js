@@ -7,6 +7,7 @@ import {
 const ASSET_GRID_SIZE_CONTROL_SELECTOR = '[data-asset-grid-size-controls]';
 const ASSET_GRID_SELECTOR = '.asset-grid';
 const ASSET_GRID_SIZE_STORAGE_KEY = 'creatorcrate-asset-grid-size';
+const ASSET_GRID_DETAILS_STORAGE_KEY = 'creatorcrate-asset-grid-details';
 const ASSET_LIST_SIZE_CONTROL_SELECTOR = '[data-asset-list-size-controls]';
 const ASSET_LIST_SELECTOR = '.asset-list';
 const ASSET_LIST_SIZE_STORAGE_KEY = 'creatorcrate-asset-list-size';
@@ -16,6 +17,7 @@ const PROJECT_GRID_SIZE_CONTROL_SCOPE_SELECTOR = '[data-project-grid-size-contro
 const PROJECT_GRID_SIZE_CONTROL_SELECTOR = `${PROJECT_GRID_SIZE_CONTROL_SCOPE_SELECTOR} ${ASSET_GRID_SIZE_CONTROL_SELECTOR}`;
 const ASSET_GRID_SIZE_SLIDER_SELECTOR = '[data-grid-size-slider]';
 const ASSET_GRID_SIZE_OPTION_LABEL_SELECTOR = '[data-grid-size-option-label]';
+const ASSET_GRID_DETAILS_TOGGLE_SELECTOR = '[data-asset-grid-details-toggle]';
 const PROJECT_ASSETS_LIVE_REGION_SELECTOR = '[data-project-assets-live-region]';
 
 const ASSET_GRID_SIZES = Object.freeze({
@@ -37,6 +39,10 @@ const ASSET_LIST_SIZE_ORDER = Object.freeze(['compact', 'large']);
 const ASSET_LIST_SIZE_LABELS = Object.freeze({
   compact: 'Compact',
   large: 'Large',
+});
+const ASSET_GRID_DETAILS_VALUES = Object.freeze({
+  shown: 'shown',
+  hidden: 'hidden',
 });
 
 export const ASSET_GRID_SIZE_CONFIG = Object.freeze({
@@ -79,6 +85,13 @@ export const PROJECT_GRID_SIZE_CONFIG = Object.freeze({
   boundKey: 'projectGridSizeBound',
   interactiveLabelsSelector: '[data-grid-size-labels-interactive]',
 });
+export const ASSET_GRID_DETAILS_CONFIG = Object.freeze({
+  storageKey: ASSET_GRID_DETAILS_STORAGE_KEY,
+  values: ASSET_GRID_DETAILS_VALUES,
+  defaultValue: 'shown',
+  stateAttribute: 'data-grid-details',
+  boundKey: 'assetGridDetailsBound',
+});
 
 export function gridSizeIsValid(size, config) {
   return typeof size === 'string'
@@ -98,6 +111,32 @@ export function readGridSize(storageKey, config, fallbackSize = config.defaultSi
 export function writeGridSize(size, storageKey) {
   try {
     globalThis.localStorage?.setItem(storageKey, size);
+  } catch {
+    // Storage can be unavailable or blocked; the current page still works.
+  }
+}
+
+export function gridDetailsIsValid(value) {
+  return typeof value === 'string'
+    && Object.prototype.hasOwnProperty.call(ASSET_GRID_DETAILS_CONFIG.values, value);
+}
+
+export function readGridDetails(fallbackValue = ASSET_GRID_DETAILS_CONFIG.defaultValue) {
+  const fallback = gridDetailsIsValid(fallbackValue)
+    ? fallbackValue
+    : ASSET_GRID_DETAILS_CONFIG.defaultValue;
+  try {
+    const stored = globalThis.localStorage?.getItem(ASSET_GRID_DETAILS_CONFIG.storageKey);
+    return gridDetailsIsValid(stored) ? stored : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export function writeGridDetails(value) {
+  if (!gridDetailsIsValid(value)) return;
+  try {
+    globalThis.localStorage?.setItem(ASSET_GRID_DETAILS_CONFIG.storageKey, value);
   } catch {
     // Storage can be unavailable or blocked; the current page still works.
   }
@@ -230,6 +269,37 @@ export function enhanceAssetListSize(scope = globalThis.document, fallbackSize) 
     ? projectAssetsSizeFallback(scope, 'data-project-assets-list-size-default', ASSET_LIST_SIZE_CONFIG)
     : fallbackSize;
   return enhanceGridSize(scope, ASSET_LIST_SIZE_CONFIG, fallback);
+}
+
+function projectAssetsLiveRegion(scope) {
+  const document = liveRegionDocument(scope);
+  return scope?.matches?.(PROJECT_ASSETS_LIVE_REGION_SELECTOR)
+    ? scope
+    : document?.querySelector?.(PROJECT_ASSETS_LIVE_REGION_SELECTOR) || null;
+}
+
+export function enhanceAssetGridDetails(scope = globalThis.document) {
+  const region = projectAssetsLiveRegion(scope);
+  const grid = region?.querySelector?.(ASSET_GRID_SELECTOR);
+  const toggle = region?.querySelector?.(ASSET_GRID_DETAILS_TOGGLE_SELECTOR);
+  if (!grid || !toggle) return 0;
+
+  const fallback = region.getAttribute?.('data-project-assets-grid-details-default');
+  const apply = (value) => {
+    grid.setAttribute?.(ASSET_GRID_DETAILS_CONFIG.stateAttribute, value);
+    toggle.checked = value === 'shown';
+  };
+  apply(readGridDetails(fallback));
+
+  if (!isEnhancementBound(toggle, ASSET_GRID_DETAILS_CONFIG.boundKey)) {
+    markEnhancementBound(toggle, ASSET_GRID_DETAILS_CONFIG.boundKey);
+    toggle.addEventListener('change', () => {
+      const value = toggle.checked ? 'shown' : 'hidden';
+      writeGridDetails(value);
+      apply(value);
+    });
+  }
+  return 1;
 }
 
 export function enhanceProjectGridSize(scope = globalThis.document) {

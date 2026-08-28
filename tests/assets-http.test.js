@@ -1400,7 +1400,7 @@ describe('asset browser HTTP workflow', () => {
         .send({
           view: 'list',
           gridSize: 'large',
-          listSize: 'compact',
+          listSize: 'compact', gridDetails: 'shown',
           sort: 'category',
           order: 'desc',
           pageSize: '50',
@@ -1480,7 +1480,7 @@ describe('asset browser HTTP workflow', () => {
       const project = await createProject('Project Assets Defaults Scope Control');
       const id = Number(project.headers.location.replace('/projects/', ''));
       const values = {
-        view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc',
+        view: 'list', gridSize: 'large', listSize: 'compact', gridDetails: 'shown', sort: 'category', order: 'desc',
         pageSize: '50', extension: 'all', tag: 'all', returnTo: `/projects/${id}/assets`, _csrf: csrfToken,
       };
       const readDefaultsDialog = (html) => (
@@ -1540,11 +1540,11 @@ describe('asset browser HTTP workflow', () => {
       expect(assetViewerDefaults.text).not.toContain('data-project-assets-defaults-scope');
     });
 
-    it('serializes only the two resolved eight-value scope sets and aligns loadedScope', async () => {
+    it('serializes only the two resolved nine-value scope sets and aligns loadedScope', async () => {
       const project = await createProject('Project Assets Defaults Scope Data');
       const id = Number(project.headers.location.replace('/projects/', ''));
       const globalValues = {
-        view: 'grid', gridSize: 'large', listSize: 'compact', sort: 'modified', order: 'desc',
+        view: 'grid', gridSize: 'large', listSize: 'compact', gridDetails: 'shown', sort: 'modified', order: 'desc',
         pageSize: '50', extension: 'all', tag: 'all',
       };
       for (const [option, value] of Object.entries(globalValues)) saveAssetDefault(option, value);
@@ -1574,7 +1574,7 @@ describe('asset browser HTTP workflow', () => {
 
     it('guards loaded scope changes before validation or writes for HTML, JSON, active, and archived submissions', async () => {
       const values = {
-        view: 'list', gridSize: 'compact', listSize: 'compact', sort: 'size', order: 'desc',
+        view: 'list', gridSize: 'compact', listSize: 'compact', gridDetails: 'shown', sort: 'size', order: 'desc',
         pageSize: '50', extension: 'all', tag: 'all',
       };
       const project = await createProject('Project Assets Loaded Scope Guard');
@@ -1722,7 +1722,7 @@ describe('asset browser HTTP workflow', () => {
       expect(archivedBare.headers.location).toBe(`/projects/${archivedId}/assets?view=list`);
 
       const archivedValues = {
-        view: 'list', gridSize: 'compact', listSize: 'compact', sort: 'size', order: 'desc',
+        view: 'list', gridSize: 'compact', listSize: 'compact', gridDetails: 'shown', sort: 'size', order: 'desc',
         pageSize: '50', extension: 'all', tag: 'all',
       };
       await agent.post(`/projects/${archivedId}/assets/defaults`).type('form').send({
@@ -1738,7 +1738,7 @@ describe('asset browser HTTP workflow', () => {
       const activeId = Number(active.headers.location.replace('/projects/', ''));
       saveProjectAssetDefault(activeId, 'view', 'list');
       await agent.post(`/projects/${activeId}/assets/defaults`).type('form').send({
-        view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc',
+        view: 'grid', gridSize: 'default', listSize: 'large', gridDetails: 'shown', sort: 'filename', order: 'asc',
         pageSize: '25', extension: 'all', tag: 'all', returnTo: `/projects/${activeId}/assets`,
         _csrf: csrfToken,
       }).expect(302);
@@ -1754,7 +1754,7 @@ describe('asset browser HTTP workflow', () => {
       const tag = app.locals.tagService.createTag({ name: 'Saved filter provenance tag' });
       writeIndexedAsset(id, getProjectDir('Saved Filter Default Provenance'), 'available.png', 'png');
       const values = {
-        view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc',
+        view: 'grid', gridSize: 'default', listSize: 'large', gridDetails: 'shown', sort: 'filename', order: 'asc',
         pageSize: '25', extension: 'png', tag: String(tag.id), scope: 'global', loadedScope: 'global', _csrf: csrfToken,
       };
 
@@ -1788,7 +1788,7 @@ describe('asset browser HTTP workflow', () => {
       writeIndexedAsset(id, getProjectDir('Multi-value Project Assets Default Redirect'), 'available.jpg', 'jpg');
 
       const saved = await agent.post(`/projects/${id}/assets/defaults`).type('form').send({
-        view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25',
+        view: 'grid', gridSize: 'default', listSize: 'large', gridDetails: 'shown', sort: 'filename', order: 'asc', pageSize: '25',
         extension: ['jpg', 'png'], tag: [String(firstTag.id), String(secondTag.id)],
         scope: 'global', loadedScope: 'global', returnTo: `/projects/${id}/assets`, _csrf: csrfToken,
       }).expect(302);
@@ -1813,7 +1813,7 @@ describe('asset browser HTTP workflow', () => {
       app.locals.assetTagService.replaceAssetTags(excluded.id, [firstTag.id]);
 
       await agent.post(`/projects/${id}/assets/defaults`).type('form').send({
-        view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25',
+        view: 'grid', gridSize: 'default', listSize: 'large', gridDetails: 'shown', sort: 'filename', order: 'asc', pageSize: '25',
         extension: ['jpg', 'png'], tag: [String(firstTag.id), String(secondTag.id)],
         scope: 'global', loadedScope: 'global', returnTo: `/projects/${id}/assets`, _csrf: csrfToken,
       }).expect(302);
@@ -1856,7 +1856,7 @@ describe('asset browser HTTP workflow', () => {
       app.locals.assetTagService.replaceAssetTags(wrongTag.id, [unrelatedTag.id]);
 
       await agent.post(`/projects/${id}/assets/defaults`).type('form').send({
-        view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25',
+        view: 'grid', gridSize: 'default', listSize: 'large', gridDetails: 'shown', sort: 'filename', order: 'asc', pageSize: '25',
         extension: ['jpg', 'png'], tag: [String(firstTag.id), String(secondTag.id)],
         scope: 'global', loadedScope: 'global', returnTo: `/projects/${id}/assets`, _csrf: csrfToken,
       }).expect(302);
@@ -1890,7 +1890,7 @@ describe('asset browser HTTP workflow', () => {
       const values = {
         view: 'grid',
         gridSize: 'default',
-        listSize: 'large',
+        listSize: 'large', gridDetails: 'shown',
         sort: 'filename',
         order: 'asc',
         pageSize: '25',
@@ -2000,11 +2000,11 @@ describe('asset browser HTTP workflow', () => {
       const second = await createProject('Scoped Save Project B');
       const secondId = Number(second.headers.location.replace('/projects/', ''));
       const globalValues = {
-        view: 'grid', gridSize: 'large', listSize: 'large', sort: 'filename', order: 'asc',
+        view: 'grid', gridSize: 'large', listSize: 'large', gridDetails: 'shown', sort: 'filename', order: 'asc',
         pageSize: '25', extension: 'all', tag: 'all',
       };
       const projectValues = {
-        view: 'list', gridSize: 'compact', listSize: 'compact', sort: 'modified', order: 'desc',
+        view: 'list', gridSize: 'compact', listSize: 'compact', gridDetails: 'shown', sort: 'modified', order: 'desc',
         pageSize: '50', extension: 'all', tag: 'all',
       };
       for (const [option, value] of Object.entries(globalValues)) saveAssetDefault(option, value);
@@ -2030,7 +2030,7 @@ describe('asset browser HTTP workflow', () => {
       const project = await createProject('Scoped JSON Save');
       const id = Number(project.headers.location.replace('/projects/', ''));
       const values = {
-        view: 'list', gridSize: 'compact', listSize: 'compact', sort: 'modified', order: 'desc',
+        view: 'list', gridSize: 'compact', listSize: 'compact', gridDetails: 'shown', sort: 'modified', order: 'desc',
         pageSize: '50', extension: 'all', tag: 'all',
       };
 
@@ -2049,7 +2049,7 @@ describe('asset browser HTTP workflow', () => {
       const second = await createProject('Scoped Global Save Project B');
       const secondId = Number(second.headers.location.replace('/projects/', ''));
       const values = {
-        view: 'list', gridSize: 'compact', listSize: 'compact', sort: 'size', order: 'desc',
+        view: 'list', gridSize: 'compact', listSize: 'compact', gridDetails: 'shown', sort: 'size', order: 'desc',
         pageSize: '100', extension: 'all', tag: 'all',
       };
       saveProjectAssetDefault(firstId, 'view', 'grid');
@@ -2080,7 +2080,7 @@ describe('asset browser HTTP workflow', () => {
       saveProjectAssetDefault(id, 'view', 'list');
 
       const response = await agent.post(`/projects/${id}/assets/defaults`).set('Accept', 'application/json').type('form').send({
-        view: 'list', gridSize: 'compact', listSize: 'compact', sort: 'size', order: 'desc',
+        view: 'list', gridSize: 'compact', listSize: 'compact', gridDetails: 'shown', sort: 'size', order: 'desc',
         pageSize: '50', extension: 'all', tag: 'all', scope: 'other',
         returnTo: `/projects/${id}/assets`, _csrf: csrfToken,
       }).expect(422);
@@ -2103,7 +2103,7 @@ describe('asset browser HTTP workflow', () => {
       });
 
       await agent.post(`/projects/${id}/assets/defaults`).set('Accept', 'application/json').type('form').send({
-        view: 'list', gridSize: 'compact', listSize: 'compact', sort: 'size', order: 'desc',
+        view: 'list', gridSize: 'compact', listSize: 'compact', gridDetails: 'shown', sort: 'size', order: 'desc',
         pageSize: '50', extension: 'all', tag: 'all', scope: 'global',
         returnTo: `/projects/${id}/assets`, _csrf: csrfToken,
       }).expect(500);
@@ -2124,7 +2124,7 @@ describe('asset browser HTTP workflow', () => {
       const values = {
         view: 'list',
         gridSize: 'large',
-        listSize: 'compact',
+        listSize: 'compact', gridDetails: 'shown',
         sort: 'category',
         order: 'desc',
         pageSize: '50',
@@ -3680,7 +3680,7 @@ describe('asset browser HTTP workflow', () => {
     const defaultsGrid = defaultsGridMatch?.[1] || '';
     const gridStart = defaultsGridMatch?.index ?? -1;
     const statusIndex = defaultsDialog.indexOf('<div class="app-dialog-status"', gridStart);
-    expect((defaultsGrid.match(/data-dialog-field="/g) || [])).toHaveLength(8);
+    expect((defaultsGrid.match(/data-dialog-field="/g) || [])).toHaveLength(9);
     expect(defaultsDialog.indexOf('data-dialog-error')).toBeLessThan(gridStart);
     expect(defaultsDialog.indexOf('name="_csrf"')).toBeLessThan(gridStart);
     expect(statusIndex).toBeGreaterThan(gridStart);
@@ -3753,6 +3753,13 @@ describe('asset browser HTTP workflow', () => {
         selectedValues: [],
         options: [],
       },
+      {
+        name: 'gridDetails',
+        label: 'Grid card details',
+        id: 'projectAssets-default-gridDetails',
+        selected: 'shown',
+        options: [['shown', 'Show details below previews'], ['hidden', 'Hide details below previews']],
+      },
     ];
     for (const field of defaultFields) {
       expect(defaultsGrid).toMatch(new RegExp(`<select[^>]*name="${field.name}"[^>]*data-cc-dropdown-native-select`));
@@ -3790,7 +3797,7 @@ describe('asset browser HTTP workflow', () => {
       expect(defaultsGrid.indexOf(`data-dialog-field="${defaultFields[index - 1].name}"`))
         .toBeLessThan(defaultsGrid.indexOf(`data-dialog-field="${defaultFields[index].name}"`));
     }
-    expect((defaultsGrid.match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(6);
+    expect((defaultsGrid.match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(7);
     expect((defaultsGrid.match(/data-cc-dropdown data-cc-dropdown-mode="multiple"/g) || [])).toHaveLength(2);
     const defaultsFooter = defaultsDialog.match(/<footer class="app-dialog-footer">[\s\S]*?<\/footer>/)?.[0] || '';
     expect((defaultsFooter.match(/<button\b[^>]*type="submit"/g) || [])).toHaveLength(1);
@@ -9480,5 +9487,38 @@ describe('asset browser HTTP workflow', () => {
           .send({ selectedAssetIds: String(asset.id), destinationCategory: 'uncategorized' }).expect(403);
       });
     });
+  });
+
+  it('renders the Project Assets grid card-details control without changing presentation state', async () => {
+    const { id } = await setupOrderedImageAssets('Grid card details');
+
+    const grid = await agent.get(`/projects/${id}/assets?view=grid`).expect(200);
+    expect(grid.text).toContain('data-project-assets-grid-details-default="shown"');
+    const filters = grid.text.match(/<form[^>]*id="asset-filters"[^>]*>[\s\S]*?<\/form>/)?.[0] || '';
+    expect(filters).toContain('data-asset-grid-details-toggle');
+    const toggle = filters.match(/<input[^>]*data-asset-grid-details-toggle[^>]*>/)?.[0] || '';
+    expect(toggle).toContain('role="switch"');
+    expect(toggle).not.toMatch(/\sname=/);
+    expect(filters).toContain('<span class="form-switch-state">Details</span>');
+    expect(filters).not.toContain('Details shown');
+    expect(filters).not.toContain('Details hidden');
+    expect(filters.indexOf('data-asset-grid-details-toggle')).toBeGreaterThan(filters.indexOf('id="asset-order-filter"'));
+    expect(filters.lastIndexOf('asset-viewer-filter-field')).toBeLessThan(filters.indexOf('data-asset-grid-details-toggle'));
+    expect(filters).toMatch(/data-asset-grid-details-toggle[\s\S]*<\/div>\s*<\/form>$/);
+    expect(grid.text).toContain('class="asset-card-body');
+    const stylesheet = fs.readFileSync(path.join(process.cwd(), 'src', 'static', 'creatorcrate.css'), 'utf8');
+    expect(stylesheet).toMatch(/\.asset-grid\[data-grid-details="hidden"\] \.asset-card--project \.asset-card-body\s*\{[^}]*display:\s*none/);
+
+    const list = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
+    expect(list.text).toContain('data-project-assets-grid-details-default="shown"');
+    expect(list.text).not.toContain('data-asset-grid-details-toggle');
+
+    app.locals.pageDefaultsService.saveDefault('projectAssets', 'gridDetails', 'hidden');
+    const hidden = await agent.get(`/projects/${id}/assets?view=grid`).expect(200);
+    expect(hidden.text).toContain('data-project-assets-grid-details-default="hidden"');
+
+    const viewer = await agent.get('/assets?view=grid').expect(200);
+    expect(viewer.text).not.toContain('data-asset-grid-details-toggle');
+    expect(viewer.text).not.toContain('data-project-assets-grid-details-default');
   });
 });

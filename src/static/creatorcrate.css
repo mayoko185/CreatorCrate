@@ -2207,6 +2207,9 @@
         color: var(--muted);
         font-size: 0.8125rem;
       }
+      .asset-grid[data-grid-details="hidden"] .asset-card--project .asset-card-body {
+        display: none;
+      }
       .asset-grid[data-grid-size="large"] .asset-card--project .asset-card-body {
         gap: var(--space-lg);
         padding: var(--space-lg);

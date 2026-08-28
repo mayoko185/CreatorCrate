@@ -12,6 +12,7 @@ const VALUE_KEYS = Object.freeze([
   'view',
   'gridSize',
   'listSize',
+  'gridDetails',
   'sort',
   'order',
   'pageSize',

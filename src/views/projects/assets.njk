@@ -464,7 +464,7 @@
     <p data-dialog-feedback-text></p>
   </div>
 
-  <div data-project-assets-live-region{% if projectAssetsGridSizeDefault %} data-project-assets-grid-size-default="{{ projectAssetsGridSizeDefault }}"{% endif %}{% if projectAssetsListSizeDefault %} data-project-assets-list-size-default="{{ projectAssetsListSizeDefault }}"{% endif %}>
+  <div data-project-assets-live-region{% if projectAssetsGridSizeDefault %} data-project-assets-grid-size-default="{{ projectAssetsGridSizeDefault }}"{% endif %}{% if projectAssetsListSizeDefault %} data-project-assets-list-size-default="{{ projectAssetsListSizeDefault }}"{% endif %} data-project-assets-grid-details-default="{{ projectAssetsGridDetailsDefault }}">
     <span class="sr-only" data-project-assets-live-status aria-live="polite" aria-atomic="true"></span>
 
   <div class="asset-browser-layout">
@@ -683,6 +683,9 @@
           optionIdPrefix: "asset-order",
           panelLabel: "Order options"
         }) }}
+        {% if filters.view == 'grid' %}
+          {% include "partials/asset-grid-details-control.njk" %}
+        {% endif %}
 
       </form>
       <noscript>

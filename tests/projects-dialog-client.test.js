@@ -281,7 +281,7 @@ function styledDropdownLabels(dropdown) {
 }
 
 const PROJECT_ASSETS_DEFAULT_KEYS = [
-  'view', 'gridSize', 'listSize', 'sort', 'order', 'pageSize', 'extension', 'tag',
+  'view', 'gridSize', 'listSize', 'gridDetails', 'sort', 'order', 'pageSize', 'extension', 'tag',
 ];
 
 function projectAssetsDefaultValues(fields) {
@@ -404,6 +404,7 @@ function makeDialogPage({
       ['view', 'grid', ['grid', 'list']],
       ['gridSize', 'default', ['compact', 'default', 'large']],
       ['listSize', 'large', ['compact', 'large']],
+      ['gridDetails', 'shown', ['shown', 'hidden']],
       ['sort', 'filename', ['filename', 'modified', 'size', 'category']],
       ['order', 'asc', ['asc', 'desc']],
       ['pageSize', '25', ['10', '25', '50', '100']],
@@ -413,6 +414,7 @@ function makeDialogPage({
       ['view', 'grid', ['grid', 'list']],
       ['gridSize', 'default', ['compact', 'default', 'large']],
       ['listSize', 'large', ['compact', 'large']],
+      ['gridDetails', 'shown', ['shown', 'hidden']],
       ['sort', 'filename', ['filename', 'modified', 'size', 'category']],
       ['order', 'asc', ['asc', 'desc']],
     ])
@@ -436,8 +438,8 @@ function makeDialogPage({
   }
   if (projectAssetsScope) {
     const values = projectAssetsScopeValues || {
-      global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
-      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'png', tag: '2' },
+      global: { view: 'grid', gridSize: 'default', listSize: 'large', gridDetails: 'shown', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
+      project: { view: 'list', gridSize: 'large', listSize: 'compact', gridDetails: 'hidden', sort: 'category', order: 'desc', pageSize: '50', extension: 'png', tag: '2' },
     };
     const serializedValues = makeElement('script', { type: 'application/json', 'data-project-assets-default-values': '' });
     serializedValues.textContent = JSON.stringify(values);
@@ -967,7 +969,7 @@ describe('Reusable app dialog enhancement', () => {
     changeProjectAssetsScope(page, 'project');
 
     expect(projectAssetsDefaultValues(page.fields)).toEqual({
-      view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc',
+      view: 'list', gridSize: 'large', listSize: 'compact', gridDetails: 'hidden', sort: 'category', order: 'desc',
       pageSize: '50', extension: 'png', tag: '2',
     });
     expect(page.form.querySelector('input[name="loadedScope"]').value).toBe('project');
@@ -1019,7 +1021,7 @@ describe('Reusable app dialog enhancement', () => {
     const page = makeDialogPage({ standardDropdowns: true, projectAssetsDefaults: true, projectAssetsScope: true });
     const initial = JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent);
     const submitted = {
-      view: 'grid', gridSize: 'compact', listSize: 'large', sort: 'modified', order: 'asc',
+      view: 'grid', gridSize: 'compact', listSize: 'large', gridDetails: 'shown', sort: 'modified', order: 'asc',
       pageSize: '100', extension: 'jpg', tag: '1',
     };
     page.region.appendChild(page.trigger);
@@ -1076,8 +1078,8 @@ describe('Reusable app dialog enhancement', () => {
 
   it('commits a successful Global JSON save to both scopes and discards an old Project-only draft', async () => {
     const initialValues = {
-      global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
-      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'png', tag: '2' },
+      global: { view: 'grid', gridSize: 'default', listSize: 'large', gridDetails: 'shown', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
+      project: { view: 'list', gridSize: 'large', listSize: 'compact', gridDetails: 'hidden', sort: 'category', order: 'desc', pageSize: '50', extension: 'png', tag: '2' },
     };
     const page = makeDialogPage({
       standardDropdowns: true,
@@ -1086,7 +1088,7 @@ describe('Reusable app dialog enhancement', () => {
       projectAssetsScopeValues: initialValues,
     });
     const submitted = {
-      view: 'list', gridSize: 'compact', listSize: 'large', sort: 'modified', order: 'asc',
+      view: 'list', gridSize: 'compact', listSize: 'large', gridDetails: 'shown', sort: 'modified', order: 'asc',
       pageSize: '100', extension: 'jpg', tag: '1',
     };
     expect(submitted).not.toEqual(initialValues.global);
@@ -1161,8 +1163,8 @@ describe('Reusable app dialog enhancement', () => {
 
   it('restores Project-only committed values after cancel/reopen and immediately saves with matching scope', async () => {
     const initialValues = {
-      global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
-      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'png', tag: '2' },
+      global: { view: 'grid', gridSize: 'default', listSize: 'large', gridDetails: 'shown', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
+      project: { view: 'list', gridSize: 'large', listSize: 'compact', gridDetails: 'hidden', sort: 'category', order: 'desc', pageSize: '50', extension: 'png', tag: '2' },
     };
     const page = makeDialogPage({
       standardDropdowns: true,
@@ -1208,8 +1210,8 @@ describe('Reusable app dialog enhancement', () => {
 
   it('keeps Project Assets committed snapshots and drafts after failed or malformed enhanced saves', async () => {
     const initialValues = {
-      global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
-      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'png', tag: '2' },
+      global: { view: 'grid', gridSize: 'default', listSize: 'large', gridDetails: 'shown', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
+      project: { view: 'list', gridSize: 'large', listSize: 'compact', gridDetails: 'hidden', sort: 'category', order: 'desc', pageSize: '50', extension: 'png', tag: '2' },
     };
     const responses = [
       {
@@ -1263,8 +1265,8 @@ describe('Reusable app dialog enhancement', () => {
     expect(malformed.form.querySelector('input[name="loadedScope"]').value).toBe('global');
 
     const values = {
-      global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
-      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'gif', tag: '2' },
+      global: { view: 'grid', gridSize: 'default', listSize: 'large', gridDetails: 'shown', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
+      project: { view: 'list', gridSize: 'large', listSize: 'compact', gridDetails: 'hidden', sort: 'category', order: 'desc', pageSize: '50', extension: 'gif', tag: '2' },
     };
     const invalidTarget = makeDialogPage({
       standardDropdowns: true,
@@ -1398,6 +1400,7 @@ describe('Reusable app dialog enhancement', () => {
       ['view', 'list'],
       ['gridSize', 'large'],
       ['listSize', 'compact'],
+      ['gridDetails', 'shown'],
       ['sort', 'filename'],
       ['order', 'asc'],
     ]);
@@ -1444,6 +1447,7 @@ describe('Reusable app dialog enhancement', () => {
     const storage = new Map([
       ['creatorcrate-asset-grid-size', 'compact'],
       ['creatorcrate-asset-list-size', 'large'],
+      ['creatorcrate-asset-grid-details', 'hidden'],
     ]);
     const previousStorage = globalThis.localStorage;
     globalThis.localStorage = {
@@ -1462,6 +1466,7 @@ describe('Reusable app dialog enhancement', () => {
             view: 'grid',
             gridSize: 'large',
             listSize: 'compact',
+            gridDetails: 'shown',
             sort: 'invalid',
             order: 'asc',
           },
@@ -1475,6 +1480,7 @@ describe('Reusable app dialog enhancement', () => {
             view: 'list',
             gridSize: 'large',
             listSize: 'compact',
+            gridDetails: 'shown',
             sort: 'category',
             order: 'desc',
             pageSize: '50',
@@ -1493,6 +1499,7 @@ describe('Reusable app dialog enhancement', () => {
 
       expect(storage.get('creatorcrate-asset-grid-size')).toBe('compact');
       expect(storage.get('creatorcrate-asset-list-size')).toBe('large');
+      expect(storage.get('creatorcrate-asset-grid-details')).toBe('hidden');
       expect(page.dialog.open).toBe(true);
 
       page.form.dispatch('submit', { submitter: page.save });
@@ -1500,6 +1507,7 @@ describe('Reusable app dialog enhancement', () => {
 
       expect(storage.get('creatorcrate-asset-grid-size')).toBe('large');
       expect(storage.get('creatorcrate-asset-list-size')).toBe('compact');
+      expect(storage.get('creatorcrate-asset-grid-details')).toBe('shown');
       expect(page.dialog.open).toBe(false);
 
       page.document.dispatch('click', { target: page.trigger });
@@ -2369,8 +2377,8 @@ describe('Project Assets multi-select defaults scope', () => {
 
   it('preserves complete Extension and Tag drafts independently for each scope', () => {
     const values = {
-      global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: ['jpg', 'png'], tag: ['1', '2'] },
-      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: ['png'], tag: ['2'] },
+      global: { view: 'grid', gridSize: 'default', listSize: 'large', gridDetails: 'shown', sort: 'filename', order: 'asc', pageSize: '25', extension: ['jpg', 'png'], tag: ['1', '2'] },
+      project: { view: 'list', gridSize: 'large', listSize: 'compact', gridDetails: 'hidden', sort: 'category', order: 'desc', pageSize: '50', extension: ['png'], tag: ['2'] },
     };
     const page = makeDialogPage({ projectAssetsDefaults: true, projectAssetsScope: true, projectAssetsScopeValues: values });
     page.fields.extension.multiple = true;
@@ -2400,8 +2408,8 @@ describe('Project Assets multi-select defaults scope', () => {
 
   it('fails closed when a committed multi-select member is unavailable', () => {
     const values = {
-      global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: ['jpg'], tag: 'all' },
-      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: ['gif', 'png'], tag: ['2'] },
+      global: { view: 'grid', gridSize: 'default', listSize: 'large', gridDetails: 'shown', sort: 'filename', order: 'asc', pageSize: '25', extension: ['jpg'], tag: 'all' },
+      project: { view: 'list', gridSize: 'large', listSize: 'compact', gridDetails: 'hidden', sort: 'category', order: 'desc', pageSize: '50', extension: ['gif', 'png'], tag: ['2'] },
     };
     const page = makeDialogPage({ projectAssetsDefaults: true, projectAssetsScope: true, projectAssetsScopeValues: values });
     page.fields.extension.multiple = true;
@@ -2418,8 +2426,8 @@ describe('Project Assets multi-select defaults scope', () => {
 
   it('clears concrete Extension and Tag selections when restoring neutral all values', () => {
     const values = {
-      global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: ['jpg', 'png'], tag: ['1', '2'] },
-      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'all', tag: 'all' },
+      global: { view: 'grid', gridSize: 'default', listSize: 'large', gridDetails: 'shown', sort: 'filename', order: 'asc', pageSize: '25', extension: ['jpg', 'png'], tag: ['1', '2'] },
+      project: { view: 'list', gridSize: 'large', listSize: 'compact', gridDetails: 'hidden', sort: 'category', order: 'desc', pageSize: '50', extension: 'all', tag: 'all' },
     };
     const page = makeDialogPage({ projectAssetsDefaults: true, projectAssetsScope: true, projectAssetsScopeValues: values });
     page.fields.extension.multiple = true;

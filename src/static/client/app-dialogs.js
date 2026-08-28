@@ -18,7 +18,9 @@ import {
 import {
   ASSET_GRID_SIZE_CONFIG,
   ASSET_LIST_SIZE_CONFIG,
+  gridDetailsIsValid,
   gridSizeIsValid,
+  writeGridDetails,
   writeGridSize,
 } from './size-preferences.js';
 export function enhanceAutoSubmit(scope = globalThis.document) {
@@ -216,6 +218,9 @@ function syncProjectAssetsSizePreferences(dialog, values) {
   }
   if (gridSizeIsValid(values?.listSize, ASSET_LIST_SIZE_CONFIG)) {
     writeGridSize(values.listSize, ASSET_LIST_SIZE_CONFIG.storageKey);
+  }
+  if (gridDetailsIsValid(values?.gridDetails)) {
+    writeGridDetails(values.gridDetails);
   }
 }
 

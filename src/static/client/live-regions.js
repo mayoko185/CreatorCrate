@@ -26,6 +26,7 @@ import {
   enhanceProjectAssetCategoryFilter,
 } from './dropdowns.js';
 import {
+  enhanceAssetGridDetails,
   enhanceAssetGridSize,
   enhanceAssetListSize,
   enhanceProjectGridSize,
@@ -985,6 +986,7 @@ function enhanceProjectAssetsLiveRegion(region) {
   enhanceAssetSelection(region);
   enhanceAssetRenames(region);
   enhanceAssetGridSize(region);
+  enhanceAssetGridDetails(region);
   enhanceAssetListSize(region);
   enhanceAssetAutoRenameOrdering(region);
   enhanceAppConfirmationControls(region);

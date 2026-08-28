@@ -53,6 +53,7 @@ export const PAGE_DEFAULT_DEFINITIONS = Object.freeze({
     pageSize: definition('page_defaults.project_assets.page_size', ['10', '25', '50', '100'], '25'),
     extension: definition('page_defaults.project_assets.extension', ['all'], 'all', { multi: true }),
     tag: definition('page_defaults.project_assets.tag', ['all'], 'all', { multi: true }),
+    gridDetails: definition('page_defaults.project_assets.grid_details', ['shown', 'hidden'], 'shown'),
   }),
   [ASSET_VIEWER]: Object.freeze({
     view: definition('page_defaults.asset_viewer.view', ['grid', 'list'], ASSET_LIBRARY_DEFAULTS.view),

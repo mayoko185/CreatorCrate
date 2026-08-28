@@ -2,6 +2,7 @@ import { describe, expect, it, vi, afterEach } from 'vitest';
 import {
   enhanceDropdowns,
   enhanceAssetSelection,
+  enhanceAssetGridDetails,
   enhanceAssetGridSize,
   enhanceAssetListSize,
   enhanceProjectAssetsLiveFiltering,
@@ -186,6 +187,8 @@ function makePage({
   view = 'list',
   gridSizeDefault = 'default',
   listSizeDefault = 'large',
+  gridDetailsDefault = 'shown',
+  withGridDetailsToggle = false,
 } = {}) {
   const document = makeNode({ tagName: 'document' });
   document.nodeType = 9;
@@ -196,6 +199,7 @@ function makePage({
       'data-project-assets-live-region': '',
       'data-project-assets-grid-size-default': gridSizeDefault,
       'data-project-assets-list-size-default': listSizeDefault,
+      'data-project-assets-grid-details-default': gridDetailsDefault,
     },
   });
   const status = makeNode({ attrs: { 'data-project-assets-live-status': '' } });
@@ -306,6 +310,9 @@ function makePage({
   gridSizeControls.appendChild(gridDefaultLabel);
   gridSizeControls.appendChild(gridLargeLabel);
   const grid = makeNode({ attrs: { class: 'asset-grid' } });
+  const gridDetailsToggle = withGridDetailsToggle
+    ? addInput(region, { type: 'checkbox', role: 'switch', 'data-asset-grid-details-toggle': '' })
+    : null;
 
   const listSizeControls = makeNode({
     attrs: {
@@ -364,6 +371,7 @@ function makePage({
     nsfwValue,
     nsfwToggle,
     grid,
+    gridDetailsToggle,
     gridSlider,
     gridLabels: [gridCompactLabel, gridDefaultLabel, gridLargeLabel],
     list,
@@ -776,6 +784,108 @@ describe('Project Assets live filtering enhancement', () => {
     enhanceProjectAssetsLiveFiltering(next.region);
     expect(next.form.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
     expect(next.form.listeners.filter(({ type }) => type === 'submit')).toHaveLength(1);
+  });
+
+  it('applies only valid Project Assets grid-details preferences and keeps the toggle synchronized', () => {
+    const storage = new Map();
+    const previousStorage = globalThis.localStorage;
+    globalThis.localStorage = {
+      getItem: (key) => storage.get(key) ?? null,
+      setItem: (key, value) => storage.set(key, value),
+    };
+
+    try {
+      for (const { fallback, stored, expected } of [
+        { fallback: 'shown', stored: null, expected: 'shown' },
+        { fallback: 'hidden', stored: null, expected: 'hidden' },
+        { fallback: 'shown', stored: 'hidden', expected: 'hidden' },
+        { fallback: 'hidden', stored: 'shown', expected: 'shown' },
+        { fallback: 'hidden', stored: 'invalid', expected: 'hidden' },
+      ]) {
+        const page = makePage({
+          view: 'grid',
+          gridDetailsDefault: fallback,
+          withGridDetailsToggle: true,
+        });
+        if (stored === null) storage.delete('creatorcrate-asset-grid-details');
+        else storage.set('creatorcrate-asset-grid-details', stored);
+
+        expect(enhanceAssetGridDetails(page.document)).toBe(1);
+        expect(page.grid.getAttribute('data-grid-details')).toBe(expected);
+        expect(page.gridDetailsToggle.checked).toBe(expected === 'shown');
+      }
+    } finally {
+      if (previousStorage === undefined) delete globalThis.localStorage;
+      else globalThis.localStorage = previousStorage;
+    }
+  });
+
+  it('persists one grid-details toggle change and leaves list and Asset Viewer grids untouched', () => {
+    const page = makePage({ view: 'grid', withGridDetailsToggle: true });
+    const assetViewerGrid = makeNode({ attrs: { class: 'asset-grid' } });
+    page.document.appendChild(assetViewerGrid);
+    const storage = new Map();
+    const setItem = vi.fn((key, value) => storage.set(key, value));
+    const previousStorage = globalThis.localStorage;
+    globalThis.localStorage = {
+      getItem: (key) => storage.get(key) ?? null,
+      setItem,
+    };
+
+    try {
+      expect(enhanceAssetGridDetails(page.region)).toBe(1);
+      expect(enhanceAssetGridDetails(page.region)).toBe(1);
+      expect(page.gridDetailsToggle.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+      page.gridDetailsToggle.checked = false;
+      page.gridDetailsToggle.dispatch('change');
+
+      expect(page.grid.getAttribute('data-grid-details')).toBe('hidden');
+      expect(storage.get('creatorcrate-asset-grid-details')).toBe('hidden');
+      expect(setItem).toHaveBeenCalledTimes(1);
+      expect(assetViewerGrid.getAttribute('data-grid-details')).toBeNull();
+
+      const listDocument = makeNode({ tagName: 'document' });
+      listDocument.nodeType = 9;
+      listDocument.ownerDocument = listDocument;
+      listDocument.appendChild(makeNode({
+        attrs: {
+          'data-project-assets-live-region': '',
+          'data-project-assets-grid-details-default': 'shown',
+        },
+      }));
+      expect(enhanceAssetGridDetails(listDocument)).toBe(0);
+    } finally {
+      if (previousStorage === undefined) delete globalThis.localStorage;
+      else globalThis.localStorage = previousStorage;
+    }
+  });
+
+  it('reapplies persisted grid-details after a Project Assets live-region replacement', async () => {
+    const initial = makePage({ view: 'grid', withGridDetailsToggle: true });
+    const next = makePage({ view: 'grid', withGridDetailsToggle: true });
+    const { windowObject } = makeWindow(initial.document, new Map([['grid-details', next.document]]));
+    const previousStorage = globalThis.localStorage;
+    globalThis.localStorage = {
+      getItem: (key) => key === 'creatorcrate-asset-grid-details' ? 'hidden' : null,
+      setItem: vi.fn(),
+    };
+    windowObject.fetch.mockResolvedValue(
+      htmlResponse('grid-details', 'http://creatorcrate.test/projects/1/assets?presence=missing&view=grid'),
+    );
+
+    try {
+      expect(enhanceProjectAssetsLiveFiltering(initial.document)).toBe(1);
+      expect(initial.grid.getAttribute('data-grid-details')).toBe('hidden');
+      initial.presenceMissing.checked = true;
+      initial.presenceMissing.dispatch('change');
+      await flush();
+
+      expect(next.grid.getAttribute('data-grid-details')).toBe('hidden');
+      expect(next.gridDetailsToggle.checked).toBe(false);
+    } finally {
+      if (previousStorage === undefined) delete globalThis.localStorage;
+      else globalThis.localStorage = previousStorage;
+    }
   });
 
   it('restores the saved list size when a live-filter replacement re-enhances the region', async () => {

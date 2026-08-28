@@ -31,6 +31,7 @@ const PROJECT_ASSETS_DEFAULT_VALUE_KEYS = Object.freeze([
   'view',
   'gridSize',
   'listSize',
+  'gridDetails',
   'sort',
   'order',
   'pageSize',
@@ -43,6 +44,7 @@ const PROJECT_ASSETS_DEFAULT_LABELS = Object.freeze({
     view: 'View',
     gridSize: 'Grid size',
     listSize: 'List size',
+    gridDetails: 'Grid card details',
     sort: 'Sort',
     order: 'Order',
     pageSize: 'Page Size',
@@ -53,6 +55,7 @@ const PROJECT_ASSETS_DEFAULT_LABELS = Object.freeze({
     view: Object.freeze({ grid: 'Grid', list: 'List' }),
     gridSize: Object.freeze({ compact: 'Compact', default: 'Default', large: 'Large' }),
     listSize: Object.freeze({ compact: 'Compact', large: 'Large' }),
+    gridDetails: Object.freeze({ shown: 'Show details below previews', hidden: 'Hide details below previews' }),
     sort: Object.freeze({
       filename: 'Filename',
       modified: 'Modified date',
@@ -700,6 +703,7 @@ export function buildBrowserRenderModel(
     { projectId: project.id },
   );
   const projectAssetsGridSizeDefault = projectAssetsScopedDefaults.effective.gridSize;
+  const projectAssetsGridDetailsDefault = projectAssetsScopedDefaults.effective.gridDetails;
   const projectAssetsListSizeDefault = projectAssetsScopedDefaults.effective.listSize;
   const context = {
     ...(data.context || data.filters),
@@ -816,6 +820,7 @@ export function buildBrowserRenderModel(
     ),
     projectAssetsEffectiveDefaults: projectAssetsScopedDefaults.effective,
     projectAssetsGridSizeDefault,
+    projectAssetsGridDetailsDefault,
     projectAssetsListSizeDefault,
     inheritedProjectAssetsFilterDefaults: inheritedFilterDefaults.join(','),
     projectAssetsDefaultsDialogOpen: false,
