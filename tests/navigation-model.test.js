@@ -249,17 +249,30 @@ describe('navigation model — Settings hierarchy', () => {
   it('owns the nine Settings destinations in the required order', () => {
     const settings = NAVIGATION_ITEMS.find((item) => item.key === 'settings');
 
-    expect(settings.children.map(({ key, label, href }) => ({ key, label, href }))).toEqual([
-      { key: 'overview', label: 'Overview', href: '/settings' },
-      { key: 'security', label: 'Security', href: '/settings/security' },
-      { key: 'backups', label: 'Backups', href: '/settings/backups' },
-      { key: 'logs', label: 'Logs', href: '/settings/logs' },
-      { key: 'defaults', label: 'Defaults', href: '/settings/defaults' },
-      { key: 'nsfw-filter', label: 'NSFW Filter', href: '/settings/nsfw-filter' },
-      { key: 'asset-categories', label: 'Asset Categories', href: '/settings/asset-categories' },
-      { key: 'tags', label: 'Tags', href: '/settings/tags' },
-      { key: 'open-locally', label: 'Open locally', href: '/settings/open-locally' },
+    expect(settings.children.map(({ key, label, href, icon }) => ({ key, label, href, icon }))).toEqual([
+      { key: 'overview', label: 'Overview', href: '/settings', icon: 'gauge' },
+      { key: 'security', label: 'Security', href: '/settings/security', icon: 'shield-check' },
+      { key: 'backups', label: 'Backups', href: '/settings/backups', icon: 'database-backup' },
+      { key: 'logs', label: 'Logs', href: '/settings/logs', icon: 'scroll-text' },
+      { key: 'defaults', label: 'Defaults', href: '/settings/defaults', icon: 'sliders-horizontal' },
+      { key: 'nsfw-filter', label: 'NSFW Filter', href: '/settings/nsfw-filter', icon: 'content-filter' },
+      { key: 'asset-categories', label: 'Asset Categories', href: '/settings/asset-categories', icon: 'boxes' },
+      { key: 'tags', label: 'Tags', href: '/settings/tags', icon: 'tags' },
+      { key: 'open-locally', label: 'Open locally', href: '/settings/open-locally', icon: 'external-link' },
     ]);
+  });
+
+  it('exposes a non-empty icon key for every Settings child', () => {
+    const children = settingsItem('/settings').children;
+
+    expect(children).toHaveLength(9);
+    expect(children.every(({ icon }) => typeof icon === 'string' && icon.length > 0)).toBe(true);
+  });
+
+  it('uses unique icon keys across Settings children', () => {
+    const icons = settingsItem('/settings').children.map(({ icon }) => icon);
+
+    expect(new Set(icons).size).toBe(icons.length);
   });
 
   it('keeps Settings section-active while mapping each direct and secondary route to one current child', () => {

@@ -33,12 +33,14 @@
 const SETTINGS_CHILDREN = [
   {
     key: 'overview',
+      icon: 'gauge',
     label: 'Overview',
     href: '/settings',
     matches: ['/settings'],
   },
   {
     key: 'security',
+      icon: 'shield-check',
     label: 'Security',
     href: '/settings/security',
     matches: [
@@ -50,6 +52,7 @@ const SETTINGS_CHILDREN = [
   },
   {
     key: 'backups',
+      icon: 'database-backup',
     label: 'Backups',
     href: '/settings/backups',
     matches: [
@@ -60,6 +63,7 @@ const SETTINGS_CHILDREN = [
   },
   {
     key: 'logs',
+      icon: 'scroll-text',
     label: 'Logs',
     href: '/settings/logs',
     matches: [
@@ -70,18 +74,21 @@ const SETTINGS_CHILDREN = [
   },
   {
     key: 'defaults',
+      icon: 'sliders-horizontal',
     label: 'Defaults',
     href: '/settings/defaults',
     matches: ['/settings/defaults'],
   },
   {
     key: 'nsfw-filter',
+      icon: 'content-filter',
     label: 'NSFW Filter',
     href: '/settings/nsfw-filter',
     matches: ['/settings/nsfw-filter'],
   },
   {
     key: 'asset-categories',
+      icon: 'boxes',
     label: 'Asset Categories',
     href: '/settings/asset-categories',
     matches: [
@@ -98,6 +105,7 @@ const SETTINGS_CHILDREN = [
   },
   {
     key: 'tags',
+      icon: 'tags',
     label: 'Tags',
     href: '/settings/tags',
     matches: [
@@ -108,6 +116,7 @@ const SETTINGS_CHILDREN = [
   },
   {
     key: 'open-locally',
+      icon: 'external-link',
     label: 'Open locally',
     href: '/settings/open-locally',
     matches: [
@@ -274,12 +283,13 @@ export function isPathActive(matchPatterns, requestPath) {
  *   pageTitle: string,
  *   activeSection: string|null,
  *   currentPath: string,
- *   navigation: Array<{ key: string, label: string, href: string, icon: string, active: boolean, children: Array<{ key: string, label: string, href: string, current: boolean }> }>
+ *   navigation: Array<{ key: string, label: string, href: string, icon: string, active: boolean, children: Array<{ key: string, label: string, href: string, icon: string, current: boolean }> }>
  * }}
  */
 export function buildShellModel({ appName, path, noActive = false }) {
   const navigation = NAVIGATION_ITEMS.map((item) => {
     const children = (item.children || []).map((child) => ({
+      icon: child.icon,
       key: child.key,
       label: child.label,
       href: child.href,

@@ -52,7 +52,7 @@
                   <ul class="app-nav-children">
                     {% for child in item.children %}
                       <li class="app-nav-child-item">
-                        <a href="{{ child.href }}" class="app-nav-child-link" data-nav-key="{{ item.key }}-{{ child.key }}"{% if child.current %} aria-current="page"{% endif %}>{{ child.label }}</a>
+                        <a href="{{ child.href }}" class="app-nav-child-link" data-nav-key="{{ item.key }}-{{ child.key }}"{% if child.current %} aria-current="page"{% endif %}>{{ icons.icon(child.icon) }}<span class="app-nav-child-label">{{ child.label }}</span></a>
                       </li>
                     {% endfor %}
                   </ul>
@@ -89,7 +89,7 @@
                   <ul class="mobile-nav-children">
                     {% for child in item.children %}
                       <li class="mobile-nav-child-item">
-                        <a href="{{ child.href }}" class="mobile-nav-child-link" data-nav-key="{{ item.key }}-{{ child.key }}"{% if child.current %} aria-current="page"{% endif %}>{{ child.label }}</a>
+                        <a href="{{ child.href }}" class="mobile-nav-child-link" data-nav-key="{{ item.key }}-{{ child.key }}"{% if child.current %} aria-current="page"{% endif %}>{{ icons.icon(child.icon) }}<span class="app-nav-child-label">{{ child.label }}</span></a>
                       </li>
                     {% endfor %}
                   </ul>

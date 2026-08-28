@@ -625,9 +625,11 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
       const css = await extractStyle(agent, (await agent.get('/settings').expect(200)).text);
       const childRule = css.match(/\.mobile-nav-child-link\s*\{[\s\S]*?\}/);
       expect(childRule).not.toBeNull();
+      expect(childRule[0]).toMatch(/gap:\s*var\(--space-sm\)/);
       expect(childRule[0]).toMatch(/min-height:\s*var\(--shell-nav-item-height\)/);
       expect(childRule[0]).toMatch(/font-size:\s*0\.875rem/);
-      expect(childRule[0]).toMatch(/padding:[^;]*calc\(var\(--space-lg\) \+ var\(--space-md\)\)/);
+      expect(childRule[0]).toMatch(/padding:\s*var\(--space-sm\) var\(--space-lg\) var\(--space-sm\) calc\(var\(--space-lg\) \+ var\(--space-xs\)\)/);
+      expect(css).toMatch(/\.mobile-nav-child-link svg\s*\{[^}]*width:\s*1rem;[^}]*height:\s*1rem;[^}]*flex:\s*none;/s);
       expect(css).toMatch(/\.mobile-nav-child-link\[aria-current="page"\][\s\S]*?box-shadow:\s*inset 3px 0 0 var\(--accent\)/);
 
       const panelRule = css.match(/\.mobile-nav-primary\s*\{[\s\S]*?\}/);

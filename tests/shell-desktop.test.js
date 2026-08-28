@@ -296,9 +296,11 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
       const css = await extractStyle(agent, (await agent.get('/settings').expect(200)).text);
       const childRule = css.match(/\.app-nav-child-link\s*\{[^}]*\}/);
       expect(childRule).not.toBeNull();
+      expect(childRule[0]).toMatch(/gap:\s*var\(--space-sm\)/);
       expect(childRule[0]).toMatch(/min-height:\s*0/);
       expect(childRule[0]).toMatch(/padding:\s*0\.3125rem 0\.5rem 0\.3125rem var\(--space-sm\)/);
       expect(childRule[0]).toMatch(/line-height:\s*1\.25/);
+      expect(css).toMatch(/\.app-nav-child-link svg\s*\{[^}]*width:\s*1rem;[^}]*height:\s*1rem;[^}]*flex:\s*none;/s);
       expect(childRule[0]).toMatch(/font-size:\s*0\.8125rem/);
       expect(css).toMatch(/\.app-nav-child-link:hover[\s\S]*?background:\s*var\(--surface-hover\)/);
       expect(css).toMatch(/\.app-nav-child-link:focus-visible[\s\S]*?outline/);
@@ -313,7 +315,7 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
       const css = await extractStyle(agent, (await agent.get('/settings').expect(200)).text);
 
       expect(css).toMatch(/\.app-nav-children\s*\{[^}]*transform:\s*translateX\(-0\.5rem\);[^}]*transition:[^}]*transform\s+var\(--shell-transition\)\s+ease;/s);
-      expect(css).toMatch(/\.app-nav-child-link\s*\{[^}]*width:\s*calc\(100% - var\(--space-2xl\) - var\(--space-2xl\)\);[^}]*margin:\s*0\.125rem var\(--space-md\) 0\.125rem calc\(var\(--space-xl\) \+ var\(--space-xl\) \+ var\(--space-xs\)\);[^}]*padding:\s*0\.3125rem 0\.5rem 0\.3125rem var\(--space-sm\);/s);
+      expect(css).toMatch(/\.app-nav-child-link\s*\{[^}]*gap:\s*var\(--space-sm\);[^}]*width:\s*calc\(100% - var\(--space-xl\) - var\(--space-md\) - var\(--space-md\)\);[^}]*margin:\s*0\.125rem var\(--space-md\) 0\.125rem calc\(var\(--space-xl\) \+ var\(--space-md\)\);[^}]*padding:\s*0\.3125rem 0\.5rem 0\.3125rem var\(--space-sm\);/s);
       expect(css).toMatch(/\.app-nav\s*\{[^}]*scrollbar-color:\s*var\(--border-strong\) transparent;[^}]*scrollbar-width:\s*thin;/s);
       expect(css).toMatch(/\.app-nav::-webkit-scrollbar-thumb\s*\{[^}]*border-radius:\s*999px;/s);
     });
@@ -421,7 +423,7 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
       expect(navBlock).not.toBeNull();
       const svgCount = (navBlock[0].match(/<svg/g) || []).length;
       const hiddenCount = (navBlock[0].match(/aria-hidden="true"/g) || []).length;
-      expect(svgCount).toBe(7);
+      expect(svgCount).toBe(16);
       expect(svgCount).toBe(hiddenCount);
     });
   });

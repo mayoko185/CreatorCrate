@@ -26,7 +26,7 @@ function activeSettingsNavLabels(html, expectedCurrentSettingsChild) {
   expect(html).not.toMatch(/<a\b(?=[^>]*\bdata-nav-key="settings")(?=[^>]*\baria-current="page")[^>]*>/);
 
   const currentChildren = [...html.matchAll(
-    /<a\b(?=[^>]*\bclass="(?:app-nav-child-link|mobile-nav-child-link)")(?=[^>]*\bdata-nav-key="(settings-[^"]+)")(?=[^>]*\baria-current="page")[^>]*>([^<]+)<\/a>/g,
+    /<a\b(?=[^>]*\bclass="(?:app-nav-child-link|mobile-nav-child-link)")(?=[^>]*\bdata-nav-key="(settings-[^"]+)")(?=[^>]*\baria-current="page")[^>]*>(?:(?!<\/a>)[\s\S])*?<span class="app-nav-child-label">([^<]+)<\/span>\s*<\/a>/g,
   )];
   expect(currentChildren).toHaveLength(2);
   expect(new Set(currentChildren.map((match) => match[1]))).toEqual(new Set([expectedCurrentSettingsChild]));
