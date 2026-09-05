@@ -4,6 +4,7 @@
 {% import "partials/dialog.njk" as dialog %}
 {% import "partials/dropdown.njk" as dropdown %}
 {% import "partials/release-create-dialog.njk" as releaseCreateDialog %}
+{% import "partials/release-social-prep-summary.njk" as socialPrepSummary %}
 
 {% set page_title = "Releases" %}
 {% set projectFilterHasSelection = false %}
@@ -145,7 +146,10 @@
         <tbody>
           {% for release in releases %}
             <tr{% if release.archived_at %} class="archived-row"{% endif %}>
-              <td><a href="/releases/{{ release.id }}">{{ release.title }}</a></td>
+              <td>
+                <a href="/releases/{{ release.id }}">{{ release.title }}</a>
+                {{ socialPrepSummary.render(release.socialPreparation) }}
+              </td>
               <td>{{ release.project_title }}</td>
               <td>{% set status = release.project_status %}{% include "partials/status-badge.njk" %}</td>
               <td>{{ release.planned_date or '—' }}{% if release.planned_time %} {{ release.planned_time }}{% endif %}</td>

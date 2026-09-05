@@ -15,9 +15,9 @@ Setup script `helper/windows/installer/CreatorCrate.OpenLocally.iss`
 building the Docker image — the Dockerfile copies this whole directory into
 the runtime image.
 
-This directory only ever contains the placeholder `.gitkeep` in the
-repository; the `.exe` artifact itself is ignored by git (`/downloads/*.exe`
-in `.gitignore` and `.git/info/exclude`) and is never committed.
+The repository intentionally tracks `downloads/CreatorCrate.OpenLocally-Setup.exe`
+as the shipped installer. Its explicit `.gitignore` exception preserves this
+deployment artifact for the download route and Docker runtime image.
 
 While the artifact is absent, the download route returns a clean 404 — that
 is the intended behavior in development.

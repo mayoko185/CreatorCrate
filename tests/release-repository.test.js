@@ -527,7 +527,7 @@ describe('release repository', () => {
         categoryId: category.id,
         nestedPath: 'nested',
       });
-      releaseRepo.addReleaseAsset(release.id, asset.id, 'source', 0);
+      releaseRepo.addReleaseAsset(release.id, asset.id, 'attachment', 0);
 
       const [sel] = releaseRepo.listReleaseAssets(release.id);
       expect(sel.category_id).toBe(category.id);
@@ -577,7 +577,7 @@ describe('release repository', () => {
       // Replace with new set
       releaseRepo.replaceReleaseAssets(release.id, [
         { assetId: asset2.id, role: 'preview', sortOrder: 0 },
-        { assetId: asset3.id, role: 'source', sortOrder: 1 },
+        { assetId: asset3.id, role: 'attachment', sortOrder: 1 },
       ]);
 
       const selections = releaseRepo.listReleaseAssets(release.id);
@@ -585,7 +585,7 @@ describe('release repository', () => {
       const assetIds = selections.map((s) => s.asset_id).sort();
       expect(assetIds).toEqual([asset2.id, asset3.id]);
       expect(selections.find((s) => s.asset_id === asset2.id).role).toBe('preview');
-      expect(selections.find((s) => s.asset_id === asset3.id).role).toBe('source');
+      expect(selections.find((s) => s.asset_id === asset3.id).role).toBe('attachment');
     });
 
     it('removes old selections and inserts new ones (explicit regression)', () => {
@@ -2667,7 +2667,7 @@ describe('release repository', () => {
       const a1 = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt' }));
       const a2 = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt' }));
       releaseRepo.addReleaseAsset(release.id, a1.id, 'preview', 0);
-      releaseRepo.addReleaseAsset(release.id, a2.id, 'source', 1);
+      releaseRepo.addReleaseAsset(release.id, a2.id, 'attachment', 1);
       const before = snapshotJunction(release.id);
 
       const a3 = assetRepo.upsert(projectId, 'c.txt', sampleAsset(projectId, { relativePath: 'c.txt' }));

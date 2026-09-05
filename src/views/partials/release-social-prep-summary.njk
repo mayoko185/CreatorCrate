@@ -1,0 +1,13 @@
+{# Display-only; accepts the shared presenter's socialPreparation projection. #}
+{% macro render(socialPreparation) %}
+  {% if socialPreparation.targets.length %}
+    <div class="release-social-prep-summary" role="group" aria-label="Social posts">
+      <small>Social posts</small>
+      {% for target in socialPreparation.targets %}
+        {% set compactLabels = { prepared: 'Prepared', failed: 'Failed', cancelled: 'Cancelled' } %}
+        {% set label = 'Not attempted' if target.noPreparationRequested else (compactLabels[target.status] or target.statusLabel) %}
+        <span class="status-badge status-badge--neutral">{{ target.platformName }} · {{ label }}</span>
+      {% endfor %}
+    </div>
+  {% endif %}
+{% endmacro %}

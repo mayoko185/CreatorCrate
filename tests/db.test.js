@@ -112,9 +112,13 @@ describe('database and migrations', () => {
          '019_add_global_watermark_sources.sql',
          '020_retire_project_watermarks.sql',
          '021_clear_processing_preset_scale_map_bindings.sql',
-         '022_add_project_type.sql',
-         '023_drop_generated_watermark_asset_id.sql',
-         '026_add_application_logs.sql',
+          '022_add_project_type.sql',
+          '023_drop_generated_watermark_asset_id.sql',
+          '024_add_project_page_defaults.sql',
+          '025_add_book_primary_images.sql',
+          '026_add_application_logs.sql',
+          '027_add_social_preparation.sql',
+          '028_remove_release_asset_source_role.sql',
        ]);
   });
 
@@ -134,8 +138,9 @@ describe('database and migrations', () => {
       'application_logs',
       'asset_category_defaults',
       'asset_tags',
-      'assets',
-      'book_contents',
+       'assets',
+       'book_contents',
+       'book_primary_images',
       'books',
       'chapters',
       'generated_artifacts',
@@ -144,14 +149,18 @@ describe('database and migrations', () => {
        'notes',
        'processing_presets',
        'project_asset_browser_preferences',
-      'project_asset_categories',
+       'project_asset_categories',
+       'project_page_defaults',
       'project_primary_images',
       'project_tags',
       'projects',
       'release_assets',
-      'releases',
-      'schema_migrations',
-      'sessions',
+       'release_social_platforms',
+       'releases',
+       'schema_migrations',
+       'sessions',
+       'social_prep_session_assets',
+       'social_prep_sessions',
       'tags',
        'watermark_scale_maps',
        'watermarks',
@@ -466,7 +475,7 @@ describe('database and migrations', () => {
       .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'release_assets'")
       .pluck()
       .get();
-    expect(ddl).toMatch(/CHECK\s*\(\s*role\s+IN\s*\(\s*'primary'\s*,\s*'preview'\s*,\s*'attachment'\s*,\s*'source'\s*\)\s*\)/i);
+    expect(ddl).toMatch(/CHECK\s*\(\s*role\s+IN\s*\(\s*'primary'\s*,\s*'preview'\s*,\s*'attachment'\s*\)\s*\)/i);
   });
 
   it('release_assets has sort_order check constraint (non-negative)', () => {

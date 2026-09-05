@@ -10,6 +10,9 @@ import {
   ReleaseNotFoundError,
 } from '../services/release-service.js';
 import { buildReleaseAssetPagePresentation } from '../services/release-asset-presenter.js';
+import { RELEASE_ASSET_ROLES } from '../data/release-repository.js';
+import { buildSocialContent } from '../services/social-content-builder.js';
+import { buildReleaseSocialPrepPresentation } from '../services/release-social-prep-presenter.js';
 import {
   buildPageDefaultsDialogModel,
   handlePageDefaultsPost,
@@ -319,7 +322,33 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
 
     try {
       releaseService.publishRelease(id, publishedDate);
-      res.redirect(`/releases/${id}`);
+
+      let socialPreparationAvailable = false;
+      const selectedPlatforms = readSubmittedSocialPlatforms(req.body?.socialPlatforms);
+      try {
+        const socialPrepSettingsService = req.app?.locals?.socialPrepSettingsService;
+        const socialPrepService = req.app?.locals?.socialPrepService;
+        if (selectedPlatforms.length > 0 && socialPrepSettingsService?.isEnabled?.()
+          && typeof socialPrepService?.initializePlatformState === 'function') {
+          const initialized = socialPrepService.initializePlatformState(id, selectedPlatforms);
+          socialPreparationAvailable = Array.isArray(initialized) && initialized.length > 0;
+        }
+      } catch (socialPrepError) {
+        try {
+          req.app?.locals?.applicationLogger?.error?.({
+            kind: 'diagnostic',
+            subsystem: 'social-preparation',
+            event: 'social_preparation.platform_initialization_failed',
+            message: 'Social Preparation platform state could not be initialized after publication.',
+            context: { releaseId: id, selectedPlatformCount: selectedPlatforms.length },
+            error: socialPrepError,
+          });
+        } catch {
+          // Social Preparation logging must not change the completed publication outcome.
+        }
+      }
+
+      res.redirect(`/releases/${id}${socialPreparationAvailable ? '?prep=1' : ''}`);
     } catch (err) {
       if (err instanceof ReleaseNotFoundError) {
         return next(createNotFound());
@@ -499,7 +528,7 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
     res.render('releases/assets.njk', {
       appName,
       ...buildAssetPageRenderModel(id, req, viewModel),
-      roles: ['primary', 'preview', 'attachment', 'source'],
+      roles: RELEASE_ASSET_ROLES,
     });
   });
 
@@ -588,7 +617,7 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
             assetPresentation: buildSubmittedReleaseAssetPresentation(viewModel, submittedAssets),
             errors: err.errors || { general: err.message },
           }),
-          roles: ['primary', 'preview', 'attachment', 'source'],
+          roles: RELEASE_ASSET_ROLES,
         });
         return;
       }
@@ -599,7 +628,7 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
           ...buildAssetPageRenderModel(id, req, viewModel, {
             errors: { general: err.message },
           }),
-          roles: ['primary', 'preview', 'attachment', 'source'],
+          roles: RELEASE_ASSET_ROLES,
         });
         return;
       }
@@ -610,7 +639,7 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
           ...buildAssetPageRenderModel(id, req, viewModel, {
             errors: { general: err.message },
           }),
-          roles: ['primary', 'preview', 'attachment', 'source'],
+          roles: RELEASE_ASSET_ROLES,
         });
         return;
       }
@@ -1145,6 +1174,22 @@ function buildReleaseDetailPageUrl(releaseId, rawQuery = {}) {
   };
 }
 
+function readSubmittedSocialPlatforms(value) {
+  if (Array.isArray(value)) return value;
+  return value === undefined ? [] : [value];
+}
+
+function buildSocialPrepPublishModel(req, release, releaseAssets) {
+  const socialPrepSettingsService = req?.app?.locals?.socialPrepSettingsService;
+  if (!socialPrepSettingsService?.isEnabled?.()) return null;
+
+  const platforms = socialPrepSettingsService.getPlatforms();
+  return {
+    platforms,
+    content: buildSocialContent({ release, releaseAssets, platforms }),
+  };
+}
+
 function buildReleaseDetailRenderModel({
   appName,
   releaseService,
@@ -1185,6 +1230,11 @@ function buildReleaseDetailRenderModel({
     editDialogForm: resolvedEditDialogForm,
     publishDialogOpen: publishAvailable && !resolvedEditDialogOpen && (publishDialogOpen || req?.query?.publish === '1'),
     publishDialogForm: resolvedPublishDialogForm,
+    socialPrepPublish: publishAvailable ? buildSocialPrepPublishModel(req, release, selectedAssets) : null,
+    socialPreparation: buildReleaseSocialPrepPresentation(
+      req.app.locals.socialPrepRepository.listPlatformsByReleaseId(release.id),
+      req.app.locals.socialPrepSettingsService.getSettings(),
+    ),
   };
 }
 
@@ -1305,7 +1355,7 @@ function renderAssetPageWithError(req, res, releaseId, errors, deps = {}) {
   res.status(422).render('releases/assets.njk', {
     appName,
     ...buildAssetPageRenderModel(releaseId, req, viewModel, { errors }),
-    roles: ['primary', 'preview', 'attachment', 'source'],
+    roles: RELEASE_ASSET_ROLES,
   });
 }
 

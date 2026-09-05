@@ -18,6 +18,7 @@ import {
 } from '../src/data/project-primary-image-repository.js';
 import { createTagRepository } from '../src/data/tag-repository.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
+import { createSocialPrepRepository } from '../src/data/social-prep-repository.js';
 import { getLocalTodayIso } from '../src/util/date.js';
 import { buildRevisionToken } from '../src/storage/preview-cache.js';
 
@@ -36,8 +37,9 @@ const ASSET_BROWSER_FIXED_STATEMENT_EXECUTIONS = 11;
 const ASSET_VIEWER_FIXED_STATEMENT_EXECUTIONS = 5;
 // getReleaseList composes: countFiltered (filtered total),
 // countFiltered({ includeArchived: true }) (hasAnyReleases existence), and
-// findPage (page rows). The count is fixed at 3 for every page.
-const RELEASE_LIST_FIXED_STATEMENT_EXECUTIONS = 3;
+// findPage (page rows), plus one saved-target batch and two Settings reads
+// for nonempty pages. Empty pages retain the original three statements.
+const RELEASE_LIST_FIXED_STATEMENT_EXECUTIONS = 6;
 
 function dashboardDefaults(sectionOverrides = {}) {
   return {
@@ -174,6 +176,72 @@ describe('workflow query service', () => {
   afterEach(() => {
     closeDatabase(db);
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  describe('read-only release Social Preparation collections', () => {
+    it('batches list targets once, preserves ordering, and never initializes unsaved targets', () => {
+      const project = insertProject(db, { title: 'Social list' });
+      const second = insertRelease(db, { projectId: project.id, title: 'Zulu' });
+      const first = insertRelease(db, { projectId: project.id, title: 'Alpha' });
+      const repository = createSocialPrepRepository(db);
+      repository.ensurePlatforms(second.id, ['bluesky', 'patreon']);
+      const batch = vi.spyOn(repository, 'listPlatformsByReleaseIds');
+      const single = vi.spyOn(repository, 'listPlatformsByReleaseId');
+      const settings = { getSettings: vi.fn(() => ({ enabled: false, platforms: ['x'] })) };
+      const query = createWorkflowQueryService({ db, socialPrepRepository: repository, socialPrepSettingsService: settings });
+      const changes = db.prepare('SELECT total_changes() AS n').get().n;
+      const result = query.getReleaseList({ sort: 'title', order: 'asc' });
+      expect(result.releases.map((release) => release.id)).toEqual([first.id, second.id]);
+      expect(batch).toHaveBeenCalledExactlyOnceWith([first.id, second.id]);
+      expect(single).not.toHaveBeenCalled();
+      expect(settings.getSettings).toHaveBeenCalledTimes(1);
+      expect(result.releases[0].socialPreparation.targets).toEqual([]);
+      expect(result.releases[1].socialPreparation).toMatchObject({ globallyEnabled: false, configuredPlatforms: ['x'],
+        targets: [{ platform: 'patreon', absentFromCurrentConfiguration: true }, { platform: 'bluesky' }] });
+      expect(db.prepare('SELECT total_changes() AS n').get().n).toBe(changes);
+    });
+
+    it('deduplicates overlapping workspace active/recent IDs without changing occurrence shapes or order', () => {
+      const project = insertProject(db, { title: 'Social workspace' });
+      const one = insertRelease(db, { projectId: project.id, title: 'One' });
+      const two = insertRelease(db, { projectId: project.id, title: 'Two' });
+      const releases = createReleaseRepository(db);
+      const expectedActive = releases.findActiveByProjectId(project.id, 5);
+      const expectedRecent = releases.findRecentByProjectId(project.id, 5);
+      const repository = createSocialPrepRepository(db);
+      repository.ensurePlatforms(one.id, ['x']);
+      const batch = vi.spyOn(repository, 'listPlatformsByReleaseIds');
+      const query = createWorkflowQueryService({ db, socialPrepRepository: repository });
+      const changes = db.prepare('SELECT total_changes() AS n').get().n;
+      const { active, recent } = query.getProjectWorkspace(project.id).releaseSummary;
+      expect(active.map((release) => release.id)).toEqual(expectedActive.map((release) => release.id));
+      expect(recent.map((release) => release.id)).toEqual(expectedRecent.map((release) => release.id));
+      expect(batch).toHaveBeenCalledExactlyOnceWith([...new Set([...active, ...recent].map((release) => release.id))]);
+      expect(batch.mock.calls[0][0]).toHaveLength(2);
+      for (const release of [...active, ...recent]) {
+        expect(release.socialPreparation.targets.map((target) => target.platform)).toEqual(release.id === one.id ? ['x'] : []);
+      }
+      expect(active.map(({ socialPreparation, ...release }) => release)).toEqual(expectedActive);
+      expect(recent.every((release) => Array.isArray(release.thumbnails))).toBe(true);
+      expect(db.prepare('SELECT total_changes() AS n').get().n).toBe(changes);
+      expect(two.id).not.toBe(one.id);
+    });
+
+    it('skips enrichment for empty collections and unrelated dashboard/calendar/asset references', () => {
+      const project = insertProject(db, { title: 'No saved releases' });
+      const repository = createSocialPrepRepository(db);
+      const batch = vi.spyOn(repository, 'listPlatformsByReleaseIds');
+      const settings = { getSettings: vi.fn(() => ({ enabled: true, platforms: ['x'] })) };
+      const query = createWorkflowQueryService({ db, socialPrepRepository: repository, socialPrepSettingsService: settings });
+      query.getReleaseList({});
+      query.getProjectWorkspace(project.id);
+      insertRelease(db, { projectId: project.id, title: 'Calendar release', plannedDate: '2030-01-01' });
+      query.getDashboardData();
+      query.getReleaseCalendar('2030-01');
+      query.getProjectAssetBrowser(project.id, {});
+      expect(batch).not.toHaveBeenCalled();
+      expect(settings.getSettings).not.toHaveBeenCalled();
+    });
   });
 
   describe('getAssetLibraryExtensions', () => {
@@ -2015,7 +2083,7 @@ describe('workflow query service', () => {
       expect(result.hasAnyReleases).toBe(false);
       expect(result.releases).toEqual([]);
       // Three fixed queries remain: filtered total, hasAnyReleases, findPage.
-      expect(count).toBe(RELEASE_LIST_FIXED_STATEMENT_EXECUTIONS);
+      expect(count).toBe(3);
     });
 
     it('releases exist but filters return zero rows: hasAnyReleases true, total zero, count fixed', () => {
@@ -2041,7 +2109,7 @@ describe('workflow query service', () => {
       expect(result.hasAnyReleases).toBe(true);
       expect(result.releases).toEqual([]);
       // Zero-row page uses the same three fixed queries.
-      expect(count).toBe(RELEASE_LIST_FIXED_STATEMENT_EXECUTIONS);
+      expect(count).toBe(3);
     });
 
     it('only archived releases exist: hasAnyReleases true via the includeArchived existence count', () => {
@@ -2063,7 +2131,7 @@ describe('workflow query service', () => {
       expect(result.total).toBe(0);
       expect(result.hasAnyReleases).toBe(true);
       expect(result.releases).toEqual([]);
-      expect(count).toBe(RELEASE_LIST_FIXED_STATEMENT_EXECUTIONS);
+      expect(count).toBe(3);
     });
   });
   it('does not expose the removed Release Board query path', () => {

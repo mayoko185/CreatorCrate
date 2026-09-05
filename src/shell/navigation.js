@@ -87,6 +87,13 @@ const SETTINGS_CHILDREN = [
     matches: ['/settings/nsfw-filter'],
   },
   {
+    key: 'social-prep',
+      icon: 'share-2',
+    label: 'Social Preparation',
+    href: '/settings/social-prep',
+    matches: ['/settings/social-prep'],
+  },
+  {
     key: 'asset-categories',
       icon: 'boxes',
     label: 'Asset Categories',

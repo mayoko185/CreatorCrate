@@ -20,6 +20,13 @@ import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.
 import { NSFW_FILTER_ENABLED_KEY } from '../src/services/nsfw-filter-settings-service.js';
 import { makeZip } from './helpers/zip-fixture.js';
 
+vi.mock('../src/services/social-prep-tokens.js', async (importOriginal) => {
+  const original = await importOriginal();
+  return Object.fromEntries(Object.entries(original).map(([key, value]) => [
+    key, typeof value === 'function' ? vi.fn(value) : value,
+  ]));
+});
+
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const PROJECTS_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/projects/index.njk', import.meta.url));
 const LEGACY_NEW_PROJECT_PRIORITY_KEY = 'page_defaults.new_project.priority';
@@ -4103,6 +4110,114 @@ describe('project HTTP workflow', () => {
     });
   });
 
+  describe('project detail Social Preparation summaries', () => {
+    let projectId, releaseId;
+
+    beforeEach(async () => {
+      projectId = await createProject({ title: 'Social summary fixture' });
+      releaseId = db.prepare("INSERT INTO releases (project_id, title, planned_date) VALUES (?, 'Saved targets release', '2099-01-01') RETURNING id").get(projectId).id;
+      app.locals.socialPrepSettingsService.setPlatforms(['patreon', 'x', 'bluesky']);
+      app.locals.socialPrepSettingsService.setEnabled(true);
+    });
+
+    afterEach(() => vi.restoreAllMocks());
+
+    function target(platform, status, attempts = 1, id = releaseId) {
+      app.locals.socialPrepRepository.ensurePlatforms(id, [platform]);
+      db.prepare(`UPDATE release_social_platforms SET status = ?, attempts = ?, message = ?, detail_code = ?
+        WHERE release_id = ? AND platform = ?`).run(status, attempts,
+        'PRIVATE_MESSAGE PRIVATE_TOKEN PRIVATE_SESSION PRIVATE_STDERR C:\\PRIVATE_PATH PRIVATE_CREATOR PRIVATE_BROWSER',
+        'PRIVATE_DETAIL_CODE', id, platform);
+    }
+
+    async function page() {
+      const { text } = await agent.get(`/projects/${projectId}`).expect(200);
+      expect(text).not.toMatch(/PRIVATE_|openlocally:|creatorcrate-social:|\/social-prep\/activate|\/social-preparation\/activate/i);
+      const list = extractReleaseList(text);
+      expect(list).not.toMatch(/Send to helper again|Prepare again|Retry|Reprepare|data-social/i);
+      for (const summary of list.match(/<div class="release-social-prep-summary"[\s\S]*?<\/div>/g) || []) {
+        expect(summary).toContain('<small>Social posts</small>');
+        expect(summary).toContain('aria-label="Social posts"');
+        expect(summary).not.toMatch(/Social targets|\(last recorded preparation\)/);
+        expect(summary).not.toMatch(/<form\b|<button\b|<input\b|<a\b|\b(posted|published|submitted|live)\b|sent successfully/i);
+      }
+      return { text, list, item: extractReleaseItem(list, releaseId) };
+    }
+
+    it('shows mixed platforms in presenter order after metadata, without crossing release boundaries', async () => {
+      target('bluesky', 'failed');
+      target('x', 'prepared');
+      target('patreon', 'pending', 0);
+      const otherId = db.prepare("INSERT INTO releases (project_id, title, published_date) VALUES (?, 'Other release', '2026-08-01') RETURNING id").get(projectId).id;
+      target('x', 'cancelled', 1, otherId);
+      const { text, list, item } = await page();
+      const summary = item.match(/<div class="release-social-prep-summary"[\s\S]*?<\/div>/)[0];
+      expect(summary.match(/class="status-badge status-badge--neutral">[^<]+/g)).toEqual([
+        'class="status-badge status-badge--neutral">Patreon · Not attempted',
+        'class="status-badge status-badge--neutral">X · Prepared',
+        'class="status-badge status-badge--neutral">Bluesky · Failed',
+      ]);
+      expect(item).toContain(`href="/releases/${releaseId}">Saved targets release</a>`);
+      expect(item).toContain('planned 2099-01-01');
+      expect(item.indexOf('updated')).toBeLessThan(item.indexOf(summary));
+      expect(item).not.toContain('Cancelled');
+      const other = extractReleaseItem(list, otherId);
+      expect(other).toContain('X · Cancelled');
+      expect(other).toContain('published 2026-08-01');
+      expect(other).not.toMatch(/Patreon|Bluesky|Prepared/);
+      expect(text).toContain(`href="/releases?project=${projectId}"`);
+      expect(text).toContain(`href="/releases/new?projectId=${projectId}"`);
+    });
+
+    it('omits targets rather than backfilling from current Settings', async () => {
+      const { item } = await page();
+      expect(item).not.toMatch(/Social posts|release-social-prep-summary/);
+      expect(app.locals.socialPrepRepository.listPlatformsByReleaseId(releaseId)).toEqual([]);
+    });
+
+    it.each([
+      ['pending', 'Pending'], ['starting', 'Starting'], ['preparing', 'Preparing'],
+      ['uploading', 'Uploading'], ['auth_required', 'Authentication required'],
+    ])('shows persisted %s with the compact Social posts label', async (status, label) => {
+      target('x', status);
+      const { item } = await page();
+      expect(item).toContain(`X · ${label}`);
+      expect(item).toContain('<small>Social posts</small>');
+    });
+
+    it.each([true, false])('retains removed saved targets on archived read-only summaries (enabled=%s)', async (enabled) => {
+      target('patreon', 'prepared');
+      app.locals.socialPrepSettingsService.setPlatforms(['bluesky']);
+      app.locals.socialPrepSettingsService.setEnabled(enabled);
+      db.prepare("UPDATE projects SET archived_at = '2026-08-01' WHERE id = ?").run(projectId);
+      db.prepare("UPDATE releases SET archived_at = '2026-08-01' WHERE id = ?").run(releaseId);
+      const { text, item } = await page();
+      expect(item).toContain('Patreon · Prepared');
+      expect(item).not.toContain('Bluesky');
+      expect(text).toContain('This project is archived and read-only');
+      expect(text).not.toContain(`href="/releases/new?projectId=${projectId}"`);
+    });
+
+    it.each([false, true])('GET remains read-only and batches overlapping active/recent IDs once (saved=%s)', async (saved) => {
+      if (saved) target('x', 'prepared');
+      const queries = vi.spyOn(db, 'prepare');
+      const tokens = await import('../src/services/social-prep-tokens.js');
+      app.locals.socialPrepService = Object.fromEntries(Object.entries(app.locals.socialPrepService).map(([key, value]) => [
+        key, typeof value === 'function' ? vi.fn(() => { throw new Error('Display must not execute preparation'); }) : value,
+      ]));
+      const executionSpies = [...Object.values(app.locals.socialPrepService), ...Object.values(tokens)].filter(vi.isMockFunction);
+      executionSpies.forEach((spy) => spy.mockClear());
+      const before = db.prepare('SELECT total_changes() AS n').get().n;
+      const { list } = await page();
+      const socialReads = queries.mock.calls.map(([sql]) => sql).filter((sql) => /FROM release_social_platforms/.test(sql));
+      expect(socialReads).toHaveLength(1);
+      expect(socialReads[0]).toContain('WHERE release_id IN (?)');
+      expect(list.match(new RegExp(`href="/releases/${releaseId}"`, 'g'))).toHaveLength(1);
+      expect(db.prepare('SELECT total_changes() AS n').get().n).toBe(before);
+      executionSpies.forEach((spy) => expect(spy).not.toHaveBeenCalled());
+    });
+  });
+
   it('project detail renders release thumbnails per release with accessible labels and a display cap', async () => {
     const projectId = await createProject({ title: 'Release Thumbnail Project' });
     const assetRepository = createAssetRepository(db);
@@ -4142,6 +4257,7 @@ describe('project HTTP workflow', () => {
     const firstRelease = createRelease('First Thumbnail Release');
     const secondRelease = createRelease('Second Thumbnail Release');
     const emptyRelease = createRelease('Empty Thumbnail Release');
+    app.locals.socialPrepRepository.ensurePlatforms(firstRelease.id, ['x']);
 
     firstAssets.forEach((asset, sortOrder) => {
       releaseRepository.addReleaseAsset(firstRelease.id, asset.id, 'attachment', sortOrder);
@@ -4168,6 +4284,8 @@ describe('project HTTP workflow', () => {
     expect(firstItem).toContain(`<a href="/releases/${firstRelease.id}">First Thumbnail Release</a>`);
     expect(firstItem).toContain('class="meta"');
     expect(firstItem).toContain('updated');
+    expect(firstItem).toContain('X · Not attempted');
+    expect(firstItem.indexOf('release-social-prep-summary')).toBeLessThan(firstItem.indexOf('release-thumbnail-strip'));
     expect(firstThumbnailLinks).toHaveLength(12);
     for (const [index, asset] of firstAssets.slice(0, 12).entries()) {
       expect(firstThumbnailLinks[index]).toContain(`href="/projects/${projectId}/assets/${asset.id}"`);

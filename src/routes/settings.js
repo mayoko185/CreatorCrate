@@ -18,6 +18,7 @@ import {
 } from '../services/page-defaults-service.js';
 import { TAG_NAME_MAX, TagNotFoundError, TagValidationError } from '../services/tag-service.js';
 import { OpenLocallySettingsValidationError } from '../services/open-locally-settings-service.js';
+import { SocialPrepSettingsValidationError } from '../services/social-prep-settings-service.js';
 import {
   PreviewCategoryValidationError,
   PREVIEW_CATEGORY_DISABLED_VALUE,
@@ -94,6 +95,7 @@ const NOTICES = {
   tag_deleted: { variant: 'success', text: 'Tag deleted successfully.' },
   nsfw_filter_enabled: { variant: 'success', text: 'NSFW Filter enabled.' },
   nsfw_filter_disabled: { variant: 'success', text: 'NSFW Filter disabled.' },
+  social_prep_saved: { variant: 'success', text: 'Social Preparation settings saved.' },
   open_locally_saved: { variant: 'success', text: 'Open locally mapping saved.' },
   open_locally_cleared: { variant: 'success', text: 'Open locally mapping removed.' },
   logging_cleared: { variant: 'success', text: 'Application logs cleared.' },
@@ -230,6 +232,14 @@ function getNsfwFilterSettingsService(req) {
   const service = req.app?.locals?.nsfwFilterSettingsService;
   if (!service) {
     throw new Error('Settings NSFW Filter requires app.locals.nsfwFilterSettingsService.');
+  }
+  return service;
+}
+
+function getSocialPrepSettingsService(req) {
+  const service = req.app?.locals?.socialPrepSettingsService;
+  if (!service) {
+    throw new Error('Settings Social Preparation requires app.locals.socialPrepSettingsService.');
   }
   return service;
 }
@@ -608,6 +618,21 @@ function renderNsfwFilterPage(req, res, {
     enabled: getNsfwFilterSettingsService(req).isEnabled(),
     notice,
     errors,
+  });
+}
+
+function renderSocialPrepPage(req, res, {
+  appName,
+  status = 200,
+  notice = null,
+  errors = {},
+} = {}) {
+  res.status(status).render('settings/social-prep.njk', {
+    appName,
+    settings: getSocialPrepSettingsService(req).getSettings(),
+    notice,
+    errors,
+    errorMessages: Object.values(errors),
   });
 }
 
@@ -1142,6 +1167,50 @@ export function createSettingsRouter({
       }
       res.redirect(`/settings/nsfw-filter?notice=${enabled ? 'nsfw_filter_enabled' : 'nsfw_filter_disabled'}`);
     } catch (err) {
+      return next(err);
+    }
+  });
+
+  router.get('/social-prep', (req, res) => {
+    renderSocialPrepPage(req, res, {
+      appName,
+      notice: resolveNotice(req.query.notice),
+    });
+  });
+
+  router.post('/social-prep', (req, res, next) => {
+    let enabled;
+    try {
+      enabled = parseEnabledField(req.body?.enabled, { defaultValue: false });
+    } catch (err) {
+      if (err instanceof AssetCategoryValidationError) {
+        renderSocialPrepPage(req, res, {
+          appName,
+          status: 422,
+          errors: err.errors,
+        });
+        return;
+      }
+      return next(err);
+    }
+
+    const platforms = req.body?.platforms === undefined
+      ? []
+      : (Array.isArray(req.body.platforms) ? req.body.platforms : [req.body.platforms]);
+    const service = getSocialPrepSettingsService(req);
+    try {
+      service.setPlatforms(platforms);
+      service.setEnabled(enabled);
+      res.redirect('/settings/social-prep?notice=social_prep_saved');
+    } catch (err) {
+      if (err instanceof SocialPrepSettingsValidationError) {
+        renderSocialPrepPage(req, res, {
+          appName,
+          status: 422,
+          errors: err.errors,
+        });
+        return;
+      }
       return next(err);
     }
   });

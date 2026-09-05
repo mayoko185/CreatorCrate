@@ -148,6 +148,8 @@
     </div>
   </section>
 
+  {% include "partials/release-social-prep-detail.njk" %}
+
   {% if release.description %}
     <section class="project-detail-section">
       <h2>Description</h2>
@@ -237,6 +239,6 @@
   {% endif %}
 
   {% if not overlayIsArchived and not overlayIsPublished %}
-    {{ releasePublishDialog.render(release, project, releaseAssets, publishDialogForm, _csrf, publishDialogOpen) }}
+    {{ releasePublishDialog.render(release, project, releaseAssets, publishDialogForm, socialPrepPublish, _csrf, publishDialogOpen) }}
   {% endif %}
 {% endblock %}

@@ -26,6 +26,10 @@
  */
 
 import { createReleaseRepository } from '../data/release-repository.js';
+import { createSocialPrepRepository } from '../data/social-prep-repository.js';
+import { createAppMetaRepository } from '../data/app-meta-repository.js';
+import { createSocialPrepSettingsService } from './social-prep-settings-service.js';
+import { buildReleaseSocialPrepPresentation } from './release-social-prep-presenter.js';
 import { createProjectRepository } from '../data/project-repository.js';
 import { createAssetRepository } from '../data/asset-repository.js';
 import { createAssetCategoryRepository } from '../data/asset-category-repository.js';
@@ -378,10 +382,15 @@ export function createWorkflowQueryService({
   projectPrimaryImageRepository,
   assetBrowserPreferenceService: injectedAssetBrowserPreferenceService,
   releaseRepository: injectedReleaseRepository,
+  socialPrepRepository: injectedSocialPrepRepository,
+  socialPrepSettingsService: injectedSocialPrepSettingsService,
   tagRepository: injectedTagRepository,
 }) {
   const projectRepository = createProjectRepository(db);
   const releaseRepository = injectedReleaseRepository ?? createReleaseRepository(db);
+  const socialPrepRepository = injectedSocialPrepRepository ?? createSocialPrepRepository(db);
+  const socialPrepSettingsService = injectedSocialPrepSettingsService
+    ?? createSocialPrepSettingsService({ appMetaRepository: createAppMetaRepository(db) });
   const assetRepository = createAssetRepository(db);
   const assetCategoryRepository = createAssetCategoryRepository(db);
   const primaryImageRepository = projectPrimaryImageRepository ?? createProjectPrimaryImageRepository(db);
@@ -528,12 +537,15 @@ export function createWorkflowQueryService({
 
     // Archived projects: skip the active-release query entirely. Historical
     // and recently updated releases are still surfaced through `recent`.
-    const activeReleases = isArchived
+    let activeReleases = isArchived
       ? []
       : releaseRepository.findActiveByProjectId(projectId, limits.activeReleases);
-    const recentReleases = attachReleaseThumbnails(
+    let recentReleases = attachReleaseThumbnails(
       releaseRepository.findRecentByProjectId(projectId, limits.recentReleases)
     );
+    const enrichedReleases = attachReleaseSocialPreparation([...activeReleases, ...recentReleases]);
+    recentReleases = enrichedReleases.slice(activeReleases.length);
+    activeReleases = enrichedReleases.slice(0, activeReleases.length);
     const releaseCount = releaseRepository.countFiltered({
       projectId,
       includeArchived: true,
@@ -1088,7 +1100,23 @@ export function createWorkflowQueryService({
       offset,
     });
 
-    return { releases, total, page, pageSize: filters.pageSize, pageCount, today, hasAnyReleases };
+    return { releases: attachReleaseSocialPreparation(releases), total, page, pageSize: filters.pageSize, pageCount, today, hasAnyReleases };
+  }
+
+  // One saved-target batch and one current Settings snapshot per displayed union.
+  // Keep each occurrence's existing fields (including recent-only thumbnails).
+  function attachReleaseSocialPreparation(releases) {
+    if (releases.length === 0) return [];
+    const ids = [...new Set(releases.map((release) => release.id))];
+    const rowsByReleaseId = new Map(ids.map((id) => [id, []]));
+    for (const row of socialPrepRepository.listPlatformsByReleaseIds(ids)) {
+      rowsByReleaseId.get(row.release_id)?.push(row);
+    }
+    const settings = socialPrepSettingsService.getSettings();
+    const presentationById = new Map(ids.map((id) => [
+      id, buildReleaseSocialPrepPresentation(rowsByReleaseId.get(id), settings),
+    ]));
+    return releases.map((release) => ({ ...release, socialPreparation: presentationById.get(release.id) }));
   }
 
 

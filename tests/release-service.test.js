@@ -1666,7 +1666,7 @@ describe('release service', () => {
       const before = snapshotReleaseAssets(release.id);
 
       expect(() => {
-        service.selectAssets(release.id, [{ assetId: asset.id, role: 'source', sortOrder: 9 }]);
+        service.selectAssets(release.id, [{ assetId: asset.id, role: 'attachment', sortOrder: 9 }]);
       }).toThrow(ReleasePublishedError);
 
       expect(snapshotReleaseAssets(release.id)).toEqual(before);
@@ -1775,7 +1775,7 @@ describe('release service', () => {
 
       service.selectAssets(release.id, [
         { assetId: first.id, role: 'primary', sortOrder: 5 },
-        { assetId: second.id, role: 'source', sortOrder: 9 },
+        { assetId: second.id, role: 'attachment', sortOrder: 9 },
       ]);
 
       service.selectAssets(release.id, [
@@ -1786,7 +1786,7 @@ describe('release service', () => {
 
       expect(service.listReleaseAssets(release.id).map(({ asset_id, role, sort_order }) => ({ asset_id, role, sort_order }))).toEqual([
         { asset_id: first.id, role: 'primary', sort_order: 0 },
-        { asset_id: second.id, role: 'source', sort_order: 1 },
+        { asset_id: second.id, role: 'attachment', sort_order: 1 },
         { asset_id: third.id, role: 'attachment', sort_order: 2 },
       ]);
     });
@@ -2043,7 +2043,7 @@ describe('release service', () => {
       service.selectAssets(release.id, [
         { assetId: asset1.id, role: 'primary', sortOrder: 0 },
         { assetId: asset2.id, role: 'attachment', sortOrder: 1 },
-        { assetId: asset3.id, role: 'source', sortOrder: 2 },
+        { assetId: asset3.id, role: 'attachment', sortOrder: 2 },
       ]);
 
       const removed = service.removeSelectedAsset(release.id, asset2.id);
@@ -2139,14 +2139,13 @@ describe('release service', () => {
       expect(rows[0].role).toBe('preview');
     });
 
-    it('updates role to source', () => {
+    it('rejects the obsolete source role', () => {
       const release = service.createRelease(projectId, validInput());
       const asset = assetRepo.upsert(projectId, 'role-src.txt', sampleAsset(projectId));
       service.addCandidateAsset(release.id, asset.id);
 
-      service.updateAssetRole(release.id, asset.id, 'source');
-      const rows = service.listReleaseAssets(release.id);
-      expect(rows[0].role).toBe('source');
+      expect(() => service.updateAssetRole(release.id, asset.id, 'source')).toThrow(ReleaseValidationError);
+      expect(service.listReleaseAssets(release.id)[0].role).toBe('attachment');
     });
 
     it('rejects invalid role', () => {
@@ -2169,12 +2168,12 @@ describe('release service', () => {
         { assetId: asset2.id, role: 'attachment', sortOrder: 1 },
       ]);
 
-      service.updateAssetRole(release.id, asset1.id, 'source');
+      service.updateAssetRole(release.id, asset1.id, 'preview');
 
       const rows = service.listReleaseAssets(release.id);
       expect(rows).toHaveLength(2);
       expect(rows[0].asset_id).toBe(asset1.id);
-      expect(rows[0].role).toBe('source');
+      expect(rows[0].role).toBe('preview');
       expect(rows[0].sort_order).toBe(0);
       expect(rows[1].asset_id).toBe(asset2.id);
       expect(rows[1].role).toBe('attachment');
@@ -2191,7 +2190,7 @@ describe('release service', () => {
         { assetId: asset2.id, role: 'attachment', sortOrder: 5 },
       ]);
 
-      service.updateAssetRole(release.id, asset1.id, 'source');
+      service.updateAssetRole(release.id, asset1.id, 'preview');
 
       const rows = service.listReleaseAssets(release.id);
       expect(rows[0].sort_order).toBe(0);
@@ -2217,7 +2216,7 @@ describe('release service', () => {
       service.selectAssets(release.id, [
         { assetId: asset1.id, role: 'primary', sortOrder: 0 },
         { assetId: asset2.id, role: 'attachment', sortOrder: 1 },
-        { assetId: asset3.id, role: 'source', sortOrder: 2 },
+        { assetId: asset3.id, role: 'attachment', sortOrder: 2 },
       ]);
 
       const moved = service.moveAssetUp(release.id, asset2.id);
@@ -2295,7 +2294,7 @@ describe('release service', () => {
       service.selectAssets(release.id, [
         { assetId: asset1.id, role: 'primary', sortOrder: 0 },
         { assetId: asset2.id, role: 'attachment', sortOrder: 1 },
-        { assetId: asset3.id, role: 'source', sortOrder: 2 },
+        { assetId: asset3.id, role: 'attachment', sortOrder: 2 },
       ]);
 
       const moved = service.moveAssetDown(release.id, asset2.id);
@@ -2340,7 +2339,7 @@ describe('release service', () => {
       service.selectAssets(release.id, [
         { assetId: asset1.id, role: 'primary', sortOrder: 0 },
         { assetId: asset2.id, role: 'attachment', sortOrder: 1 },
-        { assetId: asset3.id, role: 'source', sortOrder: 2 },
+        { assetId: asset3.id, role: 'attachment', sortOrder: 2 },
       ]);
 
       service.moveAssetDown(release.id, asset1.id);
@@ -2681,7 +2680,7 @@ describe('release service', () => {
       service.selectAssets(release.id, [
         { assetId: asset1.id, role: 'primary', sortOrder: 0 },
         { assetId: asset2.id, role: 'attachment', sortOrder: 1 },
-        { assetId: asset3.id, role: 'source', sortOrder: 2 },
+        { assetId: asset3.id, role: 'attachment', sortOrder: 2 },
       ]);
 
       const removed = service.removeSelectedAsset(release.id, asset2.id);
@@ -2727,7 +2726,7 @@ describe('release service', () => {
       service.selectAssets(release.id, [
         { assetId: asset1.id, role: 'primary', sortOrder: 0 },
         { assetId: asset2.id, role: 'attachment', sortOrder: 0 },
-        { assetId: asset3.id, role: 'source', sortOrder: 0 },
+        { assetId: asset3.id, role: 'attachment', sortOrder: 0 },
       ]);
 
       // Order is asset1, asset2, asset3 (asset_id ASC tie-break)
@@ -2756,7 +2755,7 @@ describe('release service', () => {
       service.selectAssets(release.id, [
         { assetId: asset1.id, role: 'primary', sortOrder: 0 },
         { assetId: asset2.id, role: 'attachment', sortOrder: 0 },
-        { assetId: asset3.id, role: 'source', sortOrder: 0 },
+        { assetId: asset3.id, role: 'attachment', sortOrder: 0 },
       ]);
 
       // Order is asset1, asset2, asset3 (asset_id ASC tie-break)
@@ -2784,7 +2783,7 @@ describe('release service', () => {
       service.selectAssets(release.id, [
         { assetId: asset1.id, role: 'primary', sortOrder: 0 },
         { assetId: asset2.id, role: 'attachment', sortOrder: 1 },
-        { assetId: asset3.id, role: 'source', sortOrder: 2 },
+        { assetId: asset3.id, role: 'attachment', sortOrder: 2 },
       ]);
 
       service.moveAssetUp(release.id, asset3.id);
@@ -2803,7 +2802,7 @@ describe('release service', () => {
       service.selectAssets(release.id, [
         { assetId: asset1.id, role: 'primary', sortOrder: 0 },
         { assetId: asset2.id, role: 'attachment', sortOrder: 1 },
-        { assetId: asset3.id, role: 'source', sortOrder: 2 },
+        { assetId: asset3.id, role: 'attachment', sortOrder: 2 },
       ]);
 
       service.moveAssetDown(release.id, asset1.id);
@@ -2822,7 +2821,7 @@ describe('release service', () => {
       service.selectAssets(release.id, [
         { assetId: asset1.id, role: 'primary', sortOrder: 0 },
         { assetId: asset2.id, role: 'attachment', sortOrder: 5 },
-        { assetId: asset3.id, role: 'source', sortOrder: 9 },
+        { assetId: asset3.id, role: 'attachment', sortOrder: 9 },
       ]);
 
       service.removeSelectedAsset(release.id, asset2.id);
@@ -2842,7 +2841,7 @@ describe('release service', () => {
       service.selectAssets(release.id, [
         { assetId: asset1.id, role: 'primary', sortOrder: 0 },
         { assetId: asset2.id, role: 'attachment', sortOrder: 5 },
-        { assetId: asset3.id, role: 'source', sortOrder: 9 },
+        { assetId: asset3.id, role: 'attachment', sortOrder: 9 },
       ]);
 
       service.moveAssetUp(release.id, asset3.id);
@@ -2860,7 +2859,7 @@ describe('release service', () => {
       service.selectAssets(release.id, [
         { assetId: asset1.id, role: 'primary', sortOrder: 0 },
         { assetId: asset2.id, role: 'attachment', sortOrder: 1 },
-        { assetId: asset3.id, role: 'source', sortOrder: 2 },
+        { assetId: asset3.id, role: 'attachment', sortOrder: 2 },
       ]);
 
       const repo = createReleaseRepository(db);
@@ -2910,7 +2909,7 @@ describe('release service', () => {
       service.selectAssets(release.id, [
         { assetId: asset1.id, role: 'primary', sortOrder: 0 },
         { assetId: asset2.id, role: 'attachment', sortOrder: 1 },
-        { assetId: asset3.id, role: 'source', sortOrder: 2 },
+        { assetId: asset3.id, role: 'attachment', sortOrder: 2 },
       ]);
 
       const before = snapshotReleaseAssets(release.id);
@@ -2935,7 +2934,7 @@ describe('release service', () => {
       service.selectAssets(release.id, [
         { assetId: asset1.id, role: 'primary', sortOrder: 0 },
         { assetId: asset2.id, role: 'attachment', sortOrder: 1 },
-        { assetId: asset3.id, role: 'source', sortOrder: 2 },
+        { assetId: asset3.id, role: 'attachment', sortOrder: 2 },
       ]);
 
       const before = snapshotReleaseAssets(release.id);

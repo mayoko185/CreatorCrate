@@ -18,10 +18,15 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <AssemblyMetadata Include="CreatorCrate.RepositoryRoot" Value="$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\..\..\..\..'))" />
   </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\OpenLocally\OpenLocally.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Update="diagnostic-social-request.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

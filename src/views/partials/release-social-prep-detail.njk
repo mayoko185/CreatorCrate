@@ -1,0 +1,42 @@
+<section id="release-social-preparation" class="project-detail-section" aria-labelledby="release-social-preparation-heading">
+  <h2 id="release-social-preparation-heading">Social Posts</h2>
+  <div class="project-detail-section-body">
+    {% if socialPreparation.targets.length %}
+      {% if not socialPreparation.globallyEnabled %}
+        {% set noticeVariant = "info" %}
+        {% set noticeText = "Social Preparation is currently disabled. Saved targets and recorded preparation information are retained below." %}
+        {% include "partials/notice.njk" %}
+      {% endif %}
+      <p>These are last recorded states, not live progress. Preparation-request counts do not confirm that a browser or adapter ran.</p>
+      {% for target in socialPreparation.targets %}
+        <article aria-labelledby="release-social-preparation-{{ target.platform }}">
+          <h3 id="release-social-preparation-{{ target.platform }}">{{ target.platformName }}</h3>
+          {% if target.absentFromCurrentConfiguration %}
+            <p>Currently disabled or not configured in Settings. This saved target and its recorded state are retained.</p>
+          {% endif %}
+          <dl class="detail-list release-detail-list">
+            <dt>Last recorded state</dt>
+            <dd><span class="status-badge">{% if target.noPreparationRequested %}Not attempted{% elif target.status == 'pending' %}Preparation request pending{% else %}{{ target.statusLabel }}{% endif %}</span></dd>
+            <dt>Preparation requests</dt>
+            <dd>{{ target.preparationRequestCount }}</dd>
+            <dt>Last updated</dt>
+            <dd>{{ target.lastUpdatedAt or 'Not recorded' }}</dd>
+            {% if target.firstPreparedAt %}
+              <dt>First prepared</dt>
+              <dd>{{ target.firstPreparedAt }}</dd>
+            {% endif %}
+          </dl>
+          {% if target.noPreparationRequested %}
+            <p>No helper preparation request has been issued.</p>
+          {% elif target.status == 'auth_required' %}
+            <p>Sign-in is required for preparation. Review retained diagnostic context in <a href="/settings/logs?subsystem=social_preparation">Social Preparation Logs</a>.</p>
+          {% elif target.status == 'failed' %}
+            <p>Preparation failed. Review retained diagnostic context in <a href="/settings/logs?subsystem=social_preparation">Social Preparation Logs</a>.</p>
+          {% endif %}
+        </article>
+      {% endfor %}
+    {% else %}
+      <p>No Social posts are saved for this release.</p>
+    {% endif %}
+  </div>
+</section>

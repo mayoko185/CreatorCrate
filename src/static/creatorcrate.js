@@ -25,6 +25,7 @@ import { enhanceCategoryDetails } from './client/category-details.js';
 import { enhanceDefaultsFetchSave } from './client/settings-defaults-fetch-save.js';
 import { enhanceAssetCategoryPreferencesFetchSave } from './client/settings-asset-category-preferences-fetch-save.js';
 import { enhanceNsfwFilterFetchSave } from './client/settings-nsfw-filter-fetch-save.js';
+import { enhanceSocialPrepFetchSave } from './client/settings-social-prep-fetch-save.js';
 import { enhanceOpenLocallyFetchSave } from './client/settings-open-locally-fetch-save.js';
 import { enhanceSettingsFetchSave } from './client/settings-fetch-save.js';
 import {
@@ -107,6 +108,7 @@ export {
   enhanceDefaultsFetchSave,
   enhanceAssetCategoryPreferencesFetchSave,
   enhanceNsfwFilterFetchSave,
+  enhanceSocialPrepFetchSave,
   enhanceOpenLocallyFetchSave,
   enhanceSettingsFetchSave,
   enhanceAppConfirmationControls as enhanceConfirmations,
@@ -160,6 +162,7 @@ if (typeof document !== 'undefined') {
     enhanceDefaultsFetchSave(document);
     enhanceAssetCategoryPreferencesFetchSave(document);
     enhanceNsfwFilterFetchSave(document);
+    enhanceSocialPrepFetchSave(document);
     enhanceOpenLocallyFetchSave(document);
     enhanceCategoryReorder(document);
     enhanceCategorySlugAutofill(document);

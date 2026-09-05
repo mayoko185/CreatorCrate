@@ -37,6 +37,7 @@ import { APPLICATION_LOG_DEFAULT_PAGE_SIZE, createApplicationLogRepository } fro
 import { createProjectPageDefaultRepository } from './data/project-page-default-repository.js';
 import { createTagRepository } from './data/tag-repository.js';
 import { createProjectPrimaryImageRepository } from './data/project-primary-image-repository.js';
+import { createSocialPrepRepository } from './data/social-prep-repository.js';
 import { createAssetBrowserPreferenceService } from './services/asset-browser-preference-service.js';
 import { createNoteService } from './services/note-service.js';
 import { createBookService } from './services/book-service.js';
@@ -45,6 +46,8 @@ import { createMarkdownRenderer } from './services/markdown-renderer.js';
 import { createPageDefaultsService } from './services/page-defaults-service.js';
 import { createDashboardDefaultsService } from './services/dashboard-defaults-service.js';
 import { createOpenLocallySettingsService } from './services/open-locally-settings-service.js';
+import { createSocialPrepSettingsService } from './services/social-prep-settings-service.js';
+import { createSocialPrepService } from './services/social-prep-service.js';
 import { createPreviewCategorySettingsService } from './services/preview-category-settings-service.js';
 import { createNsfwFilterSettingsService } from './services/nsfw-filter-settings-service.js';
 import { createProjectAssetCategoryService } from './services/project-asset-category-service.js';
@@ -79,6 +82,7 @@ import { createAuthMiddleware } from './middleware/auth.js';
 import { createCsrfMiddleware, createDisabledModeCsrfMiddleware } from './middleware/csrf.js';
 import { createSecurityHeadersMiddleware, createCachePolicyMiddleware } from './middleware/security-headers.js';
 import { createAuthRouter } from './routes/auth.js';
+import { createSocialPrepActivationRouter, createSocialPrepCapabilityRouter } from './routes/social-prep.js';
 import { createLoginThrottler } from './auth/login-throttle.js';
 import { createAuthTransitionService } from './auth/auth-transition-service.js';
 import { buildShellModel } from './shell/navigation.js';
@@ -264,6 +268,10 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   const openLocallySettingsService =
     opts.openLocallySettingsService || createOpenLocallySettingsService({ appMetaRepository });
   app.locals.openLocallySettingsService = openLocallySettingsService;
+
+  const socialPrepSettingsService =
+    opts.socialPrepSettingsService || createSocialPrepSettingsService({ appMetaRepository });
+  app.locals.socialPrepSettingsService = socialPrepSettingsService;
 
   const projectService = createProjectService(db, projectsRoot, {
     assetCategoryService,
@@ -549,6 +557,15 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.locals.bookPrimaryImageService = bookPrimaryImageService;
 
   const releaseService = opts.releaseService || createReleaseService({ db, applicationLogger });
+  const socialPrepRepository = opts.socialPrepRepository || createSocialPrepRepository(db);
+  app.locals.socialPrepRepository = socialPrepRepository;
+  const socialPrepService = opts.socialPrepService || createSocialPrepService({
+    db,
+    socialPrepRepository,
+    socialPrepSettingsService,
+    releaseService,
+  });
+  app.locals.socialPrepService = socialPrepService;
   const assetWorkflowMetadataService = opts.assetWorkflowMetadataService || (projectsRoot
     ? createAssetWorkflowMetadataService({ db, projectsRoot })
     : null);
@@ -641,6 +658,20 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     csrfPepper: opts.authState?.csrfPepper,
     authService,
   });
+
+  // Native-helper redemption uses its short-lived capability instead of browser cookies/CSRF.
+  // Keep this after maintenance, security headers, and body parsing, but before browser auth.
+  app.use(createSocialPrepCapabilityRouter({
+    db,
+    projectsRoot,
+    now: opts.now,
+    socialPrepService,
+    socialPrepRepository,
+    applicationLogger,
+    releaseService,
+    projectService,
+    openLocallySettingsService,
+  }));
 
   app.use(resolveSession);
   app.use(createCachePolicyMiddleware());
@@ -785,6 +816,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // catch-all 404 so the download route is always reachable.
   app.use('/downloads', createDownloadsRouter({ downloadsRoot: opts.downloadsRoot }));
 
+  app.use('/releases', createSocialPrepActivationRouter({ socialPrepService }));
   app.use('/releases', createReleasesRouter({ appName, db, releaseService, projectService, workflowQueryService }));
 
   // Compatibility route for bookmarks and integrations using the former

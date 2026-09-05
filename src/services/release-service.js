@@ -1150,7 +1150,7 @@ export function createReleaseService({ db, applicationLogger = null }) {
     /**
      * Update the role of one selected asset.
      *
-     * Allowed roles: primary, preview, attachment, source.
+     * Allowed roles: primary, preview, attachment.
      * Only the requested row is updated — asset identity and relative
      * sequence are preserved. No role cardinality rules are enforced.
      *

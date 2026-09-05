@@ -11,6 +11,9 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="OpenLocally.Tests" />
+    <None Update="OpenLocally.CommonControls.manifest"
+          CopyToOutputDirectory="PreserveNewest"
+          CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

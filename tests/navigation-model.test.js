@@ -246,7 +246,7 @@ describe('navigation model — Settings hierarchy', () => {
       .map((child) => child.key);
   }
 
-  it('owns the nine Settings destinations in the required order', () => {
+  it('owns the ten Settings destinations in the required order', () => {
     const settings = NAVIGATION_ITEMS.find((item) => item.key === 'settings');
 
     expect(settings.children.map(({ key, label, href, icon }) => ({ key, label, href, icon }))).toEqual([
@@ -256,6 +256,7 @@ describe('navigation model — Settings hierarchy', () => {
       { key: 'logs', label: 'Logs', href: '/settings/logs', icon: 'scroll-text' },
       { key: 'defaults', label: 'Defaults', href: '/settings/defaults', icon: 'sliders-horizontal' },
       { key: 'nsfw-filter', label: 'NSFW Filter', href: '/settings/nsfw-filter', icon: 'content-filter' },
+      { key: 'social-prep', label: 'Social Preparation', href: '/settings/social-prep', icon: 'share-2' },
       { key: 'asset-categories', label: 'Asset Categories', href: '/settings/asset-categories', icon: 'boxes' },
       { key: 'tags', label: 'Tags', href: '/settings/tags', icon: 'tags' },
       { key: 'open-locally', label: 'Open locally', href: '/settings/open-locally', icon: 'external-link' },
@@ -265,7 +266,7 @@ describe('navigation model — Settings hierarchy', () => {
   it('exposes a non-empty icon key for every Settings child', () => {
     const children = settingsItem('/settings').children;
 
-    expect(children).toHaveLength(9);
+    expect(children).toHaveLength(10);
     expect(children.every(({ icon }) => typeof icon === 'string' && icon.length > 0)).toBe(true);
   });
 
@@ -292,6 +293,7 @@ describe('navigation model — Settings hierarchy', () => {
       logs: ['/settings/logs', '/settings/logs/defaults', '/settings/logs/clear'],
       defaults: ['/settings/defaults'],
       'nsfw-filter': ['/settings/nsfw-filter'],
+      'social-prep': ['/settings/social-prep'],
       'asset-categories': [
         '/settings/asset-categories',
         '/settings/asset-categories/browser-default',
@@ -337,6 +339,7 @@ describe('navigation model — Settings hierarchy', () => {
       '/settings/logs-old',
       '/settings/defaults-old',
       '/settings/nsfw-filtered',
+      '/settings/social-prepared',
       '/settings/asset-categories-old',
       '/settings/tags-old',
       '/settings/open-locally-old',

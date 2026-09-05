@@ -3249,12 +3249,12 @@ describe('release HTTP workflow', () => {
     const beforeRows = getReleaseAssets(db, releaseId);
     expect(beforeRows).toHaveLength(1);
 
-    // Submit one valid asset with an invalid role — triggers 422
+    // Submit one valid asset with the obsolete source role — triggers 422
     const res = await agent
       .post(createRes.headers.location + '/assets')
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`selectedAssetIds=${assetId}`)
-      .send('roles[0]=invalid-role')
+      .send('roles[0]=source')
       .send('sortOrder[0]=0')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(422);
@@ -5928,7 +5928,7 @@ describe('release HTTP workflow', () => {
         .send(`selectedAssetIds[]=${assetMap['bravo.txt'].id}`)
         .send(`selectedAssetIds[]=${assetMap['alpha.txt'].id}`)
         .send(`selectedAssetIds[]=${assetMap['charlie.txt'].id}`)
-        .send('roles[]=source')
+        .send('roles[]=attachment')
         .send('roles[]=preview')
         .send('roles[]=primary')
         .send('roles[]=attachment')
@@ -7184,7 +7184,7 @@ describe('release HTTP workflow', () => {
       return { projectId, releaseLocation };
     }
 
-    it('role guidance section is present with all four roles', async () => {
+    it('role guidance section is present with the three supported roles', async () => {
       const { releaseLocation } = await setupBasicRelease();
       const res = await agent.get(`${releaseLocation}/assets`).expect(200);
 
@@ -7192,7 +7192,7 @@ describe('release HTTP workflow', () => {
       expect(res.text).toContain('Primary');
       expect(res.text).toContain('Preview');
       expect(res.text).toContain('Attachment');
-      expect(res.text).toContain('Source');
+      expect(res.text).not.toContain('<dt>Source</dt>');
     });
 
     it('role guidance describes organizational intent without cardinality rules', async () => {
@@ -7205,8 +7205,7 @@ describe('release HTTP workflow', () => {
       expect(res.text).toContain('preview or teaser');
       // Attachment description
       expect(res.text).toContain('supporting asset');
-      // Source description
-      expect(res.text).toContain('editable or original source');
+      expect(res.text).not.toContain('editable or original source');
     });
 
     it('search input has visible label', async () => {

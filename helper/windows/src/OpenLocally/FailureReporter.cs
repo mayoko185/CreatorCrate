@@ -19,17 +19,97 @@ internal static class FailureReporter
     /// <summary>
     /// Report a failure message. Returns the process exit code to use (1).
     /// </summary>
-    public static int Report(string message)
+    public static int Report(string message, string? detail = null)
     {
-        TextWriter? stderr = GetStderr();
-        if (stderr is not null)
-        {
-            stderr.WriteLine(message);
-            return 1;
-        }
+        return Report(message, detail, GetStderr, ShowMessageBox);
+    }
 
-        _ = MessageBoxW(IntPtr.Zero, message, "CreatorCrate", MB_OK | MB_ICONERROR);
+    /// <summary>
+    /// Reports a manual social-preparation failure. Unlike generic activation
+    /// failures, its native dialog is mandatory even when a parent harness has
+    /// redirected stderr; stderr remains secondary evidence only.
+    /// </summary>
+    public static int ReportManualSocialFailure(string message, string? detail)
+    {
+        return ReportManualSocialFailure(message, detail, GetStderr, NativeFailureDialog.Show, Console.Out.WriteLine);
+    }
+
+    /// <summary>Presentation is best effort: it can never replace the original failure outcome.</summary>
+    internal static int Report(string message, string? detail, Func<TextWriter?> getStderr, Action<string> showMessageBox)
+    {
+        string report = BuildReport(message, detail);
+        try
+        {
+            TextWriter? stderr = getStderr();
+            if (stderr is not null)
+            {
+                stderr.WriteLine(report);
+                return 1;
+            }
+        }
+        catch { }
+        try { showMessageBox(report); } catch { }
         return 1;
+    }
+
+    /// <summary>Manual presentation is best effort and cannot replace the original nonzero result.</summary>
+    internal static int ReportManualSocialFailure(
+        string message,
+        string? detail,
+        Func<TextWriter?> getStderr,
+        Func<string, string, NativePresentationResult> showDialog,
+        Action<string>? writeMarker = null)
+    {
+        string report = string.IsNullOrEmpty(detail) ? BuildManualFallbackReport(message) : detail;
+        try { getStderr()?.WriteLine(BuildReport(message, detail)); } catch { }
+        NativePresentationResult outcome;
+        try { outcome = showDialog(BuildSummary(report), report); }
+        catch { outcome = new NativePresentationResult { Stage = NativePresentationStage.unexpected }; }
+        try { writeMarker?.Invoke(outcome.ToMarker()); } catch { }
+        return 1;
+    }
+
+    // Only Program's exact offline verification invocation selects this seam.
+    // Dispatch has already produced its ordinary invalid-argument preflight failure.
+    internal static int ReportOfflineManualFailure(string message, string? detail, string scenario)
+    {
+        return ReportManualSocialFailure(message, detail, GetStderr,
+            (_, _) => scenario == "presented"
+                ? new NativePresentationResult {
+                    State = NativePresentationState.PresentedAndDismissed, Stage = NativePresentationStage.completed,
+                    InputDesktopOpened = true, ThreadDesktopSelected = true, WindowCreated = true,
+                    WindowVisible = true, NormalDismissal = true }
+                : new NativePresentationResult { Stage = NativePresentationStage.open_input_desktop, Win32Code = 5 },
+            marker => {
+                if (scenario == "missing") return;
+                Console.Out.WriteLine(scenario == "malformed" ? "CREATORCRATE_MANUAL_PRESENTATION;state=invalid" : marker);
+            });
+    }
+
+    /// <summary>Combines the stable failure headline and its safe detail without shortening either.</summary>
+    internal static string BuildReport(string message, string? detail) =>
+        string.IsNullOrEmpty(detail) ? message : $"{message}{Environment.NewLine}{detail}";
+
+    internal static string BuildSummary(string report)
+    {
+        string platform = ValueFor(report, "Platform") ?? "Social preparation";
+        string phase = ValueFor(report, "Phase")?.Replace('_', ' ') ?? "manual validation";
+        string stableError = ValueFor(report, "Stable error") ?? "unknown";
+        string errorClass = ValueFor(report, "Error class") ?? "unexpected";
+        return $"{char.ToUpperInvariant(platform[0])}{platform[1..]} preparation failed during {phase}.{Environment.NewLine}{Environment.NewLine}Stable error: {stableError}{Environment.NewLine}Error class: {errorClass}";
+    }
+
+    private static string BuildManualFallbackReport(string message) =>
+        $"Social Preparation failed{Environment.NewLine}Platform: unknown{Environment.NewLine}Phase: manual_preparation{Environment.NewLine}Stable error: {message}{Environment.NewLine}Outcome: failed{Environment.NewLine}Error class: unexpected";
+
+    private static string? ValueFor(string report, string label)
+    {
+        string prefix = label + ":";
+        foreach (string line in report.Split(["\r\n", "\n"], StringSplitOptions.None))
+        {
+            if (line.StartsWith(prefix, StringComparison.Ordinal)) return line[prefix.Length..].Trim();
+        }
+        return null;
     }
 
     private static TextWriter? GetStderr()
@@ -47,6 +127,9 @@ internal static class FailureReporter
 
         return Console.Error;
     }
+
+    private static void ShowMessageBox(string report) =>
+        _ = MessageBoxW(IntPtr.Zero, report, "CreatorCrate", MB_OK | MB_ICONERROR);
 
     /// <summary>
     /// Whether a process can actually write to stderr. A NULL or invalid

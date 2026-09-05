@@ -80,7 +80,7 @@ Top-level layout:
 | [`client/`](client/) | Vite entry point for the production browser bundle |
 | [`migrations/`](migrations/) | Forward-only SQL schema migrations |
 | [`tests/`](tests/) | Vitest suites plus a Playwright browser suite |
-| [`helper/windows/`](helper/windows/) | Separate .NET "Open locally" protocol helper |
+| [`helper/windows/`](helper/windows/) | Separate .NET protocol helper for Open Locally and social-preparation activation (see §18) |
 | [`scripts/`](scripts/) | Host-side recovery CLIs |
 | [`downloads/`](downloads/) | Prebuilt artifact served by the downloads route |
 
@@ -347,37 +347,52 @@ constraints; changing it is an architectural decision, not a refactor.
    `Permissions-Policy`, `Cross-Origin-Opener-Policy`, and optional HSTS.
    The development CSP relaxes `style-src` and allows `ws:`/`wss:` for Vite
    HMR; every other mode uses the strict policy.
-3. **Body parsing** — `express.json()` and `express.urlencoded()`.
+3. **Body parsing** — the ordinary application parser accepts JSON and
+   URL-encoded forms through global `express.json()` and
+   `express.urlencoded({ extended: true })` middleware.
 4. **Static assets** — [`src/static/`](src/static/) at the root, and the
    Vite build output under `/vite` with long-lived immutable caching. Static
    files are served **before authentication**, which is why the auth
    middleware never has to reason about them.
-5. **`resolveSession`** — resolves the session cookie into
+5. **Social Preparation capability router** — its JSON and URL-encoded
+   redemption endpoint follows maintenance, security headers, and body
+   parsing, but deliberately precedes session resolution, ordinary CSRF, and
+   `requireAuth`. The short-lived, single-use intent digest is its
+   authentication; it must not be added to shared auth or CSRF exemptions.
+   Redeemed helper media requests use a separate bearer capability boundary:
+   authenticate the digest before revealing session state, then enforce the
+   attempt deadline and authoritative state. The authenticated status probe is
+   read-only; a platform status callback uses a session-owned conditional update
+   and completes the redeemed session in that same transaction when its last
+   owned non-terminal platform becomes terminal. Asset authorization is immutable
+   from `social_prep_session_assets`; only file resolution uses the current
+   asset and project rows through the hardened asset-file boundary.
+6. **`resolveSession`** — resolves the session cookie into
    `res.locals.auth`. Exposes only safe state (`enabled`, `authenticated`,
    `username`, and the CSRF secret for the next middleware); never the raw
    token. A stale cookie is cleared.
-6. **Cache policy** — `private, no-store` for `/login`, anything under
+7. **Cache policy** — `private, no-store` for `/login`, anything under
    `/settings`, and all HTML responses while auth is enabled.
-7. **`exposeCsrfToken`** — must run after session resolution and before any
+8. **`exposeCsrfToken`** — must run after session resolution and before any
    handler renders a form.
-8. **`requireCsrf`** — must run before the auth router so `POST /logout` is
+9. **`requireCsrf`** — must run before the auth router so `POST /logout` is
    protected too. `GET`/`HEAD`/`OPTIONS` are exempt; login verifies its own
    pre-auth token.
-9. **Auth router** (or, when auth is disabled, a `/login` redirect to
-   Settings › Security, since there is no login form to render).
-10. **Shell model** — `buildShellModel({ appName, path })` from
+10. **Auth router** (or, when auth is disabled, a `/login` redirect to
+    Settings › Security, since there is no login form to render).
+11. **Shell model** — `buildShellModel({ appName, path })` from
     [`src/shell/navigation.js`](src/shell/navigation.js) computes the
     navigation model once per request from `req.path` and puts it on
     `res.locals.shell`. **Routes never assemble navigation themselves**, and
     the error handler builds its own with `noActive: true` so a 404 never
     highlights a section the request never reached.
-11. **`requireAuth`** — protects everything mounted below. It independently
+12. **`requireAuth`** — protects everything mounted below. It independently
     exempts `/health`, `/login`, and `/logout` regardless of mount order.
     HTML `GET`s redirect to `/login?next=…` (validated against open-redirect
     payloads); everything else gets a flat `401` JSON, so a mutation is
     rejected outright rather than answered with a redirect.
-12. **Feature routers**, then a catch-all that raises a 404 `Error`.
-13. **Centralized error handler.** Negotiates HTML (`error.njk`) versus JSON.
+13. **Feature routers**, then a catch-all that raises a 404 `Error`.
+14. **Centralized error handler.** Negotiates HTML (`error.njk`) versus JSON.
     Client errors (4xx) surface their message; server errors (5xx) are
     replaced with a generic message, marked `no-store`, and have
     content/disposition/ETag headers stripped so a partially-written or
@@ -420,7 +435,8 @@ twelve-step pattern and are visible in the history as `*_new` intermediate
 tables.
 
 The schema covers projects and their per-project asset categories, the asset
-index, releases and release assets, notes/books/chapters and their
+index, releases and release assets, Social Preparation session/platform/asset
+snapshots (including hashed redemption material and attempt deadlines), notes/books/chapters and their
 associations, tags and their project/asset joins, watermarks and watermark
 scale maps, processing presets, generated artifacts, project primary images,
 per-project and global page defaults, sessions, and a generic `app_meta`
@@ -1092,21 +1108,22 @@ functional suite.
 ## 18. The Windows "Open locally" helper
 
 [`helper/windows/`](helper/windows/) is a **separate subsystem with its own
-language, toolchain, and lifecycle**: a .NET 8 console application
-(`OpenLocally`) that registers the `creatorcrate-open://` URI scheme per-user
-under `HKCU`, plus an Inno Setup installer. It ships as a self-contained
-single-file executable and is not part of the Node build, the Node test
-suite, or the server process.
+language, toolchain, and lifecycle**: the `OpenLocally` assembly and
+`OpenLocally.exe` executable in `CreatorCrate.OpenLocally.sln`. It remains a
+`net8.0-windows` application with zero third-party production
+`PackageReference`s, registers its URI protocols per-user under `HKCU`, and has
+an Inno Setup installer. It ships as a self-contained single-file executable
+and is not part of the Node build, the Node test suite, or the server process.
 
-The boundary between the two systems is **one versioned URI contract**, and
-nothing else:
+The existing Open Locally boundary remains **one versioned URI contract**:
 
 ```
 creatorcrate-open://open?v=2&path=<absolute-windows-path>&select=<0|1>
 ```
 
-The web side of that contract is [`src/util/open-locally.js`](src/util/open-locally.js)
-— a **pure string builder** with no filesystem or database access and no
+The Open Locally web side of that contract is
+[`src/util/open-locally.js`](src/util/open-locally.js) — a **pure string
+builder** with no filesystem or database access and no
 knowledge of `PROJECTS_ROOT` or any container path. It composes the absolute
 Windows path from an operator-configured Windows projects root (stored in
 `app_meta` via
@@ -1118,16 +1135,366 @@ re-validates everything it receives; neither side trusts the other.
 This design is why the server can run in Docker on Linux while the operator
 opens files in Explorer on Windows: the server never resolves a host path,
 and the helper never learns anything about the server's own layout. The
-helper keeps no configuration of its own — the path is supplied with every
-request.
+Open Locally pathway keeps no configuration of its own — the path is supplied
+with every request. Social preparation maintains only its separately documented
+per-user trust state.
 
 [`downloads.js`](src/routes/downloads.js) serves the built installer from
 [`downloads/`](downloads/) under **one fixed constant filename**; the route
 never resolves user input, and an exported availability probe lets Settings
 hide the download action when the artifact was not built into the image.
 
-Changing the URI contract means changing both sides and bumping `v`. Adding
-behavior to the helper does not touch the Node application at all.
+Changing the existing `creatorcrate-open://` URI contract means changing both
+sides and bumping `v`; its helper pathway remains independent of the Node
+application.
+
+### Social-preparation activation and dispatch
+
+Social preparation is an **additive** second protocol family handled by the
+same executable, not a second helper:
+
+```
+creatorcrate-social://prepare?v=1&server=<origin>&intent=<opaque-token>
+```
+
+The activation envelope carries only the protocol version, the CreatorCrate
+server origin, and a short-lived opaque intent. The helper strictly parses
+that shape; a version it does not support produces update-required behavior.
+Content, media, and bearer capability material never enter the activation URI.
+
+The command dispatcher preserves the Open Locally isolation boundary. A
+`creatorcrate-open://` activation takes its established path and does not
+initialize social trust, HTTP, media, Chrome, WebSocket, or CDP components.
+The existing `--register` and `--unregister` commands stay independent.
+`--register-social` and `--unregister-social` register only the
+`creatorcrate-social` protocol. Installer invocation of those social
+commands is intentionally not wired yet.
+
+### Production availability gate
+
+Milestone 2 deliberately ships an empty production adapter registry. Before
+constructing any social runtime dependency, the dispatcher verifies coverage
+for the frozen platform vocabulary. The current production result is
+`production_adapters_unavailable`; therefore it occurs before a trust
+prompt, DNS or network activity, redemption, media sweep or access, Chrome
+discovery, and WebSocket or CDP work. This preserves the real attempt: the
+activation URI does not name the selected platforms, so redeeming just to
+discover a missing adapter would mutate an attempt unnecessarily.
+
+Production social preparation is consequently **not** platform-ready in this
+milestone. The runtime composition and orchestration seams exist so adapters
+can be supplied later without weakening this pre-side-effect gate.
+
+### Trusted CreatorCrate origins and capability use
+
+First-use server trust is for one exact normalized HTTP(S) origin and persists
+per Windows user. Scheme, host, and effective port identify distinct origins;
+the store contains origins only. An unknown origin requires native confirmation,
+and denial happens before DNS or network activity.
+
+HTTPS uses normal platform TLS validation without a certificate bypass.
+Plain HTTP is accepted only for approved loopback, private, or local
+addresses; public plaintext HTTP is rejected. Sensitive social requests disable
+redirect following. For a permitted plaintext hostname, the approved DNS
+answers are pinned for the connection so a later resolution cannot rebind it.
+
+The helper redeems an intent with `POST /social-prep/redeem`, sending the
+intent in the JSON body. Its response is authoritative: the helper neither
+recomputes title or body, reads `notes`, nor role-filters the asset
+snapshot. The subsequent media/status capability is bearer authorization only.
+Capability outcomes retain meaningful distinctions, including expired,
+superseded, already-finished, and invalid states.
+
+### Trusted local media roots
+
+Origin trust never authorizes arbitrary local-file upload. For a
+server-provided Windows candidate path, the helper correlates the candidate
+with the asset snapshot `relativePath` to derive a local project root. The
+exact normalized origin/root pair needs separate per-user approval in the
+trusted-media-root store. The candidate must satisfy containment, reparse-point,
+existence and regular-file checks, and an exact-size check.
+
+A valid Strategy A source remains external source media. It is never modified
+or deleted by helper cleanup.
+
+### Authenticated media staging and cleanup
+
+When the candidate is unavailable, invalid, or not trusted, Strategy B downloads
+the immutable server snapshot through the authenticated media endpoint. The
+bearer token stays in the Authorization header, never a URL. The response
+streams into helper-owned temporary storage under a deterministic safe final
+filename, first through a partial file and then finalization. Per-file and
+aggregate limits are 2 GiB and 8 GiB respectively, and the helper verifies
+the actual byte count against the snapshot. Within one session, each asset ID
+is resolved once and reused only when all safe staging metadata agrees; a
+contradictory repeated representation fails closed rather than reusing a path.
+
+Helper-owned session directories use a safe derived identifier rather than
+token material and carry an ownership marker. The helper validates the complete
+configured staging-root-to-session chain as non-reparse before it creates,
+reuses, or reads that marker; it never claims an existing unmarked directory.
+Cleanup is idempotent and refuses to traverse reparse points. The on-demand
+abandonment sweep deletes only positively owned directories older than 24 hours.
+There is no daemon, service, scheduled task, or resident cleanup loop, and
+Strategy A sources are excluded from cleanup.
+
+### Chrome, CDP, and generic browser preparation
+
+The production browser architecture remains the frozen Milestone 0/Milestone 2
+model: the operator's normal installed stable Chrome profile and session. On
+each run the helper re-reads Chrome-owned `DevToolsActivePort`; it does not
+cache a browser WebSocket identifier, scan arbitrary ports, launch or relaunch
+Chrome with debugging flags, or create another profile. It accepts only the
+loopback browser endpoint, makes one BCL `ClientWebSocket` connection
+attempt, uses Chrome's normal Allow/Deny consent, reuses that approved
+connection throughout the preparation run, and never reconnects automatically.
+The Chrome prompt and banner are intentional.
+
+A run owns one WebSocket and one shared CDP transport. The transport assigns
+monotonically unique command IDs, correlates responses, reassembles fragmented
+messages, bounds message size and its event queue, routes browser-level and
+flattened-session events separately, honors command cancellation and bounded
+timeouts, and propagates terminal transport failure to pending calls.
+`CdpSession` is a session router over that transport; it neither owns nor
+reconnects the browser socket. The transport also retains an internal terminal
+reason (`local_dispose`, `remote_close`, `receive_failure`, `send_failure`, or a
+protocol/internal failure) for bounded lifecycle diagnostics. Caller command
+cancellation remains non-terminal and does not relabel the shared transport.
+
+The reusable browser foundation provides target enumeration and filtering,
+explicitly owned target creation, flattened attach/detach, navigation and
+readiness, DOM and accessibility discovery, ordinary input/textarea text
+insertion and root-value verification, direct `DOM.setFileInputFiles` against a
+known `backendNodeId`, optional chooser interception with session-exact
+`Page.fileChooserOpened` handling, and generic upload-ready observation. It
+has no platform-specific selectors. Generic rich-contenteditable exactness is
+not a foundation guarantee: platform adapters own rich-editor behavior,
+site-specific activation, exact readback evidence, and fail-closed handling
+when exact preparation cannot be shown. Only targets explicitly created by the
+fixture, test, or helper may be closed automatically; operator tabs are never
+closed arbitrarily, and a successfully prepared future composer tab may remain
+open.
+
+### Preparation adapters and orchestration
+
+The adapter contract is preparation-only. An adapter identifies one platform
+and implements `PrepareAsync` with server-generated title/body and ordered
+resolved media. The orchestrator retains CreatorCrate lifecycle and status
+authority; adapters receive no capability and have no authority to submit or
+publish.
+
+**There is no submit, post, or publish method in the adapter or browser
+preparation contract.**
+
+The injected orchestration flow is reusable for multiple platforms: it trusts
+and redeems once, validates the capability, resolves media, opens one Chrome
+connection, and prepares platform adapters sequentially. Immediately before
+each platform, it performs an authoritative status probe; the orchestrator owns
+all status writes. An ordinary per-platform preparation failure does not erase
+platforms already prepared or prevent later platforms from being considered.
+By contrast, a terminal shared CDP transport failure aborts the remaining
+browser preparation: the current row is failed and each unstarted row is
+cancelled with `cdp_transport_failed`; no later adapter or reconnect runs.
+Supersession hard-aborts the obsolete run, an already-finished attempt is a soft
+successful stop, and expired or invalid capability outcomes terminate the run.
+Media cleanup executes on every exit path.
+
+### Test-only Manual foundation harness
+
+`NativeOperatorUiHost` owns the dedicated STA thread, checked input-desktop
+open/attachment, desktop lifetime, and bounded failure containment shared by
+Ready consent and the full-report failure dialog. Dialog content, controls,
+keyboard handling, and decisions remain separate. No dialog body runs after
+desktop attachment failure; visible window style alone is not operator visibility.
+
+Manual invocations may explicitly inject a correlated Ready response directory
+and unique request ID. Only after local Ready returns `DisplayFailed` and its
+thread/resources are gone may the parent present Ready once while the same child
+waits at consent. Responses are atomically published and consumed once before
+validation. Missing, stale, replayed, malformed, or mismatched responses fail
+closed. Child exit cancels parent presentation. Normal runtime uses local native
+consent and requires neither this bridge nor the harness.
+
+The harness `-VerifyReadyConsent` mode requires `CREATORCRATE_M2_MANUAL=1`, publishes
+the actual helper, and uses its existing redirected, no-console launch function
+with `--verify-ready-consent`. Dispatch requires both that exact sole argument
+and the manual gate. It invokes the real Ready implementation, reports bounded
+decision evidence, and exits directly without constructing browser dependencies;
+even Continue cannot reach Chrome in this mode. Real operator Continue and Cancel
+checks are required separately; machine markers are not proof of physical visibility.
+
+Manual social-preparation failures use the shared raw-Win32 full-report dialog;
+stderr and durable capture are secondary evidence, not the operator interface.
+`NativeFailureDialog.Show` returns bounded presentation evidence. Confirmation
+requires an input desktop, selected thread desktop, main window and required
+report/buttons, visibility, and a message loop ending after normal dismissal.
+The child reporter emits a fixed `CREATORCRATE_MANUAL_PRESENTATION` stdout
+record after presentation returns, without replacing the primary failure or
+its exit code. The parent accepts only one exact, valid completed-presentation
+record. After child exit, failed, missing, malformed, or multiple records cause
+one parent fallback attempt with the full report plus safe child presentation
+evidence. Confirmed child presentation or an attempted parent fallback prevents
+cleanup from presenting again. Native errors retain only fixed stages, numeric
+Win32/session values, and desktop/window flags, never raw exception text.
+
+`-VerifyPublishedManualPresentation` exercises the actual published helper and
+parent launch function with nonblocking offline outcomes. The explicit
+`-VerifyPublishedManualDesktop` mode uses the same path with real native UI and
+requires operator confirmation; automated outcomes are not desktop evidence.
+Both use the existing invalid-argument manual preflight before environment,
+browser, or platform access. Only the exact three-argument offline invocation
+in `Program` can select stub outcomes; normal manual invocations cannot.
+
+Manual Patreon execution owns a bounded `ManualPreparationEvidence` snapshot
+from composition through runtime disposal. The wrapper, Chrome consent workflow,
+socket owner, and browser-wrapper construction record their actual boundary
+states (`not_started`, `entered`, `completed`, `failed`). Socket setup is distinct
+from the connection attempt. Consent records only the child-consumed decision,
+the existing parent bridge's Requested/Accepted flags, and a fixed local
+presentation result; presentation success never implies Continue. No Ready
+transport, retry, or platform behavior is changed by this observation.
+
+The primary adapter diagnostic (including Create-resolution, CDP, lifecycle,
+and cleanup evidence) is retained before outer runtime disposal can replace its
+exception. Disposal still has its existing exception/return-code authority;
+its state and safe exception category supplement the primary report. Adapter-
+owned cleanup remains in the adapter diagnostic, not a fabricated wrapper
+disposal boundary. Returned failures and caught exceptions have distinct fixed
+failure kinds. `Serialize()` and `FormatForDisplay()` use the same manual evidence
+payload, with no raw exception messages, type names, IDs, paths, or endpoints.
+The existing 6144-byte UTF-8 transport bound applies to the combined diagnostic;
+the server explicitly reconstructs the fixed manual schema and rejects malformed
+or unknown nested fields. The existing native dialog displays the full report.
+
+The existing xUnit test project contains a complete Manual foundation harness.
+It is test-only and requires caller-provided `CREATORCRATE_M2_MANUAL=1`; ordinary
+automated tests cannot activate its live side effects. Safe verifier and recovery
+modes dispatch and return before the live activation guard. The wrapper never
+self-authorizes: it validates that exact incoming value before it creates its
+Manual workspace, publishes the helper, or starts any parent/testhost process.
+Its controlled fixtures cover
+CreatorCrate, trust and media behavior, and harmless browser preparation. The
+browser fixture creates, attaches, navigates, verifies ordinary input/textarea
+text, assigns its existing file input directly, observes upload readiness, and
+closes one helper-owned target over the existing shared transport. It neither
+tests generic rich-contenteditable exactness nor activates chooser
+interception. The one target has a three-second total cleanup deadline and no
+reconnect. A terminal transport stops further close commands and the session
+subscription is then released locally. If preparation and cleanup both fail,
+the original preparation exception remains primary and the cleanup result is
+emitted as bounded secondary Manual diagnostics. A cleanup-only failure instead
+surfaces the fixture-specific `owned_target_cleanup_failed` lifecycle result.
+The wrapper snapshots and
+restores the relevant registry state, publishes the helper to an isolated
+temporary workspace, and can later exercise the normal-Chrome foundation at
+the operator checkpoint. Before it starts VSTest,
+the wrapper verifies the real published apphost's existence, full and final
+path, readable attributes, and an owned working directory, then runs its safe
+production-adapter gate preflight. Operator evidence confirms that both the
+parent PowerShell launch and the VSTest/testhost launch currently reach the
+managed production-adapter gate under the corrected launch configuration. The
+historical native apphost startup failure remains unexplained and is not
+otherwise generalized. The testhost performs the same preflight before its own
+process launch and records its selected safe launch context; the wrapper
+compares that record with its parent-PowerShell launch context. The actual
+testhost process-stage ownership is retained until that differential evidence
+proves a context failure. Its one deterministic workflow fact emits each stage
+checkpoint to the wrapper before starting the stage; the writer serializes,
+newline-terminates, locks, and flushes JSONL records, and the wrapper parses
+only complete newline-terminated records while retaining a trailing fragment
+across reads. Testhost never reads operator input: it emits a correlated
+operator-confirmation event and waits for one matching response. The parent
+wrapper is the canonical operator-facing owner, asks for an explicit Y/N
+answer, atomically writes a JSON response in its owned workspace, and the
+testhost claims that response once before it accepts only an affirmative
+answer. Stage cancellation bounds an absent response; stale request IDs cannot
+satisfy later checkpoints. The wrapper enforces each announced stage timeout
+before its existing restoration `finally` runs. The wrapper owns only its unique
+workspace: it retries
+transient testhost/VSTest file locks for a bounded eight-second window, reports
+one workspace-level failure if cleanup remains blocked, and keeps the recovery
+export. `-RecoverFrom` restores registry state and retries that workspace
+cleanup without running the Manual workflow. The Manual checkpoint remains
+**incomplete**.
+
+### Deferred social-preparation work
+
+The following work remains deliberately outside Milestone 2:
+
+- production Patreon, X, and Bluesky adapters;
+- real platform selectors and composer behavior;
+- automatic Review & Publish-to-helper activation;
+- release-page Social Preparation status/retry UI, Send to helper again, and Prepare again;
+- final submission, posting, publishing, and platform API posting;
+- installer social-protocol wiring and helper download replacement; and
+- .NET 10 migration plus NativeAOT, ReadyToRun, and trimming decisions.
+
+#### Partial Social Preparation checkpoint — pause/resume (WP-E)
+
+This partial checkpoint is not completion of Milestone 3 or the full Social
+Posting feature: **Milestone 3 remains incomplete**. It does not activate
+production helper integration. The list above records the Milestone 2 boundary;
+the following is the current restart status. A release may target multiple
+platforms. `prepared` means a composer prepared for human submission, not posted;
+normal final social submission remains human-operated.
+
+**Closed / reuse:** Milestone 1 server foundation, Milestone 2 helper/Chrome
+foundation, Milestone 3 WP-3A, Bluesky and X adapters (both closed/pass), and
+reviewed native/diagnostic failure-reporting work. This checkpoint completes
+read-only release Social Preparation presentation on release detail, the canonical
+release list (including its project-filtered form), and project-detail recent
+release summaries. Patreon is substantially implemented, but live validation
+and normal production adapter registration/integration are incomplete.
+
+**Frozen Ready blocker:** child presentation failed at `set_thread_desktop`
+with Win32 code `170`. The parent Ready request was accepted, but the decision
+became `display_failed`. Chrome discovery never began, no platform adapter ran,
+and no automated post/publication occurred. **Do not resume by immediately
+rerunning live validation.** The next technical step is read-only diagnosis using
+retained Ready evidence; no cause is inferred here.
+
+**Incomplete / deferred:** Ready presentation diagnosis/fix; Patreon final live
+**no-submit** validation and operator inspection/discard of its prepared draft;
+normal production adapter registration/integration; Patreon creator vanity sourced
+from CreatorCrate Settings/database; working **Send to helper again** and
+**Prepare again** recovery actions; remaining runtime/performance work; and
+installer/documentation work outside this checkpoint. Current release-detail
+recovery presentation is read-only/unavailable and does not fulfill the eventual
+working recovery requirement.
+
+**Patreon privacy:** the real creator vanity must never be hardcoded or committed
+in source, tests, defaults, documentation, or committed configuration. Keep private
+live evidence out of this record.
+
+**Git hygiene (approved; closed once committed):** test-project generated `bin`/`obj`
+output is excluded from future tracking and is no longer intended to remain tracked.
+This checkpoint removes the 115 generated test `bin`/`obj` files from Git tracking
+while preserving their local copies. Narrow ignore rules keep future test build
+output untracked. The shipped `downloads/CreatorCrate.OpenLocally-Setup.exe`
+remains intentionally tracked because the current helper download/Docker path
+uses it.
+
+**Future planning task — CreatorCrate Windows Helper — selectable Open Locally
+and Social Preparation modules:** evaluate shared core versus optional components;
+installing Open Locally alone, Social Preparation alone, or both; independent
+protocol registration; per-user installation; existing-install upgrade and uninstall
+safety; preservation of settings/trust/configuration; user-facing rename versus
+internal executable/project naming; and compatibility with the existing helper
+download/distribution path. No mechanics are decided here. This checkpoint does
+not rename projects, executables, installer files, download routes, or internal
+namespaces, and does not modify the installer.
+
+**Resume order (not scheduled or begun):**
+
+1. Inspect retained Ready evidence read-only.
+2. Resolve the Ready presentation blocker using the established native UI/harness;
+   do not reopen proven browser/adapter infrastructure absent a concrete regression.
+3. Complete Patreon live no-submit validation and operator draft inspection/discard.
+4. Complete normal production adapter registration/integration and Settings/database
+   Patreon creator configuration.
+5. Implement and test working recovery actions.
+6. Separately plan future helper packaging/modular installation.
+7. Continue later milestone/runtime/performance work only under new operator direction.
 
 ---
 
@@ -1187,3 +1554,10 @@ the `opts.x || createX()` fallbacks (a test seam, not a plugin system), and
 the `app.locals` surface (an escape hatch for out-of-band callers, not a
 service locator for request handlers — routers receive their dependencies
 explicitly).
+
+
+## Manual workflow operator-confirmation boundary
+
+The Windows PowerShell Manual wrapper owns operator input; it uses bounded console-key polling rather than a blocking host read. A confirmation retains the currently announced stage deadline, reports the correlated question code on timeout, and writes only the existing one-use structured response file.
+
+A structured testhost `stage-failed` event is a workflow result: the wrapper records it, drains final JSONL events, and grants a finite normal-exit window for testhost cleanup before any forced termination. Wrapper infrastructure failures—such as timeout, EOF, invalid input, response-write failure, malformed event data, or a controlled-failure cleanup overrun—use the exact owned VSTest Process object with Windows `taskkill /PID <pid> /T /F`. The taskkill helper has one absolute three-second total deadline, including any post-timeout Kill cleanup; the owned-child observation remains a separate five-second policy. Terminator timeout/nonzero and a child that remains alive are reported separately. This cleanup boundary does not change the production trust, Chrome, media-staging, or Manual workflow contracts.

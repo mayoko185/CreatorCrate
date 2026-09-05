@@ -1,4 +1,4 @@
-export const RELEASE_ASSET_ROLES = ['primary', 'preview', 'attachment', 'source'];
+export const RELEASE_ASSET_ROLES = ['primary', 'preview', 'attachment'];
 
 const COLUMNS = [
   'id',

@@ -33,3 +33,5 @@ opencode.jsonc
 # Windows OpenLocally .NET build output (generated locally; never version).
 /helper/windows/src/OpenLocally/bin/
 /helper/windows/src/OpenLocally/obj/
+/helper/windows/tests/OpenLocally.Tests/bin/
+/helper/windows/tests/OpenLocally.Tests/obj/

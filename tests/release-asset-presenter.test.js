@@ -69,7 +69,7 @@ describe('release asset presenter', () => {
     const view = buildReleaseAssetPresentation(assetRow({
       asset_id: 32,
       is_present: 0,
-      role: 'source',
+      role: 'attachment',
       sort_order: 9,
     }), { selected: true });
 
@@ -84,7 +84,7 @@ describe('release asset presenter', () => {
       thumbnail_url: null,
       preview_url: null,
       original_url: null,
-      releaseContext: { selected: true, role: 'source', sortOrder: 9 },
+      releaseContext: { selected: true, role: 'attachment', sortOrder: 9 },
     });
   });
 
