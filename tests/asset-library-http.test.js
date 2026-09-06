@@ -1015,7 +1015,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(response.text).toContain('href="/assets?pageSize=10&amp;view=list"');
     expect(response.text).toContain('href="/assets?page=2&amp;pageSize=10&amp;view=grid"');
     expect(response.text).toMatch(/<noscript><button class="button" type="submit">Filter<\/button><\/noscript>/);
-    expect(response.text).toMatch(/<a\b(?=[^>]*href="\/assets\?view=list")(?=[^>]*data-asset-library-reset)(?=[^>]*aria-label="Reset filters")[^>]*>[\s\S]*?<span class="sr-only">Reset<\/span><\/a>/);
+    expect(response.text).toMatch(/<a\b(?=[^>]*href="\/assets\?resetFilters=1&amp;view=list")(?=[^>]*data-asset-library-reset)(?=[^>]*aria-label="Reset filters")[^>]*>[\s\S]*?<span class="sr-only">Reset<\/span><\/a>/);
   });
 
   it('canonicalizes clamped pagination together with effective saved defaults in one redirect', async () => {
@@ -1039,6 +1039,71 @@ describe('cross-project Asset Viewer HTTP route', () => {
 
     const final = await request(app).get(redirect.headers.location).expect(200);
     expect(final.headers.location).toBeUndefined();
+  });
+
+
+  it.each(['grid', 'list'])('WP3 Reset restores fresh defaults while preserving active %s', async (view) => {
+    const project = createProject('Reset defaults');
+    createCategory({ displayName: 'Reset artwork', directorySlug: 'reset-artwork' });
+    const category = assignCategory(project.id, { displayName: 'Reset artwork', directorySlug: 'reset-artwork' });
+    const asset = createAsset(project.id, 'restored.png', { categoryId: category.id });
+    createAsset(project.id, 'excluded.jpg');
+    const tag = tagRepository.create({ displayName: 'Reset tag', normalizedName: 'reset-tag' });
+    tagRepository.assignToAsset(asset.id, tag.id);
+    const rendered = await request(app).get('/assets?search=no-match&view=' + view).expect(200);
+    const links = [...rendered.text.matchAll(/<a\b[^>]*data-asset-library-reset[^>]*>/g)]
+      .map(([anchor]) => anchor.match(/href="([^"]+)"/)[1].replaceAll('&amp;', '&'));
+    expect(links).toEqual(Array(2).fill('/assets?resetFilters=1&view=' + view));
+
+    // Change saved values after rendering: the link must not snapshot them.
+    writeAssetViewerDefaults({ view: view === 'grid' ? 'list' : 'grid', category: 'reset-artwork',
+      tag: String(tag.id), extension: 'png', presence: 'present', sort: 'project', order: 'desc', pageSize: '50' });
+    const expected = '/assets?category=reset-artwork&tag=' + tag.id
+      + '&extension=png&presence=present&sort=project&order=desc&pageSize=50&view=' + view;
+    for (const suffix of ['', '&project=999&category=all&tag=all&extension=jpg&presence=missing&search=discard&usage=used&sort=size&order=asc&pageSize=10&page=99',
+      '&defaults=1&notice=asset_viewer_defaults_saved&dialog=discard&unknown=discard']) {
+      const reset = await request(app).get(links[0] + suffix).expect(302);
+      expect(reset.headers['cache-control']).toBe('no-store');
+      expect(reset.headers.location).toBe(expected);
+      const final = await request(app).get(reset.headers.location).expect(200);
+      expect(final.headers.location).toBeUndefined();
+      expect(final.text).toContain('restored.png');
+      expect(final.text).not.toContain('excluded.jpg');
+      expect(final.text).not.toContain('Asset Viewer defaults saved successfully.');
+      expect(final.text).toContain('value="' + view + '"');
+    }
+    const native = await request(app).get(links[0]).redirects(1).expect(200);
+    expect(new URL(native.request.url).pathname + new URL(native.request.url).search).toBe(expected);
+    // Back/Forward can revisit either the active state or the stable final URL.
+    await request(app).get('/assets?search=no-match&view=' + view).redirects(1).expect(200);
+    await request(app).get(expected).expect(200);
+  });
+
+  it.each(['grid', 'list'])('WP3 neutral Reset and ordinary %s navigation remain stable', async (view) => {
+    createAsset(createProject('Neutral Reset').id, 'neutral.png');
+    writeAssetViewerDefaults({ view: view === 'grid' ? 'list' : 'grid', sort: 'filename', order: 'asc', pageSize: '25',
+      category: 'all', tag: 'all', extension: 'all', presence: 'all' });
+    const reset = await request(app).get('/assets?resetFilters=1&view=' + view).expect(302);
+    expect(reset.headers.location).toBe('/assets?view=' + view);
+    await request(app).get(reset.headers.location).expect(200);
+    writeAssetViewerDefaults({ category: 'uncategorized', presence: 'missing' });
+    for (const query of ['view=' + view, 'category=all&tag=all&extension=all&presence=all&view=' + view]) {
+      const ordinary = await request(app).get('/assets?' + query).expect(200);
+      expect(ordinary.headers.location).toBeUndefined();
+      expect(ordinary.text).toContain('neutral.png');
+    }
+  });
+
+  it.each([
+    'resetFilters=&view=grid', 'resetFilters=0&view=grid', 'resetFilters=01&view=grid',
+    'resetFilters=1&resetFilters=1&view=grid', 'resetFilters[]=1&view=grid', 'resetFilters[x]=1&view=grid',
+    'resetFilters=1', 'resetFilters=1&view=', 'resetFilters=1&view=board',
+    'resetFilters=1&view=grid&view=grid', 'resetFilters=1&view=grid&view=list',
+    'resetFilters=1&view[]=grid', 'resetFilters=1&view[x]=grid',
+  ])('WP3 rejects malformed Reset before resolving defaults: %s', async (query) => {
+    app.locals.pageDefaultsService.resolve = () => { throw new Error('Defaults must not activate'); };
+    const response = await request(app).get('/assets?' + query).expect(400);
+    expect(response.headers.location).toBeUndefined();
   });
 
   it('resets filter and sort state while preserving the current view', async () => {
@@ -1068,7 +1133,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
       `<input id="${project.id}" name="project" type="radio" value="${project.id}" checked>`,
     ));
     expect(response.text).toContain('aria-label="Project filter: URL Context Project"');
-    expect(response.text).toMatch(/<a\b(?=[^>]*href="\/assets\?view=list")(?=[^>]*data-asset-library-reset)(?=[^>]*aria-label="Reset filters")[^>]*>[\s\S]*?<span class="sr-only">Reset<\/span><\/a>/);
+    expect(response.text).toMatch(/<a\b(?=[^>]*href="\/assets\?resetFilters=1&amp;view=list")(?=[^>]*data-asset-library-reset)(?=[^>]*aria-label="Reset filters")[^>]*>[\s\S]*?<span class="sr-only">Reset<\/span><\/a>/);
     expect(response.text).toMatch(/<input[^>]+name="sort"[^>]+type="radio"[^>]+value="modified" checked>/);
     expect(response.text).toMatch(/<input[^>]+name="order"[^>]+type="radio"[^>]+value="desc" checked>/);
     expect(response.text).toMatch(/<input[^>]+name="pageSize"[^>]+type="radio"[^>]+value="50" checked>/);
@@ -1082,7 +1147,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
       `/assets?project=${project.id}&category=uncategorized&search=reset&extension=png&presence=present&usage=unused&sort=filename&order=asc&pageSize=25&view=list`,
     ).expect(200);
 
-    expect(response.text).toMatch(/<a\b(?=[^>]*href="\/assets\?view=list")(?=[^>]*data-asset-library-reset)(?=[^>]*aria-label="Reset filters")[^>]*>[\s\S]*?<span class="sr-only">Reset<\/span><\/a>/);
+    expect(response.text).toMatch(/<a\b(?=[^>]*href="\/assets\?resetFilters=1&amp;view=list")(?=[^>]*data-asset-library-reset)(?=[^>]*aria-label="Reset filters")[^>]*>[\s\S]*?<span class="sr-only">Reset<\/span><\/a>/);
   });
 
   it('discards unknown parameters while retaining effective saved presentation values', async () => {
@@ -1108,7 +1173,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(filtered.text).toContain('No assets match the current filters');
     expect(filtered.text).not.toContain('No assets across active projects');
     expect(filtered.text).toMatch(/<a\b(?=[^>]*data-asset-library-reset)(?=[^>]*aria-label="Reset filters")[^>]*>[\s\S]*?<span class="sr-only">Reset<\/span><\/a>/);
-    expect(filtered.text).toMatch(/<div class="empty-state-actions">\s*<a\b(?=[^>]*href="\/assets\?view=grid")(?=[^>]*data-asset-library-reset)[^>]*>Reset<\/a>/);
+    expect(filtered.text).toMatch(/<div class="empty-state-actions">\s*<a\b(?=[^>]*href="\/assets\?resetFilters=1&amp;view=grid")(?=[^>]*data-asset-library-reset)[^>]*>Reset<\/a>/);
   });
 
   it('leaves the existing project-scoped asset detail route available', async () => {

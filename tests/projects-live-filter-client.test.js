@@ -534,7 +534,7 @@ describe('Projects live filtering enhancement', () => {
   });
 
   it.each([
-    ['empty-state Reset', 'reset', 'list', 'list', '/projects', 'http://creatorcrate.test/projects'],
+    ['empty-state Reset', 'reset', 'list', 'grid', '/projects', 'http://creatorcrate.test/projects?status=ready&type=comic&sort=title&order=asc'],
     ['pagination', 'pagination', 'list', 'list', '/projects?page=5&view=list', 'http://creatorcrate.test/projects?page=5&view=list'],
     ['Grid view switcher', 'view', 'list', 'grid', '/projects?view=grid', 'http://creatorcrate.test/projects?view=grid'],
     ['List view switcher', 'view', 'grid', 'list', '/projects?view=list', 'http://creatorcrate.test/projects?view=list'],

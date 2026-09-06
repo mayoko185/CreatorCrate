@@ -134,7 +134,7 @@ function makeModel(overrides = {}) {
     ],
     nsfwFilterEnabled: false,
     _csrf: '',
-    clearFiltersUrl: overrides.clearFiltersUrl ?? buildAssetLibraryUrl({}, { view: filters.view }),
+    clearFiltersUrl: overrides.clearFiltersUrl ?? `/assets?resetFilters=1&view=${filters.view}`,
     assetViewerDefaults: { fields: [] },
     assetViewerDefaultsDialogOpen: false,
     assetViewerDefaultsReturnUrl: '/assets',
@@ -811,6 +811,14 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).not.toContain('sort=tag');
   });
 
+  it.each(['grid', 'list'])('WP3 both Asset Viewer Reset controls use supplied %s intent', (view) => {
+    const clearFiltersUrl = '/assets?resetFilters=1&view=' + view;
+    const html = renderPage({ assets: [], hasAnyAssets: true, filters: { view, search: 'missing' }, clearFiltersUrl });
+    const anchors = [...html.matchAll(/<a\b[^>]*data-asset-library-reset[^>]*>/g)];
+    expect(anchors).toHaveLength(2);
+    for (const [anchor] of anchors) expect(anchor).toContain('href="' + href(clearFiltersUrl) + '"');
+  });
+
   it('uses supplied URLs for reset and pagination links without rebuilding query strings in the template', () => {
     const model = {
       filters: {
@@ -833,7 +841,7 @@ describe('cross-project Asset Viewer template', () => {
       hasNextPage: true,
       tagOptions: [{ value: '7', displayName: 'Context Tag', selected: true }],
     };
-    const clearUrl = '/assets?view=list';
+    const clearUrl = '/assets?resetFilters=1&view=list';
     const html = renderPage({ ...model, clearFiltersUrl: clearUrl });
     const state = {
       ...model.filters,
@@ -1062,6 +1070,7 @@ function renderProjectAssetsPage(overrides = {}) {
     pageUrl: () => '/test',
     projectAssetsDefaults: { fields: [] },
     projectAssetsDefaultsDialogOpen: false,
+    resetFiltersUrl: `/projects/${project.id}/assets?resetFilters=1&view=${filters.view}`,
     projectAssetsDefaultsReturnUrl: '/projects/1/assets',
     projectAssetsDefaultsUrl: '/projects/1/assets?defaults=1',
     nsfwFilterEnabled: false,
@@ -1229,6 +1238,15 @@ describe('slideshow scaffold — static UI', () => {
     expect(speedDetails).toContain('cc-dropdown--compact');
     expect(extensionDetails).toContain('cc-dropdown');
     expect(extensionDetails).not.toContain('cc-dropdown--compact');
+  });
+
+  it.each(['grid', 'list'])('project assets Reset controls consume the supplied %s URL', (view) => {
+    const href = `/projects/1/assets?resetFilters=1&view=${view}`;
+    const html = renderProjectAssetsPage({
+      filters: { view }, resetFiltersUrl: href,
+      emptyState: { kind: 'filtered', title: 'No matches' },
+    });
+    expect(html.match(new RegExp(`href="/projects/1/assets\\?resetFilters=1&amp;view=${view}"`, 'g'))).toHaveLength(2);
   });
 
   it('project assets page: existing Filter, Reset, and Defaults controls remain present', () => {

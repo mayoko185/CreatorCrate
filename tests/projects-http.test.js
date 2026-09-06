@@ -445,7 +445,7 @@ describe('project HTTP workflow', () => {
     expect(nsfwForm).toContain('project-filter-control asset-tooltip asset-tooltip--left');
     expect(nsfwForm).toMatch(/<button[^>]*>\s*<svg[\s\S]*<\/svg>\s*<\/button>/);
     expect(resetLink).toContain('class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"');
-    expect(resetLink).toContain('href="/projects?status=all&amp;type=all&amp;tag=all"');
+    expect(resetLink).toContain('href="/projects"');
     expect(resetLink).toContain('aria-label="Reset filters"');
     expect(resetLink).toContain('data-tooltip="Reset filters"');
     expect(resetLink).toContain('data-projects-reset');
@@ -868,7 +868,7 @@ describe('project HTTP workflow', () => {
     expect(res.text).not.toContain('id="project-search"');
     expect(res.text).not.toContain('data-projects-search');
     expect(res.text.indexOf('<div class="asset-viewer-display-controls"')).toBeLessThan(res.text.indexOf('<form id="project-filters"'));
-    expect(res.text).toMatch(/project-filter-actions[^>]*>[\s\S]*?<a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"[\s\S]*?href="\/projects\?status=all&amp;type=all&amp;tag=all"[\s\S]*?aria-label="Reset filters"/);
+    expect(res.text).toMatch(/project-filter-actions[^>]*>[\s\S]*?<a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"[\s\S]*?href="\/projects"[\s\S]*?aria-label="Reset filters"/);
     expect((res.text.match(/data-asset-viewer-filter-disclosure/g) || [])).toHaveLength(0);
 
     const css = await fetchProjectCss(app);
@@ -984,7 +984,57 @@ describe('project HTTP workflow', () => {
     expect(liveRegion).not.toMatch(/<select[^>]+(?:id="sort"|id="order"|name="sort"|name="order")/);
   });
 
-  it('reset removes selected filters without reapplying saved filter defaults', async () => {
+  it.each([false, true])('Projects Reset restores current defaults (changed after rendering: %s)', async (changeDefaults) => {
+    const originalTag = app.locals.tagService.createTag({ name: 'Original Reset Default' });
+    const currentTag = app.locals.tagService.createTag({ name: 'Current Reset Default' });
+    await createProject({ title: 'Reset Existing Project', status: 'planned' });
+    saveProjectDefault('status', 'ready');
+    saveProjectDefault('projectType', 'comic');
+    writeStoredProjectDefault('tag', String(originalTag.id));
+    saveProjectDefault('view', 'list');
+    saveProjectDefault('sort', 'title');
+    saveProjectDefault('order', 'asc');
+
+    const selected = await agent
+      .get('/projects?search=no-match&status=planned&type=wallpaper&view=grid&sort=created&order=desc&page=2')
+      .expect(200);
+    const resetLinks = [...selected.text.matchAll(/<a\b[^>]*data-projects-reset[^>]*>[\s\S]*?<\/a>/g)];
+    expect(resetLinks).toHaveLength(2);
+    expect(resetLinks[0][0]).toContain('aria-label="Reset filters"');
+    expect(resetLinks[1][0]).toContain('>Reset</a>');
+    const hrefs = resetLinks.map(([link]) => link.match(/href="([^"]+)"/)[1]);
+    expect(hrefs).toEqual(['/projects', '/projects']);
+
+    if (changeDefaults) {
+      saveProjectDefault('status', 'planned');
+      saveProjectDefault('projectType', 'wallpaper');
+      writeStoredProjectDefault('tag', String(currentTag.id));
+      saveProjectDefault('view', 'grid');
+      saveProjectDefault('sort', 'updated');
+      saveProjectDefault('order', 'desc');
+    }
+    const status = changeDefaults ? 'planned' : 'ready';
+    const type = changeDefaults ? 'wallpaper' : 'comic';
+    const tag = changeDefaults ? currentTag : originalTag;
+    const sort = changeDefaults ? 'updated' : 'title';
+    const order = changeDefaults ? 'desc' : 'asc';
+    const canonical = `/projects?status=${status}&type=${type}&tag=${tag.id}&sort=${sort}`
+      + (changeDefaults ? '' : '&order=asc&view=list');
+
+    for (const href of hrefs) {
+      const redirect = await agent.get(href).expect(302);
+      expect(redirect.headers.location).toBe(canonical);
+      const restored = await agent.get(redirect.headers.location).expect(200);
+      expect(restored.headers.location).toBeUndefined();
+      expect(extractStatusFilter(restored.text)).toMatch(new RegExp(`name="status"[^>]+value="${status}" checked`));
+      expect(extractProjectTypeFilter(restored.text)).toMatch(new RegExp(`name="type"[^>]+value="${type}" checked`));
+      expect(extractTagFilter(restored.text)).toMatch(new RegExp(`name="tag"[^>]+value="${tag.id}" checked`));
+      expectProjectSortOrderSelection(restored.text, sort, order);
+      expect(extractProjectFilter(restored.text)).toContain('aria-label="Project filter: All projects"');
+    }
+  });
+
+  it('explicit All selections remain neutral without reapplying saved filter defaults', async () => {
     const tag = app.locals.tagService.createTag({ name: 'Reset Filter Tag' });
     const projectId = await createProject({ title: 'Reset Filter Project', status: 'planned' });
     saveProjectDefault('status', 'ready');
@@ -994,7 +1044,7 @@ describe('project HTTP workflow', () => {
       .get(`/projects?status=planned&status=ready&type=wallpaper&tag=${tag.id}&project=${projectId}`)
       .expect(200);
 
-    expect(selected.text).toContain('href="/projects?status=all&amp;type=all&amp;tag=all"');
+    expect(selected.text).toContain('href="/projects"');
     expect(selected.text).toContain('aria-label="Reset filters"');
     const selectedFilterActions = selected.text.match(/<div class="project-filter-actions(?: [^"]*)?">[\s\S]*?<\/div>/)?.[0] || '';
     expect(selectedFilterActions).not.toContain('>Reset</a>');
@@ -2019,8 +2069,8 @@ describe('project HTTP workflow', () => {
 
     const res = await agent.get('/projects?search=no-match').expect(200);
 
-    expect(res.text).toContain('<a class="button button-primary" href="/projects?status=all&amp;type=all&amp;tag=all" data-projects-reset>Reset</a>');
-    expect(res.text).not.toContain('<a class="button button-primary" href="/projects?status=all&amp;type=all&amp;tag=all" data-dialog-open=');
+    expect(res.text).toContain('<a class="button button-primary" href="/projects" data-projects-reset>Reset</a>');
+    expect(res.text).not.toContain('<a class="button button-primary" href="/projects" data-dialog-open=');
   });
 
   it('new-project form uses the tbd fallback when no status default is saved', async () => {

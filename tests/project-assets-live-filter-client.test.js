@@ -754,6 +754,24 @@ describe('Project Assets live filtering enhancement', () => {
     expect(allRequest.searchParams.has('inheritedFilterDefaults')).toBe(false);
   });
 
+  it.each(['grid', 'list'])('Reset fetches its %s href and records the marker-free response URL', async (view) => {
+    const initial = makePage({ view });
+    const next = makePage({ view, page: '1' });
+    const href = `/projects/1/assets?resetFilters=1&view=${view}`;
+    const reset = makeNode({ tagName: 'a', attrs: { href, 'data-project-assets-reset': '' } });
+    initial.region.appendChild(reset);
+    const { windowObject } = makeWindow(initial.document, new Map([['reset', next.document]]));
+    const responseUrl = `http://creatorcrate.test/projects/1/assets?sort=size&order=desc&pageSize=50&view=${view}`;
+    windowObject.fetch.mockResolvedValue(htmlResponse('reset', responseUrl));
+    expect(enhanceProjectAssetsLiveFiltering(initial.document)).toBe(1);
+    reset.dispatch('click', { target: reset, button: 0 });
+    await flush();
+    expect(new URL(windowObject.fetch.mock.calls[0][0]).pathname + new URL(windowObject.fetch.mock.calls[0][0]).search).toBe(href);
+    expect(windowObject.history.pushes.at(-1).url).toBe(responseUrl);
+    expect(windowObject.history.pushes.at(-1).url).not.toContain('resetFilters');
+    expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(next.region);
+  });
+
   it('serializes category and presence changes, resets page, pushes the server URL, and rebinds the replacement', async () => {
     const initial = makePage();
     const next = makePage({ presence: 'missing' });

@@ -533,7 +533,7 @@
                   data-tooltip="Start slideshow"
                   data-slideshow-trigger>{{ icons.icon('slideshow') }}</button>
             <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
-               href="{{ pageUrl({ search: '', tag: '', extension: '', presence: 'all', usage: 'all', category: 'all', sort: 'filename', order: 'asc', page: 1, pageSize: 25 }) }}"
+               href="{{ resetFiltersUrl }}"
                aria-label="Reset filters" data-tooltip="Reset filters" data-project-assets-reset>{{ icons.icon('reset') }}<span class="sr-only">Reset</span></a>
         </div>
       </div>
@@ -962,7 +962,7 @@
            perform a scan, so no-assets/no-assets-archived intentionally omit
            emptyActionUrl/emptyActionLabel. #}
         {% if emptyState.kind != 'no-assets' and emptyState.kind != 'no-assets-archived' %}
-           {% set emptyActionUrl = pageUrl({ search: '', tag: '', extension: '', presence: 'all', usage: 'all', category: 'all', sort: 'filename', order: 'asc', page: 1, pageSize: 25 }) %}
+           {% set emptyActionUrl = resetFiltersUrl %}
           {% set emptyActionLabel = "Reset Filters" %}
         {% endif %}
         {% include "partials/empty-state.njk" %}

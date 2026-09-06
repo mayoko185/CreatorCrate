@@ -272,7 +272,7 @@ function buildAssetLibraryRenderModel(page, state, {
       || state.presentation?.view?.preserveFallback === true,
     orderOptions: buildOrderOptions(page.filters.order),
     pageSizeOptions: buildPageSizeOptions(page.pageSize),
-    clearFiltersUrl: buildAssetLibraryUrl({}, { view: state.view }),
+    clearFiltersUrl: `/assets?resetFilters=1&view=${state.view}`,
     slideshowSequenceJson: JSON.stringify(page.slideshowSequence || []).replace(/<\//g, '<\\/'),
     nsfwFilterEnabled,
     assetViewerNsfwReturnUrl: currentUrl,
@@ -295,11 +295,12 @@ function renderAssetLibraryPage(req, res, {
   assetViewerDefaultsNotice = resolveAssetViewerDefaultsNotice(req.query?.notice),
   allowSavedDefaultsRedirect = req.query?.defaults !== '1',
   rawQuery = null,
+  resetView = null,
   next,
 } = {}) {
   const pageDefaultsService = getPageDefaultsService(req);
   const nsfwFilterEnabled = getNsfwFilterSettingsService(req).isEnabled();
-  const query = rawQuery || req.query;
+  const query = resetView ? { view: resetView } : rawQuery || req.query;
   const parsed = parseAssetLibraryQuery(query);
   const resolvedPresentation = resolveAssetLibraryPresentation(parsed, pageDefaultsService);
   const input = {
@@ -319,7 +320,7 @@ function renderAssetLibraryPage(req, res, {
     workflowQueryService.getAssetLibraryExtensions(),
   );
 
-  if (isBareAssetLibraryRequest(query)) {
+  if (resetView || isBareAssetLibraryRequest(query)) {
     Object.assign(input, resolveAssetViewerFilterDefaults(pageDefaultsService, optionCatalogues));
     page = workflowQueryService.getAssetLibraryPage(input);
   }
@@ -334,7 +335,7 @@ function renderAssetLibraryPage(req, res, {
   };
   const canonicalUrl = buildAssetLibraryUrl(state, { page: page.page });
 
-  if (allowSavedDefaultsRedirect && !assetViewerDefaultsNotice && getRequestUrl(req) !== canonicalUrl) {
+  if (resetView || (allowSavedDefaultsRedirect && !assetViewerDefaultsNotice && getRequestUrl(req) !== canonicalUrl)) {
     return res.redirect(canonicalUrl);
   }
 
@@ -364,9 +365,22 @@ export function createAssetLibraryRouter({ appName, db, workflowQueryService } =
 
   router.get('/', (req, res, next) => {
     try {
+      let resetView = null;
+      if (Object.prototype.hasOwnProperty.call(req.query, 'resetFilters')) {
+        if (req.query.resetFilters !== '1'
+          || typeof req.query.view !== 'string'
+          || !['grid', 'list'].includes(req.query.view)) {
+          const error = new Error('Invalid Asset Viewer Reset request.');
+          error.status = 400;
+          throw error;
+        }
+        resetView = req.query.view;
+        res.set('Cache-Control', 'no-store');
+      }
       renderAssetLibraryPage(req, res, {
         appName,
         workflowQueryService,
+        resetView,
         next,
       });
     } catch (err) {

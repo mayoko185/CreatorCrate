@@ -510,7 +510,7 @@ function renderProjectsPage(req, res, {
     total,
     hasAnyProjects: totalProjects > 0,
     filtersActive,
-    resetFiltersUrl: '/projects?status=all&type=all&tag=all',
+    resetFiltersUrl: '/projects',
     page: currentPage,
     pageSize: PAGE_SIZE,
     pageCount,

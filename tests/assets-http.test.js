@@ -1012,6 +1012,115 @@ describe('asset browser HTTP workflow', () => {
     expect(renameUrl.searchParams.get('search')).toBe('old');
   });
 
+  describe('WP2 Reset intent', () => {
+    it.each(['grid', 'list'])('restores request-time scoped defaults while preserving %s', async (view) => {
+      const title = `WP2 ${view}`;
+      const created = await createProject(title);
+      const id = Number(created.headers.location.replace('/projects/', ''));
+      const otherView = view === 'grid' ? 'list' : 'grid';
+      const tag = app.locals.tagService.createTag({ name: 'WP2 tag' });
+      writeIndexedAsset(id, getProjectDir(title), 'chosen.png', 'png');
+      writeStoredAssetDefault('view', otherView);
+      const rendered = await agent.get(`/projects/${id}/assets?view=${view}&search=nomatch&sort=modified&order=asc&pageSize=100&page=3`).expect(200);
+      const links = [...rendered.text.matchAll(/href="([^"]+)"/g)]
+        .map((match) => decodeHtmlHref(match[1])).filter((href) => href.includes('resetFilters='));
+      expect(links).toEqual(Array(2).fill(`/projects/${id}/assets?resetFilters=1&view=${view}`));
+      // Change defaults after rendering: the old link must not carry saved state.
+      writeStoredAssetDefault('sort', 'size');
+      writeStoredAssetDefault('order', 'desc');
+      writeStoredAssetDefault('pageSize', '50');
+      writeStoredAssetDefault('extension', 'png');
+      writeStoredAssetDefault('tag', String(tag.id));
+      for (const projectOverride of [false, true]) {
+        if (projectOverride) {
+          app.locals.pageDefaultsService.saveProjectDefault('projectAssets', 'sort', 'modified', undefined, { projectId: id });
+          app.locals.pageDefaultsService.saveProjectDefault('projectAssets', 'pageSize', '10', undefined, { projectId: id });
+        }
+        const reset = await agent.get(links[0] + '&search=discard&category=bad&tag=all&extension=jpg&sort=filename&order=asc&pageSize=25&page=9&notice=asset-renamed&defaults=1&manage_categories=1&inheritedFilterDefaults=bogus').expect(302);
+        expect(reset.headers['cache-control']).toBe('no-store');
+        const url = new URL(reset.headers.location, 'http://localhost');
+        expect(url.searchParams.get('sort')).toBe(projectOverride ? 'modified' : 'size');
+        expect(url.searchParams.get('order')).toBe('desc');
+        expect(url.searchParams.get('pageSize')).toBe(projectOverride ? '10' : '50');
+        expect(url.searchParams.get('view') || 'grid').toBe(view);
+        expect(url.searchParams.getAll('tag')).toEqual([String(tag.id)]);
+        expect(url.searchParams.getAll('extension')).toEqual(['png']);
+        expect(url.searchParams.get('inheritedFilterDefaults')).toBe('tag,extension');
+        for (const key of ['resetFilters', 'search', 'page', 'notice', 'defaults', 'manage_categories']) expect(url.searchParams.has(key)).toBe(false);
+        const canonical = await agent.get(reset.headers.location).expect(200);
+        expect(canonical.headers.location).toBeUndefined();
+        expect(canonical.text).toContain(`resetFilters=1&amp;view=${view}`);
+      }
+      // Ordinary explicit view and explicit All must not activate saved filters/category.
+      for (const query of ['view=grid', 'view=list', 'category=all&tag=all&extension=all']) {
+        const ordinary = await agent.get(`/projects/${id}/assets?${query}`).expect(200);
+        expect(ordinary.headers.location).toBeUndefined();
+        expect(ordinary.text).not.toContain('name="inheritedFilterDefaults"');
+      }
+    });
+
+    it.each(['project', 'global'])('restores %s category preference with suspended provenance and complete-category behavior', async (scope) => {
+      const title = 'WP2 category';
+      const created = await createProject(title);
+      const id = Number(created.headers.location.replace('/projects/', ''));
+      const [category] = assetCategoryRepo.listProjectCategories(id);
+      for (let i = 0; i < 12; i += 1) {
+        writeIndexedAsset(id, getProjectDir(title), `asset-${String(i).padStart(2, '0')}.png`, 'png', { categoryId: category.id });
+      }
+      const tag = app.locals.tagService.createTag({ name: 'WP2 category tag' });
+      writeStoredAssetDefault('tag', String(tag.id));
+      writeStoredAssetDefault('extension', 'png');
+      writeStoredAssetDefault('pageSize', '10');
+      writeStoredAssetDefault('view', 'list');
+      if (scope === 'project') assetBrowserPreferenceRepo.upsertProjectPreference(id, 'category', category.id);
+      else {
+        assetBrowserPreferenceRepo.upsertProjectPreference(id, 'inherit', null);
+        assetBrowserPreferenceRepo.setGlobalDefault(category.directory_slug);
+      }
+      const reset = await agent.get(`/projects/${id}/assets?resetFilters=1&view=grid&category=all&tag=all&inheritedFilterDefaults=extension&page=8`).expect(302);
+      const url = new URL(reset.headers.location, 'http://localhost');
+      expect(url.searchParams.get('category')).toBe(String(category.id));
+      expect(url.searchParams.get('view')).toBe('grid');
+      expect(url.searchParams.get('inheritedFilterDefaults')).toBe('tag,extension');
+      expect(url.searchParams.has('tag')).toBe(false);
+      expect(url.searchParams.has('extension')).toBe(false);
+      expect(url.searchParams.has('resetFilters')).toBe(false);
+      const canonical = await agent.get(reset.headers.location).expect(200);
+      expect(canonical.text).toContain('data-auto-rename-surface');
+      expect(canonical.text.match(/data-auto-rename-asset\s/g)).toHaveLength(12);
+      expect(canonical.text).not.toContain('class="pagination-next"');
+      expect(canonical.text.indexOf('asset-00.png')).toBeLessThan(canonical.text.indexOf('asset-11.png'));
+      const ordinary = await agent.get(`/projects/${id}/assets?view=grid`).expect(200);
+      expect(ordinary.headers.location).toBeUndefined();
+      const all = await agent.get(`/projects/${id}/assets?category=all&tag=all`).expect(200);
+      expect(all.text).not.toContain('data-auto-rename-surface');
+      const restored = await agent.get(`/projects/${id}/assets?category=all&inheritedFilterDefaults=tag%2Cextension`).expect(200);
+      expect(restored.text).toContain('name="inheritedFilterDefaults" value="tag,extension"');
+    });
+
+    it.each(['grid', 'list'])('canonicalizes fallback-only Reset without a loop (%s)', async (view) => {
+      const created = await createProject('WP2 fallback');
+      const id = created.headers.location.replace('/projects/', '');
+      const reset = await agent.get(`/projects/${id}/assets?resetFilters=1&view=${view}`).expect(302);
+      expect(reset.headers.location).not.toContain('resetFilters');
+      await agent.get(reset.headers.location).expect(200);
+    });
+
+    it.each([
+      'resetFilters=', 'resetFilters=0', 'resetFilters=1&resetFilters=1',
+      'resetFilters[]=1', 'resetFilters[x]=1', 'resetFilters=1&resetFilters[]=1',
+      'resetFilters=1', 'resetFilters=1&view=', 'resetFilters=1&view=other',
+      'resetFilters=1&view=grid&view=list', 'resetFilters=1&view[]=grid',
+      'resetFilters=1&view[x]=grid', 'resetFilters=1&view=grid&view[]=list',
+    ])('rejects malformed Reset before resolving defaults: %s', async (query) => {
+      const created = await createProject('WP2 validation');
+      const id = created.headers.location.replace('/projects/', '');
+      const resolve = vi.spyOn(app.locals.assetBrowserPreferenceService, 'resolveEffectiveCategory');
+      await agent.get(`/projects/${id}/assets?${query}`).expect(400);
+      expect(resolve).not.toHaveBeenCalled();
+    });
+  });
+
   // ─── Phase B Chunk 3: bare-page defaults ─────────────────────────────
 
   describe('bare Assets-page default resolution', () => {
@@ -1939,10 +2048,11 @@ describe('asset browser HTTP workflow', () => {
 
       const resetAnchor = canonical.text.match(/<a\b[^>]*data-project-assets-reset[^>]*>/)?.[0] || '';
       const resetHref = resetAnchor.match(/\bhref="([^"]+)"/)?.[1];
-      expect(decodeHtmlHref(resetHref)).toBe('/projects/' + targetId + '/assets?category=all');
-      const reset = await agent.get(decodeHtmlHref(resetHref)).expect(200);
+      expect(decodeHtmlHref(resetHref)).toBe('/projects/' + targetId + '/assets?resetFilters=1&view=grid');
+      const redirect = await agent.get(decodeHtmlHref(resetHref)).expect(302);
+      const reset = await agent.get(redirect.headers.location).expect(200);
       expect(reset.headers.location).toBeUndefined();
-      expect(assetExtensionFilterHtml(reset.text)).not.toContain('>.jpg</span>');
+      expect(assetExtensionFilterHtml(reset.text)).toMatch(/name="extension"[^>]+type="checkbox"[^>]+value="jpg"[^>]*checked/);
 
       await agent
         .post('/projects/' + targetId + '/assets/defaults')
@@ -3513,7 +3623,7 @@ describe('asset browser HTTP workflow', () => {
       .get(`/projects/${id}/assets?presence=missing&usage=used`)
       .expect(200);
 
-    expect(res2.text).toContain('href="/projects/' + id + '/assets?category=all"');
+    expect(res2.text).toContain('href="/projects/' + id + '/assets?resetFilters=1&amp;view=grid"');
   });
 
   // ─── PageSize form preserves filters ───────────────────────────
@@ -3894,10 +4004,7 @@ describe('asset browser HTTP workflow', () => {
     const resetHref = resetAnchor.match(/\bhref="([^"]+)"/)?.[1];
     expect(resetHref).toBeDefined();
     const resetUrl = new URL(decodeHtmlHref(resetHref), 'http://localhost');
-    expect(resetUrl.searchParams.get('category')).toBe('all');
-    expect(resetUrl.searchParams.get('sort')).toBe('filename');
-    expect(resetUrl.searchParams.get('order')).toBe('asc');
-    expect(resetUrl.searchParams.get('pageSize')).toBe('25');
+    expect([...resetUrl.searchParams]).toEqual([['resetFilters', '1'], ['view', 'list']]);
     expect(resetUrl.searchParams.get('view')).toBe('list');
     expect(resetUrl.searchParams.has('search')).toBe(false);
     expect(resetUrl.searchParams.has('extension')).toBe(false);

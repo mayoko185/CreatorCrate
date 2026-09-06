@@ -313,7 +313,24 @@ export function createAssetsRouter({
   // GET /projects/:id/assets — Asset listing page
   router.get('/:id/assets', (req, res, next) => {
     try {
+      const query = req.query;
+      const queryKeys = Object.keys(query);
+      const hasReset = queryKeys.some((key) => key === 'resetFilters' || key.startsWith('resetFilters['));
+      let resetView;
+      if (hasReset) {
+        if (query.resetFilters !== '1'
+          || queryKeys.some((key) => key.startsWith('resetFilters[') || key.startsWith('view['))
+          || typeof query.view !== 'string'
+          || !['grid', 'list'].includes(query.view)) {
+          const error = new Error('Invalid asset filter reset request.');
+          error.status = 400;
+          throw error;
+        }
+        resetView = query.view;
+        res.set('Cache-Control', 'no-store');
+      }
       renderProjectAssetsPage(req, res, {
+        resetView,
         appName,
         projectService,
         workflowQueryService,

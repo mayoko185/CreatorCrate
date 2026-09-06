@@ -191,6 +191,7 @@ export function renderProjectAssetsPage(req, res, {
   projectId = null,
   status = 200,
   rawQuery = null,
+  resetView,
   projectAssetsDefaultsDialogOpen = req.query?.defaults === '1',
   removeMissingAssetsDialogOpen = req.query?.remove_missing === '1',
   projectAssetsDefaultsSubmittedValues = null,
@@ -222,7 +223,7 @@ export function renderProjectAssetsPage(req, res, {
   const projectAssetsDefaultOptionCatalogues = buildProjectAssetsDefaultOptionCatalogues(
     workflowQueryService,
   );
-  const query = rawQuery && typeof rawQuery === 'object'
+  const query = resetView ? { view: resetView } : rawQuery && typeof rawQuery === 'object'
     ? rawQuery
     : (req.query && typeof req.query === 'object' ? req.query : {});
   const projectPageDefaultContext = { projectId: id };
@@ -243,9 +244,9 @@ export function renderProjectAssetsPage(req, res, {
     projectPageDefaultContext,
   );
 
-  // Only a completely bare request may activate the existing category
-  // preference redirect. All non-bare requests remain authoritative GETs.
-  if (allowSavedDefaultsRedirect && isBareAssetBrowserRequest(query)) {
+  // Validated Reset intent reuses bare-navigation defaults with a request-local view.
+  // Other non-bare requests remain authoritative GETs.
+  if (allowSavedDefaultsRedirect && (resetView || isBareAssetBrowserRequest(query))) {
     const resolution = assetBrowserPreferenceService.resolveEffectiveCategory(id);
     const effective = resolution && resolution.effective;
     if (!effective || (effective.kind !== 'all' && effective.kind !== 'category')) {
@@ -262,11 +263,13 @@ export function renderProjectAssetsPage(req, res, {
         presentation,
         pageDefaultsService,
         filterDefaults,
+        resetView,
       ));
     }
 
     if (
-      hasNonFallbackAssetPresentation(presentation, pageDefaultsService)
+      resetView
+      || hasNonFallbackAssetPresentation(presentation, pageDefaultsService)
       || hasNonNeutralProjectAssetsFilterDefaults(filterDefaults)
     ) {
       return res.redirect(buildAssetDefaultsRedirectUrl(
@@ -275,6 +278,7 @@ export function renderProjectAssetsPage(req, res, {
         presentation,
         pageDefaultsService,
         filterDefaults,
+        resetView,
       ));
     }
   }
@@ -579,6 +583,7 @@ function buildAssetDefaultsRedirectUrl(
   presentation,
   pageDefaultsService,
   filterDefaults,
+  activeView,
 ) {
   const inheritedFilterDefaults = [];
   const tag = categoryId === null && filterDefaults.tag !== 'all'
@@ -601,7 +606,7 @@ function buildAssetDefaultsRedirectUrl(
     order: presentation.saved.order,
     page: 1,
     pageSize: presentation.saved.pageSize,
-    view: presentation.saved.view,
+    view: activeView ?? presentation.saved.view,
   };
   const query = buildCanonicalAssetBrowserQuery(context, 1);
   if (inheritedFilterDefaults.length > 0) {
@@ -736,6 +741,7 @@ export function buildBrowserRenderModel(
     pageSize: data.pageSize,
     pageCount: data.pageCount,
     filters: data.filters,
+    resetFiltersUrl: `/projects/${project.id}/assets?resetFilters=1&view=${data.filters.view}`,
     extensionChoices: data.extensionChoices,
     tagOptions: data.tagOptions || [],
     categoryNavigation: data.categoryNavigation,

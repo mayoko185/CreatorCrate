@@ -325,7 +325,8 @@ function makeWindow(document, pages) {
       },
       replaceState() {},
     },
-    addEventListener() {},
+    listeners: {},
+    addEventListener(type, listener) { this.listeners[type] = listener; },
   };
   document.defaultView = windowObject;
   return windowObject;
@@ -375,20 +376,20 @@ describe('Asset Viewer Project live filtering enhancement', () => {
     expect(next.form.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
   });
 
-  it('uses the live region for the empty-state Reset link', async () => {
+  it.each(['grid', 'list'])('WP3 live Reset records final canonical URL for %s', async (view) => {
     const initial = makePage('1');
     const next = makePage();
     const pages = new Map([['reset', next.document]]);
     const windowObject = makeWindow(initial.document, pages);
     windowObject.fetch.mockResolvedValue({
       ok: true,
-      url: 'http://creatorcrate.test/assets',
+      url: 'http://creatorcrate.test/assets?category=art&sort=project&order=desc&pageSize=50&view=' + view,
       text: vi.fn(async () => 'reset'),
     });
     const emptyActions = makeNode({ attrs: { class: 'empty-state-actions' } });
     const reset = makeNode({
       tagName: 'a',
-      attrs: { href: '/assets', 'data-asset-library-reset': '' },
+      attrs: { href: '/assets?resetFilters=1&view=' + view, 'data-asset-library-reset': '' },
     });
     emptyActions.appendChild(reset);
     initial.region.appendChild(emptyActions);
@@ -399,14 +400,26 @@ describe('Asset Viewer Project live filtering enhancement', () => {
 
     expect(event.defaultPrevented).toBe(true);
     expect(windowObject.fetch).toHaveBeenCalledWith(
-      'http://creatorcrate.test/assets',
+      'http://creatorcrate.test/assets?resetFilters=1&view=' + view,
       expect.objectContaining({ method: 'GET', headers: { Accept: 'text/html' } }),
     );
     expect(initial.document.querySelector('[data-asset-library-live-region]')).toBe(next.region);
     expect(windowObject.history.pushes).toEqual([
-      expect.objectContaining({ url: 'http://creatorcrate.test/assets' }),
+      expect.objectContaining({ url: 'http://creatorcrate.test/assets?category=art&sort=project&order=desc&pageSize=50&view=' + view }),
     ]);
     expect(initial.form.submit).not.toHaveBeenCalled();
+    const finalUrl = windowObject.location.href;
+    for (const url of ['http://creatorcrate.test/assets?project=1', finalUrl]) {
+      const revisited = makePage(url.includes('project=1') ? '1' : '');
+      pages.set('revisited', revisited.document);
+      windowObject.location.href = url;
+      windowObject.fetch.mockResolvedValue({ ok: true, url, text: vi.fn(async () => 'revisited') });
+      windowObject.listeners.popstate();
+      await flush();
+      expect(windowObject.fetch).toHaveBeenLastCalledWith(url, expect.objectContaining({ method: 'GET' }));
+      expect(initial.document.querySelector('[data-asset-library-live-region]')).toBe(revisited.region);
+      expect(windowObject.history.pushes).toHaveLength(1);
+    }
   });
 
   it('re-binds replaced preview links to the existing slideshow', async () => {
