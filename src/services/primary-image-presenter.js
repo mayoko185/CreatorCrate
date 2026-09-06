@@ -1,8 +1,60 @@
 import { classifyPreviewable } from './preview-service.js';
+import { ManagedMediaError } from './managed-media-service.js';
 import {
   buildAssetPreviewModel,
   buildPreviewAltText,
 } from './asset-presentation.js';
+
+/** Book-only source model; Project primary-image presentation stays unchanged. */
+export function buildBookPrimaryImageModel(selection, asset) {
+  const selectedSource = selection?.source ?? null;
+  if (selectedSource?.kind === 'managed_asset') {
+    return {
+      ...buildEmptyPrimaryImageModel(),
+      selectedSource,
+      state: 'unavailable',
+      kind: 'image',
+      unavailableReason: 'source_unavailable',
+    };
+  }
+  return { ...buildPrimaryImageModelForAsset(selection, asset), selectedSource };
+}
+
+/** Resolve managed availability at the asynchronous presentation boundary.
+ * The synchronous selection model remains conservative until source verification.
+ */
+export async function resolveBookPrimaryImageMedia(books, managedMediaService) {
+  const resolved = new Map();
+  const result = [];
+  for (const book of books) {
+    const image = book.primaryImage;
+    const source = image?.selectedSource;
+    if (source?.kind !== 'managed_asset') {
+      result.push(book);
+      continue;
+    }
+    if (!resolved.has(source.id)) {
+      try {
+        const { revision } = await managedMediaService.resolveSource(source.id);
+        const base = `/managed-assets/${encodeURIComponent(source.id)}`;
+        resolved.set(source.id, {
+          ...buildEmptyPrimaryImageModel(), selectedSource: source,
+          state: 'available', kind: 'image', revision,
+          thumbnailUrl: `${base}/thumbnail`, previewUrl: `${base}/preview`,
+          alt: 'Book cover',
+        });
+      } catch (err) {
+        if (!(err instanceof ManagedMediaError)) throw err;
+        resolved.set(source.id, {
+          ...buildEmptyPrimaryImageModel(), selectedSource: source,
+          state: 'unavailable', kind: 'image', unavailableReason: 'source_unavailable',
+        });
+      }
+    }
+    result.push({ ...book, primaryImage: resolved.get(source.id) });
+  }
+  return result;
+}
 
 export function buildEmptyPrimaryImageModel() {
   return {

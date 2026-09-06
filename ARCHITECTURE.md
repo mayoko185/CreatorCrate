@@ -553,10 +553,292 @@ Two roots, with different ownership:
   files directly (including over SMB). Project directories are **flat direct
   children** of `PROJECTS_ROOT`, named `<zero-padded-id>-<slug>`.
 - **`APP_DATA_ROOT`** — application-owned. The SQLite database and its WAL
-  sidecars, `backups/`, `previews/`, and the managed auth files. Only
+  sidecars, `backups/`, `previews/`, `assets/`, and the managed auth files. Only
   CreatorCrate writes here.
 
-The safety rules, all implemented in
+`managedAssetRoot` derives from `appDataRoot/assets`, never the database's
+parent directory or `PROJECTS_ROOT`; the existing app-data mount persists it.
+Migration 029 adds `managed_assets`: string identity, unique relative storage
+key, namespace (initially `book-covers`), verified MIME type, byte size,
+dimensions, SHA-256 and creation time. These records have no Project ownership.
+The SQL-only managed-asset repository accepts committed metadata and provides
+single-record reads and a reference check; it does not perform filesystem work.
+
+WP7A2 adds `managed-image-service.js` and Project-independent
+`storage/managed-asset-storage.js`. `app.locals.managedImageService` exposes
+`createCommittedImage({ bytes, namespace: 'book-covers' })`, returning
+`{ record, ownershipToken }`. Only a Buffer containing one still PNG, JPEG or
+WebP is accepted: at most 10 MiB encoded, 40 million pixels, and 16,384 pixels
+per axis. Sharp verifies format and fully decodes with warning failures enabled;
+APNG animation control chunks are independently rejected. WebP validation walks
+the complete RIFF chunk framing and zero padding, requiring exactly one still
+VP8/VP8L payload with optional extended-header/alpha and metadata chunks; animation,
+duplicate image payloads and nested RIFF content are rejected. Filenames and MIME
+hints are not inputs to storage or validation. Original bytes are preserved.
+
+Private writes are flushed under `assets/.staging/operation-<random>/source`.
+After validation, a hard link exclusively publishes
+`book-covers/<generated-uuid>/source.<png|jpg|webp>` beneath the managed root.
+Directory/file collisions fail without replacement; no API modifies published
+originals. Links at or below the managed root are rejected. As with existing
+identity-guarded filesystem operations, the configured parent and filesystem
+must be application-controlled; this is not protection against a hostile local
+process racing individual filesystem calls.
+
+**Book-cover multipart foundation (WP7D1).** `services/book-cover-multipart.js`
+exports `parseBookCoverMultipart(req)` for an unread multipart request, returning
+`{ fields, cover }`; `fields` is a null-prototype string map and `cover` is null
+or `{ bytes: Buffer, size }`. WP7D2A/WP7D2B mount the same HTTP adapter only on
+`POST /notes/books` and the numeric `POST /notes/books/:bookId` Edit endpoint
+for multipart requests (not reorder, delete, or nested Book actions). Ordinary URL-encoded Book forms
+and the global CSRF middleware remain unchanged.
+
+Direct production dependency Busboy 1.6.0 streams into bounded memory: one file
+named `cover`, inclusive 10 MiB file maximum, 16 text fields, 100 UTF-8 bytes per
+field name, 8 KiB per field value, and 100 KiB total decoded field names plus
+values (matching the existing URL-encoded parser's default overall body budget).
+An additional 11 MiB wire-body ceiling bounds multipart framing, preamble and
+epilogue; an 18th multipart part is rejected, including skipped parts.
+Duplicate text names are rejected rather than silently overwriting
+values, including `_csrf`. Busboy also bounds each part header to 16 KiB.
+Filename and declared MIME are discarded; WP7A remains authoritative for image
+eligibility. No filesystem APIs, staging, managed ingestion or Book mutation are
+used. File chunks and the final concatenation can coexist briefly (about 20 MiB
+at the file maximum, plus bounded parser/request buffers).
+
+The `middleware/book-create-multipart.js` adapter parses before the existing
+global `requireCsrf` gate, sets `req.body = result.fields`, and lets that gate
+validate `_csrf` against the session or auth-disabled visitor token.
+The existing `X-CSRF-Token` path is also supported. Parsing is not authorization;
+never exempt multipart or defer CSRF until after ingestion/mutation. Merely
+adding a parser inside the current Book router is too late for native multipart
+tokens because the global gate precedes that router.
+
+Failures reject with `BookCoverMultipartError` and fixed `code`, `status` and
+`message` (400 malformed/duplicate/unexpected files, 413 limits, 415 wrong type).
+Adapters must serialize only those safe properties, never stack, body or bytes.
+On streaming failure the helper unpipes/pauses the request, destroys its parser
+and releases retained chunks; it leaves the response socket available. The
+HTTP adapter sends the safe error and closes the connection for an unread
+failed body rather than resuming an unbounded drain. Existing installations need
+the normal `pnpm install` dependency upgrade; no migrations or native builds
+are introduced by this parser.
+
+**New Book upload orchestration (WP7D2A).** Multipart without a file uses the
+unchanged `bookService.createBook` path. With a cover, the adapter first calls
+`bookService.validateCreateBook`, reusing the service's existing normalization
+without mutation. Ordinary validation errors retain the 422 hosted New Book
+dialog, submitted title and errors. No file selection is restored or UI added.
+After CSRF and validation, WP7A `createCommittedImage({ bytes, namespace:
+'book-covers' })` completes outside any Book transaction; WP7B
+`createBookWithManagedPrimaryImage` then atomically creates the Book and selects
+the managed source. Existing service activity logs follow durable commit and
+the destination remains `/notes/books/:id`.
+
+If compound save fails, the operation token goes through WP7A
+`rollbackCommitted` before `compensate`. A refused/uncertain cleanup stops safe
+deletion and surfaces a sanitized 500 `RECOVERY_REQUIRED`, overriding ordinary
+validation failures. Invalid images return a sanitized 422; parser errors keep
+their fixed 400/413/415 distinctions. Logs never receive upload bytes, filenames,
+paths or raw parser errors.
+
+Parser aborts release transient buffers. Before ingestion and after it settles,
+the adapter checks request abort/response destruction; a disconnected request
+does not proceed to Book creation and uses guarded cleanup for its ingested
+source. WP7A has no mid-decode cancellation hook, so in-flight ingestion settles
+before cleanup. Once the synchronous Book transaction succeeds, disconnects
+never undo the Book or source and no automatic retry occurs. Cross-context replacement protection is described under WP7D3B2 below.
+
+**Edit Book upload orchestration (WP7D2B).** URL-encoded and multipart no-cover
+updates use the unchanged `updateBook` path and hosted Edit Book 422 rerender.
+With a file, `middleware/book-edit-multipart.js` preflights ordinary fields via
+`validateUpdateBook`, then reuses WP7D2A's request-local ingestion/rollback helper.
+WP7E must submit `expectedCoverKind=none|project_asset|managed_asset` and
+`expectedCoverId` (empty/omitted for none, canonical positive integer for Project,
+exact opaque string for managed). Either existing kind additionally requires
+`coverReplacementConfirmed=true`; missing/false confirmation fails before ingestion.
+These fields are ignored without a file. No file restoration or upload UI is added.
+The expected identity is always passed to WP7B's compound
+`updateBookWithManagedPrimaryImage` transaction: confirmation cannot bypass its
+source-kind-and-ID check. A stale identity returns sanitized `409 STALE_SOURCE`,
+rolls back Book fields, and triggers guarded WP7A rollback then compensation of
+the newly ingested source. Claiming `none` cannot replace an existing cover.
+Successful replacement retains the old Project asset or managed row/file.
+Cleanup uncertainty returns sanitized `500 RECOVERY_REQUIRED`; disconnect handling
+is shared with New Book, including no undo after durable commit. Upload controls
+and replacement warning dialogs remain WP7E; active-upload tracking is shared through WP7D3A.
+
+**Managed-upload admission (WP7D3B1).** `services/managed-upload-tracker.js`
+owns one process-local singleton, exposed as `app.locals.managedUploadTracker`.
+`begin()` synchronously registers an independent operation or returns `null`
+while admission is closed. Handles retain `signal`, `cancel()` and idempotent
+`complete()`; `activeCount` / `hasActive()` count all admitted nonterminal
+multipart Book requests, including requests without a cover. Uploads remain
+concurrent, with no queue.
+
+The first maintenance middleware in `app.js` admits multipart New Book and
+numeric Edit Book POSTs before `next()`, session resolution, parsing or CSRF.
+The existing case-insensitive, optional-trailing-slash matching and multipart
+content-type recognition are shared with the parser mounts. The request carries
+one lease into New/Edit orchestration; ingestion never registers another lease.
+Parser and route finally boundaries hold it through prevalidation, image work,
+compound saves, rollback/compensation and asynchronous validation rendering.
+Callback-based template rendering also holds ownership. Response end/terminal
+handler completion releases only after all those holds settle; socket close
+alone is not terminal (even router fallthrough may defer `next()`). Parser,
+CSRF/auth, no-cover, validation, recovery-required and response-write failures
+all use the same lifetime. Recovery artifacts do not keep settled work active.
+Disconnect signals cancellation without releasing ownership. In-flight ingestion
+settles before guarded cleanup; durable Book commits are never undone on disconnect.
+
+`tryBeginMaintenance()` synchronously returns `null` if admission is closed or
+any upload is active; failure changes/cancels no operations and leaves admission
+open when it was open. Otherwise it closes admission and returns an opaque owner
+capability with idempotent `release()` (true only for its current ownership).
+A stale release cannot release a later owner. `bindMaintenanceState(state)` binds
+the existing shared object's `active` property to the authority's closed state.
+Legacy boolean maintenance writes remain compatible, but clearing
+them cannot release token ownership. Maintenance-first uploads receive the
+unchanged 503 response before parser, CSRF, prevalidation or ingestion.
+
+**Replacement ownership (WP7D3B2).** Database/context replacement and auth
+transitions reuse this same singleton. `beginReplacement()` synchronously
+acquires maintenance, then runs `assertNoActiveProcessingJobs()` while upload
+admission is closed. Upload or processing conflicts refuse without cancellation,
+waiting, or changing live resources; only the attempted owner is released.
+Capabilities are bound to the originating connection and current graph identity.
+
+Settings holds its owner across validation, asynchronous restore, old-DB close,
+verification/recovery, and awaited graph adoption. Immediately before checkpoint
+and close, `restoreBackup(filename, db, owner)` validates authentic, still-current
+ownership. Unowned or delayed stale calls cannot retire a connection. Adoption
+accepts the existing owner without reacquisition; direct replacement acquires its
+own. Rejected candidates are still closed, never the current live connection.
+
+Pre-close failure releases maintenance with the original usable graph intact.
+Recovered connections are adopted before release. Post-close failure without a
+usable adopted graph keeps admission closed and uses the existing error handler.
+Successful restore activity is logged only after adoption. Auth enable/disable
+hold ownership from the existing conflict seam through session invalidation,
+rebuild and rollback. Every graph retains the same tracker and active counts.
+
+**Shutdown drain (WP7D3B3).** At shutdown entry, the same process tracker calls
+`beginShutdown()` synchronously before any asynchronous gap. Admission remains
+closed permanently, including after maintenance-owner release, legacy flag writes,
+and graph replacement. The existing maintenance middleware refuses New/Edit
+multipart requests before parsing. Shutdown stops the scan scheduler, closes Vite,
+and awaits HTTP server close, then awaits `waitForIdle()` before logging completion,
+closing the current database and exiting. Tracker-owned promise waiters resolve on
+the final lease completion (or immediately when idle), without polling or timeout.
+Disconnect cancellation does not release a lease: graph-dependent cleanup must
+settle first. Shutdown does not cancel uploads, undo durable commits, or delete
+retained recovery artifacts. Restore remains fail-fast; processing-job shutdown
+semantics are unchanged and no processing admission gate is added. Cross-restart
+tracking and staging recovery remain deferred.
+
+**Managed media foundation (WP7C1).** `managed-media-service.js`, composed as
+`app.locals.managedMediaService`, is independent of Project context. Its ID-only
+`resolveSource(id)` returns verified owned bytes, a record snapshot and revision;
+`getDerivative(id, 'thumbnail' | 'preview')` returns WebP bytes, dimensions,
+revision and cache-hit status. It accepts only committed Book-cover UUID/source
+keys produced by managed ingestion. Containment, non-symlink component checks,
+device/inode checks around a bounded read-only descriptor read, committed size
+and SHA-256, format/dimensions and full decoding gate every request, including
+cache hits. The decoder never reopens the original path. The same local-writer
+race limitation described above applies; the root's ancestors are trusted config.
+
+Managed derivatives use `previews/managed-assets/<id>/<revision>/<kind>.webp`.
+The revision hashes source ID/key/hash/metadata, the shared derivative version
+and actual shared sizing/quality configuration. The existing preview service's
+source-neutral Sharp pipeline is reused unchanged: auto-orientation, inside fit,
+no enlargement, metadata stripping and WebP (thumbnail 256px/quality 80;
+preview 1600px/quality 90). Source-neutral preview-cache containment/directory
+and atomic-write helpers are shared. Each independently requested derivative is
+atomically published, so no Project-shaped metadata or two-file pointer is needed.
+Cache reads require still WebP, expected dimensions, stripped metadata and full
+decode; absent/corrupt cache data is rebuilt under per-ID FIFO serialization.
+
+Missing, unsafe, unreadable or invalid sources raise `ManagedMediaError` with
+`MEDIA_UNAVAILABLE`; cache infrastructure failures use `CACHE_UNAVAILABLE`.
+Neither path mutates originals, managed records or Book selections. WP7C2 serves only
+`GET /managed-assets/:id/thumbnail` and `/managed-assets/:id/preview` behind the
+existing application authentication boundary, with no static managed-root mount.
+Routes pass only ID and fixed kind to the service and return its derivative MIME
+type and bytes with `nosniff` and private revalidation caching. Source failures
+return safe 404 responses; cache failures return 503, both with `no-store`. Old derivatives are rebuildable cache;
+garbage collection remains deferred.
+
+Only after publication does the service synchronously insert verified metadata
+through the repository (including its default creation timestamp). Filesystem
+and SQLite commits are not atomic. Failed persistence removes only operation-owned
+files and directories, checked by operation-captured device/inode identity (also
+shared by the staging/publication hard link). Mutable timestamps, including
+fallback birth times, are not identity components; unavailable stable IDs fail
+closed. Uncertain ownership or
+persistence retains files and returns a sanitized `RECOVERY_REQUIRED` error.
+Operation staging is cleaned on success and failure without recursive deletion.
+After a later Book/database failure, call `rollbackCommitted(ownershipToken)`
+on the creating image-service instance, then `compensate(ownershipToken)`.
+The first step removes only that operation's still-unreferenced database record;
+the second removes only its positively identified file and still refuses while
+the record exists. These are separate explicit operations, not general deletion.
+The SQL-only repository's `rollbackCommitted(record)` requires the exact object
+returned by its own `insertCommitted`, not an ID, copied record or lookup result.
+It returns false on refusal; the service reports `ROLLBACK_REFUSED` (or
+`INVALID_TOKEN` for an unknown token). The delete atomically checks all original
+metadata, a private creation receipt and absence of Book references.
+Connection-local TEMP receipts/triggers invalidate ownership on row mutation or
+replacement, even when metadata is identical, without changing migration 029.
+Rollback also refuses after another connection commits: its writes cannot be
+observed by the TEMP triggers. This intentionally conservative check favors
+retention over uncertain cleanup. Receipts disappear when the connection closes;
+tokens are not restart/recovery credentials. No synchronous SQLite transaction
+is held across asynchronous image ingestion.
+
+The ingestion/storage layer itself exposes no arbitrary filesystem or static routes;
+the application serves only the authenticated fixed managed thumbnail/preview routes
+described above, without statically serving `APP_DATA_ROOT`. Managed-upload admission
+and request lifetime, maintenance ownership, destructive restore/database/context
+adoption coordination, auth-transition conflict protection and shutdown drain are
+implemented as described above. Cross-restart stale `.staging` recovery and crash-recovery
+cleanup beyond current-process lifetime guarantees remain deferred. No startup sweeps
+are added; committed files are never swept for being unreferenced.
+
+`book_primary_images` retains its Book primary key and existing Project Asset
+cascade foreign key, with exactly one of `asset_id` or `managed_asset_id` set.
+The managed foreign key restricts deletion of referenced records. Existing
+selections remain Project Asset references without moving files. Committed
+managed originals may remain unreferenced: clearing a selection or deleting a
+Book does not delete them. This is persistent original storage, not a rebuildable
+preview cache; no garbage collection or backup archive redesign is introduced.
+
+**Book cover domain (WP7B).** `book-primary-image-service` remains the single
+selection authority. Repository records include both nullable foreign keys and
+an explicit `source: { kind: 'project_asset' | 'managed_asset', id }`; replacing
+a cover always clears the other foreign key. Source-aware expected checks and
+guarded clears compare both kind and ID, including an explicit `null` expectation
+for no cover. Legacy Project selection, lookup and guarded-clear APIs retain
+their Project-only meaning.
+
+Managed selection accepts committed `book-covers` records with verified PNG,
+JPEG or WebP MIME metadata from WP7A, without Project eligibility or tagging.
+Book presentation adds `selectedSource`; `selectedAssetId` remains Project-only.
+The asynchronous Book presentation boundary verifies managed sources through
+`resolveSource`: available covers receive managed thumbnail/preview URLs; missing
+or corrupt sources retain their selection with `source_unavailable` and no URLs.
+The shared cover partial remains source-neutral; no Project identity is invented.
+Notes applies Project/tag-derived NSFW classification only to Project sources.
+
+Book service's `createBookWithManagedPrimaryImage` and
+`updateBookWithManagedPrimaryImage` compose validated Book writes with selection
+through the existing authority's synchronous `saveBookWithManagedPrimaryImage`.
+That operation owns the outer SQLite transaction; Book and cover completion logs
+are emitted only after commit. It accepts no image bytes and performs no ingestion.
+On failure the caller retains WP7A's ownership token and may invoke
+`rollbackCommitted(token)` followed by guarded `compensate(token)`; neither
+replacement nor clearing deletes a previous managed original.
+
+The Project filesystem safety rules, all implemented in
 [`project-storage.js`](src/storage/project-storage.js) and
 [`asset-file.js`](src/storage/asset-file.js) and enforced at runtime:
 
@@ -959,13 +1241,13 @@ contract:
    recovered connection on `.db`. The prior database is never silently
    discarded.
 
-The **maintenance boundary** is the caller's responsibility, and the
-settings route drives it: it sets `maintenanceState.active` before starting
-and clears it in a `finally`. It also checks that flag, the service's own
-`isRestoreInProgress()` guard, and whether the processing-job service has
-queued or running work. The first two checks close the near-simultaneous
-restore-submission window; the job check refuses maintenance until active
-processing is no longer using the current context.
+The **maintenance boundary** is the caller's responsibility. Settings acquires
+current-graph managed-upload ownership before invoking restore and checks the
+existing processing and backup-service conflicts. The service's `beginRestore` /
+`endRestore` exclusion is supplementary: it ends before graph adoption, whereas
+Settings retains the owner until a usable graph is adopted (see WP7D3B2 above).
+The final pre-checkpoint/close gate independently verifies that owner and the
+current live connection. No unconditional boolean reset reopens a dead graph.
 
 Finally, the route adopts the connection: it wipes session rows on the
 connection about to become live (a restored database may carry stale,

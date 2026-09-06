@@ -1,7 +1,8 @@
 import { createAssetRepository } from '../data/asset-repository.js';
 import { createBookPrimaryImageRepository } from '../data/book-primary-image-repository.js';
 import { createBookRepository } from '../data/book-repository.js';
-import { buildPrimaryImageModelForAsset } from './primary-image-presenter.js';
+import { createManagedAssetRepository } from '../data/managed-asset-repository.js';
+import { buildBookPrimaryImageModel } from './primary-image-presenter.js';
 import { classifyPreviewable } from './preview-service.js';
 
 export const BOOK_PRIMARY_IMAGE_ERROR_CODES = Object.freeze({
@@ -11,6 +12,7 @@ export const BOOK_PRIMARY_IMAGE_ERROR_CODES = Object.freeze({
   ASSET_MISSING: 'ASSET_MISSING',
   ASSET_UNSUPPORTED: 'ASSET_UNSUPPORTED',
   STALE_CLEAR: 'STALE_CLEAR',
+  STALE_SOURCE: 'STALE_SOURCE',
   DATABASE_ERROR: 'DATABASE_ERROR',
 });
 
@@ -21,6 +23,7 @@ const ERROR_STATUS = Object.freeze({
   ASSET_MISSING: 422,
   ASSET_UNSUPPORTED: 422,
   STALE_CLEAR: 409,
+  STALE_SOURCE: 409,
   DATABASE_ERROR: 500,
 });
 
@@ -42,6 +45,25 @@ function assertCanonicalPositiveId(value, label) {
   }
 }
 
+function assertSource(source, { allowNone = false } = {}) {
+  if (source === null && allowNone) return;
+  if (source?.kind === 'project_asset') {
+    assertCanonicalPositiveId(source.id, 'source.id');
+    return;
+  }
+  if (source?.kind === 'managed_asset' && typeof source.id === 'string' && source.id.length > 0) return;
+  throw new BookPrimaryImageError('Expected an explicit cover source.', { code: 'INVALID_ID' });
+}
+
+function sameSource(left, right) {
+  return left === null ? right === null : right !== null && left.kind === right.kind && left.id === right.id;
+}
+
+function eligibleManagedAsset(asset) {
+  return asset?.namespace === 'book-covers'
+    && ['image/png', 'image/jpeg', 'image/webp'].includes(asset.mime_type);
+}
+
 /**
  * Book primary-image domain service.
  *
@@ -52,6 +74,7 @@ function assertCanonicalPositiveId(value, label) {
  * @param {import('better-sqlite3').Database} deps.db
  * @param {ReturnType<typeof createBookRepository>} [deps.bookRepository]
  * @param {ReturnType<typeof createAssetRepository>} [deps.assetRepository]
+ * @param {ReturnType<typeof createManagedAssetRepository>} [deps.managedAssetRepository]
  * @param {ReturnType<typeof createBookPrimaryImageRepository>} [deps.bookPrimaryImageRepository]
  * @param {(project: object|number, asset: object) => {quality?: string}|Promise<{quality?: string}>} [deps.previewProbe]
  * @param {object} [deps.applicationLogger]
@@ -60,6 +83,7 @@ export function createBookPrimaryImageService({
   db,
   bookRepository,
   assetRepository,
+  managedAssetRepository,
   bookPrimaryImageRepository,
   previewProbe,
   applicationLogger = null,
@@ -70,6 +94,7 @@ export function createBookPrimaryImageService({
 
   const books = bookRepository ?? createBookRepository(db);
   const assets = assetRepository ?? createAssetRepository(db);
+  const managedAssets = managedAssetRepository ?? createManagedAssetRepository(db);
   const primaryImages = bookPrimaryImageRepository ?? createBookPrimaryImageRepository(db);
 
   function requireBook(bookId) {
@@ -145,6 +170,52 @@ export function createBookPrimaryImageService({
       // Activity logging must never alter the completed primary-image operation.
     }
   }
+
+  function currentSource(bookId) {
+    requireBook(bookId);
+    return primaryImages.findByBookId(bookId)?.source ?? null;
+  }
+
+  function assertExpectedSource(bookId, expectedSource) {
+    assertSource(expectedSource, { allowNone: true });
+    if (!sameSource(currentSource(bookId), expectedSource)) {
+      throw new BookPrimaryImageError('Book cover changed since it was read.', { code: 'STALE_SOURCE' });
+    }
+  }
+
+  function selectManaged(bookId, managedAssetId, options) {
+    assertCanonicalPositiveId(bookId, 'bookId');
+    requireBook(bookId);
+    if (Object.hasOwn(options, 'expectedSource')) assertExpectedSource(bookId, options.expectedSource);
+    const asset = managedAssets.findById(managedAssetId);
+    if (!asset) throw new BookPrimaryImageError('Managed asset not found.', { code: 'ASSET_NOT_FOUND' });
+    if (!eligibleManagedAsset(asset)) throw unsupportedAsset(managedAssetId);
+    const outcome = primaryImages.setManagedPrimaryImageWithOutcome(bookId, managedAssetId);
+    if (outcome.selection?.book_id !== bookId || outcome.selection?.source?.kind !== 'managed_asset'
+      || outcome.selection.source.id !== managedAssetId || outcome.selection.asset_id !== null) {
+      throw new Error('Primary image repository returned an invalid managed selection.');
+    }
+    return outcome;
+  }
+
+  function logManagedSelection(outcome) {
+    if (outcome.changed) logActivity('book.primary_image.set', {
+      bookId: outcome.selection.book_id, managedAssetId: outcome.selection.source.id,
+    });
+  }
+
+  // Own the outer commit: completion logs must not escape a rolled-back savepoint.
+  function requireOuterOperation() {
+    if (db.inTransaction) throw new Error('Managed Book saves must own the outer database transaction.');
+  }
+
+  const setManagedTx = db.transaction(selectManaged);
+  const saveManagedBookTx = db.transaction((mutateBook, managedAssetId, options) => {
+    const book = mutateBook();
+    if (book && typeof book.then === 'function') throw new TypeError('Book mutation must be synchronous.');
+    const outcome = selectManaged(book?.id, managedAssetId, options);
+    return { book, outcome };
+  });
 
   const setPrimaryImageTx = db.transaction((bookId, assetId, kritaQuality = null) => {
     requireBook(bookId);
@@ -222,6 +293,10 @@ export function createBookPrimaryImageService({
     const selection = primaryImages.findByBookId(bookId);
     if (!selection) return undefined;
 
+    // Compatibility API returns Project Assets only; use getPrimaryImageSource
+    // for the selected identity across both domains.
+    if (selection.source.kind !== 'project_asset') return undefined;
+
     const asset = assets.findById(selection.asset_id);
     if (!asset) throw new Error('Primary image selection references an unavailable asset.');
     return asset;
@@ -236,18 +311,28 @@ export function createBookPrimaryImageService({
         selections.map((selection) => [selection.book_id, selection]),
       );
       const assetIds = [...new Set(
-        selections.map((selection) => selection.asset_id).filter((assetId) => assetId != null),
+        selections.filter((selection) => selection.source.kind === 'project_asset')
+          .map((selection) => selection.source.id),
       )];
       const selectedAssets = assetIds.length > 0 ? assets.findByIds(assetIds) : [];
       const assetById = new Map(selectedAssets.map((asset) => [asset.id, asset]));
+      const managedById = new Map(selections
+        .filter((selection) => selection.source.kind === 'managed_asset')
+        .map((selection) => [selection.source.id, null]));
+      for (const id of managedById.keys()) {
+        const asset = managedAssets.findById(id);
+        managedById.set(id, eligibleManagedAsset(asset) ? asset : null);
+      }
 
       return bookRows.map((book) => {
         const selection = selectionByBookId.get(book.id);
         return {
           ...book,
-          primaryImage: buildPrimaryImageModelForAsset(
+          primaryImage: buildBookPrimaryImageModel(
             selection,
-            selection ? assetById.get(selection.asset_id) : null,
+            selection?.source.kind === 'managed_asset'
+              ? managedById.get(selection.source.id)
+              : selection ? assetById.get(selection.asset_id) : null,
           ),
         };
       });
@@ -257,6 +342,51 @@ export function createBookPrimaryImageService({
   }
 
   return {
+    getPrimaryImageSource(bookId) {
+      assertCanonicalPositiveId(bookId, 'bookId');
+      try { return currentSource(bookId); } catch (err) { throw databaseFailure(err); }
+    },
+
+    assertExpectedPrimaryImageSource(bookId, expectedSource) {
+      assertCanonicalPositiveId(bookId, 'bookId');
+      try { assertExpectedSource(bookId, expectedSource); } catch (err) { throw databaseFailure(err); }
+    },
+
+    setManagedPrimaryImage(bookId, managedAssetId, options = {}) {
+      assertSource({ kind: 'managed_asset', id: managedAssetId });
+      try {
+        requireOuterOperation();
+        const outcome = setManagedTx(bookId, managedAssetId, options);
+        logManagedSelection(outcome);
+        return outcome.selection;
+      } catch (err) { throw databaseFailure(err); }
+    },
+
+    /** Internal domain composition for Book service; never ingest inside mutateBook. */
+    saveBookWithManagedPrimaryImage(mutateBook, managedAssetId, options = {}) {
+      assertSource({ kind: 'managed_asset', id: managedAssetId });
+      requireOuterOperation();
+      const { book, outcome } = saveManagedBookTx(mutateBook, managedAssetId, options);
+      logManagedSelection(outcome);
+      return book;
+    },
+
+    clearPrimaryImageSource(bookId, expectedSource) {
+      assertCanonicalPositiveId(bookId, 'bookId');
+      assertSource(expectedSource);
+      try {
+        requireOuterOperation();
+        db.transaction(() => {
+          requireBook(bookId);
+          if (!primaryImages.clearPrimaryImageSourceIfMatches(bookId, expectedSource)) {
+            throw new BookPrimaryImageError('Book cover no longer matches the expected source.', { code: 'STALE_CLEAR' });
+          }
+        })();
+        logActivity('book.primary_image.cleared', { bookId, source: expectedSource });
+        return true;
+      } catch (err) { throw databaseFailure(err); }
+    },
+
     getPrimaryImage(bookId) {
       assertCanonicalPositiveId(bookId, 'bookId');
       try {

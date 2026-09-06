@@ -5,7 +5,7 @@
 
 {% block content %}
   {% call pageHeading.render("Page") %}
-    <a class="button button-primary" href="/notes/{{ note.id }}/edit">Edit Page</a>
+    <a class="button button-primary" href="/notes/{{ note.id }}/edit" data-dialog-open="note-edit-dialog">Edit Page</a>
   {% endcall %}
 
   <div class="notes-page-detail-layout">
@@ -62,4 +62,12 @@
       {% endif %}
     </div>
   </div>
+{% endblock %}
+
+{% block overlay %}
+  {% set noteFormModel = noteEditForm %}
+  {% set noteDialogId = 'note-edit-dialog' %}
+  {% set noteDialogTitle = 'Edit Page' %}
+  {% set noteDialogOpen = noteEditDialogOpen %}
+  {% include "notes/form.njk" %}
 {% endblock %}

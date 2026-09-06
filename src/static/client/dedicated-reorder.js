@@ -12,6 +12,7 @@ const CHAPTER_PAGE_REORDER_HANDLE_SELECTOR = '[data-chapter-page-reorder-handle]
 const BOOK_CONTENT_REORDER_LIST_SELECTOR = '[data-book-content-reorder-list]';
 const BOOK_CONTENT_REORDER_ITEM_SELECTOR = '[data-book-content-reorder-item]';
 const BOOK_CONTENT_REORDER_HANDLE_SELECTOR = '[data-book-content-reorder-handle]';
+const NOTES_REORDER_INTERACTIVE_SELECTOR = 'a, button, input, select, textarea, label, summary, details, [contenteditable="true"], [role="button"]';
 
 const APP_DIALOG_SELECTOR = '[data-app-dialog]';
 const DASHBOARD_DEFAULTS_DIALOG_ID = 'dashboard-defaults-dialog';
@@ -97,7 +98,7 @@ function dedicatedReorderElementIsInside(item, element) {
 }
 
 function canStartDedicatedReorderDrag(item, event, config) {
-  const target = event.target;
+  const target = event.target?.nodeType === 3 ? event.target.parentElement : event.target;
   const handleTarget = target?.closest?.(config.handleSelector);
   if (dedicatedReorderElementIsInside(item, handleTarget)) return true;
 
@@ -177,6 +178,7 @@ function announceDedicatedMove(state, item, config) {
 }
 
 function finishDedicatedDrag(state) {
+  state.clearPointerTarget?.();
   const draggedItem = state.draggedItem;
   if (draggedItem) draggedItem.classList?.remove('is-dragging');
   state.list.classList?.remove('is-dragging');
@@ -205,6 +207,20 @@ function enhanceDedicatedReorder(scope, config) {
       dropBefore: null,
     };
 
+    // Chromium can retarget dragstart to the draggable ancestor. Remember the
+    // pressed descendant only until this gesture is consumed or terminated.
+    let pointerGesture = null;
+    const document = list.ownerDocument;
+    const windowObject = document?.defaultView;
+    const clearPointerTarget = () => {
+      pointerGesture = null;
+      document?.removeEventListener?.('pointerdown', clearPointerTarget, true);
+      document?.removeEventListener?.('pointerup', clearPointerTarget, true);
+      document?.removeEventListener?.('pointercancel', clearPointerTarget, true);
+      windowObject?.removeEventListener?.('blur', clearPointerTarget);
+    };
+    state.clearPointerTarget = clearPointerTarget;
+
     markEnhancementBound(list, config.bindingKey);
     updateDedicatedReorderMetadata(list, config);
     syncDedicatedReorderInput(state, config);
@@ -216,8 +232,20 @@ function enhanceDedicatedReorder(scope, config) {
     items.forEach((item) => {
       const handle = item.querySelector?.(config.handleSelector);
 
+      item.addEventListener?.('pointerdown', (event) => {
+        clearPointerTarget();
+        if (event.button !== 0 || event.isPrimary === false) return;
+        pointerGesture = { item, target: event.target };
+        document?.addEventListener?.('pointerdown', clearPointerTarget, true);
+        document?.addEventListener?.('pointerup', clearPointerTarget, true);
+        document?.addEventListener?.('pointercancel', clearPointerTarget, true);
+        windowObject?.addEventListener?.('blur', clearPointerTarget);
+      }, true);
+
       item.addEventListener?.('dragstart', (event) => {
-        if (!canStartDedicatedReorderDrag(item, event, config)) {
+        const target = pointerGesture?.item === item ? pointerGesture.target : event.target;
+        clearPointerTarget();
+        if (!canStartDedicatedReorderDrag(item, { target }, config)) {
           event.preventDefault?.();
           return;
         }
@@ -305,6 +333,8 @@ export function enhanceBookReorder(scope = globalThis.document) {
     labelDataset: 'bookLabel',
     labelAttribute: 'data-book-label',
     label: 'Book',
+    pointerDragSurfaceSelector: BOOK_REORDER_ITEM_SELECTOR,
+    pointerDragExcludedSelector: NOTES_REORDER_INTERACTIVE_SELECTOR,
     bindingKey: 'bookReorderBound',
   });
 }
@@ -323,6 +353,8 @@ export function enhanceChapterPageReorder(scope = globalThis.document) {
     labelDataset: 'noteLabel',
     labelAttribute: 'data-note-label',
     label: 'Page',
+    pointerDragSurfaceSelector: CHAPTER_PAGE_REORDER_ITEM_SELECTOR,
+    pointerDragExcludedSelector: NOTES_REORDER_INTERACTIVE_SELECTOR,
     bindingKey: 'chapterPageReorderBound',
   });
 }
@@ -341,6 +373,8 @@ export function enhanceBookContentReorder(scope = globalThis.document) {
     labelDataset: 'contentLabel',
     labelAttribute: 'data-content-label',
     label: 'Book content',
+    pointerDragSurfaceSelector: BOOK_CONTENT_REORDER_ITEM_SELECTOR,
+    pointerDragExcludedSelector: NOTES_REORDER_INTERACTIVE_SELECTOR,
     bindingKey: 'bookContentReorderBound',
   });
 }

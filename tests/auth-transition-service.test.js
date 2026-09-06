@@ -1,3 +1,4 @@
+import { managedUploadTracker } from '../src/services/managed-upload-tracker.js';
 /**
  * Phase 13 — deterministic failure-injection tests for the coordinated
  * enable/disable transition service. These are what actually prove the
@@ -41,7 +42,7 @@ describe('auth-transition-service', () => {
   // A minimal stand-in for the real session repository's SQL surface —
   // invalidateAllSessionsForDb just needs `db.prepare(sql).run()` to succeed.
   function fakeDb() {
-    return { prepare: () => ({ run: () => ({ changes: 0 }) }) };
+    return { open: true, prepare: () => ({ run: () => ({ changes: 0 }) }) };
   }
 
   beforeEach(() => {
@@ -73,6 +74,26 @@ describe('auth-transition-service', () => {
     };
   }
 
+  it.each(['enable', 'disable'])('%s refuses admitted uploads before files or sessions change', (mode) => {
+    if (mode === 'disable') enableAuthState(appDataRoot, { sessionSecret: 'a'.repeat(64), csrfPepper: 'b'.repeat(64) });
+    const before = readAuthEnablement(appDataRoot);
+    const { service, replaceAuthConfig } = buildService({ authService: { verifyCredentials: () => true } });
+    const lease = managedUploadTracker.begin();
+    try {
+      const result = mode === 'enable'
+        ? service.enable({ username: USERNAME, password: PASSWORD, confirmation: PASSWORD })
+        : service.disable({ username: USERNAME, currentPassword: PASSWORD });
+      expect(result.conflict).toBe(true);
+      expect(readAuthEnablement(appDataRoot)).toEqual(before);
+      expect(invalidateSpy).not.toHaveBeenCalled();
+      expect(replaceAuthConfig).not.toHaveBeenCalled();
+      expect(managedUploadTracker.activeCount).toBe(1);
+      expect(lease.signal.aborted).toBe(false);
+    } finally { lease.complete(); }
+    const next = managedUploadTracker.tryBeginMaintenance();
+    expect(next).not.toBeNull();
+    next.release();
+  });
   // ─── enable() ───────────────────────────────────────────────────────
 
   it('enable() writes both managed files, invalidates sessions, and adopts the new context', () => {
@@ -246,7 +267,7 @@ describe('auth-transition-service', () => {
 
     expect(result).toEqual({ ok: true });
     expect(invalidateSpy).toHaveBeenCalledTimes(1);
-    expect(replaceAuthConfig).toHaveBeenCalledWith(null);
+    expect(replaceAuthConfig).toHaveBeenCalledWith(null, expect.objectContaining({ release: expect.any(Function) }));
     expect(readAuthEnablement(appDataRoot).enabled).toBe(false);
     expect(credentialFileExists(appDataRoot)).toBe(true);
   });

@@ -1023,7 +1023,10 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).toContain('name="returnTo"');
     expect(html).toContain('data-dialog-submit');
     expect(html).toContain('>Save defaults</button>');
-    expect(html).toContain('>Cancel</button>');
+    const defaultsDialog = html.match(/<dialog id="asset-viewer-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    expect(defaultsDialog).not.toMatch(/<button[^>]*>\s*Cancel\s*<\/button>/);
+    expect(defaultsDialog.match(/data-dialog-close/g)).toHaveLength(1);
+    expect(defaultsDialog).toContain('aria-label="Close Asset Viewer defaults"');
     expect(html).toMatch(/<select id="av-view" name="view" class="cc-dropdown-native-select" data-cc-dropdown-native-select[^>]*>/);
     expect(html).toMatch(/<select id="av-sort" name="sort" class="cc-dropdown-native-select" data-cc-dropdown-native-select[^>]*>/);
     expect((html.match(/name="(?:view|sort)" class="cc-dropdown-native-select"/g) || [])).toHaveLength(2);

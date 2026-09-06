@@ -8234,7 +8234,10 @@ describe('asset browser HTTP workflow', () => {
           return originalRender.call(this, view, locals, ...args);
         };
         try {
-          await agent.get(`/projects/${first.id}/assets/${first.asset.id}?edit=1`).expect(200);
+          const viewer = await agent.get(`/projects/${first.id}/assets/${first.asset.id}?edit=1`).expect(200);
+          expect(viewer.text).toContain(`action="/projects/${first.id}/assets/${first.asset.id}/book-primary-image"`);
+          expect(viewer.text).toContain('name="bookId"');
+          expect(viewer.text).toContain('asset-book-primary-image-set-form');
         } finally {
           app.response.render = originalRender;
         }

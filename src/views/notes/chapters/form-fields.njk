@@ -1,0 +1,10 @@
+    <section class="settings-section project-form-section project-edit-dialog-section">
+      <h3>Basic information</h3>
+      <div class="project-form-section-body project-edit-dialog-section-body">
+      <div class="field app-dialog-field {% if errors.title %}field-error{% endif %}">
+        <label for="{{ chapterTitleId or 'title' }}">Title <span class="required" aria-label="required">*</span></label>
+        <input type="text" id="{{ chapterTitleId or 'title' }}" name="title" value="{{ values.title or '' }}" maxlength="200" required{% if errors.title %} aria-describedby="{{ chapterTitleId or 'title' }}-error" aria-invalid="true"{% endif %}>
+        {% if errors.title %}<span class="field-error-message" id="{{ chapterTitleId or 'title' }}-error">{{ errors.title }}</span>{% endif %}
+      </div>
+      </div>
+    </section>

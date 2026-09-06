@@ -64,7 +64,10 @@ describe('book primary-image migration (025_add_book_primary_images)', () => {
       assets: db.prepare('SELECT * FROM assets ORDER BY id').all(),
     };
 
-    runMigrations(db, MIGRATIONS_DIR);
+    // Test migration 025's historical schema, not later table rebuilds.
+    fs.copyFileSync(path.join(MIGRATIONS_DIR, MIGRATION_FILENAME),
+      path.join(tmpDir, 'pre-book-primary-image-migrations', MIGRATION_FILENAME));
+    runMigrations(db, path.join(tmpDir, 'pre-book-primary-image-migrations'));
 
     expect(db.pragma("table_info('book_primary_images')")).toEqual([
       { cid: 0, name: 'book_id', type: 'INTEGER', notnull: 0, dflt_value: null, pk: 1 },

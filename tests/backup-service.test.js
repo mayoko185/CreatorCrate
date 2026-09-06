@@ -1,3 +1,4 @@
+import { beginReplacementMaintenance } from '../src/services/managed-upload-tracker.js';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -28,8 +29,14 @@ describe('backup-service', () => {
   let databasePath;
   let db;
   let service;
+  let owner;
+  function restoreOwner() {
+    const connection = db;
+    return owner ??= beginReplacementMaintenance(connection, () => db === connection && connection.open);
+  }
 
   beforeEach(() => {
+    owner = null;
     appDataRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-backup-svc-'));
     databasePath = path.join(appDataRoot, 'creatorcrate.db');
     db = openDatabase(databasePath);
@@ -43,6 +50,7 @@ describe('backup-service', () => {
     } catch {
       // already closed by a restore in the test
     }
+    owner?.release();
     fs.rmSync(appDataRoot, { recursive: true, force: true });
   });
 
@@ -106,7 +114,7 @@ describe('backup-service', () => {
       const svc = createBackupService({ appDataRoot, databasePath, migrationsDir: MIGRATIONS_DIR });
       const backup = await service.createBackup(db);
 
-      const restorePromise = svc.restoreBackup(backup.filename, db);
+      const restorePromise = svc.restoreBackup(backup.filename, db, restoreOwner());
       await expect(svc.createBackup({ backup: async () => {} })).rejects.toThrow(
         'restore is in progress'
       );
@@ -299,7 +307,7 @@ describe('backup-service', () => {
 
     it('rejects deleting while a restore is in progress', async () => {
       const backup = await service.createBackup(db);
-      const restorePromise = service.restoreBackup(backup.filename, db);
+      const restorePromise = service.restoreBackup(backup.filename, db, restoreOwner());
 
       expect(() => service.deleteBackup(backup.filename)).toThrow('restore is in progress');
 
@@ -471,7 +479,7 @@ describe('backup-service', () => {
       insertProject(db, 'After Backup');
       expect(countProjects(db)).toBe(2);
 
-      const result = await service.restoreBackup(backup.filename, db);
+      const result = await service.restoreBackup(backup.filename, db, restoreOwner());
       db = result.db;
 
       expect(result.filename).toBe(backup.filename);
@@ -481,7 +489,7 @@ describe('backup-service', () => {
 
     it('rejects traversal filenames without touching the live database', async () => {
       insertProject(db, 'Untouched');
-      await expect(service.restoreBackup('../../etc/passwd', db)).rejects.toThrow(BackupError);
+      await expect(service.restoreBackup('../../etc/passwd', db, restoreOwner())).rejects.toThrow(BackupError);
       expect(countProjects(db)).toBe(1);
     });
 
@@ -491,7 +499,7 @@ describe('backup-service', () => {
       fs.writeFileSync(path.join(backupDir, filename), 'not sqlite');
 
       insertProject(db, 'Untouched');
-      await expect(service.restoreBackup(filename, db)).rejects.toThrow(BackupError);
+      await expect(service.restoreBackup(filename, db, restoreOwner())).rejects.toThrow(BackupError);
       expect(countProjects(db)).toBe(1);
     });
 
@@ -520,7 +528,7 @@ describe('backup-service', () => {
       // a usable handle.
       let caught;
       try {
-        await svc.restoreBackup(backup.filename, db);
+        await svc.restoreBackup(backup.filename, db, restoreOwner());
       } catch (err) {
         caught = err;
       }
@@ -534,7 +542,7 @@ describe('backup-service', () => {
 
     it('leaves no rollback or staging artifacts after a successful restore', async () => {
       const backup = await service.createBackup(db);
-      const result = await service.restoreBackup(backup.filename, db);
+      const result = await service.restoreBackup(backup.filename, db, restoreOwner());
       db = result.db;
 
       const dbDir = path.dirname(databasePath);
@@ -547,8 +555,8 @@ describe('backup-service', () => {
     it('enforces the maintenance boundary against concurrent restores', async () => {
       const backup = await service.createBackup(db);
 
-      const first = service.restoreBackup(backup.filename, db);
-      await expect(service.restoreBackup(backup.filename, db)).rejects.toThrow(
+      const first = service.restoreBackup(backup.filename, db, restoreOwner());
+      await expect(service.restoreBackup(backup.filename, db, restoreOwner())).rejects.toThrow(
         'restore is already in progress'
       );
 

@@ -1,28 +1,20 @@
-{% extends "layout.njk" %}
-{% import "partials/page-heading.njk" as pageHeading %}
+{% import "partials/dialog.njk" as dialog %}
 
-{% set page_title = "Notes — Change order — " ~ book.title %}
-
-{% block content %}
-  {% call pageHeading.render() %}
-    {% if contents.length > 0 %}
-      <button class="button button-primary" type="submit" form="notes-book-order-form">Save</button>
-    {% endif %}
-    <a class="button button-secondary" href="/notes/books/{{ book.id }}">Cancel</a>
-  {% endcall %}
-
-  <section class="notes-book-order" data-notes-book-order-page aria-labelledby="notes-book-order-heading">
-    <h2 id="notes-book-order-heading">Change order</h2>
-
-    {% if contents.length > 0 %}
-      <p class="help-text" id="notes-book-order-instructions">
-        Drag a handle to move a Chapter or Page, or focus a handle and use Arrow Up, Arrow Down, Home, or End. Select Save to keep the new order.
-      </p>
-
-      <form id="notes-book-order-form" method="post" action="/notes/books/{{ book.id }}/contents/reorder" data-book-content-reorder-form>
-        <input type="hidden" name="_csrf" value="{{ _csrf }}">
-        <input type="hidden" name="orderedItems" data-book-content-order-input value="{% for item in contents %}{{ item.type }}:{{ item.id }}{% if not loop.last %},{% endif %}{% endfor %}">
-
+{% call dialog.render('book-order-dialog', 'Change order', bookOrderDialogOpen, '', '', 'project-form-dialog') %}
+  <form id="notes-book-order-form" method="post" action="/notes/books/{{ book.id }}/contents/reorder" data-book-content-reorder-form
+        class="app-dialog-form project-form project-edit-dialog-form" data-dialog-form data-dialog-async="false">
+    <input type="hidden" name="_csrf" value="{{ _csrf }}">
+    <div class="app-dialog-body">
+      {% if bookOrderNotice %}
+        <div class="error-summary" role="alert"><p>{{ bookOrderNotice.text }}</p></div>
+      {% endif %}
+      <section class="project-edit-dialog-section" data-notes-book-order-page aria-labelledby="notes-book-order-heading">
+        <h3 id="notes-book-order-heading">Book contents</h3>
+        {% if contents.length > 0 %}
+          <p class="help-text" id="notes-book-order-instructions">
+            Drag a Chapter or Page card to move it, or focus its handle and use Arrow Up, Arrow Down, Home, or End. Select Save to keep the new order.
+          </p>
+          <input type="hidden" name="orderedItems" data-book-content-order-input value="{% for item in contents %}{{ item.type }}:{{ item.id }}{% if not loop.last %},{% endif %}{% endfor %}">
         <ol
           class="notes-book-content-list notes-book-order-list notes-reorder-list"
           data-book-content-reorder-list
@@ -31,7 +23,7 @@
           aria-describedby="notes-book-order-instructions">
           {% for item in contents %}
             <li
-              class="notes-book-content-row notes-book-order-row notes-reorder-row"
+              class="notes-book-content-row notes-book-order-row notes-reorder-row notes-reorder-row--compact"
               data-book-content-reorder-item
               data-content-key="{{ item.type }}:{{ item.id }}"
               {% if item.type == 'chapter' %}
@@ -56,7 +48,7 @@
                 title="Drag to reorder; use the arrow keys to move">
                 <span aria-hidden="true">⠿</span>
               </button>
-              <div class="notes-book-content-copy">
+              <div class="notes-book-content-copy" draggable="true">
                 {% if item.type == 'chapter' %}
                   <span class="notes-book-content-kind">Chapter</span>
                   <h3 class="notes-book-content-title"><a href="/notes/chapters/{{ item.id }}">{{ item.chapter.title }}</a></h3>
@@ -70,13 +62,17 @@
           {% endfor %}
         </ol>
         <div class="notes-book-order-live-region notes-reorder-live-region sr-only" data-book-content-reorder-live aria-live="polite" aria-atomic="true"></div>
-      </form>
 
-      <noscript>
-        <p class="help-text">JavaScript is required to move Book contents. Save still submits the current canonical order.</p>
-      </noscript>
-    {% else %}
-      <p class="help-text">This Book has no Chapters or direct Pages to order yet.</p>
-    {% endif %}
-  </section>
-{% endblock %}
+          <noscript><p class="help-text">JavaScript is required to move Book contents. Save still submits the current canonical order.</p></noscript>
+        {% else %}
+          <p class="help-text">This Book has no Chapters or direct Pages to order yet.</p>
+        {% endif %}
+      </section>
+    </div>
+    <footer class="app-dialog-footer">
+      {% if contents.length > 0 %}
+        <button class="button button-primary" type="submit" form="notes-book-order-form" data-dialog-submit>Save</button>
+      {% endif %}
+    </footer>
+  </form>
+{% endcall %}

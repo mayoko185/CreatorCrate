@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { managedUploadTracker, beginReplacementMaintenance } from './services/managed-upload-tracker.js';
 import { createApp } from './app.js';
 import { closeDatabase } from './db.js';
 import { createProjectOperationCoordinator } from './services/project-operation-coordinator.js';
@@ -91,7 +92,7 @@ export function createApplicationContext(
   }
 
   function buildApp(db, opts, applicationLogRepository = opts.applicationLogRepository) {
-    return appFactory(
+    const app = appFactory(
       { appName, db, projectsRoot, previewRoot },
       {
         ...opts,
@@ -102,10 +103,12 @@ export function createApplicationContext(
         applicationLogger,
         ...(applicationLogRepository ? { applicationLogRepository } : {}),
         assertNoActiveProcessingJobs,
+        beginReplacement: () => beginReplacement(db, app),
         onDatabaseReplaced: replaceDatabase,
         onAuthConfigReplaced: replaceAuthConfig,
       }
     );
+    return app;
   }
 
   const initialApp = buildApp(initialDb, activeAppOpts);
@@ -113,6 +116,14 @@ export function createApplicationContext(
     || applicationLogger.getRepository?.()
     || null;
   let current = { db: initialDb, app: initialApp };
+
+  function beginReplacement(db = current.db, app = current.app) {
+    const graph = current;
+    return beginReplacementMaintenance(
+      db, () => current === graph && current.db === db && current.app === app,
+      assertNoActiveProcessingJobs, graph,
+    );
+  }
 
   /**
    * Reconstruct every db-bound repository/service/route against `newDb` and
@@ -127,12 +138,15 @@ export function createApplicationContext(
    * connection is still open, remains fully usable) and `newDb` is closed
    * here so it is never leaked.
    */
-  function replaceDatabase(newDb) {
+  function replaceDatabase(newDb, maintenanceOwner) {
+    let owner = maintenanceOwner;
     const previousLoggerRepository = applicationLogRepository || applicationLogger.getRepository?.();
     const { applicationLogRepository: _previousApplicationLogRepository, ...replacementAppOpts } = activeAppOpts;
     let newApp;
     let replacementApplicationLogRepository;
     try {
+      owner ??= beginReplacement();
+      managedUploadTracker.assertMaintenanceOwner(owner, current.db, current);
       assertNoActiveProcessingJobs();
       newApp = buildApp(newDb, replacementAppOpts);
       replacementApplicationLogRepository = newApp.locals?.applicationLogRepository
@@ -142,11 +156,15 @@ export function createApplicationContext(
       if (previousLoggerRepository) {
         applicationLogger.rebindRepository(previousLoggerRepository);
       }
-      try { closeDatabase(newDb); } catch { /* best-effort */ }
+      if (newDb !== current.db) {
+        try { closeDatabase(newDb); } catch { /* best-effort */ }
+      }
+      if (!maintenanceOwner && current.db.open) owner?.release();
       throw err;
     }
     applicationLogRepository = replacementApplicationLogRepository;
     current = { db: newDb, app: newApp };
+    if (!maintenanceOwner) owner.release();
   }
 
   /**
@@ -159,21 +177,27 @@ export function createApplicationContext(
    * service.js) sees the thrown error and is responsible for rolling back
    * whatever managed-state files it had already written.
    */
-  function replaceAuthConfig(newAuthConfig) {
-    assertNoActiveProcessingJobs();
-    const previousLoggerRepository = applicationLogger.getRepository?.();
-    const candidateOpts = { ...activeAppOpts, authConfig: newAuthConfig };
-    let newApp;
+  function replaceAuthConfig(newAuthConfig, maintenanceOwner) {
+    const owner = maintenanceOwner ?? beginReplacement();
     try {
-      newApp = buildApp(current.db, candidateOpts, applicationLogRepository);
-    } catch (err) {
-      if (previousLoggerRepository) {
-        applicationLogger.rebindRepository(previousLoggerRepository);
+      managedUploadTracker.assertMaintenanceOwner(owner, current.db, current);
+      assertNoActiveProcessingJobs();
+      const previousLoggerRepository = applicationLogger.getRepository?.();
+      const candidateOpts = { ...activeAppOpts, authConfig: newAuthConfig };
+      let newApp;
+      try {
+        newApp = buildApp(current.db, candidateOpts, applicationLogRepository);
+      } catch (err) {
+        if (previousLoggerRepository) {
+          applicationLogger.rebindRepository(previousLoggerRepository);
+        }
+        throw err;
       }
-      throw err;
+      activeAppOpts = candidateOpts;
+      current = { db: current.db, app: newApp };
+    } finally {
+      if (!maintenanceOwner) owner.release();
     }
-    activeAppOpts = candidateOpts;
-    current = { db: current.db, app: newApp };
   }
 
   return {
@@ -190,6 +214,7 @@ export function createApplicationContext(
       return processingConcurrencyService;
     },
     replaceDatabase,
+    beginReplacement,
     replaceAuthConfig,
     handleRequest(req, res) {
       current.app(req, res);

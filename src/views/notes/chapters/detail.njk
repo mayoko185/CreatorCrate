@@ -1,14 +1,15 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
+{% import "partials/dialog.njk" as dialog %}
 
 {% set page_title = "Notes — " ~ chapter.title %}
 
 {% block content %}
   {% call pageHeading.render() %}
-    <a class="button button-primary" href="/notes/new?chapterId={{ chapter.id }}">New Page</a>
-    <a class="button" href="/notes/chapters/{{ chapter.id }}/edit">Edit Chapter</a>
+    <a class="button button-primary" href="/notes/new?chapterId={{ chapter.id }}" data-dialog-open="note-create-dialog">New Page</a>
+    <a class="button" href="/notes/chapters/{{ chapter.id }}/edit" data-dialog-open="chapter-edit-dialog">Edit Chapter</a>
     {% if notes.length > 1 %}
-      <a class="button button-secondary" href="/notes/chapters/{{ chapter.id }}/notes/order">Change order</a>
+      <a class="button button-secondary" href="/notes/chapters/{{ chapter.id }}/notes/order" data-dialog-open="chapter-order-dialog">Change order</a>
     {% endif %}
   {% endcall %}
 
@@ -38,9 +39,51 @@
           {% set emptyHeadingLevel = "h3" %}
           {% set emptyActionUrl = "/notes/new?chapterId=" ~ chapter.id %}
           {% set emptyActionLabel = "New Page" %}
+          {% set emptyActionDialogId = "note-create-dialog" %}
           {% include "partials/empty-state.njk" %}
         {% endif %}
       </section>
     </div>
   </div>
+{% endblock %}
+
+{% block overlay %}
+  {% include "notes/chapters/order.njk" %}
+  {% include "notes/create-dialog.njk" %}
+  {% set values = chapterEditForm.values %}
+  {% set errors = chapterEditForm.errors %}
+  {% set chapterTitleId = 'chapter-edit-title' %}
+  {% call dialog.render('chapter-edit-dialog', 'Edit Chapter', chapterEditDialogOpen, '', '', 'project-form-dialog') %}
+    <form id="chapter-form" method="post" action="{{ chapterEditForm.submitUrl }}" class="app-dialog-form project-form project-edit-dialog-form"
+          data-dialog-form data-dialog-async="false" novalidate>
+      <input type="hidden" name="_csrf" value="{{ _csrf }}">
+      <div class="app-dialog-body">
+        {% if errors.general %}
+          <div class="error-summary" role="alert"><p>{{ errors.general }}</p></div>
+        {% endif %}
+        {% include "notes/chapters/form-fields.njk" %}
+      </div>
+      <footer class="app-dialog-footer">
+        <button class="button button-primary" type="submit" data-dialog-submit>Save</button>
+      </footer>
+    </form>
+
+    <div class="app-dialog-body project-form">
+      <section class="settings-section project-form-section project-edit-dialog-section" aria-labelledby="chapter-actions-heading">
+        <h3 id="chapter-actions-heading">Chapter Actions</h3>
+        <div class="project-form-section-body project-edit-dialog-section-body">
+        <details class="notes-workspace-disclosure notes-workspace-disclosure--delete">
+          <summary>Delete Chapter</summary>
+          <div class="notes-workspace-disclosure-content">
+            <p class="notes-workspace-warning">The Chapter must be empty before it can be deleted. This cannot be undone.</p>
+            <form id="chapter-delete-form" method="post" action="/notes/chapters/{{ chapter.id }}/delete">
+              <input type="hidden" name="_csrf" value="{{ _csrf }}">
+              <button class="button button-small button-danger" type="submit" data-confirm="Delete this Chapter permanently? This cannot be undone.">Delete Chapter</button>
+            </form>
+          </div>
+        </details>
+        </div>
+      </section>
+    </div>
+  {% endcall %}
 {% endblock %}

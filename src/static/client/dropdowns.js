@@ -350,7 +350,8 @@ function creatorCrateDropdownSearchOptionRows(dropdown) {
 }
 
 function creatorCrateDropdownSearchOptionInput(option) {
-  return option?.querySelector?.('input[type="radio"]') || null;
+  return option?.querySelector?.('input[type="radio"]')
+    || option?.querySelector?.('input[type="checkbox"]') || null;
 }
 
 function updateCreatorCrateDropdownSearch(dropdown) {

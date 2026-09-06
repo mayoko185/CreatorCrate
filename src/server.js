@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { managedUploadTracker } from './services/managed-upload-tracker.js';
 
 import http from 'node:http';
 import process from 'node:process';
@@ -116,6 +117,42 @@ export async function runInitialWatermarkScan(appContext, logger = console, appl
     }
     return null;
   }
+}
+
+// The process tracker, not HTTP connection lifetime, owns upload resource safety.
+export function createShutdownHandler({
+  appContext, server, viteServer, automaticProjectScanScheduler, applicationLogger,
+  retireDatabase = closeDatabase, exit = (code) => process.exit(code),
+}) {
+  let shuttingDown = false;
+  return async function shutdown() {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    managedUploadTracker.beginShutdown();
+    applicationLogger.info({
+      kind: 'diagnostic',
+      subsystem: 'runtime',
+      event: 'runtime.shutdown.requested',
+      message: 'CreatorCrate shutdown requested.',
+    });
+    automaticProjectScanScheduler.stop();
+    try {
+      await viteServer?.close();
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+      await managedUploadTracker.waitForIdle();
+      applicationLogger.info({
+        kind: 'diagnostic',
+        subsystem: 'runtime',
+        event: 'runtime.shutdown.completed',
+        message: 'CreatorCrate shutdown completed.',
+      });
+      // Close whichever connection is currently active — a live restore may
+      // have replaced the startup handle with a new one by now.
+      retireDatabase(appContext.db);
+      exit(0);
+    }
+  };
 }
 
 async function main() {
@@ -240,6 +277,7 @@ async function main() {
     previewRoot: config.previewRoot,
     appOpts: {
       appDataRoot: config.appDataRoot,
+      managedAssetRoot: config.managedAssetRoot,
       databasePath: config.databasePath,
       migrationsDir,
       backupService,
@@ -300,33 +338,9 @@ async function main() {
     automaticProjectScanScheduler.start();
   });
 
-  let shuttingDown = false;
-  async function shutdown() {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    applicationLogger.info({
-      kind: 'diagnostic',
-      subsystem: 'runtime',
-      event: 'runtime.shutdown.requested',
-      message: 'CreatorCrate shutdown requested.',
-    });
-    automaticProjectScanScheduler.stop();
-    try {
-      await viteServer?.close();
-    } finally {
-      await new Promise((resolve) => server.close(resolve));
-      applicationLogger.info({
-        kind: 'diagnostic',
-        subsystem: 'runtime',
-        event: 'runtime.shutdown.completed',
-        message: 'CreatorCrate shutdown completed.',
-      });
-      // Close whichever connection is currently active — a live restore may
-      // have replaced the startup handle with a new one by now.
-      closeDatabase(appContext.db);
-      process.exit(0);
-    }
-  }
+  const shutdown = createShutdownHandler({
+    appContext, server, viteServer, automaticProjectScanScheduler, applicationLogger,
+  });
 
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);

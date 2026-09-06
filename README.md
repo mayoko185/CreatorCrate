@@ -19,6 +19,21 @@ CreatorCrate is a self-hosted workspace for one creator to organize art projects
 - Protect a self-hosted instance with optional single-operator authentication, server-side sessions, CSRF protection, security headers, and login throttling.
 - Create, retain, restore, and delete managed SQLite backups from Settings.
 
+In Notes, click a chapter title or its arrow in **Book contents** to expand or collapse its menu. Choose **View Chapter** inside the menu to open the Chapter page; Page links still open their Pages.
+
+Book, Chapter, and Page create/edit dialogs open on their host pages, including through the direct URLs below. They use native form POSTs; validation errors return the host with the dialog open, submitted values preserved, and errors shown (422). With JavaScript enabled, X, Escape, and backdrop dismissal use the shared dialog lifecycle.
+
+- **New Book**: hosted on the Books index; direct URL `/notes/books/new`. Success opens the created Book.
+- **Book cover uploads**: New/Edit Book accepts PNG, JPEG, or WebP images. Replacing an existing cover asks for confirmation; the previous image or Asset is not deleted. After a validation error, select the file again.
+- **Edit Page (Note)**: hosted on Note detail; `/notes/:id/edit` opens the same dialog directly. The single-column order is Book contents, Page contents, Connections, separate Move/Delete actions, then Save. Validation preserves Note-specific Project/Asset selections; success returns to Note detail. Move/Delete retain their independent forms and confirmation behavior.
+- **New Page (Note)**: hosted on Book detail for `/notes/new?bookId=:bookId`, or Chapter detail for `/notes/new?chapterId=:chapterId`. Exactly one valid container is required; bare, invalid, missing, or ambiguous containers return 404. The single-column form orders Book contents, Page contents, then Connections and Create. Validation preserves text and Project/Asset selections; success opens the created Page.
+- **New Chapter**: hosted on Book detail; direct URL `/notes/books/:bookId/chapters/new`. Success opens the new Chapter.
+- **Edit Book**: hosted on Book detail; direct URL `/notes/books/:bookId/edit`. Success returns to Book detail. Delete Book remains a separate, collapsed form.
+- **Books shelf order**: Change order on Notes opens a hosted dialog; `/notes/books/order` opens the same dialog directly. Save preserves Book ordering; X and Escape close without saving. Invalid submissions reopen with canonical order.
+- **Chapter Page order**: Change order on Chapter detail uses the same hosted dialog lifecycle, including the direct `/notes/chapters/:chapterId/notes/order` fallback and canonical-order validation rerender.
+- **Book Order**: hosted on Book detail; `/notes/books/:bookId/order` opens the dialog directly. Drag handles or use Arrow Up/Down, Home, and End, then Save. X and Escape dismiss without saving. Success returns to Book detail; invalid ordering returns 422 with the dialog open, the error shown, and the current canonical order restored.
+- **Edit Chapter**: hosted on Chapter detail; direct URL `/notes/chapters/:chapterId/edit`. Success returns to Chapter detail. Delete Chapter remains a separate, collapsed form and requires an empty Chapter.
+
 ## Quick start
 
 ### Local development

@@ -1033,6 +1033,9 @@
         border-radius: var(--radius-md);
         line-height: 1.45;
       }
+      .notes-page-detail-content .notes-content pre {
+        background: var(--surface-hover);
+      }
       .notes-content pre.notes-code-block-enhanced {
         padding-top: calc(var(--space-lg) + 2rem);
       }
@@ -4383,6 +4386,8 @@
       }
       #project-edit-dialog,
       #project-create-dialog,
+      #note-create-dialog,
+      #note-edit-dialog,
       #release-create-dialog,
       #release-edit-dialog,
       #release-publish-dialog {
@@ -4429,6 +4434,9 @@
         gap: var(--space-lg);
         min-width: 0;
         padding: var(--space-md) var(--space-lg) var(--space-lg);
+      }
+      .project-form-dialog .notes-page-contents-body {
+        padding-inline: var(--space-md);
       }
       .project-form-dialog .project-edit-dialog-actions-body {
         gap: var(--space-sm);
@@ -4689,21 +4697,44 @@
         min-height: 0;
         margin-top: var(--space-lg);
         overflow-y: auto;
+      }
+      /* Shared scrollbar visuals; dialog layout stays on .app-dialog-body. */
+      .app-dialog-body,
+      .notes-workspace .notes-editor .toastui-editor-ww-container .toastui-editor-contents,
+      .notes-workspace .notes-editor .toastui-editor-md-container .ProseMirror,
+      .notes-workspace .notes-editor .toastui-editor-md-container .toastui-editor-md-preview,
+      .notes-workspace .notes-editor textarea[data-notes-editor-source] {
         scrollbar-color: var(--border-strong) transparent;
         scrollbar-width: thin;
       }
-      .app-dialog-body::-webkit-scrollbar {
+      .app-dialog-body::-webkit-scrollbar,
+      .notes-workspace .notes-editor .toastui-editor-ww-container .toastui-editor-contents::-webkit-scrollbar,
+      .notes-workspace .notes-editor .toastui-editor-md-container .ProseMirror::-webkit-scrollbar,
+      .notes-workspace .notes-editor .toastui-editor-md-container .toastui-editor-md-preview::-webkit-scrollbar,
+      .notes-workspace .notes-editor textarea[data-notes-editor-source]::-webkit-scrollbar {
         width: 0.5rem;
       }
-      .app-dialog-body::-webkit-scrollbar-track {
+      .app-dialog-body::-webkit-scrollbar-track,
+      .notes-workspace .notes-editor .toastui-editor-ww-container .toastui-editor-contents::-webkit-scrollbar-track,
+      .notes-workspace .notes-editor .toastui-editor-md-container .ProseMirror::-webkit-scrollbar-track,
+      .notes-workspace .notes-editor .toastui-editor-md-container .toastui-editor-md-preview::-webkit-scrollbar-track,
+      .notes-workspace .notes-editor textarea[data-notes-editor-source]::-webkit-scrollbar-track {
         background: transparent;
       }
-      .app-dialog-body::-webkit-scrollbar-thumb {
+      .app-dialog-body::-webkit-scrollbar-thumb,
+      .notes-workspace .notes-editor .toastui-editor-ww-container .toastui-editor-contents::-webkit-scrollbar-thumb,
+      .notes-workspace .notes-editor .toastui-editor-md-container .ProseMirror::-webkit-scrollbar-thumb,
+      .notes-workspace .notes-editor .toastui-editor-md-container .toastui-editor-md-preview::-webkit-scrollbar-thumb,
+      .notes-workspace .notes-editor textarea[data-notes-editor-source]::-webkit-scrollbar-thumb {
         background: var(--border-strong);
         border: 2px solid var(--surface-card);
         border-radius: 999px;
       }
-      .app-dialog-body::-webkit-scrollbar-thumb:hover {
+      .app-dialog-body::-webkit-scrollbar-thumb:hover,
+      .notes-workspace .notes-editor .toastui-editor-ww-container .toastui-editor-contents::-webkit-scrollbar-thumb:hover,
+      .notes-workspace .notes-editor .toastui-editor-md-container .ProseMirror::-webkit-scrollbar-thumb:hover,
+      .notes-workspace .notes-editor .toastui-editor-md-container .toastui-editor-md-preview::-webkit-scrollbar-thumb:hover,
+      .notes-workspace .notes-editor textarea[data-notes-editor-source]::-webkit-scrollbar-thumb:hover {
         background: var(--muted);
       }
       .app-dialog-field { min-width: 0; }
@@ -7956,7 +7987,7 @@
         min-width: 0;
       }
       .notes-workspace {
-        --notes-editor-min-height: clamp(16rem, 40vh, 28rem);
+        --notes-editor-min-height: clamp(24rem, 55vh, 36rem);
         display: grid;
         grid-column: 1 / -1;
         grid-template-columns: var(--notes-page-workspace-columns);
@@ -7965,6 +7996,19 @@
         gap: var(--space-lg);
       }
       .notes-workspace > * { min-width: 0; }
+      #note-edit-dialog .notes-workspace,
+      #note-create-dialog .notes-workspace {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+      }
+      #note-edit-dialog .notes-workspace-context,
+      #note-create-dialog .notes-workspace-context {
+        position: static;
+        padding: 0;
+        border: 0;
+        background: none;
+      }
       .notes-workspace-context {
         position: sticky;
         top: calc(var(--shell-header-height) + var(--space-lg));
@@ -8077,6 +8121,18 @@
       .notes-connections .asset-filter-multiselect--sized .asset-filter-multiselect-summary {
         grid-template-columns: minmax(0, 1fr);
         width: 100%;
+      }
+      /* Keep the Projects-page picker sizing inside Connections. Its page-filter
+         fieldset z-index would trap the fixed dialog overlay beneath Assets. */
+      .project-form-dialog [data-note-connections] .asset-viewer-project-filter {
+        z-index: auto;
+        flex: 0 1 auto;
+        width: max-content;
+        max-width: min(100%, 26rem);
+      }
+      .project-form-dialog [data-note-connections] .asset-project-filter-panel {
+        width: max-content;
+        max-width: min(26rem, calc(100vw - 1rem));
       }
       .notes-connections .notes-selected-assets {
         list-style: none;
@@ -8745,6 +8801,26 @@
         padding: var(--space-sm) var(--space-md);
         transition: opacity var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast);
       }
+      /* Notes order dialogs reuse the canonical reorder card with the compact
+         list spacing already used by compact cards. Keep this modifier local
+         so Dashboard defaults and detail cards retain their existing density. */
+      .notes-reorder-row--compact {
+        gap: var(--space-xs);
+        padding: var(--space-xs) var(--space-sm);
+        cursor: grab;
+      }
+      .notes-reorder-row--compact :is(a, button, input, select, textarea, label, summary, details, [contenteditable="true"], [role="button"]) {
+        cursor: auto;
+      }
+      .notes-reorder-row--compact :is(.notes-chapter-page-number, .notes-book-content-kind) {
+        margin-bottom: 0;
+      }
+      .notes-reorder-row--compact .notes-reorder-position { margin-top: 0; }
+      /* The labels are identification, not controls: let their normal card
+         surface receive pointer drags while title links stay interactive. */
+      .notes-reorder-row--compact :is(.notes-chapter-page-number, .notes-book-content-kind, .notes-reorder-position) {
+        pointer-events: none;
+      }
       .dashboard-defaults-section-list {
         display: grid;
         gap: var(--space-sm);
@@ -8881,6 +8957,10 @@
         }
         .notes-book-content-actions { justify-content: flex-start; }
         .notes-books-index .notes-book-content-row { grid-template-columns: minmax(0, 1fr); }
+        .notes-reorder-row--compact {
+          gap: var(--space-xs);
+          padding: var(--space-xs) var(--space-sm);
+        }
       }
 
       /* -- Notes: Book detail outline -- */
@@ -8957,10 +9037,10 @@
         text-decoration: none;
         transition: background var(--transition-fast), color var(--transition-fast);
       }
-      .book-outline-title:hover {
+      a.book-outline-title:hover {
         text-decoration: underline;
       }
-      .book-outline-title:focus-visible {
+      a.book-outline-title:focus-visible {
         outline: 2px solid var(--focus-ring);
         outline-offset: 2px;
       }
@@ -8987,8 +9067,8 @@
         border-radius: var(--radius-sm);
         transition: background var(--transition-fast);
       }
-      .book-outline-page:not(.book-outline-page--child) > .book-outline-title:hover,
-      .book-outline-page:not(.book-outline-page--child) > .book-outline-title:focus-visible {
+      .book-outline-page:not(.book-outline-page--child) > a.book-outline-title:hover,
+      .book-outline-page:not(.book-outline-page--child) > a.book-outline-title:focus-visible {
         background: var(--surface-hover);
       }
       .book-outline-children {
@@ -9002,8 +9082,8 @@
         padding: var(--space-xs) var(--space-sm);
         border-radius: var(--radius-sm);
       }
-      .book-outline-page--child > .book-outline-title:hover,
-      .book-outline-page--child > .book-outline-title:focus-visible {
+      .book-outline-page--child > a.book-outline-title:hover,
+      .book-outline-page--child > a.book-outline-title:focus-visible {
         background: var(--surface-hover);
       }
       .book-outline-disclosure > .book-outline-empty {
@@ -9165,22 +9245,18 @@
       .notes-book-nav-summary:focus-visible .notes-book-nav-disclosure-indicator {
         border-color: var(--text);
       }
-      .notes-book-nav-chapter-link,
+      .notes-book-nav-chapter-title,
       .notes-book-nav-page-link {
         min-width: 0;
         overflow-wrap: anywhere;
         word-break: break-word;
       }
-      .notes-book-nav-chapter-link {
+      .notes-book-nav-chapter-title {
         display: inline;
         color: var(--text);
         font-weight: 650;
         line-height: 1.4;
         text-decoration: none;
-      }
-      .notes-book-nav-chapter-link:hover {
-        color: var(--accent);
-        text-decoration: underline;
       }
       .notes-book-nav-page-link {
         display: block;
@@ -9208,7 +9284,6 @@
         text-decoration: underline;
       }
       .notes-book-nav-book-link:focus-visible,
-      .notes-book-nav-chapter-link:focus-visible,
       .notes-book-nav-page-link:focus-visible {
         outline: 2px solid var(--focus-ring);
         outline-offset: 2px;
@@ -9228,7 +9303,7 @@
           var(--space-sm) + var(--notes-book-nav-marker-column) + var(--notes-book-nav-marker-gap) - 2px
         );
       }
-      .notes-book-nav-chapter-link[aria-current="page"],
+      .notes-book-nav-item--current > .notes-book-nav-disclosure > .notes-book-nav-summary .notes-book-nav-chapter-title,
       .notes-book-nav-page-link[aria-current="page"] {
         color: var(--text);
         font-weight: 700;

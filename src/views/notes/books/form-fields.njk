@@ -1,0 +1,40 @@
+    <section class="settings-section project-form-section project-edit-dialog-section">
+      <h3>Basic information</h3>
+      <div class="project-form-section-body project-edit-dialog-section-body">
+      <div class="field app-dialog-field {% if errors.title %}field-error{% endif %}">
+        <label for="title">Title <span class="required" aria-label="required">*</span></label>
+        <input type="text" id="title" name="title" value="{{ values.title or '' }}" maxlength="200" required{% if errors.title %} aria-describedby="title-error" aria-invalid="true"{% endif %}>
+        {% if errors.title %}<span class="field-error-message" id="title-error">{{ errors.title }}</span>{% endif %}
+      </div>
+    </div>
+    </section>
+    <section class="settings-section project-form-section project-edit-dialog-section" aria-labelledby="book-actions-heading">
+      <h3 id="book-actions-heading">Book actions</h3>
+      <div class="project-form-section-body project-edit-dialog-section-body">
+        <details class="notes-workspace-disclosure">
+          <summary>Book cover</summary>
+          <div class="notes-workspace-disclosure-content">
+            {% if bookEditForm and bookEditForm.book.primaryImage.state != 'none' %}
+              {{ bookPrimaryImage.render(bookEditForm.book, 'preview') }}
+            {% endif %}
+            <input type="hidden" name="expectedCoverKind" value="{{ bookCoverSource.kind or 'none' }}">
+            <input type="hidden" name="expectedCoverId" value="{{ bookCoverSource.id or '' }}">
+            <input type="hidden" name="coverReplacementConfirmed" value="false">
+            <div class="field app-dialog-field">
+              <label for="book-cover">Book cover image</label>
+              <input type="file" id="book-cover" name="cover" accept="image/png,image/jpeg,image/webp" aria-describedby="book-cover-help">
+              <span class="help-text" id="book-cover-help">Optional. PNG, JPEG, or WebP. Uploads are stored by CreatorCrate, not in a Project. After a validation error, select the file again.</span>
+            </div>
+          </div>
+        </details>
+    {% if bookEditForm %}
+      <details class="notes-workspace-disclosure notes-workspace-disclosure--delete">
+        <summary>Delete Book</summary>
+        <div class="notes-workspace-disclosure-content">
+          <p class="notes-workspace-warning">The Book must be empty before it can be deleted. This cannot be undone.</p>
+          <button class="button button-small button-danger" type="submit" form="book-delete-form" data-confirm="Delete this Book permanently? This cannot be undone.">Delete Book</button>
+        </div>
+      </details>
+    {% endif %}
+      </div>
+    </section>

@@ -760,7 +760,7 @@ describe('settings — backup management HTTP', () => {
         .expect(302);
       expect(allowedRestore.headers.location).toBe('/settings/backups?notice=restore_success');
       expect(restoreBackup).toHaveBeenCalledOnce();
-      expect(onDatabaseReplaced).toHaveBeenCalledWith(db);
+      expect(onDatabaseReplaced).toHaveBeenCalledWith(db, expect.objectContaining({ release: expect.any(Function) }));
     });
 
     it('redirects with restore_conflict before mutation when processing work or a pending Apply submission is active', async () => {
@@ -846,6 +846,7 @@ describe('settings — backup management HTTP', () => {
         .post(`/settings/backups/${result.filename}/restore`)
         .type('form').send({ _csrf: activeCsrf })
         .expect(503);
+      activeState.active = false;
     });
   });
 

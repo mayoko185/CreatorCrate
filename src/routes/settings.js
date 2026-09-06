@@ -930,6 +930,7 @@ export function createSettingsRouter({
   backupService,
   maintenanceState,
   processingJobService,
+  beginReplacement,
   authService,
   cookieOptions,
   onDatabaseReplaced,
@@ -964,7 +965,9 @@ export function createSettingsRouter({
   }
 
   const router = express.Router();
-  const replaceDatabase = typeof onDatabaseReplaced === 'function' ? onDatabaseReplaced : () => {};
+  const replaceDatabase = typeof onDatabaseReplaced === 'function' ? onDatabaseReplaced : () => {
+    throw new Error('Database adoption is unavailable.');
+  };
 
   // GET never mutates — the overview only reads backup listings and
   // deployment-controlled configuration values, never edits them.
@@ -1487,27 +1490,24 @@ export function createSettingsRouter({
     res.render('settings/restore-confirm.njk', { appName, backup });
   });
 
-  router.post('/backups/:filename/restore', async (req, res) => {
-    // Belt-and-suspenders: the maintenance middleware in app.js already
-    // rejects ordinary requests once `maintenanceState.active` is set, but
-    // that flag is only set *after* this handler begins running, so two
-    // near-simultaneous submissions could both reach here before either
-    // flips it. Checking both this flag and the service's own guard closes
-    // that window without weakening either boundary.
-    if (
-      maintenanceState.active
-      || backupService.isRestoreInProgress()
-      || processingJobService?.hasActiveJobs?.()
-    ) {
+  router.post('/backups/:filename/restore', async (req, res, next) => {
+    let owner;
+    try {
+      owner = beginReplacement();
+      if (backupService.isRestoreInProgress() || processingJobService?.hasActiveJobs?.()) {
+        owner.release();
+        return res.redirect('/settings/backups?notice=restore_conflict');
+      }
+    } catch {
+      owner?.release();
       return res.redirect('/settings/backups?notice=restore_conflict');
     }
-
-    maintenanceState.active = true;
+    let adopted = false;
     try {
       // restoreBackup re-resolves and re-validates the filename itself —
       // traversal, symlink, missing, staging/rollback, and invalid-schema
       // backups are all rejected there, never trusted from the URL alone.
-      const result = await backupService.restoreBackup(req.params.filename, db);
+      const result = await backupService.restoreBackup(req.params.filename, db, owner);
       // Phase 12.1: a restored database may carry session rows from whenever
       // the backup was taken — potentially long-lived, no longer trustworthy
       // sessions. Wipe them on the connection being adopted, before any
@@ -1516,7 +1516,8 @@ export function createSettingsRouter({
       // restored connection always supports this, but must never block
       // adopting the connection if it somehow doesn't.
       try { invalidateAllSessionsForDb(result.db); } catch { /* best-effort */ }
-      replaceDatabase(result.db);
+      await replaceDatabase(result.db, owner);
+      adopted = true;
       // replaceDatabase rebuilds the app graph and rebinds the shared logger
       // to the restored database before publishing it. Log only after that
       // authoritative handoff so the activity record cannot land in the old DB.
@@ -1529,11 +1530,19 @@ export function createSettingsRouter({
       // itself failed, or every other route is left holding a closed handle.
       if (err instanceof BackupError && err.db) {
         try { invalidateAllSessionsForDb(err.db); } catch { /* best-effort */ }
-        replaceDatabase(err.db);
+        try {
+          await replaceDatabase(err.db, owner);
+        } catch (adoptionError) {
+          return next(adoptionError);
+        }
+        adopted = true;
       }
+      if (!adopted && !db.open) return next(err);
       res.redirect('/settings/backups?notice=restore_failed');
     } finally {
-      maintenanceState.active = false;
+      // A closed old DB is safe only after successful graph adoption. Otherwise
+      // retain ownership: the existing unavailable boundary must stay closed.
+      if (adopted || db.open) owner.release();
     }
   });
 

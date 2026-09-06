@@ -1,14 +1,15 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
 {% import "partials/book-primary-image.njk" as bookPrimaryImage %}
+{% import "partials/dialog.njk" as dialog %}
 
 {% set page_title = "Notes" %}
 
 {% block content %}
   {% call pageHeading.render() %}
-    <a class="button button-primary" href="/notes/books/new">New Book</a>
+    <a class="button button-primary" href="/notes/books/new" data-dialog-open="book-create-dialog">New Book</a>
     {% if books.length > 1 %}
-      <a class="button button-secondary" href="/notes/books/order">Change order</a>
+      <a class="button button-secondary" href="/notes/books/order" data-dialog-open="books-order-dialog">Change order</a>
     {% endif %}
   {% endcall %}
 
@@ -41,7 +42,30 @@
       {% set emptyDescription = "Create a book to start organizing your notes." %}
       {% set emptyActionUrl = "/notes/books/new" %}
       {% set emptyActionLabel = "New Book" %}
+      {% set emptyActionDialogId = "book-create-dialog" %}
       {% include "partials/empty-state.njk" %}
     {% endif %}
   </section>
+{% endblock %}
+
+{% block overlay %}
+  {% include "notes/books/order-index.njk" %}
+  {% set values = bookCreateForm.values %}
+  {% set errors = bookCreateForm.errors %}
+  {% set bookCoverSource = none %}
+  {% call dialog.render('book-create-dialog', 'New Book', bookCreateDialogOpen, '', '', 'project-form-dialog') %}
+    <form id="book-form" method="post" action="{{ bookCreateForm.submitUrl }}" enctype="multipart/form-data" class="app-dialog-form project-form project-edit-dialog-form"
+          data-dialog-form data-dialog-async="false" novalidate>
+      <input type="hidden" name="_csrf" value="{{ _csrf }}">
+      <div class="app-dialog-body">
+        {% if errors.general %}
+          <div class="error-summary" role="alert"><p>{{ errors.general }}</p></div>
+        {% endif %}
+        {% include "notes/books/form-fields.njk" %}
+      </div>
+      <footer class="app-dialog-footer">
+        <button class="button button-primary" type="submit" data-dialog-submit>Create</button>
+      </footer>
+    </form>
+  {% endcall %}
 {% endblock %}

@@ -115,6 +115,7 @@ function isBookContentRepositoryError(error) {
  * @param {object} deps.bookContentRepository
  * @param {object} deps.chapterRepository
  * @param {object} deps.noteRepository
+ * @param {object} [deps.bookPrimaryImageService] Required only for managed-cover saves.
  * @param {object} [deps.applicationLogger]
  */
 export function createBookService({
@@ -122,6 +123,7 @@ export function createBookService({
   bookContentRepository,
   chapterRepository,
   noteRepository,
+  bookPrimaryImageService,
   applicationLogger = null,
 } = {}) {
   if (!bookRepository) {
@@ -286,10 +288,40 @@ export function createBookService({
       }
     },
 
+    validateCreateBook(input) {
+      return normalizeInput(input);
+    },
+
     createBook(input) {
       const created = bookRepository.create(normalizeInput(input));
       logActivity('book.created', { bookId: created.id });
       return created;
+    },
+
+    createBookWithManagedPrimaryImage(input, managedAssetId) {
+      const normalized = normalizeInput(input);
+      const created = bookPrimaryImageService.saveBookWithManagedPrimaryImage(
+        () => bookRepository.create(normalized), managedAssetId, { expectedSource: null },
+      );
+      logActivity('book.created', { bookId: created.id });
+      return created;
+    },
+
+    updateBookWithManagedPrimaryImage(id, input, managedAssetId, options = {}) {
+      let changed = false;
+      const updated = bookPrimaryImageService.saveBookWithManagedPrimaryImage(() => {
+        const existing = requireBook(id);
+        const saved = bookRepository.update(id, normalizeInput(input, existing.title));
+        if (!saved) throw new BookNotFoundError(id);
+        changed = saved.title !== existing.title;
+        return saved;
+      }, managedAssetId, options);
+      if (changed) logActivity('book.updated', { bookId: updated.id });
+      return updated;
+    },
+
+    validateUpdateBook(id, input) {
+      return normalizeInput(input, requireBook(id).title);
     },
 
     updateBook(id, input) {

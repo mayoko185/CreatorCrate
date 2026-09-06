@@ -252,6 +252,7 @@ describe('application context — reconstruction failure handling', () => {
     let closed = false;
     return {
       id,
+      get open() { return !closed; },
       close() {
         closed = true;
       },
@@ -333,6 +334,7 @@ describe('application context — coordinator persistence across reconstruction'
     let closed = false;
     return {
       id,
+      get open() { return !closed; },
       close() { closed = true; },
       get closed() { return closed; },
       prepare() {

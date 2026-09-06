@@ -373,3 +373,17 @@ describe('shared dropdown template', () => {
     expect(css).toMatch(/\.asset-filter-multiselect-panel\s*\{[^}]*top:\s*calc\(100% \+ var\(--space-xs\)\)/);
   });
 });
+
+it('searchable multiple uses the Projects-page shell with checkbox group semantics', () => {
+  const html = renderDropdown('multiSelect', {
+    id: 'projects-multi', name: 'projectIds[]', label: 'Projects', searchable: true,
+    options: [{ value: '1', label: 'Alpha' }], selectedValues: ['1'],
+  });
+  for (const marker of ['asset-project-filter-panel', 'asset-project-filter-search-label',
+    'data-cc-dropdown-search', 'asset-project-filter-option-list', 'data-cc-dropdown-no-results']) {
+    expect(html).toContain(marker);
+  }
+  expect(html).toContain('type="checkbox" value="1" checked');
+  expect(html).toContain('data-cc-dropdown-option-list role="group"');
+  expect(html).not.toContain('role="radiogroup"');
+});

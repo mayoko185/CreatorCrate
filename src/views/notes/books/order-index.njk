@@ -1,74 +1,72 @@
-{% extends "layout.njk" %}
-{% import "partials/page-heading.njk" as pageHeading %}
+{% import "partials/dialog.njk" as dialog %}
+{% call dialog.render('books-order-dialog', 'Change order', booksOrderDialogOpen, '', '', 'project-form-dialog') %}
+  <form id="notes-books-order-form" method="post" action="/notes/books/reorder" data-book-reorder-form
+        class="app-dialog-form project-form project-edit-dialog-form" data-dialog-form data-dialog-async="false">
+    <input type="hidden" name="_csrf" value="{{ _csrf }}">
+    <div class="app-dialog-body">
+      {% if booksOrderNotice %}<div class="error-summary" role="alert"><p>{{ booksOrderNotice.text }}</p></div>{% endif %}
+      <section class="notes-books-order" data-notes-book-order-page aria-labelledby="notes-books-order-heading">
+        <h3 id="notes-books-order-heading">Books</h3>
 
-{% set page_title = "Notes — Change order" %}
+        {% if books.length > 0 %}
+          <p class="help-text" id="notes-books-order-instructions">
+            Drag a Book card to move it, or focus its handle and use Arrow Up, Arrow Down, Home, or End. Select Save to keep the new order.
+          </p>
 
-{% block content %}
-  {% call pageHeading.render() %}
-    {% if books.length > 0 %}
-      <button class="button button-primary" type="submit" form="notes-books-order-form">Save</button>
-    {% endif %}
-    <a class="button button-secondary" href="/notes">Cancel</a>
-  {% endcall %}
+            <input type="hidden" name="orderedBookIds" data-book-order-input value="{% for book in books %}{{ book.id }}{% if not loop.last %},{% endif %}{% endfor %}">
 
-  <section class="notes-books-order" data-notes-book-order-page aria-labelledby="notes-books-order-heading">
-    <h2 id="notes-books-order-heading">Change order</h2>
+            <ol
+              class="notes-book-content-list notes-books-order-list notes-reorder-list"
+              data-book-reorder-list
+              data-reorder-form-target="notes-books-order-form"
+              aria-label="Books in current order"
+              aria-describedby="notes-books-order-instructions">
+              {% for book in books %}
+                <li
+                  class="notes-book-content-row notes-books-order-row notes-reorder-row notes-reorder-row--compact"
+                  data-book-reorder-item
+                  data-book-id="{{ book.id }}"
+                  data-book-label="{{ book.title }}"
+                  draggable="true"
+                  aria-posinset="{{ loop.index }}"
+                  aria-setsize="{{ books.length }}">
+                  <button
+                    type="button"
+                    class="notes-books-order-handle notes-reorder-handle"
+                    data-book-reorder-handle
+                    draggable="true"
+                    aria-label="Reorder {{ book.title }}"
+                    aria-describedby="notes-books-order-instructions notes-books-order-position-{{ book.id }}"
+                    title="Drag to reorder; use the arrow keys to move">
+                    <span aria-hidden="true">⠿</span>
+                  </button>
+                  <div class="notes-book-content-copy" draggable="true">
+                    <span class="notes-book-content-kind">Book</span>
+                    <h3 class="notes-book-content-title"><a href="/notes/books/{{ book.id }}">{{ book.title }}</a></h3>
+                    <span id="notes-books-order-position-{{ book.id }}" class="notes-books-order-position notes-reorder-position" data-book-order-position>Position {{ loop.index }} of {{ books.length }}</span>
+                  </div>
+                </li>
+              {% endfor %}
+            </ol>
+            <div class="notes-books-order-live-region notes-reorder-live-region sr-only" data-book-reorder-live aria-live="polite" aria-atomic="true"></div>
 
-    {% if books.length > 0 %}
-      <p class="help-text" id="notes-books-order-instructions">
-        Drag a handle to move a Book, or focus a handle and use Arrow Up, Arrow Down, Home, or End. Select Save to keep the new order.
-      </p>
-
-      <form id="notes-books-order-form" method="post" action="/notes/books/reorder" data-book-reorder-form>
-        <input type="hidden" name="_csrf" value="{{ _csrf }}">
-        <input type="hidden" name="orderedBookIds" data-book-order-input value="{% for book in books %}{{ book.id }}{% if not loop.last %},{% endif %}{% endfor %}">
-
-        <ol
-          class="notes-book-content-list notes-books-order-list notes-reorder-list"
-          data-book-reorder-list
-          data-reorder-form-target="notes-books-order-form"
-          aria-label="Books in current order"
-          aria-describedby="notes-books-order-instructions">
-          {% for book in books %}
-            <li
-              class="notes-book-content-row notes-books-order-row notes-reorder-row"
-              data-book-reorder-item
-              data-book-id="{{ book.id }}"
-              data-book-label="{{ book.title }}"
-              draggable="true"
-              aria-posinset="{{ loop.index }}"
-              aria-setsize="{{ books.length }}">
-              <button
-                type="button"
-                class="notes-books-order-handle notes-reorder-handle"
-                data-book-reorder-handle
-                draggable="true"
-                aria-label="Reorder {{ book.title }}"
-                aria-describedby="notes-books-order-instructions notes-books-order-position-{{ book.id }}"
-                title="Drag to reorder; use the arrow keys to move">
-                <span aria-hidden="true">⠿</span>
-              </button>
-              <div class="notes-book-content-copy">
-                <span class="notes-book-content-kind">Book</span>
-                <h3 class="notes-book-content-title"><a href="/notes/books/{{ book.id }}">{{ book.title }}</a></h3>
-                <span id="notes-books-order-position-{{ book.id }}" class="notes-books-order-position notes-reorder-position" data-book-order-position>Position {{ loop.index }} of {{ books.length }}</span>
-              </div>
-            </li>
-          {% endfor %}
-        </ol>
-        <div class="notes-books-order-live-region notes-reorder-live-region sr-only" data-book-reorder-live aria-live="polite" aria-atomic="true"></div>
-      </form>
-
-      <noscript>
-        <p class="help-text">JavaScript is required to move Books. Save still submits the current ordered Book ID list.</p>
-      </noscript>
-    {% else %}
-      {% set emptyHeading = "No books yet" %}
-      {% set emptyDescription = "Create a Book before changing its order." %}
-      {% set emptyHeadingLevel = "h3" %}
-      {% set emptyActionUrl = "/notes/books/new" %}
-      {% set emptyActionLabel = "New Book" %}
-      {% include "partials/empty-state.njk" %}
-    {% endif %}
-  </section>
-{% endblock %}
+          <noscript>
+            <p class="help-text">JavaScript is required to move Books. Save still submits the current ordered Book ID list.</p>
+          </noscript>
+        {% else %}
+          {% set emptyHeading = "No books yet" %}
+          {% set emptyDescription = "Create a Book before changing its order." %}
+          {% set emptyHeadingLevel = "h3" %}
+          {% set emptyActionUrl = "/notes/books/new" %}
+          {% set emptyActionLabel = "New Book" %}
+          {% include "partials/empty-state.njk" %}
+        {% endif %}
+      </section>
+    </div>
+    <footer class="app-dialog-footer">
+      {% if books.length > 0 %}
+        <button class="button button-primary" type="submit" form="notes-books-order-form" data-dialog-submit>Save</button>
+      {% endif %}
+    </footer>
+  </form>
+{% endcall %}

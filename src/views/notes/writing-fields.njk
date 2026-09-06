@@ -1,0 +1,15 @@
+        <div class="field app-dialog-field {% if errors.title %}field-error{% endif %}">
+          <label for="{{ noteTitleId or 'title' }}">Page title <span class="required" aria-label="required">*</span></label>
+          <input type="text" id="{{ noteTitleId or 'title' }}" name="title" value="{{ values.title or '' }}" maxlength="200" required{% if errors.title %} aria-describedby="{{ noteTitleId or 'title' }}-error" aria-invalid="true"{% endif %}>
+          {% if errors.title %}<span class="field-error-message" id="{{ noteTitleId or 'title' }}-error">{{ errors.title }}</span>{% endif %}
+        </div>
+
+        <div class="field app-dialog-field {% if errors.content %}field-error{% endif %}">
+          <label id="content-label" for="content">Content</label>
+          <div class="notes-editor" data-notes-editor-host-wrapper>
+            <div id="content-editor" class="notes-editor-host" data-notes-editor-host aria-labelledby="content-label" aria-describedby="content-help{% if errors.content %} content-error{% endif %}"></div>
+            <textarea id="content" name="content" data-notes-editor-source aria-describedby="content-help{% if errors.content %} content-error{% endif %}"{% if errors.content %} aria-invalid="true"{% endif %}>{{ values.content or '' }}</textarea>
+          </div>
+          <span class="help-text" id="content-help">Markdown source is stored unchanged.</span>
+          {% if errors.content %}<span class="field-error-message" id="content-error">{{ errors.content }}</span>{% endif %}
+        </div>

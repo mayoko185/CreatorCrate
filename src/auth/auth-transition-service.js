@@ -10,6 +10,7 @@
 // "everyone in the previous mode got logged out and can log back in", never
 // "auth mode changed but sessions weren't actually revoked".
 import fs from 'node:fs';
+import { beginReplacementMaintenance } from '../services/managed-upload-tracker.js';
 import {
   credentialFilePathForRoot,
   writeManagedCredential,
@@ -74,31 +75,33 @@ const USERNAME_HELP =
  *   null/undefined while auth is disabled
  */
 export function createAuthTransitionService({
-  appDataRoot, db, replaceAuthConfig, assertNoActiveProcessingJobs, authSettings, csrfPepper, authService,
+  appDataRoot, db, replaceAuthConfig, assertNoActiveProcessingJobs, beginReplacement, authSettings, csrfPepper, authService,
 }) {
   let busy = false;
 
-  function refuseWhenProcessingJobsAreActive() {
-    try {
-      assertNoActiveProcessingJobs?.();
-      return null;
-    } catch (error) {
-      return { ok: false, conflict: true, error };
-    }
-  }
-
   function withLock(fn) {
     if (busy) return { ok: false, conflict: true };
+    let owner;
+    const acquire = () => {
+      try {
+        owner = beginReplacement ? beginReplacement()
+          : beginReplacementMaintenance(db, () => db.open, assertNoActiveProcessingJobs);
+        return { ok: true, owner };
+      } catch (error) {
+        return { ok: false, conflict: true, error };
+      }
+    };
     busy = true;
     try {
-      return fn();
+      return fn(acquire);
     } finally {
       busy = false;
+      owner?.release();
     }
   }
 
   function enable({ username, password, confirmation }) {
-    return withLock(() => {
+    return withLock((acquire) => {
       const errors = [];
       if (!validateUsername(username)) {
         errors.push(USERNAME_HELP);
@@ -118,8 +121,9 @@ export function createAuthTransitionService({
         return { ok: false, alreadyEnabled: true };
       }
 
-      const processingConflict = refuseWhenProcessingJobsAreActive();
-      if (processingConflict) return processingConflict;
+      const transition = acquire();
+      if (!transition.ok) return transition;
+      const { owner } = transition;
 
       const credentialPath = credentialFilePathForRoot(appDataRoot);
       const authStatePath = authStateFilePathForRoot(appDataRoot);
@@ -161,7 +165,7 @@ export function createAuthTransitionService({
       }
 
       try {
-        replaceAuthConfig({ ...authSettings, sessionSecret, credentialProvider });
+        replaceAuthConfig({ ...authSettings, sessionSecret, credentialProvider }, owner);
       } catch (err) {
         rollback();
         return { ok: false, rebuildFailed: true, error: err };
@@ -172,7 +176,7 @@ export function createAuthTransitionService({
   }
 
   function disable({ username, currentPassword }) {
-    return withLock(() => {
+    return withLock((acquire) => {
       if (!authService) {
         return { ok: false, alreadyDisabled: true };
       }
@@ -191,8 +195,9 @@ export function createAuthTransitionService({
         return { ok: false, currentPasswordError: 'Current password is incorrect.' };
       }
 
-      const processingConflict = refuseWhenProcessingJobsAreActive();
-      if (processingConflict) return processingConflict;
+      const transition = acquire();
+      if (!transition.ok) return transition;
+      const { owner } = transition;
 
       const authStatePath = authStateFilePathForRoot(appDataRoot);
       const authStateSnapshot = snapshotFile(authStatePath);
@@ -212,7 +217,7 @@ export function createAuthTransitionService({
       }
 
       try {
-        replaceAuthConfig(null);
+        replaceAuthConfig(null, owner);
       } catch (err) {
         restoreFile(authStatePath, authStateSnapshot);
         return { ok: false, rebuildFailed: true, error: err };

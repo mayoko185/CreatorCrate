@@ -67,7 +67,7 @@ describe('book primary-image repository', () => {
 
     expect(repository.findByBookId(book.id)).toEqual({
       book_id: book.id,
-      asset_id: asset.id,
+      asset_id: asset.id, managed_asset_id: null, source: { kind: 'project_asset', id: asset.id },
     });
     expect(repository.findByBookId(missingBook.id)).toBeUndefined();
   });
@@ -81,8 +81,8 @@ describe('book primary-image repository', () => {
     repository.setPrimaryImage(secondBook.id, secondAsset.id);
 
     expect(repository.findByBookIds([secondBook.id, firstBook.id, secondBook.id])).toEqual([
-      { book_id: firstBook.id, asset_id: firstAsset.id },
-      { book_id: secondBook.id, asset_id: secondAsset.id },
+      { book_id: firstBook.id, asset_id: firstAsset.id, managed_asset_id: null, source: { kind: 'project_asset', id: firstAsset.id } },
+      { book_id: secondBook.id, asset_id: secondAsset.id, managed_asset_id: null, source: { kind: 'project_asset', id: secondAsset.id } },
     ]);
     expect(repository.findByBookIds([])).toEqual([]);
   });
@@ -95,8 +95,8 @@ describe('book primary-image repository', () => {
     repository.setPrimaryImage(secondBook.id, asset.id);
 
     expect(repository.findByAssetId(asset.id)).toEqual([
-      { book_id: firstBook.id, asset_id: asset.id },
-      { book_id: secondBook.id, asset_id: asset.id },
+      { book_id: firstBook.id, asset_id: asset.id, managed_asset_id: null, source: { kind: 'project_asset', id: asset.id } },
+      { book_id: secondBook.id, asset_id: asset.id, managed_asset_id: null, source: { kind: 'project_asset', id: asset.id } },
     ]);
   });
 
@@ -107,18 +107,18 @@ describe('book primary-image repository', () => {
 
     expect(repository.setPrimaryImage(book.id, firstAsset.id)).toEqual({
       book_id: book.id,
-      asset_id: firstAsset.id,
+      asset_id: firstAsset.id, managed_asset_id: null, source: { kind: 'project_asset', id: firstAsset.id },
     });
     expect(repository.setPrimaryImage(book.id, secondAsset.id)).toEqual({
       book_id: book.id,
-      asset_id: secondAsset.id,
+      asset_id: secondAsset.id, managed_asset_id: null, source: { kind: 'project_asset', id: secondAsset.id },
     });
     expect(db.prepare(
       'SELECT COUNT(*) FROM book_primary_images WHERE book_id = ?'
     ).pluck().get(book.id)).toBe(1);
     expect(repository.findByBookId(book.id)).toEqual({
       book_id: book.id,
-      asset_id: secondAsset.id,
+      asset_id: secondAsset.id, managed_asset_id: null, source: { kind: 'project_asset', id: secondAsset.id },
     });
   });
 
@@ -135,7 +135,7 @@ describe('book primary-image repository', () => {
     expect(repository.clearPrimaryImageIfMatches(book.id, firstAsset.id)).toBe(false);
     expect(repository.findByBookId(book.id)).toEqual({
       book_id: book.id,
-      asset_id: secondAsset.id,
+      asset_id: secondAsset.id, managed_asset_id: null, source: { kind: 'project_asset', id: secondAsset.id },
     });
   });
 });

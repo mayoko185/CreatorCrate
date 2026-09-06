@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { managedUploadTracker } from './managed-upload-tracker.js';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { openDatabase, closeDatabase, runMigrations } from '../db.js';
@@ -402,15 +403,17 @@ export function createBackupService({ appDataRoot, databasePath, migrationsDir, 
    *      original is restored and reopened before the error is thrown — the
    *      prior database is never silently discarded.
    *
-   * The caller owns the exclusive-maintenance boundary around request
-   * handling (see module docs on `isRestoreInProgress`); this function only
-   * guards against concurrent backup/restore calls within the service.
+   * The caller holds current-graph maintenance ownership through adoption,
+   * including recovered-DB adoption. The service validates that capability
+   * immediately before checkpoint/close; its own restore exclusion ends on
+   * return and is not sufficient to protect the later graph adoption.
    *
    * @param {string} filename - Managed backup filename to restore
    * @param {import('better-sqlite3').Database} db - Currently open live connection
+   * @param {object} maintenanceOwner - Owner acquired by the current application context
    * @returns {Promise<{db: import('better-sqlite3').Database, filename: string, restoredAt: string}>}
    */
-  async function restoreBackup(filename, db) {
+  async function restoreBackup(filename, db, maintenanceOwner) {
     beginRestore();
     // Yield once so the maintenance-boundary flag set above is observable
     // by callers that check `isRestoreInProgress()` or call this function
@@ -434,6 +437,7 @@ export function createBackupService({ appDataRoot, databasePath, migrationsDir, 
         });
       }
 
+      managedUploadTracker.assertMaintenanceOwner(maintenanceOwner, db);
       try {
         db.pragma('wal_checkpoint(TRUNCATE)');
       } catch {

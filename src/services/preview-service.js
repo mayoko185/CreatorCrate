@@ -112,6 +112,11 @@ const PREVIEW_MAX = 1600;
 const THUMBNAIL_QUALITY = 80;
 const PREVIEW_QUALITY = 90;
 
+export const IMAGE_DERIVATIVE_CONFIG = Object.freeze({
+  thumbnail: Object.freeze({ width: THUMBNAIL_MAX, height: THUMBNAIL_MAX, quality: THUMBNAIL_QUALITY }),
+  preview: Object.freeze({ width: PREVIEW_MAX, height: PREVIEW_MAX, quality: PREVIEW_QUALITY }),
+});
+
 /**
  * Detect whether a source is animated by reading its metadata WITHOUT the
  * `animated:true` flag. Sharp still reports `pages` for animated inputs when
@@ -148,7 +153,7 @@ async function detectAnimation(pipeline) {
  * @param {{ width: number, height: number, quality: number, animated: boolean }} opts
  * @returns {Promise<import('sharp').Sharp>}
  */
-async function buildDerivativePipeline(input, { width, height, quality, animated }) {
+export async function buildDerivativePipeline(input, { width, height, quality, animated }) {
   const sh = await sharp();
   const ctorOpts = animated ? { animated: true } : {};
   return (
@@ -680,10 +685,7 @@ export function createPreviewService({ db, projectsRoot, previewRoot, _hooks } =
    * @returns {Promise<{ buffer: Buffer, width: number, height: number, animated: boolean, frameCount: number }>}
    */
   async function generateDerivative(sourceBuffer, kind, sourceAnimated) {
-    const config =
-      kind === 'thumbnail'
-        ? { width: THUMBNAIL_MAX, height: THUMBNAIL_MAX, quality: THUMBNAIL_QUALITY }
-        : { width: PREVIEW_MAX, height: PREVIEW_MAX, quality: PREVIEW_QUALITY };
+    const config = IMAGE_DERIVATIVE_CONFIG[kind];
 
     // Thumbnail: first frame only. Sharp without `animated:true` reads only
     // the first frame of an animated input.

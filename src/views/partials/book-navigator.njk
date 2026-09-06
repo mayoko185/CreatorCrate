@@ -10,7 +10,7 @@
 {% endif %}
 
 <nav class="notes-book-nav" aria-label="Contents of {{ book.title }}">
-  <p class="notes-book-nav-heading">Book contents</p>
+  {% if not bookNavHideHeading %}<p class="notes-book-nav-heading">Book contents</p>{% endif %}
   <a class="notes-book-nav-book-link" href="/notes/books/{{ book.id }}">{{ book.title }}</a>
 
   <ol class="notes-book-nav-list">
@@ -31,9 +31,12 @@
             <summary class="notes-book-nav-summary">
               <span class="notes-book-nav-disclosure-indicator" aria-hidden="true"></span>
               <span class="notes-book-nav-title-wrap">
-                <a class="notes-book-nav-chapter-link" href="/notes/chapters/{{ item.id }}"{% if chapterIsCurrent %} aria-current="page"{% endif %}>{{ item.chapter.title }}</a>
+                <span class="notes-book-nav-chapter-title">{{ item.chapter.title }}</span>
               </span>
             </summary>
+            <p class="notes-book-nav-page--child">
+              <a class="notes-book-nav-page-link" href="/notes/chapters/{{ item.id }}"{% if chapterIsCurrent %} aria-current="page"{% endif %}>View Chapter</a>
+            </p>
             <ol class="notes-book-nav-pages">
               {% for page in item.pages %}
                 {% set pageIsCurrent = hasCurrentPage and page.id is defined and page.id is not none and (page.id | string) == currentPageIdString %}

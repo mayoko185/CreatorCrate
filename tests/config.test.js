@@ -15,6 +15,16 @@ function env(overrides = {}) {
 }
 
 describe('createConfig', () => {
+  it('derives managedAssetRoot from appDataRoot, independently of database nesting and Projects', () => {
+    expect(createConfig({}).managedAssetRoot).toBe(path.resolve('data/app/assets'));
+    const config = createConfig(env({
+      APP_DATA_ROOT: './persistent/app',
+      DATABASE_PATH: './persistent/app/database/nested/store.db',
+      PROJECTS_ROOT: './elsewhere/projects',
+    }));
+    expect(config.managedAssetRoot).toBe(path.join(config.appDataRoot, 'assets'));
+    expect(config.managedAssetRoot).not.toBe(path.join(path.dirname(config.databasePath), 'assets'));
+  });
   it('uses defaults when environment is otherwise empty', () => {
     const config = createConfig({});
     expect(config.nodeEnv).toBe('development');

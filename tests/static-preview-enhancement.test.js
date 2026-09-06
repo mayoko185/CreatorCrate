@@ -3010,7 +3010,7 @@ describe('top-level Book reorder enhancement', () => {
     expect(enhanceBookReorder(scope)).toBe(0);
   });
 
-  it('moves rows from the handle, updates the hidden order, and does not persist until Save', () => {
+  it('moves rows from the whole card while excluding interactive descendants, updates the hidden order, and does not persist until Save', () => {
     const fixture = makeBookReorderFixture();
     const calls = [];
 
@@ -3020,8 +3020,22 @@ describe('top-level Book reorder enhancement', () => {
     }, async () => {
       expect(enhanceBookReorder(fixture.document)).toBe(1);
 
+      const link = makeCategoryNode({ tagName: 'a' });
+      fixture.items[0].appendChild(link);
       const rowDrag = fixture.items[0].dispatch('dragstart', { dataTransfer: { setData() {} } });
-      expect(rowDrag.defaultPrevented).toBe(true);
+      expect(rowDrag.defaultPrevented).toBe(false);
+      fixture.items[0].dispatch('dragend');
+      const interactiveDrag = fixture.items[0].dispatch('dragstart', { target: link, dataTransfer: { setData() {} } });
+      expect(interactiveDrag.defaultPrevented).toBe(true);
+      // This lightweight DOM only bubbles; invoke the capture listener directly.
+      const pointerDown = fixture.items[0].listeners.find(entry => entry.type === 'pointerdown').handler;
+      pointerDown({ target: link, button: 0 });
+      // Native Chromium reports the draggable ancestor, not the pressed link.
+      expect(fixture.items[0].dispatch('dragstart').defaultPrevented).toBe(true);
+      expect(fixture.orderInput.value).toBe('101,202,303');
+      pointerDown({ target: fixture.items[0], button: 0 });
+      expect(fixture.items[0].dispatch('dragstart').defaultPrevented).toBe(false);
+      fixture.items[0].dispatch('dragend');
       fixture.items[0].handle.dispatch('dragstart', { dataTransfer: { setData() {} } });
       expect(fixture.items[0].classList.contains('is-dragging')).toBe(true);
       fixture.list.dispatch('dragover', {
@@ -3089,17 +3103,13 @@ describe('top-level Book reorder enhancement', () => {
     }
   });
 
-  it('is idempotent and keeps Cancel outside the form submission path', () => {
+  it('is idempotent and keeps native form submission intact', () => {
     const fixture = makeBookReorderFixture();
-    const cancel = makeCategoryNode({ tagName: 'a' });
-    cancel.setAttribute('href', '/notes');
-    fixture.document.appendChild(cancel);
 
     expect(enhanceBookReorder(fixture.document)).toBe(1);
     expect(enhanceBookReorder(fixture.document)).toBe(1);
     expect(fixture.list.listeners.filter((listener) => listener.type === 'dragover')).toHaveLength(1);
     expect(fixture.items[0].handle.listeners.filter((listener) => listener.type === 'keydown')).toHaveLength(1);
-    expect(cancel.getAttribute('href')).toBe('/notes');
     expect(fixture.form.listeners.filter((listener) => listener.type === 'submit')).toHaveLength(1);
   });
 });
@@ -3124,7 +3134,8 @@ describe('Chapter Page reorder enhancement', () => {
     expect(fixture.list.listeners.filter((listener) => listener.type === 'dragover')).toHaveLength(1);
 
     const rowDrag = fixture.items[0].dispatch('dragstart', { dataTransfer: { setData() {} } });
-    expect(rowDrag.defaultPrevented).toBe(true);
+    expect(rowDrag.defaultPrevented).toBe(false);
+    fixture.items[0].dispatch('dragend');
     fixture.items[0].handle.dispatch('dragstart', { dataTransfer: { setData() {} } });
     fixture.list.dispatch('dragover', {
       target: fixture.items[2],
@@ -3184,7 +3195,8 @@ describe('mixed Book-content reorder enhancement', () => {
       expect(fixture.items[0].handle.listeners.filter((listener) => listener.type === 'keydown')).toHaveLength(1);
 
       const rowDrag = fixture.items[0].dispatch('dragstart', { dataTransfer: { setData() {} } });
-      expect(rowDrag.defaultPrevented).toBe(true);
+      expect(rowDrag.defaultPrevented).toBe(false);
+      fixture.items[0].dispatch('dragend');
       fixture.items[0].handle.dispatch('dragstart', { dataTransfer: { setData() {} } });
       fixture.list.dispatch('dragover', {
         target: fixture.items[3],
@@ -3226,10 +3238,6 @@ describe('mixed Book-content reorder enhancement', () => {
       expect(fixture.orderInput.value).toBe(fixture.order().join(','));
       expect(fixture.form.listeners.filter((listener) => listener.type === 'submit')).toHaveLength(1);
 
-      const cancel = makeCategoryNode({ tagName: 'a' });
-      cancel.setAttribute('href', '/notes/books/7');
-      fixture.document.appendChild(cancel);
-      expect(cancel.listeners).toHaveLength(0);
     } finally {
       globalThis.fetch = originalFetch;
     }

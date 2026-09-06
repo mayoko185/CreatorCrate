@@ -84,7 +84,7 @@
         {% if searchable %}
           <label class="asset-project-filter-search-label" for="{{ searchInputId }}">{{ searchLabel }}</label>
           <input id="{{ searchInputId }}" class="asset-project-filter-search" type="search" autocomplete="off" data-cc-dropdown-search aria-controls="{{ optionListId }}"{% if config.disabled %} disabled{% endif %}>
-          <div id="{{ optionListId }}" class="asset-project-filter-option-list" data-cc-dropdown-option-list role="radiogroup" aria-label="{{ optionListLabel }}">
+          <div id="{{ optionListId }}" class="asset-project-filter-option-list" data-cc-dropdown-option-list role="{{ 'radiogroup' if mode == 'single' else 'group' }}" aria-label="{{ optionListLabel }}">
         {% endif %}
         {% if config.placeholder and mode == 'single' %}
           {{ renderOption(config, { value: '', label: config.placeholder, id: (config.optionIdPrefix or config.id) ~ '-option-all' }, mode, 'all', config.selected is not defined or config.selected is none or config.selected == '', true, searchable) }}

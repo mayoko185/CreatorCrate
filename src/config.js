@@ -99,6 +99,7 @@ export function createConfig(rawEnv = process.env) {
   // Phase 10.1A: preview root derives from APP_DATA_ROOT/previews.
   // Not directly configurable — it is a derived, owned directory of the app.
   const previewRoot = path.join(appDataRoot, 'previews');
+  const managedAssetRoot = path.join(appDataRoot, 'assets');
 
   // Phase 11.1: backup directory derives from APP_DATA_ROOT/backups.
   // Not directly configurable — it is a derived, owned directory of the app.
@@ -185,6 +186,7 @@ export function createConfig(rawEnv = process.env) {
     projectsRoot,
     databasePath,
     previewRoot,
+    managedAssetRoot,
     backupDir,
     backupRetentionCount,
     autoScanIntervalMinutes,

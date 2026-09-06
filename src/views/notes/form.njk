@@ -1,210 +1,98 @@
-{% extends "layout.njk" %}
-{% import "partials/page-heading.njk" as pageHeading %}
+{% import "partials/dialog.njk" as noteDialog %}
 {% import "partials/dropdown.njk" as dropdown %}
 
-{% set title = action ~ ' Note' %}
-{% set page_title = "Notes — Edit " ~ note.title if action == 'Edit' else "Notes — " ~ title %}
-{% set formDescription = "Capture a standalone note." if action == 'Create' else "Update this note." %}
-{% set submitLabel = 'Save' if action == 'Edit' else 'Create' %}
+{% if noteFormModel %}
+  {% set noteTitleId = 'note-edit-title' if noteFormModel.action == 'Edit' else 'note-create-title' %}
+  {% set values = noteFormModel.values %}
+  {% set errors = noteFormModel.errors %}
+  {% set projects = noteFormModel.projects %}
+  {% set selectedProjectIds = noteFormModel.selectedProjectIds %}
+  {% set selectedAssetIds = noteFormModel.selectedAssetIds %}
+  {% set selectedAssets = noteFormModel.selectedAssets %}
+  {% call noteDialog.render(noteDialogId, noteDialogTitle, noteDialogOpen, '', 'note-form', 'project-form-dialog') %}
+    <div class="app-dialog-body project-edit-dialog-body">
+      <form id="note-form" method="post" action="{{ noteFormModel.submitUrl }}" class="app-dialog-form project-form project-edit-dialog-form notes-form notes-workspace"
+            data-notes-editor-form data-dialog-form data-dialog-async="false" novalidate>
+        <input type="hidden" name="_csrf" value="{{ _csrf }}">
+        {% if noteFormModel.action == 'Create' and noteFormModel.chapter %}
+          <input type="hidden" name="chapterId" value="{{ values.chapterId }}">
+        {% elif noteFormModel.action == 'Create' %}
+          <input type="hidden" name="bookId" value="{{ values.bookId }}">
+        {% endif %}
 
-{% block page_assets %}
-{% endblock %}
-
-{% block content %}
-  {% call pageHeading.render(formDescription) %}
-    <button class="button button-primary" type="submit" form="note-form">{{ submitLabel }}</button>
-    <a class="button button-secondary" href="{% if note %}/notes/{{ note.id }}{% elif chapter %}/notes/chapters/{{ chapter.id }}{% elif book %}/notes/books/{{ book.id }}{% else %}/notes{% endif %}">Cancel</a>
-  {% endcall %}
-
-  {% if errors.general %}
-    <div class="error-summary" role="alert">
-      <p>{{ errors.general }}</p>
-    </div>
-  {% endif %}
-
-  <div class="notes-page-workspace-layout">
-    <form id="note-form" method="post" action="{{ submitUrl }}" class="project-form notes-form notes-workspace" data-notes-editor-form novalidate>
-      <input type="hidden" name="_csrf" value="{{ _csrf }}">
-      {% if chapter and action == 'Create' %}
-        <input type="hidden" name="chapterId" value="{{ values.chapterId }}">
-      {% elif book and action == 'Create' %}
-        <input type="hidden" name="bookId" value="{{ values.bookId }}">
-      {% endif %}
-
-      <div class="notes-page-sidebar">
-        <aside class="notes-workspace-context" aria-label="Book contents">
-          {% include "partials/book-navigator.njk" %}
-        </aside>
-
-        <aside class="notes-connections" aria-labelledby="notes-connections-heading">
-          <div class="notes-workspace-section-heading">
-            <h2 id="notes-connections-heading">Connections</h2>
-            <p class="notes-connections-description">Link this Page to existing projects and assets.</p>
+        <section class="settings-section project-form-section project-edit-dialog-section" aria-labelledby="notes-book-contents-heading">
+          <h3 id="notes-book-contents-heading">Book contents</h3>
+          <div class="project-form-section-body project-edit-dialog-section-body">
+            <aside class="notes-workspace-context" aria-label="Book contents">
+              {% set bookNavHideHeading = true %}
+              {% include "partials/book-navigator.njk" %}
+              {% set bookNavHideHeading = false %}
+            </aside>
           </div>
+        </section>
+        <section class="settings-section project-form-section project-edit-dialog-section" aria-labelledby="notes-editor-heading">
+          <h3 id="notes-editor-heading">Page contents</h3>
+          <div class="project-form-section-body project-edit-dialog-section-body notes-page-contents-body">
+            {% include "notes/writing-fields.njk" %}
+          </div>
+        </section>
+        <section class="settings-section project-form-section project-edit-dialog-section notes-connections" aria-labelledby="notes-connections-heading">
+          <h3 id="notes-connections-heading">Connections</h3>
+          <div class="project-form-section-body project-edit-dialog-section-body">
+            {% if errors.general %}
+              <div class="error-summary" role="alert"><p>{{ errors.general }}</p></div>
+            {% endif %}
+            {% include "notes/connections-fields.njk" %}
+          </div>
+        </section>
+      </form>
+      {% if noteFormModel.action == 'Edit' %}
+        {% set moveTargets = noteFormModel.moveTargets %}
+        <section class="settings-section project-form-section project-edit-dialog-section notes-workspace-secondary" aria-labelledby="notes-page-actions-heading">
+          <h3 id="notes-page-actions-heading">Page actions</h3>
+          <div class="project-form-section-body project-edit-dialog-section-body">
 
-          {% set projectError = errors.projectIds or errors.associations %}
-          {% set projectSummary = 'No projects selected' %}
-          {% if selectedProjectIds.length == 1 %}
-            {% for project in projects %}
-              {% if selectedProjectIds[0] == (project.id | string) %}
-                {% set projectSummary = project.title %}
-              {% endif %}
-            {% endfor %}
-          {% elif selectedProjectIds.length > 1 %}
-            {% set projectSummary = selectedProjectIds.length ~ ' projects selected' %}
-          {% endif %}
-
-          {% set projectOptions = [] %}
-          {% for project in projects %}
-            {% set _ = projectOptions.push({ value: project.id | string, label: project.title }) %}
-          {% endfor %}
-
-          {{ dropdown.multiSelect({
-            id: "note-projects-form",
-            name: "projectIds[]",
-            label: "Projects",
-            options: projectOptions,
-            selectedValues: selectedProjectIds,
-            emptySummary: "No projects selected",
-            countLabel: "projects",
-            summary: projectSummary,
-            triggerAriaLabel: "Projects: " ~ projectSummary,
-            summaryAttributes: [
-              ["aria-describedby", "projectIds-error" if projectError else none],
-              ["aria-invalid", "true" if projectError else none]
-            ],
-            inputAttributes: [
-              ["aria-describedby", "projectIds-error" if projectError else none],
-              ["aria-invalid", "true" if projectError else none]
-            ],
-            emptyState: {
-              text: "No projects available.",
-              link: { text: "Create a project", href: "/projects/new" },
-              suffix: "."
-            },
-            fieldClasses: "notes-connections-field asset-viewer-filter-field" ~ (" field-error" if projectError else ""),
-            panelLabel: "Project options"
-          }) }}
-          {% if projectError %}<span class="field-error-message" id="projectIds-error">{{ projectError }}</span>{% endif %}
-
-          {% set assetError = errors.assetIds or errors.associations %}
-
-          <fieldset class="field notes-connections-field asset-viewer-filter-field asset-filter-multiselect-field{% if assetError %} field-error{% endif %}">
-            <legend>Assets</legend>
-            <input type="hidden" name="assetIds[]" value="">
-            <ul class="notes-selected-assets" aria-label="Selected assets">
-              {% for asset in selectedAssets %}
-                <li class="notes-selected-asset">
-                  <label class="notes-selected-asset-control" for="note-asset-option-{{ asset.id }}">
-                    <input id="note-asset-option-{{ asset.id }}" name="assetIds[]" type="checkbox" value="{{ asset.id }}" aria-label="Deselect {{ asset.filename }}" aria-describedby="{% if assetError %}assetIds-error {% endif %}note-asset-option-description-{{ asset.id }}"{% if (asset.id | string) in selectedAssetIds %} checked{% endif %}{% if assetError %} aria-invalid="true"{% endif %}>
-                    <span id="note-asset-option-description-{{ asset.id }}" class="notes-selected-asset-details">
-                      <span class="notes-selected-asset-filename">{{ asset.filename }}</span>
-                      <span class="notes-selected-asset-project">Project: <span>{{ asset.projectTitle }}</span></span>
-                      {% if asset.relativePath and asset.relativePath != asset.filename %}<span class="notes-selected-asset-path">Path: <span>{{ asset.relativePath }}</span></span>{% endif %}
-                      {% if asset.isProjectArchived %}<span class="notes-selected-asset-state notes-selected-asset-state--archived">Archived project</span>{% endif %}
-                      {% if not asset.isPresent %}<span class="notes-selected-asset-state notes-selected-asset-state--missing">Missing</span>{% endif %}
-                    </span>
-                  </label>
-                </li>
-              {% endfor %}
-            </ul>
-            <p class="notes-selected-assets-empty"{% if selectedAssets.length > 0 %} hidden{% endif %}>No assets selected.</p>
-            {% if assetError %}<span class="field-error-message" id="assetIds-error">{{ assetError }}</span>{% endif %}
-            <details class="notes-asset-picker-disclosure">
-              <summary>Add assets</summary>
-              <div id="note-asset-picker" class="notes-asset-picker" data-notes-asset-picker data-projects-url="/notes/asset-picker/projects" data-assets-url="/notes/asset-picker/assets" data-note-form-id="note-form">
-                <p class="notes-asset-picker-no-js">Searching for and adding assets requires JavaScript. Existing selected assets can be removed above.</p>
-                <div class="notes-asset-picker-field">
-                  <label for="note-asset-picker-project-search">Project search</label>
-                  <input type="search" id="note-asset-picker-project-search" autocomplete="off">
-                </div>
-                <ul id="note-asset-picker-project-results" class="notes-asset-picker-results" aria-label="Project search results"></ul>
-                <div class="notes-asset-picker-field">
-                  <label for="note-asset-picker-asset-search">Asset search</label>
-                  <input type="search" id="note-asset-picker-asset-search" autocomplete="off" disabled>
-                </div>
-                <ul id="note-asset-picker-asset-results" class="notes-asset-picker-results" aria-label="Asset search results"></ul>
-                <div class="notes-asset-picker-load-more">
-                  <button type="button" class="button button-secondary" disabled>Load more</button>
-                </div>
-                <p id="note-asset-picker-status" class="notes-asset-picker-status" role="status" aria-live="polite" aria-atomic="true"></p>
-                <p id="note-asset-picker-error" class="notes-asset-picker-error" role="alert" aria-live="assertive" aria-atomic="true"></p>
+            <details class="notes-workspace-disclosure notes-workspace-disclosure--move">
+              <summary>Move Page</summary>
+              <div class="notes-workspace-disclosure-content">
+                {% set moveOptions = [] %}
+                {% for target in moveTargets %}
+                  {% set _ = moveOptions.push({ value: 'book:' ~ target.book.id, label: 'Book: ' ~ target.book.title ~ ' (direct Pages)' }) %}
+                  {% for targetChapter in target.chapters %}
+                    {% set _ = moveOptions.push({ value: 'chapter:' ~ targetChapter.id, label: 'Chapter: ' ~ target.book.title ~ ' / ' ~ targetChapter.title }) %}
+                  {% endfor %}
+                {% endfor %}
+                {{ dropdown.singleSelect({
+                  id: 'note-move-dropdown', name: 'targetContainer', label: 'Move Page destination',
+                  visuallyHiddenLabel: true, options: moveOptions,
+                  selected: ('chapter:' ~ chapter.id) if chapter else ('book:' ~ book.id),
+                  panelLabel: 'Page destinations',
+                  nativeSelect: { id: 'note-move-target', attributes: [['required', true], ['form', 'note-move-form']] }
+                }) }}
+                <button class="button button-small button-secondary" type="submit" form="note-move-form">Move Page</button>
               </div>
             </details>
-          </fieldset>
-        </aside>
 
-        {% if note and action == 'Edit' %}
-          <section class="notes-workspace-secondary" aria-labelledby="notes-page-actions-heading">
-            <aside class="notes-workspace-actions">
-              <p class="notes-workspace-kicker" id="notes-page-actions-heading">Page actions</p>
-
-              <details class="notes-workspace-disclosure notes-workspace-disclosure--move">
-                <summary>Move Page</summary>
-                <div class="notes-workspace-disclosure-content">
-                  <p class="notes-workspace-current-container">
-                    Current container:
-                    <strong>{% if chapter %}{{ book.title }} / {{ chapter.title }}{% else %}{{ book.title }} (direct Page){% endif %}</strong>
-                  </p>
-                  <div class="field">
-                    <label for="note-move-target">Target container</label>
-                    <select id="note-move-target" name="targetContainer" required form="note-move-form">
-                      {% for target in moveTargets %}
-                        <option value="book:{{ target.book.id }}"{% if not chapter and target.book.id == book.id %} selected{% endif %}>Book: {{ target.book.title }} (direct Pages)</option>
-                        {% for targetChapter in target.chapters %}
-                          <option value="chapter:{{ targetChapter.id }}"{% if chapter and targetChapter.id == chapter.id %} selected{% endif %}>Chapter: {{ target.book.title }} / {{ targetChapter.title }}</option>
-                        {% endfor %}
-                      {% endfor %}
-                    </select>
-                  </div>
-                  <button class="button button-small button-secondary" type="submit" form="note-move-form">Move Page</button>
-                </div>
-              </details>
-
-              <details class="notes-workspace-disclosure notes-workspace-disclosure--delete">
-                <summary>Delete Page</summary>
-                <div class="notes-workspace-disclosure-content">
-                  <p class="notes-workspace-warning">Permanently delete this Page and its associations. This cannot be undone.</p>
-                  <button class="button button-small button-danger" type="submit" form="note-delete-form" data-confirm="Delete this Page permanently? This cannot be undone.">Delete Page</button>
-                </div>
-              </details>
-            </aside>
-          </section>
-        {% endif %}
-      </div>
-
-      <section class="notes-workspace-editor" aria-labelledby="notes-editor-heading">
-        <div class="notes-workspace-section-heading">
-          <p class="notes-workspace-kicker">Writing surface</p>
-          <h2 id="notes-editor-heading">Page content</h2>
-        </div>
-
-        <div class="field {% if errors.title %}field-error{% endif %}">
-          <label for="title">Page title <span class="required" aria-label="required">*</span></label>
-          <input type="text" id="title" name="title" value="{{ values.title or '' }}" maxlength="200" required{% if errors.title %} aria-describedby="title-error" aria-invalid="true"{% endif %}>
-          {% if errors.title %}<span class="field-error-message" id="title-error">{{ errors.title }}</span>{% endif %}
-        </div>
-
-        <div class="field {% if errors.content %}field-error{% endif %}">
-          <label id="content-label" for="content">Content</label>
-          <div class="notes-editor" data-notes-editor-host-wrapper>
-            <div id="content-editor" class="notes-editor-host" data-notes-editor-host aria-labelledby="content-label" aria-describedby="content-help{% if errors.content %} content-error{% endif %}"></div>
-            <textarea id="content" name="content" data-notes-editor-source aria-describedby="content-help{% if errors.content %} content-error{% endif %}"{% if errors.content %} aria-invalid="true"{% endif %}>{{ values.content or '' }}</textarea>
+            <details class="notes-workspace-disclosure notes-workspace-disclosure--delete">
+              <summary>Delete Page</summary>
+              <div class="notes-workspace-disclosure-content">
+                <p class="notes-workspace-warning">Permanently delete this Page and its associations. This cannot be undone.</p>
+                <button class="button button-small button-danger" type="submit" form="note-delete-form" data-confirm="Delete this Page permanently? This cannot be undone.">Delete Page</button>
+              </div>
+            </details>
           </div>
-          <span class="help-text" id="content-help">Markdown source is stored unchanged.</span>
-          {% if errors.content %}<span class="field-error-message" id="content-error">{{ errors.content }}</span>{% endif %}
-        </div>
-      </section>
-    </form>
-
-  </div>
-
-  {% if note and action == 'Edit' %}
-    <form id="note-move-form" method="post" action="/notes/{{ note.id }}/move" hidden>
-      <input type="hidden" name="_csrf" value="{{ _csrf }}">
-    </form>
-    <form id="note-delete-form" method="post" action="/notes/{{ note.id }}/delete" hidden>
-      <input type="hidden" name="_csrf" value="{{ _csrf }}">
-    </form>
-  {% endif %}
-{% endblock %}
+        </section>
+        <form id="note-move-form" method="post" action="/notes/{{ note.id }}/move" hidden>
+          <input type="hidden" name="_csrf" value="{{ _csrf }}">
+        </form>
+        <form id="note-delete-form" method="post" action="/notes/{{ note.id }}/delete" hidden>
+          <input type="hidden" name="_csrf" value="{{ _csrf }}">
+        </form>
+      {% endif %}
+    </div>
+    <div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>
+    <footer class="app-dialog-footer">
+      <button class="button button-primary" type="submit" form="note-form" data-dialog-submit>{{ 'Save' if noteFormModel.action == 'Edit' else 'Create' }}</button>
+    </footer>
+  {% endcall %}
+{% endif %}

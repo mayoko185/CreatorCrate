@@ -33,6 +33,8 @@ import {
   enhanceNotesEditor,
 } from './client/notes-editor.js';
 import { enhanceNotesAssetPicker } from './client/notes-asset-picker.js';
+import { enhanceNoteConnections } from './client/note-connections.js';
+import { enhanceBookCoverUploads } from './client/book-cover-upload.js';
 import {
   enhanceAssetViewerInfoCards,
   enhanceProjectInfoCards,
@@ -170,7 +172,7 @@ if (typeof document !== 'undefined') {
     enhanceChapterPageReorder(document);
     enhanceBookContentReorder(document);
     enhanceNotesEditor(document);
-    enhanceNotesAssetPicker(document);
+    enhanceNoteConnections(document);
     enhanceAssetAutoRenameOrdering(document);
     enhanceCategoryDetails(document);
     enhanceAssetSelection(document);
@@ -186,6 +188,7 @@ if (typeof document !== 'undefined') {
     enhanceLogViewerAutoRefresh(document);
     enhanceAssetViewerFilterDisclosures(document);
     enhanceAppConfirmationControls(document);
+    enhanceBookCoverUploads(document);
     enhanceDashboardDefaultsDialog(document);
     enhanceProjectAssetCategoryManagement(document);
     enhanceProjectsLiveFiltering(document);

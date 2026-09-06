@@ -107,7 +107,7 @@ describe('book primary-image service', () => {
 
     expect(service.setPrimaryImage(book.id, asset.id)).toEqual({
       book_id: book.id,
-      asset_id: asset.id,
+      asset_id: asset.id, managed_asset_id: null, source: { kind: 'project_asset', id: asset.id },
     });
     expect(service.getPrimaryImage(book.id)).toMatchObject({ id: asset.id, is_present: 1 });
   });
@@ -189,7 +189,7 @@ describe('book primary-image service', () => {
 
     await expect(probedService.setPrimaryImage(book.id, asset.id)).resolves.toEqual({
       book_id: book.id,
-      asset_id: asset.id,
+      asset_id: asset.id, managed_asset_id: null, source: { kind: 'project_asset', id: asset.id },
     });
     expect(previewProbe).toHaveBeenCalledWith(
       asset.project_id,
@@ -269,7 +269,7 @@ describe('book primary-image service', () => {
 
     expect(service.setPrimaryImage(book.id, asset.id)).toEqual({
       book_id: book.id,
-      asset_id: asset.id,
+      asset_id: asset.id, managed_asset_id: null, source: { kind: 'project_asset', id: asset.id },
     });
     expect(primaryImageRepository.findByBookId).not.toHaveBeenCalled();
     expect(db.prepare('SELECT asset_id FROM book_primary_images WHERE book_id = ?')
@@ -350,7 +350,7 @@ describe('book primary-image service', () => {
 
     expect(loggingService.setPrimaryImage(book.id, asset.id)).toEqual({
       book_id: book.id,
-      asset_id: asset.id,
+      asset_id: asset.id, managed_asset_id: null, source: { kind: 'project_asset', id: asset.id },
     });
     expect(service.getPrimaryImage(book.id).id).toBe(asset.id);
   });

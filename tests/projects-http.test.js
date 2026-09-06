@@ -461,6 +461,10 @@ describe('project HTTP workflow', () => {
     expect(response.text).toContain('name="_csrf"');
 
     const defaultsDialog = response.text.match(/<dialog id="projects-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    expect(defaultsDialog).not.toMatch(/<button[^>]*>\s*Cancel\s*<\/button>/);
+    expect(defaultsDialog.match(/data-dialog-close/g)).toHaveLength(1);
+    expect(defaultsDialog).toContain('aria-label="Close Projects defaults"');
+    expect(defaultsDialog).toContain('type="submit" data-dialog-submit>Save defaults</button>');
     const defaultsGridStart = defaultsDialog.indexOf('<div class="page-defaults-grid">');
     const defaultsGrid = defaultsGridStart >= 0 ? extractHtmlElement(defaultsDialog, defaultsGridStart) : '';
 
@@ -2438,9 +2442,19 @@ describe('project HTTP workflow', () => {
     expect(summary.indexOf('project-detail-action-toolbar')).toBeGreaterThanOrEqual(0);
     expect(summary.indexOf('project-detail-action-toolbar')).toBeLessThan(summary.indexOf('project-detail-health'));
     const css = await fetchProjectCss(app);
-    const projectFormDialogWidthRule = css.match(/#project-edit-dialog,\s*#project-create-dialog,\s*#release-create-dialog,\s*#release-edit-dialog,\s*#release-publish-dialog\s*\{[^}]*\}/)?.[0] || '';
-    expect(projectFormDialogWidthRule).toContain('width: min(51rem, calc(100vw - 2rem));');
-    expect(projectFormDialogWidthRule).toContain('max-width: calc(100vw - 2rem);');
+    const projectFormDialogWidthRule = Array.from(css.matchAll(/([^{}]+)\{([^{}]*)\}/g))
+      .map(([, selectors, declarations]) => ({
+        selectors: selectors.trim().split(',').map((selector) => selector.trim()),
+        declarations,
+      }))
+      .find((rule) => rule.selectors.includes('#project-edit-dialog'));
+    expect(projectFormDialogWidthRule).toBeDefined();
+    expect(projectFormDialogWidthRule.selectors).toEqual(expect.arrayContaining([
+      '#project-edit-dialog',
+      '#project-create-dialog',
+    ]));
+    expect(projectFormDialogWidthRule.declarations).toContain('width: min(51rem, calc(100vw - 2rem));');
+    expect(projectFormDialogWidthRule.declarations).toContain('max-width: calc(100vw - 2rem);');
     expect(css).toMatch(/#project-asset-category-management-dialog\s*\{[^}]*width:\s*min\(68rem,\s*calc\(100vw - 2rem\)\)/);
     expect(css).toMatch(/\.project-detail-meta\s*\{[^}]*justify-content:\s*space-between/);
     expect(css).toMatch(/\.project-detail-action-toolbar\s*\{[^}]*margin-left:\s*auto/);

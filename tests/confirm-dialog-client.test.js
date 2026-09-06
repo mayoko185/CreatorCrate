@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { enhanceBookCoverUploads } from '../src/static/client/book-cover-upload.js';
 import {
   enhanceAppConfirmationControls,
   enhanceAppDialogs,
@@ -342,5 +343,185 @@ describe('data-confirm controls', () => {
 
     expect(second.click().defaultPrevented).toBe(true);
     expect(page.message.textContent).toBe('second');
+  });
+});
+
+function bookUploadPage(kind = 'project_asset', files = [{ name: 'cover.png' }]) {
+  const page = confirmationPage();
+  const host = element('dialog', { id: 'book-edit-dialog', 'data-app-dialog': '' });
+  const form = element('form', { enctype: 'multipart/form-data', 'data-dialog-form': '', 'data-dialog-async': 'false' });
+  const field = (name, value, type = 'hidden') => {
+    const input = element('input', { name, type });
+    input.value = value;
+    form.appendChild(input);
+    return input;
+  };
+  const cover = field('cover', '', 'file');
+  cover.files = files;
+  const source = field('expectedCoverKind', kind);
+  const id = field('expectedCoverId', kind === 'none' ? '' : '42');
+  const confirmed = field('coverReplacementConfirmed', 'false');
+  const button = element('button', { type: 'submit' });
+  button.form = form;
+  form.appendChild(button);
+  host.appendChild(form);
+  page.document.body.appendChild(host);
+  enhanceAppDialogs(page.document);
+  openAppDialogById(page.document, host.id);
+  const nativeSubmit = vi.fn();
+  let valid = true;
+  const submit = (submitter = button) => {
+    if (!valid) return;
+    const event = form.dispatch('submit', { submitter });
+    if (!event.defaultPrevented) nativeSubmit({ confirmed: confirmed.value, files: cover.files, kind: source.value, id: id.value, submitter });
+    return event;
+  };
+  form.requestSubmit = vi.fn(submit);
+  enhanceBookCoverUploads(page.document);
+  return { ...page, host, form, cover, source, id, confirmed, button, nativeSubmit, submit, invalidate: () => { valid = false; }, validate: () => { valid = true; } };
+}
+
+const settleBookConfirmation = async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); };
+
+describe('Book cover upload shared confirmation', () => {
+  it.each([
+    ['New Book', 'none', [{}]], ['Edit Book without cover', 'none', [{}]],
+    ['Project cover text edit', 'project_asset', []], ['Managed cover text edit', 'managed_asset', []],
+    ['New Book without cover', 'none', []],
+  ])('%s submits directly without confirmation', (_label, kind, files) => {
+    const page = bookUploadPage(kind, files);
+    page.submit();
+    page.submit();
+    page.cover.dispatch('change');
+    page.submit();
+    expect(page.nativeSubmit).toHaveBeenCalledOnce();
+    expect(page.confirmed.value).toBe('false');
+    expect(page.dialog.open).toBe(false);
+  });
+
+  it('a later submit listener cancellation releases the direct guard', async () => {
+    const page = bookUploadPage('none');
+    const cancel = (event) => event.preventDefault();
+    page.form.addEventListener('submit', cancel);
+    page.submit();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(page.nativeSubmit).not.toHaveBeenCalled();
+    page.form.removeEventListener('submit', cancel);
+    page.submit();
+    expect(page.nativeSubmit).toHaveBeenCalledOnce();
+  });
+
+  it('a synchronous confirmation failure releases the guard and preserves the error', () => {
+    const page = bookUploadPage();
+    const lookup = page.document.getElementById;
+    const failure = new Error('confirmation lookup failed');
+    page.document.getElementById = () => { throw failure; };
+    expect(() => page.submit()).toThrow(failure);
+    expect(page.confirmed.value).toBe('false');
+    expect(page.nativeSubmit).not.toHaveBeenCalled();
+    page.document.getElementById = lookup;
+    page.cover.files = [];
+    page.cover.dispatch('change');
+    page.submit();
+    expect(page.nativeSubmit).toHaveBeenCalledOnce();
+  });
+
+  describe.each(['project_asset', 'managed_asset'])('%s replacement', (kind) => {
+    it.each(['cancel', 'close', 'Escape', 'native cancel'])('%s cancels without closing Book or clearing the file and permits retry', async (action) => {
+      const page = bookUploadPage(kind);
+      page.submit();
+      expect(page.dialog.open).toBe(true);
+      expect(page.document.activeElement).toBe(page.close);
+      if (action === 'Escape') page.dialog.dispatch('keydown', { key: 'Escape' });
+      else if (action === 'native cancel') page.dialog.dispatch('cancel');
+      else page[action].click();
+      await settleBookConfirmation();
+      expect(page.nativeSubmit).not.toHaveBeenCalled();
+      expect(page.confirmed.value).toBe('false');
+      expect(page.cover.files).toHaveLength(1);
+      expect(page.host.open).toBe(true);
+      expect(page.document.activeElement).toBe(page.button);
+      page.submit();
+      expect(page.dialog.open).toBe(true);
+      page.cancel.click();
+      await settleBookConfirmation();
+    });
+
+    it('approves exactly one native submission with the unchanged source and submitter', async () => {
+      const page = bookUploadPage(kind);
+      expect(enhanceBookCoverUploads(page.document)).toBe(0);
+      page.submit(); page.submit(); page.submit();
+      expect(page.dialog.showModal).toHaveBeenCalledOnce();
+      expect(page.message.textContent).toContain('previous image or Asset will not be deleted');
+      expect(page.message.textContent).not.toMatch(/managed_asset|project_asset|42/);
+      page.confirm.click(); page.confirm.click();
+      await settleBookConfirmation();
+      page.submit();
+      expect(page.form.requestSubmit).toHaveBeenCalledExactlyOnceWith(page.button);
+      expect(page.nativeSubmit).toHaveBeenCalledExactlyOnceWith({ confirmed: 'true', files: page.cover.files, kind, id: '42', submitter: page.button });
+      expect(page.confirmed.value).toBe('false');
+    });
+  });
+
+  it('keyboard submit without a submitter uses the same rule', async () => {
+    const page = bookUploadPage();
+    page.cover.focus();
+    page.submit(null);
+    expect(page.dialog.open).toBe(true);
+    page.confirm.click();
+    await settleBookConfirmation();
+    expect(page.form.requestSubmit).toHaveBeenCalledExactlyOnceWith();
+    expect(page.nativeSubmit).toHaveBeenCalledOnce();
+  });
+
+  it('clearing the selection resets stale authorization and submits without a warning', () => {
+    const page = bookUploadPage();
+    page.confirmed.value = 'true';
+    page.cover.files = [];
+    page.cover.dispatch('change');
+    page.submit();
+    expect(page.confirmed.value).toBe('false');
+    expect(page.dialog.open).toBe(false);
+    expect(page.nativeSubmit).toHaveBeenCalledOnce();
+  });
+
+  it('approval uses the current file after selection changes while pending', async () => {
+    const page = bookUploadPage();
+    page.submit();
+    page.cover.files = [{ name: 'another.png' }];
+    page.cover.dispatch('change');
+    page.submit();
+    expect(page.dialog.showModal).toHaveBeenCalledOnce();
+    page.confirm.click();
+    await settleBookConfirmation();
+    expect(page.nativeSubmit.mock.calls[0][0].files[0].name).toBe('another.png');
+  });
+
+  it.each(['clear file', 'no cover'])('pending approval after %s does not retain replacement authorization', async (change) => {
+    const page = bookUploadPage();
+    page.submit();
+    if (change === 'clear file') page.cover.files = [];
+    else page.source.value = 'none';
+    page.confirm.click();
+    await settleBookConfirmation();
+    expect(page.nativeSubmit.mock.calls[0][0].confirmed).toBe('false');
+    expect(page.confirmed.value).toBe('false');
+  });
+
+  it('validation-blocked approval cannot authorize a later file selection', async () => {
+    const page = bookUploadPage();
+    page.submit();
+    page.invalidate();
+    page.confirm.click();
+    await settleBookConfirmation();
+    expect(page.nativeSubmit).not.toHaveBeenCalled();
+    expect(page.confirmed.value).toBe('false');
+    page.cover.files = [{ name: 'later.png' }];
+    page.cover.dispatch('change');
+    page.validate();
+    page.submit();
+    expect(page.dialog.showModal).toHaveBeenCalledTimes(2);
+    page.cancel.click();
+    await settleBookConfirmation();
   });
 });

@@ -15,16 +15,10 @@
     <div class="error-summary" role="alert"><p>{{ errors.general }}</p></div>
   {% endif %}
 
-  <form id="book-form" method="post" action="{{ submitUrl }}" class="project-form" novalidate>
+  {% set bookCoverSource = book.primaryImage.selectedSource if action == 'Edit' else none %}
+  <form id="book-form" method="post" action="{{ submitUrl }}" enctype="multipart/form-data" class="project-form" novalidate>
     <input type="hidden" name="_csrf" value="{{ _csrf }}">
-    <div class="settings-section">
-      <h2>Basic information</h2>
-      <div class="field {% if errors.title %}field-error{% endif %}">
-        <label for="title">Title <span class="required" aria-label="required">*</span></label>
-        <input type="text" id="title" name="title" value="{{ values.title or '' }}" maxlength="200" required{% if errors.title %} aria-describedby="title-error" aria-invalid="true"{% endif %}>
-        {% if errors.title %}<span class="field-error-message" id="title-error">{{ errors.title }}</span>{% endif %}
-      </div>
-    </div>
+    {% include "notes/books/form-fields.njk" %}
   </form>
 
   {% if book and action == "Edit" %}

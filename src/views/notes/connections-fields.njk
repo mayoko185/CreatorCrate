@@ -1,0 +1,86 @@
+<div class="project-form-section-body" data-note-connections data-assets-url="/notes/asset-picker/assets">
+          <p class="notes-connections-description">Link this Page to existing projects and assets.</p>
+
+          {% set projectError = errors.projectIds or errors.associations %}
+          {% set projectSummary = 'No projects selected' %}
+          {% if selectedProjectIds.length == 1 %}
+            {% for project in projects %}
+              {% if selectedProjectIds[0] == (project.id | string) %}
+                {% set projectSummary = project.title %}
+              {% endif %}
+            {% endfor %}
+          {% elif selectedProjectIds.length > 1 %}
+            {% set projectSummary = selectedProjectIds.length ~ ' projects selected' %}
+          {% endif %}
+
+          {% set projectOptions = [] %}
+          {% for project in projects %}
+            {% set _ = projectOptions.push({ value: project.id | string, label: project.title ~ (" (Archived)" if project.archived else ""), attributes: [["data-project-archived", "true" if project.archived else "false"]] }) %}
+          {% endfor %}
+
+          {{ dropdown.multiSelect({
+            id: "note-projects-form",
+            name: "projectIds[]",
+            searchable: true,
+            searchLabel: "Search projects",
+            noResultsText: "No matching projects",
+            optionListLabel: "Project choices",
+            classes: "asset-project-filter-disclosure",
+            label: "Projects",
+            options: projectOptions,
+            selectedValues: selectedProjectIds,
+            emptySummary: "No projects selected",
+            countLabel: "projects",
+            summary: projectSummary,
+            triggerAriaLabel: "Projects: " ~ projectSummary,
+            summaryAttributes: [
+              ["aria-describedby", "projectIds-error" if projectError else none],
+              ["aria-invalid", "true" if projectError else none]
+            ],
+            inputAttributes: [
+              ["aria-describedby", "projectIds-error" if projectError else none],
+              ["aria-invalid", "true" if projectError else none]
+            ],
+            emptyState: {
+              text: "No projects available.",
+              link: { text: "Create a project", href: "/projects/new" },
+              suffix: "."
+            },
+            fieldClasses: "asset-viewer-filter-field asset-viewer-project-filter" ~ (" field-error" if projectError else ""),
+            panelLabel: "Project options"
+          }) }}
+          {% if projectError %}<span class="field-error-message" id="projectIds-error">{{ projectError }}</span>{% endif %}
+
+          {% set assetError = errors.assetIds or errors.associations %}
+
+          {% set assetSelectedValues = [] %}
+          {% for option in noteFormModel.connections.assets %}
+            {% if option.selected %}{% set _ = assetSelectedValues.push(option.value) %}{% endif %}
+          {% endfor %}
+          <input type="hidden" name="assetIds[]" value="">
+          <div data-note-assets{% if not noteFormModel.connections.hasContext %} hidden{% endif %}>
+            {{ dropdown.multiSelect({
+              id: "note-assets-form", name: "assetIds[]", label: "Assets",
+              options: noteFormModel.connections.assets, selectedValues: assetSelectedValues,
+              searchable: true, searchLabel: "Search assets", noResultsText: "No matching assets",
+              emptySummary: "No assets selected", countLabel: "assets", panelLabel: "Asset options",
+              emptyOptionText: "No assets available for the selected projects.",
+              fieldClasses: "asset-viewer-filter-field asset-viewer-project-filter",
+              classes: "asset-project-filter-disclosure",
+              nativeSelect: { id: "note-assets-native", attributes: [["aria-describedby", "assetIds-error" if assetError else none], ["aria-invalid", "true" if assetError else none]] },
+              summaryAttributes: [["aria-describedby", "assetIds-error" if assetError else none], ["aria-invalid", "true" if assetError else none]],
+              dispatchNativeChange: true
+            }) }}
+          </div>
+          <div data-note-retained-assets{% if not noteFormModel.connections.retained.length %} hidden{% endif %}>
+            <p>Retained assets outside the available Project selection. Uncheck to remove.</p>
+            <div data-note-retained-options>
+              {% for option in noteFormModel.connections.retained %}
+                {{ dropdown.renderOption({ id: "note-retained-assets", name: "assetIds[]", inputAttributes: [["aria-describedby", "assetIds-error" if assetError else none], ["aria-invalid", "true" if assetError else none]] }, option, 'multiple', loop.index, true) }}
+              {% endfor %}
+            </div>
+          </div>
+          {% if assetError %}<span class="field-error-message" id="assetIds-error">{{ assetError }}</span>{% endif %}
+          <p data-note-assets-status hidden role="status" aria-live="polite"></p>
+          <noscript><p>Save Project selections first to load their Asset choices without JavaScript.</p></noscript>
+</div>

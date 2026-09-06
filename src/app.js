@@ -1,4 +1,9 @@
+import { managedUploadTracker, beginReplacementMaintenance } from './services/managed-upload-tracker.js';
 import path from 'node:path';
+import { admitBookUpload, isBookMultipartRequest, withBookUploadLifetime, BOOK_CREATE_MULTIPART_PATH, BOOK_EDIT_MULTIPART_PATH } from './middleware/book-upload-lifetime.js';
+import { parseBookCreateMultipart } from './middleware/book-create-multipart.js';
+import { createManagedAssetRepository } from './data/managed-asset-repository.js';
+import { createManagedImageService } from './services/managed-image-service.js';
 import express from 'express';
 import nunjucks from 'nunjucks';
 import { fileURLToPath } from 'node:url';
@@ -16,6 +21,7 @@ import { createReleasesRouter } from './routes/releases.js';
 import { createReleaseManagementRouter } from './routes/release-management.js';
 import { createCalendarRouter } from './routes/calendar.js';
 import { createNotesRouter } from './routes/notes.js';
+import { createManagedMediaRouter } from './routes/managed-media.js';
 import { createMediaRouter } from './routes/media.js';
 import { createSettingsRouter } from './routes/settings.js';
 import { createDownloadsRouter } from './routes/downloads.js';
@@ -72,6 +78,7 @@ import { createReleaseService } from './services/release-service.js';
 import { createWorkflowQueryService } from './services/workflow-query-service.js';
 import { createAssetWorkflowMetadataService } from './services/asset-workflow-metadata-service.js';
 import { createPreviewService } from './services/preview-service.js';
+import { createManagedMediaService } from './services/managed-media-service.js';
 import { createMediaService } from './services/media-service.js';
 import { createBackupService } from './services/backup-service.js';
 import { createAuthService } from './services/auth-service.js';
@@ -139,6 +146,14 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   const app = express();
   const databasePath = opts.databasePath || db.name;
   const appDataRoot = opts.appDataRoot || path.dirname(databasePath);
+  const managedAssetRoot = opts.managedAssetRoot || path.join(appDataRoot, 'assets');
+  const managedAssetRepository = createManagedAssetRepository(db);
+  app.locals.managedUploadTracker = managedUploadTracker;
+  app.locals.managedImageService = createManagedImageService({ managedAssetRoot, managedAssetRepository });
+  app.locals.managedAssetRepository = managedAssetRepository;
+  app.locals.managedMediaService = opts.managedMediaService || createManagedMediaService({
+    managedAssetRoot, managedAssetRepository, previewRoot: previewRoot || path.join(appDataRoot, 'previews'),
+  });
   // Phase 12.1: forwarded via `opts` (like databasePath/backupService/etc.)
   // rather than the first positional arg, so app-context.js's replaceDatabase
   // rebuild path (which threads appOpts straight through) carries it too.
@@ -169,8 +184,8 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.locals.useViteAssets = useViteAssets;
   app.set('view engine', 'njk');
 
-  // Phase 11.2: exclusive maintenance boundary. While a restore owns this
-  // flag, ordinary requests must not reach a route that could touch a
+  // Shared maintenance boundary. While maintenance closes admission, ordinary
+  // requests must not reach a route that could touch a
   // closing/reopening database connection. Health reporting and static
   // assets remain reachable; this is the very first middleware so no other
   // work (body parsing, static lookup, routing) happens for a blocked
@@ -178,8 +193,17 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // and, in production, across app rebuilds triggered by a live restore —
   // it is never reassigned, only mutated.
   const maintenanceState = opts.maintenanceState || { active: false };
+  managedUploadTracker.bindMaintenanceState(maintenanceState);
+  app.locals.maintenanceState = maintenanceState;
   app.use((req, res, next) => {
-    if (!maintenanceState.active) return next();
+    if (!maintenanceState.active) {
+      if (!isBookMultipartRequest(req)) return next();
+      const lifetime = admitBookUpload(req, res, managedUploadTracker);
+      if (lifetime) {
+        const release = lifetime.hold();
+        try { return next(); } finally { release(); }
+      }
+    }
     if (req.path === '/health') return next();
     // Static assets have a file extension; application routes never do.
     if (req.method === 'GET' && /\.[A-Za-z0-9]+$/.test(req.path)) return next();
@@ -316,16 +340,6 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   const noteRepository = opts.noteRepository || createNoteRepository(db);
   const chapterRepository = opts.chapterRepository || createChapterRepository(db);
   const bookContentRepository = opts.bookContentRepository || createBookContentRepository(db);
-  const bookService = opts.bookService || createBookService({
-    bookRepository,
-    bookContentRepository,
-    chapterRepository,
-    noteRepository,
-    applicationLogger,
-  });
-  app.locals.bookRepository = bookRepository;
-  app.locals.bookService = bookService;
-
   const noteService = opts.noteService || createNoteService({
     db,
     noteRepository,
@@ -550,11 +564,23 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     bookRepository,
     assetRepository: assetScanner.repository,
     bookPrimaryImageRepository,
+    managedAssetRepository,
     previewProbe: previewService?.inspectKritaPreviewSource,
     applicationLogger,
   });
   app.locals.bookPrimaryImageRepository = bookPrimaryImageRepository;
   app.locals.bookPrimaryImageService = bookPrimaryImageService;
+
+  const bookService = opts.bookService || createBookService({
+    bookRepository,
+    bookPrimaryImageService,
+    bookContentRepository,
+    chapterRepository,
+    noteRepository,
+    applicationLogger,
+  });
+  app.locals.bookRepository = bookRepository;
+  app.locals.bookService = bookService;
 
   const releaseService = opts.releaseService || createReleaseService({ db, applicationLogger });
   const socialPrepRepository = opts.socialPrepRepository || createSocialPrepRepository(db);
@@ -649,11 +675,19 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // auth-transition-service.js for the staged-write/rollback contract). Built
   // fresh per createApp call so it always closes over the current `db` and
   // the current `onAuthConfigReplaced` rebuild hook.
+  const beginReplacement = opts.beginReplacement || (() => beginReplacementMaintenance(
+    db,
+    () => db.open,
+    opts.assertNoActiveProcessingJobs || (() => {
+      if (processingJobService.hasActiveJobs()) throw new Error('Processing jobs are active.');
+    }),
+  ));
   const authTransitionService = createAuthTransitionService({
     appDataRoot,
     db,
     replaceAuthConfig: opts.onAuthConfigReplaced || (() => {}),
     assertNoActiveProcessingJobs: opts.assertNoActiveProcessingJobs,
+    beginReplacement,
     authSettings: opts.authSettings || {},
     csrfPepper: opts.authState?.csrfPepper,
     authService,
@@ -686,6 +720,9 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // context is available for token verification, but BEFORE the auth router
   // so POST /logout is also CSRF-protected. Login POST is exempt (it verifies
   // its own anonymous CSRF token). GET/HEAD/OPTIONS are always exempt.
+  app.post(BOOK_CREATE_MULTIPART_PATH, withBookUploadLifetime(parseBookCreateMultipart));
+  // Numeric Edit Book endpoint only; do not parse reorder or other Book actions.
+  app.post(BOOK_EDIT_MULTIPART_PATH, withBookUploadLifetime(parseBookCreateMultipart));
   app.use(requireCsrf);
 
   if (authService) {
@@ -754,6 +791,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // routes have four path segments under /projects; the viewer route has
   // three, but this ordering protects the media contract from future route
   // broadening.
+  app.use('/managed-assets', createManagedMediaRouter({ managedMediaService: app.locals.managedMediaService }));
   if (mediaService) {
     app.use('/projects', createMediaRouter({ mediaService }));
   }
@@ -829,6 +867,8 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.use('/calendar', createCalendarRouter({ appName, workflowQueryService }));
 
   app.use('/notes', createNotesRouter({
+    managedImageService: app.locals.managedImageService,
+    managedMediaService: app.locals.managedMediaService,
     appName,
     bookService,
     bookPrimaryImageService,
@@ -848,6 +888,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     backupService,
     maintenanceState,
     processingJobService,
+    beginReplacement,
     authService,
     cookieOptions,
     onDatabaseReplaced: opts.onDatabaseReplaced,
@@ -876,6 +917,9 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
 
   app.use((err, req, res, next) => {
     if (res.headersSent) {
+      // No application graph dispatch remains. Express's final handler may
+      // destroy the socket without end(); explicit graph-work holds still drain.
+      req.bookUploadLifetime?.terminal();
       return next(err);
     }
 
@@ -920,6 +964,13 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     }
 
     res.json({ status: 'error', message: isClientError ? err.message : 'Internal server error.' });
+  });
+
+  app.use((err, req, _res, next) => {
+    // The error renderer itself failed; no application graph dispatch remains.
+    // Settle dispatch only: outstanding upload graph-work holds must still drain.
+    req.bookUploadLifetime?.terminal();
+    next(err);
   });
 
   return app;

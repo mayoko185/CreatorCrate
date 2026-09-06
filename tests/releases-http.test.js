@@ -831,6 +831,10 @@ describe('release HTTP workflow', () => {
     it('uses the shared dropdown defaults presentation without changing the Releases defaults form contract', async () => {
       const res = await agent.get('/releases').expect(200);
       const defaultsDialog = res.text.match(/<dialog id="releases-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      expect(defaultsDialog).not.toMatch(/<button[^>]*>\s*Cancel\s*<\/button>/);
+      expect(defaultsDialog.match(/data-dialog-close/g)).toHaveLength(1);
+      expect(defaultsDialog).toContain('aria-label="Close Releases defaults"');
+      expect(defaultsDialog).toContain('type="submit" data-dialog-submit>Save defaults</button>');
 
       expect(res.text).toContain('data-releases-live-region');
       expect(res.text).toContain('data-releases-filter');
