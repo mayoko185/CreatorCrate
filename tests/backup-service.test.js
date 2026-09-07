@@ -24,6 +24,33 @@ function countProjects(db) {
   return db.prepare('SELECT COUNT(*) AS c FROM projects').get().c;
 }
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function pauseNativeBackup(sourceDb) {
+  const started = deferred();
+  let released = false;
+  return {
+    db: {
+      backup: vi.fn((target) => sourceDb.backup(target, {
+        progress({ remainingPages }) {
+          started.resolve();
+          return released ? remainingPages : 0;
+        },
+      })),
+    },
+    started: started.promise,
+    release() { released = true; },
+  };
+}
+
 describe('backup-service', () => {
   let appDataRoot;
   let databasePath;
@@ -108,6 +135,203 @@ describe('backup-service', () => {
 
       await expect(svc.createBackup(brokenDb)).rejects.toThrow(BackupError);
       expect(fs.readdirSync(backupDir)).toEqual([]);
+    });
+
+    it('gives concurrent same-timestamp backups distinct staging and published paths', async () => {
+      const backupDir = resolveBackupDir(appDataRoot);
+      const fixedNow = new Date('2026-07-29T19:24:47.000Z');
+      const svc = createBackupService({
+        appDataRoot,
+        databasePath,
+        migrationsDir: MIGRATIONS_DIR,
+        now: () => fixedNow,
+      });
+      const firstStarted = deferred();
+      const secondStarted = deferred();
+      const release = deferred();
+      const stagingTargets = [];
+      const controlledDb = (started) => ({
+        backup: vi.fn(async (target) => {
+          stagingTargets.push(target);
+          started.resolve();
+          await release.promise;
+          return db.backup(target);
+        }),
+      });
+
+      try {
+        const firstPromise = svc.createBackup(controlledDb(firstStarted));
+        const secondPromise = svc.createBackup(controlledDb(secondStarted));
+        await Promise.all([firstStarted.promise, secondStarted.promise]);
+
+        expect(stagingTargets).toHaveLength(2);
+        expect(new Set(stagingTargets).size).toBe(2);
+        expect(stagingTargets.every((target) => path.dirname(target).startsWith(backupDir))).toBe(true);
+        expect(stagingTargets.every((target) => path.basename(target) === 'snapshot.sqlite')).toBe(true);
+
+        release.resolve();
+        const [first, second] = await Promise.all([firstPromise, secondPromise]);
+
+        expect([first.filename, second.filename].sort()).toEqual([
+          'creatorcrate-2026-07-29T192447Z-1.sqlite',
+          'creatorcrate-2026-07-29T192447Z.sqlite',
+        ]);
+        expect(first.filename).not.toBe(second.filename);
+        expect(fs.existsSync(path.join(backupDir, first.filename))).toBe(true);
+        expect(fs.existsSync(path.join(backupDir, second.filename))).toBe(true);
+        expect(fs.readdirSync(backupDir).sort()).toEqual([first.filename, second.filename].sort());
+      } finally {
+        release.resolve();
+      }
+    });
+
+    it('keeps failed concurrent backup cleanup local to its owned staging directory', async () => {
+      const backupDir = resolveBackupDir(appDataRoot);
+      const fixedNow = new Date('2026-07-29T19:24:47.000Z');
+      const svc = createBackupService({
+        appDataRoot,
+        databasePath,
+        migrationsDir: MIGRATIONS_DIR,
+        now: () => fixedNow,
+      });
+      const failedStaged = deferred();
+      const successfulStaged = deferred();
+      const failNow = deferred();
+      const publishNow = deferred();
+      let failedTarget;
+      let successfulTarget;
+
+      const failingDb = {
+        backup: vi.fn(async (target) => {
+          failedTarget = target;
+          await db.backup(target);
+          failedStaged.resolve();
+          await failNow.promise;
+          throw new Error('simulated concurrent backup failure');
+        }),
+      };
+      const successfulDb = {
+        backup: vi.fn(async (target) => {
+          successfulTarget = target;
+          await db.backup(target);
+          successfulStaged.resolve();
+          await publishNow.promise;
+        }),
+      };
+
+      try {
+        const failedPromise = svc.createBackup(failingDb);
+        const successfulPromise = svc.createBackup(successfulDb);
+        await Promise.all([failedStaged.promise, successfulStaged.promise]);
+
+        expect(failedTarget).not.toBe(successfulTarget);
+        expect(fs.existsSync(failedTarget)).toBe(true);
+        expect(fs.existsSync(successfulTarget)).toBe(true);
+
+        failNow.resolve();
+        await expect(failedPromise).rejects.toThrow('Failed to create database backup.');
+        expect(fs.existsSync(path.dirname(failedTarget))).toBe(false);
+        expect(fs.existsSync(successfulTarget)).toBe(true);
+
+        publishNow.resolve();
+        const successful = await successfulPromise;
+        expect(successful.filename).toBe('creatorcrate-2026-07-29T192447Z.sqlite');
+        expect(fs.existsSync(path.join(backupDir, successful.filename))).toBe(true);
+        expect(fs.existsSync(path.dirname(successfulTarget))).toBe(false);
+        expect(fs.readdirSync(backupDir)).toEqual([successful.filename]);
+      } finally {
+        failNow.resolve();
+        publishNow.resolve();
+      }
+    });
+
+    it('rejects restore before closing the source database while a native backup is active', async () => {
+      const restoreSource = await service.createBackup(db);
+      const controlled = pauseNativeBackup(db);
+      const backupPromise = service.createBackup(controlled.db);
+
+      try {
+        await controlled.started;
+        expect(service.hasActiveBackups()).toBe(true);
+
+        await expect(
+          service.restoreBackup(restoreSource.filename, db, restoreOwner())
+        ).rejects.toThrow('backup creation is in progress');
+        expect(db.open).toBe(true);
+
+        controlled.release();
+        await expect(backupPromise).resolves.toEqual(expect.objectContaining({
+          filename: expect.stringMatching(/^creatorcrate-.*\.sqlite$/),
+        }));
+        expect(service.hasActiveBackups()).toBe(false);
+        expect(db.open).toBe(true);
+      } finally {
+        controlled.release();
+        await backupPromise.catch(() => {});
+      }
+    });
+
+    it('blocks restore until every concurrent backup has settled', async () => {
+      const restoreSource = await service.createBackup(db);
+      const first = pauseNativeBackup(db);
+      const second = pauseNativeBackup(db);
+      const firstPromise = service.createBackup(first.db);
+      const secondPromise = service.createBackup(second.db);
+
+      try {
+        await Promise.all([first.started, second.started]);
+        expect(service.hasActiveBackups()).toBe(true);
+        await expect(
+          service.restoreBackup(restoreSource.filename, db, restoreOwner())
+        ).rejects.toThrow('backup creation is in progress');
+
+        first.release();
+        await firstPromise;
+        expect(service.hasActiveBackups()).toBe(true);
+        await expect(
+          service.restoreBackup(restoreSource.filename, db, restoreOwner())
+        ).rejects.toThrow('backup creation is in progress');
+
+        second.release();
+        await secondPromise;
+        expect(service.hasActiveBackups()).toBe(false);
+
+        const result = await service.restoreBackup(restoreSource.filename, db, restoreOwner());
+        db = result.db;
+        expect(db.open).toBe(true);
+      } finally {
+        first.release();
+        second.release();
+        await Promise.allSettled([firstPromise, secondPromise]);
+      }
+    });
+
+    it('releases backup activity after failure so restore is admissible again', async () => {
+      const restoreSource = await service.createBackup(db);
+      const started = deferred();
+      const fail = deferred();
+      const failingDb = {
+        backup: vi.fn(async () => {
+          started.resolve();
+          await fail.promise;
+          throw new Error('simulated active backup failure');
+        }),
+      };
+      const backupPromise = service.createBackup(failingDb);
+
+      await started.promise;
+      expect(service.hasActiveBackups()).toBe(true);
+      await expect(
+        service.restoreBackup(restoreSource.filename, db, restoreOwner())
+      ).rejects.toThrow('backup creation is in progress');
+
+      fail.resolve();
+      await expect(backupPromise).rejects.toThrow('Failed to create database backup.');
+      expect(service.hasActiveBackups()).toBe(false);
+
+      const result = await service.restoreBackup(restoreSource.filename, db, restoreOwner());
+      db = result.db;
+      expect(db.open).toBe(true);
     });
 
     it('rejects concurrent backups while a restore is in progress', async () => {
@@ -202,6 +426,34 @@ describe('backup-service', () => {
           true
         );
       }
+    });
+
+    it('validates every listed backup and preserves metadata ordering for corrupt entries', async () => {
+      const valid = await service.createBackup(db);
+      const backupDir = resolveBackupDir(appDataRoot);
+      const corruptFilename = 'creatorcrate-2026-07-29T192447Z.sqlite';
+      const corruptPath = path.join(backupDir, corruptFilename);
+      fs.writeFileSync(corruptPath, 'not a sqlite database');
+
+      const older = new Date('2026-07-29T19:24:47.000Z');
+      const newer = new Date('2026-07-29T19:24:48.000Z');
+      fs.utimesSync(corruptPath, older, older);
+      fs.utimesSync(path.join(backupDir, valid.filename), newer, newer);
+
+      expect(service.listBackups()).toEqual([
+        expect.objectContaining({
+          filename: valid.filename,
+          createdAt: newer.toISOString(),
+          sizeBytes: valid.sizeBytes,
+          valid: true,
+        }),
+        {
+          filename: corruptFilename,
+          createdAt: older.toISOString(),
+          sizeBytes: Buffer.byteLength('not a sqlite database'),
+          valid: false,
+        },
+      ]);
     });
 
     it('ignores staging, rollback, and unmanaged files', async () => {
@@ -382,6 +634,63 @@ describe('backup-service', () => {
       expect(remaining.sort()).toEqual([keep1, keep2].sort());
       expect(remaining).not.toContain(oldest1);
       expect(remaining).not.toContain(oldest2);
+    });
+
+    it('prunes historical backups in metadata order without integrity-checking them', async () => {
+      const unpruned = createBackupService({ appDataRoot, databasePath, migrationsDir: MIGRATIONS_DIR });
+      const historical = await createNBackups(unpruned, 3);
+      const svc = createBackupService({
+        appDataRoot,
+        databasePath,
+        migrationsDir: MIGRATIONS_DIR,
+        retentionCount: 2,
+      });
+      const integrityChecks = [];
+      const originalPragma = Database.prototype.pragma;
+      const pragmaSpy = vi.spyOn(Database.prototype, 'pragma').mockImplementation(function pragma(sql, options) {
+        if (sql === 'integrity_check') integrityChecks.push(this.name);
+        return originalPragma.call(this, sql, options);
+      });
+
+      let newest;
+      try {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        newest = await svc.createBackup(db);
+      } finally {
+        pragmaSpy.mockRestore();
+      }
+
+      expect(newest.pruned).toEqual([historical[1], historical[0]]);
+      expect(newest.pruneWarnings).toEqual([]);
+      expect(integrityChecks).toHaveLength(1);
+      expect(integrityChecks[0]).toContain('.creatorcrate-backup-');
+      expect(integrityChecks[0]).toContain('snapshot.sqlite');
+      expect(historical.some((filename) => integrityChecks[0].includes(filename))).toBe(false);
+      expect(svc.listBackups().map((entry) => entry.filename)).toEqual([newest.filename, historical[2]]);
+    });
+
+    it('uses numeric collision suffixes to break equal-timestamp retention ties', () => {
+      const svc = createBackupService({
+        appDataRoot,
+        databasePath,
+        migrationsDir: MIGRATIONS_DIR,
+        retentionCount: 2,
+      });
+      const backupDir = resolveBackupDir(appDataRoot);
+      const names = [
+        'creatorcrate-2026-07-29T192447Z.sqlite',
+        'creatorcrate-2026-07-29T192447Z-1.sqlite',
+        'creatorcrate-2026-07-29T192447Z-2.sqlite',
+      ];
+      const tied = new Date('2026-07-29T19:24:47.000Z');
+      for (const name of names) {
+        const backupPath = path.join(backupDir, name);
+        fs.writeFileSync(backupPath, 'metadata-only pruning fixture');
+        fs.utimesSync(backupPath, tied, tied);
+      }
+
+      expect(svc.pruneBackups(names[2])).toEqual({ deleted: [names[0]], warnings: [] });
+      expect(fs.readdirSync(backupDir).sort()).toEqual([names[1], names[2]].sort());
     });
 
     it('never deletes the newly created backup even at retentionCount 1', async () => {

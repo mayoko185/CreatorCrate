@@ -195,19 +195,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   const maintenanceState = opts.maintenanceState || { active: false };
   managedUploadTracker.bindMaintenanceState(maintenanceState);
   app.locals.maintenanceState = maintenanceState;
-  app.use((req, res, next) => {
-    if (!maintenanceState.active) {
-      if (!isBookMultipartRequest(req)) return next();
-      const lifetime = admitBookUpload(req, res, managedUploadTracker);
-      if (lifetime) {
-        const release = lifetime.hold();
-        try { return next(); } finally { release(); }
-      }
-    }
-    if (req.path === '/health') return next();
-    // Static assets have a file extension; application routes never do.
-    if (req.method === 'GET' && /\.[A-Za-z0-9]+$/.test(req.path)) return next();
-
+  const sendMaintenanceResponse = (req, res) => {
     res.status(503);
     if (req.accepts('html')) {
       res
@@ -221,6 +209,21 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       return;
     }
     res.json({ status: 'error', message: 'Service temporarily unavailable for maintenance.' });
+  };
+  app.use((req, res, next) => {
+    if (!maintenanceState.active) {
+      if (!isBookMultipartRequest(req)) return next();
+      const lifetime = admitBookUpload(req, res, managedUploadTracker);
+      if (lifetime) {
+        const release = lifetime.hold();
+        try { return next(); } finally { release(); }
+      }
+    }
+    if (req.path === '/health') return next();
+    // Static assets have a file extension; application routes never do.
+    if ((req.method === 'GET' || req.method === 'HEAD') && /\.[A-Za-z0-9]+$/.test(req.path)) return next();
+
+    sendMaintenanceResponse(req, res);
   });
 
   app.use(createSecurityHeadersMiddleware({
@@ -239,6 +242,25 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     maxAge: '1y',
     immutable: true,
   }));
+
+  const healthRouter = createHealthRouter({ db, maintenanceState });
+  // During maintenance, health reporting must terminate on its existing route
+  // before session resolution can touch the retiring database. Outside
+  // maintenance it continues through the unchanged authentication chain and
+  // reaches the ordinary mount below.
+  app.use('/health', (req, res, next) => {
+    if (!maintenanceState.active) return next();
+    return healthRouter(req, res, next);
+  });
+
+  // A static-looking request is admitted above so the existing static
+  // middleware can serve a real file. If neither static root handles it, stop
+  // the miss here while maintenance is active, before any database-bound
+  // capability or session middleware.
+  app.use((req, res, next) => {
+    if (!maintenanceState.active) return next();
+    sendMaintenanceResponse(req, res);
+  });
 
   // Phase 1 (asset categories): dependencies are constructed once here and
   // threaded explicitly — the repository receives the database, the service
@@ -762,7 +784,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     pageDefaultsService,
     tagService,
   }));
-  app.use('/health', createHealthRouter({ db, maintenanceState }));
+  app.use('/health', healthRouter);
   app.use('/projects', createProjectsRouter({
     appName,
     db,
@@ -861,7 +883,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // release-management URL. It redirects to canonical /releases.
   app.use('/release-management', createReleaseManagementRouter());
 
-  // Phase 2D: canonical project-backed calendar route. Mounted after
+  // Phase 2D: canonical release-backed calendar route. Mounted after
   // /releases so /releases/calendar's compatibility redirect and this route
   // never overlap.
   app.use('/calendar', createCalendarRouter({ appName, workflowQueryService }));

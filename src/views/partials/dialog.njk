@@ -3,7 +3,7 @@
 {% macro render(id, title, open=false, descriptionId='', formId='', dialogClass='', cardAttributes=[], backdropClose=true) %}
 <dialog id="{{ id }}" class="app-dialog{{ ' ' ~ dialogClass if dialogClass }}" data-app-dialog{% if open %} open{% endif %}{% if backdropClose == false %} data-dialog-backdrop-static{% endif %}
         aria-labelledby="{{ id }}-title"{% if descriptionId %} aria-describedby="{{ descriptionId }}"{% endif %}>
-  <div class="app-dialog-card" role="document"{% for attribute, value in cardAttributes %} {{ attribute }}{% if value != true %}="{{ value }}"{% endif %}{% endfor %}>
+  <div class="app-dialog-card" role="document"{% for attribute, value in cardAttributes %} {{ attribute }}{% if value is not sameas(true) %}="{{ value }}"{% endif %}{% endfor %}>
     <header class="app-dialog-header">
       <h2 id="{{ id }}-title">{{ title }}</h2>
       <button class="app-dialog-close button button-small button-secondary" type="button"

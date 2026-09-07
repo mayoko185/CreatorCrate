@@ -96,6 +96,30 @@ describe('Processing dialog preset-management markup', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  it('renders valued project IDs on all four processing dialog roots', async () => {
+    expect(projectId).toBe(1);
+
+    const secondProject = await agent
+      .post('/projects')
+      .send('title=Second+Processing+Dialog+Project')
+      .send('status=tbd')
+      .send('priority=normal')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .set('Content-Type', 'application/x-www-form-urlencoded');
+    const secondProjectId = Number(secondProject.headers.location.replace('/projects/', ''));
+    expect(secondProjectId).toBe(2);
+
+    for (const id of [projectId, secondProjectId]) {
+      const res = await agent.get(`/projects/${id}/assets`).expect(200);
+      for (const dialogId of ['processing-convert-dialog', 'processing-workflow-dialog', 'processing-watermark-dialog', 'processing-archive-dialog']) {
+        const card = dialogBody(res.text, dialogId)
+          .match(/<div class="app-dialog-card" role="document"[^>]*>/)?.[0] || '';
+        expect(card, `expected ${dialogId} card for project ${id}`).not.toBe('');
+        expect(card).toContain(`data-project-id="${id}"`);
+      }
+    }
+  });
+
   it('renders the same preset-management controls for Convert, Workflow Prompt, and Watermark', async () => {
     const res = await agent.get(`/projects/${projectId}/assets`).expect(200);
     const html = res.text;

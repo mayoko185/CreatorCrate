@@ -47,7 +47,7 @@ const NOTICES = {
   backup_failed: { variant: 'error', text: 'Backup creation failed. The previous backups are unaffected.' },
   restore_success: { variant: 'success', text: 'Database restored from the selected backup.' },
   restore_failed: { variant: 'error', text: 'Restore failed. The database was left unchanged.' },
-  restore_conflict: { variant: 'warning', text: 'A restore is already in progress. Please wait for it to finish.' },
+  restore_conflict: { variant: 'warning', text: 'Restore cannot start while conflicting work is active. Please wait for it to finish.' },
   backup_deleted: { variant: 'success', text: 'Backup deleted.' },
   delete_failed: { variant: 'error', text: 'Could not delete the backup. It may have already been removed.' },
   password_rotated: { variant: 'success', text: 'Password changed. Sign in again with the new password.' },
@@ -1491,10 +1491,17 @@ export function createSettingsRouter({
   });
 
   router.post('/backups/:filename/restore', async (req, res, next) => {
+    if (backupService.hasActiveBackups?.()) {
+      return res.redirect('/settings/backups?notice=restore_conflict');
+    }
     let owner;
     try {
       owner = beginReplacement();
-      if (backupService.isRestoreInProgress() || processingJobService?.hasActiveJobs?.()) {
+      if (
+        backupService.isRestoreInProgress()
+        || backupService.hasActiveBackups?.()
+        || processingJobService?.hasActiveJobs?.()
+      ) {
         owner.release();
         return res.redirect('/settings/backups?notice=restore_conflict');
       }

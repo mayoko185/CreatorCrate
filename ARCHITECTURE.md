@@ -335,14 +335,16 @@ maps the type to an HTTP status. Two consequences worth preserving:
 `createApp` builds a fixed middleware chain. The order encodes real
 constraints; changing it is an architectural decision, not a refactor.
 
-1. **Maintenance gate.** The very first middleware. While a restore holds
-   `maintenanceState.active`, every request except `/health` and static
-   assets gets a 503 (HTML or JSON by content negotiation) before body
-   parsing, static lookup, or routing can touch a closing database. The
+1. **Maintenance admission gate.** The very first middleware. While a restore
+   holds `maintenanceState.active`, every request except exact `/health` and
+   extension-shaped `GET`/`HEAD` static candidates gets a 503 (HTML or JSON by
+   content negotiation) before body parsing, static lookup, or routing can
+   touch a closing database. The
    `maintenanceState` object is shared **by reference** with the settings
    router and survives rebuilds; it is mutated, never reassigned. Static
-   assets are recognized by having a file extension — application routes
-   never do.
+   candidates are recognized by having a file extension — application routes
+   never do. Exemption here is admission to the database-independent chain,
+   not permission to fall through into application routing.
 2. **Security headers** — CSP, `X-Content-Type-Options`, `Referrer-Policy`,
    `Permissions-Policy`, `Cross-Origin-Opener-Policy`, and optional HSTS.
    The development CSP relaxes `style-src` and allows `ws:`/`wss:` for Vite
@@ -354,7 +356,14 @@ constraints; changing it is an architectural decision, not a refactor.
    Vite build output under `/vite` with long-lived immutable caching. Static
    files are served **before authentication**, which is why the auth
    middleware never has to reason about them.
-5. **Social Preparation capability router** — its JSON and URL-encoded
+5. **Database-independent maintenance termination** — while maintenance is
+   active, the existing health router answers exact `/health` after security
+   headers but before session resolution. After both existing static mounts, a
+   second boundary returns the same maintenance 503 for every admitted request
+   that remains, so extension-shaped misses cannot reach database-bound
+   middleware. Outside maintenance this boundary is transparent and `/health`
+   continues through the ordinary authentication chain to its normal mount.
+6. **Social Preparation capability router** — its JSON and URL-encoded
    redemption endpoint follows maintenance, security headers, and body
    parsing, but deliberately precedes session resolution, ordinary CSRF, and
    `requireAuth`. The short-lived, single-use intent digest is its
@@ -367,32 +376,32 @@ constraints; changing it is an architectural decision, not a refactor.
    owned non-terminal platform becomes terminal. Asset authorization is immutable
    from `social_prep_session_assets`; only file resolution uses the current
    asset and project rows through the hardened asset-file boundary.
-6. **`resolveSession`** — resolves the session cookie into
+7. **`resolveSession`** — resolves the session cookie into
    `res.locals.auth`. Exposes only safe state (`enabled`, `authenticated`,
    `username`, and the CSRF secret for the next middleware); never the raw
    token. A stale cookie is cleared.
-7. **Cache policy** — `private, no-store` for `/login`, anything under
+8. **Cache policy** — `private, no-store` for `/login`, anything under
    `/settings`, and all HTML responses while auth is enabled.
-8. **`exposeCsrfToken`** — must run after session resolution and before any
+9. **`exposeCsrfToken`** — must run after session resolution and before any
    handler renders a form.
-9. **`requireCsrf`** — must run before the auth router so `POST /logout` is
+10. **`requireCsrf`** — must run before the auth router so `POST /logout` is
    protected too. `GET`/`HEAD`/`OPTIONS` are exempt; login verifies its own
    pre-auth token.
-10. **Auth router** (or, when auth is disabled, a `/login` redirect to
+11. **Auth router** (or, when auth is disabled, a `/login` redirect to
     Settings › Security, since there is no login form to render).
-11. **Shell model** — `buildShellModel({ appName, path })` from
+12. **Shell model** — `buildShellModel({ appName, path })` from
     [`src/shell/navigation.js`](src/shell/navigation.js) computes the
     navigation model once per request from `req.path` and puts it on
     `res.locals.shell`. **Routes never assemble navigation themselves**, and
     the error handler builds its own with `noActive: true` so a 404 never
     highlights a section the request never reached.
-12. **`requireAuth`** — protects everything mounted below. It independently
+13. **`requireAuth`** — protects everything mounted below. It independently
     exempts `/health`, `/login`, and `/logout` regardless of mount order.
     HTML `GET`s redirect to `/login?next=…` (validated against open-redirect
     payloads); everything else gets a flat `401` JSON, so a mutation is
     rejected outright rather than answered with a redirect.
-13. **Feature routers**, then a catch-all that raises a 404 `Error`.
-14. **Centralized error handler.** Negotiates HTML (`error.njk`) versus JSON.
+14. **Feature routers**, then a catch-all that raises a 404 `Error`.
+15. **Centralized error handler.** Negotiates HTML (`error.njk`) versus JSON.
     Client errors (4xx) surface their message; server errors (5xx) are
     replaced with a generic message, marked `no-store`, and have
     content/disposition/ETag headers stripped so a partially-written or
@@ -1209,13 +1218,24 @@ in.
 reference — callers pass a live `db` per call.
 
 **Create** uses SQLite's online backup API (safe against concurrent readers
-and writers), writes to a `.staging` file, switches the copy's journal mode
-to `DELETE` so a managed backup is always exactly one file with no WAL
-sidecars, validates it, and only then renames it into place. A failure never
-leaves a valid-looking partial backup behind. Retention pruning runs only
+and writers) and gives each invocation a private staging directory beneath
+`backups/`. It switches the staged copy's journal mode to `DELETE` so a managed
+backup is always exactly one file with no WAL sidecars, validates it, then
+allocates the timestamped managed filename immediately before the synchronous
+rename. Concurrent backups therefore cannot share staging or publication
+paths, and cleanup removes only the invocation's private directory. A failure
+never leaves a valid-looking partial backup behind. Retention pruning runs only
 after the new backup is installed, never deletes the backup just created,
 and reports failures as warnings rather than turning a successful backup
-into a failed one.
+into a failed one. The shared service counts every admitted backup from its
+synchronous entry until operation-owned cleanup finishes. Concurrent backups
+remain allowed, but restore admission fails while that count is non-zero.
+
+Retention enumerates only managed-file metadata (regular-file status, size,
+mtime, and managed filename) and applies the same newest-first ordering used by
+Settings; it does not open historical snapshots. Settings listing layers live
+validation over that metadata, and restore independently validates the selected
+backup again immediately before any destructive work.
 
 **Validate** rejects symlinks, non-regular files, and empty files, then
 opens the candidate read-only and checks `integrity_check`, the presence of
@@ -1246,8 +1266,10 @@ current-graph managed-upload ownership before invoking restore and checks the
 existing processing and backup-service conflicts. The service's `beginRestore` /
 `endRestore` exclusion is supplementary: it ends before graph adoption, whereas
 Settings retains the owner until a usable graph is adopted (see WP7D3B2 above).
-The final pre-checkpoint/close gate independently verifies that owner and the
-current live connection. No unconditional boolean reset reopens a dead graph.
+The backup service also rejects restore atomically at its own admission boundary
+while any backup creation remains active. The final pre-checkpoint/close gate
+independently verifies the current-graph owner and live connection. No
+unconditional boolean reset reopens a dead graph.
 
 Finally, the route adopts the connection: it wipes session rows on the
 connection about to become live (a restored database may carry stale,

@@ -68,22 +68,35 @@ function listMigrationFilenames(migrationsDir) {
  *   successful backup (newest first). 0 or undefined disables automatic
  *   pruning — Phase 11.3 never deletes a backup without an explicit,
  *   positive configured policy.
+ * @param {() => Date} [opts.now] - Clock used for backup metadata and naming
  */
-export function createBackupService({ appDataRoot, databasePath, migrationsDir, retentionCount }) {
+export function createBackupService({
+  appDataRoot,
+  databasePath,
+  migrationsDir,
+  retentionCount,
+  now = () => new Date(),
+}) {
   // ─── Exclusive maintenance boundary ────────────────────────────────────
-  // Smallest architecture that satisfies the Phase 11.1 contract: a single
-  // in-process flag guarding restore. While a restore is in progress:
+  // Smallest architecture that satisfies the Phase 11.1 contract: local
+  // in-process ownership guarding backup creation and restore. While a restore
+  // is in progress:
   //   - a second restore is rejected outright (no concurrent restores);
   //   - backups are rejected (no backup racing a restore's file swap);
-  // Ordinary backups otherwise proceed freely (the SQLite online backup API
-  // is safe against concurrent readers/writers). A later HTTP layer should
-  // use `isRestoreInProgress()` to return 503 for any request that would
-  // touch the database while this flag is set.
+  // Ordinary backups otherwise proceed freely and are counted independently
+  // (the SQLite online backup API is safe against concurrent readers/writers).
+  // Restore cannot be admitted until that count returns to zero. A later HTTP
+  // layer should use `isRestoreInProgress()` to return 503 for any request
+  // that would touch the database while this flag is set.
   let restoreInProgress = false;
+  let activeBackupCount = 0;
 
   function beginRestore() {
     if (restoreInProgress) {
       throw new BackupError('A restore is already in progress.');
+    }
+    if (activeBackupCount > 0) {
+      throw new BackupError('Cannot restore while backup creation is in progress.');
     }
     restoreInProgress = true;
   }
@@ -166,67 +179,82 @@ export function createBackupService({ appDataRoot, databasePath, migrationsDir, 
     if (restoreInProgress) {
       throw new BackupError('Cannot create a backup while a restore is in progress.');
     }
-
-    const backupDir = resolveBackupDir(appDataRoot);
-    const filename = generateBackupFilename(backupDir);
-    const finalPath = path.join(backupDir, filename);
-    const stagingPath = `${finalPath}.staging`;
+    // Admission is synchronous with the restore check above. This count is
+    // incremented before any async gap, so beginRestore cannot pass while this
+    // operation still owns work or cleanup against the source database.
+    activeBackupCount += 1;
 
     try {
-      await db.backup(stagingPath);
+      const backupDir = resolveBackupDir(appDataRoot);
+      // Each admitted backup owns a private staging directory. Published names
+      // remain timestamp-based, but are allocated only after the snapshot is
+      // ready so concurrent operations cannot share staging or final paths.
+      const stagingDir = fs.mkdtempSync(path.join(backupDir, '.creatorcrate-backup-'));
+      const stagingPath = path.join(stagingDir, 'snapshot.sqlite');
 
-      // The live database is in WAL mode, so the online backup API copies
-      // that mode into the destination's header too. Switch the standalone
-      // backup file to a plain rollback journal so opening it later (for
-      // validation, listing, or restore) never spawns -wal/-shm sidecars —
-      // a managed backup is always exactly one file.
-      const staged = new Database(stagingPath);
       try {
-        staged.pragma('journal_mode = DELETE');
+        try {
+          await db.backup(stagingPath);
+
+          // The live database is in WAL mode, so the online backup API copies
+          // that mode into the destination's header too. Switch the standalone
+          // backup file to a plain rollback journal so opening it later (for
+          // validation, listing, or restore) never spawns -wal/-shm sidecars —
+          // a managed backup is always exactly one file.
+          const staged = new Database(stagingPath);
+          try {
+            staged.pragma('journal_mode = DELETE');
+          } finally {
+            staged.close();
+          }
+        } catch (err) {
+          throw new BackupError('Failed to create database backup.', { cause: err });
+        }
+
+        removeIfExists(`${stagingPath}-wal`);
+        removeIfExists(`${stagingPath}-shm`);
+
+        const validation = validateBackupFile(stagingPath);
+        if (!validation.valid) {
+          throw new BackupError('Backup produced an invalid snapshot and was discarded.', {
+            errors: validation.errors,
+          });
+        }
+
+        // Filename selection and rename are deliberately adjacent synchronous
+        // operations. Another in-process backup cannot publish between them.
+        const filename = generateBackupFilename(backupDir, now());
+        const finalPath = path.join(backupDir, filename);
+        try {
+          fs.renameSync(stagingPath, finalPath);
+        } catch (err) {
+          throw new BackupError('Failed to finalize the backup file.', { cause: err });
+        }
+
+        const stats = fs.statSync(finalPath);
+
+        // Phase 11.3: prune only after the new backup is fully validated and
+        // atomically installed. A pruning failure is reported but never turns
+        // a successful backup into a failed one.
+        const pruneResult = pruneBackups(filename);
+
+        return {
+          filename,
+          // Internal to the service — a bare filename, never an absolute path.
+          path: filename,
+          sizeBytes: stats.size,
+          createdAt: now().toISOString(),
+          pruned: pruneResult.deleted,
+          pruneWarnings: pruneResult.warnings,
+        };
       } finally {
-        staged.close();
+        // `stagingDir` was created exclusively for this invocation, so cleanup
+        // cannot remove another operation's snapshot or sidecars.
+        fs.rmSync(stagingDir, { recursive: true, force: true });
       }
-    } catch (err) {
-      removeIfExists(stagingPath);
-      removeIfExists(`${stagingPath}-wal`);
-      removeIfExists(`${stagingPath}-shm`);
-      throw new BackupError('Failed to create database backup.', { cause: err });
+    } finally {
+      activeBackupCount -= 1;
     }
-
-    removeIfExists(`${stagingPath}-wal`);
-    removeIfExists(`${stagingPath}-shm`);
-
-    const validation = validateBackupFile(stagingPath);
-    if (!validation.valid) {
-      removeIfExists(stagingPath);
-      throw new BackupError('Backup produced an invalid snapshot and was discarded.', {
-        errors: validation.errors,
-      });
-    }
-
-    try {
-      fs.renameSync(stagingPath, finalPath);
-    } catch (err) {
-      removeIfExists(stagingPath);
-      throw new BackupError('Failed to finalize the backup file.', { cause: err });
-    }
-
-    const stats = fs.statSync(finalPath);
-
-    // Phase 11.3: prune only after the new backup is fully validated and
-    // atomically installed. A pruning failure is reported but never turns
-    // a successful backup into a failed one.
-    const pruneResult = pruneBackups(filename);
-
-    return {
-      filename,
-      // Internal to the service — a bare filename, never an absolute path.
-      path: filename,
-      sizeBytes: stats.size,
-      createdAt: new Date().toISOString(),
-      pruned: pruneResult.deleted,
-      pruneWarnings: pruneResult.warnings,
-    };
   }
 
   /**
@@ -248,12 +276,12 @@ export function createBackupService({ appDataRoot, databasePath, migrationsDir, 
   }
 
   /**
-   * List managed backups, newest first. Ignores staging/rollback/unmanaged
-   * files and symlinks; never returns absolute paths.
+   * Enumerate managed backup metadata, newest first, without opening backup
+   * databases. Validation is deliberately layered on by callers that need it.
    *
-   * @returns {Array<{filename: string, createdAt: string, sizeBytes: number, valid: boolean}>}
+   * @returns {Array<{filename: string, path: string, createdAt: string, sizeBytes: number}>}
    */
-  function listBackups() {
+  function listManagedBackupMetadata() {
     const backupDir = resolveBackupDir(appDataRoot);
 
     let entries;
@@ -276,12 +304,11 @@ export function createBackupService({ appDataRoot, databasePath, migrationsDir, 
       }
       if (stats.isSymbolicLink() || !stats.isFile()) continue;
 
-      const validation = validateBackupFile(full);
       results.push({
         filename: name,
+        path: full,
         createdAt: stats.mtime.toISOString(),
         sizeBytes: stats.size,
-        valid: validation.valid,
       });
     }
 
@@ -302,6 +329,20 @@ export function createBackupService({ appDataRoot, databasePath, migrationsDir, 
     });
 
     return results;
+  }
+
+  /**
+   * List managed backups, newest first. Ignores staging/rollback/unmanaged
+   * files and symlinks; never returns absolute paths. Each entry is validated
+   * synchronously so Settings receives a current, truthful validity state.
+   *
+   * @returns {Array<{filename: string, createdAt: string, sizeBytes: number, valid: boolean}>}
+   */
+  function listBackups() {
+    return listManagedBackupMetadata().map(({ path: backupPath, ...metadata }) => ({
+      ...metadata,
+      valid: validateBackupFile(backupPath).valid,
+    }));
   }
 
   /**
@@ -346,7 +387,7 @@ export function createBackupService({ appDataRoot, databasePath, migrationsDir, 
    * Delete managed backups older than the configured retention count.
    * Never called before a new backup is successfully installed, never
    * deletes the newly created backup, and only ever removes filenames that
-   * `listBackups` itself already classified as managed (never staging,
+   * the metadata enumerator already classified as managed (never staging,
    * rollback, symlinked, malformed, or unrelated files).
    *
    * Failures to delete an individual backup are collected as warnings and
@@ -365,7 +406,7 @@ export function createBackupService({ appDataRoot, databasePath, migrationsDir, 
     let entries;
     try {
       backupDir = resolveBackupDir(appDataRoot);
-      entries = listBackups(); // newest first
+      entries = listManagedBackupMetadata(); // newest first, no SQLite validation
     } catch (err) {
       return { deleted: [], warnings: ['Could not list backups to apply the retention policy.'] };
     }
@@ -511,5 +552,6 @@ export function createBackupService({ appDataRoot, databasePath, migrationsDir, 
     deleteBackup,
     pruneBackups,
     isRestoreInProgress: () => restoreInProgress,
+    hasActiveBackups: () => activeBackupCount > 0,
   };
 }

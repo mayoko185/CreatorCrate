@@ -131,8 +131,16 @@ describe('asset scanner', () => {
 
   it('scans an empty project directory', () => {
     const { project } = createProjectWithDir('Empty Project');
-    const result = assetScanner.scanProjectAssets(project.id);
-    expect(result).toEqual({ added: 0, updated: 0, removed: 0, total: 0 });
+    const reconcileSpy = vi.spyOn(assetScanner.repository, 'reconcileScannedAssets');
+
+    try {
+      const result = assetScanner.scanProjectAssets(project.id);
+      expect(result).toEqual({ added: 0, updated: 0, removed: 0, total: 0 });
+      expect(reconcileSpy).toHaveBeenCalledOnce();
+      expect(reconcileSpy).toHaveBeenCalledWith(project.id, []);
+    } finally {
+      reconcileSpy.mockRestore();
+    }
   });
 
   it('discovers image files', () => {
@@ -669,11 +677,22 @@ describe('asset scanner', () => {
     const countAfterFirst = assetScanner.repository.countByProjectId(project.id);
     expect(countAfterFirst).toBe(1);
 
-    // Remove the subdirectory
-    fs.rmSync(subDir, { recursive: true });
+    const originalReaddirSync = fs.readdirSync.bind(fs);
+    const readdirSpy = vi.spyOn(fs, 'readdirSync').mockImplementation((dirPath, options) => {
+      if (path.resolve(dirPath) === path.resolve(subDir)) {
+        throw Object.assign(new Error('Simulated child ENOENT'), { code: 'ENOENT' });
+      }
+      return originalReaddirSync(dirPath, options);
+    });
 
-    // Second scan — file in disappeared subdirectory should be marked missing
-    const result = assetScanner.scanProjectAssets(project.id);
+    // Second scan — the root traversal sees the child, but the child disappears
+    // before it can be read. Its indexed file should still be marked missing.
+    let result;
+    try {
+      result = assetScanner.scanProjectAssets(project.id);
+    } finally {
+      readdirSpy.mockRestore();
+    }
     expect(result.added).toBe(0);
     expect(result.updated).toBe(0);
     expect(result.removed).toBe(1); // file is now missing
@@ -682,6 +701,123 @@ describe('asset scanner', () => {
     const asset = assetScanner.repository.findByProjectIdAndPath(project.id, 'subdir/file.txt');
     expect(asset).toBeTruthy();
     expect(asset.is_present).toBe(0);
+  });
+
+  it('aborts when the initial project root read fails after preflight without reconciling state', () => {
+    const { project, absPath } = createProjectWithDir('Root ENOENT Race');
+    fs.writeFileSync(path.join(absPath, 'keep.txt'), 'indexed content');
+    assetScanner.scanProjectAssets(project.id);
+
+    const before = assetScanner.repository.findByProjectIdAndPath(project.id, 'keep.txt');
+    expect(before.is_present).toBe(1);
+
+    const previewSlug = 'root-race-preview';
+    assetCategoryService.addDefault({
+      displayName: 'Root Race Preview',
+      directorySlug: previewSlug,
+      enabled: true,
+    });
+    db.prepare(`
+      INSERT INTO project_asset_categories (
+        project_id, display_name, directory_slug, display_order, enabled
+      ) VALUES (?, ?, ?, 0, 1)
+    `).run(project.id, 'Root Race Preview', previewSlug);
+    previewCategorySettingsService.setPreviewCategory(previewSlug);
+    fs.mkdirSync(path.join(absPath, previewSlug));
+    fs.writeFileSync(path.join(absPath, previewSlug, 'candidate.png'), 'preview content');
+
+    const reconcileSpy = vi.spyOn(assetScanner.repository, 'reconcileScannedAssets');
+    const previewSpy = vi.spyOn(primaryImageRepository, 'setPrimaryImage');
+    const readdirSpy = vi.spyOn(fs, 'readdirSync').mockImplementationOnce(() => {
+      throw Object.assign(new Error('Simulated root ENOENT'), { code: 'ENOENT' });
+    });
+
+    try {
+      expect(() => assetScanner.scanProjectAssets(project.id))
+        .toThrow('Project directory cannot be scanned.');
+      expect(reconcileSpy).not.toHaveBeenCalled();
+      expect(previewSpy).not.toHaveBeenCalled();
+      expect(assetScanner.repository.findByProjectIdAndPath(project.id, 'keep.txt')).toEqual(before);
+      expect(primaryImageRepository.findByProjectId(project.id)).toBeUndefined();
+      expect(projectOperationCoordinator.isActive(project.id)).toBe(false);
+    } finally {
+      readdirSpy.mockRestore();
+      reconcileSpy.mockRestore();
+      previewSpy.mockRestore();
+    }
+
+    // The failed scan released the lock, so the next scan can reconcile normally.
+    expect(assetScanner.scanProjectAssets(project.id)).toMatchObject({ added: 1, total: 2 });
+  });
+
+  it('aborts when root loss surfaces as a recursive child ENOENT without reconciling state', () => {
+    const { project, absPath } = createProjectWithDir('Recursive Root ENOENT Race');
+    fs.writeFileSync(path.join(absPath, 'keep.txt'), 'indexed content');
+    assetScanner.scanProjectAssets(project.id);
+
+    const before = assetScanner.repository.findByProjectIdAndPath(project.id, 'keep.txt');
+    expect(before.is_present).toBe(1);
+
+    const previewSlug = 'recursive-root-race-preview';
+    const previewDir = path.join(absPath, previewSlug);
+    assetCategoryService.addDefault({
+      displayName: 'Recursive Root Race Preview',
+      directorySlug: previewSlug,
+      enabled: true,
+    });
+    db.prepare(`
+      INSERT INTO project_asset_categories (
+        project_id, display_name, directory_slug, display_order, enabled
+      ) VALUES (?, ?, ?, 0, 1)
+    `).run(project.id, 'Recursive Root Race Preview', previewSlug);
+    previewCategorySettingsService.setPreviewCategory(previewSlug);
+    fs.mkdirSync(previewDir);
+    fs.writeFileSync(path.join(previewDir, 'candidate.png'), 'preview content');
+
+    const originalReaddirSync = fs.readdirSync.bind(fs);
+    const originalLstatSync = fs.lstatSync.bind(fs);
+    let rootEnumerated = false;
+    let rootUnavailable = false;
+    const readdirSpy = vi.spyOn(fs, 'readdirSync').mockImplementation((dirPath, options) => {
+      if (path.resolve(dirPath) === path.resolve(absPath)) {
+        rootEnumerated = true;
+        return originalReaddirSync(dirPath, options);
+      }
+      if (path.resolve(dirPath) === path.resolve(previewDir)) {
+        expect(rootEnumerated).toBe(true);
+        rootUnavailable = true;
+        throw Object.assign(new Error('Simulated child ENOENT after root loss'), { code: 'ENOENT' });
+      }
+      return originalReaddirSync(dirPath, options);
+    });
+    const lstatSpy = vi.spyOn(fs, 'lstatSync').mockImplementation((targetPath, options) => {
+      if (rootUnavailable && path.resolve(targetPath) === path.resolve(absPath)) {
+        throw Object.assign(new Error('Simulated missing root'), { code: 'ENOENT' });
+      }
+      return originalLstatSync(targetPath, options);
+    });
+    const reconcileSpy = vi.spyOn(assetScanner.repository, 'reconcileScannedAssets');
+    const previewSpy = vi.spyOn(primaryImageRepository, 'setPrimaryImage');
+
+    try {
+      expect(() => assetScanner.scanProjectAssets(project.id))
+        .toThrow('Project directory cannot be scanned.');
+      expect(rootEnumerated).toBe(true);
+      expect(rootUnavailable).toBe(true);
+      expect(reconcileSpy).not.toHaveBeenCalled();
+      expect(previewSpy).not.toHaveBeenCalled();
+      expect(assetScanner.repository.findByProjectIdAndPath(project.id, 'keep.txt')).toEqual(before);
+      expect(primaryImageRepository.findByProjectId(project.id)).toBeUndefined();
+      expect(projectOperationCoordinator.isActive(project.id)).toBe(false);
+    } finally {
+      readdirSpy.mockRestore();
+      lstatSpy.mockRestore();
+      reconcileSpy.mockRestore();
+      previewSpy.mockRestore();
+    }
+
+    // The failed scan released the lock, so the next scan can reconcile normally.
+    expect(assetScanner.scanProjectAssets(project.id)).toMatchObject({ added: 1, total: 2 });
   });
 
   // ─── Phase 5 release-readiness: failed traversal must not mutate state ─────

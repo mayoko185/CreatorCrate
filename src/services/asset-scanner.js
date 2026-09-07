@@ -71,7 +71,12 @@ function walkDirectory(dirPath, projectRelPrefix = '') {
   } catch (err) {
     const cat = categorizeFsError(err);
     if (cat === 'enoent') {
-      // Directory disappeared between scan start and read — treat as empty
+      if (isRoot) {
+        // The project root disappearing after preflight invalidates the entire
+        // snapshot. Abort so reconciliation cannot mark indexed assets missing.
+        throw new Error(`Cannot read directory "${dirPath}": ${err.code || err.message}`);
+      }
+      // A child directory disappeared during traversal — treat it as empty.
       return entries;
     }
     // Permission or I/O error — abort reconciliation, do not mutate asset presence
@@ -354,6 +359,13 @@ export function createAssetScanner(
     let discovered;
     try {
       discovered = walkDirectory(absPath);
+      // Root loss can surface as a tolerated child ENOENT when the root was
+      // enumerated before it disappeared. Revalidate the root before accepting
+      // the discovered snapshot for reconciliation.
+      const postTraversalStats = fs.lstatSync(absPath);
+      if (!postTraversalStats.isDirectory() || postTraversalStats.isSymbolicLink()) {
+        throw new Error('Project root changed during traversal.');
+      }
     } catch (err) {
       // Rethrow with a safe message (no path leakage)
       throw new Error('Project directory cannot be scanned.');

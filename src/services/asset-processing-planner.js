@@ -19,7 +19,7 @@ import {
   normalizeRelativePath,
   pathKey,
   WATERMARK_SOURCE_IMAGE_EXTENSIONS,
-} from './asset-processing-service.js';
+} from './asset-processing-contracts.js';
 import {
   editWorkflowPromptsInPng,
   normalizeOrUsePromptEditOptions,

@@ -1,4 +1,4 @@
-import { normalizeConversionOptions } from './asset-processing-service.js';
+import { normalizeConversionOptions } from './asset-processing-contracts.js';
 import { normalizePromptEditOptions } from './workflow-prompt-editor.js';
 import { normalizeWatermarkOptions } from './watermark-engine.js';
 

@@ -34,6 +34,33 @@ const AUTH_SETTINGS = {
   hstsEnabled: false,
 };
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function pauseNativeBackup(sourceDb) {
+  const started = deferred();
+  let released = false;
+  return {
+    db: {
+      backup: vi.fn((target) => sourceDb.backup(target, {
+        progress({ remainingPages }) {
+          started.resolve();
+          return released ? remainingPages : 0;
+        },
+      })),
+    },
+    started: started.promise,
+    release() { released = true; },
+  };
+}
+
 function countH1(html) {
   return (html.match(/<h1[\s>]/g) || []).length;
 }
@@ -658,6 +685,63 @@ describe('settings — backup management HTTP', () => {
   // ─── Restore POST — concurrent restore prevention ─────────────────────────
 
   describe('restore POST — concurrent restore prevention', () => {
+    it('rejects an active-backup conflict before restore admission, then admits the same path after completion', async () => {
+      const restoreSource = await backupService.createBackup(db);
+      const beginReplacement = vi.fn(() => ({ release: vi.fn() }));
+      const restoreBackup = vi.spyOn(backupService, 'restoreBackup').mockResolvedValue({ db });
+      const onDatabaseReplaced = vi.fn();
+      const appWithActiveBackup = createApp(
+        { appName: APP_NAME, db, projectsRoot },
+        {
+          backupService,
+          maintenanceState: { active: false },
+          beginReplacement,
+          onDatabaseReplaced,
+          appDataRoot,
+          databasePath,
+          authConfig: AUTH_CONFIG,
+          authSettings: AUTH_SETTINGS,
+          autoScanIntervalMinutes: null,
+        },
+      );
+      const { agent: activeBackupAgent, csrfToken: activeBackupCsrf } = await authenticate(appWithActiveBackup);
+      const controlled = pauseNativeBackup(db);
+      const backupPromise = backupService.createBackup(controlled.db);
+
+      try {
+        await controlled.started;
+
+        const blocked = await activeBackupAgent
+          .post(`/settings/backups/${restoreSource.filename}/restore`)
+          .type('form').send({ _csrf: activeBackupCsrf })
+          .expect(302);
+
+        expect(blocked.headers.location).toBe('/settings/backups?notice=restore_conflict');
+        expect(beginReplacement).not.toHaveBeenCalled();
+        expect(restoreBackup).not.toHaveBeenCalled();
+        expect(onDatabaseReplaced).not.toHaveBeenCalled();
+        expect(db.open).toBe(true);
+
+        controlled.release();
+        await backupPromise;
+
+        const allowed = await activeBackupAgent
+          .post(`/settings/backups/${restoreSource.filename}/restore`)
+          .type('form').send({ _csrf: activeBackupCsrf })
+          .expect(302);
+
+        expect(allowed.headers.location).toBe('/settings/backups?notice=restore_success');
+        expect(beginReplacement).toHaveBeenCalledOnce();
+        expect(restoreBackup).toHaveBeenCalledOnce();
+        expect(onDatabaseReplaced).toHaveBeenCalledWith(db, expect.objectContaining({
+          release: expect.any(Function),
+        }));
+      } finally {
+        controlled.release();
+        await backupPromise.catch(() => {});
+      }
+    });
+
     it('transfers a live Apply reservation into its queued job and unblocks restore after terminal completion', async () => {
       const projectId = Number(insertProject(db, 'Reservation transfer'));
       const backup = await backupService.createBackup(db);

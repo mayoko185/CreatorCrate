@@ -103,16 +103,6 @@ export function createProjectRepository(db) {
     WHERE archived_at IS NULL AND status <> 'archived'
     ORDER BY title COLLATE NOCASE ASC, id ASC
   `);
-  const findCalendarRangeStmt = db.prepare(`
-    SELECT * FROM (
-      SELECT ${COLUMNS.join(', ')},
-        planned_date AS effective_date
-      FROM projects
-      WHERE archived_at IS NULL AND status <> 'archived'
-    )
-    WHERE effective_date IS NOT NULL AND effective_date >= ? AND effective_date < ?
-    ORDER BY effective_date ASC, id ASC
-  `);
   return {
     /**
      * @param {number} id
@@ -298,21 +288,6 @@ export function createProjectRepository(db) {
           })
           : null,
       };
-    },
-
-    /**
-     * Non-archived projects whose effective calendar date falls within a
-     * bounded range (inclusive start, exclusive end). A project is excluded
-     * if either archived_at is set or status is 'archived' — the two can
-     * disagree transiently, and both must be checked. The effective date is
-     * planned_date for every valid workflow status. Projects with no planned
-     * date are excluded. Each project appears at most once.
-     * @param {string} startDate - ISO date YYYY-MM-DD (inclusive)
-     * @param {string} endDate - ISO date YYYY-MM-DD (exclusive)
-     * @returns {Array<ProjectRecord & {effective_date: string}>}
-     */
-    findCalendarRange(startDate, endDate) {
-      return findCalendarRangeStmt.all(startDate, endDate);
     },
 
     /**
