@@ -9057,8 +9057,8 @@
       .notes-reorder-row.is-drop-before { box-shadow: 0 -3px 0 var(--accent); }
       .notes-reorder-row.is-drop-after { box-shadow: 0 3px 0 var(--accent); }
       #book-order-dialog {
-        width: min(51rem, calc(100vw - 2rem));
-        max-width: calc(100vw - 2rem);
+        width: min(34rem, calc(67vw - 1.34rem));
+        max-width: calc(67vw - 1.34rem);
       }
       #book-order-dialog [data-book-hierarchy-editor],
       #book-order-dialog [data-book-hierarchy-container],
@@ -9084,75 +9084,51 @@
         color: var(--muted);
         font-size: 0.75rem;
       }
-      #book-order-dialog [data-book-hierarchy-container].is-drop-target {
-        border-color: var(--accent);
-        background: var(--surface-hover);
-      }
-      #book-order-dialog .notes-book-hierarchy-move-controls {
-        display: flex;
-        flex: 0 1 18rem;
-        align-items: center;
-        gap: var(--space-xs);
-        min-width: 0;
-        margin-inline-start: auto;
-      }
-      #book-order-dialog .notes-book-hierarchy-move-controls select {
-        flex: 1 1 10rem;
-        width: 100%;
-        min-width: 0;
-        max-width: 15rem;
-      }
-      #book-order-dialog [data-book-hierarchy-container="root"] > [data-content-key^="page:"] > .notes-book-content-copy {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(10rem, 18rem);
-        align-items: center;
-        gap: 0 var(--space-md);
-      }
-      #book-order-dialog [data-book-hierarchy-container="root"] > [data-content-key^="page:"] .notes-book-content-kind,
-      #book-order-dialog [data-book-hierarchy-container="root"] > [data-content-key^="page:"] .notes-book-content-title {
-        grid-column: 1;
-      }
-      #book-order-dialog [data-book-hierarchy-container="root"] > [data-content-key^="page:"] > .notes-book-content-copy > .notes-book-hierarchy-move-controls {
-        grid-column: 2;
-        grid-row: 1 / span 2;
-        width: 100%;
-      }
       #book-order-dialog [data-book-hierarchy-container^="chapter:"] > [data-book-hierarchy-item] {
-        grid-template-columns: auto minmax(0, 1fr) minmax(10rem, 18rem);
+        background: var(--surface-card);
       }
-      #book-order-dialog [data-book-hierarchy-container^="chapter:"] > [data-book-hierarchy-item] > .notes-book-hierarchy-move-controls {
-        grid-column: 3;
-        width: 100%;
+      #book-order-dialog [data-book-hierarchy-container^="chapter:"] > [data-book-hierarchy-item]:hover {
+        background: rgba(34, 211, 238, 0.14);
+      }
+      #book-order-dialog [data-book-hierarchy-item].is-drop-before,
+      #book-order-dialog [data-book-hierarchy-item].is-drop-after {
+        position: relative;
+        z-index: 1;
+      }
+      #book-order-dialog [data-book-hierarchy-item][data-drop-position="append"] {
+        box-shadow: 0 4px 0 var(--accent);
+      }
+      #book-order-dialog [data-book-hierarchy-container].is-drop-empty {
+        outline: 2px dashed var(--accent);
+        outline-offset: -2px;
+      }
+      #book-order-dialog [data-book-hierarchy-container][data-drop-position="empty"]::before {
+        color: var(--accent);
+        font-weight: 700;
+      }
+      #book-order-dialog [data-book-hierarchy-container="root"][data-drop-position="empty"]::before {
+        content: "Drop here";
+        display: block;
+        padding: var(--space-sm);
+      }
+      #book-order-dialog [data-book-hierarchy-item].is-dragging {
+        opacity: 0.78;
+        border-color: var(--accent);
+        border-style: dashed;
       }
       @media (max-width: 540px) {
         #book-order-dialog {
-          width: calc(100vw - 1rem);
-          max-width: calc(100vw - 1rem);
+          width: calc(67vw - 0.67rem);
+          max-width: calc(67vw - 0.67rem);
         }
         #book-order-dialog .project-edit-dialog-section-body {
           padding-inline: var(--space-sm);
         }
-        #book-order-dialog [data-book-hierarchy-container="root"] > [data-content-key^="page:"] > .notes-book-content-copy {
-          grid-template-columns: minmax(0, 1fr);
-          gap: var(--space-sm);
-        }
-        #book-order-dialog [data-book-hierarchy-container="root"] > [data-content-key^="page:"] > .notes-book-content-copy > .notes-book-hierarchy-move-controls {
-          grid-column: 1;
-          grid-row: auto;
-        }
         #book-order-dialog [data-book-hierarchy-container^="chapter:"] {
           padding-inline: 0;
         }
-        #book-order-dialog [data-book-hierarchy-container^="chapter:"] > [data-book-hierarchy-item] {
-          grid-template-columns: auto minmax(0, 1fr);
-        }
         #book-order-dialog [data-book-hierarchy-container^="chapter:"] > [data-book-hierarchy-item] > .notes-reorder-handle {
           align-self: start;
-        }
-        #book-order-dialog [data-book-hierarchy-container^="chapter:"] > [data-book-hierarchy-item] > .notes-book-hierarchy-move-controls {
-          grid-column: 2;
-          width: 100%;
-          margin-inline-start: 0;
         }
       }
       .notes-reorder-handle {

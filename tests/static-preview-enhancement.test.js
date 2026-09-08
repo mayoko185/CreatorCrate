@@ -2731,17 +2731,21 @@ function makeBookHierarchyReorderFixture() {
       tagName: 'li',
       attrs: {
         'data-book-hierarchy-item': '',
+        draggable: 'true',
         'data-content-key': `${type}:${id}`,
         'data-book-hierarchy-label': `${type === 'chapter' ? 'Chapter' : 'Page'} ${id}`,
       },
       rect: { top, height: 40 },
     });
-    const handle = makeCategoryNode({ tagName: 'button', attrs: { 'data-book-hierarchy-handle': '', draggable: 'true' } });
+    const handle = makeCategoryNode({ tagName: 'button', attrs: { 'data-book-hierarchy-handle': '' } });
     const copy = makeCategoryNode();
+    const title = makeCategoryNode({ tagName: type === 'chapter' ? 'h3' : 'h4' });
     item.appendChild(handle);
     item.appendChild(copy);
+    copy.appendChild(title);
     item.handle = handle;
     item.copy = copy;
+    item.title = title;
     items.set(`${type}:${id}`, item);
     return item;
   };
@@ -2761,28 +2765,6 @@ function makeBookHierarchyReorderFixture() {
   root.appendChild(makeItem('page', 22, 200));
   const live = makeCategoryNode({ attrs: { 'data-book-hierarchy-live': '', 'aria-live': 'polite' } });
   editor.appendChild(live);
-  for (const item of items.values()) {
-    if (!item.dataset.contentKey.startsWith('page:')) continue;
-    const select = makeCategoryNode({ tagName: 'select', attrs: { 'data-book-hierarchy-destination': '' } });
-    const currentContainer = item.parentElement;
-    select.value = currentContainer?.dataset?.bookHierarchyContainer || 'root';
-    for (const [value, label] of [
-      ['root', 'Book root'],
-      ['chapter:1', 'Chapter: Chapter 1'],
-      ['chapter:2', 'Chapter: Chapter 2'],
-      ['chapter:3', 'Chapter: Chapter 3'],
-    ]) {
-      const option = makeCategoryNode({ tagName: 'option', attrs: { value } });
-      option.value = value;
-      option.textContent = label;
-      select.appendChild(option);
-    }
-    const move = makeCategoryNode({ tagName: 'button', attrs: { 'data-book-hierarchy-move': '' } });
-    item.copy.appendChild(select);
-    item.copy.appendChild(move);
-    item.destination = select;
-    item.move = move;
-  }
   document.appendChild(dialog);
   dialog.appendChild(form);
   document.appendChild(foreignForm);
@@ -2794,8 +2776,8 @@ function makeBookHierarchyReorderFixture() {
   editor.appendChild(root);
 
   const target = () => JSON.parse(input.value).target;
-  const drag = (item, destination, targetItem = null, clientY = 1000) => {
-    item.handle.dispatch('dragstart', { dataTransfer: { setData() {} } });
+  const drag = (item, destination, targetItem = null, clientY = 1000, startTarget = item) => {
+    item.dispatch('dragstart', { target: startTarget, dataTransfer: { setData() {} } });
     const eventTarget = targetItem || destination;
     eventTarget.dispatch('dragover', { clientY, dataTransfer: {} });
     eventTarget.dispatch('drop', { clientY, dataTransfer: {} });
@@ -3390,12 +3372,12 @@ describe('connected Book hierarchy reorder enhancement', () => {
     expect(enhanceBookHierarchyReorder(fixture.document)).toBe(1);
     expect(fixture.editor.listeners.filter(({ type }) => type === 'dragover')).toHaveLength(1);
     expect(fixture.editor.listeners.filter(({ type }) => type === 'keydown')).toHaveLength(1);
-    expect(fixture.editor.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
+    expect(fixture.editor.listeners.filter(({ type }) => type === 'click')).toHaveLength(0);
     expect(fixture.form.listeners.filter(({ type }) => type === 'submit')).toHaveLength(1);
     expect(fixture.dialog.__creatorCrateAppDialogState.onClose).toBe(closeHook);
     expect(fixture.editor.querySelectorAll('[data-book-hierarchy-live]')).toHaveLength(1);
-    expect(fixture.editor.querySelectorAll('[data-book-hierarchy-destination]')).toHaveLength(5);
-    expect(fixture.editor.querySelectorAll('[data-book-hierarchy-move]')).toHaveLength(5);
+    expect(fixture.editor.querySelectorAll('[data-book-hierarchy-destination]')).toHaveLength(0);
+    expect(fixture.editor.querySelectorAll('[data-book-hierarchy-move]')).toHaveLength(0);
     expect(fixture.items.get('chapter:1').getAttribute('aria-setsize')).toBe('5');
     expect(fixture.items.get('page:11').getAttribute('aria-setsize')).toBe('2');
     expect(fixture.items.get('page:13').getAttribute('aria-setsize')).toBe('1');
@@ -3419,6 +3401,10 @@ describe('connected Book hierarchy reorder enhancement', () => {
       { type: 'chapter', id: 3, pages: [] },
       { type: 'page', id: 22 },
     ]);
+    expect(fixture.items.get('page:21').classList.contains('is-dragging')).toBe(false);
+    expect(fixture.items.get('page:12').classList.contains('is-drop-after')).toBe(false);
+    expect(fixture.items.get('page:12').getAttribute('data-drop-position')).toBe(null);
+    expect(fixture.containers.get('chapter:1').classList.contains('is-drop-target')).toBe(false);
     expect(fixture.legacyItems.value).toBe('keep-items');
     expect(fixture.legacyNotes.value).toBe('keep-notes');
   });
@@ -3480,22 +3466,39 @@ describe('connected Book hierarchy reorder enhancement', () => {
     expect(fixture.target().find((item) => item.type === 'chapter' && item.id === 3).pages).toEqual([21, 13]);
   });
 
-  it('isolates nested Page handles and ignores Chapter nesting, labels, and external drops', () => {
+  it('resolves whole-card drag ownership for root Pages, Chapters, and nested Pages', () => {
+    const fixture = makeBookHierarchyReorderFixture();
+    enhanceBookHierarchyReorder(fixture.document);
+    const chapter = fixture.items.get('chapter:1');
+    const nestedPage = fixture.items.get('page:11');
+    const rootPage = fixture.items.get('page:21');
+
+    for (const target of [rootPage, rootPage.copy, rootPage.title]) {
+      rootPage.dispatch('dragstart', { target, dataTransfer: { setData() {} } });
+      expect(rootPage.classList.contains('is-dragging')).toBe(true);
+      rootPage.dispatch('dragend');
+    }
+
+    chapter.dispatch('dragstart', { target: chapter.title, dataTransfer: { setData() {} } });
+    expect(chapter.classList.contains('is-dragging')).toBe(true);
+    chapter.dispatch('dragend');
+
+    nestedPage.dispatch('dragstart', { target: nestedPage.title, dataTransfer: { setData() {} } });
+    expect(nestedPage.classList.contains('is-dragging')).toBe(true);
+    expect(chapter.classList.contains('is-dragging')).toBe(false);
+    nestedPage.dispatch('dragend');
+
+    nestedPage.handle.dispatch('dragstart', { dataTransfer: { setData() {} } });
+    expect(nestedPage.classList.contains('is-dragging')).toBe(true);
+    nestedPage.dispatch('dragend');
+  });
+
+  it('keeps Chapters root-only and ignores invalid or external destinations', () => {
     const fixture = makeBookHierarchyReorderFixture();
     enhanceBookHierarchyReorder(fixture.document);
     const initialValue = fixture.input.value;
     const chapter = fixture.items.get('chapter:1');
-    const page = fixture.items.get('page:11');
 
-    page.handle.dispatch('dragstart', { dataTransfer: { setData() {} } });
-    expect(page.classList.contains('is-dragging')).toBe(true);
-    expect(chapter.classList.contains('is-dragging')).toBe(false);
-    page.dispatch('dragend');
-
-    const labelDrag = chapter.copy.dispatch('dragstart', { dataTransfer: { setData() {} } });
-    expect(labelDrag.defaultPrevented).toBe(true);
-    expect(page.destination.dispatch('dragstart', { dataTransfer: { setData() {} } }).defaultPrevented).toBe(true);
-    expect(page.move.dispatch('dragstart', { dataTransfer: { setData() {} } }).defaultPrevented).toBe(true);
     fixture.drag(chapter, fixture.containers.get('chapter:2'));
     expect(fixture.input.value).toBe(initialValue);
 
@@ -3505,24 +3508,41 @@ describe('connected Book hierarchy reorder enhancement', () => {
     expect(chapter.classList.contains('is-dragging')).toBe(false);
   });
 
-  it('clears indicators and drag state on Escape, dragend, and invalid drop', () => {
+  it('tracks item, append, and empty insertion state without broad container targets and cleans every exit path', () => {
     const fixture = makeBookHierarchyReorderFixture();
     enhanceBookHierarchyReorder(fixture.document);
     const page = fixture.items.get('page:21');
     const chapter = fixture.items.get('chapter:1');
 
-    page.handle.dispatch('dragstart', { dataTransfer: { setData() {} } });
+    page.dispatch('dragstart', { dataTransfer: { setData() {} } });
     fixture.items.get('page:13').dispatch('dragover', { clientY: 0, dataTransfer: {} });
     expect(fixture.items.get('page:13').classList.contains('is-drop-before')).toBe(true);
+    expect(fixture.items.get('page:13').getAttribute('data-drop-position')).toBe('before');
+    expect(fixture.containers.get('chapter:2').classList.contains('is-drop-target')).toBe(false);
+
+    fixture.containers.get('chapter:2').dispatch('dragover', { dataTransfer: {} });
+    expect(fixture.items.get('page:13').classList.contains('is-drop-after')).toBe(true);
+    expect(fixture.items.get('page:13').getAttribute('data-drop-position')).toBe('append');
+
+    const empty = fixture.containers.get('chapter:3');
+    empty.dispatch('dragover', { dataTransfer: {} });
+    expect(empty.classList.contains('is-drop-empty')).toBe(true);
+    expect(empty.getAttribute('data-drop-position')).toBe('empty');
+    expect(empty.classList.contains('is-drop-target')).toBe(false);
+    empty.dispatch('dragleave', { relatedTarget: null });
+    expect(empty.classList.contains('is-drop-empty')).toBe(false);
+    expect(empty.getAttribute('data-drop-position')).toBe(null);
+
+    fixture.items.get('page:13').dispatch('dragover', { clientY: 0, dataTransfer: {} });
     page.handle.dispatch('keydown', { key: 'Escape' });
     expect(page.classList.contains('is-dragging')).toBe(false);
     expect(fixture.items.get('page:13').classList.contains('is-drop-before')).toBe(false);
 
-    page.handle.dispatch('dragstart', { dataTransfer: { setData() {} } });
+    page.dispatch('dragstart', { dataTransfer: { setData() {} } });
     page.dispatch('dragend');
     expect(fixture.editor.classList.contains('is-dragging')).toBe(false);
 
-    chapter.handle.dispatch('dragstart', { dataTransfer: { setData() {} } });
+    chapter.dispatch('dragstart', { dataTransfer: { setData() {} } });
     fixture.containers.get('chapter:2').dispatch('drop');
     expect(chapter.classList.contains('is-dragging')).toBe(false);
     expect(fixture.containers.get('chapter:2').classList.contains('is-drop-target')).toBe(false);
@@ -3565,43 +3585,7 @@ describe('connected Book hierarchy reorder enhancement', () => {
     expect(fixture.live.textContent).toBe('Chapter “Chapter 2” moved to position 5 of 5.');
   });
 
-  it('moves Pages across DOM-derived containers, refreshes destinations, and no-ops the current destination', () => {
-    const fixture = makeBookHierarchyReorderFixture();
-    enhanceBookHierarchyReorder(fixture.document);
-    const page = fixture.items.get('page:21');
-
-    page.destination.value = 'chapter:2';
-    page.move.dispatch('click');
-    expect(fixture.target().find((item) => item.type === 'chapter' && item.id === 2).pages).toEqual([13, 21]);
-    expect(page.destination.value).toBe('chapter:2');
-    expect(page.handle.focused).toBe(true);
-    expect(fixture.live.textContent).toBe('Page “Page 21” moved to Chapter “Chapter 2”, position 2 of 2.');
-
-    page.destination.value = 'root';
-    page.move.dispatch('click');
-    expect(fixture.target().map((item) => `${item.type}:${item.id}`)).toEqual([
-      'chapter:1', 'chapter:2', 'page:21', 'chapter:3', 'page:22',
-    ]);
-    expect(fixture.live.textContent).toBe('Page “Page 21” moved to Book root, position 3 of 5.');
-
-    const unchanged = fixture.input.value;
-    page.move.dispatch('click');
-    expect(fixture.input.value).toBe(unchanged);
-    page.destination.value = 'chapter:999';
-    page.move.dispatch('click');
-    expect(fixture.input.value).toBe(unchanged);
-
-    const dragged = fixture.items.get('page:11');
-    fixture.drag(dragged, fixture.containers.get('chapter:2'));
-    expect(dragged.destination.value).toBe('chapter:2');
-    dragged.destination.value = 'root';
-    dragged.move.dispatch('click');
-    expect(fixture.target().map((item) => `${item.type}:${item.id}`)).toEqual([
-      'chapter:1', 'chapter:2', 'page:11', 'page:21', 'chapter:3', 'page:22',
-    ]);
-  });
-
-  it('restores drag, keyboard, and mixed drafts to the rendered baseline on close without touching expected', () => {
+  it('restores drag and keyboard drafts to the rendered baseline on close without touching expected', () => {
     const fixture = makeBookHierarchyReorderFixture();
     enhanceBookHierarchyReorder(fixture.document);
     const initial = fixture.input.value;
@@ -3614,7 +3598,6 @@ describe('connected Book hierarchy reorder enhancement', () => {
     expect(fixture.input.value).toBe(initial);
     expect(fixture.target()).toEqual(fixture.expected);
     expect(fixture.containers.get('chapter:3').children).toHaveLength(0);
-    expect(fixture.items.get('page:21').destination.value).toBe('root');
     expect(JSON.parse(fixture.input.value).expected).toEqual(fixture.expected);
   });
 
@@ -3631,17 +3614,26 @@ describe('connected Book hierarchy reorder enhancement', () => {
     fixture.input.value = JSON.stringify({ version: 1, expected: fixture.expected, target: loadedTarget });
     enhanceBookHierarchyReorder(fixture.document);
 
-    page.destination.value = 'root';
-    page.move.dispatch('click');
+    fixture.drag(page, fixture.root, fixture.items.get('chapter:2'), 1000);
     fixture.dialog.__creatorCrateAppDialogState.onClose();
     expect(fixture.target()).toEqual(loadedTarget);
     expect(JSON.parse(fixture.input.value).expected).toEqual(fixture.expected);
 
     fixture.dialog.__creatorCrateAppDialogState.onOpen();
-    page.destination.value = 'chapter:2';
-    page.move.dispatch('click');
+    fixture.drag(page, fixture.containers.get('chapter:2'));
     const savedDraft = fixture.input.value;
-    fixture.form.dispatch('submit');
+    const submit = fixture.form.dispatch('submit');
+    expect(submit.defaultPrevented).toBe(false);
+    expect(JSON.parse(savedDraft)).toEqual({
+      version: 1,
+      expected: fixture.expected,
+      target: [
+        { type: 'chapter', id: 1, pages: [11, 12] },
+        { type: 'chapter', id: 2, pages: [13, 21] },
+        { type: 'chapter', id: 3, pages: [] },
+        { type: 'page', id: 22 },
+      ],
+    });
     fixture.dialog.__creatorCrateAppDialogState.onClose();
     expect(fixture.input.value).toBe(savedDraft);
   });

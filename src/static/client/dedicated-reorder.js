@@ -18,8 +18,6 @@ const BOOK_HIERARCHY_CONTAINER_SELECTOR = '[data-book-hierarchy-container]';
 const BOOK_HIERARCHY_ITEM_SELECTOR = '[data-book-hierarchy-item]';
 const BOOK_HIERARCHY_HANDLE_SELECTOR = '[data-book-hierarchy-handle]';
 const BOOK_HIERARCHY_INPUT_SELECTOR = '[data-book-hierarchy-input]';
-const BOOK_HIERARCHY_DESTINATION_SELECTOR = '[data-book-hierarchy-destination]';
-const BOOK_HIERARCHY_MOVE_SELECTOR = '[data-book-hierarchy-move]';
 const BOOK_HIERARCHY_LIVE_SELECTOR = '[data-book-hierarchy-live]';
 const NOTES_REORDER_INTERACTIVE_SELECTOR = 'a, button, input, select, textarea, label, summary, details, [contenteditable="true"], [role="button"]';
 
@@ -236,45 +234,6 @@ function bookHierarchyContainerKey(container) {
     || '';
 }
 
-function bookHierarchyChapterDestinations(editor) {
-  const root = bookHierarchyRoot(editor);
-  if (!root) return [];
-  return dedicatedDirectItems(root, BOOK_HIERARCHY_ITEM_SELECTOR)
-    .filter((item) => bookHierarchyContentKey(item)?.type === 'chapter')
-    .map((item) => ({
-      value: `chapter:${bookHierarchyContentKey(item).id}`,
-      label: `Chapter: ${bookHierarchyItemLabel(item)}`,
-    }));
-}
-
-function refreshBookHierarchyDestinations(state) {
-  const destinations = [{ value: 'root', label: 'Book root' }, ...bookHierarchyChapterDestinations(state.editor)];
-  const desiredValues = new Set(destinations.map(({ value }) => value));
-  const pageItems = Array.from(state.editor.querySelectorAll?.(BOOK_HIERARCHY_ITEM_SELECTOR) || [])
-    .filter((item) => bookHierarchyContentKey(item)?.type === 'page');
-
-  pageItems.forEach((item) => {
-    const select = item.querySelector?.(BOOK_HIERARCHY_DESTINATION_SELECTOR);
-    const currentContainer = bookHierarchyContainerFor(state.editor, item);
-    const currentValue = bookHierarchyContainerKey(currentContainer);
-    if (!select || !desiredValues.has(currentValue)) return;
-
-    const existing = new Map(Array.from(select.options || select.children || [])
-      .map((option) => [String(option.value ?? option.getAttribute?.('value') ?? ''), option]));
-    const document = item.ownerDocument || state.editor.ownerDocument;
-    const options = destinations.map(({ value, label }) => {
-      const option = existing.get(value) || document?.createElement?.('option');
-      if (!option) return null;
-      option.value = value;
-      option.setAttribute?.('value', value);
-      option.textContent = label;
-      return option;
-    }).filter(Boolean);
-    select.replaceChildren?.(...options);
-    select.value = currentValue;
-  });
-}
-
 function announceBookHierarchyMove(state, item) {
   if (!state.live) return;
   const content = bookHierarchyContentKey(item);
@@ -307,7 +266,6 @@ function moveBookHierarchyItemToIndex(container, item, targetIndex) {
 
 function completeBookHierarchyKeyboardMove(state, item) {
   updateBookHierarchyMetadata(state.editor);
-  refreshBookHierarchyDestinations(state);
   syncBookHierarchyInput(state);
   announceBookHierarchyMove(state, item);
   item.querySelector?.(BOOK_HIERARCHY_HANDLE_SELECTOR)?.focus?.();
@@ -331,18 +289,24 @@ function restoreBookHierarchyBaseline(state) {
     }
   }
   updateBookHierarchyMetadata(state.editor);
-  refreshBookHierarchyDestinations(state);
   return syncBookHierarchyInput(state);
 }
 
 function resolveBookHierarchyDropTarget(container, event, draggedItem) {
   const candidate = event.target?.closest?.(BOOK_HIERARCHY_ITEM_SELECTOR);
-  if (candidate === draggedItem || candidate?.parentElement !== container) return null;
-  const rect = candidate?.getBoundingClientRect?.();
-  const before = rect && Number.isFinite(event.clientY)
-    ? event.clientY < rect.top + (rect.height / 2)
-    : true;
-  return candidate ? { item: candidate, before } : null;
+  if (candidate === draggedItem && candidate?.parentElement === container) return { kind: 'self' };
+  if (candidate?.parentElement === container) {
+    const rect = candidate?.getBoundingClientRect?.();
+    const before = rect && Number.isFinite(event.clientY)
+      ? event.clientY < rect.top + (rect.height / 2)
+      : true;
+    return { kind: before ? 'before' : 'after', item: candidate, before };
+  }
+
+  const remaining = dedicatedDirectItems(container, BOOK_HIERARCHY_ITEM_SELECTOR)
+    .filter((item) => item !== draggedItem);
+  if (remaining.length === 0) return { kind: 'empty' };
+  return { kind: 'append', item: remaining[remaining.length - 1], before: false };
 }
 
 function moveBookHierarchyItem(container, item, target) {
@@ -362,8 +326,26 @@ function moveBookHierarchyItem(container, item, target) {
 
 function clearBookHierarchyDropIndicator(state) {
   clearDedicatedDropIndicator(state);
-  state.dropContainer?.classList?.remove('is-drop-target');
+  state.dropContainer?.classList?.remove('is-drop-empty');
+  if (state.dropContainer?.getAttribute?.('data-drop-position') === 'empty') {
+    state.dropContainer.removeAttribute?.('data-drop-position');
+  }
   state.dropContainer = null;
+  state.dropTarget = null;
+}
+
+function setBookHierarchyDropIndicator(state, container, target) {
+  clearBookHierarchyDropIndicator(state);
+  state.dropContainer = container;
+  state.dropTarget = target;
+  if (target.kind === 'self') return;
+  if (target.kind === 'empty') {
+    container.classList?.add('is-drop-empty');
+    container.setAttribute?.('data-drop-position', 'empty');
+    return;
+  }
+  setDedicatedDropIndicator(state, target.item, target.before);
+  if (target.kind === 'append') target.item.setAttribute?.('data-drop-position', 'append');
 }
 
 function finishBookHierarchyDrag(state) {
@@ -416,20 +398,25 @@ export function enhanceBookHierarchyReorder(scope = globalThis.document) {
       draggedItem: null,
       sourceContainer: null,
       dropContainer: null,
+      dropTarget: null,
       dropItem: null,
       dropBefore: null,
     };
 
     markEnhancementBound(editor, 'bookHierarchyReorderBound');
     updateBookHierarchyMetadata(editor);
-    refreshBookHierarchyDestinations(state);
     syncBookHierarchyInput(state);
 
     editor.addEventListener?.('dragstart', (event) => {
-      const handle = event.target?.closest?.(BOOK_HIERARCHY_HANDLE_SELECTOR);
-      const item = handle?.closest?.(BOOK_HIERARCHY_ITEM_SELECTOR);
+      const target = event.target?.nodeType === 3 ? event.target.parentElement : event.target;
+      const item = target?.closest?.(BOOK_HIERARCHY_ITEM_SELECTOR);
       const container = bookHierarchyContainerFor(editor, item);
-      if (!handle || !item || !container || item.parentElement !== container) {
+      const canStart = item && canStartDedicatedReorderDrag(item, { target }, {
+        handleSelector: BOOK_HIERARCHY_HANDLE_SELECTOR,
+        pointerDragSurfaceSelector: BOOK_HIERARCHY_ITEM_SELECTOR,
+        pointerDragExcludedSelector: NOTES_REORDER_INTERACTIVE_SELECTOR,
+      });
+      if (!canStart || !container || item.parentElement !== container) {
         event.preventDefault?.();
         finishBookHierarchyDrag(state);
         return;
@@ -455,11 +442,8 @@ export function enhanceBookHierarchyReorder(scope = globalThis.document) {
       }
       event.preventDefault?.();
       if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
-      clearBookHierarchyDropIndicator(state);
-      state.dropContainer = container;
-      state.dropContainer.classList?.add('is-drop-target');
       const target = resolveBookHierarchyDropTarget(container, event, state.draggedItem);
-      if (target) setDedicatedDropIndicator(state, target.item, target.before);
+      setBookHierarchyDropIndicator(state, container, target);
     });
 
     editor.addEventListener?.('dragleave', (event) => {
@@ -477,15 +461,14 @@ export function enhanceBookHierarchyReorder(scope = globalThis.document) {
       }
       event.preventDefault?.();
       const before = JSON.stringify(serializeBookHierarchy(editor));
-      const target = state.dropContainer === container && state.dropItem
-        ? { item: state.dropItem, before: state.dropBefore }
+      const target = state.dropContainer === container && state.dropTarget
+        ? state.dropTarget
         : resolveBookHierarchyDropTarget(container, event, state.draggedItem);
-      moveBookHierarchyItem(container, state.draggedItem, target);
+      if (target.kind !== 'self') moveBookHierarchyItem(container, state.draggedItem, target);
       const after = JSON.stringify(serializeBookHierarchy(editor));
       finishBookHierarchyDrag(state);
       if (before !== after) {
         updateBookHierarchyMetadata(editor);
-        refreshBookHierarchyDestinations(state);
         syncBookHierarchyInput(state);
       }
     });
@@ -516,31 +499,6 @@ export function enhanceBookHierarchyReorder(scope = globalThis.document) {
       if (moveBookHierarchyItemToIndex(container, item, targetIndex)) {
         completeBookHierarchyKeyboardMove(state, item);
       }
-    });
-    editor.addEventListener?.('click', (event) => {
-      const moveControl = event.target?.closest?.(BOOK_HIERARCHY_MOVE_SELECTOR);
-      const item = moveControl?.closest?.(BOOK_HIERARCHY_ITEM_SELECTOR);
-      const content = bookHierarchyContentKey(item);
-      if (!moveControl || content?.type !== 'page') return;
-      event.preventDefault?.();
-
-      const select = item.querySelector?.(BOOK_HIERARCHY_DESTINATION_SELECTOR);
-      const source = bookHierarchyContainerFor(editor, item);
-      const destinationKey = String(select?.value || '');
-      const destination = state.containers.get(destinationKey);
-      if (!source || !destination || !bookHierarchyAccepts(destination, item)
-        || bookHierarchyContainerKey(source) === destinationKey) return;
-
-      if (destinationKey === 'root') {
-        const sourceChapter = source.closest?.(BOOK_HIERARCHY_ITEM_SELECTOR);
-        const rootItems = dedicatedDirectItems(destination, BOOK_HIERARCHY_ITEM_SELECTOR);
-        const sourceIndex = rootItems.indexOf(sourceChapter);
-        if (sourceIndex === -1) return;
-        destination.insertBefore?.(item, rootItems[sourceIndex + 1] || null);
-      } else {
-        destination.appendChild?.(item);
-      }
-      completeBookHierarchyKeyboardMove(state, item);
     });
     form.addEventListener?.('submit', () => {
       syncBookHierarchyInput(state);

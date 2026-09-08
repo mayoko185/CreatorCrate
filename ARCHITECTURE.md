@@ -506,20 +506,23 @@ target while rebuilding all labels from current server entities. Stale submissio
 return 409 with the current hierarchy, and current-integrity or persistence failures
 remain server errors. The template opts into the connected mode in
 `dedicated-reorder.js`; the legacy flat adapter remains unchanged for its existing
-consumers. Connected mode owns one editor-wide drag state, enumerates direct children
+consumers. The Book hierarchy section renders Page and Chapter titles as plain text.
+Connected mode owns one editor-wide drag state, uses each Page or Chapter card as the
+drag surface, and enumerates direct children
 of explicit hierarchy containers, accepts Chapters only at root and Pages at root or
 in Chapters (including empty Chapters), and serializes the current DOM into only the
 form's `data-book-hierarchy-input` after successful drag mutations. The original
 `expected` hierarchy remains immutable, hierarchy movement sends no request, and Save
 remains the sole aggregate POST. The same editor-wide controller handles Page and
-Chapter Up/Down/Home/End movement, Page destination controls, focus restoration, and
-hierarchy-scoped live announcements. Page ownership is always derived from its current
-DOM container; Chapter-to-root keyboard movement inserts immediately after the source
-Chapter. After app-dialog enhancement, the controller composes with its existing
+Chapter Up/Down/Home/End movement within the current container through the existing
+keyboard handle, focus restoration, and hierarchy-scoped live announcements. Page
+ownership is always derived from its current DOM container. After app-dialog
+enhancement, the controller composes with its existing
 open/close lifecycle hooks. It captures the hierarchy actually rendered for the
 current response as the loaded baseline (not `expected`), restores the existing item
-nodes structurally on unsaved Cancel/X/Escape close, and regenerates `target` while preserving
-`expected`. A native form-submit guard prevents close restoration from replacing a
+nodes structurally on unsaved X/Escape close, and regenerates `target` while preserving
+`expected`; backdrop clicking does not close this dialog. A native form-submit guard
+prevents close restoration from replacing a
 genuine Save draft before navigation. The legacy root-only reorder and Page Move paths
 remain independent and available.
 

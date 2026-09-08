@@ -127,11 +127,10 @@ for (const kind of ['books', 'contents', 'pages']) {
 
       const item = (key) => dialog.locator(`[data-content-key="${key}"]`).first();
       const handle = (key) => item(key).locator(':scope > [data-book-hierarchy-handle]');
+      const title = (key) => item(key).locator(':scope > .notes-book-content-copy > .notes-book-content-title');
       const container = (key) => dialog.locator(`[data-book-hierarchy-container="${key}"]`);
-      const destination = (key) => item(key).locator('[data-book-hierarchy-destination]');
-      const move = (key) => item(key).locator('[data-book-hierarchy-move]');
       const live = dialog.locator('[data-book-hierarchy-live]');
-      const dragToEnd = async (source, destination) => {
+      const dragToEnd = async (source, destination, { proveIndicator = false } = {}) => {
         const children = destination.locator(':scope > [data-book-hierarchy-item]');
         const target = await children.count() > 0 ? children.last() : destination;
         await source.scrollIntoViewIfNeeded();
@@ -142,6 +141,11 @@ for (const kind of ['books', 'contents', 'pages']) {
         await page.mouse.down();
         await page.mouse.move(from.x + from.width / 2 + 8, from.y + from.height / 2, { steps: 4 });
         await page.mouse.move(to.x + 8, to.y + to.height - 3, { steps: 12 });
+        if (proveIndicator) {
+          await target.dispatchEvent('dragover', { clientY: to.y + to.height - 3 });
+          if (await children.count() > 0) await expect(target).toHaveClass(/is-drop-after/);
+          else await expect(destination).toHaveClass(/is-drop-empty/);
+        }
         await page.mouse.up();
       };
       const dragBefore = async (source, target) => {
@@ -180,39 +184,69 @@ for (const kind of ['books', 'contents', 'pages']) {
           || pathname.includes('/contents/reorder');
       });
 
-      await expect(destination(`page:${directPage.id}`)).toHaveValue('root');
-      await destination(`page:${directPage.id}`).selectOption(`chapter:${chapter.id}`);
-      await move(`page:${directPage.id}`).click();
+      await expect(dialog.getByRole('heading', { name: 'Book hierarchy', exact: true })).toBeVisible();
+      await expect(dialog.getByText('Drag cards to reorder. Select Save to apply changes.', { exact: true })).toBeVisible();
+      await expect(dialog.locator('[data-book-hierarchy-destination]')).toHaveCount(0);
+      await expect(dialog.locator('[data-book-hierarchy-move]')).toHaveCount(0);
+      await expect(dialog.getByRole('button', { name: 'Cancel', exact: true })).toHaveCount(0);
+      await expect(title(`page:${directPage.id}`)).toHaveText(directPage.title);
+      await expect(title(`chapter:${chapter.id}`)).toHaveText(chapter.title);
+      await expect(title(`page:${chapterPageA.id}`)).toHaveText(chapterPageA.title);
+      await expect(dialog.locator('.notes-book-content-title a')).toHaveCount(0);
+
+      let target = [
+        { type: 'chapter', id: chapter.id, pages: [chapterPageA.id, chapterPageB.id, directPage.id] },
+        { type: 'chapter', id: chapterB.id, pages: [chapterBPage.id] },
+        { type: 'chapter', id: emptyChapter.id, pages: [] },
+        { type: 'page', id: directPageB.id },
+        { type: 'page', id: directPageC.id },
+      ];
+      await dragToEnd(title(`page:${directPage.id}`), container(`chapter:${chapter.id}`), { proveIndicator: true });
+      await expectDraft(target);
       await handle(`page:${directPage.id}`).press('Home');
+      target[0].pages = [directPage.id, chapterPageA.id, chapterPageB.id];
       await expect(handle(`page:${directPage.id}`)).toBeFocused();
       await expect(live).toContainText(`Page “${directPage.title}” moved to Chapter “${chapter.title}”, position 1 of 3.`);
-      expect(JSON.parse(await hierarchyInput.inputValue()).target).not.toEqual(renderedHierarchy);
+      await expectDraft(target);
       await page.keyboard.press('Escape');
       await expect(dialog).not.toBeVisible();
-      expect(posts).toHaveLength(0);
+      await expect(opener).toBeFocused();
+      await expect(page.locator('body')).not.toHaveClass(/app-dialog-open/);
+      expect(persistencePosts()).toHaveLength(0);
       expect(JSON.parse(await hierarchyInput.inputValue())).toEqual(initialHierarchy);
 
       await opener.click();
       await expect(dialog).toBeVisible();
       expect(await domHierarchy()).toEqual(renderedHierarchy);
-      await expect(destination(`page:${directPage.id}`)).toHaveValue('root');
-
-      await destination(`page:${directPage.id}`).selectOption(`chapter:${chapter.id}`);
-      await move(`page:${directPage.id}`).click();
-      await handle(`page:${directPage.id}`).press('Home');
-      expect(JSON.parse(await hierarchyInput.inputValue()).target).not.toEqual(renderedHierarchy);
-      await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await dragBefore(title(`page:${chapterPageA.id}`), title(`chapter:${chapterB.id}`));
+      target = [
+        { type: 'chapter', id: chapter.id, pages: [chapterPageB.id] },
+        { type: 'page', id: directPage.id },
+        { type: 'page', id: chapterPageA.id },
+        { type: 'chapter', id: chapterB.id, pages: [chapterBPage.id] },
+        { type: 'chapter', id: emptyChapter.id, pages: [] },
+        { type: 'page', id: directPageB.id },
+        { type: 'page', id: directPageC.id },
+      ];
+      await expectDraft(target);
+      await expect(item(`chapter:${chapter.id}`)).toContainText(chapter.title);
+      await expect(container(`chapter:${chapter.id}`).locator(':scope > [data-book-hierarchy-item]')).toHaveCount(1);
+      await dialog.getByRole('button', { name: 'Close Change order', exact: true }).click();
       await expect(dialog).not.toBeVisible();
+      await expect(opener).toBeFocused();
       expect(persistencePosts()).toHaveLength(0);
 
       await opener.click();
       await expect(dialog).toBeVisible();
       expect(await domHierarchy()).toEqual(renderedHierarchy);
       expect(JSON.parse(await hierarchyInput.inputValue())).toEqual(initialHierarchy);
-      await expect(destination(`page:${directPage.id}`)).toHaveValue('root');
+      await page.mouse.click(1, 1);
+      await expect(dialog).toBeVisible();
+      expect(await domHierarchy()).toEqual(renderedHierarchy);
+      expect(persistencePosts()).toHaveLength(0);
 
-      await dragToEnd(handle(`page:${directPage.id}`), container(`chapter:${chapter.id}`));
-      let target = [
+      await dragToEnd(title(`page:${directPage.id}`), container(`chapter:${chapter.id}`));
+      target = [
         { type: 'chapter', id: chapter.id, pages: [chapterPageA.id, chapterPageB.id, directPage.id] },
         { type: 'chapter', id: chapterB.id, pages: [chapterBPage.id] },
         { type: 'chapter', id: emptyChapter.id, pages: [] },
@@ -221,7 +255,7 @@ for (const kind of ['books', 'contents', 'pages']) {
       ];
       await expectDraft(target);
 
-      await dragBefore(handle(`page:${chapterPageA.id}`), handle(`chapter:${chapterB.id}`));
+      await dragBefore(title(`page:${chapterPageA.id}`), title(`chapter:${chapterB.id}`));
       target = [
         { type: 'chapter', id: chapter.id, pages: [chapterPageB.id, directPage.id] },
         { type: 'page', id: chapterPageA.id },
@@ -231,77 +265,56 @@ for (const kind of ['books', 'contents', 'pages']) {
         { type: 'page', id: directPageC.id },
       ];
       await expectDraft(target);
+      await expect(item(`chapter:${chapter.id}`)).toContainText(chapter.title);
+      await expect(container(`chapter:${chapter.id}`).locator(':scope > [data-book-hierarchy-item]')).toHaveCount(2);
 
-      await dragToEnd(handle(`page:${chapterPageB.id}`), container(`chapter:${chapterB.id}`));
+      await dragToEnd(title(`page:${chapterPageB.id}`), container(`chapter:${chapterB.id}`));
       target[0].pages = [directPage.id];
       target[2].pages = [chapterBPage.id, chapterPageB.id];
       await expectDraft(target);
 
-      await dragBefore(handle(`page:${chapterPageB.id}`), handle(`page:${chapterBPage.id}`));
-      target[2].pages = [chapterPageB.id, chapterBPage.id];
-      await expectDraft(target);
-
-      await dragBefore(handle(`page:${directPageC.id}`), handle(`chapter:${chapterB.id}`));
+      await dragBefore(title(`page:${directPageC.id}`), title(`chapter:${chapterB.id}`));
       target = [target[0], target[1], { type: 'page', id: directPageC.id }, target[2], target[3], target[4]];
       await expectDraft(target);
 
-      await dragToEnd(handle(`chapter:${emptyChapter.id}`), container('root'));
-      target = [target[0], target[1], target[2], target[3], target[5], target[4]];
+      await dragToEnd(title(`chapter:${chapterB.id}`), container('root'));
+      target = [target[0], target[1], target[2], target[4], target[5], target[3]];
       await expectDraft(target);
+      expect(target[5]).toEqual({ type: 'chapter', id: chapterB.id, pages: [chapterBPage.id, chapterPageB.id] });
 
-      await dragToEnd(handle(`page:${directPageB.id}`), emptyPages);
-      target[5].pages = [directPageB.id];
+      await dragToEnd(title(`page:${directPageB.id}`), emptyPages, { proveIndicator: true });
+      target[3].pages = [directPageB.id];
       target.splice(4, 1);
       await expectDraft(target);
 
       const beforeIllegal = JSON.stringify(target);
-      await handle(`chapter:${chapter.id}`).dragTo(container(`chapter:${chapterB.id}`));
-      expect(JSON.stringify(target)).toBe(beforeIllegal);
+      await dragToEnd(title(`chapter:${chapter.id}`), container(`chapter:${chapterB.id}`));
+      expect(JSON.stringify(await domHierarchy())).toBe(beforeIllegal);
       await expectDraft(target);
 
-      await handle(`chapter:${chapter.id}`).press('ArrowDown');
-      expect(JSON.parse(await hierarchyInput.inputValue()).target).not.toEqual(renderedHierarchy);
-      await dialog.getByRole('button', { name: 'Close Change order', exact: true }).click();
-      await expect(dialog).not.toBeVisible();
-      expect(posts).toHaveLength(0);
-      expect(JSON.parse(await hierarchyInput.inputValue())).toEqual(initialHierarchy);
+      await handle(`page:${chapterPageB.id}`).press('Home');
+      target[4].pages = [chapterPageB.id, chapterBPage.id];
+      await expect(handle(`page:${chapterPageB.id}`)).toBeFocused();
+      await expectDraft(target);
+      await handle(`page:${chapterPageB.id}`).press('ArrowDown');
+      target[4].pages = [chapterBPage.id, chapterPageB.id];
+      await expectDraft(target);
 
-      await opener.click();
-      await expect(dialog).toBeVisible();
-      expect(await domHierarchy()).toEqual(renderedHierarchy);
-      await expect(dialog.locator('[data-book-hierarchy-live]')).toHaveCount(1);
-      await expect(dialog.locator('[data-book-hierarchy-destination]')).toHaveCount(6);
-      await expect(dialog.locator('[data-book-hierarchy-move]')).toHaveCount(6);
-
-      await destination(`page:${directPage.id}`).selectOption(`chapter:${chapter.id}`);
-      await move(`page:${directPage.id}`).click();
-      await expect(handle(`page:${directPage.id}`)).toBeFocused();
-      await handle(`page:${directPage.id}`).press('Home');
-
-      await destination(`page:${chapterPageA.id}`).selectOption('root');
-      await move(`page:${chapterPageA.id}`).click();
-      await expect(handle(`page:${chapterPageA.id}`)).toBeFocused();
-      await expect(live).toContainText(`Page “${chapterPageA.title}” moved to Book root, position 2 of 6.`);
-      await handle(`page:${chapterPageA.id}`).press('ArrowDown');
+      await handle(`chapter:${chapterB.id}`).press('Home');
+      target = [target[4], ...target.slice(0, 4)];
+      await expectDraft(target);
+      await handle(`chapter:${chapterB.id}`).press('ArrowDown');
+      [target[0], target[1]] = [target[1], target[0]];
+      await expectDraft(target);
+      await handle(`chapter:${chapterB.id}`).press('ArrowUp');
+      [target[0], target[1]] = [target[1], target[0]];
+      await expectDraft(target);
       await handle(`chapter:${chapterB.id}`).press('End');
+      target = [...target.slice(1), target[0]];
       await expect(handle(`chapter:${chapterB.id}`)).toBeFocused();
-      await expect(live).toContainText(`Chapter “${chapterB.title}” moved to position 6 of 6.`);
-
-      target = [
-        { type: 'chapter', id: chapter.id, pages: [directPage.id, chapterPageB.id] },
-        { type: 'page', id: chapterPageA.id },
-        { type: 'chapter', id: emptyChapter.id, pages: [] },
-        { type: 'page', id: directPageB.id },
-        { type: 'page', id: directPageC.id },
-        { type: 'chapter', id: chapterB.id, pages: [chapterBPage.id] },
-      ];
       await expectDraft(target);
-      expect(await destination(`page:${directPage.id}`).locator('option').evaluateAll(options => options.map(option => option.value))).toEqual([
-        'root', `chapter:${chapter.id}`, `chapter:${emptyChapter.id}`, `chapter:${chapterB.id}`,
-      ]);
 
       expect(persistencePosts()).toHaveLength(0);
-
       const response = page.waitForResponse(candidate => (
         candidate.request().method() === 'POST'
         && new URL(candidate.url()).pathname === `/notes/books/${book.id}/hierarchy/reorder`
