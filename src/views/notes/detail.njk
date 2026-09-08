@@ -26,6 +26,32 @@
       {% set notesDetailsPresentation = "project-section" %}
       {% include "partials/notes-details-panel.njk" %}
       {% set notesDetailsPresentation = none %}
+
+      <section class="project-detail-info project-detail-section notes-revision-history" aria-labelledby="notes-revision-history-heading">
+        <h2 id="notes-revision-history-heading">Revision history</h2>
+        {% if revisions.length > 0 %}
+          <details class="notes-book-contents-disclosure">
+            <summary class="notes-book-contents-toggle">
+              <span class="notes-book-contents-toggle-label notes-book-contents-toggle-label--expand">Expand</span>
+              <span class="notes-book-contents-toggle-label notes-book-contents-toggle-label--collapse">Collapse</span>
+            </summary>
+            <div class="project-detail-section-body notes-revision-history-body">
+              <ol class="notes-revision-list">
+                {% for revision in revisions %}
+                  <li class="notes-revision-list-item">
+                    <time datetime="{{ revision.createdAt }}">{{ revision.createdAt }}</time>
+                    <a href="/notes/{{ note.id }}/revisions/{{ revision.id }}">View</a>
+                  </li>
+                {% endfor %}
+              </ol>
+            </div>
+          </details>
+        {% else %}
+          <div class="project-detail-section-body notes-revision-history-body">
+            <p class="help-text notes-revision-empty">No revisions yet. Previous versions will appear here after this Page is edited.</p>
+          </div>
+        {% endif %}
+      </section>
     </div>
 
     <div class="notes-page-detail-content">

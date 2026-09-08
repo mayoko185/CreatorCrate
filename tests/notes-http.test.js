@@ -16,6 +16,11 @@ function getNewNoteDialog(html) {
   return html.match(/<dialog\b[^>]*id="note-create-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
 }
 
+function getNoteDialogBaseline(dialog) {
+  const serialized = dialog.match(/<script type="application\/json" data-note-dialog-baseline>([\s\S]*?)<\/script>/)?.[1];
+  return serialized ? JSON.parse(serialized) : null;
+}
+
 function expectClosedBookContentsDisclosure(dialog) {
   const heading = dialog.indexOf('<h3 id="notes-book-contents-heading">Book contents</h3>');
   const disclosure = dialog.indexOf('<details class="notes-book-contents-disclosure">');
@@ -42,7 +47,8 @@ function expectNewNoteDialog(html, open) {
   expect(dialog).toContain('data-dialog-close aria-label="Close New Page"');
   expect(dialog).not.toContain('data-dialog-backdrop-static');
   expect(/<dialog\b[^>]*\sopen(?:\s|>)/.test(dialog)).toBe(open);
-  expect(dialog).toContain('data-notes-editor-form data-dialog-form data-dialog-async="false" novalidate');
+  expect(dialog).toContain('data-notes-editor-form data-note-dialog-dirty data-dialog-form data-dialog-async="false" novalidate');
+  expect(dialog).toContain('type="application/json" data-note-dialog-baseline>');
   expect(dialog).toContain('class="app-dialog-body project-edit-dialog-body"');
   expect(dialog).toContain('class="app-dialog-footer"');
   expect(dialog.indexOf('</form>')).toBeLessThan(dialog.indexOf('class="app-dialog-footer"'));
@@ -80,7 +86,8 @@ function expectEditNoteDialog(html, noteId, open) {
   expect(/<dialog\b[^>]*\sopen(?:\s|>)/.test(dialog)).toBe(open);
   expect(html).toContain('class="notes-page-detail-layout"');
   expect(html).toContain('href="/notes/' + noteId + '/edit" data-dialog-open="note-edit-dialog"');
-  expect(dialog).toContain('data-notes-editor-form data-dialog-form data-dialog-async="false" novalidate');
+  expect(dialog).toContain('data-notes-editor-form data-note-dialog-dirty data-dialog-form data-dialog-async="false" novalidate');
+  expect(dialog).toContain('type="application/json" data-note-dialog-baseline>');
   expect(dialog).toContain('type="submit" form="note-form" data-dialog-submit>Save</button>');
   expect(html.match(/<form\b[^>]*id="note-form"/g)).toHaveLength(1);
   expect(html.match(/\sdata-notes-editor-host(?:\s|>)/g)).toHaveLength(1);
@@ -1237,6 +1244,9 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain('field-error-message');
     expect(response.text).toContain('aria-describedby="note-create-title-error"');
     expect(response.text).toContain(attemptedContent);
+    expect(getNoteDialogBaseline(getNewNoteDialog(response.text))).toMatchObject({
+      title: '', content: '', projectIds: [], assetIds: [],
+    });
     expect(app.locals.noteService.listNotes()).toHaveLength(0);
   });
 
@@ -1435,6 +1445,193 @@ describe('top-level Notes HTTP slice', () => {
     const bookDetail = await agent.get(`/notes/books/${book.id}`).expect(200);
     expect(bookDetail.text).toContain('<section class="notes-detail-panel notes-detail-details" aria-labelledby="notes-book-details-heading">');
     expect(bookDetail.text).not.toContain('<section class="project-detail-info project-detail-section notes-detail-details"');
+  });
+
+  it('creates, grows, renders, and prunes Revision history through the production HTTP path', async () => {
+    const { book, chapter } = createChapterContext(app);
+    const created = await agent.post('/notes').type('form').send({
+      _csrf: csrfToken,
+      chapterId: String(chapter.id),
+      title: 'Revision zero',
+      content: 'Zero',
+    }).expect(302);
+    const noteId = Number(created.headers.location.replace('/notes/', ''));
+    const empty = await agent.get(`/notes/${noteId}`).expect(200);
+    const emptySidebar = empty.text.slice(
+      empty.text.indexOf('<div class="notes-page-sidebar">'),
+      empty.text.indexOf('<div class="notes-page-detail-content">'),
+    );
+    const emptyHistory = emptySidebar.match(/<section class="[^"]*notes-revision-history[^"]*"[\s\S]*?<\/section>/)?.[0] || '';
+
+    expect(emptySidebar.indexOf('notes-detail-details')).toBeLessThan(emptySidebar.indexOf('notes-revision-history'));
+    expect(emptyHistory).toContain('<h2 id="notes-revision-history-heading">Revision history</h2>');
+    expect(emptyHistory).toContain('No revisions yet. Previous versions will appear here after this Page is edited.');
+    expect(emptyHistory).not.toContain('<details');
+
+    await agent.post(`/notes/${noteId}`).type('form').send({
+      _csrf: csrfToken,
+      title: 'Revision one',
+      content: 'One',
+    }).expect(302);
+    const firstRevisions = app.locals.noteService.listNoteRevisions(noteId);
+    expect(firstRevisions).toHaveLength(1);
+
+    const firstPopulated = await agent.get(`/notes/${noteId}`).expect(200);
+    const firstHistory = firstPopulated.text.match(/<section class="[^"]*notes-revision-history[^"]*"[\s\S]*?<\/section>/)?.[0] || '';
+    expect(firstHistory).toContain('<details class="notes-book-contents-disclosure">');
+    expect(firstHistory).not.toContain('<details class="notes-book-contents-disclosure" open>');
+    expect(firstHistory).toContain('<summary class="notes-book-contents-toggle">');
+    expect(firstHistory).toContain(`href="/notes/${noteId}/revisions/${firstRevisions[0].id}">View</a>`);
+    expect(firstHistory).not.toContain('No revisions yet.');
+
+    await agent.post(`/notes/${noteId}`).type('form').send({
+      _csrf: csrfToken,
+      title: 'Revision two',
+      content: 'Two',
+    }).expect(302);
+    const revisions = app.locals.noteService.listNoteRevisions(noteId);
+    const populated = await agent.get(`/notes/${noteId}`).expect(200);
+    const populatedSidebar = populated.text.slice(
+      populated.text.indexOf('<div class="notes-page-sidebar">'),
+      populated.text.indexOf('<div class="notes-page-detail-content">'),
+    );
+
+    expect(revisions).toHaveLength(2);
+    expect(populatedSidebar.indexOf(`/notes/${noteId}/revisions/${revisions[0].id}`))
+      .toBeLessThan(populatedSidebar.indexOf(`/notes/${noteId}/revisions/${revisions[1].id}`));
+    expect(populatedSidebar).not.toContain('Revision zero');
+    expect(populatedSidebar).not.toContain('Revision one');
+    expect(populated.text).toContain('id="notes-detail-content-heading">Revision two</p>');
+
+    app.locals.noteRevisionSettingsService.setRevisionRetention(1);
+    await agent.post(`/notes/${noteId}`).type('form').send({
+      _csrf: csrfToken,
+      title: 'Revision three',
+      content: 'Three',
+    }).expect(302);
+    const prunedRevisions = app.locals.noteService.listNoteRevisions(noteId);
+    expect(prunedRevisions).toHaveLength(1);
+    expect(prunedRevisions[0].id).not.toBe(revisions[0].id);
+    const pruned = await agent.get(`/notes/${noteId}`).expect(200);
+    expect(pruned.text).toContain(`/notes/${noteId}/revisions/${prunedRevisions[0].id}`);
+    expect(pruned.text).not.toContain(`/notes/${noteId}/revisions/${revisions[0].id}`);
+
+    const bookDetail = await agent.get(`/notes/books/${book.id}`).expect(200);
+    expect(bookDetail.text).not.toContain('notes-revision-history');
+  });
+
+  it('renders a scoped historical revision through the current sanitized Markdown path', async () => {
+    const availableProjectId = insertProject(db, 'Available historical project');
+    const deletedProjectId = insertProject(db, 'Deleted historical project');
+    const availableAssetId = insertAsset(db, availableProjectId, 'available-history.png');
+    const deletedAssetId = insertAsset(db, availableProjectId, 'deleted-history.png');
+    const { note } = createPage(app, {
+      title: 'Historical title',
+      content: '# Historical title\n\n<script>alert("unsafe")</script>\n\n**Historical body**',
+      projectIds: [availableProjectId, deletedProjectId],
+      assetIds: [availableAssetId, deletedAssetId],
+    });
+    app.locals.noteService.updateNote(note.id, {
+      title: 'Current title', content: 'Current body', projectIds: [], assetIds: [],
+    });
+    const [revision] = app.locals.noteService.listNoteRevisions(note.id);
+    db.prepare('DELETE FROM projects WHERE id = ?').run(deletedProjectId);
+    db.prepare('DELETE FROM assets WHERE id = ?').run(deletedAssetId);
+
+    const response = await agent.get(`/notes/${note.id}/revisions/${revision.id}`).expect(200);
+
+    expect(response.text).toContain('<title>CreatorCrate — Notes — Older revision — Historical title</title>');
+    expect(response.text).toContain('<strong>Older revision.</strong> You are viewing historical Page content, not the current Page.');
+    expect(response.text).toContain(`href="/notes/${note.id}">Back to current Page</a>`);
+    expect(response.text).not.toContain('Edit Page');
+    expect(response.text).toContain('<p><strong>Historical body</strong></p>');
+    expect(response.text).toContain('&lt;script&gt;alert(');
+    expect(response.text).not.toContain('<script>alert');
+    expect(response.text).not.toContain('<h1>Historical title</h1>');
+    expect(response.text).toContain(`href="/projects/${availableProjectId}">Available historical project</a>`);
+    expect(response.text).toContain(`Project ${deletedProjectId} — Unavailable`);
+    expect(response.text).toContain(`href="/projects/${availableProjectId}/assets/${availableAssetId}">available-history.png</a>`);
+    expect(response.text).toContain(`Asset ${deletedAssetId} — Unavailable`);
+    expect(response.text).toContain(`action="/notes/${note.id}/revisions/${revision.id}/restore"`);
+    expect(response.text).toContain('name="_csrf"');
+    expect(response.text).toContain('data-confirm-dialog-title="Restore revision?"');
+    expect(response.text).toContain('data-confirm-dialog-confirm-label="Restore"');
+  });
+
+  it('returns 404 for malformed, missing, and cross-Page historical revision access', async () => {
+    const first = createPage(app, { title: 'First history Page', content: 'First before' }).note;
+    const second = createPage(app, { title: 'Second history Page', content: 'Second before' }).note;
+    app.locals.noteService.updateNote(first.id, { title: 'First current', content: 'First current' });
+    const [revision] = app.locals.noteService.listNoteRevisions(first.id);
+
+    await agent.get(`/notes/${first.id}/revisions/01`).expect(404);
+    await agent.get(`/notes/${first.id}/revisions/999999`).expect(404);
+    await agent.get(`/notes/${second.id}/revisions/${revision.id}`).expect(404);
+    await agent.get(`/notes/01/revisions/${revision.id}`).expect(404);
+  });
+
+  it('fails safely for malformed historical data without exposing payloads or changing the current Page', async () => {
+    const { note } = createPage(app, { title: 'Malformed before', content: 'Before' });
+    app.locals.noteService.updateNote(note.id, { title: 'Malformed current', content: 'Current' });
+    const [revision] = app.locals.noteService.listNoteRevisions(note.id);
+    const currentBefore = db.prepare('SELECT title, content FROM notes WHERE id = ?').get(note.id);
+    const historyCountBefore = db.prepare('SELECT COUNT(*) AS count FROM note_revisions WHERE note_id = ?').get(note.id).count;
+    db.prepare("UPDATE note_revisions SET project_ids_json = '{malformed' WHERE id = ?").run(revision.id);
+
+    const view = await agent.get(`/notes/${note.id}/revisions/${revision.id}`).expect(500);
+    const restore = await agent.post(`/notes/${note.id}/revisions/${revision.id}/restore`).type('form')
+      .send({ _csrf: csrfToken }).expect(500);
+
+    expect(view.text).not.toContain('{malformed');
+    expect(restore.text).not.toContain('{malformed');
+    expect(db.prepare('SELECT title, content FROM notes WHERE id = ?').get(note.id)).toEqual(currentBefore);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM note_revisions WHERE note_id = ?').get(note.id).count)
+      .toBe(historyCountBefore);
+  });
+
+  it('restores through the service, redirects to current Page, and remains CSRF- and Note-scoped', async () => {
+    const first = createPage(app, { title: 'Restore before', content: 'Before body' }).note;
+    const second = createPage(app, { title: 'Other Page', content: 'Other body' }).note;
+    app.locals.noteService.updateNote(first.id, { title: 'Restore current', content: 'Current body' });
+    const [revision] = app.locals.noteService.listNoteRevisions(first.id);
+    const restore = vi.spyOn(app.locals.noteService, 'restoreNoteRevision');
+
+    await agent.post(`/notes/${first.id}/revisions/${revision.id}/restore`).type('form').send({}).expect(403);
+    await agent.post(`/notes/${second.id}/revisions/${revision.id}/restore`).type('form')
+      .send({ _csrf: csrfToken }).expect(404);
+    const response = await agent.post(`/notes/${first.id}/revisions/${revision.id}/restore`).type('form')
+      .send({ _csrf: csrfToken }).expect(302);
+
+    expect(response.headers.location).toBe(`/notes/${first.id}`);
+    expect(restore).toHaveBeenCalledTimes(2);
+    expect(restore).toHaveBeenLastCalledWith(first.id, revision.id);
+    expect(app.locals.noteService.getNote(first.id)).toMatchObject({
+      title: 'Restore before', content: 'Before body',
+    });
+  });
+
+  it('renders an actionable restore error and preserves current state/history when historical associations are unavailable', async () => {
+    const projectId = insertProject(db, 'Unavailable restore project');
+    const assetId = insertAsset(db, projectId, 'unavailable-restore.png');
+    const { note } = createPage(app, {
+      title: 'Blocked before', content: 'Blocked before body', projectIds: [projectId], assetIds: [assetId],
+    });
+    app.locals.noteService.updateNote(note.id, {
+      title: 'Blocked current', content: 'Blocked current body', projectIds: [], assetIds: [],
+    });
+    const [revision] = app.locals.noteService.listNoteRevisions(note.id);
+    db.prepare('DELETE FROM projects WHERE id = ?').run(projectId);
+    const before = app.locals.noteService.getNote(note.id);
+    const historyBefore = app.locals.noteService.listNoteRevisions(note.id);
+
+    const response = await agent.post(`/notes/${note.id}/revisions/${revision.id}/restore`).type('form')
+      .send({ _csrf: csrfToken }).expect(409);
+
+    expect(response.text).toContain('This revision cannot be restored because one or more linked Projects or Assets are unavailable. The current Page was not changed.');
+    expect(response.text).toContain(`Project ${projectId} — Unavailable`);
+    expect(response.text).toContain(`Asset ${assetId} — Unavailable`);
+    expect(app.locals.noteService.getNote(note.id)).toEqual(before);
+    expect(app.locals.noteService.listNoteRevisions(note.id)).toEqual(historyBefore);
   });
 
   it('suppresses a matching leading Markdown H1 only in Page detail while preserving Edit source', async () => {
@@ -2135,6 +2332,9 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain('Stored content');
     expect(response.text).toContain(`<form id="note-form" method="post" action="/notes/${note.id}"`);
     expect(response.text).toContain(attemptedContent);
+    expect(getNoteDialogBaseline(getEditNoteDialog(response.text))).toMatchObject({
+      title: 'Existing', content: 'Stored content', projectIds: [], assetIds: [],
+    });
     expect(response.text).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">Page Book</a>`);
     expect(getEditNoteDialog(response.text)).not.toContain('>View Chapter</a>');
     expect(response.text).not.toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');

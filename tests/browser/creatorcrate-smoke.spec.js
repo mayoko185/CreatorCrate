@@ -448,6 +448,109 @@ test.describe('CreatorCrate development browser smoke', () => {
     }
   });
 
+  test('protects only dirty Add/Edit Page dialogs and discards live editor changes safely', async ({ page, devServer }) => {
+    const chapterId = await createBrowserNotesHierarchy(page, devServer.baseURL);
+    const pageId = await createBrowserPage(page, devServer.baseURL, chapterId, 'Discard baseline');
+    const confirmation = page.locator('#app-confirmation-dialog');
+
+    await page.goto(`${devServer.baseURL}/notes/chapters/${chapterId}`, { waitUntil: 'domcontentloaded' });
+    await page.getByRole('link', { name: 'New Page', exact: true }).click();
+    await page.getByRole('button', { name: 'Close New Page' }).click();
+    await expect(page.locator('#note-create-dialog')).not.toBeVisible();
+    await expect(confirmation).not.toBeVisible();
+
+    await page.goto(`${devServer.baseURL}/notes/${pageId}`, { waitUntil: 'domcontentloaded' });
+    await page.getByRole('link', { name: 'Edit Page', exact: true }).click();
+    const dialog = page.locator('#note-edit-dialog');
+    await expect(dialog.locator('.toastui-editor-defaultUI')).toBeVisible();
+    await dialog.getByRole('button', { name: 'Close Edit Page' }).click();
+    await expect(dialog).not.toBeVisible();
+    await expect(confirmation).not.toBeVisible();
+
+    await page.getByRole('link', { name: 'Edit Page', exact: true }).click();
+    const title = dialog.locator('[name="title"]');
+    await title.fill('Unsaved title');
+    await page.keyboard.press('Escape');
+    await expect(confirmation).toBeVisible();
+    await expect(confirmation).toContainText('Your unsaved changes will be lost.');
+    await confirmation.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await expect(dialog).toBeVisible();
+    await expect(title).toHaveValue('Unsaved title');
+
+    await title.fill('Discard baseline');
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
+    await expect(confirmation).not.toBeVisible();
+
+    await page.getByRole('link', { name: 'Edit Page', exact: true }).click();
+    const editor = dialog.locator('.toastui-editor-defaultUI');
+    await selectNotesEditorMode(editor.locator('.toastui-editor-mode-switch'), 'Markdown');
+    const markdown = editor.locator('.toastui-editor-md-container .ProseMirror[contenteditable="true"]');
+    await markdown.fill('Unsaved **Markdown**');
+    await dialog.getByRole('button', { name: 'Close Edit Page' }).click();
+    await expect(confirmation).toBeVisible();
+    await confirmation.getByRole('button', { name: 'Discard', exact: true }).click();
+    await expect(dialog).not.toBeVisible();
+
+    await page.getByRole('link', { name: 'Edit Page', exact: true }).click();
+    await expect(dialog.locator('[name="title"]')).toHaveValue('Discard baseline');
+    await expect.poll(() => dialog.locator('#note-form').evaluate(form => (
+      form.__creatorCrateNotesEditor?.getMarkdown?.()
+    ))).toBe('');
+  });
+
+  test('exposes and expands populated Page Revision history at desktop and mobile widths', async ({ page, devServer }) => {
+    const diagnostics = observeBrowser(page, devServer.baseURL);
+    const chapterId = await createBrowserNotesHierarchy(page, devServer.baseURL);
+    const pageId = await createBrowserPage(page, devServer.baseURL, chapterId, 'Revision history baseline');
+
+    await page.getByRole('link', { name: 'Edit Page', exact: true }).click();
+    const dialog = page.locator('#note-edit-dialog');
+    await expect(dialog).toBeVisible();
+    await dialog.locator('[name="title"]').fill('Revision history current');
+    await Promise.all([
+      page.waitForResponse((response) => (
+        response.request().method() === 'POST'
+        && new URL(response.url()).pathname === `/notes/${pageId}`
+        && response.status() === 302
+      )),
+      dialog.getByRole('button', { name: 'Save', exact: true }).click(),
+    ]);
+    await expect(page.locator('#notes-detail-content-heading')).toHaveText('Revision history current');
+
+    for (const viewport of [
+      { width: 1280, height: 800 },
+      { width: 375, height: 800 },
+    ]) {
+      await page.setViewportSize(viewport);
+      await page.goto(`${devServer.baseURL}/notes/${pageId}`, { waitUntil: 'domcontentloaded' });
+
+      const history = page.locator('.notes-revision-history');
+      const disclosure = history.locator('details.notes-book-contents-disclosure');
+      const summary = disclosure.locator(':scope > summary.notes-book-contents-toggle');
+      const viewLink = disclosure.getByRole('link', { name: 'View', exact: true });
+      await summary.scrollIntoViewIfNeeded();
+      const box = await summary.boundingBox();
+      expect(box).not.toBeNull();
+      const center = { x: box.x + (box.width / 2), y: box.y + (box.height / 2) };
+      expect(center.x).toBeGreaterThanOrEqual(0);
+      expect(center.x).toBeLessThanOrEqual(viewport.width);
+      expect(center.y).toBeGreaterThanOrEqual(0);
+      expect(center.y).toBeLessThanOrEqual(viewport.height);
+      expect(await summary.evaluate((control, point) => {
+        const hit = document.elementFromPoint(point.x, point.y);
+        return hit === control || control.contains(hit);
+      }, center)).toBe(true);
+
+      await expect(viewLink).toBeHidden();
+      await summary.click();
+      await expect(disclosure).toHaveAttribute('open', '');
+      await expect(viewLink).toBeVisible();
+    }
+
+    assertNoBrowserDiagnostics(diagnostics);
+  });
+
   test('renders fenced code blocks with independent Copy controls at responsive widths', async ({ page, devServer }) => {
     const diagnostics = observeBrowser(page, devServer.baseURL);
     const chapterId = await createBrowserNotesHierarchy(page, devServer.baseURL);

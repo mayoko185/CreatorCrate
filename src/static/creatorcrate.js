@@ -35,6 +35,10 @@ import {
 } from './client/notes-editor.js';
 import { enhanceNotesAssetPicker } from './client/notes-asset-picker.js';
 import { enhanceNoteConnections } from './client/note-connections.js';
+import {
+  enhanceNoteDialogUnsavedChanges,
+  noteDialogIsDirty,
+} from './client/note-dialog-dirty.js';
 import { enhanceBookCoverUploads } from './client/book-cover-upload.js';
 import {
   enhanceAssetViewerInfoCards,
@@ -96,6 +100,8 @@ export {
   enhanceNotesCodeBlocks,
   enhanceNotesEditor,
   enhanceNotesAssetPicker,
+  enhanceNoteDialogUnsavedChanges,
+  noteDialogIsDirty,
   enhanceAssetViewerInfoCards,
   enhanceProjectInfoCards,
   enhanceDatePickers,
@@ -187,6 +193,7 @@ if (typeof document !== 'undefined') {
     enhanceDropdowns(document);
     enhanceProjectAssetsDefaultsScope(document);
     enhanceAppDialogs(document);
+    enhanceNoteDialogUnsavedChanges(document);
     enhanceBookHierarchyReorder(document);
     enhanceLogViewerAutoRefresh(document);
     enhanceAssetViewerFilterDisclosures(document);

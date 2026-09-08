@@ -1,0 +1,100 @@
+{% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
+{% import "partials/book-primary-image.njk" as bookPrimaryImage %}
+
+{% set page_title = "Notes — Older revision — " ~ revision.title %}
+
+{% block body_class %}notes-page-detail-page notes-revision-page{% endblock %}
+
+{% block content %}
+  {% call pageHeading.render("", "", "", "/notes/" ~ note.id, "Back to current Page") %}
+    <form method="post" action="/notes/{{ note.id }}/revisions/{{ revision.id }}/restore">
+      <input type="hidden" name="_csrf" value="{{ _csrf }}">
+      <button class="button button-primary" type="submit"
+        data-confirm="Restore this revision? The current Page state will be preserved in revision history."
+        data-confirm-dialog-title="Restore revision?"
+        data-confirm-dialog-confirm-label="Restore">Restore</button>
+    </form>
+  {% endcall %}
+
+  {% if notice %}
+    {% set noticeVariant = notice.variant %}
+    {% set noticeText = notice.text %}
+    {% include "partials/notice.njk" %}
+  {% endif %}
+
+  <div class="notice notice--warning notes-revision-state" role="status">
+    <p><strong>Older revision.</strong> You are viewing historical Page content, not the current Page.</p>
+  </div>
+
+  <div class="notes-page-detail-layout">
+    <div class="notes-page-sidebar">
+      <aside class="notes-page-detail-sidebar notes-book-detail-sidebar notes-surface notes-surface--compact">
+        {{ bookPrimaryImage.render(book, 'preview') }}
+        {% set bookNavHideChapterLinks = true %}
+        {% include "partials/book-navigator.njk" %}
+        {% set bookNavHideChapterLinks = false %}
+      </aside>
+
+      <section class="project-detail-info project-detail-section notes-revision-details" aria-labelledby="notes-revision-details-heading">
+        <h2 id="notes-revision-details-heading">Revision details</h2>
+        <div class="project-detail-section-body">
+          <dl class="detail-list">
+            <dt>Saved</dt>
+            <dd><time datetime="{{ revision.created_at }}">{{ revision.created_at }}</time></dd>
+          </dl>
+        </div>
+      </section>
+    </div>
+
+    <div class="notes-page-detail-content">
+      <section class="notes-detail-content" aria-labelledby="notes-revision-content-heading">
+        <div class="notes-detail-section-heading">
+          <p class="notes-detail-kicker notes-detail-content-heading" id="notes-revision-content-heading">{{ revision.title }}</p>
+        </div>
+        {% if revision.content %}
+          <div class="notes-content">{{ contentHtml | safe }}</div>
+        {% else %}
+          <p class="help-text">No content in this revision.</p>
+        {% endif %}
+      </section>
+
+      {% if projects.length > 0 %}
+        <section class="notes-detail-panel notes-detail-projects" aria-labelledby="notes-revision-projects-heading">
+          <h2 id="notes-revision-projects-heading">Projects</h2>
+          <ul class="project-list">
+            {% for project in projects %}
+              {% if project.available %}
+                <li><a href="/projects/{{ project.id }}">{{ project.title }}</a></li>
+              {% else %}
+                <li>Project {{ project.id }} — Unavailable</li>
+              {% endif %}
+            {% endfor %}
+          </ul>
+        </section>
+      {% endif %}
+
+      {% if assets.length > 0 %}
+        <section class="notes-detail-panel notes-detail-assets" aria-labelledby="notes-revision-assets-heading">
+          <h2 id="notes-revision-assets-heading">Assets</h2>
+          <ul class="asset-list notes-detail-asset-list">
+            {% for asset in assets %}
+              <li class="asset-list-item{% if not asset.available or not asset.isPresent %} is-missing{% endif %}">
+                <div class="notes-detail-asset">
+                  {% if asset.available %}
+                    <a class="notes-detail-asset-link" href="{{ asset.viewerUrl }}">{{ asset.filename }}</a>
+                    <span>Project: {{ asset.projectTitle }}</span>
+                    <span>{{ asset.relativePath }}</span>
+                    {% if not asset.isPresent %}<span>Missing</span>{% endif %}
+                  {% else %}
+                    <span>Asset {{ asset.id }} — Unavailable</span>
+                  {% endif %}
+                </div>
+              </li>
+            {% endfor %}
+          </ul>
+        </section>
+      {% endif %}
+    </div>
+  </div>
+{% endblock %}

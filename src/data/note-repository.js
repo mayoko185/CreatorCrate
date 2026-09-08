@@ -19,6 +19,7 @@ const HIERARCHY_ORDER = `
     notes.id ASC
 `;
 const NOTE_COLUMNS_QUALIFIED = COLUMNS.map((c) => `notes.${c}`).join(', ');
+const DEFAULT_REVISION_RETENTION = 10;
 
 export class NoteError extends Error {
   constructor(message, { code } = {}) {
@@ -84,6 +85,35 @@ export function createNoteRepository(db) {
     SET book_id = ?, chapter_id = ?, sort_order = ?
     WHERE id = ?
     RETURNING ${COLUMNS.join(', ')}
+  `);
+  const insertRevisionStmt = db.prepare(`
+    INSERT INTO note_revisions (
+      note_id, title, content, project_ids_json, asset_ids_json, source_updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  const listRevisionsStmt = db.prepare(`
+    SELECT id, note_id, title, content, project_ids_json, asset_ids_json,
+      source_updated_at, created_at
+    FROM note_revisions
+    WHERE note_id = ?
+    ORDER BY id DESC
+  `);
+  const findRevisionStmt = db.prepare(`
+    SELECT id, note_id, title, content, project_ids_json, asset_ids_json,
+      source_updated_at, created_at
+    FROM note_revisions
+    WHERE note_id = ? AND id = ?
+  `);
+  const pruneRevisionsStmt = db.prepare(`
+    DELETE FROM note_revisions
+    WHERE note_id = ?
+      AND id NOT IN (
+        SELECT id
+        FROM note_revisions
+        WHERE note_id = ?
+        ORDER BY id DESC
+        LIMIT ?
+      )
   `);
 
   function validateExactOrder(containerName, containerId, orderedIds, currentIds) {
@@ -452,9 +482,50 @@ export function createNoteRepository(db) {
     return leftIds.every((id, index) => id === rightIds[index]);
   }
 
+  function canonicalIdPayload(ids) {
+    return JSON.stringify([...new Set(ids)].sort((a, b) => a - b));
+  }
+
+  function parseCanonicalIdPayload(payload, fieldName, revisionId) {
+    let ids;
+    try {
+      ids = JSON.parse(payload);
+    } catch {
+      ids = undefined;
+    }
+    if (!Array.isArray(ids)
+      || ids.some((id) => !Number.isSafeInteger(id) || id <= 0)
+      || ids.some((id, index) => index > 0 && id <= ids[index - 1])) {
+      throw new NoteError(
+        `Revision ${revisionId} has a malformed ${fieldName} payload.`,
+        { code: 'MALFORMED_REVISION' },
+      );
+    }
+    return ids;
+  }
+
+  function hydrateRevision(row) {
+    if (!row) return undefined;
+    const { project_ids_json, asset_ids_json, ...revision } = row;
+    return {
+      ...revision,
+      projectIds: parseCanonicalIdPayload(project_ids_json, 'project IDs', row.id),
+      assetIds: parseCanonicalIdPayload(asset_ids_json, 'asset IDs', row.id),
+    };
+  }
+
+  function validateRevisionRetention(revisionRetention) {
+    if (!Number.isSafeInteger(revisionRetention) || revisionRetention <= 0) {
+      throw new NoteError('Revision retention must be a positive integer.', {
+        code: 'INVALID_REVISION_RETENTION',
+      });
+    }
+  }
+
   const saveWithAssociationsTx = db.transaction(({
     id, bookId, chapterId, title, content, projectIds, assetIds,
-  } = {}) => {
+  } = {}, { revisionRetention = DEFAULT_REVISION_RETENTION } = {}) => {
+    validateRevisionRetention(revisionRetention);
     const existing = id === undefined ? undefined : findByIdStmt.get(id);
     if (id !== undefined && !existing) return undefined;
 
@@ -473,6 +544,25 @@ export function createNoteRepository(db) {
       : [];
     const resolvedProjectIds = projectIds ?? currentProjectIds;
     const resolvedAssetIds = assetIds ?? currentAssetIds;
+    const resolvedTitle = existing && typeof title !== 'string' ? existing.title : title;
+    const resolvedContent = existing && typeof content !== 'string' ? existing.content : content;
+    const changed = existing
+      ? resolvedTitle !== existing.title
+        || resolvedContent !== existing.content
+        || !sameIdSet(currentProjectIds, [...new Set(resolvedProjectIds)])
+        || !sameIdSet(currentAssetIds, [...new Set(resolvedAssetIds)])
+      : true;
+
+    if (existing && changed) {
+      insertRevisionStmt.run(
+        existing.id,
+        existing.title,
+        existing.content,
+        canonicalIdPayload(currentProjectIds),
+        canonicalIdPayload(currentAssetIds),
+        existing.updated_at,
+      );
+    }
     const note = id === undefined
       ? createNote(
         { bookId, chapterId, title, content },
@@ -484,15 +574,14 @@ export function createNoteRepository(db) {
 
     const persistedProjectIds = replaceProjectsInTransaction(note.id, resolvedProjectIds);
     const persistedAssetIds = replaceAssetsInTransaction(note.id, resolvedAssetIds);
+    if (existing && changed) {
+      pruneRevisionsStmt.run(note.id, note.id, revisionRetention);
+    }
     return {
       note,
       projectIds: persistedProjectIds,
       assetIds: persistedAssetIds,
-      changed: id === undefined
-        || note.title !== existing.title
-        || note.content !== existing.content
-        || !sameIdSet(currentProjectIds, persistedProjectIds)
-        || !sameIdSet(currentAssetIds, persistedAssetIds),
+      changed,
     };
   });
 
@@ -631,10 +720,21 @@ export function createNoteRepository(db) {
      * one transaction. An omitted id creates a note; a supplied id updates it.
      *
      * @param {{ id?: number, bookId?: number, chapterId?: number|null, title?: string, content?: string, projectIds: number[], assetIds: number[] }} input
-     * @returns {{ note: object, projectIds: number[], assetIds: number[] }|undefined}
+     * @param {{ revisionRetention?: number }} [options]
+     * @returns {{ note: object, projectIds: number[], assetIds: number[], changed: boolean }|undefined}
      */
-    saveWithAssociations(input) {
-      return saveWithAssociationsTx(input);
+    saveWithAssociations(input, options) {
+      return saveWithAssociationsTx(input, options);
+    },
+
+    /** List historical Note snapshots newest-first by revision ID. */
+    listRevisions(noteId) {
+      return listRevisionsStmt.all(noteId).map(hydrateRevision);
+    },
+
+    /** Find one historical snapshot only when it belongs to the supplied Note. */
+    findRevision(noteId, revisionId) {
+      return hydrateRevision(findRevisionStmt.get(noteId, revisionId));
     },
 
     // ─── Project associations ─────────────────────────────────────────────

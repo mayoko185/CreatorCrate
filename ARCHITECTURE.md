@@ -459,6 +459,23 @@ dashboard and page defaults, default watermark, automatic-scan timing).
 Adding a new global setting means adding a key and a small service, not a
 migration.
 
+Note history stores old-state snapshots in `note_revisions`; each changed
+`saveWithAssociations()` snapshots title, raw Markdown, and independent project
+and asset ID sets before replacing the current Note, then prunes that Note's
+history in the same transaction. Unchanged saves neither snapshot nor prune.
+The retention limit comes from the `notes.revision_retention_count` `app_meta`
+setting (default 10) through the Note revision settings service. Restore runs in
+an outer SQLite `IMMEDIATE` transaction: it materializes the Note-scoped source
+revision, verifies every historical association still exists, and invokes the
+same save seam exactly once. Missing targets, malformed history, replacement
+failures, and pruning failures therefore leave the current Note, associations,
+and history unchanged. Historical reads do not require those live targets, so
+deleted associations remain inspectable even when restore is blocked.
+The Notes router exposes Note-scoped historical GET and restore POST routes,
+projects only revision summaries into current detail, reuses the shared sanitized
+Markdown and confirmation paths, and delegates restoration semantics entirely to
+the Note service.
+
 Book aggregate hierarchy validation is a read-only contract in
 [`book-hierarchy.js`](src/services/book-hierarchy.js), not a mutation endpoint.
 `parseBookHierarchyPayload()` accepts one JSON string containing exactly

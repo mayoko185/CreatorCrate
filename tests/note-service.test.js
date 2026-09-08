@@ -10,11 +10,16 @@ import { createBookContentRepository } from '../src/data/book-content-repository
 import { createChapterRepository } from '../src/data/chapter-repository.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
+import { createAppMetaRepository } from '../src/data/app-meta-repository.js';
+import { createNoteRevisionSettingsService } from '../src/services/note-revision-settings-service.js';
 import {
   createNoteService,
   NOTE_TITLE_MAX,
   NoteNotFoundError,
   NoteOperationError,
+  NoteRevisionAssociationUnavailableError,
+  NoteRevisionMalformedError,
+  NoteRevisionNotFoundError,
   NoteValidationError,
 } from '../src/services/note-service.js';
 import { BookNotFoundError } from '../src/services/book-service.js';
@@ -32,6 +37,7 @@ describe('note service', () => {
   let chapterRepository;
   let projectRepository;
   let assetRepository;
+  let noteRevisionSettingsService;
   let service;
   let bookId;
   let chapterId;
@@ -48,6 +54,9 @@ describe('note service', () => {
     chapterRepository = createChapterRepository(db);
     projectRepository = createProjectRepository(db);
     assetRepository = createAssetRepository(db);
+    noteRevisionSettingsService = createNoteRevisionSettingsService({
+      appMetaRepository: createAppMetaRepository(db),
+    });
     bookId = Number(db.prepare(`
       INSERT INTO books (title, sort_order)
       VALUES ('Test book', 0)
@@ -61,6 +70,7 @@ describe('note service', () => {
       chapterRepository,
       bookRepository,
       bookContentRepository,
+      noteRevisionSettingsService,
     });
     nextProjectNumber = 1;
     nextAssetNumber = 1;
@@ -2002,6 +2012,222 @@ describe('note service', () => {
       content: 'original',
       projectIds: [firstProjectId],
       assetIds: [firstAssetId],
+    });
+  });
+
+  describe('revision retention integration', () => {
+    function revise(noteId, count) {
+      for (let index = 1; index <= count; index++) {
+        service.updateNote(noteId, { title: `Version ${index}` });
+      }
+    }
+
+    it.each([
+      [1, 4, 1],
+      [3, 5, 3],
+    ])('honors configured retention %i through the Note service', (retention, saves, expected) => {
+      noteRevisionSettingsService.setRevisionRetention(retention);
+      const note = createNote({ title: 'Initial' });
+      revise(note.id, saves);
+      expect(noteRepository.listRevisions(note.id)).toHaveLength(expected);
+    });
+
+    it('uses fallback 10 when unset', () => {
+      const note = createNote({ title: 'Initial' });
+      revise(note.id, 12);
+      expect(noteRepository.listRevisions(note.id)).toHaveLength(10);
+    });
+
+    it('does not sweep or prune on a setting change or unchanged save', () => {
+      noteRevisionSettingsService.setRevisionRetention(3);
+      const note = createNote({ title: 'Initial' });
+      revise(note.id, 3);
+      noteRevisionSettingsService.setRevisionRetention(1);
+
+      expect(noteRepository.listRevisions(note.id)).toHaveLength(3);
+      service.updateNote(note.id, { title: 'Version 3' });
+      expect(noteRepository.listRevisions(note.id)).toHaveLength(3);
+
+      service.updateNote(note.id, { title: 'Prune now' });
+      expect(noteRepository.listRevisions(note.id)).toHaveLength(1);
+    });
+  });
+
+  describe('revision restore', () => {
+    function revisionFixture() {
+      const firstProjectId = createProject('Historical project');
+      const secondProjectId = createProject('Current project');
+      const firstAssetId = createAsset(firstProjectId, 'source/historical.png');
+      const secondAssetId = createAsset(secondProjectId, 'source/current.png');
+      const note = createNote({
+        title: 'Historical title',
+        content: '# Historical content',
+        projectIds: [firstProjectId],
+        assetIds: [firstAssetId],
+      });
+      service.updateNote(note.id, {
+        title: 'Current title',
+        content: '# Current content',
+        projectIds: [secondProjectId],
+        assetIds: [secondAssetId],
+      });
+      const revision = service.listNoteRevisions(note.id)[0];
+      return {
+        note,
+        revision,
+        firstProjectId,
+        secondProjectId,
+        firstAssetId,
+        secondAssetId,
+      };
+    }
+
+    it('restores title, raw content, and independent association sets while snapshotting current once', () => {
+      const fixture = revisionFixture();
+      const restored = service.restoreNoteRevision(fixture.note.id, fixture.revision.id);
+
+      expect(restored).toMatchObject({
+        id: fixture.note.id,
+        book_id: bookId,
+        chapter_id: chapterId,
+        title: 'Historical title',
+        content: '# Historical content',
+        projectIds: [fixture.firstProjectId],
+        assetIds: [fixture.firstAssetId],
+      });
+      expect(service.listNoteRevisions(fixture.note.id)).toEqual([
+        expect.objectContaining({
+          title: 'Current title',
+          content: '# Current content',
+          projectIds: [fixture.secondProjectId],
+          assetIds: [fixture.secondAssetId],
+        }),
+        expect.objectContaining({ id: fixture.revision.id }),
+      ]);
+    });
+
+    it('does not snapshot or prune an identical restore', () => {
+      const fixture = revisionFixture();
+      service.restoreNoteRevision(fixture.note.id, fixture.revision.id);
+      const identicalRevision = service.listNoteRevisions(fixture.note.id)[1];
+      const before = service.listNoteRevisions(fixture.note.id);
+
+      service.restoreNoteRevision(fixture.note.id, identicalRevision.id);
+
+      expect(service.listNoteRevisions(fixture.note.id)).toEqual(before);
+    });
+
+    it('materializes an oldest source before configured pruning and permits that source to be pruned', () => {
+      noteRevisionSettingsService.setRevisionRetention(3);
+      const note = createNote({ title: 'Version 0' });
+      for (let index = 1; index <= 3; index++) {
+        service.updateNote(note.id, { title: `Version ${index}` });
+      }
+      const oldest = service.listNoteRevisions(note.id).at(-1);
+      noteRevisionSettingsService.setRevisionRetention(1);
+
+      expect(service.restoreNoteRevision(note.id, oldest.id).title).toBe('Version 0');
+      expect(service.listNoteRevisions(note.id)).toEqual([
+        expect.objectContaining({ title: 'Version 3' }),
+      ]);
+    });
+
+    it('rejects a revision belonging to another Note', () => {
+      const fixture = revisionFixture();
+      const other = createNote({ title: 'Other note' });
+      expect(() => service.restoreNoteRevision(other.id, fixture.revision.id))
+        .toThrow(NoteRevisionNotFoundError);
+      expect(service.getNote(other.id).title).toBe('Other note');
+    });
+
+    it('blocks a missing historical project atomically', () => {
+      const fixture = revisionFixture();
+      db.prepare('DELETE FROM projects WHERE id = ?').run(fixture.firstProjectId);
+      const before = service.getNote(fixture.note.id);
+      const history = service.listNoteRevisions(fixture.note.id);
+
+      let error;
+      try {
+        service.restoreNoteRevision(fixture.note.id, fixture.revision.id);
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(NoteRevisionAssociationUnavailableError);
+      expect(error.missingProjectIds).toEqual([fixture.firstProjectId]);
+      expect(service.getNote(fixture.note.id)).toEqual(before);
+      expect(service.listNoteRevisions(fixture.note.id)).toEqual(history);
+    });
+
+    it('blocks a missing historical asset atomically', () => {
+      const fixture = revisionFixture();
+      db.prepare('DELETE FROM assets WHERE id = ?').run(fixture.firstAssetId);
+      const before = service.getNote(fixture.note.id);
+      const history = service.listNoteRevisions(fixture.note.id);
+
+      let error;
+      try {
+        service.restoreNoteRevision(fixture.note.id, fixture.revision.id);
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toBeInstanceOf(NoteRevisionAssociationUnavailableError);
+      expect(error.missingAssetIds).toEqual([fixture.firstAssetId]);
+      expect(service.getNote(fixture.note.id)).toEqual(before);
+      expect(service.listNoteRevisions(fixture.note.id)).toEqual(history);
+    });
+
+    it('maps malformed historical association payloads and leaves everything unchanged', () => {
+      const fixture = revisionFixture();
+      db.prepare('UPDATE note_revisions SET project_ids_json = ? WHERE id = ?')
+        .run('{broken', fixture.revision.id);
+      const before = service.getNote(fixture.note.id);
+      const rawHistory = db.prepare('SELECT * FROM note_revisions WHERE note_id = ? ORDER BY id DESC')
+        .all(fixture.note.id);
+
+      expect(() => service.restoreNoteRevision(fixture.note.id, fixture.revision.id))
+        .toThrow(NoteRevisionMalformedError);
+      expect(service.getNote(fixture.note.id)).toEqual(before);
+      expect(db.prepare('SELECT * FROM note_revisions WHERE note_id = ? ORDER BY id DESC')
+        .all(fixture.note.id)).toEqual(rawHistory);
+    });
+
+    it('rolls back restored fields, associations, snapshot, and pruning failures', () => {
+      const fixture = revisionFixture();
+      noteRevisionSettingsService.setRevisionRetention(1);
+      db.exec(`
+        CREATE TRIGGER fail_revision_prune
+        BEFORE DELETE ON note_revisions
+        WHEN OLD.note_id = ${fixture.note.id}
+        BEGIN
+          SELECT RAISE(ABORT, 'forced revision prune failure');
+        END
+      `);
+      const before = service.getNote(fixture.note.id);
+      const history = service.listNoteRevisions(fixture.note.id);
+
+      expect(() => service.restoreNoteRevision(fixture.note.id, fixture.revision.id))
+        .toThrow(/forced revision prune failure/);
+      expect(service.getNote(fixture.note.id)).toEqual(before);
+      expect(service.listNoteRevisions(fixture.note.id)).toEqual(history);
+    });
+
+    it('rolls back restored fields, associations, and snapshot when replacement fails', () => {
+      const fixture = revisionFixture();
+      db.exec(`
+        CREATE TRIGGER fail_restore_project_save
+        BEFORE INSERT ON note_projects
+        WHEN NEW.note_id = ${fixture.note.id} AND NEW.project_id = ${fixture.firstProjectId}
+        BEGIN
+          SELECT RAISE(ABORT, 'forced restore association failure');
+        END
+      `);
+      const before = service.getNote(fixture.note.id);
+      const history = service.listNoteRevisions(fixture.note.id);
+
+      expect(() => service.restoreNoteRevision(fixture.note.id, fixture.revision.id))
+        .toThrow(/forced restore association failure/);
+      expect(service.getNote(fixture.note.id)).toEqual(before);
+      expect(service.listNoteRevisions(fixture.note.id)).toEqual(history);
     });
   });
 });

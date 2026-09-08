@@ -5,7 +5,12 @@ import { updateBookWithUploadedCover } from '../middleware/book-edit-multipart.j
 import { BookPrimaryImageError } from '../services/book-primary-image-service.js';
 import { ManagedImageError } from '../services/managed-image-service.js';
 import { AssetPickerCursorError } from '../data/asset-picker-pagination.js';
-import { NoteNotFoundError, NoteValidationError } from '../services/note-service.js';
+import {
+  NoteNotFoundError,
+  NoteRevisionAssociationUnavailableError,
+  NoteRevisionNotFoundError,
+  NoteValidationError,
+} from '../services/note-service.js';
 import {
   BookContentIntegrityError,
   BookNotEmptyError,
@@ -1232,6 +1237,10 @@ export function createNotesRouter({
             chapter,
             note: null,
             values,
+            baselineValues: emptyFormValues({
+              chapterId: hasChapterId ? chapterId : undefined,
+              bookId: hasBookId ? bookId : undefined,
+            }),
             projects: listProjectOptions(projectService),
             selectedAssets: listSelectedAssetOptions(assetRepository, values.assetIds),
             errors: err.errors || { general: err.message },
@@ -1295,6 +1304,7 @@ export function createNotesRouter({
     const noteEditForm = buildNoteFormModel({
       assetRepository, tagRepository, nsfwFilterSettingsService,
       appName, book: decoratedBook, chapter, note, values, errors,
+      baselineValues: noteToFormValues(note),
       projects: listProjectOptions(projectService),
       selectedAssets: listSelectedAssetOptions(assetRepository, values.assetIds),
       action: 'Edit', submitUrl: `/notes/${note.id}`,
@@ -1307,9 +1317,97 @@ export function createNotesRouter({
       }),
       projects: resolveAssociatedProjects(note, projectService),
       assets: resolveAssociatedAssets(note, assetRepository),
+      revisions: noteService.listNoteRevisions(note.id).map((revision) => ({
+        id: revision.id,
+        createdAt: revision.created_at,
+      })),
       navCurrentPageId: note.id, noteEditForm, noteEditDialogOpen: open,
     });
   }
+
+  async function renderNoteRevision(res, { note, chapter, book, revision }, { notice = null, status = 200 } = {}) {
+    const [decoratedBook] = withBookPrimaryImageNsfwBlur(
+      await resolveBookPrimaryImageMedia(bookPrimaryImageService.attachPrimaryImages([book]), managedMediaService),
+      {
+        assetRepository,
+        tagRepository,
+        filterEnabled: nsfwFilterSettingsService.isEnabled(),
+      },
+    );
+    return res.status(status).render('notes/revision.njk', {
+      appName,
+      book: decoratedBook,
+      chapter,
+      note,
+      revision,
+      notice,
+      bookContents: bookService.listBookContents(book.id),
+      navCurrentPageId: note.id,
+      contentHtml: markdownRenderer.renderMarkdown(revision.content, {
+        suppressLeadingH1Matching: revision.title,
+      }),
+      projects: resolveHistoricalProjects(revision.projectIds, projectService),
+      assets: resolveHistoricalAssets(revision.assetIds, assetRepository),
+    });
+  }
+
+  // Historical Note routes precede the current Note detail route.
+  router.get('/:id/revisions/:revisionId', async (req, res, next) => {
+    const id = parseId(req.params.id);
+    const revisionId = parseId(req.params.revisionId);
+    if (id === null || revisionId === null) return next(createNotFound());
+
+    try {
+      const hierarchy = loadNoteHierarchy({ noteService, chapterService, bookService, id });
+      const revision = noteService.getNoteRevision(id, revisionId);
+      return await renderNoteRevision(res, { ...hierarchy, revision });
+    } catch (err) {
+      if (err instanceof NoteNotFoundError
+        || err instanceof NoteRevisionNotFoundError
+        || err instanceof ChapterNotFoundError
+        || err instanceof BookNotFoundError) {
+        return next(createNotFound());
+      }
+      return next(err);
+    }
+  });
+
+  router.post('/:id/revisions/:revisionId/restore', async (req, res, next) => {
+    const id = parseId(req.params.id);
+    const revisionId = parseId(req.params.revisionId);
+    if (id === null || revisionId === null) return next(createNotFound());
+
+    try {
+      noteService.restoreNoteRevision(id, revisionId);
+      return res.redirect(`/notes/${id}`);
+    } catch (err) {
+      if (err instanceof NoteNotFoundError || err instanceof NoteRevisionNotFoundError) {
+        return next(createNotFound());
+      }
+      if (err instanceof NoteRevisionAssociationUnavailableError) {
+        try {
+          const hierarchy = loadNoteHierarchy({ noteService, chapterService, bookService, id });
+          const revision = noteService.getNoteRevision(id, revisionId);
+          return await renderNoteRevision(res, { ...hierarchy, revision }, {
+            status: 409,
+            notice: {
+              variant: 'error',
+              text: 'This revision cannot be restored because one or more linked Projects or Assets are unavailable. The current Page was not changed.',
+            },
+          });
+        } catch (renderError) {
+          if (renderError instanceof NoteNotFoundError
+            || renderError instanceof NoteRevisionNotFoundError
+            || renderError instanceof ChapterNotFoundError
+            || renderError instanceof BookNotFoundError) {
+            return next(createNotFound());
+          }
+          return next(renderError);
+        }
+      }
+      return next(err);
+    }
+  });
 
   // GET /notes/:id — Note detail
   router.get('/:id', async (req, res, next) => {
@@ -1418,7 +1516,7 @@ export function createNotesRouter({
 
 function buildNoteFormModel({
   assetRepository, tagRepository, nsfwFilterSettingsService,
-  appName, book = null, chapter = null, note, values, projects, selectedAssets, errors, action, submitUrl,
+  appName, book = null, chapter = null, note, values, baselineValues = values, projects, selectedAssets, errors, action, submitUrl,
   moveTargets = [], bookContents = [], navCurrentChapterId = null, navCurrentPageId = null,
 }) {
   return {
@@ -1432,6 +1530,10 @@ function buildNoteFormModel({
     connections: buildNoteConnections(assetRepository, projects, values, note, tagRepository, nsfwFilterSettingsService),
     selectedProjectIds: values.projectIds.map(String),
     selectedAssetIds: values.assetIds.map(String),
+    dialogBaselineJson: buildNoteDialogBaselineJson(
+      baselineValues,
+      assetRepository,
+    ),
     errors,
     action,
     submitUrl,
@@ -1462,6 +1564,26 @@ function buildNoteAssetThumbnails(ids, { assetRepository, tagRepository, nsfwFil
   }));
 }
 
+function noteAssetOptionLabel(asset) {
+  return `${asset.filename}${asset.relativePath && asset.relativePath !== asset.filename ? ` (${asset.relativePath})` : ''} \u2014 Project: ${asset.projectTitle}${asset.isProjectArchived ? ' (Archived project)' : ''}${!asset.isPresent ? ' (Missing)' : ''}`;
+}
+
+function buildNoteDialogBaselineJson(values, assetRepository) {
+  const assets = listSelectedAssetOptions(assetRepository, values.assetIds);
+  return JSON.stringify({
+    title: String(values.title ?? ''),
+    content: String(values.content ?? ''),
+    projectIds: [...new Set(values.projectIds.map(String))].sort(),
+    assetIds: [...new Set(values.assetIds.map(String))].sort(),
+    assets: assets.map(asset => ({
+      id: String(asset.id),
+      projectId: String(asset.projectId),
+      label: noteAssetOptionLabel(asset),
+      thumbnail: null,
+    })),
+  }).replace(/</g, '\\u003c');
+}
+
 function buildNoteConnections(assetRepository, projects, values, note, tagRepository, nsfwFilterSettingsService) {
   const selected = new Set(values.assetIds.map(String));
   const persisted = new Set((note?.assetIds || []).map(String));
@@ -1486,7 +1608,7 @@ function buildNoteConnections(assetRepository, projects, values, note, tagReposi
 
   const option = asset => ({
     id: `note-asset-option-${asset.id}`, value: String(asset.id),
-    label: `${asset.filename}${asset.relativePath && asset.relativePath !== asset.filename ? ' (' + asset.relativePath + ')' : ''} \u2014 Project: ${asset.projectTitle}${asset.isProjectArchived ? ' (Archived project)' : ''}${!asset.isPresent ? ' (Missing)' : ''}`,
+    label: noteAssetOptionLabel(asset),
     selected: selected.has(String(asset.id)),
     thumbnail: thumbnails.get(asset.id),
     // Prefix the key: the shared attribute renderer treats numeric "1" as boolean true.
@@ -1621,6 +1743,29 @@ function resolveAssociatedAssets(note, assetRepository) {
       projectId: asset.project_id,
       projectTitle: asset.project_title,
     }));
+}
+
+function resolveHistoricalProjects(ids, projectService) {
+  return (ids || []).map((id) => {
+    const project = projectService.findById(id);
+    return project ? { ...toProjectOption(project), available: true } : { id, available: false };
+  });
+}
+
+function resolveHistoricalAssets(ids, assetRepository) {
+  const available = new Map(
+    assetRepository.findAssetsForNoteAssociation(ids || []).map((asset) => [asset.id, asset]),
+  );
+  return (ids || []).map((id) => {
+    const asset = available.get(id);
+    if (!asset) return { id, available: false };
+    return {
+      ...toAssetOption(asset),
+      projectId: asset.project_id,
+      projectTitle: asset.project_title,
+      available: true,
+    };
+  });
 }
 
 function listSelectedAssetOptions(assetRepository, ids) {

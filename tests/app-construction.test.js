@@ -433,6 +433,7 @@ import { createProjectService } from '../src/services/project-service.js';
 import { createProjectOperationCoordinator, ProjectOperationError } from '../src/services/project-operation-coordinator.js';
 import { AssetActionError } from '../src/services/asset-action-service.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
+import { NOTE_REVISION_RETENTION_KEY } from '../src/services/note-revision-settings-service.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -531,6 +532,7 @@ describe('app construction — asset actions chunk 3 wiring', () => {
       chapterRepository,
       bookRepository,
       bookContentRepository,
+      noteRevisionSettingsService: app.locals.noteRevisionSettingsService,
       applicationLogger: app.locals.applicationLogger,
     });
     expect(serviceArgs[0].bookContentRepository).toBe(bookContentRepository);
@@ -629,6 +631,17 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     expect(dependencyInstrumentation.settingsRouters[0].args[0].appMetaRepository)
       .toBe(appMetaRepository);
     expect(dependencyInstrumentation.settingsRouters[0].args[0].pageDefaultsService).toBeUndefined();
+  });
+
+  it('constructs Note revision settings over shared app metadata and injects it into Notes', () => {
+    const app = buildApp();
+    const settings = app.locals.noteRevisionSettingsService;
+    const [{ args: noteServiceArgs }] = dependencyInstrumentation.noteServices;
+
+    expect(settings.getRevisionRetentionSetting()).toEqual({ value: 10, isDefault: true });
+    expect(settings.setRevisionRetention(4)).toBe(4);
+    expect(app.locals.appMetaRepository.getValue(NOTE_REVISION_RETENTION_KEY)).toBe('4');
+    expect(noteServiceArgs[0].noteRevisionSettingsService).toBe(settings);
   });
 
   it('constructs one app-scoped open-locally settings service over the shared app-meta repository', () => {

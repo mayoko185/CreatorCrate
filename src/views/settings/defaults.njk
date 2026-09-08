@@ -5,7 +5,7 @@
 {% set page_title = "Settings — Defaults" %}
 
 {% block content %}
-  {{ pageHeading.render("Choose persistent defaults for new projects.") }}
+  {{ pageHeading.render("Choose persistent defaults for CreatorCrate.") }}
 
   {% if notice %}
     {% set noticeVariant = notice.variant %}
@@ -93,6 +93,25 @@
 
           </section>
         {% endfor %}
+
+        <section id="defaults-notes" class="settings-section settings-defaults-section" aria-labelledby="defaults-notes-heading">
+          <h3 id="defaults-notes-heading">Notes</h3>
+          <div class="field{% if noteRevisionRetention.error %} field-error{% endif %}">
+            <label for="{{ noteRevisionRetention.id }}">Old revisions to keep</label>
+            <input id="{{ noteRevisionRetention.id }}" name="{{ noteRevisionRetention.name }}" type="number"
+                   value="{{ noteRevisionRetention.value }}" min="1" max="9007199254740991" step="1" required
+                   inputmode="numeric" data-autosubmit="fetch"
+                   aria-describedby="{{ noteRevisionRetention.id }}-help {{ noteRevisionRetention.id }}-effective{% if noteRevisionRetention.error %} {{ noteRevisionRetention.id }}-error{% endif %}"
+                   {% if noteRevisionRetention.error %}aria-invalid="true"{% endif %}>
+            <p class="help-text" id="{{ noteRevisionRetention.id }}-help">Number of previous revisions retained for each Note; the current Note is additional. Changes take effect when a Note is next changed or restored.</p>
+            {% if noteRevisionRetention.usesFallback %}
+              <span class="help-text" id="{{ noteRevisionRetention.id }}-effective" data-settings-defaults-effective>Application fallback: <strong>{{ noteRevisionRetention.effectiveValue }}</strong></span>
+            {% else %}
+              <span class="help-text" id="{{ noteRevisionRetention.id }}-effective" data-settings-defaults-effective>Saved default: <strong>{{ noteRevisionRetention.effectiveValue }}</strong></span>
+            {% endif %}
+            {% if noteRevisionRetention.error %}<span class="field-error-message" id="{{ noteRevisionRetention.id }}-error">{{ noteRevisionRetention.error }}</span>{% endif %}
+          </div>
+        </section>
 
         <span class="help-text" data-settings-fetch-save-status role="status" aria-live="polite" aria-atomic="true"></span>
 

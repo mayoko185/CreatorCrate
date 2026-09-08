@@ -19,6 +19,7 @@ import {
 import { TAG_NAME_MAX, TagNotFoundError, TagValidationError } from '../services/tag-service.js';
 import { OpenLocallySettingsValidationError } from '../services/open-locally-settings-service.js';
 import { SocialPrepSettingsValidationError } from '../services/social-prep-settings-service.js';
+import { NoteRevisionSettingsValidationError } from '../services/note-revision-settings-service.js';
 import {
   PreviewCategoryValidationError,
   PREVIEW_CATEGORY_DISABLED_VALUE,
@@ -113,6 +114,8 @@ const DEFAULTS_POST_SECTIONS = Object.freeze([
   ...DEFAULTS_PAGE_SECTIONS,
   Object.freeze({ page: 'releases' }),
 ]);
+
+const NOTE_REVISION_RETENTION_FIELD = 'noteRevisionRetention';
 
 const DEFAULT_OPTION_LABELS = Object.freeze({
   view: 'Default view',
@@ -636,6 +639,14 @@ function renderSocialPrepPage(req, res, {
   });
 }
 
+function getNoteRevisionSettingsService(req) {
+  const service = req.app?.locals?.noteRevisionSettingsService;
+  if (!service) {
+    throw new Error('Settings Defaults requires app.locals.noteRevisionSettingsService.');
+  }
+  return service;
+}
+
 function buildDefaultsPageModel(service, {
   submittedValues = null,
   errors = {},
@@ -688,6 +699,30 @@ function buildDefaultsPageModel(service, {
     sections,
     hasErrors: errorMessages.length > 0,
     errorMessages,
+  };
+}
+
+function noteRevisionRetentionDisplayValue(value) {
+  if (typeof value === 'string' || typeof value === 'number') return String(value);
+  if (Array.isArray(value)) return value.map((item) => String(item)).join(', ');
+  return '';
+}
+
+function buildNoteRevisionRetentionModel(service, {
+  submittedValue,
+  submitted = false,
+  error = null,
+} = {}) {
+  const setting = service.getRevisionRetentionSetting();
+  return {
+    id: NOTE_REVISION_RETENTION_FIELD,
+    name: NOTE_REVISION_RETENTION_FIELD,
+    value: submitted
+      ? noteRevisionRetentionDisplayValue(submittedValue)
+      : String(setting.value),
+    usesFallback: setting.isDefault,
+    effectiveValue: String(setting.value),
+    error,
   };
 }
 
@@ -815,15 +850,23 @@ function renderDefaultsPage(req, res, {
   status = 200,
   notice = null,
   submittedValues = null,
+  submittedNoteRevisionRetention,
+  noteRevisionRetentionSubmitted = false,
   errors = {},
 } = {}) {
   const service = getPageDefaultsService(req);
+  const noteRevisionSettingsService = getNoteRevisionSettingsService(req);
   res.status(status).render('settings/defaults.njk', {
     appName,
     notice,
     ...buildDefaultsPageModel(service, {
       submittedValues,
       errors,
+    }),
+    noteRevisionRetention: buildNoteRevisionRetentionModel(noteRevisionSettingsService, {
+      submittedValue: submittedNoteRevisionRetention,
+      submitted: noteRevisionRetentionSubmitted,
+      error: errors[NOTE_REVISION_RETENTION_FIELD] || null,
     }),
   });
 }
@@ -1087,6 +1130,14 @@ export function createSettingsRouter({
 
   router.post('/defaults', (req, res, next) => {
     const service = getPageDefaultsService(req);
+    const noteRevisionSettingsService = getNoteRevisionSettingsService(req);
+    const noteRevisionRetentionSubmitted = Object.hasOwn(
+      req.body && typeof req.body === 'object' ? req.body : {},
+      NOTE_REVISION_RETENTION_FIELD,
+    );
+    const submittedNoteRevisionRetention = noteRevisionRetentionSubmitted
+      ? req.body[NOTE_REVISION_RETENTION_FIELD]
+      : undefined;
     const submittedValues = readSubmittedPageDefaults(req.body, service);
     let validation;
     try {
@@ -1108,6 +1159,14 @@ export function createSettingsRouter({
     const changedOptionsByPage = new Map();
     try {
       db.transaction(() => {
+        if (noteRevisionRetentionSubmitted) {
+          const previousRetention = noteRevisionSettingsService.getRevisionRetention();
+          const savedRetention = noteRevisionSettingsService.setRevisionRetention(
+            submittedNoteRevisionRetention,
+          );
+          if (savedRetention !== previousRetention) changedOptionsByPage.set('notes', 1);
+        }
+
         for (const { page } of DEFAULTS_POST_SECTIONS) {
           for (const option of Object.keys(PAGE_DEFAULT_DEFINITIONS[page])) {
             if (!defaultsPageWasSubmitted(req.body, page)) continue;
@@ -1124,11 +1183,23 @@ export function createSettingsRouter({
         }
       })();
     } catch (err) {
+      if (err instanceof NoteRevisionSettingsValidationError) {
+        renderDefaultsPage(req, res, {
+          appName,
+          status: 422,
+          submittedValues,
+          submittedNoteRevisionRetention,
+          noteRevisionRetentionSubmitted: true,
+          errors: {
+            [NOTE_REVISION_RETENTION_FIELD]: err.errors?.revisionRetention || err.message,
+          },
+        });
+        return;
+      }
       return next(err);
     }
 
-    const changedPages = DEFAULTS_POST_SECTIONS
-      .map(({ page }) => page)
+    const changedPages = [...DEFAULTS_POST_SECTIONS.map(({ page }) => page), 'notes']
       .filter((page) => changedOptionsByPage.has(page));
     if (changedPages.length > 0) {
       logSettingsActivity(applicationLogger, 'settings.defaults.updated', {

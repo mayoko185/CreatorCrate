@@ -52,14 +52,14 @@ describe('note repository', () => {
       return strictCreate({ bookId, chapterId, ...input });
     };
     repository.reorder = (orderedIds) => rawReorder(defaultChapterId, orderedIds);
-    repository.saveWithAssociations = (input = {}) => {
+    repository.saveWithAssociations = (input = {}, options) => {
       const chapterId = Object.hasOwn(input, 'chapterId') ? input.chapterId : defaultChapterId;
       const bookId = Object.hasOwn(input, 'bookId')
         ? input.bookId
         : chapterId == null
           ? defaultBookId
           : db.prepare('SELECT book_id FROM chapters WHERE id = ?').pluck().get(chapterId);
-      return rawSaveWithAssociations({ bookId, chapterId, ...input });
+      return rawSaveWithAssociations({ bookId, chapterId, ...input }, options);
     };
   });
 
@@ -1003,6 +1003,225 @@ describe('note repository', () => {
       expect(repository.findById(note.id)).toMatchObject({ title: 'Before', content: 'original' });
       expect(repository.listProjectsForNote(note.id)).toEqual([firstProjectId]);
       expect(repository.listAssetsForNote(note.id)).toEqual([firstAssetId]);
+      expect(repository.listRevisions(note.id)).toEqual([]);
+    });
+
+    describe('Note revisions', () => {
+      function createRevisionFixture() {
+        const firstProjectId = createProject('Revision first project');
+        const secondProjectId = createProject('Revision second project');
+        const firstAssetId = createAsset(firstProjectId, 'source/revision-first.png');
+        const secondAssetId = createAsset(secondProjectId, 'source/revision-second.png');
+        const note = repository.saveWithAssociations({
+          title: 'Before',
+          content: '# Original',
+          projectIds: [firstProjectId],
+          assetIds: [firstAssetId],
+        }).note;
+        return { note, firstProjectId, secondProjectId, firstAssetId, secondAssetId };
+      }
+
+      it('does not create history for a new Note or an unchanged save', () => {
+        const { note, firstProjectId, firstAssetId } = createRevisionFixture();
+        expect(repository.listRevisions(note.id)).toEqual([]);
+
+        const result = repository.saveWithAssociations({
+          id: note.id,
+          title: note.title,
+          content: note.content,
+          projectIds: [firstProjectId, firstProjectId],
+          assetIds: [firstAssetId, firstAssetId],
+        });
+
+        expect(result.changed).toBe(false);
+        expect(repository.listRevisions(note.id)).toEqual([]);
+      });
+
+      it('does not prune existing history during an unchanged save', () => {
+        const { note } = createRevisionFixture();
+        repository.saveWithAssociations({ id: note.id, title: 'Second' });
+        repository.saveWithAssociations({ id: note.id, title: 'Third' });
+        const historyBefore = repository.listRevisions(note.id);
+
+        const result = repository.saveWithAssociations(
+          { id: note.id, title: 'Third' },
+          { revisionRetention: 1 },
+        );
+
+        expect(result.changed).toBe(false);
+        expect(repository.listRevisions(note.id)).toEqual(historyBefore);
+      });
+
+      it.each([
+        ['title', ({ secondProjectId, secondAssetId }) => ({ title: 'After' })],
+        ['content', ({ secondProjectId, secondAssetId }) => ({ content: '# Changed' })],
+        ['project association', ({ secondProjectId }) => ({ projectIds: [secondProjectId] })],
+        ['asset association', ({ secondAssetId }) => ({ assetIds: [secondAssetId] })],
+      ])('snapshots the complete old state for a %s-only change', (label, change) => {
+        const fixture = createRevisionFixture();
+        const result = repository.saveWithAssociations({ id: fixture.note.id, ...change(fixture) });
+
+        expect(result.changed).toBe(true);
+        expect(repository.listRevisions(fixture.note.id)).toEqual([
+          expect.objectContaining({
+            note_id: fixture.note.id,
+            title: 'Before',
+            content: '# Original',
+            projectIds: [fixture.firstProjectId],
+            assetIds: [fixture.firstAssetId],
+            source_updated_at: fixture.note.updated_at,
+          }),
+        ]);
+      });
+
+      it('keeps project and asset associations independent in snapshots', () => {
+        const fixture = createRevisionFixture();
+        repository.saveWithAssociations({
+          id: fixture.note.id,
+          projectIds: [fixture.secondProjectId],
+        });
+        repository.saveWithAssociations({
+          id: fixture.note.id,
+          assetIds: [fixture.secondAssetId],
+        });
+
+        const revisions = repository.listRevisions(fixture.note.id);
+        expect(revisions[0]).toMatchObject({
+          projectIds: [fixture.secondProjectId],
+          assetIds: [fixture.firstAssetId],
+        });
+        expect(revisions[1]).toMatchObject({
+          projectIds: [fixture.firstProjectId],
+          assetIds: [fixture.firstAssetId],
+        });
+      });
+
+      it('stores historical association IDs as sorted, deduplicated JSON', () => {
+        const fixture = createRevisionFixture();
+        repository.saveWithAssociations({
+          id: fixture.note.id,
+          projectIds: [fixture.secondProjectId, fixture.firstProjectId, fixture.secondProjectId],
+          assetIds: [fixture.secondAssetId, fixture.firstAssetId, fixture.secondAssetId],
+        });
+        repository.saveWithAssociations({ id: fixture.note.id, title: 'After associations' });
+
+        expect(db.prepare(`
+          SELECT project_ids_json, asset_ids_json
+          FROM note_revisions
+          WHERE note_id = ?
+          ORDER BY id DESC
+          LIMIT 1
+        `).get(fixture.note.id)).toEqual({
+          project_ids_json: JSON.stringify([fixture.firstProjectId, fixture.secondProjectId]),
+          asset_ids_json: JSON.stringify([fixture.firstAssetId, fixture.secondAssetId]),
+        });
+      });
+
+      it('lists revisions newest-first and retains only the newest ten old states', () => {
+        const { note } = createRevisionFixture();
+        let currentTitle = note.title;
+        for (let index = 1; index <= 12; index++) {
+          currentTitle = `Version ${index}`;
+          repository.saveWithAssociations(
+            { id: note.id, title: currentTitle },
+            { revisionRetention: 10 },
+          );
+        }
+
+        const revisions = repository.listRevisions(note.id);
+        expect(revisions).toHaveLength(10);
+        expect(revisions.map((revision) => revision.title)).toEqual([
+          'Version 11', 'Version 10', 'Version 9', 'Version 8', 'Version 7',
+          'Version 6', 'Version 5', 'Version 4', 'Version 3', 'Version 2',
+        ]);
+        expect(revisions.map((revision) => revision.id))
+          .toEqual([...revisions.map((revision) => revision.id)].sort((a, b) => b - a));
+        expect(repository.findById(note.id).title).toBe('Version 12');
+      });
+
+      it('supports retention of one old state and rejects zero retention', () => {
+        const { note } = createRevisionFixture();
+        repository.saveWithAssociations({ id: note.id, title: 'Second' });
+        repository.saveWithAssociations(
+          { id: note.id, title: 'Third' },
+          { revisionRetention: 1 },
+        );
+
+        expect(repository.listRevisions(note.id).map((revision) => revision.title)).toEqual(['Second']);
+        expect(repository.findById(note.id).title).toBe('Third');
+        expect(() => repository.saveWithAssociations(
+          { id: note.id, title: 'Rejected' },
+          { revisionRetention: 0 },
+        )).toThrowError(expect.objectContaining({ code: 'INVALID_REVISION_RETENTION' }));
+        expect(repository.findById(note.id).title).toBe('Third');
+      });
+
+      it('scopes revision lookup by both Note ID and revision ID', () => {
+        const first = createRevisionFixture();
+        const second = repository.saveWithAssociations({
+          title: 'Other before', content: '', projectIds: [], assetIds: [],
+        }).note;
+        repository.saveWithAssociations({ id: first.note.id, title: 'First after' });
+        repository.saveWithAssociations({ id: second.id, title: 'Other after' });
+        const firstRevision = repository.listRevisions(first.note.id)[0];
+
+        expect(repository.findRevision(first.note.id, firstRevision.id)).toEqual(firstRevision);
+        expect(repository.findRevision(second.id, firstRevision.id)).toBeUndefined();
+      });
+
+      it('rejects malformed persisted association payloads at the repository boundary', () => {
+        const { note } = createRevisionFixture();
+        repository.saveWithAssociations({ id: note.id, title: 'After' });
+        db.prepare('UPDATE note_revisions SET project_ids_json = ? WHERE note_id = ?')
+          .run('[2,1]', note.id);
+
+        expect(() => repository.listRevisions(note.id))
+          .toThrowError(expect.objectContaining({ code: 'MALFORMED_REVISION' }));
+      });
+
+      it('rolls back the update when snapshot insertion fails', () => {
+        const fixture = createRevisionFixture();
+        db.exec(`
+          CREATE TRIGGER fail_note_revision_insert
+          BEFORE INSERT ON note_revisions
+          BEGIN
+            SELECT RAISE(ABORT, 'forced revision insert failure');
+          END
+        `);
+
+        expect(() => repository.saveWithAssociations({
+          id: fixture.note.id,
+          title: 'After',
+          projectIds: [fixture.secondProjectId],
+          assetIds: [fixture.secondAssetId],
+        })).toThrow(/forced revision insert failure/);
+
+        expect(repository.findById(fixture.note.id)).toMatchObject({ title: 'Before', content: '# Original' });
+        expect(repository.listProjectsForNote(fixture.note.id)).toEqual([fixture.firstProjectId]);
+        expect(repository.listAssetsForNote(fixture.note.id)).toEqual([fixture.firstAssetId]);
+        expect(repository.listRevisions(fixture.note.id)).toEqual([]);
+      });
+
+      it('rolls back snapshot and Note changes when pruning fails', () => {
+        const fixture = createRevisionFixture();
+        repository.saveWithAssociations({ id: fixture.note.id, title: 'Second' });
+        const historyBefore = repository.listRevisions(fixture.note.id);
+        db.exec(`
+          CREATE TRIGGER fail_note_revision_prune
+          BEFORE DELETE ON note_revisions
+          BEGIN
+            SELECT RAISE(ABORT, 'forced revision prune failure');
+          END
+        `);
+
+        expect(() => repository.saveWithAssociations(
+          { id: fixture.note.id, title: 'Third' },
+          { revisionRetention: 1 },
+        )).toThrow(/forced revision prune failure/);
+
+        expect(repository.findById(fixture.note.id).title).toBe('Second');
+        expect(repository.listRevisions(fixture.note.id)).toEqual(historyBefore);
+      });
     });
   });
 

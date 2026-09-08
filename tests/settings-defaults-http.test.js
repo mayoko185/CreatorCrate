@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
+import { NOTE_REVISION_RETENTION_KEY } from '../src/services/note-revision-settings-service.js';
 import { authenticate, AUTH_CONFIG } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -50,6 +51,10 @@ function selectedValue(html, id) {
   const select = html.match(new RegExp(`<select id="${id}"[\\s\\S]*?</select>`))?.[0];
   if (!select) throw new Error(`Select ${id} was not rendered.`);
   return select.match(/<option value="([^"]+)" selected>/)?.[1];
+}
+
+function inputMarkup(html, id) {
+  return html.match(new RegExp(`<input id="${id}"[^>]*>`))?.[0] || '';
 }
 
 function settingsSection(html, id) {
@@ -120,11 +125,38 @@ describe('settings — page defaults HTTP', () => {
       expect(form).toContain(`name="${field}"`);
     }
     expect(form).toContain('id="defaults-new-projects" class="settings-section settings-defaults-section"');
+    expect(form).toContain('id="defaults-notes" class="settings-section settings-defaults-section"');
     expect(form).not.toContain('id="defaults-releases"');
     expect(form).toContain('data-settings-fetch-save-status role="status" aria-live="polite" aria-atomic="true"');
     expect(res.text.indexOf('data-settings-defaults-region')).toBeLessThan(res.text.indexOf('<form id="settings-defaults-form"'));
     expect(form).toContain('<noscript>');
     expect(form).toContain('<button type="submit" class="button button-primary">Save Defaults</button>');
+  });
+
+  it('renders Note revision retention with fallback 10 without persisting it on GET', async () => {
+    const res = await agent.get('/settings/defaults').expect(200);
+    const notes = settingsSection(res.text, 'defaults-notes');
+    const input = inputMarkup(notes, 'noteRevisionRetention');
+
+    expect(notes).toContain('<h3 id="defaults-notes-heading">Notes</h3>');
+    expect(notes).toContain('<label for="noteRevisionRetention">Old revisions to keep</label>');
+    expect(notes).toContain('Number of previous revisions retained for each Note; the current Note is additional. Changes take effect when a Note is next changed or restored.');
+    expect(input).toMatch(/name="noteRevisionRetention" type="number"/);
+    expect(input).toContain('value="10"');
+    expect(input).toContain('min="1" max="9007199254740991" step="1" required');
+    expect(input).toContain('data-autosubmit="fetch"');
+    expect(notes).toContain('Application fallback: <strong>10</strong>');
+    expect(readMeta(db, NOTE_REVISION_RETENTION_KEY)).toBeUndefined();
+  });
+
+  it('renders the saved Note revision retention value', async () => {
+    writeMeta(db, NOTE_REVISION_RETENTION_KEY, '27');
+
+    const res = await agent.get('/settings/defaults').expect(200);
+    const notes = settingsSection(res.text, 'defaults-notes');
+
+    expect(inputMarkup(notes, 'noteRevisionRetention')).toContain('value="27"');
+    expect(notes).toContain('Saved default: <strong>27</strong>');
   });
 
   it('uses the native-backed single select contract for New Projects Status', async () => {
@@ -156,7 +188,7 @@ describe('settings — page defaults HTTP', () => {
     expect(selectedValue(res.text, 'new_projectStatus')).toBe('tbd');
 
 
-    expect((res.text.match(/Application fallback:/g) || [])).toHaveLength(1);
+    expect((res.text.match(/Application fallback:/g) || [])).toHaveLength(2);
     expect(res.text).toContain('These defaults apply only to new projects. Changing them does not modify existing projects.');
   });
 
@@ -196,6 +228,63 @@ describe('settings — page defaults HTTP', () => {
     expect(readMeta(db, 'page_defaults.release_management.order')).toBe('desc');
   });
 
+  it('persists Note revision retention without mutating Notes or revisions', async () => {
+    const bookId = Number(db.prepare("INSERT INTO books (title, sort_order) VALUES ('Book', 0)").run().lastInsertRowid);
+    const noteId = Number(db.prepare(`
+      INSERT INTO notes (book_id, title, content, sort_order)
+      VALUES (?, 'Current title', 'Current content', 0)
+    `).run(bookId).lastInsertRowid);
+    db.prepare(`
+      INSERT INTO note_revisions (
+        note_id, title, content, project_ids_json, asset_ids_json, source_updated_at
+      ) VALUES (?, 'Old title', 'Old content', '[]', '[]', '2026-09-08 12:00:00')
+    `).run(noteId);
+    const notesBefore = db.prepare('SELECT * FROM notes ORDER BY id').all();
+    const revisionsBefore = db.prepare('SELECT * FROM note_revisions ORDER BY id').all();
+
+    await agent
+      .post('/settings/defaults')
+      .type('form')
+      .send({ ...VALID_DEFAULTS, noteRevisionRetention: '5', _csrf: csrfToken })
+      .expect(302);
+
+    expect(readMeta(db, NOTE_REVISION_RETENTION_KEY)).toBe('5');
+    expect(db.prepare('SELECT * FROM notes ORDER BY id').all()).toEqual(notesBefore);
+    expect(db.prepare('SELECT * FROM note_revisions ORDER BY id').all()).toEqual(revisionsBefore);
+
+    const res = await agent.get('/settings/defaults').expect(200);
+    expect(inputMarkup(settingsSection(res.text, 'defaults-notes'), 'noteRevisionRetention')).toContain('value="5"');
+  });
+
+  it.each([
+    ['zero', '0'],
+    ['negative', '-1'],
+    ['fractional', '1.5'],
+    ['blank', ''],
+    ['malformed', 'five'],
+    ['object-like malformed', '[object Object]'],
+    ['unsafe integer', '9007199254740992'],
+    ['repeated values', ['5', '6']],
+  ])('rejects %s Note revision retention atomically', async (_label, value) => {
+    writeMeta(db, NOTE_REVISION_RETENTION_KEY, '7');
+    writeMeta(db, defaultKey('new_project', 'status'), 'planned');
+
+    const res = await agent
+      .post('/settings/defaults')
+      .type('form')
+      .send({
+        new_projectStatus: 'ready',
+        noteRevisionRetention: value,
+        _csrf: csrfToken,
+      })
+      .expect(422);
+
+    expect(res.text).toContain('Revision retention must be a positive safe integer.');
+    expect(inputMarkup(settingsSection(res.text, 'defaults-notes'), 'noteRevisionRetention')).toContain('aria-invalid="true"');
+    expect(readMeta(db, NOTE_REVISION_RETENTION_KEY)).toBe('7');
+    expect(readMeta(db, defaultKey('new_project', 'status'))).toBe('planned');
+  });
+
   it('accepts and persists explicit legacy Releases defaults posts', async () => {
     await agent.get('/settings/defaults').expect(200);
 
@@ -214,6 +303,7 @@ describe('settings — page defaults HTTP', () => {
     expect(readMeta(db, defaultKey('new_project', 'status'))).toBe('ready');
     expect(readMeta(db, defaultKey('releases', 'sort'))).toBe('updated');
     expect(readMeta(db, defaultKey('releases', 'order'))).toBe('desc');
+    expect(readMeta(db, NOTE_REVISION_RETENTION_KEY)).toBeUndefined();
   });
 
   it('records only effective page-default changes with safe aggregate context', async () => {

@@ -701,6 +701,7 @@ function makeFetchSaveFixture({ action = '/settings/defaults', values = { value:
 
 function makeDefaultsFetchFixture({ value = 'tbd' } = {}) {
   const fixture = makeFetchSaveFixture({ values: { new_projectStatus: value } });
+  const numberInputQueries = { count: 0 };
   const effective = {
     parentNode: {},
     replacement: null,
@@ -716,6 +717,7 @@ function makeDefaultsFetchFixture({ value = 'tbd' } = {}) {
     querySelectorAll(selector) {
       if (selector === '#settings-defaults-form') return [fixture.form];
       if (selector === '[data-cc-dropdown]') return [];
+      if (selector === 'input[type="number"]') numberInputQueries.count += 1;
       return [];
     },
   };
@@ -731,7 +733,7 @@ function makeDefaultsFetchFixture({ value = 'tbd' } = {}) {
     if (selector === '[data-autosubmit="fetch"]') return fixture.controls;
     return querySelectorAll(selector);
   };
-  return { ...fixture, effective, region, scope: { querySelectorAll: () => [fixture.form] } };
+  return { ...fixture, effective, numberInputQueries, region, scope: { querySelectorAll: () => [fixture.form] } };
 }
 
 async function withDefaultsDomParser(parser, callback) {
@@ -1104,6 +1106,7 @@ describe('Defaults fetch autosave adoption', () => {
       expect(fixture.controls[0].value).toBe('ready');
       expect(fixture.region.replacement).toBe(replacement.region);
       expect(replacement.controls[0].listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+      expect(replacement.numberInputQueries.count).toBe(1);
       expect(fixture.status.textContent).toBe('Settings saved.');
     }));
   });
@@ -6794,6 +6797,7 @@ function makeToastUiEditorStub() {
     constructor(options) {
       this.options = options;
       this.markdown = '';
+      this.setMarkdownCalls = [];
       this.removeHookCalls = [];
       this.destroyCalls = 0;
       instances.push(this);
@@ -6801,6 +6805,11 @@ function makeToastUiEditorStub() {
 
     getMarkdown() {
       return this.markdown;
+    }
+
+    setMarkdown(markdown, cursorToEnd) {
+      this.markdown = markdown;
+      this.setMarkdownCalls.push([markdown, cursorToEnd]);
     }
 
     removeHook(name) {
@@ -7103,6 +7112,30 @@ describe('Notes editor progressive enhancement', () => {
     fixture.form.listeners.find((listener) => listener.type === 'submit').handler();
 
     expect(fixture.textarea.value).toBe('## WYSIWYG result\n\n- item');
+  });
+
+  it('exposes live Markdown immediately and applies resets safely before or after async initialization', async () => {
+    const Editor = makeToastUiEditorStub();
+    let resolveEditor;
+    const fixture = makeNotesEditorFixture('initial source');
+    enhanceNotesEditor(fixture.scope, {
+      loadEditor: () => new Promise(resolve => { resolveEditor = resolve; }),
+    });
+
+    expect(fixture.form.__creatorCrateNotesEditor.getMarkdown()).toBe('initial source');
+    fixture.form.__creatorCrateNotesEditor.resetMarkdown('changed before load');
+    resolveEditor(Editor);
+    await settleNotesEditorImport();
+
+    const [editor] = Editor.instances;
+    expect(editor.options.initialValue).toBe('changed before load');
+    editor.markdown = 'live editor value';
+    expect(fixture.form.__creatorCrateNotesEditor.getMarkdown()).toBe('live editor value');
+
+    fixture.form.__creatorCrateNotesEditor.resetMarkdown('discarded baseline');
+    expect(fixture.textarea.value).toBe('discarded baseline');
+    expect(editor.setMarkdownCalls).toEqual([['discarded baseline', false]]);
+    expect(fixture.form.__creatorCrateNotesEditor.getMarkdown()).toBe('discarded baseline');
   });
 
   it('initializes once and binds one submit synchronization listener', async () => {

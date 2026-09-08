@@ -1,4 +1,5 @@
 import { enhanceDropdowns } from './dropdowns.js';
+import { enhanceNumberInputs } from './number-input.js';
 import {
   captureRegionFocus,
   enhanceSettingsFetchSave,
@@ -54,6 +55,7 @@ function setReplacementStatus(region) {
 function enhanceReplacement(region) {
   if (!region) return;
   enhanceDropdowns(region);
+  enhanceNumberInputs(region);
   enhanceDefaultsFetchSave(region);
 }
 

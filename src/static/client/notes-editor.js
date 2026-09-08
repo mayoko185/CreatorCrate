@@ -49,19 +49,22 @@ function initializeNotesEditor({ form, host, textarea }, Editor) {
       toolbarItems: NOTE_EDITOR_TOOLBAR_ITEMS,
     });
 
-    if (typeof editor.getMarkdown !== 'function' || typeof editor.removeHook !== 'function') {
+    if (typeof editor.getMarkdown !== 'function'
+      || typeof editor.setMarkdown !== 'function'
+      || typeof editor.removeHook !== 'function') {
       editor.destroy?.();
       return;
     }
 
     editor.removeHook('addImageBlobHook');
+    form.__creatorCrateNotesEditor.attach(editor);
   } catch {
     editor?.destroy?.();
     return;
   }
 
   form.addEventListener('submit', () => {
-    textarea.value = editor.getMarkdown();
+    textarea.value = form.__creatorCrateNotesEditor.getMarkdown();
   });
   textarea.hidden = true;
   textarea.setAttribute?.('hidden', '');
@@ -79,6 +82,21 @@ export function enhanceNotesEditor(scope = globalThis.document, { loadEditor = l
     const host = form.querySelector?.(NOTE_EDITOR_HOST_SELECTOR);
     const textarea = form.querySelector?.(NOTE_EDITOR_SOURCE_SELECTOR);
     if (!host || !textarea || typeof form.addEventListener !== 'function') return;
+
+    let editor = null;
+    form.__creatorCrateNotesEditor = {
+      attach(nextEditor) {
+        editor = nextEditor;
+      },
+      getMarkdown() {
+        return editor ? editor.getMarkdown() : textarea.value;
+      },
+      resetMarkdown(markdown) {
+        const value = String(markdown ?? '');
+        textarea.value = value;
+        editor?.setMarkdown(value, false);
+      },
+    };
 
     pendingNotesEditorForms.add(form);
     targets.push({ form, host, textarea });

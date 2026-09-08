@@ -54,6 +54,7 @@ import { createPageDefaultsService } from './services/page-defaults-service.js';
 import { createDashboardDefaultsService } from './services/dashboard-defaults-service.js';
 import { createOpenLocallySettingsService } from './services/open-locally-settings-service.js';
 import { createSocialPrepSettingsService } from './services/social-prep-settings-service.js';
+import { createNoteRevisionSettingsService } from './services/note-revision-settings-service.js';
 import { createSocialPrepService } from './services/social-prep-service.js';
 import { createPreviewCategorySettingsService } from './services/preview-category-settings-service.js';
 import { createNsfwFilterSettingsService } from './services/nsfw-filter-settings-service.js';
@@ -321,6 +322,10 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     opts.socialPrepSettingsService || createSocialPrepSettingsService({ appMetaRepository });
   app.locals.socialPrepSettingsService = socialPrepSettingsService;
 
+  const noteRevisionSettingsService = opts.noteRevisionSettingsService
+    || createNoteRevisionSettingsService({ appMetaRepository });
+  app.locals.noteRevisionSettingsService = noteRevisionSettingsService;
+
   const projectService = createProjectService(db, projectsRoot, {
     assetCategoryService,
     assetBrowserPreferenceRepository,
@@ -379,6 +384,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     chapterRepository,
     bookRepository,
     bookContentRepository,
+    noteRevisionSettingsService,
     applicationLogger,
   });
   const chapterService = opts.chapterService || createChapterService({

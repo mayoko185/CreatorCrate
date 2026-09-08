@@ -12,8 +12,9 @@
   {% call noteDialog.render(noteDialogId, noteDialogTitle, noteDialogOpen, '', 'note-form', 'project-form-dialog') %}
     <div class="app-dialog-body project-edit-dialog-body">
       <form id="note-form" method="post" action="{{ noteFormModel.submitUrl }}" class="app-dialog-form project-form project-edit-dialog-form notes-form notes-workspace"
-            data-notes-editor-form data-dialog-form data-dialog-async="false" novalidate>
+            data-notes-editor-form data-note-dialog-dirty data-dialog-form data-dialog-async="false" novalidate>
         <input type="hidden" name="_csrf" value="{{ _csrf }}">
+        <script type="application/json" data-note-dialog-baseline>{{ noteFormModel.dialogBaselineJson | safe }}</script>
         {% if noteFormModel.action == 'Create' and noteFormModel.chapter %}
           <input type="hidden" name="chapterId" value="{{ values.chapterId }}">
         {% elif noteFormModel.action == 'Create' %}

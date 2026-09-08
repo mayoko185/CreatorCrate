@@ -880,6 +880,51 @@ describe('Reusable app dialog enhancement', () => {
     expect(submit).not.toHaveBeenCalled();
   });
 
+  it.each(['X', 'Escape', 'native cancel', 'backdrop', 'programmatic'])('%s uses one async pre-close guard and ignores repeated dismissal', async (path) => {
+    const page = makeDialogPage();
+    page.region.appendChild(page.trigger);
+    enhanceAppDialogs(page.document);
+    openAppDialogById(page.document, page.dialog.id, page.trigger);
+    let resolveGuard;
+    const beforeClose = vi.fn(() => new Promise(resolve => { resolveGuard = resolve; }));
+    page.dialog.__creatorCrateAppDialogState.beforeClose = beforeClose;
+
+    const dismiss = () => {
+      if (path === 'X') page.close.dispatch('click');
+      else if (path === 'Escape') page.dialog.dispatch('keydown', { key: 'Escape', target: page.dialog });
+      else if (path === 'native cancel') page.dialog.dispatch('cancel', { target: page.dialog });
+      else if (path === 'backdrop') page.dialog.dispatch('click', { target: page.dialog });
+      else closeAppDialogById(page.document, page.dialog.id);
+    };
+    dismiss();
+    dismiss();
+
+    expect(beforeClose).toHaveBeenCalledOnce();
+    expect(page.dialog.open).toBe(true);
+    resolveGuard(true);
+    await flush();
+    expect(page.dialog.close).toHaveBeenCalledOnce();
+    expect(page.dialog.open).toBe(false);
+  });
+
+  it('does not let an earlier pre-close result close a reopened dialog lifecycle', async () => {
+    const page = makeDialogPage();
+    page.region.appendChild(page.trigger);
+    enhanceAppDialogs(page.document);
+    openAppDialogById(page.document, page.dialog.id, page.trigger);
+    let resolveGuard;
+    page.dialog.__creatorCrateAppDialogState.beforeClose = () => new Promise(resolve => { resolveGuard = resolve; });
+
+    page.close.dispatch('click');
+    openAppDialogById(page.document, page.dialog.id, page.trigger);
+    const closesBeforeResolution = page.dialog.close.mock.calls.length;
+    resolveGuard(true);
+    await flush();
+
+    expect(page.dialog.close).toHaveBeenCalledTimes(closesBeforeResolution);
+    expect(page.dialog.open).toBe(true);
+  });
+
   it('opens an enhanced dialog by ID and restores its explicit opener', () => {
     const page = makeDialogPage();
     const explicitOpener = makeElement('button', { type: 'button' });
@@ -1573,6 +1618,8 @@ describe('Reusable app dialog enhancement', () => {
     page.document.dispatch('click', { target: page.trigger });
 
     const viewDropdown = page.dropdowns.view.details;
+    const beforeClose = vi.fn(() => false);
+    page.dialog.__creatorCrateAppDialogState.beforeClose = beforeClose;
     viewDropdown.open = true;
     viewDropdown.setAttribute('open', '');
     page.document.dispatch('toggle', { target: viewDropdown });
@@ -1581,6 +1628,7 @@ describe('Reusable app dialog enhancement', () => {
     page.dialog.dispatch('keydown', { key: 'Escape', target: page.dropdowns.view.summary });
     expect(viewDropdown.open).toBe(false);
     expect(page.dialog.open).toBe(true);
+    expect(beforeClose).not.toHaveBeenCalled();
     expect(page.dropdowns.view.summary.focused).toBe(true);
     expect(page.form.querySelector('.app-dialog-body').classList.contains('cc-dropdown-dialog-open')).toBe(false);
 

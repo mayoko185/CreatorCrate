@@ -194,6 +194,40 @@ function appDialogClose(state) {
   appDialogFinishClose(state);
 }
 
+function appDialogRequestClose(state, opener = null) {
+  if (state.closeRequest) return;
+  if (typeof state.beforeClose !== 'function') {
+    appDialogClose(state);
+    return;
+  }
+
+  const lifecycle = state.lifecycle;
+  let decision;
+  try {
+    decision = state.beforeClose({ lifecycle, opener });
+  } catch {
+    return;
+  }
+
+  if (decision === true) {
+    appDialogClose(state);
+    return;
+  }
+  if (!decision || typeof decision.then !== 'function') return;
+
+  const request = { lifecycle };
+  state.closeRequest = request;
+  Promise.resolve(decision).then((allowed) => {
+    if (state.closeRequest !== request) return;
+    state.closeRequest = null;
+    if (allowed && state.lifecycle === lifecycle && (state.open || state.dialog.open)) {
+      appDialogClose(state);
+    }
+  }).catch(() => {
+    if (state.closeRequest === request) state.closeRequest = null;
+  });
+}
+
 function appDialogValues(form) {
   const values = {};
   Array.from(form?.querySelectorAll?.('select, input, textarea') || []).forEach((control) => {
@@ -829,6 +863,8 @@ function appDialogBindForm(state) {
 }
 
 function appDialogOpen(state, opener = null, openerAllowsFallback = true) {
+  state.lifecycle += 1;
+  state.closeRequest = null;
   state.opener = opener || (openerAllowsFallback
     ? state.document.querySelector?.(`${APP_DIALOG_TRIGGER_SELECTOR}[data-dialog-open="${state.dialog.id}"]`)
     : null);
@@ -864,19 +900,19 @@ function appDialogBind(state) {
   state.dialog.addEventListener?.('cancel', (event) => {
     event.preventDefault?.();
     if (appDialogCloseOpenDropdown(state)) return;
-    appDialogClose(state);
+    appDialogRequestClose(state, state.document.activeElement);
   });
   state.dialog.addEventListener?.('keydown', (event) => {
     if (event.key !== 'Escape' || event.defaultPrevented) return;
     event.preventDefault?.();
     if (appDialogCloseOpenDropdown(state)) return;
-    appDialogClose(state);
+    appDialogRequestClose(state, state.document.activeElement);
   });
   state.dialog.addEventListener?.('click', (event) => {
     if (event.target === state.dialog) {
       event.preventDefault?.();
       if (state.dialog.hasAttribute?.('data-dialog-backdrop-static')) return;
-      appDialogClose(state);
+      appDialogRequestClose(state, state.document.activeElement);
     }
   });
   state.dialog.querySelectorAll?.(APP_DIALOG_CLOSE_SELECTOR).forEach((control) => {
@@ -884,7 +920,7 @@ function appDialogBind(state) {
     markEnhancementBound(control, 'appDialogCloseBound');
     control.addEventListener?.('click', (event) => {
       event.preventDefault?.();
-      appDialogClose(state);
+      appDialogRequestClose(state, control);
     });
   });
   state.dialog.addEventListener?.('keydown', (event) => {
@@ -915,7 +951,7 @@ export function closeAppDialogById(document, id) {
   const dialog = document?.getElementById?.(id);
   const state = dialog?.__creatorCrateAppDialogState;
   if (!state || (!state.open && !dialog.open)) return false;
-  appDialogClose(state);
+  appDialogRequestClose(state, document.activeElement);
   return true;
 }
 
@@ -934,6 +970,9 @@ export function enhanceAppDialogs(scope = globalThis.document) {
       savedValues: null,
       open: false,
       submitting: false,
+      lifecycle: 0,
+      closeRequest: null,
+      beforeClose: null,
       preserveValuesOnError: false,
       onOpen: null,
       onClose: null,

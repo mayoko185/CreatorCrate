@@ -24,6 +24,14 @@ export function enhanceNoteConnections(scope = globalThis.document) {
     const retained = host.querySelector('[data-note-retained-assets]');
     const retainedOptions = host.querySelector('[data-note-retained-options]');
     const status = host.querySelector('[data-note-assets-status]');
+    const baselineNode = host.closest?.('[data-notes-editor-form]')
+      ?.querySelector?.('[data-note-dialog-baseline]');
+    let baseline = null;
+    try {
+      baseline = JSON.parse(baselineNode?.textContent || 'null');
+    } catch {
+      baseline = null;
+    }
     const setStatus = message => {
       status.textContent = message;
       status.hidden = !message;
@@ -42,6 +50,15 @@ export function enhanceNoteConnections(scope = globalThis.document) {
       id: input.value, projectId: input.getAttribute('data-project-key')?.replace(/^project:/, ''), label,
       persisted: input.getAttribute('data-persisted') === 'true',
       thumbnail: readCreatorCrateDropdownThumbnail(input),
+    });
+    (Array.isArray(baseline?.assets) ? baseline.assets : []).forEach((asset) => {
+      catalogue.set(String(asset.id), {
+        id: String(asset.id),
+        projectId: String(asset.projectId),
+        label: String(asset.label || ''),
+        persisted: true,
+        thumbnail: asset.thumbnail || null,
+      });
     });
     Array.from(native.options).forEach(option => remember(option, option.textContent));
     retainedOptions.querySelectorAll('input').forEach(input => remember(input, input.closest('label').textContent.trim()));
@@ -80,6 +97,32 @@ export function enhanceNoteConnections(scope = globalThis.document) {
       const empty = assets.querySelector('.asset-filter-multiselect-empty:not([data-cc-dropdown-no-results])');
       if (empty) empty.hidden = native.options.length > 0;
     }
+
+    host.__creatorCrateNoteConnections = {
+      getState() {
+        return {
+          projectIds: [...context().keys()].sort(),
+          assetIds: [...selectedIds()].sort(),
+        };
+      },
+      resetState(next = {}) {
+        generation += 1;
+        controller?.abort();
+        controller = undefined;
+        const projectIds = new Set((next.projectIds || []).map(String));
+        const assetIds = new Set((next.assetIds || []).map(String));
+        const projectInputs = Array.from(projects.querySelectorAll('input[type="checkbox"]'));
+        projectInputs.forEach((input) => { input.checked = projectIds.has(String(input.value)); });
+        render(assetIds);
+        setStatus('');
+
+        const changed = projectInputs[0];
+        const EventConstructor = document.defaultView?.Event;
+        if (changed && typeof EventConstructor === 'function') {
+          changed.dispatchEvent(new EventConstructor('change', { bubbles: true }));
+        }
+      },
+    };
 
     projects.addEventListener('change', async event => {
       if (event.target.type !== 'checkbox') return;

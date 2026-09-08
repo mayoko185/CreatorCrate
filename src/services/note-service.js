@@ -39,6 +39,36 @@ export class NoteOperationError extends Error {
   }
 }
 
+export class NoteRevisionNotFoundError extends Error {
+  constructor(noteId, revisionId) {
+    super(`Revision ${revisionId} for Note ${noteId} not found`);
+    this.name = 'NoteRevisionNotFoundError';
+    this.status = 404;
+    this.code = 'NOTE_REVISION_NOT_FOUND';
+  }
+}
+
+export class NoteRevisionMalformedError extends Error {
+  constructor(noteId, revisionId, { cause } = {}) {
+    super(
+      `Revision ${revisionId} for Note ${noteId} is malformed.`,
+      cause === undefined ? undefined : { cause },
+    );
+    this.name = 'NoteRevisionMalformedError';
+    this.code = 'MALFORMED_REVISION';
+  }
+}
+
+export class NoteRevisionAssociationUnavailableError extends Error {
+  constructor(noteId, revisionId, { missingProjectIds = [], missingAssetIds = [] } = {}) {
+    super(`Revision ${revisionId} for Note ${noteId} references unavailable associations.`);
+    this.name = 'NoteRevisionAssociationUnavailableError';
+    this.code = 'REVISION_ASSOCIATION_UNAVAILABLE';
+    this.missingProjectIds = missingProjectIds;
+    this.missingAssetIds = missingAssetIds;
+  }
+}
+
 function assertPlainObject(value, fieldLabel) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new NoteValidationError({ [fieldLabel]: 'Input must be an object.' });
@@ -133,6 +163,7 @@ function isNoteRepositoryError(error) {
  * @param {import('better-sqlite3').Database} [deps.db]
  * @param {object} [deps.bookContentRepository]
  * @param {object} [deps.applicationLogger]
+ * @param {object} [deps.noteRevisionSettingsService]
  */
 export function createNoteService({
   db,
@@ -142,6 +173,7 @@ export function createNoteService({
   chapterRepository,
   bookRepository,
   bookContentRepository,
+  noteRevisionSettingsService = null,
   applicationLogger = null,
 } = {}) {
   if (!noteRepository) {
@@ -325,9 +357,20 @@ export function createNoteService({
     };
   }
 
-  function persistWithAssociations(id, values) {
+  function getRevisionRetention() {
+    return noteRevisionSettingsService?.getRevisionRetention?.() ?? 10;
+  }
+
+  function persistWithAssociations(
+    id,
+    values,
+    { revisionRetention = id === undefined ? undefined : getRevisionRetention() } = {},
+  ) {
     try {
-      const result = noteRepository.saveWithAssociations({ id, ...values });
+      const input = { id, ...values };
+      const result = revisionRetention === undefined
+        ? noteRepository.saveWithAssociations(input)
+        : noteRepository.saveWithAssociations(input, { revisionRetention });
       if (!result) {
         throw new NoteNotFoundError(id);
       }
@@ -344,6 +387,59 @@ export function createNoteService({
       throw error;
     }
   }
+
+  function findRevision(noteId, revisionId) {
+    try {
+      return noteRepository.findRevision(noteId, revisionId);
+    } catch (error) {
+      if (isNoteRepositoryError(error) && error.code === 'MALFORMED_REVISION') {
+        throw new NoteRevisionMalformedError(noteId, revisionId, { cause: error });
+      }
+      throw error;
+    }
+  }
+
+  function requireRevision(noteId, revisionId) {
+    assertPositiveIntegerId(revisionId, 'revisionId');
+    const revision = findRevision(noteId, revisionId);
+    if (!revision) throw new NoteRevisionNotFoundError(noteId, revisionId);
+    return revision;
+  }
+
+  function validateHistoricalAssociations(noteId, revision) {
+    const missingProjectIds = revision.projectIds.filter((id) => !projectRepository.findById(id));
+    const missingAssetIds = revision.assetIds.filter((id) => !assetRepository.findById(id));
+    if (missingProjectIds.length > 0 || missingAssetIds.length > 0) {
+      throw new NoteRevisionAssociationUnavailableError(noteId, revision.id, {
+        missingProjectIds,
+        missingAssetIds,
+      });
+    }
+  }
+
+  function validateHistoricalRevision(noteId, revision) {
+    const errors = {};
+    const title = normalizeTitle(revision.title, errors);
+    const content = normalizeContent(revision.content, errors);
+    if (Object.keys(errors).length > 0 || title !== revision.title || content !== revision.content) {
+      throw new NoteRevisionMalformedError(noteId, revision.id);
+    }
+  }
+
+  const restoreRevisionTx = db && typeof db.transaction === 'function'
+    ? db.transaction((noteId, revisionId) => {
+      requireNote(noteId);
+      const revision = requireRevision(noteId, revisionId);
+      validateHistoricalRevision(noteId, revision);
+      validateHistoricalAssociations(noteId, revision);
+      return persistWithAssociations(noteId, {
+        title: revision.title,
+        content: revision.content,
+        projectIds: revision.projectIds,
+        assetIds: revision.assetIds,
+      }, { revisionRetention: getRevisionRetention() });
+    })
+    : null;
 
   const createDirectBookPageTx = db && typeof db.transaction === 'function'
     ? db.transaction((values) => {
@@ -641,6 +737,31 @@ export function createNoteService({
 
     getNote(id) {
       return detail(requireNote(id));
+    },
+
+    listNoteRevisions(id) {
+      requireNote(id);
+      return noteRepository.listRevisions(id);
+    },
+
+    getNoteRevision(noteId, revisionId) {
+      requireNote(noteId);
+      return requireRevision(noteId, revisionId);
+    },
+
+    restoreNoteRevision(noteId, revisionId) {
+      if (!restoreRevisionTx) {
+        throw new Error('createNoteService requires a db dependency for Note revision restore.');
+      }
+      assertPositiveIntegerId(noteId, 'noteId');
+      const outcome = restoreRevisionTx.immediate(noteId, revisionId);
+      if (outcome.changed) {
+        logActivity('note.restored', {
+          ...noteContext(outcome.note),
+          revisionId,
+        });
+      }
+      return outcome.note;
     },
 
     listNotes() {
