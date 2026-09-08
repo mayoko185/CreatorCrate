@@ -387,3 +387,34 @@ it('searchable multiple uses the Projects-page shell with checkbox group semanti
   expect(html).toContain('data-cc-dropdown-option-list role="group"');
   expect(html).not.toContain('role="radiogroup"');
 });
+
+
+describe('optional dropdown thumbnails', () => {
+  const thumbnail = { state: 'previewable', sourceMetadataValid: true, urls: { thumbnail: '/thumb?a=1&b=2' }, nsfwBlur: true };
+  const config = extra => ({ id: 'rich', name: 'assetIds[]', label: 'Assets', nativeSelect: {}, selectedValues: ['1'],
+    options: [{ value: '1', label: 'file <one>.png', thumbnail: { ...thumbnail, ...extra } }] });
+  it('keeps native labels and summaries plain while escaping metadata and rendering decorative media', () => {
+    const html = renderDropdown('multiSelect', config());
+    expect(html).toMatch(/<option[^>]*value="1"[^>]*selected[^>]*>file &lt;one&gt;.png<\/option>/);
+    expect(html.match(/<select[\s\S]*?<\/select>/)[0]).not.toContain('<img');
+    expect(html.match(/<summary[\s\S]*?<\/summary>/)[0]).not.toContain('<img');
+    expect(html).toContain('data-cc-dropdown-thumbnail-url="/thumb?a=1&amp;b=2"');
+    expect(html).toContain('asset-image--nsfw-blurred');
+    expect(html).toContain('alt=""');
+    expect(html).toContain('data-preview-fallback hidden');
+    expect(renderDropdown('multiSelect', config({ nsfwBlur: false }))).not.toContain('asset-image--nsfw-blurred');
+  });
+  it.each([
+    { state: 'missing' }, { state: 'unavailable' }, { state: 'unsupported' },
+    { sourceMetadataValid: false }, { urls: {} },
+  ])('uses an empty same-size fallback for unusable metadata %j', extra => {
+    const html = renderDropdown('multiSelect', config(extra));
+    expect(html).not.toContain('<img');
+    expect(html).toContain('class="cc-dropdown-option-thumbnail-fallback" data-preview-fallback>');
+  });
+  it.each(['singleSelect', 'multiSelect', 'searchableSingleSelect'])('does not change ordinary %s option geometry', method => {
+    const html = renderDropdown(method, { id: 'plain', label: 'Plain', options: [{ value: '1', label: 'One' }] });
+    expect(html).not.toContain('cc-dropdown-option-thumbnail');
+    expect(html).not.toContain('data-preview');
+  });
+});

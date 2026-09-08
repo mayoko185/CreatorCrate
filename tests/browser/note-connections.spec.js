@@ -4,21 +4,27 @@ import fs from 'node:fs/promises';
 import nunjucks from 'nunjucks';
 import { fileURLToPath } from 'node:url';
 
+const thumbnail = (id, nsfwBlur = false) => ({ state: 'previewable', sourceMetadataValid: true, urls: { thumbnail: `/thumb-${id}.png` }, nsfwBlur });
+
 async function fixture(page, edit = false) {
   const env = nunjucks.configure(fileURLToPath(new URL('../../src/views', import.meta.url)), { autoescape: true });
   const requests = [];
   const posts = [];
   const model = {
     connections: { hasContext: edit, assets: edit ? [{
-      id: 'note-asset-option-10', value: '10', label: 'a.png — Project: Alpha', selected: true,
+      thumbnail: thumbnail(10, true), id: 'note-asset-option-10', value: '10', label: 'a.png — Project: Alpha', selected: true,
       attributes: [['data-project-key', 'project:1'], ['data-persisted', 'true']],
     }] : [], retained: edit ? [{
-      id: 'note-asset-option-30', value: '30', label: 'missing.png — Project: Archived (Archived project) (Missing)',
+      thumbnail: { state: 'missing', sourceMetadataValid: false, urls: {} }, id: 'note-asset-option-30', value: '30', label: 'missing.png — Project: Archived (Archived project) (Missing)',
       attributes: [['data-project-key', 'project:3'], ['data-persisted', 'true']],
     }] : [] },
   };
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
+    if (url.pathname.startsWith('/thumb-')) {
+      res.setHeader('Content-Type', 'image/png');
+      res.end(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64')); return;
+    }
     if (req.method === 'POST') {
       let body = ''; for await (const chunk of req) body += chunk;
       posts.push(new URLSearchParams(body)); res.writeHead(204).end(); return;
@@ -33,7 +39,7 @@ async function fixture(page, edit = false) {
       const id = url.searchParams.get('projectId'); requests.push(id);
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ project: { id: Number(id), title: id === '1' ? 'Alpha' : 'Beta', archived: false },
-        items: [{ id: Number(id) * 10, filename: id === '1' ? 'a.png' : 'b.png', isPresent: true }], nextCursor: null })); return;
+        items: [{ thumbnail: thumbnail(Number(id) * 10), id: Number(id) * 10, filename: id === '1' ? 'a.png' : 'b.png', isPresent: true }], nextCursor: null })); return;
     }
     const html = env.renderString(`{% import "partials/dropdown.njk" as dropdown %}
       <form method="post" action="/save">{% include "notes/connections-fields.njk" %}<button>Save</button></form>`, {
@@ -163,5 +169,53 @@ test('loads every existing endpoint page and searches the shared Asset dropdown'
     await expect(page.getByRole('checkbox', { name: 'first.png — Project: Beta', exact: true })).toBeHidden();
     await search.fill('absent');
     await expect(page.locator('#note-assets-form-no-results')).toBeVisible();
+  } finally { await f.close(); }
+});
+
+
+test('thumbnail parity, retained fallback, failure handling, label-only search and same-value refresh', async ({ page }) => {
+  const f = await fixture(page, true);
+  try {
+    const assets = page.locator('#note-assets-form');
+    await assets.locator('summary').click();
+    const first = assets.locator('label').filter({ has: page.locator('input[value="10"]') });
+    await expect(first.locator('img')).toHaveAttribute('alt', '');
+    await expect(first.locator('img')).toHaveClass(/asset-image--nsfw-blurred/);
+    await expect(first.locator('[data-preview-enhancement]')).toHaveAttribute('data-preview-state', 'loaded');
+    await expect(page.locator('[data-note-retained-options] .cc-dropdown-option-thumbnail-fallback')).not.toHaveAttribute('hidden');
+    await expect(assets.locator('summary img')).toHaveCount(0);
+    await assets.locator('input[type=search]').fill('previewable');
+    await expect(assets.locator('[data-cc-dropdown-no-results]')).toBeVisible();
+    await assets.locator('input[type=search]').fill('a.png');
+    await expect(first).toBeVisible();
+    await project(page, 'Beta', true);
+    await expect(assets.locator('img')).toHaveCount(2);
+    await assets.locator('summary').click();
+    await assets.locator('input[type=search]').fill('');
+    const second = assets.locator('label').filter({ has: page.locator('input[value="20"]') });
+    await expect(second.locator('img')).not.toHaveClass(/asset-image--nsfw-blurred/);
+    await second.locator('input').check();
+    await expect(second.locator('input')).toBeChecked();
+    await expect(assets.locator('summary')).toContainText('2 assets selected');
+    await second.locator('img').evaluate(img => { img.src = '/broken.png'; });
+    await expect(second.locator('[data-preview-enhancement]')).toHaveAttribute('data-preview-state', 'failed');
+    await expect(second.locator('[data-preview-fallback]')).not.toHaveAttribute('hidden');
+    await expect(second.locator('img')).toBeHidden();
+    await expect(second.locator('input')).toBeChecked();
+    // Native synchronization also replaces media when the identity remains the same.
+    await page.evaluate(async () => {
+      const native = document.querySelector('#note-assets-native');
+      native.options[1].setAttribute('data-cc-dropdown-thumbnail-url', '/thumb-replaced.png');
+      const { syncCreatorCrateDropdownFromNative } = await import('/client/dropdowns.js');
+      syncCreatorCrateDropdownFromNative(native);
+    });
+    await expect(second.locator('img')).toHaveAttribute('src', '/thumb-replaced.png');
+    await expect(second.locator('[data-preview-enhancement]')).toHaveAttribute('data-preview-state', 'loaded');
+    await project(page, 'Alpha', false);
+    await expect(page.locator('[data-note-retained-options] input:checked')).toHaveCount(2);
+    await project(page, 'Alpha', true);
+    await expect(assets.locator('input[value="10"]')).toBeChecked();
+    await expect(assets.locator('img[src="/thumb-10.png"]')).toHaveCount(1);
+    await expect(page.locator('#note-projects-form .cc-dropdown-option-thumbnail')).toHaveCount(0);
   } finally { await f.close(); }
 });

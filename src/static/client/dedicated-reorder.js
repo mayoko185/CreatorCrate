@@ -12,6 +12,15 @@ const CHAPTER_PAGE_REORDER_HANDLE_SELECTOR = '[data-chapter-page-reorder-handle]
 const BOOK_CONTENT_REORDER_LIST_SELECTOR = '[data-book-content-reorder-list]';
 const BOOK_CONTENT_REORDER_ITEM_SELECTOR = '[data-book-content-reorder-item]';
 const BOOK_CONTENT_REORDER_HANDLE_SELECTOR = '[data-book-content-reorder-handle]';
+const BOOK_HIERARCHY_EDITOR_SELECTOR = '[data-book-hierarchy-editor]';
+const BOOK_HIERARCHY_FORM_SELECTOR = '[data-book-hierarchy-form]';
+const BOOK_HIERARCHY_CONTAINER_SELECTOR = '[data-book-hierarchy-container]';
+const BOOK_HIERARCHY_ITEM_SELECTOR = '[data-book-hierarchy-item]';
+const BOOK_HIERARCHY_HANDLE_SELECTOR = '[data-book-hierarchy-handle]';
+const BOOK_HIERARCHY_INPUT_SELECTOR = '[data-book-hierarchy-input]';
+const BOOK_HIERARCHY_DESTINATION_SELECTOR = '[data-book-hierarchy-destination]';
+const BOOK_HIERARCHY_MOVE_SELECTOR = '[data-book-hierarchy-move]';
+const BOOK_HIERARCHY_LIVE_SELECTOR = '[data-book-hierarchy-live]';
 const NOTES_REORDER_INTERACTIVE_SELECTOR = 'a, button, input, select, textarea, label, summary, details, [contenteditable="true"], [role="button"]';
 
 const APP_DIALOG_SELECTOR = '[data-app-dialog]';
@@ -127,6 +136,439 @@ function setDedicatedDropIndicator(state, item, before) {
   item.classList?.toggle('is-drop-before', before);
   item.classList?.toggle('is-drop-after', !before);
   item.setAttribute?.('data-drop-position', before ? 'before' : 'after');
+}
+
+function dedicatedDirectItems(container, itemSelector) {
+  return Array.from(container?.children || []).filter((child) => child.matches?.(itemSelector));
+}
+
+function bookHierarchyContentKey(item) {
+  const value = item?.dataset?.contentKey || item?.getAttribute?.('data-content-key') || '';
+  const match = value.match(/^(chapter|page):(\d+)$/);
+  if (!match) return null;
+  const id = Number(match[2]);
+  return Number.isSafeInteger(id) && id > 0 ? { type: match[1], id } : null;
+}
+
+function bookHierarchyContainerKind(container) {
+  const value = container?.dataset?.bookHierarchyContainer
+    || container?.getAttribute?.('data-book-hierarchy-container')
+    || '';
+  return value === 'root' ? 'root' : value.startsWith('chapter:') ? 'chapter' : '';
+}
+
+function bookHierarchyContainerFor(editor, element) {
+  const container = element?.closest?.(BOOK_HIERARCHY_CONTAINER_SELECTOR);
+  return container && dedicatedReorderElementIsInside(editor, container) ? container : null;
+}
+
+function bookHierarchyAccepts(container, item) {
+  const destination = bookHierarchyContainerKind(container);
+  const content = bookHierarchyContentKey(item);
+  if (!destination || !content) return false;
+  if (destination === 'root') return content.type === 'chapter' || content.type === 'page';
+  return content.type === 'page';
+}
+
+function serializeBookHierarchy(editor) {
+  const root = Array.from(editor.querySelectorAll?.(BOOK_HIERARCHY_CONTAINER_SELECTOR) || [])
+    .find((container) => bookHierarchyContainerKind(container) === 'root');
+  if (!root) return null;
+
+  const seenChapters = new Set();
+  const seenPages = new Set();
+  const target = [];
+  for (const item of dedicatedDirectItems(root, BOOK_HIERARCHY_ITEM_SELECTOR)) {
+    const content = bookHierarchyContentKey(item);
+    if (!content) return null;
+    if (content.type === 'page') {
+      if (seenPages.has(content.id)) return null;
+      seenPages.add(content.id);
+      target.push(content);
+      continue;
+    }
+
+    if (seenChapters.has(content.id)) return null;
+    seenChapters.add(content.id);
+    const chapterContainer = Array.from(item.querySelectorAll?.(BOOK_HIERARCHY_CONTAINER_SELECTOR) || [])
+      .find((container) => (
+        bookHierarchyContainerKind(container) === 'chapter'
+        && (container.dataset?.bookHierarchyContainer || container.getAttribute?.('data-book-hierarchy-container')) === `chapter:${content.id}`
+      ));
+    if (!chapterContainer) return null;
+    const pages = [];
+    for (const pageItem of dedicatedDirectItems(chapterContainer, BOOK_HIERARCHY_ITEM_SELECTOR)) {
+      const page = bookHierarchyContentKey(pageItem);
+      if (!page || page.type !== 'page' || seenPages.has(page.id)) return null;
+      seenPages.add(page.id);
+      pages.push(page.id);
+    }
+    target.push({ type: 'chapter', id: content.id, pages });
+  }
+  return target;
+}
+
+function updateBookHierarchyMetadata(editor) {
+  const containers = Array.from(editor.querySelectorAll?.(BOOK_HIERARCHY_CONTAINER_SELECTOR) || []);
+  containers.forEach((container) => {
+    const items = dedicatedDirectItems(container, BOOK_HIERARCHY_ITEM_SELECTOR);
+    items.forEach((item, index) => {
+      item.setAttribute?.('aria-posinset', String(index + 1));
+      item.setAttribute?.('aria-setsize', String(items.length));
+    });
+  });
+}
+
+function bookHierarchyRoot(editor) {
+  return Array.from(editor.querySelectorAll?.(BOOK_HIERARCHY_CONTAINER_SELECTOR) || [])
+    .find((container) => bookHierarchyContainerKind(container) === 'root') || null;
+}
+
+function bookHierarchyItemLabel(item) {
+  return item?.dataset?.bookHierarchyLabel
+    || item?.getAttribute?.('data-book-hierarchy-label')
+    || '';
+}
+
+function bookHierarchyContainerKey(container) {
+  return container?.dataset?.bookHierarchyContainer
+    || container?.getAttribute?.('data-book-hierarchy-container')
+    || '';
+}
+
+function bookHierarchyChapterDestinations(editor) {
+  const root = bookHierarchyRoot(editor);
+  if (!root) return [];
+  return dedicatedDirectItems(root, BOOK_HIERARCHY_ITEM_SELECTOR)
+    .filter((item) => bookHierarchyContentKey(item)?.type === 'chapter')
+    .map((item) => ({
+      value: `chapter:${bookHierarchyContentKey(item).id}`,
+      label: `Chapter: ${bookHierarchyItemLabel(item)}`,
+    }));
+}
+
+function refreshBookHierarchyDestinations(state) {
+  const destinations = [{ value: 'root', label: 'Book root' }, ...bookHierarchyChapterDestinations(state.editor)];
+  const desiredValues = new Set(destinations.map(({ value }) => value));
+  const pageItems = Array.from(state.editor.querySelectorAll?.(BOOK_HIERARCHY_ITEM_SELECTOR) || [])
+    .filter((item) => bookHierarchyContentKey(item)?.type === 'page');
+
+  pageItems.forEach((item) => {
+    const select = item.querySelector?.(BOOK_HIERARCHY_DESTINATION_SELECTOR);
+    const currentContainer = bookHierarchyContainerFor(state.editor, item);
+    const currentValue = bookHierarchyContainerKey(currentContainer);
+    if (!select || !desiredValues.has(currentValue)) return;
+
+    const existing = new Map(Array.from(select.options || select.children || [])
+      .map((option) => [String(option.value ?? option.getAttribute?.('value') ?? ''), option]));
+    const document = item.ownerDocument || state.editor.ownerDocument;
+    const options = destinations.map(({ value, label }) => {
+      const option = existing.get(value) || document?.createElement?.('option');
+      if (!option) return null;
+      option.value = value;
+      option.setAttribute?.('value', value);
+      option.textContent = label;
+      return option;
+    }).filter(Boolean);
+    select.replaceChildren?.(...options);
+    select.value = currentValue;
+  });
+}
+
+function announceBookHierarchyMove(state, item) {
+  if (!state.live) return;
+  const content = bookHierarchyContentKey(item);
+  const container = bookHierarchyContainerFor(state.editor, item);
+  if (!content || !container) return;
+  const items = dedicatedDirectItems(container, BOOK_HIERARCHY_ITEM_SELECTOR);
+  const index = items.indexOf(item);
+  if (index === -1) return;
+  const label = bookHierarchyItemLabel(item);
+  if (content.type === 'chapter') {
+    state.live.textContent = `Chapter “${label}” moved to position ${index + 1} of ${items.length}.`;
+    return;
+  }
+  if (bookHierarchyContainerKind(container) === 'root') {
+    state.live.textContent = `Page “${label}” moved to Book root, position ${index + 1} of ${items.length}.`;
+    return;
+  }
+  const chapter = container.closest?.(BOOK_HIERARCHY_ITEM_SELECTOR);
+  state.live.textContent = `Page “${label}” moved to Chapter “${bookHierarchyItemLabel(chapter)}”, position ${index + 1} of ${items.length}.`;
+}
+
+function moveBookHierarchyItemToIndex(container, item, targetIndex) {
+  const items = dedicatedDirectItems(container, BOOK_HIERARCHY_ITEM_SELECTOR);
+  const currentIndex = items.indexOf(item);
+  if (currentIndex === -1 || currentIndex === targetIndex) return false;
+  const remaining = items.filter((candidate) => candidate !== item);
+  container.insertBefore?.(item, remaining[targetIndex] || null);
+  return item.parentElement === container;
+}
+
+function completeBookHierarchyKeyboardMove(state, item) {
+  updateBookHierarchyMetadata(state.editor);
+  refreshBookHierarchyDestinations(state);
+  syncBookHierarchyInput(state);
+  announceBookHierarchyMove(state, item);
+  item.querySelector?.(BOOK_HIERARCHY_HANDLE_SELECTOR)?.focus?.();
+}
+
+function restoreBookHierarchyBaseline(state) {
+  finishBookHierarchyDrag(state);
+  const root = bookHierarchyRoot(state.editor);
+  if (!root) return false;
+  for (const entry of state.loadedTarget) {
+    const item = state.items.get(`${entry.type}:${entry.id}`);
+    if (!item) return false;
+    root.appendChild?.(item);
+    if (entry.type !== 'chapter') continue;
+    const container = state.containers.get(`chapter:${entry.id}`);
+    if (!container) return false;
+    for (const pageId of entry.pages) {
+      const page = state.items.get(`page:${pageId}`);
+      if (!page) return false;
+      container.appendChild?.(page);
+    }
+  }
+  updateBookHierarchyMetadata(state.editor);
+  refreshBookHierarchyDestinations(state);
+  return syncBookHierarchyInput(state);
+}
+
+function resolveBookHierarchyDropTarget(container, event, draggedItem) {
+  const candidate = event.target?.closest?.(BOOK_HIERARCHY_ITEM_SELECTOR);
+  if (candidate === draggedItem || candidate?.parentElement !== container) return null;
+  const rect = candidate?.getBoundingClientRect?.();
+  const before = rect && Number.isFinite(event.clientY)
+    ? event.clientY < rect.top + (rect.height / 2)
+    : true;
+  return candidate ? { item: candidate, before } : null;
+}
+
+function moveBookHierarchyItem(container, item, target) {
+  if (target?.item) {
+    const reference = target.before
+      ? target.item
+      : dedicatedDirectItems(container, BOOK_HIERARCHY_ITEM_SELECTOR)[
+        dedicatedDirectItems(container, BOOK_HIERARCHY_ITEM_SELECTOR).indexOf(target.item) + 1
+      ];
+    if (reference === item) return false;
+    container.insertBefore?.(item, reference || null);
+  } else {
+    container.appendChild?.(item);
+  }
+  return item.parentElement === container;
+}
+
+function clearBookHierarchyDropIndicator(state) {
+  clearDedicatedDropIndicator(state);
+  state.dropContainer?.classList?.remove('is-drop-target');
+  state.dropContainer = null;
+}
+
+function finishBookHierarchyDrag(state) {
+  state.draggedItem?.classList?.remove('is-dragging');
+  state.sourceContainer?.classList?.remove('is-dragging');
+  state.editor.classList?.remove('is-dragging');
+  clearBookHierarchyDropIndicator(state);
+  state.draggedItem = null;
+  state.sourceContainer = null;
+}
+
+function syncBookHierarchyInput(state) {
+  const target = serializeBookHierarchy(state.editor);
+  if (!target) return false;
+  state.input.value = JSON.stringify({ version: 1, expected: state.expected, target });
+  return true;
+}
+
+export function enhanceBookHierarchyReorder(scope = globalThis.document) {
+  if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
+  const editors = Array.from(scope.querySelectorAll(BOOK_HIERARCHY_EDITOR_SELECTOR));
+  editors.forEach((editor) => {
+    if (isEnhancementBound(editor, 'bookHierarchyReorderBound')) return;
+    const form = editor.closest?.(BOOK_HIERARCHY_FORM_SELECTOR);
+    const inputs = Array.from(form?.querySelectorAll?.(BOOK_HIERARCHY_INPUT_SELECTOR) || []);
+    const containers = Array.from(editor.querySelectorAll?.(BOOK_HIERARCHY_CONTAINER_SELECTOR) || []);
+    const handles = Array.from(editor.querySelectorAll?.(BOOK_HIERARCHY_HANDLE_SELECTOR) || []);
+    if (!form || inputs.length !== 1 || containers.length === 0 || handles.length === 0) return;
+
+    let payload;
+    try {
+      payload = JSON.parse(inputs[0].value);
+    } catch {
+      return;
+    }
+    const loadedTarget = serializeBookHierarchy(editor);
+    if (payload?.version !== 1 || !Array.isArray(payload.expected) || !loadedTarget) return;
+
+    const state = {
+      editor,
+      form,
+      input: inputs[0],
+      expected: payload.expected,
+      loadedTarget: JSON.parse(JSON.stringify(loadedTarget)),
+      items: new Map(Array.from(editor.querySelectorAll?.(BOOK_HIERARCHY_ITEM_SELECTOR) || [])
+        .map((item) => [item.dataset?.contentKey || item.getAttribute?.('data-content-key'), item])),
+      containers: new Map(containers.map((container) => [bookHierarchyContainerKey(container), container])),
+      live: editor.querySelector?.(BOOK_HIERARCHY_LIVE_SELECTOR),
+      submitting: false,
+      draggedItem: null,
+      sourceContainer: null,
+      dropContainer: null,
+      dropItem: null,
+      dropBefore: null,
+    };
+
+    markEnhancementBound(editor, 'bookHierarchyReorderBound');
+    updateBookHierarchyMetadata(editor);
+    refreshBookHierarchyDestinations(state);
+    syncBookHierarchyInput(state);
+
+    editor.addEventListener?.('dragstart', (event) => {
+      const handle = event.target?.closest?.(BOOK_HIERARCHY_HANDLE_SELECTOR);
+      const item = handle?.closest?.(BOOK_HIERARCHY_ITEM_SELECTOR);
+      const container = bookHierarchyContainerFor(editor, item);
+      if (!handle || !item || !container || item.parentElement !== container) {
+        event.preventDefault?.();
+        finishBookHierarchyDrag(state);
+        return;
+      }
+      finishBookHierarchyDrag(state);
+      state.draggedItem = item;
+      state.sourceContainer = container;
+      item.classList?.add('is-dragging');
+      container.classList?.add('is-dragging');
+      editor.classList?.add('is-dragging');
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = 'move';
+        event.dataTransfer.setData?.('application/x-creatorcrate-book-hierarchy', item.dataset?.contentKey || '');
+      }
+    });
+
+    editor.addEventListener?.('dragover', (event) => {
+      if (!state.draggedItem) return;
+      const container = bookHierarchyContainerFor(editor, event.target);
+      if (!container || !bookHierarchyAccepts(container, state.draggedItem)) {
+        clearBookHierarchyDropIndicator(state);
+        return;
+      }
+      event.preventDefault?.();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+      clearBookHierarchyDropIndicator(state);
+      state.dropContainer = container;
+      state.dropContainer.classList?.add('is-drop-target');
+      const target = resolveBookHierarchyDropTarget(container, event, state.draggedItem);
+      if (target) setDedicatedDropIndicator(state, target.item, target.before);
+    });
+
+    editor.addEventListener?.('dragleave', (event) => {
+      if (!state.dropContainer) return;
+      const relatedTarget = event.relatedTarget;
+      if (!relatedTarget || !state.dropContainer.contains?.(relatedTarget)) clearBookHierarchyDropIndicator(state);
+    });
+
+    editor.addEventListener?.('drop', (event) => {
+      if (!state.draggedItem) return;
+      const container = bookHierarchyContainerFor(editor, event.target);
+      if (!container || !bookHierarchyAccepts(container, state.draggedItem)) {
+        finishBookHierarchyDrag(state);
+        return;
+      }
+      event.preventDefault?.();
+      const before = JSON.stringify(serializeBookHierarchy(editor));
+      const target = state.dropContainer === container && state.dropItem
+        ? { item: state.dropItem, before: state.dropBefore }
+        : resolveBookHierarchyDropTarget(container, event, state.draggedItem);
+      moveBookHierarchyItem(container, state.draggedItem, target);
+      const after = JSON.stringify(serializeBookHierarchy(editor));
+      finishBookHierarchyDrag(state);
+      if (before !== after) {
+        updateBookHierarchyMetadata(editor);
+        refreshBookHierarchyDestinations(state);
+        syncBookHierarchyInput(state);
+      }
+    });
+
+    editor.addEventListener?.('dragend', () => finishBookHierarchyDrag(state));
+    editor.addEventListener?.('keydown', (event) => {
+      if (event.key === 'Escape' && state.draggedItem) {
+        finishBookHierarchyDrag(state);
+        return;
+      }
+      if (!['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(event.key)) return;
+      const handle = event.target?.closest?.(BOOK_HIERARCHY_HANDLE_SELECTOR);
+      const item = handle?.closest?.(BOOK_HIERARCHY_ITEM_SELECTOR);
+      const container = bookHierarchyContainerFor(editor, item);
+      if (!handle || !item || !container || item.parentElement !== container) return;
+      if (bookHierarchyContentKey(item)?.type === 'chapter'
+        && bookHierarchyContainerKind(container) !== 'root') return;
+
+      event.preventDefault?.();
+      const items = dedicatedDirectItems(container, BOOK_HIERARCHY_ITEM_SELECTOR);
+      const currentIndex = items.indexOf(item);
+      const targetIndex = event.key === 'Home'
+        ? 0
+        : event.key === 'End'
+          ? items.length - 1
+          : currentIndex + (event.key === 'ArrowUp' ? -1 : 1);
+      if (targetIndex < 0 || targetIndex >= items.length || targetIndex === currentIndex) return;
+      if (moveBookHierarchyItemToIndex(container, item, targetIndex)) {
+        completeBookHierarchyKeyboardMove(state, item);
+      }
+    });
+    editor.addEventListener?.('click', (event) => {
+      const moveControl = event.target?.closest?.(BOOK_HIERARCHY_MOVE_SELECTOR);
+      const item = moveControl?.closest?.(BOOK_HIERARCHY_ITEM_SELECTOR);
+      const content = bookHierarchyContentKey(item);
+      if (!moveControl || content?.type !== 'page') return;
+      event.preventDefault?.();
+
+      const select = item.querySelector?.(BOOK_HIERARCHY_DESTINATION_SELECTOR);
+      const source = bookHierarchyContainerFor(editor, item);
+      const destinationKey = String(select?.value || '');
+      const destination = state.containers.get(destinationKey);
+      if (!source || !destination || !bookHierarchyAccepts(destination, item)
+        || bookHierarchyContainerKey(source) === destinationKey) return;
+
+      if (destinationKey === 'root') {
+        const sourceChapter = source.closest?.(BOOK_HIERARCHY_ITEM_SELECTOR);
+        const rootItems = dedicatedDirectItems(destination, BOOK_HIERARCHY_ITEM_SELECTOR);
+        const sourceIndex = rootItems.indexOf(sourceChapter);
+        if (sourceIndex === -1) return;
+        destination.insertBefore?.(item, rootItems[sourceIndex + 1] || null);
+      } else {
+        destination.appendChild?.(item);
+      }
+      completeBookHierarchyKeyboardMove(state, item);
+    });
+    form.addEventListener?.('submit', () => {
+      syncBookHierarchyInput(state);
+      state.submitting = true;
+    });
+
+    const dialog = form.closest?.(APP_DIALOG_SELECTOR);
+    const appDialogState = dialog?.__creatorCrateAppDialogState;
+    if (appDialogState) {
+      const previousOnOpen = appDialogState.onOpen;
+      const previousOnClose = appDialogState.onClose;
+      appDialogState.onOpen = () => {
+        try {
+          previousOnOpen?.();
+        } finally {
+          state.submitting = false;
+        }
+      };
+      appDialogState.onClose = () => {
+        try {
+          previousOnClose?.();
+        } finally {
+          if (!state.submitting) restoreBookHierarchyBaseline(state);
+        }
+      };
+    }
+  });
+  return editors.length;
 }
 
 function resolveDedicatedDropTarget(list, event, draggedItem, config) {

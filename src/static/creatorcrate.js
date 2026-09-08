@@ -17,6 +17,7 @@ import {
 } from './client/category-slug-autofill.js';
 import {
   enhanceBookContentReorder,
+  enhanceBookHierarchyReorder,
   enhanceBookReorder,
   enhanceChapterPageReorder,
   enhanceDashboardDefaultsDialog,
@@ -103,6 +104,7 @@ export {
   directorySlugFromDisplayName,
   enhanceCategorySlugAutofill,
   enhanceBookContentReorder,
+  enhanceBookHierarchyReorder,
   enhanceBookReorder,
   enhanceChapterPageReorder,
   enhanceDashboardDefaultsDialog,
@@ -185,6 +187,7 @@ if (typeof document !== 'undefined') {
     enhanceDropdowns(document);
     enhanceProjectAssetsDefaultsScope(document);
     enhanceAppDialogs(document);
+    enhanceBookHierarchyReorder(document);
     enhanceLogViewerAutoRefresh(document);
     enhanceAssetViewerFilterDisclosures(document);
     enhanceAppConfirmationControls(document);

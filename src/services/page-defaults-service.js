@@ -11,6 +11,7 @@ const PROJECT_ASSETS = 'projectAssets';
 const ASSET_VIEWER = 'assetViewer';
 const NEW_PROJECT = 'new_project';
 const LOGS = 'logs';
+const BOOK_DETAIL = 'bookDetail';
 
 export const LOGS_PAGE_SIZE_VALUES = Object.freeze(['25', '50', '75', '100']);
 export const LOGS_TIMEZONE_VALUES = Object.freeze([
@@ -84,6 +85,13 @@ export const PAGE_DEFAULT_DEFINITIONS = Object.freeze({
     pageSize: definition('page_defaults.logs.page_size', LOGS_PAGE_SIZE_VALUES, '50'),
     timezone: definition('page_defaults.logs.timezone', LOGS_TIMEZONE_VALUES, 'local'),
     autoRefresh: definition('page_defaults.logs.auto_refresh', ['enabled', 'disabled'], 'enabled'),
+  }),
+  [BOOK_DETAIL]: Object.freeze({
+    navigation: definition(
+      'page_defaults.book_detail.navigation',
+      ['expanded', 'collapsed'],
+      'collapsed',
+    ),
   }),
 });
 

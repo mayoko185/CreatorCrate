@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 const dependencyInstrumentation = vi.hoisted(() => ({
   appMetaRepositories: [],
   projectPageDefaultRepositories: [],
+  bookPagePreviewSettingsRepositories: [],
   bookRepositories: [],
   bookServices: [],
   bookContentRepositories: [],
@@ -28,6 +29,7 @@ const dependencyInstrumentation = vi.hoisted(() => ({
   projectServices: [],
   preferenceServices: [],
   pageDefaultsServices: [],
+  bookPagePreviewSettingsServices: [],
   dashboardDefaultsServices: [],
   tagServices: [],
   projectTagServices: [],
@@ -77,6 +79,30 @@ vi.mock('../src/data/project-page-default-repository.js', async (importOriginal)
       const repository = actual.createProjectPageDefaultRepository(...args);
       dependencyInstrumentation.projectPageDefaultRepositories.push({ args, repository });
       return repository;
+    },
+  };
+});
+
+vi.mock('../src/data/book-page-preview-settings-repository.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createBookPagePreviewSettingsRepository(...args) {
+      const repository = actual.createBookPagePreviewSettingsRepository(...args);
+      dependencyInstrumentation.bookPagePreviewSettingsRepositories.push({ args, repository });
+      return repository;
+    },
+  };
+});
+
+vi.mock('../src/services/book-page-preview-settings-service.js', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    createBookPagePreviewSettingsService(...args) {
+      const service = actual.createBookPagePreviewSettingsService(...args);
+      dependencyInstrumentation.bookPagePreviewSettingsServices.push({ args, service });
+      return service;
     },
   };
 });
@@ -516,8 +542,10 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     expect(typeof app.locals.markdownRenderer.renderMarkdown).toBe('function');
     expect(routerArgs[0]).toEqual({
       appName: 'CreatorCrate',
+      db,
       bookService: app.locals.bookService,
       bookPrimaryImageService: app.locals.bookPrimaryImageService,
+      bookPagePreviewSettingsService: app.locals.bookPagePreviewSettingsService,
       chapterService: app.locals.chapterService,
       noteService,
       markdownRenderer: app.locals.markdownRenderer,
@@ -537,6 +565,44 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     expect(app.locals.assetBrowserPreferenceService).toBeTruthy();
     expect(typeof app.locals.assetBrowserPreferenceService.getProjectPreference).toBe('function');
     expect(typeof app.locals.assetBrowserPreferenceService.resolveEffectiveCategory).toBe('function');
+  });
+
+  it('constructs, exposes, and route-wires Book Page-preview persistence', () => {
+    const app = buildApp();
+
+    expect(dependencyInstrumentation.bookPagePreviewSettingsRepositories).toHaveLength(1);
+    expect(dependencyInstrumentation.bookPagePreviewSettingsServices).toHaveLength(1);
+    const { args: repositoryArgs, repository } =
+      dependencyInstrumentation.bookPagePreviewSettingsRepositories[0];
+    const { args: serviceArgs, service } = dependencyInstrumentation.bookPagePreviewSettingsServices[0];
+
+    expect(repositoryArgs[0]).toBe(db);
+    expect(serviceArgs[0]).toEqual({
+      repository,
+      bookRepository: app.locals.bookRepository,
+    });
+    expect(app.locals.bookPagePreviewSettingsRepository).toBe(repository);
+    expect(app.locals.bookPagePreviewSettingsService).toBe(service);
+    expect(dependencyInstrumentation.noteRouters[0].args[0].bookPagePreviewSettingsService).toBe(service);
+    expect(typeof service.getBookPagePreviewSettings).toBe('function');
+    expect(typeof service.replaceBookPagePreviewSettings).toBe('function');
+  });
+
+  it('preserves Book Page-preview repository and service overrides', () => {
+    const repository = { findByBookId: () => undefined, replace: () => undefined };
+    const service = {
+      getBookPagePreviewSettings: () => ({ mode: 'random', randomCount: 5, selectedPageIds: [] }),
+      replaceBookPagePreviewSettings: () => undefined,
+    };
+    const app = buildApp({
+      bookPagePreviewSettingsRepository: repository,
+      bookPagePreviewSettingsService: service,
+    });
+
+    expect(dependencyInstrumentation.bookPagePreviewSettingsRepositories).toHaveLength(0);
+    expect(dependencyInstrumentation.bookPagePreviewSettingsServices).toHaveLength(0);
+    expect(app.locals.bookPagePreviewSettingsRepository).toBe(repository);
+    expect(app.locals.bookPagePreviewSettingsService).toBe(service);
   });
 
   it('constructs one shared app-meta repository and wires it to app locals and Settings', () => {

@@ -226,8 +226,10 @@ describe('Compact Book navigator partial', () => {
     expect(items[2]).toContain('Chapter Two');
     expect(items[3]).toContain('Direct Page Two');
     expect(items[0]).toContain('<details class="notes-book-nav-disclosure"');
+    expect(items[0]).toContain('<a class="notes-book-nav-page-link" href="/notes/chapters/10">View Chapter</a>');
     expect(items[1]).toContain('href="/notes/201"');
     expect(items[2]).toContain('<details class="notes-book-nav-disclosure"');
+    expect(items[2]).toContain('<a class="notes-book-nav-page-link" href="/notes/chapters/20">View Chapter</a>');
     expect(items[3]).toContain('href="/notes/202"');
   });
 
@@ -310,6 +312,78 @@ describe('Compact Book navigator partial', () => {
     }
   });
 
+  it('suppresses only the Book link when the host opts out', () => {
+    const html = renderBookNavigator({
+      bookNavHideBookLink: true,
+      bookContents: [{ type: 'page', id: 201, page: { title: 'Direct Page' } }],
+    });
+
+    expect(html).toContain('<p class="notes-book-nav-heading">Book contents</p>');
+    expect(html).not.toContain('notes-book-nav-book-link');
+    expect(html).toContain('<a class="notes-book-nav-page-link" href="/notes/201">Direct Page</a>');
+  });
+
+  it('suppresses only View Chapter when the host opts out', () => {
+    const html = renderBookNavigator({
+      bookNavHideChapterLinks: true,
+      bookContents: [{
+        type: 'chapter',
+        id: 10,
+        chapter: { title: 'Chapter' },
+        pages: [{ id: 101, title: 'Nested Page' }],
+      }],
+    });
+
+    expect(html).toContain('<details class="notes-book-nav-disclosure"');
+    expect(html).toContain('<summary class="notes-book-nav-summary">');
+    expect(html).toContain('<span class="notes-book-nav-chapter-title">Chapter</span>');
+    expect(html).not.toContain('View Chapter');
+    expect(html).not.toContain('href="/notes/chapters/10"');
+    expect(html).toContain('<a class="notes-book-nav-page-link" href="/notes/101">Nested Page</a>');
+  });
+
+  it('opens every Chapter when the host mode is expanded', () => {
+    const expanded = renderBookNavigator({
+      bookContents: [
+        { type: 'chapter', id: 10, chapter: { title: 'First Chapter' }, pages: [] },
+        { type: 'chapter', id: 20, chapter: { title: 'Second Chapter' }, pages: [] },
+      ],
+      bookNavInitialMode: 'expanded',
+    });
+
+    expect(expanded.match(/<details class="notes-book-nav-disclosure" open>/g)).toHaveLength(2);
+  });
+
+  it('keeps the current Chapter closed when the host mode is collapsed', () => {
+    const collapsed = renderBookNavigator({
+      bookContents: [{
+        type: 'chapter',
+        id: 10,
+        chapter: { title: 'Current Chapter' },
+        pages: [{ id: 101, title: 'Page' }],
+      }],
+      bookNavInitialMode: 'collapsed',
+      navCurrentChapterId: 10,
+    });
+
+    expect(collapsed).not.toContain('<details class="notes-book-nav-disclosure" open>');
+  });
+
+  it('keeps the Chapter containing the current Page closed when the host mode is collapsed', () => {
+    const collapsed = renderBookNavigator({
+      bookContents: [{
+        type: 'chapter',
+        id: 10,
+        chapter: { title: 'Containing Chapter' },
+        pages: [{ id: 101, title: 'Current Page' }],
+      }],
+      bookNavInitialMode: 'collapsed',
+      navCurrentPageId: 101,
+    });
+
+    expect(collapsed).not.toContain('<details class="notes-book-nav-disclosure" open>');
+  });
+
   it('renders empty Book contents without navigator item errors', () => {
     const html = renderBookNavigator({ bookContents: [] });
 
@@ -323,7 +397,7 @@ describe('Compact Book navigator partial', () => {
     expect(creatorCrateCss).toContain('.notes-book-nav');
     expect(creatorCrateCss).toContain('.notes-book-nav-heading');
     expect(creatorCrateCss).toContain('.notes-book-nav-summary::-webkit-details-marker');
-    expect(creatorCrateCss).toContain('.notes-book-nav-chapter-link {');
+    expect(creatorCrateCss).toContain('.notes-book-nav-chapter-title {');
     expect(creatorCrateCss).toContain('display: inline;');
     expect(creatorCrateCss).toContain('.notes-book-nav-page--child');
     expect(creatorCrateCss).toContain('.notes-book-nav-page:not(.notes-book-nav-page--child)');
@@ -331,16 +405,16 @@ describe('Compact Book navigator partial', () => {
     expect(creatorCrateCss).toContain('overflow-wrap: anywhere;');
     expect(creatorCrateCss).toContain('.notes-book-nav-book-link:focus-visible');
     expect(creatorCrateCss).toMatch(/\.notes-book-nav-book-link\s*\{[\s\S]*?color: var\(--text\);/);
-    expect(creatorCrateCss).toMatch(/\.notes-book-nav-chapter-link\s*\{[\s\S]*?color: var\(--text\);/);
+    expect(creatorCrateCss).toMatch(/\.notes-book-nav-chapter-title\s*\{[\s\S]*?color: var\(--text\);/);
     expect(creatorCrateCss).toMatch(/\.notes-book-nav-page-link\s*\{[\s\S]*?color: var\(--muted\);/);
     expect(creatorCrateCss).toContain('.notes-book-nav-book-link:hover');
-    expect(creatorCrateCss).toContain('.notes-book-nav-chapter-link:hover');
+    expect(creatorCrateCss).toContain('.notes-book-nav-summary:hover');
     expect(creatorCrateCss).toContain('.notes-book-nav-page-link:hover');
     expect(creatorCrateCss).toContain('background: var(--surface-hover);');
     expect(creatorCrateCss).toContain('outline: 2px solid var(--focus-ring);');
     expect(creatorCrateCss).toMatch(/a:not\(\[class\]\)\s*\{[\s\S]*?color: var\(--link\);/);
     expect(creatorCrateCss).toMatch(/a:not\(\[class\]\):hover\s*\{[\s\S]*?color: var\(--accent-2\);/);
-    expect(creatorCrateCss).toContain('.notes-book-nav-chapter-link[aria-current="page"]');
+    expect(creatorCrateCss).toContain('.notes-book-nav-item--current > .notes-book-nav-disclosure > .notes-book-nav-summary');
     expect(creatorCrateCss).toContain('.notes-book-nav-page.notes-book-nav-item--current > .notes-book-nav-page-link');
     expect(creatorCrateCss).toContain('.notes-book-nav-page.notes-book-nav-item--current:not(.notes-book-nav-page--child) > .notes-book-nav-page-link');
     expect(creatorCrateCss).not.toContain('.notes-book-nav-page--current > .notes-book-nav-page-link');

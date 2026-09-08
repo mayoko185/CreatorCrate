@@ -7,11 +7,31 @@ import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
+import { buildAssetPreviewModel } from '../src/services/asset-presentation.js';
+import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
 function getNewNoteDialog(html) {
   return html.match(/<dialog\b[^>]*id="note-create-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+}
+
+function expectClosedBookContentsDisclosure(dialog) {
+  const heading = dialog.indexOf('<h3 id="notes-book-contents-heading">Book contents</h3>');
+  const disclosure = dialog.indexOf('<details class="notes-book-contents-disclosure">');
+  const summary = dialog.indexOf('<summary class="notes-book-contents-toggle">');
+  const body = dialog.indexOf('<div class="project-form-section-body project-edit-dialog-section-body">');
+  const navigator = dialog.indexOf('<aside class="notes-workspace-context notes-book-detail-sidebar notes-book-detail-sidebar--embedded" aria-label="Book contents">');
+
+  expect(dialog.match(/<details class="notes-book-contents-disclosure"(?:\s|>)/g)).toHaveLength(1);
+  expect(dialog).not.toContain('<details class="notes-book-contents-disclosure" open>');
+  expect(heading).toBeGreaterThanOrEqual(0);
+  expect(heading).toBeLessThan(disclosure);
+  expect(disclosure).toBeLessThan(summary);
+  expect(summary).toBeLessThan(body);
+  expect(body).toBeLessThan(navigator);
+  expect(dialog).toContain('notes-book-contents-toggle-label--expand">Expand</span>');
+  expect(dialog).toContain('notes-book-contents-toggle-label--collapse">Collapse</span>');
 }
 
 function expectNewNoteDialog(html, open) {
@@ -42,6 +62,7 @@ function expectNewNoteDialog(html, open) {
   expect(dialog).not.toMatch(/notes-page-sidebar|notes-page-workspace-layout|class="notes-workspace-editor"/);
   expect(dialog).not.toContain('Move Page');
   expect(dialog).not.toContain('Delete Page');
+  expectClosedBookContentsDisclosure(dialog);
   return dialog;
 }
 
@@ -84,6 +105,7 @@ function expectEditNoteDialog(html, noteId, open) {
   expect(dialog.indexOf('<form id="note-move-form"')).toBeGreaterThan(end);
   expect(dialog.indexOf('<form id="note-delete-form"')).toBeGreaterThan(end);
   expect(dialog).not.toMatch(/notes-page-sidebar|notes-page-workspace-layout|class="notes-workspace-editor"/);
+  expectClosedBookContentsDisclosure(dialog);
   return dialog;
 }
 
@@ -137,6 +159,24 @@ function createPage(app, input = {}) {
   const { book, chapter } = createChapterContext(app);
   const note = app.locals.noteService.createNote({ chapterId: chapter.id, ...input });
   return { book, chapter, note };
+}
+
+function captureChapterDetailLocals(app) {
+  const renders = [];
+  const originalRender = app.response.render;
+  app.response.render = function captureRender(view, renderLocals, callback) {
+    if (view === 'notes/chapters/detail.njk') renders.push(renderLocals);
+    return originalRender.call(this, view, renderLocals, callback);
+  };
+
+  return {
+    all() {
+      return renders;
+    },
+    restore() {
+      app.response.render = originalRender;
+    },
+  };
 }
 
 function extractNoteProjectsField(html) {
@@ -279,10 +319,10 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain('data-dialog-close aria-label="Close New Page"');
     expect(response.text).toContain('<form id="note-form" method="post" action="/notes"');
     expect(response.text).toContain(`<input type="hidden" name="chapterId" value="${chapter.id}">`);
-    expect(response.text).toContain('<aside class="notes-workspace-context" aria-label="Book contents">');
+    expect(response.text).toContain('<aside class="notes-workspace-context notes-book-detail-sidebar notes-book-detail-sidebar--embedded" aria-label="Book contents">');
     expect(response.text).toContain(`<nav class="notes-book-nav" aria-label="Contents of ${book.title}">`);
     expect(response.text).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">Page Book</a>`);
-    expect(response.text).toContain(`<a class="notes-book-nav-page-link" href="/notes/chapters/${chapter.id}" aria-current="page">View Chapter</a>`);
+    expect(getNewNoteDialog(response.text)).not.toContain('>View Chapter</a>');
     expect(response.text).not.toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
     expect(response.text).not.toContain('Book workspace');
     expect(response.text).not.toContain('>Hierarchy</h2>');
@@ -470,7 +510,7 @@ describe('top-level Notes HTTP slice', () => {
       listBookContents.mockRestore();
     }
 
-    const contextRail = response.text.match(/<aside class="notes-workspace-context"[\s\S]*?<\/aside>/)?.[0] || '';
+    const contextRail = response.text.match(/<aside class="notes-workspace-context notes-book-detail-sidebar notes-book-detail-sidebar--embedded"[\s\S]*?<\/aside>/)?.[0] || '';
     const navigator = contextRail.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/)?.[0] || '';
 
     expect(createLocals.bookContents).toBe(authoritativeContents);
@@ -484,7 +524,7 @@ describe('top-level Notes HTTP slice', () => {
     expect(navigator.indexOf('Second New Chapter Page')).toBeLessThan(navigator.indexOf('First New Chapter Page'));
     expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${directBookPage.id}">Direct Book Page</a>`);
     expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${unrelatedPage.id}">Unrelated Create Page</a>`);
-    expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/chapters/${chapter.id}" aria-current="page">View Chapter</a>`);
+    expect(navigator).not.toContain('>View Chapter</a>');
     expect(navigator).not.toMatch(/<a class="notes-book-nav-page-link" href="\/notes\/\d+"[^>]*aria-current="page"/);
     expect((navigator.match(/<details class="notes-book-nav-disclosure" open>/g) || [])).toHaveLength(1);
     expect(getNewNoteDialog(response.text)).not.toContain('<nav class="notes-page-nav"');
@@ -528,7 +568,7 @@ describe('top-level Notes HTTP slice', () => {
       listBookContents.mockRestore();
     }
 
-    const contextRail = response.text.match(/<aside class="notes-workspace-context"[\s\S]*?<\/aside>/)?.[0] || '';
+    const contextRail = response.text.match(/<aside class="notes-workspace-context notes-book-detail-sidebar notes-book-detail-sidebar--embedded"[\s\S]*?<\/aside>/)?.[0] || '';
     const navigator = contextRail.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/)?.[0] || '';
 
     expect(createLocals.bookContents).toBe(authoritativeContents);
@@ -551,12 +591,12 @@ describe('top-level Notes HTTP slice', () => {
     const directBook = app.locals.bookService.createBook({ title: 'Empty Direct Book' });
 
     const chapterResponse = await agent.get('/notes/new').query({ chapterId: chapter.id }).expect(200);
-    const chapterRail = chapterResponse.text.match(/<aside class="notes-workspace-context"[\s\S]*?<\/aside>/)?.[0] || '';
+    const chapterRail = chapterResponse.text.match(/<aside class="notes-workspace-context notes-book-detail-sidebar notes-book-detail-sidebar--embedded"[\s\S]*?<\/aside>/)?.[0] || '';
     expect(chapterRail).toContain('<nav class="notes-book-nav"');
     expect(chapterRail).not.toContain('<nav class="notes-page-nav"');
 
     const bookResponse = await agent.get('/notes/new').query({ bookId: directBook.id }).expect(200);
-    const bookRail = bookResponse.text.match(/<aside class="notes-workspace-context"[\s\S]*?<\/aside>/)?.[0] || '';
+    const bookRail = bookResponse.text.match(/<aside class="notes-workspace-context notes-book-detail-sidebar notes-book-detail-sidebar--embedded"[\s\S]*?<\/aside>/)?.[0] || '';
     expect(bookRail).toContain('<nav class="notes-book-nav"');
     expect(bookRail).toContain('No Pages or Chapters yet');
     expect(bookRail).not.toContain('<nav class="notes-page-nav"');
@@ -624,6 +664,114 @@ describe('top-level Notes HTTP slice', () => {
     });
   });
 
+  describe('Connections Asset thumbnail model (Package 3A)', () => {
+    function captureForms() {
+      const forms = [];
+      const original = app.response.render;
+      const spy = vi.spyOn(app.response, 'render').mockImplementation(function(view, locals, callback) {
+        const form = locals.noteEditForm || locals.noteCreateForm;
+        if (form) forms.push(form);
+        return original.call(this, view, locals, callback);
+      });
+      return { forms, restore: () => spy.mockRestore() };
+    }
+
+    function thumbnailFor(id, nsfwBlur = false) {
+      const preview = buildAssetPreviewModel(app.locals.assetScanner.repository.findByIds([id])[0]);
+      return { state: preview.state, sourceMetadataValid: preview.sourceMetadataValid,
+        urls: { thumbnail: preview.urls.thumbnail }, nsfwBlur };
+    }
+
+    it.each(['book', 'chapter'])('enriches %s New/422 and Edit/422 models without changing selection', async container => {
+      const { book, chapter } = createChapterContext(app);
+      const projectId = insertProject(db, 'Thumbnail context');
+      const direct = insertAsset(db, projectId, 'a-direct.png');
+      const missing = insertAsset(db, projectId, 'b-missing.png');
+      const unsupported = insertAsset(db, projectId, 'c-unsupported.txt', { extension: 'txt', mimeType: 'text/plain' });
+      const incomplete = insertAsset(db, projectId, 'd-incomplete.png');
+      const retained = insertAsset(db, insertProject(db, 'Outside context'), 'retained.png');
+      markAssetMissing(db, missing);
+      markAssetMissing(db, retained);
+      db.prepare('UPDATE assets SET modified_at = ? WHERE id = ?').run('2026-09-01T00:00:00.000Z', direct);
+      const expected = new Map([direct, missing, unsupported, incomplete, retained].map(id => [String(id), thumbnailFor(id)]));
+      const capture = captureForms();
+      const repository = app.locals.assetScanner.repository;
+      const batch = vi.spyOn(repository, 'findByIds');
+      try {
+        const context = { [container + 'Id']: container === 'book' ? book.id : chapter.id };
+        await agent.get('/notes/new').query(context).expect(200);
+        expect(capture.forms.at(-1).connections.assets).toEqual([]);
+        expect(batch).not.toHaveBeenCalled();
+        const body = { _csrf: csrfToken, ...context, title: ' ', projectIds: [projectId], assetIds: [direct, retained] };
+        await agent.post('/notes').type('form').send(body).expect(422);
+        const check = form => {
+          expect(form.connections.assets.map(option => option.value)).toEqual([direct, missing, unsupported, incomplete].map(String));
+          expect(form.connections.retained.map(option => option.value)).toEqual([String(retained)]);
+          for (const option of [...form.connections.assets, ...form.connections.retained]) {
+            expect(option.thumbnail).toEqual(expected.get(option.value));
+            expect(option.selected).toBe([direct, retained].map(String).includes(option.value));
+          }
+          expect(form.connections.assets[0].thumbnail.urls.thumbnail).toEqual(expect.any(String));
+          expect(form.connections.assets[2].thumbnail.state).toBe('unsupported');
+          expect(form.connections.assets[3].thumbnail).toMatchObject({ state: 'previewable', sourceMetadataValid: false, urls: { thumbnail: null } });
+        };
+        check(capture.forms.at(-1));
+        expect(batch).toHaveBeenCalledTimes(1);
+        expect(batch).toHaveBeenLastCalledWith([direct, missing, unsupported, incomplete, retained]);
+        const note = app.locals.noteService.createNote({ ...context, title: 'Saved', projectIds: [projectId], assetIds: [direct, retained] });
+        await agent.get('/notes/' + note.id + '/edit').expect(200);
+        check(capture.forms.at(-1));
+        await agent.post('/notes/' + note.id).type('form').send(body).expect(422);
+        check(capture.forms.at(-1));
+        expect(batch).toHaveBeenCalledTimes(3);
+        batch.mockReturnValueOnce([]);
+        await agent.get('/notes/' + note.id + '/edit').expect(200);
+        const unavailable = capture.forms.at(-1).connections;
+        expect(unavailable.assets.map(option => option.value)).toEqual([direct, missing, unsupported, incomplete].map(String));
+        expect(unavailable.retained[0]).toMatchObject({
+          value: String(retained), selected: true,
+          thumbnail: { state: 'missing', sourceMetadataValid: false, urls: { thumbnail: null }, nsfwBlur: false },
+        });
+        expect(unavailable.assets[0].selected).toBe(true);
+      } finally { batch.mockRestore(); capture.restore(); }
+    });
+
+    it.each(['asset', 'project', 'disabled'])('shares %s NSFW presentation between forms and dynamic picker', async policy => {
+      const projectId = insertProject(db, 'NSFW option');
+      const id = insertAsset(db, projectId);
+      db.prepare('UPDATE assets SET modified_at = ? WHERE id = ?').run('2026-09-01T00:00:00.000Z', id);
+      const tag = app.locals.tagService.createTag({ name: 'NSFW' });
+      app.locals.assetTagService.replaceAssetTags(id, policy === 'asset' || policy === 'disabled' ? [tag.id] : []);
+      app.locals.projectTagService.replaceProjectTags(projectId, policy !== 'asset' ? [tag.id] : []);
+      app.locals.nsfwFilterSettingsService.setEnabled(policy !== 'disabled');
+      const { note } = createPage(app, { title: 'Tagged', projectIds: [projectId], assetIds: [id] });
+      const capture = captureForms();
+      try {
+        await agent.get('/notes/' + note.id + '/edit').expect(200);
+        const response = await agent.get('/notes/asset-picker/assets').query({ projectId }).expect(200);
+        expect(response.body.items[0].thumbnail).toEqual(thumbnailFor(id, policy !== 'disabled'));
+        expect(capture.forms.at(-1).connections.assets[0].thumbnail).toEqual(response.body.items[0].thumbnail);
+      } finally { capture.restore(); }
+    });
+
+    it('batch-resolves only each picker page and preserves rows when full metadata is unavailable', async () => {
+      const projectId = insertProject(db, 'Batch options');
+      const ids = Array.from({ length: 26 }, (_, i) => insertAsset(db, projectId, 'asset-' + String(i).padStart(2, '0') + '.png'));
+      const batch = vi.spyOn(app.locals.assetScanner.repository, 'findByIds').mockReturnValue([]);
+      try {
+        const first = await agent.get('/notes/asset-picker/assets').query({ projectId }).expect(200);
+        expect(batch).toHaveBeenCalledExactlyOnceWith(ids.slice(0, 25));
+        expect(first.body.items).toHaveLength(25);
+        expect(first.body.items.every(item => item.thumbnail.state === 'missing' && item.thumbnail.urls.thumbnail === null)).toBe(true);
+        const second = await agent.get('/notes/asset-picker/assets').query({ projectId, cursor: first.body.nextCursor }).expect(200);
+        expect(batch).toHaveBeenCalledTimes(2);
+        expect(batch).toHaveBeenLastCalledWith(ids.slice(25));
+        expect(second.body.items.map(item => item.id)).toEqual(ids.slice(25));
+        expect(second.body.nextCursor).toBeNull();
+      } finally { batch.mockRestore(); }
+    });
+  });
+
   describe('asset picker asset endpoint', () => {
     it('returns project-scoped minimal picker rows, including missing assets', async () => {
       const projectId = insertProject(db, 'Picker Assets');
@@ -637,12 +785,12 @@ describe('top-level Notes HTTP slice', () => {
       expect(Object.keys(response.body)).toEqual(['project', 'items', 'nextCursor']);
       expect(response.body.project).toEqual({ id: projectId, title: 'Picker Assets', archived: false });
       expect(response.body.items).toEqual([
-        { id: matchingId, filename: 'alpha-file.png', relativePath: 'source/alpha-file.png', isPresent: true },
-        { id: missingId, filename: 'alpha-missing.bin', relativePath: 'alpha-missing.bin', isPresent: false },
+        { id: matchingId, filename: 'alpha-file.png', relativePath: 'source/alpha-file.png', isPresent: true, thumbnail: { state: 'previewable', sourceMetadataValid: false, urls: { thumbnail: null }, nsfwBlur: false } },
+        { id: missingId, filename: 'alpha-missing.bin', relativePath: 'alpha-missing.bin', isPresent: false, thumbnail: { state: 'missing', sourceMetadataValid: false, urls: { thumbnail: null }, nsfwBlur: false } },
       ]);
       expect(response.body.items.map((item) => Object.keys(item).sort())).toEqual([
-        ['filename', 'id', 'isPresent', 'relativePath'],
-        ['filename', 'id', 'isPresent', 'relativePath'],
+        ['filename', 'id', 'isPresent', 'relativePath', 'thumbnail'],
+        ['filename', 'id', 'isPresent', 'relativePath', 'thumbnail'],
       ]);
     });
 
@@ -965,7 +1113,7 @@ describe('top-level Notes HTTP slice', () => {
       })
       .expect(422);
 
-    const contextRail = response.text.match(/<aside class="notes-workspace-context"[\s\S]*?<\/aside>/)?.[0] || '';
+    const contextRail = response.text.match(/<aside class="notes-workspace-context notes-book-detail-sidebar notes-book-detail-sidebar--embedded"[\s\S]*?<\/aside>/)?.[0] || '';
     const navigator = contextRail.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/)?.[0] || '';
     expect(navigator).toContain(`<nav class="notes-book-nav" aria-label="Contents of ${book.title}">`);
     expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${directBookPage.id}">Direct Failed Create Page</a>`);
@@ -973,7 +1121,7 @@ describe('top-level Notes HTTP slice', () => {
     expect(navigator.indexOf('Direct Failed Create Page')).toBeLessThan(navigator.indexOf('Page Chapter'));
     expect(navigator.indexOf('Page Chapter')).toBeLessThan(navigator.indexOf('Unrelated Failed Create Chapter'));
     expect(navigator.indexOf('Second Existing Chapter Page')).toBeLessThan(navigator.indexOf('First Existing Chapter Page'));
-    expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/chapters/${chapter.id}" aria-current="page">View Chapter</a>`);
+    expect(navigator).not.toContain('>View Chapter</a>');
     expect(navigator).not.toMatch(/<a class="notes-book-nav-page-link" href="\/notes\/\d+"[^>]*aria-current="page"/);
     expect((navigator.match(/<details class="notes-book-nav-disclosure" open>/g) || [])).toHaveLength(1);
     expect(getNewNoteDialog(response.text)).not.toContain('<nav class="notes-page-nav"');
@@ -1145,11 +1293,11 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toMatch(new RegExp(`id="note-asset-option-${secondAssetId}"[^>]*checked`));
     expect(response.text).toContain('direct-validation-first.txt');
     expect(response.text).toContain('direct-validation-second.txt');
-    const contextRail = response.text.match(/<aside class="notes-workspace-context"[\s\S]*?<\/aside>/)?.[0] || '';
+    const contextRail = response.text.match(/<aside class="notes-workspace-context notes-book-detail-sidebar notes-book-detail-sidebar--embedded"[\s\S]*?<\/aside>/)?.[0] || '';
     const navigator = contextRail.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/)?.[0] || '';
     expect(navigator).toContain(`<nav class="notes-book-nav" aria-label="Contents of ${book.title}">`);
     expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${directPage.id}">Direct Validation Existing Page</a>`);
-    expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/chapters/${chapter.id}">View Chapter</a>`);
+    expect(navigator).not.toContain('>View Chapter</a>');
     expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${nestedPage.id}">Direct Validation Nested Page</a>`);
     expect(navigator.indexOf('Direct Validation Existing Page')).toBeLessThan(navigator.indexOf('Direct Validation Chapter'));
     expect(navigator).not.toContain('aria-current="page"');
@@ -1225,14 +1373,20 @@ describe('top-level Notes HTTP slice', () => {
 
     expectEditNoteDialog(response.text, note.id, false);
     expect(response.text).toContain('<title>CreatorCrate — Notes — Page — Detail Note</title>');
+    expect(response.text).toContain('<body class="notes-page-detail-page">');
     expect(response.text).toContain('<h1 class="app-section-title">Notes — Page — Detail Note</h1>');
+    expect(response.text.match(/<h1 class="app-section-title">/g)).toHaveLength(1);
     expect(response.text).toContain(`<a class="button button-primary" href="/notes/${note.id}/edit" data-dialog-open="note-edit-dialog">Edit Page</a>`);
     expect(response.text).not.toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
     expect(response.text).not.toContain('notes-hierarchy');
     expect(response.text).toContain('<div class="notes-page-detail-layout">');
-    expect(response.text).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">Page Book</a>`);
-    expect(response.text).toContain(`<a class="notes-book-nav-page-link" href="/notes/chapters/${chapter.id}">View Chapter</a>`);
-    expect(response.text).toContain(`<a class="notes-book-nav-page-link" href="/notes/${note.id}" aria-current="page">Detail Note</a>`);
+    const polishedSidebar = response.text.match(/<aside class="notes-page-detail-sidebar notes-book-detail-sidebar[^"]*">[\s\S]*?<\/aside>/)?.[0] || '';
+    expect(polishedSidebar).not.toBe('');
+    expect(polishedSidebar).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">Page Book</a>`);
+    expect(polishedSidebar).not.toContain('View Chapter');
+    expect(polishedSidebar).toContain(`<a class="notes-book-nav-page-link" href="/notes/${note.id}" aria-current="page">Detail Note</a>`);
+    expect(polishedSidebar).toContain('<details class="notes-book-nav-disclosure" open>');
+    expect(getEditNoteDialog(response.text)).not.toContain('>View Chapter</a>');
     expect(getNewNoteDialog(response.text)).not.toContain('<nav class="notes-page-nav"');
     expect(response.text.replace(getEditNoteDialog(response.text), '')).not.toContain(`/notes/${note.id}/move`);
     expect(response.text.replace(getEditNoteDialog(response.text), '')).not.toContain('Move Page');
@@ -1243,8 +1397,9 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).not.toContain('<script>alert');
     expect(response.text).toContain('<h1>Markdown <strong>text</strong></h1>');
     expect(response.text).toContain('<p>line two</p>');
-    expect(response.text).toContain('<section class="notes-detail-panel notes-detail-details" aria-labelledby="notes-detail-details-heading">');
+    expect(response.text).toContain('<section class="project-detail-info project-detail-section notes-detail-details" aria-labelledby="notes-detail-details-heading">');
     expect(response.text).toContain('<h2 id="notes-detail-details-heading">Details</h2>');
+    expect(response.text).toContain('<div class="project-detail-section-body">');
     expect(response.text).toContain('<dl class="detail-list">');
     expect(response.text).toContain('<dt>Created</dt>');
     expect(response.text).toContain(`<dd>${note.created_at}</dd>`);
@@ -1257,8 +1412,10 @@ describe('top-level Notes HTTP slice', () => {
     expect(pageContentStart).toBeGreaterThan(pageSidebarStart);
     expect(pageSidebar).toContain('notes-book-nav');
     expect(pageSidebar).toContain('notes-detail-details');
-    expect(response.text).toContain('<section class="notes-detail-content"');
-    expect(response.text).toContain(`<p class="notes-detail-kicker" id="notes-detail-content-heading">${note.title}</p>`);
+    expect(response.text).toContain('<section class="notes-detail-content" aria-labelledby="notes-detail-content-heading">');
+    expect(response.text).toContain('<div class="notes-detail-section-heading">');
+    expect(response.text).toContain('<p class="notes-detail-kicker notes-detail-content-heading" id="notes-detail-content-heading">Detail Note</p>');
+    expect(response.text).not.toContain('aria-label="Page contents"');
     expect(response.text).not.toContain('>Reading view<');
     expect(response.text).not.toContain('<h2 id="notes-detail-content-heading">Content</h2>');
     expect(response.text).not.toContain('class="notes-detail-layout"');
@@ -1274,6 +1431,54 @@ describe('top-level Notes HTTP slice', () => {
     expect(css.text).toContain('.notes-content');
     expect(css.text).toContain('.notes-content pre');
     expect(css.text).toContain('.notes-content table');
+
+    const bookDetail = await agent.get(`/notes/books/${book.id}`).expect(200);
+    expect(bookDetail.text).toContain('<section class="notes-detail-panel notes-detail-details" aria-labelledby="notes-book-details-heading">');
+    expect(bookDetail.text).not.toContain('<section class="project-detail-info project-detail-section notes-detail-details"');
+  });
+
+  it('suppresses a matching leading Markdown H1 only in Page detail while preserving Edit source', async () => {
+    const title = 'Benji reference sheet [run15]';
+    const content = `# ${title}\n\nBody remains.\n\n# Later heading`;
+    const { note } = createPage(app, { title, content });
+
+    for (const url of [`/notes/${note.id}`, `/notes/${note.id}/edit`]) {
+      const response = await agent.get(url).expect(200);
+      const renderedContent = response.text.match(/<div class="notes-content">([\s\S]*?)<\/div>/)?.[1] || '';
+      expect(renderedContent).not.toContain(`<h1>${title}</h1>`);
+      expect(renderedContent).toContain('<p>Body remains.</p>');
+      expect(renderedContent).toContain('<h1>Later heading</h1>');
+      expect(getEditNoteDialog(response.text)).toContain(content);
+      expect(response.text).toContain(`id="notes-detail-content-heading">${title}</p>`);
+    }
+
+    const validationResponse = await agent
+      .post(`/notes/${note.id}`)
+      .type('form')
+      .send({ _csrf: csrfToken, title: '', content: `# ${title}\n\nAttempted edit` })
+      .expect(422);
+    const validationContent = validationResponse.text.match(/<div class="notes-content">([\s\S]*?)<\/div>/)?.[1] || '';
+    expect(validationContent).not.toContain(`<h1>${title}</h1>`);
+    expect(validationContent).toContain('<p>Body remains.</p>');
+    expect(getEditNoteDialog(validationResponse.text)).toContain(`# ${title}\n\nAttempted edit`);
+    expect(app.locals.noteService.getNote(note.id).content).toBe(content);
+  });
+
+  it.each([
+    ['Page Title', '# Page   Title', false],
+    ['FooBar', '# Foo<br>Bar', true],
+    ['FooBar', 'Foo\nBar\n====', true],
+    ['FooBar', 'Foo  \nBar\n====', true],
+  ])('compares leading H1 whitespace through Page detail: %s / %s', async (title, heading, retained) => {
+    const content = `${heading}\n\nBody remains.\n\n## Section`;
+    const { note } = createPage(app, { title, content });
+    const response = await agent.get(`/notes/${note.id}`).expect(200);
+    const renderedContent = response.text.match(/<div class="notes-content">([\s\S]*?)<\/div>/)?.[1] || '';
+    expect(renderedContent.includes('<h1>')).toBe(retained);
+    if (retained) expect(renderedContent).toContain('<h1>Foo<br />\nBar</h1>');
+    expect(renderedContent).toContain('<p>Body remains.</p>');
+    expect(renderedContent).toContain('<h2>Section</h2>');
+    expect(app.locals.noteService.getNote(note.id).content).toBe(content);
   });
 
   it('renders a Chapter Page in the authoritative mixed Book navigator', async () => {
@@ -1324,12 +1529,13 @@ describe('top-level Notes HTTP slice', () => {
     expect(navigator.indexOf('Direct Last Page')).toBeLessThan(navigator.indexOf('Unrelated Chapter'));
     expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${directFirst.id}">Direct First Page</a>`);
     expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${directLast.id}">Direct Last Page</a>`);
-    expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/chapters/${chapter.id}">View Chapter</a>`);
+    expect(navigator).not.toContain('View Chapter');
     expect(navigator.indexOf('Last Chapter Page')).toBeLessThan(navigator.indexOf('First Chapter Page'));
     expect(navigator.indexOf('First Chapter Page')).toBeLessThan(navigator.indexOf('Current Chapter Page'));
     expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${second.id}" aria-current="page">Current Chapter Page</a>`);
     expect((navigator.match(/<details class="notes-book-nav-disclosure" open>/g) || [])).toHaveLength(1);
     expect((navigator.match(/aria-current="page"/g) || [])).toHaveLength(1);
+    expect(getEditNoteDialog(response.text)).not.toContain('>View Chapter</a>');
     expect(getNewNoteDialog(response.text)).not.toContain('<nav class="notes-page-nav"');
   });
 
@@ -1397,7 +1603,7 @@ describe('top-level Notes HTTP slice', () => {
     expect(detailResponse.text).not.toContain('Back to Chapter');
 
     const editResponse = await agent.get(`/notes/${noteId}/edit`).expect(200);
-    expect(editResponse.text).toContain('<aside class="notes-workspace-context" aria-label="Book contents">');
+    expect(editResponse.text).toContain('<aside class="notes-workspace-context notes-book-detail-sidebar notes-book-detail-sidebar--embedded" aria-label="Book contents">');
     expect(editResponse.text).toContain(`<nav class="notes-book-nav" aria-label="Contents of ${book.title}">`);
     expect(editResponse.text).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">Direct Round-trip Book</a>`);
     expect(editResponse.text).not.toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
@@ -1523,14 +1729,15 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain('value="Existing Note"');
     expect(response.text).toContain('# Existing\n**bold** &amp; &lt;script&gt;alert(&quot;unsafe&quot;)&lt;/script&gt;');
     expect(response.text).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">Page Book</a>`);
-    expect(response.text).toContain(`<a class="notes-book-nav-page-link" href="/notes/chapters/${chapter.id}">View Chapter</a>`);
+    expect(getEditNoteDialog(response.text)).not.toContain('>View Chapter</a>');
     expect(response.text).not.toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
     expect(response.text).not.toContain('Book workspace');
     expect(response.text).not.toContain('>Hierarchy</h2>');
     expect(response.text).not.toContain('Back to Chapter');
     expect(response.text).not.toContain('Back to Book');
     expect(response.text).not.toContain('This Page will belong');
-    expect(response.text).toContain(`/notes/chapters/${chapter.id}`);
+    expect(getEditNoteDialog(response.text)).toContain('<details class="notes-book-nav-disclosure" open>');
+    expect(getEditNoteDialog(response.text)).toContain('<span class="notes-book-nav-chapter-title">Page Chapter</span>');
     expect(response.text).not.toContain('name="chapterId"');
     expect(getEditNoteDialog(response.text)).not.toContain('<strong>bold</strong>');
     expect(app.locals.noteService.getNote(note.id).content).toBe(content);
@@ -1590,7 +1797,7 @@ describe('top-level Notes HTTP slice', () => {
       listBookContents.mockRestore();
     }
 
-    const contextRail = response.text.match(/<aside class="notes-workspace-context"[\s\S]*?<\/aside>/)?.[0] || '';
+    const contextRail = response.text.match(/<aside class="notes-workspace-context notes-book-detail-sidebar notes-book-detail-sidebar--embedded"[\s\S]*?<\/aside>/)?.[0] || '';
     const navigator = contextRail.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/)?.[0] || '';
 
     expect(editLocals.bookContents).toBe(authoritativeContents);
@@ -1601,13 +1808,13 @@ describe('top-level Notes HTTP slice', () => {
     expect(navigator.indexOf('Direct Edit Page')).toBeLessThan(navigator.indexOf('Page Chapter'));
     expect(navigator.indexOf('Page Chapter')).toBeLessThan(navigator.indexOf('Unrelated Edit Chapter'));
     expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${directBookPage.id}">Direct Edit Page</a>`);
-    expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/chapters/${chapter.id}">View Chapter</a>`);
+    expect(navigator).not.toContain('>View Chapter</a>');
     expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${current.id}" aria-current="page">Current Edit Page</a>`);
     expect(navigator.indexOf('Last Edit Page')).toBeLessThan(navigator.indexOf('First Edit Page'));
     expect(navigator.indexOf('First Edit Page')).toBeLessThan(navigator.indexOf('Current Edit Page'));
     expect((navigator.match(/<details class="notes-book-nav-disclosure" open>/g) || [])).toHaveLength(1);
     expect(response.text).not.toContain('<nav class="notes-page-nav"');
-    expect(contextRail).toContain('<aside class="notes-workspace-context" aria-label="Book contents">');
+    expect(contextRail).toContain('<aside class="notes-workspace-context notes-book-detail-sidebar notes-book-detail-sidebar--embedded" aria-label="Book contents">');
     expect(contextRail).not.toContain('notes-hierarchy');
     expect(contextRail).not.toContain('Book workspace');
     expect(contextRail).not.toContain('Hierarchy');
@@ -1640,7 +1847,7 @@ describe('top-level Notes HTTP slice', () => {
     ]);
 
     const response = await agent.get(`/notes/${current.id}/edit`).expect(200);
-    const contextRail = response.text.match(/<aside class="notes-workspace-context"[\s\S]*?<\/aside>/)?.[0] || '';
+    const contextRail = response.text.match(/<aside class="notes-workspace-context notes-book-detail-sidebar notes-book-detail-sidebar--embedded"[\s\S]*?<\/aside>/)?.[0] || '';
     const navigator = contextRail.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/)?.[0] || '';
 
     expect(navigator.indexOf('First Direct Edit Chapter')).toBeLessThan(navigator.indexOf('Current Direct Edit Page'));
@@ -1651,7 +1858,7 @@ describe('top-level Notes HTTP slice', () => {
     expect((navigator.match(/<details class="notes-book-nav-disclosure" open>/g) || [])).toHaveLength(0);
     expect((navigator.match(/aria-current="page"/g) || [])).toHaveLength(1);
     expect(response.text).not.toContain('<nav class="notes-page-nav"');
-    expect(contextRail).toContain('<aside class="notes-workspace-context" aria-label="Book contents">');
+    expect(contextRail).toContain('<aside class="notes-workspace-context notes-book-detail-sidebar notes-book-detail-sidebar--embedded" aria-label="Book contents">');
     expect(contextRail).not.toContain('notes-hierarchy');
     expect(contextRail).not.toContain('Book workspace');
     expect(contextRail).not.toContain('Hierarchy');
@@ -1670,15 +1877,15 @@ describe('top-level Notes HTTP slice', () => {
     const { book, chapter, note } = createPage(app, { title: 'Sole Edit Page' });
 
     const response = await agent.get(`/notes/${note.id}/edit`).expect(200);
-    const contextRail = response.text.match(/<aside class="notes-workspace-context"[\s\S]*?<\/aside>/)?.[0] || '';
+    const contextRail = response.text.match(/<aside class="notes-workspace-context notes-book-detail-sidebar notes-book-detail-sidebar--embedded"[\s\S]*?<\/aside>/)?.[0] || '';
     const navigator = contextRail.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/)?.[0] || '';
 
     expect(navigator).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">Page Book</a>`);
-    expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/chapters/${chapter.id}">View Chapter</a>`);
+    expect(navigator).not.toContain('>View Chapter</a>');
     expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${note.id}" aria-current="page">Sole Edit Page</a>`);
     expect(navigator).toContain('<details class="notes-book-nav-disclosure" open>');
     expect(response.text).not.toContain('<nav class="notes-page-nav"');
-    expect(contextRail).toContain('<aside class="notes-workspace-context" aria-label="Book contents">');
+    expect(contextRail).toContain('<aside class="notes-workspace-context notes-book-detail-sidebar notes-book-detail-sidebar--embedded" aria-label="Book contents">');
     expect(contextRail).not.toContain('notes-hierarchy');
     expect(contextRail).not.toContain('Book workspace');
     expect(contextRail).not.toContain('Hierarchy');
@@ -1929,20 +2136,101 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).toContain(`<form id="note-form" method="post" action="/notes/${note.id}"`);
     expect(response.text).toContain(attemptedContent);
     expect(response.text).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">Page Book</a>`);
-    expect(response.text).toContain(`<a class="notes-book-nav-page-link" href="/notes/chapters/${chapter.id}">View Chapter</a>`);
+    expect(getEditNoteDialog(response.text)).not.toContain('>View Chapter</a>');
     expect(response.text).not.toContain('<nav class="notes-hierarchy" aria-label="Page hierarchy">');
     expect(response.text).not.toContain('Book workspace');
     expect(response.text).not.toContain('>Hierarchy</h2>');
     expect(response.text).not.toContain('Back to Chapter');
     expect(response.text).not.toContain('Back to Book');
     expect(response.text).not.toContain('This Page will belong');
-    expect(response.text).toContain(`/notes/chapters/${chapter.id}`);
+    expect(getEditNoteDialog(response.text)).toContain('<details class="notes-book-nav-disclosure" open>');
+    expect(getEditNoteDialog(response.text)).toContain('<span class="notes-book-nav-chapter-title">Page Chapter</span>');
     expect(response.text).not.toContain('name="chapterId"');
     expect(app.locals.noteService.getNote(note.id)).toMatchObject({
       title: 'Existing',
       content: 'Stored content',
     });
     expect(app.locals.noteService.getNote(note.id).chapter_id).toBe(chapter.id);
+  });
+
+  it('reuses the Book preview cover pipeline for direct and Chapter Page detail render paths', async () => {
+    const book = app.locals.bookService.createBook({ title: 'Covered Page Book' });
+    const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Covered Chapter' });
+    const directPage = app.locals.noteService.createNote({ bookId: book.id, title: 'Direct Covered Page' });
+    const chapterPage = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Chapter Covered Page' });
+    const projectId = insertProject(db, 'Covered Page Project');
+    const assetId = insertAsset(db, projectId, 'page-cover.png');
+    db.prepare("UPDATE assets SET modified_at = '2026-09-06 12:00:00' WHERE id = ?").run(assetId);
+    const nsfwTag = app.locals.tagService.createTag({ name: 'NSFW' });
+    app.locals.bookPrimaryImageService.setPrimaryImage(book.id, assetId);
+    app.locals.assetTagService.replaceAssetTags(assetId, [nsfwTag.id]);
+    app.locals.nsfwFilterSettingsService.setEnabled(true);
+    const attachPrimaryImages = vi.spyOn(app.locals.bookPrimaryImageService, 'attachPrimaryImages');
+
+    const responses = [
+      await agent.get(`/notes/${directPage.id}`).expect(200),
+      await agent.get(`/notes/${chapterPage.id}`).expect(200),
+      await agent.get(`/notes/${directPage.id}/edit`).expect(200),
+      await agent.post(`/notes/${chapterPage.id}`).type('form')
+        .send({ _csrf: csrfToken, title: '', content: 'Attempted covered content' }).expect(422),
+    ];
+
+    expect(attachPrimaryImages).toHaveBeenCalledTimes(responses.length);
+    for (const call of attachPrimaryImages.mock.calls) {
+      expect(call[0]).toHaveLength(1);
+      expect(call[0][0].id).toBe(book.id);
+    }
+    for (const response of responses) {
+      const cover = response.text.match(/<div class="notes-book-cover[\s\S]*?<\/div>/)?.[0] || '';
+      expect(response.text.match(/class="notes-book-cover(?: |")/g)).toHaveLength(1);
+      expect(cover).toContain(`href="/notes/books/${book.id}"`);
+      expect(cover).toMatch(new RegExp(`src="/projects/${projectId}/assets/${assetId}/preview\\?v=`));
+      expect(cover).toContain('asset-image--nsfw-blurred');
+      expect(response.text.indexOf(cover)).toBeLessThan(response.text.indexOf('<nav class="notes-book-nav"'));
+    }
+    expect(getEditNoteDialog(responses[2].text)).toMatch(/<dialog\b[^>]*\sopen(?:\s|>)/);
+    expect(responses[3].text).toContain('Attempted covered content');
+    expect(responses[3].text).toContain('Title is required.');
+
+    attachPrimaryImages.mockRestore();
+  });
+
+  it('renders the existing absent and unavailable Book cover fallbacks on Page detail', async () => {
+    const noCoverBook = app.locals.bookService.createBook({ title: 'No Page Cover Book' });
+    const noCoverPage = app.locals.noteService.createNote({ bookId: noCoverBook.id, title: 'No Cover Page' });
+    const unavailableBook = app.locals.bookService.createBook({ title: 'Unavailable Page Cover Book' });
+    const unavailablePage = app.locals.noteService.createNote({ bookId: unavailableBook.id, title: 'Unavailable Cover Page' });
+    const projectId = insertProject(db, 'Unavailable Page Cover Project');
+    const assetId = insertAsset(db, projectId, 'unavailable-page-cover.png');
+    app.locals.bookPrimaryImageService.setPrimaryImage(unavailableBook.id, assetId);
+    markAssetMissing(db, assetId);
+
+    const noCover = await agent.get(`/notes/${noCoverPage.id}`).expect(200);
+    const unavailable = await agent.get(`/notes/${unavailablePage.id}`).expect(200);
+    const noCoverMarkup = noCover.text.match(/<div class="notes-book-cover[\s\S]*?<\/div>/)?.[0] || '';
+    const unavailableMarkup = unavailable.text.match(/<div class="notes-book-cover[\s\S]*?<\/div>/)?.[0] || '';
+
+    expect(noCoverMarkup).toContain('data-primary-image-state="none"');
+    expect(noCoverMarkup).toContain('>No image</span>');
+    expect(noCoverMarkup).not.toContain('<img');
+    expect(unavailableMarkup).toContain('data-primary-image-state="unavailable"');
+    expect(unavailableMarkup).toContain('>Image unavailable</span>');
+    expect(unavailableMarkup).not.toContain('<img');
+    expect(unavailableMarkup).not.toContain(`/projects/${projectId}/assets/${assetId}/preview`);
+  });
+
+  it('propagates asynchronous Page cover resolution failures through every detail render route', async () => {
+    const { note } = createPage(app, { title: 'Cover Resolution Failure Page' });
+    const resolutionFailure = vi.spyOn(app.locals.bookPrimaryImageService, 'attachPrimaryImages')
+      .mockImplementation(() => { throw new Error('Page cover resolution failed'); });
+
+    await agent.get(`/notes/${note.id}`).expect(500);
+    await agent.get(`/notes/${note.id}/edit`).expect(500);
+    await agent.post(`/notes/${note.id}`).type('form')
+      .send({ _csrf: csrfToken, title: '', content: 'Attempted content' }).expect(500);
+    expect(resolutionFailure).toHaveBeenCalledTimes(3);
+
+    resolutionFailure.mockRestore();
   });
 
   it('POST /notes/:id validation failure preserves attempted project selections', async () => {
@@ -2036,11 +2324,11 @@ describe('top-level Notes HTTP slice', () => {
       })
       .expect(422);
 
-    const contextRail = response.text.match(/<aside class="notes-workspace-context"[\s\S]*?<\/aside>/)?.[0] || '';
+    const contextRail = response.text.match(/<aside class="notes-workspace-context notes-book-detail-sidebar notes-book-detail-sidebar--embedded"[\s\S]*?<\/aside>/)?.[0] || '';
     const navigator = contextRail.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/)?.[0] || '';
     expect(navigator).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">Page Book</a>`);
     expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${directPage.id}">Direct Edit Peer</a>`);
-    expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/chapters/${chapter.id}">View Chapter</a>`);
+    expect(navigator).not.toContain('>View Chapter</a>');
     expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${current.id}" aria-current="page">Current Edit Sibling</a>`);
     expect(navigator.indexOf('Direct Edit Peer')).toBeLessThan(navigator.indexOf('Page Chapter'));
     expect(navigator.indexOf('Last Edit Sibling')).toBeLessThan(navigator.indexOf('First Edit Sibling'));
@@ -2057,7 +2345,7 @@ describe('top-level Notes HTTP slice', () => {
     expect(response.text).not.toContain('Back to Chapter');
     expect(response.text).not.toContain('Back to Book');
     expect(response.text).not.toContain('This Page will belong');
-    expect(response.text).toContain(`<a class="notes-book-nav-page-link" href="/notes/chapters/${chapter.id}">View Chapter</a>`);
+    expect(getEditNoteDialog(response.text)).not.toContain('>View Chapter</a>');
     expect(response.text).toMatch(new RegExp(`name="projectIds\\[\\]"[^>]*value="${projectId}"[^>]*checked`));
     expect(response.text).toMatch(new RegExp(`id="note-asset-option-${assetId}"[^>]*checked`));
     expect(response.text).toContain('failed-edit.txt');
@@ -2408,6 +2696,537 @@ describe('top-level Notes HTTP slice', () => {
   });
 
   describe('Book Chapters', () => {
+    it('decorates the owning Book across every Chapter shell render path', async () => {
+      const book = app.locals.bookService.createBook({ title: 'Decorated Chapter Book' });
+      const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Decorated Chapter' });
+      const first = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'First Decorated Page' });
+      const second = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Second Decorated Page' });
+      const projectId = insertProject(db, 'Decorated Chapter Project');
+      const assetId = insertAsset(db, projectId, 'chapter-cover.png');
+      db.prepare("UPDATE assets SET modified_at = '2026-09-06 12:00:00' WHERE id = ?").run(assetId);
+      const nsfwTag = app.locals.tagService.createTag({ name: 'NSFW' });
+      app.locals.bookPrimaryImageService.setPrimaryImage(book.id, assetId);
+      app.locals.assetTagService.replaceAssetTags(assetId, [nsfwTag.id]);
+      app.locals.nsfwFilterSettingsService.setEnabled(true);
+      const attachPrimaryImages = vi.spyOn(app.locals.bookPrimaryImageService, 'attachPrimaryImages');
+      const capture = captureChapterDetailLocals(app);
+      const responses = [];
+
+      try {
+        responses.push(await agent.get(`/notes/chapters/${chapter.id}`).expect(200));
+        responses.push(await agent.get(`/notes/chapters/${chapter.id}/edit`).expect(200));
+        responses.push(await agent.get(`/notes/chapters/${chapter.id}/notes/order`).expect(200));
+        responses.push(await agent.post(`/notes/chapters/${chapter.id}/notes/reorder`).type('form')
+          .send({ _csrf: csrfToken, orderedNoteIds: `${first.id},999999` }).expect(422));
+        responses.push(await agent.post(`/notes/chapters/${chapter.id}`).type('form')
+          .send({ _csrf: csrfToken, title: '' }).expect(422));
+        responses.push(await agent.get(`/notes/new?chapterId=${chapter.id}`).expect(200));
+      } finally {
+        capture.restore();
+      }
+
+      expect(attachPrimaryImages).toHaveBeenCalledTimes(6);
+      expect(capture.all()).toHaveLength(6);
+      for (const [attachedBooks] of attachPrimaryImages.mock.calls) {
+        expect(attachedBooks).toHaveLength(1);
+        expect(attachedBooks[0].id).toBe(book.id);
+      }
+      for (const locals of capture.all()) {
+        expect(locals.book).toMatchObject({
+          id: book.id,
+          primaryImage: {
+            state: 'available',
+            selectedAssetId: assetId,
+            selectedSource: { kind: 'project_asset', id: assetId },
+          },
+          nsfwBlur: true,
+        });
+        expect(locals.book.primaryImage.previewUrl)
+          .toMatch(new RegExp(`^/projects/${projectId}/assets/${assetId}/preview\\?v=`));
+        expect(locals.noteCreateForm.book).toBe(locals.book);
+        expect(locals.chapterEditForm.book).toBe(locals.book);
+      }
+      for (const response of responses) {
+        expect(response.text).toContain('class="notes-chapter-detail-sidebar notes-book-detail-sidebar notes-surface notes-surface--compact"');
+        expect(response.text).toContain(`src="/projects/${projectId}/assets/${assetId}/preview?v=`);
+        expect(response.text).toContain('asset-image--nsfw-blurred');
+      }
+    });
+
+    it('preserves Chapter Book cover fallback and Project NSFW association semantics', async () => {
+      const nsfwTag = app.locals.tagService.createTag({ name: 'NSFW' });
+      const inheritedBook = app.locals.bookService.createBook({ title: 'Inherited NSFW Chapter Book' });
+      const inheritedChapter = app.locals.chapterService.createChapter({ bookId: inheritedBook.id, title: 'Inherited Chapter' });
+      const inheritedProjectId = insertProject(db, 'Inherited Chapter Project');
+      const inheritedAssetId = insertAsset(db, inheritedProjectId, 'inherited-chapter-cover.png');
+      db.prepare("UPDATE assets SET modified_at = '2026-09-06 12:00:00' WHERE id = ?").run(inheritedAssetId);
+      app.locals.bookPrimaryImageService.setPrimaryImage(inheritedBook.id, inheritedAssetId);
+      app.locals.projectTagService.replaceProjectTags(inheritedProjectId, [nsfwTag.id]);
+
+      const noCoverBook = app.locals.bookService.createBook({ title: 'No Cover Chapter Book' });
+      const noCoverChapter = app.locals.chapterService.createChapter({ bookId: noCoverBook.id, title: 'No Cover Chapter' });
+      const unavailableBook = app.locals.bookService.createBook({ title: 'Unavailable Chapter Book' });
+      const unavailableChapter = app.locals.chapterService.createChapter({ bookId: unavailableBook.id, title: 'Unavailable Chapter' });
+      const unavailableProjectId = insertProject(db, 'Unavailable Chapter Project');
+      const unavailableAssetId = insertAsset(db, unavailableProjectId, 'unavailable-chapter-cover.png');
+      app.locals.bookPrimaryImageService.setPrimaryImage(unavailableBook.id, unavailableAssetId);
+      markAssetMissing(db, unavailableAssetId);
+      const capture = captureChapterDetailLocals(app);
+      const responses = [];
+
+      try {
+        app.locals.nsfwFilterSettingsService.setEnabled(true);
+        responses.push(await agent.get(`/notes/chapters/${inheritedChapter.id}`).expect(200));
+        responses.push(await agent.get(`/notes/chapters/${noCoverChapter.id}`).expect(200));
+        responses.push(await agent.get(`/notes/chapters/${unavailableChapter.id}`).expect(200));
+        app.locals.nsfwFilterSettingsService.setEnabled(false);
+        responses.push(await agent.get(`/notes/chapters/${inheritedChapter.id}`).expect(200));
+      } finally {
+        capture.restore();
+      }
+
+      const [inherited, none, unavailable, disabled] = capture.all().map(({ book: renderedBook }) => renderedBook);
+      expect(inherited).toMatchObject({
+        primaryImage: { state: 'available', selectedAssetId: inheritedAssetId },
+        nsfwBlur: true,
+      });
+      expect(none.primaryImage).toMatchObject({ state: 'none', selectedAssetId: null });
+      expect(none).not.toHaveProperty('nsfwBlur');
+      expect(unavailable.primaryImage).toMatchObject({
+        state: 'unavailable',
+        selectedAssetId: unavailableAssetId,
+        thumbnailUrl: null,
+        previewUrl: null,
+      });
+      expect(unavailable).not.toHaveProperty('nsfwBlur');
+      expect(disabled).toMatchObject({
+        primaryImage: { state: 'available', selectedAssetId: inheritedAssetId },
+        nsfwBlur: false,
+      });
+      expect(responses[0].text).toContain(`src="/projects/${inheritedProjectId}/assets/${inheritedAssetId}/preview`);
+      expect(responses[0].text).toContain('asset-image--nsfw-blurred');
+      expect(responses[1].text).toContain('data-primary-image-state="none"');
+      expect(responses[1].text).toContain('>No image</span>');
+      expect(responses[2].text).toContain('data-primary-image-state="unavailable"');
+      expect(responses[2].text).toContain('>Image unavailable</span>');
+      expect(responses[2].text).not.toContain(`/projects/${unavailableProjectId}/assets/${unavailableAssetId}/preview`);
+      expect(responses[3].text).toContain(`src="/projects/${inheritedProjectId}/assets/${inheritedAssetId}/preview`);
+      expect(responses[3].text).not.toContain('asset-image--nsfw-blurred');
+    });
+
+    it('forwards unexpected Chapter Book decoration failures from every shell caller', async () => {
+      const book = app.locals.bookService.createBook({ title: 'Failed Decoration Book' });
+      const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Failed Decoration Chapter' });
+      const first = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'First Failure Page' });
+      app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Second Failure Page' });
+      const decorationFailure = vi.spyOn(app.locals.bookPrimaryImageService, 'attachPrimaryImages')
+        .mockImplementation(() => { throw new Error('Chapter Book decoration failed'); });
+
+      await agent.get(`/notes/chapters/${chapter.id}`).expect(500);
+      await agent.get(`/notes/chapters/${chapter.id}/edit`).expect(500);
+      await agent.get(`/notes/chapters/${chapter.id}/notes/order`).expect(500);
+      await agent.post(`/notes/chapters/${chapter.id}/notes/reorder`).type('form')
+        .send({ _csrf: csrfToken, orderedNoteIds: `${first.id},999999` }).expect(500);
+      await agent.post(`/notes/chapters/${chapter.id}`).type('form')
+        .send({ _csrf: csrfToken, title: '' }).expect(500);
+      await agent.get(`/notes/new?chapterId=${chapter.id}`).expect(500);
+      expect(decorationFailure).toHaveBeenCalledTimes(6);
+    });
+
+    it('renders Book-detail defaults and icon toolbar in the required order', async () => {
+      const book = app.locals.bookService.createBook({ title: 'Defaulted Book' });
+      const first = app.locals.chapterService.createChapter({ bookId: book.id, title: 'First Chapter' });
+      const second = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Second Chapter' });
+      app.locals.noteService.createNote({ chapterId: first.id, title: 'Nested Page' });
+
+      const collapsedResponse = await agent.get(`/notes/books/${book.id}`).expect(200);
+      const sidebar = collapsedResponse.text.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/)?.[0] || '';
+      const toolbar = collapsedResponse.text.match(/<div class="asset-viewer-display-controls" data-book-detail-toolbar>\s*<a class="button button-secondary" href="\/notes">Back to book list<\/a>\s*(<div class="project-filter-actions project-filter-actions--projects">[\s\S]*?<\/div>)\s*<\/div>/)?.[1] || '';
+      const defaultsDialog = collapsedResponse.text.match(/<dialog id="book-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+
+      expect(sidebar.match(/<details class="notes-book-nav-disclosure"/g)).toHaveLength(2);
+      expect(sidebar).not.toContain('<details class="notes-book-nav-disclosure" open>');
+      expect(toolbar.indexOf('aria-label="Edit book"')).toBeLessThan(toolbar.indexOf('aria-label="Change order"'));
+      expect(toolbar.indexOf('aria-label="Change order"')).toBeLessThan(toolbar.indexOf('aria-label="Book defaults"'));
+      expect(toolbar.indexOf('aria-label="Book defaults"')).toBeLessThan(toolbar.indexOf('aria-label="Reset to default"'));
+
+      for (const label of ['Edit book', 'Change order', 'Book defaults', 'Reset to default']) {
+        const control = toolbar.match(new RegExp(`<a[^>]*aria-label="${label}"[\\s\\S]*?<\\/a>`))?.[0] || '';
+        expect(control).toContain('<svg');
+        expect(control).toContain(`data-tooltip="${label}"`);
+        expect(control).not.toContain('title=');
+      }
+      expect(toolbar).toContain(`href="/notes/books/${book.id}/edit" data-dialog-open="book-edit-dialog"`);
+      expect(toolbar).toContain(`href="/notes/books/${book.id}/order" data-dialog-open="book-order-dialog"`);
+      expect(toolbar).toContain(`href="/notes/books/${book.id}?defaults=1" data-dialog-open="book-defaults-dialog"`);
+      expect(toolbar).toContain(`href="/notes/books/${book.id}" aria-label="Reset to default"`);
+
+      expect(defaultsDialog).toContain(`<form id="book-defaults-form" method="post" action="/notes/books/${book.id}/defaults"`);
+      expect(defaultsDialog).toContain('data-dialog-form data-dialog-async novalidate');
+      expect(defaultsDialog).toContain('name="_csrf"');
+      expect(defaultsDialog).toContain('<legend>Chapter navigation</legend>');
+      expect(defaultsDialog).toMatch(/<option value="expanded">Expanded<\/option>/);
+      expect(defaultsDialog).toMatch(/<option value="collapsed" selected>Collapsed<\/option>/);
+      expect(defaultsDialog).not.toMatch(/<dialog\b[^>]*\sopen(?:\s|>)/);
+      expect(defaultsDialog).not.toMatch(/<button[^>]*>\s*Cancel\s*<\/button>/);
+      expect(defaultsDialog).toContain('aria-label="Close Book defaults"');
+      expect(defaultsDialog).toContain('type="submit" data-dialog-submit>Save defaults</button>');
+
+      const openResponse = await agent.get(`/notes/books/${book.id}?defaults=1`).expect(200);
+      const openDialog = openResponse.text.match(/<dialog id="book-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      expect(openDialog).toMatch(/<dialog\b[^>]*\sopen(?:\s|>)/);
+    });
+
+    it('renders Book-scoped preview defaults with authoritative contextual Page choices', async () => {
+      const book = app.locals.bookService.createBook({ title: 'Preview Book' });
+      const directFirst = app.locals.noteService.createNote({ bookId: book.id, title: 'Duplicate' });
+      const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Context Chapter' });
+      const nested = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Duplicate' });
+      const directLast = app.locals.noteService.createNote({ bookId: book.id, title: 'Last Page' });
+
+      const response = await agent.get(`/notes/books/${book.id}?defaults=1`).expect(200);
+      const dialog = response.text.match(/<dialog id="book-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+
+      expect(dialog).toContain('Navigation applies across Books. Page previews apply only to this Book.');
+      expect(dialog).toMatch(/<select id="book-preview-mode" name="previewMode"[^>]*>[\s\S]*?<option value="random" selected>Random<\/option>/);
+      expect(dialog).toMatch(/<select id="book-preview-count" name="randomPageCount"[^>]*>[\s\S]*?<option value="5" selected>5<\/option>/);
+      expect(dialog).toContain('id="book-preview-pages-dropdown" data-cc-dropdown data-cc-dropdown-mode="multiple" data-cc-dropdown-searchable');
+      expect(dialog).toMatch(/<select id="book-preview-pages" name="selectedPageIds"[^>]*multiple/);
+      expect(dialog).toContain('type="search" autocomplete="off" data-cc-dropdown-search');
+      expect(dialog).toContain('No Pages selected');
+
+      const labels = [
+        `Book: ${book.title} / ${directFirst.title}`,
+        `Chapter: ${chapter.title} / ${nested.title}`,
+        `Book: ${book.title} / ${directLast.title}`,
+      ];
+      const positions = labels.map((label) => dialog.indexOf(label));
+      expect(positions.every((position) => position >= 0)).toBe(true);
+      expect(positions).toEqual([...positions].sort((left, right) => left - right));
+      expect(dialog).toContain(`value="${directFirst.id}"`);
+      expect(dialog).toContain(`value="${nested.id}"`);
+      expect(dialog).toContain(`value="${directLast.id}"`);
+    });
+
+    it('reopens stored Random and Selected preview settings without exposing stale foreign memberships', async () => {
+      const book = app.locals.bookService.createBook({ title: 'Reopen Book' });
+      const page = app.locals.noteService.createNote({ bookId: book.id, title: 'Local Page' });
+      const otherBook = app.locals.bookService.createBook({ title: 'Foreign Book' });
+      const foreignPage = app.locals.noteService.createNote({ bookId: otherBook.id, title: 'Foreign Page' });
+
+      app.locals.bookPagePreviewSettingsService.replaceBookPagePreviewSettings(book.id, {
+        mode: 'random', randomCount: 17, selectedPageIds: [page.id],
+      });
+      let response = await agent.get(`/notes/books/${book.id}?defaults=1`).expect(200);
+      let dialog = response.text.match(/<dialog id="book-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      expect(dialog).toMatch(/<option value="random" selected>Random<\/option>/);
+      expect(dialog).toMatch(/<option value="17" selected>17<\/option>/);
+      expect(dialog).toMatch(new RegExp(`<option value="${page.id}" selected>`));
+
+      app.locals.bookPagePreviewSettingsService.replaceBookPagePreviewSettings(book.id, {
+        mode: 'selected', randomCount: 9, selectedPageIds: [page.id],
+      });
+      db.prepare('INSERT INTO book_page_preview_pages (book_id, page_id) VALUES (?, ?)')
+        .run(book.id, foreignPage.id);
+      response = await agent.get(`/notes/books/${book.id}?defaults=1`).expect(200);
+      dialog = response.text.match(/<dialog id="book-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      expect(dialog).toMatch(/<option value="selected" selected>Selected<\/option>/);
+      expect(dialog).toMatch(/<option value="9" selected>9<\/option>/);
+      expect(dialog).toMatch(new RegExp(`<option value="${page.id}" selected>`));
+      const pageSelect = dialog.match(/<select id="book-preview-pages"[\s\S]*?<\/select>/)?.[0] || '';
+      expect(pageSelect).not.toContain(`value="${foreignPage.id}"`);
+      expect(dialog).not.toContain('Foreign Page');
+    });
+
+    it('saves both preview modes, retains inactive configuration, deduplicates Pages, and isolates Books', async () => {
+      const bookA = app.locals.bookService.createBook({ title: 'Preview A' });
+      const chapter = app.locals.chapterService.createChapter({ bookId: bookA.id, title: 'Chapter A' });
+      const first = app.locals.noteService.createNote({ bookId: bookA.id, title: 'First' });
+      const second = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Second' });
+      const bookB = app.locals.bookService.createBook({ title: 'Preview B' });
+      const navigationKey = PAGE_DEFAULT_DEFINITIONS.bookDetail.navigation.key;
+
+      await agent.post(`/notes/books/${bookA.id}/defaults`).set('Accept', 'application/json').type('form').send({
+        _csrf: csrfToken,
+        navigation: 'expanded',
+        previewMode: 'random',
+        randomPageCount: '1',
+        selectedPageIds: [String(first.id), String(second.id), String(first.id)],
+      }).expect(200);
+      expect(app.locals.bookPagePreviewSettingsService.getBookPagePreviewSettings(bookA.id)).toEqual({
+        mode: 'random', randomCount: 1, selectedPageIds: [first.id, second.id].sort((a, b) => a - b),
+      });
+
+      const native = await agent.post(`/notes/books/${bookA.id}/defaults`).type('form').send({
+        _csrf: csrfToken,
+        navigation: 'collapsed',
+        previewMode: 'selected',
+        randomPageCount: '25',
+        selectedPageIds: [String(second.id), String(first.id)],
+      }).expect(302);
+      expect(native.headers.location).toBe(`/notes/books/${bookA.id}?notice=book_detail_defaults_saved`);
+      expect(app.locals.bookPagePreviewSettingsService.getBookPagePreviewSettings(bookA.id)).toEqual({
+        mode: 'selected', randomCount: 25, selectedPageIds: [first.id, second.id].sort((a, b) => a - b),
+      });
+      expect(app.locals.bookPagePreviewSettingsService.getBookPagePreviewSettings(bookB.id)).toEqual({
+        mode: 'random', randomCount: 5, selectedPageIds: [],
+      });
+      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(navigationKey)?.value).toBe('collapsed');
+      expect(db.prepare("SELECT key FROM app_meta WHERE key LIKE '%book%preview%'").all()).toEqual([]);
+
+      await agent.post(`/notes/books/${bookA.id}/defaults`).set('Accept', 'application/json').type('form').send({
+        _csrf: csrfToken,
+        navigation: 'expanded',
+        previewMode: 'selected',
+        randomPageCount: '25',
+      }).expect(200);
+      expect(app.locals.bookPagePreviewSettingsService.getBookPagePreviewSettings(bookA.id).selectedPageIds).toEqual([]);
+    });
+
+    it.each([
+      ['invalid mode', { previewMode: 'rotating', randomPageCount: '5' }, 'previewMode'],
+      ['zero count', { previewMode: 'random', randomPageCount: '0' }, 'randomPageCount'],
+      ['high count', { previewMode: 'random', randomPageCount: '26' }, 'randomPageCount'],
+      ['non-integer count', { previewMode: 'random', randomPageCount: '1.5' }, 'randomPageCount'],
+      ['malformed Page', { previewMode: 'selected', randomPageCount: '5', selectedPageIds: '01' }, 'selectedPageIds'],
+    ])('rejects %s without partially saving either settings domain', async (_label, preview, errorKey) => {
+      const book = app.locals.bookService.createBook({ title: `Invalid ${_label}` });
+      const page = app.locals.noteService.createNote({ bookId: book.id, title: 'Existing' });
+      app.locals.pageDefaultsService.saveDefault('bookDetail', 'navigation', 'expanded');
+      app.locals.bookPagePreviewSettingsService.replaceBookPagePreviewSettings(book.id, {
+        mode: 'selected', randomCount: 7, selectedPageIds: [page.id],
+      });
+
+      const response = await agent.post(`/notes/books/${book.id}/defaults`)
+        .set('Accept', 'application/json').type('form').send({
+          _csrf: csrfToken, navigation: 'collapsed', ...preview,
+        }).expect(422);
+      expect(response.body.errors).toHaveProperty(errorKey);
+      expect(app.locals.pageDefaultsService.resolvePageDefaults('bookDetail')).toEqual({ navigation: 'expanded' });
+      expect(app.locals.bookPagePreviewSettingsService.getBookPagePreviewSettings(book.id)).toEqual({
+        mode: 'selected', randomCount: 7, selectedPageIds: [page.id],
+      });
+    });
+
+    it('rejects a foreign-Book Page with 422 and rerenders submitted preview errors natively', async () => {
+      const book = app.locals.bookService.createBook({ title: 'Owned Preview' });
+      const localPage = app.locals.noteService.createNote({ bookId: book.id, title: 'Local' });
+      const foreignBook = app.locals.bookService.createBook({ title: 'Foreign Preview' });
+      const foreignPage = app.locals.noteService.createNote({ bookId: foreignBook.id, title: 'Foreign' });
+      app.locals.pageDefaultsService.saveDefault('bookDetail', 'navigation', 'expanded');
+      app.locals.bookPagePreviewSettingsService.replaceBookPagePreviewSettings(book.id, {
+        mode: 'random', randomCount: 8, selectedPageIds: [localPage.id],
+      });
+
+      const response = await agent.post(`/notes/books/${book.id}/defaults`).type('form').send({
+        _csrf: csrfToken,
+        navigation: 'collapsed',
+        previewMode: 'selected',
+        randomPageCount: '12',
+        selectedPageIds: String(foreignPage.id),
+      }).expect(422);
+      const dialog = response.text.match(/<dialog id="book-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      expect(dialog).toMatch(/<dialog\b[^>]*\sopen(?:\s|>)/);
+      expect(dialog).toContain('Every selected Page must belong to this Book.');
+      expect(dialog).toMatch(/<option value="selected" selected>Selected<\/option>/);
+      expect(dialog).toMatch(/<option value="12" selected>12<\/option>/);
+      const pageSelect = dialog.match(/<select id="book-preview-pages"[\s\S]*?<\/select>/)?.[0] || '';
+      expect(pageSelect).not.toContain(`value="${foreignPage.id}"`);
+      expect(app.locals.pageDefaultsService.resolvePageDefaults('bookDetail')).toEqual({ navigation: 'expanded' });
+      expect(app.locals.bookPagePreviewSettingsService.getBookPagePreviewSettings(book.id)).toEqual({
+        mode: 'random', randomCount: 8, selectedPageIds: [localPage.id],
+      });
+    });
+
+    it('rolls navigation back when preview persistence fails and leaves previews unchanged when navigation fails', async () => {
+      const book = app.locals.bookService.createBook({ title: 'Atomic Defaults' });
+      const page = app.locals.noteService.createNote({ bookId: book.id, title: 'Atomic Page' });
+      app.locals.pageDefaultsService.saveDefault('bookDetail', 'navigation', 'collapsed');
+
+      const previewFailure = vi.spyOn(app.locals.bookPagePreviewSettingsService, 'replaceBookPagePreviewSettings')
+        .mockImplementationOnce(() => { throw new Error('preview persistence failed'); });
+      await agent.post(`/notes/books/${book.id}/defaults`).set('Accept', 'application/json').type('form').send({
+        _csrf: csrfToken,
+        navigation: 'expanded',
+        previewMode: 'selected',
+        randomPageCount: '6',
+        selectedPageIds: String(page.id),
+      }).expect(500);
+      expect(app.locals.pageDefaultsService.resolvePageDefaults('bookDetail')).toEqual({ navigation: 'collapsed' });
+      expect(app.locals.bookPagePreviewSettingsService.getBookPagePreviewSettings(book.id)).toEqual({
+        mode: 'random', randomCount: 5, selectedPageIds: [],
+      });
+      previewFailure.mockRestore();
+
+      const navigationFailure = vi.spyOn(app.locals.pageDefaultsService, 'saveDefault')
+        .mockImplementationOnce(() => { throw new Error('navigation persistence failed'); });
+      await agent.post(`/notes/books/${book.id}/defaults`).set('Accept', 'application/json').type('form').send({
+        _csrf: csrfToken,
+        navigation: 'expanded',
+        previewMode: 'selected',
+        randomPageCount: '6',
+        selectedPageIds: String(page.id),
+      }).expect(500);
+      expect(app.locals.bookPagePreviewSettingsService.getBookPagePreviewSettings(book.id)).toEqual({
+        mode: 'random', randomCount: 5, selectedPageIds: [],
+      });
+      navigationFailure.mockRestore();
+    });
+
+    it('saves Book navigation defaults through app_meta for enhanced and native requests', async () => {
+      const book = app.locals.bookService.createBook({ title: 'Saved Defaults Book' });
+      const firstChapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'First Chapter' });
+      app.locals.chapterService.createChapter({ bookId: book.id, title: 'Second Chapter' });
+      const currentPage = app.locals.noteService.createNote({ chapterId: firstChapter.id, title: 'Current Page' });
+      const key = PAGE_DEFAULT_DEFINITIONS.bookDetail.navigation.key;
+
+      const enhanced = await agent
+        .post(`/notes/books/${book.id}/defaults`)
+        .set('Accept', 'application/json')
+        .type('form')
+        .send({
+          _csrf: csrfToken,
+          navigation: 'expanded',
+          previewMode: 'random',
+          randomPageCount: '5',
+        })
+        .expect(200);
+      expect(enhanced.body).toEqual({
+        status: 'success',
+        message: 'Book defaults saved successfully.',
+        values: {
+          navigation: 'expanded',
+          previewMode: 'random',
+          randomPageCount: '5',
+          selectedPageIds: [],
+        },
+      });
+      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(key)?.value).toBe('expanded');
+
+      const expandedPage = await agent.get(`/notes/books/${book.id}`).expect(200);
+      const [expandedSidebar = '', expandedNewPageNavigator = ''] = expandedPage.text
+        .match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/g) || [];
+      expect(expandedSidebar.match(/<details class="notes-book-nav-disclosure" open>/g)).toHaveLength(2);
+      expect(expandedNewPageNavigator).toContain('class="notes-book-nav"');
+      expect(expandedNewPageNavigator).not.toContain('<details class="notes-book-nav-disclosure" open>');
+
+      for (const detailUrl of [`/notes/chapters/${firstChapter.id}`, `/notes/${currentPage.id}`]) {
+        const detailResponse = await agent.get(detailUrl).expect(200);
+        const detailNavigator = detailResponse.text.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/)?.[0] || '';
+        expect(detailNavigator.match(/<details class="notes-book-nav-disclosure" open>/g)).toHaveLength(1);
+      }
+
+      const native = await agent
+        .post(`/notes/books/${book.id}/defaults`)
+        .type('form')
+        .send({
+          _csrf: csrfToken,
+          navigation: 'collapsed',
+          previewMode: 'random',
+          randomPageCount: '5',
+        })
+        .expect(302);
+      expect(native.headers.location).toBe(`/notes/books/${book.id}?notice=book_detail_defaults_saved`);
+      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(key)?.value).toBe('collapsed');
+
+      const resetPage = await agent.get(`/notes/books/${book.id}`).expect(200);
+      const resetSidebar = resetPage.text.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/)?.[0] || '';
+      expect(resetSidebar).not.toContain('<details class="notes-book-nav-disclosure" open>');
+    });
+
+    it('rejects invalid Book defaults, preserves storage, and protects the endpoint with CSRF', async () => {
+      const book = app.locals.bookService.createBook({ title: 'Invalid Defaults Book' });
+      const key = PAGE_DEFAULT_DEFINITIONS.bookDetail.navigation.key;
+      app.locals.pageDefaultsService.saveDefault('bookDetail', 'navigation', 'expanded');
+      app.locals.bookPagePreviewSettingsService.replaceBookPagePreviewSettings(book.id, {
+        mode: 'random', randomCount: 7, selectedPageIds: [],
+      });
+
+      const enhanced = await agent
+        .post(`/notes/books/${book.id}/defaults`)
+        .set('Accept', 'application/json')
+        .type('form')
+        .send({
+          _csrf: csrfToken,
+          navigation: 'partially-expanded',
+          previewMode: 'random',
+          randomPageCount: '5',
+        })
+        .expect(422);
+      expect(enhanced.body).toMatchObject({
+        status: 'error',
+        values: { navigation: 'partially-expanded' },
+      });
+      expect(enhanced.body.errors.navigation).toContain('is not supported');
+      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(key)?.value).toBe('expanded');
+      expect(app.locals.bookPagePreviewSettingsService.getBookPagePreviewSettings(book.id).randomCount).toBe(7);
+
+      const native = await agent
+        .post(`/notes/books/${book.id}/defaults`)
+        .type('form')
+        .send({
+          _csrf: csrfToken,
+          navigation: 'partially-expanded',
+          previewMode: 'random',
+          randomPageCount: '5',
+        })
+        .expect(422);
+      const dialog = native.text.match(/<dialog id="book-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      expect(dialog).toMatch(/<dialog\b[^>]*\sopen(?:\s|>)/);
+      expect(dialog).toContain('Value &quot;partially-expanded&quot; is not supported for bookDetail.navigation.');
+      expect(dialog).toContain('data-dialog-submitted-value');
+      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(key)?.value).toBe('expanded');
+      expect(app.locals.bookPagePreviewSettingsService.getBookPagePreviewSettings(book.id).randomCount).toBe(7);
+
+      await agent
+        .post(`/notes/books/${book.id}/defaults`)
+        .type('form')
+        .send({ navigation: 'collapsed' })
+        .expect(403);
+      await agent
+        .post('/notes/books/999999/defaults')
+        .type('form')
+        .send({ _csrf: csrfToken, navigation: 'collapsed' })
+        .expect(404);
+      await agent.get('/notes/books/999999?defaults=1').expect(404);
+      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(key)?.value).toBe('expanded');
+    });
+
+    it('propagates asynchronous Book render failures from native defaults validation', async () => {
+      const book = app.locals.bookService.createBook({ title: 'Defaults Render Error Book' });
+      const renderFailure = vi.spyOn(app.locals.bookPrimaryImageService, 'attachPrimaryImages')
+        .mockImplementationOnce(() => { throw new Error('defaults validation render failed'); });
+
+      await agent
+        .post(`/notes/books/${book.id}/defaults`)
+        .type('form')
+        .send({
+          _csrf: csrfToken,
+          navigation: 'invalid',
+          previewMode: 'random',
+          randomPageCount: '5',
+        })
+        .expect(500);
+
+      renderFailure.mockRestore();
+    });
+
+    it('enables Change order when one Chapter contains nested Pages', async () => {
+      const book = app.locals.bookService.createBook({ title: 'Order Eligibility Book' });
+      const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Only Top-Level Item' });
+      app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Nested One' });
+      app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Nested Two' });
+
+      const oneItemPage = await agent.get(`/notes/books/${book.id}`).expect(200);
+      const oneItemToolbar = oneItemPage.text.match(/<div class="asset-viewer-display-controls" data-book-detail-toolbar>\s*<a class="button button-secondary" href="\/notes">Back to book list<\/a>\s*(<div class="project-filter-actions project-filter-actions--projects">[\s\S]*?<\/div>)\s*<\/div>/)?.[1] || '';
+      expect(oneItemToolbar).toContain('aria-label="Change order"');
+
+      app.locals.noteService.createNote({ bookId: book.id, title: 'Direct Top-Level Page' });
+      const twoItemPage = await agent.get(`/notes/books/${book.id}`).expect(200);
+      const twoItemToolbar = twoItemPage.text.match(/<div class="asset-viewer-display-controls" data-book-detail-toolbar>\s*<a class="button button-secondary" href="\/notes">Back to book list<\/a>\s*(<div class="project-filter-actions project-filter-actions--projects">[\s\S]*?<\/div>)\s*<\/div>/)?.[1] || '';
+      expect(twoItemToolbar).toContain('aria-label="Change order"');
+    });
+
     it('renders only the Book Chapters in canonical order and has an empty state', async () => {
       const book = app.locals.bookService.createBook({ title: 'Chapter Book' });
       const otherBook = app.locals.bookService.createBook({ title: 'Other Book' });
@@ -2536,12 +3355,14 @@ describe('top-level Notes HTTP slice', () => {
         listBookContents.mockRestore();
       }
 
-      const navigator = response.text.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/)?.[0] || '';
+      const [navigator = '', pageDialogNavigator = ''] = response.text.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/g) || [];
       expect(chapterLocals.bookContents).toBe(authoritativeContents);
       expect(chapterLocals.navCurrentChapterId).toBe(chapter.id);
       expect(Object.hasOwn(chapterLocals, 'navCurrentPageId')).toBe(false);
+      expect(Object.hasOwn(chapterLocals, 'bookDetailSidebarNavigationMode')).toBe(false);
       expect(listBookContentsCalls).toContainEqual([book.id]);
       expect(response.text).toContain('<div class="notes-chapter-detail-layout">');
+      expect(response.text).toContain('<aside class="notes-chapter-detail-sidebar notes-book-detail-sidebar notes-surface notes-surface--compact">');
       expect(navigator).toContain(`<nav class="notes-book-nav" aria-label="Contents of ${book.title}">`);
       expect(navigator).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">${book.title}</a>`);
       expect(navigator.indexOf('Current Chapter')).toBeLessThan(navigator.indexOf('Direct Second'));
@@ -2556,10 +3377,13 @@ describe('top-level Notes HTTP slice', () => {
       expect(navigator).toMatch(
         new RegExp(`<li class="notes-book-nav-item notes-book-nav-page">\\s*<a class="notes-book-nav-page-link" href="/notes/${directFirst.id}">`),
       );
-      expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/chapters/${chapter.id}" aria-current="page">View Chapter</a>`);
+      expect(navigator).not.toContain('>View Chapter</a>');
+      expect(navigator).toContain('<li class="notes-book-nav-item notes-book-nav-chapter notes-book-nav-item--current">');
       expect((navigator.match(/<details class="notes-book-nav-disclosure" open>/g) || [])).toHaveLength(1);
       expect((navigator.match(/<details class="notes-book-nav-disclosure"/g) || [])).toHaveLength(2);
-      expect((navigator.match(/aria-current="page"/g) || [])).toHaveLength(1);
+      expect((navigator.match(/aria-current="page"/g) || [])).toHaveLength(0);
+      expect(pageDialogNavigator).not.toContain('>View Chapter</a>');
+      expect(response.text).toContain('<aside class="notes-workspace-context notes-book-detail-sidebar notes-book-detail-sidebar--embedded" aria-label="Book contents">');
 
       const pageNav = response.text.match(/<nav class="notes-page-nav"[\s\S]*?<\/nav>/)?.[0] || '';
       expect(pageNav).toContain(`<nav class="notes-page-nav" aria-label="Pages in ${chapter.title}">`);
@@ -2884,15 +3708,10 @@ describe('top-level Notes HTTP slice', () => {
       expect(bookPage.text.indexOf('Chapter Y')).toBeLessThan(bookPage.text.indexOf('Page A'));
       expect(bookPage.text.indexOf('Page A')).toBeLessThan(bookPage.text.indexOf('Chapter X'));
       expect(bookPage.text.indexOf('Chapter X')).toBeLessThan(bookPage.text.indexOf('Page B'));
-      const chapterXOutline = bookPage.text.match(new RegExp(
-        `<li class="book-outline-item book-outline-chapter">[\\s\\S]*?<a class="book-outline-title" href="/notes/chapters/${chapterX.id}">View Chapter</a>[\\s\\S]*?</details>\\s*</li>`,
-      ))?.[0] || '';
-      expect(chapterXOutline).toMatch(new RegExp(
-        `<li class="book-outline-item book-outline-page book-outline-page--child">\\s*<a class="book-outline-title" href="/notes/${chapterPage.id}">Nested Chapter Page</a>`,
-      ));
-      expect(bookPage.text).not.toMatch(new RegExp(
-        `<li class="book-outline-item book-outline-page">\\s*<a class="book-outline-title" href="/notes/${chapterPage.id}">Nested Chapter Page</a>`,
-      ));
+      const navigator = bookPage.text.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/)?.[0] || '';
+      expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${chapterPage.id}">Nested Chapter Page</a>`);
+      expect(bookPage.text).toContain(`<a class="notes-page-preview-title" href="/notes/${chapterPage.id}">Nested Chapter Page</a>`);
+      expect(bookPage.text).not.toContain('class="book-outline"');
       expect(bookPage.text).not.toContain('Foreign Chapter');
       expect(bookPage.text).not.toContain('Foreign Page');
       expect(chapterPage.chapter_id).toBe(chapterX.id);
@@ -3009,8 +3828,11 @@ describe('top-level Notes HTTP slice', () => {
         expect(response.text).toMatch(/<dialog id="book-order-dialog"[^>]* open/);
         const orderDialog = response.text.match(/<dialog id="book-order-dialog"[\s\S]*?<\/dialog>/)?.[0];
         expect(orderDialog).toContain('role="alert"');
-        expect(orderDialog).toContain('value="' + before.map((item) => item.item_type + ':' + item.item_id).join(',') + '"');
-        expect(response.text).toContain('class="book-outline"');
+        expect(orderDialog.match(/name="hierarchy"/g)).toHaveLength(1);
+        expect(orderDialog).toContain('data-book-hierarchy-input');
+        expect(orderDialog).not.toContain('name="orderedItems"');
+        expect(response.text).not.toContain('class="book-outline"');
+        expect(response.text).toContain('class="notes-detail-panel notes-page-previews"');
         expect(db.prepare(`
           SELECT item_type, item_id, sort_order
           FROM book_contents

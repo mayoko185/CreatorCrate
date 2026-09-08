@@ -10,6 +10,19 @@ import { openDatabase, closeDatabase, runMigrations } from '../src/db.js';
 import { AUTH_CONFIG, authenticate } from './helpers/auth.js';
 import { buildBookPrimaryImageModel, resolveBookPrimaryImageMedia } from '../src/services/primary-image-presenter.js';
 
+function captureChapterDetailLocals(app) {
+  const renders = [];
+  const originalRender = app.response.render;
+  app.response.render = function captureRender(view, renderLocals, callback) {
+    if (view === 'notes/chapters/detail.njk') renders.push(renderLocals);
+    return originalRender.call(this, view, renderLocals, callback);
+  };
+  return {
+    all: () => renders,
+    restore: () => { app.response.render = originalRender; },
+  };
+}
+
 describe('WP7C2 managed media HTTP and Book presentation', () => {
   let tmp, db, app, agent, record, book, sourceFile;
   beforeEach(async () => {
@@ -95,15 +108,54 @@ describe('WP7C2 managed media HTTP and Book presentation', () => {
     expect(projectLookup).not.toHaveBeenCalled();
     expect(assetLookup).not.toHaveBeenCalled();
   });
-  it.each(['available', 'unavailable'])('renders Chapter and Note navigation with a %s managed selection without inventing covers', async (state) => {
+  it.each(['available', 'unavailable'])('renders a %s managed selection on Chapter and Page detail without adding it to navigation', async (state) => {
     const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Chapter' });
     const note = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Page' });
     if (state === 'unavailable') fs.unlinkSync(sourceFile);
-    for (const route of [`/notes/chapters/${chapter.id}`, `/notes/chapters/${chapter.id}/edit`, `/notes/${note.id}`, `/notes/${note.id}/edit`, `/notes/new?chapterId=${chapter.id}`]) {
+    const capture = captureChapterDetailLocals(app);
+    try {
+      for (const route of [`/notes/chapters/${chapter.id}`, `/notes/chapters/${chapter.id}/edit`, `/notes/new?chapterId=${chapter.id}`]) {
+        const res = await agent.get(route).expect(200);
+        expect(res.text).toContain(`/notes/books/${book.id}`);
+        expect(res.text).not.toContain(record.storage_key);
+        if (state === 'available') {
+          expect(res.text).toContain(url(record.id, 'preview'));
+          expect(res.text).not.toContain('asset-image--nsfw-blurred');
+        } else {
+          expect(res.text).toContain('data-primary-image-state="unavailable"');
+          expect(res.text).toContain('Image unavailable');
+          expect(res.text).not.toContain('/managed-assets/');
+        }
+      }
+    } finally {
+      capture.restore();
+    }
+    expect(capture.all()).toHaveLength(3);
+    for (const locals of capture.all()) {
+      expect(locals.book.primaryImage).toMatchObject({
+        state,
+        selectedAssetId: null,
+        selectedSource: { kind: 'managed_asset', id: record.id },
+        thumbnailUrl: state === 'available' ? url(record.id) : null,
+        previewUrl: state === 'available' ? url(record.id, 'preview') : null,
+      });
+      if (state === 'available') expect(locals.book.nsfwBlur).toBe(false);
+      else expect(locals.book).not.toHaveProperty('nsfwBlur');
+      expect(locals.noteCreateForm.book).toBe(locals.book);
+      expect(locals.chapterEditForm.book).toBe(locals.book);
+    }
+    for (const route of [`/notes/${note.id}`, `/notes/${note.id}/edit`]) {
       const res = await agent.get(route).expect(200);
       expect(res.text).toContain(`/notes/books/${book.id}`);
       expect(res.text).not.toContain(record.storage_key);
-      expect(res.text).not.toContain('/managed-assets/');
+      if (state === 'available') {
+        expect(res.text).toContain(url(record.id, 'preview'));
+        expect(res.text).not.toContain('asset-image--nsfw-blurred');
+      } else {
+        expect(res.text).toContain('data-primary-image-state="unavailable"');
+        expect(res.text).toContain('Image unavailable');
+        expect(res.text).not.toContain('/managed-assets/');
+      }
     }
     selected();
   });

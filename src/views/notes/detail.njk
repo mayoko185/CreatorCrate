@@ -1,7 +1,10 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
+{% import "partials/book-primary-image.njk" as bookPrimaryImage %}
 
 {% set page_title = "Notes — Page — " ~ note.title %}
+
+{% block body_class %}notes-page-detail-page{% endblock %}
 
 {% block content %}
   {% call pageHeading.render("Page") %}
@@ -10,20 +13,25 @@
 
   <div class="notes-page-detail-layout">
     <div class="notes-page-sidebar">
-      <aside class="notes-page-detail-sidebar notes-surface notes-surface--compact">
+      <aside class="notes-page-detail-sidebar notes-book-detail-sidebar notes-surface notes-surface--compact">
+        {{ bookPrimaryImage.render(book, 'preview') }}
+        {% set bookNavHideChapterLinks = true %}
         {% include "partials/book-navigator.njk" %}
+        {% set bookNavHideChapterLinks = false %}
       </aside>
 
       {% set detailsHeadingId = "notes-detail-details-heading" %}
       {% set detailsCreated = note.created_at %}
       {% set detailsUpdated = note.updated_at %}
+      {% set notesDetailsPresentation = "project-section" %}
       {% include "partials/notes-details-panel.njk" %}
+      {% set notesDetailsPresentation = none %}
     </div>
 
     <div class="notes-page-detail-content">
       <section class="notes-detail-content" aria-labelledby="notes-detail-content-heading">
         <div class="notes-detail-section-heading">
-          <p class="notes-detail-kicker" id="notes-detail-content-heading">{{ note.title }}</p>
+          <p class="notes-detail-kicker notes-detail-content-heading" id="notes-detail-content-heading">{{ note.title }}</p>
         </div>
         {% if note.content %}
           <div class="notes-content">{{ contentHtml | safe }}</div>

@@ -28,6 +28,27 @@ async function rejects(bytes, code, contentType) {
 }
 
 describe('Book-cover multipart foundation', () => {
+  function rawFile(filename, bytes = '', mime = 'application/octet-stream', name = 'cover') {
+    return Buffer.from(`--wp7d1\r\nContent-Disposition: form-data; name="${name}"${filename === undefined ? '' : `; filename="${filename}"`}\r\nContent-Type: ${mime}\r\n\r\n${bytes}\r\n--wp7d1--\r\n`);
+  }
+  it.each(['', undefined])('normalizes the completed browser placeholder (filename=%s)', async filename => {
+    expect((await parse(rawFile(filename))).cover).toBeNull();
+  });
+  it.each([
+    ['empty.png', '', 'application/octet-stream'],
+    ['empty.png', '', 'image/png'],
+    [undefined, 'nonempty', 'application/octet-stream'],
+    ['', 'nonempty', 'application/octet-stream'],
+  ])('retains supplied candidate filename=%s bytes=%s MIME=%s', async (filename, payload, mime) => {
+    expect((await parse(rawFile(filename, payload, mime))).cover)
+      .toEqual({ bytes: Buffer.from(payload), size: Buffer.byteLength(payload) });
+  });
+  it('keeps placeholder file-name, duplicate and truncation checks', async () => {
+    await rejects(rawFile('', '', 'application/octet-stream', 'other'), 'UNEXPECTED_FILE');
+    const first = rawFile('').subarray(0, -Buffer.byteLength('--wp7d1--\r\n'));
+    await rejects(Buffer.concat([first, rawFile('')]), 'TOO_MANY_FILES');
+    await rejects(first, 'MALFORMED_MULTIPART');
+  });
   it('returns bounded fields without a file and preserves literal field names safely', async () => {
     const result = await parse(body([{ name: 'title', value: 'Book' }, { name: '__proto__', value: 'safe' }]));
     expect(result.cover).toBeNull();

@@ -88,6 +88,29 @@ describe('page defaults service', () => {
     expect(service.resolve('new_project', 'status')).toBe('tbd');
   });
 
+  it('defines, persists, and safely validates the Book detail navigation default', () => {
+    const definition = PAGE_DEFAULT_DEFINITIONS.bookDetail.navigation;
+    expect(definition).toEqual({
+      key: 'page_defaults.book_detail.navigation',
+      values: ['expanded', 'collapsed'],
+      fallback: 'collapsed',
+    });
+    expect(service.resolvePageDefaults('bookDetail')).toEqual({ navigation: 'collapsed' });
+
+    expect(service.saveDefault('bookDetail', 'navigation', 'expanded')).toBe('expanded');
+    expect(repository.getValue(definition.key)).toBe('expanded');
+    expect(service.resolvePageDefaults('bookDetail')).toEqual({ navigation: 'expanded' });
+
+    expect(service.saveDefault('bookDetail', 'navigation', 'collapsed')).toBe('collapsed');
+    expect(service.resolvePageDefaults('bookDetail')).toEqual({ navigation: 'collapsed' });
+
+    repository.setValue(definition.key, 'partially-expanded');
+    expect(service.resolvePageDefaults('bookDetail')).toEqual({ navigation: 'collapsed' });
+    expect(repository.getValue(definition.key)).toBe('partially-expanded');
+    expect(() => service.validatePageDefaults('bookDetail', { navigation: 'partially-expanded' }))
+      .toThrow(PageDefaultValidationError);
+  });
+
   it('defines the exact Project Assets option allowlists, keys, and fallbacks', () => {
     expect(PAGE_DEFAULT_DEFINITIONS.projectAssets).toEqual({
       view: {

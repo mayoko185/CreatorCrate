@@ -22,12 +22,17 @@ for (const kind of ['books', 'contents', 'pages']) {
     const book = app.locals.bookService.createBook({ title: 'Book Alpha' });
     app.locals.bookService.createBook({ title: 'Book Beta' });
     const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Chapter Alpha' });
-    app.locals.noteService.createNote({ bookId: book.id, title: 'Direct Page' });
-    app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Page Alpha' });
-    app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Page Beta' });
+    const directPage = app.locals.noteService.createNote({ bookId: book.id, title: 'Direct Page' });
+    const chapterPageA = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Page Alpha' });
+    const chapterPageB = app.locals.noteService.createNote({ chapterId: chapter.id, title: 'Page Beta' });
+    const chapterB = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Chapter Beta' });
+    const chapterBPage = app.locals.noteService.createNote({ chapterId: chapterB.id, title: 'Page Gamma' });
+    const emptyChapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Empty Chapter' });
+    const directPageB = app.locals.noteService.createNote({ bookId: book.id, title: 'Direct Page Two' });
+    const directPageC = app.locals.noteService.createNote({ bookId: book.id, title: 'Direct Page Three' });
     const config = {
       books: { host: '/notes', direct: '/notes/books/order', id: 'books-order-dialog', input: 'orderedBookIds', handle: 'data-book-reorder-handle', item: 'data-book-reorder-item', read: () => app.locals.bookService.listBooks().map(x => String(x.id)), peers: ['New Book'], redirect: '/notes?notice=book_reordered' },
-      contents: { host: `/notes/books/${book.id}`, direct: `/notes/books/${book.id}/order`, id: 'book-order-dialog', input: 'orderedItems', handle: 'data-book-content-reorder-handle', item: 'data-book-content-reorder-item', read: () => app.locals.bookService.listBookContents(book.id).map(x => `${x.type}:${x.id}`), peers: ['Edit Book', 'New Chapter'] },
+      contents: { host: `/notes/books/${book.id}`, direct: `/notes/books/${book.id}/order`, id: 'book-order-dialog', input: 'hierarchy', read: () => app.locals.noteService.getBookHierarchy(book.id), peers: ['Edit Book', 'New Chapter'] },
       pages: { host: `/notes/chapters/${chapter.id}`, direct: `/notes/chapters/${chapter.id}/notes/order`, id: 'chapter-order-dialog', input: 'orderedNoteIds', handle: 'data-chapter-page-reorder-handle', item: 'data-chapter-page-reorder-item', read: () => app.locals.noteService.listNotesForChapter(chapter.id).map(x => String(x.id)), peers: ['Edit Chapter'] },
     }[kind];
     server = app.listen(0, '127.0.0.1');
@@ -40,6 +45,284 @@ for (const kind of ['books', 'contents', 'pages']) {
     const opener = page.getByRole('link', { name: 'Change order', exact: true });
     const dialog = page.locator('#' + config.id);
     const input = dialog.locator(`[name="${config.input}"]`);
+
+    if (kind === 'contents') {
+      await page.setViewportSize({ width: 1280, height: 1600 });
+      await expect(opener).toHaveCount(1);
+      await expect(opener).toHaveAttribute('href', config.direct);
+      await opener.click();
+      expect(await dialog.evaluate(node => node.matches(':modal'))).toBe(true);
+      await expect(page.locator('body')).toHaveClass(/app-dialog-open/);
+      const structure = await dialog.locator('[data-notes-book-order-page]').evaluate(section => {
+        const heading = section.querySelector(':scope > #notes-book-order-heading');
+        const body = section.querySelector(':scope > .project-edit-dialog-section-body');
+        const rowHeading = body?.querySelector('.notes-book-content-title');
+        const sectionStyle = getComputedStyle(section);
+        const bodyStyle = getComputedStyle(body);
+        const rowHeadingStyle = getComputedStyle(rowHeading);
+        return {
+          directChildren: [heading?.tagName, body?.className],
+          hasSettingsSectionClass: section.classList.contains('settings-section'),
+          borderWidths: [
+            sectionStyle.borderTopWidth,
+            sectionStyle.borderRightWidth,
+            sectionStyle.borderBottomWidth,
+            sectionStyle.borderLeftWidth,
+          ],
+          bodyPadding: [bodyStyle.paddingTop, bodyStyle.paddingRight, bodyStyle.paddingBottom, bodyStyle.paddingLeft],
+          headingPadding: getComputedStyle(heading).padding,
+          headingSize: getComputedStyle(heading).fontSize,
+          headingTransform: getComputedStyle(heading).textTransform,
+          footerOutsideBody: !body.contains(section.closest('form').querySelector('footer')),
+          rowHeadingPadding: [rowHeadingStyle.paddingTop, rowHeadingStyle.paddingRight, rowHeadingStyle.paddingBottom, rowHeadingStyle.paddingLeft],
+        };
+      });
+      expect(structure.directChildren).toEqual(['H3', 'project-edit-dialog-section-body']);
+      expect(structure.hasSettingsSectionClass).toBe(false);
+      expect(structure.borderWidths).toEqual(['1px', '1px', '1px', '1px']);
+      expect(structure.bodyPadding.every(value => value !== '0px')).toBe(true);
+      expect(structure.headingPadding).toBe('8px 12px');
+      expect(structure.headingSize).toBe('12px');
+      expect(structure.headingTransform).toBe('uppercase');
+      expect(structure.footerOutsideBody).toBe(true);
+      expect(structure.rowHeadingPadding).toEqual(['0px', '0px', '0px', '0px']);
+
+      const form = dialog.locator('#notes-book-order-form');
+      await expect(form).toHaveAttribute('action', `/notes/books/${book.id}/hierarchy/reorder`);
+      await expect(form).toHaveAttribute('data-book-hierarchy-form', '');
+      await expect(dialog.locator('[name="hierarchy"]')).toHaveCount(1);
+      await expect(dialog.locator('[name="orderedItems"]')).toHaveCount(0);
+      await expect(dialog.locator('[data-book-content-reorder-handle]')).toHaveCount(0);
+      await expect(dialog.locator('[data-book-hierarchy-handle]')).toHaveCount(9);
+      await expect(dialog.locator('[draggable="true"]')).toHaveCount(9);
+
+      const hierarchyInput = dialog.locator('[name="hierarchy"]');
+      const initialValue = await hierarchyInput.inputValue();
+      const initialHierarchy = JSON.parse(initialValue);
+      const renderedHierarchy = [
+        { type: 'chapter', id: chapter.id, pages: [chapterPageA.id, chapterPageB.id] },
+        { type: 'page', id: directPage.id },
+        { type: 'chapter', id: chapterB.id, pages: [chapterBPage.id] },
+        { type: 'chapter', id: emptyChapter.id, pages: [] },
+        { type: 'page', id: directPageB.id },
+        { type: 'page', id: directPageC.id },
+      ];
+      expect(initialHierarchy).toEqual({
+        version: 1,
+        expected: renderedHierarchy,
+        target: renderedHierarchy,
+      });
+
+      const rootItems = dialog.locator('[data-book-hierarchy-container="root"] > [data-book-hierarchy-item]');
+      await expect(rootItems).toHaveCount(6);
+      await expect(rootItems.nth(0)).toContainText('Chapter Alpha');
+      await expect(rootItems.nth(1)).toContainText('Direct Page');
+      const chapterPages = dialog.locator(`[data-book-hierarchy-container="chapter:${chapter.id}"] > [data-book-hierarchy-item]`);
+      await expect(chapterPages).toHaveCount(2);
+      await expect(chapterPages.nth(0)).toContainText('Page Alpha');
+      await expect(chapterPages.nth(1)).toContainText('Page Beta');
+      const emptyPages = dialog.locator(`[data-book-hierarchy-container="chapter:${emptyChapter.id}"]`);
+      await expect(emptyPages).toHaveCount(1);
+      await expect(emptyPages).toHaveCSS('min-height', '40px');
+
+      const item = (key) => dialog.locator(`[data-content-key="${key}"]`).first();
+      const handle = (key) => item(key).locator(':scope > [data-book-hierarchy-handle]');
+      const container = (key) => dialog.locator(`[data-book-hierarchy-container="${key}"]`);
+      const destination = (key) => item(key).locator('[data-book-hierarchy-destination]');
+      const move = (key) => item(key).locator('[data-book-hierarchy-move]');
+      const live = dialog.locator('[data-book-hierarchy-live]');
+      const dragToEnd = async (source, destination) => {
+        const children = destination.locator(':scope > [data-book-hierarchy-item]');
+        const target = await children.count() > 0 ? children.last() : destination;
+        await source.scrollIntoViewIfNeeded();
+        await target.scrollIntoViewIfNeeded();
+        const from = await source.boundingBox();
+        const to = await target.boundingBox();
+        await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+        await page.mouse.down();
+        await page.mouse.move(from.x + from.width / 2 + 8, from.y + from.height / 2, { steps: 4 });
+        await page.mouse.move(to.x + 8, to.y + to.height - 3, { steps: 12 });
+        await page.mouse.up();
+      };
+      const dragBefore = async (source, target) => {
+        await source.scrollIntoViewIfNeeded();
+        await target.scrollIntoViewIfNeeded();
+        const from = await source.boundingBox();
+        const to = await target.boundingBox();
+        await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
+        await page.mouse.down();
+        await page.mouse.move(from.x + from.width / 2 + 8, from.y + from.height / 2, { steps: 4 });
+        await page.mouse.move(to.x + 4, to.y + 2, { steps: 12 });
+        await page.mouse.up();
+      };
+      const domHierarchy = () => container('root').evaluate((root) => (
+        [...root.querySelectorAll(':scope > [data-book-hierarchy-item]')].map((node) => {
+          const [type, rawId] = node.dataset.contentKey.split(':');
+          const id = Number(rawId);
+          if (type === 'page') return { type, id };
+          const pages = [...node.querySelectorAll(`:scope > .notes-book-content-copy > [data-book-hierarchy-container="chapter:${id}"] > [data-book-hierarchy-item]`)]
+            .map((pageNode) => Number(pageNode.dataset.contentKey.split(':')[1]));
+          return { type, id, pages };
+        })
+      ));
+      const expectDraft = async (target) => {
+        expect(await domHierarchy()).toEqual(target);
+        const payload = JSON.parse(await hierarchyInput.inputValue());
+        expect(payload.expected).toEqual(renderedHierarchy);
+        expect(payload.target).toEqual(target);
+        expect(posts).toHaveLength(0);
+      };
+      const persistencePosts = () => posts.filter((request) => {
+        const pathname = new URL(request.url()).pathname;
+        return pathname.includes('/hierarchy/reorder')
+          || pathname.includes('/move')
+          || pathname.includes('/notes/reorder')
+          || pathname.includes('/contents/reorder');
+      });
+
+      await expect(destination(`page:${directPage.id}`)).toHaveValue('root');
+      await destination(`page:${directPage.id}`).selectOption(`chapter:${chapter.id}`);
+      await move(`page:${directPage.id}`).click();
+      await handle(`page:${directPage.id}`).press('Home');
+      await expect(handle(`page:${directPage.id}`)).toBeFocused();
+      await expect(live).toContainText(`Page “${directPage.title}” moved to Chapter “${chapter.title}”, position 1 of 3.`);
+      expect(JSON.parse(await hierarchyInput.inputValue()).target).not.toEqual(renderedHierarchy);
+      await page.keyboard.press('Escape');
+      await expect(dialog).not.toBeVisible();
+      expect(posts).toHaveLength(0);
+      expect(JSON.parse(await hierarchyInput.inputValue())).toEqual(initialHierarchy);
+
+      await opener.click();
+      await expect(dialog).toBeVisible();
+      expect(await domHierarchy()).toEqual(renderedHierarchy);
+      await expect(destination(`page:${directPage.id}`)).toHaveValue('root');
+
+      await destination(`page:${directPage.id}`).selectOption(`chapter:${chapter.id}`);
+      await move(`page:${directPage.id}`).click();
+      await handle(`page:${directPage.id}`).press('Home');
+      expect(JSON.parse(await hierarchyInput.inputValue()).target).not.toEqual(renderedHierarchy);
+      await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await expect(dialog).not.toBeVisible();
+      expect(persistencePosts()).toHaveLength(0);
+
+      await opener.click();
+      await expect(dialog).toBeVisible();
+      expect(await domHierarchy()).toEqual(renderedHierarchy);
+      expect(JSON.parse(await hierarchyInput.inputValue())).toEqual(initialHierarchy);
+      await expect(destination(`page:${directPage.id}`)).toHaveValue('root');
+
+      await dragToEnd(handle(`page:${directPage.id}`), container(`chapter:${chapter.id}`));
+      let target = [
+        { type: 'chapter', id: chapter.id, pages: [chapterPageA.id, chapterPageB.id, directPage.id] },
+        { type: 'chapter', id: chapterB.id, pages: [chapterBPage.id] },
+        { type: 'chapter', id: emptyChapter.id, pages: [] },
+        { type: 'page', id: directPageB.id },
+        { type: 'page', id: directPageC.id },
+      ];
+      await expectDraft(target);
+
+      await dragBefore(handle(`page:${chapterPageA.id}`), handle(`chapter:${chapterB.id}`));
+      target = [
+        { type: 'chapter', id: chapter.id, pages: [chapterPageB.id, directPage.id] },
+        { type: 'page', id: chapterPageA.id },
+        { type: 'chapter', id: chapterB.id, pages: [chapterBPage.id] },
+        { type: 'chapter', id: emptyChapter.id, pages: [] },
+        { type: 'page', id: directPageB.id },
+        { type: 'page', id: directPageC.id },
+      ];
+      await expectDraft(target);
+
+      await dragToEnd(handle(`page:${chapterPageB.id}`), container(`chapter:${chapterB.id}`));
+      target[0].pages = [directPage.id];
+      target[2].pages = [chapterBPage.id, chapterPageB.id];
+      await expectDraft(target);
+
+      await dragBefore(handle(`page:${chapterPageB.id}`), handle(`page:${chapterBPage.id}`));
+      target[2].pages = [chapterPageB.id, chapterBPage.id];
+      await expectDraft(target);
+
+      await dragBefore(handle(`page:${directPageC.id}`), handle(`chapter:${chapterB.id}`));
+      target = [target[0], target[1], { type: 'page', id: directPageC.id }, target[2], target[3], target[4]];
+      await expectDraft(target);
+
+      await dragToEnd(handle(`chapter:${emptyChapter.id}`), container('root'));
+      target = [target[0], target[1], target[2], target[3], target[5], target[4]];
+      await expectDraft(target);
+
+      await dragToEnd(handle(`page:${directPageB.id}`), emptyPages);
+      target[5].pages = [directPageB.id];
+      target.splice(4, 1);
+      await expectDraft(target);
+
+      const beforeIllegal = JSON.stringify(target);
+      await handle(`chapter:${chapter.id}`).dragTo(container(`chapter:${chapterB.id}`));
+      expect(JSON.stringify(target)).toBe(beforeIllegal);
+      await expectDraft(target);
+
+      await handle(`chapter:${chapter.id}`).press('ArrowDown');
+      expect(JSON.parse(await hierarchyInput.inputValue()).target).not.toEqual(renderedHierarchy);
+      await dialog.getByRole('button', { name: 'Close Change order', exact: true }).click();
+      await expect(dialog).not.toBeVisible();
+      expect(posts).toHaveLength(0);
+      expect(JSON.parse(await hierarchyInput.inputValue())).toEqual(initialHierarchy);
+
+      await opener.click();
+      await expect(dialog).toBeVisible();
+      expect(await domHierarchy()).toEqual(renderedHierarchy);
+      await expect(dialog.locator('[data-book-hierarchy-live]')).toHaveCount(1);
+      await expect(dialog.locator('[data-book-hierarchy-destination]')).toHaveCount(6);
+      await expect(dialog.locator('[data-book-hierarchy-move]')).toHaveCount(6);
+
+      await destination(`page:${directPage.id}`).selectOption(`chapter:${chapter.id}`);
+      await move(`page:${directPage.id}`).click();
+      await expect(handle(`page:${directPage.id}`)).toBeFocused();
+      await handle(`page:${directPage.id}`).press('Home');
+
+      await destination(`page:${chapterPageA.id}`).selectOption('root');
+      await move(`page:${chapterPageA.id}`).click();
+      await expect(handle(`page:${chapterPageA.id}`)).toBeFocused();
+      await expect(live).toContainText(`Page “${chapterPageA.title}” moved to Book root, position 2 of 6.`);
+      await handle(`page:${chapterPageA.id}`).press('ArrowDown');
+      await handle(`chapter:${chapterB.id}`).press('End');
+      await expect(handle(`chapter:${chapterB.id}`)).toBeFocused();
+      await expect(live).toContainText(`Chapter “${chapterB.title}” moved to position 6 of 6.`);
+
+      target = [
+        { type: 'chapter', id: chapter.id, pages: [directPage.id, chapterPageB.id] },
+        { type: 'page', id: chapterPageA.id },
+        { type: 'chapter', id: emptyChapter.id, pages: [] },
+        { type: 'page', id: directPageB.id },
+        { type: 'page', id: directPageC.id },
+        { type: 'chapter', id: chapterB.id, pages: [chapterBPage.id] },
+      ];
+      await expectDraft(target);
+      expect(await destination(`page:${directPage.id}`).locator('option').evaluateAll(options => options.map(option => option.value))).toEqual([
+        'root', `chapter:${chapter.id}`, `chapter:${emptyChapter.id}`, `chapter:${chapterB.id}`,
+      ]);
+
+      expect(persistencePosts()).toHaveLength(0);
+
+      const response = page.waitForResponse(candidate => (
+        candidate.request().method() === 'POST'
+        && new URL(candidate.url()).pathname === `/notes/books/${book.id}/hierarchy/reorder`
+      ));
+      await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+      expect((await response).status()).toBe(302);
+      await expect(page).toHaveURL(base + config.host);
+      expect(config.read()).toEqual(target);
+      expect(posts).toHaveLength(1);
+      expect(new URL(posts[0].url()).pathname).toBe(`/notes/books/${book.id}/hierarchy/reorder`);
+      expect(JSON.parse(new URLSearchParams(posts[0].postData()).get('hierarchy'))).toEqual({
+        version: 1,
+        expected: renderedHierarchy,
+        target,
+      });
+      expect(new URLSearchParams(posts[0].postData()).has('orderedItems')).toBe(false);
+      expect(new URLSearchParams(posts[0].postData()).has('orderedNoteIds')).toBe(false);
+      expect(new URLSearchParams(posts[0].postData()).get('_csrf')).toBeTruthy();
+      expect(errors).toEqual([]);
+      return;
+    }
     const initial = config.read();
     await expect(opener).toHaveCount(1);
     await expect(opener).toHaveAttribute('href', config.direct);
@@ -60,7 +343,7 @@ for (const kind of ['books', 'contents', 'pages']) {
       expect(config.read()).toEqual(initial);
     }
     for (const peer of config.peers) {
-      await page.getByRole('link', { name: peer, exact: true }).click();
+      await page.getByRole('link', { name: peer === 'Edit Book' ? 'Edit book' : peer, exact: true }).click();
       await expect(page.getByRole('dialog', { name: peer, exact: true })).toBeVisible();
       await page.keyboard.press('Escape');
       await opener.click();

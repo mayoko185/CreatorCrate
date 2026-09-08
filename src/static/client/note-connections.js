@@ -1,5 +1,11 @@
 import { isEnhancementBound, markEnhancementBound } from './dom.js';
-import { syncCreatorCrateDropdownFromNative } from './dropdowns.js';
+import {
+  syncCreatorCrateDropdownFromNative,
+  readCreatorCrateDropdownThumbnail,
+  writeCreatorCrateDropdownThumbnail,
+  syncCreatorCrateDropdownOptionThumbnail,
+} from './dropdowns.js';
+import { enhancePreviewMedia } from './preview.js';
 
 // Only Project -> Asset catalogue reconciliation lives here. The shared dropdown
 // owns search, disclosure, keyboard interaction and selection synchronization.
@@ -10,6 +16,7 @@ export function enhanceNoteConnections(scope = globalThis.document) {
     markEnhancementBound(host, 'noteConnectionsBound');
     count += 1;
     const document = host.ownerDocument;
+    enhancePreviewMedia(host);
     const projects = host.querySelector('#note-projects-form');
     const native = host.querySelector('#note-assets-native');
     const assets = host.querySelector('#note-assets-form');
@@ -34,9 +41,10 @@ export function enhanceNoteConnections(scope = globalThis.document) {
     const remember = (input, label) => catalogue.set(input.value, {
       id: input.value, projectId: input.getAttribute('data-project-key')?.replace(/^project:/, ''), label,
       persisted: input.getAttribute('data-persisted') === 'true',
+      thumbnail: readCreatorCrateDropdownThumbnail(input),
     });
     Array.from(native.options).forEach(option => remember(option, option.textContent));
-    retainedOptions.querySelectorAll('input').forEach(input => remember(input, input.closest('label').querySelector('span').textContent));
+    retainedOptions.querySelectorAll('input').forEach(input => remember(input, input.closest('label').textContent.trim()));
     context().forEach((active, id) => { if (active) loaded.add(id); });
 
     function render(selected) {
@@ -53,6 +61,7 @@ export function enhanceNoteConnections(scope = globalThis.document) {
           option.value = asset.id;
           option.textContent = asset.label;
           option.selected = selected.has(asset.id);
+          writeCreatorCrateDropdownThumbnail(option, asset.thumbnail);
           native.append(option);
         } else if (selected.has(asset.id) && asset.persisted) {
           const label = document.createElement('label');
@@ -61,6 +70,7 @@ export function enhanceNoteConnections(scope = globalThis.document) {
           input.checked = true;
           const text = document.createElement('span'); text.textContent = asset.label;
           label.append(input, text);
+          syncCreatorCrateDropdownOptionThumbnail(label, asset.thumbnail);
           const row = document.createElement('div'); row.className = 'asset-filter-multiselect-option';
           row.append(label); retainedOptions.append(row);
         }
@@ -96,7 +106,7 @@ export function enhanceNoteConnections(scope = globalThis.document) {
             if (String(payload.project.id) !== id) throw new Error('Asset catalogue Project mismatch');
             if (payload.project.archived) break;
             rows.push(...payload.items.map(asset => ({
-              id: String(asset.id), projectId: id,
+              id: String(asset.id), projectId: id, thumbnail: asset.thumbnail,
               label: `${asset.filename}${asset.relativePath && asset.relativePath !== asset.filename ? ' (' + asset.relativePath + ')' : ''} — Project: ${payload.project.title}${asset.isPresent ? '' : ' (Missing)'}`,
             })));
             cursor = payload.nextCursor;

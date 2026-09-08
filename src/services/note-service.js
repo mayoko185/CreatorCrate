@@ -1,5 +1,6 @@
 import { NoteError } from '../data/note-repository.js';
-import { BookNotFoundError } from './book-service.js';
+import { BookContentIntegrityError, BookNotFoundError } from './book-service.js';
+import { buildCurrentBookHierarchy, planBookHierarchy } from './book-hierarchy.js';
 import { ChapterNotFoundError } from './chapter-service.js';
 
 export const NOTE_TITLE_MAX = 200;
@@ -568,6 +569,66 @@ export function createNoteService({
     }
   }
 
+  function requireHierarchyDependencies() {
+    if (!db || typeof db.transaction !== 'function') {
+      throw new Error('createNoteService requires a db dependency for Book hierarchy reordering.');
+    }
+    if (!bookRepository) {
+      throw new Error('createNoteService requires a bookRepository dependency for Book hierarchy reordering.');
+    }
+    if (!bookContentRepository) {
+      throw new Error('createNoteService requires a bookContentRepository dependency for Book hierarchy reordering.');
+    }
+    if (typeof noteRepository.listAllForBook !== 'function') {
+      throw new Error('createNoteService requires noteRepository.listAllForBook for Book hierarchy reordering.');
+    }
+  }
+
+  function readBookHierarchySnapshot(bookId) {
+    return {
+      bookId,
+      book: requireBook(bookId),
+      chapters: chapterRepository.listForBook(bookId),
+      pages: noteRepository.listAllForBook(bookId),
+      memberships: bookContentRepository.listForBook(bookId),
+    };
+  }
+
+  const reorderBookHierarchyTx = db && typeof db.transaction === 'function'
+    ? db.transaction((bookId, submission) => {
+      const snapshot = readBookHierarchySnapshot(bookId);
+      const plan = planBookHierarchy(snapshot, submission);
+      if (!plan.changed) {
+        return { changed: false, hierarchy: plan.currentHierarchy };
+      }
+
+      const chapterById = new Map(snapshot.chapters.map((chapter) => [chapter.id, chapter]));
+      for (const { pageId, targetChapterId } of plan.pageDestinationChanges) {
+        moveNoteToContainer(
+          pageId,
+          { bookId, chapterId: targetChapterId },
+          { knownTargetChapter: targetChapterId === null ? null : chapterById.get(targetChapterId) },
+        );
+      }
+
+      bookContentRepository.reorder(bookId, plan.rootTargetItems);
+      for (const [chapterId, pageIds] of plan.chapterTargetOrders) {
+        noteRepository.reorder(chapterId, pageIds);
+      }
+
+      const finalSnapshot = readBookHierarchySnapshot(bookId);
+      const finalHierarchy = buildCurrentBookHierarchy(finalSnapshot);
+      if (JSON.stringify(finalHierarchy) !== JSON.stringify(plan.targetHierarchy)) {
+        throw new BookContentIntegrityError(
+          'Persisted Book hierarchy does not match the validated target.',
+          { code: 'HIERARCHY_INTEGRITY' },
+        );
+      }
+
+      return { changed: true, hierarchy: finalHierarchy };
+    })
+    : null;
+
   return {
     createNote(input) {
       const values = normalizeCreateInput(input);
@@ -594,6 +655,12 @@ export function createNoteService({
     listNotesForBook(bookId) {
       requireBook(bookId);
       return noteRepository.listForBook(bookId);
+    },
+
+    getBookHierarchy(bookId) {
+      requireHierarchyDependencies();
+      assertPositiveIntegerId(bookId, 'bookId');
+      return buildCurrentBookHierarchy(readBookHierarchySnapshot(bookId));
     },
 
     updateNote(id, input) {
@@ -660,6 +727,16 @@ export function createNoteService({
         }
         throw error;
       }
+    },
+
+    reorderBookHierarchy(bookId, submission) {
+      requireHierarchyDependencies();
+      assertPositiveIntegerId(bookId, 'bookId');
+      const outcome = reorderBookHierarchyTx.immediate(bookId, submission);
+      if (outcome.changed) {
+        logActivity('book.hierarchy.reordered', { bookId });
+      }
+      return outcome;
     },
 
     moveNote(noteId, target) {

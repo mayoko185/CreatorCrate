@@ -63,7 +63,12 @@ for (const edit of [false, true]) test(`${edit ? 'Edit' : 'New'}: real Projects 
     }
     const insertAsset = db.prepare("INSERT INTO assets (project_id, relative_path, filename, extension, mime_type, size_bytes, is_present, last_seen_at) VALUES (?, ?, ?, 'png', 'image/png', 1, 1, datetime('now'))");
     for (const id of [1, 2, 3]) insertAsset.run(id, `${id}.png`, `${id}.png`);
-    for (let i = 0; i < 24; i++) insertAsset.run(2, `beta-${i}.png`, `beta-${i}.png`);
+    for (let i = 0; i < 24; i++) insertAsset.run(2, `beta-${i}.png`, i === 23 ? 'beta-' + 'long-filename-'.repeat(15) + '.png' : `beta-${i}.png`);
+    db.prepare("UPDATE assets SET modified_at = '2026-09-01T00:00:00.000Z' WHERE id IN (1, 2)").run();
+    const nsfw = app.locals.tagService.createTag({ name: 'NSFW' });
+    app.locals.assetTagService.replaceAssetTags(1, [nsfw.id]);
+    app.locals.projectTagService.replaceProjectTags(2, [nsfw.id]);
+    app.locals.nsfwFilterSettingsService.setEnabled(true);
     db.prepare("INSERT INTO managed_assets (id, storage_key, namespace, mime_type, size_bytes, width, height, sha256) VALUES ('managed-cover', 'private-cover.png', 'book-covers', 'image/png', 1, 1, 1, ?)").run('a'.repeat(64));
     const book = app.locals.bookService.createBook({ title: 'Connections Book' });
     const note = app.locals.noteService.createNote({ bookId: book.id, title: 'Connections Page', projectIds: [1], assetIds: [1, 3] });
@@ -74,6 +79,8 @@ for (const edit of [false, true]) test(`${edit ? 'Edit' : 'New'}: real Projects 
     server = app.listen(0, '127.0.0.1');
     await new Promise(resolve => server.once('listening', resolve));
     const base = `http://127.0.0.1:${server.address().port}`;
+    await page.route('**/thumbnail?*', route => route.fulfill({ contentType: 'image/png',
+      body: Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64') }));
 
     // The actual /projects/ route, template, stylesheet and startup module.
     await page.goto(base + '/projects/');
@@ -97,6 +104,13 @@ for (const edit of [false, true]) test(`${edit ? 'Edit' : 'New'}: real Projects 
     await open(page.locator('#project-sort-filter'));
     await page.keyboard.press('Escape');
 
+    await page.goto(base + `/notes/books/${book.id}?defaults=1`);
+    const pages = page.locator('#book-preview-pages-dropdown');
+    await open(pages);
+    await pages.locator('input[type=search]').fill('Connections Page');
+    await pages.getByRole('checkbox', { name: /Connections Page/ }).check();
+    await expect(pages.locator('.cc-dropdown-option-thumbnail')).toHaveCount(0);
+    expect(await page.locator('#book-preview-pages').evaluate(n => Array.from(n.selectedOptions).map(o => o.value))).toEqual([String(note.id)]);
     await page.goto(base + (edit ? `/notes/${note.id}` : `/notes/books/${book.id}`));
     await page.getByRole('link', { name: edit ? 'Edit Page' : 'New Page', exact: true }).click();
     const dialog = page.locator(edit ? '#note-edit-dialog' : '#note-create-dialog');
@@ -154,6 +168,12 @@ for (const edit of [false, true]) test(`${edit ? 'Edit' : 'New'}: real Projects 
     await unobscured(projects);
     await page.screenshot({ path: testInfo.outputPath('projects-open.png') });
     await chooseAsset(1);
+    await expect(assets.locator('img')).toHaveAttribute('alt', '');
+    await expect(assets.locator('img')).toHaveClass(/asset-image--nsfw-blurred/);
+    await expect(assets.locator('[data-preview-enhancement]')).toHaveAttribute('data-preview-state', 'loaded');
+    await expect(projects.locator('.cc-dropdown-option-thumbnail')).toHaveCount(0);
+    await expect(assets.locator('summary img')).toHaveCount(0);
+    if (edit) await expect(dialog.locator('[data-note-retained-options] [data-preview-fallback]')).toBeVisible();
     await expect(projects).not.toHaveAttribute('open');
     await unobscured(assets);
     await expect(assets.locator('summary')).toHaveAccessibleName(/^Assets filter:/);
@@ -166,7 +186,30 @@ for (const edit of [false, true]) test(`${edit ? 'Edit' : 'New'}: real Projects 
     await unobscured(assets);
     await assets.locator('.asset-project-filter-option-list').evaluate(n => { n.scrollTop = n.scrollHeight; });
     expect(await assets.locator('.asset-project-filter-option-list').evaluate(n => n.scrollTop)).toBeGreaterThan(0);
-    await page.screenshot({ path: testInfo.outputPath('assets-open.png') });
+    const betaImage = assets.locator('label').filter({ has: page.locator('input[value="2"]') }).locator('img');
+    await expect(betaImage).toHaveClass(/asset-image--nsfw-blurred/);
+    await betaImage.click();
+    await expect(assets.locator('input[value="2"]')).not.toBeChecked();
+    await betaImage.click();
+    await expect(assets.locator('input[value="2"]')).toBeChecked();
+    // The remaining Beta rows intentionally have incomplete metadata.
+    await expect(assets.locator('.cc-dropdown-option-thumbnail')).toHaveCount(26);
+    await expect(assets.locator('img')).toHaveCount(2);
+    for (const width of [1280, 390, 375]) {
+      await page.setViewportSize({ width, height: 900 });
+      await open(assets);
+      await assets.locator('input[type=search]').fill('');
+      await unobscured(assets);
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      const list = assets.locator('.asset-project-filter-option-list');
+      await list.evaluate(n => { n.scrollTop = n.scrollHeight; });
+      expect(await list.evaluate(n => n.scrollTop)).toBeGreaterThan(0);
+      await list.evaluate(n => { n.scrollTop = 0; });
+      const box = assets.locator('.cc-dropdown-option-thumbnail').first();
+      expect(await box.evaluate(n => ({ width: n.offsetWidth, height: n.offsetHeight }))).toEqual({ width: 32, height: 32 });
+      await page.screenshot({ path: testInfo.outputPath(`assets-${width}.png`) });
+    }
+    await page.setViewportSize({ width: 1280, height: 900 });
     await page.keyboard.press('Escape');
     await expect(dialog).toBeVisible();
     await expect(assets.locator('summary')).toBeFocused();
@@ -187,6 +230,7 @@ for (const edit of [false, true]) test(`${edit ? 'Edit' : 'New'}: real Projects 
     expect(await dialog.locator('#note-assets-native').textContent()).not.toMatch(/3\.png — Project: Project 0|private-cover|managed-cover/);
     expect(snapshot()).toEqual(before); // Only submission is allowed to persist.
 
+    app.locals.nsfwFilterSettingsService.setEnabled(false);
     await dialog.locator('[name="title"]').fill('');
     const invalid = page.waitForResponse(r => r.request().method() === 'POST');
     await dialog.getByRole('button', { name: edit ? 'Save' : 'Create', exact: true }).click();
@@ -194,6 +238,7 @@ for (const edit of [false, true]) test(`${edit ? 'Edit' : 'New'}: real Projects 
     await expect(dialog).toBeVisible();
     await expect(projects.locator('input[value="2"]')).toBeChecked();
     await expect(assets.locator('input[value="2"]')).toBeChecked();
+    await expect(assets.locator('img.asset-image--nsfw-blurred')).toHaveCount(0);
     await open(projects);
     await unobscured(projects);
     await projects.locator('input[type=search]').fill('beta');
@@ -234,6 +279,13 @@ for (const edit of [false, true]) test(`${edit ? 'Edit' : 'New'}: real Projects 
       await expect(p.locator('#note-projects-form input[value="2"]')).toBeChecked();
       await expect(p.locator('#note-assets-native')).toBeVisible();
       await expect(p.locator('#note-assets-form')).toBeHidden();
+      await expect(p.locator('#note-assets-native option').first()).toHaveText('2.png — Project: Beta');
+      await expect(p.locator('#note-assets-native img')).toHaveCount(0);
+      await p.locator('#note-assets-native').selectOption(['2']);
+      await p.locator('#note-edit-dialog [name="title"]').fill('Native saved');
+      await p.getByRole('button', { name: 'Save', exact: true }).click();
+      await expect(p).toHaveURL(/\/notes\/\d+$/);
+      expect(db.prepare('SELECT asset_id FROM note_assets WHERE note_id = ? ORDER BY asset_id').all(savedId).map(r => r.asset_id)).toEqual(edit ? [1, 2] : [2]);
     } finally { await fallback.close(); }
   } finally {
     if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }

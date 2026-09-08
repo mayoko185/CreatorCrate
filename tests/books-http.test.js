@@ -17,11 +17,13 @@ function expectBookSections(dialog, { edit = false, hasCover = false } = {}) {
   expect(dialog).toContain('class="app-dialog project-form-dialog"');
   const sections = [...dialog.matchAll(/<section class="settings-section project-form-section project-edit-dialog-section"[^>]*>[\s\S]*?<\/section>/g)].map(([section]) => section);
   expect(sections).toHaveLength(2);
-  expect(sections[0]).toContain('<h3>Basic information</h3>');
+  expect(sections[0]).toContain('data-notes-dialog-compact-section data-notes-book-details-section');
+  expect(sections[0]).toContain('<h3>Book details</h3>');
   for (const section of sections) {
     expect(section).toContain('class="project-form-section-body project-edit-dialog-section-body"');
     expect(section).toContain('field app-dialog-field');
   }
+  expect(sections[1]).toContain('data-notes-book-actions-section');
   expect(sections[1]).toContain('<h3 id="book-actions-heading">Book actions</h3>');
   expect(dialog.match(/<h[1-6][^>]*>Book actions<\/h[1-6]>/g)).toHaveLength(1);
   expect(dialog).not.toContain('Secondary actions');
@@ -196,6 +198,34 @@ function findBookCoverImage(html, assetId, size) {
   return html.match(new RegExp(
     `<img\\b[^>]*src="/projects/\\d+/assets/${assetId}/${size}\\?v=[^"]*"[^>]*>`,
   ))?.[0] || '';
+}
+
+function expectBookDetailIconControl(html, { label, href, dialogTarget, dataHook }) {
+  const control = html.match(new RegExp(`<a\\b[^>]*aria-label="${label}"[^>]*>[\\s\\S]*?<\\/a>`))?.[0] || '';
+  expect(control).not.toBe('');
+  expect(control).toContain(`aria-label="${label}"`);
+  expect(control).toContain(`data-tooltip="${label}"`);
+  expect(control).toContain(`href="${href}"`);
+  if (dialogTarget) {
+    expect(control).toContain(`data-dialog-open="${dialogTarget}"`);
+  }
+  if (dataHook) {
+    expect(control).toContain(dataHook);
+  }
+  expect(control).toContain('<svg');
+  return control;
+}
+
+function expectBookDetailControlsInOrder(html, controls) {
+  const positions = controls.map((control) => html.indexOf(control));
+  expect(positions.every((position) => position >= 0)).toBe(true);
+  expect(positions).toEqual([...positions].sort((left, right) => left - right));
+}
+
+function findBookDetailToolbar(html) {
+  return html.match(
+    /<div class="asset-viewer-display-controls" data-book-detail-toolbar>\s*<a class="button button-secondary" href="\/notes">Back to book list<\/a>\s*<div class="project-filter-actions project-filter-actions--projects">[\s\S]*?<\/div>\s*<\/div>/,
+  )?.[0] || '';
 }
 
 describe('Book HTTP routes', () => {
@@ -573,9 +603,11 @@ describe('Book HTTP routes', () => {
     expect(response.text).toContain(`<h1 class="app-section-title">Notes — ${book.title}</h1>`);
     expect((response.text.match(/<h1\b/g) || [])).toHaveLength(1);
     expect(response.text).toContain('<div class="notes-page-detail-layout">');
-    expect(response.text).toContain('<aside class="notes-page-detail-sidebar notes-surface notes-surface--compact">');
+    expect(response.text).toContain('<aside class="notes-page-detail-sidebar notes-book-detail-sidebar notes-surface notes-surface--compact">');
     expect(response.text).toContain(`<nav class="notes-book-nav" aria-label="Contents of ${book.title}">`);
-    expect(response.text).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">${book.title}</a>`);
+    const navigator = response.text.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/)?.[0] || '';
+    expect(navigator).not.toBe('');
+    expect(navigator).not.toContain('notes-book-nav-book-link');
     expect(response.text).toContain('<section class="notes-detail-panel notes-detail-details" aria-labelledby="notes-book-details-heading">');
     expect(response.text).toContain('<h2 id="notes-book-details-heading">Details</h2>');
     expect(response.text).toContain('<dl class="detail-list">');
@@ -584,11 +616,9 @@ describe('Book HTTP routes', () => {
     expect(response.text).toContain('<dt>Updated</dt>');
     expect(response.text).toContain(`<dd>${book.updated_at}</dd>`);
     expect(response.text).toContain('data-primary-image-state="none"');
-    expect((response.text.match(/class="notes-surface"/g) || [])).toHaveLength(1);
-    expect(response.text).toMatch(/<div class="notes-surface">\s*<nav class="book-outline"[\s\S]*?<\/nav>\s*<\/div>/);
-    expect(response.text).toContain(`<nav class="book-outline" aria-label="Contents of ${book.title}">`);
-    expect(response.text).toContain('<p class="book-outline-empty">No Pages or Chapters yet</p>');
-    expect((response.text.match(/class="book-outline-empty"/g) || [])).toHaveLength(1);
+    expect(response.text).not.toContain('class="book-outline"');
+    expect(response.text).toContain('<section class="notes-detail-panel notes-page-previews"');
+    expect(response.text).toContain('<p class="notes-page-previews-empty">No Pages to preview.</p>');
     expect(response.text).not.toContain('<h2 id="notes-book-content-heading">Content</h2>');
     expect(response.text).not.toContain('notes-book-section');
     expect(response.text).not.toContain('notes-book-content-list');
@@ -598,8 +628,20 @@ describe('Book HTTP routes', () => {
     expect(response.text).not.toContain('No pages yet');
     expect(response.text).toContain(`<a class="button button-primary" href="/notes/new?bookId=${book.id}" data-dialog-open="note-create-dialog">New Page</a>`);
     expect(response.text).toContain(`<a class="button" href="/notes/books/${book.id}/chapters/new" data-dialog-open="chapter-create-dialog">New Chapter</a>`);
-    expect(response.text).toContain(`href="/notes/books/${book.id}/edit"`);
-    expect(response.text).toContain('>Edit Book</a>');
+    const pageHeading = response.text.match(/<header class="page-heading">[\s\S]*?<\/header>/)?.[0] || '';
+    const toolbar = findBookDetailToolbar(response.text);
+    expect(toolbar).not.toBe('');
+    expect(pageHeading).not.toContain('aria-label="Edit book"');
+    expect(pageHeading).not.toContain('aria-label="Book defaults"');
+    expect(pageHeading).not.toContain('aria-label="Reset to default"');
+    expect(response.text.indexOf(toolbar)).toBeGreaterThan(response.text.indexOf('</header>'));
+    expect(response.text.indexOf(toolbar)).toBeLessThan(response.text.indexOf('<div class="notes-page-detail-layout">'));
+    expectBookDetailIconControl(toolbar, {
+      label: 'Edit book',
+      href: `/notes/books/${book.id}/edit`,
+      dialogTarget: 'book-edit-dialog',
+    });
+    expect(toolbar).not.toContain('aria-label="Change order"');
     expect(response.text).not.toMatch(/<a[^>]*>Change order<\/a>/);
     expect(response.text).not.toContain('>Manage</a>');
     expect(response.text).not.toContain('Move up');
@@ -621,7 +663,7 @@ describe('Book HTTP routes', () => {
     await agent.get('/notes/books/01/order').expect(404);
   });
 
-  it('renders the primary-image preview and shared Book contents sidebar without replacing the outline', async () => {
+  it('renders Page previews in place of the redundant outline while retaining the polished Book sidebar', async () => {
     const book = app.locals.bookService.createBook({ title: 'Sidebar Book' });
     const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Sidebar Chapter' });
     const chapterPage = app.locals.noteService.createNote({
@@ -654,13 +696,23 @@ describe('Book HTTP routes', () => {
       `src="/projects/${projectId}/assets/${assetId}/preview\\?v=`,
     ));
     expect(response.text).toContain(`<nav class="notes-book-nav" aria-label="Contents of ${book.title}">`);
+    const sidebar = response.text.match(/<aside class="notes-page-detail-sidebar notes-book-detail-sidebar[^"]*">[\s\S]*?<\/aside>/)?.[0] || '';
+    expect(sidebar).not.toBe('');
+    expect(sidebar).not.toContain('notes-book-nav-book-link');
+    expect(sidebar).not.toContain('View Chapter');
     expect(response.text).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">${book.title}</a>`);
-    expect(response.text).toContain(`<a class="notes-book-nav-page-link" href="/notes/chapters/${chapter.id}">View Chapter</a>`);
-    expect(response.text).toContain(`<a class="notes-book-nav-page-link" href="/notes/${chapterPage.id}">${chapterPage.title}</a>`);
-    expect(response.text).toContain(`<a class="notes-book-nav-page-link" href="/notes/${directPage.id}">${directPage.title}</a>`);
-    expect(response.text).toContain(`<nav class="book-outline" aria-label="Contents of ${book.title}">`);
-    expect(response.text).toContain(`<a class="book-outline-title" href="/notes/chapters/${chapter.id}">View Chapter</a>`);
-    expect(response.text).toContain(`<a class="book-outline-title" href="/notes/${directPage.id}">${directPage.title}</a>`);
+    const newPageDialog = response.text.match(/<dialog\b[^>]*id="note-create-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    expect(newPageDialog).not.toBe('');
+    expect(newPageDialog).toContain(`<nav class="notes-book-nav" aria-label="Contents of ${book.title}">`);
+    expect(newPageDialog).toContain(`<a class="notes-book-nav-book-link" href="/notes/books/${book.id}">${book.title}</a>`);
+    expect(newPageDialog).toContain(`<span class="notes-book-nav-chapter-title">${chapter.title}</span>`);
+    expect(newPageDialog).not.toContain('View Chapter');
+    expect(newPageDialog).toContain(`<a class="notes-book-nav-page-link" href="/notes/${chapterPage.id}">${chapterPage.title}</a>`);
+    expect(newPageDialog).toContain(`<a class="notes-book-nav-page-link" href="/notes/${directPage.id}">${directPage.title}</a>`);
+    expect(response.text).not.toContain('class="book-outline"');
+    const previews = response.text.match(/<section class="notes-detail-panel notes-page-previews"[\s\S]*?<\/section>/)?.[0] || '';
+    expect(previews).toContain(`<a class="notes-page-preview-title" href="/notes/${chapterPage.id}">${chapterPage.title}</a>`);
+    expect(previews).toContain(`<a class="notes-page-preview-title" href="/notes/${directPage.id}">${directPage.title}</a>`);
   });
 
   it('renders unavailable and absent Book primary-image fallbacks in the detail sidebar', async () => {
@@ -692,26 +744,11 @@ describe('Book HTTP routes', () => {
     const locals = renderCapture.get();
     renderCapture.restore();
 
-    const outline = response.text.match(/<nav class="book-outline"[\s\S]*?<\/nav>/)?.[0] || '';
-    expect(outline).toContain('<ol class="book-outline-list">');
-    expect(outline).toContain('<li class="book-outline-item book-outline-chapter">');
-    expect(outline).toContain('<details class="book-outline-disclosure">');
-    expect(outline).toContain('<summary class="book-outline-summary">');
-    expect(outline).toContain(`<a class="book-outline-title" href="/notes/chapters/${chapter.id}">View Chapter</a>`);
-    for (const prefix of ['notes-book-nav', 'book-outline']) {
-      const disclosure = response.text.match(new RegExp('<details class="' + prefix + '-disclosure"[\\s\\S]*?</details>'))?.[0] || '';
-      const summary = disclosure.match(/<summary[^>]*>[\s\S]*?<\/summary>/)?.[0] || '';
-      expect(summary).toContain('Chapter One');
-      expect(summary).not.toMatch(/<a\b/);
-      expect(disclosure.slice(disclosure.indexOf('</summary>'))).toContain('href="/notes/chapters/' + chapter.id + '">View Chapter</a>');
-    }
-    expect(outline).toContain('<span class="book-outline-count">0 Pages</span>');
-    expect(outline).toContain('<p class="book-outline-empty">No Pages yet</p>');
-    expect(outline).not.toMatch(/<details[^>]*\sopen(?:\s|=|>)/);
-    expect(outline).not.toContain('<h2 id="notes-book-content-heading">Content</h2>');
-    expect(outline).not.toContain('Edit Chapter');
-    expect(outline).not.toContain('/edit');
-    expect((outline.match(/<li class="book-outline-item book-outline-chapter">/g) || [])).toHaveLength(1);
+    const navigator = response.text.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/)?.[0] || '';
+    expect(navigator).toContain('<span class="notes-book-nav-chapter-title">Chapter One</span>');
+    expect(navigator).not.toContain('View Chapter');
+    expect(response.text).not.toContain('class="book-outline"');
+    expect(response.text).toContain('No Pages to preview.');
     expect(response.text).not.toMatch(/<a[^>]*>Change order<\/a>/);
     expect(response.text).not.toContain('>Manage</a>');
     expect(locals.contents.map(({ type, id }) => ({ type, id }))).toEqual([
@@ -735,20 +772,9 @@ describe('Book HTTP routes', () => {
     const locals = renderCapture.get();
     renderCapture.restore();
 
-    const outline = response.text.match(/<nav class="book-outline"[\s\S]*?<\/nav>/)?.[0] || '';
-    expect(outline).toMatch(new RegExp(
-      `<li class="book-outline-item book-outline-page">[\\s\\S]*?<a class="book-outline-title" href="/notes/${page.id}">Direct Page<\/a>[\\s\\S]*?<\/li>`,
-    ));
-    expect((outline.match(/<li class="book-outline-item book-outline-page">/g) || [])).toHaveLength(1);
-    expect(outline).not.toContain('<details');
-    expect(outline).not.toContain('Edit Page');
-    expect(outline).not.toContain('/edit');
-    expect(outline).not.toContain('<h2 id="notes-book-content-heading">Content</h2>');
-    expect(outline).not.toContain('notes-book-chapters-heading');
-    expect(outline).not.toContain('notes-book-pages-heading');
-    expect(outline).not.toContain('No Pages or Chapters yet');
-    expect(outline).not.toContain('No pages yet');
-    expect(outline).not.toContain('No chapters yet');
+    const previews = response.text.match(/<section class="notes-detail-panel notes-page-previews"[\s\S]*?<\/section>/)?.[0] || '';
+    expect(previews).toContain(`<a class="notes-page-preview-title" href="/notes/${page.id}">Direct Page</a>`);
+    expect(response.text).not.toContain('class="book-outline"');
     expect(response.text).not.toMatch(/<a[^>]*>Change order<\/a>/);
     expect(response.text).not.toContain('>Manage</a>');
     expect(locals.contents.map(({ type, id }) => ({ type, id }))).toEqual([
@@ -759,7 +785,7 @@ describe('Book HTTP routes', () => {
     expect(locals.canChangeOrder).toBe(false);
   });
 
-  it('renders both child types while excluding Chapter Pages and Pages from other Books', async () => {
+  it('renders mixed Book contents and previews direct and Chapter Pages while excluding other Books', async () => {
     const book = app.locals.bookService.createBook({ title: 'Mixed Book' });
     const otherBook = app.locals.bookService.createBook({ title: 'Other Book' });
     const pageA = app.locals.noteService.createNote({
@@ -820,19 +846,8 @@ describe('Book HTTP routes', () => {
     const response = await agent.get(`/notes/books/${book.id}`).expect(200);
     const locals = renderCapture.get();
     renderCapture.restore();
-    const outline = response.text.match(/<nav class="book-outline"[\s\S]*?<\/nav>/)?.[0] || '';
-    const topLevelStarts = [...outline.matchAll(
-      /<li class="book-outline-item (?:book-outline-page|book-outline-chapter)">/g,
-    )].map(({ index }) => index);
-    const topLevelItems = topLevelStarts.map((start, index) => (
-      outline.slice(start, topLevelStarts[index + 1] ?? outline.length)
-    ));
-    const topLevelTitles = topLevelItems.map((item) => item.match(
-      /<(?:a|span) class="book-outline-title"[^>]*>([^<]+)<\/(?:a|span)>/,
-    )?.[1]);
-    const chapterXChildTitles = [...topLevelItems[1].matchAll(
-      /<li class="book-outline-item book-outline-page book-outline-page--child">[\s\S]*?<a class="book-outline-title"[^>]*>([^<]+)<\/a>/g,
-    )].map(([, title]) => title);
+    const navigator = response.text.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/)?.[0] || '';
+    const previews = response.text.match(/<section class="notes-detail-panel notes-page-previews"[\s\S]*?<\/section>/)?.[0] || '';
 
     expect(listBookContents).toHaveBeenCalledWith(book.id);
     expect(listChapters).not.toHaveBeenCalled();
@@ -848,30 +863,42 @@ describe('Book HTTP routes', () => {
     expect(locals.chapters).toEqual([chapterX, chapterY]);
     expect(locals.pages).toEqual([pageA, pageB]);
     expect(locals.canChangeOrder).toBe(true);
-    expect(outline).toContain('<ol class="book-outline-list">');
-    expect(topLevelTitles).toEqual(['Page A', 'Chapter X', 'Page B', 'Chapter Y']);
-    expect(topLevelStarts).toHaveLength(4);
-    expect(topLevelItems[1]).toContain(`<a class="book-outline-title" href="/notes/chapters/${chapterX.id}">View Chapter</a>`);
-    expect(topLevelItems[3]).toContain(`<a class="book-outline-title" href="/notes/chapters/${chapterY.id}">View Chapter</a>`);
-    expect(topLevelItems[0]).toContain(`<a class="book-outline-title" href="/notes/${pageA.id}">Page A</a>`);
-    expect(topLevelItems[2]).toContain(`<a class="book-outline-title" href="/notes/${pageB.id}">Page B</a>`);
-    expect(topLevelItems[1]).toContain('<span class="book-outline-count">2 Pages</span>');
-    expect(topLevelItems[3]).toContain('<span class="book-outline-count">1 Page</span>');
-    expect(chapterXChildTitles).toEqual(['Chapter X Page A', 'Chapter X Page B']);
-    expect(topLevelItems[1]).not.toContain('Chapter Y Page');
-    expect(topLevelItems[3]).not.toContain('Chapter X Page A');
-    expect(outline).not.toContain(`href="/notes/${otherBookPage.id}">Other Book Page</a>`);
-    expect(outline).not.toContain('Other Book Page');
-    expect((outline.match(/<li class="book-outline-item book-outline-page book-outline-page--child">/g) || [])).toHaveLength(3);
-    expect((outline.match(/<details class="book-outline-disclosure">/g) || [])).toHaveLength(2);
-    expect(outline).not.toMatch(/<details[^>]*\sopen(?:\s|=|>)/);
-    expect(outline).not.toContain('<h2 id="notes-book-content-heading">Content</h2>');
-    expect(outline).not.toContain('Edit Chapter');
-    expect(outline).not.toContain('Edit Page');
-    expect(outline).not.toContain('/edit');
-    expect((outline.match(new RegExp(`<a class="book-outline-title" href="/notes/${pageA.id}">Page A<\/a>`, 'g')) || [])).toHaveLength(1);
-    expect((outline.match(new RegExp(`<a class="book-outline-title" href="/notes/${pageB.id}">Page B<\/a>`, 'g')) || [])).toHaveLength(1);
-    expect(response.text).toContain(`<a class="button button-secondary" href="/notes/books/${book.id}/order" data-dialog-open="book-order-dialog">Change order</a>`);
+    expect(navigator.indexOf('Page A')).toBeLessThan(navigator.indexOf('Chapter X'));
+    expect(navigator.indexOf('Chapter X')).toBeLessThan(navigator.indexOf('Page B'));
+    expect(navigator.indexOf('Page B')).toBeLessThan(navigator.indexOf('Chapter Y'));
+    expect(navigator).toContain(`href="/notes/${chapterPage.id}"`);
+    expect(navigator).toContain(`href="/notes/${chapterPageSecond.id}"`);
+    expect(previews.match(/class="notes-page-preview-item"/g)).toHaveLength(5);
+    expect(previews.indexOf('Page A')).toBeLessThan(previews.indexOf('Chapter X Page A'));
+    expect(previews.indexOf('Chapter X Page B')).toBeLessThan(previews.indexOf('Page B'));
+    expect(previews.indexOf('Page B')).toBeLessThan(previews.indexOf('Chapter Y Page'));
+    expect(previews).not.toContain(`href="/notes/${otherBookPage.id}"`);
+    expect(response.text).not.toContain('class="book-outline"');
+    const toolbar = findBookDetailToolbar(response.text);
+    const toolbarControls = [
+      expectBookDetailIconControl(toolbar, {
+        label: 'Edit book',
+        href: `/notes/books/${book.id}/edit`,
+        dialogTarget: 'book-edit-dialog',
+      }),
+      expectBookDetailIconControl(toolbar, {
+        label: 'Change order',
+        href: `/notes/books/${book.id}/order`,
+        dialogTarget: 'book-order-dialog',
+      }),
+      expectBookDetailIconControl(toolbar, {
+        label: 'Book defaults',
+        href: `/notes/books/${book.id}?defaults=1`,
+        dialogTarget: 'book-defaults-dialog',
+        dataHook: 'data-book-defaults-link',
+      }),
+      expectBookDetailIconControl(toolbar, {
+        label: 'Reset to default',
+        href: `/notes/books/${book.id}`,
+        dataHook: 'data-book-reset',
+      }),
+    ];
+    expectBookDetailControlsInOrder(toolbar, toolbarControls);
     expect(response.text).not.toContain('>Manage</a>');
     expect(response.text).not.toContain('Move up');
     expect(response.text).not.toContain('Move down');
@@ -883,7 +910,8 @@ describe('Book HTTP routes', () => {
     expect(orderPage.text).toMatch(/<dialog id="book-order-dialog"[^>]* open/);
     expect(response.text).toMatch(/<dialog id="book-order-dialog"[^>]*data-app-dialog\s+aria/);
     expect(orderPage.text).toContain('data-dialog-close aria-label="Close Change order"');
-    expect(orderPage.text.match(/<nav class="book-outline"[\s\S]*?<\/nav>/)?.[0]).toBe(outline);
+    expect(orderPage.text).not.toContain('class="book-outline"');
+    expect(orderPage.text).toContain('class="notes-detail-panel notes-page-previews"');
     const ids = [...orderPage.text.matchAll(/\sid="([^"]+)"/g)].map(([, id]) => id);
     expect(new Set(ids).size).toBe(ids.length);
     let depth = 0;
@@ -898,33 +926,64 @@ describe('Book HTTP routes', () => {
     }
     expect(orderPage.text).toContain('<button class="button button-primary" type="submit" form="notes-book-order-form" data-dialog-submit>Save</button>');
     const bookOrderDialog = orderPage.text.match(/<dialog\b[^>]*id="book-order-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
-    expect(bookOrderDialog).not.toContain('>Cancel<');
-    expect(orderPage.text).toContain(`<form id="notes-book-order-form" method="post" action="/notes/books/${book.id}/contents/reorder" data-book-content-reorder-form`);
-    expect(orderPage.text).toMatch(/<form[^>]+data-book-content-reorder-form[\s\S]*?name="_csrf"[^>]+value="[^"]+"/);
-    expect(orderPage.text.match(/name="orderedItems"/g) || []).toHaveLength(1);
-    expect(orderPage.text).toContain(`<input type="hidden" name="orderedItems" data-book-content-order-input value="${contents.map(({ type, id }) => `${type}:${id}`).join(',')}">`);
-    expect((orderPage.text.match(/data-book-content-reorder-item/g) || [])).toHaveLength(4);
-    expect((orderPage.text.match(/data-book-content-reorder-handle/g) || [])).toHaveLength(4);
-    expect((orderPage.text.match(/notes-reorder-row--compact/g) || [])).toHaveLength(4);
-    expect((orderPage.text.match(/draggable="true"/g) || [])).toHaveLength(12);
+    expect(bookOrderDialog).toContain('<button class="button button-secondary" type="button" data-dialog-close>Cancel</button>');
+    expect(orderPage.text).toContain(`<form id="notes-book-order-form" method="post" action="/notes/books/${book.id}/hierarchy/reorder" data-book-hierarchy-form`);
+    expect(orderPage.text).toMatch(/<form[^>]+data-book-hierarchy-form[\s\S]*?name="_csrf"[^>]+value="[^"]+"/);
+    expect(orderPage.text.match(/name="hierarchy"/g) || []).toHaveLength(1);
+    const hierarchyValue = orderPage.text.match(/name="hierarchy"[^>]*value="([^"]*)"/)?.[1]
+      .replaceAll('&quot;', '"');
+    expect(JSON.parse(hierarchyValue)).toEqual({
+      version: 1,
+      expected: [
+        { type: 'page', id: pageA.id },
+        { type: 'chapter', id: chapterX.id, pages: [chapterPage.id, chapterPageSecond.id] },
+        { type: 'page', id: pageB.id },
+        { type: 'chapter', id: chapterY.id, pages: [chapterYPage.id] },
+      ],
+      target: [
+        { type: 'page', id: pageA.id },
+        { type: 'chapter', id: chapterX.id, pages: [chapterPage.id, chapterPageSecond.id] },
+        { type: 'page', id: pageB.id },
+        { type: 'chapter', id: chapterY.id, pages: [chapterYPage.id] },
+      ],
+    });
+    expect((orderPage.text.match(/data-book-hierarchy-item/g) || [])).toHaveLength(7);
+    expect((orderPage.text.match(/notes-reorder-row--compact/g) || [])).toHaveLength(7);
+    expect(orderPage.text).not.toContain('data-book-content-reorder-form');
+    expect(orderPage.text).not.toContain('data-book-content-reorder-handle');
+    expect((orderPage.text.match(/data-book-hierarchy-handle/g) || [])).toHaveLength(7);
+    expect((orderPage.text.match(/draggable="true"/g) || [])).toHaveLength(7);
     expect(orderPage.text).toContain(`data-content-key="page:${pageA.id}"`);
     expect(orderPage.text).toContain(`data-content-key="chapter:${chapterX.id}"`);
     expect(orderPage.text).toContain(`data-content-key="page:${pageB.id}"`);
     expect(orderPage.text).toContain(`data-content-key="chapter:${chapterY.id}"`);
-    expect(orderPage.text).toContain('aria-label="Reorder Chapter: Chapter X"');
-    expect(orderPage.text).toContain('aria-label="Reorder Page: Page A"');
-    expect(orderPage.text).toContain('Position 1 of 4');
-    const orderList = orderPage.text.match(/<ol[\s\S]*?data-book-content-reorder-list[\s\S]*?<\/ol>/)?.[0] || '';
-    expect(orderList.indexOf('Page A')).toBeLessThan(orderList.indexOf('Chapter X'));
-    expect(orderList.indexOf('Chapter X')).toBeLessThan(orderList.indexOf('Page B'));
-    expect(orderList.indexOf('Page B')).toBeLessThan(orderList.indexOf('Chapter Y'));
+    expect(orderPage.text).toContain('data-book-hierarchy-container="root"');
+    expect(orderPage.text).toContain(`data-book-hierarchy-container="chapter:${chapterX.id}"`);
+    expect(orderPage.text).toContain(`data-book-hierarchy-container="chapter:${chapterY.id}"`);
+    const orderDialog = orderPage.text.match(/<dialog\b[^>]*id="book-order-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    const hierarchyMarkers = [
+      `data-content-key="page:${pageA.id}"`,
+      `data-content-key="chapter:${chapterX.id}"`,
+      `data-content-key="page:${chapterPage.id}"`,
+      `data-content-key="page:${chapterPageSecond.id}"`,
+      `data-content-key="page:${pageB.id}"`,
+      `data-content-key="chapter:${chapterY.id}"`,
+      `data-content-key="page:${chapterYPage.id}"`,
+    ].map((marker) => orderDialog.indexOf(marker));
+    expect(hierarchyMarkers.every((position) => position >= 0)).toBe(true);
+    expect(hierarchyMarkers).toEqual([...hierarchyMarkers].sort((left, right) => left - right));
+    expect((orderDialog.match(/data-book-hierarchy-destination/g) || [])).toHaveLength(5);
+    expect((orderDialog.match(/data-book-hierarchy-move(?:\s|>)/g) || [])).toHaveLength(5);
+    expect((orderDialog.match(/data-book-hierarchy-live/g) || [])).toHaveLength(1);
+    expect(orderDialog).toContain('type="button" class="button button-small button-secondary" data-book-hierarchy-move');
     expect(orderPage.text).not.toContain('Book ordering controls will be available here in a future update.');
     expect(orderPage.text).toContain(`<a href="/notes/chapters/${chapterX.id}">Chapter X</a>`);
     expect(orderPage.text).toContain(`<a href="/notes/${pageA.id}">Page A</a>`);
-    expect(orderPage.text.match(/<form id="notes-book-order-form"[\s\S]*?<\/form>/)?.[0]).not.toContain('Chapter Page');
+    expect(orderPage.text.match(/<form id="notes-book-order-form"[\s\S]*?<\/form>/)?.[0]).toContain('Chapter X Page A');
     expect(orderPage.text).not.toContain('Other Book Page');
     expect(orderPage.text).not.toContain('orderedChapterIds');
     expect(orderPage.text).not.toContain('orderedNoteIds');
+    expect(orderPage.text).not.toContain('orderedItems');
     expect(listBookContents).toHaveBeenCalledTimes(2);
     expect(listChapters).not.toHaveBeenCalled();
     expect(listPages).not.toHaveBeenCalled();
@@ -933,10 +992,10 @@ describe('Book HTTP routes', () => {
   it('renders controlled empty and one-item Book order pages', async () => {
     const emptyBook = app.locals.bookService.createBook({ title: 'Empty Order Book' });
     const empty = await agent.get(`/notes/books/${emptyBook.id}/order`).expect(200);
-    expect(empty.text).toContain('This Book has no Chapters or direct Pages to order yet.');
+    expect(empty.text).toContain('This Book has no Chapters or Pages to order yet.');
     const emptyOrderDialog = empty.text.match(/<dialog\b[^>]*id="book-order-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
-    expect(emptyOrderDialog).not.toContain('>Cancel<');
-    expect(empty.text).not.toContain('data-book-content-reorder-list');
+    expect(emptyOrderDialog).toContain('<button class="button button-secondary" type="button" data-dialog-close>Cancel</button>');
+    expect(empty.text).not.toContain('data-book-hierarchy-container="root"');
     expect(empty.text.match(/<form id="notes-book-order-form"/g)).toHaveLength(1);
 
     const oneBook = app.locals.bookService.createBook({ title: 'One Item Order Book' });
@@ -947,9 +1006,10 @@ describe('Book HTTP routes', () => {
     });
     const one = await agent.get(`/notes/books/${oneBook.id}/order`).expect(200);
     expect(one.text).toContain('<button class="button button-primary" type="submit" form="notes-book-order-form" data-dialog-submit>Save</button>');
-    expect(one.text).toContain(`<input type="hidden" name="orderedItems" data-book-content-order-input value="page:${page.id}">`);
-    expect((one.text.match(/data-book-content-reorder-item/g) || [])).toHaveLength(1);
-    expect((one.text.match(/data-book-content-reorder-handle/g) || [])).toHaveLength(1);
+    expect(one.text.match(/name="hierarchy"/g) || []).toHaveLength(1);
+    expect((one.text.match(/data-book-hierarchy-item/g) || [])).toHaveLength(1);
+    expect((one.text.match(/data-book-hierarchy-handle/g) || [])).toHaveLength(1);
+    expect(one.text).not.toContain('data-book-content-reorder-handle');
     expect(one.text).not.toContain('Chapter Page');
   });
 
@@ -969,12 +1029,16 @@ describe('Book HTTP routes', () => {
 
     expect(locals.contents).toHaveLength(2);
     expect(locals.canChangeOrder).toBe(true);
-    expect(response.text).toContain(`<a class="button button-secondary" href="/notes/books/${book.id}/order" data-dialog-open="book-order-dialog">Change order</a>`);
+    expectBookDetailIconControl(response.text, {
+      label: 'Change order',
+      href: `/notes/books/${book.id}/order`,
+      dialogTarget: 'book-order-dialog',
+    });
     expect(locals.chapters).toEqual([chapter]);
     expect(locals.pages.map(({ id }) => id)).toEqual([page.id]);
   });
 
-  it('does not count Chapter Pages as Book-level contents', async () => {
+  it('enables Change order when one Chapter contains a Page', async () => {
     const book = app.locals.bookService.createBook({ title: 'Nested Page Book' });
     const chapter = app.locals.chapterService.createChapter({ bookId: book.id, title: 'Chapter' });
     const chapterPage = app.locals.noteService.createNote({
@@ -985,6 +1049,9 @@ describe('Book HTTP routes', () => {
 
     const renderCapture = captureBookDetailLocals(app);
     const response = await agent.get(`/notes/books/${book.id}`).expect(200);
+    expect(response.text).toMatch(new RegExp(
+      `<a\\b(?=[^>]*href="/notes/books/${book.id}/order")(?=[^>]*data-dialog-open="book-order-dialog")(?=[^>]*aria-label="Change order")[^>]*>`,
+    ));
     const locals = renderCapture.get();
     renderCapture.restore();
 
@@ -992,17 +1059,16 @@ describe('Book HTTP routes', () => {
       { type: 'chapter', id: chapter.id },
     ]);
     expect(locals.pages).toEqual([]);
-    expect(locals.canChangeOrder).toBe(false);
-    const chapterOutline = response.text.match(new RegExp(
-      `<li class="book-outline-item book-outline-chapter">[\\s\\S]*?<a class="book-outline-title" href="/notes/chapters/${chapter.id}">View Chapter</a>[\\s\\S]*?</details>\\s*</li>`,
-    ))?.[0] || '';
-    expect(chapterOutline).toMatch(new RegExp(
-      `<li class="book-outline-item book-outline-page book-outline-page--child">\\s*<a class="book-outline-title" href="/notes/${chapterPage.id}">Chapter Page</a>`,
-    ));
-    expect(response.text).not.toMatch(new RegExp(
-      `<li class="book-outline-item book-outline-page">\\s*<a class="book-outline-title" href="/notes/${chapterPage.id}">Chapter Page</a>`,
-    ));
-    expect(response.text).not.toMatch(/<a[^>]*>Change order<\/a>/);
+    expect(locals.canChangeOrder).toBe(true);
+    const navigator = response.text.match(/<nav class="notes-book-nav"[\s\S]*?<\/nav>/)?.[0] || '';
+    expect(navigator).toContain(`<a class="notes-book-nav-page-link" href="/notes/${chapterPage.id}">Chapter Page</a>`);
+    expect(response.text).toContain(`<a class="notes-page-preview-title" href="/notes/${chapterPage.id}">Chapter Page</a>`);
+    expect(response.text).not.toContain('class="book-outline"');
+    expectBookDetailIconControl(response.text, {
+      label: 'Change order',
+      href: `/notes/books/${book.id}/order`,
+      dialogTarget: 'book-order-dialog',
+    });
   });
 
   it('propagates BookContentIntegrityError without falling back to legacy child queries', async () => {
@@ -1127,7 +1193,11 @@ describe('Book HTTP routes', () => {
     const pageHeading = form.text.match(/<header class="page-heading">[\s\S]*?<\/header>/)?.[0];
     expect((form.text.match(/<h1\b/g) || [])).toHaveLength(1);
     expect(pageHeading).toBeDefined();
-    expect(pageHeading).toContain('data-dialog-open="book-edit-dialog">Edit Book</a>');
+    expectBookDetailIconControl(detail.text, {
+      label: 'Edit book',
+      href: `/notes/books/${book.id}/edit`,
+      dialogTarget: 'book-edit-dialog',
+    });
     expect(pageHeading).not.toContain('>Edit<');
     expect(pageHeading).not.toContain('Manage');
     expect(pageHeading).not.toContain('Delete');

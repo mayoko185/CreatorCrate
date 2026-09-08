@@ -1,3 +1,4 @@
+import { enhancePreview, enhancePreviewMedia } from './preview.js';
 import {
   isEnhancementBound,
   liveRegionDocument,
@@ -435,6 +436,62 @@ function syncCreatorCrateDropdownSummaryWidthFromNative(dropdown, nativeOptions)
   });
 }
 
+// Explicit presentation data only: never HTML and never part of the option name.
+export function readCreatorCrateDropdownThumbnail(option) {
+  const state = option?.getAttribute?.('data-cc-dropdown-thumbnail-state');
+  if (state == null) return null;
+  return {
+    state,
+    sourceMetadataValid: option.getAttribute('data-cc-dropdown-thumbnail-valid') === 'true',
+    urls: { thumbnail: option.getAttribute('data-cc-dropdown-thumbnail-url') || '' },
+    nsfwBlur: option.getAttribute('data-cc-dropdown-thumbnail-blur') === 'true',
+  };
+}
+
+export function writeCreatorCrateDropdownThumbnail(option, thumbnail) {
+  if (!thumbnail) return;
+  option.setAttribute('data-cc-dropdown-thumbnail-state', thumbnail.state || '');
+  option.setAttribute('data-cc-dropdown-thumbnail-valid', String(thumbnail.sourceMetadataValid === true));
+  option.setAttribute('data-cc-dropdown-thumbnail-url', thumbnail.urls?.thumbnail || '');
+  option.setAttribute('data-cc-dropdown-thumbnail-blur', String(thumbnail.nsfwBlur === true));
+}
+
+export function syncCreatorCrateDropdownOptionThumbnail(label, thumbnail) {
+  if (!label) return;
+  const previous = label.querySelector?.('.cc-dropdown-option-thumbnail');
+  if (!thumbnail && !previous) return;
+  const signature = JSON.stringify(thumbnail);
+  if (previous?.getAttribute('data-cc-dropdown-thumbnail-signature') === signature) return;
+  previous?.remove();
+  label.classList?.toggle('cc-dropdown-option--thumbnail', Boolean(thumbnail));
+  if (!thumbnail) return;
+  const document = label.ownerDocument;
+  const root = document.createElement('span');
+  root.className = 'cc-dropdown-option-thumbnail';
+  root.setAttribute('aria-hidden', 'true');
+  root.setAttribute('data-preview-enhancement', '');
+  root.setAttribute('data-cc-dropdown-thumbnail-signature', signature);
+  const usable = thumbnail.state === 'previewable' && thumbnail.sourceMetadataValid === true
+    && thumbnail.urls?.thumbnail;
+  if (usable) {
+    const image = document.createElement('img');
+    image.className = 'cc-dropdown-option-thumbnail-image'
+      + (thumbnail.nsfwBlur === true ? ' asset-image--nsfw-blurred' : '');
+    image.alt = '';
+    image.loading = 'lazy';
+    image.setAttribute('data-preview-image', '');
+    image.src = thumbnail.urls.thumbnail;
+    root.appendChild(image);
+  }
+  const fallback = document.createElement('span');
+  fallback.className = 'cc-dropdown-option-thumbnail-fallback';
+  fallback.setAttribute('data-preview-fallback', '');
+  fallback.hidden = Boolean(usable);
+  root.appendChild(fallback);
+  label.insertBefore(root, label.querySelector('input')?.nextSibling || null);
+  enhancePreview(root);
+}
+
 function syncCreatorCrateDropdownOptionsFromNative(dropdown) {
   const nativeSelect = creatorCrateDropdownNativeSelect(dropdown);
   const mode = creatorCrateDropdownMode(dropdown);
@@ -447,9 +504,10 @@ function syncCreatorCrateDropdownOptionsFromNative(dropdown) {
     .filter((input) => !nativeValues.has(String(input.value ?? '')))
     .forEach((input) => input.closest?.('.asset-filter-multiselect-option')?.remove?.());
 
-  const existingValues = new Set(
-    creatorCrateDropdownInputs(dropdown, mode).map((input) => String(input.value ?? '')),
+  const existingInputs = new Map(
+    creatorCrateDropdownInputs(dropdown, mode).map(input => [String(input.value ?? ''), input]),
   );
+  const existingValues = new Set(existingInputs.keys());
   const panel = dropdown.querySelector?.(CC_DROPDOWN_OPTION_LIST_SELECTOR)
     || dropdown.querySelector?.('.asset-filter-multiselect-panel');
   const document = dropdown.ownerDocument || globalThis.document;
@@ -463,7 +521,11 @@ function syncCreatorCrateDropdownOptionsFromNative(dropdown) {
 
   nativeOptions.forEach((option, index) => {
     const value = creatorCrateDropdownNativeValue(option);
-    if (existingValues.has(value)) return;
+    if (existingValues.has(value)) {
+      const input = existingInputs.get(value);
+      syncCreatorCrateDropdownOptionThumbnail(input?.closest?.('label'), readCreatorCrateDropdownThumbnail(option));
+      return;
+    }
 
     const wrapper = document.createElement('div');
     wrapper.setAttribute?.('class', 'asset-filter-multiselect-option');
@@ -483,6 +545,7 @@ function syncCreatorCrateDropdownOptionsFromNative(dropdown) {
     span.textContent = option.textContent || value;
     label.appendChild?.(input);
     label.appendChild?.(span);
+    syncCreatorCrateDropdownOptionThumbnail(label, readCreatorCrateDropdownThumbnail(option));
     wrapper.appendChild?.(label);
     targetContainer.appendChild?.(wrapper);
     existingValues.add(value);
@@ -616,6 +679,7 @@ function updateCreatorCrateDropdownSummary(dropdown) {
 }
 
 export function initializeCreatorCrateDropdown(dropdown) {
+  enhancePreviewMedia(dropdown);
   const nativeSelect = creatorCrateDropdownNativeSelect(dropdown);
   if (nativeSelect) {
     dropdown.removeAttribute?.('hidden');

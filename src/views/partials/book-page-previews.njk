@@ -1,0 +1,27 @@
+<section class="notes-detail-panel notes-page-previews" aria-label="Page previews">
+  {% if bookPagePreviews.items.length > 0 %}
+    <ul class="notes-page-preview-list">
+      {% for preview in bookPagePreviews.items %}
+        <li class="notes-page-preview-item">
+          <a class="notes-page-preview-title" href="/notes/{{ preview.id }}">{{ preview.title }}</a>
+          {% if preview.contextKind == 'chapter' %}
+            <p class="notes-page-preview-context">Chapter: {{ preview.contextTitle }}</p>
+          {% endif %}
+          {% if preview.contentHtml %}
+            <div class="notes-content book-page-preview-content">{{ preview.contentHtml | safe }}</div>
+          {% endif %}
+          {% if preview.truncated %}
+            <p class="notes-page-preview-truncated" role="note" aria-label="Preview truncated"><span aria-hidden="true">…</span></p>
+          {% elif not preview.contentHtml %}
+            <p class="notes-page-preview-empty-content">No content yet</p>
+          {% endif %}
+          {% if preview.updatedAt %}<p class="notes-page-preview-updated">Updated {{ preview.updatedAt }}</p>{% endif %}
+        </li>
+      {% endfor %}
+    </ul>
+  {% elif bookPagePreviews.mode == 'selected' %}
+    <p class="notes-page-previews-empty">No selected Pages are available.</p>
+  {% else %}
+    <p class="notes-page-previews-empty">No Pages to preview.</p>
+  {% endif %}
+</section>

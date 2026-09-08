@@ -6,11 +6,25 @@ import { BookPrimaryImageError } from '../services/book-primary-image-service.js
 import { ManagedImageError } from '../services/managed-image-service.js';
 import { AssetPickerCursorError } from '../data/asset-picker-pagination.js';
 import { NoteNotFoundError, NoteValidationError } from '../services/note-service.js';
-import { BookNotEmptyError, BookNotFoundError, BookValidationError } from '../services/book-service.js';
+import {
+  BookContentIntegrityError,
+  BookNotEmptyError,
+  BookNotFoundError,
+  BookValidationError,
+} from '../services/book-service.js';
 import { ChapterNotFoundError, ChapterValidationError } from '../services/chapter-service.js';
-import { buildAssetViewerUrl } from '../services/asset-presentation.js';
+import { buildAssetPreviewModel, buildAssetViewerUrl } from '../services/asset-presentation.js';
 import { resolveBookPrimaryImageMedia } from '../services/primary-image-presenter.js';
 import { NSFW_TAG_NAME } from '../services/nsfw-filter-settings-service.js';
+import { PageDefaultValidationError } from '../services/page-defaults-service.js';
+import {
+  BookHierarchyValidationError,
+  parseBookHierarchyPayload,
+} from '../services/book-hierarchy.js';
+import {
+  buildPageDefaultsDialogModel,
+  handlePageDefaultsPost,
+} from './page-defaults.js';
 
 const NOTE_EXCERPT_MAX_LENGTH = 160;
 const NSFW_TAG_NORMALIZED_NAME = NSFW_TAG_NAME.toLowerCase();
@@ -36,7 +50,228 @@ const NOTICES = {
     variant: 'error',
     text: 'The submitted Book content order is invalid. Submit every Book content exactly once.',
   },
+  book_hierarchy_invalid: {
+    variant: 'error',
+    text: 'The submitted Book hierarchy is invalid. Nothing was saved.',
+  },
+  book_hierarchy_stale: {
+    variant: 'error',
+    text: 'Nothing was saved because the Book hierarchy changed. The current hierarchy has been refreshed.',
+  },
+  book_detail_defaults_saved: { variant: 'success', text: 'Book defaults saved successfully.' },
 };
+
+const BOOK_DETAIL_DEFAULT_LABELS = Object.freeze({
+  fields: Object.freeze({ navigation: 'Chapter navigation' }),
+  options: Object.freeze({
+    navigation: Object.freeze({ expanded: 'Expanded', collapsed: 'Collapsed' }),
+  }),
+});
+
+const BOOK_PREVIEW_MODE_OPTIONS = Object.freeze([
+  Object.freeze({ value: 'random', label: 'Random' }),
+  Object.freeze({ value: 'selected', label: 'Selected' }),
+]);
+const BOOK_PREVIEW_COUNT_OPTIONS = Object.freeze(
+  Array.from({ length: 25 }, (_, index) => Object.freeze({
+    value: String(index + 1),
+    label: String(index + 1),
+  })),
+);
+
+function flattenBookPagePreviewOptions(book, contents) {
+  return contents.flatMap((item) => {
+    if (item.type === 'page') {
+      return [{ value: String(item.page.id), label: `Book: ${book.title} / ${item.page.title}` }];
+    }
+    if (item.type === 'chapter') {
+      return item.pages.map((page) => ({
+        value: String(page.id),
+        label: `Chapter: ${item.chapter.title} / ${page.title}`,
+      }));
+    }
+    return [];
+  });
+}
+
+export function flattenBookPagePreviewCandidates(book, contents) {
+  const seenPageIds = new Set();
+  const candidates = [];
+
+  for (const item of contents) {
+    const pages = item.type === 'page'
+      ? [{ page: item.page, contextKind: 'book', contextTitle: book.title }]
+      : item.type === 'chapter'
+        ? item.pages.map((page) => ({
+          page,
+          contextKind: 'chapter',
+          contextTitle: item.chapter.title,
+        }))
+        : [];
+
+    for (const { page, contextKind, contextTitle } of pages) {
+      if (seenPageIds.has(page.id)) continue;
+      seenPageIds.add(page.id);
+      candidates.push({
+        id: page.id,
+        title: page.title || 'Untitled note',
+        updatedAt: page.updated_at || null,
+        content: page.content,
+        contextKind,
+        contextTitle,
+      });
+    }
+  }
+
+  return candidates;
+}
+
+export function resolveBookPagePreviews(candidates, currentPageId, settings, rng = Math.random) {
+  const eligible = candidates.filter(({ id }) => id !== currentPageId);
+
+  if (settings.mode === 'selected') {
+    const selectedPageIds = new Set(settings.selectedPageIds);
+    return eligible.filter(({ id }) => selectedPageIds.has(id));
+  }
+
+  const count = Math.min(settings.randomCount, eligible.length);
+  const indexes = eligible.map((_candidate, index) => index);
+  for (let index = 0; index < count; index += 1) {
+    const selectedIndex = index + Math.floor(rng() * (indexes.length - index));
+    [indexes[index], indexes[selectedIndex]] = [indexes[selectedIndex], indexes[index]];
+  }
+  const sampledIndexes = new Set(indexes.slice(0, count));
+  return eligible.filter((_candidate, index) => sampledIndexes.has(index));
+}
+
+function rawBookPagePreviewValues(rawBody) {
+  const selectedPageIds = rawBody?.selectedPageIds === undefined
+    ? []
+    : Array.isArray(rawBody.selectedPageIds) ? rawBody.selectedPageIds : [rawBody.selectedPageIds];
+  return {
+    mode: rawBody?.previewMode,
+    randomCount: rawBody?.randomPageCount,
+    selectedPageIds,
+  };
+}
+
+function validateBookPagePreviewSubmission(rawBody, candidateOptions) {
+  const raw = rawBookPagePreviewValues(rawBody);
+  const errors = {};
+  const candidateIds = new Set(candidateOptions.map(({ value }) => value));
+
+  if (raw.mode !== 'random' && raw.mode !== 'selected') {
+    errors.previewMode = 'Preview mode must be Random or Selected.';
+  }
+  if (typeof raw.randomCount !== 'string' || !/^(?:[1-9]|1\d|2[0-5])$/.test(raw.randomCount)) {
+    errors.randomPageCount = 'Random Page count must be an integer from 1 through 25.';
+  }
+
+  const selectedPageIds = [];
+  for (const value of raw.selectedPageIds) {
+    if (typeof value !== 'string' || !/^[1-9]\d*$/.test(value)
+      || !Number.isSafeInteger(Number(value))) {
+      errors.selectedPageIds = 'Selected Pages must contain valid Page IDs.';
+      break;
+    }
+    if (!candidateIds.has(value)) {
+      errors.selectedPageIds = 'Every selected Page must belong to this Book.';
+      break;
+    }
+    selectedPageIds.push(Number(value));
+  }
+
+  if (Object.keys(errors).length > 0) {
+    throw new PageDefaultValidationError(errors);
+  }
+  return {
+    mode: raw.mode,
+    randomCount: Number(raw.randomCount),
+    selectedPageIds: [...new Set(selectedPageIds)],
+  };
+}
+
+function buildBookPagePreviewDialogModel(settings, candidateOptions, submittedValues = null, errors = {}) {
+  const values = submittedValues || {
+    mode: settings.mode,
+    randomCount: String(settings.randomCount),
+    selectedPageIds: settings.selectedPageIds.map(String),
+  };
+  const candidateIds = new Set(candidateOptions.map(({ value }) => value));
+  return {
+    mode: values.mode,
+    randomCount: values.randomCount,
+    selectedPageIds: values.selectedPageIds.filter((value) => candidateIds.has(String(value))).map(String),
+    modeOptions: BOOK_PREVIEW_MODE_OPTIONS,
+    countOptions: BOOK_PREVIEW_COUNT_OPTIONS,
+    pageOptions: candidateOptions,
+    errors,
+  };
+}
+
+function hierarchyEntityKeys(hierarchy) {
+  const keys = [];
+  for (const item of hierarchy) {
+    if (item.type === 'page') keys.push(`page:${item.id}`);
+    else {
+      keys.push(`chapter:${item.id}`);
+      keys.push(...item.pages.map((pageId) => `page:${pageId}`));
+    }
+  }
+  return keys.sort();
+}
+
+function hasSameHierarchyEntities(left, right) {
+  const leftKeys = hierarchyEntityKeys(left);
+  const rightKeys = hierarchyEntityKeys(right);
+  return leftKeys.length === rightKeys.length
+    && leftKeys.every((key, index) => key === rightKeys[index]);
+}
+
+function buildBookHierarchyDialogModel(contents, currentHierarchy, targetHierarchy = null) {
+  const chapterById = new Map();
+  const pageById = new Map();
+  for (const item of contents) {
+    if (item.type === 'page') pageById.set(item.id, item.page);
+    else {
+      chapterById.set(item.id, item.chapter);
+      for (const page of item.pages) pageById.set(page.id, page);
+    }
+  }
+
+  const target = targetHierarchy && hasSameHierarchyEntities(currentHierarchy, targetHierarchy)
+    ? targetHierarchy
+    : currentHierarchy;
+  const items = target.map((item) => (
+    item.type === 'page'
+      ? { type: 'page', id: item.id, page: pageById.get(item.id) }
+      : {
+        type: 'chapter',
+        id: item.id,
+        chapter: chapterById.get(item.id),
+        pages: item.pages.map((pageId) => pageById.get(pageId)),
+      }
+  ));
+
+  if (items.some((item) => (
+    item.type === 'page' ? !item.page : !item.chapter || item.pages.some((page) => !page)
+  ))) {
+    throw new BookContentIntegrityError(
+      'Canonical Book hierarchy is missing authoritative display entities.',
+      { code: 'HIERARCHY_INTEGRITY' },
+    );
+  }
+
+  return {
+    items,
+    submission: JSON.stringify({ version: 1, expected: currentHierarchy, target }),
+  };
+}
+
+export function canChangeBookOrder(contents) {
+  return contents.length >= 2
+    || contents.some((item) => item.type === 'chapter' && item.pages.length > 0);
+}
 
 function resolveNotice(code) {
   return Object.prototype.hasOwnProperty.call(NOTICES, code) ? NOTICES[code] : null;
@@ -66,13 +301,27 @@ function withBookPrimaryImageNsfwBlur(books, {
   const assetsById = new Map(
     assetRepository.findByIds(availableAssetIds).map((asset) => [asset.id, asset]),
   );
+  const nsfwAssetIds = resolveNsfwAssetIds([...assetsById.values()], tagRepository, filterEnabled);
+
+  return books.map((book) => {
+    if (book.primaryImage?.state !== 'available') return book;
+
+    const asset = book.primaryImage.selectedSource?.kind === 'project_asset'
+      ? assetsById.get(book.primaryImage.selectedSource.id) : null;
+    return { ...book, nsfwBlur: Boolean(asset && nsfwAssetIds.has(asset.id)) };
+  });
+}
+
+// Shared Notes policy for Project Assets, including inherited Project tags.
+function resolveNsfwAssetIds(assets, tagRepository, filterEnabled) {
+  if (!filterEnabled || assets.length === 0) return new Set();
   const projectIds = [...new Set(
-    [...assetsById.values()]
+    assets
       .map((asset) => asset.project_id)
       .filter((projectId) => Number.isSafeInteger(projectId) && projectId > 0),
   )];
   const nsfwAssetIds = new Set(
-    tagRepository.listForAssetIds(availableAssetIds)
+    tagRepository.listForAssetIds(assets.map(asset => asset.id))
       .filter(isNsfwTag)
       .map((tag) => tag.asset_id),
   );
@@ -84,22 +333,14 @@ function withBookPrimaryImageNsfwBlur(books, {
       : [],
   );
 
-  return books.map((book) => {
-    if (book.primaryImage?.state !== 'available') return book;
-
-    const asset = book.primaryImage.selectedSource?.kind === 'project_asset'
-      ? assetsById.get(book.primaryImage.selectedSource.id) : null;
-    return {
-      ...book,
-      nsfwBlur: Boolean(asset && (
-        nsfwAssetIds.has(asset.id) || nsfwProjectIds.has(asset.project_id)
-      )),
-    };
-  });
+  return new Set(assets.filter(asset => (
+    nsfwAssetIds.has(asset.id) || nsfwProjectIds.has(asset.project_id)
+  )).map(asset => asset.id));
 }
 
 export function createNotesRouter({
-  appName, bookService, bookPrimaryImageService, chapterService, noteService, markdownRenderer,
+  appName, db, bookService, bookPrimaryImageService, bookPagePreviewSettingsService,
+  chapterService, noteService, markdownRenderer,
   projectService, assetRepository, tagRepository, nsfwFilterSettingsService, managedMediaService, managedImageService,
 } = {}) {
   if (!bookService || typeof bookService.listBooks !== 'function') {
@@ -134,12 +375,30 @@ export function createNotesRouter({
   if (!nsfwFilterSettingsService || typeof nsfwFilterSettingsService.isEnabled !== 'function') {
     throw new Error('createNotesRouter requires an nsfwFilterSettingsService dependency.');
   }
-  if (!markdownRenderer || typeof markdownRenderer.renderMarkdown !== 'function') {
+  if (!markdownRenderer
+    || typeof markdownRenderer.renderMarkdown !== 'function'
+    || typeof markdownRenderer.renderMarkdownPreview !== 'function') {
     throw new Error('createNotesRouter requires a markdownRenderer dependency.');
   }
 
   const router = express.Router();
   const projectRepository = projectService.repository;
+
+  function getPageDefaultsService(req) {
+    const service = req.app?.locals?.pageDefaultsService;
+    if (!service) {
+      throw new Error('Book detail requires app.locals.pageDefaultsService.');
+    }
+    return service;
+  }
+  if (!db || typeof db.transaction !== 'function') {
+    throw new Error('createNotesRouter requires a database transaction dependency.');
+  }
+  if (!bookPagePreviewSettingsService
+    || typeof bookPagePreviewSettingsService.getBookPagePreviewSettings !== 'function'
+    || typeof bookPagePreviewSettingsService.replaceBookPagePreviewSettings !== 'function') {
+    throw new Error('createNotesRouter requires a bookPagePreviewSettingsService dependency.');
+  }
 
   async function renderBooksIndex(res, {
     appName: pageAppName, bookService: pageBookService, bookPrimaryImageService: pagePrimaryImageService,
@@ -163,7 +422,7 @@ export function createNotesRouter({
 
   function buildNoteCreateForm(book, chapter, bookContents) {
     return buildNoteFormModel({
-      assetRepository,
+      assetRepository, tagRepository, nsfwFilterSettingsService,
       appName, book, chapter, note: null,
       values: emptyFormValues(chapter ? { chapterId: chapter.id } : { bookId: book.id }),
       projects: listProjectOptions(projectService), selectedAssets: [], errors: {},
@@ -172,23 +431,29 @@ export function createNotesRouter({
     });
   }
 
-  async function renderNoteCreate(res, noteCreateForm, status = 200) {
+  async function renderNoteCreate(req, res, noteCreateForm, status = 200) {
     const options = {
       appName, bookService, bookPrimaryImageService, chapterService, noteService,
       noteCreateForm, noteCreateDialogOpen: true, status,
     };
     return noteCreateForm.chapter
       ? renderChapterDetail(res, { ...options, chapterId: noteCreateForm.chapter.id })
-      : await renderBookDetail(res, { ...options, bookId: noteCreateForm.book.id });
+      : await renderBookDetail(req, res, { ...options, bookId: noteCreateForm.book.id });
   }
 
-  async function renderBookDetail(res, {
+  async function renderBookDetail(req, res, {
     appName: pageAppName, bookService: pageBookService, bookPrimaryImageService: pagePrimaryImageService,
     bookId, notice = null, status = 200, bookEditDialogOpen = false, values, errors = {},
     noteCreateForm = null, noteCreateDialogOpen = false,
     bookOrderDialogOpen = false, bookOrderNotice = null,
     chapterCreateDialogOpen = false, chapterValues = { title: '' }, chapterErrors = {},
+    bookDefaultsDialogOpen = req.query.defaults === '1',
+    bookDefaultsSubmittedValues = null, bookDefaultsErrors = {},
+    bookPreviewSubmittedValues = null, bookPreviewErrors = {},
+    bookHierarchyTarget = null,
   }) {
+    const pageDefaultsService = getPageDefaultsService(req);
+    const { navigation: bookNavigation } = pageDefaultsService.resolvePageDefaults('bookDetail');
     const [book] = withBookPrimaryImageNsfwBlur(
       await resolveBookPrimaryImageMedia(pagePrimaryImageService.attachPrimaryImages([pageBookService.getBook(bookId)]), managedMediaService),
       {
@@ -198,19 +463,56 @@ export function createNotesRouter({
       },
     );
     const contents = pageBookService.listBookContents(bookId);
+    const bookHierarchy = buildBookHierarchyDialogModel(
+      contents,
+      noteService.getBookHierarchy(bookId),
+      bookHierarchyTarget,
+    );
+    const bookPreviewPageOptions = flattenBookPagePreviewOptions(book, contents);
+    const bookPreviewSettings = bookPagePreviewSettingsService.getBookPagePreviewSettings(bookId);
+    const resolvedBookPagePreviews = resolveBookPagePreviews(
+      flattenBookPagePreviewCandidates(book, contents),
+      undefined,
+      bookPreviewSettings,
+    );
+    const bookPagePreviews = {
+      mode: bookPreviewSettings.mode,
+      items: resolvedBookPagePreviews.map(({ content, ...preview }) => ({
+        ...preview,
+        ...markdownRenderer.renderMarkdownPreview(content, {
+          suppressLeadingH1Matching: preview.title,
+        }),
+      })),
+    };
     const chapters = contents
       .filter(({ type }) => type === 'chapter')
       .map(({ chapter }) => chapter);
     const pages = contents
       .filter(({ type }) => type === 'page')
       .map(({ page }) => page);
-    const canChangeOrder = contents.length >= 2;
+    const canChangeOrder = canChangeBookOrder(contents);
     res.status(status).render('notes/books/detail.njk', {
       appName: pageAppName, book, contents, bookContents: contents, chapters, pages, canChangeOrder, notice,
-      bookOrderDialogOpen, bookOrderNotice,
+      bookOrderDialogOpen, bookOrderNotice, bookHierarchy,
       noteCreateDialogOpen,
       noteCreateForm: noteCreateForm ?? buildNoteCreateForm(book, null, contents),
       chapterCreateDialogOpen,
+      bookDetailSidebarNavigationMode: bookNavigation,
+      bookDefaults: buildPageDefaultsDialogModel({
+        pageDefaultsService,
+        page: 'bookDetail',
+        labels: BOOK_DETAIL_DEFAULT_LABELS,
+        submittedValues: bookDefaultsSubmittedValues,
+        errors: bookDefaultsErrors,
+      }),
+      bookPreviewDefaults: buildBookPagePreviewDialogModel(
+        bookPreviewSettings,
+        bookPreviewPageOptions,
+        bookPreviewSubmittedValues,
+        bookPreviewErrors,
+      ),
+      bookPagePreviews,
+      bookDefaultsDialogOpen: Boolean(bookDefaultsDialogOpen),
       chapterCreateForm: buildChapterFormModel({
         appName: pageAppName, book, chapter: null, values: chapterValues, errors: chapterErrors,
         action: 'Create', submitUrl: `/notes/books/${bookId}/chapters`,
@@ -223,20 +525,30 @@ export function createNotesRouter({
     });
   }
 
-  function renderChapterDetail(res, {
-    appName, bookService, chapterService, noteService, chapterId, notice = null, status = 200,
+  async function renderChapterDetail(res, {
+    appName, bookService, bookPrimaryImageService: pagePrimaryImageService,
+    chapterService, noteService, chapterId, notice = null, status = 200,
     noteCreateForm = null, noteCreateDialogOpen = false,
     chapterOrderDialogOpen = false, chapterOrderNotice = null,
     chapterEditDialogOpen = false, chapterEditValues = null, chapterEditErrors = {},
   }) {
     const chapter = chapterService.getChapter(chapterId);
-    const book = bookService.getBook(chapter.book_id);
+    const [book] = withBookPrimaryImageNsfwBlur(
+      await resolveBookPrimaryImageMedia(pagePrimaryImageService.attachPrimaryImages([bookService.getBook(chapter.book_id)]), managedMediaService),
+      {
+        assetRepository,
+        tagRepository,
+        filterEnabled: nsfwFilterSettingsService.isEnabled(),
+      },
+    );
     const bookContents = bookService.listBookContents(book.id);
     const notes = noteService.listNotesForChapter(chapterId);
     res.status(status).render('notes/chapters/detail.njk', {
       appName, book, bookContents, navCurrentChapterId: chapter.id, chapter, notes, notice, chapterOrderDialogOpen, chapterOrderNotice,
       noteCreateDialogOpen,
-      noteCreateForm: noteCreateForm ?? buildNoteCreateForm(book, chapter, bookContents),
+      noteCreateForm: noteCreateForm
+        ? { ...noteCreateForm, book }
+        : buildNoteCreateForm(book, chapter, bookContents),
       chapterEditDialogOpen,
       chapterEditForm: buildChapterFormModel({
         appName, book, chapter,
@@ -359,13 +671,70 @@ export function createNotesRouter({
     if (id === null) return next(createNotFound());
 
     try {
-      await renderBookDetail(res, {
+      await renderBookDetail(req, res, {
         appName, bookService, bookPrimaryImageService, bookId: id, bookEditDialogOpen: true,
       });
       return;
     } catch (err) {
       if (err instanceof BookNotFoundError) return next(createNotFound());
       if (err instanceof BookNotEmptyError) return next(err);
+      return next(err);
+    }
+  });
+
+  router.post('/books/:bookId/defaults', (req, res, next) => {
+    const bookId = parseId(req.params.bookId);
+    if (bookId === null) return next(createNotFound());
+
+    try {
+      bookService.getBook(bookId);
+      handlePageDefaultsPost(req, res, next, {
+        db,
+        pageDefaultsService: getPageDefaultsService(req),
+        page: 'bookDetail',
+        successMessage: NOTICES.book_detail_defaults_saved.text,
+        saveErrorMessage: 'Book defaults could not be saved. No changes were made.',
+        validateSubmission: ({ rawBody, submittedValues }) => {
+          const book = bookService.getBook(bookId);
+          const candidates = flattenBookPagePreviewOptions(book, bookService.listBookContents(bookId));
+          const previewSettings = validateBookPagePreviewSubmission(rawBody, candidates);
+          submittedValues.previewMode = rawBody.previewMode;
+          submittedValues.randomPageCount = rawBody.randomPageCount;
+          submittedValues.selectedPageIds = rawBookPagePreviewValues(rawBody).selectedPageIds;
+          return previewSettings;
+        },
+        saveValidatedValues: ({ validatedValues, submission }) => {
+          getPageDefaultsService(req).saveDefault('bookDetail', 'navigation', validatedValues.navigation);
+          bookPagePreviewSettingsService.replaceBookPagePreviewSettings(bookId, submission);
+          validatedValues.previewMode = submission.mode;
+          validatedValues.randomPageCount = String(submission.randomCount);
+          validatedValues.selectedPageIds = submission.selectedPageIds.map(String);
+        },
+        onValidationError: ({ submittedValues, errors }) => {
+          const previewValues = rawBookPagePreviewValues(req.body);
+          void renderBookDetail(req, res, {
+            appName,
+            bookService,
+            bookPrimaryImageService,
+            bookId,
+            status: 422,
+            bookDefaultsDialogOpen: true,
+            bookDefaultsSubmittedValues: { navigation: submittedValues.navigation },
+            bookDefaultsErrors: errors,
+            bookPreviewSubmittedValues: previewValues,
+            bookPreviewErrors: errors,
+          }).catch((renderError) => {
+            if (renderError instanceof BookNotFoundError) return next(createNotFound());
+            return next(renderError);
+          });
+        },
+        onSuccess: () => {
+          res.redirect(`/notes/books/${bookId}?notice=book_detail_defaults_saved`);
+        },
+      });
+      return;
+    } catch (err) {
+      if (err instanceof BookNotFoundError) return next(createNotFound());
       return next(err);
     }
   });
@@ -407,7 +776,7 @@ export function createNotesRouter({
       if (err instanceof BookNotFoundError) return next(createNotFound());
       if (err instanceof BookValidationError) {
         try {
-          await renderBookDetail(res, {
+          await renderBookDetail(req, res, {
             appName, bookService, bookPrimaryImageService, bookId: id,
             status: 422, bookEditDialogOpen: true,
             values: { title: body.title ?? '' },
@@ -441,7 +810,7 @@ export function createNotesRouter({
     if (bookId === null) return next(createNotFound());
 
     try {
-      return await renderBookDetail(res, {
+      return await renderBookDetail(req, res, {
         appName, bookService, bookPrimaryImageService, bookId, chapterCreateDialogOpen: true,
       });
     } catch (err) {
@@ -463,7 +832,7 @@ export function createNotesRouter({
       if (err instanceof BookNotFoundError) return next(createNotFound());
       if (err instanceof ChapterValidationError) {
         try {
-          return await renderBookDetail(res, {
+          return await renderBookDetail(req, res, {
             appName, bookService, bookPrimaryImageService, bookId,
             status: 422, chapterCreateDialogOpen: true,
             chapterValues: { title: body.title ?? '' },
@@ -490,7 +859,7 @@ export function createNotesRouter({
       if (err instanceof BookNotFoundError) return next(createNotFound());
       if (err instanceof ChapterValidationError) {
         try {
-          await renderBookDetail(res, {
+          await renderBookDetail(req, res, {
             status: 422,
             appName,
             bookService,
@@ -522,7 +891,7 @@ export function createNotesRouter({
       if (err instanceof BookNotFoundError) return next(createNotFound());
       if (err instanceof BookValidationError) {
         try {
-          await renderBookDetail(res, {
+          await renderBookDetail(req, res, {
             status: 422,
             appName,
             bookService,
@@ -542,13 +911,47 @@ export function createNotesRouter({
     }
   });
 
+  router.post('/books/:bookId/hierarchy/reorder', async (req, res, next) => {
+    const bookId = parseId(req.params.bookId);
+    if (bookId === null) return next(createNotFound());
+
+    let submission = null;
+    try {
+      submission = parseBookHierarchyPayload(req.body?.hierarchy);
+      noteService.reorderBookHierarchy(bookId, submission);
+      return res.redirect(`/notes/books/${bookId}`);
+    } catch (err) {
+      if (err instanceof BookNotFoundError) return next(createNotFound());
+      if (err instanceof BookHierarchyValidationError) {
+        const stale = err.code === 'HIERARCHY_STALE';
+        try {
+          await renderBookDetail(req, res, {
+            status: stale ? 409 : 422,
+            appName,
+            bookService,
+            bookPrimaryImageService,
+            bookId,
+            bookOrderDialogOpen: true,
+            bookOrderNotice: resolveNotice(stale ? 'book_hierarchy_stale' : 'book_hierarchy_invalid'),
+            bookHierarchyTarget: stale ? null : submission?.target,
+          });
+          return;
+        } catch (renderError) {
+          if (renderError instanceof BookNotFoundError) return next(createNotFound());
+          return next(renderError);
+        }
+      }
+      return next(err);
+    }
+  });
+
   // GET /notes/books/:bookId/order — Book detail with mixed content ordering dialog
   router.get('/books/:bookId/order', async (req, res, next) => {
     const bookId = parseId(req.params.bookId);
     if (bookId === null) return next(createNotFound());
 
     try {
-      await renderBookDetail(res, {
+      await renderBookDetail(req, res, {
         appName, bookService, bookPrimaryImageService, bookId, bookOrderDialogOpen: true,
       });
       return;
@@ -563,7 +966,7 @@ export function createNotesRouter({
     if (id === null) return next(createNotFound());
 
     try {
-      await renderBookDetail(res, {
+      await renderBookDetail(req, res, {
         appName, bookService, bookPrimaryImageService, chapterService, noteService, bookId: id,
       });
       return;
@@ -573,13 +976,13 @@ export function createNotesRouter({
     }
   });
 
-  router.get('/chapters/:chapterId', (req, res, next) => {
+  router.get('/chapters/:chapterId', async (req, res, next) => {
     const chapterId = parseId(req.params.chapterId);
     if (chapterId === null) return next(createNotFound());
 
     try {
-      renderChapterDetail(res, {
-        appName, bookService, chapterService, noteService, chapterId,
+      await renderChapterDetail(res, {
+        appName, bookService, bookPrimaryImageService, chapterService, noteService, chapterId,
       });
       return;
     } catch (err) {
@@ -589,13 +992,13 @@ export function createNotesRouter({
   });
 
   // GET /notes/chapters/:chapterId/notes/order — ordering screen shell
-  router.get('/chapters/:chapterId/notes/order', (req, res, next) => {
+  router.get('/chapters/:chapterId/notes/order', async (req, res, next) => {
     const chapterId = parseId(req.params.chapterId);
     if (chapterId === null) return next(createNotFound());
 
     try {
-      renderChapterDetail(res, {
-        appName, bookService, chapterService, noteService, chapterId, chapterOrderDialogOpen: true,
+      await renderChapterDetail(res, {
+        appName, bookService, bookPrimaryImageService, chapterService, noteService, chapterId, chapterOrderDialogOpen: true,
       });
       return;
     } catch (err) {
@@ -605,7 +1008,7 @@ export function createNotesRouter({
   });
 
   // Keep this literal hierarchy route before the dynamic /:id Note routes.
-  router.post('/chapters/:chapterId/notes/reorder', (req, res, next) => {
+  router.post('/chapters/:chapterId/notes/reorder', async (req, res, next) => {
     const chapterId = parseId(req.params.chapterId);
     if (chapterId === null) return next(createNotFound());
 
@@ -617,10 +1020,11 @@ export function createNotesRouter({
       if (err instanceof ChapterNotFoundError) return next(createNotFound());
       if (err instanceof NoteValidationError) {
         try {
-          renderChapterDetail(res, {
+          await renderChapterDetail(res, {
             status: 422,
             appName,
             bookService,
+            bookPrimaryImageService,
             chapterService,
             noteService,
             chapterId,
@@ -640,13 +1044,13 @@ export function createNotesRouter({
     }
   });
 
-  router.get('/chapters/:chapterId/edit', (req, res, next) => {
+  router.get('/chapters/:chapterId/edit', async (req, res, next) => {
     const chapterId = parseId(req.params.chapterId);
     if (chapterId === null) return next(createNotFound());
 
     try {
-      return renderChapterDetail(res, {
-        appName, bookService, chapterService, noteService, chapterId,
+      return await renderChapterDetail(res, {
+        appName, bookService, bookPrimaryImageService, chapterService, noteService, chapterId,
         chapterEditDialogOpen: true,
       });
     } catch (err) {
@@ -655,7 +1059,7 @@ export function createNotesRouter({
     }
   });
 
-  router.post('/chapters/:chapterId', (req, res, next) => {
+  router.post('/chapters/:chapterId', async (req, res, next) => {
     const chapterId = parseId(req.params.chapterId);
     if (chapterId === null) return next(createNotFound());
     const body = req.body || {};
@@ -667,8 +1071,8 @@ export function createNotesRouter({
       if (err instanceof ChapterNotFoundError) return next(createNotFound());
       if (err instanceof ChapterValidationError) {
         try {
-          return renderChapterDetail(res, {
-            appName, bookService, chapterService, noteService, chapterId,
+          return await renderChapterDetail(res, {
+            appName, bookService, bookPrimaryImageService, chapterService, noteService, chapterId,
             status: 422,
             chapterEditDialogOpen: true,
             chapterEditValues: { title: body.title ?? '' },
@@ -729,9 +1133,14 @@ export function createNotesRouter({
       }
 
       const result = assetRepository.searchAssetsForPicker({ projectId, query, limit, cursor });
+      const thumbnails = buildNoteAssetThumbnails(result.rows.map(asset => asset.id), {
+        assetRepository, tagRepository, nsfwFilterSettingsService,
+      });
       return res.json({
         project: toPickerProject(project),
-        items: result.rows.map(toPickerAsset),
+        items: result.rows.map(asset => ({
+          ...toPickerAsset(asset), thumbnail: thumbnails.get(asset.id),
+        })),
         nextCursor: result.nextCursor,
       });
     } catch (err) {
@@ -756,8 +1165,8 @@ export function createNotesRouter({
       const chapter = hasChapterId ? chapterService.getChapter(chapterId) : null;
       const book = bookService.getBook(hasChapterId ? chapter.book_id : bookId);
       const bookContents = bookService.listBookContents(book.id);
-      return await renderNoteCreate(res, buildNoteFormModel({
-        assetRepository,
+      return await renderNoteCreate(req, res, buildNoteFormModel({
+        assetRepository, tagRepository, nsfwFilterSettingsService,
         appName,
         book,
         chapter,
@@ -816,8 +1225,8 @@ export function createNotesRouter({
             chapterId: hasChapterId ? chapterId : undefined,
             bookId: hasBookId ? bookId : undefined,
           });
-          return await renderNoteCreate(res, buildNoteFormModel({
-            assetRepository,
+          return await renderNoteCreate(req, res, buildNoteFormModel({
+            assetRepository, tagRepository, nsfwFilterSettingsService,
             appName,
             book,
             chapter,
@@ -872,20 +1281,30 @@ export function createNotesRouter({
     }
   });
 
-  function renderNoteDetail(res, { note, chapter, book }, { values = noteToFormValues(note), errors = {}, open = false, status = 200 } = {}) {
+  async function renderNoteDetail(res, { note, chapter, book }, { values = noteToFormValues(note), errors = {}, open = false, status = 200 } = {}) {
+    const [decoratedBook] = withBookPrimaryImageNsfwBlur(
+      await resolveBookPrimaryImageMedia(bookPrimaryImageService.attachPrimaryImages([book]), managedMediaService),
+      {
+        assetRepository,
+        tagRepository,
+        filterEnabled: nsfwFilterSettingsService.isEnabled(),
+      },
+    );
     const bookContents = bookService.listBookContents(book.id);
     const chapterOptions = listChapterOptions(bookService, chapterService);
     const noteEditForm = buildNoteFormModel({
-      assetRepository,
-      appName, book, chapter, note, values, errors,
+      assetRepository, tagRepository, nsfwFilterSettingsService,
+      appName, book: decoratedBook, chapter, note, values, errors,
       projects: listProjectOptions(projectService),
       selectedAssets: listSelectedAssetOptions(assetRepository, values.assetIds),
       action: 'Edit', submitUrl: `/notes/${note.id}`,
       moveTargets: chapterOptions, bookContents, navCurrentPageId: note.id,
     });
     return res.status(status).render('notes/detail.njk', {
-      appName, book, chapter, note, bookContents, chapterOptions,
-      contentHtml: markdownRenderer.renderMarkdown(note.content),
+      appName, book: decoratedBook, chapter, note, bookContents, chapterOptions,
+      contentHtml: markdownRenderer.renderMarkdown(note.content, {
+        suppressLeadingH1Matching: note.title,
+      }),
       projects: resolveAssociatedProjects(note, projectService),
       assets: resolveAssociatedAssets(note, assetRepository),
       navCurrentPageId: note.id, noteEditForm, noteEditDialogOpen: open,
@@ -893,7 +1312,7 @@ export function createNotesRouter({
   }
 
   // GET /notes/:id — Note detail
-  router.get('/:id', (req, res, next) => {
+  router.get('/:id', async (req, res, next) => {
     const id = parseId(req.params.id);
     if (id === null) {
       return next(createNotFound());
@@ -903,7 +1322,7 @@ export function createNotesRouter({
       const { note, chapter, book } = loadNoteHierarchy({
         noteService, chapterService, bookService, id,
       });
-      return renderNoteDetail(res, { note, chapter, book });
+      return await renderNoteDetail(res, { note, chapter, book });
     } catch (err) {
       if (err instanceof NoteNotFoundError || err instanceof ChapterNotFoundError || err instanceof BookNotFoundError) {
         return next(createNotFound());
@@ -913,7 +1332,7 @@ export function createNotesRouter({
   });
 
   // GET /notes/:id/edit — Edit form
-  router.get('/:id/edit', (req, res, next) => {
+  router.get('/:id/edit', async (req, res, next) => {
     const id = parseId(req.params.id);
     if (id === null) {
       return next(createNotFound());
@@ -923,7 +1342,7 @@ export function createNotesRouter({
       const { note, chapter, book } = loadNoteHierarchy({
         noteService, chapterService, bookService, id,
       });
-      return renderNoteDetail(res, { note, chapter, book }, { open: true });
+      return await renderNoteDetail(res, { note, chapter, book }, { open: true });
     } catch (err) {
       if (err instanceof NoteNotFoundError || err instanceof ChapterNotFoundError || err instanceof BookNotFoundError) {
         return next(createNotFound());
@@ -933,7 +1352,7 @@ export function createNotesRouter({
   });
 
   // POST /notes/:id — Update note fields and replace independent associations.
-  router.post('/:id', (req, res, next) => {
+  router.post('/:id', async (req, res, next) => {
     const id = parseId(req.params.id);
     if (id === null) {
       return next(createNotFound());
@@ -957,7 +1376,7 @@ export function createNotesRouter({
       }
       if (err instanceof NoteValidationError) {
         try {
-          return renderNoteDetail(res, hierarchy, {
+          return await renderNoteDetail(res, hierarchy, {
             values: buildFormValues(body),
             errors: err.errors || { general: err.message },
             open: true, status: 422,
@@ -998,7 +1417,7 @@ export function createNotesRouter({
 }
 
 function buildNoteFormModel({
-  assetRepository,
+  assetRepository, tagRepository, nsfwFilterSettingsService,
   appName, book = null, chapter = null, note, values, projects, selectedAssets, errors, action, submitUrl,
   moveTargets = [], bookContents = [], navCurrentChapterId = null, navCurrentPageId = null,
 }) {
@@ -1010,7 +1429,7 @@ function buildNoteFormModel({
     values,
     projects,
     selectedAssets,
-    connections: buildNoteConnections(assetRepository, projects, values, note),
+    connections: buildNoteConnections(assetRepository, projects, values, note, tagRepository, nsfwFilterSettingsService),
     selectedProjectIds: values.projectIds.map(String),
     selectedAssetIds: values.assetIds.map(String),
     errors,
@@ -1023,7 +1442,27 @@ function buildNoteFormModel({
   };
 }
 
-function buildNoteConnections(assetRepository, projects, values, note) {
+/** Presentation-only projection, identical for form options and picker JSON.
+ * Keep presenter states: previewable with invalid source metadata has no URL.
+ */
+function buildNoteAssetThumbnails(ids, { assetRepository, tagRepository, nsfwFilterSettingsService }) {
+  const uniqueIds = [...new Set(ids)];
+  if (uniqueIds.length === 0) return new Map();
+  const assets = assetRepository.findByIds(uniqueIds);
+  const assetsById = new Map(assets.map(asset => [asset.id, asset]));
+  const nsfwAssetIds = resolveNsfwAssetIds(assets, tagRepository, nsfwFilterSettingsService.isEnabled());
+  return new Map(uniqueIds.map(id => {
+    const preview = buildAssetPreviewModel(assetsById.get(id));
+    return [id, {
+      state: preview.state,
+      sourceMetadataValid: preview.sourceMetadataValid,
+      urls: { thumbnail: preview.urls.thumbnail },
+      nsfwBlur: nsfwAssetIds.has(id),
+    }];
+  }));
+}
+
+function buildNoteConnections(assetRepository, projects, values, note, tagRepository, nsfwFilterSettingsService) {
   const selected = new Set(values.assetIds.map(String));
   const persisted = new Set((note?.assetIds || []).map(String));
   const context = new Set(values.projectIds.map(String));
@@ -1041,10 +1480,15 @@ function buildNoteConnections(assetRepository, projects, values, note) {
   }
   const retained = listSelectedAssetOptions(assetRepository, values.assetIds)
     .filter(asset => !assets.has(String(asset.id)));
+  const thumbnails = buildNoteAssetThumbnails([...assets.values(), ...retained].map(asset => asset.id), {
+    assetRepository, tagRepository, nsfwFilterSettingsService,
+  });
+
   const option = asset => ({
     id: `note-asset-option-${asset.id}`, value: String(asset.id),
     label: `${asset.filename}${asset.relativePath && asset.relativePath !== asset.filename ? ' (' + asset.relativePath + ')' : ''} \u2014 Project: ${asset.projectTitle}${asset.isProjectArchived ? ' (Archived project)' : ''}${!asset.isPresent ? ' (Missing)' : ''}`,
     selected: selected.has(String(asset.id)),
+    thumbnail: thumbnails.get(asset.id),
     // Prefix the key: the shared attribute renderer treats numeric "1" as boolean true.
     attributes: [['data-project-key', `project:${asset.projectId}`], ['data-persisted', persisted.has(String(asset.id)) ? 'true' : 'false']],
   });

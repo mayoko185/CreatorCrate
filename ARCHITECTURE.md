@@ -459,12 +459,127 @@ dashboard and page defaults, default watermark, automatic-scan timing).
 Adding a new global setting means adding a key and a small service, not a
 migration.
 
-**Transactions are owned above the repository layer, usually by a service.**
-Repositories expose statements and single-purpose operations; a caller
-composes them with `db.transaction(...)` when several must succeed together.
-Repository methods deliberately do not open nested transactions, so the
-caller's transaction can roll the whole unit back — `projectService.create`
-relies on exactly this.
+Book aggregate hierarchy validation is a read-only contract in
+[`book-hierarchy.js`](src/services/book-hierarchy.js), not a mutation endpoint.
+`parseBookHierarchyPayload()` accepts one JSON string containing exactly
+`{ version: 1, expected, target }`. Each hierarchy is an ordered array of
+`{ type: 'page', id }` or `{ type: 'chapter', id, pages: [pageId, ...] }` nodes;
+IDs are positive safe integers, with no duplicate Chapters or Pages. Unknown
+fields, nested Chapters, and root Page children are rejected rather than repaired.
+`buildCurrentBookHierarchy()` validates ownership and complete root membership
+before constructing the canonical sequence. Mixed root order comes only from
+`book_contents.sort_order` (nonnegative safe integers, no ties; gaps allowed).
+Chapter Pages use `notes.sort_order`, with the existing repository's ID tie-breaker;
+neither `chapters.sort_order` nor root Page `notes.sort_order` determines root order.
+`noteRepository.listAllForBook()` supplies every Page owned by `notes.book_id`,
+including Chapter Pages, in deterministic ID order; `listForBook()` stays root-only.
+
+`planBookHierarchy(snapshot, payload)` checks exact current/expected hierarchy
+equality, then requires the target to contain the exact current Chapter and Page
+sets. It returns detached current/target hierarchies, root target items, a Map of
+Chapter target Page orders, changed Page destinations, and a `changed` flag.
+Corruption raises `BookContentIntegrityError`; invalid submissions and stale
+expectations raise `BookHierarchyValidationError` (a `BookValidationError`, with
+`errors.hierarchy`; stale code `HIERARCHY_STALE`, status 409). The helper does not
+read repositories, write, log, or call move/reorder methods.
+
+`noteService.reorderBookHierarchy()` is the atomic persistence coordinator. Its
+outer synchronous `better-sqlite3` immediate transaction rereads the Book, all
+Chapters, all Book Pages, and root memberships; the transaction then reruns the
+pure integrity, exact-expected, complete-target, and planning checks. A plan made
+before that transaction is never accepted as authorization. True Page-container
+changes run first through the existing private move coordinator, followed by the
+exact mixed-root `bookContentRepository.reorder()` and every Chapter's exact
+`noteRepository.reorder()`. A final authoritative reread and canonical equality
+check occur before commit, so any move, membership, reorder, or verification
+failure rolls the whole hierarchy back. Exact no-ops perform no writes. One
+`book.hierarchy.reordered` activity event is emitted only after a changed commit;
+the internal moves emit no per-Page events. No schema migration is required for
+aggregate hierarchy persistence. `noteService.getBookHierarchy()` exposes the
+same validated canonical read model to Book detail. The hosted Change Order form
+submits exactly one versioned `hierarchy` JSON field to
+`POST /notes/books/:bookId/hierarchy/reorder`; the route parses through
+`parseBookHierarchyPayload()` and delegates persistence only to
+`reorderBookHierarchy()`. Initial and stale renders use the current hierarchy for
+both `expected` and `target`; a safe non-stale 422 rerender may retain the submitted
+target while rebuilding all labels from current server entities. Stale submissions
+return 409 with the current hierarchy, and current-integrity or persistence failures
+remain server errors. The template opts into the connected mode in
+`dedicated-reorder.js`; the legacy flat adapter remains unchanged for its existing
+consumers. Connected mode owns one editor-wide drag state, enumerates direct children
+of explicit hierarchy containers, accepts Chapters only at root and Pages at root or
+in Chapters (including empty Chapters), and serializes the current DOM into only the
+form's `data-book-hierarchy-input` after successful drag mutations. The original
+`expected` hierarchy remains immutable, hierarchy movement sends no request, and Save
+remains the sole aggregate POST. The same editor-wide controller handles Page and
+Chapter Up/Down/Home/End movement, Page destination controls, focus restoration, and
+hierarchy-scoped live announcements. Page ownership is always derived from its current
+DOM container; Chapter-to-root keyboard movement inserts immediately after the source
+Chapter. After app-dialog enhancement, the controller composes with its existing
+open/close lifecycle hooks. It captures the hierarchy actually rendered for the
+current response as the loaded baseline (not `expected`), restores the existing item
+nodes structurally on unsaved Cancel/X/Escape close, and regenerates `target` while preserving
+`expected`. A native form-submit guard prevents close restoration from replacing a
+genuine Save draft before navigation. The legacy root-only reorder and Page Move paths
+remain independent and available.
+
+Book Page-preview configuration is deliberately not global metadata. Migration
+030 adds one `book_page_preview_settings` row per configured Book plus the
+`book_page_preview_pages` membership table. No row means the domain defaults
+`random` mode, count `5`, and no selected Pages; defaults are resolved without
+backfilling storage. The repository replaces the settings row and complete
+selected-ID set in one SQLite transaction, while the service validates the
+`random`/`selected` mode, the inclusive `1..25` count, and canonicalizes IDs.
+Reads join selections back to `notes.book_id`, and writes reject missing or
+foreign Pages, so Book ownership is enforced below the HTTP/UI layer. The
+existing Book Defaults POST validates both the global navigation preference and
+Book-scoped preview submission before saving either, then uses the shared page-
+defaults custom-save hook inside one outer database transaction. This keeps the
+single visible Save atomic across `app_meta` navigation and both Book preview
+tables, including when either persistence path fails.
+Foreign keys cascade Book and Page deletion. An `AFTER UPDATE OF book_id`
+trigger removes the old Book's selection only when Page ownership changes;
+Chapter/direct moves within one Book retain it, and moving away then back does
+not resurrect it.
+
+Book detail is the preview consumer. `renderBookDetail()` reads these settings
+through the Book-scoped service and resolves them against the same authoritative
+`listBookContents()` hierarchy already used by its navigator and Defaults dialog.
+The hierarchy is flattened in Book order, including direct and Chapter-contained
+Pages. Random mode samples eligible Pages without replacement on each request and
+restores Book order for presentation; Selected mode filters stored IDs through
+that catalogue. Every valid Book Page is eligible because Book detail has no
+current Page. The existing `resolveBookPagePreviews()` resolver supplies the shared
+`partials/book-page-previews.njk` partial. Page detail does not load preview settings
+or build a preview model for rendering; it retains hierarchy resolution, Book
+cover/navigation, Edit, and conditional Project/Asset associations.
+
+Book detail presents the Book cover and polished navigation in the left column
+and Page previews in the main column; the redundant main `.book-outline` is
+retired. New/Edit Page dialogs reuse the polished navigator inside a native outer
+Book-contents disclosure. That disclosure is presentation-only, starts collapsed,
+and has no persisted default; its inner Chapter disclosures retain their own
+navigation state semantics, with no duplicate Book cover in the dialog. Chapter
+detail reuses the Book-cover presentation pipeline and polished shared navigator,
+retains its Book ancestor link, and automatically opens the current Chapter
+independently of the Book-detail navigation default. On Page detail, suppression of a leading Markdown H1
+applies only to rendered output when its visible text matches the Page title.
+Stored Markdown and the Edit form value remain unchanged, and other headings
+continue to render.
+
+**Transactions are normally owned above the repository layer, by a service or
+a narrow coordinating route.** Repositories expose statements and
+single-purpose operations; a caller composes them with `db.transaction(...)`
+when several must succeed together. Repository methods normally avoid opening
+nested transactions, so the caller's transaction can roll the whole unit back
+— `projectService.create` relies on exactly this.
+
+`book-page-preview-settings-repository.replace()` is an intentional exception:
+it owns the atomic replacement of its settings row and complete membership set.
+When Book Defaults calls it inside the outer Defaults transaction,
+better-sqlite3 nests that transaction as a savepoint. The inner replacement is
+therefore savepoint-safe, and any failure still propagates to roll back the
+combined Defaults operation across `app_meta` and both preview tables.
 
 That caller is normally a service, and for anything with domain rules it
 should be. It is not always one, though: the page-defaults save paths open
@@ -610,8 +725,12 @@ An additional 11 MiB wire-body ceiling bounds multipart framing, preamble and
 epilogue; an 18th multipart part is rejected, including skipped parts.
 Duplicate text names are rejected rather than silently overwriting
 values, including `_csrf`. Busboy also bounds each part header to 16 KiB.
-Filename and declared MIME are discarded; WP7A remains authoritative for image
-eligibility. No filesystem APIs, staging, managed ingestion or Book mutation are
+Only a zero-byte part with an empty or omitted filename and generic
+`application/octet-stream` MIME is normalized to no cover, matching an untouched
+optional browser file input. A named zero-byte file remains an upload candidate
+and is rejected by the unchanged image validation. Filename and declared MIME
+are otherwise discarded; WP7A remains authoritative for image eligibility.
+No filesystem APIs, staging, managed ingestion or Book mutation are
 used. File chunks and the final concatenation can coexist briefly (about 20 MiB
 at the file maximum, plus bounded parser/request buffers).
 

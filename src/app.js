@@ -36,6 +36,7 @@ import { createChapterRepository } from './data/chapter-repository.js';
 import { createBookRepository } from './data/book-repository.js';
 import { createBookContentRepository } from './data/book-content-repository.js';
 import { createBookPrimaryImageRepository } from './data/book-primary-image-repository.js';
+import { createBookPagePreviewSettingsRepository } from './data/book-page-preview-settings-repository.js';
 import { createAssetCategoryService } from './services/asset-category-service.js';
 import { createAssetBrowserPreferenceRepository } from './data/asset-browser-preference-repository.js';
 import { createAppMetaRepository } from './data/app-meta-repository.js';
@@ -69,6 +70,7 @@ import { createProcessingPresetService } from './services/processing-preset-serv
 import { createAutoRenameService } from './services/auto-rename-service.js';
 import { createProjectPrimaryImageService } from './services/project-primary-image-service.js';
 import { createBookPrimaryImageService } from './services/book-primary-image-service.js';
+import { createBookPagePreviewSettingsService } from './services/book-page-preview-settings-service.js';
 import { createProjectOperationCoordinator } from './services/project-operation-coordinator.js';
 import { createProcessingJobService } from './services/processing-job-service.js';
 import { createProcessingConcurrencyService } from './services/processing-concurrency-service.js';
@@ -362,6 +364,13 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   const noteRepository = opts.noteRepository || createNoteRepository(db);
   const chapterRepository = opts.chapterRepository || createChapterRepository(db);
   const bookContentRepository = opts.bookContentRepository || createBookContentRepository(db);
+  const bookPagePreviewSettingsRepository = opts.bookPagePreviewSettingsRepository
+    || createBookPagePreviewSettingsRepository(db);
+  const bookPagePreviewSettingsService = opts.bookPagePreviewSettingsService
+    || createBookPagePreviewSettingsService({
+      repository: bookPagePreviewSettingsRepository,
+      bookRepository,
+    });
   const noteService = opts.noteService || createNoteService({
     db,
     noteRepository,
@@ -382,6 +391,8 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   const markdownRenderer = opts.markdownRenderer || createMarkdownRenderer();
   app.locals.noteRepository = noteRepository;
   app.locals.noteService = noteService;
+  app.locals.bookPagePreviewSettingsRepository = bookPagePreviewSettingsRepository;
+  app.locals.bookPagePreviewSettingsService = bookPagePreviewSettingsService;
   app.locals.chapterService = chapterService;
   app.locals.markdownRenderer = markdownRenderer;
 
@@ -889,11 +900,13 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.use('/calendar', createCalendarRouter({ appName, workflowQueryService }));
 
   app.use('/notes', createNotesRouter({
+    db,
     managedImageService: app.locals.managedImageService,
     managedMediaService: app.locals.managedMediaService,
     appName,
     bookService,
     bookPrimaryImageService,
+    bookPagePreviewSettingsService,
     chapterService,
     noteService,
     markdownRenderer,

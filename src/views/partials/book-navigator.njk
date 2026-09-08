@@ -1,5 +1,6 @@
 {% set hasCurrentChapter = navCurrentChapterId is defined and navCurrentChapterId is not none %}
 {% set hasCurrentPage = navCurrentPageId is defined and navCurrentPageId is not none %}
+{% set hasInitialMode = bookNavInitialMode == 'expanded' or bookNavInitialMode == 'collapsed' %}
 {% set currentChapterIdString = '' %}
 {% set currentPageIdString = '' %}
 {% if hasCurrentChapter %}
@@ -11,7 +12,7 @@
 
 <nav class="notes-book-nav" aria-label="Contents of {{ book.title }}">
   {% if not bookNavHideHeading %}<p class="notes-book-nav-heading">Book contents</p>{% endif %}
-  <a class="notes-book-nav-book-link" href="/notes/books/{{ book.id }}">{{ book.title }}</a>
+  {% if not bookNavHideBookLink %}<a class="notes-book-nav-book-link" href="/notes/books/{{ book.id }}">{{ book.title }}</a>{% endif %}
 
   <ol class="notes-book-nav-list">
     {% for item in bookContents %}
@@ -27,16 +28,18 @@
         {% endif %}
 
         <li class="notes-book-nav-item notes-book-nav-chapter{% if chapterIsCurrent %} notes-book-nav-item--current{% endif %}">
-          <details class="notes-book-nav-disclosure"{% if chapterIsCurrent or chapterContainsCurrentPage %} open{% endif %}>
+          <details class="notes-book-nav-disclosure"{% if bookNavInitialMode == 'expanded' or (not hasInitialMode and (chapterIsCurrent or chapterContainsCurrentPage)) %} open{% endif %}>
             <summary class="notes-book-nav-summary">
               <span class="notes-book-nav-disclosure-indicator" aria-hidden="true"></span>
               <span class="notes-book-nav-title-wrap">
                 <span class="notes-book-nav-chapter-title">{{ item.chapter.title }}</span>
               </span>
             </summary>
-            <p class="notes-book-nav-page--child">
-              <a class="notes-book-nav-page-link" href="/notes/chapters/{{ item.id }}"{% if chapterIsCurrent %} aria-current="page"{% endif %}>View Chapter</a>
-            </p>
+            {% if not bookNavHideChapterLinks %}
+              <p class="notes-book-nav-page--child">
+                <a class="notes-book-nav-page-link" href="/notes/chapters/{{ item.id }}"{% if chapterIsCurrent %} aria-current="page"{% endif %}>View Chapter</a>
+              </p>
+            {% endif %}
             <ol class="notes-book-nav-pages">
               {% for page in item.pages %}
                 {% set pageIsCurrent = hasCurrentPage and page.id is defined and page.id is not none and (page.id | string) == currentPageIdString %}

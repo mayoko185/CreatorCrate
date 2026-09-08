@@ -1,5 +1,6 @@
-<section class="notes-detail-panel notes-detail-details" aria-labelledby="{{ detailsHeadingId }}">
+<section class="{% if notesDetailsPresentation == 'project-section' %}project-detail-info project-detail-section{% else %}notes-detail-panel{% endif %} notes-detail-details" aria-labelledby="{{ detailsHeadingId }}">
   <h2 id="{{ detailsHeadingId }}">Details</h2>
+  {% if notesDetailsPresentation == 'project-section' %}<div class="project-detail-section-body">{% endif %}
   <dl class="detail-list">
     <dt>Created</dt>
     <dd>{{ detailsCreated }}</dd>
@@ -7,4 +8,5 @@
     <dt>Updated</dt>
     <dd>{{ detailsUpdated }}</dd>
   </dl>
+  {% if notesDetailsPresentation == 'project-section' %}</div>{% endif %}
 </section>

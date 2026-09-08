@@ -43,6 +43,39 @@ test('actual New/Edit Book cover disclosures preserve native interaction and rep
       await summary.press('Enter');
       await expect(disclosure.locator('[name="cover"]')).toBeVisible();
     };
+
+    const expectBookSpacing = async bookDialog => {
+      await expect(bookDialog.getByRole('heading', { name: 'Book details', exact: true })).toHaveCount(1);
+      const spacing = await bookDialog.evaluate(node => {
+        const readPadding = element => {
+          const style = getComputedStyle(element);
+          return [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft];
+        };
+        const detailsSection = node.querySelector('[data-notes-book-details-section]');
+        const detailsBody = detailsSection.querySelector('.project-edit-dialog-section-body');
+        const actionsSection = node.querySelector('[data-notes-book-actions-section]');
+        const actionsBody = actionsSection.querySelector('.project-edit-dialog-section-body');
+        const disclosureContent = actionsSection.querySelector('.notes-workspace-disclosure-content');
+        return {
+          detailsSection: readPadding(detailsSection),
+          detailsBody: readPadding(detailsBody),
+          actionsSection: readPadding(actionsSection),
+          actionsBody: readPadding(actionsBody),
+          disclosureContentBottom: getComputedStyle(disclosureContent).paddingBottom,
+          dialogBodyBottom: getComputedStyle(node.querySelector('.app-dialog-body')).paddingBottom,
+          headingMargins: getComputedStyle(detailsSection.querySelector('h3')).marginInline,
+        };
+      });
+      expect(spacing.detailsSection).toEqual(['0px', '0px', '0px', '0px']);
+      expect(spacing.detailsBody).toEqual(['12px', '12px', '12px', '12px']);
+      expect(spacing.actionsSection[2]).toBe('0px');
+      expect(spacing.actionsBody[2]).toBe('8px');
+      expect(spacing.disclosureContentBottom).toBe('0px');
+      expect(spacing.dialogBodyBottom).toBe('8px');
+      expect(spacing.headingMargins).toBe('0px');
+      await expect(bookDialog.locator('.app-dialog-footer').getByRole('button')).toBeVisible();
+    };
+    await expectBookSpacing(create);
     await expect(create).toBeVisible();
     await expect(cover(create).locator('img')).toHaveCount(0);
     await toggle(cover(create));
@@ -50,7 +83,7 @@ test('actual New/Edit Book cover disclosures preserve native interaction and rep
     await cover(create).locator('[name="cover"]').setInputFiles(file);
     await create.getByRole('button', { name: 'Create', exact: true }).click();
     await expect(page).toHaveURL(/\/notes\/books\/\d+$/);
-    await page.getByRole('link', { name: 'Edit Book', exact: true }).click();
+    await page.getByRole('link', { name: 'Edit book', exact: true }).click();
     const edit = page.locator('#book-edit-dialog');
     const disclosure = cover(edit);
     const deletion = edit.locator('details').filter({ has: page.locator('summary', { hasText: /^Delete Book$/ }) });
@@ -88,6 +121,8 @@ test('actual New/Edit Book cover disclosures preserve native interaction and rep
     await expect(edit).toBeVisible();
     await expect(edit.locator('[name="coverReplacementConfirmed"]')).toHaveValue('false');
     await expect(edit.getByRole('heading', { name: 'Book actions', exact: true })).toHaveCount(1);
+
+    await expectBookSpacing(edit);
     await expect(edit.locator('img')).toHaveCount(1);
     await expect(page.locator('form form')).toHaveCount(0);
     expect(await page.locator('[id]').evaluateAll(nodes => new Set(nodes.map(n => n.id)).size === nodes.length)).toBe(true);
@@ -97,6 +132,8 @@ test('actual New/Edit Book cover disclosures preserve native interaction and rep
     await toggle(cover(edit));
     await cover(edit).locator('[name="cover"]').setInputFiles(file);
     expect(await cover(edit).locator('[name="cover"]').evaluate(n => n.files.length)).toBe(1);
+    await page.setViewportSize({ width: 390, height: 640 });
+    await expectBookSpacing(edit);
   } finally {
     if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
     closeDatabase(db);

@@ -66,6 +66,7 @@ export function parseBookCoverMultipart(req) {
     const fields = Object.create(null);
     let chunks = [];
     let fileSeen = false;
+    let fileInfo;
     let fileBytes = 0;
     let fieldBytes = 0;
     let requestBytes = 0;
@@ -95,7 +96,8 @@ export function parseBookCoverMultipart(req) {
       if (requestBytes > limits.requestBytes) fail('REQUEST_TOO_LARGE');
     }
 
-    parser.on('file', (name, file) => {
+    parser.on('file', (name, file, info) => {
+      fileInfo = info;
       file.on('error', malformed);
       file.on('limit', () => fail('FILE_TOO_LARGE'));
       file.on('data', (chunk) => {
@@ -128,7 +130,11 @@ export function parseBookCoverMultipart(req) {
       if (settled) return;
       settled = true;
       cleanup();
-      const cover = fileSeen ? { bytes: Buffer.concat(chunks, fileBytes), size: fileBytes } : null;
+      // Busboy conflates empty browser filenames with omitted metadata. Only
+      // zero-byte, generic octet-stream parts with no filename mean unselected.
+      const placeholder = fileSeen && (fileInfo.filename === undefined || fileInfo.filename === '')
+        && fileBytes === 0 && fileInfo.mimeType === 'application/octet-stream';
+      const cover = fileSeen && !placeholder ? { bytes: Buffer.concat(chunks, fileBytes), size: fileBytes } : null;
       chunks = [];
       resolve({ fields, cover });
     });

@@ -1,76 +1,95 @@
 {% import "partials/dialog.njk" as dialog %}
 
+{% macro pageMoveControls(page, currentChapterId='') %}
+  <div class="notes-book-hierarchy-move-controls">
+    <label class="sr-only" for="book-hierarchy-destination-{{ page.id }}">Destination for Page {{ page.title }}</label>
+    <select id="book-hierarchy-destination-{{ page.id }}" data-book-hierarchy-destination
+            aria-label="Destination for Page: {{ page.title }}">
+      <option value="root"{% if not currentChapterId %} selected{% endif %}>Book root</option>
+      {% for destination in bookHierarchy.items %}
+        {% if destination.type == 'chapter' %}
+          <option value="chapter:{{ destination.id }}"{% if currentChapterId == destination.id %} selected{% endif %}>Chapter: {{ destination.chapter.title }}</option>
+        {% endif %}
+      {% endfor %}
+    </select>
+    <button type="button" class="button button-small button-secondary" data-book-hierarchy-move
+            aria-label="Move Page: {{ page.title }}">Move</button>
+  </div>
+{% endmacro %}
+
 {% call dialog.render('book-order-dialog', 'Change order', bookOrderDialogOpen, '', '', 'project-form-dialog') %}
-  <form id="notes-book-order-form" method="post" action="/notes/books/{{ book.id }}/contents/reorder" data-book-content-reorder-form
+  <form id="notes-book-order-form" method="post" action="/notes/books/{{ book.id }}/hierarchy/reorder" data-book-hierarchy-form
         class="app-dialog-form project-form project-edit-dialog-form" data-dialog-form data-dialog-async="false">
     <input type="hidden" name="_csrf" value="{{ _csrf }}">
+    <input type="hidden" name="hierarchy" data-book-hierarchy-input value="{{ bookHierarchy.submission }}">
     <div class="app-dialog-body">
       {% if bookOrderNotice %}
         <div class="error-summary" role="alert"><p>{{ bookOrderNotice.text }}</p></div>
       {% endif %}
-      <section class="project-edit-dialog-section" data-notes-book-order-page aria-labelledby="notes-book-order-heading">
+      <section class="project-edit-dialog-section" data-notes-book-order-page data-book-hierarchy-editor aria-labelledby="notes-book-order-heading">
         <h3 id="notes-book-order-heading">Book contents</h3>
-        {% if contents.length > 0 %}
+        <div class="project-edit-dialog-section-body">
+        {% if bookHierarchy.items.length > 0 %}
           <p class="help-text" id="notes-book-order-instructions">
-            Drag a Chapter or Page card to move it, or focus its handle and use Arrow Up, Arrow Down, Home, or End. Select Save to keep the new order.
+            Use the handles with Up, Down, Home, or End to reorder within the current container. Use each Page destination and Move control to move it between the Book root and Chapters. Dragging remains available. Select Save to apply the draft hierarchy.
           </p>
-          <input type="hidden" name="orderedItems" data-book-content-order-input value="{% for item in contents %}{{ item.type }}:{{ item.id }}{% if not loop.last %},{% endif %}{% endfor %}">
-        <ol
-          class="notes-book-content-list notes-book-order-list notes-reorder-list"
-          data-book-content-reorder-list
-          data-reorder-form-target="notes-book-order-form"
-          aria-label="Book contents in current order"
-          aria-describedby="notes-book-order-instructions">
-          {% for item in contents %}
-            <li
-              class="notes-book-content-row notes-book-order-row notes-reorder-row notes-reorder-row--compact"
-              data-book-content-reorder-item
-              data-content-key="{{ item.type }}:{{ item.id }}"
-              {% if item.type == 'chapter' %}
-                data-content-label="Chapter: {{ item.chapter.title }}"
-              {% else %}
-                data-content-label="Page: {{ item.page.title }}"
-              {% endif %}
-              draggable="true"
-              aria-posinset="{{ loop.index }}"
-              aria-setsize="{{ contents.length }}">
-              <button
-                type="button"
-                class="notes-book-order-handle notes-reorder-handle"
-                data-book-content-reorder-handle
-                draggable="true"
-                {% if item.type == 'chapter' %}
-                  aria-label="Reorder Chapter: {{ item.chapter.title }}"
-                {% else %}
-                  aria-label="Reorder Page: {{ item.page.title }}"
-                {% endif %}
-                aria-describedby="notes-book-order-instructions notes-book-order-position-{{ item.type }}-{{ item.id }}"
-                title="Drag to reorder; use the arrow keys to move">
-                <span aria-hidden="true">⠿</span>
-              </button>
-              <div class="notes-book-content-copy" draggable="true">
-                {% if item.type == 'chapter' %}
-                  <span class="notes-book-content-kind">Chapter</span>
-                  <h3 class="notes-book-content-title"><a href="/notes/chapters/{{ item.id }}">{{ item.chapter.title }}</a></h3>
-                {% else %}
-                  <span class="notes-book-content-kind">Page</span>
-                  <h3 class="notes-book-content-title"><a href="/notes/{{ item.id }}">{{ item.page.title }}</a></h3>
-                {% endif %}
-                <span id="notes-book-order-position-{{ item.type }}-{{ item.id }}" class="notes-book-order-position notes-reorder-position" data-book-content-order-position>Position {{ loop.index }} of {{ contents.length }}</span>
-              </div>
-            </li>
-          {% endfor %}
-        </ol>
-        <div class="notes-book-order-live-region notes-reorder-live-region sr-only" data-book-content-reorder-live aria-live="polite" aria-atomic="true"></div>
-
-          <noscript><p class="help-text">JavaScript is required to move Book contents. Save still submits the current canonical order.</p></noscript>
+          <p class="sr-only" aria-live="polite" aria-atomic="true" data-book-hierarchy-live></p>
+          <ol class="notes-book-content-list notes-book-order-list notes-reorder-list"
+              data-book-hierarchy-container="root"
+              aria-label="Book hierarchy in current order"
+              aria-describedby="notes-book-order-instructions">
+            {% for item in bookHierarchy.items %}
+              <li class="notes-book-content-row notes-book-order-row notes-reorder-row notes-reorder-row--compact"
+                  data-book-hierarchy-item data-content-key="{{ item.type }}:{{ item.id }}"
+                  data-book-hierarchy-label="{% if item.type == 'chapter' %}{{ item.chapter.title }}{% else %}{{ item.page.title }}{% endif %}"
+                  aria-posinset="{{ loop.index }}" aria-setsize="{{ bookHierarchy.items.length }}">
+                <button type="button" class="notes-reorder-handle" data-book-hierarchy-handle draggable="true"
+                        aria-label="Move {% if item.type == 'chapter' %}Chapter: {{ item.chapter.title }}{% else %}Book Page: {{ item.page.title }}{% endif %}"
+                        aria-describedby="notes-book-order-instructions" title="Drag or use arrow keys to move">
+                  <span aria-hidden="true">⠿</span>
+                </button>
+                <div class="notes-book-content-copy">
+                  {% if item.type == 'chapter' %}
+                    <span class="notes-book-content-kind">Chapter</span>
+                    <h3 class="notes-book-content-title"><a href="/notes/chapters/{{ item.id }}">{{ item.chapter.title }}</a></h3>
+                    <ol class="notes-book-content-list notes-book-order-list"
+                        data-book-hierarchy-container="chapter:{{ item.id }}"
+                        aria-label="Pages in {{ item.chapter.title }}">
+                      {% for page in item.pages %}
+                        <li class="notes-book-content-row notes-book-order-row notes-reorder-row notes-reorder-row--compact"
+                            data-book-hierarchy-item data-content-key="page:{{ page.id }}" data-book-hierarchy-label="{{ page.title }}"
+                            aria-posinset="{{ loop.index }}" aria-setsize="{{ item.pages.length }}">
+                          <button type="button" class="notes-reorder-handle" data-book-hierarchy-handle draggable="true"
+                                  aria-label="Move Page: {{ page.title }}"
+                                  aria-describedby="notes-book-order-instructions" title="Drag or use arrow keys to move">
+                            <span aria-hidden="true">⠿</span>
+                          </button>
+                          <div class="notes-book-content-copy">
+                            <span class="notes-book-content-kind">Page in {{ item.chapter.title }}</span>
+                            <h4 class="notes-book-content-title"><a href="/notes/{{ page.id }}">{{ page.title }}</a></h4>
+                          </div>
+                          {{ pageMoveControls(page, item.id) }}
+                        </li>
+                      {% endfor %}
+                    </ol>
+                  {% else %}
+                    <span class="notes-book-content-kind">Book Page</span>
+                    <h3 class="notes-book-content-title"><a href="/notes/{{ item.id }}">{{ item.page.title }}</a></h3>
+                    {{ pageMoveControls(item.page) }}
+                  {% endif %}
+                </div>
+              </li>
+            {% endfor %}
+          </ol>
         {% else %}
-          <p class="help-text">This Book has no Chapters or direct Pages to order yet.</p>
+          <p class="help-text">This Book has no Chapters or Pages to order yet.</p>
         {% endif %}
+        </div>
       </section>
     </div>
     <footer class="app-dialog-footer">
-      {% if contents.length > 0 %}
+      <button class="button button-secondary" type="button" data-dialog-close>Cancel</button>
+      {% if bookHierarchy.items.length > 0 %}
         <button class="button button-primary" type="submit" form="notes-book-order-form" data-dialog-submit>Save</button>
       {% endif %}
     </footer>

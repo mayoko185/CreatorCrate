@@ -5,12 +5,26 @@
    emptyOptionText, emptyState: { text, link: { text, href }, suffix } }).
    For empty multi-selects, emptyState takes precedence over emptyOptionText.
    Both modes also support nativeSelect, compact, leadingOption, summaryAttributes,
-   and dispatchNativeChange for generic progressive-enhancement consumers. #}
+   and dispatchNativeChange for generic progressive-enhancement consumers.
+   Options may supply thumbnail: { state, sourceMetadataValid, urls: { thumbnail }, nsfwBlur }.
+   This decorative presentation never changes native option text or selected summaries. #}
 {% macro optionLabel(config, option, prefix) -%}{% set labelKey = config.labelKey or 'label' -%}{% set valueKey = config.valueKey or 'value' -%}{{ prefix or '' }}{{ option[labelKey] or option.label or option.displayName or option.text or option[valueKey] }}{%- endmacro %}
 
 {% macro singleSummary(config) -%}{% set valueKey = config.valueKey or 'value' -%}{% if config.summary is defined -%}{{ config.summary }}{%- elif config.selected is defined and config.selected != '' and config.selected is not none -%}{% if config.leadingOption and config.leadingOption[valueKey] == config.selected %}{{ optionLabel(config, config.leadingOption, config.optionPrefix) }}{% else %}{% for option in config.options -%}{% if option[valueKey] == config.selected %}{{ optionLabel(config, option, config.optionPrefix) }}{% endif -%}{%- endfor %}{% endif -%}{%- else -%}{{ config.placeholder or '' }}{%- endif -%}{%- endmacro %}
 
 {% macro multiSummary(config, selectedValues) -%}{% set valueKey = config.valueKey or 'value' -%}{% if config.summary is defined -%}{{ config.summary }}{%- elif selectedValues.length == 0 -%}{{ config.emptySummary or 'None selected' }}{%- elif selectedValues.length == 1 -%}{% for option in config.options -%}{% if option[valueKey] in selectedValues %}{{ optionLabel(config, option, config.optionPrefix) }}{% endif -%}{%- endfor -%}{%- else -%}{{ selectedValues.length }} {{ config.countLabel or 'items' }} selected{%- endif -%}{%- endmacro %}
+
+{% macro thumbnailAttributes(thumbnail) -%}{% if thumbnail %} data-cc-dropdown-thumbnail-state="{{ thumbnail.state or '' }}" data-cc-dropdown-thumbnail-valid="{{ 'true' if thumbnail.sourceMetadataValid == true else 'false' }}" data-cc-dropdown-thumbnail-url="{{ thumbnail.urls.thumbnail or '' }}" data-cc-dropdown-thumbnail-blur="{{ 'true' if thumbnail.nsfwBlur == true else 'false' }}"{% endif %}{%- endmacro %}
+
+{% macro optionThumbnail(thumbnail) -%}
+  {% if thumbnail %}
+    {% set usable = thumbnail.state == 'previewable' and thumbnail.sourceMetadataValid == true and thumbnail.urls.thumbnail %}
+    <span class="cc-dropdown-option-thumbnail" aria-hidden="true" data-preview-enhancement>
+      {% if usable %}<img class="cc-dropdown-option-thumbnail-image{% if thumbnail.nsfwBlur == true %} asset-image--nsfw-blurred{% endif %}" src="{{ thumbnail.urls.thumbnail }}" alt="" loading="lazy" data-preview-image>{% endif %}
+      <span class="cc-dropdown-option-thumbnail-fallback" data-preview-fallback{% if usable %} hidden{% endif %}></span>
+    </span>
+  {% endif %}
+{%- endmacro %}
 
 {% macro renderOption(config, option, mode, index, selected, placeholder=false, searchable=false) %}
   {% set optionIdPrefix = config.optionIdPrefix or config.id %}
@@ -19,16 +33,16 @@
   {% set optionValue = '' if placeholder else option[valueKey] %}
   {% set inputAttributes = config.inputAttributes or config.optionInputAttributes %}
   <div class="asset-filter-multiselect-option{% if searchable %} asset-project-filter-option{% endif %}{% if option.classes %} {{ option.classes }}{% endif %}">
-    <label for="{{ optionId }}">
-      <input id="{{ optionId }}"{% if not config.nativeSelect and (config.name or config.fieldName) %} name="{{ config.name or config.fieldName }}"{% endif %} type="{{ 'radio' if mode == 'single' else 'checkbox' }}" value="{{ optionValue }}"{% if selected %} checked{% endif %}{% if config.disabled or option.disabled %} disabled{% endif %}{% if option.disabled %} data-cc-dropdown-option-disabled="true"{% endif %}{% if inputAttributes and not placeholder %}{% for attribute, value in inputAttributes %}{% if value is not none and value != false %} {{ attribute }}{% if value != true %}="{{ value }}"{% endif %}{% endif %}{% endfor %}{% endif %}{% if option.attributes %}{% for attribute, value in option.attributes %}{% if value is not none and value != false %} {{ attribute }}{% if value != true %}="{{ value }}"{% endif %}{% endif %}{% endfor %}{% endif %}>
-      <span>{{ optionLabel(config, option, '' if placeholder else config.optionPrefix) }}{% if option.suffix %} <em{% if option.suffixClass %} class="{{ option.suffixClass }}"{% endif %}>{{ option.suffix }}</em>{% endif %}</span>
+    <label for="{{ optionId }}"{% if option.thumbnail %} class="cc-dropdown-option--thumbnail"{% endif %}>
+      <input id="{{ optionId }}"{% if not config.nativeSelect and (config.name or config.fieldName) %} name="{{ config.name or config.fieldName }}"{% endif %} type="{{ 'radio' if mode == 'single' else 'checkbox' }}" value="{{ optionValue }}"{{ thumbnailAttributes(option.thumbnail) }}{% if selected %} checked{% endif %}{% if config.disabled or option.disabled %} disabled{% endif %}{% if option.disabled %} data-cc-dropdown-option-disabled="true"{% endif %}{% if inputAttributes and not placeholder %}{% for attribute, value in inputAttributes %}{% if value is not none and value != false %} {{ attribute }}{% if value != true %}="{{ value }}"{% endif %}{% endif %}{% endfor %}{% endif %}{% if option.attributes %}{% for attribute, value in option.attributes %}{% if value is not none and value != false %} {{ attribute }}{% if value != true %}="{{ value }}"{% endif %}{% endif %}{% endfor %}{% endif %}>
+      {% if option.thumbnail %}{{ optionThumbnail(option.thumbnail) }}{% endif %}<span>{{ optionLabel(config, option, '' if placeholder else config.optionPrefix) }}{% if option.suffix %} <em{% if option.suffixClass %} class="{{ option.suffixClass }}"{% endif %}>{{ option.suffix }}</em>{% endif %}</span>
     </label>
   </div>
 {% endmacro %}
 
 {% macro nativeOption(config, option, selected) %}
   {% set valueKey = config.valueKey or 'value' %}
-  <option value="{{ option[valueKey] }}"{% if selected %} selected{% endif %}{% if option.disabled %} disabled{% endif %}{% if option.attributes %}{% for attribute, value in option.attributes %}{% if value is not none and value != false %} {{ attribute }}{% if value != true %}="{{ value }}"{% endif %}{% endif %}{% endfor %}{% endif %}>{{ optionLabel(config, option, config.optionPrefix) }}</option>
+  <option value="{{ option[valueKey] }}"{{ thumbnailAttributes(option.thumbnail) }}{% if selected %} selected{% endif %}{% if option.disabled %} disabled{% endif %}{% if option.attributes %}{% for attribute, value in option.attributes %}{% if value is not none and value != false %} {{ attribute }}{% if value != true %}="{{ value }}"{% endif %}{% endif %}{% endfor %}{% endif %}>{{ optionLabel(config, option, config.optionPrefix) }}</option>
 {% endmacro %}
 
 {% macro render(config, mode, forceSearchable=false) %}

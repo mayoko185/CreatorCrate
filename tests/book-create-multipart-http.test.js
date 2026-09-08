@@ -51,6 +51,20 @@ describe('WP7D2A New Book multipart HTTP', () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
   const post = () => agent.post('/notes/books').field('_csrf', csrfToken);
+  it('creates one Book from the raw browser placeholder without ingestion or staging', async () => {
+    const ingestion = vi.spyOn(app.locals.managedImageService, 'createCommittedImage');
+    const before = fs.readdirSync(tmp, { recursive: true });
+    const wire = Buffer.from(`--native\r\nContent-Disposition: form-data; name="_csrf"\r\n\r\n${csrfToken}\r\n--native\r\nContent-Disposition: form-data; name="title"\r\n\r\nNative empty cover\r\n--native\r\nContent-Disposition: form-data; name="cover"; filename=""\r\nContent-Type: application/octet-stream\r\n\r\n\r\n--native--\r\n`);
+    const res = await agent.post('/notes/books').set('Content-Type', 'multipart/form-data; boundary=native')
+      .send(wire).expect(302);
+    counts(1, 0);
+    const book = db.prepare('SELECT * FROM books').get();
+    expect(book.title).toBe('Native empty cover');
+    expect(res.headers.location).toBe(`/notes/books/${book.id}`);
+    expect(db.prepare('SELECT * FROM book_primary_images').all()).toEqual([]);
+    expect(ingestion).not.toHaveBeenCalled();
+    expect(fs.readdirSync(tmp, { recursive: true })).toEqual(before);
+  });
   function counts(books = 0, managed = 0) {
     expect(db.prepare('SELECT count(*) AS n FROM books').get().n).toBe(books);
     expect(db.prepare('SELECT count(*) AS n FROM managed_assets').get().n).toBe(managed);

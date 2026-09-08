@@ -16,6 +16,11 @@ import { updateBookWithUploadedCover as updateBookWithUploadedCoverHandler } fro
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 
+vi.mock('../src/services/managed-image-service.js', async (original) => {
+  const actual = await original();
+  return { ...actual, createManagedImageService: (...args) => ({ ...actual.createManagedImageService(...args) }) };
+});
+
 const deferred = () => {
   let resolve;
   const promise = new Promise((r) => { resolve = r; });
@@ -42,6 +47,24 @@ describe('WP7D2B Edit Book multipart HTTP', () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
   const post = () => agent.post(`/notes/books/${book.id}`).field('_csrf', csrfToken).field('expectedCoverKind', 'none');
+  it.each(['none', 'project_asset', 'managed_asset'])('raw browser placeholder updates title and preserves %s without replacement authorization', async kind => {
+    const current = await makeSource(kind, 'placeholder-source');
+    select(current);
+    const ingestion = vi.spyOn(app.locals.managedImageService, 'createCommittedImage');
+    const before = fs.readdirSync(tmp, { recursive: true });
+    const selections = db.prepare('SELECT * FROM book_primary_images').all();
+    const wire = Buffer.from(`--native\r\nContent-Disposition: form-data; name="_csrf"\r\n\r\n${csrfToken}\r\n--native\r\nContent-Disposition: form-data; name="title"\r\n\r\nTitle only\r\n--native\r\nContent-Disposition: form-data; name="coverReplacementConfirmed"\r\n\r\nfalse\r\n--native\r\nContent-Disposition: form-data; name="cover"; filename=""\r\nContent-Type: application/octet-stream\r\n\r\n\r\n--native--\r\n`);
+    const res = await agent.post(`/notes/books/${book.id}`).set('Content-Type', 'multipart/form-data; boundary=native')
+      .send(wire).expect(302);
+    expect(res.headers.location).toBe(`/notes/books/${book.id}`);
+    expect(app.locals.bookService.getBook(book.id).title).toBe('Title only');
+    expect(app.locals.bookPrimaryImageService.getPrimaryImageSource(book.id)).toEqual(current);
+    expect(db.prepare('SELECT * FROM book_primary_images').all()).toEqual(selections);
+    counts(1, kind === 'managed_asset' ? 1 : 0);
+    if (current) retained(current);
+    expect(ingestion).not.toHaveBeenCalled();
+    expect(fs.readdirSync(tmp, { recursive: true })).toEqual(before);
+  });
   function counts(books = 1, managed = 0) {
     expect(db.prepare('SELECT count(*) AS n FROM books').get().n).toBe(books);
     expect(db.prepare('SELECT count(*) AS n FROM managed_assets').get().n).toBe(managed);

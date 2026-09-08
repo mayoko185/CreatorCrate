@@ -48,6 +48,9 @@ export function createNoteRepository(db) {
   const listForBookStmt = db.prepare(
     `${SELECT_ALL} WHERE book_id = ? AND chapter_id IS NULL ORDER BY sort_order ASC, id ASC`
   );
+  const listAllForBookStmt = db.prepare(
+    `${SELECT_ALL} WHERE book_id = ? ORDER BY id ASC`
+  );
   const insertStmt = db.prepare(`
     INSERT INTO notes (book_id, chapter_id, title, content, sort_order)
     VALUES (?, ?, ?, ?, ?)
@@ -541,6 +544,12 @@ export function createNoteRepository(db) {
      */
     listForBook(bookId) {
       return listForBookStmt.all(bookId);
+    },
+
+    /** All Pages owned by this Book, including Chapter Pages; not display order. */
+    listAllForBook(bookId) {
+      assertId(bookId, 'Book');
+      return listAllForBookStmt.all(bookId);
     },
 
     /**

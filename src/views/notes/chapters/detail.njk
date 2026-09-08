@@ -1,5 +1,6 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
+{% import "partials/book-primary-image.njk" as bookPrimaryImage %}
 {% import "partials/dialog.njk" as dialog %}
 
 {% set page_title = "Notes — " ~ chapter.title %}
@@ -14,8 +15,11 @@
   {% endcall %}
 
   <div class="notes-chapter-detail-layout">
-    <aside class="notes-chapter-detail-sidebar notes-surface notes-surface--compact">
+    <aside class="notes-chapter-detail-sidebar notes-book-detail-sidebar notes-surface notes-surface--compact">
+      {{ bookPrimaryImage.render(book, 'preview') }}
+      {% set bookNavHideChapterLinks = true %}
       {% include "partials/book-navigator.njk" %}
+      {% set bookNavHideChapterLinks = false %}
     </aside>
 
     <div class="notes-chapter-detail-content notes-surface">
