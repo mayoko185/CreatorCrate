@@ -49,25 +49,6 @@ const TITLE_MAX = 200;
 const DESCRIPTION_MAX = 4000;
 const NOTES_MAX = 10000;
 
-const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-
-function isLeapYear(year) {
-  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
-}
-
-function isValidDate(value) {
-  if (!value) return true;
-  if (!DATE_RE.test(value)) return false;
-  const [yearStr, monthStr, dayStr] = value.split('-');
-  const year = Number(yearStr);
-  const month = Number(monthStr);
-  const day = Number(dayStr);
-  if (Number.isNaN(year) || Number.isNaN(month) || Number.isNaN(day)) return false;
-  if (month < 1 || month > 12 || day < 1) return false;
-  const daysInMonth = [31, isLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-  return day <= daysInMonth[month - 1];
-}
-
 /**
  * @param {import('better-sqlite3').Database} db
  * @param {string} projectsRoot
@@ -144,16 +125,6 @@ export function createProjectService(
       errors.projectType = `Project type must be one of: ${PROJECT_TYPES.join(', ')}.`;
     }
 
-    const plannedDate = input.plannedDate || null;
-    if (!isValidDate(plannedDate)) {
-      errors.plannedDate = 'Planned date must be a valid date (YYYY-MM-DD).';
-    }
-
-    const publishedDate = input.publishedDate || null;
-    if (!isValidDate(publishedDate)) {
-      errors.publishedDate = 'Published date must be a valid date (YYYY-MM-DD).';
-    }
-
     const patreonUrl = input.patreonUrl || null;
     if (!isValidWebUrl(patreonUrl)) {
       errors.patreonUrl = 'Project link must be a valid absolute HTTP or HTTPS URL.';
@@ -175,8 +146,6 @@ export function createProjectService(
       notes,
       status,
       projectType,
-      plannedDate,
-      publishedDate,
       patreonUrl,
     };
   }
@@ -371,9 +340,9 @@ export function createProjectService(
       const slugChanged = normalized.slug !== project.slug;
       const dirNeedsChange = slugChanged;
 
-      // The manifest serializes title, slug, description, notes,
-      // planned/published date, and patreon URL. Status and project type are
-      // database/UI metadata, so either alone skips the filesystem entirely.
+      // The manifest serializes title, slug, description, notes, and Patreon
+      // URL. Status and project type are database/UI metadata, so either alone
+      // skips the filesystem entirely.
       // Fields are compared via their DB→input
       // (snake_case→camelCase) mapping.
       const metadataChanged = [
@@ -381,8 +350,6 @@ export function createProjectService(
         ['slug', 'slug'],
         ['description', 'description'],
         ['notes', 'notes'],
-        ['planned_date', 'plannedDate'],
-        ['published_date', 'publishedDate'],
         ['patreon_url', 'patreonUrl'],
       ].some(([dbField, inputField]) => normalized[inputField] !== project[dbField]);
       const manifestNeedsRewrite = dirNeedsChange || metadataChanged;
@@ -454,8 +421,6 @@ export function createProjectService(
         notes: project.notes,
         status: project.status,
         projectType: project.project_type,
-        plannedDate: project.planned_date,
-        publishedDate: project.published_date,
         patreonUrl: project.patreon_url,
       };
       const originalProjectDir = project.project_dir;

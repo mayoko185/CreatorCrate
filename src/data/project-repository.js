@@ -14,8 +14,6 @@ export const DASHBOARD_SORTS = Object.freeze({
   updated: Object.freeze({ column: 'updated_at' }),
   created: Object.freeze({ column: 'created_at' }),
   title: Object.freeze({ column: 'title COLLATE NOCASE' }),
-  published: Object.freeze({ column: 'published_date', nullsLast: true }),
-  planned: Object.freeze({ column: 'date(planned_date)', nullsLast: true }),
 });
 
 const COLUMNS = [
@@ -26,8 +24,6 @@ const COLUMNS = [
   'notes',
   'status',
   'project_type',
-  'planned_date',
-  'published_date',
   'patreon_url',
   'created_at',
   'updated_at',
@@ -46,8 +42,6 @@ const SELECT_ALL = `SELECT ${COLUMNS.join(', ')} FROM projects`;
  * @property {string} notes
  * @property {string} status
  * @property {string} project_type
- * @property {string|null} planned_date
- * @property {string|null} published_date
  * @property {string|null} patreon_url
  * @property {string} created_at
  * @property {string} updated_at
@@ -62,15 +56,15 @@ export function createProjectRepository(db) {
   const insert = db.prepare(`
     INSERT INTO projects (
       title, slug, description, notes, status, project_type,
-      planned_date, published_date, patreon_url
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      patreon_url
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
     RETURNING ${COLUMNS.join(', ')}
   `);
   const update = db.prepare(`
     UPDATE projects
     SET title = ?, slug = ?, description = ?, notes = ?, status = ?,
         project_type = COALESCE(?, project_type),
-        planned_date = ?, published_date = ?, patreon_url = ?,
+        patreon_url = ?,
         updated_at = datetime('now')
     WHERE id = ? AND archived_at IS NULL
     RETURNING ${COLUMNS.join(', ')}
@@ -150,8 +144,6 @@ export function createProjectRepository(db) {
         input.notes,
         input.status,
         input.projectType ?? DEFAULT_PROJECT_TYPE,
-        input.plannedDate ?? null,
-        input.publishedDate ?? null,
         input.patreonUrl ?? null,
       ];
       return insert.get(...values);
@@ -170,8 +162,6 @@ export function createProjectRepository(db) {
         input.notes,
         input.status,
         input.projectType ?? null,
-        input.plannedDate ?? null,
-        input.publishedDate ?? null,
         input.patreonUrl ?? null,
         id,
       ];
@@ -291,54 +281,6 @@ export function createProjectRepository(db) {
     },
 
     /**
-     * Active, non-archived projects with a planned date on or before `today`
-     * that have no releases at all — not even archived or published ones.
-     * Any release row for the project (regardless of status) disqualifies it,
-     * since the project's schedule is then tracked via its releases instead.
-     * The caller is expected to inject `today` so every consumer shares a
-     * single application-local date snapshot — this method must not call
-     * `new Date()` itself.
-     * @param {number} limit
-     * @param {string} today ISO date string YYYY-MM-DD
-     * @returns {ProjectRecord[]}
-     */
-    findOverdueWithoutReleases(limit, today, sortBy, order) {
-      const orderClause = buildDashboardOrderClause(sortBy, order);
-      return db.prepare(`
-        ${SELECT_ALL}
-        WHERE archived_at IS NULL AND status <> 'archived'
-          AND planned_date IS NOT NULL
-          AND date(planned_date) <= ?
-          AND NOT EXISTS (SELECT 1 FROM releases WHERE releases.project_id = projects.id)
-        ${orderClause}
-        LIMIT ?
-      `).all(today, limit);
-    },
-
-    /**
-     * Active, non-archived projects whose planned_date is strictly after the
-     * supplied `today`. Project-oriented (no release-existence condition):
-     * every active project with a future planned date qualifies, whether or
-     * not it has releases. The caller is expected to inject `today` so every
-     * consumer shares a single application-local date snapshot — this method
-     * must not call `new Date()` itself.
-     * @param {number} limit
-     * @param {string} today ISO date string YYYY-MM-DD
-     * @returns {ProjectRecord[]}
-     */
-    findUpcomingPlanned(limit, today, sortBy, order) {
-      const orderClause = buildDashboardOrderClause(sortBy, order);
-      return db.prepare(`
-        ${SELECT_ALL}
-        WHERE archived_at IS NULL AND status <> 'archived'
-          AND planned_date IS NOT NULL
-          AND date(planned_date) > ?
-        ${orderClause}
-        LIMIT ?
-      `).all(today, limit);
-    },
-
-    /**
      * Find independently bounded project collections for requested Dashboard
      * statuses with one windowed SQL statement.
      *
@@ -375,23 +317,12 @@ export function createProjectRepository(db) {
             ROW_NUMBER() OVER (
               PARTITION BY effective_projects.effective_status
               ORDER BY
-                CASE WHEN requested_statuses.sort_by IN ('published', 'planned')
-                  THEN CASE requested_statuses.sort_by
-                    WHEN 'published' THEN effective_projects.published_date IS NULL
-                    WHEN 'planned' THEN effective_projects.planned_date IS NULL
-                  END
-                  ELSE 0
-                END ASC,
                 CASE WHEN requested_statuses.sort_by = 'updated' AND requested_statuses.sort_order = 'asc' THEN effective_projects.updated_at END ASC,
                 CASE WHEN requested_statuses.sort_by = 'updated' AND requested_statuses.sort_order = 'desc' THEN effective_projects.updated_at END DESC,
                 CASE WHEN requested_statuses.sort_by = 'created' AND requested_statuses.sort_order = 'asc' THEN effective_projects.created_at END ASC,
                 CASE WHEN requested_statuses.sort_by = 'created' AND requested_statuses.sort_order = 'desc' THEN effective_projects.created_at END DESC,
                 CASE WHEN requested_statuses.sort_by = 'title' AND requested_statuses.sort_order = 'asc' THEN effective_projects.title END COLLATE NOCASE ASC,
                 CASE WHEN requested_statuses.sort_by = 'title' AND requested_statuses.sort_order = 'desc' THEN effective_projects.title END COLLATE NOCASE DESC,
-                CASE WHEN requested_statuses.sort_by = 'published' AND requested_statuses.sort_order = 'asc' THEN effective_projects.published_date END ASC,
-                CASE WHEN requested_statuses.sort_by = 'published' AND requested_statuses.sort_order = 'desc' THEN effective_projects.published_date END DESC,
-                CASE WHEN requested_statuses.sort_by = 'planned' AND requested_statuses.sort_order = 'asc' THEN date(effective_projects.planned_date) END ASC,
-                CASE WHEN requested_statuses.sort_by = 'planned' AND requested_statuses.sort_order = 'desc' THEN date(effective_projects.planned_date) END DESC,
                 CASE WHEN requested_statuses.sort_order = 'asc' THEN effective_projects.id END ASC,
                 CASE WHEN requested_statuses.sort_order = 'desc' THEN effective_projects.id END DESC
             ) AS status_rank
@@ -557,22 +488,10 @@ const ALLOWED_SORTS = Object.freeze({
   updated: DASHBOARD_SORTS.updated,
   created: DASHBOARD_SORTS.created,
   title: DASHBOARD_SORTS.title,
-  published: DASHBOARD_SORTS.published,
-  planned: DASHBOARD_SORTS.planned,
 });
 
 function buildOrderClause(sortBy, order) {
   const sort = ALLOWED_SORTS[sortBy] || ALLOWED_SORTS.updated;
   const direction = order === 'asc' ? 'ASC' : 'DESC';
-  if (sort.nullsLast) {
-    return `ORDER BY (${sort.column} IS NULL) ASC, ${sort.column} ${direction}`;
-  }
   return `ORDER BY ${sort.column} ${direction}`;
-}
-
-function buildDashboardOrderClause(sortBy, order) {
-  const sort = DASHBOARD_SORTS[sortBy] || DASHBOARD_SORTS.planned;
-  const direction = order === 'desc' ? 'DESC' : 'ASC';
-  const nullsLast = sort.nullsLast ? `(${sort.column} IS NULL) ASC, ` : '';
-  return `ORDER BY ${nullsLast}${sort.column} ${direction}, id ${direction}`;
 }

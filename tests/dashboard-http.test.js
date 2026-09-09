@@ -1,12 +1,9 @@
 /**
  * HTTP-level tests for the dashboard composition.
  *
- * The dashboard was redesigned around the project-oriented view-model
- * (`overdue`, `upcoming`, `recentlyUpdated`) composed by
- * `workflowQueryService.getDashboardData()`. Overdue and Upcoming releases
- * now render project cards via the established `partials/project-card.njk`
- * + `.project-grid` pattern instead of release lists, and the old
- * release-attention/workflow-summary sections have been removed.
+ * The dashboard renders configurable retained project sections composed by
+ * `workflowQueryService.getDashboardData()` through the established
+ * `partials/project-card.njk` + `.project-grid` pattern.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
@@ -16,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
+import { createAppMetaRepository } from '../src/data/app-meta-repository.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 
@@ -48,8 +46,6 @@ function extractSummaryCards(html) {
 
 function extractSection(html, className) {
   const sectionIds = {
-    'overdue-projects': 'overdue',
-    'upcoming-releases': 'upcoming',
     'recent-projects': 'recently-updated',
   };
   const sectionId = sectionIds[className] || className;
@@ -71,14 +67,13 @@ function extractProjectCard(html, projectId) {
   return cards.find((card) => card.includes(`data-project-card-link href="/projects/${projectId}"`)) || '';
 }
 
-async function createProject(app, { title, status = 'tbd', plannedDate = null, projectType = 'images' }) {
+async function createProject(app, { title, status = 'tbd', projectType = 'images' }) {
   const parts = [
     `title=${encodeURIComponent(title)}`,
     `status=${status}`,
     `projectType=${projectType}`,
     'priority=normal',
   ];
-  if (plannedDate) parts.push(`plannedDate=${plannedDate}`);
   parts.push('_csrf=' + encodeURIComponent(app.testCsrfToken));
 
   const res = await app.testAgent
@@ -321,9 +316,8 @@ describe('dashboard HTTP composition', () => {
     });
 
     it('reuses one established project-grid size control for Dashboard project sections', async () => {
-      await createProject(app, { title: 'Overdue Size Project', status: 'planned', plannedDate: '2020-01-01' });
-      await createProject(app, { title: 'Upcoming Size Project', status: 'planned', plannedDate: '2099-01-15' });
       await createProject(app, { title: 'Recent Size Project', status: 'ready' });
+      await createProject(app, { title: 'Planned Size Project', status: 'planned' });
 
       const res = await app.testAgent.get('/').expect(200);
       const controls = res.text;
@@ -339,7 +333,7 @@ describe('dashboard HTTP composition', () => {
       expect(controls).toContain('data-grid-size-option-label="large"');
       expect(DASHBOARD_TEMPLATE).not.toContain('creatorcrate-dashboard-grid-size');
 
-      for (const sectionName of ['overdue-projects', 'upcoming-releases', 'recent-projects']) {
+      for (const sectionName of ['recent-projects', 'status:planned']) {
         expect(extractSection(res.text, sectionName)).toContain('<ul class="project-grid">');
       }
     });
@@ -363,9 +357,8 @@ describe('dashboard HTTP composition', () => {
     it('opens from ?defaults=1 and renders every normalized section in saved order', async () => {
       const defaults = app.locals.dashboardDefaultsService.getDefaults();
       defaults.order = [...defaults.order].reverse();
-      defaults.sections.overdue = { visible: false, itemCount: 3 };
-      defaults.sections.upcoming = { visible: true, itemCount: 11 };
-      defaults.sections['status:ready'] = { visible: true, itemCount: 17 };
+      defaults.sections['recently-updated'] = { ...defaults.sections['recently-updated'], visible: false, itemCount: 3 };
+      defaults.sections['status:ready'] = { ...defaults.sections['status:ready'], itemCount: 17 };
       app.locals.dashboardDefaultsService.saveDefaults(defaults);
 
       const res = await app.testAgent.get('/?defaults=1').expect(200);
@@ -378,7 +371,7 @@ describe('dashboard HTTP composition', () => {
       expect(dialog).toContain('data-dialog-form data-dashboard-defaults-reorder-form');
       expect(renderedIds).toEqual(defaults.order);
       expect(dialog).toContain('name="orderedSectionIds" data-dashboard-defaults-order-input value="' + defaults.order.join(',') + '"');
-      expect(renderedIds).toHaveLength(9);
+      expect(renderedIds).toHaveLength(7);
       expect(dialog).not.toContain('data-dashboard-section-id="projects"');
       expect(dialog).not.toContain('data-dashboard-section-id="assets"');
       expect(dialog).not.toContain('data-dashboard-section-id="missing-assets"');
@@ -407,17 +400,18 @@ describe('dashboard HTTP composition', () => {
       expect(dialog).toContain('class="dashboard-defaults-section-content"');
       expect(dialog).not.toContain('data-dashboard-defaults-order-position');
       expect(dialog).not.toContain('<span class="field-label">Show section</span>');
-      expect(dialog.match(/<span class="sr-only">Show [^<]+<\/span>/g)).toHaveLength(9);
-      expect(dialog.match(/<label class="sr-only" for="dashboard-defaults-section-[^"]+-item-count">Items to show for [^<]+<\/label>/g)).toHaveLength(9);
+      expect(dialog.match(/<span class="sr-only">Show [^<]+<\/span>/g)).toHaveLength(7);
+      expect(dialog.match(/<label class="sr-only" for="dashboard-defaults-section-[^"]+-item-count">Items to show for [^<]+<\/label>/g)).toHaveLength(7);
       expect(dialog).toContain('min="1" max="25" step="1"');
       expect(dialog).toContain('Drag a handle to move a section, or focus a handle and use Arrow Up, Arrow Down, Home, or End. Select Save defaults to keep the new order.');
       expect(dialog).not.toMatch(/<button[^>]+(?:aria-label|title)="[^"]*\b(?:Up|Down)\b/i);
       expect(dialog).not.toContain('>Cancel</button>');
       expect(dialog).toContain('>Save defaults</button>');
-      expect((dialog.match(/aria-label="Sort options for [^"]+"/g) || [])).toHaveLength(9);
+      expect((dialog.match(/aria-label="Sort options for [^"]+"/g) || [])).toHaveLength(7);
       expect((res.text.match(/id="dashboard-defaults-sort-dialog"/g) || [])).toHaveLength(1);
       expect(sortDialog).toContain('Sort by');
-      expect(sortDialog).toContain('value="published"');
+      expect(sortDialog).not.toContain('value="published"');
+      expect(sortDialog).not.toContain('value="planned"');
       expect(sortDialog).toContain('data-dashboard-defaults-sort-apply');
     });
 
@@ -439,7 +433,7 @@ describe('dashboard HTTP composition', () => {
       const defaults = app.locals.dashboardDefaultsService.getDefaults();
       const order = [...defaults.order].reverse();
       const sections = Object.fromEntries(order.map((sectionId, index) => [sectionId, {
-        visible: sectionId !== 'upcoming',
+        visible: sectionId !== 'status:archived',
         itemCount: index + 1,
       }]));
 
@@ -461,7 +455,7 @@ describe('dashboard HTTP composition', () => {
       const defaults = app.locals.dashboardDefaultsService.getDefaults();
       const order = [...defaults.order.slice(3), ...defaults.order.slice(0, 3)];
       const sections = Object.fromEntries(order.map((sectionId, index) => [sectionId, {
-        visible: sectionId !== 'overdue',
+        visible: sectionId !== 'status:completed',
         itemCount: 25 - index,
       }]));
 
@@ -501,10 +495,8 @@ describe('dashboard HTTP composition', () => {
     it('persists valid per-section sort and order values', async () => {
       const form = buildDashboardDefaultsForm(app, {
         sections: {
-          overdue: { sort: 'title', order: 'desc' },
-          upcoming: { sort: 'created', order: 'asc' },
-          'recently-updated': { sort: 'published', order: 'desc' },
-          'status:ready': { sort: 'planned', order: 'asc' },
+          'recently-updated': { sort: 'title', order: 'desc' },
+          'status:ready': { sort: 'created', order: 'asc' },
         },
       });
 
@@ -515,10 +507,8 @@ describe('dashboard HTTP composition', () => {
         .expect(302);
 
       const saved = app.locals.dashboardDefaultsService.getDefaults();
-      expect(saved.sections.overdue).toMatchObject({ sort: 'title', order: 'desc' });
-      expect(saved.sections.upcoming).toMatchObject({ sort: 'created', order: 'asc' });
-      expect(saved.sections['recently-updated']).toMatchObject({ sort: 'published', order: 'desc' });
-      expect(saved.sections['status:ready']).toMatchObject({ sort: 'planned', order: 'asc' });
+      expect(saved.sections['recently-updated']).toMatchObject({ sort: 'title', order: 'desc' });
+      expect(saved.sections['status:ready']).toMatchObject({ sort: 'created', order: 'asc' });
     });
 
     it.each([
@@ -527,7 +517,7 @@ describe('dashboard HTTP composition', () => {
     ])('rejects an unsupported section %s without changing saved defaults', async (field, value) => {
       const previous = app.locals.dashboardDefaultsService.getDefaults();
       const form = buildDashboardDefaultsForm(app);
-      form.sections.overdue[field] = value;
+      form.sections['recently-updated'][field] = value;
 
       const res = await app.testAgent
         .post('/dashboard/defaults')
@@ -536,7 +526,7 @@ describe('dashboard HTTP composition', () => {
         .send(form)
         .expect(422);
 
-      expect(res.body.errors[`sections[overdue][${field}]`]).toBeTruthy();
+      expect(res.body.errors[`sections[recently-updated][${field}]`]).toBeTruthy();
       expect(app.locals.dashboardDefaultsService.getDefaults()).toEqual(previous);
     });
 
@@ -549,8 +539,8 @@ describe('dashboard HTTP composition', () => {
     ])('rejects a %s item count without changing saved defaults', async (_label, itemCount) => {
       const previous = app.locals.dashboardDefaultsService.getDefaults();
       const form = buildDashboardDefaultsForm(app);
-      if (itemCount === undefined) delete form.sections.overdue.itemCount;
-      else form.sections.overdue.itemCount = itemCount;
+      if (itemCount === undefined) delete form.sections['recently-updated'].itemCount;
+      else form.sections['recently-updated'].itemCount = itemCount;
 
       const res = await app.testAgent
         .post('/dashboard/defaults')
@@ -559,14 +549,14 @@ describe('dashboard HTTP composition', () => {
         .send(form)
         .expect(422);
 
-      expect(res.body.errors['sections[overdue][itemCount]']).toBeTruthy();
+      expect(res.body.errors['sections[recently-updated][itemCount]']).toBeTruthy();
       expect(app.locals.dashboardDefaultsService.getDefaults()).toEqual(previous);
     });
 
     it('returns independent field-name errors for multiple invalid counts, including status sections', async () => {
       const previous = app.locals.dashboardDefaultsService.getDefaults();
       const form = buildDashboardDefaultsForm(app);
-      form.sections.overdue.itemCount = '0';
+      form.sections['recently-updated'].itemCount = '0';
       form.sections['status:ready'].itemCount = 'many';
 
       const res = await app.testAgent
@@ -579,13 +569,13 @@ describe('dashboard HTTP composition', () => {
       expect(res.body).toMatchObject({
         status: 'error',
         errors: {
-          'sections[overdue][itemCount]': 'Items to show must be between 1 and 25.',
+          'sections[recently-updated][itemCount]': 'Items to show must be between 1 and 25.',
           'sections[status:ready][itemCount]': 'Items to show must be an integer.',
         },
         values: {
           orderedSectionIds: form.orderedSectionIds,
           sections: {
-            overdue: { visible: true, itemCount: '0' },
+            'recently-updated': { visible: true, itemCount: '0' },
             'status:ready': { visible: true, itemCount: 'many' },
           },
         },
@@ -596,8 +586,8 @@ describe('dashboard HTTP composition', () => {
 
     it('parses the hidden-plus-checkbox visibility contract into explicit booleans', async () => {
       const form = buildDashboardDefaultsForm(app);
-      form.sections.overdue.visible = ['0', '1'];
-      form.sections.upcoming.visible = '0';
+      form.sections['recently-updated'].visible = ['0', '1'];
+      form.sections['status:archived'].visible = '0';
 
       await app.testAgent
         .post('/dashboard/defaults')
@@ -607,8 +597,8 @@ describe('dashboard HTTP composition', () => {
         .expect(200);
 
       const saved = app.locals.dashboardDefaultsService.getDefaults();
-      expect(saved.sections.overdue.visible).toBe(true);
-      expect(saved.sections.upcoming.visible).toBe(false);
+      expect(saved.sections['recently-updated'].visible).toBe(true);
+      expect(saved.sections['status:archived'].visible).toBe(false);
     });
 
     it('rejects summary-card tampering without persisting an unknown Dashboard section', async () => {
@@ -645,7 +635,7 @@ describe('dashboard HTTP composition', () => {
       const form = buildDashboardDefaultsForm(app, {
         order: [...app.locals.dashboardDefaultsService.getDefaults().order].reverse(),
       });
-      form.sections.overdue.itemCount = '0';
+      form.sections['recently-updated'].itemCount = '0';
 
       const res = await app.testAgent
         .post('/dashboard/defaults')
@@ -664,7 +654,7 @@ describe('dashboard HTTP composition', () => {
     it('re-renders static and status visibility errors with switch-level ARIA feedback without persisting', async () => {
       const previous = app.locals.dashboardDefaultsService.getDefaults();
       const form = buildDashboardDefaultsForm(app);
-      form.sections.overdue.visible = 'invalid';
+      form.sections['recently-updated'].visible = 'invalid';
       form.sections['status:ready'].visible = 'invalid';
 
       const res = await app.testAgent
@@ -675,44 +665,24 @@ describe('dashboard HTTP composition', () => {
       const dialog = extractDashboardDefaultsDialog(res.text);
 
       expect(dialog).toContain('class="app-dialog" data-app-dialog open');
-      expect(dialog).toContain('data-dialog-field="sections[overdue][visible]"');
+      expect(dialog).toContain('data-dialog-field="sections[recently-updated][visible]"');
       expect(dialog).toContain('data-dialog-field="sections[status:ready][visible]"');
-      expect(dialog).toContain('id="dashboard-defaults-section-overdue-visible"');
+      expect(dialog).toContain('id="dashboard-defaults-section-recently-updated-visible"');
       expect(dialog).toContain('id="dashboard-defaults-section-status:ready-visible"');
-      expect(dialog).toContain('aria-describedby="dashboard-defaults-section-overdue-visible-error"');
+      expect(dialog).toContain('aria-describedby="dashboard-defaults-section-recently-updated-visible-error"');
       expect(dialog).toContain('aria-describedby="dashboard-defaults-section-status:ready-visible-error"');
       expect(dialog).toContain('Show section must be explicitly enabled or disabled.');
-      expect(dialog).toMatch(/id="dashboard-defaults-section-overdue-visible"[\s\S]*?aria-invalid="true">/);
+      expect(dialog).toMatch(/id="dashboard-defaults-section-recently-updated-visible"[\s\S]*?aria-invalid="true">/);
       expect(dialog).toMatch(/id="dashboard-defaults-section-status:ready-visible"[\s\S]*?aria-invalid="true">/);
-      expect(dialog).not.toMatch(/id="dashboard-defaults-section-overdue-visible"[^>]*\schecked/);
+      expect(dialog).not.toMatch(/id="dashboard-defaults-section-recently-updated-visible"[^>]*\schecked/);
       expect(dialog).not.toMatch(/id="dashboard-defaults-section-status:ready-visible"[^>]*\schecked/);
-      expect(dialog).toContain(`value="${previous.sections.upcoming.itemCount}"`);
+      expect(dialog).toContain(`value="${previous.sections['status:planned'].itemCount}"`);
       expect(Array.from(dialog.matchAll(/data-dashboard-section-id="([^"]+)"/g), ([, id]) => id)).toEqual(form.orderedSectionIds.split(','));
       expect(app.locals.dashboardDefaultsService.getDefaults()).toEqual(previous);
     });
   });
 
   describe('dashboard static section visibility', () => {
-    it('omits the Overdue section and empty state when overdue is hidden', async () => {
-      setDashboardSectionVisibility(app, 'overdue', false);
-
-      const res = await app.testAgent.get('/').expect(200);
-
-      expect(extractSection(res.text, 'overdue-projects')).toBe('');
-      expect(res.text).not.toContain('<h2>Overdue</h2>');
-      expect(res.text).not.toContain('No overdue projects');
-    });
-
-    it('omits the Upcoming releases section and empty state when upcoming is hidden', async () => {
-      setDashboardSectionVisibility(app, 'upcoming', false);
-
-      const res = await app.testAgent.get('/').expect(200);
-
-      expect(extractSection(res.text, 'upcoming-releases')).toBe('');
-      expect(res.text).not.toContain('<h2>Upcoming releases</h2>');
-      expect(res.text).not.toContain('No upcoming projects scheduled');
-    });
-
     it('omits the Recently updated projects section and empty state when recently-updated is hidden', async () => {
       setDashboardSectionVisibility(app, 'recently-updated', false);
 
@@ -723,26 +693,21 @@ describe('dashboard HTTP composition', () => {
       expect(res.text).not.toContain('No projects are currently tracked');
     });
 
-    it('keeps a visible but empty static section and its established empty state', async () => {
-      setDashboardSectionVisibility(app, 'overdue', true);
-
+    it('keeps a visible but empty retained section and its established empty state', async () => {
       const res = await app.testAgent.get('/').expect(200);
-      const section = extractSection(res.text, 'overdue-projects');
+      const section = extractSection(res.text, 'recent-projects');
 
-      expect(section).toContain('<h2>Overdue</h2>');
+      expect(section).toContain('<h2>Recently updated projects</h2>');
       expect(section).toContain('empty-state');
-      expect(section).toContain('No overdue projects');
+      expect(section).toContain('No projects are currently tracked');
     });
   });
-
   describe('dashboard configurable section rendering', () => {
     it('renders every visible static and status section in saved order with service-provided limits', async () => {
       const defaults = app.locals.dashboardDefaultsService.getDefaults();
       defaults.order = [
         'status:ready',
-        'overdue',
         'status:archived',
-        'upcoming',
         'recently-updated',
         'status:tbd',
         'status:planned',
@@ -757,7 +722,7 @@ describe('dashboard HTTP composition', () => {
       await createProject(app, { title: 'Ready Second', status: 'ready' });
       await createProject(app, { title: 'TBD First', status: 'tbd' });
       await createProject(app, { title: 'TBD Second', status: 'tbd' });
-      await createProject(app, { title: 'Planned Status Project', status: 'planned', plannedDate: '2099-01-15' });
+      await createProject(app, { title: 'Planned Status Project', status: 'planned' });
       await createProject(app, { title: 'In Progress Status Project', status: 'in-progress' });
       await createProject(app, { title: 'Completed Status Project', status: 'completed' });
       const archivedProjectId = await createProject(app, { title: 'Archived Status Project', status: 'completed' });
@@ -766,9 +731,7 @@ describe('dashboard HTTP composition', () => {
       const dashboard = (await app.testAgent.get('/').expect(200)).text;
       const expectedHeadings = [
         'Ready',
-        'Overdue',
         'Archived',
-        'Upcoming releases',
         'Recently updated projects',
         'TBD',
         'Planned',
@@ -802,14 +765,11 @@ describe('dashboard HTTP composition', () => {
     });
 
     it('omits hidden static and status sections while keeping a visible empty status section', async () => {
-      setDashboardSectionVisibility(app, 'upcoming', false);
       setDashboardSectionVisibility(app, 'status:planned', false);
 
       const dashboard = (await app.testAgent.get('/').expect(200)).text;
 
-      expect(extractSection(dashboard, 'upcoming')).toBe('');
       expect(extractSection(dashboard, 'status:planned')).toBe('');
-      expect(dashboard).not.toContain('<h2>Upcoming releases</h2>');
       expect(dashboard).not.toContain('<h2>Planned</h2>');
       expect(extractSection(dashboard, 'status:ready')).toContain('<h2>Ready</h2>');
       expect(extractSection(dashboard, 'status:ready')).toContain('empty-state');
@@ -822,64 +782,6 @@ describe('dashboard HTTP composition', () => {
       expect(DASHBOARD_TEMPLATE).not.toContain('overdue-projects');
       expect(DASHBOARD_TEMPLATE).not.toContain('upcoming-releases');
       expect(DASHBOARD_TEMPLATE).not.toContain('recent-projects');
-    });
-  });
-
-  // ─── Overdue ────────────────────────────────────────────────────────
-
-  describe('dashboard overdue section', () => {
-    it('keeps the Overdue heading', async () => {
-      const res = await app.testAgent.get('/').expect(200);
-      expect(extractSection(res.text, 'overdue-projects')).toContain('<h2>Overdue</h2>');
-    });
-
-    it('shows the established empty-state contract when there are no overdue projects', async () => {
-      const res = await app.testAgent.get('/').expect(200);
-      const section = extractSection(res.text, 'overdue-projects');
-      expect(section).toContain('empty-state');
-      expect(section).toContain('No overdue projects');
-    });
-
-    it('renders overdue projects as project cards in the established project-grid', async () => {
-      await createProject(app, { title: 'Overdue Card Project', status: 'planned', plannedDate: '2020-01-01' });
-
-      const res = await app.testAgent.get('/').expect(200);
-      const section = extractSection(res.text, 'overdue-projects');
-      expect(section).toContain('<ul class="project-grid">');
-      expect(section).toMatch(/<article class="project-card project-card--grid project-grid-card" data-project-card>/);
-      expect(section).toContain('Overdue Card Project');
-      // No primary image selected: established no-image fallback renders through the partial.
-      expect(section).toContain('No image');
-      expect(section).toContain('project-card-media--fallback');
-    });
-  });
-
-  // ─── Upcoming releases (now projects) ──────────────────────────────
-
-  describe('dashboard upcoming releases section', () => {
-    it('keeps the Upcoming releases heading', async () => {
-      const res = await app.testAgent.get('/').expect(200);
-      expect(extractSection(res.text, 'upcoming-releases')).toContain('<h2>Upcoming releases</h2>');
-    });
-
-    it('shows an empty state when there are no upcoming projects', async () => {
-      const res = await app.testAgent.get('/').expect(200);
-      const section = extractSection(res.text, 'upcoming-releases');
-      expect(section).toContain('empty-state');
-      expect(section).toContain('No upcoming projects scheduled');
-    });
-
-    it('renders upcoming projects as project cards, not the old grouped-release markup', async () => {
-      await createProject(app, { title: 'Upcoming Card Project', status: 'planned', plannedDate: '2099-01-15' });
-
-      const res = await app.testAgent.get('/').expect(200);
-      const section = extractSection(res.text, 'upcoming-releases');
-      expect(section).toContain('<ul class="project-grid">');
-      expect(section).toMatch(/<article class="project-card project-card--grid project-grid-card" data-project-card>/);
-      expect(section).toContain('Upcoming Card Project');
-      expect(section).not.toContain('upcoming-grouped');
-      expect(section).not.toContain('upcoming-date');
-      expect(section).not.toContain('release-list');
     });
   });
 
@@ -912,15 +814,12 @@ describe('dashboard HTTP composition', () => {
 
   describe('dashboard project-card heading hierarchy', () => {
     it('renders section headings as h2 and grid-card titles as h3 without changing the default Projects card title', async () => {
-      const overdueId = await createProject(app, { title: 'Overdue Heading Project', status: 'planned', plannedDate: '2020-01-01' });
-      const upcomingId = await createProject(app, { title: 'Upcoming Heading Project', status: 'planned', plannedDate: '2099-01-15' });
       const recentId = await createProject(app, { title: 'Recent Heading Project', status: 'ready' });
 
       const dashboard = (await app.testAgent.get('/').expect(200)).text;
       const sections = [
-        ['overdue-projects', 'Overdue', overdueId],
-        ['upcoming-releases', 'Upcoming releases', upcomingId],
         ['recent-projects', 'Recently updated projects', recentId],
+        ['status:ready', 'Ready', recentId],
       ];
 
       for (const [className, heading, projectId] of sections) {
@@ -938,6 +837,38 @@ describe('dashboard HTTP composition', () => {
   // ─── Removed sections ───────────────────────────────────────────────
 
   describe('removed dashboard sections', () => {
+    it('normalizes stale Project-date Dashboard defaults without losing retained preferences', async () => {
+      createAppMetaRepository(db).setValue('page_defaults.dashboard', JSON.stringify({
+        version: 1,
+        order: ['status:ready', 'overdue', 'upcoming', 'recently-updated'],
+        sections: {
+          overdue: { visible: true, itemCount: 3, sort: 'planned', order: 'asc' },
+          upcoming: { visible: true, itemCount: 4, sort: 'planned', order: 'asc' },
+          'status:ready': { visible: false, itemCount: 12, sort: 'title', order: 'asc' },
+          'recently-updated': { visible: true, itemCount: 6, sort: 'published', order: 'asc' },
+        },
+      }));
+
+      const res = await app.testAgent.get('/?defaults=1').expect(200);
+      const defaults = app.locals.dashboardDefaultsService.getDefaults();
+      const dialog = extractDashboardDefaultsDialog(res.text);
+
+      expect(defaults.order.slice(0, 2)).toEqual(['status:ready', 'recently-updated']);
+      expect(defaults.sections).not.toHaveProperty('overdue');
+      expect(defaults.sections).not.toHaveProperty('upcoming');
+      expect(defaults.sections['status:ready']).toEqual({
+        visible: false, itemCount: 12, sort: 'title', order: 'asc',
+      });
+      expect(defaults.sections['recently-updated']).toEqual({
+        visible: true, itemCount: 6, sort: 'updated', order: 'asc',
+      });
+      expect(res.text).not.toContain('data-dashboard-section="overdue"');
+      expect(res.text).not.toContain('data-dashboard-section="upcoming"');
+      expect(dialog).not.toContain('data-dashboard-section-id="overdue"');
+      expect(dialog).not.toContain('data-dashboard-section-id="upcoming"');
+      expect(dialog).not.toContain('data-dashboard-section-id="releases"');
+    });
+
     it('does not render the Releases needing attention section', async () => {
       const res = await app.testAgent.get('/').expect(200);
       expect(res.text).not.toContain('Releases needing attention');
@@ -958,7 +889,7 @@ describe('dashboard HTTP composition', () => {
     });
 
     it('does not render any old release-list or attention-group markup', async () => {
-      await createProject(app, { title: 'No Old Markup Project', status: 'planned', plannedDate: '2020-01-01' });
+      await createProject(app, { title: 'No Old Markup Project', status: 'planned' });
 
       const res = await app.testAgent.get('/').expect(200);
       expect(res.text).not.toContain('release-list');

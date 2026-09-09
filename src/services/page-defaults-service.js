@@ -35,7 +35,7 @@ function definition(key, values, fallback, { multi = false } = {}) {
 export const PAGE_DEFAULT_DEFINITIONS = Object.freeze({
   [PROJECTS]: Object.freeze({
     view: definition('page_defaults.projects.view', ['grid', 'list'], 'grid'),
-    sort: definition('page_defaults.projects.sort', ['updated', 'created', 'title', 'published'], 'created'),
+    sort: definition('page_defaults.projects.sort', ['updated', 'created', 'title'], 'created'),
     order: definition('page_defaults.projects.order', ['asc', 'desc'], 'desc'),
     status: definition('page_defaults.projects.status', ['all', ...STATUSES], 'all'),
     projectType: definition('page_defaults.projects.project_type', ['all', ...PROJECT_TYPES], 'all'),

@@ -135,43 +135,41 @@ describe('dashboard route wiring', () => {
   });
 
   it('builds ordered visible section view-models with canonical labels and independent counts', async () => {
-    const customFirst = ['status:ready', 'overdue', 'status:planned', 'recently-updated'];
+    const customFirst = ['status:ready', 'status:planned', 'recently-updated'];
     const dashboardDefaults = buildDefaults({
       order: [...customFirst, ...SECTION_IDS.filter((id) => !customFirst.includes(id))],
       sections: {
         'status:ready': { itemCount: 3 },
-        overdue: { itemCount: 5 },
         'status:planned': { itemCount: 7 },
         'recently-updated': { itemCount: 9 },
-        upcoming: { visible: false },
+        'status:archived': { visible: false },
       },
     });
     const { app, getCaptured } = createTestApp({
       dashboardDefaults,
       dashboard: emptyDashboard({
         'status:ready': [buildProject({ id: 1 })],
-        overdue: [buildProject({ id: 2 })],
         'status:planned': [buildProject({ id: 3 })],
         'recently-updated': [buildProject({ id: 4 })],
-        upcoming: [buildProject({ id: 5 })],
+        'status:archived': [buildProject({ id: 5 })],
       }),
     });
 
     await request(app).get('/').expect(200);
 
-    const { dashboardSections, overdue, recentlyUpdated } = getCaptured().locals;
+    const { dashboardSections, recentlyUpdated } = getCaptured().locals;
     expect(dashboardSections.map(({ id }) => id)).toEqual(dashboardDefaults.order.filter(
-      (id) => id !== 'upcoming'
+      (id) => id !== 'status:archived'
     ));
-    expect(dashboardSections.slice(0, 4)).toEqual([
+    expect(dashboardSections.slice(0, 3)).toEqual([
       { id: 'status:ready', label: 'Ready', visible: true, itemCount: 3, projects: [expect.objectContaining({ id: 1 })] },
-      { id: 'overdue', label: 'Overdue', visible: true, itemCount: 5, projects: [expect.objectContaining({ id: 2 })] },
       { id: 'status:planned', label: 'Planned', visible: true, itemCount: 7, projects: [expect.objectContaining({ id: 3 })] },
       { id: 'recently-updated', label: 'Recently updated projects', visible: true, itemCount: 9, projects: [expect.objectContaining({ id: 4 })] },
     ]);
-    expect(dashboardSections).not.toContainEqual(expect.objectContaining({ id: 'upcoming' }));
-    expect(overdue).toBe(dashboardSections.find(({ id }) => id === 'overdue').projects);
+    expect(dashboardSections).not.toContainEqual(expect.objectContaining({ id: 'status:archived' }));
     expect(recentlyUpdated).toBe(dashboardSections.find(({ id }) => id === 'recently-updated').projects);
+    expect(getCaptured().locals).not.toHaveProperty('overdue');
+    expect(getCaptured().locals).not.toHaveProperty('upcoming');
   });
 
   it('uses the canonical static and status labels for visible sections', async () => {
@@ -180,7 +178,6 @@ describe('dashboard route wiring', () => {
     await request(app).get('/').expect(200);
 
     expect(getCaptured().locals.dashboardSections.map(({ id, label }) => ({ id, label }))).toEqual(expect.arrayContaining([
-      { id: 'upcoming', label: 'Upcoming releases' },
       { id: 'recently-updated', label: 'Recently updated projects' },
       { id: 'status:tbd', label: 'TBD' },
       { id: 'status:in-progress', label: 'In progress' },
@@ -191,7 +188,7 @@ describe('dashboard route wiring', () => {
   it('applies NSFW presentation state to every visible static and status section only', async () => {
     const dashboardDefaults = buildDefaults({ sections: { 'status:archived': { visible: false } } });
     const dashboard = emptyDashboard({
-      overdue: [buildProject({ id: 1, tags: [{ displayName: 'NSFW' }] })],
+      'recently-updated': [buildProject({ id: 1, tags: [{ displayName: 'NSFW' }] })],
       'status:ready': [buildProject({ id: 2, tags: [{ display_name: 'nsfw' }] })],
       'status:archived': [buildProject({ id: 3, tags: [{ displayName: 'NSFW' }] })],
     });
@@ -199,8 +196,8 @@ describe('dashboard route wiring', () => {
 
     await request(app).get('/').expect(200);
 
-    const { dashboardSections, overdue } = getCaptured().locals;
-    expect(overdue[0].nsfwBlur).toBe(true);
+    const { dashboardSections, recentlyUpdated } = getCaptured().locals;
+    expect(recentlyUpdated[0].nsfwBlur).toBe(true);
     expect(dashboardSections.find(({ id }) => id === 'status:ready').projects[0].nsfwBlur).toBe(true);
     expect(dashboardSections).not.toContainEqual(expect.objectContaining({ id: 'status:archived' }));
   });

@@ -23,8 +23,6 @@ function getStatusSectionLabel(status) {
 }
 
 export const DASHBOARD_SECTION_REGISTRY = Object.freeze([
-  Object.freeze({ id: 'overdue', label: 'Overdue' }),
-  Object.freeze({ id: 'upcoming', label: 'Upcoming releases' }),
   Object.freeze({ id: 'recently-updated', label: 'Recently updated projects' }),
   ...STATUSES.map((status) => Object.freeze({
     id: `status:${status}`,
@@ -40,22 +38,19 @@ function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
-function defaultSorting(sectionId) {
-  if (sectionId === 'overdue' || sectionId === 'upcoming') {
-    return { sort: 'planned', order: 'asc' };
-  }
+function defaultSorting() {
   return { sort: 'updated', order: 'desc' };
 }
 
-export function getDashboardSectionDefaultSorting(sectionId) {
-  return defaultSorting(sectionId);
+export function getDashboardSectionDefaultSorting() {
+  return defaultSorting();
 }
 
 function defaultSection(sectionId) {
   return {
     visible: true,
     itemCount: DASHBOARD_DEFAULT_ITEM_COUNT,
-    ...defaultSorting(sectionId),
+    ...defaultSorting(),
   };
 }
 

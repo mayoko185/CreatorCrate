@@ -233,9 +233,6 @@ function serializeCategories(categories) {
  *   "YYYY-MM-DDT00:00:00.000Z"     → "YYYY-MM-DD"           (date-only round-trip)
  *   null                            → null
  *
- * The date-only round-trip ensures that planned_date / published_date
- * (stored as "YYYY-MM-DD" in the database) survive serialize→deserialize.
- *
  * @param {string|null} value
  * @returns {string|null}
  */
@@ -243,8 +240,8 @@ function parseDate(value) {
   if (value == null) return null;
   const str = String(value).replace('T', ' ');
   const trimmed = str.replace(/\.\d+Z$/, '');
-  // If the time component is midnight, return date-only to satisfy
-  // database CHECK constraints (planned_date LIKE '____-__-__').
+  // Preserve the established reverse conversion for supported v3 timestamp
+  // fields when a manifest carries an ISO midnight value.
   if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(trimmed)) {
     const time = trimmed.slice(11);
     if (time === '00:00:00') return trimmed.slice(0, 10);
@@ -281,8 +278,6 @@ export function serializeManifest(project, categories = []) {
     tags: [],
     createdAt: formatDate(project.created_at),
     updatedAt: formatDate(project.updated_at),
-    plannedDate: formatDate(project.planned_date),
-    publishedDate: formatDate(project.published_date),
     patreonUrl: project.patreon_url ?? null,
     thumbnail: null,
     assetCategories: serializeCategories(categories),
@@ -315,8 +310,6 @@ export function deserializeManifest(manifest) {
     tags: manifest.tags ?? [],
     created_at: parseDate(manifest.createdAt),
     updated_at: parseDate(manifest.updatedAt),
-    planned_date: parseDate(manifest.plannedDate),
-    published_date: parseDate(manifest.publishedDate),
     patreon_url: manifest.patreonUrl ?? null,
     thumbnail: manifest.thumbnail ?? null,
   };

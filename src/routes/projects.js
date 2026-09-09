@@ -24,7 +24,7 @@ import {
   handlePageDefaultsPost,
 } from './page-defaults.js';
 
-const SORT_OPTIONS = ['updated', 'created', 'title', 'published'];
+const SORT_OPTIONS = ['updated', 'created', 'title'];
 const VIEW_OPTIONS = ['grid', 'list'];
 const PAGE_SIZE = 25;
 const NSFW_TAG_NORMALIZED_NAME = NSFW_TAG_NAME.toLowerCase();
@@ -48,7 +48,6 @@ const PROJECTS_DEFAULT_LABELS = Object.freeze({
       updated: 'Recently updated',
       created: 'Recently created',
       title: 'Title',
-      published: 'Published',
     }),
     order: Object.freeze({ asc: 'Ascending', desc: 'Descending' }),
   }),
@@ -951,8 +950,6 @@ function parseProjectInput(body) {
     notes: body.notes,
     status: body.status,
     projectType: body.projectType,
-    plannedDate: body.plannedDate || null,
-    publishedDate: body.publishedDate || null,
     patreonUrl: body.patreonUrl || null,
   };
 }
@@ -978,8 +975,6 @@ function projectToFormValues(project) {
     notes: project.notes,
     status: project.status,
     projectType: project.project_type,
-    plannedDate: project.planned_date || '',
-    publishedDate: project.published_date || '',
     patreonUrl: project.patreon_url || '',
   };
 }

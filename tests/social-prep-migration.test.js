@@ -18,8 +18,8 @@ describe('social preparation migration', () => {
 
   function createProjectAndRelease() {
     const projectId = Number(db.prepare(`
-      INSERT INTO projects (title, slug, description, notes, status, planned_date, published_date, patreon_url)
-      VALUES ('Project', 'project', '', '', 'tbd', NULL, NULL, NULL)
+      INSERT INTO projects (title, slug, description, notes, status, patreon_url)
+      VALUES ('Project', 'project', '', '', 'tbd', NULL)
     `).run().lastInsertRowid);
     const releaseId = Number(db.prepare(`
       INSERT INTO releases (project_id, title) VALUES (?, 'Release')

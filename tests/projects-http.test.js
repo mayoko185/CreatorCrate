@@ -174,41 +174,27 @@ function extractDirectHtmlChildren(html) {
   return children;
 }
 
-function expectProjectFormSchedulingStructure(html, { statusError = false, tagError = false } = {}) {
+function expectProjectFormStructure(html, { statusError = false, tagError = false } = {}) {
   const statusSection = extractProjectSettingsSection(html, 'Status');
-  const schedulingSection = extractProjectSettingsSection(html, 'Scheduling');
   expect(statusSection).not.toBe('');
-  expect(schedulingSection).not.toBe('');
-  expect(html.indexOf('>Status</h3>')).toBeLessThan(html.indexOf('>Scheduling</h3>'));
 
   const statusRow = extractProjectFormRow(statusSection, 'status-row');
-  const schedulingRow = extractProjectFormRow(schedulingSection, 'scheduling-row');
   expect(statusRow).not.toBe('');
-  expect(schedulingRow).not.toBe('');
 
   const statusChildren = extractDirectHtmlChildren(statusRow);
-  const schedulingChildren = extractDirectHtmlChildren(schedulingRow);
   expect(statusChildren).toHaveLength(3);
-  expect(schedulingChildren).toHaveLength(2);
   expect(statusChildren.every((child) => child.startsWith('<div '))).toBe(true);
-  expect(schedulingChildren.every((child) => child.startsWith('<div '))).toBe(true);
 
   const statusItem = statusChildren.find((child) => child.includes('project-status-form-trigger')) || '';
   const projectTypeItem = statusChildren.find((child) => child.includes('project-type-form-trigger')) || '';
   const tagsItem = statusChildren.find((child) => child.includes('project-tags-form-trigger')) || '';
-  const plannedDateItem = schedulingChildren.find((child) => child.includes('id="plannedDate"')) || '';
-  const publishedDateItem = schedulingChildren.find((child) => child.includes('id="publishedDate"')) || '';
 
   expect(statusItem).not.toBe('');
   expect(projectTypeItem).not.toBe('');
   expect(tagsItem).not.toBe('');
-  expect(plannedDateItem).not.toBe('');
-  expect(publishedDateItem).not.toBe('');
   expect(statusItem).toMatch(/^<div class="field status-field">/);
   expect(projectTypeItem).toMatch(/^<div class="field status-field">/);
   expect(tagsItem).toMatch(/^<div class="field status-field">/);
-  expect(plannedDateItem).toMatch(/^<div class="field scheduling-field/);
-  expect(publishedDateItem).toMatch(/^<div class="field scheduling-field/);
   expect(statusItem).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
   expect(projectTypeItem).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
   expect(projectTypeItem).toContain('id="project-type-form-trigger" aria-controls="project-type-form-options"');
@@ -219,7 +205,8 @@ function expectProjectFormSchedulingStructure(html, { statusError = false, tagEr
   expect(statusChildren.indexOf(statusItem)).toBeLessThan(statusChildren.indexOf(tagsItem));
   expect(statusChildren.indexOf(statusItem)).toBeLessThan(statusChildren.indexOf(projectTypeItem));
   expect(statusChildren.indexOf(projectTypeItem)).toBeLessThan(statusChildren.indexOf(tagsItem));
-  expect(schedulingChildren.indexOf(plannedDateItem)).toBeLessThan(schedulingChildren.indexOf(publishedDateItem));
+  expect(html).not.toContain('>Scheduling</h3>');
+  expect(html).not.toMatch(/\b(?:id|name)="(?:plannedDate|publishedDate)"/);
 
   expect(statusItem.includes('id="status-error"')).toBe(statusError);
   expect(tagsItem.includes('id="tagIds-error"')).toBe(tagError);
@@ -258,12 +245,12 @@ function expectProjectFormStatusDisclosure(html, selectedStatus) {
 
 function expectProjectFormSectionCards(html) {
   const cards = html.match(/<(?:div|section) class="[^"]*\bsettings-section\b[^"]*">\s*<h3(?:\s+[^>]*)?>[^<]+<\/h3>/g) || [];
-  expect(cards).toHaveLength(4);
+  expect(cards).toHaveLength(3);
   expect(html).toMatch(/<section class="settings-section project-form-section">\s*<h3>Basic information<\/h3>/);
   expect(html).toMatch(/<section class="settings-section status-section project-form-section">\s*<h3>Status<\/h3>/);
-  expect(html).toMatch(/<section class="settings-section scheduling-section project-form-section">\s*<h3>Scheduling<\/h3>/);
   expect(html).toMatch(/<section class="settings-section project-form-section">\s*<h3>Links<\/h3>/);
-  expect(html.indexOf('>Status</h3>')).toBeLessThan(html.indexOf('>Scheduling</h3>'));
+  expect(html).not.toContain('>Scheduling</h3>');
+  expect(html).not.toMatch(/\b(?:id|name)="(?:plannedDate|publishedDate)"/);
   const basic = extractProjectSettingsSection(html, 'Basic information');
   expect(basic).toMatch(/<textarea id="description"[^>]*rows="6"/);
   expect(basic).toMatch(/<textarea id="notes"[^>]*rows="4"/);
@@ -484,7 +471,7 @@ describe('project HTTP workflow', () => {
         name: 'sort',
         label: 'Sort',
         id: 'projects-default-sort',
-        values: ['updated', 'created', 'title', 'published'],
+        values: ['updated', 'created', 'title'],
         selected: 'created',
         summary: 'Recently created',
       },
@@ -673,7 +660,7 @@ describe('project HTTP workflow', () => {
       .type('form')
       .send({
         view: 'list',
-        sort: 'published',
+        sort: 'updated',
         order: 'asc',
         status: 'ready',
         projectType: 'comic',
@@ -687,7 +674,7 @@ describe('project HTTP workflow', () => {
       message: 'Projects defaults saved successfully.',
       values: {
         view: 'list',
-        sort: 'published',
+        sort: 'updated',
         order: 'asc',
         status: 'ready',
         projectType: 'comic',
@@ -696,7 +683,7 @@ describe('project HTTP workflow', () => {
     });
     expect(app.locals.pageDefaultsService.resolvePageDefaults('projects')).toEqual({
       view: 'list',
-      sort: 'published',
+      sort: 'updated',
       order: 'asc',
       status: 'ready',
       projectType: 'comic',
@@ -960,11 +947,12 @@ describe('project HTTP workflow', () => {
     expect(sortFilter).toContain('class="asset-filter-multiselect-panel" role="radiogroup" aria-label="Sort options"');
 
     const sortRadios = sortFilter.match(/<input[^>]*name="sort"[^>]*type="radio"[^>]*>/g) || [];
-    expect(sortRadios).toHaveLength(4);
-    for (const value of ['updated', 'created', 'title', 'published']) {
+    expect(sortRadios).toHaveLength(3);
+    for (const value of ['updated', 'created', 'title']) {
       expect(sortFilter).toMatch(new RegExp(`name="sort"[^>]*value="${value}"`));
     }
-    expect((sortFilter.match(/name="sort"/g) || [])).toHaveLength(4);
+    expect(sortFilter).not.toMatch(/name="sort"[^>]*value="(?:published|planned)"/);
+    expect((sortFilter.match(/name="sort"/g) || [])).toHaveLength(3);
     expect(sortFilter).not.toContain('<select');
 
     expect(orderFilter).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
@@ -1141,50 +1129,18 @@ describe('project HTTP workflow', () => {
     expect(res.headers.location).toBeUndefined();
   });
 
-  it('accepts published as a valid Projects sort and renders the Published option selected', async () => {
-    const res = await agent.get('/projects?sort=published').expect(200);
-    expectProjectSortOrderSelection(res.text, 'published', 'desc');
-  });
+  it.each(['published', 'planned'])(
+    'uses the canonical Projects fallback for obsolete explicit %s sorting',
+    async (obsoleteSort) => {
+      saveProjectDefault('sort', 'title');
 
-  it('sorts projects by published date with unpublished projects always last', async () => {
-    const oldestId = await createProject({
-      title: 'Published Older',
-      publishedDate: '2025-01-01',
-    });
-    const newestId = await createProject({
-      title: 'Published Newer',
-      publishedDate: '2025-12-31',
-    });
-    const unpublishedId = await createProject({
-      title: 'Published Unpublished',
-    });
-    const middleId = await createProject({
-      title: 'Published Middle',
-      publishedDate: '2025-06-15',
-    });
+      const res = await agent.get(`/projects?sort=${obsoleteSort}`).expect(200);
 
-    const asc = await agent.get('/projects?sort=published&order=asc').expect(200);
-    expectProjectSortOrderSelection(asc.text, 'published', 'asc');
-    const ascPositions = [
-      asc.text.indexOf(`data-project-card-link href="/projects/${oldestId}"`),
-      asc.text.indexOf(`data-project-card-link href="/projects/${middleId}"`),
-      asc.text.indexOf(`data-project-card-link href="/projects/${newestId}"`),
-      asc.text.indexOf(`data-project-card-link href="/projects/${unpublishedId}"`),
-    ];
-    expect(ascPositions.every((position) => position > -1)).toBe(true);
-    expect(ascPositions).toEqual([...ascPositions].sort((a, b) => a - b));
-
-    const desc = await agent.get('/projects?sort=published&order=desc').expect(200);
-    expectProjectSortOrderSelection(desc.text, 'published', 'desc');
-    const descPositions = [
-      desc.text.indexOf(`data-project-card-link href="/projects/${newestId}"`),
-      desc.text.indexOf(`data-project-card-link href="/projects/${middleId}"`),
-      desc.text.indexOf(`data-project-card-link href="/projects/${oldestId}"`),
-      desc.text.indexOf(`data-project-card-link href="/projects/${unpublishedId}"`),
-    ];
-    expect(descPositions.every((position) => position > -1)).toBe(true);
-    expect(descPositions).toEqual([...descPositions].sort((a, b) => a - b));
-  });
+      expectProjectSortOrderSelection(res.text, 'created', 'desc');
+      expect(extractSortFilter(res.text)).not.toMatch(/value="(?:published|planned)"/);
+      expect(res.text).not.toContain(`sort=${obsoleteSort}`);
+    },
+  );
 
   it('gives valid explicit values precedence while resolving omitted options from saved defaults', async () => {
     saveProjectDefault('view', 'list');
@@ -1264,8 +1220,6 @@ describe('project HTTP workflow', () => {
     const availableId = await createProject({
       title: 'Available Primary Image',
       status: 'ready',
-      plannedDate: '2026-09-01',
-      publishedDate: '2026-10-01',
     });
     const noneId = await createProject({
       title: 'No Image Missing Dates',
@@ -1323,7 +1277,7 @@ describe('project HTTP workflow', () => {
     expect(availableCard).toMatch(
       /<dt>Type<\/dt>\s*<dd>[\s\S]*?<span class="status-badge project-type-badge project-type-badge--images">Images<\/span>[\s\S]*?<\/dd>/
     );
-    expect((availableCard.match(/class="project-grid-card-info-row"/g) || [])).toHaveLength(5);
+    expect((availableCard.match(/class="project-grid-card-info-row"/g) || [])).toHaveLength(3);
     expect(availableCard).toContain('<div class="project-grid-card-info-section">');
     expect(availableCard).toContain('<span class="project-grid-card-info-section-label">Tags</span>');
     expect(availableCard).toContain('class="project-grid-card-info-empty">No tags assigned</span>');
@@ -1343,10 +1297,8 @@ describe('project HTTP workflow', () => {
     expect(availableCard).toMatch(/<dt>Status<\/dt>\s*<dd>[\s\S]*Ready[\s\S]*<\/dd>/);
     expect(availableCard).toContain(`<dt>Updated</dt>`);
     expect(availableCard).toContain(availableRow.updated_at);
-    expect(availableCard).toMatch(/<dt>Planned<\/dt>\s*<dd>2026-09-01<\/dd>/);
-    expect(availableCard).toMatch(/<dt>Published<\/dt>\s*<dd>2026-10-01<\/dd>/);
-    expect(noneCard).toMatch(/<dt>Planned<\/dt>\s*<dd>—<\/dd>/);
-    expect(noneCard).toMatch(/<dt>Published<\/dt>\s*<dd>—<\/dd>/);
+    expect(availableCard).not.toMatch(/<dt>(?:Planned|Published)<\/dt>/);
+    expect(noneCard).not.toMatch(/<dt>(?:Planned|Published)<\/dt>/);
 
     const list = await agent.get('/projects?view=list').expect(200);
     const availableListCard = extractProjectCard(list.text, availableId);
@@ -1378,8 +1330,7 @@ describe('project HTTP workflow', () => {
     expect(availableListCard).toContain('<dt>Status</dt>');
     expect(availableListCard).not.toMatch(/<dt>Priority<\/dt>/);
     expect(availableListCard).toContain('<dt>Updated</dt>');
-    expect(availableListCard).toContain('<dt>Planned</dt>');
-    expect(availableListCard).toContain('<dt>Published</dt>');
+    expect(availableListCard).not.toMatch(/<dt>(?:Planned|Published)<\/dt>/);
     expect(availableListCard).toContain('class="project-list-card-associations"');
     expect(availableListCard).toContain('class="project-list-card-association project-list-card-association--tags"');
     expect(noneListCard).not.toContain('<img');
@@ -1390,6 +1341,7 @@ describe('project HTTP workflow', () => {
     expect(unavailableListCard).toContain('class="project-list-card-media project-card-media project-card-media--fallback" data-primary-image-state="unavailable"');
     expect(unavailableListCard).toContain('data-primary-image-state="unavailable"');
     expect(unavailableListCard).toContain(`class="project-list-card-media-link project-list-card-media-link--fallback" href="/projects/${unavailableId}"`);
+    expect(noneListCard).not.toMatch(/<dt>(?:Planned|Published)<\/dt>/);
   });
 
   it('blurs only NSFW-tagged project primary images across project surfaces when enabled', async () => {
@@ -1996,17 +1948,13 @@ describe('project HTTP workflow', () => {
 
     expect(res.text.indexOf('project-status-form-trigger'))
       .toBeLessThan(res.text.indexOf('project-tags-form-trigger'));
-    expect(res.text.indexOf('project-tags-form-trigger'))
-      .toBeLessThan(res.text.indexOf('plannedDate'));
-    expect(res.text.indexOf('plannedDate'))
-      .toBeLessThan(res.text.indexOf('publishedDate'));
-    expectProjectFormSchedulingStructure(res.text);
+    expectProjectFormStructure(res.text);
   });
 
   it('new-project form renders an empty tag catalog with a Settings link', async () => {
     const res = await agent.get('/projects/new').expect(200);
     const tagsField = extractProjectFormTagsField(res.text);
-    expectProjectFormSchedulingStructure(res.text);
+    expectProjectFormStructure(res.text);
     expect(tagsField).toContain('data-cc-dropdown data-cc-dropdown-mode="multiple"');
     expect(tagsField).not.toContain('data-asset-viewer-filter-disclosure');
     expect(tagsField).not.toContain('data-asset-viewer-filter-multi-select');
@@ -2066,6 +2014,8 @@ describe('project HTTP workflow', () => {
     expect(standalone.text).toMatch(/name="status"[^>]*value="ready"[^>]*checked/);
     expect(dialog).toContain('Projects dialog tag');
     expect(new Set(ids).size).toBe(ids.length);
+    expectProjectFormStructure(dialog);
+    expectProjectFormStructure(standalone.text);
   });
 
   it('does not add dialog attributes to unrelated empty-state actions', async () => {
@@ -2213,7 +2163,7 @@ describe('project HTTP workflow', () => {
     expect(tagsField).toMatch(/<input[^>]*name="tagIds\[\]"[^>]*aria-describedby="tagIds-error"[^>]*aria-invalid="true"/);
     expect(tagsField).toMatch(/<summary[^>]*aria-describedby="tagIds-error"[^>]*aria-invalid="true"/);
     expect(res.text).toContain('class="field-error-message" id="tagIds-error"');
-    expectProjectFormSchedulingStructure(res.text, { tagError: true });
+    expectProjectFormStructure(res.text, { tagError: true });
   });
 
   it('invalid create request rerenders with values and errors', async () => {
@@ -2235,12 +2185,11 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('Create notes');
     expectProjectFormStatusDisclosure(res.text, 'ready');
     expect(res.text).not.toContain('id="priority"');
-    expect(res.text).toContain('value="2026-08-01"');
-    expect(res.text).toContain('value="2026-08-15"');
+    expect(res.text).not.toMatch(/\b(?:id|name)="(?:plannedDate|publishedDate)"/);
     expect(res.text).toContain('value="example.com/not-patreon"');
     expect(res.text).toContain('Basic information');
     expect(res.text).toContain('>Status</h3>');
-    expect(res.text).toContain('>Scheduling</h3>');
+    expect(res.text).not.toContain('>Scheduling</h3>');
     expect(res.text).toContain('Links');
     expect(res.text).toContain('href="/projects"');
     expect(res.text).toContain('<form id="project-form" method="post" action="/projects" class="project-form" novalidate>');
@@ -2272,6 +2221,7 @@ describe('project HTTP workflow', () => {
     expect(dialog).toMatch(new RegExp(`name="tagIds\\[\\]"[^>]*value="${tag.id}"[^>]*checked`));
     expect(dialog).toContain('Dashboard retry tag');
     expect(dialog).toContain('name="returnTo" value="/"');
+    expectProjectFormStructure(dialog);
   });
 
   it('validation failure from the Projects dialog rerenders Projects with submitted dialog state', async () => {
@@ -2297,6 +2247,7 @@ describe('project HTTP workflow', () => {
     expect(dialog).toMatch(new RegExp(`name="tagIds\\[\\]"[^>]*value="${tag.id}"[^>]*checked`));
     expect(dialog).toContain('Projects retry tag');
     expect(dialog).toContain('name="returnTo" value="/projects"');
+    expectProjectFormStructure(dialog);
   });
 
   it('does not trust an invalid dialog returnTo on validation failure', async () => {
@@ -2364,7 +2315,7 @@ describe('project HTTP workflow', () => {
     expect(dialog).not.toBe('');
     expect(dialog).toContain('<dialog id="project-edit-dialog" class="app-dialog project-form-dialog"');
     expect(dialog).toContain('<h2 id="project-edit-dialog-title">Edit Project</h2>');
-    expect(dialog).toContain('Edit project details, status, scheduling, and links.');
+    expect(dialog).toContain('Edit project details, status, and links.');
     expect(dialog).not.toContain('Update project metadata and planning fields.');
     expect(dialog).toContain(`<form id="project-edit-form" method="post" action="${location}" class="app-dialog-form project-form project-edit-dialog-form"`);
     expect(dialog).toContain('project-edit-dialog-form');
@@ -2384,7 +2335,7 @@ describe('project HTTP workflow', () => {
     expect(dialog.indexOf('app-dialog-body project-edit-dialog-body')).toBeLessThan(dialog.indexOf('app-dialog-footer'));
     expect(dialog).toContain('Basic information');
     expect(dialog).toContain('>Status</h3>');
-    expect(dialog).toContain('>Scheduling</h3>');
+    expect(dialog).not.toContain('>Scheduling</h3>');
     expect(dialog).toContain('Links');
     const basicInformation = extractProjectSettingsSection(dialog, 'Basic information');
     expect(basicInformation).not.toBe('');
@@ -2398,11 +2349,7 @@ describe('project HTTP workflow', () => {
     expect(status).not.toBe('');
     expect(status).toContain('name="status"');
     expect(status).toContain('id="project-tags-form"');
-    const scheduling = extractProjectSettingsSection(dialog, 'Scheduling');
-    expect(scheduling).not.toBe('');
-    expect(scheduling).toContain('id="plannedDate"');
-    expect(scheduling).toContain('id="publishedDate"');
-    expectProjectFormSchedulingStructure(dialog);
+    expectProjectFormStructure(dialog);
     const links = extractProjectSettingsSection(dialog, 'Links');
     expect(links).not.toBe('');
     expect(links).toContain('id="patreonUrl"');
@@ -2673,10 +2620,10 @@ describe('project HTTP workflow', () => {
 
     expect(res.text).toContain('One or more selected tags no longer exists. Refresh and try again.');
 
-    const project = db.prepare('SELECT title, status, planned_date FROM projects WHERE id = ?').get(id);
+    const project = db.prepare('SELECT title, status FROM projects WHERE id = ?').get(id);
     expect(project.title).toBe('Stale Tag Edit');
     expect(project.status).toBe('tbd');
-    expect(project.planned_date).toBe('2026-08-01');
+    expect(res.text).not.toMatch(/\b(?:id|name)="(?:plannedDate|publishedDate)"/);
 
     const rawAssigned = db.prepare('SELECT tag_id FROM project_tags WHERE project_id = ? ORDER BY tag_id').all(id).map((row) => row.tag_id);
     expect(rawAssigned).toEqual([beta.id]);
@@ -2757,7 +2704,7 @@ describe('project HTTP workflow', () => {
     expect(statusField).toMatch(/<summary[^>]*aria-describedby="status-error"[^>]*aria-invalid="true"/);
     expect(statusField).toContain('aria-label="Status: "');
     expect(res.text).toContain('class="field-error-message" id="status-error"');
-    expectProjectFormSchedulingStructure(res.text, { statusError: true });
+    expectProjectFormStructure(res.text, { statusError: true });
   });
 
   it('invalid edit request renders the detail page with an open dialog and submitted values', async () => {
@@ -2808,14 +2755,13 @@ describe('project HTTP workflow', () => {
     expect(dialog).toMatch(/<textarea id="description"[^>]*>Submitted description<\/textarea>/);
     expect(dialog).toMatch(/<textarea id="notes"[^>]*>Submitted notes<\/textarea>/);
     expectProjectFormStatusDisclosure(dialog, 'in-progress');
-    expectProjectFormSchedulingStructure(dialog, { statusError: false });
+    expectProjectFormStructure(dialog, { statusError: false });
     expect(res.text).not.toContain('id="priority"');
-    expect(dialog).toContain('value="2026-10-01"');
-    expect(dialog).toContain('value="2026-10-15"');
+    expect(dialog).not.toMatch(/\b(?:id|name)="(?:plannedDate|publishedDate)"/);
     expect(dialog).toContain('value="not-a-url"');
     expect(dialog).toContain('Basic information');
     expect(dialog).toContain('>Status</h3>');
-    expect(dialog).toContain('>Scheduling</h3>');
+    expect(dialog).not.toContain('>Scheduling</h3>');
     expect(dialog).toContain('Links');
 
     const tagsField = extractProjectFormTagsField(dialog);
@@ -3983,13 +3929,7 @@ describe('project HTTP workflow', () => {
     });
   });
 
-  // ─── Phase 7D-3: Project planning field wording ──────────────────────
-  //
-  // Project planning fields (planned_date, published_date, patreon_url)
-  // describe the broader creative project, not an individual release.
-  // Help text must clarify this distinction.
-
-  describe('project form planning field wording', () => {
+  describe('project link and detail rendering', () => {
     /**
      * Extract the HTML of the .field container that contains an input with the
      * given id. Returns null if not found.
@@ -4016,52 +3956,6 @@ describe('project HTTP workflow', () => {
       return fromField.slice(0, endPos);
     }
 
-    it('project form shows help text for planned date in the correct field container', async () => {
-      const res = await agent.get('/projects/new').expect(200);
-      const container = getFieldContainer(res.text, 'plannedDate');
-      expect(container).not.toBeNull();
-      expect(container).toContain('Target date for the creative project');
-      // Verify the input is inside the same container
-      expect(container).toMatch(/<input[^>]*id="plannedDate"[^>]*>/);
-    });
-
-    it('project form shows help text for published date in the correct field container', async () => {
-      const res = await agent.get('/projects/new').expect(200);
-      const container = getFieldContainer(res.text, 'publishedDate');
-      expect(container).not.toBeNull();
-      expect(container).toContain('When the project was published');
-      expect(container).toMatch(/<input[^>]*id="publishedDate"[^>]*>/);
-    });
-
-    it('project form renders canonical date-picker controls for planned and published dates', async () => {
-      const res = await agent.get('/projects/new').expect(200);
-      const statusRow = extractProjectFormRow(res.text, 'status-row');
-      const schedulingRow = extractProjectFormRow(res.text, 'scheduling-row');
-      expect(statusRow).not.toBe('');
-      expect(schedulingRow).not.toBe('');
-
-      expect(statusRow).toContain('id="project-status-form-trigger"');
-      expect(statusRow).toMatch(/<input[^>]*name="status"[^>]*type="radio"[^>]*value="tbd"[^>]*checked/);
-      expect(schedulingRow).toMatch(/<input class="picker-input"[^>]*type="date"[^>]*id="plannedDate"[^>]*name="plannedDate"[^>]*aria-describedby="plannedDate-help"[^>]*data-date-picker-input>/);
-      expect(schedulingRow).toMatch(/<input class="picker-input"[^>]*type="date"[^>]*id="publishedDate"[^>]*name="publishedDate"[^>]*aria-describedby="publishedDate-help"[^>]*data-date-picker-input>/);
-      expect(schedulingRow).toContain('Target date for the creative project');
-      expect(schedulingRow).toContain('When the project was published');
-      expect(schedulingRow).not.toContain('plannedTime');
-      expect(schedulingRow).not.toContain('time-picker');
-
-      expect(schedulingRow.match(/<div class="picker-control">/g) || []).toHaveLength(2);
-      expect(schedulingRow.match(/<div class="picker-input-row">/g) || []).toHaveLength(2);
-      expect(schedulingRow.match(/<input class="picker-input"[^>]*>/g) || []).toHaveLength(2);
-      const pickerTriggers = schedulingRow.match(/<button[^>]*class="picker-trigger[^"]*"[^>]*>/g) || [];
-      expect(pickerTriggers).toHaveLength(2);
-      expect(pickerTriggers.every((button) => /\btype="button"/.test(button))).toBe(true);
-      expect(schedulingRow).toMatch(/<button[^>]*class="picker-trigger date-picker-trigger"[^>]*aria-controls="plannedDate-calendar"[^>]*>/);
-      expect(schedulingRow).toMatch(/<button[^>]*class="picker-trigger date-picker-trigger"[^>]*aria-controls="publishedDate-calendar"[^>]*>/);
-      expect(schedulingRow).toMatch(/<div[^>]*id="plannedDate-calendar"[^>]*class="date-picker-panel"[^>]*role="dialog"[^>]*aria-label="Planned date calendar"[^>]*hidden[^>]*data-date-picker-panel[^>]*data-date-picker-for="plannedDate"[^>]*>/);
-      expect(schedulingRow).toMatch(/<div[^>]*id="publishedDate-calendar"[^>]*class="date-picker-panel"[^>]*role="dialog"[^>]*aria-label="Published date calendar"[^>]*hidden[^>]*data-date-picker-panel[^>]*data-date-picker-for="publishedDate"[^>]*>/);
-      expect(schedulingRow).not.toContain('aria-modal="true"');
-    });
-
     it('project form shows generic project-link help text in the correct field container', async () => {
       const res = await agent.get('/projects/new').expect(200);
       const container = getFieldContainer(res.text, 'patreonUrl');
@@ -4071,7 +3965,7 @@ describe('project HTTP workflow', () => {
       expect(container).toMatch(/<input[^>]*id="patreonUrl"[^>]*>/);
     });
 
-    it('project detail shows description, planned date, and the project link, and omits the published date', async () => {
+    it('project detail shows retained metadata without Project scheduling dates', async () => {
       const createRes = await agent
         .post('/projects')
         .send('title=Wording+Test')
@@ -4091,7 +3985,6 @@ describe('project HTTP workflow', () => {
       const metaStart = res.text.indexOf('<div class="project-detail-meta">');
       const meta = metaStart >= 0 ? extractHtmlElement(res.text, metaStart) : '';
 
-      // Planned date remains a labelled dt/dd pair in the Details list.
       expect(details).toContain('<section class="project-detail-info project-detail-section">');
       expect(details).toContain('<h2>Details</h2>');
       expect(details).toContain('<div class="project-detail-section-body">');
@@ -4106,34 +3999,42 @@ describe('project HTTP workflow', () => {
         'Slug',
         'Created',
         'Updated',
-        'Planned date',
         'Description',
         'Project link',
       ]);
       expect(details).toContain('<dd class="description">Project description</dd>');
       expect(details).toMatch(/<dt>Project link<\/dt>\s*<dd><a class="project-detail-link" href="https:\/\/patreon\.com\/test" target="_blank" rel="noopener">Project link<\/a><\/dd>/);
-      const plannedDt = details.match(/<dt>Planned date<\/dt>\s*<dd>[^<]*(?:<small>\(project target\)<\/small>)[^<]*<\/dd>/);
-      expect(plannedDt).not.toBeNull();
+      expect(details).not.toMatch(/<dt>(?:Planned date|Published date)<\/dt>/);
       expect(res.text).not.toContain('<p class="description">Project description</p>');
       expect(meta).not.toContain('project-detail-link');
-
-      // Published date is intentionally not rendered in the read-only detail
-      // list; it remains available in the edit dialog.
-      expect(details).not.toContain('Published date');
     });
 
-    it('project detail renders the established missing value for empty description and planned date, and omits an absent project link', async () => {
+    it('project detail renders the established missing description and omits scheduling dates and an absent project link', async () => {
       const id = await createProject({ title: 'Optional Detail Fields Empty' });
 
       const res = await agent.get(`/projects/${id}`).expect(200);
       const details = extractProjectDetailSection(res.text, 'project-detail-info');
 
       expect(details).toMatch(/<dt>Description<\/dt>\s*<dd class="description">—<\/dd>/);
-      expect(details).toMatch(/<dt>Planned date<\/dt>\s*<dd>—<\/dd>/);
+      expect(details).not.toMatch(/<dt>(?:Planned date|Published date)<\/dt>/);
       expect(details).not.toContain('project-detail-link');
       expect(details).toContain('<dt>Slug</dt>');
       expect(details).toContain('<dt>Created</dt>');
       expect(details).toContain('<dt>Updated</dt>');
+    });
+
+    it('project detail keeps associated Release planned and published dates visible', async () => {
+      const id = await createProject({ title: 'Release Scheduling Boundary' });
+      db.prepare("INSERT INTO releases (project_id, title, planned_date) VALUES (?, 'Planned Release', '2026-11-10')")
+        .run(id);
+      db.prepare("INSERT INTO releases (project_id, title, published_date) VALUES (?, 'Published Release', '2026-11-20')")
+        .run(id);
+
+      const res = await agent.get(`/projects/${id}`).expect(200);
+      const releases = extractProjectDetailSection(res.text, 'project-detail-releases');
+
+      expect(releases).toMatch(/Planned Release[\s\S]*?· planned 2026-11-10/);
+      expect(releases).toMatch(/Published Release[\s\S]*?· published 2026-11-20/);
     });
 
     it('project detail hero renders the primary image when one is set', async () => {

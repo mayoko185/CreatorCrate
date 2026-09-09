@@ -230,35 +230,25 @@ describe('project service', () => {
     expect(service.findById(project.id)).not.toHaveProperty('priority');
   });
 
-  it.each([
-    { date: 'tomorrow', label: 'non-numeric' },
-    { date: '2024-02-30', label: 'invalid February' },
-    { date: '2023-02-29', label: 'non-leap year' },
-    { date: '2024-04-31', label: 'invalid 30-day month' },
-    { date: '2024-13-01', label: 'invalid month' },
-    { date: '2024-00-10', label: 'zero month' },
-    { date: '2024-01-00', label: 'zero day' },
-  ])('rejects impossible date $label ($date)', ({ date }) => {
-    expect(() => service.create(validInput({ plannedDate: date }))).toThrow(ProjectValidationError);
-    expect(() => service.create(validInput({ publishedDate: date }))).toThrow(
-      ProjectValidationError
-    );
-  });
+  it('ignores obsolete project scheduling input without validating or persisting it', () => {
+    const createSpy = vi.spyOn(service.repository, 'create');
+    const project = service.create(validInput({
+      title: 'Legacy Scheduling Input',
+      plannedDate: 'not-a-date',
+      publishedDate: 'also-not-a-date',
+      planned_date: '2026-08-15',
+      published_date: '2026-09-01',
+    }));
 
-  it.each([
-    { date: '2024-01-01', label: 'year start' },
-    { date: '2024-12-31', label: 'year end' },
-    { date: '2024-02-29', label: 'leap day' },
-  ])('accepts valid date $label ($date)', ({ date }) => {
-    const project = service.create(validInput({ plannedDate: date, publishedDate: date }));
-    expect(project.planned_date).toBe(date);
-    expect(project.published_date).toBe(date);
-  });
-
-  it('accepts empty optional dates', () => {
-    const project = service.create(validInput({ plannedDate: null, publishedDate: '' }));
-    expect(project.planned_date).toBeNull();
-    expect(project.published_date).toBeNull();
+    const repositoryInput = createSpy.mock.calls[0][0];
+    expect(repositoryInput).not.toHaveProperty('plannedDate');
+    expect(repositoryInput).not.toHaveProperty('publishedDate');
+    expect(repositoryInput).not.toHaveProperty('planned_date');
+    expect(repositoryInput).not.toHaveProperty('published_date');
+    expect(project).not.toHaveProperty('planned_date');
+    expect(project).not.toHaveProperty('published_date');
+    expect(service.findById(project.id)).not.toHaveProperty('planned_date');
+    expect(service.findById(project.id)).not.toHaveProperty('published_date');
   });
 
   it.each([
@@ -442,8 +432,9 @@ describe('project service', () => {
       expect(content).not.toMatch(/"priority"\s*:/);
       expect(manifest.description).toBe('Desc content');
       expect(manifest.notes).toBe('Note content');
-      expect(manifest.plannedDate).toBe('2026-08-15T00:00:00.000Z');
-      expect(manifest.publishedDate).toBeNull();
+      expect(manifest).not.toHaveProperty('plannedDate');
+      expect(manifest).not.toHaveProperty('publishedDate');
+      expect(content).not.toMatch(/"(?:plannedDate|publishedDate)"\s*:/);
       expect(manifest.patreonUrl).toBe('https://patreon.com/creator');
       expect(manifest.tags).toEqual([]);
       expect(manifest.thumbnail).toBeNull();
@@ -842,17 +833,27 @@ describe('project service', () => {
       expect(fs.existsSync(path.join(srcPath, 'project.json'))).toBe(true);
     });
 
-    it('legacy priority input is not treated as a metadata change', () => {
+    it('legacy priority and scheduling input are not treated as metadata changes', () => {
       const project = createTestProject({ title: 'No Slug Change' });
       const { absPath: originalPath, relPath: originalRel } = getProjectDir(project);
       const manifestBefore = fs.readFileSync(path.join(originalPath, MANIFEST_FILENAME), 'utf8');
+      const updateSpy = vi.spyOn(service.repository, 'update');
 
       const updated = service.update(project.id, validInput({
         title: 'No Slug Change', // same title = same slug
         status: 'tbd',           // same status
         priority: 'high',        // legacy input is ignored
+        plannedDate: 'not-a-date',
+        publishedDate: 'also-not-a-date',
+        planned_date: '2026-08-15',
+        published_date: '2026-09-01',
       }));
 
+      const repositoryInput = updateSpy.mock.calls[0][1];
+      expect(repositoryInput).not.toHaveProperty('plannedDate');
+      expect(repositoryInput).not.toHaveProperty('publishedDate');
+      expect(repositoryInput).not.toHaveProperty('planned_date');
+      expect(repositoryInput).not.toHaveProperty('published_date');
       const { absPath } = getProjectDir(updated);
       expect(absPath).toBe(originalPath);
       expect(fs.existsSync(originalPath)).toBe(true);
@@ -894,7 +895,7 @@ describe('project service', () => {
         title: 'Agreement Test Renamed',
         status: 'ready',
         description: 'New desc',
-        plannedDate: '2027-01-15',
+        plannedDate: 'ignored-legacy-value',
       }));
 
       // DB values
@@ -903,7 +904,8 @@ describe('project service', () => {
       expect(updated.status).toBe('ready');
       expect(updated.description).toBe('New desc');
       expect(updated).not.toHaveProperty('priority');
-      expect(updated.planned_date).toBe('2027-01-15');
+      expect(updated).not.toHaveProperty('planned_date');
+      expect(updated).not.toHaveProperty('published_date');
 
       // Read manifest at final location
       const { absPath } = getProjectDir(updated);
@@ -914,7 +916,8 @@ describe('project service', () => {
       expect(manifest).not.toHaveProperty('status');
       expect(manifest.description).toBe(updated.description);
       expect(manifest).not.toHaveProperty('priority');
-      expect(manifest.plannedDate).toBe('2027-01-15T00:00:00.000Z');
+      expect(manifest).not.toHaveProperty('plannedDate');
+      expect(manifest).not.toHaveProperty('publishedDate');
       expect(manifest.id).toBe(updated.id);
     });
 

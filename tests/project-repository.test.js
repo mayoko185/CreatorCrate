@@ -6,9 +6,8 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import slugify from '@sindresorhus/slugify';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
-import { createProjectRepository } from '../src/data/project-repository.js';
+import { createProjectRepository, DASHBOARD_SORTS } from '../src/data/project-repository.js';
 import { createTagRepository } from '../src/data/tag-repository.js';
-import { createReleaseRepository } from '../src/data/release-repository.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -18,7 +17,6 @@ describe('project repository', () => {
   let db;
   let repository;
   let tagRepository;
-  let releaseRepository;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-projects-'));
@@ -27,7 +25,6 @@ describe('project repository', () => {
     runMigrations(db, MIGRATIONS_DIR);
     repository = createProjectRepository(db);
     tagRepository = createTagRepository(db);
-    releaseRepository = createReleaseRepository(db);
   });
 
   afterEach(() => {
@@ -35,12 +32,14 @@ describe('project repository', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('creates a project with the default project type and without a priority field', () => {
+  it('creates a project without obsolete date fields', () => {
     const project = repository.create(sampleProject({ title: 'Sunset Sketch' }));
     expect(project.title).toBe('Sunset Sketch');
     expect(project.status).toBe('tbd');
     expect(project.project_type).toBe('images');
     expect(project).not.toHaveProperty('priority');
+    expect(project).not.toHaveProperty('planned_date');
+    expect(project).not.toHaveProperty('published_date');
     expect(project.slug).toBe('sunset-sketch');
     expect(project.archived_at).toBeNull();
   });
@@ -53,7 +52,7 @@ describe('project repository', () => {
     expect(found.project_type).toBe('images');
   });
 
-  it('updates a project', () => {
+  it('updates a project without obsolete date fields', () => {
     const created = repository.create(sampleProject({ title: 'Landscape', projectType: 'comic' }));
     const unchangedType = repository.update(created.id, {
       ...sampleProject({ title: 'Landscape' }),
@@ -70,6 +69,8 @@ describe('project repository', () => {
     expect(updated.status).toBe('in-progress');
     expect(updated.project_type).toBe('animation');
     expect(updated).not.toHaveProperty('priority');
+    expect(updated).not.toHaveProperty('planned_date');
+    expect(updated).not.toHaveProperty('published_date');
   });
 
   it('archives a project and preserves the record', () => {
@@ -275,39 +276,20 @@ describe('project repository', () => {
     expect(composed.rows[0].id).toBe(match.id);
   });
 
-  it('sorts by published date with null values always last in both directions', () => {
-    const oldest = repository.create(sampleProject({
-      title: 'Oldest Published',
-      publishedDate: '2025-01-01',
-    }));
-    const newest = repository.create(sampleProject({
-      title: 'Newest Published',
-      publishedDate: '2025-12-31',
-    }));
-    const middle = repository.create(sampleProject({
-      title: 'Middle Published',
-      publishedDate: '2025-06-15',
-    }));
-    const unpublished = repository.create(sampleProject({
-      title: 'Unpublished',
-      publishedDate: null,
-    }));
+  it('exposes only retained Project sorts and falls back from obsolete date sort keys', () => {
+    expect(Object.keys(DASHBOARD_SORTS)).toEqual(['updated', 'created', 'title']);
 
-    const ascending = repository.list({ sortBy: 'published', order: 'asc' });
-    expect(ascending.rows.map((project) => project.id)).toEqual([
-      oldest.id,
-      middle.id,
-      newest.id,
-      unpublished.id,
-    ]);
+    const older = repository.create(sampleProject({ title: 'Zulu' }));
+    const newer = repository.create(sampleProject({ title: 'Alpha' }));
+    db.prepare('UPDATE projects SET updated_at = ? WHERE id = ?').run('2025-01-01 00:00:00', older.id);
+    db.prepare('UPDATE projects SET updated_at = ? WHERE id = ?').run('2025-02-01 00:00:00', newer.id);
 
-    const descending = repository.list({ sortBy: 'published', order: 'desc' });
-    expect(descending.rows.map((project) => project.id)).toEqual([
-      newest.id,
-      middle.id,
-      oldest.id,
-      unpublished.id,
-    ]);
+    expect(repository.list({ sortBy: 'title', order: 'asc' }).rows.map((project) => project.id))
+      .toEqual([newer.id, older.id]);
+    for (const obsoleteSort of ['planned', 'published']) {
+      expect(repository.list({ sortBy: obsoleteSort, order: 'asc' }).rows.map((project) => project.id))
+        .toEqual([older.id, newer.id]);
+    }
   });
 
   it('composes tag, search, status, and archived predicates and stops matching after tag deletion', () => {
@@ -627,97 +609,6 @@ describe('project repository', () => {
     });
   });
 
-  describe('findOverdueWithoutReleases', () => {
-    const TODAY = '2025-06-15';
-    const YESTERDAY = '2025-06-14';
-    const TOMORROW = '2025-06-16';
-
-    it('includes a project planned for yesterday with no releases', () => {
-      const project = repository.create(sampleProject({ title: 'Yesterday', plannedDate: YESTERDAY }));
-      const rows = repository.findOverdueWithoutReleases(10, TODAY);
-      expect(rows.map((row) => row.id)).toEqual([project.id]);
-    });
-
-    it('includes a project planned for today with no releases', () => {
-      const project = repository.create(sampleProject({ title: 'Today', plannedDate: TODAY }));
-      const rows = repository.findOverdueWithoutReleases(10, TODAY);
-      expect(rows.map((row) => row.id)).toEqual([project.id]);
-    });
-
-    it('excludes a project planned for tomorrow', () => {
-      repository.create(sampleProject({ title: 'Tomorrow', plannedDate: TOMORROW }));
-      const rows = repository.findOverdueWithoutReleases(10, TODAY);
-      expect(rows).toHaveLength(0);
-    });
-
-    it('excludes a today-or-earlier project that has any release', () => {
-      const project = repository.create(sampleProject({ title: 'Has Release', plannedDate: TODAY }));
-      releaseRepository.create(sampleRelease(project.id));
-      const rows = repository.findOverdueWithoutReleases(10, TODAY);
-      expect(rows).toHaveLength(0);
-    });
-
-    it('excludes a project whose only release is archived', () => {
-      const project = repository.create(sampleProject({ title: 'Archived Release Only', plannedDate: YESTERDAY }));
-      const release = releaseRepository.create(sampleRelease(project.id));
-      releaseRepository.archive(release.id);
-      const rows = repository.findOverdueWithoutReleases(10, TODAY);
-      expect(rows).toHaveLength(0);
-    });
-
-    it('excludes a project whose only release is published', () => {
-      const project = repository.create(sampleProject({ title: 'Published Release Only', plannedDate: YESTERDAY }));
-      const release = releaseRepository.create(sampleRelease(project.id));
-      releaseRepository.publish(release.id, '2025-06-10');
-      const rows = repository.findOverdueWithoutReleases(10, TODAY);
-      expect(rows).toHaveLength(0);
-    });
-
-    it('excludes archived projects', () => {
-      const project = repository.create(sampleProject({ title: 'Archived Project', plannedDate: YESTERDAY }));
-      repository.archive(project.id);
-      const rows = repository.findOverdueWithoutReleases(10, TODAY);
-      expect(rows).toHaveLength(0);
-    });
-
-    it('excludes projects without a planned date', () => {
-      repository.create(sampleProject({ title: 'No Planned Date', plannedDate: null }));
-      const rows = repository.findOverdueWithoutReleases(10, TODAY);
-      expect(rows).toHaveLength(0);
-    });
-  });
-
-  describe('findUpcomingPlanned', () => {
-    const TODAY = '2025-06-15';
-    const TOMORROW = '2025-06-16';
-    const LATER = '2025-06-20';
-
-    it('excludes a project planned for today', () => {
-      repository.create(sampleProject({ title: 'Today', plannedDate: TODAY }));
-      const rows = repository.findUpcomingPlanned(10, TODAY);
-      expect(rows).toHaveLength(0);
-    });
-
-    it('includes projects planned for tomorrow and later', () => {
-      const tomorrow = repository.create(sampleProject({ title: 'Tomorrow', plannedDate: TOMORROW }));
-      const later = repository.create(sampleProject({ title: 'Later', plannedDate: LATER }));
-      const rows = repository.findUpcomingPlanned(10, TODAY);
-      expect(rows.map((row) => row.id)).toEqual([tomorrow.id, later.id]);
-    });
-
-    it('excludes archived projects', () => {
-      const project = repository.create(sampleProject({ title: 'Archived Upcoming', plannedDate: TOMORROW }));
-      repository.archive(project.id);
-      const rows = repository.findUpcomingPlanned(10, TODAY);
-      expect(rows).toHaveLength(0);
-    });
-
-    it('excludes projects without a planned date', () => {
-      repository.create(sampleProject({ title: 'No Planned Date', plannedDate: null }));
-      const rows = repository.findUpcomingPlanned(10, TODAY);
-      expect(rows).toHaveLength(0);
-    });
-  });
 });
 
 function sampleProject(overrides = {}) {
@@ -728,23 +619,7 @@ function sampleProject(overrides = {}) {
     description: '',
     notes: '',
     status: 'tbd',
-    plannedDate: null,
-    publishedDate: null,
     patreonUrl: null,
-    ...overrides,
-  };
-}
-
-function sampleRelease(projectId, overrides = {}) {
-  return {
-    projectId,
-    title: 'Untitled Release',
-    description: '',
-    notes: '',
-    plannedDate: null,
-    plannedTime: null,
-    patreonUrl: null,
-    publishedDate: null,
     ...overrides,
   };
 }

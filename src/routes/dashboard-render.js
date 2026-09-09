@@ -74,8 +74,6 @@ export function renderDashboardPage(req, res, next, {
 
     res.status(status).render('index.njk', {
       appName,
-      overdue: sectionProjectsById.overdue || [],
-      upcoming: sectionProjectsById.upcoming || [],
       recentlyUpdated: sectionProjectsById['recently-updated'] || [],
       dashboardSections,
       dashboardDefaults,

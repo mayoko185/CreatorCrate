@@ -82,13 +82,7 @@
         {% set emptyActionUrl = "" %}
         {% set emptyActionLabel = "" %}
         {% set emptyActionDialogId = "" %}
-        {% if section.id == 'overdue' %}
-          {% set emptyHeading = "No overdue projects" %}
-          {% set emptyDescription = "Projects with no releases and a planned date today or earlier will show up here." %}
-        {% elif section.id == 'upcoming' %}
-          {% set emptyHeading = "No upcoming projects scheduled" %}
-          {% set emptyDescription = "Add planned dates to active projects to see them here." %}
-        {% elif section.id == 'recently-updated' %}
+        {% if section.id == 'recently-updated' %}
           {% set emptyHeading = "No projects are currently tracked" %}
           {% set emptyDescription = "Create a project to start organizing releases and assets." %}
           {% set emptyActionUrl = "/projects/new" %}

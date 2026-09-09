@@ -177,8 +177,9 @@ describe('project creation integration', () => {
       expect(content).not.toMatch(/"priority"\s*:/);
       expect(manifest.description).toBe('Desc for manifest');
       expect(manifest.notes).toBe('Notes for manifest');
-      expect(manifest.plannedDate).toBe('2026-09-15T00:00:00.000Z');
-      expect(manifest.publishedDate).toBeNull();
+      expect(manifest).not.toHaveProperty('plannedDate');
+      expect(manifest).not.toHaveProperty('publishedDate');
+      expect(content).not.toMatch(/"(?:plannedDate|publishedDate)"\s*:/);
       expect(manifest.patreonUrl).toBe('https://patreon.com/artist');
       expect(manifest.createdAt).toBeTruthy();
       expect(manifest.updatedAt).toBeTruthy();

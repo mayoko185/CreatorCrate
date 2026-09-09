@@ -40,7 +40,7 @@ describe('dashboard defaults service', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('uses all nine canonical sections with visible 8-item defaults when nothing is stored', () => {
+  it('uses all seven retained canonical sections with visible 8-item defaults when nothing is stored', () => {
     expect(service.getDefaults()).toEqual({
       version: 1,
       order: CANONICAL_IDS,
@@ -65,17 +65,25 @@ describe('dashboard defaults service', () => {
   it('normalizes duplicate, stale, and missing order entries without changing persisted data', () => {
     const stored = {
       version: 1,
-      order: ['status:ready', 'overdue', 'status:ready', 'removed-section'],
-      sections: {},
+      order: ['status:ready', 'overdue', 'status:ready', 'upcoming', 'removed-section'],
+      sections: {
+        overdue: { visible: false, itemCount: 2, sort: 'planned', order: 'asc' },
+        upcoming: { visible: false, itemCount: 3, sort: 'planned', order: 'asc' },
+        'status:ready': { visible: false, itemCount: 12, sort: 'title', order: 'asc' },
+      },
     };
     const storedValue = JSON.stringify(stored);
     repository.setValue(DASHBOARD_DEFAULTS_KEY, storedValue);
 
     expect(service.getDefaults().order).toEqual([
       'status:ready',
-      'overdue',
-      ...CANONICAL_IDS.filter((id) => !['status:ready', 'overdue'].includes(id)),
+      ...CANONICAL_IDS.filter((id) => id !== 'status:ready'),
     ]);
+    expect(service.getDefaults().sections).not.toHaveProperty('overdue');
+    expect(service.getDefaults().sections).not.toHaveProperty('upcoming');
+    expect(service.getDefaults().sections['status:ready']).toEqual({
+      visible: false, itemCount: 12, sort: 'title', order: 'asc',
+    });
     expect(repository.getValue(DASHBOARD_DEFAULTS_KEY)).toBe(storedValue);
   });
 
@@ -84,8 +92,6 @@ describe('dashboard defaults service', () => {
       version: 1,
       order: CANONICAL_IDS,
       sections: {
-        overdue: { visible: false, itemCount: 1 },
-        upcoming: { visible: true, itemCount: 25 },
         'recently-updated': { visible: 'yes', itemCount: 0 },
         'status:tbd': { visible: null, itemCount: 26 },
         'status:planned': { visible: true, itemCount: 3.5 },
@@ -94,8 +100,6 @@ describe('dashboard defaults service', () => {
     }));
 
     const defaults = service.getDefaults();
-    expect(defaults.sections.overdue).toEqual({ ...defaultSection('overdue'), visible: false, itemCount: 1 });
-    expect(defaults.sections.upcoming).toEqual({ ...defaultSection('upcoming'), itemCount: 25 });
     expect(defaults.sections['recently-updated']).toEqual(defaultSection('recently-updated'));
     expect(defaults.sections['status:tbd']).toEqual(defaultSection('status:tbd'));
     expect(defaults.sections['status:planned']).toEqual(defaultSection('status:planned'));
@@ -108,16 +112,14 @@ describe('dashboard defaults service', () => {
       version: 1,
       order: [...CANONICAL_IDS].reverse(),
       sections: {
-        overdue: { visible: false, itemCount: 3 },
-        upcoming: { visible: true, itemCount: 11 },
+        'recently-updated': { visible: false, itemCount: 3 },
         'status:ready': { visible: true, itemCount: 17 },
       },
     }));
 
     const defaults = service.getDefaults();
     expect(defaults.order).toEqual([...CANONICAL_IDS].reverse());
-    expect(defaults.sections.overdue).toEqual({ ...defaultSection('overdue'), visible: false, itemCount: 3 });
-    expect(defaults.sections.upcoming).toEqual({ ...defaultSection('upcoming'), itemCount: 11 });
+    expect(defaults.sections['recently-updated']).toEqual({ ...defaultSection('recently-updated'), visible: false, itemCount: 3 });
     expect(defaults.sections['status:ready']).toEqual({ ...defaultSection('status:ready'), itemCount: 17 });
   });
 
@@ -126,14 +128,16 @@ describe('dashboard defaults service', () => {
       version: 1,
       order: CANONICAL_IDS,
       sections: {
-        overdue: { visible: true, itemCount: 8, sort: 'raw_sql', order: 'sideways' },
-        'recently-updated': { visible: true, itemCount: 8, sort: 'title', order: 'asc' },
+        'recently-updated': { visible: true, itemCount: 8, sort: 'planned', order: 'asc' },
+        'status:ready': { visible: true, itemCount: 8, sort: 'title', order: 'asc' },
       },
     }));
 
     const defaults = service.getDefaults();
-    expect(defaults.sections.overdue).toEqual(defaultSection('overdue'));
     expect(defaults.sections['recently-updated']).toEqual({
+      ...defaultSection('recently-updated'), order: 'asc',
+    });
+    expect(defaults.sections['status:ready']).toEqual({
       visible: true, itemCount: 8, sort: 'title', order: 'asc',
     });
   });
@@ -141,21 +145,20 @@ describe('dashboard defaults service', () => {
   it('saves a complete normalized document while preserving independent per-section item counts', () => {
     const saved = service.saveDefaults({
       version: 1,
-      order: ['status:ready', 'overdue'],
+      order: ['status:ready', 'recently-updated'],
       sections: {
-        overdue: { visible: false, itemCount: 5 },
+        'recently-updated': { visible: false, itemCount: 5 },
         'status:ready': { visible: true, itemCount: 12 },
       },
     });
 
     expect(saved.order).toEqual([
       'status:ready',
-      'overdue',
-      ...CANONICAL_IDS.filter((id) => !['status:ready', 'overdue'].includes(id)),
+      'recently-updated',
+      ...CANONICAL_IDS.filter((id) => !['status:ready', 'recently-updated'].includes(id)),
     ]);
-    expect(saved.sections.overdue).toEqual({ ...defaultSection('overdue'), visible: false, itemCount: 5 });
+    expect(saved.sections['recently-updated']).toEqual({ ...defaultSection('recently-updated'), visible: false, itemCount: 5 });
     expect(saved.sections['status:ready']).toEqual({ ...defaultSection('status:ready'), itemCount: 12 });
-    expect(saved.sections.upcoming).toEqual(defaultSection('upcoming'));
     expect(JSON.parse(repository.getValue(DASHBOARD_DEFAULTS_KEY))).toEqual(saved);
   });
 
@@ -187,8 +190,6 @@ describe('dashboard defaults service', () => {
 
   it('uses the canonical project status order and Dashboard labels', () => {
     expect(DASHBOARD_SECTION_REGISTRY).toEqual([
-      { id: 'overdue', label: 'Overdue' },
-      { id: 'upcoming', label: 'Upcoming releases' },
       { id: 'recently-updated', label: 'Recently updated projects' },
       { id: 'status:tbd', label: 'TBD', status: 'tbd' },
       { id: 'status:planned', label: 'Planned', status: 'planned' },

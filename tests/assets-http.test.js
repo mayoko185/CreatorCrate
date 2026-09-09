@@ -1468,8 +1468,8 @@ describe('asset browser HTTP workflow', () => {
     it('resolves a bare specific default before the full browser query', async () => {
       const project = db.prepare(`
         INSERT INTO projects (title, slug, description, notes, status,
-                              planned_date, published_date, patreon_url, archived_at)
-        VALUES ('Early Default Project', 'early-default-project', '', '', 'tbd', NULL, NULL, NULL, NULL)
+                              patreon_url, archived_at)
+        VALUES ('Early Default Project', 'early-default-project', '', '', 'tbd', NULL, NULL)
         RETURNING *
       `).get();
       const fullBrowserQuery = vi.fn(() => {

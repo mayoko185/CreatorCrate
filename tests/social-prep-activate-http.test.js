@@ -24,7 +24,7 @@ describe('Social Preparation activation HTTP', () => {
     db = openDatabase(path.join(tmpDir, 'test.db'));
     runMigrations(db, MIGRATIONS_DIR);
     const projectId = Number(db.prepare(
-      "INSERT INTO projects (title, slug, description, notes, status, planned_date, published_date, patreon_url) VALUES ('Project', 'project', '', '', 'tbd', NULL, NULL, NULL)"
+      "INSERT INTO projects (title, slug, description, notes, status, patreon_url) VALUES ('Project', 'project', '', '', 'tbd', NULL)"
     ).run().lastInsertRowid);
     releaseId = Number(db.prepare(
       "INSERT INTO releases (project_id, title, description, notes, published_date) VALUES (?, 'Release title', 'Release body', 'Private release Notes', '2026-08-01')"

@@ -16,11 +16,8 @@
  *     has been archived are also hidden from the dashboard attention lists
  *     because mutations reject archived parents.
  *   - Today is a single application-local date (YYYY-MM-DD) computed by
- *     `getLocalTodayIso`. The service computes it once and threads the
- *     value through every date-sensitive repository call so the dashboard
- *     cannot classify a release differently across sections (overdue vs
- *     upcoming) due to per-call clock drift or UTC/local disagreement.
- *     Tests and route callers can override the value via the `today` option.
+ *     `getLocalTodayIso` for date-sensitive Release queries. Tests and route
+ *     callers can override the value via the relevant query option.
  *   - Methods never throw for empty databases — empty arrays and zero counts
  *     are returned so templates can render safe empty states.
  */
@@ -61,10 +58,6 @@ import {
 import { getLocalTodayIso } from '../util/date.js';
 
 const DEFAULT_LIMITS = Object.freeze({
-  // Dashboard sections
-  overdue: 5,
-  upcoming: 10,
-  recentlyUpdatedProjects: 10,
   // Project workspace sections
   activeReleases: 5,
   recentReleases: 5,
@@ -409,32 +402,14 @@ export function createWorkflowQueryService({
    *
    * @param {object} [options]
    * @param {object} [options.dashboardDefaults] normalized Dashboard defaults
-   * @param {string} [options.today] ISO date YYYY-MM-DD
    */
   function getDashboardData(options = {}) {
-    const today = options.today || defaultToday();
     const dashboardDefaults = normalizeDashboardDefaults(options.dashboardDefaults);
     const sections = Object.fromEntries(
       DASHBOARD_SECTION_REGISTRY.map(({ id }) => [id, []])
     );
     const { sections: sectionDefaults } = dashboardDefaults;
 
-    if (sectionDefaults.overdue.visible) {
-      sections.overdue = projectRepository.findOverdueWithoutReleases(
-        sectionDefaults.overdue.itemCount,
-        today,
-        sectionDefaults.overdue.sort,
-        sectionDefaults.overdue.order,
-      );
-    }
-    if (sectionDefaults.upcoming.visible) {
-      sections.upcoming = projectRepository.findUpcomingPlanned(
-        sectionDefaults.upcoming.itemCount,
-        today,
-        sectionDefaults.upcoming.sort,
-        sectionDefaults.upcoming.order,
-      );
-    }
     if (sectionDefaults['recently-updated'].visible) {
       sections['recently-updated'] = projectRepository.list({
         sortBy: sectionDefaults['recently-updated'].sort,
@@ -482,9 +457,6 @@ export function createWorkflowQueryService({
     }
 
     return {
-      // Keep existing route consumers working until the route is migrated.
-      overdue: sections.overdue,
-      upcoming: sections.upcoming,
       workflowSummary: {
         totalProjects: totalFromCounts(projectCounts),
         totalAssets,
@@ -495,7 +467,6 @@ export function createWorkflowQueryService({
       },
       recentlyUpdated: sections['recently-updated'],
       sections,
-      today,
     };
   }
 

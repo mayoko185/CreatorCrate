@@ -29,8 +29,6 @@ function makeProject(overrides = {}) {
     status: 'in-progress',
     created_at: '2026-07-26 14:00:00',
     updated_at: '2026-07-26 14:00:00',
-    planned_date: null,
-    published_date: null,
     patreon_url: null,
     ...overrides,
   };
@@ -88,8 +86,6 @@ describe('serializeManifest', () => {
       'id',
       'notes',
       'patreonUrl',
-      'plannedDate',
-      'publishedDate',
       'schemaVersion',
       'slug',
       'tags',
@@ -141,27 +137,24 @@ describe('serializeManifest', () => {
     expect(manifest.updatedAt).toBe('2026-07-26T14:00:00.000Z');
   });
 
-  it('converts date-only planned/published dates', () => {
+  it('omits obsolete project scheduling fields even when legacy record keys are present', () => {
     const project = makeProject({
       planned_date: '2026-08-15',
       published_date: '2026-09-01',
     });
     const manifest = serializeManifest(project);
 
-    expect(manifest.plannedDate).toBe('2026-08-15T00:00:00.000Z');
-    expect(manifest.publishedDate).toBe('2026-09-01T00:00:00.000Z');
+    expect(manifest).not.toHaveProperty('plannedDate');
+    expect(manifest).not.toHaveProperty('publishedDate');
+    expect(formatManifestJson(manifest)).not.toMatch(/"(?:plannedDate|publishedDate)"\s*:/);
   });
 
   it('keeps nullable metadata as null', () => {
     const project = makeProject({
-      planned_date: null,
-      published_date: null,
       patreon_url: null,
     });
     const manifest = serializeManifest(project);
 
-    expect(manifest.plannedDate).toBeNull();
-    expect(manifest.publishedDate).toBeNull();
     expect(manifest.patreonUrl).toBeNull();
   });
 
@@ -256,7 +249,7 @@ describe('serializeManifest', () => {
 // ─── deserializeManifest ─────────────────────────────────────────────────
 
 describe('deserializeManifest', () => {
-  it('converts camelCase manifest back to snake_case', () => {
+  it('loads a legacy v3 manifest without restoring obsolete scheduling fields', () => {
     const manifest = {
       schemaVersion: 3,
       id: 42,
@@ -280,8 +273,8 @@ describe('deserializeManifest', () => {
     expect(data.title).toBe('Test');
     expect(data.created_at).toBe('2026-07-26 14:00:00');
     expect(data.updated_at).toBe('2026-07-26 14:00:00');
-    expect(data.planned_date).toBe('2026-08-15');
-    expect(data.published_date).toBeNull();
+    expect(data).not.toHaveProperty('planned_date');
+    expect(data).not.toHaveProperty('published_date');
     expect(data.patreon_url).toBe('https://patreon.com/user');
     expect(data.thumbnail).toBeNull();
     expect(data).not.toHaveProperty('priority');
@@ -314,8 +307,8 @@ describe('deserializeManifest', () => {
     expect(result.description).toBe(project.description);
     expect(result.notes).toBe(project.notes);
     expect(result).not.toHaveProperty('status');
-    expect(result.planned_date).toBe('2026-08-15');
-    expect(result.published_date).toBeNull();
+    expect(result).not.toHaveProperty('planned_date');
+    expect(result).not.toHaveProperty('published_date');
     expect(result.patreon_url).toBe('https://patreon.com/creator');
   });
 
@@ -774,7 +767,8 @@ describe('manifest file operations', () => {
       // Verify camelCase keys
       expect(result).toHaveProperty('createdAt');
       expect(result).toHaveProperty('updatedAt');
-      expect(result).toHaveProperty('plannedDate');
+      expect(result).not.toHaveProperty('plannedDate');
+      expect(result).not.toHaveProperty('publishedDate');
     });
   });
 

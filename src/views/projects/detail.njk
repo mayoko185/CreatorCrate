@@ -114,9 +114,6 @@
             <dt>Updated</dt>
             <dd>{{ project.updated_at }}</dd>
 
-            <dt>Planned date</dt>
-            <dd>{{ project.planned_date or '—' }}{% if project.planned_date %} <small>(project target)</small>{% endif %}</dd>
-
             <dt>Description</dt>
             <dd class="description">{{ project.description or '—' }}</dd>
 
@@ -195,7 +192,7 @@
     {% set selectedTagIds = projectEditForm.selectedTagIds %}
     {% call dialog.render('project-edit-dialog', 'Edit Project', projectEditDialogOpen, 'project-edit-description', 'project-edit-form', 'project-form-dialog') %}
       <p id="project-edit-description" class="app-dialog-description">
-        Edit project details, status, scheduling, and links.
+        Edit project details, status, and links.
       </p>
 
       <div class="app-dialog-body project-edit-dialog-body">

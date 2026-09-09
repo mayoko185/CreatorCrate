@@ -10266,18 +10266,16 @@ describe('release HTTP workflow', () => {
       expect(res.text).toContain('Planned');
     });
 
-    it('does not render a project-only scheduled date without a release record', async () => {
-      const projectId = insertProjectDirect(db, { title: 'Project Only Calendar Date' });
-      db.prepare("UPDATE projects SET planned_date = '2026-07-08' WHERE id = ?").run(projectId);
+    it('does not render a project without a release record', async () => {
+      insertProjectDirect(db, { title: 'Project Without Release' });
 
       const res = await agent.get('/calendar?month=2026-07').expect(200);
 
-      expect(res.text).not.toContain('Project Only Calendar Date');
+      expect(res.text).not.toContain('Project Without Release');
     });
 
-    it('uses the release scheduled date rather than project publication metadata', async () => {
+    it('places a release on its release-owned planned date', async () => {
       const projectId = insertProjectDirect(db, { title: 'Release Date Project' });
-      db.prepare("UPDATE projects SET planned_date = '2026-07-02', published_date = '2026-07-22' WHERE id = ?").run(projectId);
       const release = createCalendarRelease(projectId, {
         title: 'Release Date Entry',
         plannedDate: '2026-07-18',
@@ -10285,7 +10283,10 @@ describe('release HTTP workflow', () => {
 
       const res = await agent.get('/calendar?month=2026-07').expect(200);
 
-      expect(res.text).toMatch(new RegExp(`href="/releases/${release.id}/edit">Release Date Entry</a>`));
+      const releaseDay = res.text.match(
+        /<li class="agenda-day[^>]*>\s*<div class="agenda-day-date">\s*2026-07-18[\s\S]*?<\/li>/,
+      )?.[0] || '';
+      expect(releaseDay).toContain(`href="/releases/${release.id}/edit">Release Date Entry</a>`);
     });
 
     it('omits archived releases', async () => {

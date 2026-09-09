@@ -14,8 +14,8 @@ function insertProject(db, { title, status = 'tbd', archivedAt = null }) {
   const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
   return db.prepare(`
     INSERT INTO projects (title, slug, description, notes, status,
-                          planned_date, published_date, patreon_url, archived_at)
-    VALUES (?, ?, '', '', ?, NULL, NULL, NULL, ?)
+                          patreon_url, archived_at)
+    VALUES (?, ?, '', '', ?, NULL, ?)
     RETURNING *
   `).get(title, slug, status, archivedAt);
 }

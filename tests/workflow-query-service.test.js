@@ -19,7 +19,6 @@ import {
 import { createTagRepository } from '../src/data/tag-repository.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
 import { createSocialPrepRepository } from '../src/data/social-prep-repository.js';
-import { getLocalTodayIso } from '../src/util/date.js';
 import { buildRevisionToken } from '../src/storage/preview-cache.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -52,15 +51,14 @@ function dashboardDefaults(sectionOverrides = {}) {
  * Helper to insert a project directly without filesystem operations.
  */
 function insertProject(db, {
-  title, status = 'tbd', plannedDate = null, publishedDate = null, archivedAt = null,
+  title, status = 'tbd', archivedAt = null,
 }) {
   const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
   return db.prepare(`
-    INSERT INTO projects (title, slug, description, notes, status,
-                          planned_date, published_date, patreon_url, archived_at)
-    VALUES (?, ?, '', '', ?, ?, ?, NULL, ?)
+    INSERT INTO projects (title, slug, description, notes, status, patreon_url, archived_at)
+    VALUES (?, ?, '', '', ?, NULL, ?)
     RETURNING *
-  `).get(title, slug, status, plannedDate, publishedDate, archivedAt);
+  `).get(title, slug, status, archivedAt);
 }
 
 /**
@@ -155,7 +153,6 @@ describe('workflow query service', () => {
   let primaryImageRepository;
   let preferenceRepository;
   let tagRepository;
-  let today;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-wqs-'));
@@ -170,7 +167,6 @@ describe('workflow query service', () => {
       projectPrimaryImageRepository: primaryImageRepository,
       tagRepository,
     });
-    today = getLocalTodayIso();
   });
 
   afterEach(() => {
@@ -280,8 +276,8 @@ describe('workflow query service', () => {
     it('returns safe empty sections for an empty database', () => {
       const data = service.getDashboardData();
 
-      expect(data.overdue).toEqual([]);
-      expect(data.upcoming).toEqual([]);
+      expect(data).not.toHaveProperty('overdue');
+      expect(data).not.toHaveProperty('upcoming');
       expect(data.workflowSummary.totalProjects).toBe(0);
       expect(data.workflowSummary.totalAssets).toBe(0);
       expect(data.workflowSummary.totalReleases).toBe(0);
@@ -290,7 +286,8 @@ describe('workflow query service', () => {
       expect(data.workflowSummary).not.toHaveProperty('releaseStatusCounts');
       expect(data).not.toHaveProperty('projectCounts');
       expect(data.recentlyUpdated).toEqual([]);
-      expect(data.today).toBe(today);
+      expect(data.sections).not.toHaveProperty('overdue');
+      expect(data.sections).not.toHaveProperty('upcoming');
     });
 
     it('does not throw for an empty database', () => {
@@ -554,233 +551,6 @@ describe('workflow query service', () => {
     });
   });
 
-  // ─── getDashboardData: overdue projects ─────────────────────────────
-
-  describe('getDashboardData — overdue projects', () => {
-    it('overdue projects appear in the overdue section', () => {
-      const project = insertProject(db, {
-        title: 'Overdue Project', status: 'planned', plannedDate: '2020-01-01',
-      });
-
-      const data = service.getDashboardData();
-      expect(data.overdue).toHaveLength(1);
-      expect(data.overdue[0].id).toBe(project.id);
-    });
-
-    it('a planned project with a release is not overdue', () => {
-      const project = insertProject(db, {
-        title: 'Has Release', status: 'planned', plannedDate: '2020-01-01',
-      });
-      insertRelease(db, { projectId: project.id, title: 'Any Release' });
-
-      const data = service.getDashboardData();
-      expect(data.overdue.map((p) => p.id)).not.toContain(project.id);
-    });
-
-    it('attaches available selected primary-image and tag data to overdue projects', () => {
-      const tag = tagRepository.create({ displayName: 'Overdue Tag', normalizedName: 'overdue-tag' });
-      const project = insertProject(db, {
-        title: 'Enriched Overdue', status: 'planned', plannedDate: '2020-01-01',
-      });
-      const asset = insertAsset(db, {
-        projectId: project.id,
-        relativePath: 'overdue-cover.png',
-        filename: 'overdue-cover.png',
-        extension: 'png',
-        mimeType: 'image/png',
-        modifiedAt: '2026-08-02T12:00:00.000Z',
-      });
-      primaryImageRepository.setPrimaryImage(project.id, asset.id);
-      tagRepository.assignToProject(project.id, tag.id);
-
-      const data = service.getDashboardData();
-      const row = data.overdue.find((p) => p.id === project.id);
-      expect(row.primaryImage).toMatchObject({
-        selectedAssetId: asset.id,
-        provenance: PRIMARY_IMAGE_PROVENANCE.MANUAL,
-        state: 'available',
-        kind: 'image',
-        alt: 'Preview of overdue-cover.png',
-      });
-      expect(row.primaryImage.previewUrl).toContain(`/projects/${project.id}/assets/${asset.id}/preview`);
-      expect(row.tags).toEqual([{ displayName: 'Overdue Tag' }]);
-    });
-
-    it('does not surface archived projects as overdue', () => {
-      const project = insertProject(db, { title: 'Archived Overdue', status: 'planned', plannedDate: '2020-01-01' });
-      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(project.id);
-
-      const data = service.getDashboardData();
-      expect(data.overdue.map((p) => p.id)).not.toContain(project.id);
-    });
-
-    it('respects the bounded limit on overdue projects', () => {
-      for (let i = 0; i < 10; i++) {
-        insertProject(db, { title: `Overdue ${i}`, status: 'planned', plannedDate: '2020-01-01' });
-      }
-
-      const data = service.getDashboardData({
-        dashboardDefaults: dashboardDefaults({ overdue: { visible: true, itemCount: 3 } }),
-      });
-      expect(data.overdue).toHaveLength(3);
-    });
-  });
-
-  // ─── getDashboardData: upcoming projects ─────────────────────────────
-
-  describe('getDashboardData — upcoming projects', () => {
-    it('projects planned strictly after today appear in upcoming', () => {
-      const project = insertProject(db, {
-        title: 'Upcoming Project', status: 'planned', plannedDate: '2099-12-31',
-      });
-
-      const data = service.getDashboardData();
-      expect(data.upcoming.map((p) => p.id)).toContain(project.id);
-    });
-
-    it('a project planned exactly today is not upcoming', () => {
-      const project = insertProject(db, { title: 'Today Project', status: 'planned', plannedDate: today });
-
-      const data = service.getDashboardData();
-      expect(data.upcoming.map((p) => p.id)).not.toContain(project.id);
-    });
-
-    it('an upcoming project with releases still appears (no release-existence condition)', () => {
-      const project = insertProject(db, {
-        title: 'Upcoming With Release', status: 'planned', plannedDate: '2099-01-01',
-      });
-      insertRelease(db, { projectId: project.id, title: 'Any Release' });
-
-      const data = service.getDashboardData();
-      expect(data.upcoming.map((p) => p.id)).toContain(project.id);
-    });
-
-    it('attaches unavailable selected primary-image and tag data to upcoming projects', () => {
-      const tag = tagRepository.create({ displayName: 'Upcoming Tag', normalizedName: 'upcoming-tag' });
-      const project = insertProject(db, {
-        title: 'Enriched Upcoming', status: 'planned', plannedDate: '2099-01-01',
-      });
-      const asset = insertAsset(db, {
-        projectId: project.id,
-        relativePath: 'upcoming-cover.png',
-        filename: 'upcoming-cover.png',
-        extension: 'png',
-        mimeType: 'image/png',
-      });
-      primaryImageRepository.setPrimaryImage(project.id, asset.id);
-      db.prepare('UPDATE assets SET is_present = 0, missing_since = datetime(\'now\') WHERE id = ?')
-        .run(asset.id);
-      tagRepository.assignToProject(project.id, tag.id);
-
-      const data = service.getDashboardData();
-      const row = data.upcoming.find((p) => p.id === project.id);
-      expect(row.tags).toEqual([{ displayName: 'Upcoming Tag' }]);
-      expect(row.primaryImage).toEqual({
-        selectedAssetId: asset.id,
-        provenance: PRIMARY_IMAGE_PROVENANCE.MANUAL,
-        state: 'unavailable',
-        kind: 'image',
-        mediaModifier: null,
-        previewUrl: null,
-        thumbnailUrl: null,
-        revision: null,
-        alt: 'Preview of upcoming-cover.png',
-      });
-    });
-
-    it('does not surface archived projects as upcoming', () => {
-      const project = insertProject(db, { title: 'Archived Upcoming', status: 'planned', plannedDate: '2099-01-01' });
-      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(project.id);
-
-      const data = service.getDashboardData();
-      expect(data.upcoming.map((p) => p.id)).not.toContain(project.id);
-    });
-
-    it('respects the bounded limit on upcoming projects', () => {
-      for (let i = 0; i < 15; i++) {
-        insertProject(db, { title: `Upcoming ${i}`, status: 'planned', plannedDate: '2099-01-01' });
-      }
-
-      const data = service.getDashboardData({
-        dashboardDefaults: dashboardDefaults({ upcoming: { visible: true, itemCount: 4 } }),
-      });
-      expect(data.upcoming).toHaveLength(4);
-    });
-  });
-
-  // ─── getDashboardData: today classification boundary ────────────────
-
-  describe('getDashboardData — today classification boundary', () => {
-    const FIXED_TODAY = '2025-06-15';
-
-    it('project planned today is overdue (no releases), not upcoming', () => {
-      const project = insertProject(db, { title: 'Today Project', status: 'planned', plannedDate: FIXED_TODAY });
-
-      const data = service.getDashboardData({ today: FIXED_TODAY });
-      expect(data.overdue.map((p) => p.id)).toContain(project.id);
-      expect(data.upcoming.map((p) => p.id)).not.toContain(project.id);
-    });
-
-    it('project planned yesterday is overdue', () => {
-      const project = insertProject(db, { title: 'Yesterday Project', status: 'planned', plannedDate: '2025-06-14' });
-
-      const data = service.getDashboardData({ today: FIXED_TODAY });
-      expect(data.overdue.map((p) => p.id)).toContain(project.id);
-      expect(data.upcoming.map((p) => p.id)).not.toContain(project.id);
-    });
-
-    it('project planned tomorrow is upcoming, not overdue', () => {
-      const project = insertProject(db, { title: 'Tomorrow Project', status: 'planned', plannedDate: '2025-06-16' });
-
-      const data = service.getDashboardData({ today: FIXED_TODAY });
-      expect(data.upcoming.map((p) => p.id)).toContain(project.id);
-      expect(data.overdue.map((p) => p.id)).not.toContain(project.id);
-    });
-
-    it('uses the same injected today value across overdue and upcoming', () => {
-      const yesterday = insertProject(db, { title: 'Yesterday', status: 'planned', plannedDate: '2025-06-14' });
-      const todayProject = insertProject(db, { title: 'Today', status: 'planned', plannedDate: '2025-06-15' });
-      const tomorrow = insertProject(db, { title: 'Tomorrow', status: 'planned', plannedDate: '2025-06-16' });
-
-      const data = service.getDashboardData({ today: FIXED_TODAY });
-      expect(data.today).toBe(FIXED_TODAY);
-      expect(data.overdue.map((p) => p.id)).toEqual(expect.arrayContaining([yesterday.id, todayProject.id]));
-      expect(data.upcoming.map((p) => p.id)).toEqual([tomorrow.id]);
-    });
-
-    it('does not classify a project as both overdue AND upcoming for the same today', () => {
-      const project = insertProject(db, { title: 'Either Or', status: 'planned', plannedDate: FIXED_TODAY });
-
-      const data = service.getDashboardData({ today: FIXED_TODAY });
-      const overdueIds = data.overdue.map((p) => p.id);
-      const upcomingIds = data.upcoming.map((p) => p.id);
-      const intersection = overdueIds.filter((id) => upcomingIds.includes(id));
-      expect(intersection).toEqual([]);
-    });
-  });
-
-  // ─── getDashboardData: application-local today boundary ─────────────
-
-  describe('getDashboardData — application-local today boundary', () => {
-    it('uses the default local today (not UTC) when no today is injected', () => {
-      // Set a system time at local noon on 2025-06-15. The local date is
-      // 2025-06-15 in every timezone.
-      vi.useFakeTimers();
-      vi.setSystemTime(new Date(2025, 5, 15, 12, 0, 0));
-      try {
-        const project = insertProject(db, { title: 'Default Local Today', status: 'planned', plannedDate: '2025-06-16' });
-
-        const data = service.getDashboardData();
-        // The default `today` is the local calendar date of `new Date()`.
-        expect(data.today).toBe('2025-06-15');
-        expect(data.upcoming.map((p) => p.id)).toContain(project.id);
-        expect(data.overdue.map((p) => p.id)).not.toContain(project.id);
-      } finally {
-        vi.useRealTimers();
-      }
-    });
-  });
-
   // ─── getDashboardData: workflow summary ────────────────────────────
 
   describe('getDashboardData — workflow summary', () => {
@@ -877,14 +647,8 @@ describe('workflow query service', () => {
       expect(row.primaryImage.state).toBe('none');
     });
 
-    it('composes configured sections with bounded, deduplicated enrichment', () => {
-      const fixedToday = '2026-07-29';
-      const nextDay = new Date(`${fixedToday}T00:00:00.000Z`);
-      nextDay.setUTCDate(nextDay.getUTCDate() + 1);
-      const upcomingDate = nextDay.toISOString().slice(0, 10);
+    it('composes retained sections with bounded, deduplicated enrichment', () => {
       const configuredDefaults = dashboardDefaults(Object.fromEntries([
-        'overdue',
-        'upcoming',
         'recently-updated',
         'status:tbd',
         'status:planned',
@@ -895,35 +659,14 @@ describe('workflow query service', () => {
       ].map((sectionId) => [sectionId, { visible: true, itemCount: 8 }])));
 
       function insertDashboardFixture(label) {
-        const overdue = insertProject(db, {
-          title: `${label} Overdue`, status: 'planned', plannedDate: fixedToday,
-        });
-        const upcoming = insertProject(db, {
-          title: `${label} Upcoming`, status: 'planned', plannedDate: upcomingDate,
-        });
         const recentlyUpdated = insertProject(db, { title: `${label} Recent`, status: 'ready' });
         const statuses = [
           insertProject(db, { title: `${label} TBD`, status: 'tbd' }),
+          insertProject(db, { title: `${label} Planned`, status: 'planned' }),
           insertProject(db, { title: `${label} In Progress`, status: 'in-progress' }),
           insertProject(db, { title: `${label} Completed`, status: 'completed' }),
           insertProject(db, { title: `${label} Archived`, status: 'tbd', archivedAt: '2026-01-01 00:00:00' }),
         ];
-
-        const availableAsset = insertAsset(db, {
-          projectId: overdue.id,
-          relativePath: `${label}-overdue.png`,
-          filename: `${label}-overdue.png`,
-          extension: 'png',
-          mimeType: 'image/png',
-          modifiedAt: '2026-08-02T12:00:00.000Z',
-        });
-        const unavailableAsset = insertAsset(db, {
-          projectId: upcoming.id,
-          relativePath: `${label}-upcoming.png`,
-          filename: `${label}-upcoming.png`,
-          extension: 'png',
-          mimeType: 'image/png',
-        });
         const recentAsset = insertAsset(db, {
           projectId: recentlyUpdated.id,
           relativePath: `${label}-recent.png`,
@@ -931,87 +674,52 @@ describe('workflow query service', () => {
           extension: 'png',
           mimeType: 'image/png',
         });
-        primaryImageRepository.setPrimaryImage(overdue.id, availableAsset.id);
-        primaryImageRepository.setPrimaryImage(upcoming.id, unavailableAsset.id);
         primaryImageRepository.setPrimaryImage(recentlyUpdated.id, recentAsset.id);
-        db.prepare('UPDATE assets SET is_present = 0, missing_since = datetime(\'now\') WHERE id = ?')
-          .run(unavailableAsset.id);
 
-        return {
-          overdue,
-          upcoming,
-          recentlyUpdated,
-          statuses,
-          availableAsset,
-          unavailableAsset,
-          recentAsset,
-        };
+        return { recentlyUpdated, statuses, recentAsset };
       }
 
       const smallFixture = insertDashboardFixture('Dashboard Query Small');
-
       const counter = instrumentStatementExecution(db);
       const instrumentedService = createWorkflowQueryService({ db });
 
       const smallStatementStart = counter.statements().length;
       counter.reset();
-      const smallData = instrumentedService.getDashboardData({
-        today: fixedToday,
-        dashboardDefaults: configuredDefaults,
-      });
+      const smallData = instrumentedService.getDashboardData({ dashboardDefaults: configuredDefaults });
       const smallCount = counter.count();
 
-      expect(smallData.overdue.map((project) => project.id)).toContain(smallFixture.overdue.id);
-      expect(smallData.upcoming.map((project) => project.id)).toContain(smallFixture.upcoming.id);
       expect(smallData.recentlyUpdated.map((project) => project.id)).toContain(smallFixture.recentlyUpdated.id);
-      expect(smallData.overdue.find((project) => project.id === smallFixture.overdue.id).primaryImage)
-        .toMatchObject({ selectedAssetId: smallFixture.availableAsset.id, state: 'available' });
-      expect(smallData.upcoming.find((project) => project.id === smallFixture.upcoming.id).primaryImage)
-        .toMatchObject({ selectedAssetId: smallFixture.unavailableAsset.id, state: 'unavailable' });
       expect(smallData.recentlyUpdated.find((project) => project.id === smallFixture.recentlyUpdated.id).primaryImage)
         .toMatchObject({ selectedAssetId: smallFixture.recentAsset.id, state: 'available' });
       expect(smallData.sections['status:archived'].map((project) => project.id))
-        .toContain(smallFixture.statuses[3].id);
-      expect(smallData.sections.overdue[0]).toBe(
-        smallData.sections['status:planned'].find((project) => project.id === smallFixture.overdue.id)
+        .toContain(smallFixture.statuses[4].id);
+      expect(smallData.sections['status:ready'][0]).toBe(
+        smallData.recentlyUpdated.find((project) => project.id === smallFixture.recentlyUpdated.id)
       );
       expect(['tbd', 'planned', 'in-progress', 'ready', 'completed', 'archived'].every(
         (status) => smallData.sections[`status:${status}`].length > 0
       )).toBe(true);
-      const smallStatements = counter.statements().slice(smallStatementStart);
-      expect(smallStatements.filter((statement) => statement.includes('requested_statuses'))).toHaveLength(1);
+      expect(counter.statements().slice(smallStatementStart)
+        .filter((statement) => statement.includes('requested_statuses'))).toHaveLength(1);
 
-      for (let i = 1; i <= 20; i++) {
-        insertDashboardFixture(`Dashboard Query Large ${i}`);
-      }
+      for (let i = 1; i <= 20; i++) insertDashboardFixture(`Dashboard Query Large ${i}`);
 
       const largeStatementStart = counter.statements().length;
       counter.reset();
-      const largeData = instrumentedService.getDashboardData({
-        today: fixedToday,
-        dashboardDefaults: configuredDefaults,
-      });
+      const largeData = instrumentedService.getDashboardData({ dashboardDefaults: configuredDefaults });
       const largeCount = counter.count();
 
-      expect(smallData.overdue).toHaveLength(1);
-      expect(smallData.upcoming).toHaveLength(1);
-      expect(smallData.recentlyUpdated).toHaveLength(6);
-      expect(largeData.overdue).toHaveLength(8);
-      expect(largeData.upcoming).toHaveLength(8);
+      expect(smallData.recentlyUpdated).toHaveLength(5);
       expect(largeData.recentlyUpdated).toHaveLength(8);
       expect(largeData.workflowSummary.totalProjects).toBeGreaterThan(smallData.workflowSummary.totalProjects);
       expect(smallCount).toBe(largeCount);
-      expect(smallCount).toBe(13);
-      expect(largeCount).toBe(13);
-      const largeStatements = counter.statements().slice(largeStatementStart);
-      expect(largeStatements.filter((statement) => statement.includes('requested_statuses'))).toHaveLength(1);
+      expect(smallCount).toBe(11);
+      expect(counter.statements().slice(largeStatementStart)
+        .filter((statement) => statement.includes('requested_statuses'))).toHaveLength(1);
     });
 
-    it('uses default eight-item sections and skips hidden project-list queries', () => {
-      const fixedToday = '2026-07-29';
+    it('uses default eight-item retained sections and skips hidden project-list queries', () => {
       for (let i = 0; i < 10; i++) {
-        insertProject(db, { title: `Default Overdue ${i}`, status: 'planned', plannedDate: fixedToday });
-        insertProject(db, { title: `Default Upcoming ${i}`, status: 'planned', plannedDate: '2026-07-30' });
         insertProject(db, { title: `Default Recent ${i}`, status: 'tbd' });
         for (const status of ['tbd', 'planned', 'in-progress', 'ready', 'completed', 'archived']) {
           insertProject(db, {
@@ -1022,17 +730,15 @@ describe('workflow query service', () => {
         }
       }
 
-      const defaults = service.getDashboardData({ today: fixedToday });
-      expect(defaults.overdue).toHaveLength(8);
-      expect(defaults.upcoming).toHaveLength(8);
+      const defaults = service.getDashboardData();
       expect(defaults.recentlyUpdated).toHaveLength(8);
+      expect(defaults).not.toHaveProperty('overdue');
+      expect(defaults).not.toHaveProperty('upcoming');
       for (const status of ['tbd', 'planned', 'in-progress', 'ready', 'completed', 'archived']) {
         expect(defaults.sections[`status:${status}`]).toHaveLength(8);
       }
 
       const allHidden = dashboardDefaults(Object.fromEntries([
-        'overdue',
-        'upcoming',
         'recently-updated',
         'status:tbd',
         'status:planned',
@@ -1045,10 +751,7 @@ describe('workflow query service', () => {
       const instrumentedService = createWorkflowQueryService({ db });
       const statementStart = counter.statements().length;
       counter.reset();
-      const hiddenData = instrumentedService.getDashboardData({
-        today: fixedToday,
-        dashboardDefaults: allHidden,
-      });
+      const hiddenData = instrumentedService.getDashboardData({ dashboardDefaults: allHidden });
 
       expect(counter.count()).toBe(5);
       expect(Object.values(hiddenData.sections).every((projects) => projects.length === 0)).toBe(true);
@@ -1056,7 +759,6 @@ describe('workflow query service', () => {
         (statement) => statement.includes('requested_statuses')
       )).toBe(false);
     });
-
     it('uses independent visible status limits in one status query', () => {
       for (let i = 0; i < 4; i++) {
         insertProject(db, { title: `TBD status ${i}`, status: 'tbd' });
@@ -4622,19 +4324,16 @@ describe('workflow query service', () => {
       }
     });
 
-    it('getDashboardData returns at most the configured limits', () => {
+    it('getDashboardData returns retained sections at no more than configured limits', () => {
       for (let i = 0; i < 20; i++) {
-        insertProject(db, {
-          title: `Bounded Overdue Project ${i}`, status: 'planned', plannedDate: '2020-01-01',
-        });
-        insertProject(db, {
-          title: `Bounded Upcoming Project ${i}`, status: 'planned', plannedDate: '2099-01-01',
-        });
+        insertProject(db, { title: `Bounded Dashboard Project ${i}`, status: 'planned' });
       }
 
-      const data = service.getDashboardData({ today: '2099-01-01' });
-      expect(data.overdue.length).toBeLessThanOrEqual(8);
-      expect(data.upcoming.length).toBeLessThanOrEqual(8);
+      const data = service.getDashboardData();
+      expect(data.recentlyUpdated.length).toBeLessThanOrEqual(8);
+      expect(data.sections['status:planned'].length).toBeLessThanOrEqual(8);
+      expect(data.sections).not.toHaveProperty('overdue');
+      expect(data.sections).not.toHaveProperty('upcoming');
     });
 
     it('getReleaseList returns at most pageSize releases', () => {
@@ -4645,30 +4344,19 @@ describe('workflow query service', () => {
   });
 
   describe('getDashboardData — configured section sorting', () => {
-    it('uses configured trusted sorting for date-driven, recently updated, and status sections', () => {
-      const overdueZulu = insertProject(db, { title: 'Zulu overdue', status: 'planned', plannedDate: '2026-07-01' });
-      const overdueAlpha = insertProject(db, { title: 'Alpha overdue', status: 'planned', plannedDate: '2026-07-01' });
-      const upcomingZulu = insertProject(db, { title: 'Zulu upcoming', status: 'planned', plannedDate: '2026-08-01' });
-      const upcomingAlpha = insertProject(db, { title: 'Alpha upcoming', status: 'planned', plannedDate: '2026-08-01' });
+    it('uses configured trusted sorting for retained recently updated and status sections', () => {
       const recentZulu = insertProject(db, { title: 'Zulu recent', status: 'tbd' });
       const recentAlpha = insertProject(db, { title: 'Alpha recent', status: 'tbd' });
       const readyZulu = insertProject(db, { title: 'Zulu ready', status: 'ready' });
       const readyAlpha = insertProject(db, { title: 'Alpha ready', status: 'ready' });
 
       const data = service.getDashboardData({
-        today: '2026-07-15',
         dashboardDefaults: dashboardDefaults({
-          overdue: { visible: true, itemCount: 8, sort: 'title', order: 'asc' },
-          upcoming: { visible: true, itemCount: 8, sort: 'title', order: 'asc' },
           'recently-updated': { visible: true, itemCount: 25, sort: 'title', order: 'asc' },
           'status:ready': { visible: true, itemCount: 8, sort: 'title', order: 'asc' },
         }),
       });
 
-      expect(data.sections.overdue.slice(0, 2).map((project) => project.id))
-        .toEqual([overdueAlpha.id, overdueZulu.id]);
-      expect(data.sections.upcoming.slice(0, 2).map((project) => project.id))
-        .toEqual([upcomingAlpha.id, upcomingZulu.id]);
       expect(data.sections['recently-updated'].map((project) => project.id))
         .toContain(recentAlpha.id);
       expect(data.sections['recently-updated'].findIndex((project) => project.id === recentAlpha.id))
@@ -4677,19 +4365,14 @@ describe('workflow query service', () => {
         .toEqual([readyAlpha.id, readyZulu.id]);
     });
 
-    it('keeps the established planned-date and updated-date defaults when no sorting is stored', () => {
-      const overdueLater = insertProject(db, { title: 'Later overdue', status: 'planned', plannedDate: '2026-07-10' });
-      const overdueEarlier = insertProject(db, { title: 'Earlier overdue', status: 'planned', plannedDate: '2026-07-01' });
+    it('keeps the established updated-date default when no sorting is stored', () => {
       const readyFirst = insertProject(db, { title: 'First ready', status: 'ready' });
       const readySecond = insertProject(db, { title: 'Second ready', status: 'ready' });
 
       const data = service.getDashboardData({
-        today: '2026-07-15',
         dashboardDefaults: { version: 1, sections: {} },
       });
 
-      expect(data.sections.overdue.slice(0, 2).map((project) => project.id))
-        .toEqual([overdueEarlier.id, overdueLater.id]);
       expect(data.sections['status:ready'].slice(0, 2).map((project) => project.id))
         .toEqual([readySecond.id, readyFirst.id]);
     });

@@ -231,7 +231,7 @@ describe('page defaults service', () => {
       },
       sort: {
         key: 'page_defaults.projects.sort',
-        values: ['updated', 'created', 'title', 'published'],
+        values: ['updated', 'created', 'title'],
         fallback: 'created',
       },
       order: {
@@ -257,11 +257,41 @@ describe('page defaults service', () => {
     });
   });
 
-  it('accepts published as a valid Projects sort default', () => {
-    repository.setValue(PAGE_DEFAULT_DEFINITIONS.projects.sort.key, 'published');
+  it.each(['published', 'planned'])(
+    'uses the Projects fallback for obsolete stored %s sorting without rewriting unrelated preferences',
+    (obsoleteSort) => {
+      const sortKey = PAGE_DEFAULT_DEFINITIONS.projects.sort.key;
+      const viewKey = PAGE_DEFAULT_DEFINITIONS.projects.view.key;
+      repository.setValue(sortKey, obsoleteSort);
+      repository.setValue(viewKey, 'list');
 
-    expect(service.getSavedDefault('projects', 'sort')).toBe('published');
-    expect(service.resolve('projects', 'sort')).toBe('published');
+      expect(service.getSavedDefault('projects', 'sort')).toBeUndefined();
+      expect(service.resolvePageDefaults('projects')).toEqual({
+        view: 'list',
+        sort: 'created',
+        order: 'desc',
+        status: 'all',
+        projectType: 'all',
+        tag: 'all',
+      });
+      expect(repository.getValue(sortKey)).toBe(obsoleteSort);
+      expect(repository.getValue(viewKey)).toBe('list');
+    },
+  );
+
+  it('keeps the Release page-default configuration unchanged', () => {
+    expect(PAGE_DEFAULT_DEFINITIONS.releases).toEqual({
+      sort: {
+        key: 'page_defaults.releases.sort',
+        values: ['planned', 'updated', 'created', 'title'],
+        fallback: 'planned',
+      },
+      order: {
+        key: 'page_defaults.releases.order',
+        values: ['asc', 'desc'],
+        fallback: 'asc',
+      },
+    });
   });
 
   it('does not expose a second Release Management defaults namespace', () => {
@@ -813,14 +843,14 @@ describe('page defaults service', () => {
     expect(service.resolve('projects', 'sort')).toBe('title');
     expect(service.validatePageDefaults('projects', {
       view: 'grid',
-      sort: 'published',
+      sort: 'updated',
       order: 'desc',
       status: 'all',
       projectType: 'all',
       tag: 'all',
     })).toEqual({
       view: 'grid',
-      sort: 'published',
+      sort: 'updated',
       order: 'desc',
       status: 'all',
       projectType: 'all',

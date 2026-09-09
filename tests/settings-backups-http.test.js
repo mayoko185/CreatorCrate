@@ -98,8 +98,8 @@ function activeNavKeys(html, expectedCurrentSettingsChild) {
 function insertProject(db, title) {
   return db
     .prepare(
-      `INSERT INTO projects (title, slug, description, notes, status, planned_date, published_date, patreon_url)
-       VALUES (?, ?, '', '', 'tbd', NULL, NULL, NULL)`
+      `INSERT INTO projects (title, slug, description, notes, status, patreon_url)
+       VALUES (?, ?, '', '', 'tbd', NULL)`
     )
     .run(title, title.toLowerCase().replace(/\s+/g, '-')).lastInsertRowid;
 }

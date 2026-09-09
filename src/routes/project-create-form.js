@@ -4,6 +4,10 @@ import { PROJECT_TYPES, DEFAULT_PROJECT_TYPE } from '../data/project-repository.
 export function createFormValues(values) {
   const formValues = { ...values };
   delete formValues.priority;
+  delete formValues.plannedDate;
+  delete formValues.publishedDate;
+  delete formValues.planned_date;
+  delete formValues.published_date;
   return formValues;
 }
 

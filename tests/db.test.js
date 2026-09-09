@@ -521,9 +521,9 @@ describe('database and migrations', () => {
 
     // Create project
     const projectId = db.prepare(`
-      INSERT INTO projects (title, slug, description, notes, status, planned_date, published_date, patreon_url)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run('Test Project', 'test-project', '', '', 'tbd', null, null, null).lastInsertRowid;
+      INSERT INTO projects (title, slug, description, notes, status, patreon_url)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run('Test Project', 'test-project', '', '', 'tbd', null).lastInsertRowid;
 
     // Create release
     const releaseId = db.prepare(`
@@ -553,9 +553,9 @@ describe('database and migrations', () => {
     runMigrations(db, MIGRATIONS_DIR);
 
     const projectId = db.prepare(`
-      INSERT INTO projects (title, slug, description, notes, status, planned_date, published_date, patreon_url)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run('Test Project', 'test-project', '', '', 'tbd', null, null, null).lastInsertRowid;
+      INSERT INTO projects (title, slug, description, notes, status, patreon_url)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run('Test Project', 'test-project', '', '', 'tbd', null).lastInsertRowid;
 
     const releaseId = db.prepare(`
       INSERT INTO releases (project_id, title, description, notes, planned_date, patreon_url)
@@ -631,9 +631,9 @@ describe('database and migrations', () => {
     expect(ddl).toMatch(/FOREIGN KEY\s*\(project_id\)\s*REFERENCES\s*projects\(id\)/i);
 
     const projectId = db.prepare(`
-      INSERT INTO projects (title, slug, description, notes, status, planned_date, published_date, patreon_url)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run('Test Project', 'test-project', '', '', 'tbd', null, null, null).lastInsertRowid;
+      INSERT INTO projects (title, slug, description, notes, status, patreon_url)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run('Test Project', 'test-project', '', '', 'tbd', null).lastInsertRowid;
 
     const categoryId = db.prepare(`
       INSERT INTO project_asset_categories (project_id, display_name, directory_slug, display_order, enabled)

@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { PROJECT_TYPES } from '../src/data/project-repository.js';
-import { buildNewProjectFormModel } from '../src/routes/project-create-form.js';
+import { buildNewProjectFormModel, createFormValues } from '../src/routes/project-create-form.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 
@@ -113,6 +113,25 @@ describe('Project Type route and form models', () => {
     expect(model.projectTypes).toEqual(PROJECT_TYPES);
   });
 
+  it('drops legacy Project scheduling keys from query and submitted form values', () => {
+    const legacyValues = {
+      title: 'Legacy scheduling input',
+      plannedDate: '2026-01-01',
+      publishedDate: '2026-01-02',
+      planned_date: '2026-01-03',
+      published_date: '2026-01-04',
+    };
+
+    expect(createFormValues(legacyValues)).toEqual({ title: 'Legacy scheduling input' });
+
+    const queryModel = buildFormModel({ query: legacyValues });
+    const submittedModel = buildFormModel({ values: legacyValues });
+    for (const key of ['plannedDate', 'publishedDate', 'planned_date', 'published_date']) {
+      expect(queryModel.values).not.toHaveProperty(key);
+      expect(submittedModel.values).not.toHaveProperty(key);
+    }
+  });
+
   it('passes explicit Project Type values through create and edit posts', async () => {
     const location = await createProject({ projectType: 'comic' });
     const id = Number(location.replace('/projects/', ''));
@@ -137,6 +156,8 @@ describe('Project Type route and form models', () => {
     const model = lastRenderModel(renderSpy, 'projects/detail.njk');
     expect(model.projectEditForm.values.projectType).toBe('animation');
     expect(model.projectEditForm.projectTypes).toEqual(PROJECT_TYPES);
+    expect(model.projectEditForm.values).not.toHaveProperty('plannedDate');
+    expect(model.projectEditForm.values).not.toHaveProperty('publishedDate');
   });
 
   it('preserves submitted Project Type values and options on create and edit validation rerenders', async () => {

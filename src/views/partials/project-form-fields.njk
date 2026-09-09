@@ -151,43 +151,6 @@
   </div>
 </section>
 
-<section class="settings-section scheduling-section project-form-section{% if projectFormDialog %} project-edit-dialog-section{% endif %}">
-  <h3>Scheduling</h3>
-  <div class="project-form-section-body{% if projectFormDialog %} project-edit-dialog-section-body{% endif %}">
-  <div class="field-row scheduling-row">
-    <div class="field scheduling-field {% if errors.plannedDate %}field-error{% endif %}" data-date-picker-field>
-      <label for="plannedDate">Planned date</label>
-      <div class="picker-control">
-        <div class="picker-input-row">
-          <input class="picker-input" type="date" id="plannedDate" name="plannedDate" value="{{ values.plannedDate or '' }}" aria-describedby="plannedDate-help{% if errors.plannedDate %} plannedDate-error{% endif %}"{% if errors.plannedDate %} aria-invalid="true"{% endif %} data-date-picker-input>
-          <button type="button" class="picker-trigger date-picker-trigger" aria-haspopup="dialog" aria-expanded="false" aria-controls="plannedDate-calendar" aria-label="Open calendar for planned date">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
-          </button>
-        </div>
-        <div id="plannedDate-calendar" class="date-picker-panel" role="dialog" aria-label="Planned date calendar" hidden data-date-picker-panel data-date-picker-for="plannedDate"></div>
-      </div>
-      <span class="help-text" id="plannedDate-help">Target date for the creative project</span>
-      {% if errors.plannedDate %}<span class="field-error-message" id="plannedDate-error">{{ errors.plannedDate }}</span>{% endif %}
-    </div>
-
-    <div class="field scheduling-field {% if errors.publishedDate %}field-error{% endif %}" data-date-picker-field>
-      <label for="publishedDate">Published date</label>
-      <div class="picker-control">
-        <div class="picker-input-row">
-          <input class="picker-input" type="date" id="publishedDate" name="publishedDate" value="{{ values.publishedDate or '' }}" aria-describedby="publishedDate-help{% if errors.publishedDate %} publishedDate-error{% endif %}"{% if errors.publishedDate %} aria-invalid="true"{% endif %} data-date-picker-input>
-          <button type="button" class="picker-trigger date-picker-trigger" aria-haspopup="dialog" aria-expanded="false" aria-controls="publishedDate-calendar" aria-label="Open calendar for published date">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
-          </button>
-        </div>
-        <div id="publishedDate-calendar" class="date-picker-panel" role="dialog" aria-label="Published date calendar" hidden data-date-picker-panel data-date-picker-for="publishedDate"></div>
-      </div>
-      <span class="help-text" id="publishedDate-help">When the project was published</span>
-      {% if errors.publishedDate %}<span class="field-error-message" id="publishedDate-error">{{ errors.publishedDate }}</span>{% endif %}
-    </div>
-  </div>
-</div>
-</section>
-
 <section class="settings-section project-form-section{% if projectFormDialog %} project-edit-dialog-section{% endif %}">
   <h3>Links</h3>
   <div class="project-form-section-body{% if projectFormDialog %} project-edit-dialog-section-body{% endif %}">
