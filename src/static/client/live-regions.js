@@ -155,7 +155,9 @@ export function createLiveRegionEngine(config) {
   const {
     regionSelector,
     formSelector,
+    formScope = 'region',
     linkSelector = null,
+    linkScope = 'region',
     searchSelector = null,
     changeSelector = null,
     debounceMs = 0,
@@ -188,17 +190,19 @@ export function createLiveRegionEngine(config) {
   }
 
   function formFor(region) {
+    const root = formScope === 'document' ? liveRegionDocument(region) : region;
     const selectors = Array.isArray(formSelector) ? formSelector : [formSelector];
     for (const selector of selectors) {
-      const form = region?.querySelector?.(selector);
+      const form = root?.querySelector?.(selector);
       if (form) return form;
     }
     return null;
   }
 
   function formsFor(region) {
+    const root = formScope === 'document' ? liveRegionDocument(region) : region;
     const selectors = Array.isArray(formSelector) ? formSelector : [formSelector];
-    return selectors.flatMap((selector) => Array.from(region?.querySelectorAll?.(selector) || []));
+    return selectors.flatMap((selector) => Array.from(root?.querySelectorAll?.(selector) || []));
   }
 
   function capabilities(windowObject) {
@@ -469,14 +473,18 @@ export function createLiveRegionEngine(config) {
     });
 
     if (linkSelector) {
-      region.querySelectorAll?.(linkSelector).forEach((link) => {
+      const linkRoot = linkScope === 'document' ? state.document : region;
+      linkRoot.querySelectorAll?.(linkSelector).forEach((link) => {
         if (isEnhancementBound(link, 'liveRegionLinkBound')) return;
         markEnhancementBound(link, 'liveRegionLinkBound');
         link.addEventListener?.('click', (event) => {
           if (event.defaultPrevented || event.button !== 0
             || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
           if (!capabilities(state.window)) return;
-          const href = link.href || link.getAttribute?.('href');
+          const ownerForm = link.form || link.closest?.('form');
+          const href = link.href || link.getAttribute?.('href')
+            || link.getAttribute?.('formaction')
+            || ownerForm?.action || ownerForm?.getAttribute?.('action');
           if (!href) return;
           event.preventDefault?.();
           let url;
@@ -542,6 +550,18 @@ export function createLiveRegionEngine(config) {
   };
 
   return engine;
+}
+
+function reconcileProjectsFilterForm(state, parsed) {
+  const currentForm = state.document?.querySelector?.(PROJECTS_FILTER_SELECTOR);
+  const nextForm = parsed?.querySelector?.(PROJECTS_FILTER_SELECTOR);
+  if (!currentForm || !nextForm || currentForm === nextForm) return;
+
+  const captured = liveRegionCaptureState(currentForm, state.document);
+  const children = Array.from(nextForm.childNodes || nextForm.children || []);
+  currentForm.replaceChildren?.(...children);
+  enhanceDropdowns(state.document);
+  liveRegionRestoreState(currentForm, state.document, captured);
 }
 
 function submitProjectsNsfwToggle(state, form, event) {
@@ -668,7 +688,9 @@ function bindProjectsNsfwForm(state, region) {
 const projectsLiveEngine = createLiveRegionEngine({
   regionSelector: PROJECTS_LIVE_REGION_SELECTOR,
   formSelector: PROJECTS_FILTER_SELECTOR,
+  formScope: 'document',
   linkSelector: 'nav.view-switcher a, .pagination a, [data-projects-reset]',
+  linkScope: 'document',
   defaultAction: '/projects',
   stateKey: '__creatorCrateProjectsLiveFiltering',
   historyState: { projects: true },
@@ -680,6 +702,8 @@ const projectsLiveEngine = createLiveRegionEngine({
   missingRegionMessage: 'Projects response did not contain the live region.',
   enhanceRegion: enhanceProjectsLiveRegion,
   onCreate(state, region) {
+    state.projectsDefaultsRefreshGeneration = null;
+    state.projectsDefaultsRefreshError = null;
     state.nsfwController = null;
     state.nsfwGeneration = 0;
     state.nsfwSubmitting = false;
@@ -695,6 +719,10 @@ const projectsLiveEngine = createLiveRegionEngine({
     bindProjectsNsfwForm(state, region);
   },
   onInvalidate(state) {
+    if (state.projectsDefaultsRefreshGeneration !== null) {
+      state.projectsDefaultsRefreshGeneration = null;
+      state.projectsDefaultsRefreshError = null;
+    }
     if (state.nsfwRefreshGeneration !== null) {
       state.nsfwNeedsRefresh = true;
       state.nsfwRefreshGeneration = null;
@@ -705,6 +733,9 @@ const projectsLiveEngine = createLiveRegionEngine({
     if (refreshesNsfw) state.nsfwNeedsRefresh = false;
     if (refreshesNsfw) state.nsfwRefreshGeneration = generation;
   },
+  onResponseParsed(state, parsed) {
+    reconcileProjectsFilterForm(state, parsed);
+  },
   onRegionReplaced(state, nextRegion) {
     if (!state.nsfwSubmitting) return;
     state.nsfwRegionReplaced = true;
@@ -713,6 +744,10 @@ const projectsLiveEngine = createLiveRegionEngine({
     updateProjectsNsfwControls(nextRegion, renderedEnabled, true);
   },
   onLoadComplete(state, generation, region) {
+    if (state.projectsDefaultsRefreshGeneration === generation) {
+      state.projectsDefaultsRefreshGeneration = null;
+      state.projectsDefaultsRefreshError = null;
+    }
     if (state.nsfwRefreshGeneration !== generation) return;
     state.nsfwRefreshGeneration = null;
     state.nsfwSubmitting = false;
@@ -721,6 +756,20 @@ const projectsLiveEngine = createLiveRegionEngine({
     updateProjectsNsfwControls(region, state.nsfwEnabled);
   },
   onLoadError(state, generation) {
+    if (state.projectsDefaultsRefreshGeneration === generation) {
+      const notifyRefreshError = state.projectsDefaultsRefreshError;
+      state.projectsDefaultsRefreshGeneration = null;
+      state.projectsDefaultsRefreshError = null;
+      const region = projectsLiveEngine.getRegion(state.document);
+      region?.removeAttribute?.('aria-busy');
+      projectsLiveEngine.status(
+        region,
+        'Defaults were saved, but Projects could not refresh. Refresh the page to see the saved defaults.',
+        'error',
+      );
+      notifyRefreshError?.();
+      return true;
+    }
     if (state.nsfwRefreshGeneration !== generation) return false;
     state.nsfwRefreshGeneration = null;
     state.nsfwNeedsRefresh = false;
@@ -1138,6 +1187,55 @@ export function refreshProjectAssetsLiveRegion(scope = globalThis.document) {
 
 export function enhanceProjectsLiveFiltering(scope = globalThis.document) {
   return projectsLiveEngine.enhance(scope);
+}
+
+export function beginProjectsDefaultsLiveRefresh(scope = globalThis.document) {
+  const document = liveRegionDocument(scope);
+  const region = projectsLiveEngine.getRegion(document);
+  if (!document || !region) return null;
+
+  projectsLiveEngine.enhance(document);
+  const state = document.__creatorCrateProjectsLiveFiltering;
+  if (!state || !projectsLiveEngine.capabilities(state.window)) return null;
+
+  if (state.projectsDefaultsRefreshGeneration !== null) {
+    projectsLiveEngine.invalidate(state);
+  }
+  return state.generation;
+}
+
+export function refreshProjectsLiveRegion(
+  scope = globalThis.document,
+  destination,
+  authorityGeneration,
+  { onError = null } = {},
+) {
+  const document = liveRegionDocument(scope);
+  const region = projectsLiveEngine.getRegion(document);
+  const state = document?.__creatorCrateProjectsLiveFiltering;
+  if (!document || !region || !state || !projectsLiveEngine.capabilities(state.window)) return 'unavailable';
+  if (state.generation !== authorityGeneration) return 'superseded';
+
+  let url;
+  try {
+    url = new URL(destination, state.window.location?.href || '/projects');
+  } catch {
+    return 'unavailable';
+  }
+  if (!projectsLiveEngine.capabilities(state.window) || url.pathname !== '/projects') return 'unavailable';
+
+  if (state.timer) state.window.clearTimeout?.(state.timer);
+  state.timer = null;
+  projectsLiveEngine.invalidate(state);
+  state.projectsDefaultsRefreshGeneration = state.generation;
+  state.projectsDefaultsRefreshError = typeof onError === 'function' ? onError : null;
+  projectsLiveEngine.load(
+    state,
+    url,
+    'replace',
+    projectsLiveEngine.getForm(projectsLiveEngine.getRegion(document)),
+  );
+  return 'started';
 }
 
 export function enhanceReleasesLiveFiltering(scope = globalThis.document) {

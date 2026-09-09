@@ -50,6 +50,12 @@
       {% endif %}
 
       <div class="project-filter-actions project-filter-actions--projects">
+        <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
+           href="#projects-filter-dialog" aria-label="Filter projects"
+           data-dialog-open="projects-filter-dialog"
+           data-tooltip="Filter projects">
+          {{ icons.icon('content-filter') }}
+        </a>
         <a class="asset-viewer-defaults-link button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
            href="/projects?defaults=1" aria-label="Projects defaults"
            data-dialog-open="projects-defaults-dialog"
@@ -68,124 +74,8 @@
             {{ icons.icon('nsfw-filter') }}
           </button>
         </form>
-        <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
-           href="{{ resetFiltersUrl }}" aria-label="Reset filters"
-           data-tooltip="Reset filters" data-projects-reset>
-          {{ icons.icon('reset') }}
-        </a>
       </div>
     </div>
-
-    <form id="project-filters" class="filters asset-viewer-filters asset-viewer-filters--projects" method="get" action="/projects">
-      {% if view == 'list' or preserveViewQuery %}
-        <input type="hidden" name="view" value="{{ view }}">
-      {% endif %}
-
-      {{ dropdown.searchableSingleSelect({
-        id: "project-project-filter",
-        name: "project",
-        label: "Project",
-        options: projectOptions,
-        valueKey: "id",
-        labelKey: "title",
-        selected: selectedProject.id if selectedProject else null,
-        placeholder: "All projects",
-        panelLabel: "Project options",
-        searchLabel: "Search projects",
-        searchInputId: "project-project-filter-search",
-        noResultsText: "No matching projects",
-        optionListLabel: "Project choices",
-        optionIdPrefix: "project-project",
-        fieldClasses: "asset-viewer-filter-field asset-viewer-project-filter",
-        classes: "asset-project-filter-disclosure"
-      }) }}
-
-      {{ dropdown.multiSelect({
-        id: "project-status-filter",
-        name: "status",
-        label: "Status",
-        fieldClasses: "asset-viewer-filter-field",
-        options: statusOptions,
-        optionIdPrefix: "project-status",
-        selectedValues: query.statuses,
-        summary: renderFilterSummary(query.statuses, statusOptions, "All active", "statuses", ""),
-        emptySummary: "All active",
-        countLabel: "statuses",
-        panelLabel: "Status options"
-      }) }}
-
-      {{ dropdown.multiSelect({
-        id: "project-type-filter",
-        name: "type",
-        label: "Project Type",
-        fieldClasses: "asset-viewer-filter-field",
-        options: projectTypeOptions,
-        optionIdPrefix: "project-type",
-        selectedValues: query.projectTypes,
-        summary: renderFilterSummary(query.projectTypes, projectTypeOptions, "All types", "types", ""),
-        emptySummary: "All types",
-        countLabel: "types",
-        panelLabel: "Project Type options"
-      }) }}
-
-      {{ dropdown.multiSelect({
-        id: "project-tag-filter",
-        name: "tag",
-        label: "Tag",
-        fieldClasses: "asset-viewer-filter-field",
-        options: tagOptions,
-        optionIdPrefix: "project-tag",
-        selectedValues: query.tagIds,
-        summary: renderFilterSummary(query.tagIds, tagOptions, "All tags", "tags", ""),
-        emptySummary: "All tags",
-        countLabel: "tags",
-        panelLabel: "Tag options",
-        emptyOptionText: "No tags available"
-      }) }}
-
-      {% set sortSummary = '' %}
-      {% for opt in sortOptions %}
-        {% if query.sort == opt or (not query.sort and opt == 'created') %}
-          {% set sortSummary = opt | replace('-', ' ') | title %}
-        {% endif %}
-      {% endfor %}
-      {% set orderSummary = 'Desc' %}
-      {% if query.order == 'asc' %}
-        {% set orderSummary = 'Asc' %}
-      {% endif %}
-
-      {{ dropdown.singleSelect({
-        id: "project-sort-filter",
-        name: "sort",
-        label: "Sort",
-        fieldClasses: "asset-viewer-filter-field",
-        options: [
-          { value: "updated", label: "Updated" },
-          { value: "created", label: "Created" },
-          { value: "title", label: "Title" }
-        ],
-        selected: query.sort or "created",
-        summary: sortSummary,
-        optionIdPrefix: "project-sort",
-        panelLabel: "Sort options"
-      }) }}
-
-      {{ dropdown.singleSelect({
-        id: "project-order-filter",
-        name: "order",
-        label: "Sort order",
-        fieldClasses: "asset-viewer-filter-field",
-        options: [
-          { id: "project-order-option-desc", value: "desc", label: "Desc" },
-          { id: "project-order-option-asc", value: "asc", label: "Asc" }
-        ],
-        selected: query.order or "desc",
-        summary: orderSummary,
-        optionIdPrefix: "project-order",
-        panelLabel: "Sort order options"
-      }) }}
-
-    </form>
 
     <p class="results-meta">{{ total }} project{% if total != 1 %}s{% endif %} found</p>
 
@@ -211,12 +101,8 @@
       {% endif %}
     {% else %}
     {% if filtersActive and hasAnyProjects %}
-      {% set emptyActionDialogId = "" %}
-      {% set emptyActionAttributes = [["data-projects-reset", true]] %}
       {% set emptyHeading = "No projects found" %}
         {% set emptyDescription = "No projects match the current filters." %}
-        {% set emptyActionUrl = resetFiltersUrl %}
-        {% set emptyActionLabel = "Reset" %}
         {% set emptyHeadingLevel = "h2" %}
     {% else %}
       {% set emptyActionDialogId = "project-create-dialog" %}
@@ -236,11 +122,131 @@
 {% block overlay %}
   {{ projectCreateDialog.render(projectCreateForm, '/projects', _csrf, projectCreateDialogOpen) }}
 
+  {% call dialog.render('projects-filter-dialog', 'Filter') %}
+    <form id="project-filters" class="app-dialog-form project-form" method="get" action="/projects">
+      <div class="app-dialog-body">
+        <div class="page-defaults-grid">
+          {% if view == 'list' or preserveViewQuery %}
+            <input type="hidden" name="view" value="{{ view }}">
+          {% endif %}
+
+          {{ dropdown.searchableSingleSelect({
+            id: "project-project-filter",
+            name: "project",
+            label: "Project",
+            options: projectOptions,
+            valueKey: "id",
+            labelKey: "title",
+            selected: selectedProject.id if selectedProject else null,
+            placeholder: "All projects",
+            panelLabel: "Project options",
+            searchLabel: "Search projects",
+            searchInputId: "project-project-filter-search",
+            noResultsText: "No matching projects",
+            optionListLabel: "Project choices",
+            optionIdPrefix: "project-project",
+            fieldClasses: "app-dialog-field asset-viewer-filter-field asset-viewer-project-filter projects-filter-field--project",
+            classes: "asset-project-filter-disclosure"
+          }) }}
+
+          {{ dropdown.multiSelect({
+            id: "project-status-filter",
+            name: "status",
+            label: "Status",
+            fieldClasses: "app-dialog-field asset-viewer-filter-field",
+            options: statusOptions,
+            optionIdPrefix: "project-status",
+            selectedValues: query.statuses,
+            summary: renderFilterSummary(query.statuses, statusOptions, "All active", "statuses", ""),
+            emptySummary: "All active",
+            countLabel: "statuses",
+            panelLabel: "Status options"
+          }) }}
+
+          {{ dropdown.multiSelect({
+            id: "project-type-filter",
+            name: "type",
+            label: "Project Type",
+            fieldClasses: "app-dialog-field asset-viewer-filter-field",
+            options: projectTypeOptions,
+            optionIdPrefix: "project-type",
+            selectedValues: query.projectTypes,
+            summary: renderFilterSummary(query.projectTypes, projectTypeOptions, "All types", "types", ""),
+            emptySummary: "All types",
+            countLabel: "types",
+            panelLabel: "Project Type options"
+          }) }}
+
+          {{ dropdown.multiSelect({
+            id: "project-tag-filter",
+            name: "tag",
+            label: "Tag",
+            fieldClasses: "app-dialog-field asset-viewer-filter-field",
+            options: tagOptions,
+            optionIdPrefix: "project-tag",
+            selectedValues: query.tagIds,
+            summary: renderFilterSummary(query.tagIds, tagOptions, "All tags", "tags", ""),
+            emptySummary: "All tags",
+            countLabel: "tags",
+            panelLabel: "Tag options",
+            emptyOptionText: "No tags available"
+          }) }}
+
+          {% set sortSummary = '' %}
+          {% for opt in sortOptions %}
+            {% if query.sort == opt or (not query.sort and opt == 'created') %}
+              {% set sortSummary = opt | replace('-', ' ') | title %}
+            {% endif %}
+          {% endfor %}
+          {% set orderSummary = 'Desc' %}
+          {% if query.order == 'asc' %}
+            {% set orderSummary = 'Asc' %}
+          {% endif %}
+
+          {{ dropdown.singleSelect({
+            id: "project-sort-filter",
+            name: "sort",
+            label: "Sort",
+            fieldClasses: "app-dialog-field asset-viewer-filter-field",
+            options: [
+              { value: "updated", label: "Updated" },
+              { value: "created", label: "Created" },
+              { value: "title", label: "Title" }
+            ],
+            selected: query.sort or "created",
+            summary: sortSummary,
+            optionIdPrefix: "project-sort",
+            panelLabel: "Sort options"
+          }) }}
+
+          {{ dropdown.singleSelect({
+            id: "project-order-filter",
+            name: "order",
+            label: "Sort order",
+            fieldClasses: "app-dialog-field asset-viewer-filter-field",
+            options: [
+              { id: "project-order-option-desc", value: "desc", label: "Desc" },
+              { id: "project-order-option-asc", value: "asc", label: "Asc" }
+            ],
+            selected: query.order or "desc",
+            summary: orderSummary,
+            optionIdPrefix: "project-order",
+            panelLabel: "Sort order options"
+          }) }}
+
+        </div>
+      </div>
+    </form>
+    <form class="projects-filter-reset" method="get" action="{{ resetFiltersUrl }}">
+      <button class="button" type="submit" data-projects-reset>Reset filters</button>
+    </form>
+  {% endcall %}
+
   {% call dialog.render('projects-defaults-dialog', 'Projects defaults', projectsDefaultsDialogOpen, 'projects-defaults-description', 'projects-defaults-form') %}
     <form id="projects-defaults-form" method="post" action="/projects/defaults" class="app-dialog-form project-form"
-          data-dialog-form data-dialog-async novalidate>
+          data-dialog-form data-dialog-async="false" data-projects-defaults-autosave novalidate>
       <p id="projects-defaults-description" class="app-dialog-description">
-        Choose the presentation used when Projects opens without explicit view options.
+        Choose the default filters and view used when you open Projects.
       </p>
 
       <div class="app-dialog-error" data-dialog-error role="alert" hidden>
@@ -254,7 +260,7 @@
         <div class="page-defaults-grid">
           {% for field in projectsDefaults.fields %}
           {% set submittedOption = none %}
-          {% set nativeAttributes = [["required", true]] %}
+          {% set nativeAttributes = [["required", true], ["data-autosubmit", "fetch"]] %}
           {% set summaryAttributes = [] %}
           {% if field.showSubmittedValue %}
             {% set submittedOption = {
@@ -266,7 +272,7 @@
             } %}
           {% endif %}
           {% if field.error %}
-            {% set nativeAttributes = [["required", true], ["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] %}
+            {% set nativeAttributes = [["required", true], ["data-autosubmit", "fetch"], ["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] %}
             {% set summaryAttributes = [["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] %}
           {% endif %}
           <div class="field app-dialog-field{% if field.error %} field-error{% endif %}" data-dialog-field="{{ field.name }}">
@@ -278,6 +284,7 @@
               selected: field.selectedValue,
               optionIdPrefix: field.id,
               leadingOption: submittedOption,
+              dispatchNativeChange: true,
               summaryAttributes: summaryAttributes,
               nativeSelect: {
                 id: field.id,
@@ -290,11 +297,7 @@
         </div>
       </div>
 
-      <div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>
-
-      <footer class="app-dialog-footer">
-        <button class="button button-primary" type="submit" data-dialog-submit>Save defaults</button>
-      </footer>
+      <div class="app-dialog-status projects-defaults-save-status" data-settings-fetch-save-status role="status" aria-live="polite" aria-atomic="true"></div>
     </form>
   {% endcall %}
 {% endblock %}

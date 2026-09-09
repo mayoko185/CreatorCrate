@@ -29,6 +29,7 @@ import { enhanceNsfwFilterFetchSave } from './client/settings-nsfw-filter-fetch-
 import { enhanceSocialPrepFetchSave } from './client/settings-social-prep-fetch-save.js';
 import { enhanceOpenLocallyFetchSave } from './client/settings-open-locally-fetch-save.js';
 import { enhanceSettingsFetchSave } from './client/settings-fetch-save.js';
+import { enhanceProjectsDefaultsFetchSave } from './client/projects-defaults-fetch-save.js';
 import {
   enhanceNotesCodeBlocks,
   enhanceNotesEditor,
@@ -85,12 +86,14 @@ import {
 } from './client/slideshow.js';
 
 import {
+  beginProjectsDefaultsLiveRefresh,
   createLiveRegionEngine,
   enhanceAssetLibraryLiveFiltering,
   enhanceProjectAssetsLiveFiltering,
   enhanceReleaseAssetsLiveFiltering,
   enhanceProjectsLiveFiltering,
   enhanceReleasesLiveFiltering,
+  refreshProjectsLiveRegion,
   refreshProjectAssetsLiveRegion,
 } from './client/live-regions.js';
 export {
@@ -121,6 +124,7 @@ export {
   enhanceSocialPrepFetchSave,
   enhanceOpenLocallyFetchSave,
   enhanceSettingsFetchSave,
+  enhanceProjectsDefaultsFetchSave,
   enhanceAppConfirmationControls as enhanceConfirmations,
   enhanceNumberInputs,
   enhanceProjectAssetsDefaultsScope,
@@ -152,12 +156,14 @@ export {
 };
 
 export {
+  beginProjectsDefaultsLiveRefresh,
   createLiveRegionEngine,
   enhanceAssetLibraryLiveFiltering,
   enhanceProjectAssetsLiveFiltering,
   enhanceReleaseAssetsLiveFiltering,
   enhanceProjectsLiveFiltering,
   enhanceReleasesLiveFiltering,
+  refreshProjectsLiveRegion,
   refreshProjectAssetsLiveRegion,
 };
 
@@ -191,6 +197,7 @@ if (typeof document !== 'undefined') {
     enhanceProjectGridSize(document);
     enhanceProjectAssetCategoryFilter(document);
     enhanceDropdowns(document);
+    enhanceProjectsDefaultsFetchSave(document);
     enhanceProjectAssetsDefaultsScope(document);
     enhanceAppDialogs(document);
     enhanceNoteDialogUnsavedChanges(document);

@@ -124,6 +124,7 @@ function startSave(state, request) {
   const { form } = state;
   state.pending = true;
   state.activePayload = request.payload;
+  notify(state.options.onStart, { form, payload: request.payload });
   form.setAttribute?.('aria-busy', 'true');
   setFetchSaveStatus(form, 'Saving settings.', 'pending');
 

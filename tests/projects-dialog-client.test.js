@@ -10,6 +10,7 @@ import {
   enhanceDropdowns,
   enhanceProjectAssetCategoryManagement,
   enhanceProjectAssetsDefaultsScope,
+  enhanceProjectsDefaultsFetchSave,
   openAppDialogById,
 } from '../src/static/creatorcrate.js';
 
@@ -310,6 +311,7 @@ function makeDialogPage({
   projectAssetsScopeValues = null,
   loadedScope = 'global',
   dialogMessages = null,
+  projectsDefaultsAutosave = false,
 } = {}) {
   const document = makeElement('document');
   document.nodeType = 9;
@@ -353,6 +355,10 @@ function makeDialogPage({
     method: 'post',
     'data-dialog-form': '',
   });
+  if (projectsDefaultsAutosave) {
+    form.setAttribute('data-dialog-async', 'false');
+    form.setAttribute('data-projects-defaults-autosave', '');
+  }
   if (dialogMessages) {
     Object.entries(dialogMessages).forEach(([name, value]) => {
       form.setAttribute(name, value);
@@ -418,11 +424,18 @@ function makeDialogPage({
       ['sort', 'filename', ['filename', 'modified', 'size', 'category']],
       ['order', 'asc', ['asc', 'desc']],
     ])
-    : [
+    : (projectsDefaultsAutosave ? [
+      ['view', 'grid', ['grid', 'list']],
+      ['sort', 'created', ['updated', 'created', 'title']],
+      ['order', 'desc', ['asc', 'desc']],
+      ['status', 'all', ['all', 'planned', 'ready']],
+      ['projectType', 'all', ['all', 'images', 'comic']],
+      ['tag', 'all', ['all', '1', '2']],
+    ] : [
       ['view', 'grid', ['grid', 'list']],
       ['sort', 'created', ['updated', 'created', 'title', 'published']],
       ['order', 'desc', ['asc', 'desc']],
-    ];
+    ]);
   for (const [name, value, options] of defaultFields) {
     const field = makeElement('div', { 'data-dialog-field': name });
     const select = makeElement('select', { id: `projects-default-${name}`, name });
@@ -431,7 +444,13 @@ function makeDialogPage({
       addOption(select, optionValue, optionValue === value, typeof option === 'string' ? option : option.label);
     });
     select.value = value;
-    if (standardDropdowns) dropdowns[name] = addStandardDropdown(field, select, name, options, value);
+    if (projectsDefaultsAutosave) {
+      select.setAttribute('data-autosubmit', 'fetch');
+      select.form = form;
+    }
+    if (standardDropdowns) {
+      dropdowns[name] = addStandardDropdown(field, select, name, options, value, projectsDefaultsAutosave);
+    }
     else field.appendChild(select);
     (dialogBody || form).appendChild(field);
     fields[name] = select;
@@ -498,8 +517,11 @@ function makeDialogPage({
   }
   if (dialogBody) form.appendChild(dialogBody);
   const status = makeElement('div', { 'data-dialog-status': '' });
+  if (projectsDefaultsAutosave) status.setAttribute('data-settings-fetch-save-status', '');
   if (liveDefault) status.setAttribute('data-asset-browser-default-status', '');
-  const save = liveDefault ? null : makeElement('button', { 'data-dialog-submit': '', type: 'submit' });
+  const save = liveDefault || projectsDefaultsAutosave
+    ? null
+    : makeElement('button', { 'data-dialog-submit': '', type: 'submit' });
   form.appendChild(status);
   if (save) form.appendChild(save);
   card.appendChild(form);
@@ -553,6 +575,7 @@ function makeDialogPage({
     dialog,
     close,
     form,
+    status,
     save,
     fields,
     dropdowns,
@@ -2022,6 +2045,258 @@ describe('Reusable app dialog enhancement', () => {
     expect(successHook).toHaveBeenCalledOnce();
     expect(page.dialog.open).toBe(false);
     expect(page.document.querySelector('[data-dialog-feedback-text]').textContent).toBe('Logs cleared.');
+  });
+});
+
+describe('Projects defaults autosave enhancement', () => {
+  function deferred() {
+    let resolve;
+    let reject;
+    const promise = new Promise((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
+    });
+    return { promise, resolve, reject };
+  }
+
+  function response({
+    ok = true,
+    redirected = true,
+    html = '',
+    url = 'http://creatorcrate.test/projects?sort=created&order=desc&view=grid&notice=projects_defaults_saved',
+  } = {}) {
+    return { ok, redirected, url, text: async () => html };
+  }
+
+  function installFetchGlobals(page, fetch) {
+    vi.stubGlobal('fetch', fetch);
+    vi.stubGlobal('FormData', page.windowObject.FormData);
+    vi.stubGlobal('URLSearchParams', URLSearchParams);
+  }
+
+  function enhanceAutosavePage(page, options = {}) {
+    page.region.appendChild(page.trigger);
+    enhanceDropdowns(page.document);
+    enhanceAppDialogs(page.document);
+    page.projectsDefaultsRefreshOptions = {
+      beginRefresh: vi.fn(() => 0),
+      refresh: vi.fn(() => 'started'),
+      ...options,
+    };
+    return enhanceProjectsDefaultsFetchSave(page.document, page.projectsDefaultsRefreshOptions);
+  }
+
+  it('sends complete snapshots serially and keeps the dialog open with the latest values', async () => {
+    const page = makeDialogPage({ standardDropdowns: true, projectsDefaultsAutosave: true });
+    const first = deferred();
+    const second = deferred();
+    const fetch = vi.fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+    installFetchGlobals(page, fetch);
+
+    try {
+      expect(enhanceAutosavePage(page)).toBe(6);
+      expect(enhanceProjectsDefaultsFetchSave(page.document, page.projectsDefaultsRefreshOptions)).toBe(0);
+      page.document.dispatch('click', { target: page.trigger });
+
+      const listRadio = page.dropdowns.view.panel.querySelectorAll('input[type="radio"]')
+        .find((input) => input.value === 'list');
+      listRadio.checked = true;
+      page.document.dispatch('change', { target: listRadio });
+      await flush();
+
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(page.fields.view.value).toBe('list');
+      expect(Object.fromEntries(fetch.mock.calls[0][1].body.entries())).toMatchObject({
+        view: 'list', sort: 'created', order: 'desc', status: 'all', projectType: 'all', tag: 'all',
+      });
+
+      page.fields.sort.value = 'title';
+      page.fields.sort.dispatch('change');
+      page.fields.order.value = 'asc';
+      page.fields.order.dispatch('change');
+      expect(fetch).toHaveBeenCalledTimes(1);
+
+      first.resolve(response());
+      await flush();
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(Object.fromEntries(fetch.mock.calls[1][1].body.entries())).toMatchObject({
+        view: 'list', sort: 'title', order: 'asc', status: 'all', projectType: 'all', tag: 'all',
+      });
+
+      second.resolve(response());
+      await flush();
+      expect(page.dialog.open).toBe(true);
+      expect(page.status.textContent).toBe('Settings saved.');
+      expect(page.form.getAttribute('aria-busy')).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each(['X', 'Escape', 'backdrop'])('%s dismissal does not cancel a pending save or restore stale values on reopen', async (path) => {
+    const page = makeDialogPage({ standardDropdowns: true, projectsDefaultsAutosave: true });
+    const pending = deferred();
+    const fetch = vi.fn(() => pending.promise);
+    installFetchGlobals(page, fetch);
+
+    try {
+      enhanceAutosavePage(page);
+      page.document.dispatch('click', { target: page.trigger });
+      page.fields.view.value = 'list';
+      page.fields.view.dispatch('change');
+      await flush();
+
+      if (path === 'X') page.close.dispatch('click');
+      else if (path === 'Escape') page.dialog.dispatch('keydown', { key: 'Escape', target: page.dialog });
+      else page.dialog.dispatch('click', { target: page.dialog });
+
+      expect(page.dialog.open).toBe(false);
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(fetch.mock.calls[0][1]).not.toHaveProperty('signal');
+      page.document.dispatch('click', { target: page.trigger });
+      expect(page.dialog.open).toBe(true);
+      expect(page.fields.view.value).toBe('list');
+
+      pending.resolve(response());
+      await flush();
+      expect(page.status.textContent).toBe('Settings saved.');
+      expect(page.fields.view.value).toBe('list');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('keeps current edits through validation failure and saves a correction', async () => {
+    const page = makeDialogPage({ standardDropdowns: true, projectsDefaultsAutosave: true });
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(response({ ok: false, redirected: false, html: '<p>Invalid sort.</p>' }))
+      .mockResolvedValueOnce(response());
+    installFetchGlobals(page, fetch);
+
+    try {
+      enhanceAutosavePage(page);
+      const renderedError = page.form.querySelector('[data-dialog-error]');
+      const sortField = page.fields.sort.closest('[data-dialog-field]');
+      const fieldError = makeElement('span', { class: 'field-error-message' });
+      renderedError.hidden = false;
+      renderedError.querySelector('[data-dialog-error-text]').textContent = 'Previously invalid.';
+      sortField.classList.add('field-error');
+      sortField.appendChild(fieldError);
+      page.fields.sort.setAttribute('aria-invalid', 'true');
+      page.fields.sort.setAttribute('aria-describedby', 'projects-default-sort-error');
+
+      page.fields.sort.value = 'invalid';
+      page.fields.sort.dispatch('change');
+      await flush();
+
+      expect(renderedError.hidden).toBe(true);
+      expect(sortField.classList.contains('field-error')).toBe(false);
+      expect(sortField.querySelector('.field-error-message')).toBeNull();
+      expect(page.fields.sort.getAttribute('aria-invalid')).toBeNull();
+      expect(page.fields.sort.value).toBe('invalid');
+      expect(page.status.textContent).toBe('Could not save settings. Your current changes were kept.');
+      expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('error');
+
+      page.fields.sort.value = 'title';
+      page.fields.sort.dispatch('change');
+      await flush();
+      expect(page.fields.sort.value).toBe('title');
+      expect(page.status.textContent).toBe('Settings saved.');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('keeps current edits through network failure and ignores a superseded validation result', async () => {
+    const page = makeDialogPage({ standardDropdowns: true, projectsDefaultsAutosave: true });
+    const stale = deferred();
+    const latest = deferred();
+    const fetch = vi.fn()
+      .mockImplementationOnce(() => stale.promise)
+      .mockImplementationOnce(() => latest.promise)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(response());
+    installFetchGlobals(page, fetch);
+
+    try {
+      enhanceAutosavePage(page);
+      page.fields.view.value = 'list';
+      page.fields.view.dispatch('change');
+      await flush();
+      page.fields.sort.value = 'title';
+      page.fields.sort.dispatch('change');
+
+      stale.resolve(response({ ok: false, redirected: false, html: '<p>Stale error.</p>' }));
+      await flush();
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(page.status.textContent).toBe('Saving settings.');
+      expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('pending');
+
+      latest.resolve(response());
+      await flush();
+      expect(page.status.textContent).toBe('Settings saved.');
+      expect(page.fields.sort.value).toBe('title');
+
+      page.fields.order.value = 'asc';
+      page.fields.order.dispatch('change');
+      await flush();
+      expect(page.fields.order.value).toBe('asc');
+      expect(page.status.textContent).toBe('Could not save settings. Your current changes were kept.');
+
+      page.fields.order.value = 'desc';
+      page.fields.order.dispatch('change');
+      await flush();
+      expect(page.status.textContent).toBe('Settings saved.');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('refreshes once from the latest confirmed success URL and reports refresh failure separately', async () => {
+    const page = makeDialogPage({ standardDropdowns: true, projectsDefaultsAutosave: true });
+    const first = deferred();
+    const second = deferred();
+    const fetch = vi.fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+    const beginRefresh = vi.fn(() => 7);
+    const refresh = vi.fn((_document, _url, _authority, { onError }) => {
+      onError();
+      return 'started';
+    });
+    installFetchGlobals(page, fetch);
+
+    try {
+      enhanceAutosavePage(page, { beginRefresh, refresh });
+      page.document.dispatch('click', { target: page.trigger });
+      page.fields.view.value = 'list';
+      page.fields.view.dispatch('change');
+      await flush();
+      page.fields.sort.value = 'title';
+      page.fields.sort.dispatch('change');
+
+      first.resolve(response({ url: 'http://creatorcrate.test/projects?view=list&notice=projects_defaults_saved' }));
+      await flush();
+      expect(beginRefresh).toHaveBeenCalledOnce();
+      expect(refresh).not.toHaveBeenCalled();
+
+      const successUrl = 'http://creatorcrate.test/projects?sort=title&order=desc&view=list&notice=projects_defaults_saved';
+      second.resolve(response({ url: successUrl }));
+      await flush();
+
+      expect(beginRefresh).toHaveBeenCalledOnce();
+      expect(refresh).toHaveBeenCalledOnce();
+      expect(refresh).toHaveBeenCalledWith(page.document, successUrl, 7, { onError: expect.any(Function) });
+      expect(page.dialog.open).toBe(true);
+      expect(page.fields.view.value).toBe('list');
+      expect(page.fields.sort.value).toBe('title');
+      expect(page.status.textContent).toBe('Settings saved, but Projects could not refresh. Refresh the page to see the saved defaults.');
+      expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('saved-refresh-error');
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 

@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
+  beginProjectsDefaultsLiveRefresh,
   enhanceProjectGridSize,
   enhanceProjectsLiveFiltering,
+  refreshProjectsLiveRegion,
 } from '../src/static/creatorcrate.js';
 
 function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } = {}) {
@@ -103,6 +105,14 @@ function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } =
       };
       adopt(child);
       return child;
+    },
+    replaceChildren(...nextChildren) {
+      children.forEach((child) => {
+        child.parentNode = null;
+        child.parentElement = null;
+      });
+      children.length = 0;
+      nextChildren.forEach((child) => this.appendChild(child));
     },
     replaceWith(next) {
       const parent = this.parentNode;
@@ -315,16 +325,23 @@ function makePage(values = {}) {
     tagName: 'img',
     attrs: { class: values.nsfwEnabled === true ? 'project-image--nsfw-blurred' : '' },
   });
+  const dialog = makeNode({
+    tagName: 'dialog',
+    attrs: { id: 'projects-filter-dialog', 'data-app-dialog': '' },
+  });
+  dialog.open = values.dialogOpen === true;
+  dialog.appendChild(form);
   region.appendChild(status);
-  region.appendChild(form);
   region.appendChild(nsfw.form);
   region.appendChild(image);
   document.appendChild(region);
+  document.appendChild(dialog);
 
   return {
     document,
     region,
     status,
+    dialog,
     form,
     projectDropdown,
     projectSearch,
@@ -348,10 +365,10 @@ function makePage(values = {}) {
 
 function addLiveLink(page, kind, href) {
   const link = makeNode({
-    tagName: 'a',
+    tagName: kind === 'dialog-reset' ? 'button' : 'a',
     attrs: {
-      href,
-      ...(kind === 'reset' ? { 'data-projects-reset': '' } : {}),
+      ...(kind === 'dialog-reset' ? { type: 'submit' } : { href }),
+      ...(kind === 'reset' || kind === 'dialog-reset' ? { 'data-projects-reset': '' } : {}),
     },
   });
   const container = kind === 'view'
@@ -360,10 +377,31 @@ function addLiveLink(page, kind, href) {
       ? makeNode({ attrs: { class: 'pagination' } })
       : kind === 'reset'
         ? makeNode({ attrs: { class: 'empty-state-actions' } })
+        : kind === 'dialog-reset'
+          ? makeNode({ tagName: 'form', attrs: { class: 'projects-filter-reset', method: 'get', action: href } })
       : page.region;
   container.appendChild(link);
-  if (container !== page.region) page.region.appendChild(container);
+  if (kind === 'dialog-reset') {
+    link.form = container;
+    link.formAction = page.document.defaultView?.location?.href
+      || 'http://creatorcrate.test/projects?page=4';
+  }
+  if (kind === 'dialog-reset') page.dialog.appendChild(container);
+  else if (container !== page.region) page.region.appendChild(container);
   return link;
+}
+
+function addProjectsDefaultsDialog(page, value = 'planned') {
+  const dialog = makeNode({ tagName: 'dialog', attrs: { id: 'projects-defaults-dialog' } });
+  dialog.open = true;
+  const form = makeNode({ tagName: 'form', attrs: { id: 'projects-defaults-form' } });
+  const status = makeNode({ attrs: { 'data-settings-fetch-save-status': '' } });
+  const field = makeNode({ tagName: 'select', attrs: { name: 'status' }, value });
+  form.appendChild(status);
+  form.appendChild(field);
+  dialog.appendChild(form);
+  page.document.appendChild(dialog);
+  return { dialog, form, status, field };
 }
 
 function addProjectGridSizeControls(page) {
@@ -498,7 +536,7 @@ describe('Projects live filtering enhancement', () => {
   });
 
   it('serializes the GET form, preserves selected options, resets page, and pushes the server URL without navigating', async () => {
-    const initial = makePage({ project: 7, types: ['images', 'comic'] });
+    const initial = makePage({ project: 7, types: ['images', 'comic'], dialogOpen: true });
     const next = makePage({ project: 7, statuses: ['ready', 'planned'], types: ['images', 'comic'], tags: ['2', '3'] });
     const pages = new Map([['next', next.document]]);
     const windowObject = makeWindow(initial.document, pages);
@@ -531,6 +569,10 @@ describe('Projects live filtering enhancement', () => {
     expect(initial.document.activeElement?.name).toBe('status');
     expect(initial.document.activeElement?.value).toBe('planned');
     expect(next.projectCurrentSummary.textContent).toBe('Project 7');
+    expect(initial.document.querySelector('#project-filters')).toBe(initial.form);
+    expect(initial.document.querySelector('#projects-filter-dialog')).toBe(initial.dialog);
+    expect(initial.dialog.open).toBe(true);
+    expect(initial.form.listeners.filter((listener) => listener.type === 'change')).toHaveLength(1);
   });
 
   it.each([
@@ -539,7 +581,7 @@ describe('Projects live filtering enhancement', () => {
     ['Grid view switcher', 'view', 'list', 'grid', '/projects?view=grid', 'http://creatorcrate.test/projects?view=grid'],
     ['List view switcher', 'view', 'grid', 'list', '/projects?view=list', 'http://creatorcrate.test/projects?view=list'],
   ])('uses the live region for %s links', async (_label, kind, initialView, nextView, href, responseUrl) => {
-    const initial = makePage({ view: initialView });
+    const initial = makePage({ view: initialView, dialogOpen: true });
     const next = makePage({ view: nextView });
     const pages = new Map([['next', next.document]]);
     const windowObject = makeWindow(initial.document, pages);
@@ -556,10 +598,226 @@ describe('Projects live filtering enhancement', () => {
       expect.objectContaining({ method: 'GET', headers: { Accept: 'text/html' } }),
     );
     expect(initial.document.querySelector('[data-projects-live-region]')).toBe(next.region);
+    expect(initial.document.querySelector('#project-filters')).toBe(initial.form);
+    expect(initial.document.querySelector('#projects-filter-dialog')).toBe(initial.dialog);
+    expect(initial.dialog.open).toBe(true);
+    expect(initial.form.listeners.filter((listener) => listener.type === 'change')).toHaveLength(1);
     expect(windowObject.history.pushes).toEqual([
       expect.objectContaining({ url: responseUrl }),
     ]);
     expect(initial.form.submit).not.toHaveBeenCalled();
+  });
+
+  it('uses the existing live Reset path for the Filter dialog button without navigation and keeps the dialog open', async () => {
+    const initial = makePage({ statuses: ['planned'], dialogOpen: true });
+    const next = makePage({ statuses: ['ready'] });
+    const afterReplacement = makePage({ statuses: ['planned'] });
+    const pages = new Map([
+      ['reset-result', next.document],
+      ['reset-after-replacement', afterReplacement.document],
+    ]);
+    const windowObject = makeWindow(initial.document, pages);
+    windowObject.location.assign = vi.fn();
+    windowObject.fetch
+      .mockResolvedValueOnce(responseFor(
+        next,
+        'reset-result',
+        'http://creatorcrate.test/projects?status=ready&type=comic&sort=title&order=asc',
+      ))
+      .mockResolvedValueOnce(responseFor(
+        afterReplacement,
+        'reset-after-replacement',
+        'http://creatorcrate.test/projects?status=planned',
+      ));
+    const reset = addLiveLink(initial, 'dialog-reset', '/projects');
+    enhanceProjectsLiveFiltering(initial.document);
+
+    const event = reset.dispatch('click', { button: 0 });
+    await flush();
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(windowObject.fetch).toHaveBeenCalledWith(
+      'http://creatorcrate.test/projects',
+      expect.objectContaining({ method: 'GET', headers: { Accept: 'text/html' } }),
+    );
+    expect(windowObject.location.assign).not.toHaveBeenCalled();
+    expect(initial.document.querySelector('[data-projects-live-region]')).toBe(next.region);
+    expect(initial.document.querySelector('#projects-filter-dialog')).toBe(initial.dialog);
+    expect(initial.dialog.open).toBe(true);
+    expect(initial.form.querySelector('input[name="status"]:checked')?.value).toBe('ready');
+    expect(initial.form.listeners.filter((listener) => listener.type === 'change')).toHaveLength(1);
+    expect(reset.listeners.filter((listener) => listener.type === 'click')).toHaveLength(1);
+    expect(windowObject.history.pushes).toEqual([
+      expect.objectContaining({ url: 'http://creatorcrate.test/projects?status=ready&type=comic&sort=title&order=asc' }),
+    ]);
+    expect(initial.form.submit).not.toHaveBeenCalled();
+
+    const repeatedEvent = reset.dispatch('click', { button: 0 });
+    await flush();
+
+    expect(repeatedEvent.defaultPrevented).toBe(true);
+    expect(windowObject.fetch).toHaveBeenCalledTimes(2);
+    expect(windowObject.fetch.mock.calls[1][0]).toBe('http://creatorcrate.test/projects');
+    expect(initial.document.querySelector('[data-projects-live-region]')).toBe(afterReplacement.region);
+    expect(initial.form.querySelector('input[name="status"]:checked')?.value).toBe('planned');
+    expect(reset.listeners.filter((listener) => listener.type === 'click')).toHaveLength(1);
+    expect(initial.form.submit).not.toHaveBeenCalled();
+  });
+
+  it('refreshes Projects from the server-provided Defaults URL without navigating or replacing either dialog', async () => {
+    const initial = makePage({ statuses: ['ready'], dialogOpen: true });
+    const defaults = addProjectsDefaultsDialog(initial, 'planned');
+    const next = makePage({ statuses: ['planned'], view: 'grid' });
+    const pages = new Map([['defaults-result', next.document]]);
+    const windowObject = makeWindow(initial.document, pages);
+    windowObject.location.assign = vi.fn();
+    const successUrl = 'http://creatorcrate.test/projects?status=planned&sort=created&order=desc&view=grid&notice=projects_defaults_saved';
+    const canonicalUrl = 'http://creatorcrate.test/projects?status=planned&sort=created&order=desc&view=grid';
+    windowObject.fetch.mockResolvedValue(responseFor(next, 'defaults-result', canonicalUrl));
+    enhanceProjectsLiveFiltering(initial.document);
+
+    const authority = beginProjectsDefaultsLiveRefresh(initial.document);
+    expect(refreshProjectsLiveRegion(initial.document, successUrl, authority)).toBe('started');
+    await flush();
+
+    expect(windowObject.fetch).toHaveBeenCalledWith(
+      successUrl,
+      expect.objectContaining({ method: 'GET', headers: { Accept: 'text/html' } }),
+    );
+    expect(windowObject.location.assign).not.toHaveBeenCalled();
+    expect(windowObject.history.pushes).toHaveLength(0);
+    expect(windowObject.history.replaces).toEqual([expect.objectContaining({ url: canonicalUrl })]);
+    expect(initial.document.querySelector('[data-projects-live-region]')).toBe(next.region);
+    expect(initial.document.querySelector('#projects-filter-dialog')).toBe(initial.dialog);
+    expect(initial.dialog.open).toBe(true);
+    expect(initial.form.querySelector('input[name="status"]:checked')?.value).toBe('planned');
+    expect(initial.document.querySelector('#projects-defaults-dialog')).toBe(defaults.dialog);
+    expect(defaults.dialog.open).toBe(true);
+    expect(defaults.field.value).toBe('planned');
+  });
+
+  it.each([
+    ['Filter change', (page) => page.form.dispatch('change', { target: page.planned })],
+    ['Reset', (page) => page.reset.dispatch('click', { button: 0 })],
+    ['view change', (page) => page.viewLink.dispatch('click', { button: 0 })],
+    ['page change', (page) => page.pageLink.dispatch('click', { button: 0 })],
+    ['Back/Forward', (page, windowObject) => {
+      windowObject.setLocation('http://creatorcrate.test/projects?status=planned');
+      windowObject.dispatch('popstate');
+    }],
+  ])('keeps newer %s intent authoritative over an older Defaults completion', async (_label, act) => {
+    const initial = makePage();
+    initial.reset = addLiveLink(initial, 'dialog-reset', '/projects');
+    initial.viewLink = addLiveLink(initial, 'view', '/projects?view=grid');
+    initial.pageLink = addLiveLink(initial, 'pagination', '/projects?page=2');
+    const windowObject = makeWindow(initial.document);
+    windowObject.fetch.mockImplementation(() => new Promise(() => {}));
+    enhanceProjectsLiveFiltering(initial.document);
+    const authority = beginProjectsDefaultsLiveRefresh(initial.document);
+
+    initial.planned.checked = true;
+    act(initial, windowObject);
+
+    expect(refreshProjectsLiveRegion(
+      initial.document,
+      'http://creatorcrate.test/projects?status=ready&notice=projects_defaults_saved',
+      authority,
+    )).toBe('superseded');
+    expect(windowObject.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a stale Defaults-triggered GET after newer filter intent starts', async () => {
+    const initial = makePage();
+    const defaultsResult = makePage({ statuses: ['ready'] });
+    const filterResult = makePage({ statuses: ['planned'] });
+    const pages = new Map([
+      ['defaults-result', defaultsResult.document],
+      ['filter-result', filterResult.document],
+    ]);
+    const windowObject = makeWindow(initial.document, pages);
+    let resolveDefaults;
+    const defaultsRequest = new Promise((resolve) => { resolveDefaults = resolve; });
+    windowObject.fetch
+      .mockImplementationOnce(() => defaultsRequest)
+      .mockResolvedValueOnce(responseFor(filterResult, 'filter-result', 'http://creatorcrate.test/projects?status=planned'));
+    enhanceProjectsLiveFiltering(initial.document);
+    const authority = beginProjectsDefaultsLiveRefresh(initial.document);
+    refreshProjectsLiveRegion(
+      initial.document,
+      'http://creatorcrate.test/projects?status=ready&notice=projects_defaults_saved',
+      authority,
+    );
+
+    initial.ready.checked = false;
+    initial.planned.checked = true;
+    initial.form.dispatch('change', { target: initial.planned });
+    await flush();
+    resolveDefaults(responseFor(defaultsResult, 'defaults-result', 'http://creatorcrate.test/projects?status=ready'));
+    await flush();
+
+    expect(initial.document.querySelector('[data-projects-live-region]')).toBe(filterResult.region);
+    expect(windowObject.location.href).toBe('http://creatorcrate.test/projects?status=planned');
+  });
+
+  it('cancels an older Defaults GET as soon as a newer Defaults save starts', async () => {
+    const initial = makePage();
+    const firstResult = makePage({ statuses: ['ready'] });
+    const secondResult = makePage({ statuses: ['planned'] });
+    const pages = new Map([
+      ['first-result', firstResult.document],
+      ['second-result', secondResult.document],
+    ]);
+    const windowObject = makeWindow(initial.document, pages);
+    let resolveFirst;
+    const firstRequest = new Promise((resolve) => { resolveFirst = resolve; });
+    windowObject.fetch
+      .mockImplementationOnce(() => firstRequest)
+      .mockResolvedValueOnce(responseFor(secondResult, 'second-result', 'http://creatorcrate.test/projects?status=planned'));
+    enhanceProjectsLiveFiltering(initial.document);
+
+    const firstAuthority = beginProjectsDefaultsLiveRefresh(initial.document);
+    refreshProjectsLiveRegion(
+      initial.document,
+      'http://creatorcrate.test/projects?status=ready&notice=projects_defaults_saved',
+      firstAuthority,
+    );
+    const secondAuthority = beginProjectsDefaultsLiveRefresh(initial.document);
+    expect(refreshProjectsLiveRegion(
+      initial.document,
+      'http://creatorcrate.test/projects?status=planned&notice=projects_defaults_saved',
+      secondAuthority,
+    )).toBe('started');
+    await flush();
+
+    resolveFirst(responseFor(firstResult, 'first-result', 'http://creatorcrate.test/projects?status=ready'));
+    await flush();
+
+    expect(initial.document.querySelector('[data-projects-live-region]')).toBe(secondResult.region);
+    expect(windowObject.location.href).toBe('http://creatorcrate.test/projects?status=planned');
+  });
+
+  it('keeps a successful save intact and announces a Defaults refresh failure without navigation', async () => {
+    const initial = makePage();
+    const windowObject = makeWindow(initial.document);
+    windowObject.location.assign = vi.fn();
+    windowObject.fetch.mockRejectedValue(new Error('offline'));
+    const onError = vi.fn();
+    enhanceProjectsLiveFiltering(initial.document);
+    const authority = beginProjectsDefaultsLiveRefresh(initial.document);
+
+    expect(refreshProjectsLiveRegion(
+      initial.document,
+      'http://creatorcrate.test/projects?status=planned&notice=projects_defaults_saved',
+      authority,
+      { onError },
+    )).toBe('started');
+    await flush();
+
+    expect(onError).toHaveBeenCalledOnce();
+    expect(windowObject.location.assign).not.toHaveBeenCalled();
+    expect(windowObject.location.href).toBe('http://creatorcrate.test/projects?page=4');
+    expect(initial.status.textContent).toBe('Defaults were saved, but Projects could not refresh. Refresh the page to see the saved defaults.');
+    expect(initial.region.getAttribute('data-projects-live-state')).toBe('error');
   });
 
   it('submits once when the shared Project selector changes', async () => {
@@ -588,8 +846,8 @@ describe('Projects live filtering enhancement', () => {
 
   it('ignores stale out-of-order responses and keeps the newest replacement interactive', async () => {
     const initial = makePage();
-    const first = makePage();
-    const second = makePage();
+    const first = makePage({ project: 8 });
+    const second = makePage({ project: 7 });
     const third = makePage();
     const pages = new Map([
       ['first', first.document],
@@ -612,13 +870,16 @@ describe('Projects live filtering enhancement', () => {
     expect(windowObject.history.pushes).toHaveLength(1);
     expect(windowObject.history.pushes[0].url).toContain('status=planned');
     expect(initial.document.querySelector('[data-projects-live-region]')).toBe(second.region);
+    expect(initial.form.contains(second.project)).toBe(true);
 
     requests[0].resolve(responseFor(first, 'first', 'http://creatorcrate.test/projects?tag=2&tag=3'));
     await flush();
     expect(initial.document.querySelector('[data-projects-live-region]')).toBe(second.region);
+    expect(initial.form.contains(second.project)).toBe(true);
+    expect(initial.form.contains(first.project)).toBe(false);
 
     second.ready.checked = false;
-    second.form.dispatch('change', { target: second.ready });
+    initial.form.dispatch('change', { target: second.ready });
     await flush();
     expect(windowObject.fetch).toHaveBeenCalledTimes(3);
     requests[2].resolve(responseFor(third, 'third', 'http://creatorcrate.test/projects?tag=2&tag=3'));
@@ -682,7 +943,7 @@ describe('Projects live filtering enhancement', () => {
 
   it('uses the current URL for Back/Forward and replaces only the Projects region', async () => {
     const initial = makePage();
-    const restored = makePage();
+    const restored = makePage({ statuses: ['planned'] });
     const pages = new Map([['restored', restored.document]]);
     const windowObject = makeWindow(initial.document, pages);
     windowObject.location.set = undefined;
@@ -700,6 +961,9 @@ describe('Projects live filtering enhancement', () => {
     expect(windowObject.history.pushes).toHaveLength(0);
     expect(windowObject.history.replaces).toHaveLength(0);
     expect(initial.document.querySelector('[data-projects-live-region]')).toBe(restored.region);
+    expect(initial.form.contains(restored.planned)).toBe(true);
+    expect(restored.planned.checked).toBe(true);
+    expect(restored.ready.checked).toBe(false);
   });
 
   it('falls back to native GET navigation when enhancement capabilities or the fetch fail', async () => {

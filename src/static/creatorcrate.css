@@ -4821,6 +4821,22 @@
         min-width: 0;
       }
       .page-defaults-grid > .app-dialog-field { min-width: 0; }
+      #projects-filter-dialog .page-defaults-grid > .asset-viewer-filter-field {
+        width: 100%;
+        max-width: none;
+      }
+      #projects-filter-dialog .page-defaults-grid > .projects-filter-field--project {
+        grid-column: 1 / -1;
+      }
+      #projects-filter-dialog .asset-filter-multiselect--sized,
+      #projects-filter-dialog .asset-filter-multiselect--sized summary {
+        width: 100%;
+      }
+      #projects-filter-dialog .projects-filter-reset {
+        display: flex;
+        justify-content: center;
+        margin: var(--space-lg);
+      }
       #project-assets-defaults-dialog .page-defaults-scope {
         min-width: 0;
         margin: 0;
@@ -4892,6 +4908,23 @@
         font-size: 0.875rem;
       }
       .app-dialog[data-dialog-state="error"] .app-dialog-status { color: var(--danger); }
+      #projects-defaults-form {
+        gap: 0;
+      }
+      #projects-defaults-form > .app-dialog-body {
+        margin-bottom: var(--space-lg);
+      }
+      #projects-defaults-form > .projects-defaults-save-status {
+        min-height: 0;
+        margin-top: calc(-1 * var(--space-md));
+        margin-bottom: var(--space-lg);
+      }
+      #projects-defaults-form > .projects-defaults-save-status:empty {
+        display: none;
+      }
+      #projects-defaults-form[data-settings-fetch-save-state="error"] > .projects-defaults-save-status {
+        color: var(--danger);
+      }
       .app-dialog-footer {
         justify-content: flex-end;
         margin-top: var(--space-sm);
@@ -4920,6 +4953,10 @@
         .app-dialog-card > .app-dialog-status {
           margin-left: var(--space-md);
           margin-right: var(--space-md);
+        }
+        #projects-filter-dialog .projects-filter-reset {
+          margin-right: var(--space-md);
+          margin-left: var(--space-md);
         }
         #auto-rename-confirmation-dialog {
           width: calc(100vw - 1rem);
