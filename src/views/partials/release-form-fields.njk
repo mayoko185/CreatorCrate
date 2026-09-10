@@ -49,7 +49,7 @@
   </div>
 {% endif %}
 
-<div class="settings-section{% if releaseFormDialog %} project-form-section project-edit-dialog-section{% endif %}">
+<div class="settings-section{% if releaseFormDialog %} project-form-section project-edit-dialog-section{% endif %}"{% if releaseFormDialog %} data-release-dialog-compact-section{% endif %}>
   <h3>Basic information</h3>
   <div class="release-form-section-body{% if releaseFormDialog %} project-form-section-body project-edit-dialog-section-body{% endif %}">
   <div class="field {% if errors.title %}field-error{% endif %}">
@@ -70,7 +70,7 @@
   </div>
 </div>
 
-<div class="settings-section scheduling-section{% if releaseFormDialog %} project-form-section project-edit-dialog-section{% endif %}">
+<div class="settings-section scheduling-section{% if releaseFormDialog %} project-form-section project-edit-dialog-section{% endif %}"{% if releaseFormDialog %} data-release-dialog-compact-section{% endif %}>
   <h3>Scheduling</h3>
   <div class="release-form-section-body{% if releaseFormDialog %} project-form-section-body project-edit-dialog-section-body{% endif %}">
   <div class="field-row scheduling-row">
@@ -105,7 +105,7 @@
   </div>
 </div>
 
-<div class="settings-section{% if releaseFormDialog %} project-form-section project-edit-dialog-section{% endif %}">
+<div class="settings-section{% if releaseFormDialog %} project-form-section project-edit-dialog-section{% endif %}"{% if releaseFormDialog %} data-release-dialog-compact-section{% endif %}>
   <h3>Links</h3>
   <div class="release-form-section-body{% if releaseFormDialog %} project-form-section-body project-edit-dialog-section-body{% endif %}">
   <div class="field {% if errors.patreonUrl %}field-error{% endif %}">

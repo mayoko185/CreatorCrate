@@ -1,7 +1,6 @@
 import express from 'express';
 import { ProjectNotFoundError } from '../services/project-service.js';
 import { ReleaseValidationError } from '../services/release-service.js';
-import { buildCreateReleaseFormModel } from './releases.js';
 import { UNCATEGORIZED } from '../services/asset-action-service.js';
 import { PRIMARY_IMAGE_ERROR_CODES } from '../services/project-primary-image-service.js';
 import { BOOK_PRIMARY_IMAGE_ERROR_CODES } from '../services/book-primary-image-service.js';
@@ -1176,10 +1175,10 @@ export function createAssetsRouter({
     }
   });
 
-  // POST /projects/:id/assets/create-release — Open the normal release-create
-  // form with the selected present assets carried forward. This intermediate
-  // route validates only; release creation and asset association remain owned
-  // by their existing later flows.
+  // POST /projects/:id/assets/create-release — Validate the selected present
+  // assets, then preserve the POST body while handing presentation to the
+  // canonical Releases host. Release creation and asset association remain
+  // owned by POST /releases.
   router.post('/:id/assets/create-release', (req, res, next) => {
     const body = req.body || {};
 
@@ -1199,20 +1198,12 @@ export function createAssetsRouter({
         throw new ReleaseValidationError({ assetIds: 'Invalid asset selection format.' });
       }
 
-      const selectedAssetIds = releaseService.validateAndNormalizeSelectedAssetIds(
+      releaseService.validateAndNormalizeSelectedAssetIds(
         id,
         normalizedSelection.ids,
       );
 
-      return res.render('releases/form.njk', buildCreateReleaseFormModel({
-        appName,
-        projectService,
-        values: {
-          projectId: String(id),
-          selectedAssetIds: selectedAssetIds.map(String),
-        },
-        errors: {},
-      }));
+      return res.redirect(307, `/releases?new=assets&projectId=${id}`);
     } catch (err) {
       const id = parseId(req.params.id);
       if (id === null) {

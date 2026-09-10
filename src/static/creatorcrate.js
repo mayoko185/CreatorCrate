@@ -32,7 +32,11 @@ import { enhanceNsfwFilterFetchSave } from './client/settings-nsfw-filter-fetch-
 import { enhanceSocialPrepFetchSave } from './client/settings-social-prep-fetch-save.js';
 import { enhanceOpenLocallyFetchSave } from './client/settings-open-locally-fetch-save.js';
 import { enhanceSettingsFetchSave } from './client/settings-fetch-save.js';
-import { enhanceProjectsDefaultsFetchSave } from './client/projects-defaults-fetch-save.js';
+import {
+  enhancePageDefaultsFetchSave,
+  enhanceProjectsDefaultsFetchSave,
+  enhanceReleasesDefaultsFetchSave,
+} from './client/projects-defaults-fetch-save.js';
 import {
   enhanceNotesCodeBlocks,
   enhanceNotesEditor,
@@ -90,6 +94,7 @@ import {
 
 import {
   beginProjectsDefaultsLiveRefresh,
+  beginReleasesDefaultsLiveRefresh,
   createLiveRegionEngine,
   enhanceAssetLibraryLiveFiltering,
   enhanceProjectAssetsLiveFiltering,
@@ -97,6 +102,7 @@ import {
   enhanceProjectsLiveFiltering,
   enhanceReleasesLiveFiltering,
   refreshProjectsLiveRegion,
+  refreshReleasesLiveRegion,
   refreshProjectAssetsLiveRegion,
 } from './client/live-regions.js';
 export {
@@ -131,6 +137,8 @@ export {
   enhanceOpenLocallyFetchSave,
   enhanceSettingsFetchSave,
   enhanceProjectsDefaultsFetchSave,
+  enhancePageDefaultsFetchSave,
+  enhanceReleasesDefaultsFetchSave,
   enhanceAppConfirmationControls as enhanceConfirmations,
   enhanceNumberInputs,
   enhanceProjectAssetsDefaultsScope,
@@ -163,6 +171,7 @@ export {
 
 export {
   beginProjectsDefaultsLiveRefresh,
+  beginReleasesDefaultsLiveRefresh,
   createLiveRegionEngine,
   enhanceAssetLibraryLiveFiltering,
   enhanceProjectAssetsLiveFiltering,
@@ -170,6 +179,7 @@ export {
   enhanceProjectsLiveFiltering,
   enhanceReleasesLiveFiltering,
   refreshProjectsLiveRegion,
+  refreshReleasesLiveRegion,
   refreshProjectAssetsLiveRegion,
 };
 
@@ -207,6 +217,7 @@ if (typeof document !== 'undefined') {
     enhanceProjectAssetCategoryFilter(document);
     enhanceDropdowns(document);
     enhanceProjectsDefaultsFetchSave(document);
+    enhanceReleasesDefaultsFetchSave(document);
     enhanceProjectAssetsDefaultsScope(document);
     enhanceAppDialogs(document);
     enhanceNoteDialogUnsavedChanges(document);

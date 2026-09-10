@@ -1,8 +1,8 @@
 {# Display-only; accepts the shared presenter's socialPreparation projection. #}
-{% macro render(socialPreparation) %}
+{% macro render(socialPreparation, showVisibleLabel = true) %}
   {% if socialPreparation.targets.length %}
     <div class="release-social-prep-summary" role="group" aria-label="Social posts">
-      <small>Social posts</small>
+      {% if showVisibleLabel %}<small>Social posts</small>{% endif %}
       {% for target in socialPreparation.targets %}
         {% set compactLabels = { prepared: 'Prepared', failed: 'Failed', cancelled: 'Cancelled' } %}
         {% set label = 'Not attempted' if target.noPreparationRequested else (compactLabels[target.status] or target.statusLabel) %}

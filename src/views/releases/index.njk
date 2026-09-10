@@ -32,113 +32,33 @@
     <div class="asset-viewer-display-controls">
       <div class="project-filter-actions project-filter-actions--projects">
         <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
+           href="#releases-filter-dialog" aria-label="Filter releases"
+           data-dialog-open="releases-filter-dialog" data-tooltip="Filter releases">
+          {{ icons.icon('content-filter') }}
+        </a>
+        <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
            href="/releases?defaults=1" aria-label="Releases defaults"
            data-dialog-open="releases-defaults-dialog" data-tooltip="Releases defaults">
           {{ icons.icon('settings') }}
-        </a>
-        <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
-           href="{{ clearUrl }}" aria-label="Reset filters" data-tooltip="Reset filters" data-releases-reset>
-          {{ icons.icon('reset') }}<span class="sr-only">Reset</span>
         </a>
       </div>
     </div>
 
     {# ─── List View ─── #}
-    <form{% if releasesLiveFiltering %} id="list-releases-filter" data-releases-filter{% endif %} class="filters asset-viewer-filters asset-viewer-filters--releases" method="get" action="{{ basePath }}">
-      {% if query.pageSize != 25 %}
-        <input type="hidden" name="pageSize" value="{{ query.pageSize }}">
-      {% endif %}
-      {% set scheduleOptions = [
-        { value: 'overdue', label: 'Overdue' },
-        { value: 'today', label: 'Today' },
-        { value: 'upcoming', label: 'Upcoming' },
-        { value: 'unscheduled', label: 'Unscheduled' }
-      ] %}
-      {% set releaseSortOptions = [] %}
-      {% for opt in sortOptions %}
-        {% set _ = releaseSortOptions.push({ value: opt, label: opt | replace('-', ' ') | title }) %}
-      {% endfor %}
-
-      {{ dropdown.searchableSingleSelect({
-        id: "release-project-filter",
-        name: "project",
-        label: "Project",
-        options: projectOptions,
-        valueKey: "id",
-        labelKey: "title",
-        selected: selectedProjectId if projectFilterHasSelection else null,
-        placeholder: "All projects",
-        panelLabel: "Project options",
-        searchLabel: "Search projects",
-        searchInputId: "release-project-filter-search",
-        noResultsText: "No matching projects",
-        optionListLabel: "Project choices",
-        optionIdPrefix: "release-project",
-        fieldClasses: "asset-viewer-filter-field asset-viewer-project-filter",
-        classes: "asset-project-filter-disclosure"
-      }) }}
-
-      {{ dropdown.singleSelect({
-        id: "list-schedule",
-        name: "schedule",
-        label: "Schedule",
-        options: scheduleOptions,
-        selected: query.schedule or '',
-        placeholder: "All",
-        fieldClasses: "asset-viewer-filter-field",
-        panelLabel: "Schedule options"
-      }) }}
-
-      {{ dropdown.singleSelect({
-        id: "list-sort",
-        name: "sort",
-        label: "Sort",
-        options: releaseSortOptions,
-        selected: query.sort,
-        fieldClasses: "asset-viewer-filter-field",
-        panelLabel: "Sort options"
-      }) }}
-
-      {{ dropdown.singleSelect({
-        id: "list-order",
-        name: "order",
-        label: "Sort order",
-        options: [
-          { value: 'desc', label: 'Desc' },
-          { value: 'asc', label: 'Asc' }
-        ],
-        selected: query.order,
-        fieldClasses: "asset-viewer-filter-field",
-        panelLabel: "Sort order options"
-      }) }}
-
-      <div class="field asset-viewer-filter-field">
-        <div class="asset-filter-multiselect-option">
-          <label for="list-includeArchived">
-            <input type="checkbox" id="list-includeArchived" name="includeArchived" value="1" {% if query.includeArchived == '1' %}checked{% endif %}>
-            <span>Archived</span>
-          </label>
-        </div>
-      </div>
-      {% if releasesLiveFiltering %}
-        <noscript><button class="button" type="submit">Filter</button></noscript>
-      {% else %}
-        <button class="button" type="submit">Filter</button>
-        <a class="button button-secondary" href="{{ clearUrl }}">Clear</a>
-      {% endif %}
-    </form>
-
-    <p class="results-meta">{{ total }} release{% if total != 1 %}s{% endif %} found</p>
-    {% if releases.length > 0 %}
-      <div class="table-scroll" tabindex="0" aria-label="Release list">
-        <table class="data-table">
+    <section class="project-detail-section releases-results-section" aria-labelledby="releases-results-heading">
+      <h2 id="releases-results-heading">Release records</h2>
+      <div class="project-detail-section-body">
+        <p class="results-meta">{{ total }} release{% if total != 1 %}s{% endif %} found</p>
+        {% if releases.length > 0 %}
+          <div class="table-scroll releases-table-scroll" tabindex="0" aria-label="Release list">
+            <table class="data-table releases-table">
         <thead>
           <tr>
             <th>Title</th>
             <th>Project</th>
             <th>Project status</th>
             <th>Planned</th>
-            <th>Published</th>
+            <th>Social Posts</th>
             <th class="num">Assets</th>
             <th></th>
           </tr>
@@ -148,16 +68,17 @@
             <tr{% if release.archived_at %} class="archived-row"{% endif %}>
               <td>
                 <a href="/releases/{{ release.id }}">{{ release.title }}</a>
-                {{ socialPrepSummary.render(release.socialPreparation) }}
               </td>
-              <td>{{ release.project_title }}</td>
+              <td><a href="/projects/{{ release.project_id }}">{{ release.project_title }}</a></td>
               <td>{% set status = release.project_status %}{% include "partials/status-badge.njk" %}</td>
               <td>{{ release.planned_date or '—' }}{% if release.planned_time %} {{ release.planned_time }}{% endif %}</td>
-              <td>{{ release.published_date or '—' }}</td>
+              <td>{{ socialPrepSummary.render(release.socialPreparation, false) }}</td>
               <td>
-                {{ release.selected_asset_count }} asset{% if release.selected_asset_count != 1 %}s{% endif %}
+                {{ release.selected_asset_count }}
                 {% if release.missing_asset_count > 0 %}
-                  <span class="missing-indicator" title="{{ release.missing_asset_count }} missing asset(s)">⚠</span>
+                  <span class="missing-indicator"
+                        title="{{ release.missing_asset_count }} missing asset{% if release.missing_asset_count != 1 %}s{% endif %}"
+                        aria-label="{{ release.missing_asset_count }} missing asset{% if release.missing_asset_count != 1 %}s{% endif %}">⚠</span>
                 {% endif %}
               </td>
               <td>
@@ -168,38 +89,40 @@
             </tr>
           {% endfor %}
         </tbody>
-      </table>
-      </div>
+            </table>
+          </div>
 
-      <nav class="pagination" aria-label="Release list pages">
-        {% if page > 1 %}
-          <a class="button" href="{{ pageUrl({ page: page - 1 }) }}">Previous</a>
+          <nav class="pagination" aria-label="Release list pages">
+            {% if page > 1 %}
+              <a class="button" href="{{ pageUrl({ page: page - 1 }) }}">Previous</a>
+            {% endif %}
+            <span>Page {{ page }} of {{ pageCount }}</span>
+            {% if page < pageCount %}
+              <a class="button" href="{{ pageUrl({ page: page + 1 }) }}">Next</a>
+            {% endif %}
+          </nav>
+        {% else %}
+          {% set releaseFiltersActive = query.project or query.search or query.schedule or query.includeArchived == '1' %}
+          {% if releaseFiltersActive and hasAnyReleases %}
+            {% set emptyHeading = "No releases match the current filters" %}
+            {% set emptyDescription = "Reset the filters to return to the full release list." %}
+            {% set emptyActionUrl = clearUrl %}
+            {% set emptyActionLabel = "Reset Filters" %}
+            {% if releasesLiveFiltering %}
+              {% set emptyActionAttributes = [['data-releases-reset', true]] %}
+            {% endif %}
+          {% else %}
+            {% set emptyHeading = "No releases yet" %}
+            {% set emptyDescription = "Create a release to start tracking publication workflow." %}
+            {% set emptyActionUrl = "/releases/new" %}
+            {% set emptyActionDialogId = "release-create-dialog" %}
+            {% set emptyActionLabel = "New Release" %}
+          {% endif %}
+          {% set emptyHeadingLevel = "h2" %}
+          {% include "partials/empty-state.njk" %}
         {% endif %}
-        <span>Page {{ page }} of {{ pageCount }}</span>
-        {% if page < pageCount %}
-          <a class="button" href="{{ pageUrl({ page: page + 1 }) }}">Next</a>
-        {% endif %}
-      </nav>
-    {% else %}
-      {% set releaseFiltersActive = query.project or query.search or query.schedule or query.includeArchived == '1' %}
-      {% if releaseFiltersActive and hasAnyReleases %}
-        {% set emptyHeading = "No releases match the current filters" %}
-        {% set emptyDescription = "Reset the filters to return to the full release list." %}
-        {% set emptyActionUrl = clearUrl %}
-        {% set emptyActionLabel = "Reset Filters" %}
-        {% if releasesLiveFiltering %}
-          {% set emptyActionAttributes = [['data-releases-reset', true]] %}
-        {% endif %}
-      {% else %}
-        {% set emptyHeading = "No releases yet" %}
-        {% set emptyDescription = "Create a release to start tracking publication workflow." %}
-        {% set emptyActionUrl = "/releases/new" %}
-        {% set emptyActionDialogId = "release-create-dialog" %}
-        {% set emptyActionLabel = "New Release" %}
-      {% endif %}
-      {% set emptyHeadingLevel = "h2" %}
-      {% include "partials/empty-state.njk" %}
-    {% endif %}
+      </div>
+    </section>
 
   </div>
 {% endblock %}
@@ -207,9 +130,96 @@
 {% block overlay %}
   {{ releaseCreateDialog.render(releaseCreateForm, _csrf, releaseCreateDialogOpen) }}
 
+  {% call dialog.render('releases-filter-dialog', 'Filter') %}
+    <form id="list-releases-filter" class="app-dialog-form project-form" method="get" action="{{ basePath }}" data-releases-filter>
+      <div class="app-dialog-body">
+        <div class="page-defaults-grid">
+          {% if query.pageSize != 25 %}
+            <input type="hidden" name="pageSize" value="{{ query.pageSize }}">
+          {% endif %}
+
+          {{ dropdown.searchableSingleSelect({
+            id: "release-project-filter",
+            name: "project",
+            label: "Project",
+            options: projectOptions,
+            valueKey: "id",
+            labelKey: "title",
+            selected: selectedProjectId if projectFilterHasSelection else null,
+            placeholder: "All projects",
+            panelLabel: "Project options",
+            searchLabel: "Search projects",
+            searchInputId: "release-project-filter-search",
+            noResultsText: "No matching projects",
+            optionListLabel: "Project choices",
+            optionIdPrefix: "release-project",
+            fieldClasses: "app-dialog-field asset-viewer-filter-field asset-viewer-project-filter releases-filter-field--project",
+            classes: "asset-project-filter-disclosure"
+          }) }}
+
+          {% set scheduleOptions = [
+            { value: 'overdue', label: 'Overdue' },
+            { value: 'today', label: 'Today' },
+            { value: 'upcoming', label: 'Upcoming' },
+            { value: 'unscheduled', label: 'Unscheduled' }
+          ] %}
+          {{ dropdown.singleSelect({
+            id: "list-schedule",
+            name: "schedule",
+            label: "Schedule",
+            options: scheduleOptions,
+            selected: query.schedule or '',
+            placeholder: "All",
+            fieldClasses: "app-dialog-field asset-viewer-filter-field",
+            panelLabel: "Schedule options"
+          }) }}
+
+          {% set releaseSortOptions = [] %}
+          {% for opt in sortOptions %}
+            {% set _ = releaseSortOptions.push({ value: opt, label: opt | replace('-', ' ') | title }) %}
+          {% endfor %}
+          {{ dropdown.singleSelect({
+            id: "list-sort",
+            name: "sort",
+            label: "Sort",
+            options: releaseSortOptions,
+            selected: query.sort,
+            fieldClasses: "app-dialog-field asset-viewer-filter-field",
+            panelLabel: "Sort options"
+          }) }}
+
+          {{ dropdown.singleSelect({
+            id: "list-order",
+            name: "order",
+            label: "Sort order",
+            options: [
+              { value: 'desc', label: 'Desc' },
+              { value: 'asc', label: 'Asc' }
+            ],
+            selected: query.order,
+            fieldClasses: "app-dialog-field asset-viewer-filter-field",
+            panelLabel: "Sort order options"
+          }) }}
+
+          <div class="field app-dialog-field asset-viewer-filter-field">
+            <div class="asset-filter-multiselect-option">
+              <label for="list-includeArchived">
+                <input type="checkbox" id="list-includeArchived" name="includeArchived" value="1" {% if query.includeArchived == '1' %}checked{% endif %}>
+                <span>Archived</span>
+              </label>
+            </div>
+          </div>
+        </div>
+      </div>
+    </form>
+    <form class="releases-filter-reset" method="get" action="{{ clearUrl }}">
+      <button class="button" type="submit" aria-label="Reset filters" data-tooltip="Reset filters" data-releases-reset>Reset filters</button>
+    </form>
+  {% endcall %}
+
   {% call dialog.render('releases-defaults-dialog', 'Releases defaults', releasesDefaultsDialogOpen, 'releases-defaults-description', 'releases-defaults-form') %}
     <form id="releases-defaults-form" method="post" action="/releases/defaults" class="app-dialog-form project-form"
-          data-dialog-form data-dialog-async data-dialog-error-message="Releases defaults could not be saved." novalidate>
+          data-dialog-form data-dialog-async="false" data-releases-defaults-autosave novalidate>
       <p id="releases-defaults-description" class="app-dialog-description">
         Choose the sort order used when Releases opens without explicit options.
       </p>
@@ -222,7 +232,7 @@
         <div class="page-defaults-grid">
           {% for field in releasesDefaults.fields %}
           {% set submittedOption = none %}
-          {% set nativeAttributes = [["required", true]] %}
+          {% set nativeAttributes = [["required", true], ["data-autosubmit", "fetch"]] %}
           {% set summaryAttributes = [] %}
           {% if field.showSubmittedValue %}
             {% set submittedOption = {
@@ -234,7 +244,7 @@
             } %}
           {% endif %}
           {% if field.error %}
-            {% set nativeAttributes = [["required", true], ["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] %}
+            {% set nativeAttributes = [["required", true], ["data-autosubmit", "fetch"], ["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] %}
             {% set summaryAttributes = [["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] %}
           {% endif %}
           <div class="field app-dialog-field{% if field.error %} field-error{% endif %}" data-dialog-field="{{ field.name }}">
@@ -246,6 +256,7 @@
               selected: field.selectedValue,
               optionIdPrefix: field.id,
               leadingOption: submittedOption,
+              dispatchNativeChange: true,
               summaryAttributes: summaryAttributes,
               nativeSelect: {
                 id: field.id,
@@ -257,10 +268,7 @@
           {% endfor %}
         </div>
       </div>
-      <div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>
-      <footer class="app-dialog-footer">
-        <button class="button button-primary" type="submit" data-dialog-submit>Save defaults</button>
-      </footer>
+      <div class="app-dialog-status" data-settings-fetch-save-status role="status" aria-live="polite" aria-atomic="true"></div>
     </form>
   {% endcall %}
 {% endblock %}

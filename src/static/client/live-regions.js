@@ -552,9 +552,9 @@ export function createLiveRegionEngine(config) {
   return engine;
 }
 
-function reconcileProjectsFilterForm(state, parsed) {
-  const currentForm = state.document?.querySelector?.(PROJECTS_FILTER_SELECTOR);
-  const nextForm = parsed?.querySelector?.(PROJECTS_FILTER_SELECTOR);
+function reconcileExternalFilterForm(state, parsed, formSelector) {
+  const currentForm = state.document?.querySelector?.(formSelector);
+  const nextForm = parsed?.querySelector?.(formSelector);
   if (!currentForm || !nextForm || currentForm === nextForm) return;
 
   const captured = liveRegionCaptureState(currentForm, state.document);
@@ -734,7 +734,7 @@ const projectsLiveEngine = createLiveRegionEngine({
     if (refreshesNsfw) state.nsfwRefreshGeneration = generation;
   },
   onResponseParsed(state, parsed) {
-    reconcileProjectsFilterForm(state, parsed);
+    reconcileExternalFilterForm(state, parsed, PROJECTS_FILTER_SELECTOR);
   },
   onRegionReplaced(state, nextRegion) {
     if (!state.nsfwSubmitting) return;
@@ -793,7 +793,9 @@ function enhanceReleasesLiveRegion(region) {
 const releasesLiveEngine = createLiveRegionEngine({
   regionSelector: RELEASES_LIVE_REGION_SELECTOR,
   formSelector: RELEASES_FILTER_SELECTOR,
+  formScope: 'document',
   linkSelector: '.pagination a, [data-releases-reset]',
+  linkScope: 'document',
   defaultAction: '/releases',
   stateKey: '__creatorCrateReleasesLiveFiltering',
   historyState: { releases: true },
@@ -804,6 +806,38 @@ const releasesLiveEngine = createLiveRegionEngine({
   responseErrorMessage: 'Releases response failed.',
   missingRegionMessage: 'Releases response did not contain the live region.',
   enhanceRegion: enhanceReleasesLiveRegion,
+  onCreate(state) {
+    state.releasesDefaultsRefreshGeneration = null;
+    state.releasesDefaultsRefreshError = null;
+  },
+  onInvalidate(state) {
+    if (state.releasesDefaultsRefreshGeneration === null) return;
+    state.releasesDefaultsRefreshGeneration = null;
+    state.releasesDefaultsRefreshError = null;
+  },
+  onResponseParsed(state, parsed) {
+    reconcileExternalFilterForm(state, parsed, RELEASES_FILTER_SELECTOR);
+  },
+  onLoadComplete(state, generation) {
+    if (state.releasesDefaultsRefreshGeneration !== generation) return;
+    state.releasesDefaultsRefreshGeneration = null;
+    state.releasesDefaultsRefreshError = null;
+  },
+  onLoadError(state, generation) {
+    if (state.releasesDefaultsRefreshGeneration !== generation) return false;
+    const notifyRefreshError = state.releasesDefaultsRefreshError;
+    state.releasesDefaultsRefreshGeneration = null;
+    state.releasesDefaultsRefreshError = null;
+    const region = releasesLiveEngine.getRegion(state.document);
+    region?.removeAttribute?.('aria-busy');
+    releasesLiveEngine.status(
+      region,
+      'Defaults were saved, but Releases could not refresh. Refresh the page to see the saved defaults.',
+      'error',
+    );
+    notifyRefreshError?.();
+    return true;
+  },
   isCurrentUrl(url) {
     return url.pathname === '/releases' || url.pathname === '/release-management';
   },
@@ -1240,6 +1274,55 @@ export function refreshProjectsLiveRegion(
 
 export function enhanceReleasesLiveFiltering(scope = globalThis.document) {
   return releasesLiveEngine.enhance(scope);
+}
+
+export function beginReleasesDefaultsLiveRefresh(scope = globalThis.document) {
+  const document = liveRegionDocument(scope);
+  const region = releasesLiveEngine.getRegion(document);
+  if (!document || !region) return null;
+
+  releasesLiveEngine.enhance(document);
+  const state = document.__creatorCrateReleasesLiveFiltering;
+  if (!state || !releasesLiveEngine.capabilities(state.window)) return null;
+
+  if (state.releasesDefaultsRefreshGeneration !== null) {
+    releasesLiveEngine.invalidate(state);
+  }
+  return state.generation;
+}
+
+export function refreshReleasesLiveRegion(
+  scope = globalThis.document,
+  destination,
+  authorityGeneration,
+  { onError = null } = {},
+) {
+  const document = liveRegionDocument(scope);
+  const region = releasesLiveEngine.getRegion(document);
+  const state = document?.__creatorCrateReleasesLiveFiltering;
+  if (!document || !region || !state || !releasesLiveEngine.capabilities(state.window)) return 'unavailable';
+  if (state.generation !== authorityGeneration) return 'superseded';
+
+  let url;
+  try {
+    url = new URL(destination, state.window.location?.href || '/releases');
+  } catch {
+    return 'unavailable';
+  }
+  if (!releasesLiveEngine.capabilities(state.window) || url.pathname !== '/releases') return 'unavailable';
+
+  if (state.timer) state.window.clearTimeout?.(state.timer);
+  state.timer = null;
+  releasesLiveEngine.invalidate(state);
+  state.releasesDefaultsRefreshGeneration = state.generation;
+  state.releasesDefaultsRefreshError = typeof onError === 'function' ? onError : null;
+  releasesLiveEngine.load(
+    state,
+    url,
+    'replace',
+    releasesLiveEngine.getForm(releasesLiveEngine.getRegion(document)),
+  );
+  return 'started';
 }
 
 export function enhanceReleaseAssetsLiveFiltering(scope = globalThis.document) {

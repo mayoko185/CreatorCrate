@@ -17,11 +17,22 @@
             data-dialog-form data-dialog-async="false" novalidate>
         <input type="hidden" name="_csrf" value="{{ csrfToken }}">
         <input type="hidden" name="returnTo" value="/releases">
+        {% if releaseCreateForm.selectedAssetsFlow %}
+          <input type="hidden" name="releaseCreateFlow" value="selected-assets">
+        {% endif %}
         {% for assetId in values.selectedAssetIds %}
           <input type="hidden" name="selectedAssetIds" value="{{ assetId }}">
         {% endfor %}
-        {% if errors.general %}
-          <div class="error-summary" role="alert"><p>{{ errors.general }}</p></div>
+        {% if errors.general or releaseCreateForm.selectedAssetsInvalid %}
+          <div class="error-summary" role="alert">
+            {% if errors.general %}<p>{{ errors.general }}</p>{% endif %}
+            {% if releaseCreateForm.selectedAssetsInvalid %}
+              <p>Return to Project Assets and select valid assets before creating a release.</p>
+              {% if releaseCreateForm.selectedAssetsRecoveryUrl %}
+                <a class="button button-secondary" href="{{ releaseCreateForm.selectedAssetsRecoveryUrl }}">Back to Project Assets</a>
+              {% endif %}
+            {% endif %}
+          </div>
         {% endif %}
         {% include "partials/release-form-fields.njk" %}
       </form>
@@ -29,7 +40,7 @@
     <div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>
     <footer class="app-dialog-footer">
       <button class="button button-secondary" type="submit" formmethod="dialog" data-dialog-close>Cancel</button>
-      <button class="button button-primary" type="submit" form="release-create-form" data-dialog-submit>Create release</button>
+      <button class="button button-primary" type="submit" form="release-create-form" data-dialog-submit{% if releaseCreateForm.selectedAssetsInvalid %} disabled{% endif %}>Create release</button>
     </footer>
   {% endcall %}
 {% endmacro %}

@@ -11,6 +11,7 @@ import {
   enhanceProjectAssetCategoryManagement,
   enhanceProjectAssetsDefaultsScope,
   enhanceProjectsDefaultsFetchSave,
+  enhanceReleasesDefaultsFetchSave,
   openAppDialogById,
 } from '../src/static/creatorcrate.js';
 
@@ -2294,6 +2295,77 @@ describe('Projects defaults autosave enhancement', () => {
       expect(page.fields.sort.value).toBe('title');
       expect(page.status.textContent).toBe('Settings saved, but Projects could not refresh. Refresh the page to see the saved defaults.');
       expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('saved-refresh-error');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('configures the shared autosave path for Releases without binding it twice', async () => {
+    const page = makeDialogPage({ standardDropdowns: true, projectsDefaultsAutosave: true });
+    page.form.setAttribute('id', 'releases-defaults-form');
+    page.form.setAttribute('action', '/releases/defaults');
+    page.form.removeAttribute('data-projects-defaults-autosave');
+    page.form.setAttribute('data-releases-defaults-autosave', '');
+    Object.entries(page.fields).forEach(([name, field]) => {
+      if (name !== 'sort' && name !== 'order') field.removeAttribute('data-autosubmit');
+    });
+    const beginRefresh = vi.fn(() => 11);
+    const refresh = vi.fn(() => 'started');
+    const fetch = vi.fn().mockResolvedValue(response({
+      url: 'http://creatorcrate.test/releases?sort=title&order=asc&notice=releases_defaults_saved',
+    }));
+    installFetchGlobals(page, fetch);
+
+    try {
+      expect(enhanceReleasesDefaultsFetchSave(page.document, { beginRefresh, refresh })).toBe(2);
+      expect(enhanceReleasesDefaultsFetchSave(page.document, { beginRefresh, refresh })).toBe(0);
+
+      page.fields.sort.value = 'title';
+      page.fields.sort.dispatch('change');
+      await flush();
+
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(fetch).toHaveBeenCalledWith('/releases/defaults', expect.objectContaining({
+        method: 'POST',
+        redirect: 'follow',
+      }));
+      expect(beginRefresh).toHaveBeenCalledOnce();
+      expect(refresh).toHaveBeenCalledWith(
+        page.document,
+        'http://creatorcrate.test/releases?sort=title&order=asc&notice=releases_defaults_saved',
+        11,
+        { onError: expect.any(Function) },
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('keeps Releases edits and uses its configured accessible failure message', async () => {
+    const page = makeDialogPage({ standardDropdowns: true, projectsDefaultsAutosave: true });
+    page.form.setAttribute('id', 'releases-defaults-form');
+    page.form.removeAttribute('data-projects-defaults-autosave');
+    page.form.setAttribute('data-releases-defaults-autosave', '');
+    Object.entries(page.fields).forEach(([name, field]) => {
+      if (name !== 'sort' && name !== 'order') field.removeAttribute('data-autosubmit');
+    });
+    const fetch = vi.fn().mockResolvedValue(response({ ok: false, redirected: false }));
+    installFetchGlobals(page, fetch);
+
+    try {
+      enhanceReleasesDefaultsFetchSave(page.document, {
+        beginRefresh: vi.fn(() => 0),
+        refresh: vi.fn(() => 'started'),
+      });
+      page.fields.order.value = 'asc';
+      page.fields.order.dispatch('change');
+      await flush();
+
+      expect(page.fields.order.value).toBe('asc');
+      expect(page.status.textContent).toBe('Could not save settings. Your current changes were kept.');
+      expect(page.status.getAttribute('role')).toBe('status');
+      expect(page.status.getAttribute('aria-live')).toBe('polite');
+      expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('error');
     } finally {
       vi.unstubAllGlobals();
     }

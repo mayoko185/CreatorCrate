@@ -7221,10 +7221,70 @@ describe('asset browser HTTP workflow', () => {
   });
 
   describe('POST /projects/:id/assets/create-release', () => {
-    it('opens the normal Create Release form with the project and selected assets', async () => {
+    it('redirects the validated selection to the canonical Releases host and opens its New Release dialog', async () => {
       const res = await createProject('Create Release From Assets');
       const id = Number(res.headers.location.replace('/projects/', ''));
       const projectDir = getProjectDir('Create Release From Assets');
+      const first = writeIndexedAsset(id, projectDir, 'first.png', await makePng());
+      const second = writeIndexedAsset(id, projectDir, 'second.png', await makePng());
+
+      const handoff = await agent
+        .post(`/projects/${id}/assets/create-release`)
+        .type('form')
+        .send({
+          selectedAssetIds: [String(second.id), String(first.id)],
+          _csrf: csrfToken,
+        })
+        .expect(307);
+
+      expect(handoff.headers.location).toBe(`/releases?new=assets&projectId=${id}`);
+
+      app.locals.pageDefaultsService.saveDefault('releases', 'sort', 'title');
+      app.locals.pageDefaultsService.saveDefault('releases', 'order', 'desc');
+      for (let index = 0; index < 26; index += 1) {
+        createReleaseService({ db }).createRelease(id, { title: `Existing Release ${index}` });
+      }
+
+      const opened = await agent
+        .post(`/projects/${id}/assets/create-release`)
+        .type('form')
+        .send({
+          selectedAssetIds: [String(second.id), String(first.id)],
+          _csrf: csrfToken,
+        })
+        .redirects(1)
+        .expect(200);
+
+      const dialog = opened.text.match(/<dialog id="release-create-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      expect(opened.text).toContain('<h1 class="app-section-title">Releases</h1>');
+      expect(dialog).toMatch(/<dialog id="release-create-dialog"[^>]*open/);
+      expect(dialog).toContain('<form id="release-create-form" method="post" action="/releases"');
+      expect(dialog).toMatch(new RegExp(`name="projectId"[^>]+value="${id}"[^>]+checked`));
+      expect(dialog).toContain('<input type="text" id="title" name="title" value="Create Release From Assets"');
+      expect(opened.text).not.toContain('<form id="release-form"');
+
+      const hiddenSelectedAssetIds = dialog.match(
+        /<input type="hidden" name="selectedAssetIds" value="\d+">/g,
+      ) || [];
+      expect(hiddenSelectedAssetIds).toEqual([
+        `<input type="hidden" name="selectedAssetIds" value="${second.id}">`,
+        `<input type="hidden" name="selectedAssetIds" value="${first.id}">`,
+      ]);
+
+      expect(opened.text).toContain('id="list-releases-filter" class="app-dialog-form project-form" method="get" action="/releases"');
+      expect(opened.text).toMatch(/<form class="releases-filter-reset" method="get" action="\/releases(?:\?[^\"]*)?">/);
+      expect(opened.text).toContain('<form id="releases-defaults-form" method="post" action="/releases/defaults"');
+      expect(opened.text).toMatch(/<a class="button" href="\/releases\?[^\"]*page=2[^\"]*">Next<\/a>/);
+      expect(opened.text).not.toMatch(/(?:action|href)="\/projects\/[^\"]*releases/);
+
+      const releaseService = createReleaseService({ db });
+      expect(releaseService.listReleases(id, { includeArchived: true })).toHaveLength(26);
+    });
+
+    it('preserves selected IDs through validation rerender and attaches them on successful create', async () => {
+      const res = await createProject('Create Release Form Rerender');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const projectDir = getProjectDir('Create Release Form Rerender');
       const first = writeIndexedAsset(id, projectDir, 'first.png', await makePng());
       const second = writeIndexedAsset(id, projectDir, 'second.png', await makePng());
 
@@ -7235,63 +7295,72 @@ describe('asset browser HTTP workflow', () => {
           selectedAssetIds: [String(second.id), String(first.id)],
           _csrf: csrfToken,
         })
+        .redirects(1)
         .expect(200);
+      const openedDialog = opened.text.match(/<dialog id="release-create-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      const readInputValue = (html, name) => html.match(
+        new RegExp(`<input[^>]+name="${name}"[^>]+value="([^"]*)"`),
+      )?.[1] || '';
+      const readSelectedAssetIds = (html) => [...html.matchAll(
+        /<input type="hidden" name="selectedAssetIds" value="(\d+)">/g,
+      )].map((match) => match[1]);
+      const openedFlow = readInputValue(openedDialog, 'releaseCreateFlow');
+      const openedSelectedAssetIds = readSelectedAssetIds(openedDialog);
 
-      expect(opened.text).toContain('Releases — Create Release');
-      expect(opened.text).toContain('<form id="release-form" method="post" action="/releases" class="project-form" novalidate>');
-      expect(opened.text).toMatch(new RegExp(`name="projectId"[^>]+value="${id}" checked`));
-      expect(opened.text).toContain('<input type="text" id="title" name="title" value=""');
-      expect(opened.text).toContain('<textarea id="notes" name="notes" rows="6" maxlength="10000"></textarea>');
+      expect(openedFlow).toBe('selected-assets');
+      expect(openedSelectedAssetIds).toEqual([String(second.id), String(first.id)]);
 
-      const hiddenSelectedAssetIds = opened.text.match(
-        /<input type="hidden" name="selectedAssetIds" value="\d+">/g,
-      ) || [];
-      expect(hiddenSelectedAssetIds).toEqual([
-        `<input type="hidden" name="selectedAssetIds" value="${second.id}">`,
-        `<input type="hidden" name="selectedAssetIds" value="${first.id}">`,
-      ]);
-
-      const releaseService = createReleaseService({ db });
-      expect(releaseService.listReleases(id, { includeArchived: true })).toEqual([]);
-    });
-
-    it('preserves selected IDs through validation rerender and attaches them on successful create', async () => {
-      const res = await createProject('Create Release Form Rerender');
-      const id = Number(res.headers.location.replace('/projects/', ''));
-      const projectDir = getProjectDir('Create Release Form Rerender');
-      const first = writeIndexedAsset(id, projectDir, 'first.png', await makePng());
-      const second = writeIndexedAsset(id, projectDir, 'second.png', await makePng());
+      const invalidForm = new URLSearchParams();
+      invalidForm.set('_csrf', readInputValue(openedDialog, '_csrf'));
+      invalidForm.set('returnTo', readInputValue(openedDialog, 'returnTo'));
+      invalidForm.set('releaseCreateFlow', openedFlow);
+      invalidForm.set('projectId', String(id));
+      invalidForm.set('title', 'User Edited Release Title');
+      invalidForm.set('notes', 'Keep these notes');
+      invalidForm.set('plannedDate', 'not-a-date');
+      for (const assetId of openedSelectedAssetIds) invalidForm.append('selectedAssetIds', assetId);
 
       const invalid = await agent
         .post('/releases')
         .type('form')
-        .send(`projectId=${id}`)
-        .send('title=')
-        .send('notes=Keep+these+notes')
-        .send(`selectedAssetIds=${second.id}`)
-        .send(`selectedAssetIds=${first.id}`)
-        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send(invalidForm.toString())
         .expect(422);
 
-      expect(invalid.text).toContain('Keep these notes');
-      expect((invalid.text.match(/<input type="hidden" name="selectedAssetIds" value="\d+">/g) || [])).toEqual([
-        `<input type="hidden" name="selectedAssetIds" value="${second.id}">`,
-        `<input type="hidden" name="selectedAssetIds" value="${first.id}">`,
-      ]);
+      const invalidDialog = invalid.text.match(/<dialog id="release-create-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      expect(invalidDialog).toMatch(/<dialog id="release-create-dialog"[^>]*open/);
+      expect(invalidDialog).toContain('value="User Edited Release Title"');
+      expect(invalidDialog).toContain('Keep these notes');
+      expect(readInputValue(invalidDialog, 'releaseCreateFlow')).toBe('selected-assets');
+      expect(readSelectedAssetIds(invalidDialog)).toEqual([String(second.id), String(first.id)]);
       expect(createReleaseService({ db }).listReleases(id, { includeArchived: true })).toEqual([]);
+
+      const resubmittedForm = new URLSearchParams();
+      resubmittedForm.set('_csrf', readInputValue(invalidDialog, '_csrf'));
+      resubmittedForm.set('returnTo', readInputValue(invalidDialog, 'returnTo'));
+      resubmittedForm.set('releaseCreateFlow', readInputValue(invalidDialog, 'releaseCreateFlow'));
+      resubmittedForm.set('projectId', String(id));
+      resubmittedForm.set('title', readInputValue(invalidDialog, 'title'));
+      resubmittedForm.set('notes', invalidDialog.match(/<textarea[^>]+name="notes"[^>]*>([\s\S]*?)<\/textarea>/)?.[1] || '');
+      resubmittedForm.set('plannedDate', '');
+      for (const assetId of readSelectedAssetIds(invalidDialog)) {
+        resubmittedForm.append('selectedAssetIds', assetId);
+      }
 
       const created = await agent
         .post('/releases')
         .type('form')
-        .send(`projectId=${id}`)
-        .send('title=Release With Selected Attachments')
-        .send(`selectedAssetIds=${second.id}`)
-        .send(`selectedAssetIds=${first.id}`)
-        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send(resubmittedForm.toString())
         .expect(302);
       const releaseId = Number(created.headers.location.split('/')[2]);
 
       expect(created.headers.location).toBe(`/releases/${releaseId}/assets`);
+      expect(createReleaseService({ db }).listReleases(id, { includeArchived: true })).toEqual([
+        expect.objectContaining({
+          id: releaseId,
+          title: 'User Edited Release Title',
+          notes: 'Keep these notes',
+        }),
+      ]);
       expect(createReleaseService({ db }).listReleaseAssets(releaseId).map((asset) => ({
         asset_id: asset.asset_id,
         role: asset.role,
@@ -7321,7 +7390,7 @@ describe('asset browser HTTP workflow', () => {
       expect(releaseService.listReleases(id, { includeArchived: true })).toEqual([]);
     });
 
-    it('rejects malformed and cross-project selections without creating a release', async () => {
+    it('rejects malformed, missing, and cross-project selections without creating a release', async () => {
       const res = await createProject('Create Release Invalid Selection');
       const id = Number(res.headers.location.replace('/projects/', ''));
       const projectDir = getProjectDir('Create Release Invalid Selection');
@@ -7335,6 +7404,17 @@ describe('asset browser HTTP workflow', () => {
       expect(invalid.text).toContain('Asset IDs must be positive integers.');
       expect(invalid.text).toContain(`action="/projects/${id}/assets/add-to-release"`);
       expect(invalid.text).not.toContain('Releases — Create Release');
+
+      const missingAsset = writeIndexedAsset(id, projectDir, 'missing.png', await makePng());
+      db.prepare('UPDATE assets SET is_present = 0 WHERE id = ?').run(missingAsset.id);
+      const missing = await agent
+        .post(`/projects/${id}/assets/create-release`)
+        .type('form')
+        .send({ selectedAssetIds: String(missingAsset.id), _csrf: csrfToken })
+        .expect(422);
+      expect(missing.text).toContain('currently missing and cannot be selected');
+      expect(missing.text).toContain(`action="/projects/${id}/assets/add-to-release"`);
+      expect(missing.text).not.toContain('Releases — Create Release');
 
       const otherRes = await createProject('Create Release Foreign Project');
       const otherId = Number(otherRes.headers.location.replace('/projects/', ''));

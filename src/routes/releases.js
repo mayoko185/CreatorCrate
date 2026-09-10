@@ -41,6 +41,7 @@ const RELEASES_DEFAULT_LABELS = Object.freeze({
 const RELEASES_NOTICES = Object.freeze({
   defaultsSaved: 'Releases defaults saved successfully.',
 });
+const SELECTED_ASSETS_RELEASE_CREATE_FLOW = 'selected-assets';
 
 export { handleReleaseList, buildPageUrl, buildCreateReleaseFormModel };
 
@@ -125,15 +126,106 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
   router.post('/', (req, res, next) => {
     const body = req.body || {};
     const hasSelectedAssetIds = Object.hasOwn(body, 'selectedAssetIds');
+    const hasReleaseCreateFlow = Object.hasOwn(body, 'releaseCreateFlow');
+    const selectedAssetsFlow = body.releaseCreateFlow === SELECTED_ASSETS_RELEASE_CREATE_FLOW;
+    const selectedAssetsIntent = selectedAssetsFlow || hasReleaseCreateFlow || hasSelectedAssetIds;
+
+    if (req.query?.new === 'assets') {
+      const normalizedSelection = normalizeSelectedAssetIds(body.selectedAssetIds);
+
+      try {
+        if (!normalizedSelection.valid) {
+          throw new ReleaseValidationError({ assetIds: 'Invalid asset selection format.' });
+        }
+
+        const assetIds = releaseService.validateAndNormalizeSelectedAssetIds(
+          req.query.projectId,
+          normalizedSelection.ids,
+        );
+        const projectId = parseStrictInt(req.query.projectId);
+        const project = projectId === null ? null : projectService.findById(projectId);
+        if (!project) {
+          return next(createNotFound());
+        }
+        const releaseCreateForm = buildCreateReleaseFormModel({
+          appName,
+          projectService,
+          selectedAssetsFlow: true,
+          values: {
+            projectId: String(projectId),
+            title: project.title,
+            selectedAssetIds: assetIds,
+          },
+          errors: {},
+        });
+
+        handleReleaseList(req, res, next, {
+          appName,
+          projectService,
+          workflowQueryService,
+          releaseCreateDialogOpen: true,
+          releaseCreateForm,
+          allowSavedDefaultsRedirect: false,
+          notice: null,
+          pagePath: '/',
+        });
+        return;
+      } catch (err) {
+        if (err instanceof ReleaseValidationError || err instanceof AssetNotFoundError) {
+          const errors = err instanceof ReleaseValidationError
+            ? { ...err.errors }
+            : { assets: err.message };
+          const selectedAssetError = errors.assetIds || errors.assets;
+          if (selectedAssetError && !errors.general) {
+            errors.general = selectedAssetError;
+          }
+
+          const projectId = parseStrictInt(req.query.projectId);
+          const project = projectId === null ? null : projectService.findById(projectId);
+          const releaseCreateForm = buildCreateReleaseFormModel({
+            appName,
+            projectService,
+            selectedAssetsFlow: true,
+            selectedAssetsInvalid: true,
+            selectedAssetsRecoveryUrl: project ? `/projects/${project.id}/assets` : null,
+            values: {
+              projectId: projectId === null ? '' : String(projectId),
+              title: project?.title || '',
+              selectedAssetIds: [],
+            },
+            errors,
+          });
+
+          handleReleaseList(req, res, next, {
+            appName,
+            projectService,
+            workflowQueryService,
+            status: 422,
+            releaseCreateDialogOpen: true,
+            releaseCreateForm,
+            allowSavedDefaultsRedirect: false,
+            notice: null,
+            pagePath: '/',
+          });
+          return;
+        }
+        next(err);
+        return;
+      }
+    }
 
     try {
+      if ((hasReleaseCreateFlow && !selectedAssetsFlow) || (hasSelectedAssetIds && !selectedAssetsFlow)) {
+        throw new ReleaseValidationError({ general: 'Invalid release creation flow.' });
+      }
+
       const projectId = parseStrictInt(body.projectId);
       if (projectId === null) {
         throw new ReleaseValidationError({ projectId: 'Project is required.' });
       }
 
       const input = parseReleaseInput(body);
-      if (hasSelectedAssetIds) {
+      if (selectedAssetsFlow) {
         const normalizedSelection = normalizeSelectedAssetIds(body.selectedAssetIds);
         if (!normalizedSelection.valid) {
           throw new ReleaseValidationError({ assetIds: 'Invalid asset selection format.' });
@@ -150,13 +242,42 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
       const release = releaseService.createRelease(projectId, input);
       return res.redirect(`/releases/${release.id}`);
     } catch (err) {
-      if (err instanceof ReleaseValidationError || (hasSelectedAssetIds && err instanceof AssetNotFoundError)) {
+      if (err instanceof ReleaseValidationError || (selectedAssetsFlow && err instanceof AssetNotFoundError)) {
         const errors = err instanceof ReleaseValidationError
           ? { ...err.errors }
           : { assets: err.message };
         const selectedAssetError = errors.assetIds || errors.assets;
-        if (hasSelectedAssetIds && selectedAssetError && !errors.general) {
+        if (selectedAssetsFlow && selectedAssetError && !errors.general) {
           errors.general = selectedAssetError;
+        }
+
+        let values = body;
+        let selectedAssetsInvalid = false;
+        let selectedAssetsRecoveryUrl = null;
+        if (selectedAssetsIntent) {
+          const normalizedSelection = normalizeSelectedAssetIds(body.selectedAssetIds);
+          let selectedAssetIds = [];
+
+          if (selectedAssetsFlow && normalizedSelection.valid && !selectedAssetError) {
+            try {
+              selectedAssetIds = releaseService.validateAndNormalizeSelectedAssetIds(
+                body.projectId,
+                normalizedSelection.ids,
+              );
+            } catch (selectionErr) {
+              if (!(selectionErr instanceof ReleaseValidationError) && !(selectionErr instanceof AssetNotFoundError)) {
+                throw selectionErr;
+              }
+              selectedAssetsInvalid = true;
+            }
+          } else {
+            selectedAssetsInvalid = true;
+          }
+
+          const recoveryProjectId = parseStrictInt(body.projectId);
+          const recoveryProject = recoveryProjectId === null ? null : projectService.findById(recoveryProjectId);
+          selectedAssetsRecoveryUrl = recoveryProject ? `/projects/${recoveryProject.id}/assets` : null;
+          values = { ...body, selectedAssetIds };
         }
 
         renderReleaseCreateError(req, res, next, {
@@ -164,6 +285,10 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
           projectService,
           workflowQueryService,
           errors,
+          values,
+          selectedAssetsFlow: selectedAssetsIntent,
+          selectedAssetsInvalid,
+          selectedAssetsRecoveryUrl,
         });
         return;
       }
@@ -861,15 +986,22 @@ function renderReleaseCreateError(req, res, next, {
   projectService,
   workflowQueryService,
   errors,
+  values = req.body,
+  selectedAssetsFlow = false,
+  selectedAssetsInvalid = false,
+  selectedAssetsRecoveryUrl = null,
 }) {
   const releaseCreateForm = buildCreateReleaseFormModel({
     appName,
     projectService,
-    values: req.body,
+    values,
     errors,
+    selectedAssetsFlow,
+    selectedAssetsInvalid,
+    selectedAssetsRecoveryUrl,
   });
 
-  if (readReleaseCreateDialogHost(req.body)) {
+  if (selectedAssetsFlow || readReleaseCreateDialogHost(req.body)) {
     handleReleaseList(req, res, next, {
       appName,
       projectService,
@@ -1132,7 +1264,15 @@ function omitLegacyStatusField(value) {
   return Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'status'));
 }
 
-function buildCreateReleaseFormModel({ appName, projectService, values = {}, errors = {} }) {
+function buildCreateReleaseFormModel({
+  appName,
+  projectService,
+  values = {},
+  errors = {},
+  selectedAssetsFlow = false,
+  selectedAssetsInvalid = false,
+  selectedAssetsRecoveryUrl = null,
+}) {
   const formValues = buildNewReleaseFormValues(values);
   const context = buildReleaseFormProjectContext(formValues.projectId, projectService);
 
@@ -1145,6 +1285,9 @@ function buildCreateReleaseFormModel({ appName, projectService, values = {}, err
     selectedProjectId: context.selectedProjectId,
     action: 'Create',
     submitUrl: '/releases',
+    selectedAssetsFlow,
+    selectedAssetsInvalid,
+    selectedAssetsRecoveryUrl,
   };
 }
 

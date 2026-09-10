@@ -99,7 +99,7 @@ describe('release Social Preparation detail display', () => {
       const summary = row.match(/<div class="release-social-prep-summary"[\s\S]*?<\/div>/)?.[0];
       expect(html).not.toMatch(/PRIVATE_|openlocally:|creatorcrate-social:|\/social-prep\/activate|\/social-preparation\/activate/i);
       if (summary) {
-        expect(summary).toContain('<small>Social posts</small>');
+        expect(summary).not.toContain('<small>Social posts</small>');
         expect(summary).toContain('aria-label="Social posts"');
         expect(summary).not.toMatch(/Social targets|\(last recorded preparation\)/);
         expect(summary).not.toMatch(/<form\b|<button\b|<input\b|<a\b|data-dialog|data-social|\b(posted|published|submitted|live)\b|sent successfully|retry|reprepare|activate/i);
@@ -108,11 +108,14 @@ describe('release Social Preparation detail display', () => {
       expect(html).toContain('aria-label="Releases defaults"');
       expect(html).toContain('aria-label="Reset filters"');
       expect(html).toContain('aria-label="Release list pages"');
-      expect(html).toContain('class="table-scroll" tabindex="0" aria-label="Release list"');
+      expect(html).toContain('class="table-scroll releases-table-scroll" tabindex="0" aria-label="Release list"');
+      expect(html.match(/<thead>[\s\S]*?<\/thead>/)[0]).toContain('<th>Social Posts</th>');
       expect(html.match(/<thead>[\s\S]*?<\/thead>/)[0].match(/<th\b/g)).toHaveLength(7);
       expect(row.match(/<td\b/g)).toHaveLength(7);
       expect(row).toContain(`href="/releases/${releaseId}">Display release</a>`);
-      if (summary) expect(row.split('</td>')[0]).toContain(summary);
+      const cells = row.match(/<td\b[^>]*>[\s\S]*?<\/td>/g) || [];
+      expect(cells[0]).not.toMatch(/release-social-prep-summary|Social posts/);
+      if (summary) expect(cells[4]).toContain(summary);
       return { html, row, summary };
     }
 
@@ -126,6 +129,15 @@ describe('release Social Preparation detail display', () => {
         'class="status-badge status-badge--neutral">X · Prepared',
         'class="status-badge status-badge--neutral">Bluesky · Failed',
       ]);
+    });
+
+    it('keeps the default visible label in the standalone Project detail summary', async () => {
+      target('x', 'prepared');
+      const { text: html } = await agent.get(`/projects/${projectId}`).expect(200);
+      const summary = html.match(/<div class="release-social-prep-summary"[\s\S]*?<\/div>/)?.[0];
+      expect(summary).toContain('<small>Social posts</small>');
+      expect(summary).toContain('aria-label="Social posts"');
+      expect(summary).toContain('>X · Prepared</span>');
     });
 
     it.each([

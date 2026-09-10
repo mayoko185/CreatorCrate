@@ -1,28 +1,31 @@
 import { enhanceSettingsFetchSave } from './settings-fetch-save.js';
 import {
   beginProjectsDefaultsLiveRefresh,
+  beginReleasesDefaultsLiveRefresh,
   refreshProjectsLiveRegion,
+  refreshReleasesLiveRegion,
 } from './live-regions.js';
 
 const PROJECTS_DEFAULTS_FORM_SELECTOR = '#projects-defaults-form';
+const RELEASES_DEFAULTS_FORM_SELECTOR = '#releases-defaults-form';
 const refreshSessions = new WeakMap();
 
-function isProjectsDefaultsAutosaveForm(form) {
-  return form?.matches?.(PROJECTS_DEFAULTS_FORM_SELECTOR)
-    && form.hasAttribute?.('data-projects-defaults-autosave');
+function isDefaultsAutosaveForm(form, formSelector, markerAttribute) {
+  return form?.matches?.(formSelector)
+    && form.hasAttribute?.(markerAttribute);
 }
 
-function projectsDefaultsForms(scope) {
+function defaultsForms(scope, formSelector, markerAttribute) {
   if (!scope) return [];
   const forms = [];
-  if (isProjectsDefaultsAutosaveForm(scope)) forms.push(scope);
-  scope.querySelectorAll?.(PROJECTS_DEFAULTS_FORM_SELECTOR).forEach((form) => {
-    if (isProjectsDefaultsAutosaveForm(form)) forms.push(form);
+  if (isDefaultsAutosaveForm(scope, formSelector, markerAttribute)) forms.push(scope);
+  scope.querySelectorAll?.(formSelector).forEach((form) => {
+    if (isDefaultsAutosaveForm(form, formSelector, markerAttribute)) forms.push(form);
   });
   return forms;
 }
 
-function clearProjectsDefaultsValidation(form) {
+function clearDefaultsValidation(form) {
   const error = form.querySelector?.('[data-dialog-error]');
   if (error) error.hidden = true;
   const errorText = error?.querySelector?.('[data-dialog-error-text]');
@@ -38,23 +41,31 @@ function clearProjectsDefaultsValidation(form) {
   form.querySelectorAll?.('.field-error').forEach((field) => field.classList?.remove?.('field-error'));
 }
 
-function markProjectsDefaultsRefreshFailed(form) {
+function markDefaultsRefreshFailed(form, message) {
   const status = form.querySelector?.('[data-settings-fetch-save-status]');
   form.setAttribute?.('data-settings-fetch-save-state', 'saved-refresh-error');
   if (!status) return;
   status.setAttribute?.('role', 'status');
   status.setAttribute?.('aria-live', 'polite');
   status.setAttribute?.('aria-atomic', 'true');
-  status.textContent = 'Settings saved, but Projects could not refresh. Refresh the page to see the saved defaults.';
+  status.textContent = message;
 }
 
-export function enhanceProjectsDefaultsFetchSave(scope = globalThis.document, options = {}) {
-  const beginRefresh = options.beginRefresh || beginProjectsDefaultsLiveRefresh;
-  const refresh = options.refresh || refreshProjectsLiveRegion;
-  return projectsDefaultsForms(scope).reduce(
+export function enhancePageDefaultsFetchSave(scope = globalThis.document, options = {}) {
+  const {
+    formSelector,
+    markerAttribute,
+    beginRefresh,
+    refresh,
+    refreshFailureMessage,
+  } = options;
+  if (!formSelector || !markerAttribute || typeof beginRefresh !== 'function'
+    || typeof refresh !== 'function' || !refreshFailureMessage) return 0;
+
+  return defaultsForms(scope, formSelector, markerAttribute).reduce(
     (bound, form) => bound + enhanceSettingsFetchSave(form, {
       onStart: ({ form: currentForm }) => {
-        clearProjectsDefaultsValidation(currentForm);
+        clearDefaultsValidation(currentForm);
         if (!refreshSessions.has(currentForm)) {
           refreshSessions.set(currentForm, {
             authorityGeneration: beginRefresh(currentForm.ownerDocument),
@@ -71,11 +82,31 @@ export function enhanceProjectsDefaultsFetchSave(scope = globalThis.document, op
           currentForm.ownerDocument,
           response?.url,
           session?.authorityGeneration,
-          { onError: () => markProjectsDefaultsRefreshFailed(currentForm) },
+          { onError: () => markDefaultsRefreshFailed(currentForm, refreshFailureMessage) },
         );
-        if (outcome === 'unavailable') markProjectsDefaultsRefreshFailed(currentForm);
+        if (outcome === 'unavailable') markDefaultsRefreshFailed(currentForm, refreshFailureMessage);
       },
     }),
     0,
   );
+}
+
+export function enhanceProjectsDefaultsFetchSave(scope = globalThis.document, options = {}) {
+  return enhancePageDefaultsFetchSave(scope, {
+    formSelector: PROJECTS_DEFAULTS_FORM_SELECTOR,
+    markerAttribute: 'data-projects-defaults-autosave',
+    beginRefresh: options.beginRefresh || beginProjectsDefaultsLiveRefresh,
+    refresh: options.refresh || refreshProjectsLiveRegion,
+    refreshFailureMessage: 'Settings saved, but Projects could not refresh. Refresh the page to see the saved defaults.',
+  });
+}
+
+export function enhanceReleasesDefaultsFetchSave(scope = globalThis.document, options = {}) {
+  return enhancePageDefaultsFetchSave(scope, {
+    formSelector: RELEASES_DEFAULTS_FORM_SELECTOR,
+    markerAttribute: 'data-releases-defaults-autosave',
+    beginRefresh: options.beginRefresh || beginReleasesDefaultsLiveRefresh,
+    refresh: options.refresh || refreshReleasesLiveRegion,
+    refreshFailureMessage: 'Settings saved, but Releases could not refresh. Refresh the page to see the saved defaults.',
+  });
 }

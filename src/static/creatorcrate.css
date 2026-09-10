@@ -2396,14 +2396,12 @@
       }
       .asset-viewer-filters--project-assets,
       .asset-viewer-filters--asset-viewer,
-      .asset-viewer-filters--releases,
       .logs-filter-form {
         border: 1px solid var(--border);
         border-radius: var(--radius-lg);
       }
       .asset-viewer-filters--project-assets,
-      .asset-viewer-filters--asset-viewer,
-      .asset-viewer-filters--releases {
+      .asset-viewer-filters--asset-viewer {
         padding-inline-end: calc(var(--space-lg) + 1.6rem);
       }
       .asset-viewer-filters--project-assets > .asset-viewer-defaults-link,
@@ -4509,6 +4507,18 @@
         gap: var(--space-sm);
       }
 
+      .project-form-dialog .project-form [data-release-dialog-compact-section] {
+        gap: 0;
+        padding: 0;
+      }
+      .project-form-dialog .project-form [data-release-dialog-compact-section] > h3 {
+        margin-inline: 0;
+      }
+      .project-form-dialog [data-release-dialog-compact-section] > .project-edit-dialog-section-body {
+        gap: var(--space-md);
+        padding: var(--space-sm) var(--space-md) var(--space-md);
+      }
+
 
       /* Notes Book/Page dialog sections intentionally override later generic project-form spacing. */
       .project-form-dialog .project-form [data-notes-dialog-compact-section] {
@@ -4865,6 +4875,23 @@
         justify-content: center;
         margin: var(--space-lg);
       }
+      #releases-filter-dialog .page-defaults-grid > .asset-viewer-filter-field {
+        width: 100%;
+        max-width: none;
+      }
+      #releases-filter-dialog .page-defaults-grid > .releases-filter-field--search,
+      #releases-filter-dialog .page-defaults-grid > .releases-filter-field--project {
+        grid-column: 1 / -1;
+      }
+      #releases-filter-dialog .asset-filter-multiselect--sized,
+      #releases-filter-dialog .asset-filter-multiselect--sized summary {
+        width: 100%;
+      }
+      #releases-filter-dialog .releases-filter-reset {
+        display: flex;
+        justify-content: center;
+        margin: var(--space-lg);
+      }
       #project-assets-defaults-dialog .page-defaults-scope {
         min-width: 0;
         margin: 0;
@@ -4983,6 +5010,10 @@
           margin-right: var(--space-md);
         }
         #projects-filter-dialog .projects-filter-reset {
+          margin-right: var(--space-md);
+          margin-left: var(--space-md);
+        }
+        #releases-filter-dialog .releases-filter-reset {
           margin-right: var(--space-md);
           margin-left: var(--space-md);
         }
@@ -6613,38 +6644,50 @@
         color: var(--muted);
         font-size: 0.8125rem;
       }
-      .logs-table-scroll {
+      .logs-table-scroll,
+      .releases-table-scroll {
         margin: var(--space-sm) 0;
         scrollbar-color: var(--border-strong) transparent;
         scrollbar-width: thin;
       }
-      .logs-table-scroll::-webkit-scrollbar {
+      .logs-table-scroll::-webkit-scrollbar,
+      .releases-table-scroll::-webkit-scrollbar {
         height: 0.5rem;
       }
-      .logs-table-scroll::-webkit-scrollbar-track {
+      .logs-table-scroll::-webkit-scrollbar-track,
+      .releases-table-scroll::-webkit-scrollbar-track {
         background: transparent;
       }
-      .logs-table-scroll::-webkit-scrollbar-thumb {
+      .logs-table-scroll::-webkit-scrollbar-thumb,
+      .releases-table-scroll::-webkit-scrollbar-thumb {
         border: 2px solid var(--surface-card);
         border-radius: 999px;
         background: var(--border-strong);
       }
-      .logs-table-scroll::-webkit-scrollbar-thumb:hover {
+      .logs-table-scroll::-webkit-scrollbar-thumb:hover,
+      .releases-table-scroll::-webkit-scrollbar-thumb:hover {
         background: var(--muted);
       }
       .logs-table {
         min-width: 72rem;
+      }
+      .logs-table,
+      .releases-table {
         margin: 0;
       }
       .logs-table th,
-      .logs-table td {
+      .logs-table td,
+      .releases-table th,
+      .releases-table td {
         padding: var(--space-xs) var(--space-sm);
       }
-      .logs-table td {
+      .logs-table td,
+      .releases-table td {
         font-size: 0.8125rem;
         line-height: 1.4;
       }
-      .logs-table th {
+      .logs-table th,
+      .releases-table th {
         font-size: 0.75rem;
       }
       .backups-table-scroll {

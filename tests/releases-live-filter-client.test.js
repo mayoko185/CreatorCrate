@@ -2,8 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
+  beginReleasesDefaultsLiveRefresh,
   enhanceReleaseAssetsLiveFiltering,
   enhanceReleasesLiveFiltering,
+  refreshReleasesLiveRegion,
 } from '../src/static/creatorcrate.js';
 
 // The live engine serializes the whole filter form, so preserving the active page
@@ -31,6 +33,7 @@ function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } =
     nodeType: 1,
     ownerDocument: null,
     parentNode: null,
+    parentElement: null,
     children,
     listeners,
     dataset: {},
@@ -41,6 +44,8 @@ function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } =
     selectionStart: null,
     selectionEnd: null,
     textContent: '',
+    open: false,
+    hidden: false,
     setAttribute(name, rawValue) {
       const stringValue = String(rawValue);
       attributes.set(name, stringValue);
@@ -50,6 +55,7 @@ function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } =
       if (name === 'value') this.value = stringValue;
       if (name === 'action') this.action = stringValue;
       if (name === 'method') this.method = stringValue;
+      if (name === 'checked') this.checked = true;
       if (name === 'hidden') this.hidden = true;
       if (name.startsWith('data-')) {
         this.dataset[name.slice(5).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())] = stringValue;
@@ -60,6 +66,7 @@ function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } =
     removeAttribute(name) {
       attributes.delete(name);
       if (name === 'hidden') this.hidden = false;
+      if (name === 'checked') this.checked = false;
       if (name.startsWith('data-')) {
         delete this.dataset[name.slice(5).replace(/-([a-z])/g, (_, letter) => letter.toUpperCase())];
       }
@@ -79,6 +86,10 @@ function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } =
           return false;
         }
         if (candidate.startsWith('#')) return this.id === candidate.slice(1);
+        const classes = [...candidate.matchAll(/\.([\w-]+)/g)].map(([, name]) => name);
+        if (!classes.every((name) => String(this.getAttribute('class') || '').split(/\s+/).includes(name))) {
+          return false;
+        }
         const tag = candidate.match(/^[a-z][\w-]*/i)?.[0];
         if (tag && this.tagName !== tag.toUpperCase()) return false;
         return [...candidate.matchAll(/\[([^\]=]+)(?:="([^"]*)")?\]/g)].every(([, name, expected]) => {
@@ -87,9 +98,18 @@ function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } =
         });
       });
     },
+    closest(selector) {
+      let current = this;
+      while (current) {
+        if (current.matches?.(selector)) return current;
+        current = current.parentNode;
+      }
+      return null;
+    },
     appendChild(child) {
       children.push(child);
       child.parentNode = this;
+      child.parentElement = this;
       const document = this.ownerDocument || (this.nodeType === 9 ? this : null);
       const adopt = (current) => {
         current.ownerDocument = document;
@@ -98,14 +118,27 @@ function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } =
       adopt(child);
       return child;
     },
+    replaceChildren(...nextChildren) {
+      children.forEach((child) => {
+        child.parentNode = null;
+        child.parentElement = null;
+      });
+      children.length = 0;
+      nextChildren.forEach((child) => this.appendChild(child));
+    },
     replaceWith(next) {
       const parent = this.parentNode;
       const index = parent?.children?.indexOf(this) ?? -1;
       if (index < 0) return;
       parent.children.splice(index, 1, next);
       next.parentNode = parent;
-      next.ownerDocument = parent.ownerDocument || parent;
-      next.children.forEach((child) => { child.ownerDocument = next.ownerDocument; });
+      next.parentElement = parent;
+      const document = parent.ownerDocument || parent;
+      const adopt = (current) => {
+        current.ownerDocument = document;
+        current.children.forEach(adopt);
+      };
+      adopt(next);
     },
     addEventListener(type, handler) { listeners.push({ type, handler }); },
     dispatch(type, props = {}) {
@@ -117,8 +150,12 @@ function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } =
         preventDefault() { this.defaultPrevented = true; },
         ...props,
       };
-      listeners.filter((listener) => listener.type === type)
-        .forEach((listener) => listener.handler(event));
+      let current = this;
+      while (current) {
+        current.listeners?.filter((listener) => listener.type === type)
+          .forEach((listener) => listener.handler(event));
+        current = current.parentNode;
+      }
       return event;
     },
     focus() {
@@ -177,9 +214,9 @@ function makeSelect(attrs, options, selectedValue) {
 function makeReleaseDropdown(form, name, value, { searchable = false } = {}) {
   const dropdown = makeNode({
     tagName: 'details',
-    attrs: { 'data-cc-dropdown': '', 'data-cc-dropdown-mode': 'single' },
+    attrs: { id: `release-${name}-filter`, 'data-cc-dropdown': '', 'data-cc-dropdown-mode': 'single' },
   });
-  const summary = makeNode({ tagName: 'summary' });
+  const summary = makeNode({ tagName: 'summary', attrs: { 'aria-controls': `release-${name}-options` } });
   const option = makeNode({
     tagName: 'input',
     attrs: { name, type: 'radio', value },
@@ -193,7 +230,7 @@ function makeReleaseDropdown(form, name, value, { searchable = false } = {}) {
   if (searchable) {
     search = makeNode({
       tagName: 'input',
-      attrs: { type: 'search', 'data-cc-dropdown-search': '' },
+      attrs: { id: `release-${name}-filter-search`, type: 'search', 'data-cc-dropdown-search': '' },
     });
     dropdown.setAttribute('data-cc-dropdown-searchable', '');
     dropdown.appendChild(search);
@@ -209,6 +246,7 @@ function makeForm(action = '/releases', {
   sortValue = 'planned',
   orderValue = 'asc',
   includeArchived = false,
+  pageSize = '25',
 } = {}) {
   const form = makeNode({
     tagName: 'form',
@@ -224,6 +262,13 @@ function makeForm(action = '/releases', {
     attrs: { name: 'page', type: 'hidden' },
     value: '4',
   });
+  if (String(pageSize) !== '25') {
+    form.appendChild(makeNode({
+      tagName: 'input',
+      attrs: { name: 'pageSize', type: 'hidden' },
+      value: String(pageSize),
+    }));
+  }
   const archived = makeNode({
     tagName: 'input',
     attrs: { name: 'includeArchived', type: 'checkbox', value: '1' },
@@ -257,16 +302,25 @@ function makePage(action = '/releases', options = {}) {
   const region = makeNode({ attrs: { 'data-releases-live-region': '' } });
   const status = makeNode({ attrs: { 'data-releases-live-status': '' } });
   const formParts = makeForm(action, options);
-  const reset = makeNode({ tagName: 'a', attrs: { href: action, 'data-releases-reset': '' } });
+  const dialog = makeNode({ tagName: 'dialog', attrs: { id: 'releases-filter-dialog', 'data-app-dialog': '' } });
+  dialog.open = options.dialogOpen === true;
+  const resetForm = makeNode({
+    tagName: 'form',
+    attrs: { action: options.resetUrl || action, method: 'get', class: 'releases-filter-reset' },
+  });
+  const reset = makeNode({ tagName: 'button', attrs: { type: 'submit', 'data-releases-reset': '' } });
+  reset.form = resetForm;
   const pagination = makeNode({ tagName: 'nav', attrs: { class: 'pagination' } });
   const next = makeNode({ tagName: 'a', attrs: { href: action + '?page=2' } });
   pagination.appendChild(next);
   region.appendChild(status);
-  region.appendChild(formParts.form);
-  region.appendChild(reset);
   region.appendChild(pagination);
   document.appendChild(region);
-  return { document, region, status, reset, pagination, next, ...formParts };
+  dialog.appendChild(formParts.form);
+  resetForm.appendChild(reset);
+  dialog.appendChild(resetForm);
+  document.appendChild(dialog);
+  return { document, region, status, dialog, resetForm, reset, pagination, next, ...formParts };
 }
 
 function makeReleaseAssetsPage({
@@ -429,6 +483,80 @@ async function flush() {
 describe('Releases live filtering enhancement', () => {
   beforeEach(() => { vi.useRealTimers(); });
   afterEach(() => { vi.useRealTimers(); });
+
+  it('refreshes Releases from the defaults redirect through the live engine and reconciles the external filter', async () => {
+    const initial = makePage('/releases', { dialogOpen: true, sortValue: 'planned', orderValue: 'asc' });
+    const next = makePage('/releases', { sortValue: 'title', orderValue: 'desc' });
+    const pages = new Map([['defaults-result', next.document]]);
+    const windowObject = makeWindow(initial.document, pages);
+    windowObject.location.assign = vi.fn();
+    const successUrl = 'http://creatorcrate.test/releases?sort=title&order=desc&notice=releases_defaults_saved';
+    const canonicalUrl = 'http://creatorcrate.test/releases?sort=title&order=desc';
+    windowObject.fetch.mockResolvedValue(responseFor('defaults-result', canonicalUrl));
+    enhanceReleasesLiveFiltering(initial.document);
+
+    const authority = beginReleasesDefaultsLiveRefresh(initial.document);
+    expect(refreshReleasesLiveRegion(initial.document, successUrl, authority)).toBe('started');
+    await flush();
+
+    expect(windowObject.fetch).toHaveBeenCalledWith(
+      successUrl,
+      expect.objectContaining({ method: 'GET', headers: { Accept: 'text/html' } }),
+    );
+    expect(windowObject.location.assign).not.toHaveBeenCalled();
+    expect(windowObject.history.pushes).toHaveLength(0);
+    expect(windowObject.history.replaces).toEqual([expect.objectContaining({ url: canonicalUrl })]);
+    expect(initial.document.querySelector('[data-releases-live-region]')).toBe(next.region);
+    expect(initial.document.querySelector('[data-releases-filter]')).toBe(initial.form);
+    expect(initial.form.contains(next.sort)).toBe(true);
+    expect(initial.form.contains(next.order)).toBe(true);
+    expect(next.sort.value).toBe('title');
+    expect(next.order.value).toBe('desc');
+    expect(initial.dialog.open).toBe(true);
+  });
+
+  it('keeps newer Releases filter intent authoritative over an older defaults completion', () => {
+    const initial = makePage();
+    const windowObject = makeWindow(initial.document);
+    windowObject.fetch.mockImplementation(() => new Promise(() => {}));
+    enhanceReleasesLiveFiltering(initial.document);
+    const authority = beginReleasesDefaultsLiveRefresh(initial.document);
+
+    initial.schedule.value = 'today';
+    initial.form.dispatch('change', { target: initial.schedule });
+
+    expect(refreshReleasesLiveRegion(
+      initial.document,
+      'http://creatorcrate.test/releases?sort=title&order=desc&notice=releases_defaults_saved',
+      authority,
+    )).toBe('superseded');
+    expect(windowObject.fetch).toHaveBeenCalledOnce();
+  });
+
+  it('announces a defaults refresh failure without falling back to navigation', async () => {
+    const initial = makePage();
+    const windowObject = makeWindow(initial.document);
+    windowObject.location.assign = vi.fn();
+    windowObject.fetch.mockRejectedValue(new Error('offline'));
+    const onError = vi.fn();
+    enhanceReleasesLiveFiltering(initial.document);
+    const authority = beginReleasesDefaultsLiveRefresh(initial.document);
+
+    expect(refreshReleasesLiveRegion(
+      initial.document,
+      'http://creatorcrate.test/releases?sort=title&order=desc&notice=releases_defaults_saved',
+      authority,
+      { onError },
+    )).toBe('started');
+    await flush();
+
+    expect(onError).toHaveBeenCalledOnce();
+    expect(windowObject.location.assign).not.toHaveBeenCalled();
+    expect(initial.status.textContent).toBe(
+      'Defaults were saved, but Releases could not refresh. Refresh the page to see the saved defaults.',
+    );
+    expect(initial.region.getAttribute('data-releases-live-state')).toBe('error');
+  });
 
   it('filters Release Assets immediately, preserves sibling state, and rebinds once per replacement', async () => {
     vi.useFakeTimers();
@@ -640,6 +768,28 @@ describe('Releases live filtering enhancement', () => {
     expect(initial.document.querySelector('[data-releases-live-region]')).toBe(cleared.region);
   });
 
+  it.each([
+    ['Project', 'project'],
+    ['Schedule', 'schedule'],
+    ['Sort', 'sort'],
+    ['Order', 'order'],
+    ['Archived', 'archived'],
+  ])('keeps immediate live filtering for the external %s control', async (_label, controlKey) => {
+    const initial = makePage();
+    const next = makePage();
+    const pages = new Map([['next', next.document]]);
+    const windowObject = makeWindow(initial.document, pages);
+    windowObject.fetch.mockResolvedValue(responseFor('next', 'http://creatorcrate.test/releases'));
+    enhanceReleasesLiveFiltering(initial.document);
+
+    if (controlKey === 'archived') initial.archived.checked = true;
+    initial.form.dispatch('change', { target: initial[controlKey] });
+    await flush();
+
+    expect(windowObject.fetch).toHaveBeenCalledTimes(1);
+    expect(initial.document.querySelector('[data-releases-live-region]')).toBe(next.region);
+  });
+
   it('serializes direct Archived toggles and preserves the checked state across replacement', async () => {
     const initial = makePage();
     const checked = makePage('/releases', { includeArchived: true });
@@ -665,7 +815,7 @@ describe('Releases live filtering enhancement', () => {
     expect(checked.archived.checked).toBe(true);
 
     checked.archived.checked = false;
-    checked.form.dispatch('change', { target: checked.archived });
+    initial.form.dispatch('change', { target: checked.archived });
     await flush();
 
     requested = new URL(windowObject.fetch.mock.calls[1][0]);
@@ -716,11 +866,36 @@ describe('Releases live filtering enhancement', () => {
       });
   });
 
-  it('uses the shared engine for Release Management filters, pagination, and reset rebinding', async () => {
-    const initial = makePage('/release-management');
-    const filtered = makePage('/release-management');
-    const paged = makePage('/release-management');
-    const reset = makePage('/release-management');
+  it('binds the external Release Management dialog once and reconciles filters, pagination, and URL Reset', async () => {
+    const initial = makePage('/release-management', {
+      dialogOpen: true,
+      pageSize: '100',
+      resetUrl: '/release-management?pageSize=100',
+    });
+    const filtered = makePage('/release-management', {
+      dialogOpen: false,
+      projectValue: '8',
+      scheduleValue: 'today',
+      sortValue: 'title',
+      orderValue: 'desc',
+      includeArchived: true,
+      pageSize: '100',
+    });
+    const paged = makePage('/release-management', {
+      projectValue: '8',
+      scheduleValue: 'today',
+      sortValue: 'title',
+      orderValue: 'desc',
+      includeArchived: true,
+      pageSize: '100',
+    });
+    const reset = makePage('/release-management', {
+      projectValue: '',
+      scheduleValue: '',
+      sortValue: 'updated',
+      orderValue: 'asc',
+      pageSize: '100',
+    });
     const pages = new Map([
       ['filtered', filtered.document],
       ['paged', paged.document],
@@ -730,16 +905,25 @@ describe('Releases live filtering enhancement', () => {
     windowObject.location.href = 'http://creatorcrate.test/release-management?page=4';
     windowObject.location.pathname = '/release-management';
     windowObject.fetch
-      .mockResolvedValueOnce(responseFor('filtered', 'http://creatorcrate.test/release-management?project=7&schedule=today&includeArchived=1&sort=title&order=asc'))
+      .mockResolvedValueOnce(responseFor('filtered', 'http://creatorcrate.test/release-management?project=8&schedule=today&includeArchived=1&sort=title&order=desc&pageSize=100'))
       .mockResolvedValueOnce(responseFor('paged', 'http://creatorcrate.test/release-management?page=2'))
-      .mockResolvedValueOnce(responseFor('reset', 'http://creatorcrate.test/release-management'));
+      .mockResolvedValueOnce(responseFor('reset', 'http://creatorcrate.test/release-management?sort=updated&order=asc&pageSize=100'));
 
     expect(enhanceReleasesLiveFiltering(initial.document)).toBe(1);
+    expect(enhanceReleasesLiveFiltering(initial.document)).toBe(1);
+    expect(initial.form.parentNode).toBe(initial.dialog);
+    expect(initial.region.contains(initial.form)).toBe(false);
+    expect(initial.form.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+    expect(initial.reset.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
     initial.archived.checked = true;
     initial.schedule.value = 'today';
     initial.sort.value = 'title';
-    initial.order.value = 'asc';
-    initial.form.dispatch('change', { target: initial.schedule });
+    initial.order.value = 'desc';
+    initial.projectDropdown.open = true;
+    initial.projectSearch.selectionStart = 0;
+    initial.projectSearch.selectionEnd = 0;
+    initial.document.activeElement = initial.projectSearch;
+    initial.form.dispatch('change', { target: initial.archived });
     await flush();
 
     let requested = new URL(windowObject.fetch.mock.calls[0][0]);
@@ -748,9 +932,17 @@ describe('Releases live filtering enhancement', () => {
     expect(requested.searchParams.get('schedule')).toBe('today');
     expect(requested.searchParams.get('includeArchived')).toBe('1');
     expect(requested.searchParams.get('sort')).toBe('title');
-    expect(requested.searchParams.get('order')).toBe('asc');
+    expect(requested.searchParams.get('order')).toBe('desc');
+    expect(requested.searchParams.get('pageSize')).toBe('100');
     expect(requested.searchParams.has('page')).toBe(false);
     expect(initial.document.querySelector('[data-releases-live-region]')).toBe(filtered.region);
+    expect(initial.document.querySelector('[data-releases-filter]')).toBe(initial.form);
+    expect(initial.dialog.open).toBe(true);
+    expect(initial.form.contains(filtered.project)).toBe(true);
+    expect(initial.form.contains(filtered.schedule)).toBe(true);
+    expect(filtered.projectDropdown.open).toBe(true);
+    expect(initial.document.activeElement).toBe(filtered.projectSearch);
+    expect(initial.form.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
 
     const pageEvent = filtered.next.dispatch('click');
     await flush();
@@ -758,22 +950,36 @@ describe('Releases live filtering enhancement', () => {
     expect(windowObject.fetch.mock.calls[1][0]).toBe(new URL(filtered.next.getAttribute('href'), windowObject.location.href).href);
     expect(initial.document.querySelector('[data-releases-live-region]')).toBe(paged.region);
 
-    const resetEvent = paged.reset.dispatch('click');
+    const resetEvent = initial.reset.dispatch('click');
     await flush();
     expect(resetEvent.defaultPrevented).toBe(true);
-    expect(windowObject.fetch.mock.calls[2][0]).toBe(new URL(paged.reset.getAttribute('href'), windowObject.location.href).href);
+    expect(windowObject.fetch.mock.calls[2][0]).toBe('http://creatorcrate.test/release-management?pageSize=100');
     expect(initial.document.querySelector('[data-releases-live-region]')).toBe(reset.region);
-    expect(reset.form.listeners).toHaveLength(2);
+    expect(initial.form.contains(reset.sort)).toBe(true);
+    expect(reset.sort.value).toBe('updated');
+    expect(reset.order.value).toBe('asc');
+    expect(initial.form.querySelector('input[name="pageSize"]')?.value).toBe('100');
+    expect(initial.dialog.open).toBe(true);
+    expect(initial.form.listeners).toHaveLength(2);
     expect(reset.next.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
+    expect(initial.reset.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
+    expect(initial.form.submit).not.toHaveBeenCalled();
+    expect(initial.resetForm.submit).toBeUndefined();
     expect(windowObject.history.pushes).toHaveLength(3);
   });
 
-  it('suppresses stale responses, handles Back/Forward, and falls back on failure', async () => {
-    const initial = makePage();
-    const first = makePage();
-    const second = makePage();
-    const restored = makePage();
-    const pages = new Map([['first', first.document], ['second', second.document], ['restored', restored.document]]);
+  it('suppresses stale responses, reconciles Back/Forward dialog state, and falls back on failure', async () => {
+    const initial = makePage('/releases', { dialogOpen: true });
+    const first = makePage('/releases', { scheduleValue: 'today' });
+    const second = makePage('/releases', { scheduleValue: 'upcoming', sortValue: 'title' });
+    const restoredBack = makePage('/releases', { scheduleValue: 'today', sortValue: 'planned' });
+    const restoredForward = makePage('/releases', { scheduleValue: 'upcoming', sortValue: 'title' });
+    const pages = new Map([
+      ['first', first.document],
+      ['second', second.document],
+      ['restored-back', restoredBack.document],
+      ['restored-forward', restoredForward.document],
+    ]);
     const windowObject = makeWindow(initial.document, pages);
     const requests = [];
     windowObject.fetch.mockImplementation((url) => new Promise((resolve) => requests.push({ url, resolve })));
@@ -788,13 +994,31 @@ describe('Releases live filtering enhancement', () => {
     requests[0].resolve(responseFor('first', 'http://creatorcrate.test/releases?schedule=today'));
     await flush();
     expect(initial.document.querySelector('[data-releases-live-region]')).toBe(second.region);
+    expect(initial.form.contains(second.schedule)).toBe(true);
+    expect(second.schedule.value).toBe('upcoming');
+    expect(initial.dialog.open).toBe(true);
 
     windowObject.location.href = 'http://creatorcrate.test/releases?schedule=today';
     windowObject.location.pathname = '/releases';
-    windowObject.fetch.mockResolvedValueOnce(responseFor('restored', windowObject.location.href));
+    windowObject.fetch.mockResolvedValueOnce(responseFor('restored-back', windowObject.location.href));
     windowObject.dispatch('popstate');
     await flush();
-    expect(initial.document.querySelector('[data-releases-live-region]')).toBe(restored.region);
+    expect(initial.document.querySelector('[data-releases-live-region]')).toBe(restoredBack.region);
+    expect(initial.form.contains(restoredBack.schedule)).toBe(true);
+    expect(restoredBack.schedule.value).toBe('today');
+    expect(restoredBack.sort.value).toBe('planned');
+    expect(initial.dialog.open).toBe(true);
+
+    windowObject.location.href = 'http://creatorcrate.test/releases?schedule=upcoming&sort=title';
+    windowObject.location.pathname = '/releases';
+    windowObject.fetch.mockResolvedValueOnce(responseFor('restored-forward', windowObject.location.href));
+    windowObject.dispatch('popstate');
+    await flush();
+    expect(initial.document.querySelector('[data-releases-live-region]')).toBe(restoredForward.region);
+    expect(initial.form.contains(restoredForward.schedule)).toBe(true);
+    expect(restoredForward.schedule.value).toBe('upcoming');
+    expect(restoredForward.sort.value).toBe('title');
+    expect(initial.dialog.open).toBe(true);
     expect(windowObject.history.pushes).toHaveLength(1);
 
     const failed = makePage();
