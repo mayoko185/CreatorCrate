@@ -1,14 +1,10 @@
 <p align="center">
-  <img src="src/static/logo.svg" width="96" alt="CreatorCrate logo">
+  <img src="src/static/logo.png" width="96" alt="CreatorCrate logo">
 </p>
 
 # CreatorCrate
 
 CreatorCrate is a self-hosted workspace for one creator to organize art projects, their files, and the releases built from them. It keeps project media on your own filesystem, well suited to a server that also exposes those files through SMB, while CreatorCrate stores searchable metadata and workflow state in SQLite.
-
-<p align="center">
-  <img src="src/static/creatorcrate-overview.svg" alt="CreatorCrate project, asset, release, and calendar workflow" width="100%">
-</p>
 
 ## What it does
 

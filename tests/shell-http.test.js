@@ -49,7 +49,7 @@ function countH1(html) {
   return (html.match(/<h1[\s>]/g) || []).length;
 }
 
-/** Count decorative icons rendered in the shell (brand svg has no aria-hidden). */
+/** Count decorative icons rendered in the shell (the brand image has no aria-hidden). */
 function countNavIcons(html) {
   return (html.match(/aria-hidden="true"/g) || []).length;
 }
@@ -123,6 +123,19 @@ describe('application shell — navigation model', () => {
       const res = await agent.get('/').expect(200);
       expect(countNavIcons(res.text)).toBe(7);
       expect(res.text).toContain('aria-hidden="true"');
+    });
+
+    it('uses the canonical PNG branding in both navs and the favicon', async () => {
+      const page = await agent.get('/').expect(200);
+      expect(page.text).toContain('<img src="/logo.png" alt="" class="app-sidebar-logo">');
+      expect(page.text).toContain('<img src="/logo.png" alt="" class="mobile-nav-logo">');
+      expect(page.text).toContain('<link rel="icon" type="image/png" href="/logo.png">');
+      expect(page.text).not.toContain('/logo.svg');
+
+      const logo = await agent.get('/logo.png').expect(200);
+      expect(logo.headers['content-type']).toMatch(/^image\/png(?:;|$)/);
+      expect(logo.body).toBeInstanceOf(Buffer);
+      expect(logo.body.length).toBeGreaterThan(0);
     });
   });
 

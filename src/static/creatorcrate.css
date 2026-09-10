@@ -149,6 +149,10 @@
         width: var(--shell-sidebar-expanded);
         box-shadow: var(--shadow-lg);
       }
+      html[data-shell-navigation-continuity="desktop"] .app-sidebar {
+        width: var(--shell-sidebar-expanded);
+        box-shadow: var(--shadow-lg);
+      }
 
       /* Brand mark — aligned to the header height so the rail top reads as a
          single bar with the header to its right. */
@@ -176,6 +180,10 @@
       }
       .app-sidebar:hover .app-sidebar-brand,
       .app-sidebar:focus-within .app-sidebar-brand {
+        opacity: 1;
+        width: auto;
+      }
+      html[data-shell-navigation-continuity="desktop"] .app-sidebar-brand {
         opacity: 1;
         width: auto;
       }
@@ -216,6 +224,12 @@
       .app-sidebar:focus-within .app-nav-item--has-children:focus-within .app-nav-children,
       .app-sidebar:hover .app-nav-item--active > .app-nav-children,
       .app-sidebar:focus-within .app-nav-item--active > .app-nav-children {
+        max-height: 20rem;
+        margin-top: var(--space-xs);
+        opacity: 1;
+        transform: translateX(0);
+      }
+      html[data-shell-navigation-submenu="settings"] .app-nav-link[data-nav-key="settings"] + .app-nav-children {
         max-height: 20rem;
         margin-top: var(--space-xs);
         opacity: 1;
@@ -303,6 +317,10 @@
       }
       .app-sidebar:hover .app-nav-label,
       .app-sidebar:focus-within .app-nav-label {
+        opacity: 1;
+        width: auto;
+      }
+      html[data-shell-navigation-continuity="desktop"] .app-nav-label {
         opacity: 1;
         width: auto;
       }
@@ -7560,7 +7578,7 @@
         white-space: nowrap;
         font-size: 0.9375rem;
         color: var(--muted);
-        text-align: right;
+        text-align: left;
       }
       /* Open state: the brand mark takes over the section title's spacer
          role (flex: 1 1 auto) so the toggle stays pinned to the right edge

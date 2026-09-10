@@ -6,6 +6,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}CreatorCrate{% if hasPageHeading %} — {{ currentPageHeading }}{% endif %}{% endblock %}</title>
+    <script src="/shell-navigation-continuity.js"></script>
     {% set viteEntryAssets = {} %}
     {% if assetMode == 'production' %}
       {% set viteEntryAssets = viteAssets.entry('client/main.js') %}
@@ -19,7 +20,7 @@
       <link rel="stylesheet" href="/creatorcrate.css">
     {% endif %}
     {% block page_assets %}{% endblock %}
-    <link rel="icon" type="image/svg+xml" href="/logo.svg">
+    <link rel="icon" type="image/png" href="/logo.png">
     {% if assetMode == 'production' %}
       <script type="module" src="{{ viteEntryAssets.js }}"></script>
     {% elif assetMode == 'development' %}
@@ -37,7 +38,7 @@
       {% if shellVisible %}
       <aside class="app-sidebar">
         <div class="app-sidebar-mark">
-          <img src="/logo.svg" alt="" class="app-sidebar-logo">
+          <img src="/logo.png" alt="" class="app-sidebar-logo">
           <span class="app-sidebar-brand">{{ shell.appName or appName }}</span>
         </div>
         {% if shell %}
@@ -75,7 +76,7 @@
 
       <details class="mobile-nav">
         <summary class="mobile-nav-summary">
-          <img src="/logo.svg" alt="" class="mobile-nav-logo">
+          <img src="/logo.png" alt="" class="mobile-nav-logo">
           <span class="mobile-nav-brand">{{ shell.appName or appName }}</span>
           <span class="mobile-nav-section">{{ currentPageHeading }}</span>
           <span class="mobile-nav-toggle">Menu</span>

@@ -424,12 +424,13 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
       );
     });
 
-    it('no <script> tag targets the mobile navigation', async () => {
+    it('the shell exposes only the navigation-continuity and asset-entry scripts', async () => {
       const res = await agent.get('/').expect(200);
       const scripts = res.text.match(/<script[^>]*>/g) || [];
-      // The only script is the asset-preview enhancer — no nav script.
-      expect(scripts).toHaveLength(1);
-      expect(scripts[0]).toContain('/creatorcrate.js');
+      expect(scripts).toEqual([
+        '<script src="/shell-navigation-continuity.js">',
+        '<script type="module" src="/creatorcrate.js">',
+      ]);
     });
 
     it('the open state uses the native [open] attribute selector', async () => {
@@ -467,6 +468,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
       expect(sectionRule[0]).toMatch(/min-width:\s*0/);
       expect(sectionRule[0]).toMatch(/overflow:\s*hidden/);
       expect(sectionRule[0]).toMatch(/text-overflow:\s*ellipsis/);
+      expect(sectionRule[0]).toMatch(/text-align:\s*left/);
     });
 
     it('the mobile breakpoint does not reserve the sidebar column', async () => {
