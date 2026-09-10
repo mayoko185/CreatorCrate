@@ -1331,6 +1331,7 @@ export function enhanceReleaseAssetsLiveFiltering(scope = globalThis.document) {
 
 const ASSET_LIBRARY_LIVE_REGION_SELECTOR = '[data-asset-library-live-region]';
 const ASSET_LIBRARY_FILTER_SELECTOR = '#asset-filters';
+const ASSET_LIBRARY_RESET_FORM_SELECTOR = '.asset-viewer-filter-reset';
 const ASSET_LIBRARY_LIVE_STATUS_SELECTOR = '[data-asset-library-live-status]';
 const ASSET_LIBRARY_LIVE_STATE_ATTRIBUTE = 'data-asset-library-live-state';
 const ASSET_LIBRARY_NSFW_FORM_SELECTOR = '[data-asset-library-nsfw-filter]';
@@ -1501,7 +1502,9 @@ function enhanceAssetLibraryLiveRegion(region) {
 const assetLibraryLiveEngine = createLiveRegionEngine({
   regionSelector: ASSET_LIBRARY_LIVE_REGION_SELECTOR,
   formSelector: ASSET_LIBRARY_FILTER_SELECTOR,
+  formScope: 'document',
   linkSelector: 'nav.view-switcher a, .pagination a, [data-asset-library-reset]',
+  linkScope: 'document',
   debounceMs: ASSET_LIBRARY_LIVE_DEBOUNCE_MS,
   defaultAction: '/assets',
   stateKey: '__creatorCrateAssetLibraryLiveFiltering',
@@ -1514,6 +1517,15 @@ const assetLibraryLiveEngine = createLiveRegionEngine({
   missingRegionMessage: 'Asset Viewer response did not contain the live region.',
   enhanceRegion: enhanceAssetLibraryLiveRegion,
   onResponseParsed(state, parsed) {
+    reconcileExternalFilterForm(state, parsed, ASSET_LIBRARY_FILTER_SELECTOR);
+
+    const currentResetForm = state.document?.querySelector?.(ASSET_LIBRARY_RESET_FORM_SELECTOR);
+    const nextResetForm = parsed?.querySelector?.(ASSET_LIBRARY_RESET_FORM_SELECTOR);
+    const nextResetAction = nextResetForm?.getAttribute?.('action');
+    if (currentResetForm && nextResetAction !== null && nextResetAction !== undefined) {
+      currentResetForm.setAttribute?.('action', nextResetAction);
+    }
+
     const nextSequence = parsed.querySelector?.(`${SLIDESHOW_SCAFFOLD_SELECTOR} ${SLIDESHOW_SEQUENCE_SELECTOR}`);
     const currentSequence = state.document.querySelector?.(
       `${SLIDESHOW_SCAFFOLD_SELECTOR} ${SLIDESHOW_SEQUENCE_SELECTOR}`,
@@ -1530,6 +1542,8 @@ const assetLibraryLiveEngine = createLiveRegionEngine({
     }
   },
   onCreate(state, region) {
+    state.assetViewerDefaultsRefreshGeneration = null;
+    state.assetViewerDefaultsRefreshError = null;
     state.libNsfwController = null;
     state.libNsfwGeneration = 0;
     state.libNsfwSubmitting = false;
@@ -1545,6 +1559,10 @@ const assetLibraryLiveEngine = createLiveRegionEngine({
     bindAssetLibraryNsfwForm(state, region);
   },
   onInvalidate(state) {
+    if (state.assetViewerDefaultsRefreshGeneration !== null) {
+      state.assetViewerDefaultsRefreshGeneration = null;
+      state.assetViewerDefaultsRefreshError = null;
+    }
     if (state.libNsfwPostPending) {
       state.libNsfwGeneration += 1;
       state.libNsfwController?.abort?.();
@@ -1575,6 +1593,10 @@ const assetLibraryLiveEngine = createLiveRegionEngine({
     updateAssetLibraryNsfwControls(nextRegion, renderedEnabled, true);
   },
   onLoadComplete(state, generation, region) {
+    if (state.assetViewerDefaultsRefreshGeneration === generation) {
+      state.assetViewerDefaultsRefreshGeneration = null;
+      state.assetViewerDefaultsRefreshError = null;
+    }
     if (state.libNsfwRefreshGeneration !== generation) return;
     state.libNsfwRefreshGeneration = null;
     state.libNsfwSubmitting = false;
@@ -1583,6 +1605,20 @@ const assetLibraryLiveEngine = createLiveRegionEngine({
     updateAssetLibraryNsfwControls(region, state.libNsfwEnabled);
   },
   onLoadError(state, generation) {
+    if (state.assetViewerDefaultsRefreshGeneration === generation) {
+      const notifyRefreshError = state.assetViewerDefaultsRefreshError;
+      state.assetViewerDefaultsRefreshGeneration = null;
+      state.assetViewerDefaultsRefreshError = null;
+      const region = assetLibraryLiveEngine.getRegion(state.document);
+      region?.removeAttribute?.('aria-busy');
+      assetLibraryLiveEngine.status(
+        region,
+        'Defaults were saved, but Asset Viewer could not refresh. Refresh the page to see the saved defaults.',
+        'error',
+      );
+      notifyRefreshError?.();
+      return true;
+    }
     if (state.libNsfwRefreshGeneration !== generation) return false;
     state.libNsfwRefreshGeneration = null;
     state.libNsfwNeedsRefresh = false;
@@ -1601,5 +1637,54 @@ const assetLibraryLiveEngine = createLiveRegionEngine({
 
 export function enhanceAssetLibraryLiveFiltering(scope = globalThis.document) {
   return assetLibraryLiveEngine.enhance(scope);
+}
+
+export function beginAssetViewerDefaultsLiveRefresh(scope = globalThis.document) {
+  const document = liveRegionDocument(scope);
+  const region = assetLibraryLiveEngine.getRegion(document);
+  if (!document || !region) return null;
+
+  assetLibraryLiveEngine.enhance(document);
+  const state = document.__creatorCrateAssetLibraryLiveFiltering;
+  if (!state || !assetLibraryLiveEngine.capabilities(state.window)) return null;
+
+  if (state.assetViewerDefaultsRefreshGeneration !== null) {
+    assetLibraryLiveEngine.invalidate(state);
+  }
+  return state.generation;
+}
+
+export function refreshAssetViewerLiveRegion(
+  scope = globalThis.document,
+  destination,
+  authorityGeneration,
+  { onError = null } = {},
+) {
+  const document = liveRegionDocument(scope);
+  const region = assetLibraryLiveEngine.getRegion(document);
+  const state = document?.__creatorCrateAssetLibraryLiveFiltering;
+  if (!document || !region || !state || !assetLibraryLiveEngine.capabilities(state.window)) return 'unavailable';
+  if (state.generation !== authorityGeneration) return 'superseded';
+
+  let url;
+  try {
+    url = new URL(destination, state.window.location?.href || '/assets');
+  } catch {
+    return 'unavailable';
+  }
+  if (!assetLibraryLiveEngine.capabilities(state.window) || url.pathname !== '/assets') return 'unavailable';
+
+  if (state.timer) state.window.clearTimeout?.(state.timer);
+  state.timer = null;
+  assetLibraryLiveEngine.invalidate(state);
+  state.assetViewerDefaultsRefreshGeneration = state.generation;
+  state.assetViewerDefaultsRefreshError = typeof onError === 'function' ? onError : null;
+  assetLibraryLiveEngine.load(
+    state,
+    url,
+    'replace',
+    assetLibraryLiveEngine.getForm(assetLibraryLiveEngine.getRegion(document)),
+  );
+  return 'started';
 }
 

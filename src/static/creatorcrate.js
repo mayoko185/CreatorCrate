@@ -93,6 +93,7 @@ import {
 } from './client/slideshow.js';
 
 import {
+  beginAssetViewerDefaultsLiveRefresh,
   beginProjectsDefaultsLiveRefresh,
   beginReleasesDefaultsLiveRefresh,
   createLiveRegionEngine,
@@ -101,6 +102,7 @@ import {
   enhanceReleaseAssetsLiveFiltering,
   enhanceProjectsLiveFiltering,
   enhanceReleasesLiveFiltering,
+  refreshAssetViewerLiveRegion,
   refreshProjectsLiveRegion,
   refreshReleasesLiveRegion,
   refreshProjectAssetsLiveRegion,
@@ -170,6 +172,7 @@ export {
 };
 
 export {
+  beginAssetViewerDefaultsLiveRefresh,
   beginProjectsDefaultsLiveRefresh,
   beginReleasesDefaultsLiveRefresh,
   createLiveRegionEngine,
@@ -178,6 +181,7 @@ export {
   enhanceReleaseAssetsLiveFiltering,
   enhanceProjectsLiveFiltering,
   enhanceReleasesLiveFiltering,
+  refreshAssetViewerLiveRegion,
   refreshProjectsLiveRegion,
   refreshReleasesLiveRegion,
   refreshProjectAssetsLiveRegion,
@@ -218,6 +222,13 @@ if (typeof document !== 'undefined') {
     enhanceDropdowns(document);
     enhanceProjectsDefaultsFetchSave(document);
     enhanceReleasesDefaultsFetchSave(document);
+    enhancePageDefaultsFetchSave(document, {
+      formSelector: '#asset-viewer-defaults-form',
+      markerAttribute: 'data-asset-viewer-defaults-autosave',
+      beginRefresh: beginAssetViewerDefaultsLiveRefresh,
+      refresh: refreshAssetViewerLiveRegion,
+      refreshFailureMessage: 'Settings saved, but Asset Viewer could not refresh. Refresh the page to see the saved defaults.',
+    });
     enhanceProjectAssetsDefaultsScope(document);
     enhanceAppDialogs(document);
     enhanceNoteDialogUnsavedChanges(document);

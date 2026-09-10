@@ -212,6 +212,7 @@ describe('page defaults service', () => {
         key: 'page_defaults.asset_viewer.extension',
         values: ['all'],
         fallback: 'all',
+        multi: true,
       },
       category: {
         key: 'page_defaults.asset_viewer.category',
@@ -227,6 +228,7 @@ describe('page defaults service', () => {
         key: 'page_defaults.asset_viewer.tag',
         values: ['all'],
         fallback: 'all',
+        multi: true,
       },
     });
   });
@@ -911,6 +913,55 @@ describe('page defaults service', () => {
     expect(service.saveDefault('projectAssets', 'extension', 'all', optionCatalogues.extension)).toBe('all');
     expect(repository.getValue(extensionKey)).toBe('all');
     expect(service.resolve('projectAssets', 'extension', undefined, optionCatalogues.extension)).toBe('all');
+  });
+
+  it('applies definition-driven multi-value persistence to Asset Viewer Extension and Tag', () => {
+    const extensionKey = PAGE_DEFAULT_DEFINITIONS.assetViewer.extension.key;
+    const tagKey = PAGE_DEFAULT_DEFINITIONS.assetViewer.tag.key;
+    const optionCatalogues = {
+      extension: [
+        { value: 'all', label: 'All extensions' },
+        { value: 'png', label: '.png' },
+        { value: 'jpg', label: '.jpg' },
+      ],
+      tag: [
+        { value: 'all', label: 'All tags' },
+        { value: '42', label: 'Design' },
+        { value: '77', label: 'Reference' },
+      ],
+    };
+
+    expect(service.saveDefault('assetViewer', 'extension', ['png', 'jpg'], optionCatalogues.extension))
+      .toEqual(['png', 'jpg']);
+    expect(service.saveDefault('assetViewer', 'tag', ['42', '77'], optionCatalogues.tag))
+      .toEqual(['42', '77']);
+    expect(repository.getValue(extensionKey)).toBe('["png","jpg"]');
+    expect(repository.getValue(tagKey)).toBe('["42","77"]');
+    expect(service.resolvePageDefaults('assetViewer', {}, optionCatalogues)).toMatchObject({
+      extension: ['png', 'jpg'],
+      tag: ['42', '77'],
+    });
+
+    repository.setValue(extensionKey, 'png');
+    repository.setValue(tagKey, '42');
+    expect(service.resolvePageDefaults('assetViewer', {}, optionCatalogues)).toMatchObject({
+      extension: ['png'],
+      tag: ['42'],
+    });
+
+    expect(() => service.saveDefault(
+      'assetViewer', 'extension', ['png', 'unsupported'], optionCatalogues.extension,
+    )).toThrow(PageDefaultValidationError);
+    expect(() => service.saveDefault(
+      'assetViewer', 'tag', ['42', '99'], optionCatalogues.tag,
+    )).toThrow(PageDefaultValidationError);
+    expect(service.saveDefault('assetViewer', 'extension', 'all', optionCatalogues.extension)).toBe('all');
+    expect(repository.getValue(extensionKey)).toBe('all');
+
+    expect(service.saveDefault('projectAssets', 'extension', ['png', 'jpg'], optionCatalogues.extension))
+      .toEqual(['png', 'jpg']);
+    expect(repository.getValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.extension.key))
+      .toBe('["png","jpg"]');
   });
 
   it('keeps unrelated page-default options scalar', () => {

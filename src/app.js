@@ -656,6 +656,8 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.locals.assetWorkflowMetadataService = assetWorkflowMetadataService;
   const workflowQueryService = opts.workflowQueryService || createWorkflowQueryService({
     db,
+    projectOptionCatalogueService,
+    assetWorkflowMetadataService,
     projectPrimaryImageRepository,
     assetBrowserPreferenceService,
     tagRepository,

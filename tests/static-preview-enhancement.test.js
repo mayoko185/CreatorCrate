@@ -5979,16 +5979,17 @@ describe('asset grid size enhancement', () => {
       expect(enhanceAssetViewerInfoCards(scope)).toBe(1);
       expect(listeners.map(({ type }) => type)).toEqual([
         'pointerenter',
-        'focusin',
+        'pointermove',
         'pointerleave',
+        'focusin',
         'focusout',
       ]);
 
       listeners.find(({ type }) => type === 'focusin').handler();
 
       expect(attrs['data-positioned']).toBe('true');
-      expect(styleValues['--asset-info-left']).toBe('-188px');
-      expect(styleValues['--asset-info-top']).toBe('108px');
+      expect(styleValues['--asset-info-left']).toBe('712px');
+      expect(styleValues['--asset-info-top']).toBe('508px');
     } finally {
       if (previousWidth === undefined) delete globalThis.innerWidth;
       else globalThis.innerWidth = previousWidth;
@@ -6042,8 +6043,9 @@ describe('asset grid size enhancement', () => {
       expect(enhanceProjectInfoCards(scope)).toBe(1);
       expect(listeners.map(({ type }) => type)).toEqual([
         'pointerenter',
-        'focusin',
+        'pointermove',
         'pointerleave',
+        'focusin',
         'focusout',
       ]);
 
@@ -6051,7 +6053,7 @@ describe('asset grid size enhancement', () => {
 
       expect(attrs['data-positioned']).toBe('true');
       expect(styleValues['--project-info-left']).toBe('8px');
-      expect(styleValues['--project-info-top']).toBe('-128px');
+      expect(styleValues['--project-info-top']).toBe('472px');
     } finally {
       if (previousWidth === undefined) delete globalThis.innerWidth;
       else globalThis.innerWidth = previousWidth;

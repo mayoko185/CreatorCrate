@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -6,18 +6,22 @@ import { fileURLToPath } from 'node:url';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
 import { createWorkflowQueryService } from '../src/services/workflow-query-service.js';
+import { createAssetWorkflowMetadataService } from '../src/services/asset-workflow-metadata-service.js';
 import { createTagRepository } from '../src/data/tag-repository.js';
+import { formatFileSize } from '../src/services/asset-presentation.js';
+import { formatLocalDate, formatLocalTime } from '../src/util/date.js';
+import { createTestProjectOptionCatalogueService } from './helpers/project-option-catalogue.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
-function insertProject(db, { title, status = 'tbd', archivedAt = null }) {
+function insertProject(db, { title, status = 'tbd', projectType = 'images', archivedAt = null }) {
   const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
   return db.prepare(`
-    INSERT INTO projects (title, slug, description, notes, status,
+    INSERT INTO projects (title, slug, description, notes, status, project_type,
                           patreon_url, archived_at)
-    VALUES (?, ?, '', '', ?, NULL, ?)
+    VALUES (?, ?, '', '', ?, ?, NULL, ?)
     RETURNING *
-  `).get(title, slug, status, archivedAt);
+  `).get(title, slug, status, projectType, archivedAt);
 }
 
 function insertProjectCategory(db, {
@@ -98,12 +102,14 @@ describe('workflow query service — asset library page model', () => {
   let db;
   let tmpDir;
   let service;
+  let projectOptionCatalogueService;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-asset-library-'));
     db = openDatabase(path.join(tmpDir, 'test.db'));
     runMigrations(db, MIGRATIONS_DIR);
-    service = createWorkflowQueryService({ db });
+    projectOptionCatalogueService = createTestProjectOptionCatalogueService(db);
+    service = createWorkflowQueryService({ db, projectOptionCatalogueService });
   });
 
   afterEach(() => {
@@ -216,6 +222,197 @@ describe('workflow query service — asset library page model', () => {
     expect(page).not.toHaveProperty('autoRename');
   });
 
+  it('adds rich Project option presentation and file scalar data without replacing raw values', () => {
+    const status = projectOptionCatalogueService.addOption('status', {
+      name: 'Needs Bespoke Review',
+      color: '#123456',
+    });
+    const projectType = projectOptionCatalogueService.addOption('projectType', {
+      name: 'Sequential Illustration',
+      color: '#654321',
+    });
+    const project = insertProject(db, {
+      title: 'Scalar Presentation Project',
+      status: status.value,
+      projectType: projectType.value,
+    });
+    const modifiedAt = '2026-02-03T04:05:00.000Z';
+    const modifiedDate = new Date(modifiedAt);
+    const asset = insertAsset(db, {
+      projectId: project.id,
+      relativePath: 'large-source.png',
+      sizeBytes: 1536,
+      modifiedAt,
+    });
+
+    const pageAsset = service.getAssetLibraryPage({ pageSize: 10 }).assets[0];
+
+    expect(pageAsset).toMatchObject({
+      id: asset.id,
+      project_status: status.value,
+      project_type: projectType.value,
+      projectStatusOption: {
+        value: status.value,
+        label: 'Needs Bespoke Review',
+        color: '#123456',
+        tintPercent: 18,
+      },
+      projectTypeOption: {
+        value: projectType.value,
+        label: 'Sequential Illustration',
+        color: '#654321',
+        tintPercent: 18,
+      },
+      size_bytes: 1536,
+      formattedSize: formatFileSize(1536),
+      modified_at: modifiedAt,
+      formattedModified: `${formatLocalDate(modifiedDate)} ${formatLocalTime(modifiedDate)}`,
+    });
+    expect(pageAsset.projectStatusOption.foregroundColor).toMatch(/^#[0-9A-F]{6}$/);
+    expect(pageAsset.projectTypeOption.foregroundColor).toMatch(/^#[0-9A-F]{6}$/);
+  });
+
+  it('accepts prepared Project presentation while keeping direct callers compatible', () => {
+    const statusCatalogue = vi.spyOn(projectOptionCatalogueService, 'getStatusCatalogue');
+    const projectTypeCatalogue = vi.spyOn(projectOptionCatalogueService, 'getProjectTypeCatalogue');
+    const prepared = service.buildAssetLibraryProjectOptionPresentation();
+
+    service.getAssetLibraryPage({ pageSize: 10 }, { projectOptionPresentation: prepared });
+    service.getAssetLibraryPage({ pageSize: 10 }, { projectOptionPresentation: prepared });
+
+    expect(statusCatalogue).toHaveBeenCalledTimes(1);
+    expect(projectTypeCatalogue).toHaveBeenCalledTimes(1);
+
+    service.getAssetLibraryPage({ pageSize: 10 });
+
+    expect(statusCatalogue).toHaveBeenCalledTimes(2);
+    expect(projectTypeCatalogue).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([null, '', 'not-a-timestamp'])(
+    'uses the presentation fallback for an invalid or missing Modified value: %s',
+    (modifiedAt) => {
+      const project = insertProject(db, { title: `Invalid Modified ${String(modifiedAt)}` });
+      insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'invalid-modified.png',
+        modifiedAt,
+      });
+
+      expect(service.getAssetLibraryPage({ pageSize: 10 }).assets[0]).toMatchObject({
+        modified_at: modifiedAt,
+        formattedModified: '\u2014',
+      });
+    },
+  );
+
+  it('adds display-ready source dimensions and isolates unavailable source files', async () => {
+    const projectsRoot = path.join(tmpDir, 'projects');
+    const projectDir = 'dimension-source-project';
+    const project = insertProject(db, { title: 'Dimension Source Project' });
+    db.prepare('UPDATE projects SET project_dir = ? WHERE id = ?').run(projectDir, project.id);
+    fs.mkdirSync(path.join(projectsRoot, projectDir), { recursive: true });
+
+    const image = insertAsset(db, {
+      projectId: project.id,
+      relativePath: 'source.png',
+      extension: 'png',
+    });
+    const missing = insertAsset(db, {
+      projectId: project.id,
+      relativePath: 'missing.png',
+      extension: 'png',
+    });
+    const corrupt = insertAsset(db, {
+      projectId: project.id,
+      relativePath: 'corrupt.png',
+      extension: 'png',
+    });
+    const unsupported = insertAsset(db, {
+      projectId: project.id,
+      relativePath: 'painting.kra',
+      extension: 'kra',
+    });
+    fs.writeFileSync(
+      path.join(projectsRoot, projectDir, image.relative_path),
+      Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=', 'base64'),
+    );
+    fs.writeFileSync(path.join(projectsRoot, projectDir, corrupt.relative_path), 'not an image');
+    fs.writeFileSync(path.join(projectsRoot, projectDir, unsupported.relative_path), 'krita source');
+
+    const dimensionService = createWorkflowQueryService({
+      db,
+      projectOptionCatalogueService,
+      assetWorkflowMetadataService: createAssetWorkflowMetadataService({ db, projectsRoot }),
+    });
+    const page = dimensionService.getAssetLibraryPage({ pageSize: 10 });
+    const enriched = await dimensionService.enrichAssetLibraryImageDimensions(page.assets);
+    const byId = new Map(enriched.map((asset) => [asset.id, asset]));
+
+    expect(byId.get(image.id)).toMatchObject({
+      id: image.id,
+      formattedDimensions: '1 \u00d7 1',
+    });
+    expect(byId.get(missing.id).formattedDimensions).toBe('\u2014');
+    expect(byId.get(corrupt.id).formattedDimensions).toBe('\u2014');
+    expect(byId.get(unsupported.id)).toMatchObject({
+      extension: 'kra',
+      formattedDimensions: '\u2014',
+    });
+  });
+
+  it('inspects only present assets in the supplied rendered page and isolates unavailable dimensions', async () => {
+    const project = insertProject(db, { title: 'Bounded Dimensions Project' });
+    const first = insertAsset(db, { projectId: project.id, relativePath: 'a.png' });
+    const corrupt = insertAsset(db, { projectId: project.id, relativePath: 'b.png' });
+    const laterPage = insertAsset(db, { projectId: project.id, relativePath: 'c.png' });
+    const missing = insertAsset(db, {
+      projectId: project.id,
+      relativePath: 'd.png',
+      isPresent: 0,
+    });
+    const unsupported = insertAsset(db, {
+      projectId: project.id,
+      relativePath: 'e.kra',
+      extension: 'kra',
+    });
+    const calls = [];
+    const dimensionService = createWorkflowQueryService({
+      db,
+      projectOptionCatalogueService,
+      assetWorkflowMetadataService: {
+        async getImageDimensions(assetId) {
+          calls.push(assetId);
+          if (assetId === first.id) return { width: 832, height: 1248 };
+          if (assetId === corrupt.id) throw new Error('Unreadable source');
+          return null;
+        },
+      },
+    });
+    const firstPage = dimensionService.getAssetLibraryPage({ page: 1, pageSize: 2 });
+
+    const enrichedFirstPage = await dimensionService.enrichAssetLibraryImageDimensions(firstPage.assets);
+    expect(calls).toEqual([first.id, corrupt.id]);
+    expect(enrichedFirstPage.map((asset) => asset.formattedDimensions)).toEqual([
+      '832 \u00d7 1248',
+      '\u2014',
+    ]);
+
+    const unavailable = await dimensionService.enrichAssetLibraryImageDimensions([
+      firstPage.assets[0],
+      { ...firstPage.assets[0], id: missing.id, is_present: 0 },
+      { ...firstPage.assets[0], id: unsupported.id, extension: 'kra', preview_url: '/generated-preview' },
+    ]);
+    expect(calls).toEqual([first.id, corrupt.id, first.id, unsupported.id]);
+    expect(unavailable[1].formattedDimensions).toBe('\u2014');
+    expect(unavailable[2]).toMatchObject({
+      preview_url: '/generated-preview',
+      formattedDimensions: '\u2014',
+    });
+    expect(calls).not.toContain(laterPage.id);
+    expect(calls).not.toContain(missing.id);
+  });
+
   it('keeps project options complete and excludes archived projects independently of the asset page', () => {
     const projects = [];
     for (let index = 1; index <= 27; index++) {
@@ -298,6 +495,7 @@ describe('workflow query service — asset library page model', () => {
     };
     const libraryService = createWorkflowQueryService({
       db,
+      projectOptionCatalogueService,
       releaseRepository: trackedReleaseRepository,
     });
 
@@ -361,6 +559,7 @@ describe('workflow query service — asset library page model', () => {
     const inheritedBatchCalls = [];
     const taggedService = createWorkflowQueryService({
       db,
+      projectOptionCatalogueService,
       tagRepository: {
         list() {
           return tagRepository.list();
@@ -428,6 +627,7 @@ describe('workflow query service — asset library page model', () => {
     let catalogCalls = 0;
     const taggedService = createWorkflowQueryService({
       db,
+      projectOptionCatalogueService,
       tagRepository: {
         list() {
           catalogCalls += 1;

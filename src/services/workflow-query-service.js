@@ -52,9 +52,13 @@ import {
   formatFileSize,
 } from './asset-presentation.js';
 import {
+  buildProjectOptionPresentation,
+  presentProjectOptions,
+} from './project-option-presenter.js';
+import {
   normalizeDashboardDefaults,
 } from './dashboard-defaults-service.js';
-import { getLocalTodayIso } from '../util/date.js';
+import { formatLocalDate, formatLocalTime, getLocalTodayIso } from '../util/date.js';
 import { isProjectArchived } from './project-state.js';
 
 const DEFAULT_LIMITS = Object.freeze({
@@ -366,12 +370,18 @@ export function isPrimaryImageAssetUsable(asset, { kritaQuality = null } = {}) {
 /**
  * @param {object} deps
  * @param {import('better-sqlite3').Database} deps.db
+ * @param {object} [deps.projectOptionCatalogueService] — required by the
+ *   cross-project Asset Viewer page model
+ * @param {object} [deps.assetWorkflowMetadataService] — source image metadata
+ *   reader used for post-canonicalization Asset Viewer grid enrichment
  * @param {object} [deps.releaseRepository] — release repository for page-local
  *   batch enrichment
  * @param {object} [deps.tagRepository] — shared project/asset tag repository
  */
 export function createWorkflowQueryService({
   db,
+  projectOptionCatalogueService,
+  assetWorkflowMetadataService,
   projectPrimaryImageRepository,
   assetBrowserPreferenceService: injectedAssetBrowserPreferenceService,
   releaseRepository: injectedReleaseRepository,
@@ -395,6 +405,53 @@ export function createWorkflowQueryService({
       projectRepository,
       assetCategoryRepository,
     });
+
+  function formatAssetModified(value) {
+    if (typeof value !== 'string' || value.length === 0) return '\u2014';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '\u2014';
+    return `${formatLocalDate(date)} ${formatLocalTime(date)}`;
+  }
+
+  async function enrichAssetLibraryImageDimensions(assets) {
+    if (!Array.isArray(assets) || assets.length === 0) return [];
+
+    return Promise.all(assets.map(async (asset) => {
+      let dimensions = null;
+
+      if ((asset.is_present === 1 || asset.is_present === true)
+        && typeof assetWorkflowMetadataService?.getImageDimensions === 'function') {
+        try {
+          dimensions = await assetWorkflowMetadataService.getImageDimensions(asset.id);
+        } catch {
+          dimensions = null;
+        }
+      }
+
+      const hasDimensions = Number.isInteger(dimensions?.width)
+        && dimensions.width > 0
+        && Number.isInteger(dimensions?.height)
+        && dimensions.height > 0;
+
+      return {
+        ...asset,
+        formattedDimensions: hasDimensions
+          ? `${dimensions.width} \u00d7 ${dimensions.height}`
+          : '\u2014',
+      };
+    }));
+  }
+
+  function buildAssetLibraryProjectOptionPresentation() {
+    if (typeof projectOptionCatalogueService?.getStatusCatalogue !== 'function'
+      || typeof projectOptionCatalogueService?.getProjectTypeCatalogue !== 'function') {
+      throw new Error('Asset Library queries require a projectOptionCatalogueService dependency.');
+    }
+    return buildProjectOptionPresentation({
+      status: projectOptionCatalogueService.getStatusCatalogue(),
+      projectType: projectOptionCatalogueService.getProjectTypeCatalogue(),
+    });
+  }
 
   /**
    * Compose dashboard project data from an already-normalized section document.
@@ -812,6 +869,9 @@ export function createWorkflowQueryService({
    * @param {number} [input.page=1]
    * @param {number} [input.pageSize=25]
    * @param {'grid'|'list'} [input.view='grid']
+   * @param {object} [options]
+   * @param {object} [options.projectOptionPresentation] request-scoped prepared
+   *   Project status/type presentation; direct callers may omit it
    * @returns {{
    *   assets: Array,
    *   total: number,
@@ -856,7 +916,9 @@ export function createWorkflowQueryService({
     return assetRepository.listAllAssetExtensions({ includeArchived: true });
   }
 
-  function getAssetLibraryPage(input = {}) {
+  function getAssetLibraryPage(input = {}, options = {}) {
+    const projectOptionPresentation = options.projectOptionPresentation
+      ?? buildAssetLibraryProjectOptionPresentation();
     const projectId = input.projectId ?? null;
     const tagCatalog = tagRepository.list();
     const categoryDefaults = assetCategoryRepository.listDefaults();
@@ -929,8 +991,16 @@ export function createWorkflowQueryService({
         offset,
       }).map((asset) => {
         const preview = buildAssetPreviewModel(asset);
+        const projectOptions = presentProjectOptions({
+          status: asset.project_status,
+          project_type: asset.project_type,
+        }, projectOptionPresentation);
         return {
           ...asset,
+          projectStatusOption: projectOptions.projectStatusOption,
+          projectTypeOption: projectOptions.projectTypeOption,
+          formattedSize: formatFileSize(asset.size_bytes),
+          formattedModified: formatAssetModified(asset.modified_at),
           preview,
           preview_state: preview.state,
           preview_revision: preview.revision,
@@ -2261,7 +2331,9 @@ function normalizeAssetBrowserQuery(
     getProjectsPageFilterOptions,
     getAssetLibraryExtensions,
     getProjectAssetsDefaultExtensions,
+    buildAssetLibraryProjectOptionPresentation,
     getAssetLibraryPage,
+    enrichAssetLibraryImageDimensions,
     getReleaseList,
     getReleaseCalendar,
     getProjectAssetBrowser,

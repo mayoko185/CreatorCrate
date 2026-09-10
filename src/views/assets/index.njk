@@ -129,12 +129,16 @@
 {% endmacro %}
 
 {% macro renderGridAssetInfo(asset) %}
-  <div class="asset-viewer-grid-card-info" data-asset-info-card role="group" aria-label="Asset information">
+  <div class="asset-viewer-grid-card-info" data-asset-info-card popover="manual" role="group" aria-label="Asset information">
     <h3 class="asset-viewer-grid-card-info-heading">Asset information</h3>
     <dl class="asset-viewer-grid-card-info-list">
       <div class="asset-viewer-grid-card-info-row">
-        <dt>Location</dt>
-        <dd>{{ asset.relative_path or '—' }}</dd>
+        <dt>Filename</dt>
+        <dd>{{ asset.filename or '—' }}</dd>
+      </div>
+      <div class="asset-viewer-grid-card-info-row">
+        <dt>Project</dt>
+        <dd>{{ asset.project_title or '—' }}</dd>
       </div>
       <div class="asset-viewer-grid-card-info-row">
         <dt>Category</dt>
@@ -146,15 +150,15 @@
       </div>
       <div class="asset-viewer-grid-card-info-row">
         <dt>Size</dt>
-        <dd>{% if asset.size_bytes == 0 or asset.size_bytes %}{{ asset.size_bytes }} bytes{% else %}—{% endif %}</dd>
+        <dd>{{ asset.formattedSize or '—' }}</dd>
+      </div>
+      <div class="asset-viewer-grid-card-info-row">
+        <dt>Dimensions</dt>
+        <dd>{{ asset.formattedDimensions or '—' }}</dd>
       </div>
       <div class="asset-viewer-grid-card-info-row">
         <dt>Modified</dt>
-        <dd>{{ asset.modified_at or '—' }}</dd>
-      </div>
-      <div class="asset-viewer-grid-card-info-row">
-        <dt>Presence</dt>
-        <dd>{% if asset.is_present %}Present at last scan{% else %}Missing at last scan{% endif %}</dd>
+        <dd>{{ asset.formattedModified or '—' }}</dd>
       </div>
       <div class="asset-viewer-grid-card-info-row">
         <dt>Release usage</dt>
@@ -171,6 +175,17 @@
     <div class="asset-viewer-grid-card-info-section">
       <span class="asset-viewer-grid-card-info-section-label">Effective tags</span>
       {{ renderEffectiveTags(asset, 'asset-viewer-grid-card-info-tags', 'asset-viewer-grid-card-info-empty') }}
+    </div>
+    <div class="asset-viewer-grid-card-info-section">
+      <span class="asset-viewer-grid-card-info-section-label">Project</span>
+      <span>
+        {% set status = asset.project_status %}
+        {% set projectStatusOption = asset.projectStatusOption %}
+        {% include "partials/status-badge.njk" %}
+        {% set projectType = asset.project_type %}
+        {% set projectTypeOption = asset.projectTypeOption %}
+        {% include "partials/project-type-badge.njk" %}
+      </span>
     </div>
   </div>
 {% endmacro %}
@@ -248,6 +263,11 @@
     {% endif %}
 
     <div class="project-filter-actions project-filter-actions--projects">
+       <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
+          href="#asset-viewer-filter-dialog" aria-label="Filter assets"
+          data-dialog-open="asset-viewer-filter-dialog" data-tooltip="Filter assets">
+         {{ icons.icon('content-filter') }}
+       </a>
        <a class="asset-viewer-defaults-link button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
           href="/assets?defaults=1" aria-label="Asset Viewer defaults"
           data-dialog-open="asset-viewer-defaults-dialog" data-tooltip="Asset Viewer defaults" data-asset-viewer-defaults-link>
@@ -270,192 +290,8 @@
                aria-label="Start slideshow"
               data-tooltip="Start slideshow"
               data-slideshow-trigger>{{ icons.icon('slideshow') }}</button>
-        <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
-           href="{{ clearFiltersUrl }}"
-           aria-label="Reset filters" data-tooltip="Reset filters" data-asset-library-reset>{{ icons.icon('reset') }}<span class="sr-only">Reset</span></a>
     </div>
   </div>
-
-  <form id="asset-filters" class="filters asset-viewer-filters asset-viewer-filters--asset-viewer" method="get" action="/assets">
-    <noscript><button class="button" type="submit">Filter</button></noscript>
-    {% if currentView == 'list' or preserveViewQuery %}
-      <input type="hidden" name="view" value="{{ currentView }}">
-    {% endif %}
-
-    {{ dropdown.searchableSingleSelect({
-      id: "asset-project-filter",
-      name: "project",
-      label: "Project",
-      options: projectOptions,
-      valueKey: "id",
-      labelKey: "title",
-      selected: filters.projectId if projectFilterHasSelection else null,
-      placeholder: "All projects",
-      panelLabel: "Project options",
-      searchLabel: "Search projects",
-      searchInputId: "asset-project-filter-search",
-      noResultsText: "No matching projects",
-      optionListLabel: "Project choices",
-      optionIdPrefix: "asset-project",
-      fieldClasses: "asset-viewer-filter-field asset-viewer-project-filter",
-      classes: "asset-project-filter-disclosure"
-    }) }}
-
-    {{ dropdown.multiSelect({
-      id: "asset-category-filter",
-      name: "category",
-      label: "Category",
-      fieldClasses: "asset-viewer-filter-field",
-      options: categoryFilterOptions,
-      optionIdPrefix: "asset-category",
-      selectedValues: categoryFilterSelectedValues,
-      emptySummary: "Any category",
-      countLabel: "categories",
-      panelLabel: "Category options"
-    }) }}
-
-    {{ dropdown.multiSelect({
-      id: "asset-tag-filter",
-      name: "tag",
-      label: "Tag",
-      fieldClasses: "asset-viewer-filter-field",
-      options: tagOptions,
-      optionIdPrefix: "asset-tag",
-      selectedValues: tagFilterSelectedValues,
-      emptySummary: "Any tag",
-      countLabel: "tags",
-      panelLabel: "Tag options",
-      emptyOptionText: "No tags available"
-    }) }}
-
-    {{ dropdown.multiSelect({
-      id: "asset-extension-filter",
-      name: "extension",
-      label: "Extension",
-      fieldClasses: "asset-viewer-filter-field",
-      options: extensionOptions,
-      optionIdPrefix: "asset-extension",
-      selectedValues: extensionFilterSelectedValues,
-      emptySummary: "Any extension",
-      countLabel: "extensions",
-      optionPrefix: ".",
-      panelLabel: "Extension options"
-    }) }}
-
-    {% if presenceOptions is defined and presenceOptions.length > 0 %}
-      {{ dropdown.singleSelect({
-        id: "asset-presence-filter",
-        name: "presence",
-        label: "Presence",
-        fieldClasses: "asset-viewer-filter-field",
-        options: presenceOptions,
-        selected: filters.presence,
-        summary: presenceFilterSummary,
-        optionIdPrefix: "asset-presence",
-        panelLabel: "Presence options"
-      }) }}
-    {% else %}
-      {{ dropdown.singleSelect({
-        id: "asset-presence-filter",
-        name: "presence",
-        label: "Presence",
-        fieldClasses: "asset-viewer-filter-field",
-        options: presenceOptions or [],
-        selected: filters.presence,
-        nativeSelect: { id: "asset-presence" },
-        panelLabel: "Presence options"
-      }) }}
-    {% endif %}
-
-    {% if usageOptions is defined and usageOptions.length > 0 %}
-      {{ dropdown.singleSelect({
-        id: "asset-usage-filter",
-        name: "usage",
-        label: "Release usage",
-        fieldClasses: "asset-viewer-filter-field",
-        options: usageOptions,
-        selected: filters.usage,
-        summary: usageFilterSummary,
-        optionIdPrefix: "asset-usage",
-        panelLabel: "Release usage options"
-      }) }}
-    {% else %}
-      {{ dropdown.singleSelect({
-        id: "asset-usage-filter",
-        name: "usage",
-        label: "Release usage",
-        fieldClasses: "asset-viewer-filter-field",
-        options: usageOptions or [],
-        selected: filters.usage,
-        nativeSelect: { id: "asset-usage" },
-        panelLabel: "Release usage options"
-      }) }}
-    {% endif %}
-
-    {% if sortOptions is defined and sortOptions.length > 0 %}
-      {{ dropdown.singleSelect({
-        id: "asset-sort-filter",
-        name: "sort",
-        label: "Sort by",
-        fieldClasses: "asset-viewer-filter-field",
-        options: sortOptions,
-        selected: filters.sort,
-        summary: sortFilterSummary,
-        optionIdPrefix: "asset-sort",
-        panelLabel: "Sort by options"
-      }) }}
-    {% else %}
-      {{ dropdown.singleSelect({
-        id: "asset-sort-filter",
-        name: "sort",
-        label: "Sort by",
-        fieldClasses: "asset-viewer-filter-field",
-        options: sortOptions or [],
-        selected: filters.sort,
-        nativeSelect: { id: "asset-sort" },
-        panelLabel: "Sort by options"
-      }) }}
-    {% endif %}
-
-    {% if orderOptions is defined and orderOptions.length > 0 %}
-      {{ dropdown.singleSelect({
-        id: "asset-order-filter",
-        name: "order",
-        label: "Sort order",
-        fieldClasses: "asset-viewer-filter-field",
-        options: orderOptions,
-        selected: filters.order,
-        summary: orderFilterSummary,
-        optionIdPrefix: "asset-order",
-        panelLabel: "Sort order options"
-      }) }}
-    {% else %}
-      <div class="field">
-        <label for="asset-order">Sort order</label>
-        <input id="asset-order" name="order" type="text" value="{{ filters.order }}">
-      </div>
-    {% endif %}
-
-    {% if pageSizeOptions is defined and pageSizeOptions.length > 0 %}
-      {{ dropdown.singleSelect({
-        id: "asset-page-size-filter",
-        name: "pageSize",
-        label: "Page size",
-        fieldClasses: "asset-viewer-filter-field",
-        options: pageSizeOptions,
-        selected: pageSize ~ '',
-        summary: pageSizeFilterSummary,
-        optionIdPrefix: "asset-page-size",
-        panelLabel: "Page size options"
-      }) }}
-    {% else %}
-      <div class="field">
-        <label for="asset-page-size">Page size</label>
-        <input id="asset-page-size" name="pageSize" type="number" value="{{ pageSize }}">
-      </div>
-    {% endif %}
-
-  </form>
 
   <p class="results-meta">{{ total }} asset{% if total != 1 %}s{% endif %} found</p>
 
@@ -464,7 +300,6 @@
       <ul class="asset-grid" role="list" aria-label="Assets across active projects">
         {% for asset in assets %}
           {% set detailUrl = "/projects/" ~ asset.project_id ~ "/assets/" ~ asset.id %}
-          {% set projectUrl = "/projects/" ~ asset.project_id %}
           {% set displayName = asset.filename or asset.relative_path or 'Unnamed asset' %}
           <li class="asset-grid-item{% if not asset.is_present %} is-missing{% endif %}">
             <article class="asset-card asset-viewer-grid-card" data-asset-id="{{ asset.id }}">
@@ -478,15 +313,6 @@
               </div>
 
               {{ renderGridPreview(asset, detailUrl, displayName) }}
-
-              <div class="asset-card-body asset-viewer-grid-card-title-area">
-                <h2 class="asset-viewer-grid-card-title">
-                  <a class="asset-file-link" href="{{ detailUrl }}">{{ displayName }}</a>
-                </h2>
-                <a class="asset-project-link asset-viewer-grid-card-project-link" href="{{ projectUrl }}"
-                   aria-label="View project {{ asset.project_title }}">{{ asset.project_title }}</a>
-                {{ renderReleaseTitles(asset, 'asset-viewer-grid-card-title-releases', 'asset-viewer-grid-card-title-empty') }}
-              </div>
             </article>
           </li>
         {% endfor %}
@@ -604,9 +430,198 @@
 
 {% endblock %}
 {% block overlay %}
+  {% call dialog.render('asset-viewer-filter-dialog', 'Filter') %}
+    <form id="asset-filters" class="app-dialog-form project-form" method="get" action="/assets">
+      <div class="app-dialog-body">
+        <div class="page-defaults-grid">
+          {% if currentView == 'list' or preserveViewQuery %}
+            <input type="hidden" name="view" value="{{ currentView }}">
+          {% endif %}
+
+          {{ dropdown.searchableSingleSelect({
+            id: "asset-project-filter",
+            name: "project",
+            label: "Project",
+            options: projectOptions,
+            valueKey: "id",
+            labelKey: "title",
+            selected: filters.projectId if projectFilterHasSelection else null,
+            placeholder: "All projects",
+            panelLabel: "Project options",
+            searchLabel: "Search projects",
+            searchInputId: "asset-project-filter-search",
+            noResultsText: "No matching projects",
+            optionListLabel: "Project choices",
+            optionIdPrefix: "asset-project",
+            fieldClasses: "app-dialog-field asset-viewer-filter-field asset-viewer-project-filter asset-viewer-filter-field--project",
+            classes: "asset-project-filter-disclosure"
+          }) }}
+
+          {{ dropdown.multiSelect({
+            id: "asset-category-filter",
+            name: "category",
+            label: "Category",
+            fieldClasses: "app-dialog-field asset-viewer-filter-field",
+            options: categoryFilterOptions,
+            optionIdPrefix: "asset-category",
+            selectedValues: categoryFilterSelectedValues,
+            emptySummary: "Any category",
+            countLabel: "categories",
+            panelLabel: "Category options"
+          }) }}
+
+          {{ dropdown.multiSelect({
+            id: "asset-tag-filter",
+            name: "tag",
+            label: "Tag",
+            fieldClasses: "app-dialog-field asset-viewer-filter-field",
+            options: tagOptions,
+            optionIdPrefix: "asset-tag",
+            selectedValues: tagFilterSelectedValues,
+            emptySummary: "Any tag",
+            countLabel: "tags",
+            panelLabel: "Tag options",
+            emptyOptionText: "No tags available"
+          }) }}
+
+          {{ dropdown.multiSelect({
+            id: "asset-extension-filter",
+            name: "extension",
+            label: "Extension",
+            fieldClasses: "app-dialog-field asset-viewer-filter-field",
+            options: extensionOptions,
+            optionIdPrefix: "asset-extension",
+            selectedValues: extensionFilterSelectedValues,
+            emptySummary: "Any extension",
+            countLabel: "extensions",
+            optionPrefix: ".",
+            panelLabel: "Extension options"
+          }) }}
+
+          {% if presenceOptions is defined and presenceOptions.length > 0 %}
+            {{ dropdown.singleSelect({
+              id: "asset-presence-filter",
+              name: "presence",
+              label: "Presence",
+              fieldClasses: "app-dialog-field asset-viewer-filter-field",
+              options: presenceOptions,
+              selected: filters.presence,
+              summary: presenceFilterSummary,
+              optionIdPrefix: "asset-presence",
+              panelLabel: "Presence options"
+            }) }}
+          {% else %}
+            {{ dropdown.singleSelect({
+              id: "asset-presence-filter",
+              name: "presence",
+              label: "Presence",
+              fieldClasses: "app-dialog-field asset-viewer-filter-field",
+              options: presenceOptions or [],
+              selected: filters.presence,
+              nativeSelect: { id: "asset-presence" },
+              panelLabel: "Presence options"
+            }) }}
+          {% endif %}
+
+          {% if usageOptions is defined and usageOptions.length > 0 %}
+            {{ dropdown.singleSelect({
+              id: "asset-usage-filter",
+              name: "usage",
+              label: "Release usage",
+              fieldClasses: "app-dialog-field asset-viewer-filter-field",
+              options: usageOptions,
+              selected: filters.usage,
+              summary: usageFilterSummary,
+              optionIdPrefix: "asset-usage",
+              panelLabel: "Release usage options"
+            }) }}
+          {% else %}
+            {{ dropdown.singleSelect({
+              id: "asset-usage-filter",
+              name: "usage",
+              label: "Release usage",
+              fieldClasses: "app-dialog-field asset-viewer-filter-field",
+              options: usageOptions or [],
+              selected: filters.usage,
+              nativeSelect: { id: "asset-usage" },
+              panelLabel: "Release usage options"
+            }) }}
+          {% endif %}
+
+          {% if sortOptions is defined and sortOptions.length > 0 %}
+            {{ dropdown.singleSelect({
+              id: "asset-sort-filter",
+              name: "sort",
+              label: "Sort by",
+              fieldClasses: "app-dialog-field asset-viewer-filter-field",
+              options: sortOptions,
+              selected: filters.sort,
+              summary: sortFilterSummary,
+              optionIdPrefix: "asset-sort",
+              panelLabel: "Sort by options"
+            }) }}
+          {% else %}
+            {{ dropdown.singleSelect({
+              id: "asset-sort-filter",
+              name: "sort",
+              label: "Sort by",
+              fieldClasses: "app-dialog-field asset-viewer-filter-field",
+              options: sortOptions or [],
+              selected: filters.sort,
+              nativeSelect: { id: "asset-sort" },
+              panelLabel: "Sort by options"
+            }) }}
+          {% endif %}
+
+          {% if orderOptions is defined and orderOptions.length > 0 %}
+            {{ dropdown.singleSelect({
+              id: "asset-order-filter",
+              name: "order",
+              label: "Sort order",
+              fieldClasses: "app-dialog-field asset-viewer-filter-field",
+              options: orderOptions,
+              selected: filters.order,
+              summary: orderFilterSummary,
+              optionIdPrefix: "asset-order",
+              panelLabel: "Sort order options"
+            }) }}
+          {% else %}
+            <div class="field app-dialog-field">
+              <label for="asset-order">Sort order</label>
+              <input id="asset-order" name="order" type="text" value="{{ filters.order }}">
+            </div>
+          {% endif %}
+
+          {% if pageSizeOptions is defined and pageSizeOptions.length > 0 %}
+            {{ dropdown.singleSelect({
+              id: "asset-page-size-filter",
+              name: "pageSize",
+              label: "Page size",
+              fieldClasses: "app-dialog-field asset-viewer-filter-field",
+              options: pageSizeOptions,
+              selected: pageSize ~ '',
+              summary: pageSizeFilterSummary,
+              optionIdPrefix: "asset-page-size",
+              panelLabel: "Page size options"
+            }) }}
+          {% else %}
+            <div class="field app-dialog-field">
+              <label for="asset-page-size">Page size</label>
+              <input id="asset-page-size" name="pageSize" type="number" value="{{ pageSize }}">
+            </div>
+          {% endif %}
+
+        </div>
+      </div>
+    </form>
+    <form class="asset-viewer-filter-reset" method="get" action="{{ clearFiltersUrl }}">
+      <button class="button" type="submit" data-asset-library-reset>Reset filters</button>
+    </form>
+  {% endcall %}
+
   {% call dialog.render('asset-viewer-defaults-dialog', 'Asset Viewer defaults', assetViewerDefaultsDialogOpen, 'asset-viewer-defaults-description', 'asset-viewer-defaults-form') %}
     <form id="asset-viewer-defaults-form" method="post" action="/assets/defaults" class="app-dialog-form project-form"
-          data-dialog-form data-dialog-async novalidate>
+          data-dialog-form data-dialog-async="false" data-asset-viewer-defaults-autosave novalidate>
       <p id="asset-viewer-defaults-description" class="app-dialog-description">
         Choose the presentation used when the Asset Viewer opens without explicit options.
       </p>
@@ -623,7 +638,7 @@
         <div class="page-defaults-grid">
           {% for field in assetViewerDefaults.fields %}
           {% set submittedOption = none %}
-          {% set nativeAttributes = [["required", true]] %}
+          {% set nativeAttributes = [["data-autosubmit", "fetch"]] if field.multi else [["required", true], ["data-autosubmit", "fetch"]] %}
           {% set summaryAttributes = [] %}
           {% if field.showSubmittedValue %}
             {% set submittedOption = {
@@ -635,11 +650,29 @@
             } %}
           {% endif %}
           {% if field.error %}
-            {% set nativeAttributes = [["required", true], ["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] %}
+            {% set nativeAttributes = [["data-autosubmit", "fetch"], ["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] if field.multi else [["required", true], ["data-autosubmit", "fetch"], ["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] %}
             {% set summaryAttributes = [["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] %}
           {% endif %}
           <div class="field app-dialog-field{% if field.error %} field-error{% endif %}" data-dialog-field="{{ field.name }}">
-            {{ dropdown.singleSelect({
+            {% if field.multi %}
+              {{ dropdown.multiSelect({
+                id: field.id ~ '-dropdown',
+                name: field.name,
+                label: field.label,
+                options: field.options,
+                selectedValues: field.selectedValues,
+                emptySummary: 'All extensions' if field.name == 'extension' else 'All tags',
+                countLabel: 'values',
+                optionIdPrefix: field.id,
+                dispatchNativeChange: true,
+                summaryAttributes: summaryAttributes,
+                nativeSelect: {
+                  id: field.id,
+                  attributes: nativeAttributes
+                }
+              }) }}
+            {% else %}
+              {{ dropdown.singleSelect({
               id: field.id ~ '-dropdown',
               name: field.name,
               label: field.label,
@@ -647,23 +680,21 @@
               selected: field.selectedValue,
               optionIdPrefix: field.id,
               leadingOption: submittedOption,
+              dispatchNativeChange: true,
               summaryAttributes: summaryAttributes,
               nativeSelect: {
                 id: field.id,
                 attributes: nativeAttributes
               }
-            }) }}
+              }) }}
+            {% endif %}
             {% if field.error %}<span class="field-error-message" id="{{ field.id }}-error">{{ field.error }}</span>{% endif %}
           </div>
           {% endfor %}
         </div>
       </div>
 
-      <div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>
-
-      <footer class="app-dialog-footer">
-        <button class="button button-primary" type="submit" data-dialog-submit>Save defaults</button>
-      </footer>
+      <div class="app-dialog-status" data-settings-fetch-save-status role="status" aria-live="polite" aria-atomic="true"></div>
     </form>
   {% endcall %}
   <div data-slideshow-scaffold class="slideshow-scaffold" hidden inert role="dialog" aria-modal="true" aria-label="Slideshow">

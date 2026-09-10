@@ -170,6 +170,12 @@ function buildAssetViewerOptionCatalogues(page, extensions) {
   };
 }
 
+function normalizeAssetViewerDefaultSelection(value, mapValue = (candidate) => candidate) {
+  if (value === 'all') return [];
+  const values = Array.isArray(value) ? value : [value];
+  return values.map(mapValue);
+}
+
 function resolveAssetViewerFilterDefaults(pageDefaultsService, optionCatalogues) {
   const category = pageDefaultsService.resolve(
     ASSET_VIEWER_PAGE_DEFAULTS,
@@ -192,8 +198,8 @@ function resolveAssetViewerFilterDefaults(pageDefaultsService, optionCatalogues)
 
   return {
     categories: category === 'all' ? [] : [category],
-    tags: tag === 'all' ? [] : [Number(tag)],
-    extensions: extension === 'all' ? [] : [extension],
+    tags: normalizeAssetViewerDefaultSelection(tag, Number),
+    extensions: normalizeAssetViewerDefaultSelection(extension),
     presence: pageDefaultsService.resolve(
       ASSET_VIEWER_PAGE_DEFAULTS,
       'presence',
@@ -284,9 +290,10 @@ function buildAssetLibraryRenderModel(page, state, {
   };
 }
 
-function renderAssetLibraryPage(req, res, {
+async function renderAssetLibraryPage(req, res, {
   appName,
   workflowQueryService,
+  projectOptionPresentation = null,
   status = 200,
   assetViewerDefaultsDialogOpen = req.query?.defaults === '1',
   assetViewerDefaultsSubmittedValues = null,
@@ -314,7 +321,12 @@ function renderAssetLibraryPage(req, res, {
     ...resolvedPresentation.values,
     page: parsed.page,
   };
-  let page = workflowQueryService.getAssetLibraryPage(input);
+  const resolvedProjectOptionPresentation = projectOptionPresentation
+    || workflowQueryService.buildAssetLibraryProjectOptionPresentation();
+  const getAssetLibraryPage = () => workflowQueryService.getAssetLibraryPage(input, {
+    projectOptionPresentation: resolvedProjectOptionPresentation,
+  });
+  let page = getAssetLibraryPage();
   const optionCatalogues = buildAssetViewerOptionCatalogues(
     page,
     workflowQueryService.getAssetLibraryExtensions(),
@@ -322,7 +334,7 @@ function renderAssetLibraryPage(req, res, {
 
   if (resetView || isBareAssetLibraryRequest(query)) {
     Object.assign(input, resolveAssetViewerFilterDefaults(pageDefaultsService, optionCatalogues));
-    page = workflowQueryService.getAssetLibraryPage(input);
+    page = getAssetLibraryPage();
   }
 
   const state = {
@@ -337,6 +349,13 @@ function renderAssetLibraryPage(req, res, {
 
   if (resetView || (allowSavedDefaultsRedirect && !assetViewerDefaultsNotice && getRequestUrl(req) !== canonicalUrl)) {
     return res.redirect(canonicalUrl);
+  }
+
+  if (page.presentation.view === 'grid') {
+    page = {
+      ...page,
+      assets: await workflowQueryService.enrichAssetLibraryImageDimensions(page.assets),
+    };
   }
 
   const assetViewerDefaults = buildPageDefaultsDialogModel({
@@ -363,7 +382,7 @@ function renderAssetLibraryPage(req, res, {
 export function createAssetLibraryRouter({ appName, db, workflowQueryService } = {}) {
   const router = express.Router();
 
-  router.get('/', (req, res, next) => {
+  router.get('/', async (req, res, next) => {
     try {
       let resetView = null;
       if (Object.prototype.hasOwnProperty.call(req.query, 'resetFilters')) {
@@ -377,7 +396,7 @@ export function createAssetLibraryRouter({ appName, db, workflowQueryService } =
         resetView = req.query.view;
         res.set('Cache-Control', 'no-store');
       }
-      renderAssetLibraryPage(req, res, {
+      await renderAssetLibraryPage(req, res, {
         appName,
         workflowQueryService,
         resetView,
@@ -391,6 +410,7 @@ export function createAssetLibraryRouter({ appName, db, workflowQueryService } =
   router.post('/defaults', (req, res, next) => {
     const returnQuery = readAssetViewerReturnQuery(req);
     const parsedReturnQuery = parseAssetLibraryQuery(returnQuery);
+    const projectOptionPresentation = workflowQueryService.buildAssetLibraryProjectOptionPresentation();
     const optionCatalogues = buildAssetViewerOptionCatalogues(
       workflowQueryService.getAssetLibraryPage({
         projectId: parsedReturnQuery.projectId,
@@ -402,7 +422,7 @@ export function createAssetLibraryRouter({ appName, db, workflowQueryService } =
         usage: parsedReturnQuery.usage,
         ...resolveAssetLibraryPresentation(parsedReturnQuery, getPageDefaultsService(req)).values,
         page: parsedReturnQuery.page,
-      }),
+      }, { projectOptionPresentation }),
       workflowQueryService.getAssetLibraryExtensions(),
     );
 
@@ -414,9 +434,10 @@ export function createAssetLibraryRouter({ appName, db, workflowQueryService } =
       saveErrorMessage: 'Asset Viewer defaults could not be saved. No changes were made.',
       optionCatalogues,
       onValidationError: ({ submittedValues, errors }) => {
-        renderAssetLibraryPage(req, res, {
+        void renderAssetLibraryPage(req, res, {
           appName,
           workflowQueryService,
+          projectOptionPresentation,
           status: 422,
           assetViewerDefaultsDialogOpen: true,
           assetViewerDefaultsSubmittedValues: submittedValues,
@@ -424,14 +445,14 @@ export function createAssetLibraryRouter({ appName, db, workflowQueryService } =
           rawQuery: readAssetViewerReturnQuery(req),
           allowSavedDefaultsRedirect: false,
           next,
-        });
+        }).catch(next);
       },
       onSuccess: ({ validatedValues }) => {
         const defaultsUrl = buildAssetLibraryUrl({
           ...validatedValues,
           categories: validatedValues.category === 'all' ? [] : [validatedValues.category],
-          tags: validatedValues.tag === 'all' ? [] : [validatedValues.tag],
-          extensions: validatedValues.extension === 'all' ? [] : [validatedValues.extension],
+          tags: normalizeAssetViewerDefaultSelection(validatedValues.tag),
+          extensions: normalizeAssetViewerDefaultSelection(validatedValues.extension),
         });
         res.redirect(`${defaultsUrl}${defaultsUrl.includes('?') ? '&' : '?'}notice=asset_viewer_defaults_saved`);
       },
@@ -456,7 +477,7 @@ export function createAssetLibraryRouter({ appName, db, workflowQueryService } =
         return;
       }
 
-      renderAssetLibraryPage(req, res, {
+      void renderAssetLibraryPage(req, res, {
         appName,
         workflowQueryService,
         status: 422,
@@ -464,7 +485,7 @@ export function createAssetLibraryRouter({ appName, db, workflowQueryService } =
         rawQuery: readAssetViewerReturnQuery(req),
         allowSavedDefaultsRedirect: false,
         next,
-      });
+      }).catch(next);
       return;
     }
 

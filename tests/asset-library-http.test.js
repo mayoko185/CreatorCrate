@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -11,6 +11,7 @@ import { createAssetCategoryRepository } from '../src/data/asset-category-reposi
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createTagRepository } from '../src/data/tag-repository.js';
 import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
+import { createWorkflowQueryService } from '../src/services/workflow-query-service.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { extractCsrfToken } from './helpers/auth.js';
 
@@ -99,6 +100,141 @@ describe('cross-project Asset Viewer HTTP route', () => {
       categoryId: overrides.categoryId ?? null,
     });
   }
+
+  it.each([
+    ['/assets', 200],
+    ['/assets?resetFilters=1&view=grid', 302],
+  ])('loads Project option presentation once for repeated page calculation: %s', async (url, status) => {
+    const catalogueService = app.locals.projectOptionCatalogueService;
+    const statusCatalogue = vi.spyOn(catalogueService, 'getStatusCatalogue');
+    const projectTypeCatalogue = vi.spyOn(catalogueService, 'getProjectTypeCatalogue');
+
+    await request(app).get(url).expect(status);
+
+    expect(statusCatalogue).toHaveBeenCalledTimes(1);
+    expect(projectTypeCatalogue).toHaveBeenCalledTimes(1);
+  });
+
+  it('reuses one Project option presentation for an invalid native Defaults POST and reloads it next request', async () => {
+    const catalogueService = app.locals.projectOptionCatalogueService;
+    const status = catalogueService.addOption('status', {
+      name: 'Defaults Review',
+      color: '#123456',
+    });
+    const projectType = catalogueService.addOption('projectType', {
+      name: 'Defaults Illustration',
+      color: '#654321',
+    });
+    const project = projectRepository.create(projectInput('Defaults Rerender Project', {
+      status: status.value,
+      projectType: projectType.value,
+    }));
+    const asset = createAsset(project.id, 'defaults-rerender.png');
+    const firstTag = tagRepository.create({ displayName: 'First default tag', normalizedName: 'first-default-tag' });
+    const secondTag = tagRepository.create({ displayName: 'Second default tag', normalizedName: 'second-default-tag' });
+    tagRepository.assignToAsset(asset.id, firstTag.id);
+    tagRepository.assignToAsset(asset.id, secondTag.id);
+
+    const workflowQueryService = createWorkflowQueryService({
+      db,
+      projectOptionCatalogueService: catalogueService,
+    });
+    const buildProjectOptionPresentation = vi.spyOn(
+      workflowQueryService,
+      'buildAssetLibraryProjectOptionPresentation',
+    );
+    const getAssetLibraryPage = vi.spyOn(workflowQueryService, 'getAssetLibraryPage');
+    const statusCatalogue = vi.spyOn(catalogueService, 'getStatusCatalogue');
+    const projectTypeCatalogue = vi.spyOn(catalogueService, 'getProjectTypeCatalogue');
+    app = createApp({ appName: 'CreatorCrate', db, projectsRoot }, {
+      projectOptionCatalogueService: catalogueService,
+      workflowQueryService,
+    });
+
+    const invalid = await request(app)
+      .post('/assets/defaults')
+      .type('form')
+      .send({
+        returnTo: '/assets?sort=modified',
+        view: 'grid',
+        sort: 'filename',
+        order: 'asc',
+        pageSize: '25',
+        extension: ['png', 'retired'],
+        category: 'all',
+        presence: 'all',
+        tag: [String(firstTag.id), String(secondTag.id)],
+      })
+      .expect(422);
+
+    expect(statusCatalogue).toHaveBeenCalledTimes(1);
+    expect(projectTypeCatalogue).toHaveBeenCalledTimes(1);
+    expect(buildProjectOptionPresentation).toHaveBeenCalledTimes(1);
+    expect(getAssetLibraryPage).toHaveBeenCalledTimes(2);
+    const pagePresentations = getAssetLibraryPage.mock.calls
+      .map(([, options]) => options?.projectOptionPresentation);
+    expect(pagePresentations[0]).toBeTruthy();
+    expect(pagePresentations[1]).toBe(pagePresentations[0]);
+
+    const defaultsForm = invalid.text.match(/<form id="asset-viewer-defaults-form"[\s\S]*?<\/form>/)?.[0] || '';
+    expect(defaultsForm).toContain('not supported for assetViewer.extension');
+    expect(defaultsForm).toMatch(/<select[^>]*name="extension"[^>]*aria-invalid(?:="true")?[^>]*>/);
+    expect(defaultsForm).toMatch(/<option value="png" selected>\.png<\/option>/);
+    expect(defaultsForm).toMatch(new RegExp(`<option value="${firstTag.id}" selected>First default tag<\\/option>`));
+    expect(defaultsForm).toMatch(new RegExp(`<option value="${secondTag.id}" selected>Second default tag<\\/option>`));
+    expect(defaultsForm.match(/<select[^>]*name="tag"[^>]*>/)?.[0]).not.toContain('aria-invalid');
+    expect(invalid.text).toContain('--project-badge-bg: #123456;');
+    expect(invalid.text).toContain('>Defaults Review</span>');
+    expect(invalid.text).toContain('--project-badge-bg: #654321;');
+    expect(invalid.text).toContain('>Defaults Illustration</span>');
+
+    catalogueService.updateOptionColor('status', { value: status.value, color: '#ABCDEF' });
+    catalogueService.updateOptionColor('projectType', { value: projectType.value, color: '#FEDCBA' });
+    const fresh = await request(app).get('/assets?sort=modified').expect(200);
+
+    expect(fresh.text).toContain('--project-badge-bg: #ABCDEF;');
+    expect(fresh.text).toContain('--project-badge-bg: #FEDCBA;');
+    expect(fresh.text).not.toContain('--project-badge-bg: #123456;');
+    expect(fresh.text).not.toContain('--project-badge-bg: #654321;');
+    expect(statusCatalogue).toHaveBeenCalledTimes(2);
+    expect(projectTypeCatalogue).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps rich Project badges current across separate explicit-filter requests', async () => {
+    const catalogueService = app.locals.projectOptionCatalogueService;
+    const status = catalogueService.addOption('status', {
+      name: 'HTTP Bespoke Review',
+      color: '#123456',
+    });
+    const projectType = catalogueService.addOption('projectType', {
+      name: 'HTTP Sequential Art',
+      color: '#654321',
+    });
+    const project = projectRepository.create(projectInput('HTTP Catalogue Project', {
+      status: status.value,
+      projectType: projectType.value,
+    }));
+    createAsset(project.id, 'catalogue.png');
+    const statusCatalogue = vi.spyOn(catalogueService, 'getStatusCatalogue');
+    const projectTypeCatalogue = vi.spyOn(catalogueService, 'getProjectTypeCatalogue');
+
+    const first = await request(app).get('/assets?sort=modified').expect(200);
+    expect(first.text).toContain('--project-badge-bg: #123456;');
+    expect(first.text).toContain('>HTTP Bespoke Review</span>');
+    expect(first.text).toContain('--project-badge-bg: #654321;');
+    expect(first.text).toContain('>HTTP Sequential Art</span>');
+
+    catalogueService.updateOptionColor('status', { value: status.value, color: '#ABCDEF' });
+    catalogueService.updateOptionColor('projectType', { value: projectType.value, color: '#FEDCBA' });
+
+    const second = await request(app).get('/assets?sort=modified').expect(200);
+    expect(second.text).toContain('--project-badge-bg: #ABCDEF;');
+    expect(second.text).toContain('--project-badge-bg: #FEDCBA;');
+    expect(second.text).not.toContain('--project-badge-bg: #123456;');
+    expect(second.text).not.toContain('--project-badge-bg: #654321;');
+    expect(statusCatalogue).toHaveBeenCalledTimes(2);
+    expect(projectTypeCatalogue).toHaveBeenCalledTimes(2);
+  });
 
   function markMissing(projectId) {
     assetRepository.markAllMissing(projectId);
@@ -673,6 +809,73 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(redirected.text).toContain('Asset Viewer defaults saved successfully.');
   });
 
+  it('probes dimensions only after canonicalization and only for the rendered grid page', async () => {
+    const project = projectRepository.create(projectInput('Dimension Probe Project', {
+      projectType: 'images',
+    }));
+    const assets = Array.from({ length: 11 }, (_, index) => createAsset(
+      project.id,
+      `source-${String(index + 1).padStart(2, '0')}.png`,
+    ));
+    const calls = [];
+    app = createApp({ appName: 'CreatorCrate', db, projectsRoot }, {
+      assetWorkflowMetadataService: {
+        async getImageDimensions(assetId) {
+          calls.push(assetId);
+          if (assetId === assets[0].id) throw new Error('Unreadable source');
+          return { width: 640, height: 480 };
+        },
+      },
+    });
+
+    const redirect = await request(app).get('/assets?unknown=discard&pageSize=10').expect(302);
+    expect(redirect.headers.location).toBe('/assets?pageSize=10');
+    expect(calls).toEqual([]);
+
+    await request(app).get(redirect.headers.location).expect(200);
+    expect(calls).toEqual(assets.slice(0, 10).map((asset) => asset.id));
+
+    await request(app).get('/assets?pageSize=10&view=list').expect(200);
+    expect(calls).toEqual(assets.slice(0, 10).map((asset) => asset.id));
+  });
+
+  it('settles dimension failures on Defaults and NSFW validation rerenders', async () => {
+    const project = projectRepository.create(projectInput('Dimension Rerender Project', {
+      projectType: 'images',
+    }));
+    createAsset(project.id, 'rerender.png');
+    app = createApp({ appName: 'CreatorCrate', db, projectsRoot }, {
+      assetWorkflowMetadataService: {
+        async getImageDimensions() {
+          throw new Error('Dimension reader failed');
+        },
+      },
+    });
+
+    const defaults = await request(app)
+      .post('/assets/defaults')
+      .type('form')
+      .send({
+        view: 'grid',
+        sort: 'filename',
+        order: 'asc',
+        pageSize: '25',
+        extension: 'unknown',
+        category: 'all',
+        presence: 'all',
+        tag: 'all',
+      })
+      .expect(422);
+    expect(defaults.text).toContain('Asset Viewer defaults');
+
+    const nsfw = await request(app)
+      .post('/assets/nsfw-filter')
+      .type('form')
+      .send({ enabled: 'invalid', returnTo: '/assets' })
+      .expect(422);
+    expect(nsfw.text).toContain('NSFW filter setting is invalid.');
+  });
+
   it('renders, stores, and canonically applies live Asset Viewer filter defaults', async () => {
     const project = createProject('Live Defaults Project');
     createCategory({ displayName: 'Reference artwork', directorySlug: 'reference-artwork' });
@@ -725,10 +928,10 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(save.headers.location).toBe(
       `/assets?category=reference-artwork&tag=${tag.id}&extension=png&presence=present&notice=asset_viewer_defaults_saved`,
     );
-    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.extension.key).value).toBe('png');
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.extension.key).value).toBe('["png"]');
     expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.category.key).value).toBe('reference-artwork');
     expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.presence.key).value).toBe('present');
-    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.tag.key).value).toBe(String(tag.id));
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.tag.key).value).toBe(`["${tag.id}"]`);
 
     const bare = await request(app).get('/assets').expect(302);
     expect(bare.headers.location).toBe(
@@ -750,6 +953,70 @@ describe('cross-project Asset Viewer HTTP route', () => {
     const reset = await request(app).get('/assets?view=grid').expect(200);
     expect(reset.headers.location).toBeUndefined();
     expect(reset.text).toContain('reference.png');
+  });
+
+  it('persists and applies every saved Asset Viewer Extension and Tag value', async () => {
+    const project = projectRepository.create({
+      ...projectInput('Multiple Defaults Project'),
+      projectType: 'images',
+    });
+    const png = createAsset(project.id, 'first.png', { extension: 'png' });
+    const jpg = createAsset(project.id, 'second.jpg', { extension: 'jpg' });
+    const firstTag = tagRepository.create({ displayName: 'First tag', normalizedName: 'first-tag' });
+    const secondTag = tagRepository.create({ displayName: 'Second tag', normalizedName: 'second-tag' });
+    tagRepository.assignToAsset(png.id, firstTag.id);
+    tagRepository.assignToAsset(jpg.id, secondTag.id);
+
+    const save = await request(app)
+      .post('/assets/defaults')
+      .type('form')
+      .send({
+        view: 'grid',
+        sort: 'filename',
+        order: 'asc',
+        pageSize: '25',
+        extension: ['png', 'jpg'],
+        category: 'all',
+        presence: 'all',
+        tag: [String(firstTag.id), String(secondTag.id)],
+      })
+      .expect(302);
+
+    const expectedFilters = `tag=${firstTag.id}&tag=${secondTag.id}&extension=jpg&extension=png`;
+    expect(save.headers.location).toBe(`/assets?${expectedFilters}&notice=asset_viewer_defaults_saved`);
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
+      .get(PAGE_DEFAULT_DEFINITIONS.assetViewer.extension.key).value).toBe('["png","jpg"]');
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
+      .get(PAGE_DEFAULT_DEFINITIONS.assetViewer.tag.key).value)
+      .toBe(`["${firstTag.id}","${secondTag.id}"]`);
+
+    const bare = await request(app).get('/assets').expect(302);
+    expect(bare.headers.location).toBe(`/assets?${expectedFilters}`);
+    const canonical = await request(app).get(bare.headers.location).expect(200);
+    expect(canonical.text).toContain('first.png');
+    expect(canonical.text).toContain('second.jpg');
+
+    const reopened = await request(app).get('/assets?defaults=1').expect(200);
+    const defaultsForm = reopened.text.match(/<form id="asset-viewer-defaults-form"[\s\S]*?<\/form>/)?.[0] || '';
+    expect(defaultsForm).toMatch(/<select[^>]*name="extension"[^>]* multiple[^>]*>/);
+    expect(defaultsForm).toMatch(/<option value="png" selected>\.png<\/option>/);
+    expect(defaultsForm).toMatch(/<option value="jpg" selected>\.jpg<\/option>/);
+    expect(defaultsForm).toMatch(new RegExp(`<option value="${firstTag.id}" selected>First tag<\\/option>`));
+    expect(defaultsForm).toMatch(new RegExp(`<option value="${secondTag.id}" selected>Second tag<\\/option>`));
+    expect(defaultsForm).not.toMatch(/<option value="all"[^>]*>All (?:extensions|tags)<\/option>/);
+  });
+
+  it('normalizes omitted Asset Viewer multi-select defaults to neutral all', async () => {
+    await request(app)
+      .post('/assets/defaults')
+      .type('form')
+      .send({ view: 'grid', sort: 'filename', order: 'asc', pageSize: '25', category: 'all', presence: 'all' })
+      .expect(302);
+
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
+      .get(PAGE_DEFAULT_DEFINITIONS.assetViewer.extension.key).value).toBe('all');
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
+      .get(PAGE_DEFAULT_DEFINITIONS.assetViewer.tag.key).value).toBe('all');
   });
 
   it('keeps global Extension defaults available while the page is filtered to another project', async () => {
@@ -785,7 +1052,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
       })
       .expect(302);
 
-    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.extension.key).value).toBe('png');
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.extension.key).value).toBe('["png"]');
   });
 
   it('rejects invalid dynamic defaults and leaves stale dynamic defaults neutral without rewriting storage', async () => {
@@ -813,10 +1080,10 @@ describe('cross-project Asset Viewer HTTP route', () => {
     });
     const rendered = await request(app).get('/assets?defaults=1').expect(200);
     const defaultsForm = rendered.text.match(/<form id="asset-viewer-defaults-form"[\s\S]*?<\/form>/)?.[0] || '';
-    expect(defaultsForm).toMatch(/<option value="all" selected>All extensions<\/option>/);
+    expect(defaultsForm).not.toMatch(/<option value="all"[^>]*>All extensions<\/option>/);
     expect(defaultsForm).toMatch(/<option value="all" selected>All categories<\/option>/);
     expect(defaultsForm).toMatch(/<option value="all" selected>All assets<\/option>/);
-    expect(defaultsForm).toMatch(/<option value="all" selected>All tags<\/option>/);
+    expect(defaultsForm).not.toMatch(/<option value="all"[^>]*>All tags<\/option>/);
     expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.extension.key).value).toBe('retired');
     expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.category.key).value).toBe('retired');
     expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.presence.key).value).toBe('unknown');

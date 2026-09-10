@@ -1928,7 +1928,9 @@ export function createAssetRepository(db) {
       const sql = `
         SELECT
           ${buildAssetBrowserSelectColumns({ includeCategorySlug: true })},
-          p.title AS project_title
+          p.title AS project_title,
+          p.status AS project_status,
+          p.project_type AS project_type
         FROM assets a
         JOIN projects p ON p.id = a.project_id
         ${CATEGORY_JOIN}

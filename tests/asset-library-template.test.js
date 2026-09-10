@@ -22,7 +22,26 @@ const alphaAsset = {
   extension: 'png',
   mime_type: 'image/png',
   size_bytes: 1024,
+  formattedSize: '1 KB',
   modified_at: '2026-08-01 10:00:00',
+  formattedModified: 'August 1, 2026 at 10:00 AM',
+  formattedDimensions: '1920 × 1080',
+  project_status: 'in-progress',
+  project_type: 'images',
+  projectStatusOption: {
+    value: 'in-progress',
+    label: 'In Progress',
+    color: '#2F81F7',
+    tintPercent: 18,
+    foregroundColor: '#79B8FF',
+  },
+  projectTypeOption: {
+    value: 'images',
+    label: 'Illustration',
+    color: '#A371F7',
+    tintPercent: 18,
+    foregroundColor: '#D2A8FF',
+  },
   is_present: 1,
   category_display_name: 'Renders',
   category_enabled: 1,
@@ -48,7 +67,26 @@ const betaAsset = {
   extension: 'png',
   mime_type: 'image/png',
   size_bytes: 2048,
+  formattedSize: '2 KB',
   modified_at: null,
+  formattedModified: '—',
+  formattedDimensions: '—',
+  project_status: 'planned',
+  project_type: 'animation',
+  projectStatusOption: {
+    value: 'planned',
+    label: 'Planned',
+    color: '#8B949E',
+    tintPercent: 20,
+    foregroundColor: '#C9D1D9',
+  },
+  projectTypeOption: {
+    value: 'animation',
+    label: 'Animation',
+    color: '#D29922',
+    tintPercent: 18,
+    foregroundColor: '#E3B341',
+  },
   is_present: 0,
   category_display_name: null,
   category_enabled: null,
@@ -219,8 +257,8 @@ describe('cross-project Asset Viewer template', () => {
       ],
     });
 
-    expect(html).toMatch(/<form id="asset-filters" class="filters asset-viewer-filters asset-viewer-filters--asset-viewer" method="get" action="\/assets">/);
-    expect(html).toMatch(/<div class="asset-viewer-display-controls">[\s\S]*?<div class="project-filter-actions project-filter-actions--projects">[\s\S]*?<\/div>\s*<\/div>\s*<form id="asset-filters"/);
+    expect(html).toMatch(/<dialog id="asset-viewer-filter-dialog"[\s\S]*?<form id="asset-filters" class="app-dialog-form project-form" method="get" action="\/assets">/);
+    expect(html.indexOf('id="asset-viewer-filter-dialog"')).toBeGreaterThan(html.indexOf('data-asset-library-live-region'));
     expect(html).toContain('<input type="hidden" name="view" value="list">');
     expect(html).toContain('aria-label="Project filter: Beta Project"');
     expect(html).toContain('<span data-cc-dropdown-summary-current class="asset-filter-multiselect-summary-current">Beta Project</span>');
@@ -270,7 +308,7 @@ describe('cross-project Asset Viewer template', () => {
       expect(disclosure).not.toContain('data-asset-viewer-filter-disclosure');
     }
     expect(html).toContain('data-asset-library-reset');
-    expect(html).toContain('aria-label="Reset filters"');
+    expect(html).toContain('<button class="button" type="submit" data-asset-library-reset>Reset filters</button>');
   });
 
   it('renders the Asset Viewer defaults link with dialog-open and accessibility text', () => {
@@ -281,6 +319,20 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).toContain('data-tooltip="Asset Viewer defaults"');
     expect(html).toContain('data-dialog-open="asset-viewer-defaults-dialog"');
     expect(html).toContain('data-asset-viewer-defaults-link');
+  });
+
+  it('renders the Asset Viewer Filter trigger before Defaults and hosts the form in the shared dialog pattern', () => {
+    const html = renderPage();
+    const toolbar = html.match(/<div class="project-filter-actions project-filter-actions--projects">[\s\S]*?<\/div>/)?.[0] ?? '';
+    const dialogHtml = html.slice(html.indexOf('<dialog id="asset-viewer-filter-dialog"'));
+
+    expect(toolbar).toContain('href="#asset-viewer-filter-dialog"');
+    expect(toolbar).toContain('data-dialog-open="asset-viewer-filter-dialog"');
+    expect(toolbar.indexOf('data-dialog-open="asset-viewer-filter-dialog"'))
+      .toBeLessThan(toolbar.indexOf('data-dialog-open="asset-viewer-defaults-dialog"'));
+    expect(dialogHtml).toMatch(/<div class="app-dialog-body">\s*<div class="page-defaults-grid">/);
+    expect(dialogHtml).toContain('class="asset-viewer-filter-reset"');
+    expect(toolbar).not.toContain('data-asset-library-reset');
   });
 
   it('renders Project as a searchable single-select disclosure with safe radio values', () => {
@@ -407,13 +459,12 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).not.toContain('id="asset-page-size-filter-trigger"');
   });
 
-  it('renders exact three-region Grid cards with retained indicators, preview info, and title-only footers', () => {
+  it('renders Grid cards without footers while retaining top-bar and preview information markup', () => {
     const html = renderPage();
     const cards = html.match(/<article class="asset-card asset-viewer-grid-card"[\s\S]*?<\/article>/g) || [];
     const alphaCard = cards.find((card) => card.includes('Alpha Project'));
     const betaCard = cards.find((card) => card.includes('Beta Project'));
     const topRow = alphaCard?.match(/<div class="asset-card-top asset-viewer-grid-card-top">[\s\S]*?<\/div>/)?.[0];
-    const titleArea = alphaCard?.match(/<div class="asset-card-body asset-viewer-grid-card-title-area">[\s\S]*?<\/div>\s*<\/article>/)?.[0];
 
     expect(html).toMatch(/<ul class="asset-grid"[^>]*aria-label="Assets across active projects">/);
     expect((html.match(/class="asset-grid-item/g) || []).length).toBe(2);
@@ -447,42 +498,40 @@ describe('cross-project Asset Viewer template', () => {
 
     expect(alphaCard).toContain('data-asset-viewer-preview');
     expect(alphaCard).toContain('data-asset-info-card');
+    expect(alphaCard).toContain('data-asset-info-card popover="manual"');
     expect(alphaCard).toContain('aria-label="View preview of shared.png"');
-    expect(alphaCard).toContain('class="asset-file-link" href="/projects/1/assets/101"');
-    expect(alphaCard).not.toMatch(/class="asset-file-link"[^>]*aria-label=/);
     expect(alphaCard).toContain('src="/projects/1/assets/101/preview?v=alpha"');
     expect(alphaCard).toContain('alt=""');
-    expect(alphaCard).toContain('>Alpha Project</a>');
-    expect(alphaCard).toContain('href="/releases/301">Alpha Release</a>');
-    expect(alphaCard).toContain('href="/releases/302">Zeta Release</a>');
-    expect(alphaCard.indexOf('href="/releases/301">Alpha Release</a>')).toBeLessThan(
-      alphaCard.indexOf('href="/releases/302">Zeta Release</a>'),
-    );
-    expect(betaCard).toContain('>Beta Project</a>');
-    expect(betaCard).toContain('Not in any release');
+    expect(alphaCard).not.toContain('asset-viewer-grid-card-title-area');
+    expect(betaCard).not.toContain('asset-viewer-grid-card-title-area');
 
-    expect(titleArea).toBeDefined();
-    expect(titleArea).toContain('>shared.png</a>');
-    expect(titleArea).toContain('>Alpha Project</a>');
-    expect(titleArea).toContain('Alpha Release');
-    expect(titleArea).toContain('Zeta Release');
-    expect(titleArea).not.toContain('renders/shared.png');
-    expect(titleArea).not.toContain('Renders');
-    expect(titleArea).not.toContain('1024 bytes');
-    expect(titleArea).not.toContain('2026-08-01 10:00:00');
-    expect(titleArea).not.toContain('Effective tags');
-    expect(titleArea).not.toContain('Asset information');
-    expect(titleArea).not.toContain('View asset details');
-
-    for (const field of ['Location', 'Category', 'Extension', 'Size', 'Modified', 'Presence', 'Release usage']) {
+    const infoCard = alphaCard?.match(/<div class="asset-viewer-grid-card-info"[\s\S]*?<\/div>\s*<\/div>/)?.[0] ?? '';
+    for (const field of ['Filename', 'Project', 'Category', 'Extension', 'Size', 'Dimensions', 'Modified', 'Release usage']) {
       expect((alphaCard.match(new RegExp(`<dt>${field}</dt>`, 'g')) || [])).toHaveLength(1);
     }
-    expect(alphaCard).toContain('renders/shared.png');
+    expect(infoCard).not.toContain('<dt>Location</dt>');
+    expect(infoCard).not.toContain('<dt>Presence</dt>');
+    expect(infoCard).toContain('<dd>shared.png</dd>');
+    expect(infoCard).toContain('<dd>Alpha Project</dd>');
     expect(alphaCard).toContain('Renders');
-    expect(alphaCard).toContain('1024 bytes');
-    expect(alphaCard).toContain('2026-08-01 10:00:00');
-    expect(alphaCard).toContain('Present at last scan');
+    expect(alphaCard).toContain('<dd>1 KB</dd>');
+    expect(alphaCard).toContain('<dd>1920 × 1080</dd>');
+    expect(alphaCard).toContain('<dd>August 1, 2026 at 10:00 AM</dd>');
     expect(alphaCard).toContain('Used in 2 releases');
+    expect(alphaCard).toContain('Effective tags');
+    expect(infoCard).toContain('class="status-badge project-option-badge project-status-badge status-badge--draft"');
+    expect(infoCard).toContain('class="status-badge project-option-badge project-type-badge"');
+    expect(infoCard).toContain('--project-badge-bg: #2F81F7; --project-badge-tint: 18%; --project-badge-fg: #79B8FF');
+    expect(infoCard).toContain('--project-badge-bg: #A371F7; --project-badge-tint: 18%; --project-badge-fg: #D2A8FF');
+    expect(infoCard).toContain('>In Progress</span>');
+    expect(infoCard).toContain('>Illustration</span>');
+    expect(infoCard).not.toContain('·');
+    const fieldOrder = ['Filename', 'Project', 'Category', 'Extension', 'Size', 'Dimensions', 'Modified', 'Release usage'];
+    for (let index = 1; index < fieldOrder.length; index += 1) {
+      expect(infoCard.indexOf(`<dt>${fieldOrder[index - 1]}</dt>`))
+        .toBeLessThan(infoCard.indexOf(`<dt>${fieldOrder[index]}</dt>`));
+    }
+    expect(infoCard.indexOf('Effective tags')).toBeLessThan(infoCard.lastIndexOf('>Project</span>'));
     expect(alphaCard).not.toContain('data-asset-info-trigger');
     expect(alphaCard).not.toContain('asset-select-checkbox');
     expect(alphaCard).not.toMatch(/\d+\s+of\s+\d+/);
@@ -719,7 +768,6 @@ describe('cross-project Asset Viewer template', () => {
 
     expect(css).toMatch(/\.asset-viewer-grid-card\s*\{[^}]*overflow:\s*visible/);
     expect(css).toMatch(/\.asset-viewer-grid-card:hover,[\s\S]*?\.asset-viewer-grid-card:focus-within\s*\{[^}]*z-index:\s*60/);
-    expect(css).toMatch(/\.asset-viewer-grid-card-info\s*\{[^}]*display:\s*none[\s\S]*?position:\s*absolute[^}]*z-index:\s*30/);
     expect(css).toMatch(/\.asset-viewer-grid-card-info\s*\{[\s\S]*?width:\s*min\(24rem,\s*calc\(100vw\s*-\s*2rem\)\)/);
     expect(css).toMatch(/\.asset-viewer-filters\s*\{[^}]*z-index:\s*20/);
     expect(css).toMatch(/\.asset-filter-multiselect\[open\]\s*\{[^}]*z-index:\s*40/);
@@ -728,7 +776,6 @@ describe('cross-project Asset Viewer template', () => {
     expect(css).not.toMatch(/\.asset-grid\s*\{[^}]*overflow:\s*(?:hidden|clip|auto|scroll)/);
     expect(css).not.toMatch(/\.asset-browser-content\s*\{[^}]*overflow:\s*(?:hidden|clip|auto|scroll)/);
     expect(css).not.toMatch(/\.asset-viewer-filters\s*\{[^}]*overflow:\s*(?:hidden|clip|auto|scroll)/);
-    expect(css).toMatch(/\.asset-viewer-grid-card-preview:hover \.asset-viewer-grid-card-info,[\s\S]*?\.asset-viewer-grid-card-preview:focus-within \.asset-viewer-grid-card-info\s*\{[^}]*display:\s*block/);
     expect(css).toMatch(/\.asset-viewer-grid-card-info-tags\s*\{[^}]*flex-wrap:\s*wrap/);
     expect(css).toMatch(/\.asset-viewer-grid-card-title-releases\s*\{[^}]*flex-wrap:\s*wrap/);
     expect(css).toMatch(/\.asset-viewer-grid-card-title \.asset-file-link\s*\{[^}]*color:\s*var\(--text\)/);
@@ -750,10 +797,9 @@ describe('cross-project Asset Viewer template', () => {
   it('styles Asset Viewer filter disclosures as scoped scrollable controls with focus states', () => {
     const css = fs.readFileSync(STYLESHEET_PATH, 'utf8');
 
-    expect(css).toMatch(/\.asset-viewer-filters\s*\{[^}]*position:\s*relative/);
-    const assetViewerFiltersBorderRule = css.match(/(?:^|})\s*\.asset-viewer-filters--asset-viewer\s*\{([^}]*)\}/)?.[1] || '';
-    expect(assetViewerFiltersBorderRule).toMatch(/border:\s*1px solid var\(--border\)/);
-    expect(assetViewerFiltersBorderRule).toMatch(/border-radius:\s*var\(--radius-lg\)/);
+    expect(css).toMatch(/#asset-viewer-filter-dialog \.page-defaults-grid > \.asset-viewer-filter-field\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*none/);
+    expect(css).toMatch(/#asset-viewer-filter-dialog \.page-defaults-grid > \.asset-viewer-filter-field--project\s*\{[^}]*grid-column:\s*1 \/ -1/);
+    expect(css).toMatch(/#asset-viewer-filter-dialog \.asset-viewer-filter-reset\s*\{[^}]*display:\s*flex;[^}]*justify-content:\s*center/);
     expect(css).toMatch(/\.asset-filter-multiselect-panel\s*\{[\s\S]*?max-height:\s*20rem[\s\S]*?overflow-y:\s*auto/);
     expect(css).toMatch(/\.asset-filter-multiselect-panel\s*\{[\s\S]*?scrollbar-width:\s*thin/);
     expect(css).toMatch(/\.asset-filter-multiselect summary:focus-visible\s*\{[\s\S]*?outline:\s*2px solid var\(--focus-ring\)/);
@@ -773,7 +819,7 @@ describe('cross-project Asset Viewer template', () => {
     expect(css).toMatch(/@media \(max-width: 540px\)[\s\S]*?\.asset-filter-multiselect-field\s*\{[\s\S]*?width:\s*100%[\s\S]*?max-width:\s*100%/);
   });
 
-  it('keeps transformed Grid cards and hover information below the global navigation root', () => {
+  it('presents transformed Grid-card information in the native popover top layer', () => {
     const css = fs.readFileSync(STYLESHEET_PATH, 'utf8');
     const sidebarLayer = Number(css.match(/--shell-z-sidebar:\s*(\d+)/)?.[1]);
     const contentLayer = Number(css.match(/--shell-z-content:\s*(\d+)/)?.[1]);
@@ -783,15 +829,16 @@ describe('cross-project Asset Viewer template', () => {
     expect(sidebarLayer).toBeGreaterThan(contentLayer);
     expect(sidebarLayer).toBeGreaterThan(60);
     expect(css).toMatch(/\.asset-viewer-grid-card:hover,[\s\S]*?\.asset-viewer-grid-card:focus-within\s*\{[\s\S]*?transform:\s*translateY\(-2px\)/);
-    expect(css).toMatch(/\.asset-viewer-grid-card-info\s*\{[\s\S]*?position:\s*absolute[\s\S]*?z-index:\s*30/);
-    expect(css).toMatch(/\.asset-viewer-grid-card-preview:hover \.asset-viewer-grid-card-info,[\s\S]*?\.asset-viewer-grid-card-preview:focus-within \.asset-viewer-grid-card-info\s*\{[\s\S]*?display:\s*block/);
+    expect(css).toMatch(/\.asset-viewer-grid-card-info\s*\{[\s\S]*?position:\s*fixed[\s\S]*?inset:\s*auto/);
+    expect(css).toMatch(/\.asset-viewer-grid-card-info\s*\{[\s\S]*?background:\s*color-mix\([\s\S]*?backdrop-filter:\s*blur\(10px\)/);
+    expect(css).toMatch(/\.asset-viewer-grid-card-info\[data-info-card-open="true"\]\s*\{[\s\S]*?display:\s*block/);
   });
 
   it('contains the filter form, NSFW form, and defaults dialog form but no asset-mutation controls', () => {
     const html = renderPage({ _csrf: 'test-csrf', nsfwFilterEnabled: false });
     const forms = html.match(/<form\b[^>]*>/g) || [];
 
-    expect(forms).toHaveLength(3);
+    expect(forms).toHaveLength(4);
     expect(forms.find((f) => f.includes('method="get"'))).toBeDefined();
     expect(forms.find((f) => f.includes('action="/assets/nsfw-filter"'))).toBeDefined();
     expect(forms.find((f) => f.includes('action="/assets/defaults"'))).toBeDefined();
@@ -811,12 +858,40 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).not.toContain('sort=tag');
   });
 
-  it.each(['grid', 'list'])('WP3 both Asset Viewer Reset controls use supplied %s intent', (view) => {
+  it.each(['grid', 'list'])('both Asset Viewer Reset controls use supplied %s intent', (view) => {
     const clearFiltersUrl = '/assets?resetFilters=1&view=' + view;
     const html = renderPage({ assets: [], hasAnyAssets: true, filters: { view, search: 'missing' }, clearFiltersUrl });
-    const anchors = [...html.matchAll(/<a\b[^>]*data-asset-library-reset[^>]*>/g)];
-    expect(anchors).toHaveLength(2);
-    for (const [anchor] of anchors) expect(anchor).toContain('href="' + href(clearFiltersUrl) + '"');
+    const resetForm = html.match(/<form class="asset-viewer-filter-reset"[^>]*>/)?.[0] ?? '';
+    const emptyReset = html.match(/<a\b[^>]*data-asset-library-reset[^>]*>/)?.[0] ?? '';
+    expect(resetForm).toContain('action="' + href(clearFiltersUrl) + '"');
+    expect(emptyReset).toContain('href="' + href(clearFiltersUrl) + '"');
+  });
+
+  it('escapes Asset information filename, project, and catalogue labels', () => {
+    const html = renderPage({
+      assets: [{
+        ...alphaAsset,
+        filename: '<asset>.png',
+        project_title: 'Project & <Studio>',
+        projectStatusOption: {
+          ...alphaAsset.projectStatusOption,
+          label: '<Ready>',
+        },
+        projectTypeOption: {
+          ...alphaAsset.projectTypeOption,
+          label: 'Art & Design',
+        },
+      }],
+    });
+    const infoCard = html.match(/<div class="asset-viewer-grid-card-info"[\s\S]*?<\/div>\s*<\/div>/)?.[0] ?? '';
+
+    expect(infoCard).toContain('&lt;asset&gt;.png');
+    expect(infoCard).toContain('Project &amp; &lt;Studio&gt;');
+    expect(infoCard).toContain('&lt;Ready&gt;</span>');
+    expect(infoCard).toContain('>Art &amp; Design</span>');
+    expect(infoCard).not.toContain('·');
+    expect(infoCard).not.toContain('<asset>');
+    expect(infoCard).not.toContain('<Ready>');
   });
 
   it('uses supplied URLs for reset and pagination links without rebuilding query strings in the template', () => {
@@ -859,7 +934,7 @@ describe('cross-project Asset Viewer template', () => {
 
     expect(html).toContain(`href="${href(previousUrl)}"`);
     expect(html).toContain(`href="${href(nextUrl)}"`);
-    expect(html).toContain(`href="${href(clearUrl)}"`);
+    expect(html).toContain(`action="${href(clearUrl)}"`);
     expect(html).toMatch(/<nav class="pagination"[^>]*aria-label="Asset Viewer pages">/);
     expect(html).toContain('Page 2 of 3');
   });
@@ -1008,6 +1083,12 @@ describe('cross-project Asset Viewer template', () => {
         fields: [
           { id: 'av-view', name: 'view', label: 'View', selectedValue: 'grid', options: [{ value: 'grid', label: 'Grid' }, { value: 'list', label: 'List' }] },
           { id: 'av-sort', name: 'sort', label: 'Sort', selectedValue: 'filename', options: [{ value: 'filename', label: 'Filename' }] },
+          { id: 'av-order', name: 'order', label: 'Order', selectedValue: 'asc', options: [{ value: 'asc', label: 'Ascending' }] },
+          { id: 'av-page-size', name: 'pageSize', label: 'Page size', selectedValue: '25', options: [{ value: '25', label: '25' }] },
+          { id: 'av-extension', name: 'extension', label: 'Extension', multi: true, selectedValue: ['jpg', 'png'], selectedValues: ['jpg', 'png'], options: [{ value: 'jpg', label: '.jpg' }, { value: 'png', label: '.png' }] },
+          { id: 'av-category', name: 'category', label: 'Category', selectedValue: 'all', options: [{ value: 'all', label: 'All categories' }] },
+          { id: 'av-presence', name: 'presence', label: 'Presence', selectedValue: 'all', options: [{ value: 'all', label: 'All assets' }] },
+          { id: 'av-tag', name: 'tag', label: 'Tag', multi: true, selectedValue: ['1', '2'], selectedValues: ['1', '2'], options: [{ value: '1', label: 'First tag' }, { value: '2', label: 'Second tag' }] },
         ],
       },
       assetViewerDefaultsDialogOpen: false,
@@ -1019,22 +1100,37 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).toContain('id="asset-viewer-defaults-form"');
     expect(html).toContain('action="/assets/defaults"');
     expect(html).toContain('data-dialog-form');
-    expect(html).toContain('data-dialog-async');
+    expect(html).toContain('data-dialog-async="false"');
+    expect(html).toContain('data-asset-viewer-defaults-autosave');
     expect(html).toContain('name="returnTo"');
-    expect(html).toContain('data-dialog-submit');
-    expect(html).toContain('>Save defaults</button>');
     const defaultsDialog = html.match(/<dialog id="asset-viewer-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    expect(defaultsDialog).not.toContain('data-dialog-submit');
+    expect(defaultsDialog).not.toContain('Save defaults');
+    expect(defaultsDialog).not.toContain('<footer');
+    expect(defaultsDialog).toContain('data-settings-fetch-save-status');
+    expect(defaultsDialog).toContain('aria-live="polite"');
+    expect(defaultsDialog).toContain('aria-atomic="true"');
     expect(defaultsDialog).not.toMatch(/<button[^>]*>\s*Cancel\s*<\/button>/);
     expect(defaultsDialog.match(/data-dialog-close/g)).toHaveLength(1);
     expect(defaultsDialog).toContain('aria-label="Close Asset Viewer defaults"');
-    expect(html).toMatch(/<select id="av-view" name="view" class="cc-dropdown-native-select" data-cc-dropdown-native-select[^>]*>/);
-    expect(html).toMatch(/<select id="av-sort" name="sort" class="cc-dropdown-native-select" data-cc-dropdown-native-select[^>]*>/);
-    expect((html.match(/name="(?:view|sort)" class="cc-dropdown-native-select"/g) || [])).toHaveLength(2);
+    expect(html).toMatch(/<select id="av-view" name="view" class="cc-dropdown-native-select" data-cc-dropdown-native-select[^>]*data-autosubmit="fetch"[^>]*>/);
+    expect(html).toMatch(/<select id="av-sort" name="sort" class="cc-dropdown-native-select" data-cc-dropdown-native-select[^>]*data-autosubmit="fetch"[^>]*>/);
+    expect((defaultsDialog.match(/data-cc-dropdown-dispatch-native-change/g) || [])).toHaveLength(8);
+    expect((defaultsDialog.match(/data-cc-dropdown-mode="multiple"/g) || [])).toHaveLength(2);
+    expect((defaultsDialog.match(/data-cc-dropdown-mode="single"/g) || [])).toHaveLength(6);
+    expect(defaultsDialog).toMatch(/<select id="av-extension" name="extension"[^>]* multiple[^>]*data-autosubmit="fetch"[^>]*>/);
+    expect(defaultsDialog).toMatch(/<select id="av-tag" name="tag"[^>]* multiple[^>]*data-autosubmit="fetch"[^>]*>/);
+    expect(defaultsDialog).toMatch(/<option value="jpg" selected>\.jpg<\/option>/);
+    expect(defaultsDialog).toMatch(/<option value="png" selected>\.png<\/option>/);
+    expect(defaultsDialog).toMatch(/<option value="1" selected>First tag<\/option>/);
+    expect(defaultsDialog).toMatch(/<option value="2" selected>Second tag<\/option>/);
+    expect(defaultsDialog).not.toMatch(/<option value="all"[^>]*>All (?:extensions|tags)<\/option>/);
+    expect(defaultsDialog).not.toMatch(/type="checkbox" value="all"/);
   });
 
-  it('renders a noscript Filter button inside the filter form', () => {
+  it('does not render a no-JavaScript Filter submit fallback', () => {
     const html = renderPage();
-    expect(html).toMatch(/<noscript><button class="button" type="submit">Filter<\/button><\/noscript>/);
+    expect(html).not.toContain('<noscript>');
   });
 });
 
@@ -1089,14 +1185,13 @@ function renderProjectAssetsPage(overrides = {}) {
 }
 
 describe('slideshow scaffold — static UI', () => {
-  it('asset-viewer page: slideshow trigger exists before Reset in DOM order', () => {
+  it('asset-viewer page: Reset is inside the Filter dialog rather than the toolbar', () => {
     const html = renderPage();
     const toolbarDiv = html.match(/<div class="project-filter-actions project-filter-actions--projects">[\s\S]*?<\/div>/)?.[0] ?? '';
-    const triggerPos = toolbarDiv.indexOf('data-slideshow-trigger');
-    const resetPos = toolbarDiv.indexOf('data-asset-library-reset');
-    expect(triggerPos).toBeGreaterThan(-1);
-    expect(resetPos).toBeGreaterThan(-1);
-    expect(triggerPos).toBeLessThan(resetPos);
+    const filterDialog = html.slice(html.indexOf('<dialog id="asset-viewer-filter-dialog"'));
+    expect(toolbarDiv).toContain('data-slideshow-trigger');
+    expect(toolbarDiv).not.toContain('data-asset-library-reset');
+    expect(filterDialog).toContain('data-asset-library-reset');
   });
 
   it('asset-viewer page: slideshow trigger has accessible label and styled tooltip', () => {
@@ -1174,14 +1269,15 @@ describe('slideshow scaffold — static UI', () => {
     expect(speedSelect).toContain('value="6000"');
   });
 
-  it('asset-viewer page: toolbar has Defaults, NSFW, Slideshow, and Reset controls', () => {
+  it('asset-viewer page: toolbar has Filter, Defaults, NSFW, and Slideshow controls', () => {
     const html = renderPage({ _csrf: 'test-csrf', nsfwFilterEnabled: false });
+    expect(html).toContain('data-dialog-open="asset-viewer-filter-dialog"');
     expect(html).toContain('data-dialog-open="asset-viewer-defaults-dialog"');
     expect(html).toContain('data-asset-library-nsfw-toggle');
     expect(html).toContain('data-slideshow-trigger');
     expect(html).toContain('data-asset-library-reset');
     expect(html).toContain('href="/assets?defaults=1"');
-    expect(html).toMatch(/<noscript><button class="button" type="submit">Filter<\/button><\/noscript>/);
+    expect(html).not.toContain('<noscript>');
   });
 
   it('project assets page: slideshow trigger exists before Filter in DOM order', () => {
