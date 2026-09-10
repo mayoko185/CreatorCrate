@@ -17,6 +17,7 @@ function createProject(repository, title) {
     description: '',
     notes: '',
     status: 'tbd',
+    projectType: 'images',
     priority: 'normal',
     plannedDate: null,
     publishedDate: null,
@@ -93,6 +94,22 @@ describe('project page-default repository', () => {
     expect(repository.getPageOptions(projectOne.id, 'projectAssets')).toEqual({ sort: 'filename' });
     expect(repository.getPageOptions(projectTwo.id, 'projectAssets')).toEqual({ sort: 'modified' });
     expect(repository.getPageOptions(projectOne.id, 'assetViewer')).toEqual({ sort: 'size' });
+  });
+
+  it('lists exact project-scoped references for one saved option value', () => {
+    const projectOne = createProject(projectRepository, 'Project One');
+    const projectTwo = createProject(projectRepository, 'Project Two');
+    repository.setOption(projectOne.id, 'projects', 'status', 'custom');
+    repository.setOption(projectTwo.id, 'projects', 'status', 'custom');
+    repository.setOption(projectOne.id, 'projects', 'projectType', 'custom');
+
+    expect(repository.listOptionValueReferences('projects', 'status', 'custom')).toEqual([
+      { project_id: projectOne.id },
+      { project_id: projectTwo.id },
+    ]);
+    expect(repository.listOptionValueReferences('projects', 'projectType', 'custom')).toEqual([
+      { project_id: projectOne.id },
+    ]);
   });
 
   it('deletes only one project and page option set', () => {

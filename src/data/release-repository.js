@@ -61,6 +61,7 @@ const ACTIVE_PARENT_PROJECT = `EXISTS (
   SELECT 1 FROM projects
   WHERE projects.id = releases.project_id
     AND projects.archived_at IS NULL
+    AND projects.status <> 'archived'
 )`;
 
 /**
@@ -718,6 +719,7 @@ export function createReleaseRepository(db) {
         WHERE r.archived_at IS NULL
           AND r.published_date IS NULL
           AND p.archived_at IS NULL
+          AND p.status <> 'archived'
           AND a.is_present = 0
         GROUP BY r.id
         ORDER BY (r.planned_date IS NULL), r.planned_date ASC, r.updated_at DESC

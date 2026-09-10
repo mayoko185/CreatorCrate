@@ -6,16 +6,18 @@ import { fileURLToPath } from 'node:url';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
 import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browser-preference-repository.js';
+import { createAppMetaRepository } from '../src/data/app-meta-repository.js';
 import { createApplicationLogRepository } from '../src/data/application-log-repository.js';
-import { PROJECT_TYPES, DEFAULT_PROJECT_TYPE } from '../src/data/project-repository.js';
 import { createAssetCategoryService } from '../src/services/asset-category-service.js';
 import { createApplicationLogger } from '../src/services/application-logger.js';
+import { createPageDefaultsService } from '../src/services/page-defaults-service.js';
 import {
   createProjectService,
   ProjectValidationError,
   ProjectNotFoundError,
 } from '../src/services/project-service.js';
 import { MANIFEST_FILENAME, readManifestSync, writeManifestSync } from '../src/storage/manifest.js';
+import { createTestProjectOptionCatalogueService } from './helpers/project-option-catalogue.js';
 import {
   formatProjectDirName,
   resolveProjectDir,
@@ -26,11 +28,14 @@ import {
 } from '../src/storage/project-storage.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
+const BUILT_IN_PROJECT_TYPES = ['images', 'comic', 'animation', 'wallpaper'];
 
 describe('project service', () => {
   let tmpDir;
   let db;
   let service;
+  let projectOptionCatalogueService;
+  let pageDefaultsService;
   let assetBrowserPreferenceRepository;
   let projectsRoot;
 
@@ -43,7 +48,17 @@ describe('project service', () => {
     runMigrations(db, MIGRATIONS_DIR);
     const assetCategoryService = createAssetCategoryService(createAssetCategoryRepository(db));
     assetBrowserPreferenceRepository = createAssetBrowserPreferenceRepository(db);
-    service = createProjectService(db, projectsRoot, { assetCategoryService, assetBrowserPreferenceRepository });
+    projectOptionCatalogueService = createTestProjectOptionCatalogueService(db);
+    pageDefaultsService = createPageDefaultsService({
+      appMetaRepository: createAppMetaRepository(db),
+      projectOptionCatalogueService,
+    });
+    service = createProjectService(db, projectsRoot, {
+      assetCategoryService,
+      assetBrowserPreferenceRepository,
+      pageDefaultsService,
+      projectOptionCatalogueService,
+    });
   });
 
   afterEach(() => {
@@ -85,6 +100,8 @@ describe('project service', () => {
       const fakeService = createProjectService(db, projectsRoot, {
         assetCategoryService: fake,
         assetBrowserPreferenceRepository,
+        pageDefaultsService,
+        projectOptionCatalogueService: createTestProjectOptionCatalogueService(db),
       });
 
       const project = fakeService.create(validInput({ title: 'Fake DI Project' }));
@@ -106,15 +123,103 @@ describe('project service', () => {
   });
 
   describe('project type', () => {
-    it('defaults missing and empty create input to images', () => {
-      const missing = service.create(validInput({ title: 'Missing Project Type' }));
-      const empty = service.create(validInput({ title: 'Empty Project Type', projectType: '' }));
+    it('accepts a newly added catalogue type without reconstructing the service', () => {
+      const { value } = projectOptionCatalogueService.addOption('projectType', {
+        name: 'Interactive Story',
+        color: '#123456',
+      });
 
-      expect(missing.project_type).toBe(DEFAULT_PROJECT_TYPE);
-      expect(empty.project_type).toBe(DEFAULT_PROJECT_TYPE);
+      expect(service.create(validInput({ projectType: value })).project_type).toBe(value);
     });
 
-    it.each(PROJECT_TYPES)('accepts the %s project type on create', (projectType) => {
+    it('resolves missing and empty create values from the saved Page Defaults', () => {
+      pageDefaultsService.saveDefault('new_project', 'status', 'ready');
+      pageDefaultsService.saveDefault('new_project', 'projectType', 'comic');
+      const missing = service.create(validInput({ title: 'Missing Project Type' }));
+      const empty = service.create(validInput({
+        title: 'Empty Project Type',
+        status: '',
+        projectType: '',
+      }));
+
+      expect(missing.status).toBe('tbd');
+      expect(missing.project_type).toBe('comic');
+      expect(empty.status).toBe('ready');
+      expect(empty.project_type).toBe('comic');
+    });
+
+    it('observes changed Status and Type defaults without reconstructing the service', () => {
+      pageDefaultsService.saveDefault('new_project', 'status', 'planned');
+      pageDefaultsService.saveDefault('new_project', 'projectType', 'comic');
+      const first = service.create(validInput({
+        title: 'First Dynamic Defaults',
+        status: undefined,
+        projectType: undefined,
+      }));
+
+      pageDefaultsService.saveDefault('new_project', 'status', 'ready');
+      pageDefaultsService.saveDefault('new_project', 'projectType', 'animation');
+      const second = service.create(validInput({
+        title: 'Second Dynamic Defaults',
+        status: undefined,
+        projectType: undefined,
+      }));
+
+      expect([first.status, first.project_type]).toEqual(['planned', 'comic']);
+      expect([second.status, second.project_type]).toEqual(['ready', 'animation']);
+    });
+
+    it('keeps explicit valid Status and Type authoritative over configured defaults', () => {
+      pageDefaultsService.saveDefault('new_project', 'status', 'planned');
+      pageDefaultsService.saveDefault('new_project', 'projectType', 'comic');
+
+      const project = service.create(validInput({ status: 'ready', projectType: 'wallpaper' }));
+
+      expect([project.status, project.project_type]).toEqual(['ready', 'wallpaper']);
+    });
+
+    it('fails clearly when either configured creation default is missing or stale', () => {
+      db.prepare('UPDATE app_meta SET value = ? WHERE key = ?')
+        .run('deleted-status', 'page_defaults.new_project.status');
+      expect(() => service.create(validInput({
+        title: 'Stale Status Default',
+        status: undefined,
+        projectType: 'images',
+      }))).toThrowError(expect.objectContaining({
+        errors: {
+          status: 'The configured New Project Status default is missing or unavailable. Choose a valid default in Settings.',
+        },
+      }));
+
+      db.prepare('UPDATE app_meta SET value = ? WHERE key = ?')
+        .run('tbd', 'page_defaults.new_project.status');
+      db.prepare('DELETE FROM app_meta WHERE key = ?')
+        .run('page_defaults.new_project.project_type');
+      expect(() => service.create(validInput({
+        title: 'Missing Type Default',
+        status: 'tbd',
+        projectType: undefined,
+      }))).toThrowError(expect.objectContaining({
+        errors: {
+          projectType: 'The configured New Project Type default is missing or unavailable. Choose a valid default in Settings.',
+        },
+      }));
+      expect(db.prepare('SELECT COUNT(*) FROM projects').pluck().get()).toBe(0);
+    });
+
+    it('cannot resolve the system Archived status for ordinary creation', () => {
+      db.prepare('UPDATE app_meta SET value = ? WHERE key = ?')
+        .run('archived', 'page_defaults.new_project.status');
+
+      expect(() => service.create(validInput({
+        status: undefined,
+        projectType: 'images',
+      }))).toThrowError(expect.objectContaining({
+        errors: expect.objectContaining({ status: expect.stringContaining('missing or unavailable') }),
+      }));
+    });
+
+    it.each(BUILT_IN_PROJECT_TYPES)('accepts the %s project type on create', (projectType) => {
       const project = service.create(validInput({
         title: `Project Type ${projectType}`,
         projectType,
@@ -127,6 +232,47 @@ describe('project service', () => {
       expect(() => service.create(validInput({ projectType: 'invalid-type' }))).toThrow(
         ProjectValidationError
       );
+    });
+
+    it('requires a Project option catalogue service dependency', () => {
+      expect(() => createProjectService(db, projectsRoot, {
+        assetCategoryService: {},
+        assetBrowserPreferenceRepository,
+      })).toThrow('createProjectService requires a projectOptionCatalogueService dependency.');
+    });
+
+    it('rejects an invalid injected Page Defaults service', () => {
+      expect(() => createProjectService(db, projectsRoot, {
+        assetCategoryService: {},
+        assetBrowserPreferenceRepository,
+        pageDefaultsService: {},
+        projectOptionCatalogueService,
+      })).toThrow('createProjectService received an invalid pageDefaultsService dependency.');
+    });
+
+    it('uses the same persisted Page Defaults service for direct callers', () => {
+      const directService = createProjectService(db, projectsRoot, {
+        assetCategoryService: createAssetCategoryService(createAssetCategoryRepository(db)),
+        assetBrowserPreferenceRepository,
+        projectOptionCatalogueService,
+      });
+
+      const project = directService.create(validInput({
+        title: 'Direct Caller Defaults',
+        status: undefined,
+        projectType: undefined,
+      }));
+      expect([project.status, project.project_type]).toEqual(['tbd', 'images']);
+    });
+
+    it('rejects a catalogue type after it is deleted', () => {
+      const { value } = projectOptionCatalogueService.addOption('projectType', {
+        name: 'Temporary Type',
+        color: '#123456',
+      });
+      projectOptionCatalogueService.deleteOption('projectType', value);
+
+      expect(() => service.create(validInput({ projectType: value }))).toThrow(ProjectValidationError);
     });
 
     it('preserves an existing non-default type when update input omits it', () => {
@@ -251,6 +397,37 @@ describe('project service', () => {
     expect(service.findById(project.id)).not.toHaveProperty('published_date');
   });
 
+  it('accepts a newly added catalogue status without reconstructing the service', () => {
+    const { value } = projectOptionCatalogueService.addOption('status', {
+      name: 'Awaiting Review',
+      color: '#123456',
+    });
+
+    expect(service.create(validInput({ status: value })).status).toBe(value);
+  });
+
+  it('updates an existing project to current custom Status and Type values', () => {
+    const project = service.create(validInput({ title: 'Custom Option Update' }));
+    const status = projectOptionCatalogueService.addOption('status', {
+      name: 'Client Approval',
+      color: '#123456',
+    });
+    const projectType = projectOptionCatalogueService.addOption('projectType', {
+      name: 'Interactive Novel',
+      color: '#654321',
+    });
+
+    const updated = service.update(project.id, validInput({
+      title: project.title,
+      status: status.value,
+      projectType: projectType.value,
+    }));
+    expect(updated).toEqual(expect.objectContaining({
+      status: status.value,
+      project_type: projectType.value,
+    }));
+  });
+
   it.each([
     { url: 'https://example.com/creator', label: 'non-Patreon HTTPS URL' },
     { url: 'http://example.com/creator', label: 'HTTP URL' },
@@ -325,7 +502,31 @@ describe('project service', () => {
     expect(() => service.update(999, validInput())).toThrow(ProjectNotFoundError);
   });
 
+  it('rejects ordinary updates for legacy status-only archived projects before filesystem mutation', () => {
+    const project = service.create(validInput({ title: 'Legacy Archived Update' }));
+    const originalDir = project.project_dir;
+    db.prepare("UPDATE projects SET status = 'archived', archived_at = NULL WHERE id = ?").run(project.id);
+
+    let error;
+    try {
+      service.update(project.id, validInput({ title: 'Must Not Rename' }));
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toBeInstanceOf(ProjectValidationError);
+    expect(error.errors).toEqual({ general: 'Archived projects cannot be edited.' });
+
+    const unchanged = service.findById(project.id);
+    expect(unchanged.title).toBe('Legacy Archived Update');
+    expect(unchanged.status).toBe('archived');
+    expect(unchanged.archived_at).toBeNull();
+    expect(unchanged.project_dir).toBe(originalDir);
+    expect(fs.existsSync(resolveProjectDir(projectsRoot, originalDir))).toBe(true);
+  });
+
   it('archives an existing project', () => {
+    expect(projectOptionCatalogueService.getStatusCatalogue().map(({ value }) => value))
+      .not.toContain('archived');
     const created = service.create(validInput());
     const archived = service.archive(created.id);
     expect(archived.status).toBe('archived');
@@ -1233,6 +1434,17 @@ describe('project service', () => {
       expect(() => service.archive(project.id)).toThrow('already archived');
     });
 
+    it('legacy status-only archived project is already archived without rewriting its marker', () => {
+      const project = createTestProject({ title: 'Legacy Double Archive' });
+      db.prepare("UPDATE projects SET status = 'archived', archived_at = NULL WHERE id = ?").run(project.id);
+
+      expect(() => service.archive(project.id)).toThrow('already archived');
+      expect(service.findById(project.id)).toMatchObject({
+        status: 'archived',
+        archived_at: null,
+      });
+    });
+
     it('missing project throws ProjectNotFoundError', () => {
       expect(() => service.archive(99999)).toThrow(ProjectNotFoundError);
     });
@@ -1407,6 +1619,8 @@ describe('project service', () => {
         assetCategoryService: createAssetCategoryService(createAssetCategoryRepository(db)),
         assetBrowserPreferenceRepository,
         applicationLogger,
+        pageDefaultsService,
+        projectOptionCatalogueService: createTestProjectOptionCatalogueService(db),
       });
     }
 
@@ -1483,7 +1697,7 @@ describe('project service', () => {
       });
       expect(record.context_json).toBe(JSON.stringify({
         status: 'tbd',
-        projectType: DEFAULT_PROJECT_TYPE,
+        projectType: 'images',
       }));
       expect(String(record.message) + String(record.context_json)).not.toContain('C:\\private');
       expect(String(record.message) + String(record.context_json)).not.toContain(projectsRoot);

@@ -682,7 +682,7 @@ describe('project HTTP workflow', () => {
         view: 'list',
         sort: 'updated',
         order: 'asc',
-        status: 'ready',
+        status: 'archived',
         projectType: 'comic',
         tag: 'all',
         _csrf: csrfToken,
@@ -696,7 +696,7 @@ describe('project HTTP workflow', () => {
         view: 'list',
         sort: 'updated',
         order: 'asc',
-        status: 'ready',
+        status: 'archived',
         projectType: 'comic',
         tag: 'all',
       },
@@ -705,7 +705,7 @@ describe('project HTTP workflow', () => {
       view: 'list',
       sort: 'updated',
       order: 'asc',
-      status: 'ready',
+      status: 'archived',
       projectType: 'comic',
       tag: 'all',
     });
@@ -1296,7 +1296,7 @@ describe('project HTTP workflow', () => {
     expect(availableCard).not.toContain('/thumbnail');
     expect(availableCard).not.toContain('project-grid-card-top');
     expect(availableCard).toMatch(
-      /<div class="project-grid-card-status" aria-label="Project badges">\s*<span class="status-badge project-type-badge project-type-badge--images">Images<\/span>\s*<span class="status-badge status-badge--active">Ready<\/span>\s*<\/div>\s*<div class="project-grid-card-preview[\s\S]*?<a class="project-grid-card-preview-link"/
+      /<div class="project-grid-card-status" aria-label="Project badges">\s*<span class="status-badge project-option-badge project-type-badge" style="--project-badge-bg: #22D3EE; --project-badge-tint: 18%; --project-badge-fg: #22D3EE">Images<\/span>\s*<span class="status-badge project-option-badge project-status-badge status-badge--active" style="--project-badge-bg: #34D399; --project-badge-tint: 18%; --project-badge-fg: #34D399">Ready<\/span>\s*<\/div>\s*<div class="project-grid-card-preview[\s\S]*?<a class="project-grid-card-preview-link"/
     );
     expect(availableCard).not.toContain('project-grid-card-priority');
     expect(availableCard).not.toMatch(/Priority:\s*High/);
@@ -1307,7 +1307,7 @@ describe('project HTTP workflow', () => {
     expect(availableCard).toContain('data-project-grid-preview');
     expect(availableCard).toContain('<dl class="project-grid-card-info-list">');
     expect(availableCard).toMatch(
-      /<dt>Type<\/dt>\s*<dd>[\s\S]*?<span class="status-badge project-type-badge project-type-badge--images">Images<\/span>[\s\S]*?<\/dd>/
+      /<dt>Type<\/dt>\s*<dd>[\s\S]*?<span class="status-badge project-option-badge project-type-badge" style="--project-badge-bg: #22D3EE; --project-badge-tint: 18%; --project-badge-fg: #22D3EE">Images<\/span>[\s\S]*?<\/dd>/
     );
     expect((availableCard.match(/class="project-grid-card-info-row"/g) || [])).toHaveLength(3);
     expect(availableCard).toContain('<div class="project-grid-card-info-section">');
@@ -2069,13 +2069,27 @@ describe('project HTTP workflow', () => {
     expect(res.text).not.toContain('id="priority"');
   });
 
-  it('new-project form falls back to tbd when the stored status default is invalid', async () => {
+  it('rejects creation when the stored status default is stale without rewriting it', async () => {
     writeStoredNewProjectDefault('status', 'archived');
     writeLegacyNewProjectPriority('urgent');
 
-    const res = await agent.get('/projects/new').expect(200);
+    const beforeCount = db.prepare('SELECT COUNT(*) AS count FROM projects').get().count;
+    const res = await agent
+      .post('/projects')
+      .send('title=Stale+Status+Default')
+      .send('projectType=images')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(422);
 
-    expectProjectFormStatusDisclosure(res.text, 'tbd');
+    expect(db.prepare('SELECT COUNT(*) AS count FROM projects').get().count).toBe(beforeCount);
+    expect(res.text).toContain(
+      'The configured New Project Status default is missing or unavailable. Choose a valid default in Settings.'
+    );
+    expectProjectFormStatusDisclosure(res.text, null, { statusError: true });
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').pluck().get(
+      PAGE_DEFAULT_DEFINITIONS.new_project.status.key,
+    )).toBe('archived');
     expect(res.text).not.toContain('id="priority"');
   });
 
@@ -2907,7 +2921,8 @@ describe('project HTTP workflow', () => {
     expect(res.headers.location).toBe('/projects');
 
     const detail = await agent.get(`/projects/${id}`).expect(200);
-    expect(detail.text).toContain('Archived');
+    expect(detail.text).toContain('<span class="status-badge status-badge--archived">Archived</span>');
+    expect(detail.text).not.toMatch(/project-status-badge[^>]*>Archived<\/span>/);
   });
 
   it('delete action removes the project and redirects to the project list', async () => {
@@ -3010,6 +3025,9 @@ describe('project HTTP workflow', () => {
     expect(archivedList.text).toContain('Filter Archive');
     expect(archivedList.text).toContain('Archived List Display');
     expect(archivedList.text).toContain('class="project-card project-card--grid project-grid-card project-card--archived" data-project-card');
+    expect(archivedList.text).toContain('<span class="status-badge status-badge--archived">Archived</span>');
+    expect(app.locals.projectOptionCatalogueService.getStatusCatalogue().map(({ value }) => value))
+      .not.toContain('archived');
   });
 
   it('project id and status query parameters affect results', async () => {
@@ -3572,7 +3590,7 @@ describe('project HTTP workflow', () => {
       const res = await agent
         .post(createRes.headers.location)
         .send('title=No+Path+HTTP')
-        .send('status=archived')  // rejected by WORKFLOW_STATUSES validation
+        .send('status=archived')  // rejected by the operational archive guard
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
@@ -4218,6 +4236,63 @@ describe('project HTTP workflow', () => {
     });
   });
 
+  it('accepts live custom Status and Type filters and drops deleted or unknown values', async () => {
+    const status = app.locals.projectOptionCatalogueService.addOption('status', {
+      name: 'Awaiting Review',
+      color: '#123456',
+    });
+    const projectType = app.locals.projectOptionCatalogueService.addOption('projectType', {
+      name: 'Interactive Story',
+      color: '#654321',
+    });
+    const deletedStatus = app.locals.projectOptionCatalogueService.addOption('status', {
+      name: 'Temporary Filter',
+      color: '#ABCDEF',
+    });
+    app.locals.projectOptionCatalogueService.deleteOption('status', deletedStatus.value);
+    app.locals.projectOptionCatalogueService.reorderOptions('status', [
+      status.value, 'tbd', 'planned', 'in-progress', 'ready', 'completed',
+    ]);
+    app.locals.projectOptionCatalogueService.reorderOptions('projectType', [
+      projectType.value, 'images', 'comic', 'animation', 'wallpaper',
+    ]);
+
+    const customId = await createProject({
+      title: 'Custom Catalogue Project',
+      status: status.value,
+      projectType: projectType.value,
+    });
+    const ordinaryId = await createProject({ title: 'Ordinary Catalogue Project' });
+
+    const filtered = await agent.get(
+      `/projects?status=${status.value}&type=${projectType.value}&sort=title&order=asc&search=Catalogue`,
+    ).expect(200);
+    expect(filtered.text).toContain(`data-project-card-link href="/projects/${customId}"`);
+    expect(filtered.text).not.toContain(`data-project-card-link href="/projects/${ordinaryId}"`);
+    const statusFilter = extractStatusFilter(filtered.text);
+    const projectTypeFilter = extractProjectTypeFilter(filtered.text);
+    expect(statusFilter).toContain('Awaiting Review');
+    expect(statusFilter.indexOf(`value="${status.value}"`)).toBeLessThan(statusFilter.indexOf('value="tbd"'));
+    expect(statusFilter.indexOf('value="completed"')).toBeLessThan(statusFilter.indexOf('value="archived"'));
+    expect(statusFilter).toContain('Archived');
+    expect(app.locals.projectOptionCatalogueService.getStatusCatalogue().map(({ value }) => value))
+      .not.toContain('archived');
+    expect(projectTypeFilter).toContain('Interactive Story');
+    expect(projectTypeFilter.indexOf(`value="${projectType.value}"`)).toBeLessThan(projectTypeFilter.indexOf('value="images"'));
+
+    const all = await agent.get('/projects?sort=title&order=asc').expect(200);
+    expect(extractStatusFilter(all.text)).toContain('All active');
+    expect(extractProjectTypeFilter(all.text)).toContain('All types');
+
+    const stale = await agent.get(
+      `/projects?status=${deletedStatus.value}&type=unknown-type&sort=title&order=asc`,
+    ).expect(200);
+    expect(stale.text).toContain(`data-project-card-link href="/projects/${customId}"`);
+    expect(stale.text).toContain(`data-project-card-link href="/projects/${ordinaryId}"`);
+    expect(stale.text).not.toContain(`status=${deletedStatus.value}`);
+    expect(stale.text).not.toContain('type=unknown-type');
+  });
+
   it('project detail renders release thumbnails per release with accessible labels and a display cap', async () => {
     const projectId = await createProject({ title: 'Release Thumbnail Project' });
     const assetRepository = createAssetRepository(db);
@@ -4453,7 +4528,7 @@ describe('project HTTP workflow', () => {
       expect(res.text).not.toContain(`/projects/${id}/edit`);
     });
 
-    it('keeps the archived asset categories page reachable even though the detail header no longer links it', async () => {
+    it('redirects archived asset categories management to the canonical Assets surface', async () => {
       const createRes = await agent
         .post('/projects')
         .send('title=Archived+Categories+Link')
@@ -4466,11 +4541,12 @@ describe('project HTTP workflow', () => {
 
       await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
-      // Asset Categories is reached from the assets page, not the project detail
-      // header, but the page itself remains reachable directly.
+      // Asset Categories is managed from the canonical Assets surface, not an
+      // independently active legacy page or the project detail header.
       const res = await agent.get(`/projects/${id}`).expect(200);
       expect(res.text).not.toContain(`/projects/${id}/asset-categories`);
-      await agent.get(`/projects/${id}/asset-categories`).expect(200);
+      const redirect = await agent.get(`/projects/${id}/asset-categories`).expect(302);
+      expect(redirect.headers.location).toBe(`/projects/${id}/assets?manage_categories=1`);
     });
   });
 
@@ -4632,6 +4708,38 @@ describe('project HTTP workflow', () => {
   // page (the read-only workspace) instead. The detail page is unaffected.
 
   describe('archived project edit guard', () => {
+    it('treats a legacy status-only archived project as read-only in detail, edit, update, and card presentation', async () => {
+      const id = await createProject({ title: 'Legacy Status Only Archived' });
+      db.prepare("UPDATE projects SET status = 'archived', archived_at = NULL WHERE id = ?").run(id);
+
+      const detail = await agent.get(`/projects/${id}?edit=1`).expect(200);
+      expect(detail.text).toContain('This project is archived and read-only.');
+      expect(detail.text).toContain('<span class="status-badge status-badge--archived">Archived</span>');
+      expect(detail.text).not.toContain('aria-label="Edit project"');
+      expect(detail.text).not.toContain('id="project-edit-dialog"');
+      expect(detail.text).not.toContain(`/releases/new?projectId=${id}`);
+
+      await agent.get(`/projects/${id}/edit`)
+        .expect(302)
+        .expect('Location', `/projects/${id}`);
+
+      await agent.post(`/projects/${id}`)
+        .type('form')
+        .send({ title: 'Accidental Unarchive', status: 'tbd', projectType: 'images', _csrf: csrfToken })
+        .expect(422);
+      expect(db.prepare('SELECT title, status, archived_at FROM projects WHERE id = ?').get(id)).toEqual({
+        title: 'Legacy Status Only Archived',
+        status: 'archived',
+        archived_at: null,
+      });
+
+      const archivedList = await agent.get('/projects?status=archived').expect(200);
+      const card = extractProjectCard(archivedList.text, id);
+      expect(card).toContain('project-card--archived');
+      expect(card).toContain('<span class="status-badge status-badge--archived">Archived</span>');
+      expect(card).not.toContain('project-status-badge');
+    });
+
     it('GET /projects/:id/edit redirects to the detail page when the project is archived', async () => {
       const createRes = await agent
         .post('/projects')

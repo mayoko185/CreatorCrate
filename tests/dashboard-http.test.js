@@ -429,6 +429,35 @@ describe('dashboard HTTP composition', () => {
   });
 
   describe('dashboard defaults save endpoint', () => {
+    it('accepts a current custom status and rejects the same submitted section after catalogue deletion', async () => {
+      const catalogue = app.locals.projectOptionCatalogueService;
+      catalogue.addOption('status', { name: 'Quality Review', color: '#123456' });
+      const currentForm = buildDashboardDefaultsForm(app);
+
+      await app.testAgent
+        .post('/dashboard/defaults')
+        .set('Accept', 'application/json')
+        .type('form')
+        .send(currentForm)
+        .expect(200);
+      expect(app.locals.dashboardDefaultsService.getDefaults().sections)
+        .toHaveProperty('status:quality-review');
+
+      catalogue.deleteOption('status', 'quality-review');
+      expect(app.locals.dashboardDefaultsService.getDefaults().sections)
+        .not.toHaveProperty('status:quality-review');
+      const rejected = await app.testAgent
+        .post('/dashboard/defaults')
+        .set('Accept', 'application/json')
+        .type('form')
+        .send(currentForm)
+        .expect(422);
+
+      expect(rejected.body.errors.order).toMatch(/unsupported section/i);
+      expect(app.locals.dashboardDefaultsService.getDefaults().sections)
+        .not.toHaveProperty('status:quality-review');
+    });
+
     it('saves a complete custom configuration through the native form and redirects to the Dashboard notice destination', async () => {
       const defaults = app.locals.dashboardDefaultsService.getDefaults();
       const order = [...defaults.order].reverse();
@@ -703,6 +732,28 @@ describe('dashboard HTTP composition', () => {
     });
   });
   describe('dashboard configurable section rendering', () => {
+    it('observes a custom status live for heading metadata, queries, counts, and shared Project cards', async () => {
+      app.locals.projectOptionCatalogueService.addOption('status', {
+        name: 'Editorial Review',
+        color: '#123456',
+      });
+      const projectId = await createProject(app, {
+        title: 'Editorial Project',
+        status: 'editorial-review',
+      });
+
+      const dashboard = (await app.testAgent.get('/?defaults=1').expect(200)).text;
+      const section = extractSection(dashboard, 'status:editorial-review');
+      const card = extractProjectCard(section, projectId);
+
+      expect(section).toContain('<h2>Editorial Review</h2>');
+      expect(section).toContain('Editorial Project');
+      expect(card).toContain('>Editorial Review</span>');
+      expect(card).toContain('style="--project-badge-bg: #123456; --project-badge-tint: 18%; --project-badge-fg: #8495A7"');
+      expect(extractSummaryCards(dashboard)).toContain('<span class="summary-card-value">1</span>');
+      expect(extractDashboardDefaultsDialog(dashboard)).toContain('data-dashboard-section-id="status:editorial-review"');
+    });
+
     it('renders every visible static and status section in saved order with service-provided limits', async () => {
       const defaults = app.locals.dashboardDefaultsService.getDefaults();
       defaults.order = [
@@ -733,9 +784,9 @@ describe('dashboard HTTP composition', () => {
         'Ready',
         'Archived',
         'Recently updated projects',
-        'TBD',
+        'Tbd',
         'Planned',
-        'In progress',
+        'In Progress',
         'Completed',
       ];
 
@@ -752,6 +803,12 @@ describe('dashboard HTTP composition', () => {
       ]) {
         expect(extractSection(dashboard, sectionId)).toContain(title);
       }
+
+      const archivedSection = extractSection(dashboard, 'status:archived');
+      expect(archivedSection).toContain('<span class="status-badge status-badge--archived">Archived</span>');
+      expect(extractSection(dashboard, 'recent-projects')).not.toContain('Archived Status Project');
+      expect(app.locals.projectOptionCatalogueService.getStatusCatalogue().map(({ value }) => value))
+        .not.toContain('archived');
 
       const readySection = extractSection(dashboard, 'status:ready');
       expect(readySection).toMatch(/Ready (First|Second)/);
@@ -797,8 +854,11 @@ describe('dashboard HTTP composition', () => {
       expect(section).toContain('<ul class="project-grid">');
       expect(card).toMatch(/<article class="project-card project-card--grid project-grid-card" data-project-card>/);
       expect(card).toContain('Recent Card Project');
-      expect(card).toContain('status-badge status-badge--active">Ready</span>');
-      expect(card.match(/project-type-badge--comic/g) || []).toHaveLength(2);
+      expect(card).toContain('project-status-badge');
+      expect(card).toContain('>Ready</span>');
+      expect(card.match(/project-option-badge project-type-badge/g) || []).toHaveLength(2);
+      expect(card).toContain('style="--project-badge-bg: #34D399; --project-badge-tint: 18%; --project-badge-fg: #34D399"');
+      expect(card).toContain('style="--project-badge-bg: #A78BFA; --project-badge-tint: 18%; --project-badge-fg: #B299FB"');
       expect(card).not.toMatch(/\bpriority\b/i);
     });
 

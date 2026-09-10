@@ -7,7 +7,7 @@
 {% set page_title = "Projects — " ~ project.title %}
 
 {% block content %}
-  {% if project.archived_at %}
+  {% if project.isArchived %}
     {{ pageHeading.render("", "archived") }}
   {% endif %}
 
@@ -17,7 +17,7 @@
     {% include "partials/notice.njk" %}
   {% endif %}
 
-  {% if project.archived_at %}
+  {% if project.isArchived %}
     {% set noticeVariant = "warning" %}
     {% set noticeText = "This project is archived and read-only. Editing, releases, and asset scanning are restricted." %}
     {% include "partials/notice.njk" %}
@@ -34,7 +34,7 @@
       {% else %}
         <span class="project-detail-media-placeholder">
           No primary image set.
-          {% if not project.archived_at %}
+          {% if not project.isArchived %}
             <a href="/projects/{{ project.id }}/assets">Choose one in the asset viewer</a>
           {% endif %}
         </span>
@@ -43,10 +43,14 @@
 
     <div class="project-detail-summary">
       <div class="project-detail-meta">
+        {% set projectStatusOption = project.projectStatusOption %}
         {% set status = project.status %}{% include "partials/status-badge.njk" %}
+        {% set projectStatusOption = none %}
+        {% set projectTypeOption = project.projectTypeOption %}
         {% set projectType = project.project_type %}{% include "partials/project-type-badge.njk" %}
+        {% set projectTypeOption = none %}
         <nav class="project-detail-action-toolbar" aria-label="Project actions">
-          {% if not project.archived_at %}
+          {% if not project.isArchived %}
             <a class="button button-small button-secondary project-detail-action asset-tooltip asset-tooltip--right"
                href="/projects/{{ project.id }}/edit" aria-label="Edit project" data-dialog-open="project-edit-dialog" data-tooltip="Edit project">
               {{ icons.icon('edit') }}
@@ -139,7 +143,7 @@
     <div class="project-detail-section-body">
       <div class="workflow-actions">
         <a class="button" href="/releases?project={{ project.id }}">View release records</a>
-        {% if not project.archived_at %}
+        {% if not project.isArchived %}
           <a class="button button-secondary" href="/releases/new?projectId={{ project.id }}">Create release record</a>
         {% endif %}
       </div>
@@ -183,7 +187,7 @@
 {% endblock %}
 
 {% block overlay %}
-  {% if not project.archived_at %}
+  {% if not project.isArchived %}
     {% set values = projectEditForm.values %}
     {% set errors = projectEditForm.errors %}
     {% set statuses = projectEditForm.statuses %}

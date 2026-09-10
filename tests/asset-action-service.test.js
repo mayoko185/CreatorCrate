@@ -19,6 +19,7 @@ import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browse
 import { createAssetCategoryService } from '../src/services/asset-category-service.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createProjectService } from '../src/services/project-service.js';
+import { createTestProjectOptionCatalogueService } from './helpers/project-option-catalogue.js';
 import { createProjectAssetCategoryService } from '../src/services/project-asset-category-service.js';
 import { createProjectPrimaryImageRepository } from '../src/data/project-primary-image-repository.js';
 import { createProjectPrimaryImageService } from '../src/services/project-primary-image-service.js';
@@ -157,6 +158,7 @@ describe('asset action service', () => {
     projectService = createProjectService(db, projectsRoot, {
       assetCategoryService,
       assetBrowserPreferenceRepository,
+      projectOptionCatalogueService: createTestProjectOptionCatalogueService(db),
     });
     categoryService = createProjectAssetCategoryService({
       db,

@@ -132,6 +132,18 @@ Each project receives a `project.json` manifest plus standard working folders: `
 
 Create a project in the web app, then place its working files in its project directory. Use the project asset screen to scan the filesystem and refresh indexed metadata. Categories help organize indexed assets; previewable media is served through generated derivatives while original files remain filesystem-backed.
 
+Manage Project Status and Project Type options under **Settings > Defaults**.
+You can add, reorder, recolor, and delete options, but existing names cannot be
+renamed. When Projects use an option, deletion can reassign them to another option
+from the same catalogue. If a saved default uses the option, change that default
+before deleting it.
+
+New Project has configurable default Status and Type values. Their initial values
+are `tbd` and `images`; these are seeded defaults rather than permanently protected
+options, so either can be deleted after its saved default is changed and any Project
+references are resolved. Archived is system-managed and remains available in
+Projects filtering and Dashboard rather than as an editable workflow Status.
+
 The filesystem is authoritative for media contents. SQLite stores project, asset, release, and workflow metadata; it is not a replacement for the project-file directory.
 
 ### Releases, publishing, and calendar

@@ -12,6 +12,7 @@ import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browse
 import { createAssetCategoryService } from '../src/services/asset-category-service.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createProjectService } from '../src/services/project-service.js';
+import { createTestProjectOptionCatalogueService } from './helpers/project-option-catalogue.js';
 import {
   AssetProcessingError,
   createAssetProcessingService as createAssetProcessingServiceRaw,
@@ -233,6 +234,7 @@ describe('watermark verification', () => {
     projectService = createProjectService(db, projectsRoot, {
       assetCategoryService,
       assetBrowserPreferenceRepository: createAssetBrowserPreferenceRepository(db),
+      projectOptionCatalogueService: createTestProjectOptionCatalogueService(db),
     });
     project = projectService.create(projectInput());
     projectDir = resolveProjectDir(projectsRoot, project.project_dir);

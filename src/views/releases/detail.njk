@@ -41,7 +41,6 @@
 {% endmacro %}
 
 {% block content %}
-  {% set projectArchived = project and project.archived_at %}
   {% set releaseArchived = release and release.archived_at %}
   {% set isPublished = release and release.published_date %}
   {% set isArchived = projectArchived or releaseArchived %}
@@ -231,7 +230,7 @@
 {% endblock %}
 
 {% block overlay %}
-  {% set overlayIsArchived = release.archived_at or (project and project.archived_at) %}
+  {% set overlayIsArchived = release.archived_at or projectArchived %}
   {% set overlayIsPublished = release.published_date %}
 
   {% if not overlayIsArchived %}

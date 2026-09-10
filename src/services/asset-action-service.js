@@ -31,6 +31,7 @@ import { resolveContainedAssetPath } from '../storage/asset-file.js';
 import { assertValidAssetFilename, AssetFilenameValidationError } from './asset-filename-validation.js';
 import { mimeFromExtension, deriveExtensionFromFilename } from './asset-metadata.js';
 import { ProjectOperationError } from './project-operation-coordinator.js';
+import { isProjectArchived } from './project-state.js';
 
 /**
  * Stable sentinel identifying the "move to Uncategorized" destination.
@@ -140,7 +141,7 @@ export function createAssetActionService({
 
   function requireMutableProject(projectId) {
     const project = requireProject(projectId);
-    if (project.archived_at || project.status === 'archived') {
+    if (isProjectArchived(project)) {
       throw new AssetActionError(`Project ${projectId} is archived and cannot be modified.`, { code: 'PROJECT_ARCHIVED' });
     }
     return project;

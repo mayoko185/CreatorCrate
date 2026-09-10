@@ -430,6 +430,7 @@ import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browse
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createAssetCategoryService } from '../src/services/asset-category-service.js';
 import { createProjectService } from '../src/services/project-service.js';
+import { createTestProjectOptionCatalogueService } from './helpers/project-option-catalogue.js';
 import { createProjectOperationCoordinator, ProjectOperationError } from '../src/services/project-operation-coordinator.js';
 import { AssetActionError } from '../src/services/asset-action-service.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
@@ -624,7 +625,11 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     expect(appMetaRepositoryArgs[0]).toBe(db);
     expect(projectPageDefaultRepositoryArgs[0]).toBe(db);
     expect(preferenceRepositoryArgs[1]).toEqual({ appMetaRepository });
-    expect(pageDefaultsServiceArgs[0]).toEqual({ appMetaRepository, projectPageDefaultRepository });
+    expect(pageDefaultsServiceArgs[0]).toEqual({
+      appMetaRepository,
+      projectPageDefaultRepository,
+      projectOptionCatalogueService: app.locals.projectOptionCatalogueService,
+    });
     expect(app.locals.appMetaRepository).toBe(appMetaRepository);
     expect(app.locals.projectPageDefaultRepository).toBe(projectPageDefaultRepository);
     expect(app.locals.pageDefaultsService).toBe(service);
@@ -835,15 +840,21 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     expect(dependencyInstrumentation.assetRouters[0].args[0].autoRenameService).toBe(injected);
   });
 
-  it('constructs one Dashboard defaults service over the shared app-meta repository', () => {
+  it('constructs one Dashboard defaults service over the shared app-meta repository and live Project catalogue', () => {
     const app = buildApp();
 
     expect(dependencyInstrumentation.dashboardDefaultsServices).toHaveLength(1);
     const { args, service } = dependencyInstrumentation.dashboardDefaultsServices[0];
     const { repository: appMetaRepository } = dependencyInstrumentation.appMetaRepositories[0];
 
-    expect(args[0]).toEqual({ appMetaRepository });
+    expect(args[0]).toEqual({
+      appMetaRepository,
+      projectOptionCatalogueService: app.locals.projectOptionCatalogueService,
+    });
     expect(app.locals.dashboardDefaultsService).toBe(service);
+    const workflowDependencies = dependencyInstrumentation.workflowQueryServices[0].args[0];
+    expect(workflowDependencies.dashboardSectionRegistryProvider())
+      .toEqual(service.getSectionRegistry());
   });
 
   it('constructs the native asset processing service without route wiring', () => {
@@ -960,6 +971,9 @@ describe('app construction — asset actions chunk 3 wiring', () => {
 
     expect(repositoryArgs[0]).toBe(db);
     expect(projectServiceArgs[2].assetBrowserPreferenceRepository).toBe(repository);
+    expect(projectServiceArgs[2].projectOptionCatalogueService)
+      .toBe(app.locals.projectOptionCatalogueService);
+    expect(projectServiceArgs[2].projectRepository).toBe(app.locals.projectService.repository);
     expect(preferenceServiceArgs[0].preferenceRepository).toBe(repository);
     expect(categoryServiceArgs[0].assetBrowserPreferenceRepository).toBe(repository);
     expect(app.locals.assetBrowserPreferenceService).toBe(preferenceService);
@@ -1025,6 +1039,7 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     const projectService = createProjectService(db, projectsRoot, {
       assetCategoryService,
       assetBrowserPreferenceRepository: createAssetBrowserPreferenceRepository(db),
+      projectOptionCatalogueService: createTestProjectOptionCatalogueService(db),
     });
     const project = projectService.create({
       title: 'Coordinator Sharing', description: '', notes: '', status: 'tbd', priority: 'normal',
@@ -1069,6 +1084,7 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     const projectService = createProjectService(db, projectsRoot, {
       assetCategoryService,
       assetBrowserPreferenceRepository: createAssetBrowserPreferenceRepository(db),
+      projectOptionCatalogueService: createTestProjectOptionCatalogueService(db),
     });
     const project = projectService.create({
       title: 'Default Coordinator', description: '', notes: '', status: 'tbd', priority: 'normal',

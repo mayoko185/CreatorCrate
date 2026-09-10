@@ -75,6 +75,29 @@ function hasNestedForms(html) {
   return depth !== 0;
 }
 
+function expectReadOnlyCategoryManagement(html, projectId, categoryId) {
+  expect(html).toMatch(/read-only/i);
+  expect(html).not.toContain('id="add-displayName"');
+  expect(html).not.toContain('data-category-reorder-form');
+  expect(html).not.toContain('data-category-reorder-list');
+  expect(html).not.toContain('data-category-reorder-handle');
+  expect(html).not.toContain('data-category-reorder-item');
+  expect(html).not.toContain('draggable="true"');
+  expect(html).not.toContain(`/projects/${projectId}/asset-categories/${categoryId}/name`);
+  expect(html).not.toContain(`action="/projects/${projectId}/asset-categories/${categoryId}/enabled"`);
+  expect(html).not.toContain(`/projects/${projectId}/asset-categories/${categoryId}/delete`);
+}
+
+function expectActiveCategoryManagement(html, projectId, categoryId) {
+  expect(html).toContain('id="add-displayName"');
+  expect(html).toContain('data-category-reorder-form');
+  expect(html).toContain('data-category-reorder-list');
+  expect(html).toContain('data-category-reorder-handle');
+  expect(html).toContain(`/projects/${projectId}/asset-categories/${categoryId}/name`);
+  expect(html).toContain(`action="/projects/${projectId}/asset-categories/${categoryId}/enabled"`);
+  expect(html).toContain(`/projects/${projectId}/asset-categories/${categoryId}/delete`);
+}
+
 function findProjectPreference(db, projectId) {
   return db.prepare(`
     SELECT default_category_mode, default_category_id
@@ -603,6 +626,91 @@ describe('project asset categories — HTTP', () => {
       expect(res.text).not.toContain(`action="/projects/${projectId}/asset-categories/${category.id}/enabled"`);
        expect(res.text).not.toContain(`/projects/${projectId}/asset-categories/${category.id}/create-release`);
        expect(res.text).not.toContain('id="add-displayName"');
+      expectReadOnlyCategoryManagement(res.text, projectId, category.id);
+    });
+
+    it('renders a legacy status-only archived project with the same read-only category controls', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const projectId = await createProject(agent, csrfToken, 'Legacy Archived Readonly');
+      ctx.db.prepare("UPDATE projects SET status = 'archived', archived_at = NULL WHERE id = ?").run(projectId);
+
+      const res = await getCategoryManagementPage(agent, projectId);
+      const [category] = listProjectCategories(ctx.db, projectId);
+      expect(res.text).toMatch(/read-only/i);
+      expect(res.text).not.toContain('data-category-reorder-list');
+      expect(res.text).not.toContain('data-category-reorder-form');
+      expect(res.text).not.toContain(`/projects/${projectId}/asset-categories/${category.id}/delete`);
+      expect(res.text).not.toContain(`/projects/${projectId}/asset-categories/${category.id}/name`);
+      expect(res.text).not.toContain(`action="/projects/${projectId}/asset-categories/${category.id}/enabled"`);
+      expect(res.text).not.toContain(`/projects/${projectId}/asset-categories/${category.id}/create-release`);
+      expect(res.text).not.toContain('id="add-displayName"');
+      expectReadOnlyCategoryManagement(res.text, projectId, category.id);
+    });
+
+    it('keeps legacy status-only archived enhanced add, rename, and delete responses read-only', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const projectId = await createProject(agent, csrfToken, 'Legacy Archived Enhanced');
+      const before = listProjectCategories(ctx.db, projectId);
+      const [category] = before;
+      ctx.db.prepare("UPDATE projects SET status = 'archived', archived_at = NULL WHERE id = ?").run(projectId);
+
+      const attempts = [
+        {
+          path: `/projects/${projectId}/asset-categories`,
+          body: { displayName: 'Rejected Add', directorySlug: 'rejected-add' },
+        },
+        {
+          path: `/projects/${projectId}/asset-categories/${category.id}/name`,
+          body: { displayName: 'Rejected Rename' },
+        },
+        {
+          path: `/projects/${projectId}/asset-categories/${category.id}/delete`,
+          body: {},
+        },
+      ];
+
+      for (const attempt of attempts) {
+        const response = await agent
+          .post(attempt.path)
+          .set('Accept', 'application/json')
+          .type('form')
+          .send({ ...attempt.body, _csrf: csrfToken })
+          .expect(409);
+
+        expect(response.body).toMatchObject({
+          status: 'error',
+          message: expect.stringMatching(/archived/i),
+        });
+        expectReadOnlyCategoryManagement(response.body.html, projectId, category.id);
+      }
+
+      expect(listProjectCategories(ctx.db, projectId)).toEqual(before);
+    });
+
+    it('keeps timestamp-archived enhanced responses read-only', async () => {
+      ctx = setupTmp();
+      const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
+      const { agent, csrfToken } = await authenticate(app);
+      const projectId = await createProject(agent, csrfToken, 'Timestamp Archived Enhanced');
+      const [category] = listProjectCategories(ctx.db, projectId);
+      await agent.post(`/projects/${projectId}/archive`).type('form').send({ _csrf: csrfToken }).expect(302);
+
+      const response = await agent
+        .post(`/projects/${projectId}/asset-categories`)
+        .set('Accept', 'application/json')
+        .type('form')
+        .send({ displayName: 'Rejected Add', directorySlug: 'rejected-add', _csrf: csrfToken })
+        .expect(409);
+
+      expect(response.body).toMatchObject({
+        status: 'error',
+        message: expect.stringMatching(/archived/i),
+      });
+      expectReadOnlyCategoryManagement(response.body.html, projectId, category.id);
     });
   });
 
@@ -937,6 +1045,8 @@ describe('project asset categories — HTTP', () => {
       expect(response.body.html).toContain('data-category-label="Storyboards"');
       expect(response.body.html).toContain('<code>storyboards</code>');
       expect(response.body.html).toContain('data-category-reorder-list');
+      const activeCategory = listProjectCategories(ctx.db, projectId)[0];
+      expectActiveCategoryManagement(response.body.html, projectId, activeCategory.id);
     });
 
     it('returns submitted add values and field errors for an enhanced validation failure', async () => {

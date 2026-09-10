@@ -459,6 +459,62 @@ dashboard and page defaults, default watermark, automatic-scan timing).
 Adding a new global setting means adding a key and a small service, not a
 migration.
 
+**Configurable Project options.** Projects retain `status` and `project_type`
+as literal strings. Their configurable metadata lives in separate versioned
+Project Status and Project Type catalogue documents in `app_meta`; each entry
+owns a stable value, an immutable label, a color, and its catalogue order. The
+Project-option catalogue service is the membership and mutation authority, and
+the presenter supplies that metadata to Project forms, filters, cards, detail,
+and Dashboard cards. Catalogue reads are live, so accepted changes do not
+require an application restart.
+
+Existing option labels cannot be renamed. The `tbd` Status value and `images` Type
+value are seeded entries, not protected built-ins, and may be deleted once no saved
+default references them. Settings supports adding,
+reordering, recoloring, and deleting entries. A deletion is blocked while the value
+is selected by an applicable persisted default, including the New Project Status or
+Type default and global or Project-scoped Projects Status/Type filter defaults; saved
+defaults are never silently remapped. Dashboard section state is not a deletion
+blocker. If Projects reference an otherwise deletable value, the operator selects a
+valid replacement from the same catalogue, and the catalogue service bulk-reassigns
+all affected Projects and deletes the source atomically. A saved-default blocker is
+checked before reassignment, so the combined case cannot partially update Projects
+or the catalogue.
+
+New Project Status and New Project Type are explicit persisted Page Defaults and
+are the authority when creation omits either field. Migration 034 initially
+materializes `tbd` and `images`, respectively. Creation validates each configured
+value against the current editable catalogue and fails clearly when the setting is
+missing, stale, or invalid; it does not fall back to either seeded value or to the
+first catalogue entry. Consequently, deleting a seeded entry cannot cause omitted
+creation to recreate or silently reuse it.
+
+`archived` is a system operational Project state, not an editable workflow Status.
+It is absent from the Status catalogue, reserved against ordinary addition, excluded
+from New/Edit selectors and reassignment targets, and cannot be the New Project
+Status default. The dedicated archive transition writes the operational state, while
+Projects filtering and Dashboard retain system Archived views. Compatibility reads
+treat a Project as operationally Archived when either `archived_at` is present or
+the stored Status is the legacy literal `archived`.
+
+Catalogue order controls editable Status option ordering. Dashboard section order
+is persisted independently: normalization preserves surviving section order, removes
+deleted workflow Status sections, incorporates newly introduced ones, and keeps the
+system Archived section independently of catalogue membership.
+
+Migration 033 rebuilt `projects` without the former fixed Status and Type enumeration
+checks while preserving existing Project values and data. Migration 034 first
+validates the persisted version-1 Status catalogue and aborts transactionally if it
+is missing, malformed, or invalid; historical validation is pinned to the frozen v1
+catalogue contract shared with runtime validation rather than drifting with future
+catalogue versions. It then removes operational `archived` from the editable Status
+catalogue, materializes missing New Project Status/Type defaults, and rebuilds
+`projects` without database defaults on `status` or `project_type`. Existing data,
+IDs, foreign keys, indexes, and the sequence are preserved. Both columns remain
+required literal strings, but valid membership is owned by the application catalogue.
+Removing the database defaults prevents static schema behavior from recreating a
+catalogue option after an operator deletes it.
+
 Note history stores old-state snapshots in `note_revisions`; each changed
 `saveWithAssociations()` snapshots title, raw Markdown, and independent project
 and asset ID sets before replacing the current Note, then prunes that Note's

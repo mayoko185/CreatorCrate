@@ -52,10 +52,17 @@ describe('project repository', () => {
     expect(found.project_type).toBe('images');
   });
 
+  it('requires explicit Status and Project Type values at the create boundary', () => {
+    expect(() => repository.create(sampleProject({ status: undefined })))
+      .toThrow('Project creation requires an explicit status.');
+    expect(() => repository.create(sampleProject({ projectType: undefined })))
+      .toThrow('Project creation requires an explicit projectType.');
+  });
+
   it('updates a project without obsolete date fields', () => {
     const created = repository.create(sampleProject({ title: 'Landscape', projectType: 'comic' }));
     const unchangedType = repository.update(created.id, {
-      ...sampleProject({ title: 'Landscape' }),
+      ...sampleProject({ title: 'Landscape', projectType: undefined }),
       status: 'in-progress',
     });
     expect(unchangedType.project_type).toBe('comic');
@@ -71,6 +78,36 @@ describe('project repository', () => {
     expect(updated).not.toHaveProperty('priority');
     expect(updated).not.toHaveProperty('planned_date');
     expect(updated).not.toHaveProperty('published_date');
+  });
+
+  it('updates only active projects at the repository boundary', () => {
+    const active = repository.create(sampleProject({ title: 'Active Project' }));
+    const timestampArchived = repository.create(sampleProject({ title: 'Timestamp Archived' }));
+    const legacyStatusArchived = repository.create(sampleProject({ title: 'Legacy Status Archived' }));
+    repository.archive(timestampArchived.id);
+    db.prepare("UPDATE projects SET status = 'archived', archived_at = NULL WHERE id = ?")
+      .run(legacyStatusArchived.id);
+
+    const activeResult = repository.update(active.id, sampleProject({ title: 'Active Updated' }));
+    const timestampArchivedResult = repository.update(
+      timestampArchived.id,
+      sampleProject({ title: 'Timestamp Archived Updated' }),
+    );
+    const legacyStatusArchivedResult = repository.update(
+      legacyStatusArchived.id,
+      sampleProject({ title: 'Legacy Status Archived Updated' }),
+    );
+
+    expect(activeResult.title).toBe('Active Updated');
+    expect(repository.findById(active.id).title).toBe('Active Updated');
+    expect(timestampArchivedResult).toBeUndefined();
+    expect(repository.findById(timestampArchived.id).title).toBe('Timestamp Archived');
+    expect(legacyStatusArchivedResult).toBeUndefined();
+    expect(repository.findById(legacyStatusArchived.id)).toMatchObject({
+      title: 'Legacy Status Archived',
+      status: 'archived',
+      archived_at: null,
+    });
   });
 
   it('archives a project and preserves the record', () => {
@@ -373,12 +410,53 @@ describe('project repository', () => {
     repository.create(sampleProject({ title: 'TBD 2' }));
     repository.create(sampleProject({ title: 'Planned', status: 'planned' }));
     const archived = repository.create(sampleProject({ title: 'Archived' }));
+    repository.create(sampleProject({ title: 'Legacy Status Archived', status: 'archived' }));
     repository.archive(archived.id);
 
     const counts = repository.countByStatus();
     expect(counts.tbd).toBe(2);
     expect(counts.planned).toBe(1);
-    expect(counts.archived).toBe(1);
+    expect(counts.archived).toBe(2);
+  });
+
+  it('bulk reassigns Status and Type values across all matching Projects', () => {
+    const active = repository.create(sampleProject({
+      title: 'Active Custom', status: 'custom-status', projectType: 'custom-type',
+    }));
+    const archived = repository.create(sampleProject({
+      title: 'Archived Custom', status: 'custom-status', projectType: 'custom-type',
+    }));
+    db.prepare(`
+      UPDATE projects
+      SET archived_at = '2025-01-01 00:00:00',
+          description = 'preserve me',
+          notes = 'still here',
+          updated_at = '2025-01-01 00:00:00'
+      WHERE id = ?
+    `).run(archived.id);
+    const unrelated = repository.create(sampleProject({
+      title: 'Unrelated', status: 'ready', projectType: 'comic',
+    }));
+
+    expect(repository.countStatusValue('custom-status')).toBe(2);
+    expect(repository.countProjectTypeValue('custom-type')).toBe(2);
+    expect(repository.reassignStatusValue('custom-status', 'planned')).toBe(2);
+    expect(repository.reassignProjectTypeValue('custom-type', 'images')).toBe(2);
+
+    const activeAfter = repository.findById(active.id);
+    const archivedAfter = repository.findById(archived.id);
+    expect(activeAfter).toMatchObject({ status: 'planned', project_type: 'images' });
+    expect(archivedAfter).toMatchObject({
+      status: 'planned',
+      project_type: 'images',
+      archived_at: '2025-01-01 00:00:00',
+      description: 'preserve me',
+      notes: 'still here',
+    });
+    expect(archivedAfter.updated_at).not.toBe('2025-01-01 00:00:00');
+    expect(repository.findById(unrelated.id)).toMatchObject({ status: 'ready', project_type: 'comic' });
+    expect(repository.countStatusValue('custom-status')).toBe(0);
+    expect(repository.countProjectTypeValue('custom-type')).toBe(0);
   });
 
   it('does not include archived projects in default list', () => {
@@ -394,11 +472,16 @@ describe('project repository', () => {
   it('returns archived projects only when requested', () => {
     const active = repository.create(sampleProject({ title: 'Active' }));
     const archived = repository.create(sampleProject({ title: 'Archived' }));
+    const statusOnlyArchived = repository.create(sampleProject({
+      title: 'Status Only Archived', status: 'archived',
+    }));
     repository.archive(archived.id);
 
     const list = repository.list({ status: 'archived', includeArchived: true });
     expect(list.rows.map((p) => p.id)).toContain(archived.id);
+    expect(list.rows.map((p) => p.id)).toContain(statusOnlyArchived.id);
     expect(list.rows.map((p) => p.id)).not.toContain(active.id);
+    expect(repository.list().rows.map((p) => p.id)).not.toContain(statusOnlyArchived.id);
   });
 
   it('lists complete active asset-filter options with only ID and title', () => {
@@ -598,7 +681,7 @@ describe('project repository', () => {
       const prepareSpy = vi.spyOn(db, 'prepare');
 
       try {
-        for (const limits of [{}, { unsupported: 3 }, { tbd: 0 }, { planned: 26 }, { ready: '3' }, null]) {
+        for (const limits of [{}, { 'unsupported status!': 3 }, { tbd: 0 }, { planned: 26 }, { ready: '3' }, null]) {
           prepareSpy.mockClear();
           expect(repository.findDashboardProjectsByStatus(limits)).toEqual([]);
           expect(prepareSpy).not.toHaveBeenCalled();
@@ -619,6 +702,7 @@ function sampleProject(overrides = {}) {
     description: '',
     notes: '',
     status: 'tbd',
+    projectType: 'images',
     patreonUrl: null,
     ...overrides,
   };

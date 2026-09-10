@@ -14,14 +14,22 @@ const GLOBAL_ASSET_BROWSER_DEFAULT_KEY = 'asset_browser.default_category';
 
 const VALID_DEFAULTS = {
   new_projectStatus: 'ready',
+  new_projectProjectType: 'comic',
 };
 
 const NEW_PROJECT_STATUS_OPTIONS = [
-  ['tbd', 'TBD'],
+  ['tbd', 'Tbd'],
   ['planned', 'Planned'],
-  ['in-progress', 'In progress'],
+  ['in-progress', 'In Progress'],
   ['ready', 'Ready'],
   ['completed', 'Completed'],
+];
+
+const NEW_PROJECT_TYPE_OPTIONS = [
+  ['images', 'Images'],
+  ['comic', 'Comic'],
+  ['animation', 'Animation'],
+  ['wallpaper', 'Wallpaper'],
 ];
 
 const MOVED_DEFAULTS = {
@@ -159,10 +167,11 @@ describe('settings — page defaults HTTP', () => {
     expect(notes).toContain('Saved default: <strong>27</strong>');
   });
 
-  it('uses the native-backed single select contract for New Projects Status', async () => {
+  it('uses native-backed live catalogue selects for New Projects Status and Project Type', async () => {
     const res = await agent.get('/settings/defaults').expect(200);
     const newProjects = settingsSection(res.text, 'defaults-new-projects');
     const statusSelect = newProjects.match(/<select id="new_projectStatus"[\s\S]*?<\/select>/)?.[0] || '';
+    const typeSelect = newProjects.match(/<select id="new_projectProjectType"[\s\S]*?<\/select>/)?.[0] || '';
 
     expect(newProjects).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
     expect(newProjects).toContain('data-cc-dropdown-dispatch-native-change');
@@ -174,21 +183,54 @@ describe('settings — page defaults HTTP', () => {
     for (const [value, label] of NEW_PROJECT_STATUS_OPTIONS) {
       expect(statusSelect).toMatch(new RegExp(`<option value="${value}"(?: selected)?>${label}</option>`));
     }
-    expect(statusSelect).toContain('<option value="tbd" selected>TBD</option>');
+    expect(statusSelect).toContain('<option value="tbd" selected>Tbd</option>');
     expect(newProjects).toMatch(/<input[^>]*type="radio" value="tbd"[^>]*checked/);
     expect(newProjects).not.toMatch(/<input[^>]*name="new_projectStatus"/);
     expect((newProjects.match(/name="new_projectStatus"/g) || [])).toHaveLength(1);
     expect(newProjects).not.toContain('aria-invalid');
     expect(newProjects).not.toContain('new_projectStatus-error');
+    expect(typeSelect).toMatch(
+      /<select id="new_projectProjectType" name="new_projectProjectType" class="cc-dropdown-native-select" data-cc-dropdown-native-select[^>]*required[^>]*data-autosubmit="fetch">/,
+    );
+    for (const [value, label] of NEW_PROJECT_TYPE_OPTIONS) {
+      expect(typeSelect).toMatch(new RegExp(`<option value="${value}"(?: selected)?>${label}</option>`));
+    }
+    expect(typeSelect).toContain('<option value="images" selected>Images</option>');
+    expect((newProjects.match(/name="new_projectProjectType"/g) || [])).toHaveLength(1);
+    expect(newProjects).not.toContain('value="archived"');
   });
 
-  it('uses application fallbacks for current Settings-owned defaults', async () => {
+  it('renders and persists the live ordered Project Type default by stable value', async () => {
+    const custom = app.locals.projectOptionCatalogueService.addOption('projectType', {
+      name: 'Interactive Story',
+      color: '#123456',
+    });
+    app.locals.projectOptionCatalogueService.reorderOptions('projectType', [
+      custom.value, 'images', 'comic', 'animation', 'wallpaper',
+    ]);
+
+    await agent.post('/settings/defaults').type('form').send({
+      new_projectStatus: 'tbd',
+      new_projectProjectType: custom.value,
+      _csrf: csrfToken,
+    }).expect(302);
+
+    const res = await agent.get('/settings/defaults').expect(200);
+    const section = settingsSection(res.text, 'defaults-new-projects');
+    const typeSelect = section.match(/<select id="new_projectProjectType"[\s\S]*?<\/select>/)?.[0] || '';
+    expect(typeSelect).toContain(`<option value="${custom.value}" selected>Interactive Story</option>`);
+    expect(typeSelect.indexOf(custom.value)).toBeLessThan(typeSelect.indexOf('value="images"'));
+    expect(readMeta(db, defaultKey('new_project', 'projectType'))).toBe(custom.value);
+  });
+
+  it('renders the persisted migration defaults for new Project creation', async () => {
     const res = await agent.get('/settings/defaults').expect(200);
 
     expect(selectedValue(res.text, 'new_projectStatus')).toBe('tbd');
-
-
-    expect((res.text.match(/Application fallback:/g) || [])).toHaveLength(2);
+    expect(selectedValue(res.text, 'new_projectProjectType')).toBe('images');
+    expect((res.text.match(/Application fallback:/g) || [])).toHaveLength(1);
+    expect(res.text).toContain('Saved default: <strong>Tbd</strong>');
+    expect(res.text).toContain('Saved default: <strong>Images</strong>');
     expect(res.text).toContain('These defaults apply only to new projects. Changing them does not modify existing projects.');
   });
 
@@ -220,6 +262,7 @@ describe('settings — page defaults HTTP', () => {
 
     expect(save.headers.location).toBe('/settings/defaults?notice=defaults_saved');
     expect(readMeta(db, defaultKey('new_project', 'status'))).toBe('ready');
+    expect(readMeta(db, defaultKey('new_project', 'projectType'))).toBe('comic');
     expect(readMeta(db, defaultKey('releases', 'sort'))).toBe('updated');
     expect(readMeta(db, defaultKey('releases', 'order'))).toBe('desc');
     expect(movedStorageSnapshot(db)).toEqual(MOVED_DEFAULTS);
@@ -316,7 +359,7 @@ describe('settings — page defaults HTTP', () => {
     const rows = db.prepare("SELECT event, level, kind, context_json FROM application_logs WHERE event = 'settings.defaults.updated'").all();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ event: 'settings.defaults.updated', level: 'info', kind: 'activity' });
-    expect(JSON.parse(rows[0].context_json)).toEqual({ changedPages: ['new_project'], changedOptionCount: 1 });
+    expect(JSON.parse(rows[0].context_json)).toEqual({ changedPages: ['new_project'], changedOptionCount: 2 });
   });
 
   it('records a committed defaults change when the legacy snapshot API is unavailable', async () => {
@@ -414,7 +457,8 @@ describe('settings — page defaults HTTP', () => {
       .send(VALID_DEFAULTS)
       .expect(403);
 
-    expect(readMeta(db, defaultKey('new_project', 'status'))).toBeUndefined();
+    expect(readMeta(db, defaultKey('new_project', 'status'))).toBe('tbd');
+    expect(readMeta(db, defaultKey('new_project', 'projectType'))).toBe('images');
     expect(readMeta(db, defaultKey('releases', 'sort'))).toBeUndefined();
     expect(readMeta(db, defaultKey('releases', 'order'))).toBeUndefined();
   });

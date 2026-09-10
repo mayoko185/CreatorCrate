@@ -1,3 +1,6 @@
+import { enhanceProjectOptionColorPickers } from './client/project-option-color-picker.js';
+import { enhanceProjectOptionMutations } from './client/settings-project-option-mutations.js';
+import { enhanceProjectOptionReorder } from './client/settings-project-option-reorder.js';
 import {
   enhancePreview,
   enhancePreviewMedia,
@@ -118,6 +121,9 @@ export {
   enhanceChapterPageReorder,
   enhanceDashboardDefaultsDialog,
   enhanceCategoryDetails,
+  enhanceProjectOptionMutations,
+  enhanceProjectOptionReorder,
+  enhanceProjectOptionColorPickers,
   enhanceDefaultsFetchSave,
   enhanceAssetCategoryPreferencesFetchSave,
   enhanceNsfwFilterFetchSave,
@@ -175,6 +181,9 @@ if (typeof document !== 'undefined') {
     enhanceNotesCodeBlocks(document);
     enhanceProjectCards(document);
     enhanceAutoSubmit(document);
+    enhanceProjectOptionMutations(document);
+    enhanceProjectOptionReorder(document);
+    enhanceProjectOptionColorPickers(document);
     enhanceDefaultsFetchSave(document);
     enhanceAssetCategoryPreferencesFetchSave(document);
     enhanceNsfwFilterFetchSave(document);

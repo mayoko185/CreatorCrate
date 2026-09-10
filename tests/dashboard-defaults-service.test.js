@@ -5,26 +5,25 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createAppMetaRepository } from '../src/data/app-meta-repository.js';
-import { STATUSES } from '../src/data/project-repository.js';
 import {
   createDashboardDefaultsService,
   DASHBOARD_DEFAULTS_KEY,
-  DASHBOARD_SECTION_REGISTRY,
   getDashboardSectionDefaultSorting,
 } from '../src/services/dashboard-defaults-service.js';
+import { createTestProjectOptionCatalogueService } from './helpers/project-option-catalogue.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
-const CANONICAL_IDS = DASHBOARD_SECTION_REGISTRY.map(({ id }) => id);
-const defaultSection = (id) => ({
+const defaultSection = () => ({
   visible: true,
   itemCount: 8,
-  ...getDashboardSectionDefaultSorting(id),
+  ...getDashboardSectionDefaultSorting(),
 });
 
 describe('dashboard defaults service', () => {
   let tmpDir;
   let db;
   let repository;
+  let catalogueService;
   let service;
 
   beforeEach(() => {
@@ -32,7 +31,11 @@ describe('dashboard defaults service', () => {
     db = openDatabase(path.join(tmpDir, 'test.db'));
     runMigrations(db, MIGRATIONS_DIR);
     repository = createAppMetaRepository(db);
-    service = createDashboardDefaultsService({ appMetaRepository: repository });
+    catalogueService = createTestProjectOptionCatalogueService(db);
+    service = createDashboardDefaultsService({
+      appMetaRepository: repository,
+      projectOptionCatalogueService: catalogueService,
+    });
   });
 
   afterEach(() => {
@@ -40,11 +43,26 @@ describe('dashboard defaults service', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('uses all seven retained canonical sections with visible 8-item defaults when nothing is stored', () => {
+  function sectionIds() {
+    return service.getSectionRegistry().map(({ id }) => id);
+  }
+
+  it('uses live catalogue order and appends the independent system Archived section', () => {
+    expect(catalogueService.getStatusCatalogue().map(({ value }) => value)).not.toContain('archived');
+    expect(service.getSectionRegistry()).toEqual([
+      { id: 'recently-updated', label: 'Recently updated projects' },
+      { id: 'status:tbd', label: 'Tbd', status: 'tbd' },
+      { id: 'status:planned', label: 'Planned', status: 'planned' },
+      { id: 'status:in-progress', label: 'In Progress', status: 'in-progress' },
+      { id: 'status:ready', label: 'Ready', status: 'ready' },
+      { id: 'status:completed', label: 'Completed', status: 'completed' },
+      { id: 'status:archived', label: 'Archived', status: 'archived' },
+    ]);
+    const ids = sectionIds();
     expect(service.getDefaults()).toEqual({
       version: 1,
-      order: CANONICAL_IDS,
-      sections: Object.fromEntries(CANONICAL_IDS.map((id) => [id, defaultSection(id)])),
+      order: ids,
+      sections: Object.fromEntries(ids.map((id) => [id, defaultSection()])),
     });
   });
 
@@ -52,151 +70,121 @@ describe('dashboard defaults service', () => {
     ['malformed JSON', '{invalid'],
     ['unsupported version', JSON.stringify({ version: 2, order: [], sections: {} })],
     ['non-object document', JSON.stringify([])],
-  ])('falls back to complete canonical defaults for %s without rewriting storage', (_label, storedValue) => {
+  ])('falls back to complete current defaults for %s without rewriting storage', (_label, storedValue) => {
     repository.setValue(DASHBOARD_DEFAULTS_KEY, storedValue);
 
-    expect(service.getDefaults().order).toEqual(CANONICAL_IDS);
-    expect(service.getDefaults().sections).toEqual(
-      Object.fromEntries(CANONICAL_IDS.map((id) => [id, defaultSection(id)]))
-    );
+    expect(service.getDefaults().order).toEqual(sectionIds());
     expect(repository.getValue(DASHBOARD_DEFAULTS_KEY)).toBe(storedValue);
   });
 
-  it('normalizes duplicate, stale, and missing order entries without changing persisted data', () => {
-    const stored = {
+  it('normalizes duplicate, malformed, stale, and missing entries with existing field fallbacks', () => {
+    repository.setValue(DASHBOARD_DEFAULTS_KEY, JSON.stringify({
       version: 1,
-      order: ['status:ready', 'overdue', 'status:ready', 'upcoming', 'removed-section'],
+      order: [
+        'status:ready', 'status:archived', 12, 'status:ready', 'status:archived', 'removed-section',
+      ],
       sections: {
-        overdue: { visible: false, itemCount: 2, sort: 'planned', order: 'asc' },
-        upcoming: { visible: false, itemCount: 3, sort: 'planned', order: 'asc' },
         'status:ready': { visible: false, itemCount: 12, sort: 'title', order: 'asc' },
+        'status:archived': { visible: false, itemCount: 7, sort: 'created', order: 'asc' },
+        'status:planned': { visible: 'yes', itemCount: 0, sort: 'unsupported', order: 'sideways' },
+        'removed-section': { visible: false, itemCount: 2, sort: 'title', order: 'asc' },
       },
-    };
-    const storedValue = JSON.stringify(stored);
-    repository.setValue(DASHBOARD_DEFAULTS_KEY, storedValue);
+    }));
 
-    expect(service.getDefaults().order).toEqual([
+    const defaults = service.getDefaults();
+    expect(defaults.order).toEqual([
       'status:ready',
-      ...CANONICAL_IDS.filter((id) => id !== 'status:ready'),
+      'status:archived',
+      ...sectionIds().filter((id) => !['status:ready', 'status:archived'].includes(id)),
     ]);
-    expect(service.getDefaults().sections).not.toHaveProperty('overdue');
-    expect(service.getDefaults().sections).not.toHaveProperty('upcoming');
-    expect(service.getDefaults().sections['status:ready']).toEqual({
+    expect(defaults.order.filter((id) => id === 'status:archived')).toHaveLength(1);
+    expect(defaults.sections).not.toHaveProperty('removed-section');
+    expect(defaults.sections['status:ready']).toEqual({
       visible: false, itemCount: 12, sort: 'title', order: 'asc',
     });
-    expect(repository.getValue(DASHBOARD_DEFAULTS_KEY)).toBe(storedValue);
-  });
-
-  it('fills missing settings and normalizes visibility and item counts independently', () => {
-    repository.setValue(DASHBOARD_DEFAULTS_KEY, JSON.stringify({
-      version: 1,
-      order: CANONICAL_IDS,
-      sections: {
-        'recently-updated': { visible: 'yes', itemCount: 0 },
-        'status:tbd': { visible: null, itemCount: 26 },
-        'status:planned': { visible: true, itemCount: 3.5 },
-        'status:ready': { visible: true, itemCount: 12 },
-      },
-    }));
-
-    const defaults = service.getDefaults();
-    expect(defaults.sections['recently-updated']).toEqual(defaultSection('recently-updated'));
-    expect(defaults.sections['status:tbd']).toEqual(defaultSection('status:tbd'));
-    expect(defaults.sections['status:planned']).toEqual(defaultSection('status:planned'));
-    expect(defaults.sections['status:ready']).toEqual({ ...defaultSection('status:ready'), itemCount: 12 });
-    expect(defaults.sections['status:completed']).toEqual(defaultSection('status:completed'));
-  });
-
-  it('adds per-section sorting defaults to saved version-one documents without changing existing settings', () => {
-    repository.setValue(DASHBOARD_DEFAULTS_KEY, JSON.stringify({
-      version: 1,
-      order: [...CANONICAL_IDS].reverse(),
-      sections: {
-        'recently-updated': { visible: false, itemCount: 3 },
-        'status:ready': { visible: true, itemCount: 17 },
-      },
-    }));
-
-    const defaults = service.getDefaults();
-    expect(defaults.order).toEqual([...CANONICAL_IDS].reverse());
-    expect(defaults.sections['recently-updated']).toEqual({ ...defaultSection('recently-updated'), visible: false, itemCount: 3 });
-    expect(defaults.sections['status:ready']).toEqual({ ...defaultSection('status:ready'), itemCount: 17 });
-  });
-
-  it('falls back to each section sorting default for unsupported stored sorting values', () => {
-    repository.setValue(DASHBOARD_DEFAULTS_KEY, JSON.stringify({
-      version: 1,
-      order: CANONICAL_IDS,
-      sections: {
-        'recently-updated': { visible: true, itemCount: 8, sort: 'planned', order: 'asc' },
-        'status:ready': { visible: true, itemCount: 8, sort: 'title', order: 'asc' },
-      },
-    }));
-
-    const defaults = service.getDefaults();
-    expect(defaults.sections['recently-updated']).toEqual({
-      ...defaultSection('recently-updated'), order: 'asc',
-    });
-    expect(defaults.sections['status:ready']).toEqual({
-      visible: true, itemCount: 8, sort: 'title', order: 'asc',
+    expect(defaults.sections['status:planned']).toEqual(defaultSection());
+    expect(defaults.sections['status:archived']).toEqual({
+      visible: false, itemCount: 7, sort: 'created', order: 'asc',
     });
   });
 
-  it('saves a complete normalized document while preserving independent per-section item counts', () => {
+  it('observes add, delete, and reorder mutations live while preserving saved Dashboard order', () => {
+    catalogueService.addOption('status', { name: 'Quality Review', color: '#123456' });
+    catalogueService.addOption('status', { name: 'Waiting Client', color: '#654321' });
+
+    const added = service.getConfiguration();
+    expect(added.sectionRegistry.slice(-3, -1)).toEqual([
+      { id: 'status:quality-review', label: 'Quality Review', status: 'quality-review' },
+      { id: 'status:waiting-client', label: 'Waiting Client', status: 'waiting-client' },
+    ]);
+    service.saveDefaults({
+      ...added.defaults,
+      order: [
+        'status:waiting-client',
+        'status:quality-review',
+        ...added.defaults.order.filter((id) => ![
+          'status:waiting-client', 'status:quality-review',
+        ].includes(id)),
+      ],
+    });
+
+    const catalogueOrder = catalogueService.getStatusCatalogue().map(({ value }) => value);
+    catalogueService.reorderOptions('status', [
+      'quality-review',
+      ...catalogueOrder.filter((value) => value !== 'quality-review'),
+    ]);
+    catalogueService.addOption('status', { name: 'Needs Polish', color: '#ABCDEF' });
+
+    const afterReorderAndAdd = service.getDefaults();
+    expect(afterReorderAndAdd.order.slice(0, 2)).toEqual([
+      'status:waiting-client',
+      'status:quality-review',
+    ]);
+    expect(afterReorderAndAdd.order.at(-1)).toBe('status:needs-polish');
+
+    catalogueService.deleteOption('status', 'quality-review');
+    const afterDelete = service.getDefaults();
+    expect(afterDelete.order).not.toContain('status:quality-review');
+    expect(afterDelete.sections).not.toHaveProperty('status:quality-review');
+    expect(afterDelete.order.slice(0, 1)).toEqual(['status:waiting-client']);
+  });
+
+  it('appends multiple new statuses in their current catalogue order', () => {
+    const initial = service.getDefaults();
+    service.saveDefaults({ ...initial, order: [...initial.order].reverse() });
+
+    catalogueService.addOption('status', { name: 'First Custom', color: '#112233' });
+    catalogueService.addOption('status', { name: 'Second Custom', color: '#334455' });
+
+    expect(service.getDefaults().order).toEqual([
+      ...[...initial.order].reverse(),
+      'status:first-custom',
+      'status:second-custom',
+    ]);
+  });
+
+  it('saves a complete normalized document with independent section settings', () => {
+    const ids = sectionIds();
     const saved = service.saveDefaults({
       version: 1,
       order: ['status:ready', 'recently-updated'],
       sections: {
         'recently-updated': { visible: false, itemCount: 5 },
-        'status:ready': { visible: true, itemCount: 12 },
+        'status:ready': { visible: true, itemCount: 12, sort: 'title', order: 'asc' },
       },
     });
 
     expect(saved.order).toEqual([
       'status:ready',
       'recently-updated',
-      ...CANONICAL_IDS.filter((id) => !['status:ready', 'recently-updated'].includes(id)),
+      ...ids.filter((id) => !['status:ready', 'recently-updated'].includes(id)),
     ]);
-    expect(saved.sections['recently-updated']).toEqual({ ...defaultSection('recently-updated'), visible: false, itemCount: 5 });
-    expect(saved.sections['status:ready']).toEqual({ ...defaultSection('status:ready'), itemCount: 12 });
+    expect(saved.sections['recently-updated']).toEqual({
+      ...defaultSection(), visible: false, itemCount: 5,
+    });
+    expect(saved.sections['status:ready']).toEqual({
+      visible: true, itemCount: 12, sort: 'title', order: 'asc',
+    });
     expect(JSON.parse(repository.getValue(DASHBOARD_DEFAULTS_KEY))).toEqual(saved);
-  });
-
-  it('adds a complete default section for an unmapped future canonical status', async () => {
-    const futureStatus = 'quality-review';
-    STATUSES.push(futureStatus);
-
-    try {
-      const futureStatusModule = await import('../src/services/dashboard-defaults-service.js?future-status');
-      const futureSectionId = `status:${futureStatus}`;
-
-      expect(futureStatusModule.DASHBOARD_SECTION_REGISTRY.at(-1)).toEqual({
-        id: futureSectionId,
-        label: 'Quality review',
-        status: futureStatus,
-      });
-      expect(futureStatusModule.normalizeDashboardDefaults(undefined)).toEqual({
-        version: 1,
-        order: [...CANONICAL_IDS, futureSectionId],
-        sections: {
-          ...Object.fromEntries(CANONICAL_IDS.map((id) => [id, defaultSection(id)])),
-          [futureSectionId]: { visible: true, itemCount: 8, sort: 'updated', order: 'desc' },
-        },
-      });
-    } finally {
-      STATUSES.pop();
-    }
-  });
-
-  it('uses the canonical project status order and Dashboard labels', () => {
-    expect(DASHBOARD_SECTION_REGISTRY).toEqual([
-      { id: 'recently-updated', label: 'Recently updated projects' },
-      { id: 'status:tbd', label: 'TBD', status: 'tbd' },
-      { id: 'status:planned', label: 'Planned', status: 'planned' },
-      { id: 'status:in-progress', label: 'In progress', status: 'in-progress' },
-      { id: 'status:ready', label: 'Ready', status: 'ready' },
-      { id: 'status:completed', label: 'Completed', status: 'completed' },
-      { id: 'status:archived', label: 'Archived', status: 'archived' },
-    ]);
   });
 });

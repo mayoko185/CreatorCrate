@@ -40,6 +40,7 @@ describe('shared confirmation dialog template', () => {
     expect(html).not.toMatch(/<dialog\b[^>]*\bdata-app-dialog\b[^>]*>[\s\S]*<dialog\b[^>]*id="app-confirmation-dialog"/);
     expect(html).toContain('<h2 id="app-confirmation-dialog-title">Confirm action</h2>');
     expect(html).toContain('data-app-dialog-confirmation-message');
+    expect(html).toContain('data-app-dialog-confirmation-field hidden');
     expect(html).toContain('data-app-dialog-confirmation-cancel');
     expect(html).toContain('data-app-dialog-confirmation-confirm');
     expect(html).not.toContain('data-dialog-form');

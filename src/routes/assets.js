@@ -18,6 +18,7 @@ import {
 } from '../services/workflow-query-service.js';
 import { buildAssetRevisionToken, classifyPreviewable } from '../services/preview-service.js';
 import { presentWorkflowJson } from '../services/workflow-json-presenter.js';
+import { isProjectArchived } from '../services/project-state.js';
 import { buildOpenLocallyUri } from '../util/open-locally.js';
 import {
   ASSET_ACTION_NOTICE_MESSAGES,
@@ -1017,7 +1018,7 @@ export function createAssetsRouter({
         }
         return next(createNotFound());
       }
-      if (project.archived_at) {
+      if (isProjectArchived(project)) {
         if (wantsJson) {
           return sendAssetJsonError(res, 409, 'PROJECT_ARCHIVED', 'This project is archived and read-only.');
         }
@@ -2531,7 +2532,7 @@ async function probePrimaryImageViewerEligibility(data, previewProbe) {
 }
 
 function buildPrimaryImageViewerState(data, selectedAsset, isEligiblePresentImage = isPrimaryImageAssetUsable(data.asset)) {
-  const projectIsArchived = Boolean(data.project.archived_at) || data.project.status === 'archived';
+  const projectIsArchived = isProjectArchived(data.project);
   const assetBelongsToProject = data.asset.project_id === data.project.id;
   const isPrimaryImage = Boolean(selectedAsset && selectedAsset.id === data.asset.id);
   const isEligible = assetBelongsToProject && isEligiblePresentImage;
@@ -2639,7 +2640,7 @@ export async function buildAssetViewerRenderModel(
     backToAssetsLink: data.backToAssetsLink,
     enabledCategories: data.enabledCategories,
     canMutate: data.canMutate,
-    canManageTags: !data.project.archived_at && data.project.status !== 'archived',
+    canManageTags: !isProjectArchived(data.project),
     openLocallyUri: buildOpenLocallyUri({
       windowsRoot: req ? getOpenLocallySettingsService(req).getWindowsProjectsPath() : null,
       projectDir: data.project.project_dir,

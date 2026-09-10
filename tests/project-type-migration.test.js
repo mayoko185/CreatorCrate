@@ -19,6 +19,13 @@ function createPreProjectTypeMigrationsDir(parentDir) {
   return legacyDir;
 }
 
+function addProjectTypeMigration(target) {
+  fs.copyFileSync(
+    path.join(MIGRATIONS_DIR, MIGRATION_FILENAME),
+    path.join(target, MIGRATION_FILENAME)
+  );
+}
+
 describe('project type migration', () => {
   let tmpDir;
   let db;
@@ -35,12 +42,14 @@ describe('project type migration', () => {
 
   it('adds the non-null project_type column and migrates existing projects to images', () => {
     db = openDatabase(path.join(tmpDir, 'upgrade.db'));
-    runMigrations(db, createPreProjectTypeMigrationsDir(tmpDir));
+    const migrations = createPreProjectTypeMigrationsDir(tmpDir);
+    runMigrations(db, migrations);
     const existingId = Number(db.prepare(`
       INSERT INTO projects (title, slug, status) VALUES ('Existing', 'existing', 'ready')
     `).run().lastInsertRowid);
 
-    runMigrations(db, MIGRATIONS_DIR);
+    addProjectTypeMigration(migrations);
+    runMigrations(db, migrations);
 
     expect(db.pragma('table_info(projects)')).toEqual(expect.arrayContaining([
       expect.objectContaining({
@@ -51,9 +60,11 @@ describe('project type migration', () => {
       .toBe('images');
   });
 
-  it('defaults new rows, accepts every allowed type, and rejects invalid database values', () => {
+  it('migration 022 defaults new rows, accepts every allowed type, and rejects invalid database values', () => {
     db = openDatabase(path.join(tmpDir, 'fresh.db'));
-    runMigrations(db, MIGRATIONS_DIR);
+    const migrations = createPreProjectTypeMigrationsDir(tmpDir);
+    addProjectTypeMigration(migrations);
+    runMigrations(db, migrations);
 
     const insert = db.prepare('INSERT INTO projects (title, slug, project_type) VALUES (?, ?, ?)');
     for (const projectType of ['images', 'comic', 'animation', 'wallpaper']) {

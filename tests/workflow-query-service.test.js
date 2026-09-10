@@ -20,6 +20,7 @@ import { createTagRepository } from '../src/data/tag-repository.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
 import { createSocialPrepRepository } from '../src/data/social-prep-repository.js';
 import { buildRevisionToken } from '../src/storage/preview-cache.js';
+import { buildDashboardSectionRegistry } from '../src/services/dashboard-defaults-service.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 // Phase 3 chunk 1: browser composition now also loads the project's
@@ -39,6 +40,14 @@ const ASSET_VIEWER_FIXED_STATEMENT_EXECUTIONS = 5;
 // findPage (page rows), plus one saved-target batch and two Settings reads
 // for nonempty pages. Empty pages retain the original three statements.
 const RELEASE_LIST_FIXED_STATEMENT_EXECUTIONS = 6;
+const DASHBOARD_SECTION_REGISTRY = buildDashboardSectionRegistry([
+  { value: 'tbd', label: 'Tbd' },
+  { value: 'planned', label: 'Planned' },
+  { value: 'in-progress', label: 'In Progress' },
+  { value: 'ready', label: 'Ready' },
+  { value: 'completed', label: 'Completed' },
+]);
+const dashboardSectionRegistryProvider = () => DASHBOARD_SECTION_REGISTRY;
 
 function dashboardDefaults(sectionOverrides = {}) {
   return {
@@ -51,14 +60,14 @@ function dashboardDefaults(sectionOverrides = {}) {
  * Helper to insert a project directly without filesystem operations.
  */
 function insertProject(db, {
-  title, status = 'tbd', archivedAt = null,
+  title, status = 'tbd', projectType = 'images', archivedAt = null,
 }) {
   const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
   return db.prepare(`
-    INSERT INTO projects (title, slug, description, notes, status, patreon_url, archived_at)
-    VALUES (?, ?, '', '', ?, NULL, ?)
+    INSERT INTO projects (title, slug, description, notes, status, project_type, patreon_url, archived_at)
+    VALUES (?, ?, '', '', ?, ?, NULL, ?)
     RETURNING *
-  `).get(title, slug, status, archivedAt);
+  `).get(title, slug, status, projectType, archivedAt);
 }
 
 /**
@@ -166,6 +175,7 @@ describe('workflow query service', () => {
       db,
       projectPrimaryImageRepository: primaryImageRepository,
       tagRepository,
+      dashboardSectionRegistryProvider,
     });
   });
 
@@ -184,7 +194,12 @@ describe('workflow query service', () => {
       const batch = vi.spyOn(repository, 'listPlatformsByReleaseIds');
       const single = vi.spyOn(repository, 'listPlatformsByReleaseId');
       const settings = { getSettings: vi.fn(() => ({ enabled: false, platforms: ['x'] })) };
-      const query = createWorkflowQueryService({ db, socialPrepRepository: repository, socialPrepSettingsService: settings });
+      const query = createWorkflowQueryService({
+        db,
+        socialPrepRepository: repository,
+        socialPrepSettingsService: settings,
+        dashboardSectionRegistryProvider,
+      });
       const changes = db.prepare('SELECT total_changes() AS n').get().n;
       const result = query.getReleaseList({ sort: 'title', order: 'asc' });
       expect(result.releases.map((release) => release.id)).toEqual([first.id, second.id]);
@@ -228,7 +243,12 @@ describe('workflow query service', () => {
       const repository = createSocialPrepRepository(db);
       const batch = vi.spyOn(repository, 'listPlatformsByReleaseIds');
       const settings = { getSettings: vi.fn(() => ({ enabled: true, platforms: ['x'] })) };
-      const query = createWorkflowQueryService({ db, socialPrepRepository: repository, socialPrepSettingsService: settings });
+      const query = createWorkflowQueryService({
+        db,
+        socialPrepRepository: repository,
+        socialPrepSettingsService: settings,
+        dashboardSectionRegistryProvider,
+      });
       query.getReleaseList({});
       query.getProjectWorkspace(project.id);
       insertRelease(db, { projectId: project.id, title: 'Calendar release', plannedDate: '2030-01-01' });
@@ -681,7 +701,7 @@ describe('workflow query service', () => {
 
       const smallFixture = insertDashboardFixture('Dashboard Query Small');
       const counter = instrumentStatementExecution(db);
-      const instrumentedService = createWorkflowQueryService({ db });
+      const instrumentedService = createWorkflowQueryService({ db, dashboardSectionRegistryProvider });
 
       const smallStatementStart = counter.statements().length;
       counter.reset();
@@ -748,7 +768,7 @@ describe('workflow query service', () => {
         'status:archived',
       ].map((sectionId) => [sectionId, { visible: false, itemCount: 8 }])));
       const counter = instrumentStatementExecution(db);
-      const instrumentedService = createWorkflowQueryService({ db });
+      const instrumentedService = createWorkflowQueryService({ db, dashboardSectionRegistryProvider });
       const statementStart = counter.statements().length;
       counter.reset();
       const hiddenData = instrumentedService.getDashboardData({ dashboardDefaults: allHidden });
@@ -765,7 +785,7 @@ describe('workflow query service', () => {
         insertProject(db, { title: `Ready status ${i}`, status: 'ready' });
       }
       const counter = instrumentStatementExecution(db);
-      const instrumentedService = createWorkflowQueryService({ db });
+      const instrumentedService = createWorkflowQueryService({ db, dashboardSectionRegistryProvider });
       const statementStart = counter.statements().length;
       counter.reset();
       const data = instrumentedService.getDashboardData({
@@ -789,6 +809,22 @@ describe('workflow query service', () => {
         (statement) => statement.includes('requested_statuses')
       )).toHaveLength(1);
     });
+
+    it('queries and counts a custom status without repository membership knowledge', () => {
+      const custom = insertProject(db, { title: 'Custom review', status: 'quality-review' });
+      const registry = buildDashboardSectionRegistry([
+        ...DASHBOARD_SECTION_REGISTRY.filter(({ status }) => status).map(({ status, label }) => ({
+          value: status,
+          label,
+        })),
+        { value: 'quality-review', label: 'Editorial Review' },
+      ]);
+
+      const data = service.getDashboardData({ dashboardSectionRegistry: registry });
+
+      expect(data.workflowSummary.totalProjects).toBe(1);
+      expect(data.sections['status:quality-review'].map(({ id }) => id)).toEqual([custom.id]);
+    });
   });
 
   // ─── getDashboardData: release-count source ───────────────────────
@@ -809,6 +845,7 @@ describe('workflow query service', () => {
         projectPrimaryImageRepository: primaryImageRepository,
         tagRepository,
         releaseRepository: releaseRepositorySpy,
+        dashboardSectionRegistryProvider,
       });
 
       const data = spiedService.getDashboardData();
@@ -1196,6 +1233,24 @@ describe('workflow query service', () => {
   // remain visible through the recent list and the status counts.
 
   describe('getProjectWorkspace — archived parent hides active workflow', () => {
+    it('legacy status-only archived project does not surface active releases', () => {
+      const project = insertProject(db, { title: 'Legacy Archived Workspace', status: 'archived' });
+      const release = insertRelease(db, {
+        projectId: project.id,
+        title: 'Active In Legacy Archived Project',
+        status: 'planned',
+        plannedDate: '2099-01-01',
+      });
+
+      const ws = service.getProjectWorkspace(project.id);
+
+      expect(ws.project.status).toBe('archived');
+      expect(ws.project.archived_at).toBeNull();
+      expect(ws.releaseSummary.active).toEqual([]);
+      expect(db.prepare('SELECT archived_at FROM releases WHERE id = ?').get(release.id).archived_at)
+        .toBeNull();
+    });
+
     it('archived project with active release does not show active releases', () => {
       const project = insertProject(db, { title: 'Archived Active Project' });
       const release = insertRelease(db, {

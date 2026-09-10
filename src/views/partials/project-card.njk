@@ -1,11 +1,13 @@
 {% macro render(project, variant = 'grid', headingLevel = 'h2') %}
+  {% set projectStatusOption = project.projectStatusOption %}
+  {% set projectTypeOption = project.projectTypeOption %}
   {% set imageUrl = project.primaryImage.previewUrl %}
   {% if variant == 'list' %}
     {% set imageUrl = project.primaryImage.thumbnailUrl %}
   {% endif %}
 
   <li class="{% if variant == 'list' %}project-list-item{% else %}project-grid-item{% endif %}">
-    <article class="project-card project-card--{{ variant }}{% if variant == 'grid' %} project-grid-card{% else %} project-list-card{% endif %}{% if project.archived_at %} project-card--archived{% endif %}" data-project-card>
+    <article class="project-card project-card--{{ variant }}{% if variant == 'grid' %} project-grid-card{% else %} project-list-card{% endif %}{% if project.isArchived %} project-card--archived{% endif %}" data-project-card>
       {% if variant == 'list' %}
         {% if project.primaryImage.state == 'available' %}
           <div class="project-list-card-media project-card-media project-card-media--image{% if project.primaryImage.mediaModifier %} project-card-media--{{ project.primaryImage.mediaModifier }}{% endif %}" data-preview-enhancement data-preview-state="loading">

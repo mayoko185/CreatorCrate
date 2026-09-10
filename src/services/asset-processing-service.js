@@ -8,6 +8,7 @@ import { resolveProjectDir } from '../storage/project-storage.js';
 import { deriveExtensionFromFilename, mimeFromExtension } from './asset-metadata.js';
 import { ProjectOperationError } from './project-operation-coordinator.js';
 import { classifyAssetPath } from './asset-path-classification.js';
+import { isProjectArchived } from './project-state.js';
 import {
   isOwnedWatermarkDestination as isOwnedWatermarkDestinationShared,
   resolveTrustedWatermarkFile,
@@ -299,7 +300,7 @@ export function createAssetProcessingService({
     if (!project) {
       throw new AssetProcessingError(`Project ${projectId} not found.`, { code: 'PROJECT_NOT_FOUND' });
     }
-    if (project.archived_at || project.status === 'archived') {
+    if (isProjectArchived(project)) {
       throw new AssetProcessingError(
         `Project ${projectId} is archived and cannot be modified.`,
         { code: 'PROJECT_ARCHIVED' },

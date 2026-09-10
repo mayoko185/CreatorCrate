@@ -681,8 +681,19 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       expect(defaultsRegion).not.toBeNull();
       expect(logs.text).not.toContain('settings-defaults-content');
       expect(logs.text).not.toContain('settings-defaults-section');
+      expect(css).toMatch(/\.settings-section h3\s*\{[^}]*padding:\s*var\(--space-sm\)\s+var\(--space-md\);[^}]*font-family:\s*var\(--mono\);[^}]*text-transform:\s*uppercase;[^}]*background:\s*var\(--surface-card\);[^}]*border-bottom:\s*1px solid var\(--border\);/);
       expect(css).toMatch(/\.settings-defaults-content\s+\.project-form\s*>\s*\.settings-defaults-section\s*\{\s*overflow:\s*visible;/);
-      expect(css).toMatch(/\.settings-defaults-content\s+\.project-form\s*>\s*\.settings-defaults-section\s*>\s*h3\s*\{\s*border-radius:\s*var\(--radius-lg\)\s+var\(--radius-lg\)\s+0\s+0;/);
+      expect(css).toMatch(/\.settings-defaults-content\s+\.project-form\s*>\s*\.settings-defaults-section\s*>\s*h3,\s*\.settings-defaults-content\s*>\s*\.settings-project-option-editor\s*>\s*h3\s*\{\s*border-radius:\s*var\(--radius-lg\)\s+var\(--radius-lg\)\s+0\s+0;/);
+      for (const [kind, headingId, heading] of [
+        ['status', 'defaults-project-status-heading', 'Project Status'],
+        ['project-type', 'defaults-project-type-heading', 'Project Type'],
+      ]) {
+        const editorIndex = res.text.indexOf(`data-settings-project-option-editor="${kind}"`);
+        expect(editorIndex).toBeGreaterThan(res.text.indexOf('</form>'));
+        expect(res.text.slice(editorIndex)).toMatch(
+          new RegExp(`<h3 id="${headingId}">${heading}</h3>`),
+        );
+      }
       expect(css).toMatch(/\.settings-section\s*\{[^}]*overflow:\s*hidden/);
       expect(css).not.toMatch(/(^|\n)\s*\.settings-defaults-section\s*\{[^}]*overflow:\s*visible/);
       expect(css).not.toMatch(/(^|\n)\s*\.settings-defaults-content\s+\.settings-defaults-section\s*\{[^}]*overflow:\s*visible/);
@@ -953,15 +964,42 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
   // ─── 10. No inline styles ───────────────────────────────────────────────
 
   describe('no inline presentation styles', () => {
+    function withoutAllowedProjectOptionVariables(relativePath, source) {
+      const allowedExpressions = {
+        'partials/status-badge.njk': /\sstyle="--project-badge-bg: \{\{ projectStatusOption\.color \}\}; --project-badge-tint: \{\{ projectStatusOption\.tintPercent \}\}%; --project-badge-fg: \{\{ projectStatusOption\.foregroundColor \}\}"/g,
+        'partials/project-type-badge.njk': /\sstyle="--project-badge-bg: \{\{ projectTypeOption\.color \}\}; --project-badge-tint: \{\{ projectTypeOption\.tintPercent \}\}%; --project-badge-fg: \{\{ projectTypeOption\.foregroundColor \}\}"/g,
+        'settings/project-option-color-control.njk': /\sstyle="--project-option-color: \{\{ color \}\}"/g,
+      };
+      const allowedExpression = allowedExpressions[relativePath];
+      return allowedExpression ? source.replace(allowedExpression, '') : source;
+    }
+
     it('production templates keep presentation CSS in the shared stylesheet only', () => {
       const offenders = [];
       for (const templatePath of listProductionTemplates()) {
         const source = fs.readFileSync(templatePath, 'utf8');
-        if (/<style\b/i.test(source) || /\sstyle\s*=/i.test(source)) {
-          offenders.push(path.relative(VIEWS_DIR, templatePath).replace(/\\/g, '/'));
+        const relativePath = path.relative(VIEWS_DIR, templatePath).replace(/\\/g, '/');
+        const withoutAllowedVariables = withoutAllowedProjectOptionVariables(relativePath, source);
+        if (/<style\b/i.test(withoutAllowedVariables) || /\sstyle\s*=/i.test(withoutAllowedVariables)) {
+          offenders.push(relativePath);
         }
       }
       expect(offenders).toEqual([]);
+    });
+
+    it('does not exempt other inline styles or the Settings expression in other templates', () => {
+      expect(withoutAllowedProjectOptionVariables(
+        'settings/project-option-color-control.njk',
+        '<span style="color: {{ color }}">',
+      )).toContain('style=');
+      expect(withoutAllowedProjectOptionVariables(
+        'settings/project-option-color-control.njk',
+        '<span style="--project-option-other: {{ color }}">',
+      )).toContain('style=');
+      expect(withoutAllowedProjectOptionVariables(
+        'settings/other.njk',
+        '<span style="--project-option-color: {{ color }}">',
+      )).toContain('style=');
     });
   });
 

@@ -5,17 +5,34 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
-import { PROJECT_TYPES } from '../src/data/project-repository.js';
 import { buildNewProjectFormModel, createFormValues } from '../src/routes/project-create-form.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
+const BUILT_IN_PROJECT_TYPES = ['images', 'comic', 'animation', 'wallpaper'];
+const BUILT_IN_PROJECT_TYPE_OPTIONS = BUILT_IN_PROJECT_TYPES.map((value) => ({
+  value,
+  label: value.replace(/\b\w/g, (character) => character.toUpperCase()),
+  color: '#123456',
+}));
 
 function buildFormModel(options = {}) {
   return buildNewProjectFormModel({
     tagService: { listTags: () => [] },
-    pageDefaultsService: { resolve: () => 'tbd' },
+    pageDefaultsService: {
+      resolve: () => 'tbd',
+      getSavedDefault(_page, option) {
+        return option === 'status' ? 'tbd' : 'images';
+      },
+      getOptionCatalogue(page, option) {
+        if (page === 'new_project' && option === 'status') {
+          return ['tbd', 'planned', 'in-progress', 'ready', 'completed']
+            .map((value) => ({ value, label: `Label ${value}`, color: '#123456' }));
+        }
+        return BUILT_IN_PROJECT_TYPE_OPTIONS;
+      },
+    },
     ...options,
   });
 }
@@ -32,7 +49,7 @@ function extractProjectTypeField(html) {
 
 function expectProjectTypeDropdown(html, selectedProjectType, { error = false } = {}) {
   const field = extractProjectTypeField(html);
-  const isAllowedProjectType = PROJECT_TYPES.includes(selectedProjectType);
+  const isAllowedProjectType = BUILT_IN_PROJECT_TYPES.includes(selectedProjectType);
   const selectedLabel = selectedProjectType.replace(/\b\w/g, (character) => character.toUpperCase());
 
   expect(field).not.toBe('');
@@ -110,7 +127,97 @@ describe('Project Type route and form models', () => {
     const model = buildFormModel();
 
     expect(model.values.projectType).toBe('images');
-    expect(model.projectTypes).toEqual(PROJECT_TYPES);
+    expect(model.projectTypes).toEqual(BUILT_IN_PROJECT_TYPE_OPTIONS);
+  });
+
+  it('observes newly added Status and Type options without rebuilding the app', async () => {
+    app.locals.projectOptionCatalogueService.addOption('status', {
+      name: 'Client Review',
+      color: '#123456',
+    });
+    app.locals.projectOptionCatalogueService.addOption('projectType', {
+      name: 'Interactive Story',
+      color: '#654321',
+    });
+
+    const response = await agent.get('/projects/new').expect(200);
+    expect(response.text).toContain('name="status" type="radio" value="client-review"');
+    expect(response.text).toContain('name="projectType" type="radio" value="interactive-story"');
+  });
+
+  it('uses changed saved Status and Type defaults for the next shared form and omitted create', async () => {
+    const status = app.locals.projectOptionCatalogueService.addOption('status', {
+      name: 'Client Review',
+      color: '#123456',
+    });
+    const projectType = app.locals.projectOptionCatalogueService.addOption('projectType', {
+      name: 'Interactive Story',
+      color: '#654321',
+    });
+    app.locals.pageDefaultsService.saveDefault('new_project', 'status', status.value);
+    app.locals.pageDefaultsService.saveDefault('new_project', 'projectType', projectType.value);
+
+    const form = await agent.get('/projects/new').expect(200);
+    expect(form.text).toContain(`name="status" type="radio" value="${status.value}" checked`);
+    expect(form.text).toContain(`name="projectType" type="radio" value="${projectType.value}" checked`);
+
+    const created = await postForm('/projects', { title: 'Configured Defaults Project' }).expect(302);
+    const id = Number(created.headers.location.replace('/projects/', ''));
+    expect(db.prepare('SELECT status, project_type FROM projects WHERE id = ?').get(id))
+      .toEqual({ status: status.value, project_type: projectType.value });
+
+    app.locals.pageDefaultsService.saveDefault('new_project', 'status', 'ready');
+    app.locals.pageDefaultsService.saveDefault('new_project', 'projectType', 'comic');
+    const changed = await agent.get('/projects').expect(200);
+    const dialog = changed.text.match(/<dialog id="project-create-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    expect(dialog).toContain('name="status" type="radio" value="ready" checked');
+    expect(dialog).toContain('name="projectType" type="radio" value="comic" checked');
+  });
+
+  it('renders persisted labels and catalogue order while preserving values, selection, and archive exclusion', async () => {
+    const status = app.locals.projectOptionCatalogueService.addOption('status', {
+      name: 'Client QA Label',
+      color: '#123456',
+    });
+    const projectType = app.locals.projectOptionCatalogueService.addOption('projectType', {
+      name: 'Visual Novel Label',
+      color: '#654321',
+    });
+    app.locals.projectOptionCatalogueService.reorderOptions('status', [
+      status.value, 'tbd', 'planned', 'in-progress', 'ready', 'completed',
+    ]);
+    app.locals.projectOptionCatalogueService.reorderOptions('projectType', [
+      projectType.value, ...BUILT_IN_PROJECT_TYPES,
+    ]);
+
+    const response = await agent.get(
+      `/projects/new?status=${status.value}&projectType=${projectType.value}`,
+    ).expect(200);
+    const statusField = response.text.match(/id="project-status-form"[\s\S]*?<\/fieldset>/)?.[0] || '';
+    const typeField = extractProjectTypeField(response.text);
+
+    expect(statusField).toContain(`value="${status.value}" checked`);
+    expect(statusField).toContain('Client QA Label');
+    expect(statusField.indexOf(status.value)).toBeLessThan(statusField.indexOf('value="tbd"'));
+    expect(statusField).not.toContain('value="archived"');
+    expect(typeField).toContain(`value="${projectType.value}" checked`);
+    expect(typeField).toContain('Visual Novel Label');
+    expect(typeField.indexOf(projectType.value)).toBeLessThan(typeField.indexOf('value="images"'));
+
+    const location = await createProject({
+      title: 'Custom option selection',
+      status: status.value,
+      projectType: projectType.value,
+    });
+    const edit = await agent.get(`${location}?edit=1`).expect(200);
+    const editStatusField = edit.text.match(/id="project-status-form"[\s\S]*?<\/fieldset>/)?.[0] || '';
+    const editTypeField = extractProjectTypeField(edit.text);
+    expect(editStatusField).toContain(`name="status" type="radio" value="${status.value}" checked`);
+    expect(editStatusField).not.toContain('value="archived"');
+    expect(editTypeField).toContain(`name="projectType" type="radio" value="${projectType.value}" checked`);
+    const stored = db.prepare('SELECT status, project_type FROM projects WHERE id = ?')
+      .get(Number(location.replace('/projects/', '')));
+    expect(stored).toEqual({ status: status.value, project_type: projectType.value });
   });
 
   it('drops legacy Project scheduling keys from query and submitted form values', () => {
@@ -155,7 +262,7 @@ describe('Project Type route and form models', () => {
 
     const model = lastRenderModel(renderSpy, 'projects/detail.njk');
     expect(model.projectEditForm.values.projectType).toBe('animation');
-    expect(model.projectEditForm.projectTypes).toEqual(PROJECT_TYPES);
+    expect(model.projectEditForm.projectTypes.map(({ value }) => value)).toEqual(BUILT_IN_PROJECT_TYPES);
     expect(model.projectEditForm.values).not.toHaveProperty('plannedDate');
     expect(model.projectEditForm.values).not.toHaveProperty('publishedDate');
   });
@@ -171,7 +278,7 @@ describe('Project Type route and form models', () => {
 
     const createModel = lastRenderModel(renderSpy, 'projects/form.njk');
     expect(createModel.values.projectType).toBe('not-a-project-type');
-    expect(createModel.projectTypes).toEqual(PROJECT_TYPES);
+    expect(createModel.projectTypes.map(({ value }) => value)).toEqual(BUILT_IN_PROJECT_TYPES);
 
     const location = await createProject({ projectType: 'comic' });
     renderSpy.mockClear();
@@ -184,7 +291,7 @@ describe('Project Type route and form models', () => {
 
     const editModel = lastRenderModel(renderSpy, 'projects/detail.njk');
     expect(editModel.projectEditForm.values.projectType).toBe('not-a-project-type');
-    expect(editModel.projectEditForm.projectTypes).toEqual(PROJECT_TYPES);
+    expect(editModel.projectEditForm.projectTypes.map(({ value }) => value)).toEqual(BUILT_IN_PROJECT_TYPES);
   });
 
   it('renders the shared Project Type dropdown for new, standalone, and edit forms', async () => {

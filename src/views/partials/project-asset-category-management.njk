@@ -10,13 +10,13 @@
     {% include "partials/notice.njk" %}
   {% endif %}
 
-  {% if project.archived_at %}
+  {% if isArchived %}
     {% set noticeVariant = "warning" %}
     {% set noticeText = "This project is archived, so its categories are shown read-only. No category here can be added, edited, reordered, or deleted." %}
     {% include "partials/notice.njk" %}
   {% endif %}
 
-  {% if not project.archived_at %}
+  {% if not isArchived %}
     <div id="project-category-management-status" class="sr-only category-management-status" data-category-management-status
          role="status" aria-live="polite" aria-atomic="true" tabindex="-1"></div>
   {% endif %}
@@ -27,14 +27,14 @@
     "/projects/" ~ project.id ~ "/asset-categories/default",
     "project-asset-categories-default-category",
     _csrf,
-    project.archived_at,
+    isArchived,
     null,
     [],
     categoryManagementReturnUrl,
     true
   ) }}
 
-  {% if not project.archived_at %}
+  {% if not isArchived %}
     <section class="project-category-management-panel project-category-management-add settings-section">
       <h3>Add a category</h3>
       {% if management.addErrors.displayName or management.addErrors.directorySlug or management.addErrors.enabled %}
@@ -87,7 +87,7 @@
     <h3>Categories</h3>
     <p class="category-management-section-note">Changing a display name does not rename its directory.</p>
     {% if management.categories.length > 0 %}
-      {% if not project.archived_at %}
+      {% if not isArchived %}
         <form id="project-category-reorder-form" method="post" action="/projects/{{ project.id }}/asset-categories/reorder" class="category-reorder-form" data-category-reorder-form>
           <input type="hidden" name="_csrf" value="{{ _csrf }}">
           <input type="hidden" name="returnTo" value="{{ categoryManagementReturnUrl }}">
@@ -96,10 +96,10 @@
       {% endif %}
 
       <div
-        class="category-reorder-list{% if project.archived_at %} category-reorder-list--readonly{% endif %}"
+        class="category-reorder-list{% if isArchived %} category-reorder-list--readonly{% endif %}"
         role="list"
         aria-label="Project asset categories"
-        {% if not project.archived_at %}
+        {% if not isArchived %}
           data-category-reorder-list
           data-reorder-url="/projects/{{ project.id }}/asset-categories/reorder"
           data-reorder-form-target="project-category-reorder-form"
@@ -115,17 +115,17 @@
           {% set rowNameErrors = management.nameEdit.errors if (management.nameEdit and management.nameEdit.categoryId == category.id) else {} %}
           {% set rowNameValue = management.nameEdit.values.displayName if (management.nameEdit and management.nameEdit.categoryId == category.id) else category.display_name %}
           <article
-            class="category-management-card{% if project.archived_at %} category-management-card--readonly{% endif %}"
+            class="category-management-card{% if isArchived %} category-management-card--readonly{% endif %}"
             role="listitem"
             data-category-id="{{ category.id }}"
             data-category-label="{{ category.display_name }}"
-            {% if not project.archived_at %}
+            {% if not isArchived %}
               data-category-reorder-item
               draggable="true"
               aria-posinset="{{ loop.index }}"
               aria-setsize="{{ management.categories.length }}"
             {% endif %}>
-            {% if not project.archived_at %}
+            {% if not isArchived %}
               <button
                 type="button"
                 class="category-reorder-handle"
@@ -141,7 +141,7 @@
               <div class="category-management-card-fields">
                 <div class="category-management-card-field category-management-name">
                   <span class="category-management-card-label">Display name</span>
-                  {% if not project.archived_at %}
+                  {% if not isArchived %}
                     <form method="post" action="/projects/{{ project.id }}/asset-categories/{{ category.id }}/name" class="inline-form category-name-form" novalidate>
                       <input type="hidden" name="_csrf" value="{{ _csrf }}">
                       <input type="hidden" name="returnTo" value="{{ categoryManagementReturnUrl }}">
@@ -165,7 +165,7 @@
 
               <div class="category-management-card-controls">
                 <div class="category-management-enabled">
-                  {% if project.archived_at %}
+                  {% if isArchived %}
                     {{ formSwitch.control(
                       "project-category-enabled-" ~ category.id,
                       "enabled",
@@ -195,7 +195,7 @@
                   {% endif %}
                 </div>
 
-                {% if not project.archived_at %}
+                {% if not isArchived %}
                   <div class="category-management-actions">
                     <form method="post" action="/projects/{{ project.id }}/asset-categories/{{ category.id }}/delete" class="inline-form" data-category-management-delete-form>
                       <input type="hidden" name="_csrf" value="{{ _csrf }}">
@@ -209,7 +209,7 @@
           </article>
         {% endfor %}
       </div>
-      {% if not project.archived_at %}
+      {% if not isArchived %}
         <div class="category-reorder-live-region sr-only" data-category-reorder-live aria-live="polite" aria-atomic="true"></div>
       {% endif %}
     {% else %}

@@ -1207,6 +1207,20 @@ describe('asset browser HTTP workflow', () => {
       expect(redirectUrl).toBe(`/projects/${id}/assets?category=${category.id}&inheritedFilterDefaults=extension`);
     });
 
+    it('suppresses the complete category-management surface for a legacy status-only archived project', async () => {
+      const id = await projectIdFor('Legacy Status Only Category Surface');
+      const category = firstProjectCategory(id);
+      writeIndexedAsset(id, getProjectDir('Legacy Status Only Category Surface'), 'category.png', 'png', {
+        categoryId: category.id,
+      });
+      db.prepare("UPDATE projects SET status = 'archived', archived_at = NULL WHERE id = ?").run(id);
+
+      const response = await agent.get(`/projects/${id}/assets?category=${category.id}`).expect(200);
+      expect(response.text).toMatch(/read-only/i);
+      expect(response.text).not.toContain('data-auto-rename-surface');
+      expect(response.text).not.toContain('data-auto-rename-form');
+    });
+
     it('keeps the complete category surface and a canonical category URL for a saved Global Tag default', async () => {
       const tag = app.locals.tagService.createTag({ name: 'Category surface global default tag' });
       const { id, category, redirectUrl } = await expectCategorySurfaceWithSavedDefaults(
@@ -1467,9 +1481,9 @@ describe('asset browser HTTP workflow', () => {
 
     it('resolves a bare specific default before the full browser query', async () => {
       const project = db.prepare(`
-        INSERT INTO projects (title, slug, description, notes, status,
+        INSERT INTO projects (title, slug, description, notes, status, project_type,
                               patreon_url, archived_at)
-        VALUES ('Early Default Project', 'early-default-project', '', '', 'tbd', NULL, NULL)
+        VALUES ('Early Default Project', 'early-default-project', '', '', 'tbd', 'images', NULL, NULL)
         RETURNING *
       `).get();
       const fullBrowserQuery = vi.fn(() => {
@@ -3317,6 +3331,21 @@ describe('asset browser HTTP workflow', () => {
 
       const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
       expect(res2.text).not.toContain('Scan Now');
+    });
+
+    it('rejects a manual scan for a legacy status-only archived project without indexing files', async () => {
+      const res = await createProject('Legacy Status Only Scan');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      fs.writeFileSync(path.join(getProjectDir('Legacy Status Only Scan'), 'must-not-scan.png'), 'png');
+      db.prepare("UPDATE projects SET status = 'archived', archived_at = NULL WHERE id = ?").run(id);
+
+      const scan = await agent
+        .post(`/projects/${id}/scan`)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
+
+      expect(scan.headers.location).toContain('scan_error=archived');
+      expect(assetRepo.findByProjectId(id)).toEqual([]);
     });
 
     it('the scan route still redirects and shows Added/Updated/Missing/Total result notices unchanged', async () => {

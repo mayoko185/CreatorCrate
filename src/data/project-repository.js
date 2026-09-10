@@ -6,10 +6,10 @@ import {
   normalizeAssetPickerQuery,
 } from './asset-picker-pagination.js';
 
-export const STATUSES = ['tbd', 'planned', 'in-progress', 'ready', 'completed', 'archived'];
-export const WORKFLOW_STATUSES = ['tbd', 'planned', 'in-progress', 'ready', 'completed'];
-export const PROJECT_TYPES = ['images', 'comic', 'animation', 'wallpaper'];
+export const ARCHIVED_PROJECT_STATUS = 'archived';
+export const DEFAULT_PROJECT_STATUS = 'tbd';
 export const DEFAULT_PROJECT_TYPE = 'images';
+const PROJECT_OPTION_VALUE_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 export const DASHBOARD_SORTS = Object.freeze({
   updated: Object.freeze({ column: 'updated_at' }),
   created: Object.freeze({ column: 'created_at' }),
@@ -66,7 +66,7 @@ export function createProjectRepository(db) {
         project_type = COALESCE(?, project_type),
         patreon_url = ?,
         updated_at = datetime('now')
-    WHERE id = ? AND archived_at IS NULL
+    WHERE id = ? AND archived_at IS NULL AND status <> ?
     RETURNING ${COLUMNS.join(', ')}
   `);
   const archive = db.prepare(`
@@ -85,11 +85,35 @@ export function createProjectRepository(db) {
   const countByStatus = db.prepare(`
     SELECT status, COUNT(*) AS c
     FROM projects
-    WHERE archived_at IS NULL
+    WHERE archived_at IS NULL AND status <> 'archived'
     GROUP BY status
   `);
   const countArchived = db.prepare(`
-    SELECT COUNT(*) AS c FROM projects WHERE archived_at IS NOT NULL
+    SELECT COUNT(*) AS c
+    FROM projects
+    WHERE archived_at IS NOT NULL OR status = 'archived'
+  `);
+  const hasStatusValueStmt = db.prepare(`
+    SELECT EXISTS(SELECT 1 FROM projects WHERE status = ?)
+  `);
+  const hasProjectTypeValueStmt = db.prepare(`
+    SELECT EXISTS(SELECT 1 FROM projects WHERE project_type = ?)
+  `);
+  const countStatusValueStmt = db.prepare(`
+    SELECT COUNT(*) AS c FROM projects WHERE status = ?
+  `);
+  const countProjectTypeValueStmt = db.prepare(`
+    SELECT COUNT(*) AS c FROM projects WHERE project_type = ?
+  `);
+  const reassignStatusValueStmt = db.prepare(`
+    UPDATE projects
+    SET status = ?, updated_at = datetime('now')
+    WHERE status = ?
+  `);
+  const reassignProjectTypeValueStmt = db.prepare(`
+    UPDATE projects
+    SET project_type = ?, updated_at = datetime('now')
+    WHERE project_type = ?
   `);
   const listActiveAssetFilterOptionsStmt = db.prepare(`
     SELECT id, title
@@ -137,13 +161,19 @@ export function createProjectRepository(db) {
      * @returns {ProjectRecord}
      */
     create(input) {
+      if (typeof input.status !== 'string' || input.status.length === 0) {
+        throw new TypeError('Project creation requires an explicit status.');
+      }
+      if (typeof input.projectType !== 'string' || input.projectType.length === 0) {
+        throw new TypeError('Project creation requires an explicit projectType.');
+      }
       const values = [
         input.title,
         input.slug,
         input.description,
         input.notes,
         input.status,
-        input.projectType ?? DEFAULT_PROJECT_TYPE,
+        input.projectType,
         input.patreonUrl ?? null,
       ];
       return insert.get(...values);
@@ -164,6 +194,7 @@ export function createProjectRepository(db) {
         input.projectType ?? null,
         input.patreonUrl ?? null,
         id,
+        ARCHIVED_PROJECT_STATUS,
       ];
       return update.get(...values);
     },
@@ -205,12 +236,36 @@ export function createProjectRepository(db) {
      */
     countByStatus() {
       const rows = countByStatus.all();
-      const counts = Object.fromEntries(STATUSES.map((s) => [s, 0]));
+      const counts = {};
       for (const row of rows) {
         counts[row.status] = row.c;
       }
       counts.archived = countArchived.pluck().get();
       return counts;
+    },
+
+    hasStatusValue(value) {
+      return Boolean(hasStatusValueStmt.pluck().get(value));
+    },
+
+    hasProjectTypeValue(value) {
+      return Boolean(hasProjectTypeValueStmt.pluck().get(value));
+    },
+
+    countStatusValue(value) {
+      return countStatusValueStmt.pluck().get(value);
+    },
+
+    countProjectTypeValue(value) {
+      return countProjectTypeValueStmt.pluck().get(value);
+    },
+
+    reassignStatusValue(source, replacement) {
+      return reassignStatusValueStmt.run(replacement, source).changes;
+    },
+
+    reassignProjectTypeValue(source, replacement) {
+      return reassignProjectTypeValueStmt.run(replacement, source).changes;
     },
 
     /**
@@ -386,7 +441,7 @@ export function createProjectRepository(db) {
       }
 
       if (!includeArchived) {
-        conditions.push('archived_at IS NULL');
+        conditions.push("archived_at IS NULL AND status <> 'archived'");
       }
 
       if (selectedStatuses.length > 0) {
@@ -394,7 +449,7 @@ export function createProjectRepository(db) {
         const activeStatuses = selectedStatuses.filter((value) => value !== 'archived');
 
         if (selectedStatuses.includes('archived')) {
-          statusConditions.push('archived_at IS NOT NULL');
+          statusConditions.push("(archived_at IS NOT NULL OR status = 'archived')");
         }
         if (activeStatuses.length > 0) {
           const placeholders = activeStatuses.map(() => '?').join(',');
@@ -450,13 +505,20 @@ function escapeLike(value) {
 }
 
 function normalizeStatusSelection(value) {
-  const values = new Set(Array.isArray(value) ? value : [value]);
-  return STATUSES.filter((status) => values.has(status));
+  return normalizeProjectOptionSelection(value);
 }
 
 function normalizeProjectTypeSelection(value) {
-  const values = new Set(Array.isArray(value) ? value : [value]);
-  return PROJECT_TYPES.filter((projectType) => values.has(projectType));
+  return normalizeProjectOptionSelection(value);
+}
+
+function normalizeProjectOptionSelection(value) {
+  const values = Array.isArray(value) ? value : [value];
+  return [...new Set(values.filter((candidate) => (
+    typeof candidate === 'string'
+      && candidate !== 'all'
+      && PROJECT_OPTION_VALUE_PATTERN.test(candidate)
+  )))];
 }
 
 function normalizeDashboardStatusConfigurations(configurationByStatus) {
@@ -464,8 +526,8 @@ function normalizeDashboardStatusConfigurations(configurationByStatus) {
     return [];
   }
 
-  return STATUSES.flatMap((status) => {
-    const configuration = configurationByStatus[status];
+  return Object.entries(configurationByStatus).flatMap(([status, configuration]) => {
+    if (!PROJECT_OPTION_VALUE_PATTERN.test(status)) return [];
     const limit = typeof configuration === 'number' ? configuration : configuration?.limit;
     return Number.isSafeInteger(limit) && limit >= 1 && limit <= 25
       ? [{

@@ -7,8 +7,20 @@ import { describe, it, expect, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { createIndexRouter } from '../src/routes/index.js';
-import { DASHBOARD_SECTION_REGISTRY } from '../src/services/dashboard-defaults-service.js';
+import { buildDashboardSectionRegistry } from '../src/services/dashboard-defaults-service.js';
 
+const STATUS_CATALOGUE = [
+  { value: 'tbd', label: 'Tbd', color: '#64748B' },
+  { value: 'planned', label: 'Planned', color: '#3B82F6' },
+  { value: 'in-progress', label: 'In Progress', color: '#F59E0B' },
+  { value: 'ready', label: 'Ready', color: '#22C55E' },
+  { value: 'completed', label: 'Completed', color: '#10B981' },
+  { value: 'archived', label: 'Archived', color: '#475569' },
+];
+const PROJECT_TYPE_CATALOGUE = [
+  { value: 'images', label: 'Images', color: '#64748B' },
+];
+const DASHBOARD_SECTION_REGISTRY = buildDashboardSectionRegistry(STATUS_CATALOGUE);
 const SECTION_IDS = DASHBOARD_SECTION_REGISTRY.map(({ id }) => id);
 
 function buildProject(overrides = {}) {
@@ -52,11 +64,30 @@ function createTestApp({
   if (withNsfwService) {
     app.locals.nsfwFilterSettingsService = { isEnabled: () => nsfwEnabled };
   }
-  const dashboardDefaultsService = { getDefaults: vi.fn(() => dashboardDefaults) };
+  const dashboardDefaultsService = {
+    getConfiguration: vi.fn(() => ({
+      defaults: dashboardDefaults,
+      sectionRegistry: DASHBOARD_SECTION_REGISTRY,
+    })),
+    getDefaults: vi.fn(() => dashboardDefaults),
+    getSectionRegistry: vi.fn(() => DASHBOARD_SECTION_REGISTRY),
+    saveDefaults: vi.fn(),
+  };
   if (withDashboardDefaultsService) {
     app.locals.dashboardDefaultsService = dashboardDefaultsService;
   }
-  const pageDefaultsService = { resolve: vi.fn((_page, _field, value) => value || 'tbd') };
+  const pageDefaultsService = {
+    resolve: vi.fn((_page, _field, value) => value || 'tbd'),
+    getSavedDefault: vi.fn((_page, field) => (field === 'status' ? 'tbd' : 'images')),
+    getOptionCatalogue: vi.fn((page, field) => {
+      if (page === 'new_project' && field === 'status') return STATUS_CATALOGUE;
+      if (page === 'new_project' && field === 'projectType') return PROJECT_TYPE_CATALOGUE;
+      if (page === 'projects' && field === 'projectType') {
+        return [{ value: 'all', label: 'All types' }, ...PROJECT_TYPE_CATALOGUE];
+      }
+      throw new Error(`Unexpected Page Defaults catalogue request: ${page}.${field}`);
+    }),
+  };
   const tagService = { listTags: vi.fn(() => []) };
 
   app.use((req, res, next) => {
@@ -102,9 +133,13 @@ describe('dashboard route wiring', () => {
 
     const { view, locals } = getCaptured();
     expect(view).toBe('index.njk');
-    expect(dashboardDefaultsService.getDefaults).toHaveBeenCalledOnce();
-    expect(workflowQueryService.getDashboardData).toHaveBeenCalledWith({ dashboardDefaults });
-    expect(pageDefaultsService.resolve).toHaveBeenCalledWith('new_project', 'status', undefined);
+    expect(dashboardDefaultsService.getConfiguration).toHaveBeenCalledOnce();
+    expect(workflowQueryService.getDashboardData).toHaveBeenCalledWith({
+      dashboardDefaults,
+      dashboardSectionRegistry: DASHBOARD_SECTION_REGISTRY,
+    });
+    expect(pageDefaultsService.getSavedDefault).toHaveBeenCalledWith('new_project', 'status');
+    expect(pageDefaultsService.getSavedDefault).toHaveBeenCalledWith('new_project', 'projectType');
     expect(tagService.listTags).toHaveBeenCalledOnce();
     expect(locals).toMatchObject({
       appName: 'Test App',
@@ -179,8 +214,8 @@ describe('dashboard route wiring', () => {
 
     expect(getCaptured().locals.dashboardSections.map(({ id, label }) => ({ id, label }))).toEqual(expect.arrayContaining([
       { id: 'recently-updated', label: 'Recently updated projects' },
-      { id: 'status:tbd', label: 'TBD' },
-      { id: 'status:in-progress', label: 'In progress' },
+      { id: 'status:tbd', label: 'Tbd' },
+      { id: 'status:in-progress', label: 'In Progress' },
       { id: 'status:archived', label: 'Archived' },
     ]));
   });

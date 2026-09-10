@@ -4,7 +4,6 @@ import {
   DASHBOARD_ITEM_COUNT_MAX,
   DASHBOARD_ITEM_COUNT_MIN,
   DASHBOARD_ORDER_VALUES,
-  DASHBOARD_SECTION_REGISTRY,
   DASHBOARD_SORT_VALUES,
   getDashboardSectionDefaultSorting,
 } from '../services/dashboard-defaults-service.js';
@@ -56,9 +55,9 @@ function flattenDashboardDefaultsErrors(errors) {
   return flatErrors;
 }
 
-function parseDashboardDefaultsSubmission(body) {
+function parseDashboardDefaultsSubmission(body, sectionRegistry) {
   const rawBody = isPlainObject(body) ? body : {};
-  const sectionIds = DASHBOARD_SECTION_REGISTRY.map(({ id }) => id);
+  const sectionIds = sectionRegistry.map(({ id }) => id);
   const sectionIdSet = new Set(sectionIds);
   const rawSections = isPlainObject(rawBody.sections) ? rawBody.sections : {};
   const errors = { sections: {} };
@@ -179,7 +178,11 @@ export function createIndexRouter({
 
   router.post('/dashboard/defaults', (req, res, next) => {
     const enhanced = isEnhancedRequest(req);
-    const submission = parseDashboardDefaultsSubmission(req.body);
+    const dashboardDefaultsService = getDashboardDefaultsService(req);
+    const submission = parseDashboardDefaultsSubmission(
+      req.body,
+      dashboardDefaultsService.getSectionRegistry(),
+    );
 
     if (!submission.valid) {
       if (enhanced) {
@@ -210,7 +213,7 @@ export function createIndexRouter({
     }
 
     try {
-      getDashboardDefaultsService(req).saveDefaults(submission.values);
+      dashboardDefaultsService.saveDefaults(submission.values);
       if (enhanced) {
         res.json({
           status: 'success',

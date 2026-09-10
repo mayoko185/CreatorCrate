@@ -7,6 +7,7 @@ import { AssetCategoryValidationError } from './asset-category-validation.js';
 import { buildReleaseAssetPagePresentation } from './release-asset-presenter.js';
 import { formatLocalDate, formatLocalTime, getLocalTodayIso } from '../util/date.js';
 import { isValidWebUrl } from '../util/url.js';
+import { isProjectArchived } from './project-state.js';
 
 export class ReleaseValidationError extends Error {
   constructor(errors) {
@@ -280,10 +281,7 @@ export function createReleaseService({ db, applicationLogger = null }) {
     if (!project) {
       throw new ReleaseValidationError({ projectId: 'Project not found.' });
     }
-    // Both archive indicators must be checked — a row can disagree (e.g.
-    // status='archived' with a NULL archived_at), and either one means the
-    // project is not valid release-create context.
-    if (project.archived_at || project.status === 'archived') {
+    if (isProjectArchived(project)) {
       throw new ReleaseValidationError({ projectId: 'Cannot create release for archived project.' });
     }
     return project;
@@ -367,7 +365,7 @@ export function createReleaseService({ db, applicationLogger = null }) {
    */
   function guardParentProjectNotArchived(projectId) {
     const parent = projectRepository.findById(projectId);
-    if (parent && parent.archived_at) {
+    if (isProjectArchived(parent)) {
       throw new ReleaseParentArchivedError(projectId);
     }
   }

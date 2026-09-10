@@ -77,6 +77,7 @@ function cleanupScrollableDropdownPositioning(dropdown, { restoreScroll = true }
     state.body?.removeEventListener?.('scroll', dropdown.__creatorCrateDropdownRecordScroll);
     state.viewport?.removeEventListener?.('resize', state.reposition);
     state.viewport?.removeEventListener?.('scroll', state.reposition, true);
+    state.observer?.disconnect();
     if (restoreScroll && state.body) {
       state.body.scrollTop = state.lastScrollTop ?? state.body.scrollTop;
     }
@@ -101,7 +102,8 @@ function dropdownViewport(dropdown) {
 }
 
 function positionScrollableCategoryDropdown(dropdown, dialogBody) {
-  if (!dropdown || dropdown.open !== true || !isScrollableDialogBody(dialogBody)) return false;
+  if (!dropdown || dropdown.open !== true
+    || (!dropdown.hasAttribute?.('data-cc-viewport-disclosure') && !isScrollableDialogBody(dialogBody))) return false;
 
   const summary = dropdown.querySelector?.('summary');
   const panel = dropdown.querySelector?.(CC_DROPDOWN_PANEL_SELECTOR);
@@ -179,7 +181,7 @@ function bindScrollableCategoryDropdownPositioning(dropdown, dialogBody) {
   const { viewport } = dropdownViewport(dropdown);
   let lastScrollTop = Number(dialogBody.scrollTop) || 0;
   const reposition = () => {
-    if (dropdown.open !== true) {
+    if (dropdown.open !== true || dropdown.isConnected === false) {
       cleanupScrollableDropdownPositioning(dropdown);
       return;
     }
@@ -206,6 +208,16 @@ function bindScrollableCategoryDropdownPositioning(dropdown, dialogBody) {
     reposition,
     get lastScrollTop() { return lastScrollTop; },
   };
+  if (dropdown.hasAttribute?.('data-cc-viewport-disclosure') && viewport?.MutationObserver) {
+    const observer = new viewport.MutationObserver(() => {
+      if (!dropdown.isConnected) {
+        dropdown.open = false;
+        cleanupScrollableDropdownPositioning(dropdown);
+      }
+    });
+    observer.observe(dropdown.ownerDocument.documentElement, { childList: true, subtree: true });
+    dropdown[CC_DROPDOWN_OVERLAY_STATE].observer = observer;
+  }
 }
 
 function closeScrollableCategoryDropdown(dropdown, restoreFocus = false) {
@@ -233,6 +245,22 @@ export function cleanupScrollableCategoryDialogDropdowns(dialog) {
 
 export function updateAssetViewerFilterDisclosureState(disclosure) {
   disclosure?.querySelector?.('summary')?.setAttribute?.('aria-expanded', String(disclosure.open === true));
+  if (disclosure?.hasAttribute?.('data-cc-viewport-disclosure')) {
+    if (disclosure.open) {
+      const body = disclosure.ownerDocument.documentElement;
+      bindScrollableCategoryDropdownPositioning(disclosure, body);
+      if (!positionScrollableCategoryDropdown(disclosure, body)) closeScrollableCategoryDropdown(disclosure, true);
+    } else {
+      const wasPositioned = Boolean(disclosure[CC_DROPDOWN_OVERLAY_STATE]);
+      cleanupScrollableDropdownPositioning(disclosure, { restoreScroll: false });
+      if (wasPositioned && disclosure.isConnected && (disclosure.ownerDocument.activeElement === disclosure.ownerDocument.body
+        || (disclosure.contains(disclosure.ownerDocument.activeElement)
+          && disclosure.ownerDocument.activeElement !== disclosure.querySelector('summary')))) {
+        disclosure.querySelector('summary')?.focus({ preventScroll: true });
+      }
+    }
+    return;
+  }
   const dialogBody = disclosure?.closest?.('.app-dialog-body');
   if (!dialogBody) return;
 
@@ -870,6 +898,15 @@ export function enhanceDropdowns(scope = globalThis.document) {
     boundKey: 'creatorCrateDropdownsBound',
     initialize: initializeCreatorCrateDropdown,
     onChange: handleCreatorCrateDropdownChange,
+  });
+}
+
+// Inline controls opt into the same disclosure lifecycle and viewport calculations.
+export function enhanceViewportDisclosures(scope = globalThis.document) {
+  return enhanceAssetDisclosures(scope, {
+    selector: '[data-cc-viewport-disclosure]',
+    boundKey: 'viewportDisclosuresBound',
+    initialize: updateAssetViewerFilterDisclosureState,
   });
 }
 

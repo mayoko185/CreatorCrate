@@ -1,6 +1,7 @@
 import { NSFW_TAG_NAME } from '../services/nsfw-filter-settings-service.js';
 
 import { buildProjectAssetBrowserPreferenceModel } from '../services/asset-browser-preference-presenter.js';
+import { isProjectArchived } from '../services/project-state.js';
 
 import { buildPageDefaultsDialogModel } from './page-defaults.js';
 
@@ -972,7 +973,7 @@ function buildAssetsPageData(
 
   const categorySurface = workflowQueryService.getProjectAutoRenameCategory(projectId, categoryQuery);
   const category = categorySurface?.effectiveCategory;
-  const canRenderCompleteCategory = Boolean(category && !project.archived_at && categorySurface);
+  const canRenderCompleteCategory = Boolean(category && !isProjectArchived(project) && categorySurface);
 
   if (!canRenderCompleteCategory) {
     const ordinary = workflowQueryService.getProjectAssetBrowser(projectId, categoryQuery);

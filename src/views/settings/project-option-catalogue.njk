@@ -1,0 +1,146 @@
+{% import "settings/project-option-color-control.njk" as colorControl %}
+{% import "partials/dropdown.njk" as dropdown %}
+
+<section
+  id="{{ editor.anchor }}"
+  class="settings-section settings-defaults-section settings-project-option-editor"
+  aria-labelledby="{{ editor.anchor }}-heading"
+  data-settings-project-option-editor="{{ editor.routeId }}"
+  data-project-option-reorder-url="/settings/defaults/project-options/{{ editor.routeId }}/reorder">
+  <h3 id="{{ editor.anchor }}-heading">{{ editor.title }}</h3>
+
+  {% if editor.feedback %}
+    {% set feedbackClass = "notice notice--success" %}
+    {% if editor.feedback.variant == 'error' %}{% set feedbackClass = "notice notice--error" %}{% endif %}
+    <div
+      class="{{ feedbackClass }}"
+      role="{% if editor.feedback.variant == 'error' %}alert{% else %}status{% endif %}"
+      data-project-option-feedback
+      data-project-option-feedback-code="{{ editor.feedback.code }}">
+      <p>{{ editor.feedback.text }}</p>
+    </div>
+  {% endif %}
+
+  {% if editor.unavailable %}
+    <p class="help-text">This catalogue cannot be managed until its saved data is repaired.</p>
+  {% else %}
+    <ul class="project-option-list" data-project-option-list>
+      {% for option in editor.entries %}
+        <li
+          id="project-option-{{ editor.routeId }}-{{ option.value }}"
+          class="project-option-card"
+          data-project-option-card
+          data-project-option-value="{{ option.value }}">
+          <span class="project-option-label">
+            {% if editor.routeId == "status" %}
+              {% set status = option.value %}
+              {% set projectStatusOption = option %}
+              {% include "partials/status-badge.njk" %}
+            {% else %}
+              {% set projectType = option.value %}
+              {% set projectTypeOption = option %}
+              {% include "partials/project-type-badge.njk" %}
+            {% endif %}
+          </span>
+          <div class="project-option-card-controls">
+            <form
+              method="post"
+              action="/settings/defaults/project-options/{{ editor.routeId }}/{{ option.value }}/color"
+              class="project-option-color-form"
+              data-project-option-color-form>
+              <input type="hidden" name="_csrf" value="{{ _csrf }}">
+              {{ colorControl.render(
+                "project-option-" ~ editor.routeId ~ "-" ~ option.value ~ "-color",
+                option.color,
+                option.label
+              ) }}
+            </form>
+            <form
+              method="post"
+              action="/settings/defaults/project-options/{{ editor.routeId }}/{{ option.value }}/delete"
+              class="project-option-delete-form"
+              data-project-option-delete-form>
+              <input type="hidden" name="_csrf" value="{{ _csrf }}">
+              {% set deletion = option.deletion %}
+              {% set optionKind = "type" %}
+              {% if editor.routeId == "status" %}{% set optionKind = "status" %}{% endif %}
+              <button
+                type="submit"
+                class="button button-small button-danger project-option-delete"
+                data-project-option-delete
+                {% if deletion.savedDefaultBlockers | length %}
+                  data-project-option-delete-mode="blocked"
+                  data-project-option-delete-title="“{{ option.label }}” cannot be deleted yet"
+                  data-project-option-delete-message="Blocked by {% for blocker in deletion.savedDefaultBlockers %}{{ blocker.label }}{% if blocker.referenceCount > 1 %} ({{ blocker.referenceCount }} references){% endif %}{% if not loop.last %}; {% endif %}{% endfor %}. Change {% if deletion.savedDefaultBlockers | length == 1 %}that default{% else %}those defaults{% endif %} first.{% if deletion.projectReferenceCount %} {{ deletion.projectReferenceCount }} Project{% if deletion.projectReferenceCount != 1 %}s also currently use{% else %} also currently uses{% endif %} this {{ optionKind }}.{% endif %}"
+                  data-project-option-delete-confirm-label="Close"
+                {% elif deletion.projectReferenceCount %}
+                  data-project-option-delete-mode="referenced"
+                  data-project-option-delete-title="Delete “{{ option.label }}”?"
+                  data-project-option-delete-message="{{ deletion.projectReferenceCount }} Project{% if deletion.projectReferenceCount != 1 %}s currently use{% else %} currently uses{% endif %} this {{ optionKind }}. Choose the {{ optionKind }} {% if deletion.projectReferenceCount != 1 %}they{% else %}it{% endif %} should use instead."
+                  data-project-option-delete-confirm-label="Reassign and delete"
+                {% else %}
+                  data-project-option-delete-mode="unused"
+                  data-project-option-delete-title="Delete “{{ option.label }}”?"
+                  data-project-option-delete-message="This cannot be undone."
+                  data-project-option-delete-confirm-label="Delete"
+                {% endif %}
+                aria-label="Delete {{ option.label }}">×</button>
+              {% if not (deletion.savedDefaultBlockers | length) and deletion.projectReferenceCount %}
+                {% set replacementId = "project-option-" ~ editor.routeId ~ "-" ~ option.value ~ "-delete-replacement" %}
+                <template data-project-option-delete-replacement-template>
+                  {{ dropdown.singleSelect({
+                    id: replacementId ~ "-dropdown",
+                    name: "replacement",
+                    label: "Replacement " ~ optionKind,
+                    required: true,
+                    selected: "",
+                    placeholder: "Choose a replacement",
+                    options: deletion.eligibleReplacements,
+                    optionIdPrefix: replacementId,
+                    panelLabel: "Replacement " ~ optionKind ~ " options",
+                    dispatchNativeChange: true,
+                    summaryAttributes: [["autofocus", true]],
+                    nativeSelect: {
+                      id: replacementId,
+                      attributes: [
+                        ["required", true],
+                        ["data-project-option-delete-replacement", true]
+                      ]
+                    }
+                  }) }}
+                </template>
+              {% endif %}
+            </form>
+          </div>
+        </li>
+      {% endfor %}
+    </ul>
+
+    <form
+      method="post"
+      action="/settings/defaults/project-options/{{ editor.routeId }}/add"
+      class="project-option-add-row"
+      novalidate
+      data-project-option-add-form>
+      <input type="hidden" name="_csrf" value="{{ _csrf }}">
+      <div class="field{% if editor.feedback.errors.name %} field-error{% endif %}">
+        <label for="project-option-{{ editor.routeId }}-name">Name</label>
+        <input
+          id="project-option-{{ editor.routeId }}-name"
+          name="name"
+          type="text"
+          value="{{ editor.addDraft.name }}"
+          maxlength="100"
+          required
+          autocomplete="off"
+          {% if editor.feedback.errors.name %}aria-invalid="true"{% endif %}>
+      </div>
+      {{ colorControl.render(
+        "project-option-" ~ editor.routeId ~ "-new-color",
+        editor.addDraft.color,
+        "new " ~ editor.title ~ " option"
+      ) }}
+      <button type="submit" class="button button-primary">Add</button>
+    </form>
+  {% endif %}
+</section>

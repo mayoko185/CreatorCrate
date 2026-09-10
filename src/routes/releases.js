@@ -13,6 +13,7 @@ import { buildReleaseAssetPagePresentation } from '../services/release-asset-pre
 import { RELEASE_ASSET_ROLES } from '../data/release-repository.js';
 import { buildSocialContent } from '../services/social-content-builder.js';
 import { buildReleaseSocialPrepPresentation } from '../services/release-social-prep-presenter.js';
+import { isProjectArchived } from '../services/project-state.js';
 import {
   buildPageDefaultsDialogModel,
   handlePageDefaultsPost,
@@ -210,7 +211,7 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
     // Archived releases and releases in archived projects are read-only.
     // Redirect to detail view instead of showing the edit form.
     const project = projectService.findById(release.project_id);
-    if (release.archived_at || (project && project.archived_at)) {
+    if (release.archived_at || isProjectArchived(project)) {
       return res.redirect(`/releases/${id}`);
     }
 
@@ -294,7 +295,7 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
     const project = projectService.findById(release.project_id);
 
     // Archived and already-published releases cannot enter publication review.
-    if (release.archived_at || (project && project.archived_at)) {
+    if (release.archived_at || isProjectArchived(project)) {
       return res.redirect(`/releases/${id}`);
     }
     if (release.published_date != null) {
@@ -1204,7 +1205,8 @@ function buildReleaseDetailRenderModel({
   publishDialogForm = null,
 }) {
   const selectedAssets = Array.isArray(releaseAssets) ? releaseAssets : [];
-  const editAvailable = !release.archived_at && !(project && project.archived_at);
+  const projectArchived = isProjectArchived(project);
+  const editAvailable = !release.archived_at && !projectArchived;
   const publishAvailable = editAvailable && release.published_date == null;
   const resolvedEditDialogForm = editDialogForm || {
     values: releaseToFormValues(release),
@@ -1220,6 +1222,7 @@ function buildReleaseDetailRenderModel({
     appName,
     release,
     project,
+    projectArchived,
     releaseAssets: selectedAssets,
     assetCount: selectedAssets.length,
     assetPresentation: releaseService.getReleaseAssetPresentation(release.id, selectedAssets),
@@ -1272,6 +1275,7 @@ function buildAssetPageRenderModel(
   return {
     release: viewModel.release,
     project: viewModel.project,
+    projectArchived: isProjectArchived(viewModel.project),
     releaseAssets,
     assetPresentation: pagePresentation,
     assets: viewModel.assets,
@@ -1432,16 +1436,6 @@ function parseId(value) {
 }
 
 /**
- * A project is active release-create context only when neither archive
- * indicator is set. Rows can disagree (status='archived' with a NULL
- * archived_at, or vice versa) so both must be checked directly on the
- * project object regardless of which lookup path produced it.
- */
-function isActiveProject(project) {
-  return !project.archived_at && project.status !== 'archived';
-}
-
-/**
  * Resolve a GET /releases/new `projectId` query value against the loaded
  * project options, returning the options to render (possibly extended) and
  * the trusted, normalized selected project id (or null when the context
@@ -1471,7 +1465,7 @@ function isActiveProject(project) {
 function buildReleaseFormProjectContext(rawProjectId, projectService) {
   const { rows: originalProjects } = projectService.list({ includeArchived: false, limit: 100 });
   const originalPageWasFull = originalProjects.length === 100;
-  const activeProjects = originalProjects.filter(isActiveProject);
+  const activeProjects = originalProjects.filter((project) => !isProjectArchived(project));
   return resolveReleaseFormContext(rawProjectId, activeProjects, projectService, { originalPageWasFull });
 }
 
@@ -1487,7 +1481,7 @@ function resolveReleaseFormContext(rawProjectId, projects, projectService, { ori
   if (!originalPageWasFull) return { projects, selectedProjectId: null };
 
   const project = projectService.findById(id);
-  if (!project || !isActiveProject(project)) {
+  if (!project || isProjectArchived(project)) {
     return { projects, selectedProjectId: null };
   }
 

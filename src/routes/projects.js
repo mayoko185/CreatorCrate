@@ -2,10 +2,7 @@ import express from 'express';
 import {
   ProjectNotFoundError,
   ProjectValidationError,
-  STATUSES,
-  WORKFLOW_STATUSES,
 } from '../services/project-service.js';
-import { PROJECT_TYPES } from '../data/project-repository.js';
 import {
   ProjectNotFoundError as ProjectTagProjectNotFoundError,
   ProjectTagValidationError,
@@ -17,7 +14,12 @@ import {
   parseEnabledField,
 } from '../services/asset-category-validation.js';
 import { buildOpenLocallyUri } from '../util/open-locally.js';
+import {
+  buildProjectOptionPresentation,
+  presentProjectOptions,
+} from '../services/project-option-presenter.js';
 import { buildNewProjectFormModel, createFormValues } from './project-create-form.js';
+import { isProjectArchived } from '../services/project-state.js';
 import { renderDashboardPage } from './dashboard-render.js';
 import {
   buildPageDefaultsDialogModel,
@@ -93,6 +95,7 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
         });
       },
       optionCatalogues: buildProjectsDefaultOptionCatalogues(
+        getPageDefaultsService(req),
         getProjectTagFilterOptions(workflowQueryService),
       ),
       onSuccess: ({ validatedValues }) => {
@@ -236,7 +239,7 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
     // Archived projects are immutable. The edit form would render but POST
     // would still reject archived_at, so block access to the form itself
     // and route the user back to the detail page (read-only workspace).
-    if (project.archived_at) {
+    if (isProjectArchived(project)) {
       return res.redirect(`/projects/${project.id}`);
     }
 
@@ -274,8 +277,8 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
           projectEditForm: {
             values: createFormValues(req.body),
             errors: err.errors,
-            statuses: WORKFLOW_STATUSES,
-            projectTypes: PROJECT_TYPES,
+            statuses: getProjectFormStatusOptions(req),
+            projectTypes: getProjectFormTypeOptions(req),
             tags: loadAvailableTags(req),
             selectedTagIds: buildSubmittedSelectedTagIds(parsedTags),
           },
@@ -296,8 +299,8 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
         projectEditForm: {
           values: createFormValues(req.body),
           errors: { general: 'Project update failed. Please try again.' },
-          statuses: WORKFLOW_STATUSES,
-          projectTypes: PROJECT_TYPES,
+          statuses: getProjectFormStatusOptions(req),
+          projectTypes: getProjectFormTypeOptions(req),
           tags: loadAvailableTags(req),
           selectedTagIds: buildSubmittedSelectedTagIds(parsedTags),
         },
@@ -360,27 +363,32 @@ function renderProjectDetailPage(req, res, {
 
   const assignedProjectTags = getProjectTagService(req).listProjectTags(id);
   const nsfwFilterEnabled = getNsfwFilterSettingsService(req).isEnabled();
+  const optionPresentation = getProjectOptionPresentation(req);
   const projectTags = assignedProjectTags
     .map((tag) => ({ displayName: tag.display_name }));
-  const projectEditForm = workspace.project.archived_at
+  const projectArchived = isProjectArchived(workspace.project);
+  const projectEditForm = projectArchived
     ? null
     : submittedProjectEditForm || {
       values: projectToFormValues(workspace.project),
       errors: {},
-      statuses: WORKFLOW_STATUSES,
-      projectTypes: PROJECT_TYPES,
+      statuses: getProjectFormStatusOptions(req),
+      projectTypes: getProjectFormTypeOptions(req),
       tags: loadAvailableTags(req),
       selectedTagIds: assignedProjectTags.map((tag) => String(tag.id)),
     };
 
   res.status(status).render('projects/detail.njk', {
     appName,
-    project: withNsfwBlur(workspace.project, assignedProjectTags, nsfwFilterEnabled),
+    project: presentProjectOptions(
+      withNsfwBlur(workspace.project, assignedProjectTags, nsfwFilterEnabled),
+      optionPresentation,
+    ),
     releaseSummary: workspace.releaseSummary,
     assetHealth: workspace.assetHealth,
     projectTags,
     projectEditForm,
-    projectEditDialogOpen: Boolean(!workspace.project.archived_at && projectEditDialogOpen),
+    projectEditDialogOpen: Boolean(!projectArchived && projectEditDialogOpen),
     openLocallyUri: buildOpenLocallyUri({
       windowsRoot: getOpenLocallySettingsService(req).getWindowsProjectsPath(),
       projectDir: workspace.project.project_dir,
@@ -419,6 +427,7 @@ function renderProjectCreateError(req, res, next, {
 }) {
   const projectCreateForm = buildNewProjectFormModel({
     tagService: getTagService(req),
+    pageDefaultsService: getPageDefaultsService(req),
     values: req.body,
     errors,
     selectedTagIds: buildSubmittedSelectedTagIds(parsedTags),
@@ -472,7 +481,10 @@ function renderProjectsPage(req, res, {
 } = {}) {
   const pageDefaultsService = getPageDefaultsService(req);
   const availableTagOptions = getProjectTagFilterOptions(workflowQueryService);
-  const projectsDefaultOptionCatalogues = buildProjectsDefaultOptionCatalogues(availableTagOptions);
+  const projectsDefaultOptionCatalogues = buildProjectsDefaultOptionCatalogues(
+    pageDefaultsService,
+    availableTagOptions,
+  );
   const parsedQuery = parseListQuery(
     req.query,
     pageDefaultsService,
@@ -483,7 +495,10 @@ function renderProjectsPage(req, res, {
     ...option,
     selected: parsedQuery.tagIds.includes(Number(option.value)),
   }));
-  const projectTypeOptions = buildProjectTypeFilterOptions(parsedQuery.projectTypes);
+  const projectTypeOptions = buildProjectTypeFilterOptions(
+    projectsDefaultOptionCatalogues.projectType,
+    parsedQuery.projectTypes,
+  );
   const { total } = projectService.list({ ...parsedQuery, limit: 0 });
   const { total: totalProjects } = projectService.list({ includeArchived: true, limit: 0 });
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -495,6 +510,7 @@ function renderProjectsPage(req, res, {
   const offset = (currentPage - 1) * PAGE_SIZE;
   const nsfwFilterEnabled = getNsfwFilterSettingsService(req).isEnabled();
   const { rows } = workflowQueryService.getProjectList({ ...parsedQuery, offset, limit: PAGE_SIZE });
+  const optionPresentation = getProjectOptionPresentation(req);
   const pageUrl = buildPageUrl(req, parsedQuery, currentPage, pageDefaultsService);
   const filtersActive = Boolean(
     parsedQuery.search || parsedQuery.statuses.length > 0 || parsedQuery.projectTypes.length > 0
@@ -505,7 +521,10 @@ function renderProjectsPage(req, res, {
 
   return res.status(status).render('projects/index.njk', {
     appName,
-    projects: rows.map((project) => withNsfwBlur(project, project.tags, nsfwFilterEnabled)),
+    projects: rows.map((project) => presentProjectOptions(
+      withNsfwBlur(project, project.tags, nsfwFilterEnabled),
+      optionPresentation,
+    )),
     total,
     hasAnyProjects: totalProjects > 0,
     filtersActive,
@@ -526,8 +545,13 @@ function renderProjectsPage(req, res, {
       view: parsedQuery.view,
     },
     view: parsedQuery.view,
-    statuses: STATUSES,
-    statusOptions: buildStatusFilterOptions(parsedQuery.statuses),
+    statuses: projectsDefaultOptionCatalogues.status
+      .map(({ value }) => value)
+      .filter((value) => value !== 'all'),
+    statusOptions: buildStatusFilterOptions(
+      projectsDefaultOptionCatalogues.status,
+      parsedQuery.statuses,
+    ),
     projectTypeOptions,
     sortOptions: SORT_OPTIONS,
     tagOptions,
@@ -608,16 +632,10 @@ function getProjectTagFilterOptions(workflowQueryService) {
   return workflowQueryService.getProjectTagFilterOptions();
 }
 
-function buildProjectsDefaultOptionCatalogues(tagOptions) {
+function buildProjectsDefaultOptionCatalogues(pageDefaultsService, tagOptions) {
   return {
-    status: [
-      { value: 'all', label: 'All active' },
-      ...buildStatusFilterOptions([]).map(({ value, label }) => ({ value, label })),
-    ],
-    projectType: [
-      { value: 'all', label: 'All types' },
-      ...buildProjectTypeFilterOptions([]).map(({ value, label }) => ({ value, label })),
-    ],
+    status: pageDefaultsService.getOptionCatalogue('projects', 'status'),
+    projectType: pageDefaultsService.getOptionCatalogue('projects', 'projectType'),
     tag: [
       { value: 'all', label: 'All tags' },
       ...(Array.isArray(tagOptions) ? tagOptions : []).map(({ value, label, displayName }) => ({
@@ -640,29 +658,40 @@ function buildProjectsDefaultsSuccessUrl(validatedValues) {
   return `/projects?${params.toString()}`;
 }
 
-function buildStatusFilterOptions(selectedStatuses) {
-  return STATUSES.map((value) => ({
-    value,
-    label: value
-      .split('-')
-      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-      .join(' '),
-    selected: selectedStatuses.includes(value),
-  }));
+function buildStatusFilterOptions(catalogue, selectedStatuses) {
+  return catalogue
+    .filter(({ value }) => value !== 'all')
+    .map((option) => ({
+      ...option,
+      selected: selectedStatuses.includes(option.value),
+    }));
 }
 
-function buildProjectTypeFilterOptions(selectedProjectTypes) {
-  const labels = {
-    images: 'Images',
-    comic: 'Comic',
-    animation: 'Animation',
-    wallpaper: 'Wallpaper',
-  };
-  return PROJECT_TYPES.map((value) => ({
-    value,
-    label: labels[value],
-    selected: selectedProjectTypes.includes(value),
-  }));
+function buildProjectTypeFilterOptions(catalogue, selectedProjectTypes) {
+  return catalogue
+    .filter(({ value }) => value !== 'all')
+    .map((option) => ({
+      ...option,
+      selected: selectedProjectTypes.includes(option.value),
+    }));
+}
+
+function getProjectFormStatusOptions(req) {
+  return getPageDefaultsService(req).getOptionCatalogue('new_project', 'status');
+}
+
+function getProjectFormTypeOptions(req) {
+  return getPageDefaultsService(req).getOptionCatalogue('projects', 'projectType')
+    .filter(({ value }) => value !== 'all');
+}
+
+function getProjectOptionPresentation(req) {
+  const pageDefaultsService = getPageDefaultsService(req);
+  return buildProjectOptionPresentation({
+    status: pageDefaultsService.getOptionCatalogue('new_project', 'status'),
+    projectType: pageDefaultsService.getOptionCatalogue('projects', 'projectType')
+      .filter(({ value }) => value !== 'all'),
+  });
 }
 
 function getTagService(req) {
@@ -830,11 +859,13 @@ function parseListQuery(raw, pageDefaultsService, tagOptions = [], optionCatalog
     useSavedFilterDefaults && resolvedFilters.status !== 'all'
       ? resolvedFilters.status
       : rawQuery.status,
+    optionCatalogues.status,
   );
   const projectTypes = parseProjectTypeFilterValues(
     useSavedFilterDefaults && resolvedFilters.projectType !== 'all'
       ? resolvedFilters.projectType
       : rawQuery.type,
+    optionCatalogues.projectType,
   );
   const search = typeof rawQuery.search === 'string' ? rawQuery.search.trim() : '';
   const tagIds = parseTagFilterIds(
@@ -872,16 +903,20 @@ function parseListQuery(raw, pageDefaultsService, tagOptions = [], optionCatalog
   };
 }
 
-function parseStatusFilterValues(value) {
-  const values = Array.isArray(value) ? value : [value];
-  const selected = new Set(values.filter((candidate) => typeof candidate === 'string'));
-  return STATUSES.filter((status) => selected.has(status));
+function parseStatusFilterValues(value, catalogue) {
+  return parseProjectOptionFilterValues(value, catalogue);
 }
 
-function parseProjectTypeFilterValues(value) {
+function parseProjectTypeFilterValues(value, catalogue) {
+  return parseProjectOptionFilterValues(value, catalogue);
+}
+
+function parseProjectOptionFilterValues(value, catalogue = []) {
   const values = Array.isArray(value) ? value : [value];
   const selected = new Set(values.filter((candidate) => typeof candidate === 'string'));
-  return PROJECT_TYPES.filter((projectType) => selected.has(projectType));
+  return catalogue
+    .map(({ value: candidate }) => candidate)
+    .filter((candidate) => candidate !== 'all' && selected.has(candidate));
 }
 
 function parseTagFilterIds(value, tagOptions) {

@@ -100,7 +100,6 @@
 {% endmacro %}
 
 {% block content %}
-  {% set projectArchived = project and project.archived_at %}
   {% set releaseArchived = release and release.archived_at %}
   {% set isPublished = release and release.published_date %}
   {% set isArchived = projectArchived or releaseArchived %}

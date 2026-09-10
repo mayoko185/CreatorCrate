@@ -4,15 +4,17 @@
     {% set projectType = project.project_type %}
     {% include "partials/project-type-badge.njk" %}
 
-  Known project types use dedicated visual variants. Unknown values preserve the
-  Status badge fallback convention: readable neutral text without breaking the
-  surrounding template.
+  Project types use explicit catalogue metadata. A missing entry preserves a
+  readable neutral value without inventing a label.
 
   Parameters (set before including):
     - projectType: the stored project type string
+    - projectTypeOption: the matching Project catalogue metadata
 #}
 {% if projectType %}
-  {% if projectType == "images" %}
+  {% if projectTypeOption and projectTypeOption.value == projectType %}
+    <span class="status-badge project-option-badge project-type-badge" style="--project-badge-bg: {{ projectTypeOption.color }}; --project-badge-tint: {{ projectTypeOption.tintPercent }}%; --project-badge-fg: {{ projectTypeOption.foregroundColor }}">{{ projectTypeOption.label }}</span>
+  {% elif projectType == "images" %}
     <span class="status-badge project-type-badge project-type-badge--images">Images</span>
   {% elif projectType == "comic" %}
     <span class="status-badge project-type-badge project-type-badge--comic">Comic</span>

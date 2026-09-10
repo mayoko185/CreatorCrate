@@ -13,6 +13,7 @@ import { createApplicationLogRepository } from '../src/data/application-log-repo
 import { createAssetCategoryService } from '../src/services/asset-category-service.js';
 import { createApplicationLogger } from '../src/services/application-logger.js';
 import { createProjectService, ProjectNotFoundError } from '../src/services/project-service.js';
+import { createTestProjectOptionCatalogueService } from './helpers/project-option-catalogue.js';
 import { createAssetScanner } from '../src/services/asset-scanner.js';
 import { createProjectPrimaryImageRepository } from '../src/data/project-primary-image-repository.js';
 import { createProjectPrimaryImageService } from '../src/services/project-primary-image-service.js';
@@ -51,6 +52,7 @@ describe('asset scanner', () => {
       description: '',
       notes: '',
       status,
+      projectType: 'images',
       priority: 'normal',
       plannedDate: null,
       publishedDate: null,
@@ -100,6 +102,7 @@ describe('asset scanner', () => {
     projectService = createProjectService(db, projectsRoot, {
       assetCategoryService,
       assetBrowserPreferenceRepository: createAssetBrowserPreferenceRepository(db),
+      projectOptionCatalogueService: createTestProjectOptionCatalogueService(db),
     });
     projectOperationCoordinator = createProjectOperationCoordinator();
     primaryImageRepository = createProjectPrimaryImageRepository(db);
@@ -432,6 +435,7 @@ describe('asset scanner', () => {
       description: '',
       notes: '',
       status: 'tbd',
+      projectType: 'images',
       priority: 'normal',
     });
     // No setProjectDir call — project_dir is null

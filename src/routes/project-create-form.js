@@ -1,6 +1,3 @@
-import { WORKFLOW_STATUSES } from '../services/project-service.js';
-import { PROJECT_TYPES, DEFAULT_PROJECT_TYPE } from '../data/project-repository.js';
-
 export function createFormValues(values) {
   const formValues = { ...values };
   delete formValues.priority;
@@ -14,8 +11,12 @@ export function createFormValues(values) {
 function createNewProjectFormValues(query, pageDefaultsService) {
   return {
     ...createFormValues(query),
-    status: pageDefaultsService.resolve('new_project', 'status', query.status),
-    projectType: query.projectType || DEFAULT_PROJECT_TYPE,
+    status: query.status === undefined
+      ? pageDefaultsService.getSavedDefault('new_project', 'status')
+      : pageDefaultsService.resolve('new_project', 'status', query.status),
+    projectType: query.projectType === undefined
+      ? pageDefaultsService.getSavedDefault('new_project', 'projectType')
+      : pageDefaultsService.resolve('new_project', 'projectType', query.projectType),
   };
 }
 
@@ -34,13 +35,17 @@ export function buildNewProjectFormModel({
   errors = {},
   selectedTagIds = [],
 } = {}) {
+  const statuses = pageDefaultsService.getOptionCatalogue('new_project', 'status')
+    .filter(({ value }) => value !== 'archived');
+  const projectTypes = pageDefaultsService.getOptionCatalogue('new_project', 'projectType');
+
   return {
     values: values === undefined
       ? createNewProjectFormValues(query, pageDefaultsService)
       : createFormValues(values),
     errors,
-    statuses: WORKFLOW_STATUSES,
-    projectTypes: PROJECT_TYPES,
+    statuses,
+    projectTypes,
     tags: loadAvailableTags(tagService),
     selectedTagIds,
   };

@@ -14,6 +14,7 @@ import { createAssetCategoryService } from '../src/services/asset-category-servi
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createProjectService } from '../src/services/project-service.js';
+import { createTestProjectOptionCatalogueService } from './helpers/project-option-catalogue.js';
 import { createAssetBrowserPreferenceService } from '../src/services/asset-browser-preference-service.js';
 import {
   createProjectAssetCategoryService,
@@ -129,6 +130,7 @@ describe('project asset category service', () => {
     projectService = createProjectService(db, projectsRoot, {
       assetCategoryService,
       assetBrowserPreferenceRepository,
+      projectOptionCatalogueService: createTestProjectOptionCatalogueService(db),
     });
     assetBrowserPreferenceService = createAssetBrowserPreferenceService({
       preferenceRepository: assetBrowserPreferenceRepository,

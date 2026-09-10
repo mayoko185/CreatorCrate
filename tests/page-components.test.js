@@ -710,7 +710,7 @@ describe('Phase 10.5A: Shared page-level components', () => {
       // The status badge must contain text content (not just color)
       expect(res.text).toContain('status-badge');
       // The text "Tbd" must appear inside a badge
-      expect(res.text).toMatch(/status-badge[^>]*>Tbd</);
+      expect(res.text).toMatch(/status-badge project-option-badge project-status-badge[^>]*>Tbd</);
     });
 
     it('project detail uses status-badge', async () => {
@@ -726,6 +726,55 @@ describe('Phase 10.5A: Shared page-level components', () => {
       const res = await agent.get(createRes.headers.location).expect(200);
       expect(res.text).toContain('status-badge');
       expect(res.text).not.toMatch(/\bpriority\b/i);
+    });
+
+    it('uses explicit Project metadata without changing shared non-Project badge rendering', () => {
+      const ordinary = renderPartial('partials/status-badge.njk', { status: 'present' });
+      const project = renderPartial('partials/status-badge.njk', {
+        status: 'present',
+        projectStatusOption: {
+          value: 'present', label: 'Project Present Label', color: '#123456', tintPercent: 18,
+          foregroundColor: '#8495A7',
+        },
+      });
+
+      expect(ordinary).toContain('status-badge status-badge--success">Present</span>');
+      expect(ordinary).not.toContain('project-option-badge');
+      expect(project).toContain('project-option-badge project-status-badge');
+      expect(project).toContain('>Project Present Label</span>');
+      expect(project).not.toContain('status-badge--success');
+    });
+
+    it('renders custom catalogue labels and colors on Project cards and detail', async () => {
+      const status = app.locals.projectOptionCatalogueService.addOption('status', {
+        name: 'Awaiting Art Review', color: '#123456',
+      });
+      const projectType = app.locals.projectOptionCatalogueService.addOption('projectType', {
+        name: 'Interactive Story', color: '#F5F5F5',
+      });
+      const created = await agent
+        .post('/projects')
+        .type('form')
+        .send({
+          title: 'Configured Badge Project',
+          status: status.value,
+          projectType: projectType.value,
+          _csrf: csrfToken,
+        })
+        .expect(302);
+      const projectId = created.headers.location.replace('/projects/', '');
+
+      const list = await agent.get('/projects').expect(200);
+      const card = extractProjectCard(list.text, projectId);
+      expect(card).toContain('style="--project-badge-bg: #123456; --project-badge-tint: 18%; --project-badge-fg: #8495A7"');
+      expect(card).toContain('>Awaiting Art Review</span>');
+      expect(card).toContain('style="--project-badge-bg: #F5F5F5; --project-badge-tint: 18%; --project-badge-fg: #F5F5F5"');
+      expect(card).toContain('>Interactive Story</span>');
+
+      const detail = await agent.get(created.headers.location).expect(200);
+      const meta = detail.text.match(/<div class="project-detail-meta">[\s\S]*?<\/nav>/)?.[0] || '';
+      expect(meta).toContain('>Awaiting Art Review</span>');
+      expect(meta).toContain('>Interactive Story</span>');
     });
 
     it('status-badge variant classes are defined in CSS', async () => {
@@ -749,10 +798,18 @@ describe('Phase 10.5A: Shared page-level components', () => {
       ['comic', 'Comic'],
       ['animation', 'Animation'],
       ['wallpaper', 'Wallpaper'],
-    ])('renders the %s badge with its readable label and modifier', (projectType, label) => {
-      const html = renderPartial('partials/project-type-badge.njk', { projectType });
+    ])('renders the %s badge from catalogue metadata', (projectType, label) => {
+      const html = renderPartial('partials/project-type-badge.njk', {
+        projectType,
+        projectTypeOption: {
+          value: projectType, label, color: '#123456', tintPercent: 18,
+          foregroundColor: '#8495A7',
+        },
+      });
 
-      expect(html).toContain(`status-badge project-type-badge project-type-badge--${projectType}`);
+      expect(html).toContain('status-badge project-option-badge project-type-badge');
+      expect(html).toContain('style="--project-badge-bg: #123456; --project-badge-tint: 18%; --project-badge-fg: #8495A7"');
+      expect(html).not.toContain(`project-type-badge--${projectType}`);
       expect(html).toContain(`>${label}</span>`);
     });
 
@@ -761,6 +818,14 @@ describe('Phase 10.5A: Shared page-level components', () => {
 
       expect(html).toContain('status-badge--neutral project-type-badge project-type-badge--unknown');
       expect(html).toContain('>Legacy Type</span>');
+    });
+
+    it('preserves legacy built-in Project Type styling only without catalogue metadata', () => {
+      const html = renderPartial('partials/project-type-badge.njk', { projectType: 'images' });
+
+      expect(html).toContain('project-type-badge--images');
+      expect(html).not.toContain('project-option-badge');
+      expect(html).toContain('>Images</span>');
     });
 
     it('renders Type beside unchanged Status badges in list and grid project cards', async () => {
@@ -780,17 +845,17 @@ describe('Phase 10.5A: Shared page-level components', () => {
         const card = extractProjectCard(res.text, projectId);
 
         expect(card).toContain('>Tbd</span>');
-        expect(card.match(/project-type-badge--animation/g) || []).toHaveLength(2);
+        expect(card.match(/project-option-badge project-type-badge/g) || []).toHaveLength(2);
 
         const typeMeta = card.match(/<dt>Type<\/dt>\s*<dd>[\s\S]*?<\/dd>/)?.[0] || '';
-        expect(typeMeta.match(/project-type-badge--animation/g) || []).toHaveLength(1);
+        expect(typeMeta.match(/project-option-badge project-type-badge/g) || []).toHaveLength(1);
 
         if (view === 'list') {
           const indicators = card.match(/<div class="project-list-card-indicators"[\s\S]*?<\/div>/)?.[0] || '';
-          expect(indicators.match(/project-type-badge--animation/g) || []).toHaveLength(1);
+          expect(indicators.match(/project-option-badge project-type-badge/g) || []).toHaveLength(1);
         } else {
           const indicators = card.match(/<div class="project-grid-card-status"[\s\S]*?<\/div>/)?.[0] || '';
-          expect(indicators.match(/project-type-badge--animation/g) || []).toHaveLength(1);
+          expect(indicators.match(/project-option-badge project-type-badge/g) || []).toHaveLength(1);
         }
       }
     });
@@ -809,18 +874,18 @@ describe('Phase 10.5A: Shared page-level components', () => {
       const res = await agent.get(created.headers.location).expect(200);
       const meta = res.text.match(/<div class="project-detail-meta">[\s\S]*?<\/nav>/)?.[0] || '';
 
-      expect(meta).toContain('status-badge status-badge--active">Ready</span>');
-      expect(meta.match(/project-type-badge--wallpaper/g) || []).toHaveLength(1);
-      expect(meta.indexOf('status-badge--active')).toBeLessThan(meta.indexOf('project-type-badge--wallpaper'));
+      expect(meta).toContain('project-status-badge');
+      expect(meta).toContain('>Ready</span>');
+      expect(meta.match(/project-option-badge project-type-badge/g) || []).toHaveLength(1);
+      expect(meta.indexOf('project-status-badge')).toBeLessThan(meta.indexOf('project-type-badge'));
     });
 
-    it('defines dedicated Project Type badge variants without changing Status badge classes', async () => {
+    it('defines one metadata-driven Project badge rule without removing shared Status variants', async () => {
       const res = await agent.get('/projects').expect(200);
       const css = await extractStyle(agent, res.text);
 
-      for (const projectType of ['images', 'comic', 'animation', 'wallpaper']) {
-        expect(css).toContain(`.project-type-badge--${projectType}`);
-      }
+      expect(css).toContain('.project-option-badge');
+      expect(css).toContain('.project-type-badge--images');
       expect(css).toContain('.status-badge--neutral');
       expect(css).toContain('.status-badge--active');
     });
@@ -831,8 +896,8 @@ describe('Phase 10.5A: Shared page-level components', () => {
   describe('table responsiveness', () => {
     it('project list uses project card grid markup', async () => {
       db.prepare(
-        `INSERT INTO projects (title, slug, description, notes, status, patreon_url)
-         VALUES (?, ?, '', '', 'tbd', NULL)`
+        `INSERT INTO projects (title, slug, description, notes, status, project_type, patreon_url)
+         VALUES (?, ?, '', '', 'tbd', 'images', NULL)`
       ).run('Table Test', 'table-test');
       const res = await agent.get('/projects').expect(200);
       expect(res.text).toContain('<ul class="project-grid">');
@@ -1047,16 +1112,43 @@ describe('Phase 10.5A: Shared page-level components', () => {
   // ─── 10. No inline presentation styles ─────────────────────────────────
 
   describe('no inline presentation styles', () => {
+    function withoutAllowedProjectOptionVariables(relativePath, source) {
+      const allowedExpressions = {
+        'partials/status-badge.njk': /\sstyle="--project-badge-bg: \{\{ projectStatusOption\.color \}\}; --project-badge-tint: \{\{ projectStatusOption\.tintPercent \}\}%; --project-badge-fg: \{\{ projectStatusOption\.foregroundColor \}\}"/g,
+        'partials/project-type-badge.njk': /\sstyle="--project-badge-bg: \{\{ projectTypeOption\.color \}\}; --project-badge-tint: \{\{ projectTypeOption\.tintPercent \}\}%; --project-badge-fg: \{\{ projectTypeOption\.foregroundColor \}\}"/g,
+        'settings/project-option-color-control.njk': /\sstyle="--project-option-color: \{\{ color \}\}"/g,
+      };
+      const allowedExpression = allowedExpressions[relativePath];
+      return allowedExpression ? source.replace(allowedExpression, '') : source;
+    }
+
     it('production templates keep presentation CSS in the shared stylesheet only', () => {
       const offenders = [];
       for (const templatePath of listProductionTemplates()) {
         const source = fs.readFileSync(templatePath, 'utf8');
-        if (/<style\b/i.test(source) || /\sstyle\s*=/i.test(source)) {
-          offenders.push(path.relative(VIEWS_DIR, templatePath).replace(/\\/g, '/'));
+        const relativePath = path.relative(VIEWS_DIR, templatePath).replace(/\\/g, '/');
+        const withoutAllowedVariables = withoutAllowedProjectOptionVariables(relativePath, source);
+        if (/<style\b/i.test(withoutAllowedVariables) || /\sstyle\s*=/i.test(withoutAllowedVariables)) {
+          offenders.push(relativePath);
         }
       }
 
       expect(offenders).toEqual([]);
+    });
+
+    it('does not exempt other inline styles or the Settings expression in other templates', () => {
+      expect(withoutAllowedProjectOptionVariables(
+        'settings/project-option-color-control.njk',
+        '<span style="color: {{ color }}">',
+      )).toContain('style=');
+      expect(withoutAllowedProjectOptionVariables(
+        'settings/project-option-color-control.njk',
+        '<span style="--project-option-other: {{ color }}">',
+      )).toContain('style=');
+      expect(withoutAllowedProjectOptionVariables(
+        'settings/other.njk',
+        '<span style="--project-option-color: {{ color }}">',
+      )).toContain('style=');
     });
   });
 

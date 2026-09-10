@@ -6,11 +6,14 @@ import { fileURLToPath } from 'node:url';
 import { openDatabase, runMigrations, closeDatabase } from '../../src/db.js';
 import { createAssetCategoryRepository } from '../../src/data/asset-category-repository.js';
 import { createAssetBrowserPreferenceRepository } from '../../src/data/asset-browser-preference-repository.js';
+import { createAppMetaRepository } from '../../src/data/app-meta-repository.js';
 import { createAssetCategoryService } from '../../src/services/asset-category-service.js';
+import { createPageDefaultsService } from '../../src/services/page-defaults-service.js';
 import {
   createProjectService,
   ProjectValidationError,
 } from '../../src/services/project-service.js';
+import { createTestProjectOptionCatalogueService } from '../helpers/project-option-catalogue.js';
 import {
   formatProjectDirName,
   resolveProjectDir,
@@ -62,9 +65,16 @@ describe('project creation integration', () => {
     runMigrations(db, MIGRATIONS_DIR);
     const assetCategoryService = createAssetCategoryService(createAssetCategoryRepository(db));
     assetBrowserPreferenceRepository = createAssetBrowserPreferenceRepository(db);
+    const projectOptionCatalogueService = createTestProjectOptionCatalogueService(db);
+    const pageDefaultsService = createPageDefaultsService({
+      appMetaRepository: createAppMetaRepository(db),
+      projectOptionCatalogueService,
+    });
     service = createProjectService(db, projectsRoot, {
       assetCategoryService,
       assetBrowserPreferenceRepository,
+      pageDefaultsService,
+      projectOptionCatalogueService,
     });
   });
 

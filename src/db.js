@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import Database from 'better-sqlite3';
+import { isProjectOptionCatalogueV1SerializedValid } from './services/project-option-catalogue-v1.js';
 
 export class DatabaseError extends Error {
   constructor(message, { cause } = {}) {
@@ -32,6 +33,12 @@ export function openDatabase(databasePath) {
 }
 
 export function runMigrations(db, migrationsDir) {
+  db.function(
+    'is_project_option_catalogue_v1_valid',
+    { deterministic: true },
+    (serialized) => Number(isProjectOptionCatalogueV1SerializedValid(serialized)),
+  );
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS schema_migrations (
       filename TEXT PRIMARY KEY,

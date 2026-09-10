@@ -46,6 +46,8 @@ describe('page defaults service', () => {
   let db;
   let repository;
   let projectPageDefaultRepository;
+  let statusCatalogue;
+  let projectTypeCatalogue;
   let service;
 
   beforeEach(() => {
@@ -54,7 +56,27 @@ describe('page defaults service', () => {
     runMigrations(db, MIGRATIONS_DIR);
     repository = createAppMetaRepository(db);
     projectPageDefaultRepository = createInMemoryProjectPageDefaultRepository();
-    service = createPageDefaultsService({ appMetaRepository: repository, projectPageDefaultRepository });
+    statusCatalogue = [
+      { value: 'tbd', label: 'TBD', color: '#AAAAAA' },
+      { value: 'planned', label: 'Planned', color: '#22D3EE' },
+      { value: 'in-progress', label: 'In Progress', color: '#22D3EE' },
+      { value: 'ready', label: 'Ready', color: '#34D399' },
+      { value: 'completed', label: 'Completed', color: '#A78BFA' },
+    ];
+    projectTypeCatalogue = [
+      { value: 'images', label: 'Images', color: '#AAAAAA' },
+      { value: 'comic', label: 'Comic', color: '#22D3EE' },
+      { value: 'animation', label: 'Animation', color: '#34D399' },
+      { value: 'wallpaper', label: 'Wallpaper', color: '#A78BFA' },
+    ];
+    service = createPageDefaultsService({
+      appMetaRepository: repository,
+      projectPageDefaultRepository,
+      projectOptionCatalogueService: {
+        getStatusCatalogue: () => statusCatalogue.map((entry) => ({ ...entry })),
+        getProjectTypeCatalogue: () => projectTypeCatalogue.map((entry) => ({ ...entry })),
+      },
+    });
   });
 
   afterEach(() => {
@@ -86,6 +108,7 @@ describe('page defaults service', () => {
     expect(service.resolve('assetViewer', 'presence')).toBe('all');
     expect(service.resolve('assetViewer', 'tag')).toBe('all');
     expect(service.resolve('new_project', 'status')).toBe('tbd');
+    expect(service.resolve('new_project', 'projectType')).toBe('images');
   });
 
   it('defines, persists, and safely validates the Book detail navigation default', () => {
@@ -208,12 +231,17 @@ describe('page defaults service', () => {
     });
   });
 
-  it('defines the exact New Projects option allowlists, keys, and fallbacks', () => {
+  it('defines only the operational New Projects fallbacks statically', () => {
     expect(PAGE_DEFAULT_DEFINITIONS.new_project).toEqual({
       status: {
         key: 'page_defaults.new_project.status',
-        values: ['tbd', 'planned', 'in-progress', 'ready', 'completed'],
+        values: ['tbd'],
         fallback: 'tbd',
+      },
+      projectType: {
+        key: 'page_defaults.new_project.project_type',
+        values: ['images'],
+        fallback: 'images',
       },
     });
   });
@@ -222,7 +250,7 @@ describe('page defaults service', () => {
     expect(PAGE_DEFAULT_DEFINITIONS).not.toHaveProperty('new_release');
   });
 
-  it('defines the exact Projects option allowlists, keys, and fallbacks', () => {
+  it('defines only Projects filter sentinels statically', () => {
     expect(PAGE_DEFAULT_DEFINITIONS.projects).toEqual({
       view: {
         key: 'page_defaults.projects.view',
@@ -241,12 +269,12 @@ describe('page defaults service', () => {
       },
       status: {
         key: 'page_defaults.projects.status',
-        values: ['all', 'tbd', 'planned', 'in-progress', 'ready', 'completed', 'archived'],
+        values: ['all'],
         fallback: 'all',
       },
       projectType: {
         key: 'page_defaults.projects.project_type',
-        values: ['all', 'images', 'comic', 'animation', 'wallpaper'],
+        values: ['all'],
         fallback: 'all',
       },
       tag: {
@@ -307,10 +335,13 @@ describe('page defaults service', () => {
 
   it('accepts valid New Projects saved values', () => {
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.new_project.status.key, 'ready');
+    repository.setValue(PAGE_DEFAULT_DEFINITIONS.new_project.projectType.key, 'comic');
 
     expect(service.getSavedDefault('new_project', 'status')).toBe('ready');
+    expect(service.getSavedDefault('new_project', 'projectType')).toBe('comic');
     expect(service.resolvePageDefaults('new_project')).toEqual({
       status: 'ready',
+      projectType: 'comic',
     });
   });
 
@@ -320,7 +351,7 @@ describe('page defaults service', () => {
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.new_project.status.key, 'ready');
 
     expect(PAGE_DEFAULT_DEFINITIONS.new_project).not.toHaveProperty('priority');
-    expect(service.resolvePageDefaults('new_project')).toEqual({ status: 'ready' });
+    expect(service.resolvePageDefaults('new_project')).toEqual({ status: 'ready', projectType: 'images' });
     expect(repository.getValue(legacyKey)).toBe('high');
   });
 
@@ -404,13 +435,72 @@ describe('page defaults service', () => {
     expect(repository.getValue(key)).toBe('invalid-sort');
   });
 
-  it('uses the New Project status fallback for invalid stored values without rewriting it', () => {
-    const key = PAGE_DEFAULT_DEFINITIONS.new_project.status.key;
-    repository.setValue(key, 'cancelled');
+  it('uses New Project fallbacks for stale stored values without rewriting them', () => {
+    const statusKey = PAGE_DEFAULT_DEFINITIONS.new_project.status.key;
+    const typeKey = PAGE_DEFAULT_DEFINITIONS.new_project.projectType.key;
+    repository.setValue(statusKey, 'cancelled');
+    repository.setValue(typeKey, 'deleted-type');
 
-    expect(service.resolvePageDefaults('new_project')).toEqual({ status: 'tbd' });
-    expect(repository.getValue(key)).toBe('cancelled');
+    expect(service.resolvePageDefaults('new_project')).toEqual({ status: 'tbd', projectType: 'images' });
+    expect(repository.getValue(statusKey)).toBe('cancelled');
+    expect(repository.getValue(typeKey)).toBe('deleted-type');
     expect(service.getSavedDefault('new_project', 'status')).toBeUndefined();
+    expect(service.getSavedDefault('new_project', 'projectType')).toBeUndefined();
+  });
+
+  it('uses live ordered Project catalogues for global and project-scoped defaults', () => {
+    statusCatalogue = [
+      { value: 'client-review', label: 'Client Review', color: '#123456' },
+      ...statusCatalogue,
+    ];
+    projectTypeCatalogue = [
+      ...projectTypeCatalogue,
+      { value: 'interactive', label: 'Interactive', color: '#654321' },
+    ];
+
+    expect(service.getOptionCatalogue('new_project', 'status'))
+      .toEqual(statusCatalogue);
+    expect(service.getOptionCatalogue('new_project', 'projectType'))
+      .toEqual(projectTypeCatalogue);
+    expect(service.getOptionCatalogue('projects', 'projectType').map(({ value }) => value))
+      .toEqual(['all', 'images', 'comic', 'animation', 'wallpaper', 'interactive']);
+
+    expect(service.saveDefault('new_project', 'status', 'client-review')).toBe('client-review');
+    expect(service.saveDefault('new_project', 'projectType', 'interactive')).toBe('interactive');
+    expect(service.saveDefault('projects', 'status', 'client-review')).toBe('client-review');
+    expect(service.saveDefault('projects', 'projectType', 'interactive')).toBe('interactive');
+    expect(service.saveProjectDefault(
+      'projects', 'projectType', 'interactive', undefined, { projectId: 1 },
+    )).toBe('interactive');
+
+    statusCatalogue = statusCatalogue.filter(({ value }) => value !== 'client-review');
+    projectTypeCatalogue = projectTypeCatalogue.filter(({ value }) => value !== 'interactive');
+
+    expect(service.resolve('new_project', 'status')).toBe('tbd');
+    expect(service.resolve('new_project', 'projectType')).toBe('images');
+    expect(service.resolveGlobalPageDefaults('projects').status).toBe('all');
+    expect(service.resolveGlobalPageDefaults('projects').projectType).toBe('all');
+    expect(service.resolveProjectPageDefaults('projects', {}, { projectId: 1 }).projectType)
+      .toBe('all');
+    expect(repository.getValue(PAGE_DEFAULT_DEFINITIONS.new_project.status.key)).toBe('client-review');
+    expect(repository.getValue(PAGE_DEFAULT_DEFINITIONS.new_project.projectType.key)).toBe('interactive');
+    expect(repository.getValue(PAGE_DEFAULT_DEFINITIONS.projects.status.key)).toBe('client-review');
+    expect(projectPageDefaultRepository.getOption(1, 'projects', 'projectType')).toBe('interactive');
+  });
+
+  it('treats Archived as a Projects-filter system value without exposing it to New Project defaults', () => {
+    expect(statusCatalogue.map(({ value }) => value)).not.toContain('archived');
+    expect(service.getOptionCatalogue('projects', 'status')).toEqual([
+      { value: 'all', label: 'All active' },
+      ...statusCatalogue,
+      { value: 'archived', label: 'Archived' },
+    ]);
+
+    expect(service.saveDefault('projects', 'status', 'archived')).toBe('archived');
+    expect(service.getSavedDefault('projects', 'status')).toBe('archived');
+    expect(service.resolvePageDefaults('projects').status).toBe('archived');
+    expect(() => service.saveDefault('new_project', 'status', 'archived'))
+      .toThrow(PageDefaultValidationError);
   });
 
   it('ignores an obsolete stored New Release status default without rewriting it', () => {

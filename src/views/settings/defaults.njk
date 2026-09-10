@@ -121,6 +121,10 @@
           </div>
         </noscript>
       </form>
+
+      {% for editor in projectOptionEditors %}
+        {% include "settings/project-option-catalogue.njk" %}
+      {% endfor %}
     </div>
   </div>
 {% endblock %}

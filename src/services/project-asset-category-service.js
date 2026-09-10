@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { ProjectNotFoundError } from './project-service.js';
 import { AssetCategoryNotFoundError } from './asset-category-service.js';
+import { isProjectArchived } from './project-state.js';
 import { AssetCategoryError } from '../data/asset-category-repository.js';
 import {
   AssetCategoryValidationError,
@@ -133,7 +134,7 @@ export function createProjectAssetCategoryService({
 
   function requireMutableProject(projectId) {
     const project = requireProject(projectId);
-    if (project.archived_at || project.status === 'archived') {
+    if (isProjectArchived(project)) {
       throw new ProjectArchivedError(projectId);
     }
     return project;

@@ -29,6 +29,7 @@ import { createAssetCategoryRepository } from '../src/data/asset-category-reposi
 import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browser-preference-repository.js';
 import { createAssetCategoryService } from '../src/services/asset-category-service.js';
 import { createProjectService } from '../src/services/project-service.js';
+import { createTestProjectOptionCatalogueService } from './helpers/project-option-catalogue.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const APP_NAME = 'CreatorCrate';
@@ -182,6 +183,7 @@ describe('live restore — same-process application context', () => {
     const projectService = createProjectService(appContext.db, projectsRoot, {
       assetCategoryService,
       assetBrowserPreferenceRepository: createAssetBrowserPreferenceRepository(appContext.db),
+      projectOptionCatalogueService: createTestProjectOptionCatalogueService(appContext.db),
     });
     const project = projectService.create({
       title: 'Restore Wiring Project', description: '', notes: '', status: 'tbd', priority: 'normal',

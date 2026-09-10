@@ -1,0 +1,16 @@
+{% macro render(id, color, label) %}
+  <div class="project-option-color-control" data-project-option-color-control>
+    <input type="hidden" name="color" value="{{ color }}" data-project-option-color-value>
+    <button
+      id="{{ id }}"
+      type="button"
+      class="button button-small project-option-color-trigger"
+      data-project-option-color-trigger
+      aria-haspopup="dialog"
+      aria-expanded="false"
+      aria-label="Change color for {{ label }}">
+      <span class="project-option-color-swatch" style="--project-option-color: {{ color }}" aria-hidden="true"></span>
+      <span class="project-option-color-code">{{ color }}</span>
+    </button>
+  </div>
+{% endmacro %}

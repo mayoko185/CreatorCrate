@@ -42,6 +42,7 @@ import { createAssetBrowserPreferenceRepository } from './data/asset-browser-pre
 import { createAppMetaRepository } from './data/app-meta-repository.js';
 import { APPLICATION_LOG_DEFAULT_PAGE_SIZE, createApplicationLogRepository } from './data/application-log-repository.js';
 import { createProjectPageDefaultRepository } from './data/project-page-default-repository.js';
+import { createProjectRepository } from './data/project-repository.js';
 import { createTagRepository } from './data/tag-repository.js';
 import { createProjectPrimaryImageRepository } from './data/project-primary-image-repository.js';
 import { createSocialPrepRepository } from './data/social-prep-repository.js';
@@ -51,6 +52,7 @@ import { createBookService } from './services/book-service.js';
 import { createChapterService } from './services/chapter-service.js';
 import { createMarkdownRenderer } from './services/markdown-renderer.js';
 import { createPageDefaultsService } from './services/page-defaults-service.js';
+import { createProjectOptionCatalogueService } from './services/project-option-catalogue-service.js';
 import { createDashboardDefaultsService } from './services/dashboard-defaults-service.js';
 import { createOpenLocallySettingsService } from './services/open-locally-settings-service.js';
 import { createSocialPrepSettingsService } from './services/social-prep-settings-service.js';
@@ -301,14 +303,28 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     opts.projectPageDefaultRepository || createProjectPageDefaultRepository(db);
   app.locals.projectPageDefaultRepository = projectPageDefaultRepository;
 
+  const projectRepository = opts.projectRepository || createProjectRepository(db);
+  const projectOptionCatalogueService = opts.projectOptionCatalogueService
+    || createProjectOptionCatalogueService({
+      db,
+      appMetaRepository,
+      projectRepository,
+      projectPageDefaultRepository,
+    });
+  app.locals.projectOptionCatalogueService = projectOptionCatalogueService;
+
   const pageDefaultsService = opts.pageDefaultsService || createPageDefaultsService({
     appMetaRepository,
     projectPageDefaultRepository,
+    projectOptionCatalogueService,
   });
   app.locals.pageDefaultsService = pageDefaultsService;
 
   const dashboardDefaultsService =
-    opts.dashboardDefaultsService || createDashboardDefaultsService({ appMetaRepository });
+    opts.dashboardDefaultsService || createDashboardDefaultsService({
+      appMetaRepository,
+      projectOptionCatalogueService,
+    });
   app.locals.dashboardDefaultsService = dashboardDefaultsService;
 
   // Phase: Open locally v2 — one app-scoped settings service over the shared
@@ -330,6 +346,9 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     assetCategoryService,
     assetBrowserPreferenceRepository,
     applicationLogger,
+    pageDefaultsService,
+    projectOptionCatalogueService,
+    projectRepository,
   });
   app.locals.projectService = projectService;
 
@@ -640,6 +659,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     projectPrimaryImageRepository,
     assetBrowserPreferenceService,
     tagRepository,
+    dashboardSectionRegistryProvider: () => dashboardDefaultsService.getSectionRegistry(),
   });
 
   // Phase 10.1C: media service reuses the exact preview service instance

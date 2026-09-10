@@ -52,6 +52,23 @@ export function createProjectPageDefaultRepository(db) {
         AND page_key = ?
     )
   `);
+  const hasOptionValueStmt = db.prepare(`
+    SELECT EXISTS(
+      SELECT 1
+      FROM project_page_defaults
+      WHERE page_key = ?
+        AND option_key = ?
+        AND value = ?
+    )
+  `);
+  const listOptionValueReferencesStmt = db.prepare(`
+    SELECT project_id
+    FROM project_page_defaults
+    WHERE page_key = ?
+      AND option_key = ?
+      AND value = ?
+    ORDER BY project_id
+  `);
 
   return {
     getOption(projectId, pageKey, optionKey) {
@@ -80,6 +97,14 @@ export function createProjectPageDefaultRepository(db) {
 
     hasPageOptions(projectId, pageKey) {
       return Boolean(hasPageOptionsStmt.pluck().get(projectId, pageKey));
+    },
+
+    hasOptionValue(pageKey, optionKey, value) {
+      return Boolean(hasOptionValueStmt.pluck().get(pageKey, optionKey, value));
+    },
+
+    listOptionValueReferences(pageKey, optionKey, value) {
+      return listOptionValueReferencesStmt.all(pageKey, optionKey, value);
     },
   };
 }

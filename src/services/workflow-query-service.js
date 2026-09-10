@@ -52,10 +52,10 @@ import {
   formatFileSize,
 } from './asset-presentation.js';
 import {
-  DASHBOARD_SECTION_REGISTRY,
   normalizeDashboardDefaults,
 } from './dashboard-defaults-service.js';
 import { getLocalTodayIso } from '../util/date.js';
+import { isProjectArchived } from './project-state.js';
 
 const DEFAULT_LIMITS = Object.freeze({
   // Project workspace sections
@@ -378,6 +378,7 @@ export function createWorkflowQueryService({
   socialPrepRepository: injectedSocialPrepRepository,
   socialPrepSettingsService: injectedSocialPrepSettingsService,
   tagRepository: injectedTagRepository,
+  dashboardSectionRegistryProvider,
 }) {
   const projectRepository = createProjectRepository(db);
   const releaseRepository = injectedReleaseRepository ?? createReleaseRepository(db);
@@ -404,9 +405,17 @@ export function createWorkflowQueryService({
    * @param {object} [options.dashboardDefaults] normalized Dashboard defaults
    */
   function getDashboardData(options = {}) {
-    const dashboardDefaults = normalizeDashboardDefaults(options.dashboardDefaults);
+    const dashboardSectionRegistry = options.dashboardSectionRegistry
+      ?? dashboardSectionRegistryProvider?.();
+    if (!Array.isArray(dashboardSectionRegistry)) {
+      throw new Error('Dashboard queries require a Dashboard section registry.');
+    }
+    const dashboardDefaults = normalizeDashboardDefaults(
+      options.dashboardDefaults,
+      dashboardSectionRegistry,
+    );
     const sections = Object.fromEntries(
-      DASHBOARD_SECTION_REGISTRY.map(({ id }) => [id, []])
+      dashboardSectionRegistry.map(({ id }) => [id, []])
     );
     const { sections: sectionDefaults } = dashboardDefaults;
 
@@ -420,7 +429,7 @@ export function createWorkflowQueryService({
     }
 
     const statusLimits = Object.fromEntries(
-      DASHBOARD_SECTION_REGISTRY
+      dashboardSectionRegistry
         .filter(({ status }) => status && sectionDefaults[`status:${status}`].visible)
         .map(({ status }) => {
           const section = sectionDefaults[`status:${status}`];
@@ -504,7 +513,7 @@ export function createWorkflowQueryService({
     if (!project) return null;
 
     const limits = mergeLimits(options);
-    const isArchived = Boolean(project.archived_at);
+    const isArchived = isProjectArchived(project);
 
     // Archived projects: skip the active-release query entirely. Historical
     // and recently updated releases are still surfaced through `recent`.
@@ -1820,7 +1829,7 @@ function normalizeAssetBrowserQuery(
 
     // Archived projects are read-only — bulk release-association targets are
     // never rendered there, so skip the (otherwise bounded) query entirely.
-    const isArchived = Boolean(project.archived_at);
+    const isArchived = isProjectArchived(project);
     const releaseTargets = isArchived
       ? []
       : releaseRepository.findEligibleAssetSelectionTargets(projectId).map((release) => ({
@@ -2216,7 +2225,7 @@ function normalizeAssetBrowserQuery(
     const enabledCategories = projectCategories
       .filter((c) => c.enabled === 1 || c.enabled === true)
       .map((c) => ({ id: c.id, displayName: c.display_name }));
-    const canMutate = !project.archived_at && asset.is_present === 1;
+    const canMutate = !isProjectArchived(project) && asset.is_present === 1;
 
     return {
       project: summarizeProject(project),

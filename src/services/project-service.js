@@ -4,12 +4,11 @@ import crypto from 'node:crypto';
 import slugify from '@sindresorhus/slugify';
 import {
   createProjectRepository,
-  STATUSES,
-  WORKFLOW_STATUSES,
-  PROJECT_TYPES,
-  DEFAULT_PROJECT_TYPE,
+  ARCHIVED_PROJECT_STATUS,
 } from '../data/project-repository.js';
+import { createAppMetaRepository } from '../data/app-meta-repository.js';
 import { createReleaseRepository } from '../data/release-repository.js';
+import { createPageDefaultsService } from './page-defaults-service.js';
 import {
   formatProjectDirName,
   resolveProjectDir,
@@ -25,8 +24,7 @@ import {
   MANIFEST_FILENAME,
 } from '../storage/manifest.js';
 import { isValidWebUrl } from '../util/url.js';
-
-export { STATUSES, WORKFLOW_STATUSES };
+import { isProjectArchived } from './project-state.js';
 
 export class ProjectValidationError extends Error {
   constructor(errors) {
@@ -59,11 +57,24 @@ const NOTES_MAX = 10000;
  * @param {object} deps.assetBrowserPreferenceRepository - Injected
  *   transaction-compatible preference repository. Required — project
  *   creation owns preference-row initialization in its database transaction.
+ * @param {object} deps.projectOptionCatalogueService - App-scoped live
+ *   Project option catalogue. Required for create/update membership checks.
+ * @param {object} [deps.pageDefaultsService] - App-scoped Page Defaults service.
+ *   Direct callers fall back to the same service over `db`.
+ * @param {object} [deps.projectRepository] - Shared repository for the current
+ *   application graph. Defaults to a repository over `db` for direct callers.
  */
 export function createProjectService(
   db,
   projectsRoot,
-  { assetCategoryService, assetBrowserPreferenceRepository, applicationLogger = null } = {}
+  {
+    assetCategoryService,
+    assetBrowserPreferenceRepository,
+    applicationLogger = null,
+    pageDefaultsService,
+    projectOptionCatalogueService,
+    projectRepository,
+  } = {}
 ) {
   if (!assetCategoryService) {
     throw new Error('createProjectService requires an assetCategoryService dependency.');
@@ -71,9 +82,21 @@ export function createProjectService(
   if (!assetBrowserPreferenceRepository) {
     throw new Error('createProjectService requires an assetBrowserPreferenceRepository dependency.');
   }
+  if (!projectOptionCatalogueService
+    || typeof projectOptionCatalogueService.getStatusCatalogue !== 'function'
+    || typeof projectOptionCatalogueService.getProjectTypeCatalogue !== 'function') {
+    throw new Error('createProjectService requires a projectOptionCatalogueService dependency.');
+  }
 
-  const repository = createProjectRepository(db);
+  const repository = projectRepository ?? createProjectRepository(db);
   const releaseRepository = createReleaseRepository(db);
+  const creationDefaultsService = pageDefaultsService ?? createPageDefaultsService({
+    appMetaRepository: createAppMetaRepository(db),
+    projectOptionCatalogueService,
+  });
+  if (typeof creationDefaultsService.getSavedDefault !== 'function') {
+    throw new Error('createProjectService received an invalid pageDefaultsService dependency.');
+  }
 
   function logActivity(event, project, context = {}) {
     try {
@@ -91,7 +114,7 @@ export function createProjectService(
   }
 
   function validate(input, options = {}) {
-    const { existingId, existingProjectType = DEFAULT_PROJECT_TYPE } = options;
+    const { existingId, existingProjectType } = options;
     const errors = {};
 
     const title = typeof input.title === 'string' ? input.title.trim() : '';
@@ -112,17 +135,22 @@ export function createProjectService(
     }
 
     const status = input.status;
-    if (!WORKFLOW_STATUSES.includes(status)) {
-      errors.status = `Status must be one of: ${WORKFLOW_STATUSES.join(', ')}.`;
+    const statusValues = projectOptionCatalogueService.getStatusCatalogue()
+      .map(({ value }) => value)
+      .filter((value) => value !== ARCHIVED_PROJECT_STATUS);
+    if (!statusValues.includes(status)) {
+      errors.status = `Status must be one of: ${statusValues.join(', ')}.`;
     }
 
-    // Empty project type follows form compatibility: create defaults to images;
-    // update retains the project's stored type rather than resetting it.
+    // Empty project type on update retains the project's stored type.
+    // Create inputs have already resolved omitted values from Page Defaults.
     const projectType = input.projectType === undefined || input.projectType === null || input.projectType === ''
       ? existingProjectType
       : input.projectType;
-    if (!PROJECT_TYPES.includes(projectType)) {
-      errors.projectType = `Project type must be one of: ${PROJECT_TYPES.join(', ')}.`;
+    const projectTypeValues = projectOptionCatalogueService.getProjectTypeCatalogue()
+      .map(({ value }) => value);
+    if (!projectTypeValues.includes(projectType)) {
+      errors.projectType = `Project type must be one of: ${projectTypeValues.join(', ')}.`;
     }
 
     const patreonUrl = input.patreonUrl || null;
@@ -147,6 +175,28 @@ export function createProjectService(
       status,
       projectType,
       patreonUrl,
+    };
+  }
+
+  function resolveRequiredCreateDefault(option, fieldLabel) {
+    const value = creationDefaultsService.getSavedDefault('new_project', option);
+    if (value === undefined) {
+      throw new ProjectValidationError({
+        [option]: `The configured New Project ${fieldLabel} default is missing or unavailable. Choose a valid default in Settings.`,
+      });
+    }
+    return value;
+  }
+
+  function resolveCreateInput(input) {
+    return {
+      ...input,
+      status: input.status === undefined || input.status === null || input.status === ''
+        ? resolveRequiredCreateDefault('status', 'Status')
+        : input.status,
+      projectType: input.projectType === undefined || input.projectType === null || input.projectType === ''
+        ? resolveRequiredCreateDefault('projectType', 'Type')
+        : input.projectType,
     };
   }
 
@@ -217,13 +267,10 @@ export function createProjectService(
   }
 
   return {
-    STATUSES,
-    WORKFLOW_STATUSES,
-
     repository,
 
     create(input) {
-      const normalized = validate(input);
+      const normalized = validate(resolveCreateInput(input));
 
       let project;
       let relPath;
@@ -323,6 +370,10 @@ export function createProjectService(
       const project = repository.findById(id);
       if (!project) {
         throw new ProjectNotFoundError(id);
+      }
+
+      if (isProjectArchived(project)) {
+        throw new ProjectValidationError({ general: 'Archived projects cannot be edited.' });
       }
 
       // Phase 1: Validate input
@@ -492,7 +543,7 @@ export function createProjectService(
         throw new ProjectNotFoundError(id);
       }
 
-      if (project.archived_at) {
+      if (isProjectArchived(project)) {
         throw new Error('Project is already archived.');
       }
 

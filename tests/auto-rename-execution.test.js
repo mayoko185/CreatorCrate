@@ -10,6 +10,7 @@ import { createAssetCategoryRepository } from '../src/data/asset-category-reposi
 import { createAssetCategoryService } from '../src/services/asset-category-service.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createProjectService } from '../src/services/project-service.js';
+import { createTestProjectOptionCatalogueService } from './helpers/project-option-catalogue.js';
 import {
   AUTO_RENAME_ERROR_CODES,
   createAutoRenameService,
@@ -129,6 +130,7 @@ describe('category-scoped Auto Rename execution', () => {
     const projectService = createProjectService(db, projectsRoot, {
       assetCategoryService,
       assetBrowserPreferenceRepository,
+      projectOptionCatalogueService: createTestProjectOptionCatalogueService(db),
     });
     const project = projectService.create(validProjectInput());
     const projectDir = resolveProjectDir(projectsRoot, project.project_dir);

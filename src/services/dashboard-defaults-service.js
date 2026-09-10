@@ -1,4 +1,7 @@
-import { DASHBOARD_SORTS, STATUSES } from '../data/project-repository.js';
+import {
+  ARCHIVED_PROJECT_STATUS,
+  DASHBOARD_SORTS,
+} from '../data/project-repository.js';
 
 export const DASHBOARD_DEFAULTS_KEY = 'page_defaults.dashboard';
 export const DASHBOARD_DEFAULTS_VERSION = 1;
@@ -8,34 +11,36 @@ export const DASHBOARD_ITEM_COUNT_MAX = 25;
 export const DASHBOARD_SORT_VALUES = Object.freeze(Object.keys(DASHBOARD_SORTS));
 export const DASHBOARD_ORDER_VALUES = Object.freeze(['asc', 'desc']);
 
-const STATUS_SECTION_LABELS = Object.freeze({
-  tbd: 'TBD',
-  planned: 'Planned',
-  'in-progress': 'In progress',
-  ready: 'Ready',
-  completed: 'Completed',
-  archived: 'Archived',
+const RECENTLY_UPDATED_SECTION = Object.freeze({
+  id: 'recently-updated',
+  label: 'Recently updated projects',
 });
-
-function getStatusSectionLabel(status) {
-  return STATUS_SECTION_LABELS[status]
-    ?? `${status.charAt(0).toUpperCase()}${status.slice(1).replaceAll('-', ' ')}`;
-}
-
-export const DASHBOARD_SECTION_REGISTRY = Object.freeze([
-  Object.freeze({ id: 'recently-updated', label: 'Recently updated projects' }),
-  ...STATUSES.map((status) => Object.freeze({
-    id: `status:${status}`,
-    label: getStatusSectionLabel(status),
-    status,
-  })),
-]);
-
-const SECTION_IDS = Object.freeze(DASHBOARD_SECTION_REGISTRY.map(({ id }) => id));
-const SECTION_ID_SET = new Set(SECTION_IDS);
+const SYSTEM_ARCHIVED_SECTION = Object.freeze({
+  id: `status:${ARCHIVED_PROJECT_STATUS}`,
+  label: 'Archived',
+  status: ARCHIVED_PROJECT_STATUS,
+});
 
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+export function buildDashboardSectionRegistry(statusCatalogue) {
+  if (!Array.isArray(statusCatalogue)) {
+    throw new Error('Dashboard status catalogue must be an array.');
+  }
+
+  return Object.freeze([
+    RECENTLY_UPDATED_SECTION,
+    ...statusCatalogue
+      .filter(({ value }) => value !== ARCHIVED_PROJECT_STATUS)
+      .map(({ value, label }) => Object.freeze({
+        id: `status:${value}`,
+        label,
+        status: value,
+      })),
+    SYSTEM_ARCHIVED_SECTION,
+  ]);
 }
 
 function defaultSorting() {
@@ -46,7 +51,7 @@ export function getDashboardSectionDefaultSorting() {
   return defaultSorting();
 }
 
-function defaultSection(sectionId) {
+function defaultSection() {
   return {
     visible: true,
     itemCount: DASHBOARD_DEFAULT_ITEM_COUNT,
@@ -54,34 +59,34 @@ function defaultSection(sectionId) {
   };
 }
 
-function canonicalDefaults() {
+function canonicalDefaults(sectionIds) {
   return {
     version: DASHBOARD_DEFAULTS_VERSION,
-    order: [...SECTION_IDS],
-    sections: Object.fromEntries(SECTION_IDS.map((sectionId) => [sectionId, defaultSection(sectionId)])),
+    order: [...sectionIds],
+    sections: Object.fromEntries(sectionIds.map((sectionId) => [sectionId, defaultSection()])),
   };
 }
 
-function normalizeOrder(order) {
+function normalizeOrder(order, sectionIds, sectionIdSet) {
   const seen = new Set();
   const normalized = [];
 
   if (Array.isArray(order)) {
     for (const sectionId of order) {
-      if (typeof sectionId !== 'string' || !SECTION_ID_SET.has(sectionId) || seen.has(sectionId)) continue;
+      if (typeof sectionId !== 'string' || !sectionIdSet.has(sectionId) || seen.has(sectionId)) continue;
       seen.add(sectionId);
       normalized.push(sectionId);
     }
   }
 
-  for (const sectionId of SECTION_IDS) {
+  for (const sectionId of sectionIds) {
     if (!seen.has(sectionId)) normalized.push(sectionId);
   }
   return normalized;
 }
 
-function normalizeSection(section, sectionId) {
-  const fallback = defaultSection(sectionId);
+function normalizeSection(section) {
+  const fallback = defaultSection();
   if (!isPlainObject(section)) return fallback;
 
   return {
@@ -96,18 +101,24 @@ function normalizeSection(section, sectionId) {
   };
 }
 
-export function normalizeDashboardDefaults(document) {
+export function normalizeDashboardDefaults(document, sectionRegistry) {
+  if (!Array.isArray(sectionRegistry)) {
+    throw new Error('Dashboard normalization requires a section registry.');
+  }
+  const sectionIds = sectionRegistry.map(({ id }) => id);
+  const sectionIdSet = new Set(sectionIds);
+
   if (!isPlainObject(document) || document.version !== DASHBOARD_DEFAULTS_VERSION) {
-    return canonicalDefaults();
+    return canonicalDefaults(sectionIds);
   }
 
   const sections = isPlainObject(document.sections) ? document.sections : {};
   return {
     version: DASHBOARD_DEFAULTS_VERSION,
-    order: normalizeOrder(document.order),
-    sections: Object.fromEntries(SECTION_IDS.map((sectionId) => [
+    order: normalizeOrder(document.order, sectionIds, sectionIdSet),
+    sections: Object.fromEntries(sectionIds.map((sectionId) => [
       sectionId,
-      normalizeSection(sections[sectionId], sectionId),
+      normalizeSection(sections[sectionId]),
     ])),
   };
 }
@@ -121,24 +132,48 @@ function parseStoredDocument(value) {
   }
 }
 
-export function createDashboardDefaultsService({ appMetaRepository } = {}) {
+export function createDashboardDefaultsService({
+  appMetaRepository,
+  projectOptionCatalogueService,
+} = {}) {
   if (!appMetaRepository || typeof appMetaRepository.getValue !== 'function'
     || typeof appMetaRepository.setValue !== 'function') {
     throw new Error('createDashboardDefaultsService requires an appMetaRepository dependency.');
   }
+  if (!projectOptionCatalogueService
+    || typeof projectOptionCatalogueService.getStatusCatalogue !== 'function') {
+    throw new Error('createDashboardDefaultsService requires a projectOptionCatalogueService dependency.');
+  }
 
-  function getDefaults() {
-    return normalizeDashboardDefaults(parseStoredDocument(appMetaRepository.getValue(DASHBOARD_DEFAULTS_KEY)));
+  function getSectionRegistry() {
+    return buildDashboardSectionRegistry(projectOptionCatalogueService.getStatusCatalogue());
+  }
+
+  function getDefaults(sectionRegistry = getSectionRegistry()) {
+    return normalizeDashboardDefaults(
+      parseStoredDocument(appMetaRepository.getValue(DASHBOARD_DEFAULTS_KEY)),
+      sectionRegistry,
+    );
+  }
+
+  function getConfiguration() {
+    const sectionRegistry = getSectionRegistry();
+    return {
+      sectionRegistry,
+      defaults: getDefaults(sectionRegistry),
+    };
   }
 
   function saveDefaults(defaults) {
-    const normalized = normalizeDashboardDefaults(defaults);
+    const normalized = normalizeDashboardDefaults(defaults, getSectionRegistry());
     appMetaRepository.setValue(DASHBOARD_DEFAULTS_KEY, JSON.stringify(normalized));
     return normalized;
   }
 
   return {
+    getConfiguration,
     getDefaults,
+    getSectionRegistry,
     saveDefaults,
   };
 }

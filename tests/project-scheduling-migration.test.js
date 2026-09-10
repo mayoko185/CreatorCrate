@@ -237,9 +237,11 @@ describe('Project scheduling migration (032)', () => {
     expect(db.pragma('foreign_key_check')).toEqual([]);
   });
 
-  it('is safe on a current database and is not reapplied by repeated migration runs', () => {
+  it('is safe after migration 032 and is not reapplied by repeated migration runs', () => {
     db = openDatabase(path.join(tmpDir, 'current.db'));
-    runMigrations(db, MIGRATIONS_DIR);
+    const migrations = copyPre032Migrations(tmpDir);
+    addMigration(migrations);
+    runMigrations(db, migrations);
     const tableSql = projectTableSql(db);
     const columns = Object.fromEntries(
       db.pragma("table_info('projects')").map((column) => [column.name, column])
@@ -266,7 +268,7 @@ describe('Project scheduling migration (032)', () => {
     expect(() => db.prepare("INSERT INTO projects (title, slug, project_type) VALUES ('Invalid', 'invalid-type', 'video')").run())
       .toThrow(/CHECK constraint failed/i);
 
-    runMigrations(db, MIGRATIONS_DIR);
+    runMigrations(db, migrations);
 
     expect(projectTableSql(db)).toBe(tableSql);
     expect(db.prepare('SELECT applied_at FROM schema_migrations WHERE filename = ?').pluck().get(MIGRATION_FILENAME))

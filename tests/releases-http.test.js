@@ -168,8 +168,8 @@ function insertProjectDirect(db, overrides = {}) {
   } = overrides;
   const row = db
     .prepare(
-      `INSERT INTO projects (title, slug, description, notes, status, archived_at, updated_at)
-       VALUES (?, ?, '', '', ?, ?, COALESCE(?, datetime('now')))
+      `INSERT INTO projects (title, slug, description, notes, status, project_type, archived_at, updated_at)
+       VALUES (?, ?, '', '', ?, 'images', ?, COALESCE(?, datetime('now')))
        RETURNING id`
     )
     .get(title, slug, status, archivedAt, updatedAt);
@@ -4213,6 +4213,48 @@ describe('release HTTP workflow', () => {
       expect(detail.text).toMatch(/href="\/releases\/\d+\/edit"/);
       expect(detail.text).toMatch(/action="\/releases\/\d+\/archive"/);
       expect(detail.text).toMatch(/href="\/releases\/\d+\/assets"/);
+    });
+
+    it('treats a legacy status-only archived parent as read-only across affordances and direct actions', async () => {
+      const { releaseLocation, projectId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
+      const releaseId = Number(releaseLocation.replace('/releases/', ''));
+      const beforeRelease = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+
+      db.prepare("UPDATE projects SET status = 'archived', archived_at = NULL WHERE id = ?").run(projectId);
+
+      const detail = await agent.get(releaseLocation).expect(200);
+      expect(detail.text).toMatch(/read-only/i);
+      expect(detail.text).not.toMatch(/href="\/releases\/\d+\/edit"/);
+      expect(detail.text).not.toMatch(/action="\/releases\/\d+\/archive"/);
+      expect(detail.text).not.toMatch(/href="\/releases\/\d+\/publish"/);
+      expect(detail.text).not.toMatch(/href="\/releases\/\d+\/assets"/);
+
+      const assetsPage = await agent.get(`${releaseLocation}/assets`).expect(200);
+      expect(assetsPage.text).toMatch(/read-only/i);
+      expect(assetsPage.text).not.toContain('class="release-assets-form"');
+      expect(assetsPage.text).not.toContain('class="asset-select-checkbox"');
+
+      const editRedirect = await agent.get(`${releaseLocation}/edit`).expect(302);
+      const publishRedirect = await agent.get(`${releaseLocation}/publish`).expect(302);
+      expect(editRedirect.headers.location).toBe(releaseLocation);
+      expect(publishRedirect.headers.location).toBe(releaseLocation);
+
+      await agent
+        .post(releaseLocation)
+        .type('form')
+        .send({ title: 'Must Not Change', _csrf: csrfToken })
+        .expect(422);
+      await agent
+        .post(`${releaseLocation}/publish`)
+        .type('form')
+        .send({ _csrf: csrfToken })
+        .expect(422);
+
+      expect(db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId)).toEqual(beforeRelease);
+      expect(db.prepare('SELECT status, archived_at FROM projects WHERE id = ?').get(projectId)).toEqual({
+        status: 'archived',
+        archived_at: null,
+      });
     });
 
     it('release detail exposes Review & Publish for an eligible non-ready project', async () => {

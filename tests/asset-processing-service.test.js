@@ -14,6 +14,7 @@ import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browse
 import { createAssetCategoryService } from '../src/services/asset-category-service.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createProjectService } from '../src/services/project-service.js';
+import { createTestProjectOptionCatalogueService } from './helpers/project-option-catalogue.js';
 import { createAssetProcessingScopeService } from '../src/services/asset-processing-scope-service.js';
 import { createAssetProcessingPlanner } from '../src/services/asset-processing-planner.js';
 import {
@@ -85,6 +86,7 @@ describe('asset processing service', () => {
     projectService = createProjectService(db, projectsRoot, {
       assetCategoryService,
       assetBrowserPreferenceRepository,
+      projectOptionCatalogueService: createTestProjectOptionCatalogueService(db),
     });
     project = projectService.create(validProjectInput());
     projectDir = resolveProjectDir(projectsRoot, project.project_dir);

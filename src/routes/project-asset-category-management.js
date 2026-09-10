@@ -11,6 +11,7 @@ import {
 } from '../services/asset-category-validation.js';
 import { StorageError } from '../storage/path-manager.js';
 import { buildProjectAssetBrowserPreferenceModel } from '../services/asset-browser-preference-presenter.js';
+import { isProjectArchived } from '../services/project-state.js';
 import {
   PROJECT_ASSET_CATEGORY_NOTICES,
   buildAssetsRedirectUrl,
@@ -146,6 +147,7 @@ function sendEnhancedCategoryManagementResponse(req, res, next, project, {
 
   return res.render('partials/project-asset-category-management.njk', {
     project,
+    isArchived: isProjectArchived(project),
     categoryManagement,
     categoryManagementReturnUrl,
     _csrf: res.locals._csrf,
@@ -172,7 +174,7 @@ router.post('/:projectId/asset-categories/default', (req, res, next) => {
   const submittedValue = typeof req.body?.defaultCategory === 'string' ? req.body.defaultCategory : '';
   const enhanced = isEnhancedAssetRequest(req);
 
-  if (isArchivedProject(project)) {
+  if (isProjectArchived(project)) {
     if (enhanced) {
       return res.status(409).json({
         status: 'error',
@@ -342,7 +344,7 @@ router.post('/:projectId/asset-categories', (req, res, next) => {
 router.post('/:projectId/asset-categories/reorder', (req, res, next) => {
   const project = loadCategoryProject(req, next);
   if (!project) return;
-  if (isArchivedProject(project)) {
+  if (isProjectArchived(project)) {
     return renderCategoryAssetsPage(req, res, next, project, {
       status: 409,
       notice: resolveProjectAssetCategoryNotice('category_archived'),
@@ -377,7 +379,7 @@ router.post('/:projectId/asset-categories/:categoryId/create-release', (req, res
   const categoryId = parseId(req.params.categoryId);
   if (categoryId === null) return next(createNotFound());
 
-  if (isArchivedProject(project)) {
+  if (isProjectArchived(project)) {
     return renderCategoryAssetsPage(req, res, next, project, {
       status: 409,
       notice: resolveProjectAssetCategoryNotice('category_archived'),
@@ -599,9 +601,6 @@ router.post('/:projectId/asset-categories/:categoryId/delete', (req, res, next) 
   }
 });
 
-function isArchivedProject(project) {
-  return Boolean(project?.archived_at || project?.status === 'archived');
-}
 /**
  * Parse the batch reorder form contract: one `orderedCategoryIds` field whose
  * value is a comma-separated list of canonical positive integer IDs. An empty

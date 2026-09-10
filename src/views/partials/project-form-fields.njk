@@ -29,19 +29,18 @@
   <div class="project-form-section-body{% if projectFormDialog %} project-edit-dialog-section-body{% endif %}">
 
   {% set statusSummary = '' %}
-  {% for s in statuses %}
-    {% if values.status == s %}
-      {% set statusSummary = s | replace('-', ' ') | title %}
+  {% for statusOption in statuses %}
+    {% if values.status == statusOption.value %}
+      {% set statusSummary = statusOption.label %}
     {% endif %}
   {% endfor %}
 
   {% set projectTypeSummary = '' %}
   {% set projectTypeOptions = [] %}
-  {% for projectType in projectTypes %}
-    {% set projectTypeLabel = projectType | title %}
-    {% set _ = projectTypeOptions.push({ value: projectType, label: projectTypeLabel }) %}
-    {% if values.projectType == projectType %}
-      {% set projectTypeSummary = projectTypeLabel %}
+  {% for projectTypeOption in projectTypes %}
+    {% set _ = projectTypeOptions.push({ value: projectTypeOption.value, label: projectTypeOption.label }) %}
+    {% if values.projectType == projectTypeOption.value %}
+      {% set projectTypeSummary = projectTypeOption.label %}
     {% endif %}
   {% endfor %}
 
@@ -62,8 +61,8 @@
   {% endfor %}
 
   {% set statusOptions = [] %}
-  {% for s in statuses %}
-    {% set _ = statusOptions.push({ value: s, label: s | replace('-', ' ') | title }) %}
+  {% for statusOption in statuses %}
+    {% set _ = statusOptions.push({ value: statusOption.value, label: statusOption.label }) %}
   {% endfor %}
 
   <div class="field-row status-row">

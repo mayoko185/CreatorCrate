@@ -1,5 +1,6 @@
 import { closeAppDialogById, openAppDialogById } from './app-dialogs.js';
 import { isEnhancementBound, markEnhancementBound } from './dom.js';
+import { initializeCreatorCrateDropdown } from './dropdowns.js';
 
 const APP_CONFIRMATION_DIALOG_ID = 'app-confirmation-dialog';
 const activeRequests = new WeakMap();
@@ -21,6 +22,8 @@ export function requestAppConfirmation(document, {
   title = 'Confirm action',
   confirmLabel = 'Confirm',
   opener = null,
+  replacementTemplate = null,
+  destructive = true,
 } = {}) {
   if (!document || activeRequests.has(document)) return Promise.resolve(false);
 
@@ -28,8 +31,12 @@ export function requestAppConfirmation(document, {
   const state = dialog?.__creatorCrateAppDialogState;
   const titleNode = dialog?.querySelector?.(`#${APP_CONFIRMATION_DIALOG_ID}-title`);
   const messageNode = dialog?.querySelector?.('[data-app-dialog-confirmation-message]');
+  const fieldHost = dialog?.querySelector?.('[data-app-dialog-confirmation-field]');
   const confirmControl = dialog?.querySelector?.('[data-app-dialog-confirmation-confirm]');
-  if (!state || !titleNode || !messageNode || !confirmControl) return Promise.resolve(false);
+  if (!state || !titleNode || !messageNode || !confirmControl
+    || (replacementTemplate && !fieldHost)) {
+    return Promise.resolve(false);
+  }
 
   return new Promise((resolve) => {
     const previousOnClose = state.onClose;
@@ -37,13 +44,53 @@ export function requestAppConfirmation(document, {
       title: confirmationText(dialog, `#${APP_CONFIRMATION_DIALOG_ID}-title`, 'Confirm action'),
       message: confirmationText(dialog, '[data-app-dialog-confirmation-message]'),
       confirmLabel: confirmationText(dialog, '[data-app-dialog-confirmation-confirm]', 'Confirm'),
+      confirmDanger: confirmControl.classList?.contains?.('button-danger'),
+      confirmSecondary: confirmControl.classList?.contains?.('button-secondary'),
     };
     let settled = false;
+    let replacementSelect = null;
+    let replacementDropdown = null;
+
+    const clearField = () => {
+      if (!fieldHost) return;
+      fieldHost.replaceChildren?.();
+      fieldHost.hidden = true;
+    };
+    const installReplacementDropdown = () => {
+      const fragment = replacementTemplate?.content?.cloneNode?.(true);
+      if (!fragment || !fieldHost) return !replacementTemplate;
+      fieldHost.replaceChildren(fragment);
+      replacementSelect = fieldHost.querySelector?.('[data-project-option-delete-replacement]');
+      replacementDropdown = fieldHost.querySelector?.('[data-cc-dropdown]');
+      if (!replacementSelect || !replacementDropdown) {
+        clearField();
+        replacementSelect = null;
+        replacementDropdown = null;
+        return false;
+      }
+      initializeCreatorCrateDropdown(replacementDropdown);
+      const updateValidity = () => {
+        confirmControl.disabled = Boolean(replacementSelect.required && !replacementSelect.value);
+      };
+      replacementSelect.addEventListener?.('change', updateValidity);
+      replacementSelect.__creatorCrateConfirmationChange = updateValidity;
+      fieldHost.hidden = false;
+      updateValidity();
+      return true;
+    };
 
     const reset = () => {
+      const onChange = replacementSelect?.__creatorCrateConfirmationChange;
+      if (onChange) replacementSelect.removeEventListener?.('change', onChange);
+      replacementSelect = null;
+      replacementDropdown = null;
+      clearField();
       titleNode.textContent = previousContent.title;
       messageNode.textContent = previousContent.message;
       confirmControl.textContent = previousContent.confirmLabel;
+      confirmControl.disabled = false;
+      confirmControl.classList?.toggle?.('button-danger', previousContent.confirmDanger);
+      confirmControl.classList?.toggle?.('button-secondary', previousContent.confirmSecondary);
     };
     const cleanup = () => {
       confirmControl.removeEventListener?.('click', onConfirm);
@@ -66,7 +113,13 @@ export function requestAppConfirmation(document, {
     };
     const onConfirm = (event) => {
       event.preventDefault?.();
-      settle(true);
+      if (replacementSelect?.required && !replacementSelect.value) {
+        (replacementDropdown?.querySelector?.('summary') || replacementSelect).focus?.();
+        return;
+      }
+      settle(replacementSelect
+        ? { confirmed: true, value: replacementSelect.value }
+        : true);
       closeAppDialogById(document, APP_CONFIRMATION_DIALOG_ID);
     };
 
@@ -74,6 +127,13 @@ export function requestAppConfirmation(document, {
     titleNode.textContent = String(title ?? '');
     messageNode.textContent = String(message ?? '');
     confirmControl.textContent = String(confirmLabel ?? '');
+    confirmControl.classList?.toggle?.('button-danger', destructive);
+    confirmControl.classList?.toggle?.('button-secondary', !destructive);
+    clearField();
+    if (!installReplacementDropdown()) {
+      settle(false);
+      return;
+    }
     state.onClose = onClose;
     confirmControl.addEventListener?.('click', onConfirm);
 

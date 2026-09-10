@@ -315,11 +315,11 @@
 
 {% block content %}
   {% set assetsHeadingDescription = "Browse scanned files, category, and release usage." %}
-  {% if project.archived_at %}
+  {% if isArchived %}
     {{ pageHeading.render(assetsHeadingDescription, "archived", "", "/projects/" ~ project.id, "Project: " ~ project.title) }}
   {% else %}
     {% call pageHeading.render(assetsHeadingDescription, "", "", "/projects/" ~ project.id, "Project: " ~ project.title) %}
-    {% if not project.archived_at %}
+    {% if not isArchived %}
       <form method="post" action="/projects/{{ project.id }}/scan" class="inline-form">
         <input type="hidden" name="_csrf" value="{{ _csrf }}">
         {{ renderContextFields(context, contextFields, false) }}
@@ -333,7 +333,7 @@
     {% endcall %}
   {% endif %}
 
-  {% if project.archived_at %}
+  {% if isArchived %}
     {% set noticeVariant = "warning" %}
     {% set noticeText = "This project is archived. Asset browsing is read-only and scanning is not available." %}
     {% include "partials/notice.njk" %}
@@ -498,7 +498,7 @@
         {% endif %}
 
         <div class="project-filter-actions project-filter-actions--projects">
-          {% if not project.archived_at %}
+          {% if not isArchived %}
             <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
                href="/projects/{{ project.id }}/edit" aria-label="Edit project" data-tooltip="Edit project">
               {{ icons.icon('edit') }}
@@ -1091,7 +1091,7 @@
       </footer>
     </form>
   {% endcall %}
-  {% if not project.archived_at and categoryNavigation.missingCount > 0 %}
+  {% if not isArchived and categoryNavigation.missingCount > 0 %}
     {% call dialog.render('remove-missing-assets-dialog', 'Remove missing assets', removeMissingAssetsDialogOpen, 'remove-missing-assets-description', 'remove-missing-assets-form') %}
       <form id="remove-missing-assets-form" method="post" action="/projects/{{ project.id }}/assets/remove-missing"
             class="app-dialog-form" data-dialog-form data-dialog-async="false">

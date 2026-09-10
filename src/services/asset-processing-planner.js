@@ -6,6 +6,7 @@ import { resolveContainedAssetPath } from '../storage/asset-file.js';
 import { resolveProjectDir } from '../storage/project-storage.js';
 import { deriveExtensionFromFilename } from './asset-metadata.js';
 import { classifyAssetPath } from './asset-path-classification.js';
+import { isProjectArchived } from './project-state.js';
 import {
   isOwnedWatermarkDestination as isOwnedWatermarkDestinationShared,
   isValidGeneratedOutputSha256,
@@ -246,7 +247,7 @@ function hashRegularFile(absolutePath, code = 'OUTPUT_PATH_UNSAFE', label = 'Out
 function resolveProjectContext(projectRepository, projectId, projectsRoot) {
   const project = projectRepository.findById(projectId);
   if (!project) throw plannerError(`Project ${projectId} not found.`, 'PROJECT_NOT_FOUND');
-  if (project.archived_at || project.status === 'archived') {
+  if (isProjectArchived(project)) {
     throw plannerError(`Project ${projectId} is archived and cannot be modified.`, 'PROJECT_ARCHIVED');
   }
   if (!project.project_dir) throw plannerError('Project has no stored directory path.', 'PROJECT_DIRECTORY_UNSAFE');

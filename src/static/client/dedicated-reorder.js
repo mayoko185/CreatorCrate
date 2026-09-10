@@ -19,7 +19,7 @@ const BOOK_HIERARCHY_ITEM_SELECTOR = '[data-book-hierarchy-item]';
 const BOOK_HIERARCHY_HANDLE_SELECTOR = '[data-book-hierarchy-handle]';
 const BOOK_HIERARCHY_INPUT_SELECTOR = '[data-book-hierarchy-input]';
 const BOOK_HIERARCHY_LIVE_SELECTOR = '[data-book-hierarchy-live]';
-const NOTES_REORDER_INTERACTIVE_SELECTOR = 'a, button, input, select, textarea, label, summary, details, [contenteditable="true"], [role="button"]';
+export const NOTES_REORDER_INTERACTIVE_SELECTOR = 'a, button, input, select, textarea, label, summary, details, [contenteditable="true"], [role="button"]';
 
 const APP_DIALOG_SELECTOR = '[data-app-dialog]';
 const DASHBOARD_DEFAULTS_DIALOG_ID = 'dashboard-defaults-dialog';
@@ -92,6 +92,7 @@ function dedicatedReorderLiveRegion(list, scope, config) {
 }
 
 function syncDedicatedReorderInput(state, config) {
+  if (config.syncInput) return config.syncInput(dedicatedReorderOrder(state.list, config));
   const input = state.form.querySelector?.(config.inputSelector);
   if (!input) return false;
   input.value = dedicatedReorderOrder(state.list, config).join(',');
@@ -106,7 +107,7 @@ function dedicatedReorderElementIsInside(item, element) {
 
 function canStartDedicatedReorderDrag(item, event, config) {
   const target = event.target?.nodeType === 3 ? event.target.parentElement : event.target;
-  const handleTarget = target?.closest?.(config.handleSelector);
+  const handleTarget = config.handleSelector ? target?.closest?.(config.handleSelector) : null;
   if (dedicatedReorderElementIsInside(item, handleTarget)) return true;
 
   if (!config.pointerDragSurfaceSelector) return false;
@@ -586,7 +587,7 @@ function finishDedicatedDrag(state) {
   state.draggedItem = null;
 }
 
-function enhanceDedicatedReorder(scope, config) {
+export function enhanceDedicatedReorder(scope, config) {
   if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
 
   const lists = scope.querySelectorAll(config.listSelector);
@@ -594,8 +595,8 @@ function enhanceDedicatedReorder(scope, config) {
     if (isEnhancementBound(list, config.bindingKey)) return;
 
     const items = dedicatedReorderItems(list, config);
-    const form = findDedicatedReorderForm(list, scope, config);
-    const handles = items.map((item) => item.querySelector?.(config.handleSelector));
+    const form = config.form || findDedicatedReorderForm(list, scope, config);
+    const handles = items.map((item) => config.wholeCardKeyboard ? item : item.querySelector?.(config.handleSelector));
     if (!form || items.length === 0 || handles.some((handle) => !handle)) return;
 
     const state = {
@@ -630,7 +631,7 @@ function enhanceDedicatedReorder(scope, config) {
     });
 
     items.forEach((item) => {
-      const handle = item.querySelector?.(config.handleSelector);
+      const handle = config.wholeCardKeyboard ? item : item.querySelector?.(config.handleSelector);
 
       item.addEventListener?.('pointerdown', (event) => {
         clearPointerTarget();
@@ -645,7 +646,7 @@ function enhanceDedicatedReorder(scope, config) {
       item.addEventListener?.('dragstart', (event) => {
         const target = pointerGesture?.item === item ? pointerGesture.target : event.target;
         clearPointerTarget();
-        if (!canStartDedicatedReorderDrag(item, { target }, config)) {
+        if (config.isBusy?.() || !canStartDedicatedReorderDrag(item, { target }, config)) {
           event.preventDefault?.();
           return;
         }
@@ -662,10 +663,12 @@ function enhanceDedicatedReorder(scope, config) {
       item.addEventListener?.('dragend', () => finishDedicatedDrag(state));
 
       handle.addEventListener?.('keydown', (event) => {
+        if (config.wholeCardKeyboard && event.target !== item) return;
         const keyTargets = { ArrowUp: -1, ArrowDown: 1, Home: 0, End: items.length - 1 };
         if (!Object.prototype.hasOwnProperty.call(keyTargets, event.key)) return;
 
         event.preventDefault?.();
+        if (config.isBusy?.()) return;
         const currentItems = dedicatedReorderItems(list, config);
         const currentIndex = currentItems.indexOf(item);
         if (currentIndex === -1) return;
@@ -680,6 +683,7 @@ function enhanceDedicatedReorder(scope, config) {
           announceDedicatedMove(state, item, config);
           syncDedicatedReorderInput(state, config);
           handle.focus?.();
+          config.onOrderChange?.({ item, keyboard: true });
         }
       });
     });
@@ -712,6 +716,8 @@ function enhanceDedicatedReorder(scope, config) {
       if (!sameDedicatedReorder(beforeIds, afterIds)) {
         updateDedicatedReorderMetadata(list, config);
         syncDedicatedReorderInput(state, config);
+        if (config.onOrderChange) announceDedicatedMove(state, draggedItem, config);
+        config.onOrderChange?.({ item: draggedItem, keyboard: false });
       }
     });
   });

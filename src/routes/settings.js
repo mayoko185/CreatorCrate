@@ -21,6 +21,12 @@ import { OpenLocallySettingsValidationError } from '../services/open-locally-set
 import { SocialPrepSettingsValidationError } from '../services/social-prep-settings-service.js';
 import { NoteRevisionSettingsValidationError } from '../services/note-revision-settings-service.js';
 import {
+  ProjectOptionCatalogueConflictError,
+  ProjectOptionCatalogueIntegrityError,
+  ProjectOptionCatalogueValidationError,
+} from '../services/project-option-catalogue-service.js';
+import { presentProjectOptionCatalogue } from '../services/project-option-presenter.js';
+import {
   PreviewCategoryValidationError,
   PREVIEW_CATEGORY_DISABLED_VALUE,
 } from '../services/preview-category-settings-service.js';
@@ -117,6 +123,30 @@ const DEFAULTS_POST_SECTIONS = Object.freeze([
 
 const NOTE_REVISION_RETENTION_FIELD = 'noteRevisionRetention';
 
+const PROJECT_OPTION_CATALOGUES = Object.freeze({
+  status: Object.freeze({
+    routeId: 'status',
+    kind: 'status',
+    title: 'Project Status',
+    anchor: 'defaults-project-status',
+    getter: 'getStatusCatalogue',
+  }),
+  'project-type': Object.freeze({
+    routeId: 'project-type',
+    kind: 'projectType',
+    title: 'Project Type',
+    anchor: 'defaults-project-type',
+    getter: 'getProjectTypeCatalogue',
+  }),
+});
+
+const PROJECT_OPTION_SUCCESS_NOTICES = Object.freeze({
+  project_option_added: 'Option added.',
+  project_option_color_updated: 'Option color updated.',
+  project_options_reordered: 'Option order updated.',
+  project_option_deleted: 'Option deleted.',
+});
+
 const DEFAULT_OPTION_LABELS = Object.freeze({
   view: 'Default view',
   sort: 'Default sort',
@@ -128,7 +158,10 @@ const DEFAULT_OPTION_LABELS = Object.freeze({
     order: 'Default order',
     pageSize: 'Default page size',
   }),
-  status: 'New project status',
+  new_project: Object.freeze({
+    status: 'Status',
+    projectType: 'Project Type',
+  }),
 });
 
 const DEFAULT_VALUE_LABELS = Object.freeze({
@@ -176,7 +209,12 @@ function pageDefaultFieldName(page, option) {
 }
 
 function defaultValueLabel(page, option, value) {
-  return DEFAULT_VALUE_LABELS[page][option][value] || value;
+  return DEFAULT_VALUE_LABELS[page]?.[option]?.[value] || value;
+}
+
+function optionValueLabel(page, option, value, optionCatalogue) {
+  return optionCatalogue.find((candidate) => candidate.value === value)?.label
+    || defaultValueLabel(page, option, value);
 }
 
 function readSubmittedPageDefaults(body, service) {
@@ -647,6 +685,140 @@ function getNoteRevisionSettingsService(req) {
   return service;
 }
 
+function getProjectOptionCatalogueService(req) {
+  const service = req.app?.locals?.projectOptionCatalogueService;
+  if (!service) {
+    throw new Error('Settings Defaults requires app.locals.projectOptionCatalogueService.');
+  }
+  return service;
+}
+
+function requireProjectOptionCatalogue(routeId) {
+  const definition = PROJECT_OPTION_CATALOGUES[routeId];
+  if (!definition) throw createNotFound();
+  return definition;
+}
+
+function projectOptionSuccessFeedback(req, definition) {
+  if (req.query?.catalogue !== definition.routeId) return null;
+  const text = PROJECT_OPTION_SUCCESS_NOTICES[req.query?.notice];
+  return text ? { code: 'SUCCESS', variant: 'success', text } : null;
+}
+
+function buildProjectOptionEditor(req, definition, {
+  feedback = projectOptionSuccessFeedback(req, definition),
+  addDraft = null,
+  entries,
+  unavailable = false,
+} = {}) {
+  const service = getProjectOptionCatalogueService(req);
+  const catalogueEntries = entries || service.getDeletionMetadata(definition.kind);
+  return {
+    ...definition,
+    entries: presentProjectOptionCatalogue(catalogueEntries, definition.kind),
+    feedback,
+    addDraft: {
+      name: addDraft?.name || '',
+      color: '#22D3EE',
+    },
+    unavailable,
+  };
+}
+
+function buildProjectOptionEditors(req) {
+  return Object.values(PROJECT_OPTION_CATALOGUES)
+    .map((definition) => buildProjectOptionEditor(req, definition));
+}
+
+function projectOptionFailure(error) {
+  if (error instanceof ProjectOptionCatalogueValidationError) {
+    return {
+      status: 422,
+      feedback: {
+        code: 'VALIDATION_ERROR',
+        variant: 'error',
+        text: Object.values(error.errors || {})[0] || 'The submitted option is invalid.',
+        errors: { ...(error.errors || {}) },
+      },
+    };
+  }
+  if (error instanceof ProjectOptionCatalogueConflictError) {
+    return {
+      status: 409,
+      feedback: { code: error.code, variant: 'error', text: error.message },
+    };
+  }
+  if (error instanceof ProjectOptionCatalogueIntegrityError) {
+    const storedCatalogueUnavailable = error.code === 'CATALOGUE_MISSING'
+      || error.code === 'CATALOGUE_INVALID';
+    return {
+      status: 500,
+      unavailable: storedCatalogueUnavailable,
+      feedback: {
+        code: error.code || 'CATALOGUE_INVALID',
+        variant: 'error',
+        text: error.code === 'CATALOGUE_MISSING'
+          ? 'This Project option catalogue is unavailable because its saved data is missing.'
+          : (error.code === 'CATALOGUE_REFERENCE_INTEGRITY'
+              ? 'Project references changed unexpectedly. No changes were made.'
+              : 'This Project option catalogue is unavailable because its saved data is invalid.'),
+      },
+    };
+  }
+  return {
+    status: 500,
+    feedback: {
+      code: 'UNEXPECTED_ERROR',
+      variant: 'error',
+      text: 'The Project option could not be saved. No changes were made.',
+    },
+  };
+}
+
+function renderProjectOptionEditorFailure(req, res, definition, error, { addDraft } = {}) {
+  const failure = projectOptionFailure(error);
+  let entries = [];
+  let unavailable = failure.unavailable || false;
+  if (!unavailable) {
+    try {
+      entries = getProjectOptionCatalogueService(req).getDeletionMetadata(definition.kind);
+    } catch {
+      unavailable = true;
+    }
+  }
+  res.status(failure.status).render('settings/project-option-catalogue.njk', {
+    editor: buildProjectOptionEditor(req, definition, {
+      feedback: failure.feedback,
+      addDraft,
+      entries,
+      unavailable,
+    }),
+  });
+}
+
+function readProjectOptionDeleteReplacement(body) {
+  const rawBody = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
+  const unexpected = Object.keys(rawBody)
+    .filter((key) => key !== '_csrf' && key !== 'replacement');
+  if (unexpected.length > 0) {
+    throw new ProjectOptionCatalogueValidationError({
+      replacement: `Unexpected fields are not allowed: ${unexpected.join(', ')}.`,
+    });
+  }
+  if (!Object.hasOwn(rawBody, 'replacement')) return undefined;
+  if (typeof rawBody.replacement !== 'string') {
+    throw new ProjectOptionCatalogueValidationError({
+      replacement: 'Replacement must be one Project option value.',
+    });
+  }
+  return rawBody.replacement;
+}
+
+function projectOptionRedirect(res, definition, notice) {
+  const query = new URLSearchParams({ catalogue: definition.routeId, notice });
+  res.redirect(`/settings/defaults?${query}`);
+}
+
 function buildDefaultsPageModel(service, {
   submittedValues = null,
   errors = {},
@@ -658,6 +830,7 @@ function buildDefaultsPageModel(service, {
     anchor,
     fields: Object.keys(PAGE_DEFAULT_DEFINITIONS[page]).map((option) => {
       const definition = PAGE_DEFAULT_DEFINITIONS[page][option];
+      const optionCatalogue = service.getOptionCatalogue(page, option);
       const name = pageDefaultFieldName(page, option);
       const savedValue = service.getSavedDefault(page, option);
       const fallbackValue = service.getFallback(page, option);
@@ -669,19 +842,21 @@ function buildDefaultsPageModel(service, {
       const showSubmittedValue = hasSubmittedValues
         && Boolean(error)
         && typeof submittedValue === 'string'
-        && !definition.values.includes(submittedValue);
+        && !optionCatalogue.some(({ value }) => value === submittedValue);
 
       return {
         id: name,
         name,
         label: DEFAULT_OPTION_LABELS[page]?.[option] ?? DEFAULT_OPTION_LABELS[option],
-        options: definition.values.map((value) => ({
+        options: optionCatalogue.map(({ value, label }) => ({
           value,
-          label: defaultValueLabel(page, option, value),
+          label: label || defaultValueLabel(page, option, value),
         })),
         selectedValue: submittedValue,
-        savedLabel: savedValue === undefined ? null : defaultValueLabel(page, option, savedValue),
-        fallbackLabel: defaultValueLabel(page, option, fallbackValue),
+        savedLabel: savedValue === undefined
+          ? null
+          : optionValueLabel(page, option, savedValue, optionCatalogue),
+        fallbackLabel: optionValueLabel(page, option, fallbackValue, optionCatalogue),
         usesFallback: savedValue === undefined,
         error,
         showSubmittedValue,
@@ -859,6 +1034,7 @@ function renderDefaultsPage(req, res, {
   res.status(status).render('settings/defaults.njk', {
     appName,
     notice,
+    projectOptionEditors: buildProjectOptionEditors(req),
     ...buildDefaultsPageModel(service, {
       submittedValues,
       errors,
@@ -1126,6 +1302,74 @@ export function createSettingsRouter({
       appName,
       notice: resolveNotice(req.query.notice),
     });
+  });
+
+  router.post('/defaults/project-options/:catalogue/add', (req, res) => {
+    const definition = requireProjectOptionCatalogue(req.params.catalogue);
+    try {
+      const option = getProjectOptionCatalogueService(req).addOption(definition.kind, {
+        name: req.body?.name,
+        color: req.body?.color,
+      });
+      logSettingsActivity(applicationLogger, 'settings.project_option.added', {
+        catalogue: definition.routeId,
+        value: option.value,
+      });
+      projectOptionRedirect(res, definition, 'project_option_added');
+    } catch (error) {
+      renderProjectOptionEditorFailure(req, res, definition, error, {
+        addDraft: {
+          name: typeof req.body?.name === 'string' ? req.body.name : '',
+        },
+      });
+    }
+  });
+
+  router.post('/defaults/project-options/:catalogue/reorder', (req, res) => {
+    const definition = requireProjectOptionCatalogue(req.params.catalogue);
+    try {
+      getProjectOptionCatalogueService(req)
+        .reorderOptions(definition.kind, req.body?.orderedValues);
+      logSettingsActivity(applicationLogger, 'settings.project_options.reordered', {
+        catalogue: definition.routeId,
+      });
+      projectOptionRedirect(res, definition, 'project_options_reordered');
+    } catch (error) {
+      renderProjectOptionEditorFailure(req, res, definition, error);
+    }
+  });
+
+  router.post('/defaults/project-options/:catalogue/:value/color', (req, res) => {
+    const definition = requireProjectOptionCatalogue(req.params.catalogue);
+    try {
+      const option = getProjectOptionCatalogueService(req).updateOptionColor(definition.kind, {
+        value: req.params.value,
+        color: req.body?.color,
+      });
+      logSettingsActivity(applicationLogger, 'settings.project_option.color_updated', {
+        catalogue: definition.routeId,
+        value: option.value,
+      });
+      projectOptionRedirect(res, definition, 'project_option_color_updated');
+    } catch (error) {
+      renderProjectOptionEditorFailure(req, res, definition, error);
+    }
+  });
+
+  router.post('/defaults/project-options/:catalogue/:value/delete', (req, res) => {
+    const definition = requireProjectOptionCatalogue(req.params.catalogue);
+    try {
+      const replacement = readProjectOptionDeleteReplacement(req.body);
+      getProjectOptionCatalogueService(req)
+        .deleteOption(definition.kind, req.params.value, replacement);
+      logSettingsActivity(applicationLogger, 'settings.project_option.deleted', {
+        catalogue: definition.routeId,
+        value: req.params.value,
+      });
+      projectOptionRedirect(res, definition, 'project_option_deleted');
+    } catch (error) {
+      renderProjectOptionEditorFailure(req, res, definition, error);
+    }
   });
 
   router.post('/defaults', (req, res, next) => {

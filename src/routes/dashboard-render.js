@@ -1,7 +1,10 @@
 import { NSFW_TAG_NAME } from '../services/nsfw-filter-settings-service.js';
-import { DASHBOARD_SECTION_REGISTRY } from '../services/dashboard-defaults-service.js';
 import { buildAssetLibraryUrl } from './asset-library-query.js';
 import { buildNewProjectFormModel } from './project-create-form.js';
+import {
+  buildProjectOptionPresentation,
+  presentProjectOptions,
+} from '../services/project-option-presenter.js';
 
 const NSFW_TAG_NORMALIZED_NAME = NSFW_TAG_NAME.toLowerCase();
 
@@ -46,14 +49,31 @@ export function renderDashboardPage(req, res, next, {
   projectCreateForm,
 } = {}) {
   try {
-    const dashboardDefaults = getDashboardDefaultsService(req).getDefaults();
-    const dashboard = workflowQueryService.getDashboardData({ dashboardDefaults });
+    const effectivePageDefaultsService = pageDefaultsService || req.app?.locals?.pageDefaultsService;
+    if (!effectivePageDefaultsService) {
+      throw new Error('Dashboard requires a pageDefaultsService.');
+    }
+    const dashboardConfiguration = getDashboardDefaultsService(req).getConfiguration();
+    const dashboardDefaults = dashboardConfiguration.defaults;
+    const dashboardSectionRegistry = dashboardConfiguration.sectionRegistry;
+    const dashboard = workflowQueryService.getDashboardData({
+      dashboardDefaults,
+      dashboardSectionRegistry,
+    });
     const nsfwFilterEnabled = getNsfwFilterSettingsService(req).isEnabled();
+    const optionPresentation = buildProjectOptionPresentation({
+      status: effectivePageDefaultsService.getOptionCatalogue('new_project', 'status'),
+      projectType: effectivePageDefaultsService.getOptionCatalogue('projects', 'projectType')
+        .filter(({ value }) => value !== 'all'),
+    });
     const blurProjects = (projects) => projects.map(
-      (project) => withNsfwBlur(project, project.tags, nsfwFilterEnabled)
+      (project) => presentProjectOptions(
+        withNsfwBlur(project, project.tags, nsfwFilterEnabled),
+        optionPresentation,
+      )
     );
     const sectionMetadataById = new Map(
-      DASHBOARD_SECTION_REGISTRY.map((section) => [section.id, section])
+      dashboardSectionRegistry.map((section) => [section.id, section])
     );
     const dashboardSections = dashboardDefaults.order.flatMap((sectionId) => {
       const sectionDefaults = dashboardDefaults.sections[sectionId];
@@ -77,13 +97,13 @@ export function renderDashboardPage(req, res, next, {
       recentlyUpdated: sectionProjectsById['recently-updated'] || [],
       dashboardSections,
       dashboardDefaults,
-      dashboardSectionRegistry: DASHBOARD_SECTION_REGISTRY,
+      dashboardSectionRegistry,
       dashboardDefaultsDialogOpen,
       dashboardDefaultsFormState,
       projectCreateDialogOpen: Boolean(projectCreateDialogOpen),
       projectCreateForm: projectCreateForm || buildNewProjectFormModel({
         tagService,
-        pageDefaultsService,
+        pageDefaultsService: effectivePageDefaultsService,
       }),
       summary: dashboard.workflowSummary,
       nsfwFilterEnabled,

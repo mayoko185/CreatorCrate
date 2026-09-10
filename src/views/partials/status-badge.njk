@@ -10,9 +10,20 @@
 
   Parameters (set before including):
     - status: required, the status string (e.g. "in-progress", "published")
+    - projectStatusOption: optional explicit Project catalogue metadata
 #}
 {% if status %}
-  {% if status == "tbd" %}
+  {% if projectStatusOption and projectStatusOption.value == status %}
+    {% set projectStatusClass = "" %}
+    {% if status == "tbd" or status == "planned" %}{% set projectStatusClass = " status-badge--neutral" %}
+    {% elif status == "in-progress" %}{% set projectStatusClass = " status-badge--draft" %}
+    {% elif status == "ready" %}{% set projectStatusClass = " status-badge--active" %}
+    {% elif status == "completed" %}{% set projectStatusClass = " status-badge--completed" %}
+    {% elif status == "published" %}{% set projectStatusClass = " status-badge--published" %}
+    {% elif status == "archived" %}{% set projectStatusClass = " status-badge--archived" %}
+    {% endif %}
+    <span class="status-badge project-option-badge project-status-badge{{ projectStatusClass }}" style="--project-badge-bg: {{ projectStatusOption.color }}; --project-badge-tint: {{ projectStatusOption.tintPercent }}%; --project-badge-fg: {{ projectStatusOption.foregroundColor }}">{{ projectStatusOption.label }}</span>
+  {% elif status == "tbd" %}
     <span class="status-badge status-badge--neutral">Tbd</span>
   {% elif status == "planned" %}
     <span class="status-badge status-badge--neutral">Planned</span>
