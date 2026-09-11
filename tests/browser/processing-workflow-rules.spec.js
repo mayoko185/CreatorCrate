@@ -136,7 +136,7 @@ test('cloned workflow-rule rows keep unique relationships and independent dropdo
   const fixture = await createFixture(page);
 
   try {
-    await page.getByRole('button', { name: 'Edit workflow prompts', exact: true }).click();
+    await page.getByRole('button', { name: 'Image workflows editor', exact: true }).click();
     const dialog = page.locator('#processing-workflow-dialog');
     const processingRoot = dialog.locator('[data-processing-root]');
     await expect(dialog).toBeVisible();

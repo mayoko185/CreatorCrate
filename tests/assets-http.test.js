@@ -214,6 +214,24 @@ describe('asset browser HTTP workflow', () => {
     return match ? match[2].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim() : null;
   }
 
+  function buttonHtml(html, identifyingAttribute) {
+    return (html.match(/<button\b[^>]*>[\s\S]*?<\/button>/g) || [])
+      .find((button) => button.includes(identifyingAttribute)) || '';
+  }
+
+  function expectIconOnlyButton(button, { attributes, classes, iconGeometry }) {
+    expect(button).not.toBe('');
+    const openingTag = button.match(/^<button\b[^>]*>/)?.[0] || '';
+    const classNames = openingTag.match(/\bclass="([^"]*)"/)?.[1].split(/\s+/) || [];
+    const content = button.match(/^<button\b[^>]*>([\s\S]*)<\/button>$/)?.[1] || '';
+
+    for (const attribute of attributes) expect(openingTag).toContain(attribute);
+    expect(classNames).toEqual(expect.arrayContaining(classes));
+    expect(content).toMatch(/<svg\b(?=[^>]*aria-hidden="true")(?=[^>]*focusable="false")[^>]*>/);
+    for (const geometry of iconGeometry) expect(content).toMatch(geometry);
+    expect(content.replace(/<[^>]+>/g, '').trim()).toBe('');
+  }
+
   function expectProjectReturnLead(html, { href, title, extraClass = '' }) {
     const heading = html.match(/<header class="page-heading">[\s\S]*?<\/header>/)?.[0] || '';
     const classSuffix = extraClass ? ` ${extraClass}` : '';
@@ -235,7 +253,7 @@ describe('asset browser HTTP workflow', () => {
 
   function assetSelectionControlsHtml(html) {
     const start = html.indexOf('<div class="asset-selection-controls-area">');
-    const end = html.indexOf('<div class="asset-selection-controls">', start);
+    const end = html.indexOf('</section>', start);
     return start >= 0 && end > start ? html.slice(start, end) : '';
   }
 
@@ -256,6 +274,11 @@ describe('asset browser HTTP workflow', () => {
     ));
     expect(html).not.toContain('class="app-section-title"');
     expect(html).not.toMatch(/<h2[^>]*(?:class|style)=[^>]*>Project actions<\/h2>/);
+    const bodyStart = html.indexOf('<div class="project-detail-section-body">');
+    const formStart = html.indexOf('<form id="bulk-select-form"', bodyStart);
+    const utilityStart = html.indexOf('<div class="asset-actions-category-row">', bodyStart);
+    expect(formStart).toBeGreaterThan(bodyStart);
+    expect(utilityStart).toBeGreaterThan(formStart);
   }
 
   function projectAssetsDisplayActions(html) {
@@ -381,8 +404,9 @@ describe('asset browser HTTP workflow', () => {
     expectProjectReturnLead(res2.text, { href: `/projects/${id}`, title: 'Browser Title Test' });
     expect(pageHeading.indexOf('page-heading-lead')).toBeLessThan(pageHeading.indexOf('<div class="page-heading-actions">'));
     expect(headingActions).toContain('Scan Now');
-    expect(headingActions).not.toContain('Edit project');
-    expect(displayActions).toContain(`href="/projects/${id}/edit"`);
+    expect(headingActions).toContain('Edit project');
+    expect(headingActions.indexOf('aria-label="Scan Now"')).toBeLessThan(headingActions.indexOf('aria-label="Edit project"'));
+    expect(displayActions).not.toContain(`href="/projects/${id}/edit"`);
     expect(headingActions).not.toContain('Project: Browser Title Test');
     expect(res2.text).not.toContain('Back to Project');
     expect((res2.text.match(/<h1\b/g) || []).length).toBe(1);
@@ -735,7 +759,7 @@ describe('asset browser HTTP workflow', () => {
     expect(active.text).toContain(`action="/projects/${id}/assets/remove-missing"`);
     expect(active.text).toContain('data-dialog-async="false"');
     expect(active.text).toContain(`name="returnTo" value="/projects/${id}/assets"`);
-    expect(projectAssetsDisplayActions(active.text)).toContain(`href="/projects/${id}/edit"`);
+    expect(active.text.match(/<div class="page-heading-actions">[\s\S]*?<\/div>/)?.[0]).toContain(`href="/projects/${id}/edit"`);
     expect(active.text).toContain('Only asset records currently marked missing will be removed.');
 
     const emptyRes = await createProject('No Missing Cleanup Control');
@@ -752,7 +776,7 @@ describe('asset browser HTTP workflow', () => {
     expect(archived.text).not.toContain('Back to Project');
     expect(archived.text).not.toContain('remove-missing-assets-dialog');
     expect(archived.text).not.toContain('Scan Now');
-    expect(archived.text).not.toContain(`href="/projects/${id}/edit">Edit project</a>`);
+    expect(archived.text).not.toContain(`href="/projects/${id}/edit"`);
   });
 
   it('removes eligible missing records within one project and reports protected records', async () => {
@@ -3669,9 +3693,9 @@ describe('asset browser HTTP workflow', () => {
       const res2 = await agent.get(`/projects/${id}/assets?category=all&search=hero&presence=present&sort=size&order=desc&pageSize=50`).expect(200);
       const html = res2.text;
 
-      // Exactly one "Scan Now" label on the page.
-      const scanNowCount = (html.match(/Scan Now/g) || []).length;
-      expect(scanNowCount).toBe(1);
+      const scanNowButtons = html.match(/<button\b(?=[^>]*aria-label="Scan Now")[^>]*>[\s\S]*?<\/button>/g) || [];
+      expect(scanNowButtons).toHaveLength(1);
+      expect(scanNowButtons[0]).toContain('data-tooltip="Scan Now"');
 
       const formMatch = html.match(/<form method="post" action="\/projects\/\d+\/scan"[^>]*>[\s\S]*?<\/form>/);
       expect(formMatch).not.toBeNull();
@@ -4927,8 +4951,8 @@ describe('asset browser HTTP workflow', () => {
 
   // ─── Project Assets display actions ────────────────────────────────
   //
-  // The display controls render project-level icon actions immediately before
-  // Project Assets defaults. Open locally keeps the category-aware URI from
+  // The display controls render Filter immediately before Project Assets
+  // defaults, followed by Open locally. Open locally keeps the category-aware URI from
   // the assets page model; its href is Nunjucks-escaped (autoescape), so
   // ampersands appear as &amp; in the markup. The action must never leak the
   // container root or an absolute path.
@@ -4951,10 +4975,15 @@ describe('asset browser HTTP workflow', () => {
       return { id, projectDir };
     }
 
-    it('renders active-project edit and open-locally actions immediately before Project Assets defaults', async () => {
+    it('orders accessible heading actions and keeps display Filter, defaults, Open locally, and NSFW adjacent', async () => {
       const { id, projectDir } = await createAssetsProject('Assets Open Locally');
       const row = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(id);
       configureWindowsRoot();
+      const missingPath = path.join(projectDir, 'missing-heading-action.png');
+      fs.writeFileSync(missingPath, await makePng());
+      await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+      fs.rmSync(missingPath);
+      await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       const res = await agent
         .get(`/projects/${id}/assets`)
@@ -4962,20 +4991,51 @@ describe('asset browser HTTP workflow', () => {
 
       const actions = projectAssetsDisplayActions(res.text);
       const headingActions = extractPageHeadingActions(res.text);
-      const editIndex = actions.indexOf('aria-label="Edit project"');
       const openLocallyIndex = actions.indexOf('aria-label="Open locally"');
+      const filterIndex = actions.indexOf('aria-label="Filter assets"');
       const defaultsIndex = actions.indexOf('aria-label="Project Assets defaults"');
+      const nsfwIndex = actions.indexOf('id="project-assets-nsfw-toggle"');
+      const scanIndex = headingActions.indexOf('aria-label="Scan Now"');
+      const removeMissingIndex = headingActions.indexOf('aria-label="Remove missing assets"');
+      const editIndex = headingActions.indexOf('aria-label="Edit project"');
 
-      expect(actions).toContain(`href="/projects/${id}/edit"`);
+      expect(headingActions).toContain(`href="/projects/${id}/edit"`);
       expect(actions).toContain('creatorcrate-open://');
       expect(actions).toContain(
         `href="creatorcrate-open://open?v=2&amp;path=${encodeURIComponent(`D:\\example\\${row.project_dir}`)}&amp;select=0"`
       );
-      expect(editIndex).toBeGreaterThanOrEqual(0);
-      expect(openLocallyIndex).toBeGreaterThan(editIndex);
-      expect(defaultsIndex).toBeGreaterThan(openLocallyIndex);
-      expect(headingActions).not.toContain('Edit project');
+      expect(filterIndex).toBeGreaterThanOrEqual(0);
+      expect(defaultsIndex).toBeGreaterThan(filterIndex);
+      expect(openLocallyIndex).toBeGreaterThan(defaultsIndex);
+      expect(nsfwIndex).toBeGreaterThan(openLocallyIndex);
+      expect(actions).toMatch(/aria-label="Filter assets"[\s\S]*?<\/a>\s*<a class="asset-viewer-defaults-link/);
+      expect(actions).toMatch(/aria-label="Project Assets defaults"[\s\S]*?<\/a>\s*<a class="button button-small button-secondary project-filter-control[^"]*"\s*href="creatorcrate-open:/);
+      expect(scanIndex).toBeGreaterThanOrEqual(0);
+      expect(removeMissingIndex).toBeGreaterThan(scanIndex);
+      expect(editIndex).toBeGreaterThan(removeMissingIndex);
+      const scanForm = headingActions.match(new RegExp(`<form method="post" action="/projects/${id}/scan" class="inline-form">[\\s\\S]*?<\\/form>`))?.[0] || '';
+      expect(scanForm).toContain('name="_csrf"');
+      expect(scanForm).toContain('type="submit" aria-label="Scan Now" data-tooltip="Scan Now"');
+      expect(scanForm).toContain('<path d="M4 10a8 8 0 1 1 2.3 5.7"/>');
+      expect(scanForm.replace(/<[^>]+>/g, '').trim()).toBe('');
+      const removeMissingAction = headingActions.match(/<a\b(?=[^>]*aria-label="Remove missing assets")[^>]*>[\s\S]*?<\/a>/)?.[0] || '';
+      expect(removeMissingAction).toContain(`href="/projects/${id}/assets?remove_missing=1"`);
+      expect(removeMissingAction).toContain('data-dialog-open="remove-missing-assets-dialog"');
+      expect(removeMissingAction).toContain('data-tooltip="Remove missing assets"');
+      expect(removeMissingAction).toContain('button-danger');
+      expect(removeMissingAction).toMatch(/<svg[^>]*aria-hidden="true"[^>]*focusable="false"/);
+      expect(removeMissingAction).toContain('<path d="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6M14 11v6"/>');
+      expect(removeMissingAction.replace(/<[^>]+>/g, '').trim()).toBe('');
+      const removeMissingDialog = res.text.match(/<dialog id="remove-missing-assets-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      expect(removeMissingDialog).toContain(`<form id="remove-missing-assets-form" method="post" action="/projects/${id}/assets/remove-missing"`);
+      expect(removeMissingDialog).toContain(`<input type="hidden" name="_csrf" value="${csrfToken}">`);
+      expect(removeMissingDialog).toContain(`<input type="hidden" name="returnTo" value="/projects/${id}/assets">`);
+      expect(removeMissingDialog).toContain('<button class="button button-danger" type="submit" data-dialog-submit>Remove missing assets</button>');
       expect(headingActions).not.toContain('Open locally');
+      const style = await readStylesheetSource(res.text);
+      const headingGroupRule = style.match(/(?:^|})\s*\.page-heading:has\(\.project-assets-heading-action\) \.page-heading-actions\s*\{([^}]*)\}/)?.[1] || '';
+      expect(headingGroupRule).toMatch(/justify-content:\s*flex-end/);
+      expect(headingGroupRule).toMatch(/gap:\s*var\(--space-sm\)/);
       expect(projectDir).toBeTruthy();
     });
 
@@ -6833,6 +6893,7 @@ describe('asset browser HTTP workflow', () => {
 
       const selectedCounts = response.text.match(/<p class="results-meta" data-selected-count data-selected-total="\d+">\d+ of \d+ selected<\/p>/g) || [];
       expect(selectedCounts).toHaveLength(1);
+      expect(response.text).toContain('<div class="asset-results-metadata">');
       const displayControls = response.text.indexOf('<div class="asset-viewer-display-controls">');
       const selectedCount = response.text.indexOf(selectedCounts[0]);
       const actionPanelStart = response.text.indexOf('data-asset-actions-panel');
@@ -6856,6 +6917,46 @@ describe('asset browser HTTP workflow', () => {
     expect(controlsAreaRule).toMatch(/align-items:\s*flex-end/);
     expect(buttonsRowRule).toMatch(/justify-content:\s*flex-end/);
     expect(actionControlsRule).toMatch(/margin-inline-start:\s*auto/);
+
+    const metadataRule = style.match(/(?:^|})\s*\.asset-results-metadata\s*\{([^}]*)\}/)?.[1] || '';
+    const categoryRule = style.match(/(?:^|})\s*\.asset-results-category\s*\{([^}]*)\}/)?.[1] || '';
+    expect(metadataRule).toMatch(/display:\s*flex/);
+    expect(metadataRule).toMatch(/flex-wrap:\s*wrap/);
+    expect(metadataRule).toMatch(/max-width:\s*100%/);
+    expect(categoryRule).toMatch(/margin-inline-start:\s*auto/);
+  });
+
+  it('renders the active category label from canonical filters and enabled or disabled navigation entries', async () => {
+    const res = await createProject('Active Category Metadata');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const enabled = assetCategoryRepo.addProjectCategory({
+      projectId: id, displayName: 'Finished Renders', directorySlug: 'finished-renders', displayOrder: 0, enabled: true,
+    });
+    const disabled = assetCategoryRepo.addProjectCategory({
+      projectId: id, displayName: 'Legacy Sources', directorySlug: 'legacy-sources', displayOrder: 1, enabled: false,
+    });
+    assetRepo.upsert(id, 'root.png', {
+      filename: 'root.png', extension: 'png', mimeType: 'image/png', sizeBytes: 10, modifiedAt: null,
+    });
+    assetRepo.upsert(id, 'finished-renders/final.png', {
+      filename: 'final.png', extension: 'png', mimeType: 'image/png', sizeBytes: 10, modifiedAt: null, categoryId: enabled.id, nestedPath: '',
+    });
+    assetRepo.upsert(id, 'legacy-sources/old.png', {
+      filename: 'old.png', extension: 'png', mimeType: 'image/png', sizeBytes: 10, modifiedAt: null, categoryId: disabled.id, nestedPath: '',
+    });
+
+    const cases = [
+      ['', 'Category: All'],
+      ['?category=uncategorized', 'Category: Uncategorized'],
+      [`?category=${enabled.id}`, 'Category: Finished Renders'],
+      [`?category=${disabled.id}`, 'Category: Legacy Sources'],
+    ];
+    for (const [query, expected] of cases) {
+      const response = await agent.get(`/projects/${id}/assets${query}`).expect(200);
+      const metadata = response.text.match(/<div class="asset-results-metadata">[\s\S]*?<\/div>/)?.[0] || '';
+      expect(metadata).toContain(`class="results-meta asset-results-category">${expected}</p>`);
+      expect((metadata.match(/data-selected-count/g) || [])).toHaveLength(1);
+    }
   });
 
   it('uses ordinary filtered results for non-default search and sorting on a numeric category view', async () => {
@@ -7242,7 +7343,12 @@ describe('asset browser HTTP workflow', () => {
         expect((res2.text.match(/data-selected-count/g) || [])).toHaveLength(1);
         expect(res2.text.indexOf('<div class="asset-viewer-display-controls">')).toBeLessThan(res2.text.indexOf('data-selected-count'));
         expect(res2.text.indexOf('data-selected-count')).toBeLessThan(res2.text.indexOf('data-asset-actions-panel'));
-        expect(res2.text.indexOf('class="asset-selection-controls-area"')).toBeLessThan(res2.text.indexOf('class="asset-selection-controls"'));
+        const actionPanel = assetActionsPanelHtml(res2.text);
+        const cardsIndex = actionPanel.indexOf('class="asset-selection-controls"');
+        const utilitiesIndex = actionPanel.indexOf('class="asset-selection-controls-area"');
+        expect(cardsIndex).toBeGreaterThanOrEqual(0);
+        expect(utilitiesIndex).toBeGreaterThanOrEqual(0);
+        expect(cardsIndex).toBeLessThan(utilitiesIndex);
         expect((form.match(/class="asset-action-group"/g) || []).length).toBe(2);
         expect(form).toMatch(/<h3 class="asset-action-group-heading">Release<\/h3>/);
         expect(form).toMatch(/<h3 class="asset-action-group-heading">File<\/h3>/);
@@ -7256,8 +7362,21 @@ describe('asset browser HTTP workflow', () => {
         expect(form).toContain('data-release-select');
         expect(form).toContain('name="destinationCategory"');
         expect(form).toContain(`formaction="/projects/${id}/assets/move-selected"`);
-        expect(form).toMatch(new RegExp(`formaction="/projects/${id}/assets/move-selected"[^>]*>Move<\\/button>`));
-        expect(form).toMatch(new RegExp(`formaction="/projects/${id}/assets/copy-selected">Copy<\\/button>`));
+        const moveButton = buttonHtml(form, `formaction="/projects/${id}/assets/move-selected"`);
+        expectIconOnlyButton(moveButton, {
+          attributes: ['type="submit"', `formaction="/projects/${id}/assets/move-selected"`, 'aria-label="Move selected"', 'data-tooltip="Move selected"'],
+          classes: ['button', 'button-small', 'button-secondary', 'project-filter-control', 'asset-tooltip', 'asset-tooltip--top'],
+          iconGeometry: [
+            /<path\b[^>]*\bd="M3 6h6l2 2h10v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6z"[^>]*\/?>/,
+            /<path\b[^>]*\bd="M8 14h8M13 11l3 3-3 3"[^>]*\/?>/,
+          ],
+        });
+        expect(moveButton).not.toContain('<path d="M3 10h18l-2 8H5z"/>');
+        expectIconOnlyButton(buttonHtml(form, `formaction="/projects/${id}/assets/copy-selected"`), {
+          attributes: ['type="submit"', `formaction="/projects/${id}/assets/copy-selected"`, 'aria-label="Copy selected"', 'data-tooltip="Copy selected"'],
+          classes: ['button', 'button-small', 'button-secondary', 'project-filter-control', 'asset-tooltip', 'asset-tooltip--top'],
+          iconGeometry: [/<rect\b(?=[^>]*\bx="8")(?=[^>]*\by="8")(?=[^>]*\bwidth="11")(?=[^>]*\bheight="11")(?=[^>]*\brx="2")[^>]*\/?>/],
+        });
 
         const actionGroups = form.match(/<section class="asset-action-group">[\s\S]*?<\/section>/g) || [];
         const releaseActions = actionGroups.find((group) => group.includes('>Release</h3>'));
@@ -7273,10 +7392,35 @@ describe('asset browser HTTP workflow', () => {
         expect(categoryFileActions).toMatch(/<select id="destinationCategory-action-native" name="destinationCategory" class="cc-dropdown-native-select" data-cc-dropdown-native-select/);
         expect(releaseActions).toMatch(/<option value=""[^>]*>Select a release…<\/option>/);
         expect(categoryFileActions).toContain('value="uncategorized"');
-        expect(releaseActions).toMatch(/<button[^>]*data-bulk-submit[^>]*>Add<\/button>/);
-        expect(releaseActions).toMatch(new RegExp(`formaction="/projects/${id}/assets/create-release">New<\\/button>`));
-        expect(categoryFileActions).toMatch(new RegExp(`formaction="/projects/${id}/assets/delete-selected"[\\s\\S]*>Delete<\\/button>`));
+        expectIconOnlyButton(buttonHtml(releaseActions, 'data-bulk-submit'), {
+          attributes: ['type="submit"', 'data-bulk-submit', 'aria-label="Add to release"', 'data-tooltip="Add to release"'],
+          classes: ['button', 'button-small', 'button-primary', 'project-filter-control', 'asset-tooltip', 'asset-tooltip--top'],
+          iconGeometry: [
+            /<circle\b(?=[^>]*\bcx="12")(?=[^>]*\bcy="12")(?=[^>]*\br="9")[^>]*\/?>/,
+            /<path\b[^>]*\bd="M12 7v5l3 3"[^>]*\/?>/,
+          ],
+        });
+        expectIconOnlyButton(buttonHtml(releaseActions, `formaction="/projects/${id}/assets/create-release"`), {
+          attributes: ['type="submit"', `formaction="/projects/${id}/assets/create-release"`, 'aria-label="New release"', 'data-tooltip="New release"'],
+          classes: ['button', 'button-small', 'button-secondary', 'project-filter-control', 'asset-tooltip', 'asset-tooltip--top'],
+          iconGeometry: [/<path\b[^>]*\bd="M12 5v14M5 12h14"[^>]*\/?>/],
+        });
+        expectIconOnlyButton(buttonHtml(categoryFileActions, `formaction="/projects/${id}/assets/delete-selected"`), {
+          attributes: ['type="submit"', `formaction="/projects/${id}/assets/delete-selected"`, 'aria-label="Delete selected"', 'data-tooltip="Delete selected"'],
+          classes: ['button', 'button-small', 'button-danger', 'project-filter-control', 'asset-tooltip', 'asset-tooltip--top'],
+          iconGeometry: [/<path\b[^>]*\bd="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6M14 11v6"[^>]*\/?>/],
+        });
         expect(categoryFileActions).not.toContain('data-release-select');
+        const fileActionOrder = [
+          'id="destination-category-action"',
+          'data-dialog-open="processing-convert-dialog"',
+          'data-processing-rename-trigger',
+          `formaction="/projects/${id}/assets/move-selected"`,
+          `formaction="/projects/${id}/assets/copy-selected"`,
+          `formaction="/projects/${id}/assets/delete-selected"`,
+        ].map((marker) => categoryFileActions.indexOf(marker));
+        expect(fileActionOrder.every((index) => index >= 0)).toBe(true);
+        expect(fileActionOrder).toEqual([...fileActionOrder].sort((a, b) => a - b));
         expect(releaseActions).not.toMatch(/<button[^>]*data-bulk-submit[^>]*>Add selected to release<\/button>/);
         expect(categoryFileActions).not.toMatch(/formaction="[^"]*\/move-selected"[^>]*>Move selected<\/button>/);
         expect(categoryFileActions).not.toMatch(/formaction="[^"]*\/copy-selected"[^>]*>Copy selected<\/button>/);
@@ -7285,6 +7429,9 @@ describe('asset browser HTTP workflow', () => {
         const style = await readStylesheetSource(res2.text);
         expect(style).toMatch(/\.asset-action-groups\s*\{[^}]*display:\s*grid[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\)/);
         expect(style).toMatch(/\.asset-action-group-controls\s*\{[^}]*flex-wrap:\s*wrap/);
+        const desktopActionGroupsRule = style.match(/@media \(min-width: 1024px\)\s*\{\s*\.asset-action-groups\s*\{([^}]*)\}/)?.[1] || '';
+        expect(desktopActionGroupsRule).toMatch(/grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*max-content\)\)/);
+        expect(desktopActionGroupsRule).toMatch(/justify-content:\s*start/);
         expect(style).toMatch(/\.asset-action-groups\s*\{[^}]*grid-template-columns:\s*1fr/);
         expect(style).not.toContain('asset-action-disclosure');
         const actionGroupRule = style.match(/(?:^|})\s*\.asset-action-group\s*\{([^}]*)\}/)?.[1] || '';
@@ -9575,17 +9722,43 @@ describe('asset browser HTTP workflow', () => {
           expect(bulk[0]).not.toContain('Bulk Disabled');
           expect(bulk[0]).toContain('data-bulk-submit');
           expect(bulk[0]).toContain(`formaction="/projects/${id}/assets/move-selected"`);
-          expect(bulk[0]).toMatch(new RegExp(`formaction="/projects/${id}/assets/move-selected"[^>]*>Move<\\/button>`));
-          expect(bulk[0]).toMatch(new RegExp(`formaction="/projects/${id}/assets/copy-selected">Copy<\\/button>`));
-          expect(bulk[0]).toMatch(new RegExp(`formaction="/projects/${id}/assets/delete-selected"[^>]*>Delete<\\/button>`));
+          expectIconOnlyButton(buttonHtml(bulk[0], `formaction="/projects/${id}/assets/move-selected"`), {
+            attributes: ['type="submit"', `formaction="/projects/${id}/assets/move-selected"`, 'aria-label="Move selected"', 'data-tooltip="Move selected"'],
+            classes: ['button', 'button-small', 'button-secondary', 'project-filter-control', 'asset-tooltip', 'asset-tooltip--top'],
+            iconGeometry: [
+              /<path\b[^>]*\bd="M3 6h6l2 2h10v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6z"[^>]*\/?>/,
+              /<path\b[^>]*\bd="M8 14h8M13 11l3 3-3 3"[^>]*\/?>/,
+            ],
+          });
+          expectIconOnlyButton(buttonHtml(bulk[0], `formaction="/projects/${id}/assets/copy-selected"`), {
+            attributes: ['type="submit"', `formaction="/projects/${id}/assets/copy-selected"`, 'aria-label="Copy selected"', 'data-tooltip="Copy selected"'],
+            classes: ['button', 'button-small', 'button-secondary', 'project-filter-control', 'asset-tooltip', 'asset-tooltip--top'],
+            iconGeometry: [/<rect\b(?=[^>]*\bx="8")(?=[^>]*\by="8")(?=[^>]*\bwidth="11")(?=[^>]*\bheight="11")(?=[^>]*\brx="2")[^>]*\/?>/],
+          });
+          expectIconOnlyButton(buttonHtml(bulk[0], `formaction="/projects/${id}/assets/delete-selected"`), {
+            attributes: ['type="submit"', `formaction="/projects/${id}/assets/delete-selected"`, 'aria-label="Delete selected"', 'data-tooltip="Delete selected"'],
+            classes: ['button', 'button-small', 'button-danger', 'project-filter-control', 'asset-tooltip', 'asset-tooltip--top'],
+            iconGeometry: [/<path\b[^>]*\bd="M4 7h16M9 7V4h6v3M6 7l1 14h10l1-14M10 11v6M14 11v6"[^>]*\/?>/],
+          });
           expect(bulk[0]).not.toMatch(new RegExp(`formaction="/projects/${id}/assets/move-selected"[^>]*>Move selected<\\/button>`));
           expect(bulk[0]).not.toMatch(new RegExp(`formaction="/projects/${id}/assets/copy-selected">Copy selected<\\/button>`));
           expect(bulk[0]).not.toMatch(new RegExp(`formaction="/projects/${id}/assets/delete-selected"[^>]*>Delete selected<\\/button>`));
           expect(bulk[0]).toContain('data-confirm="The selected files will be permanently deleted from disk and cannot be restored through CreatorCrate. Continue?"');
           expect(bulk[0]).toContain('action="/projects/' + id + '/assets/add-to-release"');
-          expect(bulk[0]).toMatch(/<button[^>]*data-bulk-submit[^>]*>Add<\/button>/);
+          expectIconOnlyButton(buttonHtml(bulk[0], 'data-bulk-submit'), {
+            attributes: ['type="submit"', 'data-bulk-submit', 'aria-label="Add to release"', 'data-tooltip="Add to release"'],
+            classes: ['button', 'button-small', 'button-primary', 'project-filter-control', 'asset-tooltip', 'asset-tooltip--top'],
+            iconGeometry: [
+              /<circle\b(?=[^>]*\bcx="12")(?=[^>]*\bcy="12")(?=[^>]*\br="9")[^>]*\/?>/,
+              /<path\b[^>]*\bd="M12 7v5l3 3"[^>]*\/?>/,
+            ],
+          });
           expect(bulk[0]).not.toMatch(/<button[^>]*data-bulk-submit[^>]*>Add selected to release<\/button>/);
-          expect(bulk[0]).toMatch(new RegExp(`formaction="/projects/${id}/assets/create-release">New<\\/button>`));
+          expectIconOnlyButton(buttonHtml(bulk[0], `formaction="/projects/${id}/assets/create-release"`), {
+            attributes: ['type="submit"', `formaction="/projects/${id}/assets/create-release"`, 'aria-label="New release"', 'data-tooltip="New release"'],
+            classes: ['button', 'button-small', 'button-secondary', 'project-filter-control', 'asset-tooltip', 'asset-tooltip--top'],
+            iconGeometry: [/<path\b[^>]*\bd="M12 5v14M5 12h14"[^>]*\/?>/],
+          });
           expect(bulk[0]).not.toMatch(new RegExp(`formaction="/projects/${id}/assets/create-release">Create release with selected<\\/button>`));
           const expectedAssetId = query.includes(`category=${enabled.id}`) ? categoryAsset.id : asset.id;
           expect(res.text).toMatch(new RegExp(`<input type="checkbox" form="bulk-select-form"[^>]*name="selectedAssetIds" value="${expectedAssetId}"`));

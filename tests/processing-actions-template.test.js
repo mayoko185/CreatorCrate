@@ -88,11 +88,20 @@ describe('Processing actions placement', () => {
     });
   }
 
+  function iconButton(card, label) {
+    return card.match(new RegExp(`<button\\b(?=[^>]*aria-label="${label}")[^>]*>[\\s\\S]*?<\\/button>`))?.[0] || '';
+  }
+
   function expectProcessingButtons(card) {
-    expect(card).toContain('>Watermark<');
-    expect(card).toContain('>Edit workflow prompts<');
-    expect(card).toContain('>Convert<');
-    expect(card).toContain('>Archives<');
+    for (const label of ['Watermark', 'Image workflows editor', 'Archives']) {
+      const button = iconButton(card, label);
+      expect(button).not.toBe('');
+      expect(button).toContain(`data-tooltip="${label}"`);
+      expect(button).toMatch(/<svg[^>]*aria-hidden="true"[^>]*focusable="false"/);
+      expect(button.replace(/<[^>]+>/g, '').trim()).toBe('');
+    }
+    expect(card).not.toContain('aria-label="Convert"');
+    expect(card).not.toContain('data-dialog-open="processing-convert-dialog"');
   }
 
   it('renders on the ordinary branch when viewing All', async () => {
@@ -104,7 +113,6 @@ describe('Processing actions placement', () => {
     expectProcessingButtons(card);
     expect(card).toContain('data-dialog-open="processing-watermark-dialog"');
     expect(card).toContain('data-dialog-open="processing-workflow-dialog"');
-    expect(card).toContain('data-dialog-open="processing-convert-dialog"');
     expect(card).toContain('data-dialog-open="processing-archive-dialog"');
     // Exactly one card — no duplicate render in a single response.
     expect((res.text.match(/class="asset-action-group processing-action-group"/g) || [])).toHaveLength(1);
@@ -158,7 +166,7 @@ describe('Processing actions placement', () => {
     expect(allGroups.length).toBeGreaterThanOrEqual(3);
   });
 
-  it('disables all four processing buttons with an explanation on archived projects, without gating on Auto Rename', async () => {
+  it('disables all three processing buttons with an explanation on archived projects, without gating on Auto Rename', async () => {
     const id = await createProject('Archived Processing Check');
     addAsset(id, 'a.png');
     await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken))
@@ -167,10 +175,15 @@ describe('Processing actions placement', () => {
     const card = processingActionsCard(res.text);
     expect(card).not.toBe('');
     expect(card).not.toContain('data-dialog-open="processing-watermark-dialog"');
-    expect(card).toMatch(/<button[^>]*disabled[^>]*aria-disabled="true"[^>]*>Watermark<\/button>/);
-    expect(card).toMatch(/<button[^>]*disabled[^>]*aria-disabled="true"[^>]*>Edit workflow prompts<\/button>/);
-    expect(card).toMatch(/<button[^>]*disabled[^>]*aria-disabled="true"[^>]*>Convert<\/button>/);
-    expect(card).toMatch(/<button[^>]*disabled[^>]*aria-disabled="true"[^>]*>Archives<\/button>/);
+    for (const label of ['Watermark', 'Image workflows editor', 'Archives']) {
+      const button = iconButton(card, label);
+      expect(button).toMatch(/\bdisabled\b/);
+      expect(button).toContain('aria-disabled="true"');
+      expect(button).toContain(`data-tooltip="${label} — unavailable for archived projects"`);
+      expect(button).toMatch(/<svg[^>]*aria-hidden="true"[^>]*focusable="false"/);
+      expect(button.replace(/<[^>]+>/g, '').trim()).toBe('');
+    }
+    expect(card).not.toContain('aria-label="Convert"');
     expect(res.text).not.toContain('id="processing-watermark-dialog"');
   });
 
@@ -244,31 +257,138 @@ describe('Processing actions placement', () => {
     return match ? match[0] : '';
   }
 
-  it('orders Release and File controls with dropdown/options above action buttons', async () => {
+  it('keeps compact accessible Release and File controls consistent across both action-panel branches', async () => {
     const id = await createProject('Control Order Check');
+    const category = assetCategoryRepo.addProjectCategory({
+      projectId: id, displayName: 'Renders', directorySlug: 'renders', displayOrder: 0, enabled: true,
+    });
     addAsset(id, 'a.png');
-    const res = await agent.get(`/projects/${id}/assets`).expect(200);
-    const html = res.text;
+    addAsset(id, 'renders/b.png', { categoryId: category.id });
 
-    const releaseSection = releaseSectionHtml(html);
-    expect(releaseSection).not.toBe('');
-    expect(releaseSection).toContain('asset-action-group-controls--stacked');
-    expect(releaseSection).toContain('asset-action-group-button-row');
-    expect(releaseSection.indexOf('data-cc-dropdown')).toBeLessThan(releaseSection.indexOf('data-bulk-submit'));
-    expect(releaseSection.indexOf('data-bulk-submit')).toBeLessThan(releaseSection.indexOf('formaction="/projects/'));
+    for (const url of [`/projects/${id}/assets`, `/projects/${id}/assets?category=${category.id}`]) {
+      const res = await agent.get(url).expect(200);
+      const releaseSection = releaseSectionHtml(res.text);
+      const fileSection = fileSectionHtml(res.text);
 
-    const fileSection = fileSectionHtml(html);
-    expect(fileSection).not.toBe('');
-    expect(fileSection).toContain('asset-action-group-controls--stacked');
-    expect(fileSection).toContain('asset-action-group-button-row');
-    expect(fileSection.indexOf('data-cc-dropdown')).toBeLessThan(fileSection.indexOf('formaction="/projects/'));
+      expect(releaseSection).not.toBe('');
+      expect(releaseSection).toContain('<legend class="sr-only">Add to release</legend>');
+      expect(releaseSection).not.toContain('asset-action-group-controls--stacked');
+      expect(releaseSection.indexOf('data-cc-dropdown')).toBeLessThan(releaseSection.indexOf('data-bulk-submit'));
+      for (const label of ['Add to release', 'New release']) {
+        const button = iconButton(releaseSection, label);
+        expect(button).toContain(`data-tooltip="${label}"`);
+        expect(button).toMatch(/<svg[^>]*aria-hidden="true"[^>]*focusable="false"/);
+        expect(button.replace(/<[^>]+>/g, '').trim()).toBe('');
+      }
+      expect(res.text).toContain(`action="/projects/${id}/assets/add-to-release"`);
+      expect(releaseSection).toContain(`formaction="/projects/${id}/assets/create-release"`);
+
+      expect(fileSection).not.toBe('');
+      expect(fileSection).toContain('<legend class="sr-only">Move selected to</legend>');
+      expect(fileSection).not.toContain('asset-action-group-controls--stacked');
+      for (const [label, path] of [
+        ['Move selected', 'move-selected'],
+        ['Copy selected', 'copy-selected'],
+        ['Delete selected', 'delete-selected'],
+      ]) {
+        const button = iconButton(fileSection, label);
+        expect(button).toContain(`data-tooltip="${label}"`);
+        expect(button).toContain(`formaction="/projects/${id}/assets/${path}"`);
+        expect(button).toMatch(/<svg[^>]*aria-hidden="true"[^>]*focusable="false"/);
+        expect(button.replace(/<[^>]+>/g, '').trim()).toBe('');
+      }
+      const renameButton = iconButton(fileSection, 'Rename');
+      expect(renameButton).toContain('type="button"');
+      expect(renameButton).toContain('data-processing-rename-trigger');
+      expect(renameButton).toContain('data-dialog-open="processing-rename-dialog"');
+      expect(renameButton).toContain('data-tooltip="Rename"');
+      expect(renameButton).toMatch(/\bdisabled\b/);
+      expect(renameButton.replace(/<[^>]+>/g, '').trim()).toBe('');
+      const convertButton = iconButton(fileSection, 'Convert');
+      expect(convertButton).toContain('type="button"');
+      expect(convertButton).toContain('data-dialog-open="processing-convert-dialog"');
+      expect(convertButton).toContain('data-tooltip="Convert"');
+      expect(convertButton.replace(/<[^>]+>/g, '').trim()).toBe('');
+      const fileActionOrder = [
+        'id="destination-category-action"',
+        'data-dialog-open="processing-convert-dialog"',
+        'data-processing-rename-trigger',
+        `formaction="/projects/${id}/assets/move-selected"`,
+        `formaction="/projects/${id}/assets/copy-selected"`,
+        `formaction="/projects/${id}/assets/delete-selected"`,
+      ].map((marker) => fileSection.indexOf(marker));
+      expect(fileActionOrder.every((index) => index >= 0)).toBe(true);
+      expect(fileActionOrder).toEqual([...fileActionOrder].sort((a, b) => a - b));
+
+      const processingSection = processingActionsCard(res.text);
+      expect(processingSection).not.toContain('data-dialog-open="processing-convert-dialog"');
+      expect(res.text).toContain('<h2 id="processing-workflow-dialog-title">Image workflows editor</h2>');
+      expect(res.text).toContain('data-processing-operation="convert"');
+      expect(res.text).toContain('<h2 id="processing-rename-dialog-title">Rename</h2>');
+      expect(res.text).toContain('data-processing-operation="rename"');
+      expect(res.text).toMatch(/data-processing-operation="rename"[\s\S]*?data-processing-apply[^>]*>Save<\/button>/);
+      expect(res.text).toMatch(/data-asset-basename="[^"]+"/);
+      expect(res.text).toMatch(/data-asset-filename="[^"]+\.png"/);
+      expect(res.text).toContain('data-asset-extension="png"');
+    }
   });
 
-  it('has a wide-layout three-column rule for action groups with a responsive fallback', () => {
+  it('keeps Project Actions intrinsic on desktop and full-width on mobile', () => {
     const css = fs.readFileSync(CSS_PATH, 'utf8');
-    expect(css).toMatch(/@media\s*\(\s*min-width:\s*1024px\s*\)\s*\{[\s\S]*?\.asset-action-groups\s*\{[\s\S]*?grid-template-columns:\s*repeat\(3\s*,\s*minmax\(0\s*,\s*1fr\)\)/);
     expect(css).toMatch(/\.asset-action-groups\s*\{\s*display:\s*grid;/);
     expect(css).toContain('grid-template-columns: repeat(2, minmax(0, 1fr));');
+
+    const desktopGroupsRule = css.match(/@media\s*\(\s*min-width:\s*1024px\s*\)\s*\{\s*\.asset-action-groups\s*\{([^}]*)\}/)?.[1] || '';
+    expect(desktopGroupsRule).toMatch(/grid-template-columns:\s*repeat\(3\s*,\s*minmax\(0\s*,\s*max-content\)\)/);
+    expect(desktopGroupsRule).toMatch(/justify-content:\s*start/);
+
+    const panelBodyRule = css.match(/\.asset-actions-panel\s*>\s*\.project-detail-section-body\s*\{([^}]*)\}/)?.[1] || '';
+    expect(panelBodyRule).toMatch(/display:\s*flex/);
+    expect(panelBodyRule).toMatch(/flex-flow:\s*row wrap/);
+    expect(panelBodyRule).toMatch(/justify-content:\s*space-between/);
+
+    const bulkFormRule = css.match(/\.asset-actions-panel\s*>\s*\.project-detail-section-body\s*>\s*\.bulk-select-form\s*\{([^}]*)\}/)?.[1] || '';
+    expect(bulkFormRule).toMatch(/flex:\s*0 0 auto/);
+    expect(bulkFormRule).toMatch(/max-width:\s*100%/);
+
+    const actionControlsRule = css.match(/(?:^|})\s*\.asset-action-group-controls\s*\{([^}]*)\}/)?.[1] || '';
+    expect(actionControlsRule).toMatch(/flex-wrap:\s*wrap/);
+    expect(actionControlsRule).toMatch(/align-self:\s*flex-start/);
+    expect(actionControlsRule).toMatch(/gap:\s*var\(--space-sm\)/);
+
+    const moveFieldRule = css.match(/\.asset-action-group-controls\s*>\s*\.bulk-move-field\s*\{([^}]*)\}/)?.[1] || '';
+    expect(moveFieldRule).toMatch(/flex:\s*0 1 auto/);
+    expect(moveFieldRule).toMatch(/width:\s*max-content/);
+    expect(moveFieldRule).toMatch(/max-width:\s*12rem/);
+    expect(moveFieldRule).not.toMatch(/(?:^|[;\s])(?:flex|width):\s*12rem/);
+
     expect(css).toMatch(/@media\s*\(\s*max-width:\s*767px\s*\)\s*\{[\s\S]*?\.asset-action-groups\s*\{\s*grid-template-columns:\s*1fr/);
+    expect(css).toMatch(/\.asset-action-group-controls\s*>\s*\.bulk-release-field,\s*\.asset-action-group-controls\s*>\s*\.bulk-move-field\s*\{[\s\S]*?flex-basis:\s*100%;[\s\S]*?width:\s*100%;[\s\S]*?max-width:\s*100%/);
+
+    const actionButtonRule = css.match(/\.asset-actions-panel\s+\.project-filter-control\s*\{([^}]*)\}/)?.[1] || '';
+    const actionIconRule = css.match(/\.asset-actions-panel\s+\.project-filter-control svg\s*\{([^}]*)\}/)?.[1] || '';
+    expect(actionButtonRule).toMatch(/min-block-size:\s*2\.25rem/);
+    expect(actionButtonRule).toMatch(/min-inline-size:\s*2\.25rem/);
+    expect(actionButtonRule).toMatch(/padding:\s*var\(--space-sm\)/);
+    expect(actionIconRule).toMatch(/width:\s*1\.25rem/);
+    expect(actionIconRule).toMatch(/height:\s*1\.25rem/);
+    expect(css).not.toContain('padding: calc(var(--space-sm) - 1px)');
+    expect(css).toMatch(/\[data-project-assets-live-region\] \.asset-viewer-display-controls \.project-filter-actions--projects\s*\{[\s\S]*?justify-content:\s*flex-end;[\s\S]*?flex-wrap:\s*wrap;[\s\S]*?gap:\s*var\(--space-sm\)/);
+  });
+
+  it('lets Project Actions dropdown panels escape the shared section clipping boundary', () => {
+    const css = fs.readFileSync(CSS_PATH, 'utf8');
+    expect(css).toMatch(/\.project-detail-section\s*\{[\s\S]*?overflow:\s*hidden/);
+    expect(css).toMatch(/\.asset-actions-panel\s*\{[\s\S]*?overflow:\s*visible/);
+    expect(css).toMatch(/\.asset-actions-panel\s*>\s*h2\s*\{[\s\S]*?border-radius:\s*calc\(var\(--radius-lg\) - 1px\) calc\(var\(--radius-lg\) - 1px\) 0 0/);
+    expect(css).toMatch(/\.asset-filter-multiselect summary:focus-visible\s*\{\s*outline:\s*2px solid var\(--focus-ring\);\s*outline-offset:\s*2px/);
+  });
+
+  it('sizes View asset details only within Project Assets grid and list cards', () => {
+    const css = fs.readFileSync(path.join(process.cwd(), 'src/static/creatorcrate.css'), 'utf8');
+    expect(css).toMatch(/\.asset-details-link\s*\{[\s\S]*?flex:\s*0\s+0\s+1\.75rem;[\s\S]*?width:\s*1\.75rem;[\s\S]*?height:\s*1\.75rem;/);
+    expect(css).toMatch(/\.asset-details-link svg\s*\{\s*width:\s*1\.125rem;\s*height:\s*1\.125rem;/);
+    expect(css).toMatch(/\.asset-card--project \.asset-details-link,\s*\.asset-list-card--project \.asset-list-card-status \.asset-details-link\s*\{[\s\S]*?flex-basis:\s*2rem;[\s\S]*?width:\s*2rem;[\s\S]*?height:\s*2rem;/);
+    expect(css).toMatch(/\.asset-card--project \.asset-details-link svg,\s*\.asset-list-card--project \.asset-list-card-status \.asset-details-link svg\s*\{\s*width:\s*1\.25rem;\s*height:\s*1\.25rem;/);
   });
 });

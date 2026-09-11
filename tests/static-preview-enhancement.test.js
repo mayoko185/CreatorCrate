@@ -3664,7 +3664,7 @@ function makeControl({ value = '', disabled = false } = {}) {
  * disabled checkbox that the real DOM selector excludes entirely, so the
  * mock's querySelectorAll for that selector never returns them either.
  */
-function makeAssetSelectionForm({ enabledCheckboxes = [], selectedCount, releaseSelect, selectAll, clearSelection, bulkSubmit } = {}) {
+function makeAssetSelectionForm({ enabledCheckboxes = [], selectedCount, releaseSelect, selectAll, clearSelection, bulkSubmit, renameButtons = [] } = {}) {
   const singles = {
     '[data-release-select]': releaseSelect ?? makeControl(),
     '[data-select-all]': selectAll ?? makeControl(),
@@ -3675,6 +3675,7 @@ function makeAssetSelectionForm({ enabledCheckboxes = [], selectedCount, release
   return {
     querySelectorAll(selector) {
       if (selector.includes('selectedAssetIds')) return enabledCheckboxes;
+      if (selector === '[data-processing-rename-trigger]') return renameButtons;
       return [];
     },
     querySelector(selector) {
@@ -4481,6 +4482,54 @@ describe('page-local asset selection enhancement', () => {
 
     form._singles['[data-clear-selection]'].dispatch('click');
     expect(countEl.textContent).toBe('0 of 2 selected');
+  });
+
+  it('enables Rename for one or many selected assets and disables it for zero', () => {
+    const first = makeCheckbox();
+    const second = makeCheckbox();
+    const rename = makeControl();
+    rename.setAttribute = vi.fn();
+    const form = makeAssetSelectionForm({ enabledCheckboxes: [first, second], renameButtons: [rename] });
+    const scope = makeAssetSelectionScope(form);
+
+    enhanceAssetSelection(scope);
+    expect(rename.disabled).toBe(true);
+    expect(rename.setAttribute).toHaveBeenLastCalledWith('aria-disabled', 'true');
+
+    first.checked = true;
+    first.dispatch('change');
+    expect(rename.disabled).toBe(false);
+    expect(rename.setAttribute).toHaveBeenLastCalledWith('aria-disabled', 'false');
+
+    second.checked = true;
+    second.dispatch('change');
+    expect(rename.disabled).toBe(false);
+
+    first.checked = false;
+    second.checked = false;
+    second.dispatch('change');
+    expect(rename.disabled).toBe(true);
+  });
+
+  it('re-enhances a replacement selection form once without duplicating Rename updates', () => {
+    const firstCheckbox = makeCheckbox();
+    const firstRename = makeControl();
+    firstRename.setAttribute = vi.fn();
+    const firstForm = makeAssetSelectionForm({ enabledCheckboxes: [firstCheckbox], renameButtons: [firstRename] });
+    enhanceAssetSelection(makeAssetSelectionScope(firstForm));
+
+    const replacementCheckbox = makeCheckbox({ checked: true });
+    const replacementRename = makeControl();
+    replacementRename.setAttribute = vi.fn();
+    const replacementForm = makeAssetSelectionForm({
+      enabledCheckboxes: [replacementCheckbox], renameButtons: [replacementRename],
+    });
+    const replacementScope = makeAssetSelectionScope(replacementForm);
+
+    enhanceAssetSelection(replacementScope);
+    enhanceAssetSelection(replacementScope);
+    expect(replacementRename.disabled).toBe(false);
+    expect(replacementCheckbox.listeners.filter((entry) => entry.type === 'change')).toHaveLength(1);
   });
 
   it('uses the rendered visible-asset total for the live count', () => {

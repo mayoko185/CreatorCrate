@@ -173,7 +173,8 @@
           {% if asset.is_present %}
             <label class="asset-selection-control{% if selected %} is-selected{% endif %}" for="asset-card-select-{{ asset.id }}">
               <input type="checkbox" form="bulk-select-form" id="asset-card-select-{{ asset.id }}" name="selectedAssetIds" value="{{ asset.id }}"
-                     class="asset-select-checkbox"
+                     class="asset-select-checkbox" data-asset-basename="{{ asset.displayFilename }}"
+                     data-asset-filename="{{ asset.filename }}" data-asset-extension="{{ asset.extension or '' }}"
                      aria-label="Select {{ asset.filename }}"
                      {% if selected %}checked{% endif %}>
               <span class="asset-selection-control-mark" aria-hidden="true">✓</span>
@@ -265,7 +266,8 @@
           {% if asset.is_present %}
             <label class="asset-selection-control{% if selected %} is-selected{% endif %}" for="asset-list-card-select-{{ asset.id }}">
               <input type="checkbox" form="bulk-select-form" id="asset-list-card-select-{{ asset.id }}" name="selectedAssetIds" value="{{ asset.id }}"
-                     class="asset-select-checkbox"
+                     class="asset-select-checkbox" data-asset-basename="{{ asset.displayFilename }}"
+                     data-asset-filename="{{ asset.filename }}" data-asset-extension="{{ asset.extension or '' }}"
                      aria-label="Select {{ selectionLabel }}"
                      {% if selected %}checked{% endif %}>
               <span class="asset-selection-control-mark" aria-hidden="true">✓</span>
@@ -333,12 +335,22 @@
       <form method="post" action="/projects/{{ project.id }}/scan" class="inline-form">
         <input type="hidden" name="_csrf" value="{{ _csrf }}">
         {{ renderContextFields(context, contextFields, false) }}
-        <button class="button button-primary" type="submit">Scan Now</button>
-        </form>
+        <button class="button button-small button-primary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--left"
+                type="submit" aria-label="Scan Now" data-tooltip="Scan Now">
+          {{ icons.icon('reset') }}
+        </button>
+      </form>
       {% if categoryNavigation.missingCount > 0 %}
-        <a class="button button-danger" href="{{ removeMissingAssetsDialogUrl }}"
-           data-dialog-open="remove-missing-assets-dialog">Remove missing assets</a>
+        <a class="button button-small button-danger project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--left"
+           href="{{ removeMissingAssetsDialogUrl }}" data-dialog-open="remove-missing-assets-dialog"
+           aria-label="Remove missing assets" data-tooltip="Remove missing assets">
+          {{ icons.icon('trash') }}
+        </a>
       {% endif %}
+      <a class="button button-small button-secondary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--left"
+         href="/projects/{{ project.id }}/edit" aria-label="Edit project" data-tooltip="Edit project">
+        {{ icons.icon('edit') }}
+      </a>
       {% endif %}
     {% endcall %}
   {% endif %}
@@ -499,23 +511,17 @@
              data-dialog-open="project-assets-filter-dialog" data-tooltip="Filter assets">
             {{ icons.icon('content-filter') }}
           </a>
-          {% if not isArchived %}
-            <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
-               href="/projects/{{ project.id }}/edit" aria-label="Edit project" data-tooltip="Edit project">
-              {{ icons.icon('edit') }}
-            </a>
-          {% endif %}
+           <a class="asset-viewer-defaults-link button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
+              href="{{ projectAssetsDefaultsUrl }}" aria-label="Project Assets defaults"
+              data-dialog-open="project-assets-defaults-dialog" data-tooltip="Project Assets defaults" data-asset-viewer-defaults-link>
+            {{ icons.icon('settings') }}
+          </a>
           {% if openLocallyUri %}
             <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
                href="{{ openLocallyUri }}" aria-label="Open locally" data-tooltip="Open locally">
               {{ icons.icon('open-locally') }}
             </a>
           {% endif %}
-           <a class="asset-viewer-defaults-link button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
-              href="{{ projectAssetsDefaultsUrl }}" aria-label="Project Assets defaults"
-              data-dialog-open="project-assets-defaults-dialog" data-tooltip="Project Assets defaults" data-asset-viewer-defaults-link>
-            {{ icons.icon('settings') }}
-          </a>
           {% set nsfwToggleLabel = "Disable NSFW filter" if nsfwFilterEnabled else "Enable NSFW filter" %}
           <form method="post" action="/projects/{{ project.id }}/assets/nsfw-filter" class="inline-form" data-project-assets-nsfw-filter>
             <input type="hidden" name="_csrf" value="{{ _csrf }}">
@@ -536,9 +542,23 @@
         </div>
       </div>
 
-      {% if assets.length > 0 and not isArchived %}
-        <p class="results-meta" data-selected-count data-selected-total="{{ assets.length }}">0 of {{ assets.length }} selected</p>
+      {% set activeCategoryLabel = "All" %}
+      {% if filters.category == 'uncategorized' %}
+        {% set activeCategoryLabel = "Uncategorized" %}
+      {% elif filters.category != 'all' %}
+        {% for cat in categoryNavigation.enabled %}
+          {% if (cat.id ~ '') == (filters.category ~ '') %}{% set activeCategoryLabel = cat.displayName %}{% endif %}
+        {% endfor %}
+        {% for cat in categoryNavigation.disabled %}
+          {% if (cat.id ~ '') == (filters.category ~ '') %}{% set activeCategoryLabel = cat.displayName %}{% endif %}
+        {% endfor %}
       {% endif %}
+      <div class="asset-results-metadata">
+        {% if assets.length > 0 and not isArchived %}
+          <p class="results-meta" data-selected-count data-selected-total="{{ assets.length }}">0 of {{ assets.length }} selected</p>
+        {% endif %}
+        <p class="results-meta asset-results-category">Category: {{ activeCategoryLabel }}</p>
+      </div>
 
       {% if assets.length > 0 %}
         {% if completeCategorySurface %}
@@ -551,11 +571,6 @@
               <section class="project-detail-section asset-actions-panel" data-asset-actions-panel aria-labelledby="project-actions-heading">
                 <h2 id="project-actions-heading">Project actions</h2>
                 <div class="project-detail-section-body">
-                  <div class="asset-actions-category-row">
-                    <div class="asset-actions-controls">
-                      {{ renderAssetSelectionControls(project.id, _csrf, filters.view, autoRenameCategory, not isArchived, categoryManagementDialogUrl) }}
-                    </div>
-                  </div>
                   {% if not isArchived %}
                     {# Checkboxes below are associated via form="bulk-select-form"
                        so per-row rename forms can remain outside this form. #}
@@ -567,11 +582,12 @@
                       <div class="asset-action-groups">
                         <section class="asset-action-group">
                           <h3 class="asset-action-group-heading">Release</h3>
-                          <div class="asset-action-group-controls asset-action-group-controls--stacked">
+                          <div class="asset-action-group-controls">
                             {{ dropdown.singleSelect({
                               id: "releaseId-action",
                               name: "releaseId",
                               label: "Add to release",
+                              visuallyHiddenLabel: true,
                               fieldClasses: "bulk-release-field",
                               options: releaseActionOptions,
                               optionIdPrefix: "releaseId-action",
@@ -583,20 +599,21 @@
                                 attributes: [["data-release-select", true]]
                               }
                             }) }}
-                            <div class="asset-action-group-button-row">
-                              <button type="submit" class="button button-primary" data-bulk-submit>Add</button>
-                              <button type="submit" class="button button-secondary"
-                                      formaction="/projects/{{ project.id }}/assets/create-release">New</button>
-                            </div>
+                            <button type="submit" class="button button-small button-primary project-filter-control asset-tooltip asset-tooltip--top"
+                                    data-bulk-submit aria-label="Add to release" data-tooltip="Add to release">{{ icons.icon('releases') }}</button>
+                            <button type="submit" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top"
+                                    formaction="/projects/{{ project.id }}/assets/create-release"
+                                    aria-label="New release" data-tooltip="New release">{{ icons.icon('plus') }}</button>
                           </div>
                         </section>
                         <section class="asset-action-group">
                           <h3 class="asset-action-group-heading">File</h3>
-                          <div class="asset-action-group-controls asset-action-group-controls--stacked">
+                          <div class="asset-action-group-controls">
                             {{ dropdown.singleSelect({
                               id: "destination-category-action",
                               name: "destinationCategory",
                               label: "Move selected to",
+                              visuallyHiddenLabel: true,
                               fieldClasses: "bulk-move-field",
                               options: destinationCategoryActionOptions,
                               optionIdPrefix: "destination-category-action",
@@ -604,15 +621,22 @@
                               panelLabel: "Destination category options",
                               nativeSelect: { id: "destinationCategory-action-native" }
                             }) }}
-                            <div class="asset-action-group-button-row">
-                              <button type="submit" class="button"
-                                      formaction="/projects/{{ project.id }}/assets/move-selected">Move</button>
-                              <button type="submit" class="button button-secondary"
-                                      formaction="/projects/{{ project.id }}/assets/copy-selected">Copy</button>
-                              <button type="submit" class="button button-danger"
-                                      formaction="/projects/{{ project.id }}/assets/delete-selected"
-                                      data-confirm="The selected files will be permanently deleted from disk and cannot be restored through CreatorCrate. Continue?">Delete</button>
-                            </div>
+                            <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top"
+                                    data-dialog-open="processing-convert-dialog"
+                                    aria-label="Convert" data-tooltip="Convert">{{ icons.icon('convert') }}</button>
+                            <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top"
+                                    data-processing-rename-trigger data-dialog-open="processing-rename-dialog" disabled aria-disabled="true"
+                                    aria-label="Rename" data-tooltip="Rename">{{ icons.icon('edit') }}</button>
+                            <button type="submit" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top"
+                                    formaction="/projects/{{ project.id }}/assets/move-selected"
+                                    aria-label="Move selected" data-tooltip="Move selected">{{ icons.icon('folder-move') }}</button>
+                            <button type="submit" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top"
+                                    formaction="/projects/{{ project.id }}/assets/copy-selected"
+                                    aria-label="Copy selected" data-tooltip="Copy selected">{{ icons.icon('copy') }}</button>
+                            <button type="submit" class="button button-small button-danger project-filter-control asset-tooltip asset-tooltip--top"
+                                    formaction="/projects/{{ project.id }}/assets/delete-selected"
+                                    data-confirm="The selected files will be permanently deleted from disk and cannot be restored through CreatorCrate. Continue?"
+                                    aria-label="Delete selected" data-tooltip="Delete selected">{{ icons.icon('trash') }}</button>
                           </div>
                         </section>
                         {{ processingActions.render(isArchived) }}
@@ -620,6 +644,11 @@
                     </div>
                     </form>
                   {% endif %}
+                  <div class="asset-actions-category-row">
+                    <div class="asset-actions-controls">
+                      {{ renderAssetSelectionControls(project.id, _csrf, filters.view, autoRenameCategory, not isArchived, categoryManagementDialogUrl) }}
+                    </div>
+                  </div>
                 </div>
               </section>
             {% endif %}
@@ -629,11 +658,6 @@
           <section class="project-detail-section asset-actions-panel asset-actions-panel--selection-only" data-asset-actions-panel aria-labelledby="project-actions-heading">
             <h2 id="project-actions-heading">Project actions</h2>
             <div class="project-detail-section-body">
-              <div class="asset-actions-category-row">
-                <div class="asset-actions-controls">
-                  {{ renderAssetSelectionControls(project.id, _csrf, filters.view, none, true, categoryManagementDialogUrl) }}
-                </div>
-              </div>
               <form id="bulk-select-form" method="post" action="/projects/{{ project.id }}/assets/add-to-release" class="bulk-select-form" data-asset-selection-form>
                 <input type="hidden" name="_csrf" value="{{ _csrf }}">
                 {{ renderContextFields(context, contextFields, false) }}
@@ -642,11 +666,12 @@
                 <div class="asset-action-groups">
                   <section class="asset-action-group">
                     <h3 class="asset-action-group-heading">Release</h3>
-                    <div class="asset-action-group-controls asset-action-group-controls--stacked">
+                    <div class="asset-action-group-controls">
                       {{ dropdown.singleSelect({
                         id: "releaseId-action",
                         name: "releaseId",
                         label: "Add to release",
+                        visuallyHiddenLabel: true,
                         fieldClasses: "bulk-release-field",
                         options: releaseActionOptions,
                         optionIdPrefix: "releaseId-action",
@@ -658,20 +683,21 @@
                           attributes: [["data-release-select", true]]
                         }
                       }) }}
-                      <div class="asset-action-group-button-row">
-                        <button type="submit" class="button button-primary" data-bulk-submit>Add</button>
-                        <button type="submit" class="button button-secondary"
-                                formaction="/projects/{{ project.id }}/assets/create-release">New</button>
-                      </div>
+                      <button type="submit" class="button button-small button-primary project-filter-control asset-tooltip asset-tooltip--top"
+                              data-bulk-submit aria-label="Add to release" data-tooltip="Add to release">{{ icons.icon('releases') }}</button>
+                      <button type="submit" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top"
+                              formaction="/projects/{{ project.id }}/assets/create-release"
+                              aria-label="New release" data-tooltip="New release">{{ icons.icon('plus') }}</button>
                     </div>
                   </section>
                   <section class="asset-action-group">
                     <h3 class="asset-action-group-heading">File</h3>
-                    <div class="asset-action-group-controls asset-action-group-controls--stacked">
+                    <div class="asset-action-group-controls">
                       {{ dropdown.singleSelect({
                         id: "destination-category-action",
                         name: "destinationCategory",
                         label: "Move selected to",
+                        visuallyHiddenLabel: true,
                         fieldClasses: "bulk-move-field",
                         options: destinationCategoryActionOptions,
                         optionIdPrefix: "destination-category-action",
@@ -679,21 +705,33 @@
                         panelLabel: "Destination category options",
                         nativeSelect: { id: "destinationCategory-action-native" }
                       }) }}
-                      <div class="asset-action-group-button-row">
-                        <button type="submit" class="button"
-                                formaction="/projects/{{ project.id }}/assets/move-selected">Move</button>
-                        <button type="submit" class="button button-secondary"
-                                formaction="/projects/{{ project.id }}/assets/copy-selected">Copy</button>
-                        <button type="submit" class="button button-danger"
-                                formaction="/projects/{{ project.id }}/assets/delete-selected"
-                                data-confirm="The selected files will be permanently deleted from disk and cannot be restored through CreatorCrate. Continue?">Delete</button>
-                      </div>
+                      <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top"
+                              data-dialog-open="processing-convert-dialog"
+                              aria-label="Convert" data-tooltip="Convert">{{ icons.icon('convert') }}</button>
+                      <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top"
+                              data-processing-rename-trigger data-dialog-open="processing-rename-dialog" disabled aria-disabled="true"
+                              aria-label="Rename" data-tooltip="Rename">{{ icons.icon('edit') }}</button>
+                      <button type="submit" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top"
+                              formaction="/projects/{{ project.id }}/assets/move-selected"
+                              aria-label="Move selected" data-tooltip="Move selected">{{ icons.icon('folder-move') }}</button>
+                      <button type="submit" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top"
+                              formaction="/projects/{{ project.id }}/assets/copy-selected"
+                              aria-label="Copy selected" data-tooltip="Copy selected">{{ icons.icon('copy') }}</button>
+                      <button type="submit" class="button button-small button-danger project-filter-control asset-tooltip asset-tooltip--top"
+                              formaction="/projects/{{ project.id }}/assets/delete-selected"
+                              data-confirm="The selected files will be permanently deleted from disk and cannot be restored through CreatorCrate. Continue?"
+                              aria-label="Delete selected" data-tooltip="Delete selected">{{ icons.icon('trash') }}</button>
                     </div>
                   </section>
                   {{ processingActions.render(isArchived) }}
                 </div>
                 </div>
               </form>
+              <div class="asset-actions-category-row">
+                <div class="asset-actions-controls">
+                  {{ renderAssetSelectionControls(project.id, _csrf, filters.view, none, true, categoryManagementDialogUrl) }}
+                </div>
+              </div>
             </div>
           </section>
         {% endif %}

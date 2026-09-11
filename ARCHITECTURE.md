@@ -1127,7 +1127,7 @@ release membership, or notes.
 ## 11. Processing invariants
 
 Asset processing (format conversion, watermarking, archive generation,
-ComfyUI workflow-prompt editing) is the most invariant-dense part of the
+ComfyUI workflow-prompt editing, and explicit selected-file Rename) is the most invariant-dense part of the
 system. The rules below hold across all of it.
 
 ### Serialization
@@ -1157,6 +1157,12 @@ snapshot lifecycle of `queued`, `running`, `succeeded`, `failed`, or
 `cancelled`, plus coarse `{ completed, total }` progress once the work is
 running. Only `queued` jobs are cancellable; a running job always runs to its
 existing completion or failure path. The job service is also the sole owner of the correlated application-log lifecycle: it records queued, started, succeeded, failed, queued-cancelled, and running-cancellation-rejected events through the context-scoped logger. Route and lower-level processing services do not duplicate those entries; log-sink failures cannot change a job result.
+
+The Apply route captures the planner's concrete ordered asset IDs and normalized
+options in the job closure. Capability-gated already-coordinated executors then
+run inside the job service's existing `runAsync()` owner; they must not reacquire
+the same project lock. Rename follows this seam through the asset action service,
+so its private locked primitive remains unavailable to ordinary callers.
 
 The browser polls `GET /processing/jobs/:id` for status and may request
 `POST /processing/jobs/:id/cancel` while the job is queued. This is HTTP
@@ -1212,12 +1218,21 @@ Processing is a two-phase contract, visible in the route surface as
 produces a **read-only snapshot**: it resolves scope, inspects sources,
 derives output paths, detects conflicts and intra-plan collisions, and marks
 blocked items — without mutating anything and, importantly, **without taking
-the project lock**. A plan is advisory by construction.
+the project lock**. Rename accepts only an explicit selected scope plus
+`options.renames`, an array containing exactly one `{ assetId, basename }`
+entry per selected asset. Its planner normalizes the mapping into selected-asset
+order and delegates single-file validation/destination derivation to the asset
+action service's capability-gated read-only adapter. A plan is advisory by
+construction.
 
 [`asset-processing-service.js`](src/services/asset-processing-service.js)
-applies. It takes the lock and **re-runs authoritative preflight from
-scratch** inside it. A plan is never trusted as authorization; it is a
-preview. Auto Rename adds a signed plan token on top of this — signed with
+and the asset action service provide the operation executors. The processing-job
+service takes the lock, and those executors **re-run authoritative preflight
+from scratch** inside the already-coordinated region. A plan is never trusted as
+authorization; it is a preview. Queued Rename invokes the established
+single-file basename primitive in deterministic planned order. If a later item
+fails, prior successful renames remain committed and the job fails; there is no
+unsafe batch rename-back compensation. Auto Rename adds a signed plan token on top of this — signed with
 the context-scoped key described in §4, so outstanding tokens survive a
 database restore — but the apply path still re-validates.
 

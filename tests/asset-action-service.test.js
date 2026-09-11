@@ -31,6 +31,7 @@ import {
 } from '../src/services/asset-action-service.js';
 import { createProjectOperationCoordinator, ProjectOperationError } from '../src/services/project-operation-coordinator.js';
 import { resolveProjectDir } from '../src/storage/project-storage.js';
+import { createProcessingJobService } from '../src/services/processing-job-service.js';
 import { getCacheDir } from '../src/storage/preview-cache.js';
 import { MANIFEST_FILENAME } from '../src/storage/manifest.js';
 
@@ -82,6 +83,7 @@ describe('asset action service', () => {
   let categoryService;
   let actionService;
   let projectOperationCoordinator;
+  let alreadyCoordinatedCapability;
   let project;
   let absPath;
 
@@ -169,8 +171,10 @@ describe('asset action service', () => {
       projectsRoot,
     });
     projectOperationCoordinator = createProjectOperationCoordinator();
+    alreadyCoordinatedCapability = Object.freeze({});
     actionService = createAssetActionService({
       projectRepository, assetRepository, assetCategoryRepository, projectsRoot, projectOperationCoordinator,
+      alreadyCoordinatedCapability,
     });
     primaryImageRepository = createProjectPrimaryImageRepository(db);
     primaryImageService = createProjectPrimaryImageService({
@@ -1738,6 +1742,93 @@ describe('asset action service', () => {
       }
 
       expect(logger.info).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('queued Rename execution', () => {
+    it('requires the private capability and executes inside the existing project queue without lock re-entry', async () => {
+      const first = createAsset('first.png');
+      const second = createAsset('second.jpg');
+      writeFile('first.png', 'first');
+      writeFile('second.jpg', 'second');
+      expect(() => actionService.createAlreadyCoordinatedExecutor()).toThrow(/capability/i);
+      expect(() => actionService.createAlreadyCoordinatedExecutor({})).toThrow(/capability/i);
+      expect(() => actionService.createProcessingPlanner()).toThrow(/capability/i);
+      expect(actionService).not.toHaveProperty('renameAssetBasenameLocked');
+      const executor = actionService.createAlreadyCoordinatedExecutor(alreadyCoordinatedCapability);
+      const progress = [];
+      const runAsync = vi.spyOn(projectOperationCoordinator, 'runAsync');
+      const jobs = createProcessingJobService({ projectOperationCoordinator });
+      const jobId = jobs.enqueue({
+        projectId: project.id,
+        operation: 'rename',
+        assetCount: 2,
+        execute: ({ updateProgress }) => executor.renameAssets(project.id, [first.id, second.id], {
+          renames: [
+            { assetId: first.id, basename: 'renamed-first' },
+            { assetId: second.id, basename: 'renamed-second' },
+          ],
+        }, (value) => {
+          progress.push(value);
+          updateProgress(value);
+        }),
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(jobs.getJob(jobId)).toMatchObject({
+        state: 'succeeded',
+        progress: { completed: 2, total: 2 },
+        result: { requestedCount: 2, changedCount: 2 },
+      });
+      expect(progress).toEqual([
+        { completed: 0, total: 2 },
+        { completed: 1, total: 2 },
+        { completed: 2, total: 2 },
+      ]);
+      expect(runAsync).toHaveBeenCalledTimes(1);
+      expect(assetRepository.findById(first.id).relative_path).toBe('renamed-first.png');
+      expect(assetRepository.findById(second.id).relative_path).toBe('renamed-second.jpg');
+    });
+
+    it('preserves completed renames and reports a failed job without rollback when a later file fails', async () => {
+      const first = createAsset('batch-first.png');
+      const second = createAsset('batch-second.png');
+      writeFile('batch-first.png', 'first');
+      writeFile('batch-second.png', 'second');
+      const executor = actionService.createAlreadyCoordinatedExecutor(alreadyCoordinatedCapability);
+      const progress = [];
+      const jobs = createProcessingJobService({ projectOperationCoordinator });
+      const jobId = jobs.enqueue({
+        projectId: project.id,
+        operation: 'rename',
+        assetCount: 2,
+        execute: ({ updateProgress }) => executor.renameAssets(project.id, [first.id, second.id], {
+          renames: [
+            { assetId: first.id, basename: 'completed' },
+            { assetId: second.id, basename: 'appears-late' },
+          ],
+        }, (value) => {
+          progress.push(value);
+          updateProgress(value);
+          if (value.completed === 1) writeFile('appears-late.png', 'external');
+        }),
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(assetRepository.findById(first.id).relative_path).toBe('completed.png');
+      expect(assetRepository.findById(second.id).relative_path).toBe('batch-second.png');
+      expect(fs.existsSync(path.join(absPath, 'batch-first.png'))).toBe(false);
+      expect(fs.readFileSync(path.join(absPath, 'completed.png'), 'utf8')).toBe('first');
+      expect(progress).toEqual([
+        { completed: 0, total: 2 },
+        { completed: 1, total: 2 },
+      ]);
+      expect(jobs.getJob(jobId)).toMatchObject({
+        state: 'failed',
+        progress: { completed: 1, total: 2 },
+        result: null,
+        error: { code: 'PROCESSING_FAILED', message: 'Processing failed.' },
+      });
     });
   });
 

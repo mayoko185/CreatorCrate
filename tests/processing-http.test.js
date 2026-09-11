@@ -65,6 +65,7 @@ function createHarness(overrides = {}) {
   const editWorkflowPrompts = vi.fn(async () => ({ changedCount: 1 }));
   const watermarkAssets = vi.fn(async () => ({ changedCount: 1 }));
   const createArchives = vi.fn(async () => ({ changedCount: 2 }));
+  const renameAssets = vi.fn(async () => ({ requestedCount: 1, changedCount: 1 }));
   const services = {
     projectService: { findById: vi.fn((id) => (id === 1 ? project : null)) },
     assetRepository: {
@@ -88,6 +89,7 @@ function createHarness(overrides = {}) {
         buffer: Buffer.from('preview-bytes'), contentType: 'image/png', filename: 'source.png', eligibleCount: 2, variant: 'resized',
       })),
       planArchives: vi.fn(async (_id, scope, options) => ({ scope, options, assetIds: scope.assetIds || [9], items: [], archives: [{ status: 'ready' }] })),
+      planRename: vi.fn(async (_id, scope, options) => ({ scope, options, assetIds: scope.assetIds || [9], items: [] })),
     },
     assetProcessingService: {
       convertAssets,
@@ -95,11 +97,15 @@ function createHarness(overrides = {}) {
       watermarkAssets,
       createArchives,
     },
+    assetActionService: {
+      renameAssetBasename: vi.fn(),
+    },
     alreadyCoordinatedProcessingExecutor: {
       convertAssets,
       editWorkflowPrompts,
       watermarkAssets,
       createArchives,
+      renameAssets,
     },
     watermarkService: {
       listWatermarks: vi.fn(() => [{ id: 10, filename: 'mark.png', relativePath: 'mark.png', width: 1, height: 1 }]),
@@ -138,6 +144,7 @@ describe('processing HTTP routes', () => {
     ['workflow-prompt', { positive: [], negative: [] }],
     ['watermark', { mode: 'patreon', outputFormat: 'png', deleteSource: false, watermarkId: 10 }],
     ['archive', { makeArchives: true, archiveFormat: '7z' }],
+    ['rename', { renames: [{ assetId: 9, basename: 'renamed' }] }],
   ])('passes safe %s lifecycle metadata through the common job service', async (operation, options) => {
     const applicationLogger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
     const { app } = createHarness({ applicationLogger });
@@ -175,6 +182,54 @@ describe('processing HTTP routes', () => {
       { format: 'webp', quality: 85, originalHandling: 'keep' },
     );
     expect(services.assetProcessingService.convertAssets).not.toHaveBeenCalled();
+  });
+
+  it('normalizes per-asset Rename mappings and reuses the common plan/apply job path', async () => {
+    const { app, services } = createHarness();
+    const body = {
+      scope: { type: 'selected', assetIds: [9] },
+      options: { renames: [{ assetId: '9', basename: 'renamed' }] },
+    };
+
+    const planned = await request(app)
+      .post('/projects/1/assets/processing/rename/plan')
+      .send(body)
+      .expect(200);
+    expect(planned.body).toMatchObject({ ok: true, operation: 'rename' });
+    expect(services.assetProcessingPlanner.planRename).toHaveBeenCalledWith(
+      1,
+      body.scope,
+      { renames: [{ assetId: 9, basename: 'renamed' }] },
+    );
+
+    const submitted = await request(app)
+      .post('/projects/1/assets/processing/rename/apply')
+      .send(body)
+      .expect(202);
+    await settle();
+
+    expect(services.alreadyCoordinatedProcessingExecutor.renameAssets).toHaveBeenCalledWith(
+      1,
+      [9],
+      { renames: [{ assetId: 9, basename: 'renamed' }] },
+      expect.any(Function),
+    );
+    expect(services.processingJobService.getJob(submitted.body.jobId)).toMatchObject({
+      state: 'succeeded',
+      result: {
+        result: { requestedCount: 1, changedCount: 1 },
+        refreshUrl: '/projects/1/assets',
+      },
+    });
+
+    const nonSelected = await request(app)
+      .post('/projects/1/assets/processing/rename/plan')
+      .send({ scope: { type: 'project' }, options: body.options })
+      .expect(400);
+    expect(nonSelected.body).toMatchObject({
+      ok: false,
+      error: { code: 'RENAME_REQUIRES_SELECTED_SCOPE', field: 'scope.type' },
+    });
   });
 
   it('accepts global watermarkId for plan and apply and rejects mixed identities', async () => {

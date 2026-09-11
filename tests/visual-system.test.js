@@ -552,6 +552,15 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       expect(css).toMatch(/\.notice\s*\{[^}]*margin-bottom:\s*var\(--space-lg\)/);
     });
 
+    it('keeps Project Assets scan notices compact without changing shared notices', async () => {
+      const res = await request(app).get('/').expect(200);
+      const css = await extractStyle(app, res.text);
+      expect(css).toMatch(/\.scan-success\s*\{[^}]*padding:\s*var\(--space-sm\)\s+1\.25rem/);
+      expect(css).toMatch(/\.scan-success p\s*\{[^}]*margin:\s*0/);
+      expect(css).toMatch(/\.scan-error\s*\{[^}]*padding:\s*1rem\s+1\.25rem/);
+      expect(css).toMatch(/\.notice\s*\{[^}]*padding:\s*var\(--space-sm\)\s+var\(--space-md\)/);
+    });
+
     it('keeps transient Settings notices outside wrapper structural margin resets', async () => {
       const [nsfw, categories] = await Promise.all([
         request(app).get('/settings/nsfw-filter?notice=nsfw_filter_enabled').expect(200),

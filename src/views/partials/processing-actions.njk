@@ -3,23 +3,23 @@
    (the complete-category/auto-rename surface and the ordinary/selection-only
    surface) so it never disappears when viewing All, a downgraded surface, or
    Uncategorized. Not gated on Auto Rename availability. #}
+{% import "partials/icons.njk" as icons %}
+
 {% macro render(isArchived) %}
 <section class="asset-action-group processing-action-group" data-processing-actions>
   <h3 class="asset-action-group-heading">Processing</h3>
   {% if isArchived %}
-    <p class="processing-actions-archived-note">Archived projects cannot be processed. Unarchive the project to convert, watermark, edit workflow prompts, or create archives.</p>
+    <p class="processing-actions-archived-note">Archived projects cannot be processed. Unarchive the project to watermark assets, use the Image workflows editor, or create archives.</p>
     <div class="asset-action-group-controls">
-      <button type="button" class="button" disabled aria-disabled="true" title="Unavailable for archived projects">Watermark</button>
-      <button type="button" class="button" disabled aria-disabled="true" title="Unavailable for archived projects">Edit workflow prompts</button>
-      <button type="button" class="button" disabled aria-disabled="true" title="Unavailable for archived projects">Convert</button>
-      <button type="button" class="button" disabled aria-disabled="true" title="Unavailable for archived projects">Archives</button>
+      <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top" disabled aria-disabled="true" aria-label="Watermark" data-tooltip="Watermark — unavailable for archived projects">{{ icons.icon('watermark') }}</button>
+      <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top" disabled aria-disabled="true" aria-label="Image workflows editor" data-tooltip="Image workflows editor — unavailable for archived projects">{{ icons.icon('edit') }}</button>
+      <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top" disabled aria-disabled="true" aria-label="Archives" data-tooltip="Archives — unavailable for archived projects">{{ icons.icon('database-backup') }}</button>
     </div>
   {% else %}
     <div class="asset-action-group-controls">
-      <button type="button" class="button" data-dialog-open="processing-watermark-dialog">Watermark</button>
-      <button type="button" class="button" data-dialog-open="processing-workflow-dialog">Edit workflow prompts</button>
-      <button type="button" class="button" data-dialog-open="processing-convert-dialog">Convert</button>
-      <button type="button" class="button" data-dialog-open="processing-archive-dialog">Archives</button>
+      <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top" data-dialog-open="processing-watermark-dialog" aria-label="Watermark" data-tooltip="Watermark">{{ icons.icon('watermark') }}</button>
+      <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top" data-dialog-open="processing-workflow-dialog" aria-label="Image workflows editor" data-tooltip="Image workflows editor">{{ icons.icon('edit') }}</button>
+      <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top" data-dialog-open="processing-archive-dialog" aria-label="Archives" data-tooltip="Archives">{{ icons.icon('database-backup') }}</button>
     </div>
   {% endif %}
 </section>

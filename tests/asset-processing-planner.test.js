@@ -18,6 +18,8 @@ import { createProjectService } from '../src/services/project-service.js';
 import { createTestProjectOptionCatalogueService } from './helpers/project-option-catalogue.js';
 import { createAssetProcessingScopeService } from '../src/services/asset-processing-scope-service.js';
 import { createAssetProcessingPlanner as createAssetProcessingPlannerRaw } from '../src/services/asset-processing-planner.js';
+import { createAssetActionService } from '../src/services/asset-action-service.js';
+import { createProjectOperationCoordinator } from '../src/services/project-operation-coordinator.js';
 import { createWatermarkScaleMapService } from '../src/services/watermark-scale-map-service.js';
 import { createProcessingPresetService } from '../src/services/processing-preset-service.js';
 import { createPngChunk, PNG_SIGNATURE } from '../src/services/workflow-prompt-editor.js';
@@ -194,6 +196,15 @@ describe('asset processing planner', () => {
       },
     }).png().toBuffer());
     scopeService = createAssetProcessingScopeService({ projectRepository, assetRepository });
+    const renameCapability = Object.freeze({});
+    const assetActionService = createAssetActionService({
+      projectRepository,
+      assetRepository,
+      assetCategoryRepository: categoryRepository,
+      projectsRoot,
+      projectOperationCoordinator: createProjectOperationCoordinator(),
+      alreadyCoordinatedCapability: renameCapability,
+    });
     planner = createAssetProcessingPlanner({
       scopeService,
       projectRepository,
@@ -203,6 +214,7 @@ describe('asset processing planner', () => {
       projectsRoot,
       watermarkPath,
       watermarkRoot: tmpDir,
+      renamePlanner: assetActionService.createProcessingPlanner(renameCapability),
     });
   });
 
@@ -255,6 +267,103 @@ describe('asset processing planner', () => {
       WHERE id = ?
     `).run(source.id, source.relative_path, mode, digest, asset.id);
   }
+
+  it('plans selected Rename mappings in frozen asset order and preserves extensions', async () => {
+    const first = writeAsset('Final/first.png');
+    const second = writeAsset('second.jpg');
+
+    const plan = await planner.planRename(project.id, {
+      type: 'selected', assetIds: [second.id, first.id],
+    }, {
+      renames: [
+        { assetId: String(first.id), basename: 'renamed-first' },
+        { assetId: second.id, basename: 'renamed-second' },
+      ],
+    });
+
+    expect(plan).toMatchObject({
+      operation: 'rename',
+      projectId: project.id,
+      scope: { type: 'selected', assetIds: [second.id, first.id] },
+      assetIds: [second.id, first.id],
+      options: {
+        renames: [
+          { assetId: second.id, basename: 'renamed-second' },
+          { assetId: first.id, basename: 'renamed-first' },
+        ],
+      },
+      counts: { total: 2, eligible: 2, changed: 2, conflicts: 0 },
+    });
+    expect(plan.items.map((item) => item.plannedDestination)).toEqual([
+      expect.objectContaining({ relativePath: 'renamed-second.jpg', filename: 'renamed-second.jpg', extension: 'jpg' }),
+      expect.objectContaining({ relativePath: 'Final/renamed-first.png', filename: 'renamed-first.png', extension: 'png' }),
+    ]);
+  });
+
+  it.each([
+    ['missing mapping', [{ assetId: 0, basename: 'unused' }], 'RENAME_MAPPING_SCOPE_MISMATCH'],
+    ['extra mapping', null, 'RENAME_MAPPING_SCOPE_MISMATCH'],
+    ['duplicate mapping', 'duplicate', 'DUPLICATE_RENAME_MAPPING'],
+  ])('rejects malformed Rename batch membership: %s', async (_label, mappingKind, code) => {
+    const first = writeAsset('Final/member-one.png');
+    const second = writeAsset('Final/member-two.png');
+    let renames;
+    if (mappingKind === null) {
+      renames = [
+        { assetId: first.id, basename: 'one' },
+        { assetId: second.id, basename: 'two' },
+        { assetId: 999999, basename: 'extra' },
+      ];
+    } else if (mappingKind === 'duplicate') {
+      renames = [
+        { assetId: first.id, basename: 'one' },
+        { assetId: first.id, basename: 'again' },
+      ];
+    } else {
+      renames = [{ assetId: first.id, basename: 'one' }];
+    }
+
+    await expect(planner.planRename(project.id, {
+      type: 'selected', assetIds: [first.id, second.id],
+    }, { renames })).rejects.toMatchObject({ code });
+  });
+
+  it('reports invalid, unchanged, case-only, indexed, filesystem, and intra-batch Rename conflicts', async () => {
+    const invalid = writeAsset('Final/invalid.png');
+    const unchanged = writeAsset('Final/same.png');
+    const caseOnly = writeAsset('Final/Case.png');
+    const indexed = writeAsset('Final/indexed-source.png');
+    writeAsset('Final/indexed-target.png');
+    const filesystem = writeAsset('Final/filesystem-source.png');
+    fs.writeFileSync(path.join(projectDir, 'Final', 'filesystem-target.png'), baseImage);
+    const collisionOne = writeAsset('Final/collision-one.png');
+    const collisionTwo = writeAsset('Final/collision-two.png');
+    const assets = [invalid, unchanged, caseOnly, indexed, filesystem, collisionOne, collisionTwo];
+
+    const plan = await planner.planRename(project.id, {
+      type: 'selected', assetIds: assets.map((asset) => asset.id),
+    }, {
+      renames: [
+        { assetId: invalid.id, basename: 'bad/name' },
+        { assetId: unchanged.id, basename: 'same' },
+        { assetId: caseOnly.id, basename: 'case' },
+        { assetId: indexed.id, basename: 'indexed-target' },
+        { assetId: filesystem.id, basename: 'filesystem-target' },
+        { assetId: collisionOne.id, basename: 'collision' },
+        { assetId: collisionTwo.id, basename: 'collision' },
+      ],
+    });
+
+    expect(plan.items.map((item) => [item.assetId, item.status, item.reasonCode])).toEqual([
+      [invalid.id, 'error', 'INVALID_FILENAME'],
+      [unchanged.id, 'error', 'UNCHANGED_LOCATION'],
+      [caseOnly.id, 'error', 'CASE_ONLY_RENAME_UNSUPPORTED'],
+      [indexed.id, 'conflict', 'DESTINATION_CONFLICT'],
+      [filesystem.id, 'conflict', 'DESTINATION_CONFLICT'],
+      [collisionOne.id, 'conflict', 'INTRA_BATCH_DESTINATION_CONFLICT'],
+      [collisionTwo.id, 'conflict', 'INTRA_BATCH_DESTINATION_CONFLICT'],
+    ]);
+  });
 
   it('plans Convert across selected and directory scopes without mutation', async () => {
     const png = writeAsset('Final/render.png');

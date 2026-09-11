@@ -73,6 +73,8 @@ function isCategoryEnabled(category) {
  *   Shared per-project lock (Phase: asset actions chunk 3) — the same
  *   instance the caller also injects into the asset scanner, so a scan and
  *   a rename/move/copy/delete/cleanup for one project can never interleave.
+ * @param {object} [deps.alreadyCoordinatedCapability]
+ *   Private application-composition token for queued Rename execution.
  */
 export function createAssetActionService({
   projectRepository,
@@ -80,6 +82,7 @@ export function createAssetActionService({
   assetCategoryRepository,
   projectsRoot,
   projectOperationCoordinator,
+  alreadyCoordinatedCapability,
   applicationLogger = null,
 } = {}) {
   if (!projectRepository) throw new Error('createAssetActionService requires a projectRepository dependency.');
@@ -127,6 +130,94 @@ export function createAssetActionService({
     } catch {
       // Activity logging must never alter a completed asset mutation.
     }
+  }
+
+  function assertAlreadyCoordinatedCapability(capability) {
+    if (capability === undefined
+      || alreadyCoordinatedCapability === undefined
+      || capability !== alreadyCoordinatedCapability) {
+      throw new AssetActionError(
+        'Already-coordinated asset actions require the background execution capability.',
+        { code: 'INVALID_ASSET_ACTION_COORDINATION_CAPABILITY' },
+      );
+    }
+  }
+
+  function createRenameMapping(assetIds, rawOptions) {
+    if (!Array.isArray(assetIds) || assetIds.length === 0) {
+      throw new AssetActionError('Queued Rename requires selected asset IDs.', { code: 'INVALID_RENAME_MAPPING' });
+    }
+    if (!rawOptions || typeof rawOptions !== 'object' || Array.isArray(rawOptions)
+      || !Array.isArray(rawOptions.renames)
+      || Object.keys(rawOptions).some((key) => key !== 'renames')) {
+      throw new AssetActionError('Queued Rename requires a renames mapping.', { code: 'INVALID_RENAME_MAPPING' });
+    }
+
+    const selected = new Set(assetIds);
+    const byAssetId = new Map();
+    for (const entry of rawOptions.renames) {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)
+        || Object.keys(entry).some((key) => key !== 'assetId' && key !== 'basename')
+        || !isPositiveInteger(entry.assetId)
+        || typeof entry.basename !== 'string'
+        || byAssetId.has(entry.assetId)
+        || !selected.has(entry.assetId)) {
+        throw new AssetActionError('Queued Rename mapping does not match the selected assets.', {
+          code: 'INVALID_RENAME_MAPPING',
+        });
+      }
+      byAssetId.set(entry.assetId, entry.basename);
+    }
+    if (byAssetId.size !== assetIds.length || assetIds.some((assetId) => !byAssetId.has(assetId))) {
+      throw new AssetActionError('Queued Rename mapping does not match the selected assets.', {
+        code: 'INVALID_RENAME_MAPPING',
+      });
+    }
+    return byAssetId;
+  }
+
+  function createProcessingPlanner(capability) {
+    assertAlreadyCoordinatedCapability(capability);
+    return Object.freeze({
+      inspectRenameAssetBasename: (projectId, assetId, basename) => {
+        assertPositiveInteger(projectId, 'INVALID_PROJECT_ID', 'projectId');
+        assertPositiveInteger(assetId, 'INVALID_ASSET_ID', 'assetId');
+        const prepared = prepareRenameAssetBasename(projectId, assetId, basename);
+        return Object.freeze({
+          assetId,
+          basename,
+          currentFilename: prepared.oldFilename,
+          filename: prepared.newFilename,
+          extension: deriveExtensionFromFilename(prepared.newFilename),
+          relativePath: prepared.newRelativePath,
+        });
+      },
+    });
+  }
+
+  function createAlreadyCoordinatedExecutor(capability) {
+    assertAlreadyCoordinatedCapability(capability);
+    return Object.freeze({
+      renameAssets(projectId, assetIds, rawOptions, onProgress) {
+        assertPositiveInteger(projectId, 'INVALID_PROJECT_ID', 'projectId');
+        if (onProgress !== undefined && typeof onProgress !== 'function') {
+          throw new TypeError('Queued Rename progress reporter must be a function.');
+        }
+        const byAssetId = createRenameMapping(assetIds, rawOptions);
+        let completed = 0;
+        onProgress?.({ completed, total: assetIds.length });
+        for (const assetId of assetIds) {
+          renameAssetBasenameLocked(projectId, assetId, byAssetId.get(assetId));
+          logActivity('asset.renamed', projectId);
+          completed += 1;
+          onProgress?.({ completed, total: assetIds.length });
+        }
+        return {
+          requestedCount: assetIds.length,
+          changedCount: completed,
+        };
+      },
+    });
   }
 
   // ── Project / asset loading (shared source-validation steps 1-5) ──────
@@ -553,10 +644,10 @@ export function createAssetActionService({
     }
   }
 
-  // Holds the project lock for its entire body — validation through
-  // database update. Never exposed publicly; only reachable via runLocked from
-  // the returned renameAsset method below.
-  function renameAssetLocked(projectId, assetId, filename) {
+  // Prepares the authoritative single-file rename. Public mutations call it
+  // under runLocked; the capability-gated queued executor calls it only while
+  // ProcessingJobService already owns this project's runAsync coordination.
+  function prepareRenameAsset(projectId, assetId, filename, resolvedAsset = null) {
       let newFilename;
       try {
         newFilename = assertValidAssetFilename(filename);
@@ -568,7 +659,7 @@ export function createAssetActionService({
       }
 
       const project = requireMutableProject(projectId);
-      const asset = requirePresentAsset(projectId, assetId);
+      const asset = resolvedAsset || requirePresentAsset(projectId, assetId);
 
       const oldRelativePath = asset.relative_path;
       const segments = oldRelativePath.split('/');
@@ -593,18 +684,23 @@ export function createAssetActionService({
       assertDestinationClearInDb(projectId, newRelativePath);
       assertDestinationClearOnDisk(destAbsPath);
 
-      return performMoveAndUpdate({
+      return {
         projectId, assetId,
         sourceAbsPath, destAbsPath,
         oldRelativePath, newRelativePath,
+        oldFilename,
         newFilename,
         categoryId: asset.category_id,
         nestedPath: asset.nested_path,
         sourceIdentity,
-      });
+      };
   }
 
-  function renameAssetBasenameLocked(projectId, assetId, basename) {
+  function renameAssetLocked(projectId, assetId, filename) {
+      return performMoveAndUpdate(prepareRenameAsset(projectId, assetId, filename));
+  }
+
+  function prepareRenameAssetBasename(projectId, assetId, basename) {
     const asset = requirePresentAsset(projectId, assetId);
     try {
       assertValidAssetFilename(basename);
@@ -620,7 +716,11 @@ export function createAssetActionService({
     const extensionStart = currentFilename.lastIndexOf('.');
     const extension = extensionStart > 0 ? currentFilename.slice(extensionStart + 1) : '';
     const filename = extension ? `${basename}.${extension}` : basename;
-    return renameAssetLocked(projectId, assetId, filename);
+    return prepareRenameAsset(projectId, assetId, filename, asset);
+  }
+
+  function renameAssetBasenameLocked(projectId, assetId, basename) {
+    return performMoveAndUpdate(prepareRenameAssetBasename(projectId, assetId, basename));
   }
 
   // Holds the project lock for its entire body — validation through
@@ -1134,6 +1234,8 @@ export function createAssetActionService({
   }
 
   return {
+    createProcessingPlanner,
+    createAlreadyCoordinatedExecutor,
     /**
      * Rename an asset's file in place — same parent directory, same
      * category and nested_path, only the filename changes. Holds this

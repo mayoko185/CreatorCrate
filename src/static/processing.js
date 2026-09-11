@@ -10,7 +10,7 @@ import {
 } from './client/dropdowns.js';
 
 /**
- * Processing actions: Convert, Workflow Prompt Editor, Watermark, and Archives
+ * Processing actions: Rename, Convert, Workflow Prompt Editor, Watermark, and Archives
  * dialogs on /projects/:id/assets, plus the global Watermark/scale-map dialogs they
  * link to. One cohesive enhancement module, following the data-attribute +
  * delegated-event conventions used throughout creatorcrate.js.
@@ -28,7 +28,7 @@ const OPERATION_PLAN_PATH = (projectId, operation) => `/projects/${projectId}/as
 const OPERATION_APPLY_PATH = (projectId, operation) => `/projects/${projectId}/assets/processing/${operation}/apply`;
 const PROCESSING_JOB_PATH = (jobId) => `/processing/jobs/${encodeURIComponent(jobId)}`;
 const PROCESSING_JOB_POLL_INTERVAL_MS = 1_000;
-const AUTO_RESCAN_OPERATIONS = new Set(['convert', 'watermark']);
+const AUTO_RESCAN_OPERATIONS = new Set(['rename', 'convert', 'watermark']);
 const ACTIVE_PROCESSING_JOB_STATES = new Set(['queued', 'running']);
 const TERMINAL_PROCESSING_JOB_STATES = new Set(['succeeded', 'failed', 'cancelled']);
 const LEGACY_WATERMARK_ARCHIVE_FIELDS = new Set([
@@ -526,6 +526,58 @@ function getSelectedAssetIds(document) {
     .filter((id) => Number.isSafeInteger(id) && id > 0);
 }
 
+function getSelectedRenameAssets(document) {
+  return Array.from(document.querySelectorAll(ASSET_CHECKBOX_SELECTOR))
+    .filter((checkbox) => checkbox.checked && checkbox.name === 'selectedAssetIds')
+    .map((checkbox) => ({
+      assetId: Number(checkbox.value),
+      basename: checkbox.dataset.assetBasename || '',
+      filename: checkbox.dataset.assetFilename || '',
+      extension: checkbox.dataset.assetExtension || '',
+    }))
+    .filter((asset) => Number.isSafeInteger(asset.assetId) && asset.assetId > 0);
+}
+
+function populateRenameFields(root) {
+  if (root.dataset.processingOperation !== 'rename') return;
+  const list = root.querySelector('[data-processing-rename-list]');
+  if (!list) return;
+  const document = liveDocument(root);
+  list.innerHTML = '';
+  getSelectedRenameAssets(document).forEach((asset, index) => {
+    const item = document.createElement('li');
+    item.className = 'processing-plan-item processing-rename-item';
+    const label = document.createElement('label');
+    const inputId = `processing-rename-basename-${asset.assetId}`;
+    label.setAttribute('for', inputId);
+    label.textContent = asset.filename || `Asset ${asset.assetId}`;
+    const field = document.createElement('span');
+    field.className = `asset-card-rename-field${asset.extension ? ' has-extension' : ''}`;
+    const input = document.createElement('input');
+    input.id = inputId;
+    input.type = 'text';
+    input.className = 'asset-card-rename-input';
+    input.value = asset.basename;
+    input.required = true;
+    input.maxLength = 255;
+    input.autocomplete = 'off';
+    input.dataset.processingRenameBasename = '';
+    input.dataset.assetId = String(asset.assetId);
+    input.setAttribute('aria-label', `New basename for ${asset.filename || `Asset ${asset.assetId}`}`);
+    field.append(input);
+    if (asset.extension) {
+      const extension = document.createElement('span');
+      extension.className = 'asset-rename-extension';
+      extension.setAttribute('aria-hidden', 'true');
+      extension.textContent = `.${asset.extension}`;
+      field.append(extension);
+    }
+    item.append(label, field);
+    list.append(item);
+    if (index === 0) input.dataset.processingInitialFocus = '';
+  });
+}
+
 function currentCategoryIdFromUrl(window) {
   const params = new window.URLSearchParams(window.location.search || '');
   const category = params.get('category');
@@ -974,6 +1026,8 @@ function planItemLine(item) {
       ? destination.formats.map((format) => String(format).toUpperCase()).join('/')
       : 'archive';
     parts.push(`→ ${formats} archive outputs${destination.cbz ? ' + CBZ' : ''}`);
+  } else if (destination && typeof destination === 'object' && destination.action === 'rename-in-place') {
+    parts.push(`→ ${destination.relativePath || destination.filename || 'renamed file'}`);
   }
   if (item.sourceAction && item.sourceAction !== 'keep') parts.push(`(${item.sourceAction} source)`);
   return parts.join(' ');
@@ -1071,6 +1125,15 @@ function renderWatermarkResult(body, result) {
     del.textContent = `Deleted ${result.deletedSourceAssetIds.length} source file${result.deletedSourceAssetIds.length === 1 ? '' : 's'}.`;
     body.append(del);
   }
+}
+
+function renderRenameResult(body, result) {
+  const changedCount = Number(result.changedCount) || 0;
+  const requestedCount = Number(result.requestedCount) || 0;
+  const document = body.ownerDocument || globalThis.document;
+  const p = document.createElement('p');
+  p.textContent = `Renamed ${changedCount} of ${requestedCount} file${requestedCount === 1 ? '' : 's'}.`;
+  body.append(p);
 }
 
 const ARCHIVE_KIND_LABELS = {
@@ -1171,6 +1234,7 @@ function renderArchiveResult(body, result) {
 }
 
 const RESULT_RENDERERS = {
+  rename: renderRenameResult,
   convert: renderConvertResult,
   'workflow-prompt': renderWorkflowResult,
   watermark: renderWatermarkResult,
@@ -1529,7 +1593,7 @@ function bindDirtyTracking(root) {
       syncWatermarkProcessingState(root);
       return;
     }
-    if (!event.target.closest('[data-processing-field], [data-processing-scope], [data-processing-category-select], [data-processing-rule-row]')) return;
+    if (!event.target.closest('[data-processing-field], [data-processing-scope], [data-processing-category-select], [data-processing-rule-row], [data-processing-rename-basename]')) return;
     if (event.target.closest('[data-processing-field="outputCategorySlug"]')) {
       root.__ccMissingPresetOutputCategory = false;
       syncWatermarkProcessingState(root);
@@ -1916,8 +1980,26 @@ function applyWorkflowRulesToForm(root, side, ruleList) {
 // ─── Payload assembly ────────────────────────────────────────────────────
 
 function buildRequestBody(root) {
-  const scope = resolveScope(root);
   const operation = root.dataset.processingOperation;
+  if (operation === 'rename') {
+    const selected = getSelectedRenameAssets(liveDocument(root));
+    if (selected.length === 0) {
+      throw new ProcessingRequestError('Select at least one asset in the browser list to rename.');
+    }
+    const inputs = Array.from(root.querySelectorAll('[data-processing-rename-basename]'));
+    const renames = inputs.map((input) => ({
+      assetId: Number(input.dataset.assetId),
+      basename: input.value,
+    }));
+    if (renames.length !== selected.length) {
+      throw new ProcessingRequestError('Rename fields are out of date. Close and reopen the dialog.');
+    }
+    return {
+      scope: { type: 'selected', assetIds: selected.map((asset) => asset.assetId) },
+      options: { renames },
+    };
+  }
+  const scope = resolveScope(root);
   if (operation === 'watermark' && !root.querySelector('[data-processing-field="outputCategorySlug"]')?.value) {
     throw new ProcessingRequestError('Choose an output category.');
   }
@@ -2243,12 +2325,15 @@ function onDialogOpen(root) {
   applyDefaultScope(root);
   updateScopeDisplay(root);
   resetDialogState(root);
+  populateRenameFields(root);
   loadPresets(root);
   loadWatermarkResourceSelects(root);
   if (root.dataset.processingOperation === 'workflow-prompt') ensureInitialWorkflowRow(root);
   if (root.__ccProcessingJob) {
     setBusy(root, true);
     void pollProcessingJob(root);
+  } else if (root.dataset.processingOperation === 'rename') {
+    root.querySelector('[data-processing-initial-focus]')?.focus?.();
   }
 }
 

@@ -844,6 +844,12 @@ export function updateAssetSelectionState(form, scope = form) {
     submitButton.disabled = !(selectedCount > 0 && hasReleaseTarget);
   }
 
+  form.querySelectorAll('[data-processing-rename-trigger]').forEach((button) => {
+    const disabled = selectedCount === 0;
+    button.disabled = disabled;
+    button.setAttribute?.('aria-disabled', String(disabled));
+  });
+
   const autoRenameSurface = form.closest?.(AUTO_RENAME_SURFACE_SELECTOR);
   const autoRenameState = autoRenameSurface?.autoRenameOrderingState;
   if (autoRenameState) autoRenameSync(autoRenameState);

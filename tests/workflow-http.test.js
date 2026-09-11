@@ -1991,7 +1991,7 @@ describe('Phase 6B HTTP workflow', () => {
         // Assert the form element with the correct action
         expect(res.text).toContain(`<form method="post" action="/projects/${projectId}/scan" class="inline-form">`);
         // Assert the submit button inside the form
-        expect(res.text).toMatch(/<button class="button button-primary" type="submit">Scan Now<\/button>/);
+        expect(res.text).toMatch(/<button class="button button-small button-primary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--left"\s+type="submit" aria-label="Scan Now" data-tooltip="Scan Now">[\s\S]*?<svg[^>]*aria-hidden="true"[^>]*focusable="false"[\s\S]*?<\/button>/);
         // Scanning is POST-only; the empty state intentionally has no GET link.
         expect(res.text).not.toContain('Scan Now</a>');
       });

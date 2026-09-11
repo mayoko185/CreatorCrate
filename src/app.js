@@ -462,6 +462,8 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
 
 
 
+  const processingJobExecutionCapability = Object.freeze({});
+
   // Phase: asset actions chunk 3 — rename/move filesystem action service.
   // Shares projectService.repository / assetScanner.repository (no
   // duplicate repository construction) and the same coordinator instance
@@ -474,10 +476,15 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       assetCategoryRepository,
       projectsRoot,
       projectOperationCoordinator,
+      alreadyCoordinatedCapability: processingJobExecutionCapability,
       applicationLogger,
     })
     : null);
   app.locals.assetActionService = assetActionService;
+  const assetActionProcessingPlanner = assetActionService
+    ?.createProcessingPlanner?.(processingJobExecutionCapability);
+  const alreadyCoordinatedAssetActionExecutor = assetActionService
+    ?.createAlreadyCoordinatedExecutor?.(processingJobExecutionCapability);
 
   // Shared read-only scope resolution is available before operation planning
   // consumes it. It uses indexed assets only and does not require a filesystem
@@ -540,6 +547,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       watermarkService,
       scaleMapService: watermarkScaleMapService,
       watermarkScaleMap: opts.watermarkScaleMap,
+      renamePlanner: assetActionProcessingPlanner,
     })
     : null);
   app.locals.assetProcessingPlanner = assetProcessingPlanner;
@@ -548,7 +556,6 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // action service and exposed through the processing router below. The shared
   // coordinator keeps conversion, scanning, archive generation, and other asset
   // actions mutually exclusive for one project across application rebuilds.
-  const processingJobExecutionCapability = Object.freeze({});
   // The application context supplies this process-wide instance across app
   // rebuilds; direct createApp callers still receive one app-owned pool.
   const processingConcurrencyService = opts.processingConcurrencyService
@@ -570,7 +577,10 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     })
     : null);
   const alreadyCoordinatedProcessingExecutor = opts.alreadyCoordinatedProcessingExecutor
-    || assetProcessingService?.createAlreadyCoordinatedExecutor?.(processingJobExecutionCapability);
+    || Object.freeze({
+      ...assetProcessingService?.createAlreadyCoordinatedExecutor?.(processingJobExecutionCapability),
+      ...alreadyCoordinatedAssetActionExecutor,
+    });
   app.locals.assetProcessingService = assetProcessingService;
   app.locals.processingConcurrencyService = processingConcurrencyService;
 
@@ -839,6 +849,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     assetProcessingScopeService,
     assetProcessingPlanner,
     assetProcessingService,
+    assetActionService,
     watermarkService,
     watermarkDefaultService,
     watermarkScaleMapService,

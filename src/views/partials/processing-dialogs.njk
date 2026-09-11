@@ -1,4 +1,4 @@
-{# Processing dialogs: Convert, Workflow Prompt Editor, Watermark, Archives,
+{# Processing dialogs: Rename, Convert, Workflow Prompt Editor, Watermark, Archives,
    and the global-resource (Watermarks/Scale maps) dialogs they link to. Rendered
    once in the assets page overlay block (outside the live-filtered region,
    so they survive live category/search/sort changes). All async behavior is
@@ -198,16 +198,36 @@
   </section>
 {% endmacro %}
 
-{% macro planFooter() %}
+{% macro planFooter(applyLabel='Apply') %}
   <div class="app-dialog-error processing-error" data-processing-error role="alert" hidden>
     <p data-processing-error-text></p>
   </div>
   <div class="app-dialog-status" data-processing-status role="status" aria-live="polite"></div>
   <footer class="app-dialog-footer">
     <button type="button" class="button button-secondary" data-processing-preview>Preview</button>
-    <button type="button" class="button button-primary" data-processing-apply disabled aria-disabled="true">Apply</button>
+    <button type="button" class="button button-primary" data-processing-apply disabled aria-disabled="true">{{ applyLabel }}</button>
   </footer>
 {% endmacro %}
+
+{# ─── Rename ───────────────────────────────────────────────────────────── #}
+{% call dialog.render('processing-rename-dialog', 'Rename', false, 'processing-rename-description', '', 'app-dialog--processing app-dialog--processing-rename', [
+  ['data-processing-root', true],
+  ['data-processing-operation', 'rename'],
+  ['data-project-id', project.id],
+  ['data-csrf', _csrf]
+]) %}
+  <p id="processing-rename-description" class="app-dialog-description">Rename each selected file without changing its extension.</p>
+  <div class="app-dialog-body processing-dialog-body">
+    <section class="settings-section processing-dialog-section">
+      <h3>Selected files</h3>
+      <div class="processing-dialog-section-body">
+        <ol class="processing-plan-items processing-rename-list" data-processing-rename-list></ol>
+      </div>
+    </section>
+    {{ processingOutputSections() }}
+  </div>
+  {{ planFooter('Save') }}
+{% endcall %}
 
 {# ─── Convert ──────────────────────────────────────────────────────────── #}
 {% call dialog.render('processing-convert-dialog', 'Convert', false, 'processing-convert-description', '', 'app-dialog--processing', [
@@ -250,8 +270,8 @@
   {{ planFooter() }}
 {% endcall %}
 
-{# ─── Workflow Prompt Editor ──────────────────────────────────────────── #}
-{% call dialog.render('processing-workflow-dialog', 'Edit workflow prompts', false, 'processing-workflow-description', '', 'app-dialog--processing app-dialog--processing-workflow', [
+{# ─── Image workflows editor ──────────────────────────────────────────── #}
+{% call dialog.render('processing-workflow-dialog', 'Image workflows editor', false, 'processing-workflow-description', '', 'app-dialog--processing app-dialog--processing-workflow', [
   ['data-processing-root', true],
   ['data-processing-operation', 'workflow-prompt'],
   ['data-project-id', project.id],

@@ -51,6 +51,45 @@ function isPositiveSafeInteger(value) {
   return Number.isSafeInteger(value) && value > 0;
 }
 
+function normalizePositiveId(value, field) {
+  if ((typeof value !== 'string' && typeof value !== 'number')
+    || !/^[1-9]\d*$/.test(String(value))) {
+    throw plannerError(`${field} must be a positive integer.`, 'INVALID_RENAME_MAPPING');
+  }
+  const id = Number(value);
+  if (!isPositiveSafeInteger(id)) {
+    throw plannerError(`${field} must be a positive integer.`, 'INVALID_RENAME_MAPPING');
+  }
+  return id;
+}
+
+function normalizeRenameOptions(rawOptions) {
+  if (!rawOptions || typeof rawOptions !== 'object' || Array.isArray(rawOptions)
+    || Object.keys(rawOptions).some((key) => key !== 'renames')
+    || !Array.isArray(rawOptions.renames)
+    || rawOptions.renames.length === 0) {
+    throw plannerError('Rename options must contain a non-empty renames array.', 'INVALID_RENAME_MAPPING');
+  }
+
+  const seen = new Set();
+  const renames = rawOptions.renames.map((entry, index) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)
+      || Object.keys(entry).some((key) => key !== 'assetId' && key !== 'basename')
+      || !Object.hasOwn(entry, 'assetId')
+      || !Object.hasOwn(entry, 'basename')
+      || typeof entry.basename !== 'string') {
+      throw plannerError(`renames[${index}] must contain only assetId and basename.`, 'INVALID_RENAME_MAPPING');
+    }
+    const assetId = normalizePositiveId(entry.assetId, `renames[${index}].assetId`);
+    if (seen.has(assetId)) {
+      throw plannerError(`Duplicate Rename mapping for asset ${assetId}.`, 'DUPLICATE_RENAME_MAPPING');
+    }
+    seen.add(assetId);
+    return { assetId, basename: entry.basename };
+  });
+  return { renames };
+}
+
 const ITEM_ERROR_MESSAGES = Object.freeze({
   MISSING_SOURCE: 'Source file does not exist.',
   SOURCE_PATH_UNSAFE: 'Source file cannot be safely accessed.',
@@ -408,6 +447,7 @@ export function createAssetProcessingPlanner({
   watermarkService,
   scaleMapService,
   watermarkScaleMap,
+  renamePlanner,
 } = {}) {
   const resolvedScopeService = scopeService || assetProcessingScopeService;
   const resolvedProjectRepository = projectRepository || projectService?.repository;
@@ -446,6 +486,86 @@ export function createAssetProcessingPlanner({
     } catch (cause) {
       throw plannerError(cause?.message || 'Managed scale map is unavailable.', cause?.code || 'SCALE_MAP_INVALID', cause);
     }
+  }
+
+  async function planRename(projectId, scope, rawOptions) {
+    if (scope?.type !== 'selected') {
+      throw plannerError('Rename requires an explicit selected asset scope.', 'RENAME_REQUIRES_SELECTED_SCOPE');
+    }
+    if (!renamePlanner || typeof renamePlanner.inspectRenameAssetBasename !== 'function') {
+      throw plannerError('Queued Rename planning is unavailable.', 'RENAME_PROCESSING_UNAVAILABLE');
+    }
+
+    const submittedOptions = normalizeRenameOptions(rawOptions);
+    const resolved = resolveScope(projectId, scope);
+    const selectedIds = new Set(resolved.assetIds);
+    const submittedById = new Map(submittedOptions.renames.map((entry) => [entry.assetId, entry.basename]));
+    const missingId = resolved.assetIds.find((assetId) => !submittedById.has(assetId));
+    const extraId = submittedOptions.renames.find((entry) => !selectedIds.has(entry.assetId))?.assetId;
+    if (missingId !== undefined || extraId !== undefined || submittedById.size !== resolved.assetIds.length) {
+      throw plannerError(
+        missingId !== undefined
+          ? `Rename mapping is missing selected asset ${missingId}.`
+          : `Rename mapping contains out-of-scope asset ${extraId}.`,
+        'RENAME_MAPPING_SCOPE_MISMATCH',
+      );
+    }
+
+    const options = {
+      renames: resolved.assetIds.map((assetId) => ({ assetId, basename: submittedById.get(assetId) })),
+    };
+    const items = [];
+    const destinations = new Map();
+
+    for (const asset of resolved.assets) {
+      const basename = submittedById.get(asset.id);
+      const item = {
+        ...baseItem(asset),
+        proposedBasename: basename,
+        eligible: true,
+        operationEligibility: 'supported',
+      };
+      try {
+        const inspected = renamePlanner.inspectRenameAssetBasename(projectId, asset.id, basename);
+        const ready = {
+          ...item,
+          status: 'ready',
+          reasonCode: null,
+          reason: null,
+          changed: true,
+          plannedDestination: {
+            relativePath: inspected.relativePath,
+            filename: inspected.filename,
+            extension: inspected.extension,
+            action: 'rename-in-place',
+          },
+        };
+        items.push(ready);
+        const key = inspected.relativePath.normalize('NFC').toLowerCase();
+        const matchingIndexes = destinations.get(key) || [];
+        matchingIndexes.push(items.length - 1);
+        destinations.set(key, matchingIndexes);
+      } catch (err) {
+        if (err?.code === 'DESTINATION_CONFLICT') {
+          items.push(itemConflict(item, err.code, err.message));
+        } else {
+          items.push(itemError(item, err, err?.code || 'RENAME_PRECHECK_FAILED', err?.message));
+        }
+      }
+    }
+
+    for (const indexes of destinations.values()) {
+      if (indexes.length < 2) continue;
+      for (const index of indexes) {
+        items[index] = itemConflict(
+          items[index],
+          'INTRA_BATCH_DESTINATION_CONFLICT',
+          'Two or more selected assets would have the same Rename destination.',
+        );
+      }
+    }
+
+    return completePlan('rename', projectId, resolved.scope, resolved.assetIds, items, options);
   }
 
   function resolveWatermarkInput(rawOptions) {
@@ -1279,5 +1399,5 @@ export function createAssetProcessingPlanner({
     };
   }
 
-  return { planConvert, planWorkflowPromptEdit, planWatermark, renderWatermarkPreview, planArchives };
+  return { planConvert, planWorkflowPromptEdit, planWatermark, renderWatermarkPreview, planArchives, planRename };
 }

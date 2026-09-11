@@ -15,6 +15,12 @@ const OPERATION_METHODS = Object.freeze({
   [PROCESSING_PRESET_OPERATION_TYPES.WORKFLOW_PROMPT]: { plan: 'planWorkflowPromptEdit', apply: 'editWorkflowPrompts' },
   [PROCESSING_PRESET_OPERATION_TYPES.WATERMARK]: { plan: 'planWatermark', apply: 'watermarkAssets' },
   archive: { plan: 'planArchives', apply: 'createArchives' },
+  rename: {
+    plan: 'planRename',
+    apply: 'renameAssets',
+    service: 'assetActionService',
+    serviceMethod: 'renameAssetBasename',
+  },
 });
 const NON_APPLYABLE_ITEM_STATUSES = new Set(['unsupported', 'error', 'conflict', 'blocked']);
 
@@ -172,6 +178,29 @@ function normalizeWatermarkRequestOptions(options) {
   return normalizeWatermarkIdentity({ ...options }, 'options');
 }
 
+function normalizeRenameRequestOptions(options) {
+  assertAllowedKeys(options, new Set(['renames']), 'options');
+  if (!Array.isArray(options.renames) || options.renames.length === 0) {
+    throw new ProcessingRouteError('options.renames must be a non-empty array.', { field: 'options.renames' });
+  }
+  return {
+    renames: options.renames.map((entry, index) => {
+      const field = `options.renames[${index}]`;
+      assertAllowedKeys(entry, new Set(['assetId', 'basename']), field);
+      if (!Object.hasOwn(entry, 'assetId') || !Object.hasOwn(entry, 'basename')) {
+        throw new ProcessingRouteError(`${field} must contain assetId and basename.`, { field });
+      }
+      if (typeof entry.basename !== 'string') {
+        throw new ProcessingRouteError(`${field}.basename must be a string.`, { field: `${field}.basename` });
+      }
+      return {
+        assetId: parsePositiveId(entry.assetId, `${field}.assetId`),
+        basename: entry.basename,
+      };
+    }),
+  };
+}
+
 function normalizeRuntimeResources(resources) {
   const normalized = normalizeWatermarkIdentity({ ...resources }, 'runtimeResources');
   for (const key of Object.keys(normalized)) {
@@ -187,6 +216,12 @@ function normalizeRuntimeResources(resources) {
 function parseExecutionRequest(body, { operation, projectId, assetRepository, processingPresetService }) {
   const input = parseJsonObject(body, 'body');
   assertAllowedKeys(input, new Set(['scope', 'options', 'presetId', 'runtimeResources']), 'body');
+  if (operation === 'rename' && input.scope?.type !== 'selected') {
+    throw new ProcessingRouteError('Rename requires an explicit selected asset scope.', {
+      code: 'RENAME_REQUIRES_SELECTED_SCOPE',
+      field: 'scope.type',
+    });
+  }
   const scope = normalizeScope(input.scope, { projectId, assetRepository });
 
   if (Object.hasOwn(input, 'presetId')) {
@@ -227,6 +262,7 @@ function parseExecutionRequest(body, { operation, projectId, assetRepository, pr
     throw new ProcessingRouteError('options contains an unsupported field: scaleMapId.', { field: 'scaleMapId' });
   }
   if (operation === 'watermark') options = normalizeWatermarkRequestOptions(options);
+  if (operation === 'rename') options = normalizeRenameRequestOptions(options);
   return { scope, options, preset: null };
 }
 
@@ -333,6 +369,7 @@ export function createProcessingRouter({
   assetProcessingScopeService,
   assetProcessingPlanner,
   assetProcessingService,
+  assetActionService,
   watermarkService,
   watermarkDefaultService,
   watermarkScaleMapService,
@@ -385,8 +422,11 @@ export function createProcessingRouter({
       throw new TypeError('alreadyCoordinatedProcessingExecutor is required for processing execution routes');
     }
     for (const [operation, methods] of Object.entries(OPERATION_METHODS)) {
+      const operationService = methods.service === 'assetActionService'
+        ? assetActionService
+        : assetProcessingService;
       if (typeof assetProcessingPlanner[methods.plan] !== 'function'
-        || typeof assetProcessingService[methods.apply] !== 'function'
+        || typeof operationService?.[methods.serviceMethod || methods.apply] !== 'function'
         || typeof alreadyCoordinatedProcessingExecutor[methods.apply] !== 'function') continue;
       router.post(`/projects/:id/assets/processing/${operation}/plan`, createExecutionHandler({
         operation, mode: 'plan', projectService, assetRepository, assetProcessingPlanner, assetProcessingService, processingPresetService,
