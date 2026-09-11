@@ -311,7 +311,7 @@ export function createAssetsRouter({
   const router = express.Router({ mergeParams: true });
 
   // GET /projects/:id/assets — Asset listing page
-  router.get('/:id/assets', (req, res, next) => {
+  router.get('/:id/assets', async (req, res, next) => {
     try {
       const query = req.query;
       const queryKeys = Object.keys(query);
@@ -329,7 +329,7 @@ export function createAssetsRouter({
         resetView = query.view;
         res.set('Cache-Control', 'no-store');
       }
-      renderProjectAssetsPage(req, res, {
+      await renderProjectAssetsPage(req, res, {
         resetView,
         appName,
         projectService,
@@ -416,7 +416,7 @@ export function createAssetsRouter({
           projectAssetsDefaultsSelectedScope: submission?.scope || (req.body?.scope === 'project' ? 'project' : 'global'),
           rawQuery: readProjectAssetsReturnQuery(req, id),
           allowSavedDefaultsRedirect: false,
-        });
+        }).catch(next);
       },
       onSuccess: ({ validatedValues }) => {
         res.redirect(buildProjectAssetsDefaultsSuccessUrl(req, id, validatedValues));
@@ -452,7 +452,7 @@ export function createAssetsRouter({
         projectAssetsNsfwError: 'NSFW filter setting is invalid.',
         rawQuery: readProjectAssetsReturnQuery(req, id),
         allowSavedDefaultsRedirect: false,
-      });
+      }).catch(next);
     }
 
     try {
@@ -585,7 +585,7 @@ export function createAssetsRouter({
           autoRenameConfirmationContext: context,
           autoRenameConfirmationReturnUrl: cancelUrl,
           next,
-        });
+        }).catch(next);
       } catch (err) {
         return handleAutoRenameFailure(err, {
           operation: 'preview',
@@ -1092,7 +1092,7 @@ export function createAssetsRouter({
   // Delegates all validation and mutation to releaseService.addAssetsToRelease
   // — this route never touches the repository or reimplements mutability
   // rules.
-  router.post('/:id/assets/add-to-release', (req, res, next) => {
+  router.post('/:id/assets/add-to-release', async (req, res, next) => {
     try {
       const pageDefaultsService = getPageDefaultsService(req);
       const id = parseId(req.params.id);
@@ -1151,13 +1151,17 @@ export function createAssetsRouter({
           const presentation = resolveAssetBrowserPresentation(req.body, pageDefaultsService, { projectId: id });
           const data = buildAssetBrowserPageData(workflowQueryService, id, project, presentation);
           if (!data) return next(createNotFound());
+          const enrichedAssets = await workflowQueryService.enrichProjectAssetInformationAssets(
+            project,
+            data.assets,
+          );
 
           const normalizedSelection = normalizeSelectedAssetIds(req.body.selectedAssetIds);
           const submittedReleaseId = typeof req.body.releaseId === 'string' ? req.body.releaseId : '';
 
           return res.status(status).render('projects/assets.njk', {
             appName,
-            ...buildBrowserRenderModel(project, data, pageDefaultsService, req, workflowQueryService, null, getProjectAssetsInheritedFilterDefaults(req.body)),
+            ...buildBrowserRenderModel(project, { ...data, assets: enrichedAssets }, pageDefaultsService, req, workflowQueryService, null, getProjectAssetsInheritedFilterDefaults(req.body)),
             query: {},
             error: null,
             archivedError: null,
@@ -1179,7 +1183,7 @@ export function createAssetsRouter({
   // assets, then preserve the POST body while handing presentation to the
   // canonical Releases host. Release creation and asset association remain
   // owned by POST /releases.
-  router.post('/:id/assets/create-release', (req, res, next) => {
+  router.post('/:id/assets/create-release', async (req, res, next) => {
     const body = req.body || {};
 
     try {
@@ -1225,11 +1229,15 @@ export function createAssetsRouter({
           const presentation = resolveAssetBrowserPresentation(body, pageDefaultsService, { projectId: id });
           const data = buildAssetBrowserPageData(workflowQueryService, id, project, presentation);
           if (!data) return next(createNotFound());
+          const enrichedAssets = await workflowQueryService.enrichProjectAssetInformationAssets(
+            project,
+            data.assets,
+          );
 
           const normalizedSelection = normalizeSelectedAssetIds(body.selectedAssetIds);
           return res.status(status).render('projects/assets.njk', {
             appName,
-            ...buildBrowserRenderModel(project, data, pageDefaultsService, req, workflowQueryService, null, getProjectAssetsInheritedFilterDefaults(body)),
+            ...buildBrowserRenderModel(project, { ...data, assets: enrichedAssets }, pageDefaultsService, req, workflowQueryService, null, getProjectAssetsInheritedFilterDefaults(body)),
             query: {},
             error: null,
             archivedError: null,
@@ -1251,7 +1259,7 @@ export function createAssetsRouter({
   // assets to one category or Uncategorized. All validation (asset presence,
   // destination validity, intra-batch conflicts) runs inside the service under
   // one project lock. The route only extracts and type-checks form fields.
-  router.post('/:id/assets/move-selected', (req, res, next) => {
+  router.post('/:id/assets/move-selected', async (req, res, next) => {
     try {
       const pageDefaultsService = getPageDefaultsService(req);
       const id = parseId(req.params.id);
@@ -1264,14 +1272,18 @@ export function createAssetsRouter({
       const rawDestination = req.body.destinationCategory;
       const parsedDestination = parseDestinationCategoryField(rawDestination);
 
-      const renderMoveError = (status, message, selectedIds = []) => {
+      const renderMoveError = async (status, message, selectedIds = []) => {
         try {
           const presentation = resolveAssetBrowserPresentation(req.body, pageDefaultsService, { projectId: id });
           const data = buildAssetBrowserPageData(workflowQueryService, id, project, presentation);
           if (!data) return next(createNotFound());
+          const enrichedAssets = await workflowQueryService.enrichProjectAssetInformationAssets(
+            project,
+            data.assets,
+          );
           return res.status(status).render('projects/assets.njk', {
             appName,
-            ...buildBrowserRenderModel(project, data, pageDefaultsService, req, workflowQueryService, null, getProjectAssetsInheritedFilterDefaults(req.body)),
+            ...buildBrowserRenderModel(project, { ...data, assets: enrichedAssets }, pageDefaultsService, req, workflowQueryService, null, getProjectAssetsInheritedFilterDefaults(req.body)),
             query: {},
             error: null,
             archivedError: null,
@@ -1337,7 +1349,7 @@ export function createAssetsRouter({
   // assets to one category or Uncategorized. The route mirrors Move's strict
   // form parsing and browser-context handling; the service owns all project,
   // filesystem, lock, and indexed-row validation.
-  router.post('/:id/assets/copy-selected', (req, res, next) => {
+  router.post('/:id/assets/copy-selected', async (req, res, next) => {
     try {
       const pageDefaultsService = getPageDefaultsService(req);
       const id = parseId(req.params.id);
@@ -1351,14 +1363,18 @@ export function createAssetsRouter({
       const parsedDestination = parseDestinationCategoryField(rawDestination);
       const submittedDestinationCategory = typeof rawDestination === 'string' ? rawDestination : '';
 
-      const renderCopyError = (status, message, selectedIds = []) => {
+      const renderCopyError = async (status, message, selectedIds = []) => {
         try {
           const presentation = resolveAssetBrowserPresentation(req.body, pageDefaultsService, { projectId: id });
           const data = buildAssetBrowserPageData(workflowQueryService, id, project, presentation);
           if (!data) return next(createNotFound());
+          const enrichedAssets = await workflowQueryService.enrichProjectAssetInformationAssets(
+            project,
+            data.assets,
+          );
           return res.status(status).render('projects/assets.njk', {
             appName,
-            ...buildBrowserRenderModel(project, data, pageDefaultsService, req, workflowQueryService, null, getProjectAssetsInheritedFilterDefaults(req.body)),
+            ...buildBrowserRenderModel(project, { ...data, assets: enrichedAssets }, pageDefaultsService, req, workflowQueryService, null, getProjectAssetsInheritedFilterDefaults(req.body)),
             query: {},
             error: null,
             archivedError: null,
@@ -1422,7 +1438,7 @@ export function createAssetsRouter({
   // POST /projects/:id/assets/delete-selected — Permanently delete selected
   // present assets from disk and the index. The locked service owns all
   // validation, staging, rollback, cascade, and published-release policy.
-  router.post('/:id/assets/delete-selected', (req, res, next) => {
+  router.post('/:id/assets/delete-selected', async (req, res, next) => {
     try {
       const pageDefaultsService = getPageDefaultsService(req);
       const id = parseId(req.params.id);
@@ -1438,14 +1454,18 @@ export function createAssetsRouter({
         ? body.destinationCategory
         : '';
 
-      const renderDeleteError = (status, message, selectedIds = []) => {
+      const renderDeleteError = async (status, message, selectedIds = []) => {
         try {
           const presentation = resolveAssetBrowserPresentation(body, pageDefaultsService, { projectId: id });
           const data = buildAssetBrowserPageData(workflowQueryService, id, project, presentation);
           if (!data) return next(createNotFound());
+          const enrichedAssets = await workflowQueryService.enrichProjectAssetInformationAssets(
+            project,
+            data.assets,
+          );
           return res.status(status).render('projects/assets.njk', {
             appName,
-            ...buildBrowserRenderModel(project, data, pageDefaultsService, req, workflowQueryService, null, getProjectAssetsInheritedFilterDefaults(body)),
+            ...buildBrowserRenderModel(project, { ...data, assets: enrichedAssets }, pageDefaultsService, req, workflowQueryService, null, getProjectAssetsInheritedFilterDefaults(body)),
             query: {},
             error: null,
             archivedError: null,
@@ -1971,7 +1991,7 @@ export function buildAutoRenamePlanRenderModel(plan) {
   };
 }
 
-function renderAutoRenameBrowserError({
+async function renderAutoRenameBrowserError({
   appName,
   project,
   projectId,
@@ -1994,6 +2014,12 @@ function renderAutoRenameBrowserError({
       { projectId },
     );
     data = buildAssetBrowserPageData(workflowQueryService, projectId, project, presentation);
+    if (data) {
+      data = {
+        ...data,
+        assets: await workflowQueryService.enrichProjectAssetInformationAssets(project, data.assets),
+      };
+    }
   } catch {
     const fallback = new Error('Auto Rename could not be completed. Please try again.');
     fallback.status = 500;
@@ -2001,20 +2027,24 @@ function renderAutoRenameBrowserError({
   }
   if (!data) return next(createNotFound());
 
-  return res.status(status).render('projects/assets.njk', {
-    appName,
-    ...buildBrowserRenderModel(project, data, pageDefaultsService, req, workflowQueryService, null, getProjectAssetsInheritedFilterDefaults(returnContext)),
-    query: {},
-    error: null,
-    archivedError: null,
-    bulkNotice: null,
-    moveNotice: null,
-    assetActionNotice: null,
-    autoRenameNotice: null,
-    autoRenameError: { message },
-    submittedSelectedAssetIds: [],
-    submittedReleaseId: null,
-  });
+  try {
+    return await res.status(status).render('projects/assets.njk', {
+      appName,
+      ...buildBrowserRenderModel(project, data, pageDefaultsService, req, workflowQueryService, null, getProjectAssetsInheritedFilterDefaults(returnContext)),
+      query: {},
+      error: null,
+      archivedError: null,
+      bulkNotice: null,
+      moveNotice: null,
+      assetActionNotice: null,
+      autoRenameNotice: null,
+      autoRenameError: { message },
+      submittedSelectedAssetIds: [],
+      submittedReleaseId: null,
+    });
+  } catch (renderErr) {
+    return next(renderErr);
+  }
 }
 
 function handleAutoRenameFailure(err, {
@@ -2744,7 +2774,7 @@ async function handleAssetActionFailure(err, {
   });
 }
 
-function handleAssetBrowserActionFailure(err, {
+async function handleAssetBrowserActionFailure(err, {
   appName, workflowQueryService, req, res, next,
   pageDefaultsService,
   project, projectId, assetId, action, submittedFilename,
@@ -2763,6 +2793,12 @@ function handleAssetBrowserActionFailure(err, {
   try {
     const presentation = resolveAssetBrowserPresentation(req.body, pageDefaultsService, { projectId });
     data = buildAssetBrowserPageData(workflowQueryService, projectId, project, presentation);
+    if (data) {
+      data = {
+        ...data,
+        assets: await workflowQueryService.enrichProjectAssetInformationAssets(project, data.assets),
+      };
+    }
   } catch (renderErr) {
     return next(renderErr);
   }

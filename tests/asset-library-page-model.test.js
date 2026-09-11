@@ -413,6 +413,103 @@ describe('workflow query service — asset library page model', () => {
     expect(calls).not.toContain(missing.id);
   });
 
+  it('prepares Project Assets for Asset Information without repurposing assigned tags', async () => {
+    const status = projectOptionCatalogueService.addOption('status', {
+      name: 'Information Review',
+      color: '#123456',
+    });
+    const projectType = projectOptionCatalogueService.addOption('projectType', {
+      name: 'Illustration Series',
+      color: '#654321',
+    });
+    const project = insertProject(db, {
+      title: 'Project Asset Information',
+      status: status.value,
+      projectType: projectType.value,
+    });
+    const category = insertProjectCategory(db, {
+      projectId: project.id,
+      displayName: 'Finished Art',
+      directorySlug: 'finished-art',
+    });
+    const modifiedAt = '2026-02-03T04:05:00.000Z';
+    const modifiedDate = new Date(modifiedAt);
+    const asset = insertAsset(db, {
+      projectId: project.id,
+      categoryId: category.id,
+      relativePath: 'finished-art/hero.png',
+      filename: 'hero.png',
+      extension: 'png',
+      sizeBytes: 1536,
+      modifiedAt,
+    });
+    const release = insertRelease(db, { projectId: project.id, title: 'Launch Set' });
+    linkAssetToRelease(db, release.id, asset.id);
+
+    const tagRepository = createTagRepository(db);
+    const inherited = tagRepository.create({
+      displayName: 'Alpha Inherited',
+      normalizedName: 'alpha-inherited',
+    });
+    const direct = tagRepository.create({
+      displayName: 'Beta Direct',
+      normalizedName: 'beta-direct',
+    });
+    tagRepository.assignToProject(project.id, inherited.id);
+    tagRepository.assignToAsset(asset.id, direct.id);
+
+    const dimensionCalls = [];
+    const informationService = createWorkflowQueryService({
+      db,
+      projectOptionCatalogueService,
+      assetWorkflowMetadataService: {
+        async getImageDimensions(assetId) {
+          dimensionCalls.push(assetId);
+          return { width: 2048, height: 3072 };
+        },
+      },
+    });
+    const projectAsset = informationService.getProjectAssetBrowser(project.id).assets[0];
+
+    expect(projectAsset.tags).toEqual([{ displayName: 'Beta Direct' }]);
+
+    const [enriched] = await informationService.enrichProjectAssetInformationAssets(
+      project,
+      [projectAsset],
+    );
+    const [libraryAsset] = await informationService.enrichAssetLibraryImageDimensions(
+      informationService.getAssetLibraryPage({ projectId: project.id, pageSize: 10 }).assets,
+    );
+
+    expect(dimensionCalls).toEqual([asset.id, asset.id]);
+    expect(enriched.tags).toEqual([{ displayName: 'Beta Direct' }]);
+    expect(enriched.effectiveTags).toEqual([
+      { displayName: 'Alpha Inherited', origin: 'inherited' },
+      { displayName: 'Beta Direct', origin: 'direct' },
+    ]);
+    expect(enriched).toMatchObject({
+      id: asset.id,
+      project_title: project.title,
+      project_status: status.value,
+      project_type: projectType.value,
+      category_display_name: 'Finished Art',
+      category_enabled: true,
+      formattedSize: formatFileSize(1536),
+      formattedModified: `${formatLocalDate(modifiedDate)} ${formatLocalTime(modifiedDate)}`,
+      formattedDimensions: '2048 × 3072',
+      release_titles: [{ id: release.id, title: 'Launch Set' }],
+      projectStatusOption: libraryAsset.projectStatusOption,
+      projectTypeOption: libraryAsset.projectTypeOption,
+    });
+    expect(enriched).toMatchObject({
+      formattedSize: libraryAsset.formattedSize,
+      formattedModified: libraryAsset.formattedModified,
+      formattedDimensions: libraryAsset.formattedDimensions,
+      release_titles: libraryAsset.release_titles,
+      effectiveTags: libraryAsset.tags,
+    });
+  });
+
   it('keeps project options complete and excludes archived projects independently of the asset page', () => {
     const projects = [];
     for (let index = 1; index <= 27; index++) {

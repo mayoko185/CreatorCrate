@@ -2,6 +2,7 @@
 {% import "partials/page-heading.njk" as pageHeading %}
 {% import "partials/icons.njk" as icons %}
 {% import "partials/asset-presentation.njk" as assetPresentation %}
+{% import "partials/asset-information.njk" as assetInformation %}
 {% import "partials/view-switcher.njk" as viewSwitcher %}
 {% import "partials/dialog.njk" as dialog %}
 {% import "partials/dropdown.njk" as dropdown %}
@@ -158,7 +159,9 @@
       filenameLink: false,
       nsfwBlur: asset.nsfwBlur,
       categoryLabel: asset.categoryLabel,
-      previewSlideshowAssetId: asset.id
+      previewSlideshowAssetId: asset.id,
+      assetInformation: true,
+      hideBody: true
     }) %}
       {% if slot == 'top-start' %}
         {% if not isArchived %}
@@ -182,6 +185,8 @@
         {% endif %}
       {% elif slot == 'top-end' %}
         <span class="asset-card-usage">{{ releaseUsageInline(asset) }}</span>
+      {% elif slot == 'asset-information' %}
+        {{ assetInformation.render(asset, { showProjectName: false }) }}
       {% elif slot == 'title-row' %}
         {% if not isArchived and asset.is_present %}
           <a class="button button-small asset-rename-trigger" data-asset-rename-trigger
@@ -316,9 +321,9 @@
 {% block content %}
   {% set assetsHeadingDescription = "Browse scanned files, category, and release usage." %}
   {% if isArchived %}
-    {{ pageHeading.render(assetsHeadingDescription, "archived", "", "/projects/" ~ project.id, "Project: " ~ project.title) }}
+    {{ pageHeading.render(assetsHeadingDescription, "archived", "", "/projects/" ~ project.id, project.title, "", "chevron-left") }}
   {% else %}
-    {% call pageHeading.render(assetsHeadingDescription, "", "", "/projects/" ~ project.id, "Project: " ~ project.title) %}
+    {% call pageHeading.render(assetsHeadingDescription, "", "", "/projects/" ~ project.id, project.title, "", "chevron-left") %}
     {% if not isArchived %}
       <form method="post" action="/projects/{{ project.id }}/scan" class="inline-form">
         <input type="hidden" name="_csrf" value="{{ _csrf }}">
@@ -464,25 +469,11 @@
     <p data-dialog-feedback-text></p>
   </div>
 
-  <div data-project-assets-live-region{% if projectAssetsGridSizeDefault %} data-project-assets-grid-size-default="{{ projectAssetsGridSizeDefault }}"{% endif %}{% if projectAssetsListSizeDefault %} data-project-assets-list-size-default="{{ projectAssetsListSizeDefault }}"{% endif %} data-project-assets-grid-details-default="{{ projectAssetsGridDetailsDefault }}">
+  <div data-project-assets-live-region{% if projectAssetsGridSizeDefault %} data-project-assets-grid-size-default="{{ projectAssetsGridSizeDefault }}"{% endif %}{% if projectAssetsListSizeDefault %} data-project-assets-list-size-default="{{ projectAssetsListSizeDefault }}"{% endif %}>
     <span class="sr-only" data-project-assets-live-status aria-live="polite" aria-atomic="true"></span>
 
   <div class="asset-browser-layout">
     <div class="asset-browser-content">
-      {% set categoryFilterSummary = "All categories (" ~ categoryNavigation.totalCount ~ ")" %}
-      {% if filters.category == 'all' and filters.presence == 'missing' %}
-        {% set categoryFilterSummary = "Missing (" ~ categoryNavigation.missingCount ~ ")" %}
-      {% elif filters.category == 'uncategorized' %}
-        {% set categoryFilterSummary = "Uncategorized (" ~ categoryNavigation.uncategorizedCount ~ ")" %}
-      {% elif filters.category != 'all' %}
-        {% for cat in categoryNavigation.enabled %}
-          {% if cat.id == filters.category %}{% set categoryFilterSummary = cat.displayName ~ " (" ~ cat.assetCount ~ ")" %}{% endif %}
-        {% endfor %}
-        {% for cat in categoryNavigation.disabled %}
-          {% if cat.id == filters.category %}{% set categoryFilterSummary = cat.displayName ~ " (" ~ cat.assetCount ~ ") (disabled)" %}{% endif %}
-        {% endfor %}
-      {% endif %}
-
       <div class="asset-viewer-display-controls">
         {% if filters.view == 'grid' or filters.view == 'list' %}
           {% set gridSizeLabelsInteractive = true %}
@@ -498,6 +489,11 @@
         {% endif %}
 
         <div class="project-filter-actions project-filter-actions--projects">
+          <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
+             href="#project-assets-filter-dialog" aria-label="Filter assets"
+             data-dialog-open="project-assets-filter-dialog" data-tooltip="Filter assets">
+            {{ icons.icon('content-filter') }}
+          </a>
           {% if not isArchived %}
             <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
                href="/projects/{{ project.id }}/edit" aria-label="Edit project" data-tooltip="Edit project">
@@ -532,165 +528,9 @@
                    aria-label="Start slideshow"
                   data-tooltip="Start slideshow"
                   data-slideshow-trigger>{{ icons.icon('slideshow') }}</button>
-            <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
-               href="{{ resetFiltersUrl }}"
-               aria-label="Reset filters" data-tooltip="Reset filters" data-project-assets-reset>{{ icons.icon('reset') }}<span class="sr-only">Reset</span></a>
         </div>
       </div>
 
-      <form class="filters asset-viewer-filters asset-viewer-filters--project-assets" method="get" action="/projects/{{ project.id }}/assets" id="asset-filters">
-        {% if filters.view == 'list' or preserveViewQuery %}
-          <input type="hidden" name="view" value="{{ filters.view }}">
-        {% endif %}
-        {% if pageSize != 25 or preservePageSizeQuery %}
-          <input type="hidden" name="pageSize" value="{{ pageSize }}">
-        {% endif %}
-        {% if inheritedProjectAssetsFilterDefaults %}
-          <input type="hidden" name="inheritedFilterDefaults" value="{{ inheritedProjectAssetsFilterDefaults }}" data-project-assets-inherited-filter-defaults>
-        {% endif %}
-        {{ dropdown.singleSelect({
-          id: "asset-category-filter",
-          name: "category",
-          label: "Category",
-          fieldClasses: "asset-viewer-filter-field asset-project-category-filter",
-          fieldAttributes: [["data-asset-category-filter", true]],
-          options: categoryFilterOptions,
-          optionIdPrefix: "asset-category",
-          summary: categoryFilterSummary,
-          panelLabel: "Category options"
-        }) }}
-
-        <div class="field">
-          <label for="search">Search</label>
-          <input id="search" name="search" type="search" value="{{ filters.search or '' }}" maxlength="{{ searchMaxLength }}">
-        </div>
-
-        {% set tagFilterSelection = filters.tags or [] %}
-        {{ dropdown.multiSelect({
-          id: "asset-tag-filter",
-          name: "tag",
-          label: "Tag",
-          fieldClasses: "asset-viewer-filter-field",
-          options: tagOptions,
-          optionIdPrefix: "asset-tag",
-          selectedValues: tagFilterSelection,
-          emptySummary: "All tags",
-          countLabel: "tags",
-          panelLabel: "Tag options",
-          emptyOptionText: "No tags available"
-        }) }}
-
-        {% set extensionFilterSelection = filters.extension or [] %}
-        {{ dropdown.multiSelect({
-          id: "asset-extension-filter",
-          name: "extension",
-          label: "Extension",
-          fieldClasses: "asset-viewer-filter-field",
-          options: extensionChoices,
-          optionIdPrefix: "asset-extension",
-          selectedValues: extensionFilterSelection,
-          emptySummary: "All extensions",
-          countLabel: "extensions",
-          optionPrefix: ".",
-          panelLabel: "Extension options",
-          emptyOptionText: "No extensions available"
-        }) }}
-
-        {% set presenceFilterSummary = "All assets" %}
-        {% if filters.presence == 'present' %}
-          {% set presenceFilterSummary = "Present at last scan" %}
-        {% elif filters.presence == 'missing' %}
-          {% set presenceFilterSummary = "Missing at last scan" %}
-        {% endif %}
-        {{ dropdown.singleSelect({
-          id: "asset-presence-filter",
-          name: "presence",
-          label: "Show",
-          fieldClasses: "asset-viewer-filter-field",
-          options: [
-            { id: "asset-presence-option-all", value: "all", label: "All assets" },
-            { id: "asset-presence-option-present", value: "present", label: "Present at last scan" },
-            { id: "asset-presence-option-missing", value: "missing", label: "Missing at last scan" }
-          ],
-          selected: filters.presence,
-          summary: presenceFilterSummary,
-          optionIdPrefix: "asset-presence",
-          panelLabel: "Show options"
-        }) }}
-
-        {% set usageFilterSummary = "All assets" %}
-        {% if filters.usage == 'used' %}
-          {% set usageFilterSummary = "Used by a release" %}
-        {% elif filters.usage == 'unused' %}
-          {% set usageFilterSummary = "Not used by a release" %}
-        {% endif %}
-        {{ dropdown.singleSelect({
-          id: "asset-usage-filter",
-          name: "usage",
-          label: "Usage",
-          fieldClasses: "asset-viewer-filter-field",
-          options: [
-            { id: "asset-usage-option-all", value: "all", label: "All assets" },
-            { id: "asset-usage-option-used", value: "used", label: "Used by a release" },
-            { id: "asset-usage-option-unused", value: "unused", label: "Not used by a release" }
-          ],
-          selected: filters.usage,
-          summary: usageFilterSummary,
-          optionIdPrefix: "asset-usage",
-          panelLabel: "Usage options"
-        }) }}
-
-        {% set sortFilterSummary = "Filename" %}
-        {% if filters.sort == 'modified' %}
-          {% set sortFilterSummary = "Modified date" %}
-        {% elif filters.sort == 'size' %}
-          {% set sortFilterSummary = "File size" %}
-        {% elif filters.sort == 'category' %}
-          {% set sortFilterSummary = "Category & location" %}
-        {% endif %}
-        {{ dropdown.singleSelect({
-          id: "asset-sort-filter",
-          name: "sort",
-          label: "Sort by",
-          fieldClasses: "asset-viewer-filter-field",
-          options: [
-            { id: "asset-sort-option-filename", value: "filename", label: "Filename" },
-            { id: "asset-sort-option-modified", value: "modified", label: "Modified date" },
-            { id: "asset-sort-option-size", value: "size", label: "File size" },
-            { id: "asset-sort-option-category", value: "category", label: "Category & location" }
-          ],
-          selected: filters.sort,
-          summary: sortFilterSummary,
-          optionIdPrefix: "asset-sort",
-          panelLabel: "Sort by options"
-        }) }}
-
-        {% set orderFilterSummary = "Ascending" %}
-        {% if filters.order == 'desc' %}
-          {% set orderFilterSummary = "Descending" %}
-        {% endif %}
-        {{ dropdown.singleSelect({
-          id: "asset-order-filter",
-          name: "order",
-          label: "Order",
-          fieldClasses: "asset-viewer-filter-field",
-          options: [
-            { id: "asset-order-option-asc", value: "asc", label: "Ascending" },
-            { id: "asset-order-option-desc", value: "desc", label: "Descending" }
-          ],
-          selected: filters.order,
-          summary: orderFilterSummary,
-          optionIdPrefix: "asset-order",
-          panelLabel: "Order options"
-        }) }}
-        {% if filters.view == 'grid' %}
-          {% include "partials/asset-grid-details-control.njk" %}
-        {% endif %}
-
-      </form>
-      <noscript>
-             <button class="button button-primary" type="submit" form="asset-filters">Filter</button>
-      </noscript>
 
       {% if assets.length > 0 %}
         {% if completeCategorySurface %}
@@ -974,6 +814,175 @@
 
 {% endblock %}
 {% block overlay %}
+  {% set categoryFilterSummary = "All categories (" ~ categoryNavigation.totalCount ~ ")" %}
+  {% if filters.category == 'all' and filters.presence == 'missing' %}
+    {% set categoryFilterSummary = "Missing (" ~ categoryNavigation.missingCount ~ ")" %}
+  {% elif filters.category == 'uncategorized' %}
+    {% set categoryFilterSummary = "Uncategorized (" ~ categoryNavigation.uncategorizedCount ~ ")" %}
+  {% elif filters.category != 'all' %}
+    {% for cat in categoryNavigation.enabled %}
+      {% if cat.id == filters.category %}{% set categoryFilterSummary = cat.displayName ~ " (" ~ cat.assetCount ~ ")" %}{% endif %}
+    {% endfor %}
+    {% for cat in categoryNavigation.disabled %}
+      {% if cat.id == filters.category %}{% set categoryFilterSummary = cat.displayName ~ " (" ~ cat.assetCount ~ ") (disabled)" %}{% endif %}
+    {% endfor %}
+  {% endif %}
+
+  {% call dialog.render('project-assets-filter-dialog', 'Filter') %}
+    <form id="asset-filters" class="app-dialog-form project-form" method="get" action="/projects/{{ project.id }}/assets">
+      <div class="app-dialog-body">
+        <div class="page-defaults-grid">
+          {% if filters.view == 'list' or preserveViewQuery %}
+            <input type="hidden" name="view" value="{{ filters.view }}">
+          {% endif %}
+          {% if pageSize != 25 or preservePageSizeQuery %}
+            <input type="hidden" name="pageSize" value="{{ pageSize }}">
+          {% endif %}
+          {% if inheritedProjectAssetsFilterDefaults %}
+            <input type="hidden" name="inheritedFilterDefaults" value="{{ inheritedProjectAssetsFilterDefaults }}" data-project-assets-inherited-filter-defaults>
+          {% endif %}
+          {{ dropdown.singleSelect({
+            id: "asset-category-filter",
+            name: "category",
+            label: "Category",
+            fieldClasses: "app-dialog-field asset-viewer-filter-field asset-project-category-filter",
+            fieldAttributes: [["data-asset-category-filter", true]],
+            options: categoryFilterOptions,
+            optionIdPrefix: "asset-category",
+            summary: categoryFilterSummary,
+            panelLabel: "Category options"
+          }) }}
+
+          <div class="app-dialog-field field">
+            <label for="search">Search</label>
+            <input id="search" name="search" type="search" value="{{ filters.search or '' }}" maxlength="{{ searchMaxLength }}">
+          </div>
+
+          {% set tagFilterSelection = filters.tags or [] %}
+          {{ dropdown.multiSelect({
+            id: "asset-tag-filter",
+            name: "tag",
+            label: "Tag",
+            fieldClasses: "app-dialog-field asset-viewer-filter-field",
+            options: tagOptions,
+            optionIdPrefix: "asset-tag",
+            selectedValues: tagFilterSelection,
+            emptySummary: "All tags",
+            countLabel: "tags",
+            panelLabel: "Tag options",
+            emptyOptionText: "No tags available"
+          }) }}
+
+          {% set extensionFilterSelection = filters.extension or [] %}
+          {{ dropdown.multiSelect({
+            id: "asset-extension-filter",
+            name: "extension",
+            label: "Extension",
+            fieldClasses: "app-dialog-field asset-viewer-filter-field",
+            options: extensionChoices,
+            optionIdPrefix: "asset-extension",
+            selectedValues: extensionFilterSelection,
+            emptySummary: "All extensions",
+            countLabel: "extensions",
+            optionPrefix: ".",
+            panelLabel: "Extension options",
+            emptyOptionText: "No extensions available"
+          }) }}
+
+          {% set presenceFilterSummary = "All assets" %}
+          {% if filters.presence == 'present' %}
+            {% set presenceFilterSummary = "Present at last scan" %}
+          {% elif filters.presence == 'missing' %}
+            {% set presenceFilterSummary = "Missing at last scan" %}
+          {% endif %}
+          {{ dropdown.singleSelect({
+            id: "asset-presence-filter",
+            name: "presence",
+            label: "Show",
+            fieldClasses: "app-dialog-field asset-viewer-filter-field",
+            options: [
+              { id: "asset-presence-option-all", value: "all", label: "All assets" },
+              { id: "asset-presence-option-present", value: "present", label: "Present at last scan" },
+              { id: "asset-presence-option-missing", value: "missing", label: "Missing at last scan" }
+            ],
+            selected: filters.presence,
+            summary: presenceFilterSummary,
+            optionIdPrefix: "asset-presence",
+            panelLabel: "Show options"
+          }) }}
+
+          {% set usageFilterSummary = "All assets" %}
+          {% if filters.usage == 'used' %}
+            {% set usageFilterSummary = "Used by a release" %}
+          {% elif filters.usage == 'unused' %}
+            {% set usageFilterSummary = "Not used by a release" %}
+          {% endif %}
+          {{ dropdown.singleSelect({
+            id: "asset-usage-filter",
+            name: "usage",
+            label: "Usage",
+            fieldClasses: "app-dialog-field asset-viewer-filter-field",
+            options: [
+              { id: "asset-usage-option-all", value: "all", label: "All assets" },
+              { id: "asset-usage-option-used", value: "used", label: "Used by a release" },
+              { id: "asset-usage-option-unused", value: "unused", label: "Not used by a release" }
+            ],
+            selected: filters.usage,
+            summary: usageFilterSummary,
+            optionIdPrefix: "asset-usage",
+            panelLabel: "Usage options"
+          }) }}
+
+          {% set sortFilterSummary = "Filename" %}
+          {% if filters.sort == 'modified' %}
+            {% set sortFilterSummary = "Modified date" %}
+          {% elif filters.sort == 'size' %}
+            {% set sortFilterSummary = "File size" %}
+          {% elif filters.sort == 'category' %}
+            {% set sortFilterSummary = "Category & location" %}
+          {% endif %}
+          {{ dropdown.singleSelect({
+            id: "asset-sort-filter",
+            name: "sort",
+            label: "Sort by",
+            fieldClasses: "app-dialog-field asset-viewer-filter-field",
+            options: [
+              { id: "asset-sort-option-filename", value: "filename", label: "Filename" },
+              { id: "asset-sort-option-modified", value: "modified", label: "Modified date" },
+              { id: "asset-sort-option-size", value: "size", label: "File size" },
+              { id: "asset-sort-option-category", value: "category", label: "Category & location" }
+            ],
+            selected: filters.sort,
+            summary: sortFilterSummary,
+            optionIdPrefix: "asset-sort",
+            panelLabel: "Sort by options"
+          }) }}
+
+          {% set orderFilterSummary = "Ascending" %}
+          {% if filters.order == 'desc' %}
+            {% set orderFilterSummary = "Descending" %}
+          {% endif %}
+          {{ dropdown.singleSelect({
+            id: "asset-order-filter",
+            name: "order",
+            label: "Order",
+            fieldClasses: "app-dialog-field asset-viewer-filter-field",
+            options: [
+              { id: "asset-order-option-asc", value: "asc", label: "Ascending" },
+              { id: "asset-order-option-desc", value: "desc", label: "Descending" }
+            ],
+            selected: filters.order,
+            summary: orderFilterSummary,
+            optionIdPrefix: "asset-order",
+            panelLabel: "Order options"
+          }) }}
+        </div>
+      </div>
+    </form>
+    <form class="projects-filter-reset" method="get" action="{{ resetFiltersUrl }}">
+      <button class="button" type="submit" data-project-assets-reset>Reset filters</button>
+    </form>
+  {% endcall %}
   {% set currentCategoryId = '' %}
   {% set currentCategoryLabel = '' %}
   {% if filters.category != 'all' and filters.category != 'uncategorized' %}

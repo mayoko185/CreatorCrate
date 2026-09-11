@@ -93,7 +93,6 @@ describe('page defaults service', () => {
     expect(service.resolve('projectAssets', 'view')).toBe('grid');
     expect(service.resolve('projectAssets', 'gridSize')).toBe('default');
     expect(service.resolve('projectAssets', 'listSize')).toBe('large');
-    expect(service.resolve('projectAssets', 'gridDetails')).toBe('shown');
     expect(service.resolve('projectAssets', 'sort')).toBe('filename');
     expect(service.resolve('projectAssets', 'order')).toBe('asc');
     expect(service.resolve('projectAssets', 'pageSize')).toBe('25');
@@ -150,11 +149,6 @@ describe('page defaults service', () => {
         key: 'page_defaults.project_assets.list_size',
         values: ['compact', 'large'],
         fallback: 'large',
-      },
-      gridDetails: {
-        key: 'page_defaults.project_assets.grid_details',
-        values: ['shown', 'hidden'],
-        fallback: 'shown',
       },
       sort: {
         key: 'page_defaults.project_assets.sort',
@@ -369,11 +363,11 @@ describe('page defaults service', () => {
   });
 
   it('accepts valid Project Assets saved values', () => {
+    const obsoleteGridDetailsKey = 'page_defaults.project_assets.grid_details';
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.view.key, 'list');
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.gridSize.key, 'large');
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.listSize.key, 'compact');
-    expect(service.saveDefault('projectAssets', 'gridDetails', 'shown')).toBe('shown');
-    expect(service.saveDefault('projectAssets', 'gridDetails', 'hidden')).toBe('hidden');
+    repository.setValue(obsoleteGridDetailsKey, 'hidden');
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.sort.key, 'category');
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.order.key, 'desc');
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.pageSize.key, '100');
@@ -382,13 +376,14 @@ describe('page defaults service', () => {
       view: 'list',
       gridSize: 'large',
       listSize: 'compact',
-      gridDetails: 'hidden',
       sort: 'category',
       order: 'desc',
       pageSize: '100',
       extension: 'all',
       tag: 'all',
     });
+    expect(service.resolvePageDefaults('projectAssets')).not.toHaveProperty('gridDetails');
+    expect(repository.getValue(obsoleteGridDetailsKey)).toBe('hidden');
   });
 
   it('accepts valid Asset Viewer saved values, including project sorting', () => {
@@ -543,7 +538,6 @@ describe('page defaults service', () => {
       view: 'grid',
       gridSize: 'default',
       listSize: 'large',
-      gridDetails: 'shown',
       sort: 'filename',
       order: 'asc',
       pageSize: '25',
@@ -601,7 +595,7 @@ describe('page defaults service', () => {
       .toThrow(PageDefaultValidationError);
     expect(() => service.saveDefault('projectAssets', 'gridSize', 'extra-large'))
       .toThrow(PageDefaultValidationError);
-    expect(() => service.saveDefault('projectAssets', 'gridDetails', 'collapsed'))
+    expect(() => service.saveDefault('projectAssets', 'gridDetails', 'hidden'))
       .toThrow(PageDefaultValidationError);
     expect(() => service.saveDefault('projectAssets', 'listSize', 'default'))
       .toThrow(PageDefaultValidationError);
@@ -642,7 +636,6 @@ describe('page defaults service', () => {
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.view.key, 'list');
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.gridSize.key, 'large');
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.listSize.key, 'compact');
-    repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.gridDetails.key, 'hidden');
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.sort.key, 'size');
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.order.key, 'desc');
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.pageSize.key, '100');
@@ -656,7 +649,6 @@ describe('page defaults service', () => {
       view: 'grid',
       gridSize: 'compact',
       listSize: 'large',
-      gridDetails: 'hidden',
       sort: 'size',
       order: 'desc',
       pageSize: '10',
@@ -694,7 +686,6 @@ describe('page defaults service', () => {
       view: 'grid',
       gridSize: 'large',
       listSize: 'compact',
-      gridDetails: 'hidden',
       sort: 'modified',
       order: 'desc',
       pageSize: '50',
@@ -704,7 +695,6 @@ describe('page defaults service', () => {
       view: 'grid',
       gridSize: 'large',
       listSize: 'compact',
-      gridDetails: 'hidden',
       sort: 'modified',
       order: 'desc',
       pageSize: '50',
@@ -787,7 +777,6 @@ describe('page defaults service', () => {
       view: 'grid',
       gridSize: 'default',
       listSize: 'large',
-      gridDetails: 'shown',
       sort: 'filename',
       order: 'asc',
       pageSize: '25',
@@ -798,7 +787,6 @@ describe('page defaults service', () => {
       view: 'grid',
       gridSize: 'default',
       listSize: 'large',
-      gridDetails: 'shown',
       sort: 'filename',
       order: 'asc',
       pageSize: '25',
@@ -824,7 +812,6 @@ describe('page defaults service', () => {
       view: 'grid',
       gridSize: 'default',
       listSize: 'large',
-      gridDetails: 'shown',
       sort: 'filename',
       order: 'asc',
       pageSize: '25',

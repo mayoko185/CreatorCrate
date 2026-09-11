@@ -105,8 +105,8 @@
   {% set isArchived = projectArchived or releaseArchived %}
   {% set readOnly = isArchived or isPublished %}
   {% set projectLeadHref = "/projects/" ~ project.id if project and project.id else "" %}
-  {% set projectLeadLabel = "Project: " ~ project.title if project else "" %}
-  {% call pageHeading.render("", "", "", projectLeadHref, projectLeadLabel) %}
+  {% set projectLeadLabel = project.title if project else "" %}
+  {% call pageHeading.render("", "", "", projectLeadHref, projectLeadLabel, "", "chevron-left") %}
     {% if not readOnly %}
       <form id="release-assets-form" method="post" action="{{ pageUrl({}) }}" class="inline-form" data-asset-selection-form>
         <input type="hidden" name="_csrf" value="{{ _csrf }}">

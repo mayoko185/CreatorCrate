@@ -26,7 +26,6 @@ import {
   enhanceProjectAssetCategoryFilter,
 } from './dropdowns.js';
 import {
-  enhanceAssetGridDetails,
   enhanceAssetGridSize,
   enhanceAssetListSize,
   enhanceProjectGridSize,
@@ -461,8 +460,9 @@ export function createLiveRegionEngine(config) {
         onFormChange?.(state, form, event, engine);
         schedule(state, form);
       });
-      if (searchSelector) {
-        form.querySelector?.(searchSelector)?.addEventListener?.('input', () => {
+      if (searchSelector && form.querySelector?.(searchSelector)) {
+        form.addEventListener?.('input', (event) => {
+          if (!event.target?.matches?.(searchSelector)) return;
           schedule(state, form, debounceMs);
         });
       }
@@ -880,6 +880,7 @@ const releaseAssetsLiveEngine = createLiveRegionEngine({
 
 const PROJECT_ASSETS_LIVE_REGION_SELECTOR = '[data-project-assets-live-region]';
 const PROJECT_ASSETS_FILTER_SELECTOR = ['#asset-filters', '.page-size-form'];
+const PROJECT_ASSETS_RESET_FORM_SELECTOR = '#project-assets-filter-dialog .projects-filter-reset';
 const PROJECT_ASSETS_SEARCH_SELECTOR = '#search';
 const PROJECT_ASSETS_LIVE_STATUS_SELECTOR = '[data-project-assets-live-status]';
 const PROJECT_ASSETS_LIVE_STATE_ATTRIBUTE = 'data-project-assets-live-state';
@@ -1065,15 +1066,15 @@ function omitInheritedProjectAssetsFiltersForCategory(params, form) {
 
 function enhanceProjectAssetsLiveRegion(region) {
   enhancePreviewMedia(region);
+  enhanceAssetViewerInfoCards(region);
   enhanceNumberInputs(region);
   enhanceAssetSelection(region);
   enhanceAssetRenames(region);
   enhanceAssetGridSize(region);
-  enhanceAssetGridDetails(region);
   enhanceAssetListSize(region);
   enhanceAssetAutoRenameOrdering(region);
   enhanceAppConfirmationControls(region);
-  enhanceProjectAssetCategoryFilter(region);
+  enhanceProjectAssetCategoryFilter(liveRegionDocument(region));
   enhanceDropdowns(liveRegionDocument(region));
   enhanceSlideshow(liveRegionDocument(region));
   enhanceProjectAssetsPreviewSlideshow(region);
@@ -1082,8 +1083,10 @@ function enhanceProjectAssetsLiveRegion(region) {
 const projectAssetsLiveEngine = createLiveRegionEngine({
   regionSelector: PROJECT_ASSETS_LIVE_REGION_SELECTOR,
   formSelector: PROJECT_ASSETS_FILTER_SELECTOR,
+  formScope: 'document',
   searchSelector: PROJECT_ASSETS_SEARCH_SELECTOR,
   linkSelector: 'nav.view-switcher a, .pagination a, [data-project-assets-reset]',
+  linkScope: 'document',
   debounceMs: PROJECT_ASSETS_LIVE_DEBOUNCE_MS,
   defaultAction: '/projects',
   stateKey: '__creatorCrateProjectAssetsLiveFiltering',
@@ -1100,6 +1103,15 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
   },
   transformParams: omitInheritedProjectAssetsFiltersForCategory,
   onResponseParsed(state, parsed) {
+    reconcileExternalFilterForm(state, parsed, '#asset-filters');
+
+    const currentResetForm = state.document?.querySelector?.(PROJECT_ASSETS_RESET_FORM_SELECTOR);
+    const nextResetForm = parsed?.querySelector?.(PROJECT_ASSETS_RESET_FORM_SELECTOR);
+    const nextResetAction = nextResetForm?.getAttribute?.('action');
+    if (currentResetForm && nextResetAction !== null && nextResetAction !== undefined) {
+      currentResetForm.setAttribute?.('action', nextResetAction);
+    }
+
     const nextSequence = parsed.querySelector?.(`${SLIDESHOW_SCAFFOLD_SELECTOR} ${SLIDESHOW_SEQUENCE_SELECTOR}`);
     const currentSequence = state.document.querySelector?.(
       `${SLIDESHOW_SCAFFOLD_SELECTOR} ${SLIDESHOW_SEQUENCE_SELECTOR}`,

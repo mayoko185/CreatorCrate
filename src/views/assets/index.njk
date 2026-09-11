@@ -4,6 +4,7 @@
 {% import "partials/icons.njk" as icons %}
 {% import "partials/dialog.njk" as dialog %}
 {% import "partials/dropdown.njk" as dropdown %}
+{% import "partials/asset-information.njk" as assetInformation %}
 
 {% set page_title = "Asset Viewer" %}
 {% set currentView = presentation.view or filters.view %}
@@ -84,14 +85,6 @@
   {% endif %}
 {% endmacro %}
 
-{% macro renderCategory(asset) %}
-  {% if asset.category_display_name %}
-    {{ asset.category_display_name }}{% if asset.category_enabled == 0 %} <em class="asset-category-disabled-marker">(disabled)</em>{% endif %}
-  {% else %}
-    Uncategorized
-  {% endif %}
-{% endmacro %}
-
 {% macro renderListLocation(asset) %}
   {% if asset.category_directory_slug %}
     {{ asset.category_directory_slug }}{% if asset.nested_path %}/{{ asset.nested_path }}{% endif %}
@@ -101,18 +94,6 @@
     {{ asset.relative_path | replace('/' ~ asset.filename, '') }}
   {% else %}
     Project root
-  {% endif %}
-{% endmacro %}
-
-{% macro renderEffectiveTags(asset, listClass, emptyClass) %}
-  {% if asset.tags and asset.tags.length > 0 %}
-    <ul class="{{ listClass }}" aria-label="Effective tags">
-      {% for tag in asset.tags %}
-        <li>{{ tag.displayName }}{% if tag.origin == 'inherited' %} <span class="asset-tag-origin"><span class="sr-only">Inherited from </span>Project</span>{% endif %}</li>
-      {% endfor %}
-    </ul>
-  {% else %}
-    <span class="{{ emptyClass }}">No effective tags</span>
   {% endif %}
 {% endmacro %}
 
@@ -126,68 +107,6 @@
   {% else %}
     <span class="{{ emptyClass }}">Not in any release</span>
   {% endif %}
-{% endmacro %}
-
-{% macro renderGridAssetInfo(asset) %}
-  <div class="asset-viewer-grid-card-info" data-asset-info-card popover="manual" role="group" aria-label="Asset information">
-    <h3 class="asset-viewer-grid-card-info-heading">Asset information</h3>
-    <dl class="asset-viewer-grid-card-info-list">
-      <div class="asset-viewer-grid-card-info-row">
-        <dt>Filename</dt>
-        <dd>{{ asset.filename or '—' }}</dd>
-      </div>
-      <div class="asset-viewer-grid-card-info-row">
-        <dt>Project</dt>
-        <dd>{{ asset.project_title or '—' }}</dd>
-      </div>
-      <div class="asset-viewer-grid-card-info-row">
-        <dt>Category</dt>
-        <dd>{{ renderCategory(asset) }}</dd>
-      </div>
-      <div class="asset-viewer-grid-card-info-row">
-        <dt>Extension</dt>
-        <dd>{{ asset.extension or '—' }}</dd>
-      </div>
-      <div class="asset-viewer-grid-card-info-row">
-        <dt>Size</dt>
-        <dd>{{ asset.formattedSize or '—' }}</dd>
-      </div>
-      <div class="asset-viewer-grid-card-info-row">
-        <dt>Dimensions</dt>
-        <dd>{{ asset.formattedDimensions or '—' }}</dd>
-      </div>
-      <div class="asset-viewer-grid-card-info-row">
-        <dt>Modified</dt>
-        <dd>{{ asset.formattedModified or '—' }}</dd>
-      </div>
-      <div class="asset-viewer-grid-card-info-row">
-        <dt>Release usage</dt>
-        <dd>
-          {% if asset.release_titles and asset.release_titles.length > 0 %}
-            Used in {{ asset.release_titles.length }} release{% if asset.release_titles.length != 1 %}s{% endif %}
-          {% else %}
-            Not used by a release
-          {% endif %}
-        </dd>
-      </div>
-    </dl>
-
-    <div class="asset-viewer-grid-card-info-section">
-      <span class="asset-viewer-grid-card-info-section-label">Effective tags</span>
-      {{ renderEffectiveTags(asset, 'asset-viewer-grid-card-info-tags', 'asset-viewer-grid-card-info-empty') }}
-    </div>
-    <div class="asset-viewer-grid-card-info-section">
-      <span class="asset-viewer-grid-card-info-section-label">Project</span>
-      <span>
-        {% set status = asset.project_status %}
-        {% set projectStatusOption = asset.projectStatusOption %}
-        {% include "partials/status-badge.njk" %}
-        {% set projectType = asset.project_type %}
-        {% set projectTypeOption = asset.projectTypeOption %}
-        {% include "partials/project-type-badge.njk" %}
-      </span>
-    </div>
-  </div>
 {% endmacro %}
 
 {% macro renderGridPreview(asset, detailUrl, displayName) %}
@@ -211,7 +130,7 @@
     {% else %}
       <span class="asset-card-placeholder">Preview unavailable</span>
     {% endif %}
-    {{ renderGridAssetInfo(asset) }}
+    {{ assetInformation.render(asset) }}
   </div>
 {% endmacro %}
 
@@ -352,7 +271,7 @@
                   </div>
                   <div class="asset-list-card-meta asset-list-card-meta--category">
                     <dt>Category</dt>
-                    <dd>{{ renderCategory(asset) }}</dd>
+                    <dd>{{ assetInformation.renderCategory(asset) }}</dd>
                   </div>
                   <div class="asset-list-card-meta asset-list-card-meta--extension">
                     <dt>Extension</dt>
@@ -372,7 +291,7 @@
                   <section class="asset-list-card-association asset-list-card-association--tags">
                     <h3 class="asset-list-card-association-label">Effective tags</h3>
                     <div class="asset-list-card-association-content">
-                      {{ renderEffectiveTags(asset, 'asset-list-card-tags', 'asset-list-card-empty') }}
+                      {{ assetInformation.renderEffectiveTags(asset, 'asset-list-card-tags', 'asset-list-card-empty') }}
                     </div>
                   </section>
                   <section class="asset-list-card-association asset-list-card-association--releases">

@@ -1,0 +1,84 @@
+{% macro renderCategory(asset) %}
+  {% if asset.category_display_name %}
+    {{ asset.category_display_name }}{% if asset.category_enabled == 0 %} <em class="asset-category-disabled-marker">(disabled)</em>{% endif %}
+  {% else %}
+    Uncategorized
+  {% endif %}
+{% endmacro %}
+
+{% macro renderEffectiveTags(asset, listClass, emptyClass) %}
+  {% set effectiveTags = asset.effectiveTags if asset.effectiveTags is defined else asset.tags %}
+  {% if effectiveTags and effectiveTags.length > 0 %}
+    <ul class="{{ listClass }}" aria-label="Effective tags">
+      {% for tag in effectiveTags %}
+        <li>{{ tag.displayName }}{% if tag.origin == 'inherited' %} <span class="asset-tag-origin"><span class="sr-only">Inherited from </span>Project</span>{% endif %}</li>
+      {% endfor %}
+    </ul>
+  {% else %}
+    <span class="{{ emptyClass }}">No effective tags</span>
+  {% endif %}
+{% endmacro %}
+
+{% macro render(asset, options={}) %}
+  <div class="asset-viewer-grid-card-info" data-asset-info-card popover="manual" role="group" aria-label="Asset information">
+    <h3 class="asset-viewer-grid-card-info-heading">Asset information</h3>
+    <dl class="asset-viewer-grid-card-info-list">
+      <div class="asset-viewer-grid-card-info-row">
+        <dt>Filename</dt>
+        <dd>{{ asset.filename or '—' }}</dd>
+      </div>
+      {% if options.showProjectName != false %}
+        <div class="asset-viewer-grid-card-info-row">
+          <dt>Project</dt>
+          <dd>{{ asset.project_title or '—' }}</dd>
+        </div>
+      {% endif %}
+      <div class="asset-viewer-grid-card-info-row">
+        <dt>Category</dt>
+        <dd>{{ renderCategory(asset) }}</dd>
+      </div>
+      <div class="asset-viewer-grid-card-info-row">
+        <dt>Extension</dt>
+        <dd>{{ asset.extension or '—' }}</dd>
+      </div>
+      <div class="asset-viewer-grid-card-info-row">
+        <dt>Size</dt>
+        <dd>{{ asset.formattedSize or '—' }}</dd>
+      </div>
+      <div class="asset-viewer-grid-card-info-row">
+        <dt>Dimensions</dt>
+        <dd>{{ asset.formattedDimensions or '—' }}</dd>
+      </div>
+      <div class="asset-viewer-grid-card-info-row">
+        <dt>Modified</dt>
+        <dd>{{ asset.formattedModified or '—' }}</dd>
+      </div>
+      <div class="asset-viewer-grid-card-info-row">
+        <dt>Release usage</dt>
+        <dd>
+          {% if asset.release_titles and asset.release_titles.length > 0 %}
+            Used in {{ asset.release_titles.length }} release{% if asset.release_titles.length != 1 %}s{% endif %}
+          {% else %}
+            Not used by a release
+          {% endif %}
+        </dd>
+      </div>
+    </dl>
+
+    <div class="asset-viewer-grid-card-info-section">
+      <span class="asset-viewer-grid-card-info-section-label">Effective tags</span>
+      {{ renderEffectiveTags(asset, 'asset-viewer-grid-card-info-tags', 'asset-viewer-grid-card-info-empty') }}
+    </div>
+    <div class="asset-viewer-grid-card-info-section">
+      <span class="asset-viewer-grid-card-info-section-label">Project</span>
+      <span>
+        {% set status = asset.project_status %}
+        {% set projectStatusOption = asset.projectStatusOption %}
+        {% include "partials/status-badge.njk" %}
+        {% set projectType = asset.project_type %}
+        {% set projectTypeOption = asset.projectTypeOption %}
+        {% include "partials/project-type-badge.njk" %}
+      </span>
+    </div>
+  </div>
+{% endmacro %}

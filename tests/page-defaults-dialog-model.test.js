@@ -156,7 +156,6 @@ describe('page defaults dialog model', () => {
           view: 'grid',
           gridSize: 'default',
           listSize: 'large',
-          gridDetails: 'shown',
           sort: 'filename',
           order: 'asc',
           pageSize: '25',
@@ -167,10 +166,10 @@ describe('page defaults dialog model', () => {
       page: 'projectAssets',
       labels: {
         fields: {
-          view: 'View', gridSize: 'Grid size', listSize: 'List size', gridDetails: 'Grid card details', sort: 'Sort',
+          view: 'View', gridSize: 'Grid size', listSize: 'List size', sort: 'Sort',
           order: 'Order', pageSize: 'Page size', extension: 'Extension', tag: 'Tag',
         },
-        options: { gridDetails: { shown: 'Show details below previews', hidden: 'Hide details below previews' } },
+        options: {},
       },
       optionCatalogues,
     });
@@ -189,13 +188,7 @@ describe('page defaults dialog model', () => {
       selectedValue: 'grid',
     });
     expect(model.fields.find((field) => field.name === 'view')).not.toHaveProperty('multi');
-    expect(model.fields.find((field) => field.name === 'gridDetails')).toMatchObject({
-      selectedValue: 'shown',
-      options: [
-        { value: 'shown', label: 'Show details below previews' },
-        { value: 'hidden', label: 'Hide details below previews' },
-      ],
-    });
+    expect(model.fields.map((field) => field.name)).not.toContain('gridDetails');
   });
 
   it('marks only Asset Viewer Extension and Tag as multi-select fields', () => {

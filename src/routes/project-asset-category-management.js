@@ -101,7 +101,7 @@ function renderCategoryAssetsPage(req, res, next, project, {
     categoryManagementEnabledControl: enabledControl,
     allowSavedDefaultsRedirect: false,
     next,
-  });
+  }).catch(next);
 }
 
 function sendEnhancedCategoryManagementResponse(req, res, next, project, {

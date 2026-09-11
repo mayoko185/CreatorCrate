@@ -71,7 +71,6 @@ import {
 } from './client/dropdowns.js';
 
 import {
-  enhanceAssetGridDetails,
   enhanceAssetGridSize,
   enhanceAssetListSize,
   enhanceProjectGridSize,
@@ -147,7 +146,6 @@ export {
   AUTO_REFRESH_INTERVAL_MS,
   enhanceLogViewerAutoRefresh,
   formatLogTimestamp,
-  enhanceAssetGridDetails,
   enhanceAssetGridSize,
   enhanceAssetListSize,
   enhanceProjectGridSize,
@@ -215,7 +213,6 @@ if (typeof document !== 'undefined') {
     enhanceAssetSelection(document);
     enhanceAssetRenames(document);
     enhanceAssetGridSize(document);
-    enhanceAssetGridDetails(document);
     enhanceAssetListSize(document);
     enhanceProjectGridSize(document);
     enhanceProjectAssetCategoryFilter(document);

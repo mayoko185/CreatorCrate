@@ -579,10 +579,12 @@ describe('Releases live filtering enhancement', () => {
       .mockResolvedValue(responseFor('after-search', 'http://creatorcrate.test/releases/7/assets?view=grid&pageSize=50&search=needle&extension=jpg&category=3'));
 
     expect(enhanceReleaseAssetsLiveFiltering(initial.document)).toBe(2);
-    expect(initial.filter.listeners).toHaveLength(2);
+    expect(initial.filter.listeners).toHaveLength(3);
+    expect(initial.filter.listeners.filter(({ type }) => type === 'input')).toHaveLength(1);
     expect(initial.region.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
     expect(enhanceReleaseAssetsLiveFiltering(initial.document)).toBe(2);
-    expect(initial.filter.listeners).toHaveLength(2);
+    expect(initial.filter.listeners).toHaveLength(3);
+    expect(initial.filter.listeners.filter(({ type }) => type === 'input')).toHaveLength(1);
 
     initial.extensionPng.checked = false;
     initial.extensionJpg.checked = true;
@@ -598,7 +600,8 @@ describe('Releases live filtering enhancement', () => {
     expect(requested.searchParams.has('page')).toBe(false);
     expect(requested.searchParams.has('selectedAssetIds')).toBe(false);
     expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(afterExtension.region);
-    expect(afterExtension.filter.listeners).toHaveLength(2);
+    expect(afterExtension.filter.listeners).toHaveLength(3);
+    expect(afterExtension.filter.listeners.filter(({ type }) => type === 'input')).toHaveLength(1);
     expect(afterExtension.region.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
 
     afterExtension.categoryThree.checked = false;
@@ -626,7 +629,8 @@ describe('Releases live filtering enhancement', () => {
     expect(requested.searchParams.get('category')).toBe('4');
     expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(afterSearch.region);
     expect(enhanceReleaseAssetsLiveFiltering(initial.document)).toBe(2);
-    expect(afterSearch.filter.listeners).toHaveLength(2);
+    expect(afterSearch.filter.listeners).toHaveLength(3);
+    expect(afterSearch.filter.listeners.filter(({ type }) => type === 'input')).toHaveLength(1);
 
     afterSearch.categoryFour.checked = false;
     afterSearch.categoryThree.checked = true;

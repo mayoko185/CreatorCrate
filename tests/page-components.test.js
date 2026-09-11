@@ -580,6 +580,23 @@ describe('Phase 10.5A: Shared page-level components', () => {
       expect(html.indexOf('page-heading-lead')).toBeLessThan(html.indexOf('page-heading-actions'));
     });
 
+    it('renders an icon-only lead with the shared hover and focus tooltip contract', () => {
+      const env = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: true });
+      const html = env.renderString(
+        '{% import "partials/page-heading.njk" as pageHeading %}{{ pageHeading.render("", "", "", "/projects/7", "Long Project Title", "", "chevron-left") }}',
+        {}
+      );
+      const lead = html.match(/<a class="button button-secondary page-heading-lead page-heading-lead--icon asset-tooltip asset-tooltip--left"[\s\S]*?<\/a>/)?.[0] || '';
+
+      expect(lead).toContain('href="/projects/7"');
+      expect(lead).toContain('aria-label="Long Project Title"');
+      expect(lead).toContain('data-tooltip="Long Project Title"');
+      expect(lead).not.toContain('title=');
+      expect(lead).toMatch(/<svg[^>]*aria-hidden="true"[^>]*focusable="false"/);
+      expect(lead).toContain('<path d="M15 18l-6-6 6-6"/>');
+      expect(lead.replace(/<[^>]+>/g, '').trim()).toBe('');
+    });
+
     it('renders the page-heading wrapper for a lead-only invocation', () => {
       const env = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: true });
       const html = env.renderString(

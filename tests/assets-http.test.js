@@ -14,7 +14,10 @@ import { createReleaseService } from '../src/services/release-service.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { AssetActionError } from '../src/services/asset-action-service.js';
 import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
-import { buildBrowserRenderModel } from '../src/routes/project-assets-shared.js';
+import {
+  buildBrowserRenderModel,
+  renderProjectAssetsPage,
+} from '../src/routes/project-assets-shared.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 import { makeZip } from './helpers/zip-fixture.js';
 import slugify from '@sindresorhus/slugify';
@@ -211,6 +214,21 @@ describe('asset browser HTTP workflow', () => {
     return match ? match[2].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim() : null;
   }
 
+  function expectProjectReturnLead(html, { href, title, extraClass = '' }) {
+    const heading = html.match(/<header class="page-heading">[\s\S]*?<\/header>/)?.[0] || '';
+    const classSuffix = extraClass ? ` ${extraClass}` : '';
+    const lead = heading.match(new RegExp(
+      `<a class="button button-secondary page-heading-lead page-heading-lead--icon asset-tooltip asset-tooltip--left${classSuffix}" href="${href}" aria-label="${title}" data-tooltip="${title}">([\\s\\S]*?)<\\/a>`
+    ));
+
+    expect(lead).not.toBeNull();
+    expect(lead[0]).not.toContain('title=');
+    expect(lead[1]).toMatch(/<svg[^>]*aria-hidden="true"[^>]*focusable="false"/);
+    expect(lead[1]).toContain('<path d="M15 18l-6-6 6-6"/>');
+    expect(lead[1].replace(/<[^>]+>/g, '').trim()).toBe('');
+    expect(heading).not.toContain(`Project: ${title}`);
+  }
+
   function assetCardHtml(html, assetId) {
     return html.match(new RegExp(`<article\\b[^>]*data-asset-id="${assetId}"[\\s\\S]*?<\\/article>`))?.[0] || '';
   }
@@ -349,7 +367,7 @@ describe('asset browser HTTP workflow', () => {
     const pageHeading = res2.text.match(/<header class="page-heading">([\s\S]*?)<\/header>/)?.[1] || '';
     const headingActions = pageHeading.match(/<div class="page-heading-actions">([\s\S]*?)<\/div>/)?.[1] || '';
     const displayActions = projectAssetsDisplayActions(res2.text);
-    expect(pageHeading).toContain(`<a class="button button-secondary page-heading-lead" href="/projects/${id}">Project: Browser Title Test</a>`);
+    expectProjectReturnLead(res2.text, { href: `/projects/${id}`, title: 'Browser Title Test' });
     expect(pageHeading.indexOf('page-heading-lead')).toBeLessThan(pageHeading.indexOf('<div class="page-heading-actions">'));
     expect(headingActions).toContain('Scan Now');
     expect(headingActions).not.toContain('Edit project');
@@ -361,6 +379,329 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).toContain('No tags available');
     expect(assetExtensionFilterHtml(res2.text)).toContain('data-cc-dropdown-mode="multiple"');
     expect(assetExtensionFilterHtml(res2.text)).not.toMatch(/name="extension"[^>]*checked/);
+  });
+
+  it('enriches ordinary and complete-category assets at the central Project Assets render boundary', async () => {
+    const created = await createProject('Central Asset Information Enrichment');
+    const id = Number(created.headers.location.replace('/projects/', ''));
+    const project = app.locals.projectService.findById(id);
+    const [category] = assetCategoryRepo.listProjectCategories(id);
+    const assignedTags = [{ displayName: 'Assigned only' }];
+    const asset = {
+      id: 701,
+      project_id: id,
+      filename: 'central.png',
+      extension: 'png',
+      relative_path: `${category.directory_slug}/central.png`,
+      category_id: category.id,
+      category: {
+        id: category.id,
+        displayName: category.display_name,
+        directorySlug: category.directory_slug,
+        enabled: true,
+      },
+      tags: assignedTags,
+      is_present: 1,
+    };
+    const browserData = {
+      assets: [asset],
+      total: 1,
+      page: 1,
+      pageSize: 25,
+      pageCount: 1,
+      filters: {
+        category: 'all',
+        tag: null,
+        search: null,
+        extension: null,
+        presence: 'all',
+        usage: 'all',
+        sort: 'filename',
+        order: 'asc',
+        view: 'grid',
+      },
+      context: {},
+      extensionChoices: ['png'],
+      tagOptions: [],
+      categoryNavigation: {
+        totalCount: 1,
+        missingCount: 0,
+        uncategorizedCount: 0,
+        enabled: [],
+        disabled: [],
+      },
+      emptyState: null,
+      isArchived: false,
+      releaseTargets: [],
+      searchMaxLength: 100,
+    };
+    const enrichedAsset = {
+      ...asset,
+      formattedDimensions: '640 × 480',
+      formattedModified: 'Sep 10, 2026 12:34 PM',
+      formattedSize: '1.5 KB',
+      release_titles: [{ id: 9, title: 'Central Release' }],
+      effectiveTags: [
+        { displayName: 'Inherited project tag', origin: 'inherited' },
+        { displayName: 'Assigned only', origin: 'direct' },
+      ],
+    };
+    const enrichProjectAssetInformationAssets = vi.fn(async (_project, assets) => (
+      assets.map((candidate) => ({ ...enrichedAsset, tags: candidate.tags }))
+    ));
+    const workflowQueryService = {
+      getProjectAssetsDefaultExtensions: () => ['png'],
+      getProjectTagFilterOptions: () => [],
+      getProjectAssetBrowser: vi.fn(() => browserData),
+      getProjectAutoRenameCategory: vi.fn(() => ({
+        assets: [asset],
+        total: 1,
+        view: 'grid',
+        orderedAssetIds: [asset.id],
+        effectiveCategory: category,
+      })),
+      enrichProjectAssetInformationAssets,
+    };
+    const renderCentral = async (query) => {
+      let model = null;
+      const res = {
+        status: vi.fn(function status() { return this; }),
+        render: vi.fn((_template, renderedModel) => {
+          model = renderedModel;
+          return renderedModel;
+        }),
+        redirect: vi.fn(),
+      };
+      await renderProjectAssetsPage({
+        params: { id: String(id) },
+        query,
+        app: { locals: app.locals },
+      }, res, {
+        appName: 'CreatorCrate',
+        projectService: app.locals.projectService,
+        workflowQueryService,
+        assetBrowserPreferenceService: app.locals.assetBrowserPreferenceService,
+        projectAssetCategoryService: app.locals.projectAssetCategoryService,
+        next: vi.fn(),
+      });
+      return model;
+    };
+
+    const ordinaryModel = await renderCentral({ category: 'all', view: 'grid' });
+    expect(ordinaryModel.completeCategorySurface).toBe(false);
+    expect(ordinaryModel.assets[0]).toMatchObject({
+      formattedDimensions: '640 × 480',
+      formattedModified: 'Sep 10, 2026 12:34 PM',
+      formattedSize: '1.5 KB',
+      release_titles: [{ id: 9, title: 'Central Release' }],
+      effectiveTags: enrichedAsset.effectiveTags,
+    });
+    expect(ordinaryModel.assets[0].tags).toBe(assignedTags);
+
+    const completeCategoryModel = await renderCentral({ category: String(category.id), view: 'grid' });
+    expect(completeCategoryModel.completeCategorySurface).toBe(true);
+    expect(completeCategoryModel.assets[0]).toMatchObject({
+      formattedDimensions: '640 × 480',
+      formattedModified: 'Sep 10, 2026 12:34 PM',
+      formattedSize: '1.5 KB',
+      release_titles: [{ id: 9, title: 'Central Release' }],
+      effectiveTags: enrichedAsset.effectiveTags,
+    });
+    expect(completeCategoryModel.assets[0].tags).toBe(assignedTags);
+    expect(enrichProjectAssetInformationAssets).toHaveBeenNthCalledWith(1, project, [asset]);
+    expect(enrichProjectAssetInformationAssets).toHaveBeenNthCalledWith(2, project, [asset]);
+  });
+
+  it('enriches every direct Project Assets action and error rerender exactly once', async () => {
+    const projectResponse = await createProject('Direct Rerender Enrichment');
+    const id = Number(projectResponse.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Direct Rerender Enrichment');
+    const asset = writeIndexedAsset(id, projectDir, 'ready.png', await makePng(80, 60));
+    const inheritedTag = app.locals.tagService.createTag({ name: 'Inherited information tag' });
+    const directTag = app.locals.tagService.createTag({ name: 'Direct information tag' });
+    app.locals.projectTagService.replaceProjectTags(id, [inheritedTag.id]);
+    app.locals.assetTagService.replaceAssetTags(asset.id, [directTag.id]);
+    const releaseId = await createEmptyRelease(id, 'Direct Rerender Release');
+
+    const getImageDimensions = vi.fn(async () => ({ width: 80, height: 60 }));
+    const appDataRoot = path.join(tmpDir, 'direct-rerender-app');
+    fs.mkdirSync(appDataRoot, { recursive: true });
+    const { csrfPepper } = ensureAuthEnablement(appDataRoot);
+    const directApp = createApp(
+      { appName: 'CreatorCrate', db, projectsRoot, previewRoot },
+      {
+        appDataRoot,
+        authState: { csrfPepper },
+        assetWorkflowMetadataService: { getImageDimensions },
+      },
+    );
+    const { agent: directAgent, csrfToken: directCsrf } = await getDisabledModeCsrf(
+      directApp,
+      appDataRoot,
+    );
+
+    const renderedModels = [];
+    const originalRender = directApp.response.render;
+    const renderSpy = vi.spyOn(directApp.response, 'render').mockImplementation(function render(view, options, callback) {
+      if (view === 'projects/assets.njk') renderedModels.push(options);
+      return originalRender.call(this, view, options, callback);
+    });
+
+    try {
+      await directAgent.post(`/projects/${id}/assets/add-to-release`).type('form').send({
+        releaseId: String(releaseId), category: 'all', _csrf: directCsrf,
+      }).expect(422);
+      await directAgent.post(`/projects/${id}/assets/create-release`).type('form').send({
+        category: 'all', _csrf: directCsrf,
+      }).expect(422);
+      await directAgent.post(`/projects/${id}/assets/move-selected`).type('form').send({
+        category: 'all', destinationCategory: 'uncategorized', _csrf: directCsrf,
+      }).expect(422);
+      await directAgent.post(`/projects/${id}/assets/copy-selected`).type('form').send({
+        category: 'all', destinationCategory: 'uncategorized', _csrf: directCsrf,
+      }).expect(422);
+      await directAgent.post(`/projects/${id}/assets/delete-selected`).type('form').send({
+        category: 'all', _csrf: directCsrf,
+      }).expect(422);
+      await directAgent.post(`/projects/${id}/assets/auto-rename/preview`).type('form').send({
+        category: 'all', categoryId: 'invalid', _csrf: directCsrf,
+      }).expect(422);
+      await directAgent.post(`/projects/${id}/assets/${asset.id}/rename`).type('form').send({
+        filename: 'bad/name', origin: 'assets', category: 'all', _csrf: directCsrf,
+      }).expect(422);
+    } finally {
+      renderSpy.mockRestore();
+    }
+
+    expect(renderedModels).toHaveLength(7);
+    expect(getImageDimensions).toHaveBeenCalledTimes(7);
+    expect(renderedModels.map((model) => Boolean(
+      model.bulkError
+      || model.bulkMoveError
+      || model.copyError
+      || model.deleteError
+      || model.autoRenameError
+      || model.renameFailure
+    ))).toEqual([true, true, true, true, true, true, true]);
+    for (const model of renderedModels) {
+      expect(model.filters.category).toBe('all');
+      expect(model.assets).toHaveLength(1);
+      expect(model.assets[0]).toMatchObject({
+        id: asset.id,
+        formattedDimensions: '80 × 60',
+        tags: [{ displayName: 'Direct information tag' }],
+        effectiveTags: [
+          { displayName: 'Direct information tag', origin: 'direct' },
+          { displayName: 'Inherited information tag', origin: 'inherited' },
+        ],
+      });
+    }
+  });
+
+  it('forwards an Auto Rename render-model failure after enrichment exactly once', async () => {
+    const projectResponse = await createProject('Auto Rename Render Failure');
+    const id = Number(projectResponse.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Auto Rename Render Failure');
+    const asset = writeIndexedAsset(id, projectDir, 'ready.png', await makePng(80, 60));
+    const [category] = assetCategoryRepo.listProjectCategories(id);
+    const postEnrichmentFailure = new Error('post-enrichment extension catalogue failure');
+    const enrichProjectAssetInformationAssets = vi.fn(async (_project, assets) => assets);
+    const getProjectAssetsDefaultExtensions = vi.fn(() => {
+      expect(enrichProjectAssetInformationAssets).toHaveBeenCalledTimes(1);
+      throw postEnrichmentFailure;
+    });
+    const workflowQueryService = {
+      getProjectAutoRenameCategory: vi.fn(() => null),
+      getProjectAssetBrowser: vi.fn(() => ({
+        assets: [asset],
+        total: 1,
+        page: 1,
+        pageSize: 25,
+        pageCount: 1,
+        filters: {
+          category: 'all',
+          tag: null,
+          search: null,
+          extension: null,
+          presence: 'all',
+          usage: 'all',
+          sort: 'filename',
+          order: 'asc',
+          view: 'grid',
+        },
+        extensionChoices: ['png'],
+        tagOptions: [],
+        categoryNavigation: {
+          totalCount: 1,
+          missingCount: 0,
+          uncategorizedCount: 0,
+          enabled: [{
+            id: category.id,
+            displayName: category.display_name,
+            directorySlug: category.directory_slug,
+            assetCount: 1,
+          }],
+          disabled: [],
+        },
+        emptyState: null,
+        isArchived: false,
+        releaseTargets: [],
+        searchMaxLength: 100,
+      })),
+      enrichProjectAssetInformationAssets,
+      getProjectAssetsDefaultExtensions,
+      getProjectTagFilterOptions: vi.fn(() => []),
+    };
+    const errorSpy = vi.fn();
+    const applicationLogger = {
+      error: errorSpy,
+      info: vi.fn(),
+      warn: vi.fn(),
+      rebindRepository: vi.fn(),
+      prune: vi.fn(),
+    };
+    const appDataRoot = path.join(tmpDir, 'auto-rename-render-failure-app');
+    fs.mkdirSync(appDataRoot, { recursive: true });
+    const { csrfPepper } = ensureAuthEnablement(appDataRoot);
+    const failingApp = createApp(
+      { appName: 'CreatorCrate', db, projectsRoot, previewRoot },
+      {
+        appDataRoot,
+        authState: { csrfPepper },
+        workflowQueryService,
+        applicationLogger,
+      },
+    );
+    const { agent: failingAgent, csrfToken: failingCsrf } = await getDisabledModeCsrf(
+      failingApp,
+      appDataRoot,
+    );
+    const renderedViews = [];
+    const originalRender = failingApp.response.render;
+    const renderSpy = vi.spyOn(failingApp.response, 'render').mockImplementation(function render(view, options, callback) {
+      renderedViews.push(view);
+      return originalRender.call(this, view, options, callback);
+    });
+
+    try {
+      const response = await failingAgent
+        .post(`/projects/${id}/assets/auto-rename/preview`)
+        .type('form')
+        .send({ category: 'all', categoryId: 'invalid', _csrf: failingCsrf })
+        .expect(500);
+
+      expect(response.text).toContain('Something went wrong.');
+      expect(enrichProjectAssetInformationAssets).toHaveBeenCalledTimes(1);
+      expect(getProjectAssetsDefaultExtensions).toHaveBeenCalledTimes(1);
+      expect(errorSpy).toHaveBeenCalledTimes(1);
+      expect(errorSpy).toHaveBeenCalledWith(expect.objectContaining({
+        event: 'runtime.http.unhandled_error',
+        error: postEnrichmentFailure,
+      }));
+      expect(renderedViews).toEqual(['error.njk']);
+    } finally {
+      renderSpy.mockRestore();
+    }
   });
 
   it('does not expose the obsolete project Watermark discovery route', async () => {
@@ -395,7 +736,7 @@ describe('asset browser HTTP workflow', () => {
     await agent.post(`/projects/${id}/archive`).type('form').send({ _csrf: csrfToken }).expect(302);
     const archived = await agent.get(`/projects/${id}/assets`).expect(200);
     const archivedHeading = archived.text.match(/<header class="page-heading">([\s\S]*?)<\/header>/)?.[1] || '';
-    expect(archivedHeading).toContain(`<a class="button button-secondary page-heading-lead" href="/projects/${id}">Project: Missing Cleanup Controls</a>`);
+    expectProjectReturnLead(archived.text, { href: `/projects/${id}`, title: 'Missing Cleanup Controls' });
     expect(archivedHeading).not.toContain('<div class="page-heading-actions">');
     expect(archived.text).not.toContain('Back to Project');
     expect(archived.text).not.toContain('remove-missing-assets-dialog');
@@ -638,7 +979,7 @@ describe('asset browser HTTP workflow', () => {
     expect(style).toMatch(/\.asset-tooltip\[data-tooltip\]::after[\s\S]*pointer-events:\s*none/);
   });
 
-  it('renders page-local assigned asset tags in grid and list views without changing asset results', async () => {
+  it('renders page-local assigned asset tags in list view without changing grid asset results', async () => {
     const res = await createProject('Asset Tag Browser Display');
     const id = Number(res.headers.location.replace('/projects/', ''));
     const assets = ['a.txt', 'b.txt', 'c.txt', 'd.txt'].map((filename) => assetRepo.upsert(id, filename, {
@@ -662,19 +1003,13 @@ describe('asset browser HTTP workflow', () => {
       .expect(200);
     const untaggedCard = assetCardHtml(gridPageOne.text, assets[0].id);
     const taggedCard = assetCardHtml(gridPageOne.text, assets[1].id);
-    const taggedCardTags = assetTagListHtml(taggedCard, 'asset-card-tags');
 
     expectNoAssetResultsCount(gridPageOne.text);
     expect(gridPageOne.text).toContain('<span class="selected-count" data-selected-count data-selected-total="2">0 of 2 selected</span>');
-    expect(untaggedCard).not.toContain('asset-card-tags');
-    expect(taggedCardTags.indexOf('Alpha Display')).toBeLessThan(taggedCardTags.indexOf('Shared Display'));
-    expect(taggedCardTags.indexOf('Shared Display')).toBeLessThan(taggedCardTags.indexOf('Zebra Display'));
-    expect(taggedCardTags).not.toContain('Project Only Display');
-    expect(taggedCardTags).not.toContain('normalized_name');
-    expect(taggedCardTags).not.toContain(`>${alpha.id}<`);
-    expect(taggedCardTags).not.toContain(`>${shared.id}<`);
-    expect(taggedCardTags).not.toContain(`>${zebra.id}<`);
-    expect(taggedCardTags).not.toContain('href=');
+    for (const card of [untaggedCard, taggedCard]) {
+      expect(card).toContain('data-asset-info-card popover="manual"');
+      expect(card).not.toContain('class="asset-card-body');
+    }
 
     const listPageOne = await agent
       .get(`/projects/${id}/assets?sort=filename&order=asc&page=1&pageSize=2&view=list`)
@@ -692,13 +1027,15 @@ describe('asset browser HTTP workflow', () => {
     const gridPageTwo = await agent
       .get(`/projects/${id}/assets?sort=filename&order=asc&page=2&pageSize=2`)
       .expect(200);
-    const sharedCard = assetCardHtml(gridPageTwo.text, assets[2].id);
-    const secondUntaggedCard = assetCardHtml(gridPageTwo.text, assets[3].id);
-
-    expect(sharedCard).toContain('Shared Display');
-    expect(sharedCard).not.toContain('Alpha Display');
-    expect(sharedCard).not.toContain('Zebra Display');
-    expect(secondUntaggedCard).not.toContain('asset-card-tags');
+    const pageTwoCards = [
+      assetCardHtml(gridPageTwo.text, assets[2].id),
+      assetCardHtml(gridPageTwo.text, assets[3].id),
+    ];
+    for (const card of pageTwoCards) {
+      expect(card).toContain('data-asset-viewer-preview');
+      expect(card).toContain('data-asset-info-card popover="manual"');
+      expect(card).not.toContain('class="asset-card-body');
+    }
     expect((gridPageTwo.text.match(/data-asset-id="\d+"/g) || [])).toHaveLength(2);
     expect(gridPageTwo.text).toContain('name="tag"');
     expect(gridPageTwo.text).not.toContain('sort=tag');
@@ -791,7 +1128,7 @@ describe('asset browser HTTP workflow', () => {
     expect(tagOptions.indexOf('Shared Filter')).toBeLessThan(tagOptions.indexOf('Zebra Filter'));
     expect(filter).not.toContain('normalized_name');
     expect(pageSizeForm).toContain(`<input type="hidden" name="tag" value="${shared.id}">`);
-    const filterForm = pageOne.text.match(/<form class="filters asset-viewer-filters asset-viewer-filters--project-assets" method="get" action="\/projects\/\d+\/assets" id="asset-filters">[\s\S]*?<\/form>/)?.[0] || '';
+    const filterForm = pageOne.text.match(/<form id="asset-filters" class="app-dialog-form project-form" method="get" action="\/projects\/\d+\/assets">[\s\S]*?<\/form>/)?.[0] || '';
     expect(filterForm).toContain('<input type="hidden" name="view" value="list">');
     expect(filterForm).not.toContain('name="page"');
     const ids = [...pageOne.text.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]);
@@ -821,8 +1158,8 @@ describe('asset browser HTTP workflow', () => {
     const multipleNextMatch = multiple.text.match(/<a href="([^"]+)" class="pagination-next">Next/);
     const multipleNextUrl = new URL(decodeHtmlHref(multipleNextMatch[1]), 'http://localhost');
     const multiplePageSizeForm = multiple.text.match(/<form class="page-size-form"[\s\S]*?<\/form>/)?.[0] || '';
-    const resetAnchor = multiple.text.match(/<a\b[^>]*data-project-assets-reset[^>]*>/)?.[0] || '';
-    const resetHref = resetAnchor.match(/\bhref="([^"]+)"/)?.[1];
+    const resetForm = multiple.text.match(/<form class="projects-filter-reset"[^>]*>/)?.[0] || '';
+    const resetHref = resetForm.match(/\baction="([^"]+)"/)?.[1];
 
     expect((multiple.text.match(/<li class="asset-list-item/g) || [])).toHaveLength(2);
     expect(multiple.text).toContain('b.txt');
@@ -1022,7 +1359,7 @@ describe('asset browser HTTP workflow', () => {
       writeIndexedAsset(id, getProjectDir(title), 'chosen.png', 'png');
       writeStoredAssetDefault('view', otherView);
       const rendered = await agent.get(`/projects/${id}/assets?view=${view}&search=nomatch&sort=modified&order=asc&pageSize=100&page=3`).expect(200);
-      const links = [...rendered.text.matchAll(/href="([^"]+)"/g)]
+      const links = [...rendered.text.matchAll(/(?:href|action)="([^"]+)"/g)]
         .map((match) => decodeHtmlHref(match[1])).filter((href) => href.includes('resetFilters='));
       expect(links).toEqual(Array(2).fill(`/projects/${id}/assets?resetFilters=1&view=${view}`));
       // Change defaults after rendering: the old link must not carry saved state.
@@ -1523,7 +1860,8 @@ describe('asset browser HTTP workflow', () => {
         .send({
           view: 'list',
           gridSize: 'large',
-          listSize: 'compact', gridDetails: 'shown',
+          listSize: 'compact',
+          gridDetails: 'hidden',
           sort: 'category',
           order: 'desc',
           pageSize: '50',
@@ -1539,6 +1877,7 @@ describe('asset browser HTTP workflow', () => {
       );
       expect(save.headers.location).not.toContain('gridSize');
       expect(save.headers.location).not.toContain('listSize');
+      expect(app.locals.appMetaRepository.getValue('page_defaults.project_assets.grid_details')).toBeUndefined();
       expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
         .get(PAGE_DEFAULT_DEFINITIONS.projectAssets.view.key).value).toBe('list');
       expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
@@ -1603,7 +1942,7 @@ describe('asset browser HTTP workflow', () => {
       const project = await createProject('Project Assets Defaults Scope Control');
       const id = Number(project.headers.location.replace('/projects/', ''));
       const values = {
-        view: 'list', gridSize: 'large', listSize: 'compact', gridDetails: 'shown', sort: 'category', order: 'desc',
+        view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc',
         pageSize: '50', extension: 'all', tag: 'all', returnTo: `/projects/${id}/assets`, _csrf: csrfToken,
       };
       const readDefaultsDialog = (html) => (
@@ -1663,14 +2002,15 @@ describe('asset browser HTTP workflow', () => {
       expect(assetViewerDefaults.text).not.toContain('data-project-assets-defaults-scope');
     });
 
-    it('serializes only the two resolved nine-value scope sets and aligns loadedScope', async () => {
+    it('serializes only the two resolved eight-value scope sets and aligns loadedScope', async () => {
       const project = await createProject('Project Assets Defaults Scope Data');
       const id = Number(project.headers.location.replace('/projects/', ''));
       const globalValues = {
-        view: 'grid', gridSize: 'large', listSize: 'compact', gridDetails: 'shown', sort: 'modified', order: 'desc',
+        view: 'grid', gridSize: 'large', listSize: 'compact', sort: 'modified', order: 'desc',
         pageSize: '50', extension: 'all', tag: 'all',
       };
       for (const [option, value] of Object.entries(globalValues)) saveAssetDefault(option, value);
+      app.locals.appMetaRepository.setValue('page_defaults.project_assets.grid_details', 'hidden');
 
       const readPayload = (html) => JSON.parse(
         html.match(/<script type="application\/json" data-project-assets-default-values>([\s\S]*?)<\/script>/)?.[1] || '{}',
@@ -1683,21 +2023,26 @@ describe('asset browser HTTP workflow', () => {
       expect(Object.keys(globalPayload.project)).toEqual(Object.keys(globalValues));
       expect(globalPayload.global).toEqual(globalValues);
       expect(globalPayload.project).toEqual(globalValues);
+      expect(globalPayload.global).not.toHaveProperty('gridDetails');
+      expect(app.locals.appMetaRepository.getValue('page_defaults.project_assets.grid_details')).toBe('hidden');
       expect(JSON.stringify(globalPayload)).not.toContain('Grid size');
       expect(JSON.stringify(globalPayload)).not.toContain('All extensions');
 
       saveProjectAssetDefault(id, 'view', 'list');
       saveProjectAssetDefault(id, 'extension', 'stale-extension');
+      app.locals.projectPageDefaultRepository.setOption(id, 'projectAssets', 'gridDetails', 'hidden');
       const projectResponse = await agent.get(`/projects/${id}/assets?defaults=1`).expect(200);
       const projectPayload = readPayload(projectResponse.text);
       expect(projectResponse.text).toContain('name="loadedScope" value="project"');
       expect(projectPayload.global).toEqual(globalValues);
       expect(projectPayload.project).toEqual({ ...globalValues, view: 'list' });
+      expect(projectPayload.project).not.toHaveProperty('gridDetails');
+      expect(app.locals.projectPageDefaultRepository.getOption(id, 'projectAssets', 'gridDetails')).toBe('hidden');
     });
 
     it('guards loaded scope changes before validation or writes for HTML, JSON, active, and archived submissions', async () => {
       const values = {
-        view: 'list', gridSize: 'compact', listSize: 'compact', gridDetails: 'shown', sort: 'size', order: 'desc',
+        view: 'list', gridSize: 'compact', listSize: 'compact', sort: 'size', order: 'desc',
         pageSize: '50', extension: 'all', tag: 'all',
       };
       const project = await createProject('Project Assets Loaded Scope Guard');
@@ -1845,7 +2190,7 @@ describe('asset browser HTTP workflow', () => {
       expect(archivedBare.headers.location).toBe(`/projects/${archivedId}/assets?view=list`);
 
       const archivedValues = {
-        view: 'list', gridSize: 'compact', listSize: 'compact', gridDetails: 'shown', sort: 'size', order: 'desc',
+        view: 'list', gridSize: 'compact', listSize: 'compact', sort: 'size', order: 'desc',
         pageSize: '50', extension: 'all', tag: 'all',
       };
       await agent.post(`/projects/${archivedId}/assets/defaults`).type('form').send({
@@ -1861,7 +2206,7 @@ describe('asset browser HTTP workflow', () => {
       const activeId = Number(active.headers.location.replace('/projects/', ''));
       saveProjectAssetDefault(activeId, 'view', 'list');
       await agent.post(`/projects/${activeId}/assets/defaults`).type('form').send({
-        view: 'grid', gridSize: 'default', listSize: 'large', gridDetails: 'shown', sort: 'filename', order: 'asc',
+        view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc',
         pageSize: '25', extension: 'all', tag: 'all', returnTo: `/projects/${activeId}/assets`,
         _csrf: csrfToken,
       }).expect(302);
@@ -1877,7 +2222,7 @@ describe('asset browser HTTP workflow', () => {
       const tag = app.locals.tagService.createTag({ name: 'Saved filter provenance tag' });
       writeIndexedAsset(id, getProjectDir('Saved Filter Default Provenance'), 'available.png', 'png');
       const values = {
-        view: 'grid', gridSize: 'default', listSize: 'large', gridDetails: 'shown', sort: 'filename', order: 'asc',
+        view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc',
         pageSize: '25', extension: 'png', tag: String(tag.id), scope: 'global', loadedScope: 'global', _csrf: csrfToken,
       };
 
@@ -1911,7 +2256,7 @@ describe('asset browser HTTP workflow', () => {
       writeIndexedAsset(id, getProjectDir('Multi-value Project Assets Default Redirect'), 'available.jpg', 'jpg');
 
       const saved = await agent.post(`/projects/${id}/assets/defaults`).type('form').send({
-        view: 'grid', gridSize: 'default', listSize: 'large', gridDetails: 'shown', sort: 'filename', order: 'asc', pageSize: '25',
+        view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25',
         extension: ['jpg', 'png'], tag: [String(firstTag.id), String(secondTag.id)],
         scope: 'global', loadedScope: 'global', returnTo: `/projects/${id}/assets`, _csrf: csrfToken,
       }).expect(302);
@@ -1936,7 +2281,7 @@ describe('asset browser HTTP workflow', () => {
       app.locals.assetTagService.replaceAssetTags(excluded.id, [firstTag.id]);
 
       await agent.post(`/projects/${id}/assets/defaults`).type('form').send({
-        view: 'grid', gridSize: 'default', listSize: 'large', gridDetails: 'shown', sort: 'filename', order: 'asc', pageSize: '25',
+        view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25',
         extension: ['jpg', 'png'], tag: [String(firstTag.id), String(secondTag.id)],
         scope: 'global', loadedScope: 'global', returnTo: `/projects/${id}/assets`, _csrf: csrfToken,
       }).expect(302);
@@ -1979,7 +2324,7 @@ describe('asset browser HTTP workflow', () => {
       app.locals.assetTagService.replaceAssetTags(wrongTag.id, [unrelatedTag.id]);
 
       await agent.post(`/projects/${id}/assets/defaults`).type('form').send({
-        view: 'grid', gridSize: 'default', listSize: 'large', gridDetails: 'shown', sort: 'filename', order: 'asc', pageSize: '25',
+        view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25',
         extension: ['jpg', 'png'], tag: [String(firstTag.id), String(secondTag.id)],
         scope: 'global', loadedScope: 'global', returnTo: `/projects/${id}/assets`, _csrf: csrfToken,
       }).expect(302);
@@ -2013,7 +2358,7 @@ describe('asset browser HTTP workflow', () => {
       const values = {
         view: 'grid',
         gridSize: 'default',
-        listSize: 'large', gridDetails: 'shown',
+        listSize: 'large',
         sort: 'filename',
         order: 'asc',
         pageSize: '25',
@@ -2060,8 +2405,8 @@ describe('asset browser HTTP workflow', () => {
         new RegExp('name="tag"[^>]+type="checkbox"[^>]+value="' + tag.id + '"[^>]*checked'),
       );
 
-      const resetAnchor = canonical.text.match(/<a\b[^>]*data-project-assets-reset[^>]*>/)?.[0] || '';
-      const resetHref = resetAnchor.match(/\bhref="([^"]+)"/)?.[1];
+      const resetForm = canonical.text.match(/<form class="projects-filter-reset"[^>]*>/)?.[0] || '';
+      const resetHref = resetForm.match(/\baction="([^"]+)"/)?.[1];
       expect(decodeHtmlHref(resetHref)).toBe('/projects/' + targetId + '/assets?resetFilters=1&view=grid');
       const redirect = await agent.get(decodeHtmlHref(resetHref)).expect(302);
       const reset = await agent.get(redirect.headers.location).expect(200);
@@ -2124,11 +2469,11 @@ describe('asset browser HTTP workflow', () => {
       const second = await createProject('Scoped Save Project B');
       const secondId = Number(second.headers.location.replace('/projects/', ''));
       const globalValues = {
-        view: 'grid', gridSize: 'large', listSize: 'large', gridDetails: 'shown', sort: 'filename', order: 'asc',
+        view: 'grid', gridSize: 'large', listSize: 'large', sort: 'filename', order: 'asc',
         pageSize: '25', extension: 'all', tag: 'all',
       };
       const projectValues = {
-        view: 'list', gridSize: 'compact', listSize: 'compact', gridDetails: 'shown', sort: 'modified', order: 'desc',
+        view: 'list', gridSize: 'compact', listSize: 'compact', sort: 'modified', order: 'desc',
         pageSize: '50', extension: 'all', tag: 'all',
       };
       for (const [option, value] of Object.entries(globalValues)) saveAssetDefault(option, value);
@@ -2154,7 +2499,7 @@ describe('asset browser HTTP workflow', () => {
       const project = await createProject('Scoped JSON Save');
       const id = Number(project.headers.location.replace('/projects/', ''));
       const values = {
-        view: 'list', gridSize: 'compact', listSize: 'compact', gridDetails: 'shown', sort: 'modified', order: 'desc',
+        view: 'list', gridSize: 'compact', listSize: 'compact', sort: 'modified', order: 'desc',
         pageSize: '50', extension: 'all', tag: 'all',
       };
 
@@ -2173,7 +2518,7 @@ describe('asset browser HTTP workflow', () => {
       const second = await createProject('Scoped Global Save Project B');
       const secondId = Number(second.headers.location.replace('/projects/', ''));
       const values = {
-        view: 'list', gridSize: 'compact', listSize: 'compact', gridDetails: 'shown', sort: 'size', order: 'desc',
+        view: 'list', gridSize: 'compact', listSize: 'compact', sort: 'size', order: 'desc',
         pageSize: '100', extension: 'all', tag: 'all',
       };
       saveProjectAssetDefault(firstId, 'view', 'grid');
@@ -2204,7 +2549,7 @@ describe('asset browser HTTP workflow', () => {
       saveProjectAssetDefault(id, 'view', 'list');
 
       const response = await agent.post(`/projects/${id}/assets/defaults`).set('Accept', 'application/json').type('form').send({
-        view: 'list', gridSize: 'compact', listSize: 'compact', gridDetails: 'shown', sort: 'size', order: 'desc',
+        view: 'list', gridSize: 'compact', listSize: 'compact', sort: 'size', order: 'desc',
         pageSize: '50', extension: 'all', tag: 'all', scope: 'other',
         returnTo: `/projects/${id}/assets`, _csrf: csrfToken,
       }).expect(422);
@@ -2227,7 +2572,7 @@ describe('asset browser HTTP workflow', () => {
       });
 
       await agent.post(`/projects/${id}/assets/defaults`).set('Accept', 'application/json').type('form').send({
-        view: 'list', gridSize: 'compact', listSize: 'compact', gridDetails: 'shown', sort: 'size', order: 'desc',
+        view: 'list', gridSize: 'compact', listSize: 'compact', sort: 'size', order: 'desc',
         pageSize: '50', extension: 'all', tag: 'all', scope: 'global',
         returnTo: `/projects/${id}/assets`, _csrf: csrfToken,
       }).expect(500);
@@ -2248,7 +2593,7 @@ describe('asset browser HTTP workflow', () => {
       const values = {
         view: 'list',
         gridSize: 'large',
-        listSize: 'compact', gridDetails: 'shown',
+        listSize: 'compact',
         sort: 'category',
         order: 'desc',
         pageSize: '50',
@@ -3644,7 +3989,7 @@ describe('asset browser HTTP workflow', () => {
     expect(filter).not.toMatch(/name="usage"[^>]*value="used"[^>]*checked/);
   });
 
-  it('reset link points to assets page without filters', async () => {
+  it('reset form points to assets page without filters', async () => {
     const res = await createProject('Reset Link');
     const id = res.headers.location.replace('/projects/', '');
 
@@ -3652,7 +3997,7 @@ describe('asset browser HTTP workflow', () => {
       .get(`/projects/${id}/assets?presence=missing&usage=used`)
       .expect(200);
 
-    expect(res2.text).toContain('href="/projects/' + id + '/assets?resetFilters=1&amp;view=grid"');
+    expect(res2.text).toContain('class="projects-filter-reset" method="get" action="/projects/' + id + '/assets?resetFilters=1&amp;view=grid"');
   });
 
   // ─── PageSize form preserves filters ───────────────────────────
@@ -3819,7 +4164,7 @@ describe('asset browser HTTP workflow', () => {
     const defaultsGrid = defaultsGridMatch?.[1] || '';
     const gridStart = defaultsGridMatch?.index ?? -1;
     const statusIndex = defaultsDialog.indexOf('<div class="app-dialog-status"', gridStart);
-    expect((defaultsGrid.match(/data-dialog-field="/g) || [])).toHaveLength(9);
+    expect((defaultsGrid.match(/data-dialog-field="/g) || [])).toHaveLength(8);
     expect(defaultsDialog.indexOf('data-dialog-error')).toBeLessThan(gridStart);
     expect(defaultsDialog.indexOf('name="_csrf"')).toBeLessThan(gridStart);
     expect(statusIndex).toBeGreaterThan(gridStart);
@@ -3892,13 +4237,6 @@ describe('asset browser HTTP workflow', () => {
         selectedValues: [],
         options: [],
       },
-      {
-        name: 'gridDetails',
-        label: 'Grid card details',
-        id: 'projectAssets-default-gridDetails',
-        selected: 'shown',
-        options: [['shown', 'Show details below previews'], ['hidden', 'Hide details below previews']],
-      },
     ];
     for (const field of defaultFields) {
       expect(defaultsGrid).toMatch(new RegExp(`<select[^>]*name="${field.name}"[^>]*data-cc-dropdown-native-select`));
@@ -3936,7 +4274,7 @@ describe('asset browser HTTP workflow', () => {
       expect(defaultsGrid.indexOf(`data-dialog-field="${defaultFields[index - 1].name}"`))
         .toBeLessThan(defaultsGrid.indexOf(`data-dialog-field="${defaultFields[index].name}"`));
     }
-    expect((defaultsGrid.match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(7);
+    expect((defaultsGrid.match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(6);
     expect((defaultsGrid.match(/data-cc-dropdown data-cc-dropdown-mode="multiple"/g) || [])).toHaveLength(2);
     const defaultsFooter = defaultsDialog.match(/<footer class="app-dialog-footer">[\s\S]*?<\/footer>/)?.[0] || '';
     expect((defaultsFooter.match(/<button\b[^>]*type="submit"/g) || [])).toHaveLength(1);
@@ -4029,8 +4367,8 @@ describe('asset browser HTTP workflow', () => {
     expect(gridUrl.searchParams.get('order')).toBe('desc');
     expect(gridUrl.searchParams.get('pageSize')).toBe('10');
 
-    const resetAnchor = response.text.match(/<a\b[^>]*data-project-assets-reset[^>]*>/)?.[0] || '';
-    const resetHref = resetAnchor.match(/\bhref="([^"]+)"/)?.[1];
+    const resetForm = response.text.match(/<form class="projects-filter-reset"[^>]*>/)?.[0] || '';
+    const resetHref = resetForm.match(/\baction="([^"]+)"/)?.[1];
     expect(resetHref).toBeDefined();
     const resetUrl = new URL(decodeHtmlHref(resetHref), 'http://localhost');
     expect([...resetUrl.searchParams]).toEqual([['resetFilters', '1'], ['view', 'list']]);
@@ -4392,7 +4730,11 @@ describe('asset browser HTTP workflow', () => {
     const res2 = await agent
       .get(`/projects/${id}/assets/${asset.id}`)
       .expect(200);
-    expect(res2.text).toContain('Project: Viewer Archived');
+    expectProjectReturnLead(res2.text, {
+      href: `/projects/${id}`,
+      title: 'Viewer Archived',
+      extraClass: 'asset-viewer-project',
+    });
     expect(res2.text).toContain('<h1 class="app-section-title">Assets — Viewer Archived — archived.png</h1>');
   });
 
@@ -4823,11 +5165,15 @@ describe('asset browser HTTP workflow', () => {
     const pageHeading = res.text.match(/<header class="page-heading">([\s\S]*?)<\/header>/)?.[1] || '';
     const headingActions = pageHeading.match(/<div class="page-heading-actions">([\s\S]*?)<\/div>/)?.[1] || '';
     expect(headingActions).not.toBe('');
-    expect(anchorText(pageHeading, 'asset-viewer-project')).toBe('Project: Viewer Accessibility');
+    expect(anchorText(pageHeading, 'asset-viewer-project')).toBe('');
     expect(anchorText(headingActions, 'asset-viewer-back')).toBe('Back to Assets');
     expect(anchorHref(pageHeading, 'asset-viewer-project')).toBe(`/projects/${id}`);
     expect(anchorHref(headingActions, 'asset-viewer-back')).toBe(`/projects/${id}/assets?page=2&pageSize=1`);
-    expect(pageHeading).toMatch(new RegExp(`<a class="button button-secondary page-heading-lead asset-viewer-project" href="/projects/${id}">Project: Viewer Accessibility</a>`));
+    expectProjectReturnLead(res.text, {
+      href: `/projects/${id}`,
+      title: 'Viewer Accessibility',
+      extraClass: 'asset-viewer-project',
+    });
     expect(pageHeading.indexOf('asset-viewer-project')).toBeLessThan(pageHeading.indexOf('<div class="page-heading-actions">'));
     expect(headingActions).not.toContain('asset-viewer-project');
     expect(pageHeading).not.toContain('status-badge');
@@ -5642,7 +5988,7 @@ describe('asset browser HTTP workflow', () => {
     expect(globalListRes.text).not.toContain('asset-list-card--project');
   });
 
-  it('renders project Grid identity, grouped metadata, actions, and bulk-selection fields', async () => {
+  it('renders project Grid preview, information popup, actions, and bulk-selection fields', async () => {
     const res = await createProject('Grid Card Parity');
     const id = Number(res.headers.location.replace('/projects/', ''));
     const projectDir = getProjectDir('Grid Card Parity');
@@ -5661,9 +6007,7 @@ describe('asset browser HTTP workflow', () => {
     expect(card).toContain(`name="selectedAssetIds" value="${asset.id}"`);
     expect(card).toContain('form="bulk-select-form"');
     expect(html).toContain(`aria-label="Select hero.png"`);
-    expect(card).toMatch(/<span class="asset-card-title-text">hero<\/span>/);
     expect(card).not.toContain('asset-card-filename');
-    expect(card).not.toMatch(/<a[^>]*>hero<\/a>/);
     expect(html).toContain('class="asset-card-media-link"');
     expect(html).toContain('class="asset-details-link asset-tooltip asset-tooltip--right"');
     expect(html).toContain('aria-label="View details for hero.png"');
@@ -5673,36 +6017,16 @@ describe('asset browser HTTP workflow', () => {
     expect(card).toContain('aria-selected="false"');
     expect(card).not.toContain('asset-card-selection-badge');
     expect(card).not.toContain('title="');
-    expect(card).toContain('<div class="asset-card-identity">');
-    expect(card).toContain('<dl class="asset-card-primary-metadata" aria-label="Primary metadata">');
-    const metadata = card.match(/<dl class="asset-card-primary-metadata"[\s\S]*?<\/dl>/)?.[0] || '';
-    for (const label of ['Category', 'Type', 'Size', 'Modified']) {
-      expect((metadata.match(new RegExp(`<dt>${label}</dt>`, 'g')) || [])).toHaveLength(1);
-    }
-    expect(metadata).toContain('Uncategorized');
-    expect(card.indexOf('asset-card-title-text')).toBeLessThan(card.indexOf('asset-card-primary-metadata'));
-    expect(card).toContain('<section class="asset-card-associations-region" aria-label="Asset associations">');
-    expect(card).toContain('<h3 class="asset-card-associations-heading">Associations</h3>');
-    expect(card).toContain('asset-card-association--tags');
-    expect(card).toContain('>Tags<');
-    expect(card).toContain('None assigned');
-    expect(card).not.toContain('asset-card-association--releases');
     expect(card).toContain('data-tooltip="View asset details"');
-    expect(card).toContain('data-asset-rename-trigger');
-    expect(card).toContain('data-asset-rename-editor');
     expect(card).toContain('href="/projects/');
-    expect(card).toMatch(/class="asset-card-rename-editor" data-asset-rename-editor hidden inert>/);
-    expect(card).toMatch(/class="asset-card-rename-input"[^>]*\bdisabled\b/);
-    expect(card).not.toContain('<summary');
-    expect(card).not.toContain('<details');
-    expect(card).toContain('data-asset-rename-input');
-    expect(card).toContain('value="hero"');
-    expect(card).not.toContain('value="hero.png"');
-    expect(card).toContain('data-asset-rename-confirm');
-    expect(card).toContain('data-asset-rename-cancel');
-    expect(card).toContain('name="origin" value="assets"');
     expect(card).toContain(`data-project-assets-preview-id="${asset.id}"`);
-    expect(card).toMatch(/<div class="asset-card-media" data-preview-enhancement data-preview-state="loading">\s*<a class="asset-card-media-link" href="[^"]+" aria-label="View details for hero\.png" data-project-assets-preview-id="\d+">\s*<img class="asset-card-thumb"[^>]*data-preview-image>\s*<\/a>\s*<span class="asset-card-placeholder asset-card-fallback" data-preview-fallback hidden>PNG<\/span>\s*<\/div>/);
+    expect(card).toMatch(/class="asset-card-media" data-asset-viewer-preview data-preview-enhancement data-preview-state="loading"/);
+    expect(card).toMatch(/data-asset-viewer-preview[\s\S]*data-asset-info-card popover="manual"/);
+    expect((card.match(/data-asset-info-card/g) || [])).toHaveLength(1);
+    expect(card).not.toContain('<dt>Project</dt>');
+    expect(card).not.toContain('class="asset-card-body');
+    expect(card).not.toContain('data-asset-rename-trigger');
+    expect(card).not.toContain('data-asset-rename-editor');
     expect(card).not.toMatch(/<a class="asset-card-media-link"[^>]*>\s*<div class="asset-card-media"/);
 
     const style = await readStylesheetSource(html);
@@ -5728,7 +6052,7 @@ describe('asset browser HTTP workflow', () => {
     expect(assetListCardHtml(list.text, asset.id)).toContain(`data-project-assets-preview-id="${asset.id}"`);
   });
 
-  it('renders categorized and uncategorized labels inside project Grid metadata', async () => {
+  it('renders categorized and uncategorized labels in project Grid information popups', async () => {
     const res = await createProject('Grid Card Category Metadata');
     const id = Number(res.headers.location.replace('/projects/', ''));
     const projectDir = getProjectDir('Grid Card Category Metadata');
@@ -5750,19 +6074,18 @@ describe('asset browser HTTP workflow', () => {
     const categorizedCard = assetCardHtml(res2.text, categorized.id);
     const uncategorizedCard = assetCardHtml(res2.text, uncategorized.id);
 
-    expect(categorizedCard).toMatch(/<span class="asset-card-title-text">final<\/span>/);
-    expect(categorizedCard).toMatch(/<div class="asset-card-fact asset-card-fact--category">[\s\S]*?<dt>Category<\/dt>[\s\S]*?<dd>[\s\S]*?Renders[\s\S]*?<\/dd>/);
-    expect(categorizedCard.indexOf('asset-card-title-text')).toBeLessThan(categorizedCard.indexOf('asset-card-primary-metadata'));
+    expect(categorizedCard).toMatch(/data-asset-info-card[\s\S]*?<dt>Category<\/dt>[\s\S]*?<dd>[\s\S]*?Renders[\s\S]*?<\/dd>/);
     expect((categorizedCard.match(/<dt>Category<\/dt>/g) || [])).toHaveLength(1);
-    expect(categorizedCard).not.toMatch(/<a[^>]*>final<\/a>/);
     expect(categorizedCard).toContain(`class="asset-details-link asset-tooltip asset-tooltip--right" href="/projects/${id}/assets/${categorized.id}`);
     expect(categorizedCard).toContain(`class="asset-card-media-link" href="/projects/${id}/assets/${categorized.id}`);
+    expect(categorizedCard).not.toContain('class="asset-card-body');
 
-    expect(uncategorizedCard).toMatch(/<div class="asset-card-fact asset-card-fact--category">[\s\S]*?<dt>Category<\/dt>[\s\S]*?<dd>[\s\S]*?Uncategorized[\s\S]*?<\/dd>/);
+    expect(uncategorizedCard).toMatch(/data-asset-info-card[\s\S]*?<dt>Category<\/dt>[\s\S]*?<dd>[\s\S]*?Uncategorized[\s\S]*?<\/dd>/);
     expect(uncategorizedCard).toContain(`class="asset-details-link asset-tooltip asset-tooltip--right" href="/projects/${id}/assets/${uncategorized.id}`);
+    expect(uncategorizedCard).not.toContain('class="asset-card-body');
   });
 
-  it('groups Grid release membership and tags in Associations without an empty Releases row', async () => {
+  it('renders Grid release usage and effective tags in the shared information popup', async () => {
     const res = await createProject('Grid Associations');
     const id = Number(res.headers.location.replace('/projects/', ''));
     const projectDir = getProjectDir('Grid Associations');
@@ -5776,22 +6099,16 @@ describe('asset browser HTTP workflow', () => {
     const response = await agent.get(`/projects/${id}/assets?view=grid&pageSize=100`).expect(200);
     const usedCard = assetCardHtml(response.text, used.id);
     const unusedCard = assetCardHtml(response.text, unused.id);
-    const metadata = usedCard.match(/<dl class="asset-card-primary-metadata"[\s\S]*?<\/dl>/)?.[0] || '';
-
-    expect(metadata).toContain('<dt>Category</dt>');
-    expect(metadata).toContain('<dt>Type</dt>');
-    expect(metadata).toContain('<dt>Size</dt>');
-    expect(metadata).toContain('<dt>Modified</dt>');
-    expect(usedCard).toContain('<h3 class="asset-card-associations-heading">Associations</h3>');
-    expect(usedCard).toContain('asset-card-association--releases');
-    expect(usedCard).toContain('asset-card-association--tags');
-    expect(usedCard).toContain('>Grid Release One</a>');
-    expect(usedCard).toContain('>Grid Release Two</a>');
-    expect(usedCard).toContain('>Grid Association Tag</li>');
-    expect(usedCard).toContain('data-asset-release-membership');
-    expect(usedCard.indexOf('asset-card-primary-metadata')).toBeLessThan(usedCard.indexOf('asset-card-associations-region'));
-    expect(unusedCard).not.toContain('asset-card-association--releases');
-    expect(unusedCard).toContain('asset-card-association--tags');
+    expect(usedCard).toContain('data-asset-info-card popover="manual"');
+    expect(usedCard).toMatch(/<dt>Release usage<\/dt>[\s\S]*?<dd>[\s\S]*?Used in 2 releases/);
+    expect(usedCard).toContain('<ul class="asset-viewer-grid-card-info-tags" aria-label="Effective tags">');
+    expect(usedCard).toContain('Grid Association Tag');
+    expect(unusedCard).toMatch(/<dt>Release usage<\/dt>[\s\S]*?<dd>[\s\S]*?Not used by a release/);
+    expect(unusedCard).toContain('No effective tags');
+    for (const card of [usedCard, unusedCard]) {
+      expect(card).not.toContain('asset-card-associations-region');
+      expect(card).not.toContain('class="asset-card-body');
+    }
   });
 
   it('keeps missing and unavailable grid media placeholders outside the details link', async () => {
@@ -5799,7 +6116,7 @@ describe('asset browser HTTP workflow', () => {
     const id = Number(res.headers.location.replace('/projects/', ''));
     const projectDir = getProjectDir('Grid Media Placeholders');
     const missing = writeIndexedAsset(id, projectDir, 'missing.png', await makePng());
-    writeIndexedAsset(id, projectDir, 'source.bin', Buffer.from('binary'), {
+    const unsupported = writeIndexedAsset(id, projectDir, 'source.bin', Buffer.from('binary'), {
       extension: 'bin', mimeType: 'application/octet-stream',
     });
     await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
@@ -5809,13 +6126,13 @@ describe('asset browser HTTP workflow', () => {
     const res2 = await agent.get(`/projects/${id}/assets?view=grid`).expect(200);
     const cards = [...res2.text.matchAll(/<article class="asset-card[\s\S]*?<\/article>/g)].map((match) => match[0]);
     const missingCard = cards.find((card) => card.includes(`data-asset-id="${missing.id}"`));
-    const unsupportedCard = cards.find((card) => card.includes('>source<'));
+    const unsupportedCard = cards.find((card) => card.includes(`data-asset-id="${unsupported.id}"`));
 
     expect(missingCard).toBeDefined();
-    expect(missingCard).toMatch(/<div class="asset-card-media">\s*<span class="asset-card-placeholder asset-card-placeholder-missing">Missing at last scan<\/span>\s*<\/div>/);
+    expect(missingCard).toMatch(/<div class="asset-card-media" data-asset-viewer-preview>[\s\S]*?<span class="asset-card-placeholder asset-card-placeholder-missing">Missing at last scan<\/span>[\s\S]*?data-asset-info-card/);
     expect(missingCard).not.toContain('asset-card-media-link');
     expect(unsupportedCard).toBeDefined();
-    expect(unsupportedCard).toMatch(/<div class="asset-card-media">\s*<span class="asset-card-placeholder">BIN — preview not supported<\/span>\s*<\/div>/);
+    expect(unsupportedCard).toMatch(/<div class="asset-card-media" data-asset-viewer-preview>[\s\S]*?<span class="asset-card-placeholder">BIN — preview not supported<\/span>[\s\S]*?data-asset-info-card/);
     expect(unsupportedCard).not.toContain('asset-card-media-link');
   });
 
@@ -5847,7 +6164,7 @@ describe('asset browser HTTP workflow', () => {
     for (const asset of [kra, krz]) {
       const card = grid.text.match(new RegExp(`<article class="asset-card[\\s\\S]*?data-asset-id="${asset.id}"[\\s\\S]*?<\\/article>`))?.[0];
       expect(card).toBeDefined();
-      expect(card).toContain('class="asset-card-media asset-media--krita" data-preview-enhancement');
+      expect(card).toMatch(/class="asset-card-media asset-media--krita" data-asset-viewer-preview data-preview-enhancement/);
       expect(card).toMatch(new RegExp(`class="asset-card-thumb"[^>]*src="/projects/${id}/assets/${asset.id}/preview\\?v=`));
       expect(card).toContain(`/projects/${id}/assets/${asset.id}`);
     }
@@ -5929,7 +6246,7 @@ describe('asset browser HTTP workflow', () => {
     expect(fs.existsSync(path.join(projectDir, 'archive.final.png'))).toBe(false);
   });
 
-  it('reopens the grid Rename editor with the submitted basename after a controlled failure', async () => {
+  it('does not restore the removed grid Rename editor after a controlled failure', async () => {
     const res = await createProject('Grid Rename Failure');
     const id = Number(res.headers.location.replace('/projects/', ''));
     const projectDir = getProjectDir('Grid Rename Failure');
@@ -5945,13 +6262,11 @@ describe('asset browser HTTP workflow', () => {
 
     const card = failed.text.match(/<article class="asset-card[\s\S]*?<\/article>/)?.[0];
     expect(card).toBeDefined();
-    expect(card).toContain('data-asset-title-row hidden');
-    expect(card).toContain('data-asset-rename-editor');
-    expect(card).toMatch(/class="asset-card-rename-editor" data-asset-rename-editor>/);
-    expect(card).not.toContain('<summary');
-    expect(card).not.toContain('<details');
-    expect(card).toContain('value="bad/name"');
-    expect(card).toContain('aria-label="New basename for scene.v2.kra"');
+    expect(card).toContain('data-asset-viewer-preview');
+    expect(card).toContain('data-asset-info-card popover="manual"');
+    expect(card).not.toContain('class="asset-card-body');
+    expect(card).not.toContain('data-asset-rename-trigger');
+    expect(card).not.toContain('data-asset-rename-editor');
     expect(fs.existsSync(path.join(projectDir, 'scene.v2.kra'))).toBe(true);
     expect(fs.existsSync(path.join(projectDir, 'bad', 'name.kra'))).toBe(false);
   });
@@ -6059,7 +6374,7 @@ describe('asset browser HTTP workflow', () => {
     expect(style).toMatch(/\.asset-card-title-text\s*\{[^}]*overflow-wrap:\s*anywhere[^}]*word-break:\s*break-word/);
   });
 
-  it('renders a full-row native category picker with counts before Search and places Manage Categories after Clear selection', async () => {
+  it('renders Project Assets filters in a persistent dialog with Reset and keeps category controls intact', async () => {
     const res = await createProject('Category Disclosure');
     const id = Number(res.headers.location.replace('/projects/', ''));
     const projectDir = getProjectDir('Category Disclosure');
@@ -6094,16 +6409,20 @@ describe('asset browser HTTP workflow', () => {
 
     const displayControlsStart = res2.text.indexOf('<div class="asset-viewer-display-controls">');
     const filterActionsStart = res2.text.indexOf('<div class="project-filter-actions project-filter-actions--projects">');
-    const filterFormStart = res2.text.indexOf('<form class="filters asset-viewer-filters asset-viewer-filters--project-assets"');
+    const liveRegionStart = res2.text.indexOf('<div data-project-assets-live-region');
+    const filterDialogStart = res2.text.indexOf('<dialog id="project-assets-filter-dialog"');
+    const filterFormStart = res2.text.indexOf('<form id="asset-filters"');
     expect(displayControlsStart).toBeGreaterThanOrEqual(0);
     expect(filterActionsStart).toBeGreaterThan(displayControlsStart);
-    expect(filterFormStart).toBeGreaterThan(filterActionsStart);
+    expect(filterDialogStart).toBeGreaterThan(liveRegionStart);
+    expect(filterFormStart).toBeGreaterThan(filterDialogStart);
 
-    const filterActions = res2.text.slice(filterActionsStart, filterFormStart);
+    const filterActions = res2.text.match(/<div class="project-filter-actions project-filter-actions--projects">[\s\S]*?<\/div>/)?.[0] || '';
+    expect(filterActions).toContain('href="#project-assets-filter-dialog"');
+    expect(filterActions).toContain('data-dialog-open="project-assets-filter-dialog"');
+    expect(filterActions).toContain('aria-label="Filter assets"');
     expect(filterActions).toContain('data-slideshow-trigger');
-    expect(filterActions).toContain('data-project-assets-reset');
-    expect(res2.text).toContain('<noscript>');
-    expect(res2.text).toContain('<button class="button button-primary" type="submit" form="asset-filters">Filter</button>');
+    expect(filterActions).not.toContain('data-project-assets-reset');
 
     const defaultsLink = res2.text.match(/<a class="[^"]*\basset-viewer-defaults-link\b[^"]*"[\s\S]*?<\/a>/)?.[0];
     expect(defaultsLink).toBeDefined();
@@ -6115,8 +6434,19 @@ describe('asset browser HTTP workflow', () => {
     expect(defaultsLink).not.toContain('title=');
     expect(defaultsLink).toContain('aria-hidden="true"');
 
-    const filterForm = res2.text.match(/<form class="filters asset-viewer-filters asset-viewer-filters--project-assets" method="get" action="\/projects\/\d+\/assets" id="asset-filters">[\s\S]*?<\/form>/)?.[0];
+    const filterDialog = res2.text.match(/<dialog id="project-assets-filter-dialog"[\s\S]*?<\/dialog>/)?.[0];
+    expect(filterDialog).toBeDefined();
+    expect(filterDialog).toContain('<h2 id="project-assets-filter-dialog-title">Filter</h2>');
+    const filterForm = filterDialog.match(/<form id="asset-filters" class="app-dialog-form project-form" method="get" action="\/projects\/\d+\/assets">[\s\S]*?<\/form>/)?.[0];
     expect(filterForm).toBeDefined();
+    expect(res2.text.slice(liveRegionStart, filterDialogStart)).not.toContain('id="asset-filters"');
+    expect((res2.text.match(/id="project-assets-filter-dialog"/g) || [])).toHaveLength(1);
+    expect((res2.text.match(/id="asset-filters"/g) || [])).toHaveLength(1);
+    expect((res2.text.match(/id="search"/g) || [])).toHaveLength(1);
+    const resetForm = filterDialog.match(/<form class="projects-filter-reset" method="get" action="[^"]+">[\s\S]*?<\/form>/)?.[0];
+    expect(resetForm).toBeDefined();
+    expect(resetForm).toContain(`action="/projects/${id}/assets?resetFilters=1&amp;view=grid"`);
+    expect(resetForm).toContain('<button class="button" type="submit" data-project-assets-reset>Reset filters</button>');
     const categoryPosition = filterForm.indexOf('data-asset-category-filter');
     const searchPosition = filterForm.indexOf('<label for="search">Search</label>');
     expect(categoryPosition).toBeGreaterThanOrEqual(0);
@@ -6138,12 +6468,11 @@ describe('asset browser HTTP workflow', () => {
     expect(filterForm).toContain('name="order"');
     expect(filterForm).toContain('value="asc"');
     expect(filterForm).toContain('value="desc"');
-    expect(filterForm).toContain('id="asset-filters"');
     expect((filterForm.match(/data-cc-dropdown data-cc-dropdown-mode="(?:single|multiple)"/g) || [])).toHaveLength(7);
     expect(filterForm).not.toContain('data-asset-viewer-filter-disclosure');
     expect(filterForm).not.toContain('data-asset-action-select');
     expect(filterForm).not.toContain('>Filter</button>');
-    expect(filterForm).not.toMatch(/<a class="button button-secondary" href="[^"]+">Reset<\/a>/);
+    expect(filterForm).not.toContain('data-project-assets-reset');
     expect(filterForm).not.toMatch(/<select[^>]+name="(?:presence|usage|sort|order)"/);
 
     const convertedFilterControls = [
@@ -6232,34 +6561,16 @@ describe('asset browser HTTP workflow', () => {
     expect(categorySummaryRule).toMatch(/min-height:\s*2\.5rem/);
     const searchHeightRule = style.match(/(?:^|})\s*#asset-filters \.field input\[type="search"\]\s*\{([^}]*)\}/)?.[1] || '';
     expect(searchHeightRule).toMatch(/height:\s*2\.5rem/);
-    const defaultsCardMatch = style.match(/(?:^|})\s*(\.asset-viewer-filters--project-assets[^{]*)\{([^}]*)\}/);
-    const defaultsCardRule = defaultsCardMatch?.[2] || '';
-    expect(defaultsCardMatch?.[1]).toMatch(/\.asset-viewer-filters--asset-viewer/);
-    expect(defaultsCardRule).toMatch(/padding-inline-end:\s*calc\(var\(--space-lg\) \+ 1\.6rem\)/);
-    expect(defaultsCardRule).not.toMatch(/padding-top/);
-    const defaultsLinkMatch = style.match(/(?:^|})\s*(\.asset-viewer-filters--project-assets\s*>\s*\.asset-viewer-defaults-link[^{]*)\{([^}]*)\}/);
-    const defaultsLinkRule = defaultsLinkMatch?.[2] || '';
-    expect(defaultsLinkMatch?.[1]).toMatch(/\.asset-viewer-filters--asset-viewer\s*>\s*\.asset-viewer-defaults-link/);
-    expect(defaultsLinkRule).toMatch(/position:\s*absolute/);
-    expect(defaultsLinkRule).toMatch(/top:\s*var\(--space-sm\)/);
-    expect(defaultsLinkRule).toMatch(/right:\s*var\(--space-sm\)/);
     expect(style).toMatch(/@media\s*\(max-width:\s*540px\)[\s\S]*?\.asset-filter-multiselect-field\s*\{[^}]*width:\s*100%[^}]*max-width:\s*100%/);
 
     const gridCards = [...res2.text.matchAll(/<article class="asset-card asset-card--project[\s\S]*?<\/article>/g)]
       .map((match) => match[0]);
     expect(gridCards).toHaveLength(3);
     for (const card of gridCards) {
-      const metadata = card.match(/<dl class="asset-card-primary-metadata" aria-label="Primary metadata">[\s\S]*?<\/dl>/)?.[0] || '';
-      expect(metadata).not.toBe('');
-      for (const label of ['Category', 'Type', 'Size', 'Modified']) {
-        expect((metadata.match(new RegExp(`<dt>${label}</dt>`, 'g')) || [])).toHaveLength(1);
-      }
-    }
-    for (const category of ['Uncategorized', 'Renders', 'Archive']) {
-      const card = gridCards.find((candidate) => candidate.includes(category));
-      expect(card).toBeDefined();
-      const metadata = card.match(/<dl class="asset-card-primary-metadata" aria-label="Primary metadata">[\s\S]*?<\/dl>/)?.[0] || '';
-      expect(metadata).toContain(category);
+      expect(card).not.toContain('class="asset-card-body');
+      expect(card).toContain('class="asset-card-top"');
+      expect(card).toContain('class="asset-selection-control');
+      expect(card).toContain('data-asset-info-card popover="manual"');
     }
 
     expect(res2.text).toContain('id="asset-category-filter-options"');
@@ -6412,7 +6723,7 @@ describe('asset browser HTTP workflow', () => {
       expect(ordinarySelectionControls).toMatch(
         /data-clear-selection>Clear selection<\/button>\s*<a class="button button-small button-secondary" href="[^"]*manage_categories=1"\s+data-dialog-open="project-asset-category-management-dialog">Manage Categories<\/a>/
       );
-    expect(res2.text).toContain('<form class="filters asset-viewer-filters asset-viewer-filters--project-assets" method="get" action="/projects/' + id + '/assets" id="asset-filters">');
+    expect(res2.text).toContain('<form id="asset-filters" class="app-dialog-form project-form" method="get" action="/projects/' + id + '/assets">');
     expect(res2.text).toContain('id="search" name="search"');
     expect(res2.text).toMatch(new RegExp(`<input id="asset-category-option-${cat.id}"[^>]*value="${cat.id}"[\\s\\S]*?checked>`));
     expectCheckedAssetFilter(res2.text, 'sort', 'filename');
@@ -9018,24 +9329,17 @@ describe('asset browser HTTP workflow', () => {
         expect(form).not.toContain('unknown');
       });
 
-      it('renders an eligible grid Rename form and keeps form ownership valid', async () => {
+      it('omits grid Rename while keeping bulk-selection form ownership valid', async () => {
         const { id, asset } = await setupProjectWithAsset('Main Grid Rename', 'hero.png');
 
         const res = await agent.get(`/projects/${id}/assets?view=grid`).expect(200);
         const card = res.text.match(new RegExp(`<article class="asset-card(?: asset-card--project)?(?: is-selected)?"\\s+data-asset-id="${asset.id}"[^>]*>[\\s\\S]*?<\\/article>`));
         expect(card).not.toBeNull();
-        expect(card[0]).toContain(`action="/projects/${id}/assets/${asset.id}/rename"`);
-        expect(card[0]).toContain('class="asset-card-rename-editor"');
-        expect(card[0]).toContain('name="origin" value="assets"');
-        expect(card[0]).toContain('value="hero"');
-        expect(card[0]).toContain('class="asset-rename-extension" aria-hidden="true">.png</span>');
-        const editor = card[0].match(/<form[^>]*class="asset-card-rename-editor"[\s\S]*?<\/form>/)?.[0];
-        expect(editor).not.toBeUndefined();
-        expect(editor).toMatch(/<form[^>]*\bhidden\b[^>]*\binert\b/);
-        expect(editor).toMatch(/<input type="hidden" name="_csrf"[^>]*\bdisabled\b/);
-        expect(editor).toMatch(/<input type="text"[^>]*class="asset-card-rename-input"[^>]*\bdisabled\b/);
-        expect(editor).toMatch(/<button[^>]*data-asset-rename-confirm[^>]*\bdisabled\b/);
-        expect(editor).toMatch(/<button[^>]*data-asset-rename-cancel[^>]*\bdisabled\b/);
+        expect(card[0]).toContain('data-asset-viewer-preview');
+        expect(card[0]).toContain('data-asset-info-card popover="manual"');
+        expect(card[0]).not.toContain('class="asset-card-body');
+        expect(card[0]).not.toContain('data-asset-rename-trigger');
+        expect(card[0]).not.toContain('data-asset-rename-editor');
         expect((card[0].match(/<form\b/g) || []).length).toBe((card[0].match(/<\/form>/g) || []).length);
         expect((res.text.match(/<h1\b/g) || []).length).toBe(1);
 
@@ -9047,7 +9351,7 @@ describe('asset browser HTTP workflow', () => {
         expect(res.text).toContain('formaction="/projects/' + id + '/assets/move-selected"');
       });
 
-      it('opens only the affected grid Rename editor after a controlled validation failure', async () => {
+      it('keeps grid Rename absent after a controlled validation failure', async () => {
         const { id, assets } = await setupOrderedImageAssets('Main Grid Rename Failure');
         const res = await agent
           .post(`/projects/${id}/assets/${assets.alpha.id}/rename`)
@@ -9055,22 +9359,13 @@ describe('asset browser HTTP workflow', () => {
           .send({ filename: 'bad/name', origin: 'assets', category: 'all', view: 'grid', _csrf: csrfToken })
           .expect(422);
 
-        const activeEditor = res.text.match(new RegExp(`<form method="post" action="/projects/${id}/assets/${assets.alpha.id}/rename"[\\s\\S]*?<\\/form>`))?.[0];
-        expect(activeEditor).not.toBeUndefined();
-        expect(activeEditor).not.toMatch(/<form[^>]*\bhidden\b/);
-        expect(activeEditor).not.toMatch(/<form[^>]*\binert\b/);
-        expect(activeEditor).not.toMatch(/class="asset-card-rename-input"[^>]*\bdisabled\b/);
-        expect(activeEditor).toContain('value="bad/name"');
-
-        const inactiveEditors = [...res.text.matchAll(/<form method="post" action="\/projects\/\d+\/assets\/\d+\/rename"[\s\S]*?<\/form>/g)]
-          .map(([form]) => form)
-          .filter((form) => !form.includes(`/assets/${assets.alpha.id}/rename`));
-        expect(inactiveEditors.length).toBeGreaterThan(0);
-        for (const editor of inactiveEditors) {
-          expect(editor).toMatch(/<form[^>]*\bhidden\b[^>]*\binert\b/);
-          expect(editor).toMatch(/<input type="text"[^>]*class="asset-card-rename-input"[^>]*\bdisabled\b/);
-          expect(editor).toMatch(/<button[^>]*data-asset-rename-confirm[^>]*\bdisabled\b/);
-          expect(editor).toMatch(/<button[^>]*data-asset-rename-cancel[^>]*\bdisabled\b/);
+        const cards = [...res.text.matchAll(/<article class="asset-card[\s\S]*?<\/article>/g)].map(([card]) => card);
+        expect(cards.length).toBeGreaterThan(1);
+        for (const card of cards) {
+          expect(card).toContain('data-asset-info-card popover="manual"');
+          expect(card).not.toContain('class="asset-card-body');
+          expect(card).not.toContain('data-asset-rename-trigger');
+          expect(card).not.toContain('data-asset-rename-editor');
         }
       });
 
@@ -9174,10 +9469,10 @@ describe('asset browser HTTP workflow', () => {
           .type('form')
           .send({ filename: 'bad/name', origin: 'assets', category: 'all', search: 'old', view: 'grid', _csrf: csrfToken })
           .expect(422);
-        expect(invalidRes.text).toContain('Enter a valid filename.');
-        expect(invalidRes.text).toContain('value="bad/name"');
         expect(invalidRes.text).toContain('<input type="hidden" name="category" value="all">');
-          expect(invalidRes.text).toContain('class="asset-card-rename-editor"');
+        expect(invalidRes.text).toContain('data-asset-info-card popover="manual"');
+        expect(invalidRes.text).not.toContain('class="asset-card-body');
+        expect(invalidRes.text).not.toContain('data-asset-rename-editor');
         expect(invalidRes.text).not.toContain('asset-preview-section');
 
         const conflict = await setupProjectWithAsset('Main Rename Conflict', 'old.png');
@@ -9187,8 +9482,9 @@ describe('asset browser HTTP workflow', () => {
           .type('form')
           .send({ filename: 'taken', origin: 'assets', _csrf: csrfToken })
           .expect(409);
-        expect(conflictRes.text).toContain('Destination already exists.');
-        expect(conflictRes.text).toContain(`action="/projects/${conflict.id}/assets/${conflict.asset.id}/rename"`);
+        expect(conflictRes.text).toContain('data-asset-info-card popover="manual"');
+        expect(conflictRes.text).not.toContain('class="asset-card-body');
+        expect(conflictRes.text).not.toContain('data-asset-rename-editor');
         expect(conflictRes.text).not.toContain('asset-preview-section');
         expect(conflictRes.text).not.toMatch(/[A-Z]:\\/);
         expect(conflictRes.text).not.toContain('ENOENT');
@@ -9708,33 +10004,26 @@ describe('asset browser HTTP workflow', () => {
     });
   });
 
-  it('renders the Project Assets grid card-details control without changing presentation state', async () => {
+  it('omits the retired Project Assets grid Details behavior while preserving the body opt-out', async () => {
     const { id } = await setupOrderedImageAssets('Grid card details');
 
     const grid = await agent.get(`/projects/${id}/assets?view=grid`).expect(200);
-    expect(grid.text).toContain('data-project-assets-grid-details-default="shown"');
+    expect(grid.text).not.toContain('data-project-assets-grid-details-default');
     const filters = grid.text.match(/<form[^>]*id="asset-filters"[^>]*>[\s\S]*?<\/form>/)?.[0] || '';
-    expect(filters).toContain('data-asset-grid-details-toggle');
-    const toggle = filters.match(/<input[^>]*data-asset-grid-details-toggle[^>]*>/)?.[0] || '';
-    expect(toggle).toContain('role="switch"');
-    expect(toggle).not.toMatch(/\sname=/);
-    expect(filters).toContain('<span class="form-switch-state">Details</span>');
-    expect(filters).not.toContain('Details shown');
-    expect(filters).not.toContain('Details hidden');
-    expect(filters.indexOf('data-asset-grid-details-toggle')).toBeGreaterThan(filters.indexOf('id="asset-order-filter"'));
-    expect(filters.lastIndexOf('asset-viewer-filter-field')).toBeLessThan(filters.indexOf('data-asset-grid-details-toggle'));
-    expect(filters).toMatch(/data-asset-grid-details-toggle[\s\S]*<\/div>\s*<\/form>$/);
-    expect(grid.text).toContain('class="asset-card-body');
+    expect(filters).not.toContain('data-asset-grid-details-toggle');
+    expect(filters).not.toContain('id="asset-grid-details-toggle"');
+    expect(filters).not.toContain('class="asset-grid-details-control"');
+    expect(grid.text).not.toContain('class="asset-card-body');
+    expect(grid.text).not.toContain('data-asset-rename-trigger');
+    expect(grid.text).toContain('data-asset-info-card popover="manual"');
+    expect(grid.text).toContain('class="asset-card-top"');
+    expect(grid.text).toContain('class="asset-select-checkbox"');
     const stylesheet = fs.readFileSync(path.join(process.cwd(), 'src', 'static', 'creatorcrate.css'), 'utf8');
-    expect(stylesheet).toMatch(/\.asset-grid\[data-grid-details="hidden"\] \.asset-card--project \.asset-card-body\s*\{[^}]*display:\s*none/);
+    expect(stylesheet).not.toContain('[data-grid-details="hidden"]');
 
     const list = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
-    expect(list.text).toContain('data-project-assets-grid-details-default="shown"');
+    expect(list.text).not.toContain('data-project-assets-grid-details-default');
     expect(list.text).not.toContain('data-asset-grid-details-toggle');
-
-    app.locals.pageDefaultsService.saveDefault('projectAssets', 'gridDetails', 'hidden');
-    const hidden = await agent.get(`/projects/${id}/assets?view=grid`).expect(200);
-    expect(hidden.text).toContain('data-project-assets-grid-details-default="hidden"');
 
     const viewer = await agent.get('/assets?view=grid').expect(200);
     expect(viewer.text).not.toContain('data-asset-grid-details-toggle');

@@ -453,6 +453,61 @@ export function createWorkflowQueryService({
     });
   }
 
+  function attachAssetInformationPresentation(assets, projectOptionPresentation) {
+    if (!Array.isArray(assets) || assets.length === 0) return [];
+
+    return assets.map((asset) => {
+      const projectOptions = presentProjectOptions({
+        status: asset.project_status,
+        project_type: asset.project_type,
+      }, projectOptionPresentation);
+
+      return {
+        ...asset,
+        projectStatusOption: projectOptions.projectStatusOption,
+        projectTypeOption: projectOptions.projectTypeOption,
+        formattedSize: formatFileSize(asset.size_bytes),
+        formattedModified: formatAssetModified(asset.modified_at),
+      };
+    });
+  }
+
+  /**
+   * Prepare Project Assets rows for the shared Asset Information renderer.
+   * The outer `tags` property remains the directly assigned Project Assets
+   * value; `effectiveTags` uses the cross-project Asset Viewer semantics.
+   */
+  async function enrichProjectAssetInformationAssets(project, assets, options = {}) {
+    if (!Array.isArray(assets) || assets.length === 0) return [];
+
+    const projectOptionPresentation = options.projectOptionPresentation
+      ?? buildAssetLibraryProjectOptionPresentation();
+    const normalizedAssets = assets.map((asset) => ({
+      ...asset,
+      project_title: asset.project_title ?? project?.title ?? null,
+      project_status: asset.project_status ?? project?.status ?? null,
+      project_type: asset.project_type ?? project?.project_type ?? null,
+      category_display_name: asset.category_display_name ?? asset.category?.displayName ?? null,
+      category_enabled: asset.category_enabled ?? asset.category?.enabled ?? null,
+    }));
+    const presentedAssets = attachAssetInformationPresentation(
+      attachAssetLibraryReleaseTitles(attachAssetLibraryTags(normalizedAssets, tagRepository.list())),
+      projectOptionPresentation,
+    );
+    const dimensionedAssets = await enrichAssetLibraryImageDimensions(presentedAssets);
+
+    return dimensionedAssets.map((asset, index) => {
+      const effectiveTags = asset.tags;
+      const assignedTags = assets[index].tags;
+
+      return {
+        ...asset,
+        tags: assignedTags,
+        effectiveTags,
+      };
+    });
+  }
+
   /**
    * Compose dashboard project data from an already-normalized section document.
    * Project enrichment is deliberately applied to one deduplicated union, then
@@ -984,23 +1039,15 @@ export function createWorkflowQueryService({
     const pageCount = Math.max(1, Math.ceil(total / pageSize));
     const page = Math.min(requestedPage, pageCount);
     const offset = (page - 1) * pageSize;
-    const assets = attachAssetLibraryReleaseTitles(attachAssetLibraryTags(
-      assetRepository.findAllAssets({
+    const assets = attachAssetInformationPresentation(
+      attachAssetLibraryReleaseTitles(attachAssetLibraryTags(assetRepository.findAllAssets({
         ...repositoryFilters,
         limit: pageSize,
         offset,
       }).map((asset) => {
         const preview = buildAssetPreviewModel(asset);
-        const projectOptions = presentProjectOptions({
-          status: asset.project_status,
-          project_type: asset.project_type,
-        }, projectOptionPresentation);
         return {
           ...asset,
-          projectStatusOption: projectOptions.projectStatusOption,
-          projectTypeOption: projectOptions.projectTypeOption,
-          formattedSize: formatFileSize(asset.size_bytes),
-          formattedModified: formatAssetModified(asset.modified_at),
           preview,
           preview_state: preview.state,
           preview_revision: preview.revision,
@@ -1010,9 +1057,9 @@ export function createWorkflowQueryService({
           isPreviewable: preview.previewable,
           hasThumbnail: Boolean(preview.urls.thumbnail),
         };
-      }),
-      tagCatalog,
-    ));
+      }), tagCatalog)),
+      projectOptionPresentation,
+    );
 
     // This is intentionally an unpaged project-option query: it is the
     // filter control's complete source, not the current asset page.
@@ -2334,6 +2381,7 @@ function normalizeAssetBrowserQuery(
     buildAssetLibraryProjectOptionPresentation,
     getAssetLibraryPage,
     enrichAssetLibraryImageDimensions,
+    enrichProjectAssetInformationAssets,
     getReleaseList,
     getReleaseCalendar,
     getProjectAssetBrowser,

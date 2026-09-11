@@ -2,7 +2,6 @@ import { describe, expect, it, vi, afterEach } from 'vitest';
 import {
   enhanceDropdowns,
   enhanceAssetSelection,
-  enhanceAssetGridDetails,
   enhanceAssetGridSize,
   enhanceAssetListSize,
   enhanceProjectAssetsLiveFiltering,
@@ -109,6 +108,13 @@ function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } =
       adopt(child);
       return child;
     },
+    replaceChildren(...nextChildren) {
+      children.splice(0).forEach((child) => {
+        child.parentNode = null;
+        child.parentElement = null;
+      });
+      nextChildren.forEach((child) => this.appendChild(child));
+    },
     replaceWith(next) {
       const parent = this.parentNode;
       const index = parent?.children?.indexOf(this) ?? -1;
@@ -187,8 +193,10 @@ function makePage({
   view = 'list',
   gridSizeDefault = 'default',
   listSizeDefault = 'large',
-  gridDetailsDefault = 'shown',
-  withGridDetailsToggle = false,
+  withAssetInfoCard = false,
+  dialogOpen = true,
+  resetUrl = '/projects/1/assets?resetFilters=1&view=list',
+  projectsResetUrl = null,
 } = {}) {
   const document = makeNode({ tagName: 'document' });
   document.nodeType = 9;
@@ -199,7 +207,6 @@ function makePage({
       'data-project-assets-live-region': '',
       'data-project-assets-grid-size-default': gridSizeDefault,
       'data-project-assets-list-size-default': listSizeDefault,
-      'data-project-assets-grid-details-default': gridDetailsDefault,
     },
   });
   const status = makeNode({ attrs: { 'data-project-assets-live-status': '' } });
@@ -208,6 +215,20 @@ function makePage({
     attrs: { id: 'asset-filters', action: '/projects/1/assets', method: 'get' },
   });
   form.submit = vi.fn();
+  const dialog = makeNode({
+    tagName: 'dialog',
+    attrs: { id: 'project-assets-filter-dialog', 'data-app-dialog': '' },
+  });
+  dialog.open = dialogOpen;
+  const resetForm = makeNode({
+    tagName: 'form',
+    attrs: { action: resetUrl, method: 'get', class: 'projects-filter-reset' },
+  });
+  const reset = makeNode({ tagName: 'button', attrs: { type: 'submit', 'data-project-assets-reset': '' } });
+  reset.form = resetForm;
+  const projectsResetForm = projectsResetUrl
+    ? makeNode({ tagName: 'form', attrs: { action: projectsResetUrl, method: 'get', class: 'projects-filter-reset' } })
+    : null;
   const search = addInput(form, { id: 'search', name: 'search', type: 'search' });
   addInput(form, { name: 'page', type: 'hidden' }, page);
   addInput(form, { name: 'view', type: 'hidden' }, view);
@@ -310,10 +331,16 @@ function makePage({
   gridSizeControls.appendChild(gridDefaultLabel);
   gridSizeControls.appendChild(gridLargeLabel);
   const grid = makeNode({ attrs: { class: 'asset-grid' } });
-  const gridDetailsToggle = withGridDetailsToggle
-    ? addInput(region, { type: 'checkbox', role: 'switch', 'data-asset-grid-details-toggle': '' })
+  const assetInfoPreview = withAssetInfoCard
+    ? makeNode({ attrs: { 'data-asset-viewer-preview': '' } })
     : null;
-
+  const assetInfoCard = withAssetInfoCard
+    ? makeNode({ attrs: { 'data-asset-info-card': '', popover: 'manual' } })
+    : null;
+  if (assetInfoPreview && assetInfoCard) {
+    assetInfoPreview.appendChild(assetInfoCard);
+    grid.appendChild(assetInfoPreview);
+  }
   const listSizeControls = makeNode({
     attrs: {
       'data-asset-list-size-controls': '',
@@ -344,23 +371,32 @@ function makePage({
   });
 
   region.appendChild(status);
-  region.appendChild(form);
   region.appendChild(nsfwForm);
   region.appendChild(gridSizeControls);
   region.appendChild(grid);
   region.appendChild(listSizeControls);
   region.appendChild(list);
+  if (projectsResetForm) document.appendChild(projectsResetForm);
   document.appendChild(region);
+  dialog.appendChild(form);
+  resetForm.appendChild(reset);
+  dialog.appendChild(resetForm);
+  document.appendChild(dialog);
 
   return {
     document,
     region,
     status,
     form,
+    dialog,
+    resetForm,
+    reset,
+    projectsResetForm,
     search,
     tagInput,
     extensionInput,
     inheritedFilterDefaultsInput,
+    categoryFilter,
     categoryAll: categoryAll.input,
     categoryRenders: categoryRenders.input,
     categoryMissing: categoryMissing.input,
@@ -371,7 +407,8 @@ function makePage({
     nsfwValue,
     nsfwToggle,
     grid,
-    gridDetailsToggle,
+    assetInfoPreview,
+    assetInfoCard,
     gridSlider,
     gridLabels: [gridCompactLabel, gridDefaultLabel, gridLargeLabel],
     list,
@@ -580,6 +617,38 @@ async function withLocalStorage(entries, callback) {
 describe('Project Assets live filtering enhancement', () => {
   afterEach(() => vi.useRealTimers());
 
+  it('enhances Asset Information on initial load and replacement without duplicate listeners', async () => {
+    vi.useFakeTimers();
+    const initial = makePage({ view: 'grid', withAssetInfoCard: true });
+    const replacement = makePage({ view: 'grid', withAssetInfoCard: true });
+    const { windowObject } = makeWindow(initial.document, new Map([
+      ['replacement', replacement.document],
+    ]));
+    windowObject.fetch.mockResolvedValue(htmlResponse(
+      'replacement',
+      'http://creatorcrate.test/projects/1/assets?search=replaced&view=grid',
+    ));
+
+    expect(enhanceProjectAssetsLiveFiltering(initial.document)).toBe(1);
+    expect(initial.assetInfoPreview.listeners.map(({ type }) => type)).toEqual([
+      'pointerenter', 'pointermove', 'pointerleave', 'focusin', 'focusout',
+    ]);
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    expect(initial.assetInfoPreview.listeners).toHaveLength(5);
+
+    initial.search.value = 'replaced';
+    initial.search.dispatch('input');
+    vi.advanceTimersByTime(350);
+    await flush();
+
+    expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(replacement.region);
+    expect(replacement.assetInfoPreview.listeners.map(({ type }) => type)).toEqual([
+      'pointerenter', 'pointermove', 'pointerleave', 'focusin', 'focusout',
+    ]);
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    expect(replacement.assetInfoPreview.listeners).toHaveLength(5);
+  });
+
   it('applies saved grid and list defaults when no valid localStorage choice exists', async () => {
     await withLocalStorage({}, async () => {
       const page = makePage({ gridSizeDefault: 'large', listSizeDefault: 'compact' });
@@ -612,6 +681,107 @@ describe('Project Assets live filtering enhancement', () => {
       expect(page.grid.getAttribute('data-grid-size')).toBeNull();
       expect(page.list.getAttribute('data-list-size')).toBe('large');
     });
+  });
+
+  it('keeps delegated Search and category controls interactive through repeated external-form reconciliation', async () => {
+    vi.useFakeTimers();
+    const initial = makePage({
+      resetUrl: '/projects/1/assets?resetFilters=1&view=list',
+      projectsResetUrl: '/projects?sort=title',
+    });
+    const afterFirst = makePage({
+      resetUrl: '/projects/1/assets?resetFilters=1&view=grid',
+      projectsResetUrl: '/projects?sort=updated',
+    });
+    const afterSecond = makePage({
+      resetUrl: '/projects/1/assets?resetFilters=1&view=list&pageSize=50',
+      projectsResetUrl: '/projects?sort=created',
+    });
+    const afterThird = makePage({
+      resetUrl: '/projects/1/assets?resetFilters=1&view=grid&pageSize=10',
+      projectsResetUrl: '/projects?sort=title&order=desc',
+    });
+    const pages = new Map([
+      ['after-first', afterFirst.document],
+      ['after-second', afterSecond.document],
+      ['after-third', afterThird.document],
+    ]);
+    const { windowObject } = makeWindow(initial.document, pages);
+    windowObject.fetch
+      .mockResolvedValueOnce(htmlResponse('after-first', 'http://creatorcrate.test/projects/1/assets?search=first&view=grid'))
+      .mockResolvedValueOnce(htmlResponse('after-second', 'http://creatorcrate.test/projects/1/assets?search=second&view=list&pageSize=50'))
+      .mockResolvedValueOnce(htmlResponse('after-third', 'http://creatorcrate.test/projects/1/assets?search=third&view=grid&pageSize=10'));
+
+    expect(enhanceProjectAssetsLiveFiltering(initial.document)).toBe(1);
+    expect(enhanceProjectAssetsLiveFiltering(initial.document)).toBe(1);
+    expect(initial.form.listeners.filter(({ type }) => type === 'input')).toHaveLength(1);
+    expect(initial.form.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+    expect(initial.form.listeners.filter(({ type }) => type === 'submit')).toHaveLength(1);
+
+    initial.search.value = 'first';
+    initial.search.dispatch('input');
+    vi.advanceTimersByTime(349);
+    expect(windowObject.fetch).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    await flush();
+
+    expect(windowObject.fetch).toHaveBeenCalledTimes(1);
+    expect(new URL(windowObject.fetch.mock.calls[0][0]).searchParams.get('search')).toBe('first');
+    expect(initial.document.querySelector('#asset-filters')).toBe(initial.form);
+    expect(initial.document.querySelector('#project-assets-filter-dialog')).toBe(initial.dialog);
+    expect(initial.dialog.open).toBe(true);
+    expect(initial.resetForm.getAttribute('action')).toBe('/projects/1/assets?resetFilters=1&view=grid');
+    expect(initial.projectsResetForm.getAttribute('action')).toBe('/projects?sort=title');
+    expect(initial.document.querySelector('#search')).toBe(afterFirst.search);
+    expect(afterFirst.categoryRenders.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+    expect(afterFirst.presenceMissing.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+
+    const firstReplacementSearch = initial.document.querySelector('#search');
+    firstReplacementSearch.value = 'second';
+    firstReplacementSearch.dispatch('input');
+    vi.advanceTimersByTime(350);
+    await flush();
+
+    expect(windowObject.fetch).toHaveBeenCalledTimes(2);
+    expect(new URL(windowObject.fetch.mock.calls[1][0]).searchParams.get('search')).toBe('second');
+    expect(initial.document.querySelector('#asset-filters')).toBe(initial.form);
+    expect(initial.dialog.open).toBe(true);
+    expect(initial.resetForm.getAttribute('action')).toBe('/projects/1/assets?resetFilters=1&view=list&pageSize=50');
+    expect(initial.projectsResetForm.getAttribute('action')).toBe('/projects?sort=title');
+    expect(initial.document.querySelector('#search')).toBe(afterSecond.search);
+    expect(afterSecond.categoryRenders.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+    expect(afterSecond.presenceMissing.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+
+    const secondReplacementSearch = initial.document.querySelector('#search');
+    secondReplacementSearch.value = 'third-a';
+    secondReplacementSearch.dispatch('input');
+    vi.advanceTimersByTime(100);
+    secondReplacementSearch.value = 'third-b';
+    secondReplacementSearch.dispatch('input');
+    vi.advanceTimersByTime(100);
+    secondReplacementSearch.value = 'third';
+    secondReplacementSearch.dispatch('input');
+    vi.advanceTimersByTime(349);
+    expect(windowObject.fetch).toHaveBeenCalledTimes(2);
+    vi.advanceTimersByTime(1);
+    await flush();
+
+    expect(windowObject.fetch).toHaveBeenCalledTimes(3);
+    expect(new URL(windowObject.fetch.mock.calls[2][0]).searchParams.get('search')).toBe('third');
+    expect(initial.document.querySelector('#search')).toBe(afterThird.search);
+    expect(initial.dialog.open).toBe(true);
+    expect(initial.resetForm.getAttribute('action')).toBe('/projects/1/assets?resetFilters=1&view=grid&pageSize=10');
+    expect(initial.projectsResetForm.getAttribute('action')).toBe('/projects?sort=title');
+    expect(afterThird.categoryRenders.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+    expect(afterThird.presenceMissing.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    expect(initial.form.listeners.filter(({ type }) => type === 'input')).toHaveLength(1);
+    expect(initial.form.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+    expect(initial.form.listeners.filter(({ type }) => type === 'submit')).toHaveLength(1);
+    expect(afterThird.categoryRenders.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+    expect(afterThird.presenceMissing.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
   });
 
   it('suspends inherited defaults through live category navigation and preserves provenance for All Categories', async () => {
@@ -754,22 +924,26 @@ describe('Project Assets live filtering enhancement', () => {
     expect(allRequest.searchParams.has('inheritedFilterDefaults')).toBe(false);
   });
 
-  it.each(['grid', 'list'])('Reset fetches its %s href and records the marker-free response URL', async (view) => {
-    const initial = makePage({ view });
-    const next = makePage({ view, page: '1' });
+  it.each(['grid', 'list'])('Reset fetches its %s form action and keeps the persistent dialog open', async (view) => {
     const href = `/projects/1/assets?resetFilters=1&view=${view}`;
-    const reset = makeNode({ tagName: 'a', attrs: { href, 'data-project-assets-reset': '' } });
-    initial.region.appendChild(reset);
+    const initial = makePage({ view, resetUrl: href });
+    const next = makePage({ view, page: '1', resetUrl: href });
     const { windowObject } = makeWindow(initial.document, new Map([['reset', next.document]]));
     const responseUrl = `http://creatorcrate.test/projects/1/assets?sort=size&order=desc&pageSize=50&view=${view}`;
     windowObject.fetch.mockResolvedValue(htmlResponse('reset', responseUrl));
     expect(enhanceProjectAssetsLiveFiltering(initial.document)).toBe(1);
-    reset.dispatch('click', { target: reset, button: 0 });
+    initial.reset.dispatch('click', { target: initial.reset, button: 0 });
     await flush();
     expect(new URL(windowObject.fetch.mock.calls[0][0]).pathname + new URL(windowObject.fetch.mock.calls[0][0]).search).toBe(href);
     expect(windowObject.history.pushes.at(-1).url).toBe(responseUrl);
     expect(windowObject.history.pushes.at(-1).url).not.toContain('resetFilters');
     expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(next.region);
+    expect(initial.document.querySelector('#asset-filters')).toBe(initial.form);
+    expect(initial.document.querySelector('#project-assets-filter-dialog')).toBe(initial.dialog);
+    expect(initial.dialog.open).toBe(true);
+    expect(initial.resetForm.getAttribute('action')).toBe(href);
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    expect(initial.reset.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
   });
 
   it('serializes category and presence changes, resets page, pushes the server URL, and rebinds the replacement', async () => {
@@ -800,110 +974,10 @@ describe('Project Assets live filtering enhancement', () => {
 
     enhanceProjectAssetsLiveFiltering(next.region);
     enhanceProjectAssetsLiveFiltering(next.region);
-    expect(next.form.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
-    expect(next.form.listeners.filter(({ type }) => type === 'submit')).toHaveLength(1);
-  });
-
-  it('applies only valid Project Assets grid-details preferences and keeps the toggle synchronized', () => {
-    const storage = new Map();
-    const previousStorage = globalThis.localStorage;
-    globalThis.localStorage = {
-      getItem: (key) => storage.get(key) ?? null,
-      setItem: (key, value) => storage.set(key, value),
-    };
-
-    try {
-      for (const { fallback, stored, expected } of [
-        { fallback: 'shown', stored: null, expected: 'shown' },
-        { fallback: 'hidden', stored: null, expected: 'hidden' },
-        { fallback: 'shown', stored: 'hidden', expected: 'hidden' },
-        { fallback: 'hidden', stored: 'shown', expected: 'shown' },
-        { fallback: 'hidden', stored: 'invalid', expected: 'hidden' },
-      ]) {
-        const page = makePage({
-          view: 'grid',
-          gridDetailsDefault: fallback,
-          withGridDetailsToggle: true,
-        });
-        if (stored === null) storage.delete('creatorcrate-asset-grid-details');
-        else storage.set('creatorcrate-asset-grid-details', stored);
-
-        expect(enhanceAssetGridDetails(page.document)).toBe(1);
-        expect(page.grid.getAttribute('data-grid-details')).toBe(expected);
-        expect(page.gridDetailsToggle.checked).toBe(expected === 'shown');
-      }
-    } finally {
-      if (previousStorage === undefined) delete globalThis.localStorage;
-      else globalThis.localStorage = previousStorage;
-    }
-  });
-
-  it('persists one grid-details toggle change and leaves list and Asset Viewer grids untouched', () => {
-    const page = makePage({ view: 'grid', withGridDetailsToggle: true });
-    const assetViewerGrid = makeNode({ attrs: { class: 'asset-grid' } });
-    page.document.appendChild(assetViewerGrid);
-    const storage = new Map();
-    const setItem = vi.fn((key, value) => storage.set(key, value));
-    const previousStorage = globalThis.localStorage;
-    globalThis.localStorage = {
-      getItem: (key) => storage.get(key) ?? null,
-      setItem,
-    };
-
-    try {
-      expect(enhanceAssetGridDetails(page.region)).toBe(1);
-      expect(enhanceAssetGridDetails(page.region)).toBe(1);
-      expect(page.gridDetailsToggle.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
-      page.gridDetailsToggle.checked = false;
-      page.gridDetailsToggle.dispatch('change');
-
-      expect(page.grid.getAttribute('data-grid-details')).toBe('hidden');
-      expect(storage.get('creatorcrate-asset-grid-details')).toBe('hidden');
-      expect(setItem).toHaveBeenCalledTimes(1);
-      expect(assetViewerGrid.getAttribute('data-grid-details')).toBeNull();
-
-      const listDocument = makeNode({ tagName: 'document' });
-      listDocument.nodeType = 9;
-      listDocument.ownerDocument = listDocument;
-      listDocument.appendChild(makeNode({
-        attrs: {
-          'data-project-assets-live-region': '',
-          'data-project-assets-grid-details-default': 'shown',
-        },
-      }));
-      expect(enhanceAssetGridDetails(listDocument)).toBe(0);
-    } finally {
-      if (previousStorage === undefined) delete globalThis.localStorage;
-      else globalThis.localStorage = previousStorage;
-    }
-  });
-
-  it('reapplies persisted grid-details after a Project Assets live-region replacement', async () => {
-    const initial = makePage({ view: 'grid', withGridDetailsToggle: true });
-    const next = makePage({ view: 'grid', withGridDetailsToggle: true });
-    const { windowObject } = makeWindow(initial.document, new Map([['grid-details', next.document]]));
-    const previousStorage = globalThis.localStorage;
-    globalThis.localStorage = {
-      getItem: (key) => key === 'creatorcrate-asset-grid-details' ? 'hidden' : null,
-      setItem: vi.fn(),
-    };
-    windowObject.fetch.mockResolvedValue(
-      htmlResponse('grid-details', 'http://creatorcrate.test/projects/1/assets?presence=missing&view=grid'),
-    );
-
-    try {
-      expect(enhanceProjectAssetsLiveFiltering(initial.document)).toBe(1);
-      expect(initial.grid.getAttribute('data-grid-details')).toBe('hidden');
-      initial.presenceMissing.checked = true;
-      initial.presenceMissing.dispatch('change');
-      await flush();
-
-      expect(next.grid.getAttribute('data-grid-details')).toBe('hidden');
-      expect(next.gridDetailsToggle.checked).toBe(false);
-    } finally {
-      if (previousStorage === undefined) delete globalThis.localStorage;
-      else globalThis.localStorage = previousStorage;
-    }
+    expect(initial.document.querySelector('#asset-filters')).toBe(initial.form);
+    expect(initial.form.listeners.filter(({ type }) => type === 'input')).toHaveLength(1);
+    expect(initial.form.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+    expect(initial.form.listeners.filter(({ type }) => type === 'submit')).toHaveLength(1);
   });
 
   it('restores the saved list size when a live-filter replacement re-enhances the region', async () => {

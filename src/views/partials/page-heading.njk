@@ -20,11 +20,12 @@
   Text parameters are escaped by Nunjucks autoescaping. Action markup is only
   accepted through the Nunjucks caller block; do not pass arbitrary HTML strings.
 #}
-{% macro render(description='', badgeStatus='', badgeText='', leadHref='', leadLabel='', leadClass='') %}
+{% import "partials/icons.njk" as icons %}
+{% macro render(description='', badgeStatus='', badgeText='', leadHref='', leadLabel='', leadClass='', leadIcon='') %}
 {% if leadHref and leadLabel or badgeStatus or badgeText or caller is defined %}
 <header class="page-heading">
   {% if leadHref and leadLabel %}
-    <a class="button button-secondary page-heading-lead{% if leadClass %} {{ leadClass }}{% endif %}" href="{{ leadHref }}">{{ leadLabel }}</a>
+    <a class="button button-secondary page-heading-lead{% if leadIcon %} page-heading-lead--icon asset-tooltip asset-tooltip--left{% endif %}{% if leadClass %} {{ leadClass }}{% endif %}" href="{{ leadHref }}"{% if leadIcon %} aria-label="{{ leadLabel }}" data-tooltip="{{ leadLabel }}"{% endif %}>{% if leadIcon %}{{ icons.icon(leadIcon) }}{% else %}{{ leadLabel }}{% endif %}</a>
   {% endif %}
   {% if badgeStatus or badgeText %}
     <div class="page-heading-copy">

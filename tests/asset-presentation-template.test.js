@@ -93,4 +93,24 @@ describe('reusable asset presentation macros', () => {
     expect(html).toContain('class="asset-list-card-media-link" href="/projects/7/assets/73"');
     expect(renderComponents(asset)).not.toContain('data-project-assets-preview-id');
   });
+
+  it('suppresses the complete grid body only when explicitly requested', () => {
+    const html = env.renderString(`
+      {% import "partials/asset-presentation.njk" as presentation %}
+      {{ presentation.gridCard(asset, { cardClass: 'default-body' }) }}
+      {% call(slot) presentation.gridCard(asset, { cardClass: 'hidden-body', hideBody: true }) %}
+        {% if slot == 'title-row' %}<span data-title-row-slot>Title action</span>{% endif %}
+        {% if slot == 'associations' %}<span data-associations-slot>Associations</span>{% endif %}
+      {% endcall %}
+    `, { asset: minimalReleaseAsset });
+    const defaultCard = html.match(/<article class="asset-card default-body"[\s\S]*?<\/article>/)?.[0] ?? '';
+    const hiddenCard = html.match(/<article class="asset-card hidden-body"[\s\S]*?<\/article>/)?.[0] ?? '';
+
+    expect(defaultCard).toContain('class="asset-card-body"');
+    expect(hiddenCard).not.toContain('class="asset-card-body"');
+    expect(hiddenCard).not.toContain('data-title-row-slot');
+    expect(hiddenCard).not.toContain('data-associations-slot');
+    expect(hiddenCard).toContain('class="asset-card-top"');
+    expect(hiddenCard).toContain('class="asset-card-media');
+  });
 });

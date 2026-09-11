@@ -31,6 +31,20 @@ function extractPageHeading(html) {
   return html.match(/<header class="page-heading">[\s\S]*?<\/header>/)?.[0] || '';
 }
 
+function expectProjectReturnLead(html, { href, title }) {
+  const heading = extractPageHeading(html);
+  const lead = heading.match(new RegExp(
+    `<a class="button button-secondary page-heading-lead page-heading-lead--icon asset-tooltip asset-tooltip--left" href="${href}" aria-label="${title}" data-tooltip="${title}">([\\s\\S]*?)<\\/a>`
+  ));
+
+  expect(lead).not.toBeNull();
+  expect(lead[0]).not.toContain('title=');
+  expect(lead[1]).toMatch(/<svg[^>]*aria-hidden="true"[^>]*focusable="false"/);
+  expect(lead[1]).toContain('<path d="M15 18l-6-6 6-6"/>');
+  expect(lead[1].replace(/<[^>]+>/g, '').trim()).toBe('');
+  expect(heading).not.toContain(`Project: ${title}`);
+}
+
 function extractReleasesResultsSection(html) {
   return html.match(/<section class="project-detail-section releases-results-section"[\s\S]*?<\/section>/)?.[0] || '';
 }
@@ -1614,7 +1628,7 @@ describe('release HTTP workflow', () => {
     expect(res.text).toContain('Detail View Test');
     expect(res.text).toContain('Edit');
     expect(res.text).toContain(`aria-label="Manage Assets" data-tooltip="Manage Assets"`);
-    expect(res.text).toContain(`<a class="button button-secondary page-heading-lead" href="/projects/${projectId}">Project: Detail Test Project</a>`);
+    expectProjectReturnLead(res.text, { href: `/projects/${projectId}`, title: 'Detail Test Project' });
     expect(res.text).toContain(`<dd><a href="/projects/${projectId}">Detail Test Project</a></dd>`);
     expect(res.text).not.toMatch(/>Back to Project<\/a>/);
     expect(res.text).toContain(`<nav class="project-detail-action-toolbar" aria-label="Release actions">`);
@@ -1714,7 +1728,7 @@ describe('release HTTP workflow', () => {
     const actionsMatch = res.text.match(/<nav class="project-detail-action-toolbar" aria-label="Release actions">[\s\S]*?<\/nav>/);
     expect(headingMatch).not.toBeNull();
     expect(actionsMatch).not.toBeNull();
-    expect(headingMatch[0]).toContain('Project: Heading Action Project</a>');
+    expectProjectReturnLead(res.text, { href: `/projects/${projectId}`, title: 'Heading Action Project' });
     expect(headingMatch[0]).toContain('<a class="button button-primary" href="/releases/' + releaseId + '/publish" data-dialog-open="release-publish-dialog">Review &amp; Publish</a>');
     expect(actionsMatch[0]).toContain('href="/releases/' + releaseId + '/assets" aria-label="Manage Assets" data-tooltip="Manage Assets"');
     expect(actionsMatch[0]).toContain('href="/releases/' + releaseId + '/edit" data-dialog-open="release-edit-dialog" aria-label="Edit release" data-tooltip="Edit release"');
@@ -2619,7 +2633,7 @@ describe('release HTTP workflow', () => {
 
     const detail = await agent.get(createRes.headers.location).expect(200);
     expect(detail.text).toContain('Archived');
-    expect(detail.text).toContain(`<a class="button button-secondary page-heading-lead" href="/projects/${projectId}">Project: Archive Test Project</a>`);
+    expectProjectReturnLead(detail.text, { href: `/projects/${projectId}`, title: 'Archive Test Project' });
   });
 
   it('cannot archive already archived release', async () => {
@@ -2689,7 +2703,7 @@ describe('release HTTP workflow', () => {
       .expect(200);
     expect(res.text).toContain('Asset Selection Release');
     expect(res.text).toContain('Back to Release');
-    expect(res.text).toContain(`<a class="button button-secondary page-heading-lead" href="/projects/${projectId}">Project: Asset Selection Project</a>`);
+    expectProjectReturnLead(res.text, { href: `/projects/${projectId}`, title: 'Asset Selection Project' });
     expect(res.text).toMatch(/Project status:[\s\S]*?<span class="status-badge status-badge--active">Ready<\/span>/);
   });
 
@@ -6006,8 +6020,9 @@ describe('release HTTP workflow', () => {
         const heading = res.text.match(/<header class="page-heading">[\s\S]*?<\/header>/)?.[0] || '';
         const releaseAssetsContent = res.text.slice(res.text.indexOf('<section data-release-assets-live-region>'));
         const headingActions = heading.match(/<div class="page-heading-actions">[\s\S]*?<\/div>/)?.[0] || '';
+        expectProjectReturnLead(res.text, { href: `/projects/${projectId}`, title: 'Readiness Test Project' });
         expect(heading).toMatch(new RegExp(
-          '<header class="page-heading">\\s*<a class="button button-secondary page-heading-lead" href="/projects/' + projectId + '">Project: Readiness Test Project</a>[\\s\\S]*?<div class="page-heading-actions">\\s*<form id="release-assets-form" method="post" action="' + releaseLocation + '/assets" class="inline-form" data-asset-selection-form>[\\s\\S]*?<button class="button button-primary" type="submit">Save Selection</button>[\\s\\S]*?<a class="button button-secondary" href="' + releaseLocation + '">Back to Release</a>',
+          '<header class="page-heading">[\\s\\S]*?<div class="page-heading-actions">\\s*<form id="release-assets-form" method="post" action="' + releaseLocation + '/assets" class="inline-form" data-asset-selection-form>[\\s\\S]*?<button class="button button-primary" type="submit">Save Selection</button>[\\s\\S]*?<a class="button button-secondary" href="' + releaseLocation + '">Back to Release</a>',
         ));
         expect(headingActions.indexOf('Save Selection')).toBeLessThan(headingActions.indexOf('Back to Release'));
         expect(headingActions).not.toContain('class="inline-form release-assets-form"');

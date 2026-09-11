@@ -483,7 +483,7 @@ describe('project HTTP workflow', () => {
     expect(defaultsDialog).toContain('role="status" aria-live="polite" aria-atomic="true"');
 
     const css = await fetchProjectCss(app);
-    expect(css).toMatch(/#projects-filter-dialog\s+\.projects-filter-reset\s*\{[^}]*display:\s*flex;[^}]*justify-content:\s*center;[^}]*margin:\s*var\(--space-lg\);/);
+    expect(css).toMatch(/#projects-filter-dialog\s+\.projects-filter-reset,\s*#project-assets-filter-dialog\s+\.projects-filter-reset\s*\{[^}]*display:\s*flex;[^}]*justify-content:\s*center;[^}]*margin:\s*var\(--space-lg\);/);
 
     for (const field of [
       { name: 'view', label: 'View', id: 'projects-default-view', values: ['grid', 'list'], selected: 'grid', summary: 'Grid' },

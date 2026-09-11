@@ -7,6 +7,7 @@ import { buildAssetLibraryUrl } from '../src/routes/asset-library-query.js';
 
 const VIEWS_DIR = fileURLToPath(new URL('../src/views', import.meta.url));
 const TEMPLATE_PATH = path.join(VIEWS_DIR, 'assets', 'index.njk');
+const ASSET_INFORMATION_PARTIAL_PATH = path.join(VIEWS_DIR, 'partials', 'asset-information.njk');
 const PROJECT_ASSET_VIEWER_PATH = path.join(VIEWS_DIR, 'projects', 'asset-viewer.njk');
 const STYLESHEET_PATH = path.join(VIEWS_DIR, '..', 'static', 'creatorcrate.css');
 const css = fs.readFileSync(STYLESHEET_PATH, 'utf8');
@@ -218,6 +219,14 @@ function renderPage(overrides = {}) {
     auth: { enabled: false, authenticated: false },
     shell: { appName: 'CreatorCrate', activeSection: 'Assets', navigation: [] },
   });
+}
+
+function renderAssetInformation(asset = alphaAsset, options = {}) {
+  const env = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: true });
+  return env.renderString(
+    '{% import "partials/asset-information.njk" as assetInformation %}{{ assetInformation.render(asset, options) }}',
+    { asset, options },
+  );
 }
 
 function href(url) {
@@ -867,6 +876,55 @@ describe('cross-project Asset Viewer template', () => {
     expect(emptyReset).toContain('href="' + href(clearFiltersUrl) + '"');
   });
 
+  it('imports Asset information independently and includes the Project-name field by default', () => {
+    const pageSource = fs.readFileSync(TEMPLATE_PATH, 'utf8');
+    const source = fs.readFileSync(ASSET_INFORMATION_PARTIAL_PATH, 'utf8');
+    const html = renderAssetInformation();
+
+    expect(pageSource).toContain('{% import "partials/asset-information.njk" as assetInformation %}');
+    expect(pageSource).toContain('{{ assetInformation.render(asset) }}');
+    expect(pageSource).not.toContain('{% macro renderGridAssetInfo');
+    expect(source).not.toContain('pageUrl');
+    expect(html).toContain('data-asset-info-card popover="manual"');
+    expect(html).toContain('<dt>Project</dt>');
+    expect(html).toContain('<dd>Alpha Project</dd>');
+  });
+
+  it('omits only the Project-name field when showProjectName is false', () => {
+    const html = renderAssetInformation({
+      ...alphaAsset,
+      tags: [{ displayName: 'Shared Render Tag', origin: 'inherited' }],
+    }, { showProjectName: false });
+
+    expect(html).not.toContain('<dt>Project</dt>');
+    expect(html).not.toContain('<dd>Alpha Project</dd>');
+    for (const field of ['Filename', 'Category', 'Extension', 'Size', 'Dimensions', 'Modified', 'Release usage']) {
+      expect(html).toContain(`<dt>${field}</dt>`);
+    }
+    expect(html).toContain('Effective tags');
+    expect(html).toContain('Shared Render Tag');
+    expect(html).toContain('<span class="asset-viewer-grid-card-info-section-label">Project</span>');
+    expect(html).toContain('>In Progress</span>');
+    expect(html).toContain('>Illustration</span>');
+  });
+
+  it('prefers explicit effectiveTags while retaining the existing tags fallback', () => {
+    const effectiveHtml = renderAssetInformation({
+      ...alphaAsset,
+      tags: [{ displayName: 'Assigned only', origin: 'direct' }],
+      effectiveTags: [{ displayName: 'Inherited presentation', origin: 'inherited' }],
+    });
+    const assetLibraryHtml = renderAssetInformation({
+      ...alphaAsset,
+      tags: [{ displayName: 'Asset Library effective tag', origin: 'direct' }],
+    });
+
+    expect(effectiveHtml).toContain('Inherited presentation');
+    expect(effectiveHtml).toContain('Inherited from');
+    expect(effectiveHtml).not.toContain('Assigned only');
+    expect(assetLibraryHtml).toContain('Asset Library effective tag');
+  });
+
   it('escapes Asset information filename, project, and catalogue labels', () => {
     const html = renderPage({
       assets: [{
@@ -1184,6 +1242,87 @@ function renderProjectAssetsPage(overrides = {}) {
   });
 }
 
+describe('Project Assets Asset Information popup', () => {
+  const projectAsset = {
+    ...alphaAsset,
+    displayFilename: 'shared',
+    viewerUrl: '/projects/1/assets/101',
+    categoryLabel: 'Renders',
+    categoryDisabled: false,
+    typeLabel: 'PNG',
+    locationLabel: 'renders',
+    presenceLabel: 'Present',
+    releaseSummary: {
+      mode: 'some',
+      releases: [{ release_id: 301, title: 'Alpha Release', role: 'primary' }],
+    },
+    tags: [{ displayName: 'Assigned only' }],
+    effectiveTags: [{ displayName: 'Inherited project tag', origin: 'inherited' }],
+  };
+
+  it.each([
+    ['ordinary', false],
+    ['complete-category', true],
+  ])('renders the shared popup on %s grid cards without a bottom body', (_surface, completeCategorySurface) => {
+    const html = renderProjectAssetsPage({
+      assets: [projectAsset],
+      total: 1,
+      completeCategorySurface,
+      autoRenameSurface: completeCategorySurface,
+      submittedSelectedAssetIds: [],
+    });
+    const card = html.match(/<article class="asset-card asset-card--project[\s\S]*?<\/article>/)?.[0] ?? '';
+    const info = card.slice(card.indexOf('<div class="asset-viewer-grid-card-info"'));
+
+    expect(card).toMatch(/class="asset-card-media[^"\n]*" data-asset-viewer-preview data-preview-enhancement/);
+    expect(card).toMatch(/data-asset-viewer-preview[\s\S]*data-asset-info-card popover="manual"/);
+    expect((card.match(/data-asset-info-card/g) || [])).toHaveLength(1);
+    expect(info).not.toContain('<dt>Project</dt>');
+    for (const field of ['Filename', 'Category', 'Extension', 'Size', 'Dimensions', 'Modified', 'Release usage']) {
+      expect(info).toContain(`<dt>${field}</dt>`);
+    }
+    expect(info).toContain('1920 × 1080');
+    expect(info).toContain('Used in 2 releases');
+    expect(info).toContain('Inherited project tag');
+    expect(info).toContain('<span class="asset-viewer-grid-card-info-section-label">Project</span>');
+    expect(info).toContain('>In Progress</span>');
+    expect(info).toContain('>Illustration</span>');
+
+    expect(card).toContain('class="asset-card-top"');
+    expect(card).toContain('class="asset-card-media-link" href="/projects/1/assets/101"');
+    expect(card).toContain('data-project-assets-preview-id="101"');
+    expect(card).toContain('class="asset-select-checkbox"');
+    expect(card).not.toContain('data-asset-rename-trigger');
+    expect(card).not.toContain('data-asset-rename-editor');
+    expect(card).not.toContain('class="asset-card-body"');
+    expect(card).not.toContain('asset-card-title-controls');
+    expect(card).not.toContain('asset-card-primary-metadata');
+    expect(card).not.toContain('asset-card-associations-region');
+    expect(card).not.toContain('Assigned only');
+    if (completeCategorySurface) {
+      expect(html).toContain('data-auto-rename-asset-id="101"');
+      expect(html).toMatch(/data-auto-rename-asset-id="101"[\s\S]*?draggable="true"[\s\S]*?tabindex="0"/);
+    }
+  });
+
+  it('does not render the Project Assets Details control', () => {
+    const html = renderProjectAssetsPage();
+
+    expect(html).not.toContain('id="asset-grid-details-toggle"');
+    expect(html).not.toContain('data-asset-grid-details-toggle');
+    expect(html).not.toContain('class="asset-grid-details-control"');
+  });
+
+  it('uses the shared renderer with Project-name omission while leaving Asset Viewer defaults unchanged', () => {
+    const projectSource = fs.readFileSync(PROJECT_ASSETS_PATH, 'utf8');
+    const assetViewerSource = fs.readFileSync(TEMPLATE_PATH, 'utf8');
+
+    expect(projectSource).toContain('{% import "partials/asset-information.njk" as assetInformation %}');
+    expect(projectSource).toContain('{{ assetInformation.render(asset, { showProjectName: false }) }}');
+    expect(assetViewerSource).toContain('{{ assetInformation.render(asset) }}');
+  });
+});
+
 describe('slideshow scaffold — static UI', () => {
   it('asset-viewer page: Reset is inside the Filter dialog rather than the toolbar', () => {
     const html = renderPage();
@@ -1339,21 +1478,36 @@ describe('slideshow scaffold — static UI', () => {
     expect(extensionDetails).not.toContain('cc-dropdown--compact');
   });
 
-  it.each(['grid', 'list'])('project assets Reset controls consume the supplied %s URL', (view) => {
-    const href = `/projects/1/assets?resetFilters=1&view=${view}`;
+  it.each(['grid', 'list'])('project assets Reset form consumes the supplied %s URL', (view) => {
+    const action = `/projects/1/assets?resetFilters=1&view=${view}`;
     const html = renderProjectAssetsPage({
-      filters: { view }, resetFiltersUrl: href,
+      filters: { view }, resetFiltersUrl: action,
       emptyState: { kind: 'filtered', title: 'No matches' },
     });
-    expect(html.match(new RegExp(`href="/projects/1/assets\\?resetFilters=1&amp;view=${view}"`, 'g'))).toHaveLength(2);
+    const filterDialog = html.match(/<dialog id="project-assets-filter-dialog"[\s\S]*?<\/dialog>/)?.[0] ?? '';
+    const resetForm = filterDialog.match(/<form class="projects-filter-reset"[^>]*>[\s\S]*?<\/form>/)?.[0] ?? '';
+
+    expect(resetForm).toContain(`method="get" action="/projects/1/assets?resetFilters=1&amp;view=${view}"`);
+    expect(resetForm).toContain('type="submit" data-project-assets-reset>Reset filters</button>');
   });
 
-  it('project assets page: existing Filter, Reset, and Defaults controls remain present', () => {
+  it('project assets page: Filter dialog owns the persistent filters and Reset controls', () => {
     const html = renderProjectAssetsPage();
-    expect(html).toContain('type="submit" form="asset-filters"');
-    expect(html).toContain('>Filter</button>');
-    expect(html).toContain('data-project-assets-reset');
-    expect(html).toContain('>Reset</span>');
+    const filterControl = html.match(/<a[^>]*data-dialog-open="project-assets-filter-dialog"[^>]*>/)?.[0] ?? '';
+    const filterDialog = html.match(/<dialog id="project-assets-filter-dialog"[\s\S]*?<\/dialog>/)?.[0] ?? '';
+
+    expect(filterControl).toContain('href="#project-assets-filter-dialog"');
+    expect(filterControl).toContain('aria-label="Filter assets"');
+    expect(filterDialog).toContain('<form id="asset-filters" class="app-dialog-form project-form" method="get" action="/projects/1/assets">');
+    expect(filterDialog).toContain('<form class="projects-filter-reset" method="get" action="/projects/1/assets?resetFilters=1&amp;view=grid">');
+    expect(filterDialog).toContain('type="submit" data-project-assets-reset>Reset filters</button>');
+    expect(css).toMatch(/#projects-filter-dialog\s+\.projects-filter-reset,\s*#project-assets-filter-dialog\s+\.projects-filter-reset\s*\{[^}]*display:\s*flex;[^}]*justify-content:\s*center;[^}]*margin:\s*var\(--space-lg\);/);
+    expect(css).toMatch(/#projects-filter-dialog\s+\.projects-filter-reset,\s*#project-assets-filter-dialog\s+\.projects-filter-reset\s*\{[^}]*margin-right:\s*var\(--space-md\);[^}]*margin-left:\s*var\(--space-md\);/);
+    expect(html.match(/id="project-assets-filter-dialog"/g)).toHaveLength(1);
+    expect(html.match(/id="asset-filters"/g)).toHaveLength(1);
+    expect(html.match(/data-project-assets-reset/g)).toHaveLength(1);
+    expect(html).not.toContain('type="submit" form="asset-filters"');
+    expect(html).not.toContain('>Reset</span>');
     expect(html).toContain('href="/projects/1/assets?defaults=1"');
     expect(html).toContain('data-dialog-open="project-assets-defaults-dialog"');
   });

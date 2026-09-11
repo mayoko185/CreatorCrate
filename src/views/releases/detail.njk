@@ -45,11 +45,11 @@
   {% set isPublished = release and release.published_date %}
   {% set isArchived = projectArchived or releaseArchived %}
   {% set projectLeadHref = "/projects/" ~ project.id if project and project.id else "" %}
-  {% set projectLeadLabel = "Project: " ~ project.title if project else "" %}
+  {% set projectLeadLabel = project.title if project else "" %}
   {% if isArchived %}
-    {{ pageHeading.render("", "archived", "Archived", projectLeadHref, projectLeadLabel) }}
+    {{ pageHeading.render("", "archived", "Archived", projectLeadHref, projectLeadLabel, "", "chevron-left") }}
   {% else %}
-    {% call pageHeading.render("", "", "", projectLeadHref, projectLeadLabel) %}
+    {% call pageHeading.render("", "", "", projectLeadHref, projectLeadLabel, "", "chevron-left") %}
       {% if not isPublished %}
         <a class="button button-primary" href="/releases/{{ release.id }}/publish" data-dialog-open="release-publish-dialog">Review &amp; Publish</a>
       {% endif %}

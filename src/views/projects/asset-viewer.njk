@@ -5,7 +5,7 @@
 {% set page_title = "Assets — " ~ project.title ~ " — " ~ asset.filename %}
 
 {% block content %}
-  {% call pageHeading.render("", "", "", "/projects/" ~ project.id, "Project: " ~ project.title, "asset-viewer-project") %}
+  {% call pageHeading.render("", "", "", "/projects/" ~ project.id, project.title, "asset-viewer-project", "chevron-left") %}
     <a class="button button-secondary asset-viewer-back" href="{{ backToAssetsLink.href }}">Back to Assets</a>
   {% endcall %}
 

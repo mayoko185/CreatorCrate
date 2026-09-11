@@ -34,7 +34,7 @@
       {% endif %}
     </div>
 
-    <div class="asset-card-media{% if asset.preview and asset.preview.kind == 'krita' %} asset-media--krita{% endif %}"{% if previewAvailable %} data-preview-enhancement data-preview-state="loading"{% endif %}>
+    <div class="asset-card-media{% if asset.preview and asset.preview.kind == 'krita' %} asset-media--krita{% endif %}"{% if options.assetInformation %} data-asset-viewer-preview{% endif %}{% if previewAvailable %} data-preview-enhancement data-preview-state="loading"{% endif %}>
       {% if previewAvailable %}
         {% if asset.viewerUrl %}
           <a class="asset-card-media-link" href="{{ asset.viewerUrl }}" aria-label="View details for {{ filenameLabel }}"{% if options.previewSlideshowAssetId is defined and options.previewSlideshowAssetId is not none %} data-project-assets-preview-id="{{ options.previewSlideshowAssetId }}"{% endif %}>
@@ -61,8 +61,10 @@
       {% else %}
         <span class="asset-card-placeholder">Preview unavailable</span>
       {% endif %}
+      {% if options.assetInformation and caller %}{{ caller('asset-information') }}{% endif %}
     </div>
 
+    {% if not options.hideBody %}
     <div class="asset-card-body">
       {% if options.projectLayout %}<div class="asset-card-identity">{% endif %}
       <div class="asset-card-title-controls">
@@ -113,6 +115,7 @@
         {% if caller %}{{ caller('body') }}{% endif %}
       {% endif %}
     </div>
+    {% endif %}
   </article>
 {% endmacro %}
 
