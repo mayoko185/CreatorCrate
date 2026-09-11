@@ -16,7 +16,7 @@
       <form id="project-create-form" method="post" action="/projects" class="app-dialog-form project-form project-edit-dialog-form"
             data-dialog-form data-dialog-async="false" novalidate>
         <input type="hidden" name="_csrf" value="{{ csrfToken }}">
-        <input type="hidden" name="returnTo" value="{{ returnTo }}">
+        <input type="hidden" name="returnTo" value="{{ projectCreateForm.invocationReturnTo or returnTo }}"{% if projectCreateForm.invocationReturnTo %} data-dialog-return-location{% endif %}>
 
         {% if errors.general %}
           <div class="error-summary" role="alert">

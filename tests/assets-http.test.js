@@ -405,6 +405,7 @@ describe('asset browser HTTP workflow', () => {
     expect(pageHeading.indexOf('page-heading-lead')).toBeLessThan(pageHeading.indexOf('<div class="page-heading-actions">'));
     expect(headingActions).toContain('Scan Now');
     expect(headingActions).toContain('Edit project');
+    expect(headingActions).toContain('data-dialog-invocation');
     expect(headingActions.indexOf('aria-label="Scan Now"')).toBeLessThan(headingActions.indexOf('aria-label="Edit project"'));
     expect(displayActions).not.toContain(`href="/projects/${id}/edit"`);
     expect(headingActions).not.toContain('Project: Browser Title Test');
@@ -6764,6 +6765,7 @@ describe('asset browser HTTP workflow', () => {
       expect(completeActionPanel).toContain('data-release-select');
       expect(completeActionPanel).toContain('name="destinationCategory"');
       expect(completeActionPanel).toContain(`formaction="/projects/${id}/assets/create-release"`);
+      expect(completeActionPanel).toContain('<input type="hidden" name="returnTo" value="">');
       expect(completeActionPanel).toContain(`formaction="/projects/${id}/assets/move-selected"`);
       expect(completeActionPanel).toContain('data-auto-rename-form');
       expect(completeActionPanel).toContain('data-auto-rename-submit');
@@ -7401,7 +7403,7 @@ describe('asset browser HTTP workflow', () => {
           ],
         });
         expectIconOnlyButton(buttonHtml(releaseActions, `formaction="/projects/${id}/assets/create-release"`), {
-          attributes: ['type="submit"', `formaction="/projects/${id}/assets/create-release"`, 'aria-label="New release"', 'data-tooltip="New release"'],
+          attributes: ['type="submit"', `formaction="/projects/${id}/assets/create-release"`, 'data-dialog-invocation', 'aria-label="New release"', 'data-tooltip="New release"'],
           classes: ['button', 'button-small', 'button-secondary', 'project-filter-control', 'asset-tooltip', 'asset-tooltip--top'],
           iconGeometry: [/<path\b[^>]*\bd="M12 5v14M5 12h14"[^>]*\/?>/],
         });
@@ -7734,12 +7736,14 @@ describe('asset browser HTTP workflow', () => {
       const projectDir = getProjectDir('Create Release From Assets');
       const first = writeIndexedAsset(id, projectDir, 'first.png', await makePng());
       const second = writeIndexedAsset(id, projectDir, 'second.png', await makePng());
+      const returnTo = `/projects/${id}/assets?view=list&search=cover&page=3#asset-${second.id}`;
 
       const handoff = await agent
         .post(`/projects/${id}/assets/create-release`)
         .type('form')
         .send({
           selectedAssetIds: [String(second.id), String(first.id)],
+          returnTo,
           _csrf: csrfToken,
         })
         .expect(307);
@@ -7757,6 +7761,7 @@ describe('asset browser HTTP workflow', () => {
         .type('form')
         .send({
           selectedAssetIds: [String(second.id), String(first.id)],
+          returnTo,
           _csrf: csrfToken,
         })
         .redirects(1)
@@ -7768,6 +7773,7 @@ describe('asset browser HTTP workflow', () => {
       expect(dialog).toContain('<form id="release-create-form" method="post" action="/releases"');
       expect(dialog).toMatch(new RegExp(`name="projectId"[^>]+value="${id}"[^>]+checked`));
       expect(dialog).toContain('<input type="text" id="title" name="title" value="Create Release From Assets"');
+      expect(dialog).toContain(`name="returnTo" value="/projects/${id}/assets?view=list&amp;search=cover&amp;page=3#asset-${second.id}" data-dialog-return-location`);
       expect(opened.text).not.toContain('<form id="release-form"');
 
       const hiddenSelectedAssetIds = dialog.match(
@@ -7794,12 +7800,14 @@ describe('asset browser HTTP workflow', () => {
       const projectDir = getProjectDir('Create Release Form Rerender');
       const first = writeIndexedAsset(id, projectDir, 'first.png', await makePng());
       const second = writeIndexedAsset(id, projectDir, 'second.png', await makePng());
+      const returnTo = `/projects/${id}/assets?sort=filename&order=desc&page=2#asset-${first.id}`;
 
       const opened = await agent
         .post(`/projects/${id}/assets/create-release`)
         .type('form')
         .send({
           selectedAssetIds: [String(second.id), String(first.id)],
+          returnTo,
           _csrf: csrfToken,
         })
         .redirects(1)
@@ -7816,10 +7824,11 @@ describe('asset browser HTTP workflow', () => {
 
       expect(openedFlow).toBe('selected-assets');
       expect(openedSelectedAssetIds).toEqual([String(second.id), String(first.id)]);
+      expect(readInputValue(openedDialog, 'returnTo')).toBe(`/projects/${id}/assets?sort=filename&amp;order=desc&amp;page=2#asset-${first.id}`);
 
       const invalidForm = new URLSearchParams();
       invalidForm.set('_csrf', readInputValue(openedDialog, '_csrf'));
-      invalidForm.set('returnTo', readInputValue(openedDialog, 'returnTo'));
+      invalidForm.set('returnTo', returnTo);
       invalidForm.set('releaseCreateFlow', openedFlow);
       invalidForm.set('projectId', String(id));
       invalidForm.set('title', 'User Edited Release Title');
@@ -7839,11 +7848,12 @@ describe('asset browser HTTP workflow', () => {
       expect(invalidDialog).toContain('Keep these notes');
       expect(readInputValue(invalidDialog, 'releaseCreateFlow')).toBe('selected-assets');
       expect(readSelectedAssetIds(invalidDialog)).toEqual([String(second.id), String(first.id)]);
+      expect(invalidDialog).toContain(`name="returnTo" value="/projects/${id}/assets?sort=filename&amp;order=desc&amp;page=2#asset-${first.id}" data-dialog-return-location`);
       expect(createReleaseService({ db }).listReleases(id, { includeArchived: true })).toEqual([]);
 
       const resubmittedForm = new URLSearchParams();
       resubmittedForm.set('_csrf', readInputValue(invalidDialog, '_csrf'));
-      resubmittedForm.set('returnTo', readInputValue(invalidDialog, 'returnTo'));
+      resubmittedForm.set('returnTo', returnTo);
       resubmittedForm.set('releaseCreateFlow', readInputValue(invalidDialog, 'releaseCreateFlow'));
       resubmittedForm.set('projectId', String(id));
       resubmittedForm.set('title', readInputValue(invalidDialog, 'title'));
@@ -9755,7 +9765,7 @@ describe('asset browser HTTP workflow', () => {
           });
           expect(bulk[0]).not.toMatch(/<button[^>]*data-bulk-submit[^>]*>Add selected to release<\/button>/);
           expectIconOnlyButton(buttonHtml(bulk[0], `formaction="/projects/${id}/assets/create-release"`), {
-            attributes: ['type="submit"', `formaction="/projects/${id}/assets/create-release"`, 'aria-label="New release"', 'data-tooltip="New release"'],
+            attributes: ['type="submit"', `formaction="/projects/${id}/assets/create-release"`, 'data-dialog-invocation', 'aria-label="New release"', 'data-tooltip="New release"'],
             classes: ['button', 'button-small', 'button-secondary', 'project-filter-control', 'asset-tooltip', 'asset-tooltip--top'],
             iconGeometry: [/<path\b[^>]*\bd="M12 5v14M5 12h14"[^>]*\/?>/],
           });

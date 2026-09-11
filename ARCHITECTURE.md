@@ -1515,6 +1515,26 @@ helpers live in [`dom.js`](src/static/client/dom.js). Styling is one
 stylesheet, [`creatorcrate.css`](src/static/creatorcrate.css), built on CSS
 custom properties; inline presentation styles are actively tested against.
 
+Cross-page hosted-dialog return is an explicit, opt-in contract. An invoking
+link marked with `data-dialog-invocation` adds the live browser pathname,
+query, and fragment as `returnTo` at activation time; an opted-in submit
+control writes the same value to its form's existing `returnTo` field. For an
+already-hosted dialog, capture happens after the dialog opens so restoration of
+the form's initial snapshot cannot overwrite the live invocation value. The
+owning route must
+validate that value for its exact entity and allowed host path before carrying
+it through the host redirect and native form. A validated hidden
+`data-dialog-return-location` field lets `appDialogRequestClose()` navigate
+only after the existing close guard accepts a terminal cancellation; ordinary
+dialog close lifecycles do not navigate. Project Assets -> Edit Project,
+Calendar -> Edit Release, Books -> Edit Book, and Project Assets -> selected-assets
+New Release adopt this contract. Projects-list New Project and Releases-list
+New Release also retain exact list context through create validation/error
+rerenders; their route owners accept only canonical `/projects` and `/releases`
+paths and keep their established post-create detail destinations. The edit flows may also use the validated
+destination after a successful mutation; selected-assets Release creation
+deliberately retains its canonical `/releases/:id/assets` success destination.
+
 The processing enhancement turns an Apply `202` response into a centralized
 HTTP polling loop for that dialog. It renders queued/running progress and
 terminal success, failure, or cancellation from job snapshots. Closing a

@@ -864,6 +864,266 @@ async function flush() {
 }
 
 describe('Reusable app dialog enhancement', () => {
+  it.each([
+    ['Projects', 'project-create-dialog', '/projects/new', '/projects?search=needle&sort=title&order=asc&page=3#projects-list'],
+    ['Releases', 'release-create-dialog', '/releases/new', '/releases?project=7&sort=created&order=desc&page=2#releases-list'],
+  ])('captures the exact live %s list URL in its hosted create form', (_label, dialogId, href, invocationLocation) => {
+    const page = makeDialogPage();
+    page.dialog.setAttribute('id', dialogId);
+    const invocation = makeElement('a', {
+      href,
+      'data-dialog-open': dialogId,
+      'data-dialog-invocation': '',
+    });
+    const returnTo = makeElement('input', { type: 'hidden', name: 'returnTo', value: invocationLocation.split('?')[0] });
+    page.form.appendChild(returnTo);
+    page.region.appendChild(invocation);
+    const currentUrl = new URL(invocationLocation, 'http://creatorcrate.local');
+    page.windowObject.location = {
+      href: currentUrl.href,
+      origin: currentUrl.origin,
+      pathname: currentUrl.pathname,
+      search: currentUrl.search,
+      hash: currentUrl.hash,
+      assign: vi.fn(),
+    };
+
+    enhanceAppDialogs(page.document);
+    page.document.dispatch('click', { target: invocation });
+
+    expect(returnTo.value).toBe(invocationLocation);
+    expect(invocation.getAttribute('href')).toBe(href);
+  });
+
+  it('captures the exact live Project Assets URL in the selected-assets release POST form', () => {
+    const page = makeDialogPage();
+    const selectionForm = makeElement('form', {
+      method: 'post',
+      action: '/projects/7/assets/add-to-release',
+    });
+    const returnTo = makeElement('input', { type: 'hidden', name: 'returnTo', value: '' });
+    const invocation = makeElement('button', {
+      type: 'submit',
+      formaction: '/projects/7/assets/create-release',
+      'data-dialog-invocation': '',
+    });
+    selectionForm.appendChild(returnTo);
+    selectionForm.appendChild(invocation);
+    page.region.appendChild(selectionForm);
+    page.windowObject.location = {
+      href: 'http://creatorcrate.local/projects/7/assets?view=list&page=3&filter=present#asset-42',
+      origin: 'http://creatorcrate.local',
+      pathname: '/projects/7/assets',
+      search: '?view=list&page=3&filter=present',
+      hash: '#asset-42',
+      assign: vi.fn(),
+    };
+
+    enhanceAppDialogs(page.document);
+    page.document.dispatch('click', { target: invocation });
+
+    expect(returnTo.value).toBe('/projects/7/assets?view=list&page=3&filter=present#asset-42');
+    expect(invocation.getAttribute('formaction')).toBe('/projects/7/assets/create-release');
+  });
+
+  it('captures the exact live Books-list URL for a Book edit invocation', () => {
+    const page = makeDialogPage();
+    const invocation = makeElement('a', {
+      href: '/notes/books/17/edit',
+      'data-dialog-invocation': '',
+    });
+    page.region.appendChild(invocation);
+    page.windowObject.location = {
+      href: 'http://creatorcrate.local/notes?sort=title&page=3&filter=active#book-17',
+      origin: 'http://creatorcrate.local',
+      pathname: '/notes',
+      search: '?sort=title&page=3&filter=active',
+      hash: '#book-17',
+      assign: vi.fn(),
+    };
+
+    enhanceAppDialogs(page.document);
+    page.document.dispatch('click', { target: invocation });
+
+    const target = new URL(invocation.getAttribute('href'), page.windowObject.location.origin);
+    expect(target.pathname).toBe('/notes/books/17/edit');
+    expect(target.searchParams.get('returnTo')).toBe('/notes?sort=title&page=3&filter=active#book-17');
+  });
+
+  it('captures the exact live Calendar URL for a Release edit invocation', () => {
+    const page = makeDialogPage();
+    const invocation = makeElement('a', {
+      href: '/releases/19/edit',
+      'data-dialog-invocation': '',
+    });
+    page.region.appendChild(invocation);
+    page.windowObject.location = {
+      href: 'http://creatorcrate.local/calendar?month=2026-07&filter=planned#release-19',
+      origin: 'http://creatorcrate.local',
+      pathname: '/calendar',
+      search: '?month=2026-07&filter=planned',
+      hash: '#release-19',
+      assign: vi.fn(),
+    };
+
+    enhanceAppDialogs(page.document);
+    page.document.dispatch('click', { target: invocation });
+
+    const target = new URL(invocation.getAttribute('href'), page.windowObject.location.origin);
+    expect(target.pathname).toBe('/releases/19/edit');
+    expect(target.searchParams.get('returnTo')).toBe('/calendar?month=2026-07&filter=planned#release-19');
+  });
+
+  it('captures the live invoking path, query, and fragment without duplicating return metadata', () => {
+    const page = makeDialogPage();
+    const invocation = makeElement('a', {
+      href: '/projects/7/edit',
+      'data-dialog-invocation': '',
+    });
+    page.region.appendChild(invocation);
+    page.windowObject.location = {
+      href: 'http://creatorcrate.local/projects/7/assets?view=list&page=3#asset-42',
+      origin: 'http://creatorcrate.local',
+      pathname: '/projects/7/assets',
+      search: '?view=list&page=3',
+      hash: '#asset-42',
+      assign: vi.fn(),
+    };
+
+    enhanceAppDialogs(page.document);
+    enhanceAppDialogs(page.document);
+    page.document.dispatch('click', { target: invocation });
+    const replacement = makeElement('a', {
+      href: invocation.getAttribute('href'),
+      'data-dialog-invocation': '',
+    });
+    invocation.replaceWith(replacement);
+    enhanceAppDialogs(page.document);
+    page.document.dispatch('click', { target: replacement });
+    page.document.dispatch('click', { target: replacement });
+
+    const target = new URL(replacement.getAttribute('href'), page.windowObject.location.origin);
+    expect(target.pathname).toBe('/projects/7/edit');
+    expect(target.searchParams.getAll('returnTo')).toEqual([
+      '/projects/7/assets?view=list&page=3#asset-42',
+    ]);
+    expect(page.document.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
+  });
+
+  it.each(['X', 'Escape', 'native cancel', 'backdrop', 'programmatic'])('%s returns a hosted dialog to its validated invocation location', (path) => {
+    const page = makeDialogPage();
+    const returnTo = makeElement('input', {
+      type: 'hidden',
+      name: 'returnTo',
+      value: '/projects/7/assets?view=list&page=3#asset-42',
+      'data-dialog-return-location': '',
+    });
+    page.form.appendChild(returnTo);
+    const assign = vi.fn();
+    page.windowObject.location = {
+      href: 'http://creatorcrate.local/projects/7?edit=1',
+      origin: 'http://creatorcrate.local',
+      pathname: '/projects/7',
+      search: '?edit=1',
+      hash: '',
+      assign,
+    };
+
+    enhanceAppDialogs(page.document);
+    openAppDialogById(page.document, page.dialog.id, page.trigger);
+    if (path === 'X') page.close.dispatch('click');
+    else if (path === 'Escape') page.dialog.dispatch('keydown', { key: 'Escape', target: page.dialog });
+    else if (path === 'native cancel') page.dialog.dispatch('cancel', { target: page.dialog });
+    else if (path === 'backdrop') page.dialog.dispatch('click', { target: page.dialog });
+    else closeAppDialogById(page.document, page.dialog.id);
+
+    expect(page.dialog.open).toBe(false);
+    expect(assign).toHaveBeenCalledOnce();
+    expect(assign).toHaveBeenCalledWith('/projects/7/assets?view=list&page=3#asset-42');
+  });
+
+  it.each([
+    ['Projects', '/projects?search=needle&sort=title&order=asc&page=3#projects-list'],
+    ['Releases', '/releases?project=7&sort=created&order=desc&page=2#releases-list'],
+  ])('returns a rerendered %s create dialog to its exact invoking list URL on accepted cancel', (_label, returnLocation) => {
+    const page = makeDialogPage();
+    page.form.appendChild(makeElement('input', {
+      type: 'hidden',
+      name: 'returnTo',
+      value: returnLocation,
+      'data-dialog-return-location': '',
+    }));
+    const assign = vi.fn();
+    page.windowObject.location = {
+      href: 'http://creatorcrate.local/projects',
+      origin: 'http://creatorcrate.local',
+      pathname: '/projects',
+      search: '',
+      hash: '',
+      assign,
+    };
+
+    enhanceAppDialogs(page.document);
+    openAppDialogById(page.document, page.dialog.id, page.trigger);
+    page.close.dispatch('click');
+
+    expect(assign).toHaveBeenCalledOnce();
+    expect(assign).toHaveBeenCalledWith(returnLocation);
+  });
+
+  it('does not navigate when a hosted dialog close guard rejects cancellation', () => {
+    const page = makeDialogPage();
+    page.form.appendChild(makeElement('input', {
+      type: 'hidden',
+      name: 'returnTo',
+      value: '/projects/7/assets?view=list',
+      'data-dialog-return-location': '',
+    }));
+    const assign = vi.fn();
+    page.windowObject.location = {
+      href: 'http://creatorcrate.local/projects/7?edit=1',
+      origin: 'http://creatorcrate.local',
+      pathname: '/projects/7',
+      search: '?edit=1',
+      hash: '',
+      assign,
+    };
+
+    enhanceAppDialogs(page.document);
+    openAppDialogById(page.document, page.dialog.id, page.trigger);
+    page.dialog.__creatorCrateAppDialogState.beforeClose = vi.fn(() => false);
+    page.close.dispatch('click');
+
+    expect(page.dialog.open).toBe(true);
+    expect(assign).not.toHaveBeenCalled();
+  });
+
+  it('does not turn an unrelated native close lifecycle into return navigation', () => {
+    const page = makeDialogPage();
+    page.form.appendChild(makeElement('input', {
+      type: 'hidden',
+      name: 'returnTo',
+      value: '/projects/7/assets?view=list',
+      'data-dialog-return-location': '',
+    }));
+    const assign = vi.fn();
+    page.windowObject.location = {
+      href: 'http://creatorcrate.local/projects/7?edit=1',
+      origin: 'http://creatorcrate.local',
+      pathname: '/projects/7',
+      search: '?edit=1',
+      hash: '',
+      assign,
+    };
+
+    enhanceAppDialogs(page.document);
+    openAppDialogById(page.document, page.dialog.id, page.trigger);
+    page.dialog.close();
+
+    expect(page.dialog.open).toBe(false);
+    expect(assign).not.toHaveBeenCalled();
+  });
+
   it('uses the shared cancellation path for X and Escape, without submitting', () => {
     const page = makeDialogPage();
     page.region.appendChild(page.trigger);

@@ -74,7 +74,7 @@
                   <div class="calendar-release">
                     <span class="calendar-release-trigger">
                       <span class="calendar-release-project">{{ entry.project_title }}</span>
-                      <a href="/releases/{{ entry.id }}/edit">{{ entry.title }}</a>
+                      <a href="/releases/{{ entry.id }}/edit" data-dialog-invocation>{{ entry.title }}</a>
                       {% if entry.preview_url %}
                         <img class="calendar-release-preview" src="{{ entry.preview_url }}" alt="Preview of {{ entry.title }}" loading="lazy" decoding="async">
                       {% endif %}
@@ -127,7 +127,7 @@
                 <div class="agenda-release">
                   <span class="calendar-release-trigger">
                     <span class="calendar-release-project">{{ entry.project_title }}</span>
-                    <a href="/releases/{{ entry.id }}/edit">{{ entry.title }}</a>
+                    <a href="/releases/{{ entry.id }}/edit" data-dialog-invocation>{{ entry.title }}</a>
                     {% if entry.preview_url %}
                       <img class="calendar-release-preview" src="{{ entry.preview_url }}" alt="Preview of {{ entry.title }}" loading="lazy" decoding="async">
                     {% endif %}

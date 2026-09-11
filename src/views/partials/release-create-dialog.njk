@@ -16,7 +16,7 @@
       <form id="release-create-form" method="post" action="/releases" class="app-dialog-form project-form project-edit-dialog-form"
             data-dialog-form data-dialog-async="false" novalidate>
         <input type="hidden" name="_csrf" value="{{ csrfToken }}">
-        <input type="hidden" name="returnTo" value="/releases">
+        <input type="hidden" name="returnTo" value="{{ releaseCreateForm.selectedAssetsReturnTo or releaseCreateForm.invocationReturnTo or '/releases' }}"{% if releaseCreateForm.selectedAssetsReturnTo or releaseCreateForm.invocationReturnTo %} data-dialog-return-location{% endif %}>
         {% if releaseCreateForm.selectedAssetsFlow %}
           <input type="hidden" name="releaseCreateFlow" value="selected-assets">
         {% endif %}

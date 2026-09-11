@@ -348,7 +348,7 @@
         </a>
       {% endif %}
       <a class="button button-small button-secondary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--left"
-         href="/projects/{{ project.id }}/edit" aria-label="Edit project" data-tooltip="Edit project">
+         href="/projects/{{ project.id }}/edit" data-dialog-invocation aria-label="Edit project" data-tooltip="Edit project">
         {{ icons.icon('edit') }}
       </a>
       {% endif %}
@@ -576,6 +576,7 @@
                        so per-row rename forms can remain outside this form. #}
                     <form id="bulk-select-form" method="post" action="/projects/{{ project.id }}/assets/add-to-release" class="bulk-select-form" data-asset-selection-form>
                     <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                    <input type="hidden" name="returnTo" value="">
                     {{ renderContextFields(context, contextFields, false) }}
 
                     <div class="asset-selection-controls">
@@ -603,6 +604,7 @@
                                     data-bulk-submit aria-label="Add to release" data-tooltip="Add to release">{{ icons.icon('releases') }}</button>
                             <button type="submit" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top"
                                     formaction="/projects/{{ project.id }}/assets/create-release"
+                                    data-dialog-invocation
                                     aria-label="New release" data-tooltip="New release">{{ icons.icon('plus') }}</button>
                           </div>
                         </section>
@@ -660,6 +662,7 @@
             <div class="project-detail-section-body">
               <form id="bulk-select-form" method="post" action="/projects/{{ project.id }}/assets/add-to-release" class="bulk-select-form" data-asset-selection-form>
                 <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                <input type="hidden" name="returnTo" value="">
                 {{ renderContextFields(context, contextFields, false) }}
 
                 <div class="asset-selection-controls">
@@ -687,6 +690,7 @@
                               data-bulk-submit aria-label="Add to release" data-tooltip="Add to release">{{ icons.icon('releases') }}</button>
                       <button type="submit" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top"
                               formaction="/projects/{{ project.id }}/assets/create-release"
+                              data-dialog-invocation
                               aria-label="New release" data-tooltip="New release">{{ icons.icon('plus') }}</button>
                     </div>
                   </section>

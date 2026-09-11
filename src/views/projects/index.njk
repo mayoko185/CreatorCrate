@@ -25,7 +25,7 @@
 
 {% block content %}
   {% call pageHeading.render("Browse active and archived project records.") %}
-    <a class="button button-primary" href="/projects/new" data-dialog-open="project-create-dialog">New Project</a>
+    <a class="button button-primary" href="/projects/new" data-dialog-open="project-create-dialog" data-dialog-invocation>New Project</a>
   {% endcall %}
 
   {% if notice %}
@@ -106,7 +106,7 @@
         {% set emptyHeadingLevel = "h2" %}
     {% else %}
       {% set emptyActionDialogId = "project-create-dialog" %}
-      {% set emptyActionAttributes = [] %}
+      {% set emptyActionAttributes = [['data-dialog-invocation', true]] %}
       {% set emptyHeading = "No projects yet" %}
         {% set emptyDescription = "Create your first project to get started." %}
         {% set emptyActionUrl = "/projects/new" %}

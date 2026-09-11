@@ -203,6 +203,9 @@
         <form id="project-edit-form" method="post" action="/projects/{{ project.id }}" class="app-dialog-form project-form project-edit-dialog-form"
               data-dialog-form data-dialog-async="false" novalidate>
           <input type="hidden" name="_csrf" value="{{ _csrf }}">
+          {% if projectEditReturnTo %}
+            <input type="hidden" name="returnTo" value="{{ projectEditReturnTo }}" data-dialog-return-location>
+          {% endif %}
 
           {% if errors.general %}
             <div class="error-summary" role="alert">

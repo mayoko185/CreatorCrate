@@ -2033,7 +2033,7 @@ describe('project HTTP workflow', () => {
     ]);
     const dialog = projects.text.match(/<dialog id="project-create-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
     const ids = [...projects.text.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
-    const newProjectOpeners = projects.text.match(/<a class="button button-primary" href="\/projects\/new" data-dialog-open="project-create-dialog">New Project<\/a>/g) || [];
+    const newProjectOpeners = projects.text.match(/<a class="button button-primary" href="\/projects\/new" data-dialog-open="project-create-dialog" data-dialog-invocation>New Project<\/a>/g) || [];
 
     expect((projects.text.match(/<dialog id="project-create-dialog"/g) || [])).toHaveLength(1);
     expect(newProjectOpeners).toHaveLength(2);
@@ -2135,13 +2135,14 @@ describe('project HTTP workflow', () => {
   });
 
   it('valid create request redirects to detail', async () => {
+    const returnTo = '/projects?search=needle&sort=title&order=asc&page=3#projects-list';
     const res = await agent
       .post('/projects')
       .send('title=Test+Project')
       .send('description=A+test')
       .send('notes=notes')
       .send('status=tbd')
-      .send('returnTo=/projects')
+      .send('returnTo=' + encodeURIComponent(returnTo))
       .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
@@ -2273,8 +2274,9 @@ describe('project HTTP workflow', () => {
     expectProjectFormStructure(dialog);
   });
 
-  it('validation failure from the Projects dialog rerenders Projects with submitted dialog state', async () => {
+  it('validation failure from a filtered Projects dialog preserves the exact invocation URL and submitted state', async () => {
     const tag = app.locals.tagService.createTag({ name: 'Projects retry tag' });
+    const returnTo = '/projects?search=needle&status=planned&sort=title&order=asc&view=list&page=3#projects-list';
 
     const res = await agent
       .post('/projects')
@@ -2282,7 +2284,7 @@ describe('project HTTP workflow', () => {
       .send('status=planned')
       .send('patreonUrl=not-a-url')
       .send(`tagIds[]=${tag.id}`)
-      .send('returnTo=/projects')
+      .send('returnTo=' + encodeURIComponent(returnTo))
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(422);
@@ -2295,24 +2297,61 @@ describe('project HTTP workflow', () => {
     expect(dialog).toMatch(/name="status"[^>]*value="planned"[^>]*checked/);
     expect(dialog).toMatch(new RegExp(`name="tagIds\\[\\]"[^>]*value="${tag.id}"[^>]*checked`));
     expect(dialog).toContain('Projects retry tag');
-    expect(dialog).toContain('name="returnTo" value="/projects"');
+    expect(dialog).toContain('name="returnTo" value="/projects?search=needle&amp;status=planned&amp;sort=title&amp;order=asc&amp;view=list&amp;page=3#projects-list" data-dialog-return-location');
     expectProjectFormStructure(dialog);
   });
 
-  it('does not trust an invalid dialog returnTo on validation failure', async () => {
+  it('validation failure preserves explicit All filters in generated Projects links', async () => {
+    const savedTag = app.locals.tagService.createTag({ name: 'Saved default tag' });
+    for (let i = 0; i < 26; i += 1) {
+      await createProject({
+        title: `Explicit All Recovery ${String(i).padStart(2, '0')}`,
+        status: 'planned',
+        projectType: 'images',
+      });
+    }
+    saveProjectDefault('status', 'ready');
+    saveProjectDefault('projectType', 'comic');
+    writeStoredProjectDefault('tag', String(savedTag.id));
+    const returnTo = '/projects?status=all&type=all&tag=all&page=2#projects-list';
+
+    const res = await agent
+      .post('/projects')
+      .send('title=Explicit+All+Preserves')
+      .send('status=planned')
+      .send('patreonUrl=not-a-url')
+      .send('returnTo=' + encodeURIComponent(returnTo))
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(422);
+
+    const dialog = extractProjectCreateDialog(res.text);
+    expect(dialog).toContain('name="returnTo" value="/projects?status=all&amp;type=all&amp;tag=all&amp;page=2#projects-list" data-dialog-return-location');
+    expect(res.text).toContain('26 projects found');
+    expect(res.text).toContain('Page 2 of 2');
+    expect(res.text).toContain('href="/projects?status=all&amp;type=all&amp;tag=all&amp;page=2&amp;view=list"');
+    expect(res.text).toContain('href="/projects?status=all&amp;type=all&amp;tag=all&amp;page=1"');
+  });
+
+  it.each([
+    'https://evil.example/projects',
+    '//evil.example/projects',
+    '/projects/%',
+    '/releases?sort=title',
+  ])('does not trust an invalid Project create invocation returnTo on validation failure: %s', async (returnTo) => {
     const res = await agent
       .post('/projects')
       .send('title=Invalid+Host')
       .send('status=tbd')
       .send('patreonUrl=not-a-url')
-      .send('returnTo=https%3A%2F%2Fevil.example%2Fprojects')
+      .send('returnTo=' + encodeURIComponent(returnTo))
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(422);
 
     expect(res.text).toContain('<form id="project-form" method="post" action="/projects" class="project-form" novalidate>');
     expect(res.text).not.toContain('id="project-create-dialog"');
-    expect(res.text).not.toContain('name="returnTo" value="https://evil.example/projects"');
+    expect(res.text).not.toContain(`name="returnTo" value="${returnTo}"`);
   });
 
   it('rejects archived status on create', async () => {
@@ -2539,6 +2578,142 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain(`action="${createRes.headers.location}"`);
     expect(res.text).not.toContain('value="archived"');
     expect(res.text).not.toContain('id="priority"');
+    expect(res.text).not.toContain('data-dialog-return-location');
+  });
+
+  it('carries a validated Project Assets invocation through the edit host', async () => {
+    const createRes = await agent
+      .post('/projects')
+      .send('title=Invoked+Project+Edit')
+      .send('status=tbd')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+    const id = createRes.headers.location.replace('/projects/', '');
+    const returnTo = `/projects/${id}/assets?view=list&page=3#asset-42`;
+
+    const entry = await agent
+      .get(`/projects/${id}/edit?returnTo=${encodeURIComponent(returnTo)}`)
+      .expect(302);
+    const hosted = new URL(entry.headers.location, 'http://creatorcrate.local');
+    expect(hosted.pathname).toBe(`/projects/${id}`);
+    expect(hosted.searchParams.get('edit')).toBe('1');
+    expect(hosted.searchParams.get('returnTo')).toBe(returnTo);
+
+    const res = await agent.get(entry.headers.location).expect(200);
+    expect(res.text).toContain(`name="returnTo" value="/projects/${id}/assets?view=list&amp;page=3#asset-42" data-dialog-return-location`);
+  });
+
+  it('returns a successful invoked edit to the exact Project Assets location', async () => {
+    const createRes = await agent
+      .post('/projects')
+      .send('title=Invoked+Edit+Success')
+      .send('status=tbd')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+    const id = createRes.headers.location.replace('/projects/', '');
+    const returnTo = `/projects/${id}/assets?view=list&page=3#asset-42`;
+
+    const res = await agent
+      .post(`/projects/${id}`)
+      .type('form')
+      .send({ title: 'Invoked Edit Saved', status: 'planned', returnTo, _csrf: csrfToken })
+      .expect(302);
+
+    expect(res.headers.location).toBe(returnTo);
+    expect(app.locals.projectService.findById(Number(id)).title).toBe('Invoked Edit Saved');
+  });
+
+  it('retains submitted values and invocation metadata after edit validation fails', async () => {
+    const createRes = await agent
+      .post('/projects')
+      .send('title=Invoked+Edit+Validation')
+      .send('status=tbd')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+    const id = createRes.headers.location.replace('/projects/', '');
+    const returnTo = `/projects/${id}/assets?view=list&page=3#asset-42`;
+
+    const res = await agent
+      .post(`/projects/${id}`)
+      .type('form')
+      .send({ title: 'Still Submitted', status: 'not-a-status', returnTo, _csrf: csrfToken })
+      .expect(422);
+
+    expect(res.text).toMatch(/<dialog id="project-edit-dialog"[^>]*\bopen\b/);
+    expect(res.text).toContain('value="Still Submitted"');
+    expect(res.text).toContain(`name="returnTo" value="/projects/${id}/assets?view=list&amp;page=3#asset-42" data-dialog-return-location`);
+  });
+
+  it('retains submitted values and invocation metadata after an edit error rerender', async () => {
+    const createRes = await agent
+      .post('/projects')
+      .send('title=Invoked+Edit+Error')
+      .send('status=tbd')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+    const id = createRes.headers.location.replace('/projects/', '');
+    const returnTo = `/projects/${id}/assets?view=list&page=3#asset-42`;
+    const update = vi.spyOn(app.locals.projectService, 'update')
+      .mockImplementationOnce(() => { throw new Error('simulated update failure'); });
+
+    let res;
+    try {
+      res = await agent
+        .post(`/projects/${id}`)
+        .type('form')
+        .send({ title: 'Still Submitted After Error', status: 'planned', returnTo, _csrf: csrfToken })
+        .expect(500);
+    } finally {
+      update.mockRestore();
+    }
+
+    expect(res.text).toMatch(/<dialog id="project-edit-dialog"[^>]*\bopen\b/);
+    expect(res.text).toContain('value="Still Submitted After Error"');
+    expect(res.text).toContain('Project update failed. Please try again.');
+    expect(res.text).toContain(`name="returnTo" value="/projects/${id}/assets?view=list&amp;page=3#asset-42" data-dialog-return-location`);
+  });
+
+  it('does not follow external or wrong-Project edit return destinations', async () => {
+    const createRes = await agent
+      .post('/projects')
+      .send('title=Safe+Edit+Return')
+      .send('status=tbd')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+    const otherRes = await agent
+      .post('/projects')
+      .send('title=Other+Edit+Return')
+      .send('status=tbd')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+    const id = createRes.headers.location.replace('/projects/', '');
+    const otherId = otherRes.headers.location.replace('/projects/', '');
+    const invalidDestinations = [
+      'https://example.com/projects/1/assets',
+      `//example.com/projects/${id}/assets`,
+      `/projects/${otherId}/assets?view=list`,
+      `/projects/${id}/assets/extra?view=list`,
+    ];
+
+    for (const [index, returnTo] of invalidDestinations.entries()) {
+      const entry = await agent
+        .get(`/projects/${id}/edit?returnTo=${encodeURIComponent(returnTo)}`)
+        .expect(302);
+      expect(entry.headers.location).toBe(`/projects/${id}?edit=1`);
+
+      const update = await agent
+        .post(`/projects/${id}`)
+        .type('form')
+        .send({ title: `Safe Edit Return ${index}`, status: 'tbd', returnTo, _csrf: csrfToken })
+        .expect(302);
+      expect(update.headers.location).toBe(`/projects/${id}`);
+    }
   });
 
   it('edit dialog contains the former Edit-page actions without nesting action forms', async () => {
@@ -3385,6 +3560,31 @@ describe('project HTTP workflow', () => {
       expect(dialog).toContain('Conflict Create');
       expect(dialog).toContain('Value kept');
       expect(dialog).toContain('name="returnTo" value="/"');
+      expect(res.text).not.toMatch(/[A-Z]:\\/);
+    });
+
+    it('filesystem conflict from a filtered Projects dialog preserves its exact invocation URL', async () => {
+      const slug = parseSlug('Filtered Conflict Create');
+      const conflictPath = path.join(projectsRoot, `000001-${slug}`);
+      fs.writeFileSync(conflictPath, 'blocker');
+      const returnTo = '/projects?search=conflict&sort=title&order=asc&page=2#projects-list';
+
+      const res = await agent
+        .post('/projects')
+        .send('title=Filtered+Conflict+Create')
+        .send('description=Value+kept')
+        .send('status=tbd')
+        .send('priority=normal')
+        .send('returnTo=' + encodeURIComponent(returnTo))
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(500);
+
+      const dialog = extractProjectCreateDialog(res.text);
+      expect(dialog).toMatch(/<dialog id="project-create-dialog"[^>]*\bopen\b/);
+      expect(dialog).toContain('Project creation failed');
+      expect(dialog).toContain('Filtered Conflict Create');
+      expect(dialog).toContain('name="returnTo" value="/projects?search=conflict&amp;sort=title&amp;order=asc&amp;page=2#projects-list" data-dialog-return-location');
       expect(res.text).not.toMatch(/[A-Z]:\\/);
     });
   });

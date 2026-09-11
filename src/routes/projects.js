@@ -20,6 +20,7 @@ import {
 } from '../services/project-option-presenter.js';
 import { buildNewProjectFormModel, createFormValues } from './project-create-form.js';
 import { isProjectArchived } from '../services/project-state.js';
+import { isSafeRedirectTarget } from '../middleware/auth.js';
 import { renderDashboardPage } from './dashboard-render.js';
 import {
   buildPageDefaultsDialogModel,
@@ -57,6 +58,24 @@ const PROJECTS_DEFAULT_LABELS = Object.freeze({
 
 function resolveNotice(code) {
   return Object.prototype.hasOwnProperty.call(NOTICES, code) ? NOTICES[code] : null;
+}
+
+function readProjectEditReturnLocation(candidate, projectId) {
+  if (!isSafeRedirectTarget(candidate)) return '';
+
+  try {
+    const url = new URL(candidate, 'http://creatorcrate.local');
+    if (url.origin !== 'http://creatorcrate.local' || url.pathname !== `/projects/${projectId}/assets`) return '';
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return '';
+  }
+}
+
+function buildProjectEditDialogUrl(projectId, returnLocation) {
+  const query = new URLSearchParams({ edit: '1' });
+  if (returnLocation) query.set('returnTo', returnLocation);
+  return `/projects/${projectId}?${query}`;
 }
 
 export function createProjectsRouter({ appName, db, projectService, workflowQueryService }) {
@@ -220,6 +239,7 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
       workflowQueryService,
       id,
       projectEditDialogOpen: req.query.edit === '1',
+      projectEditReturnTo: readProjectEditReturnLocation(req.query.returnTo, id),
     })) {
       return next(createNotFound());
     }
@@ -243,7 +263,8 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
       return res.redirect(`/projects/${project.id}`);
     }
 
-    return res.redirect(`/projects/${project.id}?edit=1`);
+    const returnLocation = readProjectEditReturnLocation(req.query.returnTo, project.id);
+    return res.redirect(buildProjectEditDialogUrl(project.id, returnLocation));
   });
 
   router.post('/:id', (req, res, next) => {
@@ -253,6 +274,7 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
     }
 
     const parsedTags = parseProjectFormTagIds(req.body?.tagIds);
+    const projectEditReturnTo = readProjectEditReturnLocation(req.body?.returnTo, id);
 
     try {
       validateSubmittedTagsExist(req, parsedTags);
@@ -262,7 +284,7 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
         return next(createNotFound());
       }
       persistProjectTags(req, project.id, parsedTags);
-      res.redirect(`/projects/${project.id}`);
+      res.redirect(projectEditReturnTo || `/projects/${project.id}`);
     } catch (err) {
       if (err instanceof ProjectNotFoundError) {
         return next(createNotFound());
@@ -274,6 +296,7 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
           id,
           status: 422,
           projectEditDialogOpen: true,
+          projectEditReturnTo,
           projectEditForm: {
             values: createFormValues(req.body),
             errors: err.errors,
@@ -296,6 +319,7 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
         id,
         status: 500,
         projectEditDialogOpen: true,
+        projectEditReturnTo,
         projectEditForm: {
           values: createFormValues(req.body),
           errors: { general: 'Project update failed. Please try again.' },
@@ -356,6 +380,7 @@ function renderProjectDetailPage(req, res, {
   id,
   status = 200,
   projectEditDialogOpen = false,
+  projectEditReturnTo = '',
   projectEditForm: submittedProjectEditForm = null,
 } = {}) {
   const workspace = workflowQueryService.getProjectWorkspace(id);
@@ -389,6 +414,7 @@ function renderProjectDetailPage(req, res, {
     projectTags,
     projectEditForm,
     projectEditDialogOpen: Boolean(!projectArchived && projectEditDialogOpen),
+    projectEditReturnTo,
     openLocallyUri: buildOpenLocallyUri({
       windowsRoot: getOpenLocallySettingsService(req).getWindowsProjectsPath(),
       projectDir: workspace.project.project_dir,
@@ -406,14 +432,35 @@ function getPageDefaultsService(req) {
   return service;
 }
 
-function readProjectCreateDialogHost(body) {
-  switch (body?.returnTo) {
-    case '/':
-      return '/';
-    case '/projects':
-      return '/projects';
-    default:
-      return null;
+function queryFromSearchParams(searchParams) {
+  const query = {};
+  for (const [key, value] of searchParams) {
+    if (!Object.hasOwn(query, key)) {
+      query[key] = value;
+    } else if (Array.isArray(query[key])) {
+      query[key].push(value);
+    } else {
+      query[key] = [query[key], value];
+    }
+  }
+  return query;
+}
+
+function readProjectCreateDialogContext(body) {
+  const candidate = body?.returnTo;
+  if (candidate === '/') return { host: '/', invocationReturnTo: '', listQuery: null };
+  if (!isSafeRedirectTarget(candidate)) return null;
+
+  try {
+    const url = new URL(candidate, 'http://creatorcrate.local');
+    if (url.origin !== 'http://creatorcrate.local' || url.pathname !== '/projects') return null;
+    return {
+      host: '/projects',
+      invocationReturnTo: `${url.pathname}${url.search}${url.hash}`,
+      listQuery: queryFromSearchParams(url.searchParams),
+    };
+  } catch {
+    return null;
   }
 }
 
@@ -425,15 +472,19 @@ function renderProjectCreateError(req, res, next, {
   errors,
   parsedTags,
 }) {
-  const projectCreateForm = buildNewProjectFormModel({
-    tagService: getTagService(req),
-    pageDefaultsService: getPageDefaultsService(req),
-    values: req.body,
-    errors,
-    selectedTagIds: buildSubmittedSelectedTagIds(parsedTags),
-  });
+  const createDialogContext = readProjectCreateDialogContext(req.body);
+  const projectCreateForm = {
+    ...buildNewProjectFormModel({
+      tagService: getTagService(req),
+      pageDefaultsService: getPageDefaultsService(req),
+      values: req.body,
+      errors,
+      selectedTagIds: buildSubmittedSelectedTagIds(parsedTags),
+    }),
+    invocationReturnTo: createDialogContext?.invocationReturnTo || '',
+  };
 
-  switch (readProjectCreateDialogHost(req.body)) {
+  switch (createDialogContext?.host) {
     case '/':
       renderDashboardPage(req, res, next, {
         appName,
@@ -453,6 +504,7 @@ function renderProjectCreateError(req, res, next, {
         projectCreateDialogOpen: true,
         projectCreateForm,
         allowSavedDefaultsRedirect: false,
+        listQuery: createDialogContext.listQuery,
       });
       return;
     default:
@@ -478,6 +530,7 @@ function renderProjectsPage(req, res, {
   projectCreateDialogOpen = false,
   projectCreateForm,
   allowSavedDefaultsRedirect = req.query.defaults !== '1',
+  listQuery = req.query,
 } = {}) {
   const pageDefaultsService = getPageDefaultsService(req);
   const availableTagOptions = getProjectTagFilterOptions(workflowQueryService);
@@ -486,7 +539,7 @@ function renderProjectsPage(req, res, {
     availableTagOptions,
   );
   const parsedQuery = parseListQuery(
-    req.query,
+    listQuery,
     pageDefaultsService,
     availableTagOptions,
     projectsDefaultOptionCatalogues,
@@ -503,7 +556,7 @@ function renderProjectsPage(req, res, {
   const { total: totalProjects } = projectService.list({ includeArchived: true, limit: 0 });
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const currentPage = Math.min(parsedQuery.page, pageCount);
-  if (allowSavedDefaultsRedirect && shouldRedirectToSavedDefaults(req.query, parsedQuery, pageDefaultsService)) {
+  if (allowSavedDefaultsRedirect && shouldRedirectToSavedDefaults(listQuery, parsedQuery, pageDefaultsService)) {
     return res.redirect(buildSavedDefaultsUrl(req, parsedQuery, currentPage, pageDefaultsService));
   }
 
@@ -511,7 +564,7 @@ function renderProjectsPage(req, res, {
   const nsfwFilterEnabled = getNsfwFilterSettingsService(req).isEnabled();
   const { rows } = workflowQueryService.getProjectList({ ...parsedQuery, offset, limit: PAGE_SIZE });
   const optionPresentation = getProjectOptionPresentation(req);
-  const pageUrl = buildPageUrl(req, parsedQuery, currentPage, pageDefaultsService);
+  const pageUrl = buildPageUrl(req, parsedQuery, currentPage, pageDefaultsService, listQuery);
   const filtersActive = Boolean(
     parsedQuery.search || parsedQuery.statuses.length > 0 || parsedQuery.projectTypes.length > 0
       || parsedQuery.tagIds.length > 0 || parsedQuery.projectId != null,
@@ -533,7 +586,7 @@ function renderProjectsPage(req, res, {
     pageSize: PAGE_SIZE,
     pageCount,
     pageUrl,
-    preserveViewQuery: shouldPreserveViewQuery(req.query, parsedQuery, pageDefaultsService),
+    preserveViewQuery: shouldPreserveViewQuery(listQuery, parsedQuery, pageDefaultsService),
     query: {
       search: parsedQuery.search,
       statuses: parsedQuery.statuses,
@@ -1014,8 +1067,8 @@ function projectToFormValues(project) {
   };
 }
 
-function buildPageUrl(req, parsedQuery, currentPage, pageDefaultsService) {
-  const baseQuery = buildCanonicalPageQuery(req, parsedQuery, currentPage, pageDefaultsService);
+function buildPageUrl(req, parsedQuery, currentPage, pageDefaultsService, listQuery = req.query) {
+  const baseQuery = buildCanonicalPageQuery(req, parsedQuery, currentPage, pageDefaultsService, listQuery);
   const fallbackView = pageDefaultsService.getFallback('projects', 'view');
   const defaultView = pageDefaultsService.resolve('projects', 'view');
 
@@ -1039,8 +1092,8 @@ function buildPageUrl(req, parsedQuery, currentPage, pageDefaultsService) {
   };
 }
 
-function buildCanonicalPageQuery(req, parsedQuery, currentPage, pageDefaultsService) {
-  const rawQuery = req.query && typeof req.query === 'object' ? req.query : {};
+function buildCanonicalPageQuery(req, parsedQuery, currentPage, pageDefaultsService, rawListQuery = req.query) {
+  const rawQuery = rawListQuery && typeof rawListQuery === 'object' ? rawListQuery : {};
   const query = {};
   const fallbackSort = pageDefaultsService.getFallback('projects', 'sort');
   const fallbackOrder = pageDefaultsService.getFallback('projects', 'order');

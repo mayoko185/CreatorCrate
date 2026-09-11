@@ -1,6 +1,6 @@
 {% import "partials/dialog.njk" as dialog %}
 
-{% macro render(release, releaseEditForm, csrfToken, open=false) %}
+{% macro render(release, releaseEditForm, csrfToken, open=false, returnTo='') %}
   {% set values = releaseEditForm.values %}
   {% set errors = releaseEditForm.errors %}
   {% call dialog.render('release-edit-dialog', 'Edit Release', open, 'release-edit-description', 'release-edit-form', 'project-form-dialog') %}
@@ -11,6 +11,9 @@
       <form id="release-edit-form" method="post" action="/releases/{{ release.id }}" class="app-dialog-form project-form project-edit-dialog-form"
             data-dialog-form data-dialog-async="false" novalidate>
         <input type="hidden" name="_csrf" value="{{ csrfToken }}">
+        {% if returnTo %}
+          <input type="hidden" name="returnTo" value="{{ returnTo }}" data-dialog-return-location>
+        {% endif %}
         {% if errors.general %}
           <div class="error-summary" role="alert"><p>{{ errors.general }}</p></div>
         {% endif %}

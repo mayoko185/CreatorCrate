@@ -2,6 +2,7 @@ import { withBookUploadLifetime } from '../middleware/book-upload-lifetime.js';
 import express from 'express';
 import { createBookWithUploadedCover } from '../middleware/book-create-multipart.js';
 import { updateBookWithUploadedCover } from '../middleware/book-edit-multipart.js';
+import { isSafeRedirectTarget } from '../middleware/auth.js';
 import { BookPrimaryImageError } from '../services/book-primary-image-service.js';
 import { ManagedImageError } from '../services/managed-image-service.js';
 import { AssetPickerCursorError } from '../data/asset-picker-pagination.js';
@@ -33,6 +34,18 @@ import {
 
 const NOTE_EXCERPT_MAX_LENGTH = 160;
 const NSFW_TAG_NORMALIZED_NAME = NSFW_TAG_NAME.toLowerCase();
+
+function readBookEditReturnLocation(candidate) {
+  if (!isSafeRedirectTarget(candidate)) return '';
+
+  try {
+    const url = new URL(candidate, 'http://creatorcrate.local');
+    if (url.origin !== 'http://creatorcrate.local' || url.pathname !== '/notes') return '';
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return '';
+  }
+}
 
 const NOTICES = {
   book_reordered: { variant: 'success', text: 'Book order updated.' },
@@ -448,7 +461,7 @@ export function createNotesRouter({
 
   async function renderBookDetail(req, res, {
     appName: pageAppName, bookService: pageBookService, bookPrimaryImageService: pagePrimaryImageService,
-    bookId, notice = null, status = 200, bookEditDialogOpen = false, values, errors = {},
+    bookId, notice = null, status = 200, bookEditDialogOpen = false, bookEditReturnTo = '', values, errors = {},
     noteCreateForm = null, noteCreateDialogOpen = false,
     bookOrderDialogOpen = false, bookOrderNotice = null,
     chapterCreateDialogOpen = false, chapterValues = { title: '' }, chapterErrors = {},
@@ -523,6 +536,7 @@ export function createNotesRouter({
         action: 'Create', submitUrl: `/notes/books/${bookId}/chapters`,
       }),
       bookEditDialogOpen,
+      bookEditReturnTo,
       bookEditForm: buildBookFormModel({
         appName: pageAppName, book, values: values ?? { title: book.title }, errors,
         action: 'Edit', submitUrl: `/notes/books/${bookId}`,
@@ -678,6 +692,7 @@ export function createNotesRouter({
     try {
       await renderBookDetail(req, res, {
         appName, bookService, bookPrimaryImageService, bookId: id, bookEditDialogOpen: true,
+        bookEditReturnTo: readBookEditReturnLocation(req.query.returnTo),
       });
       return;
     } catch (err) {
@@ -748,6 +763,7 @@ export function createNotesRouter({
     const id = parseId(req.params.bookId);
     if (id === null) return next(createNotFound());
     const body = req.body || {};
+    const bookEditReturnTo = readBookEditReturnLocation(body.returnTo);
 
     try {
       const cover = res.locals.bookCoverUpload;
@@ -756,7 +772,7 @@ export function createNotesRouter({
         ? await updateBookWithUploadedCover(req, res, { bookService, managedImageService }, id, cover.bytes)
         : bookService.updateBook(id, { title: body.title });
       if (!book) return;
-      return res.redirect(`/notes/books/${book.id}`);
+      return res.redirect(bookEditReturnTo || `/notes/books/${book.id}`);
     } catch (err) {
       if (err instanceof ManagedImageError && err.code === 'INVALID_IMAGE'
         && req.accepts(['html', 'json']) === 'html') {
@@ -784,6 +800,7 @@ export function createNotesRouter({
           await renderBookDetail(req, res, {
             appName, bookService, bookPrimaryImageService, bookId: id,
             status: 422, bookEditDialogOpen: true,
+            bookEditReturnTo,
             values: { title: body.title ?? '' },
             errors: err.errors || { general: err.message },
           });

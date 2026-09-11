@@ -85,6 +85,19 @@ describe('WP7D2B Edit Book multipart HTTP', () => {
     counts(1, 0);
     expect(files()).toHaveLength(0);
   });
+  it('threads Books-list return metadata through multipart validation and a successful cover update', async () => {
+    const returnTo = '/notes?sort=title&page=2#book-7';
+    const invalid = await post().field('title', '   ').field('returnTo', returnTo).attach('cover', bytes, 'private.png').expect(422);
+    expect(invalid.text).toContain('value="   "');
+    expect(invalid.text).toContain('name="returnTo" value="/notes?sort=title&amp;page=2#book-7" data-dialog-return-location');
+    expect(files()).toHaveLength(0);
+
+    const saved = await post().field('title', 'Updated from list').field('returnTo', returnTo).attach('cover', bytes, 'cover.png').expect(302);
+    expect(saved.headers.location).toBe(returnTo);
+    expect(app.locals.bookService.getBook(book.id).title).toBe('Updated from list');
+    counts(1, 1);
+    expect(files()).toHaveLength(1);
+  });
   it.each([false, true])('rerenders invalid Book fields before ingestion (cover=%s)', async (cover) => {
     const submit = post().field('title', '   ');
     if (cover) submit.attach('cover', bytes, 'private.png');

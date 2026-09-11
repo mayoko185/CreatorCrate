@@ -14,6 +14,7 @@ import { RELEASE_ASSET_ROLES } from '../data/release-repository.js';
 import { buildSocialContent } from '../services/social-content-builder.js';
 import { buildReleaseSocialPrepPresentation } from '../services/release-social-prep-presenter.js';
 import { isProjectArchived } from '../services/project-state.js';
+import { isSafeRedirectTarget } from '../middleware/auth.js';
 import {
   buildPageDefaultsDialogModel,
   handlePageDefaultsPost,
@@ -42,6 +43,36 @@ const RELEASES_NOTICES = Object.freeze({
   defaultsSaved: 'Releases defaults saved successfully.',
 });
 const SELECTED_ASSETS_RELEASE_CREATE_FLOW = 'selected-assets';
+
+function readReleaseEditReturnLocation(candidate) {
+  if (!isSafeRedirectTarget(candidate)) return '';
+
+  try {
+    const url = new URL(candidate, 'http://creatorcrate.local');
+    if (url.origin !== 'http://creatorcrate.local' || url.pathname !== '/calendar') return '';
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return '';
+  }
+}
+
+function readSelectedAssetsReleaseReturnLocation(candidate, projectId) {
+  if (!isSafeRedirectTarget(candidate)) return '';
+
+  try {
+    const url = new URL(candidate, 'http://creatorcrate.local');
+    if (url.origin !== 'http://creatorcrate.local' || url.pathname !== `/projects/${projectId}/assets`) return '';
+    return `${url.pathname}${url.search}${url.hash}`;
+  } catch {
+    return '';
+  }
+}
+
+function buildReleaseEditDialogUrl(releaseId, returnLocation) {
+  const query = new URLSearchParams({ edit: '1' });
+  if (returnLocation) query.set('returnTo', returnLocation);
+  return `/releases/${releaseId}?${query}`;
+}
 
 export { handleReleaseList, buildPageUrl, buildCreateReleaseFormModel };
 
@@ -147,10 +178,12 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
         if (!project) {
           return next(createNotFound());
         }
+        const selectedAssetsReturnTo = readSelectedAssetsReleaseReturnLocation(body.returnTo, projectId);
         const releaseCreateForm = buildCreateReleaseFormModel({
           appName,
           projectService,
           selectedAssetsFlow: true,
+          selectedAssetsReturnTo,
           values: {
             projectId: String(projectId),
             title: project.title,
@@ -182,12 +215,16 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
 
           const projectId = parseStrictInt(req.query.projectId);
           const project = projectId === null ? null : projectService.findById(projectId);
+          const selectedAssetsReturnTo = project
+            ? readSelectedAssetsReleaseReturnLocation(body.returnTo, projectId)
+            : '';
           const releaseCreateForm = buildCreateReleaseFormModel({
             appName,
             projectService,
             selectedAssetsFlow: true,
+            selectedAssetsReturnTo,
             selectedAssetsInvalid: true,
-            selectedAssetsRecoveryUrl: project ? `/projects/${project.id}/assets` : null,
+            selectedAssetsRecoveryUrl: project ? (selectedAssetsReturnTo || `/projects/${project.id}/assets`) : null,
             values: {
               projectId: projectId === null ? '' : String(projectId),
               title: project?.title || '',
@@ -254,6 +291,7 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
         let values = body;
         let selectedAssetsInvalid = false;
         let selectedAssetsRecoveryUrl = null;
+        let selectedAssetsReturnTo = '';
         if (selectedAssetsIntent) {
           const normalizedSelection = normalizeSelectedAssetIds(body.selectedAssetIds);
           let selectedAssetIds = [];
@@ -276,7 +314,12 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
 
           const recoveryProjectId = parseStrictInt(body.projectId);
           const recoveryProject = recoveryProjectId === null ? null : projectService.findById(recoveryProjectId);
-          selectedAssetsRecoveryUrl = recoveryProject ? `/projects/${recoveryProject.id}/assets` : null;
+          selectedAssetsReturnTo = recoveryProject
+            ? readSelectedAssetsReleaseReturnLocation(body.returnTo, recoveryProjectId)
+            : '';
+          selectedAssetsRecoveryUrl = recoveryProject
+            ? (selectedAssetsReturnTo || `/projects/${recoveryProject.id}/assets`)
+            : null;
           values = { ...body, selectedAssetIds };
         }
 
@@ -287,6 +330,7 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
           errors,
           values,
           selectedAssetsFlow: selectedAssetsIntent,
+          selectedAssetsReturnTo,
           selectedAssetsInvalid,
           selectedAssetsRecoveryUrl,
         });
@@ -340,7 +384,8 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
       return res.redirect(`/releases/${id}`);
     }
 
-    return res.redirect(`/releases/${id}?edit=1`);
+    const returnLocation = readReleaseEditReturnLocation(req.query.returnTo);
+    return res.redirect(buildReleaseEditDialogUrl(id, returnLocation));
   });
 
   // POST /releases/:id — Update a release
@@ -350,13 +395,15 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
       return next(createNotFound());
     }
 
+    const releaseEditReturnTo = readReleaseEditReturnLocation(req.body?.returnTo);
+
     try {
       const input = parseReleaseInput(req.body);
       const release = releaseService.updateRelease(id, input);
       if (!release) {
         return next(createNotFound());
       }
-      res.redirect(`/releases/${id}`);
+      res.redirect(releaseEditReturnTo || `/releases/${id}`);
     } catch (err) {
       if (err instanceof ReleaseNotFoundError) {
         return next(createNotFound());
@@ -376,6 +423,7 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
           releaseAssets,
           req,
           editDialogOpen: true,
+          editDialogReturnTo: releaseEditReturnTo,
           editDialogForm: {
             values: omitLegacyStatusField(req.body),
             errors: err.errors || { general: err.message },
@@ -401,7 +449,26 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
         }));
         return;
       }
-      next(err);
+      const existing = releaseService.findRelease(id);
+      if (!existing) {
+        return next(createNotFound());
+      }
+      const project = projectService.findById(existing.project_id);
+      const releaseAssets = releaseService.listReleaseAssets(id);
+      res.status(500).render('releases/detail.njk', buildReleaseDetailRenderModel({
+        appName,
+        releaseService,
+        release: existing,
+        project,
+        releaseAssets,
+        req,
+        editDialogOpen: true,
+        editDialogReturnTo: releaseEditReturnTo,
+        editDialogForm: {
+          values: omitLegacyStatusField(req.body),
+          errors: { general: 'Release update failed. Please try again.' },
+        },
+      }));
     }
   });
 
@@ -977,8 +1044,34 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
   return router;
 }
 
-function readReleaseCreateDialogHost(body) {
-  return body?.returnTo === '/releases' ? '/releases' : null;
+function releaseListQueryFromSearchParams(searchParams) {
+  const query = {};
+  for (const [key, value] of searchParams) {
+    if (!Object.hasOwn(query, key)) {
+      query[key] = value;
+    } else if (Array.isArray(query[key])) {
+      query[key].push(value);
+    } else {
+      query[key] = [query[key], value];
+    }
+  }
+  return query;
+}
+
+function readReleaseCreateDialogContext(body) {
+  const candidate = body?.returnTo;
+  if (!isSafeRedirectTarget(candidate)) return null;
+
+  try {
+    const url = new URL(candidate, 'http://creatorcrate.local');
+    if (url.origin !== 'http://creatorcrate.local' || url.pathname !== '/releases') return null;
+    return {
+      invocationReturnTo: `${url.pathname}${url.search}${url.hash}`,
+      listQuery: releaseListQueryFromSearchParams(url.searchParams),
+    };
+  } catch {
+    return null;
+  }
 }
 
 function renderReleaseCreateError(req, res, next, {
@@ -988,20 +1081,24 @@ function renderReleaseCreateError(req, res, next, {
   errors,
   values = req.body,
   selectedAssetsFlow = false,
+  selectedAssetsReturnTo = '',
   selectedAssetsInvalid = false,
   selectedAssetsRecoveryUrl = null,
 }) {
+  const createDialogContext = selectedAssetsFlow ? null : readReleaseCreateDialogContext(req.body);
   const releaseCreateForm = buildCreateReleaseFormModel({
     appName,
     projectService,
     values,
     errors,
     selectedAssetsFlow,
+    selectedAssetsReturnTo,
     selectedAssetsInvalid,
     selectedAssetsRecoveryUrl,
+    invocationReturnTo: createDialogContext?.invocationReturnTo || '',
   });
 
-  if (selectedAssetsFlow || readReleaseCreateDialogHost(req.body)) {
+  if (selectedAssetsFlow || createDialogContext) {
     handleReleaseList(req, res, next, {
       appName,
       projectService,
@@ -1012,6 +1109,7 @@ function renderReleaseCreateError(req, res, next, {
       allowSavedDefaultsRedirect: false,
       notice: null,
       pagePath: '/',
+      listQuery: createDialogContext?.listQuery || req.query,
     });
     return;
   }
@@ -1043,11 +1141,12 @@ function handleReleaseList(
     allowSavedDefaultsRedirect = req.query?.defaults !== '1',
     notice = resolveReleasesNotice(req.query?.notice),
     pagePath = req.path,
+    listQuery = req.query,
   },
 ) {
   try {
     const pageDefaultsService = getReleasePageDefaultsService(req, RELEASES_PAGE_DEFAULTS);
-    const rawQuery = req.query && typeof req.query === 'object' ? req.query : {};
+    const rawQuery = listQuery && typeof listQuery === 'object' ? listQuery : {};
     const normalizedRawQuery = omitLegacyStatusField(rawQuery);
     const presentation = resolveReleasePresentation(normalizedRawQuery, pageDefaultsService, RELEASES_PAGE_DEFAULTS);
     const effectiveQuery = {
@@ -1270,8 +1369,10 @@ function buildCreateReleaseFormModel({
   values = {},
   errors = {},
   selectedAssetsFlow = false,
+  selectedAssetsReturnTo = '',
   selectedAssetsInvalid = false,
   selectedAssetsRecoveryUrl = null,
+  invocationReturnTo = '',
 }) {
   const formValues = buildNewReleaseFormValues(values);
   const context = buildReleaseFormProjectContext(formValues.projectId, projectService);
@@ -1286,8 +1387,10 @@ function buildCreateReleaseFormModel({
     action: 'Create',
     submitUrl: '/releases',
     selectedAssetsFlow,
+    selectedAssetsReturnTo,
     selectedAssetsInvalid,
     selectedAssetsRecoveryUrl,
+    invocationReturnTo,
   };
 }
 
@@ -1343,6 +1446,7 @@ function buildReleaseDetailRenderModel({
   req,
   errors = {},
   editDialogOpen = false,
+  editDialogReturnTo = '',
   editDialogForm = null,
   publishDialogOpen = false,
   publishDialogForm = null,
@@ -1373,6 +1477,7 @@ function buildReleaseDetailRenderModel({
     pageUrl: buildReleaseDetailPageUrl(release.id, req?.query),
     errors,
     editDialogOpen: resolvedEditDialogOpen,
+    editDialogReturnTo: editDialogReturnTo || readReleaseEditReturnLocation(req?.query?.returnTo),
     editDialogForm: resolvedEditDialogForm,
     publishDialogOpen: publishAvailable && !resolvedEditDialogOpen && (publishDialogOpen || req?.query?.publish === '1'),
     publishDialogForm: resolvedPublishDialogForm,

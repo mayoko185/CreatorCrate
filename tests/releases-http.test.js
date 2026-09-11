@@ -855,10 +855,11 @@ describe('release HTTP workflow', () => {
       const res = await agent.get('/releases').expect(200);
       const dialog = res.text.match(/<dialog id="release-create-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
 
-      expect(res.text).toContain('<a class="button button-primary" href="/releases/new" data-dialog-open="release-create-dialog">New Release</a>');
+      expect(res.text).toContain('<a class="button button-primary" href="/releases/new" data-dialog-open="release-create-dialog" data-dialog-invocation>New Release</a>');
       expect(dialog).toContain('<form id="release-create-form" method="post" action="/releases"');
       expect(dialog).toContain('data-dialog-form data-dialog-async="false"');
       expect(dialog).toContain('<input type="hidden" name="returnTo" value="/releases">');
+      expect(dialog).not.toContain('data-dialog-return-location');
       expect(dialog).not.toContain('name="releaseCreateFlow"');
     });
 
@@ -889,6 +890,30 @@ describe('release HTTP workflow', () => {
       expect(selectedIds).toEqual([second.id, first.id]);
       expect(dialog).toContain('action="/releases"');
       expect(releaseRepository.findByProjectId(projectId, { includeArchived: true })).toEqual([]);
+    });
+
+    it.each([
+      ['external', 'https://evil.example/projects/1/assets'],
+      ['protocol-relative', '//evil.example/projects/1/assets'],
+      ['another project', null],
+      ['unrelated local path', '/releases?view=list'],
+    ])('rejects an %s selected-assets cancellation destination', async (_label, candidate) => {
+      const projectId = await createTestProject(`Return Validation Project ${_label}`);
+      const otherProjectId = await createTestProject(`Other Return Project ${_label}`);
+      const asset = insertAssetDirect(db, projectId, `return-${_label.replaceAll(' ', '-')}.png`);
+      const returnTo = candidate ?? `/projects/${otherProjectId}/assets?view=list`;
+
+      const res = await agent
+        .post(`/releases?new=assets&projectId=${projectId}`)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send(`selectedAssetIds=${asset.id}`)
+        .send('returnTo=' + encodeURIComponent(returnTo))
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(200);
+      const dialog = res.text.match(/<dialog id="release-create-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+
+      expect(dialog).toContain('<input type="hidden" name="returnTo" value="/releases">');
+      expect(dialog).not.toContain('data-dialog-return-location');
     });
 
     it('rejects direct handoffs with nonexistent projects and empty, foreign, missing, or non-positive asset selections', async () => {
@@ -1045,12 +1070,13 @@ describe('release HTTP workflow', () => {
       expect(css).toMatch(/\.project-form-dialog \[data-release-dialog-compact-section\] > \.project-edit-dialog-section-body\s*\{[^}]*gap:\s*var\(--space-md\);[^}]*padding:\s*var\(--space-sm\) var\(--space-md\) var\(--space-md\);/);
     });
 
-    it('re-renders /releases with the dialog open and submitted values after a dialog validation error', async () => {
+    it('re-renders a filtered Releases list with the exact invocation URL and submitted values after validation', async () => {
       const projectId = await createTestProject('Release Dialog Validation Project');
+      const returnTo = `/releases?project=${projectId}&search=needle&sort=created&order=desc&page=2#releases-list`;
       const res = await agent
         .post('/releases')
         .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('returnTo=%2Freleases')
+        .send('returnTo=' + encodeURIComponent(returnTo))
         .send(`projectId=${projectId}`)
         .send('title=')
         .send('description=Keep+dialog+description')
@@ -1074,6 +1100,21 @@ describe('release HTTP workflow', () => {
       expect(dialog).toMatch(/id="publishedDate"[^>]*value="2031-04-06"/);
       expect(dialog).toMatch(/id="patreonUrl"[^>]*value="https:\/\/example\.test\/releases\/keep"/);
       expect(dialog).toMatch(/id="title"[^>]*aria-describedby="title-error"[^>]*aria-invalid="true"/);
+      expect(dialog).toContain(`name="returnTo" value="/releases?project=${projectId}&amp;search=needle&amp;sort=created&amp;order=desc&amp;page=2#releases-list" data-dialog-return-location`);
+    });
+
+    it('keeps the existing detail destination on a successful retry with Releases invocation metadata', async () => {
+      const projectId = await createTestProject('Release Dialog Retry Project');
+      const res = await agent
+        .post('/releases')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send('returnTo=' + encodeURIComponent('/releases?sort=created&order=desc&page=2#releases-list'))
+        .send(`projectId=${projectId}`)
+        .send('title=Successful+Dialog+Retry')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      expect(res.headers.location).toMatch(/^\/releases\/\d+$/);
     });
 
     it('keeps selected assets in the open dialog after validation failure', async () => {
@@ -1140,11 +1181,16 @@ describe('release HTTP workflow', () => {
       expect(releaseRepository.findByProjectId(projectId, { includeArchived: true })).toHaveLength(1);
     });
 
-    it('does not treat an external returnTo value as a dialog host', async () => {
+    it.each([
+      'https://evil.example/releases',
+      '//evil.example/releases',
+      '/releases/%',
+      '/projects?sort=title',
+    ])('does not treat an invalid Release create invocation returnTo as a dialog host: %s', async (returnTo) => {
       const res = await agent
         .post('/releases')
         .send('_csrf=' + encodeURIComponent(csrfToken))
-        .send('returnTo=https%3A%2F%2Fevil.example')
+        .send('returnTo=' + encodeURIComponent(returnTo))
         .send('title=')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
@@ -2457,7 +2503,119 @@ describe('release HTTP workflow', () => {
     expect(editDialog).toContain('Existing description');
     expect(editDialog).toContain('Save changes');
     expect(editDialog).not.toMatch(/name="projectId"/);
+    expect(editDialog).not.toContain('data-dialog-return-location');
     expect(res.text).not.toMatch(/<dialog id="release-publish-dialog"[^>]*open/);
+  });
+
+  it('threads a validated Calendar invocation through the Release edit host', async () => {
+    const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
+    const returnTo = '/calendar?month=2026-07&filter=planned#release-19';
+
+    const entry = await agent
+      .get(`${releaseLocation}/edit?returnTo=${encodeURIComponent(returnTo)}`)
+      .expect(302);
+    const hosted = new URL(entry.headers.location, 'http://creatorcrate.local');
+    expect(hosted.pathname).toBe(releaseLocation);
+    expect(hosted.searchParams.get('edit')).toBe('1');
+    expect(hosted.searchParams.get('returnTo')).toBe(returnTo);
+
+    const res = await agent.get(entry.headers.location).expect(200);
+    expect(res.text).toContain('name="returnTo" value="/calendar?month=2026-07&amp;filter=planned#release-19" data-dialog-return-location');
+  });
+
+  it('returns a successful Calendar-invoked Release edit to its exact destination', async () => {
+    const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
+    const returnTo = '/calendar?month=2026-07&filter=planned#release-19';
+
+    const res = await agent
+      .post(releaseLocation)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send('title=Updated+from+Calendar')
+      .send('returnTo=' + encodeURIComponent(returnTo))
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    expect(res.headers.location).toBe(returnTo);
+  });
+
+  it('retains Calendar invocation metadata on Release edit validation rerender', async () => {
+    const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
+    const returnTo = '/calendar?month=2026-07&filter=planned#release-19';
+
+    const res = await agent
+      .post(releaseLocation)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send('title=')
+      .send('description=Submitted+description')
+      .send('returnTo=' + encodeURIComponent(returnTo))
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(422);
+
+    const editDialog = res.text.match(/<dialog id="release-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    expect(editDialog).toMatch(/<dialog id="release-edit-dialog"[^>]*open/);
+    expect(editDialog).toContain('Submitted description');
+    expect(editDialog).toContain('name="returnTo" value="/calendar?month=2026-07&amp;filter=planned#release-19" data-dialog-return-location');
+  });
+
+  it('retains submitted values and Calendar invocation metadata after a Release edit server error', async () => {
+    const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
+    const returnTo = '/calendar?month=2026-07&filter=planned#release-19';
+    const baseReleaseService = createReleaseService({ db });
+    const stubbedApp = createApp(
+      { appName: 'CreatorCrate', db, projectsRoot },
+      {
+        releaseService: {
+          ...baseReleaseService,
+          updateRelease() {
+            throw new Error('simulated update failure');
+          },
+        },
+        appDataRoot,
+        authState: { csrfPepper: ensureAuthEnablement(appDataRoot).csrfPepper },
+      },
+    );
+    const { agent: stubbedAgent, csrfToken: stubbedCsrfToken } = await getDisabledModeCsrf(stubbedApp, appDataRoot);
+
+    const res = await stubbedAgent
+      .post(releaseLocation)
+      .send('_csrf=' + encodeURIComponent(stubbedCsrfToken))
+      .send('title=Still+submitted')
+      .send('description=Submitted+after+failure')
+      .send('returnTo=' + encodeURIComponent(returnTo))
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(500);
+
+    const editDialog = res.text.match(/<dialog id="release-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    expect(editDialog).toMatch(/<dialog id="release-edit-dialog"[^>]*open/);
+    expect(editDialog).toContain('value="Still submitted"');
+    expect(editDialog).toContain('Submitted after failure');
+    expect(editDialog).toContain('Release update failed. Please try again.');
+    expect(editDialog).toContain('name="returnTo" value="/calendar?month=2026-07&amp;filter=planned#release-19" data-dialog-return-location');
+  });
+
+  it.each([
+    ['external', 'https://example.com/calendar?month=2026-07'],
+    ['protocol-relative', '//example.com/calendar?month=2026-07'],
+    ['unrelated local path', '/releases?month=2026-07'],
+  ])('rejects an %s Release edit return destination', async (_label, returnTo) => {
+    const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
+
+    const entry = await agent
+      .get(`${releaseLocation}/edit?returnTo=${encodeURIComponent(returnTo)}`)
+      .expect(302);
+    expect(entry.headers.location).toBe(`${releaseLocation}?edit=1`);
+
+    const hosted = await agent.get(entry.headers.location).expect(200);
+    expect(hosted.text).not.toContain('data-dialog-return-location');
+
+    const saved = await agent
+      .post(releaseLocation)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send('title=Safely+Updated')
+      .send('returnTo=' + encodeURIComponent(returnTo))
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+    expect(saved.headers.location).toBe(releaseLocation);
   });
 
   it('normal release detail includes but does not open the Edit dialog', async () => {
@@ -10691,7 +10849,7 @@ describe('release HTTP workflow', () => {
 
       const res = await agent.get('/calendar?month=2026-07').expect(200);
 
-      expect(res.text).toMatch(new RegExp(`href="/releases/${release.id}/edit">Calendar Release</a>`));
+      expect(res.text).toMatch(new RegExp(`href="/releases/${release.id}/edit" data-dialog-invocation>Calendar Release</a>`));
       expect(res.text).toContain('13:45');
       expect(res.text).toContain('Planned');
     });
@@ -10716,7 +10874,7 @@ describe('release HTTP workflow', () => {
       const releaseDay = res.text.match(
         /<li class="agenda-day[^>]*>\s*<div class="agenda-day-date">\s*2026-07-18[\s\S]*?<\/li>/,
       )?.[0] || '';
-      expect(releaseDay).toContain(`href="/releases/${release.id}/edit">Release Date Entry</a>`);
+      expect(releaseDay).toContain(`href="/releases/${release.id}/edit" data-dialog-invocation>Release Date Entry</a>`);
     });
 
     it('omits archived releases', async () => {

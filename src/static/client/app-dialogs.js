@@ -109,8 +109,10 @@ export function enhanceAutoSubmit(scope = globalThis.document) {
 
 const APP_DIALOG_SELECTOR = '[data-app-dialog]';
 const APP_DIALOG_TRIGGER_SELECTOR = '[data-dialog-open]';
+const APP_DIALOG_INVOCATION_SELECTOR = '[data-dialog-invocation]';
 const APP_DIALOG_CLOSE_SELECTOR = '[data-dialog-close]';
 const APP_DIALOG_FORM_SELECTOR = '[data-dialog-form]';
+const APP_DIALOG_RETURN_LOCATION_SELECTOR = '[data-dialog-return-location]';
 const PROJECT_ASSETS_DEFAULTS_DIALOG_ID = 'project-assets-defaults-dialog';
 const ASSET_BROWSER_DEFAULT_LIVE_FORM_SELECTOR = '[data-asset-browser-default-live]';
 const APP_DIALOG_FOCUSABLE_SELECTOR = 'a[href], button, input, select, textarea, summary, [tabindex]';
@@ -164,12 +166,44 @@ function appDialogRestoreFocus(state) {
   opener?.focus?.({ preventScroll: true });
 }
 
+function appDialogValidatedLocalLocation(windowObject, candidate) {
+  if (typeof candidate !== 'string' || !candidate.startsWith('/') || candidate.startsWith('//')) return null;
+  const currentLocation = windowObject?.location;
+  if (!currentLocation) return null;
+
+  try {
+    const currentUrl = new URL(
+      currentLocation.href || `${currentLocation.origin || 'http://creatorcrate.local'}${currentLocation.pathname || '/'}${currentLocation.search || ''}${currentLocation.hash || ''}`,
+    );
+    const targetUrl = new URL(candidate, currentUrl);
+    if (targetUrl.origin !== currentUrl.origin) return null;
+    return `${targetUrl.pathname}${targetUrl.search}${targetUrl.hash}`;
+  } catch {
+    return null;
+  }
+}
+
+function appDialogReturnLocation(state) {
+  const control = state.dialog.querySelector?.(APP_DIALOG_RETURN_LOCATION_SELECTOR);
+  const candidate = control?.value || control?.getAttribute?.('data-dialog-return-location');
+  return appDialogValidatedLocalLocation(state.document?.defaultView || globalThis, candidate);
+}
+
+function appDialogNavigateToReturnLocation(state, returnLocation) {
+  if (!returnLocation) return;
+  const windowObject = state.document?.defaultView || globalThis;
+  windowObject.location?.assign?.(returnLocation);
+}
+
 function appDialogFinishClose(state) {
+  const returnLocation = state.pendingReturnLocation;
+  state.pendingReturnLocation = null;
   cleanupScrollableCategoryDialogDropdowns(state.dialog);
   state.onClose?.();
   state.open = false;
   appDialogBodyLock(state, false);
   appDialogRestoreFocus(state);
+  appDialogNavigateToReturnLocation(state, returnLocation);
 }
 
 function appDialogCloseOpenDropdown(state) {
@@ -182,7 +216,8 @@ function appDialogCloseOpenDropdown(state) {
   return true;
 }
 
-function appDialogClose(state) {
+function appDialogClose(state, returnLocation = null) {
+  state.pendingReturnLocation = returnLocation;
   if (typeof state.dialog.close === 'function' && state.dialog.open) {
     state.dialog.close();
     return;
@@ -195,7 +230,7 @@ function appDialogClose(state) {
 function appDialogRequestClose(state, opener = null) {
   if (state.closeRequest) return;
   if (typeof state.beforeClose !== 'function') {
-    appDialogClose(state);
+    appDialogClose(state, appDialogReturnLocation(state));
     return;
   }
 
@@ -208,7 +243,7 @@ function appDialogRequestClose(state, opener = null) {
   }
 
   if (decision === true) {
-    appDialogClose(state);
+    appDialogClose(state, appDialogReturnLocation(state));
     return;
   }
   if (!decision || typeof decision.then !== 'function') return;
@@ -219,7 +254,7 @@ function appDialogRequestClose(state, opener = null) {
     if (state.closeRequest !== request) return;
     state.closeRequest = null;
     if (allowed && state.lifecycle === lifecycle && (state.open || state.dialog.open)) {
-      appDialogClose(state);
+      appDialogClose(state, appDialogReturnLocation(state));
     }
   }).catch(() => {
     if (state.closeRequest === request) state.closeRequest = null;
@@ -860,6 +895,7 @@ function appDialogBindForm(state) {
 function appDialogOpen(state, opener = null, openerAllowsFallback = true) {
   state.lifecycle += 1;
   state.closeRequest = null;
+  state.pendingReturnLocation = null;
   state.opener = opener || (openerAllowsFallback
     ? state.document.querySelector?.(`${APP_DIALOG_TRIGGER_SELECTOR}[data-dialog-open="${state.dialog.id}"]`)
     : null);
@@ -967,6 +1003,7 @@ export function enhanceAppDialogs(scope = globalThis.document) {
       submitting: false,
       lifecycle: 0,
       closeRequest: null,
+      pendingReturnLocation: null,
       beforeClose: null,
       preserveValuesOnError: false,
       onOpen: null,
@@ -980,12 +1017,44 @@ export function enhanceAppDialogs(scope = globalThis.document) {
     markEnhancementBound(document, 'appDialogsBound');
     document.addEventListener?.('click', (event) => {
       const trigger = event.target?.closest?.(APP_DIALOG_TRIGGER_SELECTOR);
-      if (!trigger) return;
-      const dialog = document.getElementById?.(trigger.getAttribute?.('data-dialog-open'));
+      const dialog = trigger
+        ? document.getElementById?.(trigger.getAttribute?.('data-dialog-open'))
+        : null;
       const state = dialog?.__creatorCrateAppDialogState;
-      if (!state) return;
-      event.preventDefault?.();
-      appDialogOpen(state, trigger);
+      if (state) {
+        event.preventDefault?.();
+        appDialogOpen(state, trigger);
+      }
+
+      const invocationTrigger = event.target?.closest?.(APP_DIALOG_INVOCATION_SELECTOR);
+      if (invocationTrigger) {
+        const windowObject = document.defaultView || globalThis;
+        const currentLocation = windowObject.location;
+        const invocationLocation = currentLocation
+          ? `${currentLocation.pathname || ''}${currentLocation.search || ''}${currentLocation.hash || ''}`
+          : '';
+        const invocationDialogId = invocationTrigger.getAttribute?.('data-dialog-open');
+        const invocationDialog = invocationDialogId
+          ? document.getElementById?.(invocationDialogId)
+          : null;
+        const invocationForm = invocationTrigger.form
+          || invocationTrigger.closest?.('form')
+          || invocationDialog?.querySelector?.(APP_DIALOG_FORM_SELECTOR);
+        const returnControl = invocationForm?.querySelector?.('input[name="returnTo"]')
+          || invocationDialog?.querySelector?.('input[name="returnTo"]');
+        const target = returnControl ? null : appDialogValidatedLocalLocation(
+          windowObject,
+          invocationTrigger.getAttribute?.('href'),
+        );
+        if (returnControl && invocationLocation) {
+          returnControl.value = invocationLocation;
+          returnControl.setAttribute?.('value', invocationLocation);
+        } else if (target && invocationLocation) {
+          const targetUrl = new URL(target, currentLocation.href || currentLocation.origin);
+          targetUrl.searchParams.set('returnTo', invocationLocation);
+          invocationTrigger.setAttribute?.('href', `${targetUrl.pathname}${targetUrl.search}${targetUrl.hash}`);
+        }
+      }
     });
   }
   return dialogs.length;

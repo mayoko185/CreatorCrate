@@ -249,6 +249,9 @@
     <form id="book-form" method="post" action="{{ bookEditForm.submitUrl }}" enctype="multipart/form-data" class="app-dialog-form project-form project-edit-dialog-form"
           data-dialog-form data-dialog-async="false" novalidate>
       <input type="hidden" name="_csrf" value="{{ _csrf }}">
+      {% if bookEditReturnTo %}
+        <input type="hidden" name="returnTo" value="{{ bookEditReturnTo }}" data-dialog-return-location>
+      {% endif %}
       <div class="app-dialog-body">
         {% if errors.general %}
           <div class="error-summary" role="alert"><p>{{ errors.general }}</p></div>

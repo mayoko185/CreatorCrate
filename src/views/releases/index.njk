@@ -18,7 +18,7 @@
   <div data-releases-live-region>
     <span class="sr-only" data-releases-live-status aria-live="polite" aria-atomic="true"></span>
     {% call pageHeading.render() %}
-      <a class="button button-primary" href="/releases/new" data-dialog-open="release-create-dialog">New Release</a>
+      <a class="button button-primary" href="/releases/new" data-dialog-open="release-create-dialog" data-dialog-invocation>New Release</a>
     {% endcall %}
 
     {% if releasesDefaultsNotice %}
@@ -116,6 +116,7 @@
             {% set emptyDescription = "Create a release to start tracking publication workflow." %}
             {% set emptyActionUrl = "/releases/new" %}
             {% set emptyActionDialogId = "release-create-dialog" %}
+            {% set emptyActionAttributes = [['data-dialog-invocation', true]] %}
             {% set emptyActionLabel = "New Release" %}
           {% endif %}
           {% set emptyHeadingLevel = "h2" %}

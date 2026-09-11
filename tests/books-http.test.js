@@ -314,7 +314,7 @@ describe('Book HTTP routes', () => {
     const response = await agent.get('/notes').expect(200);
 
     expect(response.text).toContain(`<a href="/notes/books/${book.id}">Single Book</a>`);
-    expect(response.text).toContain(`<a class="button button-small button-secondary" href="/notes/books/${book.id}/edit" aria-label="Edit Book: Single Book">Edit Book</a>`);
+    expect(response.text).toContain(`<a class="button button-small button-secondary" href="/notes/books/${book.id}/edit" data-dialog-invocation aria-label="Edit Book: Single Book">Edit Book</a>`);
     expect(response.text.match(/<main\b[\s\S]*?<\/main>/)?.[0]).not.toContain('Change order');
     expect(response.text).not.toContain('>Manage</a>');
     expect(response.text).not.toContain('Move up');
@@ -340,8 +340,8 @@ describe('Book HTTP routes', () => {
     expect(booksList.indexOf('Second Book')).toBeLessThan(booksList.indexOf('First Book'));
     expect(booksList).toContain(`<a href="/notes/books/${second.id}">Second Book</a>`);
     expect(booksList).toContain(`<a href="/notes/books/${first.id}">First Book</a>`);
-    expect(booksList).toContain(`<a class="button button-small button-secondary" href="/notes/books/${second.id}/edit" aria-label="Edit Book: Second Book">Edit Book</a>`);
-    expect(booksList).toContain(`<a class="button button-small button-secondary" href="/notes/books/${first.id}/edit" aria-label="Edit Book: First Book">Edit Book</a>`);
+    expect(booksList).toContain(`<a class="button button-small button-secondary" href="/notes/books/${second.id}/edit" data-dialog-invocation aria-label="Edit Book: Second Book">Edit Book</a>`);
+    expect(booksList).toContain(`<a class="button button-small button-secondary" href="/notes/books/${first.id}/edit" data-dialog-invocation aria-label="Edit Book: First Book">Edit Book</a>`);
     expect(response.text).toContain('<a class="button button-secondary" href="/notes/books/order" data-dialog-open="books-order-dialog">Change order</a>');
     expect(response.text).not.toContain('<table');
     expect(response.text).not.toContain('<th>Actions</th>');
@@ -1217,6 +1217,7 @@ describe('Book HTTP routes', () => {
     expect(pageHeading).not.toContain('Manage');
     expect(pageHeading).not.toContain('Delete');
     expect(form.text).toContain(`<form id="book-form" method="post" action="/notes/books/${book.id}"`);
+    expect(form.text).not.toContain('data-dialog-return-location');
     expect(form.text).toContain('value="Before"');
     expect(form.text).toContain('<h1 class="app-section-title">Notes — Before</h1>');
     expect(form.text).not.toContain('notes-hierarchy');
@@ -1248,6 +1249,59 @@ describe('Book HTTP routes', () => {
 
     expect(response.headers.location).toBe(`/notes/books/${book.id}`);
     expect(app.locals.bookService.getBook(book.id).title).toBe('After');
+  });
+
+  it('threads an exact Books-list invocation through the Edit Book host, validation retry, and successful save', async () => {
+    const book = app.locals.bookService.createBook({ title: 'Before list edit' });
+    const returnTo = '/notes?sort=title&page=3&filter=active#book-17';
+
+    const hosted = await agent
+      .get(`/notes/books/${book.id}/edit`)
+      .query({ returnTo })
+      .expect(200);
+    const hostedDialog = hosted.text.match(/<dialog\b[^>]*id="book-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    expect(hostedDialog).toContain('name="returnTo" value="/notes?sort=title&amp;page=3&amp;filter=active#book-17" data-dialog-return-location');
+
+    const invalid = await agent
+      .post(`/notes/books/${book.id}`)
+      .type('form')
+      .send({ _csrf: csrfToken, title: '', returnTo })
+      .expect(422);
+    const invalidDialog = invalid.text.match(/<dialog\b[^>]*id="book-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    expect(invalidDialog).toMatch(/<dialog\b[^>]*\bopen/);
+    expect(invalidDialog).toContain('Title is required.');
+    expect(invalidDialog).toContain('name="returnTo" value="/notes?sort=title&amp;page=3&amp;filter=active#book-17" data-dialog-return-location');
+
+    const saved = await agent
+      .post(`/notes/books/${book.id}`)
+      .type('form')
+      .send({ _csrf: csrfToken, title: 'After list edit', returnTo })
+      .expect(302);
+    expect(saved.headers.location).toBe(returnTo);
+    expect(app.locals.bookService.getBook(book.id).title).toBe('After list edit');
+  });
+
+  it.each([
+    ['external', 'https://example.com/notes?page=3'],
+    ['protocol-relative', '//example.com/notes?page=3'],
+    ['malformed', '/notes?filter=%'],
+    ['unrelated local path', '/calendar?month=2026-07'],
+    ['Book detail path', '/notes/books/1?page=3'],
+  ])('rejects an %s Edit Book return destination', async (_label, returnTo) => {
+    const book = app.locals.bookService.createBook({ title: 'Safe Book edit' });
+
+    const hosted = await agent
+      .get(`/notes/books/${book.id}/edit`)
+      .query({ returnTo })
+      .expect(200);
+    expect(hosted.text).not.toContain('data-dialog-return-location');
+
+    const saved = await agent
+      .post(`/notes/books/${book.id}`)
+      .type('form')
+      .send({ _csrf: csrfToken, title: 'Safely updated', returnTo })
+      .expect(302);
+    expect(saved.headers.location).toBe(`/notes/books/${book.id}`);
   });
 
   it('updates a Book title without disturbing its Chapters or direct Pages', async () => {
