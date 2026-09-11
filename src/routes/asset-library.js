@@ -129,14 +129,14 @@ function isEnhancedRequest(req) {
 
 function readAssetViewerReturnUrl(req) {
   const candidate = typeof req.body?.returnTo === 'string' ? req.body.returnTo : '';
-  if (candidate && candidate.startsWith('/assets')) return candidate;
-  return '/assets';
+  if (candidate && candidate.startsWith('/asset-viewer')) return candidate;
+  return '/asset-viewer';
 }
 
 function readAssetViewerNsfwReturnUrl(req) {
   const candidate = typeof req.body?.returnTo === 'string' ? req.body.returnTo : '';
-  if (candidate && candidate.startsWith('/assets')) return candidate;
-  return '/assets';
+  if (candidate && candidate.startsWith('/asset-viewer')) return candidate;
+  return '/asset-viewer';
 }
 
 function normalizeSavedPresentationValue(key, value) {
@@ -278,7 +278,7 @@ function buildAssetLibraryRenderModel(page, state, {
       || state.presentation?.view?.preserveFallback === true,
     orderOptions: buildOrderOptions(page.filters.order),
     pageSizeOptions: buildPageSizeOptions(page.pageSize),
-    clearFiltersUrl: `/assets?resetFilters=1&view=${state.view}`,
+    clearFiltersUrl: `/asset-viewer?resetFilters=1&view=${state.view}`,
     slideshowSequenceJson: JSON.stringify(page.slideshowSequence || []).replace(/<\//g, '<\\/'),
     nsfwFilterEnabled,
     assetViewerNsfwReturnUrl: currentUrl,
@@ -519,7 +519,7 @@ export function createAssetLibraryRouter({ appName, db, workflowQueryService } =
 
 function readAssetViewerReturnQuery(req) {
   const returnTo = typeof req.body?.returnTo === 'string' ? req.body.returnTo : '';
-  if (!returnTo || !returnTo.startsWith('/assets')) return {};
+  if (!returnTo || !returnTo.startsWith('/asset-viewer')) return {};
   try {
     const url = new URL(returnTo, 'http://localhost');
     return Object.fromEntries(url.searchParams.entries());

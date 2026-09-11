@@ -115,7 +115,7 @@ describe('application shell — navigation model', () => {
     it('renders only existing top-level destinations', async () => {
       const res = await agent.get('/').expect(200);
       expect(navHrefs(res.text)).toEqual([
-        '/', '/projects', '/assets', '/releases', '/calendar', '/notes', '/settings',
+        '/', '/projects', '/asset-viewer', '/releases', '/calendar', '/notes', '/settings',
       ]);
     });
 
@@ -177,8 +177,8 @@ describe('application shell — navigation model', () => {
   });
 
   describe('active state — cross-project Asset Viewer', () => {
-    it('marks Asset Viewer active on /assets and query-string requests', async () => {
-      for (const url of ['/assets', '/assets?view=list']) {
+    it('marks Asset Viewer active on /asset-viewer and query-string requests', async () => {
+      for (const url of ['/asset-viewer', '/asset-viewer?view=list']) {
         const res = await agent.get(url).expect(200);
         expect(activeNavKeys(res.text)).toEqual(['assets']);
         expect(countActive(res.text)).toBe(1);

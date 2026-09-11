@@ -188,12 +188,12 @@
          {{ icons.icon('content-filter') }}
        </a>
        <a class="asset-viewer-defaults-link button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
-          href="/assets?defaults=1" aria-label="Asset Viewer defaults"
+          href="/asset-viewer?defaults=1" aria-label="Asset Viewer defaults"
           data-dialog-open="asset-viewer-defaults-dialog" data-tooltip="Asset Viewer defaults" data-asset-viewer-defaults-link>
         {{ icons.icon('settings') }}
       </a>
       {% set nsfwToggleLabel = "Disable NSFW filter" if nsfwFilterEnabled else "Enable NSFW filter" %}
-      <form method="post" action="/assets/nsfw-filter" class="inline-form" data-asset-library-nsfw-filter>
+      <form method="post" action="/asset-viewer/nsfw-filter" class="inline-form" data-asset-library-nsfw-filter>
         <input type="hidden" name="_csrf" value="{{ _csrf }}">
         <input type="hidden" name="enabled" value="{{ '0' if nsfwFilterEnabled else '1' }}" data-asset-library-nsfw-value>
         <input type="hidden" name="returnTo" value="{{ assetViewerNsfwReturnUrl }}">
@@ -350,7 +350,7 @@
 {% endblock %}
 {% block overlay %}
   {% call dialog.render('asset-viewer-filter-dialog', 'Filter') %}
-    <form id="asset-filters" class="app-dialog-form project-form" method="get" action="/assets">
+    <form id="asset-filters" class="app-dialog-form project-form" method="get" action="/asset-viewer">
       <div class="app-dialog-body">
         <div class="page-defaults-grid">
           {% if currentView == 'list' or preserveViewQuery %}
@@ -539,7 +539,7 @@
   {% endcall %}
 
   {% call dialog.render('asset-viewer-defaults-dialog', 'Asset Viewer defaults', assetViewerDefaultsDialogOpen, 'asset-viewer-defaults-description', 'asset-viewer-defaults-form') %}
-    <form id="asset-viewer-defaults-form" method="post" action="/assets/defaults" class="app-dialog-form project-form"
+    <form id="asset-viewer-defaults-form" method="post" action="/asset-viewer/defaults" class="app-dialog-form project-form"
           data-dialog-form data-dialog-async="false" data-asset-viewer-defaults-autosave novalidate>
       <p id="asset-viewer-defaults-description" class="app-dialog-description">
         Choose the presentation used when the Asset Viewer opens without explicit options.

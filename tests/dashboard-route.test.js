@@ -147,8 +147,8 @@ describe('dashboard route wiring', () => {
       nsfwFilterEnabled: false,
       dashboardDefaults,
       dashboardSectionRegistry: DASHBOARD_SECTION_REGISTRY,
-      assetsUrl: '/assets',
-      missingAssetsUrl: '/assets?presence=missing',
+      assetsUrl: '/asset-viewer',
+      missingAssetsUrl: '/asset-viewer?presence=missing',
     });
     expect(locals).not.toHaveProperty('projectCounts');
     expect(locals.projectCreateForm).toMatchObject({

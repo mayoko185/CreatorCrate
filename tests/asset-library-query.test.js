@@ -198,7 +198,7 @@ describe('Asset Viewer query foundation', () => {
     });
 
     expect(buildAssetLibraryUrl(parsed)).toBe(
-      '/assets?project=12&category=source-files&tag=42&search=A%26B+%2F+r%C3%A9sum%C3%A9&extension=png&presence=missing&usage=used&sort=project&order=desc&page=3&pageSize=50&view=list',
+      '/asset-viewer?project=12&category=source-files&tag=42&search=A%26B+%2F+r%C3%A9sum%C3%A9&extension=png&presence=missing&usage=used&sort=project&order=desc&page=3&pageSize=50&view=list',
     );
 
     expect(buildAssetLibraryUrl(parseAssetLibraryQuery({
@@ -207,7 +207,7 @@ describe('Asset Viewer query foundation', () => {
       presence: 'all',
       usage: 'all',
       page: '1',
-    }))).toBe('/assets');
+    }))).toBe('/asset-viewer');
   });
 
   it('serializes every valid multi-value selection as repeated canonical parameters', () => {
@@ -223,7 +223,7 @@ describe('Asset Viewer query foundation', () => {
     });
 
     expect(buildAssetLibraryUrl(parsed)).toBe(
-      '/assets?category=final&category=krz&tag=1&tag=2&extension=krz&extension=png&sort=project&order=desc&page=2&pageSize=10&view=list',
+      '/asset-viewer?category=final&category=krz&tag=1&tag=2&extension=krz&extension=png&sort=project&order=desc&page=2&pageSize=10&view=list',
     );
     expect(new URL(`http://localhost${buildAssetLibraryUrl(parsed)}`).searchParams.getAll('tag'))
       .toEqual(['1', '2']);
@@ -250,7 +250,7 @@ describe('Asset Viewer query foundation', () => {
       pageSize: 50,
       view: 'list',
     })).toBe(
-      '/assets?category=final&category=krz&tag=1&tag=2&extension=krz&extension=png&sort=project&order=desc&page=2&pageSize=50&view=list',
+      '/asset-viewer?category=final&category=krz&tag=1&tag=2&extension=krz&extension=png&sort=project&order=desc&page=2&pageSize=50&view=list',
     );
   });
 
@@ -262,34 +262,34 @@ describe('Asset Viewer query foundation', () => {
       pageSize: '25',
     });
 
-    expect(buildAssetLibraryUrl(parsed)).toBe('/assets?sort=filename&order=asc&pageSize=25&view=grid');
+    expect(buildAssetLibraryUrl(parsed)).toBe('/asset-viewer?sort=filename&order=asc&pageSize=25&view=grid');
     expect(buildAssetLibraryUrl(parseAssetLibraryQuery({
       view: 'invalid',
       sort: 'invalid',
       order: 'invalid',
       pageSize: '20',
-    }))).toBe('/assets');
+    }))).toBe('/asset-viewer');
   });
 
   it('retains route-marked neutral filters so saved defaults cannot reappear', () => {
     expect(buildAssetLibraryUrl({
       presence: 'all',
       explicitNeutralFilters: ['presence'],
-    })).toBe('/assets?presence=all');
+    })).toBe('/asset-viewer?presence=all');
     expect(buildAssetLibraryUrl({
       categories: [],
       tags: [],
       extensions: [],
       explicitNeutralFilters: ['category', 'tag', 'extension'],
-    })).toBe('/assets?category=all&tag=all&extension=all');
+    })).toBe('/asset-viewer?category=all&tag=all&extension=all');
   });
 
   it('omits null, malformed, and unsafe tag values from generated URLs', () => {
     const state = parseAssetLibraryQuery({ tag: '42', search: 'keep' });
 
-    expect(buildAssetLibraryUrl(state, { tag: null })).toBe('/assets?search=keep');
-    expect(buildAssetLibraryUrl(state, { tag: '42junk' })).toBe('/assets?search=keep');
-    expect(buildAssetLibraryUrl({ tag: '9007199254740992' })).toBe('/assets');
+    expect(buildAssetLibraryUrl(state, { tag: null })).toBe('/asset-viewer?search=keep');
+    expect(buildAssetLibraryUrl(state, { tag: '42junk' })).toBe('/asset-viewer?search=keep');
+    expect(buildAssetLibraryUrl({ tag: '9007199254740992' })).toBe('/asset-viewer');
   });
 
   it('preserves a route-marked fallback for an invalid explicit value', () => {
@@ -303,7 +303,7 @@ describe('Asset Viewer query foundation', () => {
       },
     };
 
-    expect(buildAssetLibraryUrl(state)).toBe('/assets?sort=filename');
+    expect(buildAssetLibraryUrl(state)).toBe('/asset-viewer?sort=filename');
   });
 
   it('supports pagination, view, sorting, and clear-filter overrides without mutation', () => {
@@ -325,7 +325,7 @@ describe('Asset Viewer query foundation', () => {
       search: null,
       presence: 'all',
       unknown: 'discard-me',
-    })).toBe('/assets?project=4&sort=filename&page=2&pageSize=50&view=grid');
+    })).toBe('/asset-viewer?project=4&sort=filename&page=2&pageSize=50&view=grid');
     expect(parsed).toEqual(original);
   });
 
@@ -340,7 +340,7 @@ describe('Asset Viewer query foundation', () => {
       project: 9,
     });
 
-    expect(url).toBe('/assets?project=9&search=two');
+    expect(url).toBe('/asset-viewer?project=9&search=two');
     expect(new URL(`http://localhost${url}`).searchParams.getAll('project')).toEqual(['9']);
     expect(new URL(`http://localhost${url}`).searchParams.getAll('search')).toEqual(['two']);
   });

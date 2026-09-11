@@ -212,10 +212,10 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     it('mobile nav renders the same destinations as desktop', async () => {
       const res = await agent.get('/').expect(200);
       expect(mobileNavHrefs(res.text)).toEqual([
-        '/', '/projects', '/assets', '/releases', '/calendar', '/notes', '/settings',
+        '/', '/projects', '/asset-viewer', '/releases', '/calendar', '/notes', '/settings',
       ]);
       expect(desktopNavHrefs(res.text)).toEqual([
-        '/', '/projects', '/assets', '/releases', '/calendar', '/notes', '/settings',
+        '/', '/projects', '/asset-viewer', '/releases', '/calendar', '/notes', '/settings',
       ]);
     });
 
@@ -246,7 +246,7 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
       const children = res.text.match(/<ul class="mobile-nav-children">([\s\S]*?)<\/ul>/);
       expect(children).not.toBeNull();
       expect(mobileNavHrefs(res.text)).toEqual([
-        '/', '/projects', '/assets', '/releases', '/calendar', '/notes', '/settings',
+        '/', '/projects', '/asset-viewer', '/releases', '/calendar', '/notes', '/settings',
       ]);
       expect(desktopNavHrefs(res.text)).toEqual(mobileNavHrefs(res.text));
       expect(
@@ -299,8 +299,8 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
       expect(mobileActiveKeys(res.text)).toEqual(['projects']);
     });
 
-    it('marks Asset Viewer active on /assets and query-string requests', async () => {
-      for (const url of ['/assets', '/assets?view=list']) {
+    it('marks Asset Viewer active on /asset-viewer and query-string requests', async () => {
+      for (const url of ['/asset-viewer', '/asset-viewer?view=list']) {
         const res = await agent.get(url).expect(200);
         expect(mobileActiveKeys(res.text)).toEqual(['assets']);
       }
@@ -327,8 +327,8 @@ describe('application shell (Phase 10.4C) — mobile navigation', () => {
     });
 
     it('exactly one mobile item is active on representative pages', async () => {
-      for (const url of ['/', '/projects', '/assets', '/releases', '/calendar', '/release-management']) {
-        const res = await agent.get(url).expect(200);
+      for (const url of ['/', '/projects', '/asset-viewer', '/releases', '/calendar', '/release-management']) {
+        const res = await agent.get(url).redirects(1).expect(200);
         expect(mobileActiveKeys(res.text)).toHaveLength(1);
       }
     });

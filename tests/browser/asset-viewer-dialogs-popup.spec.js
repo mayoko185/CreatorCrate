@@ -89,7 +89,7 @@ async function expectPointerFollowing(page, previewSelector, infoSelector) {
 test('shared Asset Viewer and Projects info cards use cursor, top-layer, dialog, focus, and refresh lifecycles', async ({ page }) => {
   const fixture = await openFixture(page);
   try {
-    await page.goto(`${fixture.baseURL}/assets`, { waitUntil: 'domcontentloaded' });
+    await page.goto(`${fixture.baseURL}/asset-viewer`, { waitUntil: 'domcontentloaded' });
     const asset = await expectPointerFollowing(
       page,
       '[data-asset-viewer-preview]',
@@ -140,7 +140,7 @@ test('shared Asset Viewer and Projects info cards use cursor, top-layer, dialog,
     await expect(asset.info).not.toBeVisible();
     const oldAssetRegion = await page.locator('[data-asset-library-live-region]').elementHandle();
     const response = page.waitForResponse((candidate) => (
-      candidate.request().method() === 'GET' && new URL(candidate.url()).pathname === '/assets'
+      candidate.request().method() === 'GET' && new URL(candidate.url()).pathname === '/asset-viewer'
     ));
     await assetFilterDialog.locator('#asset-extension-filter > summary').click();
     await assetFilterDialog.locator('input[name="extension"][value="png"]').check();

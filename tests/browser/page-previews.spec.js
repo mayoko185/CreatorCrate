@@ -31,7 +31,7 @@ test('shared Projects toolbar tooltips stay inside the document on Book detail a
     const selector = '.asset-viewer-display-controls .project-filter-actions--projects .asset-tooltip[data-tooltip]';
     for (const width of [1280, 1440, 390, 375]) {
       await page.setViewportSize({ width, height: 900 });
-      for (const route of [`/notes/books/${book.id}`, '/projects', '/', '/assets', `/projects/${project.id}/assets`, '/releases', '/settings/logs']) {
+      for (const route of [`/notes/books/${book.id}`, '/projects', '/', '/asset-viewer', `/projects/${project.id}/assets`, '/releases', '/settings/logs']) {
         await page.goto(`${base}${route}`);
         const controls = page.locator(selector);
         await expect(controls.first()).toBeVisible();

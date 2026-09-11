@@ -293,7 +293,7 @@ function appendExplicitNeutralFilters(query, state) {
 }
 
 /**
- * Build a deterministic canonical `/assets` URL from normalized state.
+ * Build a deterministic canonical `/asset-viewer` URL from normalized state.
  * Unknown state fields and override keys are ignored. Overrides are applied
  * to a copied view of the state and never mutate either input object.
  *
@@ -360,5 +360,5 @@ export function buildAssetLibraryUrl(normalizedState = {}, overrides = {}) {
   }
 
   const serialized = orderedQuery.toString();
-  return serialized ? `/assets?${serialized}` : '/assets';
+  return serialized ? `/asset-viewer?${serialized}` : '/asset-viewer';
 }

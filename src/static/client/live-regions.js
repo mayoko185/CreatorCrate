@@ -1518,7 +1518,7 @@ const assetLibraryLiveEngine = createLiveRegionEngine({
   linkSelector: 'nav.view-switcher a, .pagination a, [data-asset-library-reset]',
   linkScope: 'document',
   debounceMs: ASSET_LIBRARY_LIVE_DEBOUNCE_MS,
-  defaultAction: '/assets',
+  defaultAction: '/asset-viewer',
   stateKey: '__creatorCrateAssetLibraryLiveFiltering',
   historyState: { assetLibrary: true },
   statusSelector: ASSET_LIBRARY_LIVE_STATUS_SELECTOR,
@@ -1643,7 +1643,7 @@ const assetLibraryLiveEngine = createLiveRegionEngine({
     return true;
   },
   isCurrentUrl(url) {
-    return url.pathname === '/assets';
+    return url.pathname === '/asset-viewer';
   },
 });
 
@@ -1680,11 +1680,11 @@ export function refreshAssetViewerLiveRegion(
 
   let url;
   try {
-    url = new URL(destination, state.window.location?.href || '/assets');
+    url = new URL(destination, state.window.location?.href || '/asset-viewer');
   } catch {
     return 'unavailable';
   }
-  if (!assetLibraryLiveEngine.capabilities(state.window) || url.pathname !== '/assets') return 'unavailable';
+  if (!assetLibraryLiveEngine.capabilities(state.window) || url.pathname !== '/asset-viewer') return 'unavailable';
 
   if (state.timer) state.window.clearTimeout?.(state.timer);
   state.timer = null;

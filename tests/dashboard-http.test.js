@@ -171,10 +171,10 @@ describe('dashboard HTTP composition', () => {
       expect(cards).toContain('href="/projects"');
     });
 
-    it('Assets summary card links to the canonical assetsUrl (/assets)', async () => {
+    it('Assets summary card links to the canonical assetsUrl (/asset-viewer)', async () => {
       const res = await app.testAgent.get('/').expect(200);
       const cards = extractSummaryCards(res.text);
-      expect(cards).toMatch(/<a class="summary-card" href="\/assets">/);
+      expect(cards).toMatch(/<a class="summary-card" href="\/asset-viewer">/);
     });
 
     it('renders the total Releases card with the canonical /releases destination', async () => {
@@ -198,10 +198,10 @@ describe('dashboard HTTP composition', () => {
       expect(releaseCard).toContain('Including archived releases');
     });
 
-    it('Missing assets summary card links to the canonical missingAssetsUrl (/assets?presence=missing)', async () => {
+    it('Missing assets summary card links to the canonical missingAssetsUrl (/asset-viewer?presence=missing)', async () => {
       const res = await app.testAgent.get('/').expect(200);
       const cards = extractSummaryCards(res.text);
-      expect(cards).toContain('href="/assets?presence=missing"');
+      expect(cards).toContain('href="/asset-viewer?presence=missing"');
     });
 
     it('renders the missing-assets count and link without the removed release-reference field', async () => {
@@ -217,11 +217,11 @@ describe('dashboard HTTP composition', () => {
 
       const res = await app.testAgent.get('/').expect(200);
       const missingCard = extractSummaryCards(res.text).match(
-        /<a class="summary-card summary-card--warning" href="\/assets\?presence=missing">[\s\S]*?<\/a>/,
+        /<a class="summary-card summary-card--warning" href="\/asset-viewer\?presence=missing">[\s\S]*?<\/a>/,
       )?.[0] || '';
 
       expect(missingCard).toContain('<span class="summary-card-value">1</span>');
-      expect(missingCard).toContain('href="/assets?presence=missing"');
+      expect(missingCard).toContain('href="/asset-viewer?presence=missing"');
       expect(DASHBOARD_TEMPLATE).not.toContain('referencedByReleases');
     });
 

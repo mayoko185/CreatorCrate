@@ -159,9 +159,9 @@ const NAVIGATION_ITEMS = [
   {
     key: 'assets',
     label: 'Asset Viewer',
-    href: '/assets',
+    href: '/asset-viewer',
     icon: 'assets',
-    matches: ['/assets'],
+    matches: ['/asset-viewer'],
   },
   {
     key: 'releases',

@@ -179,20 +179,20 @@ test('desktop Asset Viewer navigation survives saved-default canonicalization th
   await page.goto(`${baseURL}/`, { waitUntil: 'domcontentloaded' });
 
   const link = page.locator('.app-nav-link[data-nav-key="assets"]');
-  await expect(link).toHaveAttribute('href', '/assets');
+  await expect(link).toHaveAttribute('href', '/asset-viewer');
   await link.hover();
   await expect.poll(() => sidebarWidth(page)).toBe(EXPANDED_SIDEBAR_WIDTH);
-  const redirectResponse = page.waitForResponse(`${baseURL}/assets`);
+  const redirectResponse = page.waitForResponse(`${baseURL}/asset-viewer`);
 
   await clickWithMouse(page, link);
   const response = await redirectResponse;
   expect(response.status()).toBe(302);
-  expect(response.headers().location).toBe(`/assets${ASSET_VIEWER_SAVED_DEFAULTS_SEARCH}`);
-  const firstFrame = await readDestinationFirstFrame(page, '/assets');
+  expect(response.headers().location).toBe(`/asset-viewer${ASSET_VIEWER_SAVED_DEFAULTS_SEARCH}`);
+  const firstFrame = await readDestinationFirstFrame(page, '/asset-viewer');
 
   expect(new URL(page.url()).search).toBe(ASSET_VIEWER_SAVED_DEFAULTS_SEARCH);
   expect(firstFrame).toMatchObject({
-    pathname: '/assets',
+    pathname: '/asset-viewer',
     search: ASSET_VIEWER_SAVED_DEFAULTS_SEARCH,
     sidebarWidth: EXPANDED_SIDEBAR_WIDTH,
     sidebarHovered: false,
@@ -210,18 +210,18 @@ test('mobile Asset Viewer navigation survives saved-default canonicalization thr
   await mobileNav.locator('summary').click();
   await expect(mobileNav).toHaveAttribute('open', '');
   const link = mobileNav.locator('.mobile-nav-link[data-nav-key="assets"]');
-  await expect(link).toHaveAttribute('href', '/assets');
-  const redirectResponse = page.waitForResponse(`${baseURL}/assets`);
+  await expect(link).toHaveAttribute('href', '/asset-viewer');
+  const redirectResponse = page.waitForResponse(`${baseURL}/asset-viewer`);
 
   await clickWithMouse(page, link);
   const response = await redirectResponse;
   expect(response.status()).toBe(302);
-  expect(response.headers().location).toBe(`/assets${ASSET_VIEWER_SAVED_DEFAULTS_SEARCH}`);
-  const firstFrame = await readDestinationFirstFrame(page, '/assets');
+  expect(response.headers().location).toBe(`/asset-viewer${ASSET_VIEWER_SAVED_DEFAULTS_SEARCH}`);
+  const firstFrame = await readDestinationFirstFrame(page, '/asset-viewer');
 
   expect(new URL(page.url()).search).toBe(ASSET_VIEWER_SAVED_DEFAULTS_SEARCH);
   expect(firstFrame).toMatchObject({
-    pathname: '/assets',
+    pathname: '/asset-viewer',
     search: ASSET_VIEWER_SAVED_DEFAULTS_SEARCH,
     sidebarWidth: 0,
     mobileOpen: true,

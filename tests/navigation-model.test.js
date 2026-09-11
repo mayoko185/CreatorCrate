@@ -27,7 +27,7 @@ describe('navigation model — destinations', () => {
     // Dashboard, Projects, Asset Viewer, Releases, Calendar, Notes, Settings. No Health
     // (JSON-only), no dead links.
     expect(navigation.map((n) => n.href)).toEqual([
-      '/', '/projects', '/assets', '/releases', '/calendar', '/notes', '/settings',
+      '/', '/projects', '/asset-viewer', '/releases', '/calendar', '/notes', '/settings',
     ]);
   });
 
@@ -136,23 +136,24 @@ describe('navigation model — Notes active state', () => {
 });
 
 describe('navigation model — Asset Viewer active state', () => {
-  it('has one exact /assets destination with the assets icon', () => {
+  it('has one exact /asset-viewer destination with the assets icon', () => {
     const item = NAVIGATION_ITEMS.find((i) => i.key === 'assets');
     expect(item).toMatchObject({
       label: 'Asset Viewer',
-      href: '/assets',
+      href: '/asset-viewer',
       icon: 'assets',
-      matches: ['/assets'],
+      matches: ['/asset-viewer'],
     });
   });
 
-  it('is active on /assets with or without a query string', () => {
-    expect(activeKeys('/assets')).toEqual(['assets']);
-    expect(activeKeys('/assets?view=list')).toEqual(['assets']);
+  it('is active on /asset-viewer with or without a query string', () => {
+    expect(activeKeys('/asset-viewer')).toEqual(['assets']);
+    expect(activeKeys('/asset-viewer?view=list')).toEqual(['assets']);
   });
 
   it('does not capture project-scoped asset routes or unrelated asset paths', () => {
-    expect(activeKeys('/assets/preview')).toEqual([]);
+    expect(activeKeys('/asset-viewer/preview')).toEqual([]);
+    expect(activeKeys('/assets')).toEqual([]);
     expect(activeKeys('/projects/42/assets')).toEqual(['projects']);
     expect(activeKeys('/projects/42/assets/7')).toEqual(['projects']);
     expect(activeKeys('/projects/42/asset-categories')).not.toContain('assets');
@@ -393,8 +394,8 @@ describe('navigation model — active-count invariants', () => {
       '/projects/1/edit',
       '/projects/1/assets',
       '/projects/1/assets/2',
-      '/assets',
-      '/assets?view=list',
+      '/asset-viewer',
+      '/asset-viewer?view=list',
       '/releases',
       '/calendar',
       '/release-management',
@@ -428,7 +429,7 @@ describe('navigation model — active-count invariants', () => {
 describe('navigation model — active section (header source)', () => {
   it('exposes the active item label as activeSection', () => {
     expect(buildShellModel({ appName: APP_NAME, path: '/projects' }).activeSection).toBe('Projects');
-    expect(buildShellModel({ appName: APP_NAME, path: '/assets' }).activeSection).toBe('Asset Viewer');
+    expect(buildShellModel({ appName: APP_NAME, path: '/asset-viewer' }).activeSection).toBe('Asset Viewer');
     expect(buildShellModel({ appName: APP_NAME, path: '/releases/3/edit' }).activeSection).toBe('Releases');
     expect(buildShellModel({ appName: APP_NAME, path: '/calendar' }).activeSection).toBe('Calendar');
     expect(buildShellModel({ appName: APP_NAME, path: '/' }).activeSection).toBe('Dashboard');

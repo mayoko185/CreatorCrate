@@ -101,9 +101,29 @@ describe('cross-project Asset Viewer HTTP route', () => {
     });
   }
 
+  it('redirects the legacy Asset Viewer URL to the canonical route', async () => {
+    const response = await request(app).get('/assets').expect(302);
+
+    expect(response.headers.location).toBe('/asset-viewer');
+  });
+
+  it('preserves the legacy URL raw query suffix, including repeated keys and encoding', async () => {
+    const rawQuery = 'tag=2&tag=1&search=A%2FB+%26+C&defaults=1&notice=kept';
+    const response = await request(app).get(`/assets?${rawQuery}`).expect(302);
+
+    expect(response.headers.location).toBe(`/asset-viewer?${rawQuery}`);
+  });
+
+  it.each(['/assets', '/assets/defaults', '/assets/nsfw-filter'])(
+    'does not expose a POST compatibility alias at %s',
+    async (url) => {
+      await request(app).post(url).expect(404);
+    },
+  );
+
   it.each([
-    ['/assets', 200],
-    ['/assets?resetFilters=1&view=grid', 302],
+    ['/asset-viewer', 200],
+    ['/asset-viewer?resetFilters=1&view=grid', 302],
   ])('loads Project option presentation once for repeated page calculation: %s', async (url, status) => {
     const catalogueService = app.locals.projectOptionCatalogueService;
     const statusCatalogue = vi.spyOn(catalogueService, 'getStatusCatalogue');
@@ -152,10 +172,10 @@ describe('cross-project Asset Viewer HTTP route', () => {
     });
 
     const invalid = await request(app)
-      .post('/assets/defaults')
+      .post('/asset-viewer/defaults')
       .type('form')
       .send({
-        returnTo: '/assets?sort=modified',
+        returnTo: '/asset-viewer?sort=modified',
         view: 'grid',
         sort: 'filename',
         order: 'asc',
@@ -190,7 +210,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
 
     catalogueService.updateOptionColor('status', { value: status.value, color: '#ABCDEF' });
     catalogueService.updateOptionColor('projectType', { value: projectType.value, color: '#FEDCBA' });
-    const fresh = await request(app).get('/assets?sort=modified').expect(200);
+    const fresh = await request(app).get('/asset-viewer?sort=modified').expect(200);
 
     expect(fresh.text).toContain('--project-badge-bg: #ABCDEF;');
     expect(fresh.text).toContain('--project-badge-bg: #FEDCBA;');
@@ -218,7 +238,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     const statusCatalogue = vi.spyOn(catalogueService, 'getStatusCatalogue');
     const projectTypeCatalogue = vi.spyOn(catalogueService, 'getProjectTypeCatalogue');
 
-    const first = await request(app).get('/assets?sort=modified').expect(200);
+    const first = await request(app).get('/asset-viewer?sort=modified').expect(200);
     expect(first.text).toContain('--project-badge-bg: #123456;');
     expect(first.text).toContain('>HTTP Bespoke Review</span>');
     expect(first.text).toContain('--project-badge-bg: #654321;');
@@ -227,7 +247,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     catalogueService.updateOptionColor('status', { value: status.value, color: '#ABCDEF' });
     catalogueService.updateOptionColor('projectType', { value: projectType.value, color: '#FEDCBA' });
 
-    const second = await request(app).get('/assets?sort=modified').expect(200);
+    const second = await request(app).get('/asset-viewer?sort=modified').expect(200);
     expect(second.text).toContain('--project-badge-bg: #ABCDEF;');
     expect(second.text).toContain('--project-badge-bg: #FEDCBA;');
     expect(second.text).not.toContain('--project-badge-bg: #123456;');
@@ -293,16 +313,16 @@ describe('cross-project Asset Viewer HTTP route', () => {
     markMissing(beta.id);
     assetRepository.restorePresent(beta.id, ['source/shared.png', 'source/archive.bin']);
 
-    const response = await request(app).get('/assets').expect(200);
+    const response = await request(app).get('/asset-viewer').expect(200);
 
     expect(response.headers.location).toBeUndefined();
     expect(response.text).toContain('<title>CreatorCrate — Asset Viewer</title>');
     expect(response.text).toContain('<h1 class="app-section-title">Asset Viewer</h1>');
     expect(response.text).toContain(
-      '<a href="/assets" class="app-nav-link" data-nav-key="assets" aria-current="page">',
+      '<a href="/asset-viewer" class="app-nav-link" data-nav-key="assets" aria-current="page">',
     );
     expect(response.text).toContain(
-      '<a href="/assets" class="mobile-nav-link" data-nav-key="assets" aria-current="page">',
+      '<a href="/asset-viewer" class="mobile-nav-link" data-nav-key="assets" aria-current="page">',
     );
     expect(response.text).toContain('Alpha Project');
     expect(response.text).toContain('Beta Project');
@@ -389,7 +409,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     tagRepository.assignToAsset(missing.id, shared.id);
     tagRepository.assignToProject(project.id, projectOnly.id);
 
-    const grid = await request(app).get('/assets').expect(200);
+    const grid = await request(app).get('/asset-viewer').expect(200);
     expect(grid.text).toContain('<ul class="asset-viewer-grid-card-info-tags" aria-label="Effective tags">');
     expect((grid.text.match(/>HTTP Shared Tag<\/li>/g) || [])).toHaveLength(2);
     expect(grid.text).toContain('HTTP Present Tag');
@@ -400,7 +420,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(grid.text).not.toContain('http-shared-secret');
     expect(grid.text).not.toContain('<select id="asset-tag"');
 
-    const list = await request(app).get('/assets?view=list').expect(200);
+    const list = await request(app).get('/asset-viewer?view=list').expect(200);
     expect(list.text).toContain('<ul class="asset-list" role="list" aria-label="Assets across active projects">');
     expect(list.text).not.toContain('<table class="data-table asset-table">');
     expect((list.text.match(/<article class="asset-list-card"/g) || [])).toHaveLength(2);
@@ -436,7 +456,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
       VALUES (?, ?, 'attachment', 0)
     `).run(release.id, released.id);
 
-    const response = await request(app).get('/assets?view=list').expect(200);
+    const response = await request(app).get('/asset-viewer?view=list').expect(200);
     const listCards = response.text.match(/<article class="asset-list-card"[\s\S]*?<\/article>/g) || [];
     const releasedListCard = listCards.find((card) => card.includes(`data-asset-id="${released.id}"`));
 
@@ -477,7 +497,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     const jpeg = createAsset(project.id, 'references/photo.jpg');
     const krita = createAsset(project.id, 'source/painting.kra');
 
-    const response = await request(app).get('/assets?view=list').expect(200);
+    const response = await request(app).get('/asset-viewer?view=list').expect(200);
     const cards = response.text.match(/<article class="asset-list-card"[\s\S]*?<\/article>/g) || [];
 
     expect(cards).toHaveLength(3);
@@ -507,7 +527,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     const zetaRelease = insertRelease(project.id, 'Zeta Grid Release', released.id);
     const alphaRelease = insertRelease(project.id, 'Alpha Grid Release', released.id);
 
-    const response = await request(app).get('/assets').expect(200);
+    const response = await request(app).get('/asset-viewer').expect(200);
     const cards = response.text.match(/<article class="asset-card asset-viewer-grid-card"[\s\S]*?<\/article>/g) || [];
     const releasedCard = cards.find((card) => card.includes('hero.png'));
     const unreleasedCard = cards.find((card) => card.includes('readme.txt'));
@@ -587,7 +607,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     tagRepository.assignToProject(alpha.id, projectOnly.id);
     markMissing(beta.id);
 
-    const response = await request(app).get(`/assets?tag=${shared.id}&view=list`).expect(200);
+    const response = await request(app).get(`/asset-viewer?tag=${shared.id}&view=list`).expect(200);
 
     expect(response.headers.location).toBeUndefined();
     expect(response.text).toContain('<ul class="asset-list" role="list" aria-label="Assets across active projects">');
@@ -601,7 +621,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect((response.text.match(/<span class="asset-tag-origin">/g) || [])).toHaveLength(2);
     expect(response.text).toContain('3 assets found');
 
-    const inheritedResponse = await request(app).get(`/assets?tag=${projectOnly.id}&view=list`).expect(200);
+    const inheritedResponse = await request(app).get(`/asset-viewer?tag=${projectOnly.id}&view=list`).expect(200);
     expect(inheritedResponse.text).toContain('<ul class="asset-list" role="list" aria-label="Assets across active projects">');
     expect(inheritedResponse.text).not.toContain('<table class="data-table asset-table">');
     expect((inheritedResponse.text.match(/<article class="asset-list-card"/g) || [])).toHaveLength(2);
@@ -638,13 +658,13 @@ describe('cross-project Asset Viewer HTTP route', () => {
 
     const tagValues = [tagA.id, tagB.id].sort((left, right) => left - right);
     const redirect = await request(app).get(
-      `/assets?tag=${tagB.id}&tag=${tagA.id}&tag=${tagB.id}&tag=999999`
+      `/asset-viewer?tag=${tagB.id}&tag=${tagA.id}&tag=${tagB.id}&tag=999999`
       + '&category=test-krz&category=test-final&category=all&category=not-a-valid-category'
       + '&extension=.KRZ&extension=png&extension=png&extension=unknown'
       + '&sort=project&page=2&pageSize=10&view=list',
     ).expect(302);
 
-    const canonicalUrl = `/assets?category=test-final&category=test-krz&tag=${tagValues[0]}&tag=${tagValues[1]}`
+    const canonicalUrl = `/asset-viewer?category=test-final&category=test-krz&tag=${tagValues[0]}&tag=${tagValues[1]}`
       + '&extension=krz&extension=png&sort=project&page=2&pageSize=10&view=list';
     expect(redirect.headers.location).toBe(canonicalUrl);
 
@@ -668,9 +688,9 @@ describe('cross-project Asset Viewer HTTP route', () => {
 
     for (const value of invalidValues) {
       const redirect = await request(app)
-        .get(`/assets?tag=${encodeURIComponent(value)}&search=keep`)
+        .get(`/asset-viewer?tag=${encodeURIComponent(value)}&search=keep`)
         .expect(302);
-      expect(redirect.headers.location).toBe('/assets?search=keep');
+      expect(redirect.headers.location).toBe('/asset-viewer?search=keep');
 
       const canonical = await request(app).get(redirect.headers.location).expect(200);
       expect(canonical.headers.location).toBeUndefined();
@@ -679,10 +699,10 @@ describe('cross-project Asset Viewer HTTP route', () => {
     const deleted = tagRepository.create({ displayName: 'Deleted Filter Tag', normalizedName: 'deleted-filter-secret' });
     tagRepository.deleteById(deleted.id);
     const redirect = await request(app)
-      .get(`/assets?tag=${deleted.id}&search=keep`)
+      .get(`/asset-viewer?tag=${deleted.id}&search=keep`)
       .expect(302);
 
-    expect(redirect.headers.location).toBe('/assets?search=keep');
+    expect(redirect.headers.location).toBe('/asset-viewer?search=keep');
     const canonical = await request(app).get(redirect.headers.location).expect(200);
     expect(canonical.headers.location).toBeUndefined();
   });
@@ -706,10 +726,10 @@ describe('cross-project Asset Viewer HTTP route', () => {
     createAsset(alpha.id, 'source/other.jpg', { categoryId: alphaSource.id, extension: 'jpg' });
     insertReleaseUsage(beta.id, used.id);
 
-    const query = `/assets?project=${alpha.id}&category=source&search=shared&extension=.PNG&presence=present&usage=unused&sort=project&order=desc&page=1&pageSize=50&view=list`;
+    const query = `/asset-viewer?project=${alpha.id}&category=source&search=shared&extension=.PNG&presence=present&usage=unused&sort=project&order=desc&page=1&pageSize=50&view=list`;
     const redirect = await request(app).get(query).expect(302);
     expect(redirect.headers.location).toBe(
-      `/assets?project=${alpha.id}&category=source&search=shared&extension=png&presence=present&usage=unused&sort=project&order=desc&pageSize=50&view=list`,
+      `/asset-viewer?project=${alpha.id}&category=source&search=shared&extension=png&presence=present&usage=unused&sort=project&order=desc&pageSize=50&view=list`,
     );
 
     const response = await request(app).get(redirect.headers.location).expect(200);
@@ -738,8 +758,8 @@ describe('cross-project Asset Viewer HTTP route', () => {
     writeAssetViewerDefaults({ view: 'list', sort: 'project', order: 'desc', pageSize: '50' });
     createAsset(createProject('Saved Defaults Project').id, 'saved.png');
 
-    const redirect = await request(app).get('/assets').expect(302);
-    expect(redirect.headers.location).toBe('/assets?sort=project&order=desc&pageSize=50&view=list');
+    const redirect = await request(app).get('/asset-viewer').expect(302);
+    expect(redirect.headers.location).toBe('/asset-viewer?sort=project&order=desc&pageSize=50&view=list');
 
     const canonical = await request(app).get(redirect.headers.location).expect(200);
     expect(canonical.headers.location).toBeUndefined();
@@ -753,11 +773,11 @@ describe('cross-project Asset Viewer HTTP route', () => {
   });
 
   it('does not redirect when saved Asset Viewer preferences are missing or fallback-equivalent', async () => {
-    const missing = await request(app).get('/assets').expect(200);
+    const missing = await request(app).get('/asset-viewer').expect(200);
     expect(missing.headers.location).toBeUndefined();
 
     writeAssetViewerDefaults({ view: 'grid', sort: 'filename', order: 'asc', pageSize: '25' });
-    const fallbackEquivalent = await request(app).get('/assets').expect(200);
+    const fallbackEquivalent = await request(app).get('/asset-viewer').expect(200);
     expect(fallbackEquivalent.headers.location).toBeUndefined();
   });
 
@@ -770,9 +790,9 @@ describe('cross-project Asset Viewer HTTP route', () => {
       { appDataRoot: csrfAppDataRoot, authState: { csrfPepper } },
     );
     const agent = request.agent(csrfApp);
-    const rendered = await agent.get('/assets').expect(200);
-    const nsfwForm = rendered.text.match(/<form[^>]+action="\/assets\/nsfw-filter"[\s\S]*?<\/form>/)?.[0] || '';
-    const defaultsForm = rendered.text.match(/<form[^>]+action="\/assets\/defaults"[\s\S]*?<\/form>/)?.[0] || '';
+    const rendered = await agent.get('/asset-viewer').expect(200);
+    const nsfwForm = rendered.text.match(/<form[^>]+action="\/asset-viewer\/nsfw-filter"[\s\S]*?<\/form>/)?.[0] || '';
+    const defaultsForm = rendered.text.match(/<form[^>]+action="\/asset-viewer\/defaults"[\s\S]*?<\/form>/)?.[0] || '';
     expect(nsfwForm).not.toBe('');
     expect(defaultsForm).not.toBe('');
 
@@ -782,12 +802,12 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(defaultsToken).not.toBe('');
 
     await agent
-      .post('/assets/nsfw-filter')
+      .post('/asset-viewer/nsfw-filter')
       .type('form')
       .send({ _csrf: nsfwToken, enabled: '1' })
       .expect(302);
     await agent
-      .post('/assets/defaults')
+      .post('/asset-viewer/defaults')
       .type('form')
       .send({ _csrf: defaultsToken, view: 'list', sort: 'project', order: 'desc', pageSize: '50', extension: 'all', category: 'all', presence: 'all', tag: 'all' })
       .expect(302);
@@ -795,13 +815,13 @@ describe('cross-project Asset Viewer HTTP route', () => {
 
   it('redirects normal defaults saves to a known notice and renders it without canonicalizing it away', async () => {
     const save = await request(app)
-      .post('/assets/defaults')
+      .post('/asset-viewer/defaults')
       .type('form')
       .send({ view: 'list', sort: 'project', order: 'desc', pageSize: '50', extension: 'all', category: 'all', presence: 'all', tag: 'all' })
       .expect(302);
 
     expect(save.headers.location).toBe(
-      '/assets?sort=project&order=desc&pageSize=50&view=list&notice=asset_viewer_defaults_saved',
+      '/asset-viewer?sort=project&order=desc&pageSize=50&view=list&notice=asset_viewer_defaults_saved',
     );
 
     const redirected = await request(app).get(save.headers.location).expect(200);
@@ -828,14 +848,14 @@ describe('cross-project Asset Viewer HTTP route', () => {
       },
     });
 
-    const redirect = await request(app).get('/assets?unknown=discard&pageSize=10').expect(302);
-    expect(redirect.headers.location).toBe('/assets?pageSize=10');
+    const redirect = await request(app).get('/asset-viewer?unknown=discard&pageSize=10').expect(302);
+    expect(redirect.headers.location).toBe('/asset-viewer?pageSize=10');
     expect(calls).toEqual([]);
 
     await request(app).get(redirect.headers.location).expect(200);
     expect(calls).toEqual(assets.slice(0, 10).map((asset) => asset.id));
 
-    await request(app).get('/assets?pageSize=10&view=list').expect(200);
+    await request(app).get('/asset-viewer?pageSize=10&view=list').expect(200);
     expect(calls).toEqual(assets.slice(0, 10).map((asset) => asset.id));
   });
 
@@ -853,7 +873,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     });
 
     const defaults = await request(app)
-      .post('/assets/defaults')
+      .post('/asset-viewer/defaults')
       .type('form')
       .send({
         view: 'grid',
@@ -869,9 +889,9 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(defaults.text).toContain('Asset Viewer defaults');
 
     const nsfw = await request(app)
-      .post('/assets/nsfw-filter')
+      .post('/asset-viewer/nsfw-filter')
       .type('form')
-      .send({ enabled: 'invalid', returnTo: '/assets' })
+      .send({ enabled: 'invalid', returnTo: '/asset-viewer' })
       .expect(422);
     expect(nsfw.text).toContain('NSFW filter setting is invalid.');
   });
@@ -887,7 +907,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     const tag = tagRepository.create({ displayName: 'Featured artwork', normalizedName: 'featured-artwork' });
     tagRepository.assignToAsset(asset.id, tag.id);
 
-    const dialog = await request(app).get('/assets?defaults=1').expect(200);
+    const dialog = await request(app).get('/asset-viewer?defaults=1').expect(200);
     const defaultsForm = dialog.text.match(/<form id="asset-viewer-defaults-form"[\s\S]*?<\/form>/)?.[0] || '';
     const defaultsGrid = defaultsForm.match(/<div class="page-defaults-grid">([\s\S]*?)<\/div>\s*<\/div>\s*<div class="app-dialog-status"/)?.[1] || '';
     const defaultsFieldNames = ['view', 'sort', 'order', 'pageSize', 'extension', 'category', 'presence', 'tag'];
@@ -911,7 +931,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(defaultsForm).toContain('Featured artwork');
 
     const save = await request(app)
-      .post('/assets/defaults')
+      .post('/asset-viewer/defaults')
       .type('form')
       .send({
         view: 'grid',
@@ -926,31 +946,31 @@ describe('cross-project Asset Viewer HTTP route', () => {
       .expect(302);
 
     expect(save.headers.location).toBe(
-      `/assets?category=reference-artwork&tag=${tag.id}&extension=png&presence=present&notice=asset_viewer_defaults_saved`,
+      `/asset-viewer?category=reference-artwork&tag=${tag.id}&extension=png&presence=present&notice=asset_viewer_defaults_saved`,
     );
     expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.extension.key).value).toBe('["png"]');
     expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.category.key).value).toBe('reference-artwork');
     expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.presence.key).value).toBe('present');
     expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(PAGE_DEFAULT_DEFINITIONS.assetViewer.tag.key).value).toBe(`["${tag.id}"]`);
 
-    const bare = await request(app).get('/assets').expect(302);
+    const bare = await request(app).get('/asset-viewer').expect(302);
     expect(bare.headers.location).toBe(
-      `/assets?category=reference-artwork&tag=${tag.id}&extension=png&presence=present`,
+      `/asset-viewer?category=reference-artwork&tag=${tag.id}&extension=png&presence=present`,
     );
     const canonical = await request(app).get(bare.headers.location).expect(200);
     expect(canonical.headers.location).toBeUndefined();
 
     createAsset(project.id, 'other.jpg', { extension: 'jpg' });
-    const explicit = await request(app).get('/assets?extension=jpg').expect(200);
+    const explicit = await request(app).get('/asset-viewer?extension=jpg').expect(200);
     expect(explicit.headers.location).toBeUndefined();
     expect(explicit.text).toContain('other.jpg');
     expect(explicit.text).not.toContain('reference.png');
 
-    const explicitNeutral = await request(app).get('/assets?presence=all').expect(200);
+    const explicitNeutral = await request(app).get('/asset-viewer?presence=all').expect(200);
     expect(explicitNeutral.headers.location).toBeUndefined();
     expect(explicitNeutral.text).toMatch(/name="presence"[^>]+value="all" checked/);
 
-    const reset = await request(app).get('/assets?view=grid').expect(200);
+    const reset = await request(app).get('/asset-viewer?view=grid').expect(200);
     expect(reset.headers.location).toBeUndefined();
     expect(reset.text).toContain('reference.png');
   });
@@ -968,7 +988,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     tagRepository.assignToAsset(jpg.id, secondTag.id);
 
     const save = await request(app)
-      .post('/assets/defaults')
+      .post('/asset-viewer/defaults')
       .type('form')
       .send({
         view: 'grid',
@@ -983,20 +1003,20 @@ describe('cross-project Asset Viewer HTTP route', () => {
       .expect(302);
 
     const expectedFilters = `tag=${firstTag.id}&tag=${secondTag.id}&extension=jpg&extension=png`;
-    expect(save.headers.location).toBe(`/assets?${expectedFilters}&notice=asset_viewer_defaults_saved`);
+    expect(save.headers.location).toBe(`/asset-viewer?${expectedFilters}&notice=asset_viewer_defaults_saved`);
     expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
       .get(PAGE_DEFAULT_DEFINITIONS.assetViewer.extension.key).value).toBe('["png","jpg"]');
     expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
       .get(PAGE_DEFAULT_DEFINITIONS.assetViewer.tag.key).value)
       .toBe(`["${firstTag.id}","${secondTag.id}"]`);
 
-    const bare = await request(app).get('/assets').expect(302);
-    expect(bare.headers.location).toBe(`/assets?${expectedFilters}`);
+    const bare = await request(app).get('/asset-viewer').expect(302);
+    expect(bare.headers.location).toBe(`/asset-viewer?${expectedFilters}`);
     const canonical = await request(app).get(bare.headers.location).expect(200);
     expect(canonical.text).toContain('first.png');
     expect(canonical.text).toContain('second.jpg');
 
-    const reopened = await request(app).get('/assets?defaults=1').expect(200);
+    const reopened = await request(app).get('/asset-viewer?defaults=1').expect(200);
     const defaultsForm = reopened.text.match(/<form id="asset-viewer-defaults-form"[\s\S]*?<\/form>/)?.[0] || '';
     expect(defaultsForm).toMatch(/<select[^>]*name="extension"[^>]* multiple[^>]*>/);
     expect(defaultsForm).toMatch(/<option value="png" selected>\.png<\/option>/);
@@ -1008,7 +1028,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
 
   it('normalizes omitted Asset Viewer multi-select defaults to neutral all', async () => {
     await request(app)
-      .post('/assets/defaults')
+      .post('/asset-viewer/defaults')
       .type('form')
       .send({ view: 'grid', sort: 'filename', order: 'asc', pageSize: '25', category: 'all', presence: 'all' })
       .expect(302);
@@ -1026,7 +1046,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     createAsset(beta.id, 'beta.jpg', { extension: 'jpg' });
     writeAssetViewerDefaults({ extension: 'png' });
 
-    const returnTo = `/assets?project=${beta.id}&defaults=1`;
+    const returnTo = `/asset-viewer?project=${beta.id}&defaults=1`;
     const dialog = await request(app).get(returnTo).expect(200);
     const defaultsForm = dialog.text.match(/<form id="asset-viewer-defaults-form"[\s\S]*?<\/form>/)?.[0] || '';
     const filterForm = dialog.text.match(/<form id="asset-filters"[\s\S]*?<\/form>/)?.[0] || '';
@@ -1037,7 +1057,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(filterForm).not.toMatch(/name="extension"[^>]+value="png"/);
 
     await request(app)
-      .post('/assets/defaults')
+      .post('/asset-viewer/defaults')
       .type('form')
       .send({
         returnTo,
@@ -1057,7 +1077,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
 
   it('rejects invalid dynamic defaults and leaves stale dynamic defaults neutral without rewriting storage', async () => {
     const invalid = await request(app)
-      .post('/assets/defaults')
+      .post('/asset-viewer/defaults')
       .type('form')
       .send({
         view: 'grid',
@@ -1078,7 +1098,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
       presence: 'unknown',
       tag: '999',
     });
-    const rendered = await request(app).get('/assets?defaults=1').expect(200);
+    const rendered = await request(app).get('/asset-viewer?defaults=1').expect(200);
     const defaultsForm = rendered.text.match(/<form id="asset-viewer-defaults-form"[\s\S]*?<\/form>/)?.[0] || '';
     expect(defaultsForm).not.toMatch(/<option value="all"[^>]*>All extensions<\/option>/);
     expect(defaultsForm).toMatch(/<option value="all" selected>All categories<\/option>/);
@@ -1092,13 +1112,13 @@ describe('cross-project Asset Viewer HTTP route', () => {
 
   it('applies page-local Asset Viewer defaults on a later bare render', async () => {
     await request(app)
-      .post('/assets/defaults')
+      .post('/asset-viewer/defaults')
       .type('form')
       .send({ view: 'list', sort: 'project', order: 'desc', pageSize: '50', extension: 'all', category: 'all', presence: 'all', tag: 'all' })
       .expect(302);
 
-    const bare = await request(app).get('/assets').expect(302);
-    expect(bare.headers.location).toBe('/assets?sort=project&order=desc&pageSize=50&view=list');
+    const bare = await request(app).get('/asset-viewer').expect(302);
+    expect(bare.headers.location).toBe('/asset-viewer?sort=project&order=desc&pageSize=50&view=list');
 
     const rendered = await request(app).get(bare.headers.location).expect(200);
     expect(rendered.headers.location).toBeUndefined();
@@ -1109,9 +1129,9 @@ describe('cross-project Asset Viewer HTTP route', () => {
   });
 
   it('ignores arbitrary Asset Viewer notice values during canonicalization and rendering', async () => {
-    const redirect = await request(app).get('/assets?notice=not-a-real-notice').expect(302);
+    const redirect = await request(app).get('/asset-viewer?notice=not-a-real-notice').expect(302);
 
-    expect(redirect.headers.location).toBe('/assets');
+    expect(redirect.headers.location).toBe('/asset-viewer');
 
     const canonical = await request(app).get(redirect.headers.location).expect(200);
     expect(canonical.headers.location).toBeUndefined();
@@ -1128,7 +1148,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     writePageDefault('projectAssets', 'order', 'desc');
     writePageDefault('projectAssets', 'pageSize', '100');
 
-    const assetViewer = await request(app).get('/assets').expect(200);
+    const assetViewer = await request(app).get('/asset-viewer').expect(200);
     expect(assetViewer.headers.location).toBeUndefined();
     expect(assetViewer.text).toMatch(/<input[^>]+name="sort"[^>]+type="radio"[^>]+value="filename" checked>/);
     expect(assetViewer.text).toMatch(/<input[^>]+name="order"[^>]+type="radio"[^>]+value="asc" checked>/);
@@ -1149,8 +1169,8 @@ describe('cross-project Asset Viewer HTTP route', () => {
   it('lets valid explicit values override saved values while omitted options use saved values', async () => {
     writeAssetViewerDefaults({ view: 'list', sort: 'project', order: 'desc', pageSize: '50' });
 
-    const explicitSort = await request(app).get('/assets?sort=size').expect(302);
-    expect(explicitSort.headers.location).toBe('/assets?sort=size&order=desc&pageSize=50&view=list');
+    const explicitSort = await request(app).get('/asset-viewer?sort=size').expect(302);
+    expect(explicitSort.headers.location).toBe('/asset-viewer?sort=size&order=desc&pageSize=50&view=list');
     const explicitSortPage = await request(app).get(explicitSort.headers.location).expect(200);
     expect(explicitSortPage.text).toMatch(/<input[^>]+name="sort"[^>]+type="radio"[^>]+value="size" checked>/);
     expect(explicitSortPage.text).toMatch(/<input[^>]+name="order"[^>]+type="radio"[^>]+value="desc" checked>/);
@@ -1158,16 +1178,16 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(explicitSortPage.text).toContain('<input type="hidden" name="view" value="list">');
 
     const explicitControls = await request(app)
-      .get('/assets?sort=size&order=asc&pageSize=10')
+      .get('/asset-viewer?sort=size&order=asc&pageSize=10')
       .expect(302);
-    expect(explicitControls.headers.location).toBe('/assets?sort=size&order=asc&pageSize=10&view=list');
+    expect(explicitControls.headers.location).toBe('/asset-viewer?sort=size&order=asc&pageSize=10&view=list');
     const explicitControlsPage = await request(app).get(explicitControls.headers.location).expect(200);
     expect(explicitControlsPage.text).toMatch(/<input[^>]+name="order"[^>]+type="radio"[^>]+value="asc" checked>/);
     expect(explicitControlsPage.text).toMatch(/<input[^>]+name="pageSize"[^>]+type="radio"[^>]+value="10" checked>/);
 
-    const explicitView = await request(app).get('/assets?project=999&view=grid').expect(302);
+    const explicitView = await request(app).get('/asset-viewer?project=999&view=grid').expect(302);
     expect(explicitView.headers.location).toBe(
-      '/assets?project=999&sort=project&order=desc&pageSize=50&view=grid',
+      '/asset-viewer?project=999&sort=project&order=desc&pageSize=50&view=grid',
     );
     const explicitViewPage = await request(app).get(explicitView.headers.location).expect(200);
     expect(explicitViewPage.headers.location).toBeUndefined();
@@ -1183,24 +1203,24 @@ describe('cross-project Asset Viewer HTTP route', () => {
     const cases = [
       {
         query: 'view=invalid',
-        location: '/assets?sort=project&order=desc&pageSize=50&view=grid',
+        location: '/asset-viewer?sort=project&order=desc&pageSize=50&view=grid',
       },
       {
         query: 'sort=invalid',
-        location: '/assets?sort=filename&order=desc&pageSize=50&view=list',
+        location: '/asset-viewer?sort=filename&order=desc&pageSize=50&view=list',
       },
       {
         query: 'order=invalid',
-        location: '/assets?sort=project&order=asc&pageSize=50&view=list',
+        location: '/asset-viewer?sort=project&order=asc&pageSize=50&view=list',
       },
       {
         query: 'pageSize=20',
-        location: '/assets?sort=project&order=desc&pageSize=25&view=list',
+        location: '/asset-viewer?sort=project&order=desc&pageSize=25&view=list',
       },
     ];
 
     for (const testCase of cases) {
-      const redirect = await request(app).get(`/assets?${testCase.query}`).expect(302);
+      const redirect = await request(app).get(`/asset-viewer?${testCase.query}`).expect(302);
       expect(redirect.headers.location).toBe(testCase.location);
       const canonical = await request(app).get(redirect.headers.location).expect(200);
       expect(canonical.headers.location).toBeUndefined();
@@ -1232,10 +1252,10 @@ describe('cross-project Asset Viewer HTTP route', () => {
     assetRepository.restorePresent(project.id, ['source/keep.PNG']);
 
     const redirect = await request(app).get(
-      `/assets?project=${project.id}&category=source&tag=${tag.id}&search=keep&extension=.PNG&presence=present&usage=unused`,
+      `/asset-viewer?project=${project.id}&category=source&tag=${tag.id}&search=keep&extension=.PNG&presence=present&usage=unused`,
     ).expect(302);
     expect(redirect.headers.location).toBe(
-      `/assets?project=${project.id}&category=source&tag=${tag.id}&search=keep&extension=png&presence=present&usage=unused&sort=project&order=desc&pageSize=50&view=list`,
+      `/asset-viewer?project=${project.id}&category=source&tag=${tag.id}&search=keep&extension=png&presence=present&usage=unused&sort=project&order=desc&pageSize=50&view=list`,
     );
 
     const response = await request(app).get(redirect.headers.location).expect(200);
@@ -1253,10 +1273,10 @@ describe('cross-project Asset Viewer HTTP route', () => {
     createAsset(project.id, 'A+B.png', { filename: 'A+B.png', extension: 'PNG' });
 
     const redirect = await request(app)
-      .get('/assets?unknown=discard&tag=123&project=not-a-number&category=Not%20A%20Category&search=%20A%2BB%20&extension=.PNG&presence=invalid&usage=invalid&sort=invalid&order=invalid&page=0&pageSize=20&view=invalid')
+      .get('/asset-viewer?unknown=discard&tag=123&project=not-a-number&category=Not%20A%20Category&search=%20A%2BB%20&extension=.PNG&presence=invalid&usage=invalid&sort=invalid&order=invalid&page=0&pageSize=20&view=invalid')
       .expect(302);
 
-    expect(redirect.headers.location).toBe('/assets?search=A%2BB&extension=png');
+    expect(redirect.headers.location).toBe('/asset-viewer?search=A%2BB&extension=png');
 
     const canonical = await request(app).get(redirect.headers.location).expect(200);
     expect(canonical.headers.location).toBeUndefined();
@@ -1273,16 +1293,16 @@ describe('cross-project Asset Viewer HTTP route', () => {
       });
     }
 
-    const redirect = await request(app).get('/assets?page=99&pageSize=10&view=list').expect(302);
-    expect(redirect.headers.location).toBe('/assets?page=2&pageSize=10&view=list');
+    const redirect = await request(app).get('/asset-viewer?page=99&pageSize=10&view=list').expect(302);
+    expect(redirect.headers.location).toBe('/asset-viewer?page=2&pageSize=10&view=list');
 
     const response = await request(app).get(redirect.headers.location).expect(200);
     expect(response.headers.location).toBeUndefined();
     expect(response.text).toContain('Page 2 of 2');
-    expect(response.text).toContain('href="/assets?pageSize=10&amp;view=list"');
-    expect(response.text).toContain('href="/assets?page=2&amp;pageSize=10&amp;view=grid"');
+    expect(response.text).toContain('href="/asset-viewer?pageSize=10&amp;view=list"');
+    expect(response.text).toContain('href="/asset-viewer?page=2&amp;pageSize=10&amp;view=grid"');
     expect(response.text).toMatch(/<noscript><button class="button" type="submit">Filter<\/button><\/noscript>/);
-    expect(response.text).toMatch(/<a\b(?=[^>]*href="\/assets\?resetFilters=1&amp;view=list")(?=[^>]*data-asset-library-reset)(?=[^>]*aria-label="Reset filters")[^>]*>[\s\S]*?<span class="sr-only">Reset<\/span><\/a>/);
+    expect(response.text).toMatch(/<a\b(?=[^>]*href="\/asset-viewer\?resetFilters=1&amp;view=list")(?=[^>]*data-asset-library-reset)(?=[^>]*aria-label="Reset filters")[^>]*>[\s\S]*?<span class="sr-only">Reset<\/span><\/a>/);
   });
 
   it('canonicalizes clamped pagination together with effective saved defaults in one redirect', async () => {
@@ -1295,9 +1315,9 @@ describe('cross-project Asset Viewer HTTP route', () => {
       });
     }
 
-    const redirect = await request(app).get('/assets?page=99').expect(302);
+    const redirect = await request(app).get('/asset-viewer?page=99').expect(302);
     expect(redirect.headers.location).toBe(
-      '/assets?sort=project&order=desc&page=2&pageSize=50&view=list',
+      '/asset-viewer?sort=project&order=desc&page=2&pageSize=50&view=list',
     );
 
     const canonical = await request(app).get(redirect.headers.location).expect(200);
@@ -1317,15 +1337,15 @@ describe('cross-project Asset Viewer HTTP route', () => {
     createAsset(project.id, 'excluded.jpg');
     const tag = tagRepository.create({ displayName: 'Reset tag', normalizedName: 'reset-tag' });
     tagRepository.assignToAsset(asset.id, tag.id);
-    const rendered = await request(app).get('/assets?search=no-match&view=' + view).expect(200);
+    const rendered = await request(app).get('/asset-viewer?search=no-match&view=' + view).expect(200);
     const links = [...rendered.text.matchAll(/<a\b[^>]*data-asset-library-reset[^>]*>/g)]
       .map(([anchor]) => anchor.match(/href="([^"]+)"/)[1].replaceAll('&amp;', '&'));
-    expect(links).toEqual(Array(2).fill('/assets?resetFilters=1&view=' + view));
+    expect(links).toEqual(Array(2).fill('/asset-viewer?resetFilters=1&view=' + view));
 
     // Change saved values after rendering: the link must not snapshot them.
     writeAssetViewerDefaults({ view: view === 'grid' ? 'list' : 'grid', category: 'reset-artwork',
       tag: String(tag.id), extension: 'png', presence: 'present', sort: 'project', order: 'desc', pageSize: '50' });
-    const expected = '/assets?category=reset-artwork&tag=' + tag.id
+    const expected = '/asset-viewer?category=reset-artwork&tag=' + tag.id
       + '&extension=png&presence=present&sort=project&order=desc&pageSize=50&view=' + view;
     for (const suffix of ['', '&project=999&category=all&tag=all&extension=jpg&presence=missing&search=discard&usage=used&sort=size&order=asc&pageSize=10&page=99',
       '&defaults=1&notice=asset_viewer_defaults_saved&dialog=discard&unknown=discard']) {
@@ -1342,7 +1362,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     const native = await request(app).get(links[0]).redirects(1).expect(200);
     expect(new URL(native.request.url).pathname + new URL(native.request.url).search).toBe(expected);
     // Back/Forward can revisit either the active state or the stable final URL.
-    await request(app).get('/assets?search=no-match&view=' + view).redirects(1).expect(200);
+    await request(app).get('/asset-viewer?search=no-match&view=' + view).redirects(1).expect(200);
     await request(app).get(expected).expect(200);
   });
 
@@ -1350,12 +1370,12 @@ describe('cross-project Asset Viewer HTTP route', () => {
     createAsset(createProject('Neutral Reset').id, 'neutral.png');
     writeAssetViewerDefaults({ view: view === 'grid' ? 'list' : 'grid', sort: 'filename', order: 'asc', pageSize: '25',
       category: 'all', tag: 'all', extension: 'all', presence: 'all' });
-    const reset = await request(app).get('/assets?resetFilters=1&view=' + view).expect(302);
-    expect(reset.headers.location).toBe('/assets?view=' + view);
+    const reset = await request(app).get('/asset-viewer?resetFilters=1&view=' + view).expect(302);
+    expect(reset.headers.location).toBe('/asset-viewer?view=' + view);
     await request(app).get(reset.headers.location).expect(200);
     writeAssetViewerDefaults({ category: 'uncategorized', presence: 'missing' });
     for (const query of ['view=' + view, 'category=all&tag=all&extension=all&presence=all&view=' + view]) {
-      const ordinary = await request(app).get('/assets?' + query).expect(200);
+      const ordinary = await request(app).get('/asset-viewer?' + query).expect(200);
       expect(ordinary.headers.location).toBeUndefined();
       expect(ordinary.text).toContain('neutral.png');
     }
@@ -1369,7 +1389,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     'resetFilters=1&view[]=grid', 'resetFilters=1&view[x]=grid',
   ])('WP3 rejects malformed Reset before resolving defaults: %s', async (query) => {
     app.locals.pageDefaultsService.resolve = () => { throw new Error('Defaults must not activate'); };
-    const response = await request(app).get('/assets?' + query).expect(400);
+    const response = await request(app).get('/asset-viewer?' + query).expect(400);
     expect(response.headers.location).toBeUndefined();
   });
 
@@ -1387,20 +1407,20 @@ describe('cross-project Asset Viewer HTTP route', () => {
     for (const asset of contextAssets) tagRepository.assignToAsset(asset.id, tag.id);
 
     const response = await request(app).get(
-      `/assets?project=${project.id}&tag=${tag.id}&sort=modified&order=desc&page=2&pageSize=50&view=list`,
+      `/asset-viewer?project=${project.id}&tag=${tag.id}&sort=modified&order=desc&page=2&pageSize=50&view=list`,
     ).expect(200);
 
     expect(response.text).toContain(
-      'href="/assets?project=' + project.id + '&amp;tag=' + tag.id + '&amp;sort=modified&amp;order=desc&amp;page=2&amp;pageSize=50&amp;view=grid"',
+      'href="/asset-viewer?project=' + project.id + '&amp;tag=' + tag.id + '&amp;sort=modified&amp;order=desc&amp;page=2&amp;pageSize=50&amp;view=grid"',
     );
     expect(response.text).toContain(
-      'href="/assets?project=' + project.id + '&amp;tag=' + tag.id + '&amp;sort=modified&amp;order=desc&amp;pageSize=50&amp;view=list"',
+      'href="/asset-viewer?project=' + project.id + '&amp;tag=' + tag.id + '&amp;sort=modified&amp;order=desc&amp;pageSize=50&amp;view=list"',
     );
     expect(response.text).toMatch(new RegExp(
       `<input id="${project.id}" name="project" type="radio" value="${project.id}" checked>`,
     ));
     expect(response.text).toContain('aria-label="Project filter: URL Context Project"');
-    expect(response.text).toMatch(/<a\b(?=[^>]*href="\/assets\?resetFilters=1&amp;view=list")(?=[^>]*data-asset-library-reset)(?=[^>]*aria-label="Reset filters")[^>]*>[\s\S]*?<span class="sr-only">Reset<\/span><\/a>/);
+    expect(response.text).toMatch(/<a\b(?=[^>]*href="\/asset-viewer\?resetFilters=1&amp;view=list")(?=[^>]*data-asset-library-reset)(?=[^>]*aria-label="Reset filters")[^>]*>[\s\S]*?<span class="sr-only">Reset<\/span><\/a>/);
     expect(response.text).toMatch(/<input[^>]+name="sort"[^>]+type="radio"[^>]+value="modified" checked>/);
     expect(response.text).toMatch(/<input[^>]+name="order"[^>]+type="radio"[^>]+value="desc" checked>/);
     expect(response.text).toMatch(/<input[^>]+name="pageSize"[^>]+type="radio"[^>]+value="50" checked>/);
@@ -1411,17 +1431,17 @@ describe('cross-project Asset Viewer HTTP route', () => {
     createAsset(project.id, 'reset-url.png', { filename: 'reset-url.png', extension: 'png' });
 
     const response = await request(app).get(
-      `/assets?project=${project.id}&category=uncategorized&search=reset&extension=png&presence=present&usage=unused&sort=filename&order=asc&pageSize=25&view=list`,
+      `/asset-viewer?project=${project.id}&category=uncategorized&search=reset&extension=png&presence=present&usage=unused&sort=filename&order=asc&pageSize=25&view=list`,
     ).expect(200);
 
-    expect(response.text).toMatch(/<a\b(?=[^>]*href="\/assets\?resetFilters=1&amp;view=list")(?=[^>]*data-asset-library-reset)(?=[^>]*aria-label="Reset filters")[^>]*>[\s\S]*?<span class="sr-only">Reset<\/span><\/a>/);
+    expect(response.text).toMatch(/<a\b(?=[^>]*href="\/asset-viewer\?resetFilters=1&amp;view=list")(?=[^>]*data-asset-library-reset)(?=[^>]*aria-label="Reset filters")[^>]*>[\s\S]*?<span class="sr-only">Reset<\/span><\/a>/);
   });
 
   it('discards unknown parameters while retaining effective saved presentation values', async () => {
     writeAssetViewerDefaults({ view: 'list', sort: 'project', order: 'desc', pageSize: '50' });
 
-    const redirect = await request(app).get('/assets?unknown=discard-me').expect(302);
-    expect(redirect.headers.location).toBe('/assets?sort=project&order=desc&pageSize=50&view=list');
+    const redirect = await request(app).get('/asset-viewer?unknown=discard-me').expect(302);
+    expect(redirect.headers.location).toBe('/asset-viewer?sort=project&order=desc&pageSize=50&view=list');
     expect(redirect.headers.location).not.toContain('unknown');
 
     const response = await request(app).get(redirect.headers.location).expect(200);
@@ -1429,18 +1449,18 @@ describe('cross-project Asset Viewer HTTP route', () => {
   });
 
   it('distinguishes no active assets from a filtered-empty result', async () => {
-    const empty = await request(app).get('/assets').expect(200);
+    const empty = await request(app).get('/asset-viewer').expect(200);
     expect(empty.text).toContain('No assets across active projects');
     expect(empty.text).not.toContain('No assets match the current filters');
 
     const project = createProject('Filtered Empty Project');
     createAsset(project.id, 'present.png');
 
-    const filtered = await request(app).get('/assets?search=does-not-exist').expect(200);
+    const filtered = await request(app).get('/asset-viewer?search=does-not-exist').expect(200);
     expect(filtered.text).toContain('No assets match the current filters');
     expect(filtered.text).not.toContain('No assets across active projects');
     expect(filtered.text).toMatch(/<a\b(?=[^>]*data-asset-library-reset)(?=[^>]*aria-label="Reset filters")[^>]*>[\s\S]*?<span class="sr-only">Reset<\/span><\/a>/);
-    expect(filtered.text).toMatch(/<div class="empty-state-actions">\s*<a\b(?=[^>]*href="\/assets\?resetFilters=1&amp;view=grid")(?=[^>]*data-asset-library-reset)[^>]*>Reset<\/a>/);
+    expect(filtered.text).toMatch(/<div class="empty-state-actions">\s*<a\b(?=[^>]*href="\/asset-viewer\?resetFilters=1&amp;view=grid")(?=[^>]*data-asset-library-reset)[^>]*>Reset<\/a>/);
   });
 
   it('leaves the existing project-scoped asset detail route available', async () => {

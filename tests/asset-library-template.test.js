@@ -173,11 +173,11 @@ function makeModel(overrides = {}) {
     ],
     nsfwFilterEnabled: false,
     _csrf: '',
-    clearFiltersUrl: overrides.clearFiltersUrl ?? `/assets?resetFilters=1&view=${filters.view}`,
+    clearFiltersUrl: overrides.clearFiltersUrl ?? `/asset-viewer?resetFilters=1&view=${filters.view}`,
     assetViewerDefaults: { fields: [] },
     assetViewerDefaultsDialogOpen: false,
-    assetViewerDefaultsReturnUrl: '/assets',
-    assetViewerNsfwReturnUrl: '/assets',
+    assetViewerDefaultsReturnUrl: '/asset-viewer',
+    assetViewerNsfwReturnUrl: '/asset-viewer',
     ...overrides,
     filters,
   };
@@ -266,7 +266,7 @@ describe('cross-project Asset Viewer template', () => {
       ],
     });
 
-    expect(html).toMatch(/<dialog id="asset-viewer-filter-dialog"[\s\S]*?<form id="asset-filters" class="app-dialog-form project-form" method="get" action="\/assets">/);
+    expect(html).toMatch(/<dialog id="asset-viewer-filter-dialog"[\s\S]*?<form id="asset-filters" class="app-dialog-form project-form" method="get" action="\/asset-viewer">/);
     expect(html.indexOf('id="asset-viewer-filter-dialog"')).toBeGreaterThan(html.indexOf('data-asset-library-live-region'));
     expect(html).toContain('<input type="hidden" name="view" value="list">');
     expect(html).toContain('aria-label="Project filter: Beta Project"');
@@ -323,7 +323,7 @@ describe('cross-project Asset Viewer template', () => {
   it('renders the Asset Viewer defaults link with dialog-open and accessibility text', () => {
     const html = renderPage();
 
-    expect(html).toContain('href="/assets?defaults=1"');
+    expect(html).toContain('href="/asset-viewer?defaults=1"');
     expect(html).toContain('aria-label="Asset Viewer defaults"');
     expect(html).toContain('data-tooltip="Asset Viewer defaults"');
     expect(html).toContain('data-dialog-open="asset-viewer-defaults-dialog"');
@@ -849,8 +849,8 @@ describe('cross-project Asset Viewer template', () => {
 
     expect(forms).toHaveLength(4);
     expect(forms.find((f) => f.includes('method="get"'))).toBeDefined();
-    expect(forms.find((f) => f.includes('action="/assets/nsfw-filter"'))).toBeDefined();
-    expect(forms.find((f) => f.includes('action="/assets/defaults"'))).toBeDefined();
+    expect(forms.find((f) => f.includes('action="/asset-viewer/nsfw-filter"'))).toBeDefined();
+    expect(forms.find((f) => f.includes('action="/asset-viewer/defaults"'))).toBeDefined();
     expect(html).not.toMatch(/Scan Now|Rename|Move file|Add selected|Set as primary|select all/i);
     expect(html).not.toContain('name="selectedAssetIds"');
     expect(html).not.toContain('asset-select-checkbox');
@@ -868,7 +868,7 @@ describe('cross-project Asset Viewer template', () => {
   });
 
   it.each(['grid', 'list'])('both Asset Viewer Reset controls use supplied %s intent', (view) => {
-    const clearFiltersUrl = '/assets?resetFilters=1&view=' + view;
+    const clearFiltersUrl = '/asset-viewer?resetFilters=1&view=' + view;
     const html = renderPage({ assets: [], hasAnyAssets: true, filters: { view, search: 'missing' }, clearFiltersUrl });
     const resetForm = html.match(/<form class="asset-viewer-filter-reset"[^>]*>/)?.[0] ?? '';
     const emptyReset = html.match(/<a\b[^>]*data-asset-library-reset[^>]*>/)?.[0] ?? '';
@@ -974,7 +974,7 @@ describe('cross-project Asset Viewer template', () => {
       hasNextPage: true,
       tagOptions: [{ value: '7', displayName: 'Context Tag', selected: true }],
     };
-    const clearUrl = '/assets?resetFilters=1&view=list';
+    const clearUrl = '/asset-viewer?resetFilters=1&view=list';
     const html = renderPage({ ...model, clearFiltersUrl: clearUrl });
     const state = {
       ...model.filters,
@@ -1052,7 +1052,7 @@ describe('cross-project Asset Viewer template', () => {
     const html = renderPage({ _csrf: 'test-csrf', nsfwFilterEnabled: false });
 
     expect(html).toContain('data-asset-library-nsfw-filter');
-    expect(html).toContain('action="/assets/nsfw-filter"');
+    expect(html).toContain('action="/asset-viewer/nsfw-filter"');
     expect(html).toContain('data-asset-library-nsfw-toggle');
     expect(html).toContain('data-asset-library-nsfw-value');
     expect(html).toMatch(/name="_csrf" value="test-csrf"/);
@@ -1150,13 +1150,13 @@ describe('cross-project Asset Viewer template', () => {
         ],
       },
       assetViewerDefaultsDialogOpen: false,
-      assetViewerDefaultsReturnUrl: '/assets',
+      assetViewerDefaultsReturnUrl: '/asset-viewer',
     });
 
     expect(html).toContain('id="asset-viewer-defaults-dialog"');
     expect(html).toContain('Asset Viewer defaults');
     expect(html).toContain('id="asset-viewer-defaults-form"');
-    expect(html).toContain('action="/assets/defaults"');
+    expect(html).toContain('action="/asset-viewer/defaults"');
     expect(html).toContain('data-dialog-form');
     expect(html).toContain('data-dialog-async="false"');
     expect(html).toContain('data-asset-viewer-defaults-autosave');
@@ -1415,7 +1415,7 @@ describe('slideshow scaffold — static UI', () => {
     expect(html).toContain('data-asset-library-nsfw-toggle');
     expect(html).toContain('data-slideshow-trigger');
     expect(html).toContain('data-asset-library-reset');
-    expect(html).toContain('href="/assets?defaults=1"');
+    expect(html).toContain('href="/asset-viewer?defaults=1"');
     expect(html).not.toContain('<noscript>');
   });
 

@@ -202,7 +202,7 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
     it('renders all seven destinations in primary-navigation order', async () => {
       const res = await agent.get('/').expect(200);
       expect(navHrefs(res.text)).toEqual([
-        '/', '/projects', '/assets', '/releases', '/calendar', '/notes', '/settings',
+        '/', '/projects', '/asset-viewer', '/releases', '/calendar', '/notes', '/settings',
       ]);
     });
 
@@ -224,7 +224,7 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
         const children = res.text.match(/<ul class="app-nav-children">([\s\S]*?)<\/ul>/);
         expect(children).not.toBeNull();
         expect(navHrefs(res.text)).toEqual([
-          '/', '/projects', '/assets', '/releases', '/calendar', '/notes', '/settings',
+          '/', '/projects', '/asset-viewer', '/releases', '/calendar', '/notes', '/settings',
         ]);
         expect(
           [...children[1].matchAll(/<a href="([^"]+)" class="app-nav-child-link"/g)].map((match) => match[1]),
@@ -436,13 +436,13 @@ describe('application shell (Phase 10.4B) — landmarks & structure', () => {
         `/projects/${projectId}`,
         `/projects/${projectId}/assets`,
         `/projects/${projectId}/assets/${assetId}`,
-        '/assets',
+        '/asset-viewer',
         '/releases',
         '/calendar',
         '/release-management',
       ];
       for (const url of pages) {
-        const res = await agent.get(url).expect(200);
+        const res = await agent.get(url).redirects(1).expect(200);
         expect(countActive(res.text)).toBe(1);
       }
     });

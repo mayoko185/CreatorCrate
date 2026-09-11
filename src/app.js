@@ -14,6 +14,7 @@ import { createAssetsRouter } from './routes/assets.js';
 import { createProjectAssetCategoryManagementRouter } from './routes/project-asset-category-management.js';
 import { createProcessingRouter } from './routes/processing.js';
 import { createAssetLibraryRouter } from './routes/asset-library.js';
+import { createAssetLibraryCompatibilityRouter } from './routes/asset-library-compatibility.js';
 import { createProjectAssetCategoriesRouter } from './routes/project-asset-categories.js';
 import { createProjectTagsRouter } from './routes/project-tags.js';
 import { createAssetTagsRouter } from './routes/asset-tags.js';
@@ -840,7 +841,8 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     projectService,
     workflowQueryService,
   }));
-  app.use('/assets', createAssetLibraryRouter({ appName, db, workflowQueryService }));
+  app.use('/asset-viewer', createAssetLibraryRouter({ appName, db, workflowQueryService }));
+  app.use('/assets', createAssetLibraryCompatibilityRouter());
   // Managed resources are application-global. Project execution endpoints are
   // added by the same router only when rooted processing dependencies exist.
   app.use(createProcessingRouter({
