@@ -194,6 +194,7 @@ function makePage({
   gridSizeDefault = 'default',
   listSizeDefault = 'large',
   withAssetInfoCard = false,
+  withAssetSelection = false,
   dialogOpen = true,
   resetUrl = '/projects/1/assets?resetFilters=1&view=list',
   projectsResetUrl = null,
@@ -370,9 +371,25 @@ function makePage({
     },
   });
 
+  const selectedCount = withAssetSelection
+    ? makeNode({
+      tagName: 'p',
+      attrs: { class: 'results-meta', 'data-selected-count': '', 'data-selected-total': '1' },
+    })
+    : null;
+  const selectionForm = withAssetSelection
+    ? makeNode({ tagName: 'form', attrs: { id: 'bulk-select-form', 'data-asset-selection-form': '' } })
+    : null;
+  const selectionCheckbox = withAssetSelection
+    ? makeNode({ tagName: 'input', attrs: { type: 'checkbox', name: 'selectedAssetIds', value: '1' } })
+    : null;
+  if (selectionForm && selectionCheckbox) selectionForm.appendChild(selectionCheckbox);
+
   region.appendChild(status);
   region.appendChild(nsfwForm);
   region.appendChild(gridSizeControls);
+  if (selectedCount) region.appendChild(selectedCount);
+  if (selectionForm) region.appendChild(selectionForm);
   region.appendChild(grid);
   region.appendChild(listSizeControls);
   region.appendChild(list);
@@ -406,6 +423,9 @@ function makePage({
     nsfwForm,
     nsfwValue,
     nsfwToggle,
+    selectedCount,
+    selectionForm,
+    selectionCheckbox,
     grid,
     assetInfoPreview,
     assetInfoCard,
@@ -647,6 +667,33 @@ describe('Project Assets live filtering enhancement', () => {
     ]);
     enhanceProjectAssetsLiveFiltering(initial.document);
     expect(replacement.assetInfoPreview.listeners).toHaveLength(5);
+  });
+
+  it('updates the replacement external selected count instead of stale live-region markup', async () => {
+    vi.useFakeTimers();
+    const initial = makePage({ withAssetSelection: true });
+    const replacement = makePage({ withAssetSelection: true });
+    const { windowObject } = makeWindow(initial.document, new Map([
+      ['replacement-selection', replacement.document],
+    ]));
+    windowObject.fetch.mockResolvedValue(htmlResponse(
+      'replacement-selection',
+      'http://creatorcrate.test/projects/1/assets?search=replaced',
+    ));
+
+    expect(enhanceProjectAssetsLiveFiltering(initial.document)).toBe(1);
+    expect(initial.selectedCount.textContent).toBe('0 of 1 selected');
+
+    initial.search.value = 'replaced';
+    initial.search.dispatch('input');
+    vi.advanceTimersByTime(350);
+    await flush();
+
+    expect(initial.document.querySelector('[data-selected-count]')).toBe(replacement.selectedCount);
+    replacement.selectionCheckbox.checked = true;
+    replacement.selectionCheckbox.dispatch('change');
+    expect(replacement.selectedCount.textContent).toBe('1 of 1 selected');
+    expect(initial.selectedCount.textContent).toBe('0 of 1 selected');
   });
 
   it('applies saved grid and list defaults when no valid localStorage choice exists', async () => {

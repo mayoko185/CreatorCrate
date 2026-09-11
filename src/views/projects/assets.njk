@@ -45,7 +45,7 @@
   {% endif %}
 {% endmacro %}
 
-{% macro renderAssetSelectionControls(projectId, csrfToken, assetTotal, currentView, autoRenameCategory, showSelectionTools, categoryManagementUrl) %}
+{% macro renderAssetSelectionControls(projectId, csrfToken, currentView, autoRenameCategory, showSelectionTools, categoryManagementUrl) %}
   <div class="asset-selection-controls-area">
     <div class="asset-selection-buttons-row">
       {% if autoRenameCategory %}
@@ -58,21 +58,26 @@
           <input type="hidden" name="selectedAssetIds" value="[]"
                  data-auto-rename-selection-input>
           <input type="hidden" name="view" value="{{ currentView }}">
-          <button type="submit" class="button button-primary button-small" data-auto-rename-submit disabled aria-disabled="true">Auto Rename</button>
+          <button type="submit" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--right"
+                  data-auto-rename-submit disabled aria-disabled="true"
+                  aria-label="Auto Rename" data-tooltip="Auto Rename">{{ icons.icon('edit') }}</button>
           <div class="auto-rename-live-region sr-only" data-auto-rename-live aria-live="polite" aria-atomic="true"></div>
         </form>
       {% endif %}
       {% if showSelectionTools %}
         <div class="asset-selection-tools" role="group" aria-label="Selection controls">
-          <button type="button" class="button button-small" form="bulk-select-form" data-select-all>Select all visible</button>
-          <button type="button" class="button button-small button-secondary" form="bulk-select-form" data-clear-selection>Clear selection</button>
-          <a class="button button-small button-secondary" href="{{ categoryManagementUrl or ('/projects/' ~ projectId ~ '/assets?manage_categories=1') }}"
-             data-dialog-open="project-asset-category-management-dialog">Manage Categories</a>
+          <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--right"
+                  form="bulk-select-form" data-select-all
+                  aria-label="Select all visible" data-tooltip="Select all visible">{{ icons.icon('select-all') }}</button>
+          <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--right"
+                  form="bulk-select-form" data-clear-selection
+                  aria-label="Clear selection" data-tooltip="Clear selection">{{ icons.icon('close') }}</button>
+          <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--right"
+             href="{{ categoryManagementUrl or ('/projects/' ~ projectId ~ '/assets?manage_categories=1') }}"
+             data-dialog-open="project-asset-category-management-dialog"
+             aria-label="Manage Categories" data-tooltip="Manage Categories">{{ icons.icon('settings') }}</a>
         </div>
       {% endif %}
-    </div>
-    <div class="selected-count-row">
-      <span class="selected-count" data-selected-count data-selected-total="{{ assetTotal }}">0 of {{ assetTotal }} selected</span>
     </div>
   </div>
 {% endmacro %}
@@ -531,6 +536,9 @@
         </div>
       </div>
 
+      {% if assets.length > 0 and not isArchived %}
+        <p class="results-meta" data-selected-count data-selected-total="{{ assets.length }}">0 of {{ assets.length }} selected</p>
+      {% endif %}
 
       {% if assets.length > 0 %}
         {% if completeCategorySurface %}
@@ -540,20 +548,18 @@
               Focus an asset card or row and press Space or Enter to grab it. Use the arrow keys to reorder it, Space or Enter to commit, or Escape to cancel.
             </p>
             {% if autoRenameSurface and autoRenameCategory %}
-              <div class="asset-actions-panel" data-asset-actions-panel>
-                <div class="asset-actions-category-row">
-                  <div class="asset-actions-category-copy">
-                    <span class="asset-actions-label">Category actions</span>
-                    <span class="asset-actions-helper">Drag assets to change their filename order</span>
+              <section class="project-detail-section asset-actions-panel" data-asset-actions-panel aria-labelledby="project-actions-heading">
+                <h2 id="project-actions-heading">Project actions</h2>
+                <div class="project-detail-section-body">
+                  <div class="asset-actions-category-row">
+                    <div class="asset-actions-controls">
+                      {{ renderAssetSelectionControls(project.id, _csrf, filters.view, autoRenameCategory, not isArchived, categoryManagementDialogUrl) }}
+                    </div>
                   </div>
-                  <div class="asset-actions-controls">
-                    {{ renderAssetSelectionControls(project.id, _csrf, assets.length, filters.view, autoRenameCategory, not isArchived, categoryManagementDialogUrl) }}
-                  </div>
-                </div>
-                {% if not isArchived %}
-                  {# Checkboxes below are associated via form="bulk-select-form"
-                     so per-row rename forms can remain outside this form. #}
-                  <form id="bulk-select-form" method="post" action="/projects/{{ project.id }}/assets/add-to-release" class="bulk-select-form" data-asset-selection-form>
+                  {% if not isArchived %}
+                    {# Checkboxes below are associated via form="bulk-select-form"
+                       so per-row rename forms can remain outside this form. #}
+                    <form id="bulk-select-form" method="post" action="/projects/{{ project.id }}/assets/add-to-release" class="bulk-select-form" data-asset-selection-form>
                     <input type="hidden" name="_csrf" value="{{ _csrf }}">
                     {{ renderContextFields(context, contextFields, false) }}
 
@@ -612,28 +618,27 @@
                         {{ processingActions.render(isArchived) }}
                       </div>
                     </div>
-                  </form>
-                {% endif %}
-              </div>
+                    </form>
+                  {% endif %}
+                </div>
+              </section>
             {% endif %}
         {% endif %}
 
         {% if not completeCategorySurface and not isArchived %}
-          <div class="asset-actions-panel asset-actions-panel--selection-only" data-asset-actions-panel>
-            <div class="asset-actions-category-row">
-              <div class="asset-actions-category-copy">
-                <span class="asset-actions-label">Category actions</span>
-                <span class="asset-actions-helper">Drag assets to change their filename order</span>
+          <section class="project-detail-section asset-actions-panel asset-actions-panel--selection-only" data-asset-actions-panel aria-labelledby="project-actions-heading">
+            <h2 id="project-actions-heading">Project actions</h2>
+            <div class="project-detail-section-body">
+              <div class="asset-actions-category-row">
+                <div class="asset-actions-controls">
+                  {{ renderAssetSelectionControls(project.id, _csrf, filters.view, none, true, categoryManagementDialogUrl) }}
+                </div>
               </div>
-              <div class="asset-actions-controls">
-                {{ renderAssetSelectionControls(project.id, _csrf, assets.length, filters.view, none, true, categoryManagementDialogUrl) }}
-              </div>
-            </div>
-            <form id="bulk-select-form" method="post" action="/projects/{{ project.id }}/assets/add-to-release" class="bulk-select-form" data-asset-selection-form>
-              <input type="hidden" name="_csrf" value="{{ _csrf }}">
-              {{ renderContextFields(context, contextFields, false) }}
+              <form id="bulk-select-form" method="post" action="/projects/{{ project.id }}/assets/add-to-release" class="bulk-select-form" data-asset-selection-form>
+                <input type="hidden" name="_csrf" value="{{ _csrf }}">
+                {{ renderContextFields(context, contextFields, false) }}
 
-              <div class="asset-selection-controls">
+                <div class="asset-selection-controls">
                 <div class="asset-action-groups">
                   <section class="asset-action-group">
                     <h3 class="asset-action-group-heading">Release</h3>
@@ -687,9 +692,10 @@
                   </section>
                   {{ processingActions.render(isArchived) }}
                 </div>
-              </div>
-            </form>
-          </div>
+                </div>
+              </form>
+            </div>
+          </section>
         {% endif %}
 
         {% if isArchived %}

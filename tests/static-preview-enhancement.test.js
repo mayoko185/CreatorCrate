@@ -3666,12 +3666,12 @@ function makeControl({ value = '', disabled = false } = {}) {
  */
 function makeAssetSelectionForm({ enabledCheckboxes = [], selectedCount, releaseSelect, selectAll, clearSelection, bulkSubmit } = {}) {
   const singles = {
-    '[data-selected-count]': selectedCount ?? makeControl(),
     '[data-release-select]': releaseSelect ?? makeControl(),
     '[data-select-all]': selectAll ?? makeControl(),
     '[data-clear-selection]': clearSelection ?? makeControl(),
     '[data-bulk-submit]': bulkSubmit ?? makeControl(),
   };
+  if (selectedCount) singles['[data-selected-count]'] = selectedCount;
   return {
     querySelectorAll(selector) {
       if (selector.includes('selectedAssetIds')) return enabledCheckboxes;
@@ -3684,13 +3684,16 @@ function makeAssetSelectionForm({ enabledCheckboxes = [], selectedCount, release
   };
 }
 
-function makeAssetSelectionScope(form, cards = []) {
+function makeAssetSelectionScope(form, cards = [], selectedCount = null) {
   return {
     querySelectorAll(selector) {
       if (selector === '[data-asset-selection-form]') return form ? [form] : [];
       if (selector.includes('selectedAssetIds')) return form?.querySelectorAll(selector) || [];
       if (selector === '[data-asset-selectable-card]') return cards;
       return [];
+    },
+    querySelector(selector) {
+      return selector === '[data-selected-count]' ? selectedCount : null;
     },
   };
 }
@@ -4451,12 +4454,12 @@ describe('page-local asset selection enhancement', () => {
     expect(disabledLikeMissingRow.checked).toBe(false);
   });
 
-  it('updates the live selected count after a checkbox change', () => {
+  it('updates the external live selected count for initialization, checkbox changes, Select All, and Clear Selection', () => {
     const cb1 = makeCheckbox();
     const cb2 = makeCheckbox();
     const countEl = makeControl();
-    const form = makeAssetSelectionForm({ enabledCheckboxes: [cb1, cb2], selectedCount: countEl });
-    const scope = makeAssetSelectionScope(form);
+    const form = makeAssetSelectionForm({ enabledCheckboxes: [cb1, cb2] });
+    const scope = makeAssetSelectionScope(form, [], countEl);
 
     enhanceAssetSelection(scope);
     expect(countEl.textContent).toBe('0 of 2 selected');
@@ -4468,14 +4471,24 @@ describe('page-local asset selection enhancement', () => {
     cb2.checked = true;
     cb2.dispatch('change');
     expect(countEl.textContent).toBe('2 of 2 selected');
+
+    cb1.checked = false;
+    cb1.dispatch('change');
+    expect(countEl.textContent).toBe('1 of 2 selected');
+
+    form._singles['[data-select-all]'].dispatch('click');
+    expect(countEl.textContent).toBe('2 of 2 selected');
+
+    form._singles['[data-clear-selection]'].dispatch('click');
+    expect(countEl.textContent).toBe('0 of 2 selected');
   });
 
   it('uses the rendered visible-asset total for the live count', () => {
     const checkbox = makeCheckbox();
     const countEl = makeControl();
     countEl.getAttribute = (name) => name === 'data-selected-total' ? '3' : null;
-    const form = makeAssetSelectionForm({ enabledCheckboxes: [checkbox], selectedCount: countEl });
-    const scope = makeAssetSelectionScope(form);
+    const form = makeAssetSelectionForm({ enabledCheckboxes: [checkbox] });
+    const scope = makeAssetSelectionScope(form, [], countEl);
 
     enhanceAssetSelection(scope);
     expect(countEl.textContent).toBe('0 of 3 selected');
@@ -4513,10 +4526,8 @@ describe('page-local asset selection enhancement', () => {
     const releaseSelect = makeControl({ value: '5' }); // pre-selected from submission
     const submit = makeControl();
     const countEl = makeControl();
-    const form = makeAssetSelectionForm({
-      enabledCheckboxes: [cb1], releaseSelect, bulkSubmit: submit, selectedCount: countEl,
-    });
-    const scope = makeAssetSelectionScope(form);
+    const form = makeAssetSelectionForm({ enabledCheckboxes: [cb1], releaseSelect, bulkSubmit: submit });
+    const scope = makeAssetSelectionScope(form, [], countEl);
 
     enhanceAssetSelection(scope);
 

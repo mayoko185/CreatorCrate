@@ -1569,12 +1569,6 @@
         outline: 2px solid var(--focus-ring);
         outline-offset: 2px;
       }
-      .selected-count {
-        font-size: 0.875rem;
-        font-weight: 600;
-        color: var(--text);
-        font-variant-numeric: tabular-nums;
-      }
       .bulk-release-field {
         display: flex;
         flex-direction: column;
@@ -1718,18 +1712,15 @@
         max-width: 100%;
         overflow: visible;
       }
-      .asset-auto-rename-surface h2 { margin-top: var(--space-lg); }
       .asset-actions-panel {
-        display: flex;
-        flex-direction: column;
-        gap: var(--space-md);
         min-width: 0;
         max-width: 100%;
         margin: var(--space-md) 0;
-        padding: var(--space-md);
-        border: 1px solid var(--border);
-        border-radius: var(--radius-lg);
-        background: var(--surface);
+      }
+      .asset-actions-panel > .project-detail-section-body {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-md);
       }
       .asset-actions-panel .button:disabled,
       .asset-actions-panel .button[aria-disabled="true"] {
@@ -1755,8 +1746,6 @@
         gap: var(--space-sm);
         min-width: 0;
         flex-wrap: wrap;
-      }
-      .asset-actions-panel--selection-only .asset-actions-controls {
         margin-inline-start: auto;
       }
       .asset-selection-controls-area {
@@ -1775,24 +1764,11 @@
         min-width: 0;
         flex-wrap: wrap;
       }
-      .selected-count-row {
-        align-self: flex-end;
-        text-align: right;
-      }
       .asset-actions-category-copy {
         display: flex;
         flex-direction: column;
         gap: var(--space-xs);
         min-width: 0;
-      }
-      .asset-actions-label {
-        font-weight: 600;
-        color: var(--text);
-      }
-      .asset-actions-helper {
-        color: var(--muted);
-        font-size: 0.8125rem;
-        overflow-wrap: anywhere;
       }
       .auto-rename-assets-form {
         display: flex;
@@ -1867,10 +1843,10 @@
           align-items: stretch;
         }
         .auto-rename-assets-form { align-items: stretch; }
-        .auto-rename-assets-form .button { width: 100%; }
+        .auto-rename-assets-form .button:not(.project-filter-control) { width: 100%; }
         .asset-action-groups { grid-template-columns: 1fr; }
         .asset-selection-tools { align-items: stretch; }
-        .asset-selection-tools .button { flex: 1 1 auto; }
+        .asset-selection-tools .button:not(.project-filter-control) { flex: 1 1 auto; }
         .asset-action-group-controls { align-items: stretch; }
         .asset-action-group-controls .button { width: 100%; }
         .asset-action-group-controls--stacked { align-items: stretch; }
@@ -2373,7 +2349,8 @@
         width: 1rem;
         height: 1rem;
       }
-      .asset-viewer-display-controls .project-filter-actions--projects .project-filter-control {
+      .asset-viewer-display-controls .project-filter-actions--projects .project-filter-control,
+      .asset-actions-panel .project-filter-control {
         display: inline-flex;
         align-items: center;
         justify-content: center;
@@ -2381,9 +2358,14 @@
         min-inline-size: 2.25rem;
         padding: var(--space-sm);
       }
-      .asset-viewer-display-controls .project-filter-actions--projects .project-filter-control svg {
+      .asset-viewer-display-controls .project-filter-actions--projects .project-filter-control svg,
+      .asset-actions-panel .project-filter-control svg {
         width: 1.25rem;
         height: 1.25rem;
+      }
+      .asset-actions-panel .project-filter-control {
+        flex: 0 0 2.25rem;
+        width: 2.25rem;
       }
 
       /* ── Asset Viewer multi-select filters ── */

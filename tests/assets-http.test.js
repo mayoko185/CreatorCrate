@@ -240,11 +240,22 @@ describe('asset browser HTTP workflow', () => {
   }
 
   function assetActionsPanelHtml(html) {
-    const start = html.search(/<div class="asset-actions-panel(?: asset-actions-panel--selection-only)?" data-asset-actions-panel>/);
+    const start = html.search(/<section class="project-detail-section asset-actions-panel(?: asset-actions-panel--selection-only)?" data-asset-actions-panel/);
     if (start < 0) return '';
     const panel = html.slice(start);
     const assetListStart = panel.search(/<ul class="asset-(?:grid|list)\b/);
     return assetListStart >= 0 ? panel.slice(0, assetListStart) : panel;
+  }
+
+  function expectProjectActionsSection(html, { selectionOnly = false } = {}) {
+    const modifier = selectionOnly ? ' asset-actions-panel--selection-only' : '';
+    expect(html).toMatch(new RegExp(
+      `<section class="project-detail-section asset-actions-panel${modifier}" data-asset-actions-panel aria-labelledby="project-actions-heading">\\s*`
+      + '<h2 id="project-actions-heading">Project actions<\\/h2>\\s*'
+      + '<div class="project-detail-section-body">',
+    ));
+    expect(html).not.toContain('class="app-section-title"');
+    expect(html).not.toMatch(/<h2[^>]*(?:class|style)=[^>]*>Project actions<\/h2>/);
   }
 
   function projectAssetsDisplayActions(html) {
@@ -967,10 +978,14 @@ describe('asset browser HTTP workflow', () => {
     expect(defaultsCardRule).not.toMatch(/padding-top/);
     const projectFiltersBorderRule = style.match(/(?:^|})\s*\.asset-viewer-filters--project-assets\s*\{([^}]*)\}/)?.[1] || '';
     const categoryActionsCardRule = style.match(/(?:^|})\s*\.asset-actions-panel\s*\{([^}]*)\}/)?.[1] || '';
+    const detailSectionRule = style.match(/(?:^|})\s*\.project-detail-section\s*\{([^}]*)\}/)?.[1] || '';
+    const detailSectionBodyRule = style.match(/(?:^|})\s*\.project-detail-section-body\s*\{([^}]*)\}/)?.[1] || '';
     expect(projectFiltersBorderRule).toMatch(/border:\s*1px solid var\(--border\)/);
     expect(projectFiltersBorderRule).toMatch(/border-radius:\s*var\(--radius-lg\)/);
-    expect(categoryActionsCardRule).toMatch(/border:\s*1px solid var\(--border\)/);
-    expect(categoryActionsCardRule).toMatch(/border-radius:\s*var\(--radius-lg\)/);
+    expect(categoryActionsCardRule).not.toMatch(/(?:border|border-radius|background|padding):/);
+    expect(detailSectionRule).toMatch(/border:\s*1px solid var\(--border\)/);
+    expect(detailSectionRule).toMatch(/border-radius:\s*var\(--radius-lg\)/);
+    expect(detailSectionBodyRule).toMatch(/padding:\s*var\(--space-md\) var\(--space-lg\)/);
     expect(defaultsLinkMatch?.[1]).toMatch(/\.asset-viewer-filters--asset-viewer\s*>\s*\.asset-viewer-defaults-link/);
     expect(defaultsLinkRule).toMatch(/position:\s*absolute/);
     expect(defaultsLinkRule).toMatch(/top:\s*var\(--space-sm\)/);
@@ -1005,7 +1020,7 @@ describe('asset browser HTTP workflow', () => {
     const taggedCard = assetCardHtml(gridPageOne.text, assets[1].id);
 
     expectNoAssetResultsCount(gridPageOne.text);
-    expect(gridPageOne.text).toContain('<span class="selected-count" data-selected-count data-selected-total="2">0 of 2 selected</span>');
+    expect(gridPageOne.text).toContain('<p class="results-meta" data-selected-count data-selected-total="2">0 of 2 selected</p>');
     for (const card of [untaggedCard, taggedCard]) {
       expect(card).toContain('data-asset-info-card popover="manual"');
       expect(card).not.toContain('class="asset-card-body');
@@ -3626,6 +3641,7 @@ describe('asset browser HTTP workflow', () => {
 
     const res2 = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
     expect(res2.text).toContain('No assets found');
+    expect(res2.text).not.toContain('data-selected-count');
     // The empty-state partial's action div must not exist for the
     // no-assets case — the only "Scan Now" control on the page is the
     // POST form already rendered in the heading.
@@ -6536,8 +6552,8 @@ describe('asset browser HTTP workflow', () => {
     }
     expect(res2.text).not.toContain(`href="/projects/${id}/asset-categories"`);
     const selectionControls = assetSelectionControlsHtml(assetActionsPanelHtml(res2.text));
-    expect(selectionControls).toMatch(
-      /data-clear-selection>Clear selection<\/button>\s*<a class="button button-small button-secondary" href="[^"]*manage_categories=1"\s+data-dialog-open="project-asset-category-management-dialog">Manage Categories<\/a>/
+    expect(selectionControls.indexOf('data-clear-selection')).toBeLessThan(
+      selectionControls.indexOf('data-dialog-open="project-asset-category-management-dialog"'),
     );
     expect(res2.text).toContain('id="project-asset-category-management-dialog"');
     expect(res2.text).toContain('data-category-reorder-list');
@@ -6641,29 +6657,37 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).toMatch(/data-auto-rename-submit[^>]*disabled/);
     expect(res2.text).toContain('data-asset-actions-panel');
       expect((res2.text.match(/data-asset-actions-panel/g) || []).length).toBe(1);
-      expect(res2.text).toContain('Category actions');
+      expect(res2.text).toContain('Project actions');
       expect(res2.text).not.toMatch(/<span class="asset-actions-label">Category order<\/span>/);
-      expect(res2.text).toContain('Drag assets to change their filename order');
+      expect(res2.text).not.toContain('Drag assets to change their filename order');
       expect(res2.text).not.toMatch(/<span class="asset-actions-selection-label">Selected assets<\/span>/);
       const selectionControlsOnly = assetSelectionControlsHtml(res2.text);
       expect(selectionControlsOnly).not.toContain('Selected assets');
       expect(res2.text).not.toMatch(/<h2\b[^>]*>Renders assets<\/h2>/);
       expect(res2.text).toMatch(/<section class="asset-auto-rename-surface" data-auto-rename-surface data-auto-rename-view="grid"\s+aria-label="Renders assets">/);
-      const completeActionPanelStart = res2.text.indexOf('<div class="asset-actions-panel" data-asset-actions-panel>');
+      const completeActionPanelStart = res2.text.indexOf('<section class="project-detail-section asset-actions-panel" data-asset-actions-panel');
       const completeAssetListStart = res2.text.indexOf('<ul class="asset-grid"', completeActionPanelStart);
       const completeActionPanel = res2.text.slice(completeActionPanelStart, completeAssetListStart);
-      expect(completeActionPanel).toMatch(/<div class="asset-actions-category-copy">\s*<span class="asset-actions-label">Category actions<\/span>\s*<span class="asset-actions-helper">Drag assets to change their filename order<\/span>\s*<\/div>/);
-      expect((completeActionPanel.match(/<span class="asset-actions-label">Category actions<\/span>/g) || [])).toHaveLength(1);
-      const categoryHeaderStart = completeActionPanel.indexOf('<div class="asset-actions-category-copy">');
+      expectProjectActionsSection(completeActionPanel);
+      expect((completeActionPanel.match(/<h2 id="project-actions-heading">Project actions<\/h2>/g) || [])).toHaveLength(1);
+      const style = await readStylesheetSource(res2.text);
+      expect(style).not.toMatch(/\.asset-auto-rename-surface\s+h2\s*\{/);
+      expect(style).toMatch(/\.auto-rename-assets-form\s+\.button:not\(\.project-filter-control\)\s*\{\s*width:\s*100%/);
+      expect(style).toMatch(/\.asset-selection-tools\s+\.button:not\(\.project-filter-control\)\s*\{\s*flex:\s*1\s+1\s+auto/);
+      const projectActionIconRule = style.match(/(?:^|})\s*\.asset-actions-panel\s+\.project-filter-control\s*\{([^}]*)\}/)?.[1] || '';
+      expect(projectActionIconRule).toMatch(/flex:\s*0\s+0\s+2\.25rem/);
+      expect(projectActionIconRule).toMatch(/width:\s*2\.25rem/);
+      const categoryHeaderStart = completeActionPanel.indexOf('<h2 id="project-actions-heading">Project actions</h2>');
       const releaseActionsHeadingStart = completeActionPanel.indexOf('<h3 class="asset-action-group-heading">Release</h3>');
       const categoryFileActionsHeadingStart = completeActionPanel.indexOf('<h3 class="asset-action-group-heading">File</h3>');
       expect(categoryHeaderStart).toBeGreaterThan(-1);
       expect(categoryHeaderStart).toBeLessThan(releaseActionsHeadingStart);
       expect(categoryHeaderStart).toBeLessThan(categoryFileActionsHeadingStart);
       expect(completeActionPanel).not.toContain('asset-selection-header');
-      expect(completeActionPanel).toContain('data-selected-count');
+      expect(completeActionPanel).not.toContain('data-selected-count');
       expect(completeActionPanel).toContain('data-select-all');
       expect(completeActionPanel).toContain('data-clear-selection');
+      expect(res2.text).toContain('Focus an asset card or row and press Space or Enter to grab it. Use the arrow keys to reorder it, Space or Enter to commit, or Escape to cancel.');
       expect((completeActionPanel.match(/<section class="asset-action-group">[\s\S]*?<\/section>/g) || [])).toHaveLength(2);
     expect(completeActionPanel).toContain('<h3 class="asset-action-group-heading">Release</h3>');
     expect(completeActionPanel).toContain('<h3 class="asset-action-group-heading">File</h3>');
@@ -6681,17 +6705,41 @@ describe('asset browser HTTP workflow', () => {
       expect(completeActionPanel).toContain('name="destinationCategory"');
       expect(completeActionPanel).toContain(`formaction="/projects/${id}/assets/create-release"`);
       expect(completeActionPanel).toContain(`formaction="/projects/${id}/assets/move-selected"`);
-      expect(completeActionPanel).toMatch(/<button[^>]*form="bulk-select-form"[^>]*data-select-all[^>]*>Select all visible<\/button>/);
-      expect(completeActionPanel).toMatch(/<button[^>]*form="bulk-select-form"[^>]*data-clear-selection[^>]*>Clear selection<\/button>/);
       expect(completeActionPanel).toContain('data-auto-rename-form');
       expect(completeActionPanel).toContain('data-auto-rename-submit');
       expect(completeActionPanel).toContain(`name="categoryId" value="${cat.id}"`);
       expect(completeActionPanel).toContain('name="orderedAssetIds"');
       expect(completeActionPanel).toContain('name="selectedAssetIds" value="[]"');
       expect(completeActionPanel).toContain('data-asset-selection-form');
-      expect(completeActionPanel).toMatch(/<button type="submit" class="button button-primary button-small"[^>]*data-auto-rename-submit[^>]*>Auto Rename<\/button>/);
-      expect(completeActionPanel).toMatch(/<button type="button" class="button button-small"[^>]*data-select-all[^>]*>Select all visible<\/button>/);
-      expect(completeActionPanel).toMatch(/<button type="button" class="button button-small button-secondary"[^>]*data-clear-selection[^>]*>Clear selection<\/button>/);
+      const autoRenameButton = completeActionPanel.match(/<button\b(?=[^>]*data-auto-rename-submit)[^>]*>[\s\S]*?<\/button>/)?.[0] || '';
+      expect(autoRenameButton).toContain('type="submit"');
+      expect(autoRenameButton).toContain('aria-label="Auto Rename"');
+      expect(autoRenameButton).toContain('data-tooltip="Auto Rename"');
+      expect(autoRenameButton).toMatch(/\bdisabled\b/);
+      expect(autoRenameButton).toContain('aria-disabled="true"');
+      expect(autoRenameButton).toMatch(/<svg[^>]*aria-hidden="true"[^>]*focusable="false"/);
+      expect(autoRenameButton.replace(/<[^>]+>/g, '').trim()).toBe('');
+
+      for (const [hook, label] of [
+        ['data-select-all', 'Select all visible'],
+        ['data-clear-selection', 'Clear selection'],
+      ]) {
+        const button = completeActionPanel.match(new RegExp(`<button\\b(?=[^>]*${hook})[^>]*>[\\s\\S]*?<\\/button>`))?.[0] || '';
+        expect(button).toContain('type="button"');
+        expect(button).toContain('form="bulk-select-form"');
+        expect(button).toContain(`aria-label="${label}"`);
+        expect(button).toContain(`data-tooltip="${label}"`);
+        expect(button).not.toMatch(/\bdisabled\b/);
+        expect(button).toMatch(/<svg[^>]*aria-hidden="true"[^>]*focusable="false"/);
+        expect(button.replace(/<[^>]+>/g, '').trim()).toBe('');
+      }
+      const manageCategoriesLink = completeActionPanel.match(/<a\b(?=[^>]*data-dialog-open="project-asset-category-management-dialog")[^>]*>[\s\S]*?<\/a>/)?.[0] || '';
+      expect(manageCategoriesLink).toContain(`href="/projects/${id}/assets?category=${cat.id}&amp;manage_categories=1"`);
+      expect(manageCategoriesLink).toContain('class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--right"');
+      expect(manageCategoriesLink).toContain('aria-label="Manage Categories"');
+      expect(manageCategoriesLink).toContain('data-tooltip="Manage Categories"');
+      expect(manageCategoriesLink).toMatch(/<svg[^>]*aria-hidden="true"[^>]*focusable="false"/);
+      expect(manageCategoriesLink.replace(/<[^>]+>/g, '').trim()).toBe('');
       const completeSelectionControls = assetSelectionControlsHtml(completeActionPanel);
       expect(completeSelectionControls).not.toBe('');
       const topControlOrder = [
@@ -6699,29 +6747,26 @@ describe('asset browser HTTP workflow', () => {
         'data-select-all',
         'data-clear-selection',
         'data-dialog-open="project-asset-category-management-dialog"',
-        'class="selected-count-row"',
       ].map((marker) => completeSelectionControls.indexOf(marker));
       expect(topControlOrder.every((position) => position >= 0)).toBe(true);
       expect(topControlOrder[0]).toBeLessThan(topControlOrder[1]);
       expect(topControlOrder[1]).toBeLessThan(topControlOrder[2]);
       expect(topControlOrder[2]).toBeLessThan(topControlOrder[3]);
-      expect(topControlOrder[3]).toBeLessThan(topControlOrder[4]);
-      expect(completeSelectionControls).toMatch(
-        /data-clear-selection>Clear selection<\/button>\s*<a class="button button-small button-secondary" href="[^"]*manage_categories=1"\s+data-dialog-open="project-asset-category-management-dialog">Manage Categories<\/a>/
+      expect(completeSelectionControls.indexOf('data-clear-selection')).toBeLessThan(
+        completeSelectionControls.indexOf('data-dialog-open="project-asset-category-management-dialog"'),
       );
       expect(res2.text).not.toContain('Selection applies to this page');
 
       const ordinaryResponse = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
       const ordinaryActionPanel = assetActionsPanelHtml(ordinaryResponse.text);
-      expect(ordinaryActionPanel).toContain('<div class="asset-actions-panel asset-actions-panel--selection-only" data-asset-actions-panel>');
-      expect(ordinaryActionPanel).toContain('<span class="asset-actions-label">Category actions</span>');
-      expect((ordinaryActionPanel.match(/<span class="asset-actions-label">Category actions<\/span>/g) || [])).toHaveLength(1);
-      expect(ordinaryActionPanel).toContain('Drag assets to change their filename order');
+      expectProjectActionsSection(ordinaryActionPanel, { selectionOnly: true });
+      expect((ordinaryActionPanel.match(/<h2 id="project-actions-heading">Project actions<\/h2>/g) || [])).toHaveLength(1);
+      expect(ordinaryActionPanel).not.toContain('Drag assets to change their filename order');
       expect(ordinaryActionPanel).toContain('<h3 class="asset-action-group-heading">Release</h3>');
       expect(ordinaryActionPanel).toContain('<h3 class="asset-action-group-heading">File</h3>');
       const ordinarySelectionControls = assetSelectionControlsHtml(ordinaryActionPanel);
-      expect(ordinarySelectionControls).toMatch(
-        /data-clear-selection>Clear selection<\/button>\s*<a class="button button-small button-secondary" href="[^"]*manage_categories=1"\s+data-dialog-open="project-asset-category-management-dialog">Manage Categories<\/a>/
+      expect(ordinarySelectionControls.indexOf('data-clear-selection')).toBeLessThan(
+        ordinarySelectionControls.indexOf('data-dialog-open="project-asset-category-management-dialog"'),
       );
     expect(res2.text).toContain('<form id="asset-filters" class="app-dialog-form project-form" method="get" action="/projects/' + id + '/assets">');
     expect(res2.text).toContain('id="search" name="search"');
@@ -6754,7 +6799,7 @@ describe('asset browser HTTP workflow', () => {
     expect(inCat.id).toBeGreaterThan(0);
   });
 
-  it('places the selected count beneath one shared selection-controls contract on both asset surfaces', async () => {
+  it('places one results-meta selected count after display controls and outside both action-panel variants', async () => {
     const res = await createProject('Selected Count Placement Contract');
     const id = Number(res.headers.location.replace('/projects/', ''));
     const category = assetCategoryRepo.addProjectCategory({
@@ -6776,22 +6821,30 @@ describe('asset browser HTTP workflow', () => {
 
     for (const { response, autoRename } of surfaces) {
       const controls = assetSelectionControlsHtml(response.text);
+      const actionPanel = assetActionsPanelHtml(response.text);
       expect(controls).not.toContain('Selected assets');
       expect(controls).not.toBe('');
       expect((controls.match(/class="asset-selection-controls-area"/g) || [])).toHaveLength(1);
       expect((controls.match(/class="asset-selection-buttons-row"/g) || [])).toHaveLength(1);
-      expect((controls.match(/class="selected-count-row"/g) || [])).toHaveLength(1);
-      expect(controls).toContain('data-selected-count');
-      expect(controls).toContain('data-selected-total=');
+      expect(controls).not.toContain('data-selected-count');
+      expectProjectActionsSection(actionPanel, { selectionOnly: !autoRename });
+      expect(actionPanel).not.toContain('data-selected-count');
+      expect(actionPanel).not.toContain('Drag assets to change their filename order');
+
+      const selectedCounts = response.text.match(/<p class="results-meta" data-selected-count data-selected-total="\d+">\d+ of \d+ selected<\/p>/g) || [];
+      expect(selectedCounts).toHaveLength(1);
+      const displayControls = response.text.indexOf('<div class="asset-viewer-display-controls">');
+      const selectedCount = response.text.indexOf(selectedCounts[0]);
+      const actionPanelStart = response.text.indexOf('data-asset-actions-panel');
+      expect(displayControls).toBeGreaterThan(-1);
+      expect(selectedCount).toBeGreaterThan(displayControls);
+      expect(selectedCount).toBeLessThan(actionPanelStart);
 
       const buttonsRow = controls.indexOf('class="asset-selection-buttons-row"');
       const selectAll = controls.indexOf('data-select-all');
       const clear = controls.indexOf('data-clear-selection');
-      const countRow = controls.indexOf('class="selected-count-row"');
       expect(selectAll).toBeGreaterThan(buttonsRow);
       expect(clear).toBeGreaterThan(selectAll);
-      expect(countRow).toBeGreaterThan(clear);
-      expect(controls.indexOf('class="selected-count"')).toBeGreaterThan(countRow);
       if (autoRename) expect(controls.indexOf('data-auto-rename-submit')).toBeGreaterThan(buttonsRow);
       else expect(controls).not.toContain('data-auto-rename-submit');
     }
@@ -6799,13 +6852,10 @@ describe('asset browser HTTP workflow', () => {
     const style = await readStylesheetSource(surfaces[0].response.text);
     const controlsAreaRule = style.match(/(?:^|})\s*\.asset-selection-controls-area\s*\{([^}]*)\}/)?.[1] || '';
     const buttonsRowRule = style.match(/(?:^|})\s*\.asset-selection-buttons-row\s*\{([^}]*)\}/)?.[1] || '';
-    const countRowRule = style.match(/(?:^|})\s*\.selected-count-row\s*\{([^}]*)\}/)?.[1] || '';
-    const selectionOnlyRule = style.match(/(?:^|})\s*\.asset-actions-panel--selection-only\s+\.asset-actions-controls\s*\{([^}]*)\}/)?.[1] || '';
+    const actionControlsRule = style.match(/(?:^|})\s*\.asset-actions-controls\s*\{([^}]*)\}/)?.[1] || '';
     expect(controlsAreaRule).toMatch(/align-items:\s*flex-end/);
     expect(buttonsRowRule).toMatch(/justify-content:\s*flex-end/);
-    expect(countRowRule).toMatch(/align-self:\s*flex-end/);
-    expect(countRowRule).toMatch(/text-align:\s*right/);
-    expect(selectionOnlyRule).toMatch(/margin-inline-start:\s*auto/);
+    expect(actionControlsRule).toMatch(/margin-inline-start:\s*auto/);
   });
 
   it('uses ordinary filtered results for non-default search and sorting on a numeric category view', async () => {
@@ -6853,10 +6903,9 @@ describe('asset browser HTTP workflow', () => {
     expect(response.text).not.toContain('smaller-match');
 
     const actionPanel = assetActionsPanelHtml(response.text);
-    expect(actionPanel).toContain('<div class="asset-actions-panel asset-actions-panel--selection-only" data-asset-actions-panel>');
-    expect(actionPanel).toContain('<span class="asset-actions-label">Category actions</span>');
-    expect((actionPanel.match(/<span class="asset-actions-label">Category actions<\/span>/g) || [])).toHaveLength(1);
-    expect(actionPanel).toContain('Drag assets to change their filename order');
+    expectProjectActionsSection(actionPanel, { selectionOnly: true });
+    expect((actionPanel.match(/<h2 id="project-actions-heading">Project actions<\/h2>/g) || [])).toHaveLength(1);
+    expect(actionPanel).not.toContain('Drag assets to change their filename order');
     expect(actionPanel).toContain('<h3 class="asset-action-group-heading">Release</h3>');
     expect(actionPanel).toContain('<h3 class="asset-action-group-heading">File</h3>');
 
@@ -6879,10 +6928,9 @@ describe('asset browser HTTP workflow', () => {
       .get(`/projects/${id}/assets?category=${category.id}&sort=modified`)
       .expect(200);
     const modifiedActionPanel = assetActionsPanelHtml(modifiedResponse.text);
-    expect(modifiedActionPanel).toContain('<div class="asset-actions-panel asset-actions-panel--selection-only" data-asset-actions-panel>');
-    expect(modifiedActionPanel).toContain('<span class="asset-actions-label">Category actions</span>');
-    expect((modifiedActionPanel.match(/<span class="asset-actions-label">Category actions<\/span>/g) || [])).toHaveLength(1);
-    expect(modifiedActionPanel).toContain('Drag assets to change their filename order');
+    expectProjectActionsSection(modifiedActionPanel, { selectionOnly: true });
+    expect((modifiedActionPanel.match(/<h2 id="project-actions-heading">Project actions<\/h2>/g) || [])).toHaveLength(1);
+    expect(modifiedActionPanel).not.toContain('Drag assets to change their filename order');
     expect(modifiedActionPanel).toContain('<h3 class="asset-action-group-heading">Release</h3>');
     expect(modifiedActionPanel).toContain('<h3 class="asset-action-group-heading">File</h3>');
 
@@ -6890,18 +6938,16 @@ describe('asset browser HTTP workflow', () => {
       .get(`/projects/${id}/assets?category=${disabledCategory.id}`)
       .expect(200);
     const disabledActionPanel = assetActionsPanelHtml(disabledResponse.text);
-    expect(disabledActionPanel).toContain('<div class="asset-actions-panel asset-actions-panel--selection-only" data-asset-actions-panel>');
-    expect(disabledActionPanel).toContain('<span class="asset-actions-label">Category actions</span>');
-    expect((disabledActionPanel.match(/<span class="asset-actions-label">Category actions<\/span>/g) || [])).toHaveLength(1);
-    expect(disabledActionPanel).toContain('Drag assets to change their filename order');
+    expectProjectActionsSection(disabledActionPanel, { selectionOnly: true });
+    expect((disabledActionPanel.match(/<h2 id="project-actions-heading">Project actions<\/h2>/g) || [])).toHaveLength(1);
+    expect(disabledActionPanel).not.toContain('Drag assets to change their filename order');
 
     for (const categoryQuery of ['category=all', 'category=uncategorized']) {
       const ordinaryResponse = await agent.get(`/projects/${id}/assets?${categoryQuery}`).expect(200);
       const ordinaryActionPanel = assetActionsPanelHtml(ordinaryResponse.text);
-      expect(ordinaryActionPanel).toContain('<div class="asset-actions-panel asset-actions-panel--selection-only" data-asset-actions-panel>');
-      expect(ordinaryActionPanel).toContain('<span class="asset-actions-label">Category actions</span>');
-      expect((ordinaryActionPanel.match(/<span class="asset-actions-label">Category actions<\/span>/g) || [])).toHaveLength(1);
-      expect(ordinaryActionPanel).toContain('Drag assets to change their filename order');
+      expectProjectActionsSection(ordinaryActionPanel, { selectionOnly: true });
+      expect((ordinaryActionPanel.match(/<h2 id="project-actions-heading">Project actions<\/h2>/g) || [])).toHaveLength(1);
+      expect(ordinaryActionPanel).not.toContain('Drag assets to change their filename order');
     }
   });
 
@@ -7189,11 +7235,13 @@ describe('asset browser HTTP workflow', () => {
         expect(form).not.toContain('asset-selection-header');
         const selectionControls = assetSelectionControlsHtml(res2.text);
         expect(selectionControls).not.toBe('');
-        expect(selectionControls).toContain('data-selected-count');
+        expect(selectionControls).not.toContain('data-selected-count');
         expect(selectionControls).not.toMatch(/<span class="asset-actions-selection-label">Selected assets<\/span>/);
         expect(selectionControls).toContain('role="group" aria-label="Selection controls"');
         expect(selectionControls.indexOf('data-select-all')).toBeLessThan(selectionControls.indexOf('data-clear-selection'));
-        expect(selectionControls.indexOf('data-clear-selection')).toBeLessThan(selectionControls.indexOf('class="selected-count-row"'));
+        expect((res2.text.match(/data-selected-count/g) || [])).toHaveLength(1);
+        expect(res2.text.indexOf('<div class="asset-viewer-display-controls">')).toBeLessThan(res2.text.indexOf('data-selected-count'));
+        expect(res2.text.indexOf('data-selected-count')).toBeLessThan(res2.text.indexOf('data-asset-actions-panel'));
         expect(res2.text.indexOf('class="asset-selection-controls-area"')).toBeLessThan(res2.text.indexOf('class="asset-selection-controls"'));
         expect((form.match(/class="asset-action-group"/g) || []).length).toBe(2);
         expect(form).toMatch(/<h3 class="asset-action-group-heading">Release<\/h3>/);
@@ -7278,6 +7326,7 @@ describe('asset browser HTTP workflow', () => {
       expect(res2.text).not.toContain('add-to-release');
       expect(res2.text).not.toContain('data-select-all');
       expect(res2.text).not.toContain('data-release-select');
+      expect(res2.text).not.toContain('data-selected-count');
     });
   });
 
@@ -9731,7 +9780,7 @@ describe('asset browser HTTP workflow', () => {
         expect(res.text).toContain('Choose a valid destination category.');
         const selectedCheckbox = res.text.match(new RegExp(`<input type="checkbox"[^>]*name="selectedAssetIds" value="${asset.id}"[^>]*>`))?.[0];
         expect(selectedCheckbox).toContain('checked');
-        expect(res.text).toContain('<span class="selected-count" data-selected-count data-selected-total="1">0 of 1 selected</span>');
+        expect(res.text).toContain('<p class="results-meta" data-selected-count data-selected-total="1">0 of 1 selected</p>');
         expect(res.text).toContain('<input type="hidden" name="category" value="all">');
         expect(res.text).toContain('<input type="hidden" name="search" value="png">');
         expect(res.text).toContain('<input type="hidden" name="extension" value="png">');

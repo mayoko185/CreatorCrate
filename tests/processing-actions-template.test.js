@@ -198,7 +198,11 @@ describe('Processing actions placement', () => {
     expect(actionGroupHeadings(all.text).filter((h) => h === 'Release')).toHaveLength(1);
     expect(actionGroupHeadings(all.text).filter((h) => h === 'File')).toHaveLength(1);
     expect(actionGroupHeadings(all.text).filter((h) => h === 'Processing')).toHaveLength(1);
-    expect(all.text).toContain('<span class="asset-actions-label">Category actions</span>');
+    expect(all.text).toMatch(
+      /<section class="project-detail-section asset-actions-panel asset-actions-panel--selection-only" data-asset-actions-panel aria-labelledby="project-actions-heading">\s*<h2 id="project-actions-heading">Project actions<\/h2>\s*<div class="project-detail-section-body">/,
+    );
+    expect(all.text).not.toMatch(/<h2 class="app-section-title"[^>]*>Project actions<\/h2>/);
+    expect(all.text).not.toMatch(/<h2[^>]*(?:class|style)=[^>]*>Project actions<\/h2>/);
     expect(all.text).not.toContain('>Release actions<');
     expect(all.text).not.toContain('>Category &amp; file actions<');
 
