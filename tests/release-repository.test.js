@@ -20,6 +20,7 @@ function sampleProject(overrides = {}) {
     description: '',
     notes: '',
     status: 'tbd',
+    projectType: 'images',
     priority: 'normal',
     plannedDate: null,
     publishedDate: null,
@@ -139,6 +140,55 @@ describe('release repository', () => {
 
       expect(releaseRepo.findByProjectId(projectId, { includeArchived: true })).toEqual([]);
       expect(db.prepare('SELECT COUNT(*) AS count FROM release_assets').get().count).toBe(0);
+    });
+  });
+
+  describe('findRecentByProjectIds', () => {
+    it('returns at most five releases per project with single-project ordering and state semantics', () => {
+      const otherProject = projectRepo.create(sampleProject({ title: 'Other Project' }));
+      const releasesByProject = new Map([
+        [projectId, []],
+        [otherProject.id, []],
+      ]);
+
+      for (const [targetProjectId, prefix] of [[projectId, 'Primary'], [otherProject.id, 'Other']]) {
+        for (let index = 0; index < 7; index += 1) {
+          const release = releaseRepo.create({
+            projectId: targetProjectId,
+            ...sampleRelease({
+              title: `${prefix} ${index}`,
+              publishedDate: index === 4 ? '2026-01-01' : null,
+            }),
+          });
+          db.prepare(`UPDATE releases SET updated_at = ? WHERE id = ?`)
+            .run(`2026-01-${String(index + 1).padStart(2, '0')} 12:00:00`, release.id);
+          releasesByProject.get(targetProjectId).push(release.id);
+        }
+      }
+
+      const archivedId = releasesByProject.get(projectId)[5];
+      db.prepare(`UPDATE releases SET archived_at = '2026-02-01' WHERE id = ?`).run(archivedId);
+
+      const batch = releaseRepo.findRecentByProjectIds([
+        otherProject.id,
+        projectId,
+        otherProject.id,
+      ]);
+
+      for (const targetProjectId of [projectId, otherProject.id]) {
+        const batchRows = batch.filter((release) => release.project_id === targetProjectId);
+        expect(batchRows).toHaveLength(5);
+        expect(batchRows).toEqual(releaseRepo.findRecentByProjectId(targetProjectId, 5));
+      }
+      expect(batch.find((release) => release.id === archivedId)?.archived_at).toBeTruthy();
+      expect(batch.some((release) => release.published_date === '2026-01-01')).toBe(true);
+    });
+
+    it('does not query for empty project input', () => {
+      const prepareSpy = vi.spyOn(db, 'prepare');
+
+      expect(releaseRepo.findRecentByProjectIds([])).toEqual([]);
+      expect(prepareSpy).not.toHaveBeenCalled();
     });
   });
 

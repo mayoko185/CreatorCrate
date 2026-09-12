@@ -562,7 +562,12 @@ function renderProjectsPage(req, res, {
 
   const offset = (currentPage - 1) * PAGE_SIZE;
   const nsfwFilterEnabled = getNsfwFilterSettingsService(req).isEnabled();
-  const { rows } = workflowQueryService.getProjectList({ ...parsedQuery, offset, limit: PAGE_SIZE });
+  const { rows } = workflowQueryService.getProjectList({
+    ...parsedQuery,
+    offset,
+    limit: PAGE_SIZE,
+    includeGridInformation: parsedQuery.view === 'grid',
+  });
   const optionPresentation = getProjectOptionPresentation(req);
   const pageUrl = buildPageUrl(req, parsedQuery, currentPage, pageDefaultsService, listQuery);
   const filtersActive = Boolean(

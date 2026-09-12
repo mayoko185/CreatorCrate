@@ -25,7 +25,11 @@
 
 {% block content %}
   {% call pageHeading.render("Browse active and archived project records.") %}
-    <a class="button button-primary" href="/projects/new" data-dialog-open="project-create-dialog" data-dialog-invocation>New Project</a>
+    <a class="button button-small button-primary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--left"
+       href="/projects/new" data-dialog-open="project-create-dialog" data-dialog-invocation
+       aria-label="New Project" data-tooltip="New Project">
+      {{ icons.icon('plus') }}
+    </a>
   {% endcall %}
 
   {% if notice %}

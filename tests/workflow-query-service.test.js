@@ -162,6 +162,8 @@ describe('workflow query service', () => {
   let primaryImageRepository;
   let preferenceRepository;
   let tagRepository;
+  let assetRepository;
+  let releaseRepository;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-wqs-'));
@@ -171,9 +173,13 @@ describe('workflow query service', () => {
     primaryImageRepository = createProjectPrimaryImageRepository(db);
     preferenceRepository = createAssetBrowserPreferenceRepository(db);
     tagRepository = createTagRepository(db);
+    assetRepository = createAssetRepository(db);
+    releaseRepository = createReleaseRepository(db);
     service = createWorkflowQueryService({
       db,
+      assetRepository,
       projectPrimaryImageRepository: primaryImageRepository,
+      releaseRepository,
       tagRepository,
       dashboardSectionRegistryProvider,
     });
@@ -563,11 +569,94 @@ describe('workflow query service', () => {
       findBatch.mockRestore();
     });
 
-    it('handles an empty project page without issuing asset lookups', () => {
-      expect(service.getProjectList({ limit: 25, offset: 0 })).toEqual({
+    it('attaches asset totals and recent releases only to paged Projects when grid information is enabled', () => {
+      const projects = ['A', 'B', 'C'].map((letter) => insertProject(db, { title: `Grid Page ${letter}` }));
+      insertAsset(db, {
+        projectId: projects[1].id,
+        relativePath: 'first.png',
+        filename: 'first.png',
+      });
+      insertAsset(db, {
+        projectId: projects[1].id,
+        relativePath: 'second.png',
+        filename: 'second.png',
+      });
+      const release = insertRelease(db, { projectId: projects[1].id, title: 'Recent B' });
+      insertRelease(db, { projectId: projects[0].id, title: 'Outside Page' });
+      const countBatch = vi.spyOn(assetRepository, 'countByProjectIds');
+      const releaseBatch = vi.spyOn(releaseRepository, 'findRecentByProjectIds');
+
+      const result = service.getProjectList({
+        sortBy: 'title',
+        order: 'asc',
+        limit: 2,
+        offset: 1,
+        includeGridInformation: true,
+      });
+
+      expect(result.total).toBe(3);
+      expect(result.rows.map((project) => project.title)).toEqual(['Grid Page B', 'Grid Page C']);
+      expect(result.rows[0]).toMatchObject({ assetCount: 2 });
+      expect(result.rows[0].recentReleases.map((item) => item.id)).toEqual([release.id]);
+      expect(result.rows[1]).toMatchObject({ assetCount: 0, recentReleases: [] });
+      expect(countBatch).toHaveBeenCalledExactlyOnceWith([projects[1].id, projects[2].id]);
+      expect(releaseBatch).toHaveBeenCalledExactlyOnceWith([projects[1].id, projects[2].id]);
+    });
+
+    it('does not run grid-information batches or alter ordinary rows when enrichment is disabled', () => {
+      insertProject(db, { title: 'Ordinary List Row' });
+      const countBatch = vi.spyOn(assetRepository, 'countByProjectIds');
+      const releaseBatch = vi.spyOn(releaseRepository, 'findRecentByProjectIds');
+
+      const [row] = service.getProjectList({ limit: 25, offset: 0 }).rows;
+
+      expect(countBatch).not.toHaveBeenCalled();
+      expect(releaseBatch).not.toHaveBeenCalled();
+      expect(row).not.toHaveProperty('assetCount');
+      expect(row).not.toHaveProperty('recentReleases');
+      expect(row).toHaveProperty('primaryImage');
+      expect(row).toHaveProperty('tags');
+    });
+
+    it('adds exactly two fixed statements for grid information without changing the ordinary query count', () => {
+      const project = insertProject(db, { title: 'Grid Query Count' });
+      const asset = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'cover.png',
+        filename: 'cover.png',
+        extension: 'png',
+        mimeType: 'image/png',
+      });
+      primaryImageRepository.setPrimaryImage(project.id, asset.id);
+      const counter = instrumentStatementExecution(db);
+      const countedService = createWorkflowQueryService({
+        db,
+        projectPrimaryImageRepository: primaryImageRepository,
+      });
+
+      counter.reset();
+      countedService.getProjectList({ limit: 25, offset: 0 });
+      expect(counter.count()).toBe(5);
+
+      counter.reset();
+      countedService.getProjectList({ limit: 25, offset: 0, includeGridInformation: true });
+      expect(counter.count()).toBe(7);
+    });
+
+    it('handles an empty project page without issuing grid-information batches', () => {
+      const countBatch = vi.spyOn(assetRepository, 'countByProjectIds');
+      const releaseBatch = vi.spyOn(releaseRepository, 'findRecentByProjectIds');
+
+      expect(service.getProjectList({
+        limit: 25,
+        offset: 0,
+        includeGridInformation: true,
+      })).toEqual({
         rows: [],
         total: 0,
       });
+      expect(countBatch).not.toHaveBeenCalled();
+      expect(releaseBatch).not.toHaveBeenCalled();
     });
   });
 

@@ -46,6 +46,12 @@ function extractProjectCards(html) {
   return html.match(/<article\b[^>]*data-project-card[^>]*>[\s\S]*?<\/article>/g) || [];
 }
 
+function extractProjectReleaseItem(card, releaseId) {
+  return card.match(/<li class="project-grid-card-info-release">[\s\S]*?<\/li>/g)?.find((item) => (
+    item.includes(`href="/releases/${releaseId}"`)
+  )) || '';
+}
+
 function extractPageHeadingActions(html) {
   return html.match(/<div class="page-heading-actions">([\s\S]*?)<\/div>/)?.[1] || '';
 }
@@ -271,6 +277,21 @@ function extractReleaseItem(releaseList, releaseId) {
   )) || '';
 }
 
+async function capturePreparedSql(db, execute) {
+  const originalPrepare = db.prepare;
+  const statements = [];
+  db.prepare = function prepare(sql, ...args) {
+    statements.push(String(sql));
+    return originalPrepare.call(this, sql, ...args);
+  };
+  try {
+    await execute();
+  } finally {
+    db.prepare = originalPrepare;
+  }
+  return statements;
+}
+
 describe('project HTTP workflow', () => {
   let db;
   let app;
@@ -400,6 +421,38 @@ describe('project HTTP workflow', () => {
     expect(extractTagFilter(res.text)).toContain('No tags available');
     expect(extractProjectFilter(res.text)).toContain('aria-label="Project filter: All projects"');
     expect(extractProjectFilter(res.text)).toMatch(/No matching projects|No projects available/);
+  });
+
+  it('requests grid information only when the resolved Projects view is grid', async () => {
+    await createProject({ title: 'Resolved View Project' });
+    const capture = (url) => capturePreparedSql(db, () => agent.get(url).expect(200));
+    const assetBatchCount = (statements) => statements.filter((sql) => (
+      sql.includes('COUNT(assets.id) AS asset_count')
+    )).length;
+    const releaseBatchCount = (statements) => statements.filter((sql) => (
+      sql.includes('ROW_NUMBER() OVER') && sql.includes('recent_rank <= 5')
+    )).length;
+
+    const fallbackGrid = await capture('/projects');
+    expect(assetBatchCount(fallbackGrid)).toBe(1);
+    expect(releaseBatchCount(fallbackGrid)).toBe(1);
+
+    const normalizedGrid = await capture('/projects?view=invalid');
+    expect(assetBatchCount(normalizedGrid)).toBe(1);
+    expect(releaseBatchCount(normalizedGrid)).toBe(1);
+
+    const explicitList = await capture('/projects?view=list');
+    expect(assetBatchCount(explicitList)).toBe(0);
+    expect(releaseBatchCount(explicitList)).toBe(0);
+
+    saveProjectDefault('view', 'list');
+    const savedList = await capture('/projects?view=list');
+    expect(assetBatchCount(savedList)).toBe(0);
+    expect(releaseBatchCount(savedList)).toBe(0);
+
+    const explicitGridOverSavedList = await capture('/projects?view=grid');
+    expect(assetBatchCount(explicitGridOverSavedList)).toBe(1);
+    expect(releaseBatchCount(explicitGridOverSavedList)).toBe(1);
   });
 
   it('renders Projects Filter, Defaults, and the NSFW toggle with Reset inside Filter', async () => {
@@ -1283,39 +1336,38 @@ describe('project HTTP workflow', () => {
     expect(projectsTemplate).not.toContain('project-card-meta--tags');
     expect(res.text).not.toContain('project-card-meta--tags');
 
-    expect(availableCard).toContain(`data-project-card-link href="/projects/${availableId}">Available Primary Image</a>`);
+    expect(availableCard).toContain(`data-project-card-link href="/projects/${availableId}"`);
     expect(availableCard).toMatch(
       /<img class="project-card-media-image" data-preview-image src="\/projects\/\d+\/assets\/\d+\/preview\?v=[0-9a-f]+" alt="Preview of cover\.png" loading="lazy" decoding="async">/
     );
     expect(availableCard).toContain('data-preview-enhancement');
     expect(availableCard).toContain('data-preview-fallback');
     expect(availableCard).toContain(`class="project-card project-card--grid project-grid-card" data-project-card`);
-    expect(availableCard).toContain(`class="project-grid-card-preview-link" href="/projects/${availableId}"`);
+    expect(availableCard).toContain(`class="project-grid-card-preview-link" data-project-card-link href="/projects/${availableId}"`);
     expect(availableCard).not.toContain('project-list-card');
     expect(availableCard).not.toContain('/original');
     expect(availableCard).not.toContain('/thumbnail');
     expect(availableCard).not.toContain('project-grid-card-top');
     expect(availableCard).toMatch(
-      /<div class="project-grid-card-status" aria-label="Project badges">\s*<span class="status-badge project-option-badge project-type-badge" style="--project-badge-bg: #22D3EE; --project-badge-tint: 18%; --project-badge-fg: #22D3EE">Images<\/span>\s*<span class="status-badge project-option-badge project-status-badge status-badge--active" style="--project-badge-bg: #34D399; --project-badge-tint: 18%; --project-badge-fg: #34D399">Ready<\/span>\s*<\/div>\s*<div class="project-grid-card-preview[\s\S]*?<a class="project-grid-card-preview-link"/
+      /<div class="project-grid-card-status" aria-label="Project badges">\s*<span class="status-badge project-option-badge project-status-badge status-badge--active" style="--project-badge-bg: #34D399; --project-badge-tint: 18%; --project-badge-fg: #34D399">Ready<\/span>\s*<span class="status-badge project-option-badge project-type-badge" style="--project-badge-bg: #22D3EE; --project-badge-tint: 18%; --project-badge-fg: #22D3EE">Images<\/span>\s*<\/div>\s*<div class="project-grid-card-preview[\s\S]*?<a class="project-grid-card-preview-link"/
     );
     expect(availableCard).not.toContain('project-grid-card-priority');
     expect(availableCard).not.toMatch(/Priority:\s*High/);
     expect(availableCard).not.toMatch(/<dt>Priority<\/dt>/);
     expect(availableCard).toMatch(
-      /<div class="project-grid-card-preview[\s\S]*?<div class="project-grid-card-info" data-project-info-card popover="manual"[^>]*>[\s\S]*?<h3 class="project-grid-card-info-heading">Project information<\/h3>[\s\S]*?<dt>Status<\/dt>/
+      /<div class="project-grid-card-preview[\s\S]*?<div class="project-grid-card-info" data-project-info-card popover="manual" role="group" aria-label="Project information">[\s\S]*?<h3 class="project-grid-card-info-heading">Available Primary Image<\/h3>[\s\S]*?<dt>Status<\/dt>/
     );
     expect(availableCard).toContain('data-project-grid-preview');
     expect(availableCard).toContain('<dl class="project-grid-card-info-list">');
     expect(availableCard).toMatch(
       /<dt>Type<\/dt>\s*<dd>[\s\S]*?<span class="status-badge project-option-badge project-type-badge" style="--project-badge-bg: #22D3EE; --project-badge-tint: 18%; --project-badge-fg: #22D3EE">Images<\/span>[\s\S]*?<\/dd>/
     );
-    expect((availableCard.match(/class="project-grid-card-info-row"/g) || [])).toHaveLength(3);
+    expect((availableCard.match(/class="project-grid-card-info-row"/g) || [])).toHaveLength(5);
     expect(availableCard).toContain('<div class="project-grid-card-info-section">');
     expect(availableCard).toContain('<span class="project-grid-card-info-section-label">Tags</span>');
     expect(availableCard).toContain('class="project-grid-card-info-empty">No tags assigned</span>');
-    expect(availableCard).toMatch(
-      /<div class="project-grid-card-title-area">\s*<h2 class="project-grid-card-title">\s*<a class="project-card-link"[^>]*>Available Primary Image<\/a>\s*<\/h2>\s*<\/div>/
-    );
+    expect(availableCard).not.toContain('project-grid-card-title-area');
+    expect(availableCard).not.toContain('project-grid-card-title');
 
     expect(noneCard).toContain('data-primary-image-state="none"');
     expect(noneCard).toContain('No image');
@@ -1327,8 +1379,11 @@ describe('project HTTP workflow', () => {
 
     const availableRow = db.prepare('SELECT updated_at FROM projects WHERE id = ?').get(availableId);
     expect(availableCard).toMatch(/<dt>Status<\/dt>\s*<dd>[\s\S]*Ready[\s\S]*<\/dd>/);
-    expect(availableCard).toContain(`<dt>Updated</dt>`);
+    expect(availableCard).toContain('<dt>Total assets</dt>');
+    expect(availableCard).toMatch(/<dt>Total assets<\/dt>\s*<dd>1<\/dd>/);
+    expect(availableCard.indexOf('<dt>Created</dt>')).toBeLessThan(availableCard.indexOf('<dt>Updated</dt>'));
     expect(availableCard).toContain(availableRow.updated_at);
+    expect(noneCard).toContain('class="project-grid-card-info-empty">No release records</span>');
     expect(availableCard).not.toMatch(/<dt>(?:Planned|Published)<\/dt>/);
     expect(noneCard).not.toMatch(/<dt>(?:Planned|Published)<\/dt>/);
 
@@ -1376,6 +1431,74 @@ describe('project HTTP workflow', () => {
     expect(noneListCard).not.toMatch(/<dt>(?:Planned|Published)<\/dt>/);
   });
 
+  it('renders recent Release details and the publication-date fallback in grid Project information', async () => {
+    const projectId = await createProject({ title: 'Release Popup Project', status: 'ready' });
+    const insertRelease = db.prepare(`
+      INSERT INTO releases (
+        project_id, title, planned_date, planned_time, published_date, archived_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      RETURNING id
+    `);
+    const publishedId = insertRelease.get(
+      projectId,
+      'Published Popup Release',
+      '2026-10-01',
+      '09:30',
+      '2026-10-03',
+      null,
+      '2026-10-04 10:00:00',
+    ).id;
+    const plannedId = insertRelease.get(
+      projectId,
+      'Planned Popup Release',
+      '2026-11-05',
+      '14:45',
+      null,
+      null,
+      '2026-10-04 09:00:00',
+    ).id;
+    const undatedId = insertRelease.get(
+      projectId,
+      'Undated Popup Release',
+      null,
+      null,
+      null,
+      null,
+      '2026-10-04 08:00:00',
+    ).id;
+    const archivedId = insertRelease.get(
+      projectId,
+      'Archived Popup Release',
+      '2026-12-01',
+      null,
+      null,
+      '2026-10-04 07:00:00',
+      '2026-10-04 07:00:00',
+    ).id;
+
+    const response = await agent.get('/projects').expect(200);
+    const card = extractProjectCard(response.text, projectId);
+    const published = extractProjectReleaseItem(card, publishedId);
+    const planned = extractProjectReleaseItem(card, plannedId);
+    const undated = extractProjectReleaseItem(card, undatedId);
+    const archived = extractProjectReleaseItem(card, archivedId);
+
+    expect(card).toContain('<span class="project-grid-card-info-section-label">Releases</span>');
+    expect(published).toContain(`href="/releases/${publishedId}">Published Popup Release</a>`);
+    expect(published).toContain('published 2026-10-03');
+    expect(published).not.toContain('planned 2026-10-01');
+    expect(published).toContain('updated 2026-10-04 10:00:00');
+    expect(planned).toContain(`href="/releases/${plannedId}">Planned Popup Release</a>`);
+    expect(planned).toContain('planned 2026-11-05 14:45');
+    expect(planned).toContain('updated 2026-10-04 09:00:00');
+    expect(undated).toContain(`href="/releases/${undatedId}">Undated Popup Release</a>`);
+    expect(undated).toMatch(/>\s*—\s*· updated 2026-10-04 08:00:00/);
+    expect(archived).toContain(`href="/releases/${archivedId}">Archived Popup Release</a>`);
+    expect(archived).toContain('<span class="status-badge status-badge--archived">Archived</span>');
+    expect(card).not.toContain('release-thumbnail');
+    expect(card).not.toContain('social-preparation');
+  });
+
   it('blurs only NSFW-tagged project primary images across project surfaces when enabled', async () => {
     const nsfwTag = app.locals.tagService.createTag({ name: 'NSFW' });
     const nsfwProjectId = await createProject({ title: 'NSFW Project', status: 'ready' });
@@ -1415,7 +1538,7 @@ describe('project HTTP workflow', () => {
     expect(nsfwGridCard).not.toMatch(/class="[^"]*project-card-media--nsfw-clipped/);
     expect(safeGridCard).not.toContain('project-image--nsfw-blurred');
     expect(safeGridCard).not.toContain('project-card-media--nsfw-clipped');
-    expect(nsfwGridCard).toContain(`data-project-card-link href="/projects/${nsfwProjectId}">NSFW Project</a>`);
+    expect(nsfwGridCard).toContain(`data-project-card-link href="/projects/${nsfwProjectId}"`);
     expect(nsfwGridCard).toContain('>Ready</span>');
     expect(nsfwGridCard).toContain('>NSFW</li>');
 
@@ -1489,10 +1612,13 @@ describe('project HTTP workflow', () => {
   });
 
   it('serves scoped responsive project-card presentation contracts', async () => {
+    const projectId = await createProject({ title: 'Responsive Badge Layout', status: 'ready' });
     const page = await agent.get('/projects').expect(200);
     const css = (await agent.get('/creatorcrate.css').expect(200)).text;
+    const gridBadgeRow = extractProjectCard(page.text, projectId).match(/<div class="project-grid-card-status"[^>]*>[\s\S]*?<\/div>/)?.[0] || '';
 
     expect(page.text).toContain('<link rel="stylesheet" href="/creatorcrate.css">');
+    expect(gridBadgeRow).toMatch(/project-status-badge[\s\S]*project-type-badge/);
     expect(css).toMatch(/\.project-grid\s*\{[\s\S]*?--project-card-min:\s*15rem;[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(min\(100%,\s*var\(--project-card-min\)\),\s*1fr\)\)/);
     expect(css).toMatch(/@media\s*\(max-width:\s*540px\)[\s\S]*?\.project-grid\s*\{[\s\S]*?--project-card-min:\s*9rem;[\s\S]*?gap:\s*var\(--space-md\)/);
     expect(css).toMatch(/\.project-list\s*>\s*li:not\(\.project-list-item\)\s*\{[^}]*padding:\s*0\.75rem 0;[^}]*border-bottom:\s*1px solid var\(--border\);/);
@@ -1508,17 +1634,41 @@ describe('project HTTP workflow', () => {
     expect(css).toMatch(/\.project-card-meta dd\s*\{[^}]*overflow-wrap:\s*anywhere/);
     expect(css).toMatch(/@media\s*\(max-width:\s*540px\)\s*\{[\s\S]*?\.project-card-meta\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)/);
     expect(css).toMatch(/\.project-card:focus-within\s*\{[\s\S]*?outline:\s*2px solid var\(--focus-ring\)[\s\S]*?transform:\s*scale\(1\.01\)/);
-    expect(css).toMatch(/\.project-card--grid \.project-card-media\s*\{[\s\S]*?margin:\s*var\(--space-sm\) var\(--space-sm\) 0;/);
+    const gridMediaRule = css.match(/\.project-card--grid \.project-card-media\s*\{[^}]*\}/)?.[0] || '';
+    const gridPreviewRule = css.match(/\.project-grid-card-preview\s*\{[^}]*\}/)?.[0] || '';
+    const gridStatusRule = css.match(/\.project-grid-card-status\s*\{[^}]*\}/)?.[0] || '';
+    const gridTypeBadgeRule = css.match(/\.project-grid-card-status\s*>\s*\.project-type-badge\s*\{[^}]*\}/)?.[0] || '';
+    const gridPreviewRadiiRule = css.match(/\.project-grid-card-preview-link,\s*\.project-grid-card-preview \.project-card-media-image,\s*\.project-grid-card-preview \.project-card-media-fallback\s*\{[^}]*\}/)?.[0] || '';
+    const listCardRule = css.match(/\.project-list-card\s*\{[^}]*\}/)?.[0] || '';
+    const listMediaRule = css.match(/\.project-list-card-media\s*\{[^}]*\}/)?.[0] || '';
+
+    expect(gridMediaRule).toMatch(/margin:\s*var\(--space-sm\) 0 0;/);
+    expect(gridMediaRule).toMatch(/border-bottom:\s*0;/);
+    expect(gridMediaRule).toMatch(/border-radius:\s*var\(--radius-md\) var\(--radius-md\) var\(--radius-lg\) var\(--radius-lg\);/);
+    expect(css).not.toMatch(/\.project-card--grid \.project-card-media\s*\{[^}]*margin:\s*var\(--space-sm\) var\(--space-sm\) 0;/);
     expect(css).toMatch(/\.project-grid-card\s*\{[\s\S]*?position:\s*relative;[\s\S]*?overflow:\s*visible/);
     expect(css).toMatch(/\.project-grid-card:hover,[\s\S]*?\.project-grid-card:focus-within\s*\{[\s\S]*?z-index:\s*60/);
     expect(css).not.toMatch(/\.project-grid-card-top\s*\{/);
-    expect(css).toMatch(/\.project-grid-card-status\s*\{[\s\S]*?display:\s*flex;[\s\S]*?align-items:\s*flex-start;[\s\S]*?padding:\s*var\(--space-sm\)\s+var\(--space-sm\)\s+0;/);
+    expect(gridStatusRule).toMatch(/display:\s*flex;/);
+    expect(gridStatusRule).toMatch(/flex-wrap:\s*wrap;/);
+    expect(gridStatusRule).toMatch(/justify-content:\s*space-between;/);
+    expect(gridStatusRule).toMatch(/align-items:\s*flex-start;/);
+    expect(gridStatusRule).toMatch(/padding:\s*var\(--space-sm\)\s+var\(--space-sm\)\s+0;/);
+    expect(gridTypeBadgeRule).toMatch(/margin-inline-start:\s*auto;/);
+    expect(css).not.toMatch(/\.project-grid-card-status\s*>\s*\.project-status-badge\s*\{[^}]*margin-inline-start:\s*auto;/);
+    expect(css).not.toMatch(/\.project-list-card-status[^}]*margin-inline-start:\s*auto;/);
     expect(css).not.toMatch(/\.project-grid-card-status\s*\{[^}]*position:\s*absolute;/);
     expect(css).not.toMatch(/\.project-grid-card-priority\s*\{/);
     expect(css).not.toMatch(/\.project-list-card-priority\s*\{/);
     expect(css).not.toMatch(/\.project-detail-priority\s*\{/);
-    expect(css).toMatch(/\.project-grid-card-preview\s*\{[\s\S]*?position:\s*relative;[\s\S]*?overflow:\s*visible/);
+    expect(gridPreviewRule).toMatch(/position:\s*relative;/);
+    expect(gridPreviewRule).toMatch(/overflow:\s*visible;/);
+    expect(gridPreviewRule).not.toMatch(/overflow:\s*hidden;/);
     expect(css).toMatch(/\.project-grid-card-preview\s*\{[\s\S]*?--project-info-top:\s*0px;[\s\S]*?--project-info-left:\s*0px/);
+    expect(gridPreviewRadiiRule).toMatch(/border-top-left-radius:\s*var\(--radius-md\);/);
+    expect(gridPreviewRadiiRule).toMatch(/border-top-right-radius:\s*var\(--radius-md\);/);
+    expect(gridPreviewRadiiRule).toMatch(/border-bottom-left-radius:\s*var\(--radius-lg\);/);
+    expect(gridPreviewRadiiRule).toMatch(/border-bottom-right-radius:\s*var\(--radius-lg\);/);
     expect(css).toMatch(/\.project-grid-card-info\s*\{[\s\S]*?display:\s*none[\s\S]*?position:\s*fixed[\s\S]*?inset:\s*auto/);
     expect(css).toMatch(/\.project-grid-card-info\s*\{[\s\S]*?width:\s*min\(24rem,\s*calc\(100vw\s*-\s*2rem\)\)[\s\S]*?max-height:\s*calc\(100vh\s*-\s*1rem\)[\s\S]*?margin:\s*0[\s\S]*?overflow:\s*auto[\s\S]*?padding:\s*var\(--space-md\)[\s\S]*?border:\s*1px solid var\(--border-strong\)[\s\S]*?border-radius:\s*var\(--radius-md\)[\s\S]*?background:\s*color-mix\([\s\S]*?backdrop-filter:\s*blur\(10px\)[\s\S]*?box-shadow:\s*var\(--shadow-lg\)[\s\S]*?opacity:\s*0[\s\S]*?visibility:\s*hidden[\s\S]*?pointer-events:\s*none/);
     expect(css).toMatch(/\.project-grid-card-info\[data-positioned="true"\]\s*\{[\s\S]*?top:\s*var\(--project-info-top, 0\)[\s\S]*?left:\s*var\(--project-info-left, 0\)/);
@@ -1529,9 +1679,16 @@ describe('project HTTP workflow', () => {
     expect(css).toMatch(/\.project-grid-card-info-section\s*\{[\s\S]*?margin-top:\s*var\(--space-sm\)[\s\S]*?padding-top:\s*var\(--space-sm\)[\s\S]*?border-top:\s*1px solid var\(--border\)/);
     expect(css).toMatch(/\.project-grid-card-info-tags\s*\{[\s\S]*?display:\s*flex[\s\S]*?flex-wrap:\s*wrap[\s\S]*?gap:\s*var\(--space-xs\)/);
     expect(css).toMatch(/\.project-grid-card-info-tags li\s*\{[\s\S]*?padding:\s*0\.2rem 0\.45rem[\s\S]*?border-radius:\s*var\(--radius-sm\)[\s\S]*?background:\s*var\(--surface\)[\s\S]*?font-size:\s*0\.75rem/);
+    expect(css).toMatch(/\.project-grid-card-info-releases\s*\{[^}]*display:\s*grid;[^}]*gap:\s*var\(--space-xs\);[^}]*list-style:\s*none;/);
+    expect(css).toMatch(/\.project-grid-card-info-release-heading a\s*\{[^}]*min-width:\s*0;[^}]*overflow-wrap:\s*anywhere;[^}]*word-break:\s*break-word;/);
+    expect(css).not.toMatch(/\.project-grid-card-title(?:-area)?(?:\s|\.|\{)/);
     expect(css).toMatch(/@media\s*\(max-width:\s*540px\)[\s\S]*?\.project-grid-card-info-row\s*\{[\s\S]*?grid-template-columns:\s*minmax\(5rem,\s*auto\)\s+minmax\(0,\s*1fr\)[\s\S]*?gap:\s*var\(--space-xs\)/);
     expect(css).not.toMatch(/\.project-card--grid \.project-card-details\s*\{[\s\S]*?display:/);
     expect(css).toMatch(/\.project-list-card\s*\{[\s\S]*?grid-template-columns:\s*clamp\(7rem,\s*20%,\s*15rem\)\s+minmax\(0,\s*1fr\)/);
+    expect(listCardRule).toMatch(/gap:\s*var\(--space-md\);/);
+    expect(listCardRule).toMatch(/padding:\s*var\(--space-sm\);/);
+    expect(listMediaRule).toMatch(/margin:\s*0;/);
+    expect(listMediaRule).toMatch(/border-radius:\s*var\(--radius-md\);/);
     expect(css).toMatch(/\.project-list-card-media\s*\{[\s\S]*?min-height:\s*10rem/);
     expect(css).toMatch(/\.project-list-card-media-image\s*\{[\s\S]*?width:\s*100%;[\s\S]*?height:\s*100%;[\s\S]*?object-fit:\s*contain/);
     expect(css).toMatch(/\.project-list-card \.project-list-card-media-link\s*\{[^}]*color:\s*inherit;[^}]*font-weight:\s*normal;/);
@@ -2033,10 +2190,22 @@ describe('project HTTP workflow', () => {
     ]);
     const dialog = projects.text.match(/<dialog id="project-create-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
     const ids = [...projects.text.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
-    const newProjectOpeners = projects.text.match(/<a class="button button-primary" href="\/projects\/new" data-dialog-open="project-create-dialog" data-dialog-invocation>New Project<\/a>/g) || [];
+    const headingActions = extractPageHeadingActions(projects.text);
+    const headingNewProject = headingActions.match(/<a\b[^>]*href="\/projects\/new"[^>]*>[\s\S]*?<\/a>/)?.[0] || '';
+    const headingNewProjectContent = headingNewProject.match(/>([\s\S]*)<\/a>/)?.[1] || '';
+    const emptyState = projects.text.match(/<div class="empty-state">[\s\S]*?<\/div>\s*<\/div>/)?.[0] || '';
 
     expect((projects.text.match(/<dialog id="project-create-dialog"/g) || [])).toHaveLength(1);
-    expect(newProjectOpeners).toHaveLength(2);
+    expect(headingNewProject).toContain('class="button button-small button-primary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--left"');
+    expect(headingNewProject).toContain('href="/projects/new"');
+    expect(headingNewProject).toContain('data-dialog-open="project-create-dialog"');
+    expect(headingNewProject).toContain('data-dialog-invocation');
+    expect(headingNewProject).toContain('aria-label="New Project"');
+    expect(headingNewProject).toContain('data-tooltip="New Project"');
+    expect(headingNewProjectContent).toContain('<svg');
+    expect(headingNewProjectContent).toContain('<path d="M12 5v14M5 12h14"/>');
+    expect(headingNewProjectContent).not.toContain('New Project');
+    expect(emptyState).toContain('<a class="button button-primary" href="/projects/new" data-dialog-open="project-create-dialog" data-dialog-invocation>New Project</a>');
     expect(dialog).not.toBe('');
     expect(dialog).not.toMatch(/<dialog\b[^>]*\bopen(?:\s|>|=)/);
     expect(dialog).toContain('<form id="project-create-form" method="post" action="/projects"');

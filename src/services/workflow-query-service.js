@@ -374,6 +374,8 @@ export function isPrimaryImageAssetUsable(asset, { kritaQuality = null } = {}) {
  *   cross-project Asset Viewer page model
  * @param {object} [deps.assetWorkflowMetadataService] — source image metadata
  *   reader used for post-canonicalization Asset Viewer grid enrichment
+ * @param {object} [deps.assetRepository] — asset repository for page-local
+ *   batch enrichment
  * @param {object} [deps.releaseRepository] — release repository for page-local
  *   batch enrichment
  * @param {object} [deps.tagRepository] — shared project/asset tag repository
@@ -382,6 +384,7 @@ export function createWorkflowQueryService({
   db,
   projectOptionCatalogueService,
   assetWorkflowMetadataService,
+  assetRepository: injectedAssetRepository,
   projectPrimaryImageRepository,
   assetBrowserPreferenceService: injectedAssetBrowserPreferenceService,
   releaseRepository: injectedReleaseRepository,
@@ -395,7 +398,7 @@ export function createWorkflowQueryService({
   const socialPrepRepository = injectedSocialPrepRepository ?? createSocialPrepRepository(db);
   const socialPrepSettingsService = injectedSocialPrepSettingsService
     ?? createSocialPrepSettingsService({ appMetaRepository: createAppMetaRepository(db) });
-  const assetRepository = createAssetRepository(db);
+  const assetRepository = injectedAssetRepository ?? createAssetRepository(db);
   const assetCategoryRepository = createAssetCategoryRepository(db);
   const primaryImageRepository = projectPrimaryImageRepository ?? createProjectPrimaryImageRepository(db);
   const tagRepository = injectedTagRepository ?? createTagRepository(db);
@@ -885,18 +888,53 @@ export function createWorkflowQueryService({
   }
 
   /**
+   * Attach the bounded information needed only by Projects grid cards.
+   * Both repositories receive the already-paged Project IDs in one batch.
+   *
+   * @param {Array} projects
+   * @returns {Array}
+   */
+  function attachProjectGridInformation(projects) {
+    if (!Array.isArray(projects) || projects.length === 0) return [];
+
+    const projectIds = projects.map((project) => project.id);
+    const assetCountsByProjectId = new Map(
+      assetRepository.countByProjectIds(projectIds)
+        .map((row) => [row.project_id, row.asset_count])
+    );
+    const recentReleasesByProjectId = new Map();
+
+    for (const release of releaseRepository.findRecentByProjectIds(projectIds)) {
+      if (!recentReleasesByProjectId.has(release.project_id)) {
+        recentReleasesByProjectId.set(release.project_id, []);
+      }
+      recentReleasesByProjectId.get(release.project_id).push(release);
+    }
+
+    return projects.map((project) => ({
+      ...project,
+      assetCount: assetCountsByProjectId.get(project.id) ?? 0,
+      recentReleases: recentReleasesByProjectId.get(project.id) ?? [],
+    }));
+  }
+
+  /**
    * Project-list read model foundation. Repository pagination and filtering
    * happen first; only the returned page rows receive primary-image and tag data.
    * Reads retain unavailable selections and never mutate primary-image state.
    *
    * @param {object} [options] - project repository list options
+   * @param {boolean} [options.includeGridInformation=false] - attach batched
+   *   asset totals and recent releases to the already-paged rows
    * @returns {{ rows: Array, total: number }}
    */
   function getProjectList(options = {}) {
-    const result = projectRepository.list(options);
+    const { includeGridInformation = false, ...listOptions } = options;
+    const result = projectRepository.list(listOptions);
+    const rows = attachProjectTags(attachPrimaryImages(result.rows));
     return {
       ...result,
-      rows: attachProjectTags(attachPrimaryImages(result.rows)),
+      rows: includeGridInformation ? attachProjectGridInformation(rows) : rows,
     };
   }
 

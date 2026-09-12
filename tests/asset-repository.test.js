@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -27,6 +27,7 @@ describe('asset repository', () => {
       description: '',
       notes: '',
       status: 'tbd',
+      projectType: 'images',
       priority: 'normal',
       plannedDate: null,
       publishedDate: null,
@@ -307,6 +308,46 @@ describe('asset repository', () => {
       sizeBytes: 100, modifiedAt: null,
     });
     expect(assetRepo.countByProjectId(projectId)).toBe(1);
+  });
+
+  it('counts assets for multiple projects, including zero counts, and deduplicates IDs', () => {
+    const p2 = createProject('Project Two');
+    const empty = createProject('Empty Project');
+
+    assetRepo.upsert(projectId, 'a.png', {
+      filename: 'a.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 100, modifiedAt: null,
+    });
+    assetRepo.upsert(projectId, 'b.png', {
+      filename: 'b.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 100, modifiedAt: null,
+    });
+    assetRepo.upsert(p2.id, 'c.jpg', {
+      filename: 'c.jpg', extension: 'jpg', mimeType: 'image/jpeg',
+      sizeBytes: 100, modifiedAt: null,
+    });
+    assetRepo.markAllMissing(p2.id);
+
+    const batchCounts = assetRepo.countByProjectIds([p2.id, empty.id, projectId, p2.id]);
+    expect(batchCounts).toEqual([
+      { project_id: projectId, asset_count: 2 },
+      { project_id: p2.id, asset_count: 1 },
+      { project_id: empty.id, asset_count: 0 },
+    ]);
+    expect(batchCounts.map(({ project_id, asset_count }) => [
+      project_id,
+      asset_count,
+    ])).toEqual(batchCounts.map(({ project_id }) => [
+      project_id,
+      assetRepo.countByProjectId(project_id),
+    ]));
+  });
+
+  it('does not query for empty batch-count input', () => {
+    const prepareSpy = vi.spyOn(db, 'prepare');
+
+    expect(assetRepo.countByProjectIds([])).toEqual([]);
+    expect(prepareSpy).not.toHaveBeenCalled();
   });
 
   it('counts assets across all projects', () => {
@@ -1068,6 +1109,7 @@ describe('asset repository', () => {
         description: '',
         notes: '',
         status: 'tbd',
+        projectType: 'images',
         priority: 'normal',
         plannedDate: null,
         publishedDate: null,
@@ -1893,7 +1935,7 @@ describe('asset repository', () => {
     it('returns undefined for unknown and cross-project assets', () => {
       const otherProject = projectRepo.create({
         title: 'Viewer Other', slug: 'viewer-other', description: '', notes: '',
-        status: 'tbd', priority: 'normal', plannedDate: null, publishedDate: null, patreonUrl: null,
+        status: 'tbd', projectType: 'images', priority: 'normal', plannedDate: null, publishedDate: null, patreonUrl: null,
       });
       const otherAsset = assetRepo.upsert(otherProject.id, 'other.txt', {
         filename: 'other.txt', extension: 'txt', mimeType: 'text/plain',
@@ -2071,7 +2113,7 @@ describe('asset repository', () => {
     it('cross-project corrupt reference does not count as used', () => {
       const otherProject = projectRepo.create({
         title: 'Other', slug: 'other', description: '', notes: '',
-        status: 'tbd', priority: 'normal', plannedDate: null, publishedDate: null, patreonUrl: null,
+        status: 'tbd', projectType: 'images', priority: 'normal', plannedDate: null, publishedDate: null, patreonUrl: null,
       });
       const otherRelId = db.prepare(`
         INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)
@@ -2095,7 +2137,7 @@ describe('asset repository', () => {
     it('asset with only corrupt cross-project references is unused', () => {
       const otherProject = projectRepo.create({
         title: 'Other', slug: 'other', description: '', notes: '',
-        status: 'tbd', priority: 'normal', plannedDate: null, publishedDate: null, patreonUrl: null,
+        status: 'tbd', projectType: 'images', priority: 'normal', plannedDate: null, publishedDate: null, patreonUrl: null,
       });
       const otherRelId = db.prepare(`
         INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)
@@ -2118,7 +2160,7 @@ describe('asset repository', () => {
     it('mixed valid and corrupt references: only valid releases count for used filter', () => {
       const otherProject = projectRepo.create({
         title: 'Other', slug: 'other', description: '', notes: '',
-        status: 'tbd', priority: 'normal', plannedDate: null, publishedDate: null, patreonUrl: null,
+        status: 'tbd', projectType: 'images', priority: 'normal', plannedDate: null, publishedDate: null, patreonUrl: null,
       });
       const otherRelId = db.prepare(`
         INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)
@@ -2234,7 +2276,7 @@ describe('asset repository', () => {
     it('cross-project corrupt reference does not increase release_usage_count', () => {
       const otherProject = projectRepo.create({
         title: 'Other', slug: 'other', description: '', notes: '',
-        status: 'tbd', priority: 'normal', plannedDate: null, publishedDate: null, patreonUrl: null,
+        status: 'tbd', projectType: 'images', priority: 'normal', plannedDate: null, publishedDate: null, patreonUrl: null,
       });
       const otherRelId = db.prepare(`
         INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)
@@ -2257,7 +2299,7 @@ describe('asset repository', () => {
     it('mixed valid and corrupt references count only valid releases', () => {
       const otherProject = projectRepo.create({
         title: 'Other', slug: 'other', description: '', notes: '',
-        status: 'tbd', priority: 'normal', plannedDate: null, publishedDate: null, patreonUrl: null,
+        status: 'tbd', projectType: 'images', priority: 'normal', plannedDate: null, publishedDate: null, patreonUrl: null,
       });
       const otherRelId = db.prepare(`
         INSERT INTO releases (project_id, title, description, notes, planned_date, published_date, patreon_url)

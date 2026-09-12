@@ -1718,6 +1718,27 @@ export function createAssetRepository(db) {
     },
 
     /**
+     * Count assets for multiple projects in one query. Existing projects with
+     * no assets are returned with an asset_count of zero.
+     * @param {number[]} projectIds
+     * @returns {Array<{project_id: number, asset_count: number}>}
+     */
+    countByProjectIds(projectIds) {
+      const uniqueProjectIds = [...new Set(projectIds)];
+      if (uniqueProjectIds.length === 0) return [];
+
+      const placeholders = uniqueProjectIds.map(() => '?').join(', ');
+      return db.prepare(`
+        SELECT projects.id AS project_id, COUNT(assets.id) AS asset_count
+        FROM projects
+        LEFT JOIN assets ON assets.project_id = projects.id
+        WHERE projects.id IN (${placeholders})
+        GROUP BY projects.id
+        ORDER BY projects.id ASC
+      `).all(...uniqueProjectIds);
+    },
+
+    /**
      * Count assets across all projects.
      * @returns {number}
      */

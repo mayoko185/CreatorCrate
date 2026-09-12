@@ -26,6 +26,7 @@ const RELEASE_ASSET_COLUMNS = [
 const QUALIFIED_RELEASE_COLUMNS = COLUMNS.map((column) => `releases.${column}`).join(', ');
 const SELECT_ALL_WITH_PROJECT = `SELECT ${QUALIFIED_RELEASE_COLUMNS}, projects.status AS project_status FROM releases JOIN projects ON projects.id = releases.project_id`;
 const RELEASE_COLUMNS_WITH_ALIAS = (alias) => COLUMNS.map((column) => `${alias}.${column}`).join(', ');
+const RECENT_RELEASE_ORDER = 'releases.updated_at DESC';
 
 function buildReleaseInsertValues(input) {
   return [
@@ -780,10 +781,40 @@ export function createReleaseRepository(db) {
       const sql = `
         ${SELECT_ALL_WITH_PROJECT}
         WHERE releases.project_id = ?
-        ORDER BY releases.updated_at DESC
+        ORDER BY ${RECENT_RELEASE_ORDER}
         LIMIT ?
       `;
       return db.prepare(sql).all(projectId, limit);
+    },
+
+    /**
+     * Up to five recently updated releases per supplied project, including
+     * every publication and archive state.
+     * @param {number[]} projectIds
+     * @returns {ReleaseRecord[]}
+     */
+    findRecentByProjectIds(projectIds) {
+      const uniqueProjectIds = [...new Set(projectIds)];
+      if (uniqueProjectIds.length === 0) return [];
+
+      const placeholders = uniqueProjectIds.map(() => '?').join(', ');
+      const rankedColumns = COLUMNS.map((column) => `ranked.${column}`).join(', ');
+      const sql = `
+        SELECT ${rankedColumns}, ranked.project_status
+        FROM (
+          SELECT ${QUALIFIED_RELEASE_COLUMNS}, projects.status AS project_status,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY releases.project_id
+                   ORDER BY ${RECENT_RELEASE_ORDER}
+                 ) AS recent_rank
+          FROM releases
+          JOIN projects ON projects.id = releases.project_id
+          WHERE releases.project_id IN (${placeholders})
+        ) AS ranked
+        WHERE ranked.recent_rank <= 5
+        ORDER BY ranked.project_id ASC, ranked.updated_at DESC
+      `;
+      return db.prepare(sql).all(...uniqueProjectIds);
     },
 
     /**
