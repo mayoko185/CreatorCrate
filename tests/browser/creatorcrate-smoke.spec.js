@@ -601,20 +601,51 @@ test.describe('CreatorCrate development browser smoke', () => {
     await expect(copyButtons).toHaveCount(4);
     await expect(copyButtons).toHaveText(['Copy', 'Copy', 'Copy', 'Copy']);
 
+    const firstCodeBlock = page.locator('.notes-content pre').first();
+    expect(await page.evaluate(() => window.matchMedia('(hover: hover)').matches)).toBe(true);
+    await page.mouse.move(0, 0);
+    await expect(copyButtons.first()).toHaveCSS('opacity', '0');
+    await expect(copyButtons.first()).toHaveCSS('pointer-events', 'none');
+    await firstCodeBlock.hover();
+    await expect(copyButtons.first()).toHaveCSS('opacity', '1');
+    await expect(copyButtons.first()).toHaveCSS('pointer-events', 'auto');
+    await page.mouse.move(0, 0);
+    await expect(copyButtons.first()).toHaveCSS('opacity', '0');
+
     await page.context().grantPermissions(['clipboard-read', 'clipboard-write'], { origin: devServer.baseURL });
     const clipboardAvailable = await page.evaluate(() => typeof navigator.clipboard?.writeText === 'function');
     if (clipboardAvailable) {
+      const editPageLink = page.getByRole('link', { name: 'Edit Page', exact: true });
+      const fourthCodeBlock = page.locator('.notes-content pre').nth(3);
+      const fourthCopyButton = copyButtons.nth(3);
+      await editPageLink.focus();
+      await expect(editPageLink).toBeFocused();
+
+      let reachedFourthCopyButton = false;
+      for (let tabCount = 0; tabCount < 20; tabCount += 1) {
+        await page.keyboard.press('Tab');
+        reachedFourthCopyButton = await fourthCopyButton.evaluate((button) => document.activeElement === button);
+        if (reachedFourthCopyButton) break;
+      }
+      expect(reachedFourthCopyButton).toBe(true);
+      await expect(fourthCopyButton).toBeFocused();
+      expect(await fourthCodeBlock.evaluate((block) => block.matches(':focus-within'))).toBe(true);
+      await expect(fourthCopyButton).toHaveCSS('opacity', '1');
+      await expect(fourthCopyButton).toHaveCSS('pointer-events', 'auto');
+      await expect.poll(() => fourthCopyButton.evaluate((button) => (
+        getComputedStyle(button).outlineStyle
+      ))).toBe('solid');
+
+      await page.keyboard.press('Enter');
+      await expect(fourthCopyButton).toHaveText('Copied');
+      await expect.poll(() => page.evaluate(() => navigator.clipboard.readText()
+        .then((text) => text.replaceAll('\r\n', '\n')))).toBe(codeText[3]);
+
       await copyButtons.nth(0).click();
       await expect(copyButtons.nth(0)).toHaveText('Copied');
       await expect.poll(() => page.evaluate(() => navigator.clipboard.readText()
         .then((text) => text.replaceAll('\r\n', '\n')))).toBe(codeText[0]);
       await expect(copyButtons.nth(0)).toHaveText('Copy', { timeout: 3_000 });
-
-      await copyButtons.nth(3).click();
-      await expect(copyButtons.nth(3)).toHaveText('Copied');
-      await expect.poll(() => page.evaluate(() => navigator.clipboard.readText()
-        .then((text) => text.replaceAll('\r\n', '\n')))).toBe(codeText[3]);
-      await expect(copyButtons.nth(0)).toHaveText('Copy');
     } else {
       await expect(copyButtons).toBeDisabled();
     }
@@ -650,6 +681,11 @@ test.describe('CreatorCrate development browser smoke', () => {
               preScrollWidth: pre.scrollWidth,
               preOverflowX: preStyle.overflowX,
               prePadding: preStyle.padding,
+              prePaddingTop: Number.parseFloat(preStyle.paddingTop),
+              prePaddingRight: Number.parseFloat(preStyle.paddingRight),
+              prePaddingBottom: Number.parseFloat(preStyle.paddingBottom),
+              prePaddingLeft: Number.parseFloat(preStyle.paddingLeft),
+              preBorderTopWidth: Number.parseFloat(preStyle.borderTopWidth),
               preLineHeight: preStyle.lineHeight,
               preBorder: preStyle.border,
               preBackground: preStyle.backgroundColor,
@@ -661,6 +697,7 @@ test.describe('CreatorCrate development browser smoke', () => {
               codeLineHeight: codeStyle?.lineHeight,
               codePadding: codeStyle?.padding,
               codeFontFamily: codeStyle?.fontFamily,
+              buttonPosition: button ? getComputedStyle(button).position : null,
             };
           }),
           documentWidth: document.documentElement.scrollWidth,
@@ -669,12 +706,32 @@ test.describe('CreatorCrate development browser smoke', () => {
       });
       expect(geometry.documentWidth).toBeLessThanOrEqual(geometry.viewportWidth);
       expect(geometry.blocks).toHaveLength(4);
-      geometry.blocks.forEach(({ pre, code, button }) => {
+      geometry.blocks.forEach(({
+        pre,
+        code,
+        button,
+        prePaddingTop,
+        prePaddingRight,
+        prePaddingBottom,
+        prePaddingLeft,
+        preBorderTopWidth,
+        codePadding,
+        buttonPosition,
+      }) => {
         expect(pre.left).toBeGreaterThanOrEqual(0);
         expect(pre.right).toBeLessThanOrEqual(viewport + 1);
         expect(button.left).toBeGreaterThanOrEqual(pre.left);
         expect(button.right).toBeLessThanOrEqual(pre.right + 1);
-        expect(button.bottom).toBeLessThanOrEqual(code.top + 1);
+        expect(button.top).toBeGreaterThanOrEqual(pre.top);
+        expect(button.bottom).toBeLessThanOrEqual(pre.bottom + 1);
+        expect(button.bottom).toBeGreaterThan(code.top + 1);
+        expect(buttonPosition).toBe('absolute');
+        expect(prePaddingTop).toBe(prePaddingRight);
+        expect(prePaddingTop).toBe(prePaddingBottom);
+        expect(prePaddingTop).toBe(prePaddingLeft);
+        expect(codePadding).toBe('0px');
+        expect(Math.abs(code.top - (pre.top + preBorderTopWidth + prePaddingTop)))
+          .toBeLessThanOrEqual(1);
       });
       expect(geometry.blocks[1].codeScrollWidth).toBeGreaterThan(geometry.blocks[1].codeClientWidth);
       expect(geometry.blocks[1].preOverflowX).toBe('auto');
@@ -708,10 +765,6 @@ test.describe('CreatorCrate development browser smoke', () => {
     await page.locator('.notes-content pre > code').first().selectText();
     await expect.poll(() => page.evaluate(() => window.getSelection()?.toString())).toContain('const value = 1;');
 
-    await copyButtons.first().evaluate((button) => button.focus({ focusVisible: true }));
-    await expect.poll(() => page.locator('.notes-content pre > .notes-code-copy').first().evaluate((button) => (
-      getComputedStyle(button).outlineStyle
-    ))).toBe('solid');
     assertNoBrowserDiagnostics(diagnostics);
   });
 

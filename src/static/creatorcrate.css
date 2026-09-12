@@ -1074,9 +1074,6 @@
       .notes-page-detail-content .notes-content pre {
         background: var(--surface-hover);
       }
-      .notes-content pre.notes-code-block-enhanced {
-        padding-top: calc(var(--space-lg) + 2rem);
-      }
       .notes-content pre > code::-webkit-scrollbar { height: 0.45rem; }
       .notes-content pre > code::-webkit-scrollbar-track { background: transparent; }
       .notes-content pre > code::-webkit-scrollbar-thumb {
@@ -1120,6 +1117,17 @@
       .notes-content pre > .notes-code-copy:focus-visible {
         outline: 2px solid var(--focus-ring);
         outline-offset: 2px;
+      }
+      @media (hover: hover) {
+        .notes-content pre.notes-code-block-enhanced > .notes-code-copy {
+          opacity: 0;
+          pointer-events: none;
+        }
+        .notes-content pre.notes-code-block-enhanced:hover > .notes-code-copy,
+        .notes-content pre.notes-code-block-enhanced:focus-within > .notes-code-copy {
+          opacity: 1;
+          pointer-events: auto;
+        }
       }
       .notes-content table {
         width: 100%;

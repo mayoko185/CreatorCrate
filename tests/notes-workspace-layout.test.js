@@ -124,6 +124,16 @@ describe('Notes workspace layout contract', () => {
     expect(notesCss).toMatch(/\.notes-content pre > code\s*\{[^}]*background: transparent;/);
   });
 
+  it('keeps enhanced code Copy controls visible when hover is unavailable', () => {
+    const baseCopyRule = notesCss.match(/\.notes-content pre > \.notes-code-copy\s*\{[^}]*\}/)?.[0] || '';
+    const hoverCapabilityRules = notesCss.match(/@media\s*\(hover:\s*hover\)\s*\{([\s\S]*?)\n\s{6}\}/)?.[1] || '';
+
+    expect(baseCopyRule).not.toContain('opacity:');
+    expect(baseCopyRule).not.toContain('pointer-events:');
+    expect(hoverCapabilityRules).toMatch(/pre\.notes-code-block-enhanced > \.notes-code-copy\s*\{[^}]*opacity:\s*0;[^}]*pointer-events:\s*none;/);
+    expect(hoverCapabilityRules).toMatch(/pre\.notes-code-block-enhanced:hover > \.notes-code-copy,[\s\S]*pre\.notes-code-block-enhanced:focus-within > \.notes-code-copy\s*\{[^}]*opacity:\s*1;[^}]*pointer-events:\s*auto;/);
+  });
+
   it('reuses dialog scrollbar declarations only on the four Notes scroll owners', () => {
     const owners = [
       '.notes-workspace .notes-editor .toastui-editor-ww-container .toastui-editor-contents',
