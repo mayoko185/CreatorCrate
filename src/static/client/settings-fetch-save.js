@@ -3,6 +3,7 @@ import { isEnhancementBound, markEnhancementBound } from './dom.js';
 const FETCH_AUTOSUBMIT_SELECTOR = '[data-autosubmit="fetch"]';
 const FETCH_AUTOSUBMIT_STATUS_SELECTOR = '[data-settings-fetch-save-status]';
 const formStates = new WeakMap();
+const suppressedForms = new WeakSet();
 
 function fetchSaveAvailable() {
   return typeof globalThis.fetch === 'function'
@@ -153,6 +154,13 @@ function startSave(state, request) {
     }
 
     const next = state.queuedPayload;
+    notify(state.options.onAcknowledged, {
+      form,
+      response,
+      html,
+      payload: request.payload,
+      superseded: next !== null,
+    });
     state.pending = false;
     state.activePayload = '';
     state.queuedPayload = null;
@@ -190,6 +198,7 @@ function bindFetchSaveControl(control, form, options) {
 
   control.addEventListener('change', (event) => {
     event.preventDefault?.();
+    if (suppressedForms.has(form)) return;
     queueSave(state);
   });
   return true;
@@ -200,6 +209,16 @@ export function queueSettingsFetchSave(control) {
   if (!state || !isEnhancementBound(control, 'settingsFetchSaveBound')) return false;
   queueSave(state);
   return true;
+}
+
+export function suppressSettingsFetchSave(form, callback) {
+  if (!form || typeof callback !== 'function') return undefined;
+  suppressedForms.add(form);
+  try {
+    return callback();
+  } finally {
+    suppressedForms.delete(form);
+  }
 }
 
 export function enhanceSettingsFetchSave(scope = globalThis.document, options = {}) {

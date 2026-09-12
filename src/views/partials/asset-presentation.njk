@@ -24,11 +24,11 @@
            aria-label="Toggle selection for {{ filenameLabel }}"{% endif %}>
     <div class="asset-card-top">
       {% if caller %}{{ caller('top-start') }}{% endif %}
-      {{ presenceIndicator(asset, 'left') }}
+      {% if not options.detailsPresenceStatus %}{{ presenceIndicator(asset, 'left') }}{% endif %}
       {% if caller %}{{ caller('top-end') }}{% endif %}
       {% if asset.viewerUrl %}
-        <a class="asset-details-link asset-tooltip asset-tooltip--right" href="{{ asset.viewerUrl }}"
-           aria-label="View details for {{ filenameLabel }}" data-tooltip="View asset details">
+        <a class="asset-details-link{% if options.detailsPresenceStatus %} asset-details-link--{{ 'present' if asset.is_present else 'missing' }}{% endif %} asset-tooltip asset-tooltip--right" href="{{ asset.viewerUrl }}"
+           aria-label="{% if options.detailsPresenceStatus %}Asset details | File {{ 'present' if asset.is_present else 'missing!' }}{% else %}View details for {{ filenameLabel }}{% endif %}" data-tooltip="{% if options.detailsPresenceStatus %}Asset details | File {{ 'present' if asset.is_present else 'missing!' }}{% else %}View asset details{% endif %}">
           {{ icons.icon('details') }}<span class="sr-only">View details</span>
         </a>
       {% endif %}
@@ -193,8 +193,8 @@
                   </span>
                   {% if caller %}{{ caller('status') }}{% endif %}
                   {% if options.headerStatusDetails and asset.viewerUrl %}
-                    <a class="asset-details-link asset-tooltip asset-tooltip--right" href="{{ asset.viewerUrl }}"
-                       aria-label="View details for {{ filenameLabel }}" data-tooltip="View asset details">
+                    <a class="asset-details-link{% if options.detailsPresenceStatus %} asset-details-link--{{ 'present' if asset.is_present else 'missing' }}{% endif %} asset-tooltip asset-tooltip--right" href="{{ asset.viewerUrl }}"
+                       aria-label="{% if options.detailsPresenceStatus %}Asset details | File {{ 'present' if asset.is_present else 'missing!' }}{% else %}View details for {{ filenameLabel }}{% endif %}" data-tooltip="{% if options.detailsPresenceStatus %}Asset details | File {{ 'present' if asset.is_present else 'missing!' }}{% else %}View asset details{% endif %}">
                       {{ icons.icon('details') }}<span class="sr-only">View details</span>
                     </a>
                   {% endif %}
@@ -221,8 +221,8 @@
             </span>
             {% if caller %}{{ caller('status') }}{% endif %}
             {% if options.headerStatusDetails and asset.viewerUrl %}
-              <a class="asset-details-link asset-tooltip asset-tooltip--right" href="{{ asset.viewerUrl }}"
-                 aria-label="View details for {{ filenameLabel }}" data-tooltip="View asset details">
+              <a class="asset-details-link{% if options.detailsPresenceStatus %} asset-details-link--{{ 'present' if asset.is_present else 'missing' }}{% endif %} asset-tooltip asset-tooltip--right" href="{{ asset.viewerUrl }}"
+                 aria-label="{% if options.detailsPresenceStatus %}Asset details | File {{ 'present' if asset.is_present else 'missing!' }}{% else %}View details for {{ filenameLabel }}{% endif %}" data-tooltip="{% if options.detailsPresenceStatus %}Asset details | File {{ 'present' if asset.is_present else 'missing!' }}{% else %}View asset details{% endif %}">
                 {{ icons.icon('details') }}<span class="sr-only">View details</span>
               </a>
             {% endif %}
@@ -272,8 +272,8 @@
       {% if not options.hideActions and (caller or (asset.viewerUrl and not options.headerStatusDetails)) %}
         <div class="asset-list-card-actions">
           {% if asset.viewerUrl and not options.headerStatusDetails %}
-            <a class="asset-details-link asset-tooltip" href="{{ asset.viewerUrl }}"
-               aria-label="View details for {{ filenameLabel }}" data-tooltip="View asset details">
+            <a class="asset-details-link{% if options.detailsPresenceStatus %} asset-details-link--{{ 'present' if asset.is_present else 'missing' }}{% endif %} asset-tooltip" href="{{ asset.viewerUrl }}"
+               aria-label="{% if options.detailsPresenceStatus %}Asset details | File {{ 'present' if asset.is_present else 'missing!' }}{% else %}View details for {{ filenameLabel }}{% endif %}" data-tooltip="{% if options.detailsPresenceStatus %}Asset details | File {{ 'present' if asset.is_present else 'missing!' }}{% else %}View asset details{% endif %}">
               {{ icons.icon('details') }}<span class="sr-only">View details</span>
             </a>
           {% endif %}

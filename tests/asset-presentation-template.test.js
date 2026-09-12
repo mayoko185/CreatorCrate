@@ -53,6 +53,40 @@ describe('reusable asset presentation macros', () => {
     expect(html).not.toContain('undefined');
     expect(html).not.toContain('href=""');
     expect(html).not.toContain('src=""');
+    expect(html).toContain('asset-indicator--present');
+    expect(html).toMatch(/aria-label="View details for candidate &lt;final&gt;\.png"\s+data-tooltip="View asset details"/);
+    expect(html).not.toContain('asset-details-link--present');
+    expect(html).not.toContain('asset-details-link--missing');
+  });
+
+  it('moves persisted presence onto an opt-in Details control without changing its destination', () => {
+    const html = env.renderString(`
+      {% import "partials/asset-presentation.njk" as presentation %}
+      {{ presentation.gridCard(presentAsset, { cardClass: 'present-grid', detailsPresenceStatus: true }) }}
+      {{ presentation.gridCard(missingAsset, { cardClass: 'missing-grid', detailsPresenceStatus: true }) }}
+      {{ presentation.listCard(presentAsset, { cardClass: 'present-list', headerStatusDetails: true, detailsPresenceStatus: true }) }}
+      {{ presentation.listCard(missingAsset, { cardClass: 'missing-list', headerStatusDetails: true, detailsPresenceStatus: true }) }}
+    `, {
+      presentAsset: minimalReleaseAsset,
+      missingAsset: { ...minimalReleaseAsset, id: 74, is_present: false, viewerUrl: '/projects/7/assets/74' },
+    });
+    const presentGrid = html.match(/<article class="asset-card present-grid"[\s\S]*?<\/article>/)?.[0] ?? '';
+    const missingGrid = html.match(/<article class="asset-card missing-grid"[\s\S]*?<\/article>/)?.[0] ?? '';
+    const presentList = html.match(/<article class="asset-list-card present-list"[\s\S]*?<\/article>/)?.[0] ?? '';
+    const missingList = html.match(/<article class="asset-list-card missing-list"[\s\S]*?<\/article>/)?.[0] ?? '';
+
+    expect(presentGrid).not.toContain('class="asset-indicator');
+    expect(missingGrid).not.toContain('class="asset-indicator');
+    expect(presentGrid).toContain('class="asset-details-link asset-details-link--present asset-tooltip asset-tooltip--right" href="/projects/7/assets/73"');
+    expect(presentGrid).toContain('aria-label="Asset details | File present"');
+    expect(presentGrid).toContain('data-tooltip="Asset details | File present"');
+    expect(missingGrid).toContain('class="asset-details-link asset-details-link--missing asset-tooltip asset-tooltip--right" href="/projects/7/assets/74"');
+    expect(missingGrid).toContain('aria-label="Asset details | File missing!"');
+    expect(missingGrid).toContain('data-tooltip="Asset details | File missing!"');
+    expect(presentList).toContain('asset-indicator--present');
+    expect(missingList).toContain('asset-indicator--missing');
+    expect(presentList).toContain('asset-details-link--present');
+    expect(missingList).toContain('asset-details-link--missing');
   });
 
   it('supports an opt-in grid filename link for release cards', () => {

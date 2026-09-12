@@ -474,6 +474,7 @@ describe('cross-project Asset Viewer template', () => {
     const alphaCard = cards.find((card) => card.includes('Alpha Project'));
     const betaCard = cards.find((card) => card.includes('Beta Project'));
     const topRow = alphaCard?.match(/<div class="asset-card-top asset-viewer-grid-card-top">[\s\S]*?<\/div>/)?.[0];
+    const betaTopRow = betaCard?.match(/<div class="asset-card-top asset-viewer-grid-card-top">[\s\S]*?<\/div>/)?.[0];
 
     expect(html).toMatch(/<ul class="asset-grid"[^>]*aria-label="Assets across active projects">/);
     expect((html.match(/class="asset-grid-item/g) || []).length).toBe(2);
@@ -495,13 +496,17 @@ describe('cross-project Asset Viewer template', () => {
     expect(alphaCard).toBeDefined();
     expect(betaCard).toBeDefined();
     expect(topRow).toBeDefined();
-    expect((topRow?.match(/class="asset-indicator\b/g) || [])).toHaveLength(2);
-    expect(topRow).toContain('asset-indicator--present');
-    expect(topRow).toContain('aria-label="Present"');
-    expect(topRow).toContain('asset-indicator--used');
-    expect(topRow).toContain('aria-label="Used in 2 releases"');
-    expect(topRow).toContain('class="asset-details-link asset-tooltip asset-tooltip--right" href="/projects/1/assets/101"');
-    expect(topRow).toContain('aria-label="View details for shared.png" data-tooltip="View asset details"');
+    expect(betaTopRow).toBeDefined();
+    expect((topRow?.match(/class="asset-indicator\b/g) || [])).toHaveLength(0);
+    expect((betaTopRow?.match(/class="asset-indicator\b/g) || [])).toHaveLength(0);
+    expect(topRow).not.toContain('asset-card-usage');
+    expect(betaTopRow).not.toContain('asset-card-usage');
+    expect(topRow).toContain('class="asset-details-link asset-details-link--present asset-tooltip asset-tooltip--right" href="/projects/1/assets/101"');
+    expect(topRow).toContain('aria-label="Asset details | File present"');
+    expect(topRow).toContain('data-tooltip="Asset details | File present"');
+    expect(betaTopRow).toContain('class="asset-details-link asset-details-link--missing asset-tooltip asset-tooltip--right" href="/projects/2/assets/202"');
+    expect(betaTopRow).toContain('aria-label="Asset details | File missing!"');
+    expect(betaTopRow).toContain('data-tooltip="Asset details | File missing!"');
     expect(topRow).toContain('<circle cx="12" cy="12" r="9"/><path d="M12 10v6M12 7h.01"/>');
     expect(topRow).toContain('<span class="sr-only">View details</span>');
 
@@ -580,6 +585,7 @@ describe('cross-project Asset Viewer template', () => {
     const source = fs.readFileSync(TEMPLATE_PATH, 'utf8');
     const cards = html.match(/<article class="asset-list-card"[\s\S]*?<\/article>/g) || [];
     const alphaCard = cards.find((card) => card.includes('Alpha Project'));
+    const betaCard = cards.find((card) => card.includes('Beta Project'));
 
     expect(html).toMatch(/<ul class="asset-list" role="list" aria-label="Assets across active projects">/);
     expect(html).not.toContain('<table class="data-table asset-table">');
@@ -614,6 +620,10 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).toContain('Uncategorized');
     expect(html).toContain('Present at last scan');
     expect(html).toContain('Missing at last scan');
+    expect(alphaCard).toContain('class="asset-details-link asset-details-link--present asset-tooltip asset-tooltip--right" href="/projects/1/assets/101"');
+    expect(alphaCard).toMatch(/aria-label="Asset details \| File present"\s+data-tooltip="Asset details \| File present"/);
+    expect(betaCard).toContain('class="asset-details-link asset-details-link--missing asset-tooltip asset-tooltip--right" href="/projects/2/assets/202"');
+    expect(betaCard).toMatch(/aria-label="Asset details \| File missing!"\s+data-tooltip="Asset details \| File missing!"/);
     for (const field of ['Project', 'Category', 'Extension', 'Size', 'Modified']) {
       expect((alphaCard?.match(new RegExp(`<dt>${field}</dt>`, 'g')) || [])).toHaveLength(1);
     }
@@ -789,6 +799,9 @@ describe('cross-project Asset Viewer template', () => {
     expect(css).toMatch(/\.asset-viewer-grid-card-title-releases\s*\{[^}]*flex-wrap:\s*wrap/);
     expect(css).toMatch(/\.asset-viewer-grid-card-title \.asset-file-link\s*\{[^}]*color:\s*var\(--text\)/);
     expect(css).toMatch(/\.asset-viewer-grid-card-project-link:visited,[\s\S]*?\.asset-viewer-grid-card-release-link:visited[\s\S]*?color:\s*var\(--link\)/);
+    expect(css).toMatch(/\.asset-details-link--present\s*\{\s*color:\s*var\(--success\)/);
+    expect(css).toMatch(/\.asset-details-link--missing\s*\{\s*color:\s*var\(--danger\)/);
+    expect(css).toMatch(/\.asset-details-link--present svg,[\s\S]*?\.asset-details-link--missing svg\s*\{\s*width:\s*1\.375rem;\s*height:\s*1\.375rem/);
   });
 
   it('separates View and Grid-size controls and keeps the grouped toolbar wrap-safe', () => {
@@ -851,7 +864,7 @@ describe('cross-project Asset Viewer template', () => {
     expect(forms.find((f) => f.includes('method="get"'))).toBeDefined();
     expect(forms.find((f) => f.includes('action="/asset-viewer/nsfw-filter"'))).toBeDefined();
     expect(forms.find((f) => f.includes('action="/asset-viewer/defaults"'))).toBeDefined();
-    expect(html).not.toMatch(/Scan Now|Rename|Move file|Add selected|Set as primary|select all/i);
+    expect(html).not.toMatch(/Manually scan project files|Rename|Move file|Add selected|Set as primary|select all/i);
     expect(html).not.toContain('name="selectedAssetIds"');
     expect(html).not.toContain('asset-select-checkbox');
     expect(html).not.toContain('asset-rename-trigger');
@@ -1002,7 +1015,7 @@ describe('cross-project Asset Viewer template', () => {
     expect(unfiltered).toContain('No assets across active projects');
     expect(unfiltered).not.toContain('No assets match the current filters');
     expect(unfiltered).not.toMatch(/<div class="empty-state-actions">/);
-    expect(unfiltered).not.toContain('Scan Now');
+    expect(unfiltered).not.toContain('Manually scan project files');
 
     const filtered = renderPage({
       assets: [],
@@ -1131,7 +1144,7 @@ describe('cross-project Asset Viewer template', () => {
     });
 
     expect(html).toContain('class="asset-list-card-media-link" href="/projects/1/assets/73" aria-label="View preview of table-preview.png from Test Project" data-project-assets-preview-id="73"');
-    expect(html).toContain('class="asset-details-link asset-tooltip asset-tooltip--right" href="/projects/1/assets/73"');
+    expect(html).toContain('class="asset-details-link asset-details-link--present asset-tooltip asset-tooltip--right" href="/projects/1/assets/73"');
   });
 
   it('renders the Asset Viewer defaults dialog in the overlay block', () => {
@@ -1289,6 +1302,10 @@ describe('Project Assets Asset Information popup', () => {
     expect(info).toContain('>Illustration</span>');
 
     expect(card).toContain('class="asset-card-top"');
+    expect(card).not.toContain('class="asset-indicator');
+    expect(card).not.toContain('class="asset-card-usage"');
+    expect(card).toContain('class="asset-details-link asset-details-link--present asset-tooltip asset-tooltip--right" href="/projects/1/assets/101"');
+    expect(card).toMatch(/aria-label="Asset details \| File present"\s+data-tooltip="Asset details \| File present"/);
     expect(card).toContain('class="asset-card-media-link" href="/projects/1/assets/101"');
     expect(card).toContain('data-project-assets-preview-id="101"');
     expect(card).toContain('class="asset-select-checkbox"');
@@ -1303,6 +1320,33 @@ describe('Project Assets Asset Information popup', () => {
       expect(html).toContain('data-auto-rename-asset-id="101"');
       expect(html).toMatch(/data-auto-rename-asset-id="101"[\s\S]*?draggable="true"[\s\S]*?tabindex="0"/);
     }
+  });
+
+  it('maps missing Project Assets Details status while preserving List presence and release information', () => {
+    const missingAsset = {
+      ...projectAsset,
+      is_present: 0,
+      presenceLabel: 'Missing at last scan',
+    };
+    const gridHtml = renderProjectAssetsPage({ assets: [missingAsset], total: 1, submittedSelectedAssetIds: [] });
+    const listHtml = renderProjectAssetsPage({
+      assets: [missingAsset],
+      total: 1,
+      filters: { view: 'list' },
+      submittedSelectedAssetIds: [],
+    });
+    const gridCard = gridHtml.match(/<article class="asset-card asset-card--project[\s\S]*?<\/article>/)?.[0] ?? '';
+    const listCard = listHtml.match(/<article class="asset-list-card asset-list-card--project[\s\S]*?<\/article>/)?.[0] ?? '';
+
+    expect(gridCard).not.toContain('class="asset-indicator');
+    expect(gridCard).not.toContain('class="asset-card-usage"');
+    expect(gridCard).toContain('class="asset-details-link asset-details-link--missing asset-tooltip asset-tooltip--right" href="/projects/1/assets/101"');
+    expect(gridCard).toMatch(/aria-label="Asset details \| File missing!"\s+data-tooltip="Asset details \| File missing!"/);
+    expect(gridCard).toContain('Used in 2 releases');
+    expect(listCard).toContain('asset-indicator--missing');
+    expect(listCard).toContain('class="asset-list-card-release-usage"');
+    expect(listCard).toContain('Alpha Release');
+    expect(listCard).toContain('asset-details-link--missing');
   });
 
   it('does not render the Project Assets Details control', () => {

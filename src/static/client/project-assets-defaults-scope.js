@@ -1,5 +1,10 @@
 import { isEnhancementBound, markEnhancementBound } from './dom.js';
 import { syncCreatorCrateDropdownFromNative } from './dropdowns.js';
+import { syncProjectAssetsSizePreferences } from './app-dialogs.js';
+import {
+  queueSettingsFetchSave,
+  suppressSettingsFetchSave,
+} from './settings-fetch-save.js';
 
 const MULTI_VALUE_KEYS = new Set(['extension', 'tag']);
 
@@ -8,6 +13,7 @@ const SCOPE_SELECTOR = '[data-project-assets-defaults-scope]';
 const VALUES_SELECTOR = 'script[type="application/json"][data-project-assets-default-values]';
 const LOADED_SCOPE_SELECTOR = 'input[name="loadedScope"]';
 const SCOPES = Object.freeze(['global', 'project']);
+const states = new WeakMap();
 const VALUE_KEYS = Object.freeze([
   'view',
   'gridSize',
@@ -46,6 +52,21 @@ function parseValues(script) {
     const global = scopeValues(parsed?.global);
     const project = scopeValues(parsed?.project);
     return global && project ? { global, project } : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseResponseState(form, html) {
+  if (typeof html !== 'string' || html === '') return null;
+  const DOMParser = form?.ownerDocument?.defaultView?.DOMParser || globalThis.DOMParser;
+  if (typeof DOMParser !== 'function') return null;
+  try {
+    const parsed = new DOMParser().parseFromString(html, 'text/html');
+    const responseForm = parsed?.querySelector?.(FORM_SELECTOR);
+    const activeScope = validScope(responseForm?.querySelector?.(LOADED_SCOPE_SELECTOR)?.value);
+    const values = parseValues(responseForm?.querySelector?.(VALUES_SELECTOR));
+    return activeScope && values ? { ...values, activeScope } : null;
   } catch {
     return null;
   }
@@ -155,6 +176,22 @@ function captureSuccessfulSubmission(state) {
   return { scope, loadedScope, values };
 }
 
+function submissionFromPayload(state, payload) {
+  if (typeof payload !== 'string') return null;
+  const params = new globalThis.URLSearchParams(payload);
+  const scope = validScope(params.get('scope'));
+  const loadedScope = validScope(params.get('loadedScope'));
+  if (!scope || scope !== loadedScope) return null;
+
+  const values = Object.fromEntries(VALUE_KEYS.map((key) => {
+    if (!MULTI_VALUE_KEYS.has(key)) return [key, params.get(key)];
+    const selected = params.getAll(key).filter((value) => value !== 'all');
+    if (!state.fields[key]?.multiple) return [key, selected[0] || 'all'];
+    return [key, selected.length > 0 ? selected : 'all'];
+  }));
+  return scopeValues(values) ? { scope, loadedScope, values } : null;
+}
+
 function writeCommittedValues(state) {
   state.valuesScript.textContent = JSON.stringify({
     global: { ...state.committed.global },
@@ -168,7 +205,7 @@ function reconcileSuccessfulSubmission(state, payload) {
   const values = scopeValues(payload?.values);
   if (!submitted || !values) return;
   const global = submitted.scope === 'global' ? values : state.committed.global;
-  const project = values;
+  const project = submitted.scope === 'project' ? values : state.committed.project;
   state.committed = {
     global: { ...global },
     project: { ...project },
@@ -182,6 +219,53 @@ function reconcileSuccessfulSubmission(state, payload) {
   restoreLoadedScopeRadio(state.scopeControl, submitted.loadedScope);
   writeCommittedValues(state);
   clearScopeError(state.form);
+}
+
+export function beginProjectAssetsDefaultsAcknowledgement(form, payload) {
+  const state = states.get(form);
+  if (!state) return;
+  const submitted = submissionFromPayload(state, payload);
+  const current = captureSuccessfulSubmission(state);
+  // A queued immutable payload may start after the editor has changed again.
+  state.submissionRevision = submitted && current
+    && JSON.stringify(submitted) === JSON.stringify(current) ? state.userRevision : null;
+}
+
+export function reconcileProjectAssetsDefaultsAcknowledgement(
+  form,
+  payload,
+  { html = '', superseded = false } = {},
+) {
+  const state = states.get(form);
+  const submitted = state ? submissionFromPayload(state, payload) : null;
+  const authoritative = state ? parseResponseState(state.form, html) : null;
+  if (!state || !submitted || !authoritative) return false;
+  if (!draftIsRepresentable(state.fields, authoritative.global)
+    || !draftIsRepresentable(state.fields, authoritative.project)) return false;
+
+  state.committed = {
+    global: { ...authoritative.global },
+    project: { ...authoritative.project },
+  };
+  state.committedScope = authoritative.activeScope;
+  writeCommittedValues(state);
+  syncProjectAssetsSizePreferences(
+    state.form.closest?.('[data-app-dialog]'),
+    authoritative[authoritative.activeScope],
+  );
+
+  const unchanged = state.userRevision === state.submissionRevision
+    || state.userRevision === state.reopenRevision;
+  if (!superseded && unchanged) {
+    state.drafts = {
+      global: { ...state.committed.global },
+      project: { ...state.committed.project },
+    };
+    restoreLoadedScopeRadio(state.scopeControl, authoritative.activeScope);
+    if (!applyDraft(state, authoritative.activeScope)) return false;
+    clearScopeError(state.form);
+  }
+  return true;
 }
 
 function restoreCommittedStateOnOpen(state) {
@@ -198,7 +282,10 @@ function restoreCommittedStateOnOpen(state) {
   };
   state.loadedScope.value = loadedScope;
   restoreLoadedScopeRadio(state.scopeControl, loadedScope);
-  return applyDraft(state, loadedScope);
+  const restored = applyDraft(state, loadedScope);
+  // Reopening discards drafts; it is not a new user edit.
+  if (restored) state.reopenRevision = state.userRevision;
+  return restored;
 }
 
 function bindDialogHooks(state) {
@@ -246,12 +333,12 @@ function applyDraft(state, targetScope) {
   };
 
   try {
-    applyValues(targetDraft);
+    suppressSettingsFetchSave(state.form, () => applyValues(targetDraft));
     state.loadedScope.value = targetScope;
     clearScopeError(state.form);
     return true;
   } catch {
-    applyValues(previousValues);
+    suppressSettingsFetchSave(state.form, () => applyValues(previousValues));
     return false;
   } finally {
     state.applying = false;
@@ -291,7 +378,11 @@ export function enhanceProjectAssetsDefaultsScope(scope = globalThis.document) {
     pendingSubmission: null,
     dialogState: null,
     committedScope: currentScope,
+    userRevision: 0,
+    submissionRevision: null,
+    reopenRevision: null,
   };
+  states.set(form, state);
   state.drafts[currentScope] = captureDraft(fields);
 
   bindDialogHooks(state);
@@ -306,7 +397,10 @@ export function enhanceProjectAssetsDefaultsScope(scope = globalThis.document) {
   Object.values(fields).forEach((select) => {
     const capture = () => {
       const activeScope = validScope(loadedScope.value);
-      if (!state.applying && activeScope) state.drafts[activeScope] = captureDraft(fields);
+      if (!state.applying && activeScope) {
+        state.userRevision += 1;
+        state.drafts[activeScope] = captureDraft(fields);
+      }
     };
     select.addEventListener?.('input', capture);
     select.addEventListener?.('change', capture);
@@ -321,7 +415,10 @@ export function enhanceProjectAssetsDefaultsScope(scope = globalThis.document) {
       if (!applyDraft(state, targetScope)) {
         restoreLoadedScopeRadio(scopeControl, activeScope);
         showScopeError(form, 'Project Assets defaults scope could not be changed safely.');
+        return;
       }
+      state.userRevision += 1;
+      queueSettingsFetchSave(state.fields.view);
     });
   });
 

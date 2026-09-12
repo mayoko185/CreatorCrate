@@ -209,7 +209,7 @@ function makeAssetPage({ view = 'list', ids = [1, 2, 3], initialOrder = ids, sel
   }, rect: view === 'grid'
     ? { top: 0, left: 0, width: 400, height: 500 }
     : { top: 0, left: 0, width: 500, height: 500 } });
-  const form = makeNode({ tagName: 'form', attrs: { 'data-auto-rename-form': '' } });
+  const form = makeNode({ tagName: 'form', attrs: { id: 'auto-rename-assets-form', 'data-auto-rename-form': '' } });
   const selectionForm = makeNode({ tagName: 'form', attrs: {
     id: 'bulk-select-form',
     'data-asset-selection-form': '',
@@ -226,6 +226,7 @@ function makeAssetPage({ view = 'list', ids = [1, 2, 3], initialOrder = ids, sel
   selectionInput.value = '[]';
   const submit = makeNode({ tagName: 'button', attrs: {
     type: 'submit',
+    form: 'auto-rename-assets-form',
     'data-auto-rename-submit': '',
     disabled: '',
   } });
@@ -235,7 +236,6 @@ function makeAssetPage({ view = 'list', ids = [1, 2, 3], initialOrder = ids, sel
 
   form.appendChild(orderInput);
   form.appendChild(selectionInput);
-  form.appendChild(submit);
   form.appendChild(live);
   surface.appendChild(form);
   if (selectionToolsOutsideForm) {
@@ -247,6 +247,8 @@ function makeAssetPage({ view = 'list', ids = [1, 2, 3], initialOrder = ids, sel
     selectionForm.appendChild(selectAll);
     selectionForm.appendChild(clearSelection);
   }
+  selectionForm.appendChild(submit);
+  submit.form = form;
   surface.appendChild(selectionForm);
   surface.appendChild(list);
   document.appendChild(surface);
@@ -481,9 +483,11 @@ describe('Assets-page Auto Rename ordering enhancement', () => {
     expect(page.selectionInput.value).toBe('[]');
   });
 
-  it('enables from selection, clears when deselected, and also enables for reorder', () => {
+  it('enables only from eligible selection and stays disabled after reorder-only changes', () => {
     const page = makeAssetPage();
 
+    expect(page.form.querySelector('[data-auto-rename-submit]')).toBe(null);
+    expect(page.submit.getAttribute('form')).toBe('auto-rename-assets-form');
     expect(page.submit.disabled).toBe(true);
     expect(enhanceAssetAutoRenameOrdering(page.document)).toBe(1);
     expect(enhanceAssetSelection(page.document)).toBe(1);
@@ -507,7 +511,7 @@ describe('Assets-page Auto Rename ordering enhancement', () => {
     expect(page.submit.disabled).toBe(true);
 
     dragTo(page, 0, { clientY: 140 });
-    expect(page.submit.disabled).toBe(false);
+    expect(page.submit.disabled).toBe(true);
 
     expect(enhanceAssetAutoRenameOrdering(page.document)).toBe(1);
     expect(page.assets[0].item.listeners.filter((entry) => entry.type === 'dragstart')).toHaveLength(1);
@@ -537,7 +541,7 @@ describe('Assets-page Auto Rename ordering enhancement', () => {
 
       expect(page.order()).toEqual(['2', '3', '1']);
       expect(page.orderInput.value).toBe('[2,3,1]');
-      expect(page.submit.disabled).toBe(false);
+      expect(page.submit.disabled).toBe(true);
       expect(page.assets[0].item.querySelector('[data-preview-enhancement]')).toBe(originalPreview);
       expect(page.assets[0].item.querySelector('[data-preview-image]')).toBe(page.assets[0].image);
       expect(page.assets[0].indicator.textContent).toBe('3 of 3');
@@ -751,7 +755,7 @@ describe('Assets-page Auto Rename ordering enhancement', () => {
     });
   });
 
-  it('disables Auto Rename again when pointer dragging restores the initial order', () => {
+  it('keeps Auto Rename disabled while pointer dragging changes or restores order without a selection', () => {
     const page = makeAssetPage({ view: 'list' });
     enhanceAssetAutoRenameOrdering(page.document);
 
@@ -764,7 +768,7 @@ describe('Assets-page Auto Rename ordering enhancement', () => {
 
     move(page.assets[0], page.assets[1], 80);
     expect(page.order()).toEqual(['2', '1', '3']);
-    expect(page.submit.disabled).toBe(false);
+    expect(page.submit.disabled).toBe(true);
 
     move(page.assets[0], page.assets[1], 1);
     expect(page.order()).toEqual(['1', '2', '3']);
@@ -836,7 +840,7 @@ describe('Assets-page Auto Rename ordering enhancement', () => {
     expect(page.order()).toEqual(['1', '3', '2']);
     expect(page.orderInput.value).toBe('[1,3,2]');
     expect(page.assets[1].indicator.textContent).toBe('3 of 3');
-    expect(page.submit.disabled).toBe(false);
+    expect(page.submit.disabled).toBe(true);
     expect(item.focused).toBe(true);
     expect(page.live.textContent).toContain('position 3 of 3');
 
@@ -853,7 +857,7 @@ describe('Assets-page Auto Rename ordering enhancement', () => {
     expect(page.order()).toEqual(['3', '1', '2']);
     escapeItem.dispatch('keydown', { key: 'Escape' });
     expect(page.order()).toEqual(['1', '3', '2']);
-    expect(page.submit.disabled).toBe(false);
+    expect(page.submit.disabled).toBe(true);
     expect(escapeItem.focused).toBe(true);
   });
 

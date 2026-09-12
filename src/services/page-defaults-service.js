@@ -16,6 +16,7 @@ const ASSET_VIEWER = 'assetViewer';
 const NEW_PROJECT = 'new_project';
 const LOGS = 'logs';
 const BOOK_DETAIL = 'bookDetail';
+const PAGE_DEFAULT_SCOPES = Object.freeze(['global', 'project']);
 
 const SYSTEM_ARCHIVED_PROJECT_FILTER_OPTION = Object.freeze({
   value: ARCHIVED_PROJECT_STATUS,
@@ -282,7 +283,8 @@ export function createPageDefaultsService({
       || typeof projectPageDefaultRepository.getOption !== 'function'
       || typeof projectPageDefaultRepository.setOption !== 'function'
       || typeof projectPageDefaultRepository.deletePageOptions !== 'function'
-      || typeof projectPageDefaultRepository.hasPageOptions !== 'function') {
+      || typeof projectPageDefaultRepository.getPageScope !== 'function'
+      || typeof projectPageDefaultRepository.setPageScope !== 'function') {
       throw new Error(
         'createPageDefaultsService requires a projectPageDefaultRepository for project-scoped defaults.'
       );
@@ -343,9 +345,11 @@ export function createPageDefaultsService({
       return pageDefinition.fallback;
     }
 
-    return projectId === undefined
-      ? resolveGlobalDefault(page, option, optionCatalogue)
-      : resolveProjectDefault(page, option, optionCatalogue, context);
+    if (projectId === undefined || getPageDefaultScope(page, context) === 'global') {
+      return resolveGlobalDefault(page, option, optionCatalogue);
+    }
+
+    return resolveProjectDefault(page, option, optionCatalogue, context);
   }
 
   function resolvePageDefaults(page, query = {}, optionCatalogues = {}, context) {
@@ -386,7 +390,17 @@ export function createPageDefaultsService({
   function getPageDefaultScope(page, context) {
     requirePageDefinition(page);
     const projectId = requireProjectId(context);
-    return requireProjectRepository().hasPageOptions(projectId, page) ? 'project' : 'global';
+    const storedScope = requireProjectRepository().getPageScope(projectId, page);
+    return PAGE_DEFAULT_SCOPES.includes(storedScope) ? storedScope : 'global';
+  }
+
+  function setPageDefaultScope(page, activeScope, context) {
+    requirePageDefinition(page);
+    const projectId = requireProjectId(context);
+    if (!PAGE_DEFAULT_SCOPES.includes(activeScope)) {
+      invalid({ activeScope: `Scope "${activeScope}" is not supported.` });
+    }
+    return requireProjectRepository().setPageScope(projectId, page, activeScope);
   }
 
   function validatePageDefaults(page, values = {}, optionCatalogues = {}) {
@@ -473,6 +487,7 @@ export function createPageDefaultsService({
     resolveGlobalPageDefaults,
     resolveProjectPageDefaults,
     getPageDefaultScope,
+    setPageDefaultScope,
     validatePageDefaults,
     saveDefault,
     saveDefaultWithOutcome,

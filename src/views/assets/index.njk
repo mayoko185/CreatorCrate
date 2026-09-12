@@ -56,35 +56,6 @@
   {% include "partials/status-badge.njk" %}
 {% endmacro %}
 
-{% macro renderGridPresenceIcon(asset) %}
-  {% if asset.is_present %}
-    <span class="asset-indicator asset-icon-control asset-tooltip asset-tooltip--left asset-indicator--present"
-          role="img" tabindex="0" aria-label="Present" data-tooltip="Present">P</span>
-  {% else %}
-    <span class="asset-indicator asset-icon-control asset-tooltip asset-tooltip--left asset-indicator--missing"
-          role="img" tabindex="0" aria-label="Missing at last scan" data-tooltip="Missing at last scan">!</span>
-  {% endif %}
-{% endmacro %}
-
-{% macro renderGridReleaseUsageIcon(asset) %}
-  {% if asset.release_titles and asset.release_titles.length > 0 %}
-    {% if asset.release_titles.length == 1 %}
-      {% set release = asset.release_titles[0] %}
-      <a class="asset-indicator asset-icon-control asset-tooltip asset-indicator--used"
-         href="/releases/{{ release.id }}" aria-label="Used in release {{ release.title }}"
-         data-tooltip="Used in release">R</a>
-    {% else %}
-      <span class="asset-indicator asset-icon-control asset-tooltip asset-indicator--used"
-            role="img" tabindex="0" aria-label="Used in {{ asset.release_titles.length }} releases"
-            data-tooltip="Used in multiple releases">R</span>
-    {% endif %}
-  {% else %}
-    <span class="asset-indicator asset-icon-control asset-tooltip asset-indicator--unused"
-          role="img" tabindex="0" aria-label="Not used by a release"
-          data-tooltip="Not used by a release">U</span>
-  {% endif %}
-{% endmacro %}
-
 {% macro renderListLocation(asset) %}
   {% if asset.category_directory_slug %}
     {{ asset.category_directory_slug }}{% if asset.nested_path %}/{{ asset.nested_path }}{% endif %}
@@ -223,10 +194,9 @@
           <li class="asset-grid-item{% if not asset.is_present %} is-missing{% endif %}">
             <article class="asset-card asset-viewer-grid-card" data-asset-id="{{ asset.id }}">
               <div class="asset-card-top asset-viewer-grid-card-top">
-                {{ renderGridPresenceIcon(asset) }}
-                <span class="asset-card-usage">{{ renderGridReleaseUsageIcon(asset) }}</span>
-                <a class="asset-details-link asset-tooltip asset-tooltip--right" href="{{ detailUrl }}"
-                   aria-label="View details for {{ displayName }}" data-tooltip="View asset details">
+                <a class="asset-details-link asset-details-link--{{ 'present' if asset.is_present else 'missing' }} asset-tooltip asset-tooltip--right" href="{{ detailUrl }}"
+                   aria-label="Asset details | File {{ 'present' if asset.is_present else 'missing!' }}"
+                   data-tooltip="Asset details | File {{ 'present' if asset.is_present else 'missing!' }}">
                   {{ icons.icon('details') }}<span class="sr-only">View details</span>
                 </a>
               </div>
@@ -257,8 +227,9 @@
                   </div>
                   <div class="asset-list-card-status" role="group" aria-label="Asset status">
                     <span class="asset-list-card-presence">{{ renderPresence(asset) }}</span>
-                    <a class="asset-details-link asset-tooltip asset-tooltip--right" href="{{ detailUrl }}"
-                       aria-label="View details for {{ displayName }}" data-tooltip="View asset details">
+                    <a class="asset-details-link asset-details-link--{{ 'present' if asset.is_present else 'missing' }} asset-tooltip asset-tooltip--right" href="{{ detailUrl }}"
+                       aria-label="Asset details | File {{ 'present' if asset.is_present else 'missing!' }}"
+                       data-tooltip="Asset details | File {{ 'present' if asset.is_present else 'missing!' }}">
                       {{ icons.icon('details') }}<span class="sr-only">View details</span>
                     </a>
                   </div>

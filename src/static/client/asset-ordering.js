@@ -117,6 +117,17 @@ function autoRenameSetDisabled(control, disabled) {
   }
 }
 
+function autoRenameSubmitControl(surface, form) {
+  const descendant = form?.querySelector?.(AUTO_RENAME_SUBMIT_SELECTOR);
+  if (descendant) return descendant;
+
+  const formId = form?.id || form?.getAttribute?.('id');
+  if (!formId) return null;
+  return Array.from(surface?.querySelectorAll?.(AUTO_RENAME_SUBMIT_SELECTOR) || []).find((control) => (
+    control.form === form || control.getAttribute?.('form') === formId
+  )) || null;
+}
+
 function autoRenameItemLabel(item) {
   const label = item?.getAttribute?.('aria-label');
   if (typeof label === 'string' && label.length > 0) {
@@ -153,14 +164,13 @@ function autoRenameSync(state) {
   state.surface.setAttribute?.('data-auto-rename-current-order', valid ? JSON.stringify(ids) : '');
   state.surface.setAttribute?.('data-auto-rename-membership', valid ? 'valid' : 'invalid');
 
-  const unchanged = valid && autoRenameSameOrder(ids, state.initialOrder);
   if (state.selectionInput) {
     state.selectionInput.value = JSON.stringify(autoRenameSelectedAssetIds(state.surface));
   }
   const hasSelectedAssets = Array.from(
     state.surface.querySelectorAll?.(ASSET_SELECTION_CHECKBOX_SELECTOR) || [],
   ).some((checkbox) => checkbox.checked);
-  autoRenameSetDisabled(button, !valid || (unchanged && !hasSelectedAssets));
+  autoRenameSetDisabled(button, !valid || !hasSelectedAssets);
 
   const items = autoRenameSurfaceItems(state.surface);
   items.forEach((item, index) => {
@@ -175,7 +185,7 @@ function autoRenameSync(state) {
 
 function autoRenameDisableSurface(surface, form = null) {
   surface.setAttribute?.('data-auto-rename-membership', 'invalid');
-  const submit = form?.querySelector?.(AUTO_RENAME_SUBMIT_SELECTOR);
+  const submit = autoRenameSubmitControl(surface, form);
   autoRenameSetDisabled(submit, true);
   surface.querySelectorAll?.(AUTO_RENAME_ASSET_SELECTOR).forEach((item) => {
     item.draggable = false;
@@ -743,7 +753,7 @@ export function enhanceAssetAutoRenameOrdering(scope = globalThis.document) {
 
     const form = surface.querySelector?.(AUTO_RENAME_FORM_SELECTOR);
     const orderInput = form?.querySelector?.(AUTO_RENAME_ORDER_INPUT_SELECTOR);
-    const submit = form?.querySelector?.(AUTO_RENAME_SUBMIT_SELECTOR);
+    const submit = autoRenameSubmitControl(surface, form);
     const items = autoRenameSurfaceItems(surface);
     const initialOrder = autoRenameOrder(surface);
     const initialIndexes = items.map(autoRenameInitialIndex);

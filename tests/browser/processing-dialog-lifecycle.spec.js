@@ -195,7 +195,7 @@ test('Project Assets scan notices keep compact readable spacing at desktop and n
   try {
     await Promise.all([
       page.waitForURL(/scan_result=ok/),
-      page.getByRole('button', { name: 'Scan Now', exact: true }).click(),
+      page.getByRole('button', { name: 'Manually scan project files', exact: true }).click(),
     ]);
 
     const scanNotice = page.locator('.scan-success').first();
@@ -332,31 +332,24 @@ test('Project Assets action cards and Rename dialog remain contained across desk
     expect(desktopLayout[1].width).toBeGreaterThan(desktopLayout[2].width);
     expect(desktopLayout[0].width).toBeGreaterThan(desktopLayout[2].width);
     expect(new Set(desktopLayout.map(({ top }) => Math.round(top))).size).toBe(1);
-    const desktopGroupBounds = await desktopPanel.locator('.asset-action-groups').boundingBox();
-    const desktopBodyRow = await desktopPanel.locator('.project-detail-section-body').evaluate((body) => {
-      const cards = body.querySelector('.asset-action-groups').getBoundingClientRect();
-      const utilities = body.querySelector('.asset-actions-category-row').getBoundingClientRect();
-      const bodyRect = body.getBoundingClientRect();
-      const bodyStyle = getComputedStyle(body);
-      const utilityControls = Array.from(body.querySelectorAll('.asset-selection-tools .project-filter-control'));
+    const desktopUtilityRow = page.locator('.asset-actions-category-row').first();
+    const desktopBodyRow = await desktopUtilityRow.evaluate((utilities) => {
+      const panel = utilities.previousElementSibling.getBoundingClientRect();
+      const row = utilities.getBoundingClientRect();
+      const utilityControls = Array.from(utilities.querySelectorAll('.asset-selection-tools .project-filter-control'));
       return {
-        bodyContentLeft: Math.round(bodyRect.left + parseFloat(bodyStyle.paddingLeft)),
-        bodyContentRight: Math.round(bodyRect.right - parseFloat(bodyStyle.paddingRight)),
-        cardsLeft: Math.round(cards.left),
-        cardsRight: Math.round(cards.right),
-        cardsTop: Math.round(cards.top),
-        utilitiesLeft: Math.round(utilities.left),
-        utilitiesRight: Math.round(utilities.right),
-        utilitiesTop: Math.round(utilities.top),
+        panelBottom: Math.round(panel.bottom),
+        panelRight: Math.round(panel.right),
+        utilitiesRight: Math.round(row.right),
+        utilitiesTop: Math.round(row.top),
+        controlTops: utilityControls.map((node) => Math.round(node.getBoundingClientRect().top)),
         utilityLabels: utilityControls.map((node) => node.getAttribute('aria-label')),
       };
     });
-    expect(desktopBodyRow.cardsLeft).toBe(desktopBodyRow.bodyContentLeft);
-    expect(desktopBodyRow.utilitiesRight).toBe(desktopBodyRow.bodyContentRight);
-    expect(desktopBodyRow.cardsTop).toBe(desktopBodyRow.utilitiesTop);
-    expect(desktopBodyRow.utilitiesLeft - desktopBodyRow.cardsRight).toBeGreaterThanOrEqual(16);
+    expect(desktopBodyRow.utilitiesTop).toBeGreaterThanOrEqual(desktopBodyRow.panelBottom);
+    expect(desktopBodyRow.utilitiesRight).toBe(desktopBodyRow.panelRight);
+    expect(new Set(desktopBodyRow.controlTops).size).toBe(1);
     expect(desktopBodyRow.utilityLabels).toEqual(['Select all visible', 'Clear selection', 'Manage Categories']);
-    expect(desktopGroupBounds.width).toBeLessThan(desktopBodyRow.utilitiesLeft - desktopBodyRow.cardsLeft);
 
     const desktopFileGroup = desktopGroups.filter({ has: page.getByRole('heading', { name: 'File', exact: true }) });
     const desktopFileField = desktopFileGroup.locator('.bulk-move-field');
@@ -466,7 +459,7 @@ test('Project Assets action cards and Rename dialog remain contained across desk
       const headingActions = page.locator('.page-heading-actions .project-assets-heading-action');
       await expect(headingActions).toHaveCount(3);
       expect(await headingActions.evaluateAll((nodes) => nodes.map((node) => node.getAttribute('aria-label'))))
-        .toEqual(['Scan Now', 'Remove missing assets', 'Edit project']);
+        .toEqual(['Manually scan project files', 'Remove missing assets', 'Edit project']);
       await expectEstablishedIconControls(headingActions);
 
       const toolbar = page.locator('[data-project-assets-live-region] .asset-viewer-display-controls .project-filter-actions--projects');
@@ -504,23 +497,29 @@ test('Project Assets action cards and Rename dialog remain contained across desk
       expect(Math.abs(rowMetrics.heading.right - rowMetrics.toolbar.right)).toBeLessThanOrEqual(1);
 
       const panel = page.locator('[data-asset-actions-panel]').first();
-      const mobileBodyLayout = await panel.locator('.project-detail-section-body').evaluate((body) => {
-        const cards = body.querySelector('.asset-action-groups').getBoundingClientRect();
-        const utilities = body.querySelector('.asset-actions-category-row').getBoundingClientRect();
+      const utilityRow = page.locator('.asset-actions-category-row').first();
+      const mobileBodyLayout = await utilityRow.evaluate((utilities) => {
+        const panel = utilities.previousElementSibling.getBoundingClientRect();
+        const row = utilities.getBoundingClientRect();
+        const tools = utilities.querySelector('.asset-selection-tools');
+        const toolStyle = getComputedStyle(tools);
+        const controls = Array.from(tools.querySelectorAll('.project-filter-control'));
         return {
-          cardsTop: Math.round(cards.top),
-          cardsLeft: Math.round(cards.left),
-          cardsRight: Math.round(cards.right),
-          utilitiesTop: Math.round(utilities.top),
-          utilitiesLeft: Math.round(utilities.left),
-          utilitiesRight: Math.round(utilities.right),
+          panelBottom: Math.round(panel.bottom),
+          utilitiesTop: Math.round(row.top),
+          utilitiesLeft: Math.round(row.left),
+          utilitiesRight: Math.round(row.right),
+          flexDirection: toolStyle.flexDirection,
+          flexWrap: toolStyle.flexWrap,
+          controlTops: controls.map((node) => Math.round(node.getBoundingClientRect().top)),
         };
       });
-      expect(mobileBodyLayout.utilitiesTop).toBeGreaterThan(mobileBodyLayout.cardsTop);
-      expect(mobileBodyLayout.cardsLeft).toBeGreaterThanOrEqual(0);
-      expect(mobileBodyLayout.cardsRight).toBeLessThanOrEqual(375);
+      expect(mobileBodyLayout.utilitiesTop).toBeGreaterThanOrEqual(mobileBodyLayout.panelBottom);
       expect(mobileBodyLayout.utilitiesLeft).toBeGreaterThanOrEqual(0);
       expect(mobileBodyLayout.utilitiesRight).toBeLessThanOrEqual(375);
+      expect(mobileBodyLayout.flexDirection).toBe('row');
+      expect(mobileBodyLayout.flexWrap).toBe('wrap');
+      expect(new Set(mobileBodyLayout.controlTops).size).toBe(1);
       const mobileGroups = await panel.locator('.asset-action-group').evaluateAll((groups) => groups.map((group) => {
         const rect = group.getBoundingClientRect();
         return { left: rect.left, right: rect.right, top: rect.top };
@@ -550,7 +549,7 @@ test('Project Assets action cards and Rename dialog remain contained across desk
       await mobileFileDropdown.locator('summary').click();
       const processingControls = panel.locator('.processing-action-group .project-filter-control');
       expect(await processingControls.evaluateAll((nodes) => nodes.map((node) => node.getAttribute('aria-label'))))
-        .toEqual(['Watermark', 'Image workflows editor', 'Archives']);
+        .toEqual(['Auto Rename', 'Watermark', 'Image workflows editor', 'Archives']);
       await expectEstablishedIconControls(processingControls, [18, 20]);
 
       const details = view === 'grid'

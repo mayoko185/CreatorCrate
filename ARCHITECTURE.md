@@ -448,8 +448,8 @@ index, releases and release assets, Social Preparation session/platform/asset
 snapshots (including hashed redemption material and attempt deadlines), notes/books/chapters and their
 associations, tags and their project/asset joins, watermarks and watermark
 scale maps, processing presets, generated artifacts, project primary images,
-per-project and global page defaults, sessions, and a generic `app_meta`
-key/value table.
+per-project and global page defaults, independently persisted per-project/page
+active-default scopes, sessions, and a generic `app_meta` key/value table.
 
 `app_meta` deserves a note: it is the **application-scoped settings store**,
 accessed exclusively through
@@ -458,6 +458,21 @@ narrow settings services (preview category, NSFW filter, Open-locally root,
 dashboard and page defaults, default watermark, automatic-scan timing).
 Adding a new global setting means adding a key and a small service, not a
 migration.
+
+Project Assets Global defaults are shared through `app_meta`, while Project-only
+values are stored independently in `project_page_defaults`. The active
+`global`/`project` scope for each Project and page is separate durable state in
+`project_page_default_scopes`; Project option-row existence never selects the
+active scope. Project-only rows may therefore remain dormant while Global is
+active. When Project is active, each missing or invalid Project field falls back
+to its Global value without materializing a Project row.
+
+The Project Assets Defaults POST writes submitted options and the selected active
+scope in one transaction, then resolves the live-refresh destination using that
+persisted scope. Scope toggles use the existing serialized autosave queue and live
+region engine, keeping the dialog open. Reloaded dialogs read persisted scope;
+query parameters do not select a defaults scope. Global saves preserve every
+project's stored Project-only values.
 
 **Configurable Project options.** Projects retain `status` and `project_type`
 as literal strings. Their configurable metadata lives in separate versioned

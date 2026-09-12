@@ -1975,13 +1975,12 @@ describe('Phase 6B HTTP workflow', () => {
         const res = await app.testAgent.get(`/projects/${projectId}/assets`).expect(200);
         // The scan form must not be rendered — assert the form markup is absent
         expect(res.text).not.toContain(`action="/projects/${projectId}/scan"`);
-        expect(res.text).not.toMatch(/<button[^>]*>\s*Scan Now\s*<\/button>/);
-        // The empty-state "Scan Now" text (inside a <strong>) must not be confused
-        // with the button — the button is absent, but the placeholder text may still
-        // contain "Scan Now" for non-archived projects. For archived projects the
+        expect(res.text).not.toMatch(/<button[^>]*aria-label="Manually scan project files"[^>]*>/);
+        // The manual-scan accessible name must not be confused
+        // with unrelated empty-state copy. For archived projects the
         // placeholder says "This archived project has no assets on record."
-        // No "Scan Now" action should appear for archived projects
-        expect(res.text).not.toContain('>Scan Now<');
+        // No manual-scan action should appear for archived projects.
+        expect(res.text).not.toContain('aria-label="Manually scan project files"');
       });
 
       it('active project contains the actual scan form and submit button', async () => {
@@ -1991,9 +1990,9 @@ describe('Phase 6B HTTP workflow', () => {
         // Assert the form element with the correct action
         expect(res.text).toContain(`<form method="post" action="/projects/${projectId}/scan" class="inline-form">`);
         // Assert the submit button inside the form
-        expect(res.text).toMatch(/<button class="button button-small button-primary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--left"\s+type="submit" aria-label="Scan Now" data-tooltip="Scan Now">[\s\S]*?<svg[^>]*aria-hidden="true"[^>]*focusable="false"[\s\S]*?<\/button>/);
+        expect(res.text).toMatch(/<button class="button button-small button-primary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--left"\s+type="submit" aria-label="Manually scan project files" data-tooltip="Manually scan project files">[\s\S]*?<svg[^>]*aria-hidden="true"[^>]*focusable="false"[\s\S]*?<\/button>/);
         // Scanning is POST-only; the empty state intentionally has no GET link.
-        expect(res.text).not.toContain('Scan Now</a>');
+        expect(res.text).not.toContain('Manually scan project files</a>');
       });
 
       it('POST scan for archived project is rejected', async () => {

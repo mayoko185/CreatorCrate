@@ -1,10 +1,13 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import {
+  beginProjectAssetsDefaultsLiveRefresh,
   enhanceDropdowns,
   enhanceAssetSelection,
   enhanceAssetGridSize,
   enhanceAssetListSize,
   enhanceProjectAssetsLiveFiltering,
+  refreshProjectAssetsDefaultsLiveRegion,
+  refreshProjectAssetsLiveRegion,
 } from '../src/static/creatorcrate.js';
 
 function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } = {}) {
@@ -619,6 +622,16 @@ async function flush() {
   for (let index = 0; index < 10; index += 1) await Promise.resolve();
 }
 
+function deferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
 async function withLocalStorage(entries, callback) {
   const previousStorage = globalThis.localStorage;
   const storage = new Map(Object.entries(entries));
@@ -667,6 +680,153 @@ describe('Project Assets live filtering enhancement', () => {
     ]);
     enhanceProjectAssetsLiveFiltering(initial.document);
     expect(replacement.assetInfoPreview.listeners).toHaveLength(5);
+  });
+
+  it('loads the server-authoritative Defaults destination without preserving the active query and re-enhances the replacement', async () => {
+    const initial = makePage({ tag: '8', page: '4', withAssetInfoCard: true, withAssetSelection: true });
+    initial.search.value = 'obsolete';
+    const replacement = makePage({
+      presence: 'missing',
+      page: '1',
+      view: 'grid',
+      withAssetInfoCard: true,
+      withAssetSelection: true,
+    });
+    const pages = new Map([['defaults-result', replacement.document]]);
+    const { windowObject } = makeWindow(initial.document, pages);
+    const destination = 'http://creatorcrate.test/projects/1/assets?presence=missing&view=grid&notice=project_assets_defaults_saved';
+    const canonicalUrl = 'http://creatorcrate.test/projects/1/assets?presence=missing&view=grid';
+    windowObject.fetch.mockResolvedValue(htmlResponse('defaults-result', canonicalUrl));
+    enhanceProjectAssetsLiveFiltering(initial.document);
+
+    const authority = beginProjectAssetsDefaultsLiveRefresh(initial.document);
+    expect(refreshProjectAssetsDefaultsLiveRegion(initial.document, destination, authority)).toBe('started');
+    await flush();
+
+    expect(windowObject.fetch).toHaveBeenCalledWith(
+      destination,
+      expect.objectContaining({ method: 'GET', redirect: 'follow', headers: { Accept: 'text/html' } }),
+    );
+    expect(windowObject.fetch.mock.calls[0][0]).not.toContain('obsolete');
+    expect(windowObject.fetch.mock.calls[0][0]).not.toContain('tag=8');
+    expect(windowObject.fetch.mock.calls[0][0]).not.toContain('page=4');
+    expect(windowObject.history.pushes).toHaveLength(0);
+    expect(windowObject.history.replaces).toEqual([expect.objectContaining({ url: canonicalUrl })]);
+    expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(replacement.region);
+    expect(initial.document.querySelector('#asset-filters')).toBe(initial.form);
+    expect(initial.document.querySelector('#search')).toBe(replacement.search);
+    expect(initial.dialog.open).toBe(true);
+    expect(replacement.assetInfoPreview.listeners.map(({ type }) => type)).toEqual([
+      'pointerenter', 'pointermove', 'pointerleave', 'focusin', 'focusout',
+    ]);
+    expect(replacement.selectedCount.textContent).toBe('0 of 1 selected');
+    replacement.selectionCheckbox.checked = true;
+    replacement.selectionCheckbox.dispatch('change');
+    expect(replacement.selectedCount.textContent).toBe('1 of 1 selected');
+  });
+
+  it('keeps mutation refresh query preservation separate from Defaults authority', async () => {
+    const initial = makePage({ tag: '8', page: '4', view: 'grid' });
+    initial.search.value = 'active';
+    const replacement = makePage({ tag: '8', page: '4', view: 'grid' });
+    const { windowObject } = makeWindow(initial.document, new Map([['mutation-result', replacement.document]]));
+    windowObject.fetch.mockResolvedValue(htmlResponse(
+      'mutation-result',
+      'http://creatorcrate.test/projects/1/assets?search=active&tag=8&page=4&view=grid',
+    ));
+    enhanceProjectAssetsLiveFiltering(initial.document);
+
+    expect(refreshProjectAssetsLiveRegion(initial.document)).toBe(true);
+    await flush();
+
+    const requested = new URL(windowObject.fetch.mock.calls[0][0]);
+    expect(requested.searchParams.get('search')).toBe('active');
+    expect(requested.searchParams.get('tag')).toBe('8');
+    expect(requested.searchParams.get('page')).toBe('4');
+    expect(requested.searchParams.get('view')).toBe('grid');
+    expect(windowObject.history.pushes).toHaveLength(0);
+    expect(windowObject.history.replaces).toHaveLength(0);
+  });
+
+  it('does not let a stale Defaults GET replace newer Project Assets navigation', async () => {
+    const initial = makePage();
+    const defaultsResult = makePage({ presence: 'present' });
+    const navigationResult = makePage({ presence: 'missing' });
+    const pages = new Map([
+      ['defaults-result', defaultsResult.document],
+      ['navigation-result', navigationResult.document],
+    ]);
+    const { windowObject } = makeWindow(initial.document, pages);
+    const defaultsRequest = deferred();
+    windowObject.fetch
+      .mockImplementationOnce(() => defaultsRequest.promise)
+      .mockResolvedValueOnce(htmlResponse(
+        'navigation-result',
+        'http://creatorcrate.test/projects/1/assets?presence=missing',
+      ));
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    const authority = beginProjectAssetsDefaultsLiveRefresh(initial.document);
+    refreshProjectAssetsDefaultsLiveRegion(
+      initial.document,
+      'http://creatorcrate.test/projects/1/assets?presence=present&notice=project_assets_defaults_saved',
+      authority,
+    );
+
+    initial.presenceAll.checked = false;
+    initial.presenceMissing.checked = true;
+    initial.presenceMissing.dispatch('change');
+    await flush();
+    defaultsRequest.resolve(htmlResponse(
+      'defaults-result',
+      'http://creatorcrate.test/projects/1/assets?presence=present',
+    ));
+    await flush();
+
+    expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(navigationResult.region);
+    expect(windowObject.location.href).toBe('http://creatorcrate.test/projects/1/assets?presence=missing');
+  });
+
+  it('reports a superseded Defaults authority before starting another request', () => {
+    const initial = makePage();
+    const { windowObject } = makeWindow(initial.document);
+    windowObject.fetch.mockImplementation(() => new Promise(() => {}));
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    const authority = beginProjectAssetsDefaultsLiveRefresh(initial.document);
+
+    initial.presenceAll.checked = false;
+    initial.presenceMissing.checked = true;
+    initial.presenceMissing.dispatch('change');
+
+    expect(refreshProjectAssetsDefaultsLiveRegion(
+      initial.document,
+      'http://creatorcrate.test/projects/1/assets?presence=present',
+      authority,
+    )).toBe('superseded');
+    expect(windowObject.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces Defaults refresh failure without forcing document navigation', async () => {
+    const initial = makePage();
+    const { windowObject } = makeWindow(initial.document);
+    windowObject.location.assign = vi.fn();
+    windowObject.fetch.mockRejectedValue(new Error('offline'));
+    const onError = vi.fn();
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    const authority = beginProjectAssetsDefaultsLiveRefresh(initial.document);
+
+    expect(refreshProjectAssetsDefaultsLiveRegion(
+      initial.document,
+      'http://creatorcrate.test/projects/1/assets?presence=missing&notice=project_assets_defaults_saved',
+      authority,
+      { onError },
+    )).toBe('started');
+    await flush();
+
+    expect(onError).toHaveBeenCalledOnce();
+    expect(windowObject.location.assign).not.toHaveBeenCalled();
+    expect(windowObject.location.href).toBe('http://creatorcrate.test/projects/1/assets?page=2');
+    expect(initial.status.textContent).toBe('Defaults were saved, but Project Assets could not refresh. Refresh the page to see the saved defaults.');
+    expect(initial.region.getAttribute('data-project-assets-live-state')).toBe('error');
   });
 
   it('updates the replacement external selected count instead of stale live-region markup', async () => {

@@ -155,6 +155,8 @@ describe('asset browser HTTP workflow', () => {
   }
 
   function saveProjectAssetDefault(projectId, option, value) {
+    // These fixtures model an actively selected Project scope, not dormant rows.
+    app.locals.projectPageDefaultRepository.setPageScope(projectId, 'projectAssets', 'project');
     return app.locals.projectPageDefaultRepository.setOption(projectId, 'projectAssets', option, value);
   }
 
@@ -235,14 +237,16 @@ describe('asset browser HTTP workflow', () => {
   function expectProjectReturnLead(html, { href, title, extraClass = '' }) {
     const heading = html.match(/<header class="page-heading">[\s\S]*?<\/header>/)?.[0] || '';
     const classSuffix = extraClass ? ` ${extraClass}` : '';
+    const label = `Back to main project page: ${title}`;
     const lead = heading.match(new RegExp(
-      `<a class="button button-secondary page-heading-lead page-heading-lead--icon asset-tooltip asset-tooltip--left${classSuffix}" href="${href}" aria-label="${title}" data-tooltip="${title}">([\\s\\S]*?)<\\/a>`
+      `<a class="button button-secondary page-heading-lead page-heading-lead--icon asset-tooltip asset-tooltip--left${classSuffix}" href="${href}" aria-label="${label}" data-tooltip="${label}">([\\s\\S]*?)<\\/a>`
     ));
 
     expect(lead).not.toBeNull();
     expect(lead[0]).not.toContain('title=');
     expect(lead[1]).toMatch(/<svg[^>]*aria-hidden="true"[^>]*focusable="false"/);
-    expect(lead[1]).toContain('<path d="M15 18l-6-6 6-6"/>');
+    expect(lead[1]).toContain('<path d="M3 7l9-4 9 4-9 4-9-4z"/>');
+    expect(lead[1]).toContain('<path d="M3 7v10l9 4 9-4V7"/>');
     expect(lead[1].replace(/<[^>]+>/g, '').trim()).toBe('');
     expect(heading).not.toContain(`Project: ${title}`);
   }
@@ -252,9 +256,7 @@ describe('asset browser HTTP workflow', () => {
   }
 
   function assetSelectionControlsHtml(html) {
-    const start = html.indexOf('<div class="asset-selection-controls-area">');
-    const end = html.indexOf('</section>', start);
-    return start >= 0 && end > start ? html.slice(start, end) : '';
+    return html.match(/<div class="asset-selection-controls-area">[\s\S]*?<\/div>\s*<\/div>\s*<\/div>/)?.[0] || '';
   }
 
   function assetActionsPanelHtml(html) {
@@ -396,17 +398,17 @@ describe('asset browser HTTP workflow', () => {
     const id = res.headers.location.replace('/projects/', '');
     const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
     expect(res2.text).toContain('Assets — Browser Title Test');
-    expect(res2.text).toContain('Scan Now');
+    expect(res2.text).toContain('Manually scan project files');
     expect(res2.text).toContain('class="page-heading"');
     const pageHeading = res2.text.match(/<header class="page-heading">([\s\S]*?)<\/header>/)?.[1] || '';
     const headingActions = pageHeading.match(/<div class="page-heading-actions">([\s\S]*?)<\/div>/)?.[1] || '';
     const displayActions = projectAssetsDisplayActions(res2.text);
     expectProjectReturnLead(res2.text, { href: `/projects/${id}`, title: 'Browser Title Test' });
     expect(pageHeading.indexOf('page-heading-lead')).toBeLessThan(pageHeading.indexOf('<div class="page-heading-actions">'));
-    expect(headingActions).toContain('Scan Now');
+    expect(headingActions).toContain('Manually scan project files');
     expect(headingActions).toContain('Edit project');
     expect(headingActions).toContain('data-dialog-invocation');
-    expect(headingActions.indexOf('aria-label="Scan Now"')).toBeLessThan(headingActions.indexOf('aria-label="Edit project"'));
+    expect(headingActions.indexOf('aria-label="Manually scan project files"')).toBeLessThan(headingActions.indexOf('aria-label="Edit project"'));
     expect(displayActions).not.toContain(`href="/projects/${id}/edit"`);
     expect(headingActions).not.toContain('Project: Browser Title Test');
     expect(res2.text).not.toContain('Back to Project');
@@ -776,7 +778,7 @@ describe('asset browser HTTP workflow', () => {
     expect(archivedHeading).not.toContain('<div class="page-heading-actions">');
     expect(archived.text).not.toContain('Back to Project');
     expect(archived.text).not.toContain('remove-missing-assets-dialog');
-    expect(archived.text).not.toContain('Scan Now');
+    expect(archived.text).not.toContain('Manually scan project files');
     expect(archived.text).not.toContain(`href="/projects/${id}/edit"`);
   });
 
@@ -1103,7 +1105,7 @@ describe('asset browser HTTP workflow', () => {
 
     const archived = await agent.get(`/projects/${id}/assets?view=grid`).expect(200);
     expect(assetCardHtml(archived.text, asset.id)).toContain('Retained Asset Tag');
-    expect(archived.text).not.toContain('Scan Now');
+    expect(archived.text).not.toContain('Manually scan project files');
   });
 
   it('filters project assets by one reusable tag, preserves uniqueness and pagination, and renders catalog options', async () => {
@@ -1412,6 +1414,7 @@ describe('asset browser HTTP workflow', () => {
         if (projectOverride) {
           app.locals.pageDefaultsService.saveProjectDefault('projectAssets', 'sort', 'modified', undefined, { projectId: id });
           app.locals.pageDefaultsService.saveProjectDefault('projectAssets', 'pageSize', '10', undefined, { projectId: id });
+          app.locals.pageDefaultsService.setPageDefaultScope('projectAssets', 'project', { projectId: id });
         }
         const reset = await agent.get(links[0] + '&search=discard&category=bad&tag=all&extension=jpg&sort=filename&order=asc&pageSize=25&page=9&notice=asset-renamed&defaults=1&manage_categories=1&inheritedFilterDefaults=bogus').expect(302);
         expect(reset.headers['cache-control']).toBe('no-store');
@@ -2015,7 +2018,7 @@ describe('asset browser HTTP workflow', () => {
         + (globalDialog.match(/checked[^>]*name="scope"/g) || []).length).toBe(1);
       expect(globalDialog.slice(gridStart, statusStart)).not.toContain('data-project-assets-defaults-scope');
       expect(statusStart).toBeGreaterThan(gridStart);
-      expect(footerStart).toBeGreaterThan(statusStart);
+      expect(footerStart).toBe(-1);
 
       saveProjectAssetDefault(id, 'view', 'list');
       const projectResponse = await agent.get(`/projects/${id}/assets?defaults=1`).expect(200);
@@ -2037,7 +2040,7 @@ describe('asset browser HTTP workflow', () => {
       expect(checkedScope(invalidScopeDialog, 'project')).toBe(false);
 
       const projectsDefaults = await agent.get('/projects?defaults=1').expect(200);
-      const assetViewerDefaults = await agent.get('/assets?defaults=1').expect(200);
+      const assetViewerDefaults = await agent.get('/assets?defaults=1').redirects(1).expect(200);
       expect(projectsDefaults.text).not.toContain('data-project-assets-defaults-scope');
       expect(assetViewerDefaults.text).not.toContain('data-project-assets-defaults-scope');
     });
@@ -2127,7 +2130,7 @@ describe('asset browser HTTP workflow', () => {
         ...values, scope: 'global', loadedScope: 'global', returnTo: `/projects/${id}/assets`, _csrf: csrfToken,
       }).expect(302);
       expect(app.locals.pageDefaultsService.resolveGlobalPageDefaults('projectAssets')).toEqual(values);
-      expect(app.locals.projectPageDefaultRepository.getPageOptions(id, 'projectAssets')).toEqual({});
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(id, 'projectAssets')).toEqual(values);
 
       const archived = await createProject('Archived Project Assets Loaded Scope Guard');
       const archivedId = Number(archived.headers.location.replace('/projects/', ''));
@@ -2241,6 +2244,7 @@ describe('asset browser HTTP workflow', () => {
         ...archivedValues, scope: 'global', returnTo: `/projects/${archivedId}/assets`, _csrf: csrfToken,
       }).expect(302);
       expect(app.locals.pageDefaultsService.getPageDefaultScope('projectAssets', { projectId: archivedId })).toBe('global');
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(archivedId, 'projectAssets')).toEqual(archivedValues);
 
       const active = await createProject('Scoped Project Assets Global POST');
       const activeId = Number(active.headers.location.replace('/projects/', ''));
@@ -2252,7 +2256,7 @@ describe('asset browser HTTP workflow', () => {
       }).expect(302);
       expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
         .get(PAGE_DEFAULT_DEFINITIONS.projectAssets.view.key).value).toBe('grid');
-      expect(app.locals.projectPageDefaultRepository.getOption(activeId, 'projectAssets', 'view')).toBeUndefined();
+      expect(app.locals.projectPageDefaultRepository.getOption(activeId, 'projectAssets', 'view')).toBe('list');
       expect(app.locals.pageDefaultsService.getPageDefaultScope('projectAssets', { projectId: activeId })).toBe('global');
     });
 
@@ -2531,8 +2535,16 @@ describe('asset browser HTTP workflow', () => {
       expect(app.locals.projectPageDefaultRepository.getPageOptions(secondId, 'projectAssets')).toEqual({ view: 'list' });
       expect(app.locals.pageDefaultsService.resolveGlobalPageDefaults('projectAssets')).toEqual(globalValues);
       expect(app.locals.pageDefaultsService.getPageDefaultScope('projectAssets', { projectId: firstId })).toBe('project');
+      expect(save.headers.location).toBe(
+        `/projects/${firstId}/assets?view=list&sort=modified&order=desc&pageSize=50&notice=project_assets_defaults_saved`,
+      );
       const converged = await agent.get(save.headers.location).expect(200);
       expect(converged.headers.location).toBeUndefined();
+      const convergedDialog = converged.text.match(
+        /<dialog id="project-assets-defaults-dialog"[\s\S]*?<\/dialog>/,
+      )?.[0] || '';
+      expect(convergedDialog).toMatch(/name="scope"[^>]*value="project"[^>]*checked/);
+      expect(convergedDialog).toContain('name="loadedScope" value="project"');
     });
 
     it('applies Project-only persistence for enhanced JSON submissions', async () => {
@@ -2552,17 +2564,20 @@ describe('asset browser HTTP workflow', () => {
       expect(app.locals.pageDefaultsService.getPageDefaultScope('projectAssets', { projectId: id })).toBe('project');
     });
 
-    it('saves Global defaults and clears only the current project scope', async () => {
+    it('shares Global defaults while preserving partial overrides for every project', async () => {
       const first = await createProject('Scoped Global Save Project A');
       const firstId = Number(first.headers.location.replace('/projects/', ''));
       const second = await createProject('Scoped Global Save Project B');
       const secondId = Number(second.headers.location.replace('/projects/', ''));
+      const inheriting = await createProject('Scoped Global Save Project C');
+      const inheritingId = Number(inheriting.headers.location.replace('/projects/', ''));
       const values = {
-        view: 'list', gridSize: 'compact', listSize: 'compact', sort: 'size', order: 'desc',
-        pageSize: '100', extension: 'all', tag: 'all',
+        view: 'grid', gridSize: 'compact', listSize: 'compact', sort: 'filename', order: 'asc',
+        pageSize: '25', extension: 'all', tag: 'all',
       };
-      saveProjectAssetDefault(firstId, 'view', 'grid');
-      saveProjectAssetDefault(secondId, 'view', 'list');
+      saveProjectAssetDefault(firstId, 'view', 'list');
+      saveProjectAssetDefault(firstId, 'order', 'desc');
+      saveProjectAssetDefault(secondId, 'sort', 'modified');
 
       const save = await agent.post(`/projects/${firstId}/assets/defaults`).type('form').send({
         ...values,
@@ -2572,14 +2587,134 @@ describe('asset browser HTTP workflow', () => {
       }).expect(302);
 
       expect(app.locals.pageDefaultsService.resolveGlobalPageDefaults('projectAssets')).toEqual(values);
-      expect(app.locals.projectPageDefaultRepository.getPageOptions(firstId, 'projectAssets')).toEqual({});
-      expect(app.locals.projectPageDefaultRepository.getPageOptions(secondId, 'projectAssets')).toEqual({ view: 'list' });
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(firstId, 'projectAssets')).toEqual({
+        view: 'list',
+        order: 'desc',
+      });
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(secondId, 'projectAssets')).toEqual({ sort: 'modified' });
       expect(app.locals.pageDefaultsService.resolvePageDefaults(
         'projectAssets', {}, {}, { projectId: firstId },
       )).toEqual(values);
+      expect(app.locals.pageDefaultsService.resolvePageDefaults(
+        'projectAssets', {}, {}, { projectId: secondId },
+      )).toEqual({ ...values, sort: 'modified' });
+      expect(app.locals.pageDefaultsService.resolvePageDefaults(
+        'projectAssets', {}, {}, { projectId: inheritingId },
+      )).toEqual(values);
       expect(app.locals.pageDefaultsService.getPageDefaultScope('projectAssets', { projectId: firstId })).toBe('global');
+      expect(save.headers.location).toBe(
+        `/projects/${firstId}/assets?view=grid&sort=filename&order=asc&pageSize=25&notice=project_assets_defaults_saved`,
+      );
+      const secondRendered = await agent.get(`/projects/${secondId}/assets?defaults=1`).expect(200);
+      const secondPayload = JSON.parse(
+        secondRendered.text.match(/<script type="application\/json" data-project-assets-default-values>([\s\S]*?)<\/script>/)?.[1] || '{}',
+      );
+      expect(secondPayload.global).toEqual(values);
       const converged = await agent.get(save.headers.location).expect(200);
       expect(converged.headers.location).toBeUndefined();
+      const convergedDialog = converged.text.match(
+        /<dialog id="project-assets-defaults-dialog"[\s\S]*?<\/dialog>/,
+      )?.[0] || '';
+      const convergedPayload = JSON.parse(
+        convergedDialog.match(/<script type="application\/json" data-project-assets-default-values>([\s\S]*?)<\/script>/)?.[1] || '{}',
+      );
+      expect(convergedDialog).toMatch(/name="scope"[^>]*value="global"[^>]*checked/);
+      expect(convergedDialog).not.toMatch(/name="scope"[^>]*value="project"[^>]*checked/);
+      expect(convergedDialog).toContain('name="loadedScope" value="global"');
+      const returnTo = convergedDialog.match(/name="returnTo" value="([^"]+)"/)?.[1] || '';
+      expect(returnTo).toBe(`/projects/${firstId}/assets?category=all`);
+      expect(returnTo).not.toContain('defaultsScope');
+      expect(convergedPayload.global).toEqual(values);
+      expect(convergedPayload.project).toEqual({ ...values, view: 'list', order: 'desc' });
+    });
+
+    it.each(['other', 'global'])('ignores obsolete defaultsScope=%s and reads persisted active scope', async (queryScope) => {
+      const project = await createProject('Scoped Editor State Validation');
+      const id = Number(project.headers.location.replace('/projects/', ''));
+      saveProjectAssetDefault(id, 'view', 'list');
+
+      const rendered = await agent
+        .get(`/projects/${id}/assets?defaults=1&defaultsScope=${queryScope}`)
+        .expect(200);
+      const dialog = rendered.text.match(
+        /<dialog id="project-assets-defaults-dialog"[\s\S]*?<\/dialog>/,
+      )?.[0] || '';
+
+      expect(dialog).toMatch(/name="scope"[^>]*value="project"[^>]*checked/);
+      expect(dialog).toContain('name="loadedScope" value="project"');
+      expect(dialog).not.toContain('value="other"');
+    });
+
+    it('persists scope switches across reloads while keeping dormant rows and shared Global independent', async () => {
+      const a = Number((await createProject('Active Scope A')).headers.location.split('/').pop());
+      const b = Number((await createProject('Active Scope B')).headers.location.split('/').pop());
+      const service = app.locals.pageDefaultsService;
+      const repo = app.locals.projectPageDefaultRepository;
+      const global = { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename',
+        order: 'asc', pageSize: '25', extension: 'all', tag: 'all' };
+      const project = { ...global, view: 'list', sort: 'modified' };
+      for (const [key, value] of Object.entries(global)) saveAssetDefault(key, value);
+      repo.setOption(a, 'projectAssets', 'view', 'list');
+      repo.setOption(a, 'projectAssets', 'sort', 'modified');
+      repo.setOption(b, 'projectAssets', 'sort', 'size');
+      const bRows = repo.getPageOptions(b, 'projectAssets');
+      const save = async (id, scope, values) => agent.post(`/projects/${id}/assets/defaults`)
+        .type('form').send({ ...values, scope, loadedScope: scope, _csrf: csrfToken,
+          returnTo: `/projects/${id}/assets` }).expect(302);
+      const reload = async (id, scope, values) => {
+        const page = await agent.get(`/projects/${id}/assets`).redirects(2).expect(200);
+        expect(page.text).toContain(`name="loadedScope" value="${scope}"`);
+        expect(service.resolvePageDefaults('projectAssets', {}, {}, { projectId: id })).toEqual(values);
+        const view = values.view === 'list' ? 'asset-list' : 'asset-grid';
+        expect(page.text).toContain(view);
+      };
+      // Rows exist, but missing scope reads Global; neither row set selects it.
+      await reload(a, 'global', global);
+      await save(a, 'project', project);
+      await reload(a, 'project', project);
+      const aRows = repo.getPageOptions(a, 'projectAssets');
+      const switched = await save(a, 'global', global);
+      expect(switched.headers.location).toContain('view=grid&sort=filename');
+      expect(switched.headers.location).not.toContain('defaultsScope');
+      await reload(a, 'global', global);
+      expect(repo.getPageOptions(a, 'projectAssets')).toEqual(aRows);
+      await save(a, 'project', project);
+      await reload(a, 'project', project);
+      const updatedGlobal = { ...global, order: 'desc' };
+      await save(b, 'global', updatedGlobal);
+      await reload(b, 'global', updatedGlobal);
+      await reload(a, 'project', project);
+      expect(repo.getPageOptions(a, 'projectAssets')).toEqual(aRows);
+      expect(repo.getPageOptions(b, 'projectAssets')).toEqual(bRows);
+      service.setPageDefaultScope('projectAssets', 'project', { projectId: b });
+      await reload(b, 'project', { ...updatedGlobal, sort: 'size' });
+      expect(repo.getPageOptions(b, 'projectAssets')).toEqual(bRows);
+    });
+
+    it.each(['global', 'project'])('rolls back options and active scope together after a %s scope write failure', async (scope) => {
+      const id = Number((await createProject('Scope Atomic Failure')).headers.location.split('/').pop());
+      const service = app.locals.pageDefaultsService;
+      const repo = app.locals.projectPageDefaultRepository;
+      repo.setPageScope(id, 'projectAssets', scope === 'global' ? 'project' : 'global');
+      repo.setOption(id, 'projectAssets', 'view', 'list');
+      const beforeGlobal = service.resolveGlobalPageDefaults('projectAssets');
+      const beforeProject = repo.getPageOptions(id, 'projectAssets');
+      const beforeScope = repo.getPageScope(id, 'projectAssets');
+      const write = service.setPageDefaultScope;
+      const spy = vi.spyOn(service, 'setPageDefaultScope').mockImplementation((...args) => {
+        write(...args);
+        throw new Error('failure after active scope write');
+      });
+      try {
+        await agent.post(`/projects/${id}/assets/defaults`).set('Accept', 'application/json')
+          .type('form').send({ ...beforeGlobal, view: 'list', sort: 'modified', scope,
+            loadedScope: scope, _csrf: csrfToken }).expect(500);
+      } finally {
+        spy.mockRestore();
+      }
+      expect(service.resolveGlobalPageDefaults('projectAssets')).toEqual(beforeGlobal);
+      expect(repo.getPageOptions(id, 'projectAssets')).toEqual(beforeProject);
+      expect(repo.getPageScope(id, 'projectAssets')).toBe(beforeScope);
     });
 
     it('rejects an invalid scope before either persistence branch writes', async () => {
@@ -2599,27 +2734,32 @@ describe('asset browser HTTP workflow', () => {
       expect(app.locals.projectPageDefaultRepository.getPageOptions(id, 'projectAssets')).toEqual({ view: 'list' });
     });
 
-    it('rolls back Global writes and the current-project clear when clearing fails', async () => {
-      const project = await createProject('Scoped Global Rollback');
-      const id = Number(project.headers.location.replace('/projects/', ''));
-      saveAssetDefault('view', 'grid');
-      saveProjectAssetDefault(id, 'view', 'list');
+    it('rolls back partial Global writes without damaging any project overrides', async () => {
+      const first = await createProject('Scoped Global Rollback Project A');
+      const firstId = Number(first.headers.location.replace('/projects/', ''));
+      const second = await createProject('Scoped Global Rollback Project B');
+      const secondId = Number(second.headers.location.replace('/projects/', ''));
+      const globalBefore = app.locals.pageDefaultsService.resolveGlobalPageDefaults('projectAssets');
+      saveProjectAssetDefault(firstId, 'view', 'list');
+      saveProjectAssetDefault(secondId, 'sort', 'modified');
       const service = app.locals.pageDefaultsService;
-      const clearProjectPageDefaults = service.clearProjectPageDefaults;
-      const clearSpy = vi.spyOn(service, 'clearProjectPageDefaults').mockImplementation((...args) => {
-        clearProjectPageDefaults(...args);
-        throw new Error('simulated project default clear failure');
+      const saveDefault = service.saveDefault;
+      const saveSpy = vi.spyOn(service, 'saveDefault').mockImplementation((...args) => {
+        const result = saveDefault(...args);
+        if (args[1] === 'sort') throw new Error('simulated Global default write failure');
+        return result;
       });
 
-      await agent.post(`/projects/${id}/assets/defaults`).set('Accept', 'application/json').type('form').send({
+      await agent.post(`/projects/${firstId}/assets/defaults`).set('Accept', 'application/json').type('form').send({
         view: 'list', gridSize: 'compact', listSize: 'compact', sort: 'size', order: 'desc',
         pageSize: '50', extension: 'all', tag: 'all', scope: 'global',
-        returnTo: `/projects/${id}/assets`, _csrf: csrfToken,
+        returnTo: `/projects/${firstId}/assets`, _csrf: csrfToken,
       }).expect(500);
 
-      clearSpy.mockRestore();
-      expect(app.locals.pageDefaultsService.resolveGlobalPageDefaults('projectAssets').view).toBe('grid');
-      expect(app.locals.projectPageDefaultRepository.getPageOptions(id, 'projectAssets')).toEqual({ view: 'list' });
+      saveSpy.mockRestore();
+      expect(app.locals.pageDefaultsService.resolveGlobalPageDefaults('projectAssets')).toEqual(globalBefore);
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(firstId, 'projectAssets')).toEqual({ view: 'list' });
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(secondId, 'projectAssets')).toEqual({ sort: 'modified' });
     });
 
     it.each([
@@ -2999,8 +3139,9 @@ describe('asset browser HTTP workflow', () => {
       .expect(200);
     expect(res2.text).toContain('used.png');
     expect(res2.text).not.toContain('unused.png');
-    expect(res2.text).toContain('Used Asset Release');
-    expect(res2.text).toContain('Attachment');
+    const usedCard = assetCardHtml(res2.text, usedAsset.id);
+    expect(usedCard).toMatch(/data-asset-info-card[\s\S]*?<dt>Release usage<\/dt>[\s\S]*?<dd>\s*Used in 1 release\s*<\/dd>/);
+    expect(res2.text).not.toContain('Attachment');
   });
 
   it('shows unused-only assets', async () => {
@@ -3184,9 +3325,13 @@ describe('asset browser HTTP workflow', () => {
     expect(presentCard).toContain('asset-indicator--present');
     expect(presentCard).toContain('aria-label="Present"');
     expect(presentCard).not.toContain('asset-indicator--missing');
+    expect(presentCard).toContain(`class="asset-details-link asset-details-link--present asset-tooltip asset-tooltip--right" href="/projects/${id}/assets/${presentAsset.id}?view=list"`);
+    expect(presentCard).toContain('aria-label="Asset details | File present" data-tooltip="Asset details | File present"');
     expect(missingCard).toContain('asset-indicator--missing');
     expect(missingCard).toContain('aria-label="Missing at last scan"');
     expect(missingCard).not.toContain('asset-indicator--present');
+    expect(missingCard).toContain(`class="asset-details-link asset-details-link--missing asset-tooltip asset-tooltip--right" href="/projects/${id}/assets/${missingAsset.id}?view=list"`);
+    expect(missingCard).toContain('aria-label="Asset details | File missing!" data-tooltip="Asset details | File missing!"');
   });
 
   // ─── Pagination ──────────────────────────────────────────────────
@@ -3660,7 +3805,7 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).toContain('Reset Filters');
   });
 
-  it('shows empty state for project with no assets, with no separate no-op Scan Now action', async () => {
+  it('shows empty state for project with no assets, with no separate no-op manual scan action', async () => {
     const res = await createProject('No Assets Project');
     const id = res.headers.location.replace('/projects/', '');
 
@@ -3668,40 +3813,40 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).toContain('No assets found');
     expect(res2.text).not.toContain('data-selected-count');
     // The empty-state partial's action div must not exist for the
-    // no-assets case — the only "Scan Now" control on the page is the
+    // no-assets case — the only manual scan control on the page is the
     // POST form already rendered in the heading.
     expect(res2.text).not.toMatch(/<div class="empty-state-actions">/);
   });
 
-  // ─── Defect fix: no no-op "Scan Now" GET anchor in the empty state ─────
+  // ─── Defect fix: no no-op manual scan GET anchor in the empty state ─────
 
-  describe('Scan Now is never a no-op GET link', () => {
-    // Project titles deliberately avoid the substring "Scan Now" — it
+  describe('manual scan is never a no-op GET link', () => {
+    // Project titles deliberately avoid the manual scan label — it
     // renders verbatim in the page <h1>, which would otherwise pollute the
-    // "exactly one Scan Now" / "no Scan Now" assertions below.
-    it('an empty browser contains no "Scan Now" anchor targeting the GET browser route', async () => {
+    // would otherwise pollute the exact-count assertions below.
+    it('an empty browser contains no manual scan anchor targeting the GET browser route', async () => {
       const res = await createProject('Scan Ctrl No Anchor');
       const id = res.headers.location.replace('/projects/', '');
 
       const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
-      expect(res2.text).not.toMatch(/<a[^>]*href="\/projects\/\d+\/assets"[^>]*>\s*Scan Now\s*<\/a>/);
+      expect(res2.text).not.toMatch(/<a[^>]*href="\/projects\/\d+\/assets"[^>]*>\s*Manually scan project files\s*<\/a>/);
     });
 
-    it('every rendered "Scan Now" control is inside a POST form targeting /projects/:id/scan with CSRF and normalized context', async () => {
+    it('every rendered manual scan control is inside a POST form targeting /projects/:id/scan with CSRF and normalized context', async () => {
       const res = await createProject('Scan Ctrl Form Shape');
       const id = res.headers.location.replace('/projects/', '');
 
       const res2 = await agent.get(`/projects/${id}/assets?category=all&search=hero&presence=present&sort=size&order=desc&pageSize=50`).expect(200);
       const html = res2.text;
 
-      const scanNowButtons = html.match(/<button\b(?=[^>]*aria-label="Scan Now")[^>]*>[\s\S]*?<\/button>/g) || [];
+      const scanNowButtons = html.match(/<button\b(?=[^>]*aria-label="Manually scan project files")[^>]*>[\s\S]*?<\/button>/g) || [];
       expect(scanNowButtons).toHaveLength(1);
-      expect(scanNowButtons[0]).toContain('data-tooltip="Scan Now"');
+      expect(scanNowButtons[0]).toContain('data-tooltip="Manually scan project files"');
 
       const formMatch = html.match(/<form method="post" action="\/projects\/\d+\/scan"[^>]*>[\s\S]*?<\/form>/);
       expect(formMatch).not.toBeNull();
       const form = formMatch[0];
-      expect(form).toContain('Scan Now');
+      expect(form).toContain('Manually scan project files');
       expect(form).toContain('<input type="hidden" name="_csrf" value="');
       expect(form).toContain('<input type="hidden" name="search" value="hero">');
       expect(form).toContain('<input type="hidden" name="presence" value="present">');
@@ -3710,13 +3855,13 @@ describe('asset browser HTTP workflow', () => {
       expect(form).toContain('<input type="hidden" name="pageSize" value="50">');
     });
 
-    it('archived projects render no Scan Now control at all', async () => {
+    it('archived projects render no manual scan control at all', async () => {
       const res = await createProject('Scan Ctrl Archived');
       const id = Number(res.headers.location.replace('/projects/', ''));
       await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
-      expect(res2.text).not.toContain('Scan Now');
+      expect(res2.text).not.toContain('Manually scan project files');
     });
 
     it('rejects a manual scan for a legacy status-only archived project without indexing files', async () => {
@@ -4209,7 +4354,7 @@ describe('asset browser HTTP workflow', () => {
     expect(defaultsDialog.indexOf('data-dialog-error')).toBeLessThan(gridStart);
     expect(defaultsDialog.indexOf('name="_csrf"')).toBeLessThan(gridStart);
     expect(statusIndex).toBeGreaterThan(gridStart);
-    expect(defaultsDialog.indexOf('<footer class="app-dialog-footer">')).toBeGreaterThan(statusIndex);
+    expect(defaultsDialog.indexOf('<footer class="app-dialog-footer">')).toBe(-1);
     expect(defaultsGrid).not.toContain('data-dialog-error');
     expect(defaultsGrid).not.toContain('data-dialog-status');
     expect(defaultsGrid).not.toContain('app-dialog-footer');
@@ -4318,10 +4463,12 @@ describe('asset browser HTTP workflow', () => {
     expect((defaultsGrid.match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(6);
     expect((defaultsGrid.match(/data-cc-dropdown data-cc-dropdown-mode="multiple"/g) || [])).toHaveLength(2);
     const defaultsFooter = defaultsDialog.match(/<footer class="app-dialog-footer">[\s\S]*?<\/footer>/)?.[0] || '';
-    expect((defaultsFooter.match(/<button\b[^>]*type="submit"/g) || [])).toHaveLength(1);
-    expect(defaultsFooter).toContain('data-dialog-submit');
-    expect(defaultsFooter).toContain('>Save defaults</button>');
-    expect(defaultsFooter).not.toContain('>Cancel</button>');
+    expect(defaultsFooter).toBe('');
+    expect(defaultsDialog).not.toContain('>Save defaults</button>');
+    expect(defaultsDialog).toContain('data-dialog-async="false"');
+    expect(defaultsDialog).toContain('data-project-assets-defaults-autosave');
+    expect((defaultsGrid.match(/data-autosubmit="fetch"/g) || [])).toHaveLength(8);
+    expect(defaultsDialog).toContain('data-settings-fetch-save-status');
 
     const invalidDefaults = await agent
       .post(`/projects/${id}/assets/defaults`)
@@ -4342,8 +4489,13 @@ describe('asset browser HTTP workflow', () => {
     const invalidListSize = invalidDefaults.text.match(
       /<select id="projectAssets-default-listSize"[\s\S]*?<\/select>/,
     )?.[0] || '';
+    const invalidDefaultsDialog = invalidDefaults.text.match(
+      /<dialog id="project-assets-defaults-dialog"[\s\S]*?<\/dialog>/,
+    )?.[0] || '';
     expect(invalidListSize).not.toContain('data-dialog-submitted-value');
     expect(invalidListSize).not.toContain('value="default"');
+    expect((invalidDefaultsDialog.match(/data-autosubmit="fetch"/g) || [])).toHaveLength(8);
+    expect(invalidDefaultsDialog).not.toContain('>Save defaults</button>');
 
     const speedSelect = response.text.match(/<select[^>]*data-slideshow-speed[^>]*>/)?.[0] || '';
     expect(speedSelect).toContain('data-cc-dropdown-native-select');
@@ -4996,7 +5148,7 @@ describe('asset browser HTTP workflow', () => {
       const filterIndex = actions.indexOf('aria-label="Filter assets"');
       const defaultsIndex = actions.indexOf('aria-label="Project Assets defaults"');
       const nsfwIndex = actions.indexOf('id="project-assets-nsfw-toggle"');
-      const scanIndex = headingActions.indexOf('aria-label="Scan Now"');
+      const scanIndex = headingActions.indexOf('aria-label="Manually scan project files"');
       const removeMissingIndex = headingActions.indexOf('aria-label="Remove missing assets"');
       const editIndex = headingActions.indexOf('aria-label="Edit project"');
 
@@ -5016,7 +5168,7 @@ describe('asset browser HTTP workflow', () => {
       expect(editIndex).toBeGreaterThan(removeMissingIndex);
       const scanForm = headingActions.match(new RegExp(`<form method="post" action="/projects/${id}/scan" class="inline-form">[\\s\\S]*?<\\/form>`))?.[0] || '';
       expect(scanForm).toContain('name="_csrf"');
-      expect(scanForm).toContain('type="submit" aria-label="Scan Now" data-tooltip="Scan Now"');
+      expect(scanForm).toContain('type="submit" aria-label="Manually scan project files" data-tooltip="Manually scan project files"');
       expect(scanForm).toContain('<path d="M4 10a8 8 0 1 1 2.3 5.7"/>');
       expect(scanForm.replace(/<[^>]+>/g, '').trim()).toBe('');
       const removeMissingAction = headingActions.match(/<a\b(?=[^>]*aria-label="Remove missing assets")[^>]*>[\s\S]*?<\/a>/)?.[0] || '';
@@ -5941,7 +6093,7 @@ describe('asset browser HTTP workflow', () => {
     expect(response.text).toContain('<ul class="asset-list asset-list--project" role="list" aria-label="Project assets" data-list-size="large">');
     expect(card).not.toBe('');
     expect(card).toContain(`data-project-assets-preview-id="${asset.id}"`);
-    expect(card).toMatch(new RegExp(`<a\\b[^>]*class="asset-details-link[^\"]*"[^>]*href="/projects/${id}/assets/${asset.id}[^\"]*"[^>]*data-tooltip="View asset details"`));
+    expect(card).toMatch(new RegExp(`<a\\b(?=[^>]*class="[^\"]*\\basset-details-link--present\\b[^\"]*")(?=[^>]*href="/projects/${id}/assets/${asset.id}[^\"]*")(?=[^>]*aria-label="Asset details \\| File present")(?=[^>]*data-tooltip="Asset details \\| File present")[^>]*>`));
   });
 
   it('uses the global Asset Viewer list preview structure and dimensions in the project list', async () => {
@@ -5991,7 +6143,7 @@ describe('asset browser HTTP workflow', () => {
     const header = card.match(/<div class="asset-list-card-header asset-list-card-identity">([\s\S]*?)<\/div>\s*<dl class="asset-list-card-metadata/)?.[1] || '';
     expect(top).not.toContain('asset-list-card-status');
     expect(header).toMatch(/asset-list-card-title-control-row[\s\S]*asset-card-title-row[\s\S]*asset-list-card-title-actions[\s\S]*asset-list-card-status/);
-    expect(header).toMatch(/asset-list-card-title-actions[\s\S]*data-asset-rename-trigger[\s\S]*asset-list-card-status[\s\S]*asset-indicator--present[\s\S]*class="asset-details-link asset-tooltip asset-tooltip--right"[\s\S]*data-tooltip="View asset details"/);
+    expect(header).toMatch(/asset-list-card-title-actions[\s\S]*data-asset-rename-trigger[\s\S]*asset-list-card-status[\s\S]*asset-indicator--present[\s\S]*class="asset-details-link asset-details-link--present asset-tooltip asset-tooltip--right"[\s\S]*aria-label="Asset details \| File present"[\s\S]*data-tooltip="Asset details \| File present"/);
     expect(card).toContain('name="_csrf"');
     expect(card).toContain('name="origin" value="assets"');
     expect(card).toContain('class="asset-card-rename-input"');
@@ -6034,7 +6186,7 @@ describe('asset browser HTTP workflow', () => {
     expect(listRes.text).toMatch(/data-grid-size-option-label="compact"[^>]*>Compact/);
     expect(listRes.text).toMatch(/data-grid-size-option-label="large"[^>]*>Large/);
     expect(listRes.text).not.toMatch(/data-grid-size-option-label="default"/);
-    expect(listRes.text).toContain('data-tooltip="View asset details"');
+    expect(listRes.text).toContain('data-tooltip="Asset details | File present"');
     expect(listRes.text).not.toMatch(/class="asset-details-link[^>]*title="/);
 
     const gridRes = await agent.get(`/projects/${id}/assets`).expect(200);
@@ -6080,21 +6232,21 @@ describe('asset browser HTTP workflow', () => {
     expect(html).toContain(`data-asset-id="${asset.id}"`);
     expect((card.match(/<input type="checkbox"/g) || []).length).toBe(1);
     expect((card.match(/class="asset-selection-control"/g) || []).length).toBe(1);
-    expect(card.indexOf('class="asset-selection-control"')).toBeLessThan(card.indexOf('asset-indicator'));
+    expect(card.indexOf('class="asset-selection-control"')).toBeLessThan(card.indexOf('asset-details-link'));
     expect(card).toContain(`name="selectedAssetIds" value="${asset.id}"`);
     expect(card).toContain('form="bulk-select-form"');
     expect(html).toContain(`aria-label="Select hero.png"`);
     expect(card).not.toContain('asset-card-filename');
     expect(html).toContain('class="asset-card-media-link"');
-    expect(html).toContain('class="asset-details-link asset-tooltip asset-tooltip--right"');
-    expect(html).toContain('aria-label="View details for hero.png"');
-    expect(html).toContain('asset-indicator--present');
-    expect(html).toContain('aria-label="Present" data-tooltip="Present">P</span>');
+    expect(html).toContain('class="asset-details-link asset-details-link--present asset-tooltip asset-tooltip--right"');
+    expect(html).toContain('aria-label="Asset details | File present"');
+    expect(card).not.toContain('class="asset-indicator');
+    expect(card).not.toContain('class="asset-card-usage"');
     expect(card).toContain('role="option" aria-selected="false" data-asset-selectable-card tabindex="0"');
     expect(card).toContain('aria-selected="false"');
     expect(card).not.toContain('asset-card-selection-badge');
     expect(card).not.toContain('title="');
-    expect(card).toContain('data-tooltip="View asset details"');
+    expect(card).toContain('data-tooltip="Asset details | File present"');
     expect(card).toContain('href="/projects/');
     expect(card).toContain(`data-project-assets-preview-id="${asset.id}"`);
     expect(card).toMatch(/class="asset-card-media" data-asset-viewer-preview data-preview-enhancement data-preview-state="loading"/);
@@ -6119,7 +6271,8 @@ describe('asset browser HTTP workflow', () => {
     expect(style).toMatch(/\.asset-tooltip\[data-tooltip\]:hover::after[\s\S]*\.asset-tooltip\[data-tooltip\]:focus-visible::after/);
     expect(style).toMatch(/\.asset-tooltip--left\[data-tooltip\]::after/);
     expect(style).toMatch(/\.asset-tooltip--right\[data-tooltip\]::after/);
-    expect(card).toMatch(/asset-tooltip--left[\s\S]*asset-tooltip--right/);
+    expect(card).not.toContain('asset-tooltip--left');
+    expect(card).toContain('asset-tooltip--right');
     expect(card.indexOf('asset-tooltip--right')).toBeLessThan(card.indexOf('asset-card-media'));
 
     const list = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
@@ -6153,12 +6306,12 @@ describe('asset browser HTTP workflow', () => {
 
     expect(categorizedCard).toMatch(/data-asset-info-card[\s\S]*?<dt>Category<\/dt>[\s\S]*?<dd>[\s\S]*?Renders[\s\S]*?<\/dd>/);
     expect((categorizedCard.match(/<dt>Category<\/dt>/g) || [])).toHaveLength(1);
-    expect(categorizedCard).toContain(`class="asset-details-link asset-tooltip asset-tooltip--right" href="/projects/${id}/assets/${categorized.id}`);
+    expect(categorizedCard).toContain(`class="asset-details-link asset-details-link--present asset-tooltip asset-tooltip--right" href="/projects/${id}/assets/${categorized.id}`);
     expect(categorizedCard).toContain(`class="asset-card-media-link" href="/projects/${id}/assets/${categorized.id}`);
     expect(categorizedCard).not.toContain('class="asset-card-body');
 
     expect(uncategorizedCard).toMatch(/data-asset-info-card[\s\S]*?<dt>Category<\/dt>[\s\S]*?<dd>[\s\S]*?Uncategorized[\s\S]*?<\/dd>/);
-    expect(uncategorizedCard).toContain(`class="asset-details-link asset-tooltip asset-tooltip--right" href="/projects/${id}/assets/${uncategorized.id}`);
+    expect(uncategorizedCard).toContain(`class="asset-details-link asset-details-link--present asset-tooltip asset-tooltip--right" href="/projects/${id}/assets/${uncategorized.id}`);
     expect(uncategorizedCard).not.toContain('class="asset-card-body');
   });
 
@@ -6206,6 +6359,10 @@ describe('asset browser HTTP workflow', () => {
     const unsupportedCard = cards.find((card) => card.includes(`data-asset-id="${unsupported.id}"`));
 
     expect(missingCard).toBeDefined();
+    expect(missingCard).toContain(`class="asset-details-link asset-details-link--missing asset-tooltip asset-tooltip--right" href="/projects/${id}/assets/${missing.id}?category=all"`);
+    expect(missingCard).toContain('aria-label="Asset details | File missing!" data-tooltip="Asset details | File missing!"');
+    expect(missingCard).not.toContain('class="asset-indicator');
+    expect(missingCard).not.toContain('class="asset-card-usage"');
     expect(missingCard).toMatch(/<div class="asset-card-media" data-asset-viewer-preview>[\s\S]*?<span class="asset-card-placeholder asset-card-placeholder-missing">Missing at last scan<\/span>[\s\S]*?data-asset-info-card/);
     expect(missingCard).not.toContain('asset-card-media-link');
     expect(unsupportedCard).toBeDefined();
@@ -6733,8 +6890,10 @@ describe('asset browser HTTP workflow', () => {
       expect((completeActionPanel.match(/<h2 id="project-actions-heading">Project actions<\/h2>/g) || [])).toHaveLength(1);
       const style = await readStylesheetSource(res2.text);
       expect(style).not.toMatch(/\.asset-auto-rename-surface\s+h2\s*\{/);
-      expect(style).toMatch(/\.auto-rename-assets-form\s+\.button:not\(\.project-filter-control\)\s*\{\s*width:\s*100%/);
-      expect(style).toMatch(/\.asset-selection-tools\s+\.button:not\(\.project-filter-control\)\s*\{\s*flex:\s*1\s+1\s+auto/);
+      const selectionToolsRule = style.match(/(?:^|})\s*\.asset-selection-tools\s*\{([^}]*)\}/)?.[1] || '';
+      expect(selectionToolsRule).toMatch(/display:\s*flex/);
+      expect(selectionToolsRule).toMatch(/flex-wrap:\s*wrap/);
+      expect(selectionToolsRule).not.toMatch(/flex-direction:\s*column/);
       const projectActionIconRule = style.match(/(?:^|})\s*\.asset-actions-panel\s+\.project-filter-control\s*\{([^}]*)\}/)?.[1] || '';
       expect(projectActionIconRule).toMatch(/flex:\s*0\s+0\s+2\.25rem/);
       expect(projectActionIconRule).toMatch(/width:\s*2\.25rem/);
@@ -6775,6 +6934,7 @@ describe('asset browser HTTP workflow', () => {
       expect(completeActionPanel).toContain('data-asset-selection-form');
       const autoRenameButton = completeActionPanel.match(/<button\b(?=[^>]*data-auto-rename-submit)[^>]*>[\s\S]*?<\/button>/)?.[0] || '';
       expect(autoRenameButton).toContain('type="submit"');
+      expect(autoRenameButton).toContain('form="auto-rename-assets-form"');
       expect(autoRenameButton).toContain('aria-label="Auto Rename"');
       expect(autoRenameButton).toContain('data-tooltip="Auto Rename"');
       expect(autoRenameButton).toMatch(/\bdisabled\b/);
@@ -6805,7 +6965,6 @@ describe('asset browser HTTP workflow', () => {
       const completeSelectionControls = assetSelectionControlsHtml(completeActionPanel);
       expect(completeSelectionControls).not.toBe('');
       const topControlOrder = [
-        'data-auto-rename-submit',
         'data-select-all',
         'data-clear-selection',
         'data-dialog-open="project-asset-category-management-dialog"',
@@ -6813,10 +6972,23 @@ describe('asset browser HTTP workflow', () => {
       expect(topControlOrder.every((position) => position >= 0)).toBe(true);
       expect(topControlOrder[0]).toBeLessThan(topControlOrder[1]);
       expect(topControlOrder[1]).toBeLessThan(topControlOrder[2]);
-      expect(topControlOrder[2]).toBeLessThan(topControlOrder[3]);
+      expect(completeSelectionControls).not.toContain('data-auto-rename-submit');
+      expect(completeActionPanel).toMatch(/<\/div>\s*<\/section>\s*<div class="asset-actions-category-row">/);
+      expect((completeActionPanel.match(/class="asset-actions-category-row"/g) || [])).toHaveLength(1);
+      const selectAllButton = completeSelectionControls.match(/<button\b(?=[^>]*data-select-all)[^>]*>/)?.[0] || '';
+      const clearSelectionButton = completeSelectionControls.match(/<button\b(?=[^>]*data-clear-selection)[^>]*>/)?.[0] || '';
+      expect(selectAllButton).toContain('form="bulk-select-form"');
+      expect(clearSelectionButton).toContain('form="bulk-select-form"');
       expect(completeSelectionControls.indexOf('data-clear-selection')).toBeLessThan(
         completeSelectionControls.indexOf('data-dialog-open="project-asset-category-management-dialog"'),
       );
+      const processingCard = completeActionPanel.match(/<section class="asset-action-group processing-action-group"[^>]*>[\s\S]*?<\/section>/)?.[0] || '';
+      expect(processingCard).toContain('data-auto-rename-submit');
+      const bulkFormStart = completeActionPanel.indexOf('<form id="bulk-select-form"');
+      const bulkFormEnd = completeActionPanel.indexOf('</form>', bulkFormStart);
+      const autoRenameFormStart = completeActionPanel.indexOf('<form id="auto-rename-assets-form"');
+      expect(bulkFormEnd).toBeGreaterThan(bulkFormStart);
+      expect(autoRenameFormStart).toBeGreaterThan(bulkFormEnd);
       expect(res2.text).not.toContain('Selection applies to this page');
 
       const ordinaryResponse = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
@@ -6830,6 +7002,10 @@ describe('asset browser HTTP workflow', () => {
       expect(ordinarySelectionControls.indexOf('data-clear-selection')).toBeLessThan(
         ordinarySelectionControls.indexOf('data-dialog-open="project-asset-category-management-dialog"'),
       );
+      expect(ordinaryActionPanel).toMatch(/<\/div>\s*<\/section>\s*<div class="asset-actions-category-row">/);
+      expect((ordinaryActionPanel.match(/class="asset-actions-category-row"/g) || [])).toHaveLength(1);
+      expect(ordinaryActionPanel).toContain('aria-label="Auto Rename"');
+      expect(ordinaryActionPanel).not.toContain('data-auto-rename-submit');
     expect(res2.text).toContain('<form id="asset-filters" class="app-dialog-form project-form" method="get" action="/projects/' + id + '/assets">');
     expect(res2.text).toContain('id="search" name="search"');
     expect(res2.text).toMatch(new RegExp(`<input id="asset-category-option-${cat.id}"[^>]*value="${cat.id}"[\\s\\S]*?checked>`));
@@ -6908,8 +7084,10 @@ describe('asset browser HTTP workflow', () => {
       const clear = controls.indexOf('data-clear-selection');
       expect(selectAll).toBeGreaterThan(buttonsRow);
       expect(clear).toBeGreaterThan(selectAll);
-      if (autoRename) expect(controls.indexOf('data-auto-rename-submit')).toBeGreaterThan(buttonsRow);
-      else expect(controls).not.toContain('data-auto-rename-submit');
+      expect(controls).not.toContain('data-auto-rename-submit');
+      expect(actionPanel).toContain('aria-label="Auto Rename"');
+      if (autoRename) expect(actionPanel).toContain('data-auto-rename-submit');
+      else expect(actionPanel).not.toContain('data-auto-rename-submit');
     }
 
     const style = await readStylesheetSource(surfaces[0].response.text);
@@ -6919,6 +7097,10 @@ describe('asset browser HTTP workflow', () => {
     expect(controlsAreaRule).toMatch(/align-items:\s*flex-end/);
     expect(buttonsRowRule).toMatch(/justify-content:\s*flex-end/);
     expect(actionControlsRule).toMatch(/margin-inline-start:\s*auto/);
+    const selectionToolsRule = style.match(/(?:^|})\s*\.asset-selection-tools\s*\{([^}]*)\}/)?.[1] || '';
+    expect(selectionToolsRule).toMatch(/flex-wrap:\s*wrap/);
+    expect(selectionToolsRule).not.toMatch(/flex-direction:\s*column/);
+    expect(style).not.toMatch(/@media\s*\(max-width:\s*767px\)[\s\S]*?\.asset-selection-tools\s*\{[^}]*flex-direction:\s*column/);
 
     const metadataRule = style.match(/(?:^|})\s*\.asset-results-metadata\s*\{([^}]*)\}/)?.[1] || '';
     const categoryRule = style.match(/(?:^|})\s*\.asset-results-category\s*\{([^}]*)\}/)?.[1] || '';
@@ -7140,8 +7322,8 @@ describe('asset browser HTTP workflow', () => {
     assetRepo.markMissingByProjectIdAndPathNotIn(id, ['present.png']);
 
     const res2 = await agent.get(`/projects/${id}/assets`).expect(200);
-    expect(res2.text).toContain('aria-label="Present"');
-    expect(res2.text).toContain('aria-label="Missing at last scan"');
+    expect(res2.text).toContain('aria-label="Asset details | File present"');
+    expect(res2.text).toContain('aria-label="Asset details | File missing!"');
     expect(res2.text).not.toContain(`/projects/${id}/assets/${missing.id}/thumbnail`);
   });
 
@@ -7189,7 +7371,7 @@ describe('asset browser HTTP workflow', () => {
     expect(html).toContain(`/releases/${relA}`);
     expect(html).toContain('aria-label="Used in release Solo Release (Attachment)"');
     expect(html).not.toContain('()');
-    expect(multiCard).toMatch(/<div class="asset-list-card-header asset-list-card-identity"[\s\S]*?asset-list-card-status[\s\S]*?asset-indicator--present[\s\S]*?asset-list-card-release-usage[\s\S]*?asset-indicator--used[\s\S]*?asset-details-link asset-tooltip asset-tooltip--right/);
+    expect(multiCard).toMatch(/<div class="asset-list-card-header asset-list-card-identity"[\s\S]*?asset-list-card-status[\s\S]*?asset-indicator--present[\s\S]*?asset-list-card-release-usage[\s\S]*?asset-indicator--used[\s\S]*?asset-details-link asset-details-link--present asset-tooltip asset-tooltip--right/);
     expect(singleCard).toContain('class="asset-list-card-release-link"');
     expect(singleCard).toContain('>Solo Release</a>');
     expect(multiCard).toContain('data-asset-release-membership');

@@ -15,7 +15,9 @@ const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
 function createInMemoryProjectPageDefaultRepository() {
   const values = new Map();
+  const scopes = new Map();
   const keyFor = (projectId, page, option) => `${projectId}:${page}:${option}`;
+  const scopeKeyFor = (projectId, page) => `${projectId}:${page}`;
 
   return {
     getOption(projectId, page, option) {
@@ -35,8 +37,12 @@ function createInMemoryProjectPageDefaultRepository() {
       }
       return deleted;
     },
-    hasPageOptions(projectId, page) {
-      return [...values.keys()].some((key) => key.startsWith(`${projectId}:${page}:`));
+    getPageScope(projectId, page) {
+      return scopes.get(scopeKeyFor(projectId, page));
+    },
+    setPageScope(projectId, page, activeScope) {
+      scopes.set(scopeKeyFor(projectId, page), activeScope);
+      return activeScope;
     },
   };
 }
@@ -878,6 +884,7 @@ describe('page defaults service', () => {
       { projectId: 1 },
     )).toEqual(['42', '77']);
     expect(projectPageDefaultRepository.getOption(1, 'projectAssets', 'tag')).toBe('["42","77"]');
+    service.setPageDefaultScope('projectAssets', 'project', { projectId: 1 });
     expect(service.resolve(
       'projectAssets',
       'tag',
@@ -1001,25 +1008,69 @@ describe('page defaults service', () => {
     expect(repository.getValue(PAGE_DEFAULT_DEFINITIONS.projects.view.key)).toBe('list');
   });
 
-  it('follows global defaults for projects without rows and isolates valid project overrides', () => {
+  it('keeps active Global independent from dormant Project rows', () => {
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.sort.key, 'modified');
 
     expect(service.getPageDefaultScope('projectAssets', { projectId: 1 })).toBe('global');
+    expect(service.resolvePageDefaults('projectAssets', {}, {}, { projectId: 1 }).sort).toBe('modified');
     expect(service.resolveProjectPageDefaults('projectAssets', {}, { projectId: 1 }).sort).toBe('modified');
 
     expect(service.saveProjectDefault('projectAssets', 'view', 'list', undefined, { projectId: 1 }))
       .toBe('list');
-    expect(service.resolveProjectPageDefaults('projectAssets', {}, { projectId: 1 }).sort).toBe('modified');
-
     expect(service.saveProjectDefault('projectAssets', 'sort', 'size', undefined, { projectId: 1 }))
       .toBe('size');
 
-    expect(service.getPageDefaultScope('projectAssets', { projectId: 1 })).toBe('project');
+    expect(service.getPageDefaultScope('projectAssets', { projectId: 1 })).toBe('global');
+    expect(service.resolvePageDefaults('projectAssets', {}, {}, { projectId: 1 }).sort).toBe('modified');
     expect(service.resolveProjectPageDefaults('projectAssets', {}, { projectId: 1 }).sort).toBe('size');
     expect(service.resolveProjectPageDefaults('projectAssets', {}, { projectId: 2 }).sort).toBe('modified');
+
+    expect(service.setPageDefaultScope('projectAssets', 'project', { projectId: 1 })).toBe('project');
+    expect(service.getPageDefaultScope('projectAssets', { projectId: 1 })).toBe('project');
+    expect(service.resolvePageDefaults('projectAssets', {}, {}, { projectId: 1 })).toMatchObject({
+      view: 'list',
+      sort: 'size',
+    });
+    expect(service.resolveGlobalPageDefaults('projectAssets').sort).toBe('modified');
+
+    expect(service.setPageDefaultScope('projectAssets', 'global', { projectId: 1 })).toBe('global');
+    expect(service.resolvePageDefaults('projectAssets', {}, {}, { projectId: 1 }).sort).toBe('modified');
+    expect(service.resolveProjectPageDefaults('projectAssets', {}, { projectId: 1 }).sort).toBe('size');
+    expect(projectPageDefaultRepository.getOption(1, 'projectAssets', 'sort')).toBe('size');
     expect(service.resolvePageDefaults(
       'projectAssets', { sort: 'category' }, {}, { projectId: 1 }
     ).sort).toBe('category');
+  });
+
+  it('uses partial Project values with Global fallback only while Project is active', () => {
+    repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.view.key, 'grid');
+    repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.sort.key, 'modified');
+    service.saveProjectDefault('projectAssets', 'view', 'list', undefined, { projectId: 1 });
+
+    service.setPageDefaultScope('projectAssets', 'project', { projectId: 1 });
+    expect(service.resolvePageDefaults('projectAssets', {}, {}, { projectId: 1 })).toMatchObject({
+      view: 'list',
+      sort: 'modified',
+    });
+
+    service.clearProjectPageDefaults('projectAssets', { projectId: 1 });
+    expect(service.getPageDefaultScope('projectAssets', { projectId: 1 })).toBe('project');
+    expect(service.resolvePageDefaults('projectAssets', {}, {}, { projectId: 1 })).toMatchObject({
+      view: 'grid',
+      sort: 'modified',
+    });
+  });
+
+  it('falls back safely for invalid stored scope and rejects invalid scope writes', () => {
+    repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.sort.key, 'modified');
+    projectPageDefaultRepository.setOption(1, 'projectAssets', 'sort', 'size');
+    projectPageDefaultRepository.setPageScope(1, 'projectAssets', 'retired');
+
+    expect(service.getPageDefaultScope('projectAssets', { projectId: 1 })).toBe('global');
+    expect(service.resolvePageDefaults('projectAssets', {}, {}, { projectId: 1 }).sort).toBe('modified');
+    expect(() => service.setPageDefaultScope('projectAssets', 'retired', { projectId: 1 }))
+      .toThrow(PageDefaultValidationError);
+    expect(projectPageDefaultRepository.getPageScope(1, 'projectAssets')).toBe('retired');
   });
 
   it('inherits global values for missing or stale project options without rewriting either scope', () => {
@@ -1055,15 +1106,17 @@ describe('page defaults service', () => {
       .toBe('recent');
   });
 
-  it('writes global and project scopes independently and clears project following', () => {
+  it('writes global and project values independently without coupling scope to clearing', () => {
     expect(service.saveProjectDefault('projects', 'view', 'list', undefined, { projectId: 1 }))
       .toBe('list');
     expect(service.saveGlobalDefault('projects', 'view', 'grid')).toBe('grid');
+    expect(service.setPageDefaultScope('projects', 'project', { projectId: 1 })).toBe('project');
 
     expect(projectPageDefaultRepository.getOption(1, 'projects', 'view')).toBe('list');
     expect(repository.getValue(PAGE_DEFAULT_DEFINITIONS.projects.view.key)).toBe('grid');
     expect(service.clearProjectPageDefaults('projects', { projectId: 1 })).toBe(true);
-    expect(service.getPageDefaultScope('projects', { projectId: 1 })).toBe('global');
+    expect(service.getPageDefaultScope('projects', { projectId: 1 })).toBe('project');
+    expect(service.resolvePageDefaults('projects', {}, {}, { projectId: 1 }).view).toBe('grid');
     expect(service.resolveProjectPageDefaults('projects', {}, { projectId: 1 }).view).toBe('grid');
   });
 

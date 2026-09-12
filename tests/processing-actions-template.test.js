@@ -102,6 +102,22 @@ describe('Processing actions placement', () => {
     }
     expect(card).not.toContain('aria-label="Convert"');
     expect(card).not.toContain('data-dialog-open="processing-convert-dialog"');
+    const workflow = iconButton(card, 'Image workflows editor');
+    expect(workflow).toContain('<path d="M4 6h5"/>');
+    expect(workflow).not.toContain('<path d="M4 20h4L19 9l-4-4L4 16v4z"/>');
+  }
+
+  function expectUnavailableAutoRename(card, tooltip) {
+    const button = iconButton(card, 'Auto Rename');
+    expect(button).not.toBe('');
+    expect(button).toContain('type="button"');
+    expect(button).toMatch(/\bdisabled\b/);
+    expect(button).toContain('aria-disabled="true"');
+    expect(button).toContain(`data-tooltip="${tooltip}"`);
+    expect(button).not.toContain('form="auto-rename-assets-form"');
+    expect(button).not.toContain('data-auto-rename-submit');
+    expect(button).toContain('<path d="M8 6h12M8 12h8M8 18h4"/>');
+    expect(button).not.toContain('<path d="M4 20h4L19 9l-4-4L4 16v4z"/>');
   }
 
   it('renders on the ordinary branch when viewing All', async () => {
@@ -114,6 +130,7 @@ describe('Processing actions placement', () => {
     expect(card).toContain('data-dialog-open="processing-watermark-dialog"');
     expect(card).toContain('data-dialog-open="processing-workflow-dialog"');
     expect(card).toContain('data-dialog-open="processing-archive-dialog"');
+    expectUnavailableAutoRename(card, 'Auto Rename — available only for a complete category with selected assets');
     // Exactly one card — no duplicate render in a single response.
     expect((res.text.match(/class="asset-action-group processing-action-group"/g) || [])).toHaveLength(1);
   });
@@ -125,6 +142,7 @@ describe('Processing actions placement', () => {
     const card = processingActionsCard(res.text);
     expect(card).not.toBe('');
     expectProcessingButtons(card);
+    expectUnavailableAutoRename(card, 'Auto Rename — available only for a complete category with selected assets');
   });
 
   it('renders on the complete-category/auto-rename surface for a concrete category', async () => {
@@ -138,6 +156,14 @@ describe('Processing actions placement', () => {
     const card = processingActionsCard(res.text);
     expect(card).not.toBe('');
     expectProcessingButtons(card);
+    const autoRename = iconButton(card, 'Auto Rename');
+    expect(autoRename).toContain('type="submit"');
+    expect(autoRename).toContain('form="auto-rename-assets-form"');
+    expect(autoRename).toContain('data-auto-rename-submit');
+    expect(autoRename).toMatch(/\bdisabled\b/);
+    expect(autoRename).toContain('aria-disabled="true"');
+    expect(autoRename).toContain('<path d="M8 6h12M8 12h8M8 18h4"/>');
+    expect(autoRename).not.toContain('<path d="M4 20h4L19 9l-4-4L4 16v4z"/>');
     expect((res.text.match(/class="asset-action-group processing-action-group"/g) || [])).toHaveLength(1);
   });
 
@@ -152,6 +178,36 @@ describe('Processing actions placement', () => {
     const card = processingActionsCard(res.text);
     expect(card).not.toBe('');
     expectProcessingButtons(card);
+    expectUnavailableAutoRename(card, 'Auto Rename — available only for a complete category with selected assets');
+  });
+
+  it('renders disabled Auto Rename for an unavailable disabled-category surface', async () => {
+    const id = await createProject('Unavailable Category Processing');
+    const category = assetCategoryRepo.addProjectCategory({
+      projectId: id, displayName: 'Disabled', directorySlug: 'disabled', displayOrder: 0, enabled: false,
+    });
+    addAsset(id, 'disabled/keep.png', { categoryId: category.id });
+    const res = await agent.get(`/projects/${id}/assets?category=${category.id}`).expect(200);
+    const card = processingActionsCard(res.text);
+    expect(card).not.toBe('');
+    expectUnavailableAutoRename(card, 'Auto Rename — available only for a complete category with selected assets');
+  });
+
+  it('keeps Processing and disabled Auto Rename on empty and no-results pages', async () => {
+    const emptyId = await createProject('Empty Processing');
+    const empty = await agent.get(`/projects/${emptyId}/assets`).expect(200);
+    expectUnavailableAutoRename(
+      processingActionsCard(empty.text),
+      'Auto Rename — available only for a complete category with selected assets',
+    );
+
+    const filteredId = await createProject('No Results Processing');
+    addAsset(filteredId, 'present.png');
+    const noResults = await agent.get(`/projects/${filteredId}/assets?search=absent`).expect(200);
+    expectUnavailableAutoRename(
+      processingActionsCard(noResults.text),
+      'Auto Rename — available only for a complete category with selected assets',
+    );
   });
 
   it('is additive: Release and File remain present alongside it', async () => {
@@ -166,7 +222,7 @@ describe('Processing actions placement', () => {
     expect(allGroups.length).toBeGreaterThanOrEqual(3);
   });
 
-  it('disables all three processing buttons with an explanation on archived projects, without gating on Auto Rename', async () => {
+  it('disables all four processing buttons with an explanation on archived projects, including Auto Rename', async () => {
     const id = await createProject('Archived Processing Check');
     addAsset(id, 'a.png');
     await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken))
@@ -175,7 +231,7 @@ describe('Processing actions placement', () => {
     const card = processingActionsCard(res.text);
     expect(card).not.toBe('');
     expect(card).not.toContain('data-dialog-open="processing-watermark-dialog"');
-    for (const label of ['Watermark', 'Image workflows editor', 'Archives']) {
+    for (const label of ['Auto Rename', 'Watermark', 'Image workflows editor', 'Archives']) {
       const button = iconButton(card, label);
       expect(button).toMatch(/\bdisabled\b/);
       expect(button).toContain('aria-disabled="true"');
@@ -183,6 +239,10 @@ describe('Processing actions placement', () => {
       expect(button).toMatch(/<svg[^>]*aria-hidden="true"[^>]*focusable="false"/);
       expect(button.replace(/<[^>]+>/g, '').trim()).toBe('');
     }
+    expectUnavailableAutoRename(card, 'Auto Rename — unavailable for archived projects');
+    const workflow = iconButton(card, 'Image workflows editor');
+    expect(workflow).toContain('<path d="M4 6h5"/>');
+    expect(workflow).not.toContain('<path d="M4 20h4L19 9l-4-4L4 16v4z"/>');
     expect(card).not.toContain('aria-label="Convert"');
     expect(res.text).not.toContain('id="processing-watermark-dialog"');
   });
@@ -245,6 +305,14 @@ describe('Processing actions placement', () => {
     expect(card).toContain('<h3 class="asset-action-group-heading">Processing</h3>');
     expect(card).not.toContain('>Release<');
     expect(card).not.toContain('>File<');
+  });
+
+  it('keeps disabled Auto Rename visible for an archived project with no assets', async () => {
+    const id = await createProject('Archived Empty Processing');
+    await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken))
+      .set('Content-Type', 'application/x-www-form-urlencoded');
+    const res = await agent.get(`/projects/${id}/assets`).expect(200);
+    expectUnavailableAutoRename(processingActionsCard(res.text), 'Auto Rename — unavailable for archived projects');
   });
 
   function releaseSectionHtml(html) {

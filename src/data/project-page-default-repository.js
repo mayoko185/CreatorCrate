@@ -12,6 +12,19 @@ const SELECT_PAGE_OPTIONS = `
   FROM project_page_defaults
 `;
 
+const PAGE_SCOPE_COLUMNS = [
+  'project_id',
+  'page_key',
+  'active_scope',
+  'created_at',
+  'updated_at',
+];
+
+const SELECT_PAGE_SCOPES = `
+  SELECT ${PAGE_SCOPE_COLUMNS.join(', ')}
+  FROM project_page_default_scopes
+`;
+
 /**
  * Persistence boundary for project-scoped page-default overrides.
  *
@@ -69,6 +82,19 @@ export function createProjectPageDefaultRepository(db) {
       AND value = ?
     ORDER BY project_id
   `);
+  const getPageScopeStmt = db.prepare(`
+    ${SELECT_PAGE_SCOPES}
+    WHERE project_id = ?
+      AND page_key = ?
+  `);
+  const upsertPageScopeStmt = db.prepare(`
+    INSERT INTO project_page_default_scopes (project_id, page_key, active_scope)
+    VALUES (?, ?, ?)
+    ON CONFLICT(project_id, page_key) DO UPDATE SET
+      active_scope = excluded.active_scope,
+      updated_at = datetime('now')
+    RETURNING ${PAGE_SCOPE_COLUMNS.join(', ')}
+  `);
 
   return {
     getOption(projectId, pageKey, optionKey) {
@@ -105,6 +131,14 @@ export function createProjectPageDefaultRepository(db) {
 
     listOptionValueReferences(pageKey, optionKey, value) {
       return listOptionValueReferencesStmt.all(pageKey, optionKey, value);
+    },
+
+    getPageScope(projectId, pageKey) {
+      return getPageScopeStmt.get(projectId, pageKey)?.active_scope;
+    },
+
+    setPageScope(projectId, pageKey, activeScope) {
+      return upsertPageScopeStmt.get(projectId, pageKey, activeScope).active_scope;
     },
   };
 }

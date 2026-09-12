@@ -48,22 +48,6 @@
 {% macro renderAssetSelectionControls(projectId, csrfToken, currentView, autoRenameCategory, showSelectionTools, categoryManagementUrl) %}
   <div class="asset-selection-controls-area">
     <div class="asset-selection-buttons-row">
-      {% if autoRenameCategory %}
-        <form method="post" action="/projects/{{ projectId }}/assets/auto-rename/preview"
-              class="auto-rename-assets-form" data-auto-rename-form>
-          <input type="hidden" name="_csrf" value="{{ csrfToken }}">
-          <input type="hidden" name="categoryId" value="{{ autoRenameCategory.categoryId }}">
-          <input type="hidden" name="orderedAssetIds" value="{{ autoRenameCategory.orderedAssetIdsJson }}"
-                 data-auto-rename-order-input>
-          <input type="hidden" name="selectedAssetIds" value="[]"
-                 data-auto-rename-selection-input>
-          <input type="hidden" name="view" value="{{ currentView }}">
-          <button type="submit" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--right"
-                  data-auto-rename-submit disabled aria-disabled="true"
-                  aria-label="Auto Rename" data-tooltip="Auto Rename">{{ icons.icon('edit') }}</button>
-          <div class="auto-rename-live-region sr-only" data-auto-rename-live aria-live="polite" aria-atomic="true"></div>
-        </form>
-      {% endif %}
       {% if showSelectionTools %}
         <div class="asset-selection-tools" role="group" aria-label="Selection controls">
           <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--right"
@@ -80,6 +64,20 @@
       {% endif %}
     </div>
   </div>
+{% endmacro %}
+
+{% macro renderAutoRenameForm(projectId, csrfToken, currentView, autoRenameCategory) %}
+  <form id="auto-rename-assets-form" method="post" action="/projects/{{ projectId }}/assets/auto-rename/preview"
+        class="auto-rename-assets-form" data-auto-rename-form>
+    <input type="hidden" name="_csrf" value="{{ csrfToken }}">
+    <input type="hidden" name="categoryId" value="{{ autoRenameCategory.categoryId }}">
+    <input type="hidden" name="orderedAssetIds" value="{{ autoRenameCategory.orderedAssetIdsJson }}"
+           data-auto-rename-order-input>
+    <input type="hidden" name="selectedAssetIds" value="[]"
+           data-auto-rename-selection-input>
+    <input type="hidden" name="view" value="{{ currentView }}">
+    <div class="auto-rename-live-region sr-only" data-auto-rename-live aria-live="polite" aria-atomic="true"></div>
+  </form>
 {% endmacro %}
 
 {% macro releaseUsageInline(asset, showDetails=true) %}
@@ -166,6 +164,7 @@
       categoryLabel: asset.categoryLabel,
       previewSlideshowAssetId: asset.id,
       assetInformation: true,
+      detailsPresenceStatus: true,
       hideBody: true
     }) %}
       {% if slot == 'top-start' %}
@@ -189,8 +188,6 @@
         {% if autoRenameSurface %}
           <span class="auto-rename-order-indicator" data-auto-rename-order-indicator>{{ autoRenameInitialIndex + 1 }} of {{ autoRenameTotal }}</span>
         {% endif %}
-      {% elif slot == 'top-end' %}
-        <span class="asset-card-usage">{{ releaseUsageInline(asset) }}</span>
       {% elif slot == 'asset-information' %}
         {{ assetInformation.render(asset, { showProjectName: false }) }}
       {% elif slot == 'title-row' %}
@@ -259,7 +256,8 @@
       selectable: not isArchived and asset.is_present,
       mediaContextLabel: project.title,
       nsfwBlur: asset.nsfwBlur,
-      previewSlideshowAssetId: asset.id
+      previewSlideshowAssetId: asset.id,
+      detailsPresenceStatus: true
     }) %}
       {% if slot == 'top' %}
         {% if not isArchived %}
@@ -328,15 +326,15 @@
 {% block content %}
   {% set assetsHeadingDescription = "Browse scanned files, category, and release usage." %}
   {% if isArchived %}
-    {{ pageHeading.render(assetsHeadingDescription, "archived", "", "/projects/" ~ project.id, project.title, "", "chevron-left") }}
+    {{ pageHeading.render(assetsHeadingDescription, "archived", "", "/projects/" ~ project.id, "Back to main project page: " ~ project.title, "", "projects") }}
   {% else %}
-    {% call pageHeading.render(assetsHeadingDescription, "", "", "/projects/" ~ project.id, project.title, "", "chevron-left") %}
+    {% call pageHeading.render(assetsHeadingDescription, "", "", "/projects/" ~ project.id, "Back to main project page: " ~ project.title, "", "projects") %}
     {% if not isArchived %}
       <form method="post" action="/projects/{{ project.id }}/scan" class="inline-form">
         <input type="hidden" name="_csrf" value="{{ _csrf }}">
         {{ renderContextFields(context, contextFields, false) }}
         <button class="button button-small button-primary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--left"
-                type="submit" aria-label="Scan Now" data-tooltip="Scan Now">
+                type="submit" aria-label="Manually scan project files" data-tooltip="Manually scan project files">
           {{ icons.icon('reset') }}
         </button>
       </form>
@@ -641,18 +639,21 @@
                                     aria-label="Delete selected" data-tooltip="Delete selected">{{ icons.icon('trash') }}</button>
                           </div>
                         </section>
-                        {{ processingActions.render(isArchived) }}
+                        {{ processingActions.render(isArchived, "auto-rename-assets-form") }}
                       </div>
                     </div>
                     </form>
+                    {{ renderAutoRenameForm(project.id, _csrf, filters.view, autoRenameCategory) }}
                   {% endif %}
-                  <div class="asset-actions-category-row">
-                    <div class="asset-actions-controls">
-                      {{ renderAssetSelectionControls(project.id, _csrf, filters.view, autoRenameCategory, not isArchived, categoryManagementDialogUrl) }}
-                    </div>
-                  </div>
                 </div>
               </section>
+              {% if not isArchived %}
+                <div class="asset-actions-category-row">
+                  <div class="asset-actions-controls">
+                    {{ renderAssetSelectionControls(project.id, _csrf, filters.view, autoRenameCategory, true, categoryManagementDialogUrl) }}
+                  </div>
+                </div>
+              {% endif %}
             {% endif %}
         {% endif %}
 
@@ -731,13 +732,13 @@
                 </div>
                 </div>
               </form>
-              <div class="asset-actions-category-row">
-                <div class="asset-actions-controls">
-                  {{ renderAssetSelectionControls(project.id, _csrf, filters.view, none, true, categoryManagementDialogUrl) }}
-                </div>
-              </div>
             </div>
           </section>
+          <div class="asset-actions-category-row">
+            <div class="asset-actions-controls">
+              {{ renderAssetSelectionControls(project.id, _csrf, filters.view, none, true, categoryManagementDialogUrl) }}
+            </div>
+          </div>
         {% endif %}
 
         {% if isArchived %}
@@ -841,11 +842,16 @@
           </form>
         {% endif %}
       {% elseif emptyState %}
+        <div class="asset-actions-panel asset-actions-panel--empty-processing" data-asset-actions-panel>
+          <div class="asset-action-groups">
+            {{ processingActions.render(isArchived) }}
+          </div>
+        </div>
         {% set emptyHeading = emptyState.heading %}
         {% set emptyDescription = emptyState.description %}
         {% set emptyHeadingLevel = "h2" %}
         {# The 'no-assets' cases direct the user to the existing authenticated,
-           CSRF-protected POST "Scan Now" form already rendered in the page
+           CSRF-protected POST manual scan form already rendered in the page
            heading above — no separate action link here. A GET anchor cannot
            perform a scan, so no-assets/no-assets-archived intentionally omit
            emptyActionUrl/emptyActionLabel. #}
@@ -1052,7 +1058,7 @@
   {% endcall %}
   {% call dialog.render('project-assets-defaults-dialog', 'Project Assets defaults', projectAssetsDefaultsDialogOpen, 'project-assets-defaults-description', 'project-assets-defaults-form') %}
     <form id="project-assets-defaults-form" method="post" action="/projects/{{ project.id }}/assets/defaults" class="app-dialog-form project-form"
-          data-dialog-form data-dialog-async novalidate>
+          data-dialog-form data-dialog-async="false" data-project-assets-defaults-autosave novalidate>
       <p id="project-assets-defaults-description" class="app-dialog-description">
         Choose the presentation used when Project Assets opens without explicit options.
       </p>
@@ -1087,7 +1093,7 @@
         <div class="page-defaults-grid">
           {% for field in projectAssetsDefaults.fields %}
           {% set submittedOption = none %}
-          {% set nativeAttributes = [] if field.multi else [["required", true]] %}
+          {% set nativeAttributes = [["data-autosubmit", "fetch"]] if field.multi else [["required", true], ["data-autosubmit", "fetch"]] %}
           {% set summaryAttributes = [] %}
           {% if field.showSubmittedValue and not (field.name == 'listSize' and field.submittedOptionValue == 'default') %}
             {% set submittedOption = {
@@ -1099,7 +1105,7 @@
             } %}
           {% endif %}
           {% if field.error %}
-            {% set nativeAttributes = ([] if field.multi else [["required", true]]) + [["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] %}
+            {% set nativeAttributes = [["data-autosubmit", "fetch"], ["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] if field.multi else [["required", true], ["data-autosubmit", "fetch"], ["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] %}
             {% set summaryAttributes = [["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] %}
           {% endif %}
           <div class="field app-dialog-field{% if field.error %} field-error{% endif %}" data-dialog-field="{{ field.name }}">
@@ -1113,6 +1119,7 @@
                 emptySummary: 'All extensions' if field.name == 'extension' else 'All tags',
                 countLabel: 'values',
                 optionIdPrefix: field.id,
+                dispatchNativeChange: true,
                 summaryAttributes: summaryAttributes,
                 nativeSelect: {
                   id: field.id,
@@ -1128,6 +1135,7 @@
                 selected: field.selectedValue,
                 optionIdPrefix: field.id,
                 leadingOption: submittedOption,
+                dispatchNativeChange: true,
                 summaryAttributes: summaryAttributes,
                 nativeSelect: {
                   id: field.id,
@@ -1141,11 +1149,7 @@
         </div>
       </div>
 
-      <div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>
-
-      <footer class="app-dialog-footer">
-        <button class="button button-primary" type="submit" data-dialog-submit>Save defaults</button>
-      </footer>
+      <div class="app-dialog-status" data-dialog-status data-settings-fetch-save-status role="status" aria-live="polite"></div>
     </form>
   {% endcall %}
   {% if not isArchived and categoryNavigation.missingCount > 0 %}

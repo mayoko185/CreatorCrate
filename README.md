@@ -63,6 +63,13 @@ pnpm test:browser
 
 The browser suite uses temporary application data, projects, and SQLite state; it does not use the local `data/` directories.
 
+Run the focused Project Assets scope/reload regression with
+`pnpm test:browser tests/browser/project-assets-defaults-scope.spec.js`.
+To test a deployed runtime instead, set `CREATORCRATE_BROWSER_BASE_URL` and
+explicit, distinct `CREATORCRATE_BROWSER_PROJECT_A` / `CREATORCRATE_BROWSER_PROJECT_B`
+IDs. This opt-in run changes shared Global defaults and those projects' defaults;
+use suitable test projects with visible image assets.
+
 ### Docker Compose
 
 CreatorCrate uses two host bind mounts: one for application data and one for project files. Create the directories first, then add the required paths to `.env`:
@@ -127,6 +134,12 @@ Each project receives a `project.json` manifest plus standard working folders: `
 ### Projects and assets
 
 Create a project in the web app, then place its working files in its project directory. Use the project asset screen to scan the filesystem and refresh indexed metadata. Categories help organize indexed assets; previewable media is served through generated derivatives while original files remain filesystem-backed.
+
+**Project Assets defaults** offers shared **Global** values and independent
+**Project only** values. Each project remembers its active scope across reloads.
+Clicking either scope saves immediately and refreshes the assets without closing
+the dialog. Switching to Global keeps saved Project-only values for later; when
+Project only is active, unset fields fall back to Global.
 
 Manage Project Status and Project Type options under **Settings > Defaults**.
 You can add, reorder, recolor, and delete options, but existing names cannot be

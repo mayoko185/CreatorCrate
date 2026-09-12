@@ -34,6 +34,7 @@ import { enhanceOpenLocallyFetchSave } from './client/settings-open-locally-fetc
 import { enhanceSettingsFetchSave } from './client/settings-fetch-save.js';
 import {
   enhancePageDefaultsFetchSave,
+  enhanceProjectAssetsDefaultsFetchSave,
   enhanceProjectsDefaultsFetchSave,
   enhanceReleasesDefaultsFetchSave,
 } from './client/projects-defaults-fetch-save.js';
@@ -93,6 +94,7 @@ import {
 
 import {
   beginAssetViewerDefaultsLiveRefresh,
+  beginProjectAssetsDefaultsLiveRefresh,
   beginProjectsDefaultsLiveRefresh,
   beginReleasesDefaultsLiveRefresh,
   createLiveRegionEngine,
@@ -102,6 +104,7 @@ import {
   enhanceProjectsLiveFiltering,
   enhanceReleasesLiveFiltering,
   refreshAssetViewerLiveRegion,
+  refreshProjectAssetsDefaultsLiveRegion,
   refreshProjectsLiveRegion,
   refreshReleasesLiveRegion,
   refreshProjectAssetsLiveRegion,
@@ -137,6 +140,7 @@ export {
   enhanceSocialPrepFetchSave,
   enhanceOpenLocallyFetchSave,
   enhanceSettingsFetchSave,
+  enhanceProjectAssetsDefaultsFetchSave,
   enhanceProjectsDefaultsFetchSave,
   enhancePageDefaultsFetchSave,
   enhanceReleasesDefaultsFetchSave,
@@ -171,6 +175,7 @@ export {
 
 export {
   beginAssetViewerDefaultsLiveRefresh,
+  beginProjectAssetsDefaultsLiveRefresh,
   beginProjectsDefaultsLiveRefresh,
   beginReleasesDefaultsLiveRefresh,
   createLiveRegionEngine,
@@ -180,6 +185,7 @@ export {
   enhanceProjectsLiveFiltering,
   enhanceReleasesLiveFiltering,
   refreshAssetViewerLiveRegion,
+  refreshProjectAssetsDefaultsLiveRegion,
   refreshProjectsLiveRegion,
   refreshReleasesLiveRegion,
   refreshProjectAssetsLiveRegion,
@@ -227,6 +233,7 @@ if (typeof document !== 'undefined') {
       refreshFailureMessage: 'Settings saved, but Asset Viewer could not refresh. Refresh the page to see the saved defaults.',
     });
     enhanceProjectAssetsDefaultsScope(document);
+    enhanceProjectAssetsDefaultsFetchSave(document);
     enhanceAppDialogs(document);
     enhanceNoteDialogUnsavedChanges(document);
     enhanceBookHierarchyReorder(document);

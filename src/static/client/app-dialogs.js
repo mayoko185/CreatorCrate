@@ -276,7 +276,7 @@ function appDialogValues(form) {
   return values;
 }
 
-function syncProjectAssetsSizePreferences(dialog, values) {
+export function syncProjectAssetsSizePreferences(dialog, values) {
   const dialogId = dialog?.id || dialog?.getAttribute?.('id');
   if (dialogId !== PROJECT_ASSETS_DEFAULTS_DIALOG_ID) return;
 

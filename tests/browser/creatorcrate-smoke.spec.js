@@ -180,7 +180,7 @@ test.describe('CreatorCrate development browser smoke', () => {
     });
     await Promise.all([
       page.waitForURL((url) => new URL(url).pathname === `/projects/${projectId}/assets`),
-      page.getByRole('button', { name: 'Scan Now', exact: true }).click(),
+      page.getByRole('button', { name: 'Manually scan project files', exact: true }).click(),
     ]);
 
     const surface = page.locator('[data-auto-rename-surface]');
@@ -2634,7 +2634,7 @@ async function createAndScanBrowserPickerAssets(page, baseURL, projectsRoot, pro
   expect(assetsResponse?.status()).toBe(200);
   await Promise.all([
     page.waitForURL((url) => new URL(url).pathname === `/projects/${projectId}/assets`),
-    page.getByRole('button', { name: 'Scan Now' }).click(),
+    page.getByRole('button', { name: 'Manually scan project files' }).click(),
   ]);
 }
 

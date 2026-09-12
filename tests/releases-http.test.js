@@ -33,14 +33,16 @@ function extractPageHeading(html) {
 
 function expectProjectReturnLead(html, { href, title }) {
   const heading = extractPageHeading(html);
+  const label = `Back to main project page: ${title}`;
   const lead = heading.match(new RegExp(
-    `<a class="button button-secondary page-heading-lead page-heading-lead--icon asset-tooltip asset-tooltip--left" href="${href}" aria-label="${title}" data-tooltip="${title}">([\\s\\S]*?)<\\/a>`
+    `<a class="button button-secondary page-heading-lead page-heading-lead--icon asset-tooltip asset-tooltip--left" href="${href}" aria-label="${label}" data-tooltip="${label}">([\\s\\S]*?)<\\/a>`
   ));
 
   expect(lead).not.toBeNull();
   expect(lead[0]).not.toContain('title=');
   expect(lead[1]).toMatch(/<svg[^>]*aria-hidden="true"[^>]*focusable="false"/);
-  expect(lead[1]).toContain('<path d="M15 18l-6-6 6-6"/>');
+  expect(lead[1]).toContain('<path d="M3 7l9-4 9 4-9 4-9-4z"/>');
+  expect(lead[1]).toContain('<path d="M3 7v10l9 4 9-4V7"/>');
   expect(lead[1].replace(/<[^>]+>/g, '').trim()).toBe('');
   expect(heading).not.toContain(`Project: ${title}`);
 }

@@ -1,14 +1,22 @@
 import { enhanceSettingsFetchSave } from './settings-fetch-save.js';
 import {
+  beginProjectAssetsDefaultsLiveRefresh,
   beginProjectsDefaultsLiveRefresh,
   beginReleasesDefaultsLiveRefresh,
+  refreshProjectAssetsDefaultsLiveRegion,
   refreshProjectsLiveRegion,
   refreshReleasesLiveRegion,
 } from './live-regions.js';
+import {
+  beginProjectAssetsDefaultsAcknowledgement,
+  reconcileProjectAssetsDefaultsAcknowledgement,
+} from './project-assets-defaults-scope.js';
 
+const PROJECT_ASSETS_DEFAULTS_FORM_SELECTOR = '#project-assets-defaults-form';
 const PROJECTS_DEFAULTS_FORM_SELECTOR = '#projects-defaults-form';
 const RELEASES_DEFAULTS_FORM_SELECTOR = '#releases-defaults-form';
 const refreshSessions = new WeakMap();
+const acknowledgementFailures = new WeakSet();
 
 function isDefaultsAutosaveForm(form, formSelector, markerAttribute) {
   return form?.matches?.(formSelector)
@@ -58,13 +66,16 @@ export function enhancePageDefaultsFetchSave(scope = globalThis.document, option
     beginRefresh,
     refresh,
     refreshFailureMessage,
+    onAcknowledged,
+    onStart,
   } = options;
   if (!formSelector || !markerAttribute || typeof beginRefresh !== 'function'
     || typeof refresh !== 'function' || !refreshFailureMessage) return 0;
 
   return defaultsForms(scope, formSelector, markerAttribute).reduce(
     (bound, form) => bound + enhanceSettingsFetchSave(form, {
-      onStart: ({ form: currentForm }) => {
+      onStart: ({ form: currentForm, payload }) => {
+        onStart?.(currentForm, payload);
         clearDefaultsValidation(currentForm);
         if (!refreshSessions.has(currentForm)) {
           refreshSessions.set(currentForm, {
@@ -73,7 +84,15 @@ export function enhancePageDefaultsFetchSave(scope = globalThis.document, option
         }
       },
       onError: ({ form: currentForm, superseded }) => {
-        if (!superseded) refreshSessions.delete(currentForm);
+        if (!superseded) {
+          refreshSessions.delete(currentForm);
+          acknowledgementFailures.delete(currentForm);
+        }
+      },
+      onAcknowledged: (detail) => {
+        if (typeof onAcknowledged !== 'function') return;
+        if (onAcknowledged(detail) === false) acknowledgementFailures.add(detail.form);
+        else acknowledgementFailures.delete(detail.form);
       },
       onSuccess: ({ form: currentForm, response }) => {
         const session = refreshSessions.get(currentForm);
@@ -85,10 +104,34 @@ export function enhancePageDefaultsFetchSave(scope = globalThis.document, option
           { onError: () => markDefaultsRefreshFailed(currentForm, refreshFailureMessage) },
         );
         if (outcome === 'unavailable') markDefaultsRefreshFailed(currentForm, refreshFailureMessage);
+        if (acknowledgementFailures.delete(currentForm)) {
+          markDefaultsRefreshFailed(
+            currentForm,
+            'Settings saved, but the returned Project Assets defaults could not be read. Refresh the page before editing them again.',
+          );
+        }
       },
     }),
     0,
   );
+}
+
+export function enhanceProjectAssetsDefaultsFetchSave(scope = globalThis.document, options = {}) {
+  return enhancePageDefaultsFetchSave(scope, {
+    formSelector: PROJECT_ASSETS_DEFAULTS_FORM_SELECTOR,
+    markerAttribute: 'data-project-assets-defaults-autosave',
+    onStart: beginProjectAssetsDefaultsAcknowledgement,
+    beginRefresh: options.beginRefresh || beginProjectAssetsDefaultsLiveRefresh,
+    refresh: options.refresh || refreshProjectAssetsDefaultsLiveRegion,
+    refreshFailureMessage: 'Settings saved, but Project Assets could not refresh. Refresh the page to see the saved defaults.',
+    onAcknowledged: options.onAcknowledged || ((detail) => (
+      reconcileProjectAssetsDefaultsAcknowledgement(
+        detail.form,
+        detail.payload,
+        { html: detail.html, superseded: detail.superseded },
+      )
+    )),
+  });
 }
 
 export function enhanceProjectsDefaultsFetchSave(scope = globalThis.document, options = {}) {

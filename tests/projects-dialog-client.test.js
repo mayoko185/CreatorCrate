@@ -9,6 +9,7 @@ import {
   enhanceDashboardDefaultsDialog,
   enhanceDropdowns,
   enhanceProjectAssetCategoryManagement,
+  enhanceProjectAssetsDefaultsFetchSave,
   enhanceProjectAssetsDefaultsScope,
   enhanceProjectsDefaultsFetchSave,
   enhanceReleasesDefaultsFetchSave,
@@ -302,6 +303,41 @@ function changeProjectAssetsScope(page, scope) {
   page.scopeControls[scope].dispatch('change');
 }
 
+function projectAssetsDefaultsHtml(values, activeScope = 'global') {
+  return `<form id="project-assets-defaults-form"><input name="loadedScope" value="${activeScope}"><script type="application/json" data-project-assets-default-values>${JSON.stringify(values)}</script></form>`;
+}
+
+function installProjectAssetsResponseParser(page) {
+  page.windowObject.DOMParser = class DOMParserMock {
+    parseFromString(html) {
+      const match = String(html).match(
+        /<script type="application\/json" data-project-assets-default-values>([\s\S]*?)<\/script>/,
+      );
+      const script = match
+        ? Object.assign(makeElement('script', {
+          type: 'application/json',
+          'data-project-assets-default-values': '',
+        }), { textContent: match[1] })
+        : null;
+      const scope = String(html).match(/<input name="loadedScope" value="([^"]*)">/);
+      const form = {
+        querySelector: (selector) => {
+          if (selector === 'input[name="loadedScope"]') return scope ? { value: scope[1] } : null;
+          if (selector === 'script[type="application/json"][data-project-assets-default-values]') return script;
+          return null;
+        },
+      };
+      return {
+        querySelector: (selector) => (
+          selector === '#project-assets-defaults-form'
+            ? form
+            : null
+        ),
+      };
+    }
+  };
+}
+
 function makeDialogPage({
   standardDropdowns = false,
   scrollableDialog = false,
@@ -313,6 +349,7 @@ function makeDialogPage({
   loadedScope = 'global',
   dialogMessages = null,
   projectsDefaultsAutosave = false,
+  projectAssetsDefaultsAutosave = false,
 } = {}) {
   const document = makeElement('document');
   document.nodeType = 9;
@@ -359,6 +396,10 @@ function makeDialogPage({
   if (projectsDefaultsAutosave) {
     form.setAttribute('data-dialog-async', 'false');
     form.setAttribute('data-projects-defaults-autosave', '');
+  }
+  if (projectAssetsDefaultsAutosave) {
+    form.setAttribute('data-dialog-async', 'false');
+    form.setAttribute('data-project-assets-defaults-autosave', '');
   }
   if (dialogMessages) {
     Object.entries(dialogMessages).forEach(([name, value]) => {
@@ -443,12 +484,19 @@ function makeDialogPage({
       addOption(select, optionValue, optionValue === value, typeof option === 'string' ? option : option.label);
     });
     select.value = value;
-    if (projectsDefaultsAutosave) {
+    if (projectsDefaultsAutosave || projectAssetsDefaultsAutosave) {
       select.setAttribute('data-autosubmit', 'fetch');
       select.form = form;
     }
     if (standardDropdowns) {
-      dropdowns[name] = addStandardDropdown(field, select, name, options, value, projectsDefaultsAutosave);
+      dropdowns[name] = addStandardDropdown(
+        field,
+        select,
+        name,
+        options,
+        value,
+        projectsDefaultsAutosave || projectAssetsDefaultsAutosave,
+      );
     }
     else field.appendChild(select);
     (dialogBody || form).appendChild(field);
@@ -516,9 +564,11 @@ function makeDialogPage({
   }
   if (dialogBody) form.appendChild(dialogBody);
   const status = makeElement('div', { 'data-dialog-status': '' });
-  if (projectsDefaultsAutosave) status.setAttribute('data-settings-fetch-save-status', '');
+  if (projectsDefaultsAutosave || projectAssetsDefaultsAutosave) {
+    status.setAttribute('data-settings-fetch-save-status', '');
+  }
   if (liveDefault) status.setAttribute('data-asset-browser-default-status', '');
-  const save = liveDefault || projectsDefaultsAutosave
+  const save = liveDefault || projectsDefaultsAutosave || projectAssetsDefaultsAutosave
     ? null
     : makeElement('button', { 'data-dialog-submit': '', type: 'submit' });
   form.appendChild(status);
@@ -553,7 +603,8 @@ function makeDialogPage({
     FormData: class FormDataMock {
       constructor(ownerForm) {
         this.fields = ownerForm.querySelectorAll('select, input, textarea')
-          .filter((control) => control.name && !control.disabled)
+          .filter((control) => control.name && !control.disabled
+            && (!['radio', 'checkbox'].includes(control.type) || control.checked))
           .map((control) => [control.name, control.value]);
       }
       *entries() { yield* this.fields; }
@@ -1411,7 +1462,7 @@ describe('Reusable app dialog enhancement', () => {
     expect(projectAssetsDefaultValues(page.fields)).toEqual(submitted);
   });
 
-  it('commits a successful Global JSON save to both scopes and discards an old Project-only draft', async () => {
+  it('commits a successful Global JSON save without replacing Project-only committed values', async () => {
     const initialValues = {
       global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
       project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'png', tag: '2' },
@@ -1450,14 +1501,13 @@ describe('Reusable app dialog enhancement', () => {
     expect(page.scopeControls.global.checked).toBe(true);
     expect(JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent)).toEqual({
       global: submitted,
-      project: submitted,
+      project: initialValues.project,
     });
 
     page.document.dispatch('click', { target: page.trigger });
     expect(projectAssetsDefaultValues(page.fields)).toEqual(submitted);
     changeProjectAssetsScope(page, 'project');
-    expect(projectAssetsDefaultValues(page.fields)).toEqual(submitted);
-    expect(projectAssetsDefaultValues(page.fields)).not.toEqual(initialValues.project);
+    expect(projectAssetsDefaultValues(page.fields)).toEqual(initialValues.project);
 
     page.fields.sort.value = 'filename';
     page.fields.sort.dispatch('change');
@@ -2346,6 +2396,793 @@ describe('Projects defaults autosave enhancement', () => {
     };
     return enhanceProjectsDefaultsFetchSave(page.document, page.projectsDefaultsRefreshOptions);
   }
+
+  function enhanceProjectAssetsAutosavePage(page, options = {}) {
+    page.region.appendChild(page.trigger);
+    installProjectAssetsResponseParser(page);
+    enhanceDropdowns(page.document);
+    enhanceProjectAssetsDefaultsScope(page.document);
+    enhanceAppDialogs(page.document);
+    page.projectAssetsDefaultsRefreshOptions = {
+      beginRefresh: vi.fn(() => 17),
+      refresh: vi.fn(() => 'started'),
+      ...options,
+    };
+    return enhanceProjectAssetsDefaultsFetchSave(
+      page.document,
+      page.projectAssetsDefaultsRefreshOptions,
+    );
+  }
+
+  it('saves a Project-only scope switch once after hydrating its complete paired snapshot', async () => {
+    const page = makeDialogPage({
+      standardDropdowns: true,
+      projectAssetsDefaults: true,
+      projectAssetsScope: true,
+      projectAssetsDefaultsAutosave: true,
+    });
+    const destination = 'http://creatorcrate.test/projects/1/assets?view=list&notice=project_assets_defaults_saved';
+    const snapshots = JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent);
+    const fetch = vi.fn().mockResolvedValue(response({
+      url: destination,
+      html: projectAssetsDefaultsHtml(snapshots, 'project'),
+    }));
+    installFetchGlobals(page, fetch);
+
+    try {
+      expect(enhanceProjectAssetsAutosavePage(page)).toBe(8);
+      expect(enhanceProjectAssetsDefaultsFetchSave(
+        page.document,
+        page.projectAssetsDefaultsRefreshOptions,
+      )).toBe(0);
+      page.document.dispatch('click', { target: page.trigger });
+      await flush();
+
+      changeProjectAssetsScope(page, 'project');
+      await flush();
+
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(Object.fromEntries(fetch.mock.calls[0][1].body.entries())).toEqual({
+        _csrf: 'csrf-token',
+        scope: 'project',
+        loadedScope: 'project',
+        view: 'list',
+        gridSize: 'large',
+        listSize: 'compact',
+        sort: 'category',
+        order: 'desc',
+        pageSize: '50',
+        extension: 'png',
+        tag: '2',
+      });
+      expect(page.projectAssetsDefaultsRefreshOptions.beginRefresh).toHaveBeenCalledOnce();
+      expect(page.projectAssetsDefaultsRefreshOptions.refresh).toHaveBeenCalledWith(
+        page.document,
+        destination,
+        17,
+        { onError: expect.any(Function) },
+      );
+      expect(page.dialog.open).toBe(true);
+      expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('saved');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('saves a Global scope switch once after hydrating its complete paired snapshot', async () => {
+    const values = {
+      global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
+      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'png', tag: '2' },
+    };
+    const page = makeDialogPage({
+      standardDropdowns: true,
+      projectAssetsDefaults: true,
+      projectAssetsScope: true,
+      projectAssetsScopeValues: values,
+      loadedScope: 'project',
+      projectAssetsDefaultsAutosave: true,
+    });
+    setProjectAssetsDefaultValues(page.fields, values.project);
+    const authoritative = {
+      global: { ...values.global, sort: 'modified' },
+      project: { ...values.project, sort: 'modified' },
+    };
+    const destination = 'http://creatorcrate.test/projects/1/assets?view=grid&sort=modified&notice=project_assets_defaults_saved';
+    const fetch = vi.fn().mockImplementation((_url, { body }) => Promise.resolve(response({
+      url: destination,
+      html: projectAssetsDefaultsHtml(authoritative, body.get('scope')),
+    })));
+    installFetchGlobals(page, fetch);
+
+    try {
+      enhanceProjectAssetsAutosavePage(page);
+      page.document.dispatch('click', { target: page.trigger });
+      await flush();
+
+      changeProjectAssetsScope(page, 'global');
+      page.fields.sort.value = 'modified';
+      page.fields.sort.dispatch('change');
+      await flush();
+      await flush();
+
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(Object.fromEntries(fetch.mock.calls[1][1].body.entries())).toEqual({
+        _csrf: 'csrf-token',
+        scope: 'global',
+        loadedScope: 'global',
+        view: 'grid',
+        gridSize: 'default',
+        listSize: 'large',
+        sort: 'modified',
+        order: 'asc',
+        pageSize: '25',
+        extension: 'jpg',
+        tag: '1',
+      });
+      expect(page.projectAssetsDefaultsRefreshOptions.refresh).toHaveBeenCalledWith(
+        page.document,
+        destination,
+        17,
+        { onError: expect.any(Function) },
+      );
+      closeAppDialogById(page.document, page.dialog.id);
+      page.document.dispatch('click', { target: page.trigger });
+      expect(page.scopeControls.global.checked).toBe(true);
+      expect(page.form.querySelector('input[name="loadedScope"]').value).toBe('global');
+      expect(projectAssetsDefaultValues(page.fields)).toEqual(authoritative.global);
+      changeProjectAssetsScope(page, 'project');
+      expect(projectAssetsDefaultValues(page.fields)).toEqual(authoritative.project);
+      changeProjectAssetsScope(page, 'global');
+      expect(projectAssetsDefaultValues(page.fields)).toEqual(authoritative.global);
+      changeProjectAssetsScope(page, 'project');
+      expect(projectAssetsDefaultValues(page.fields)).toEqual(authoritative.project);
+      await flush();
+      closeAppDialogById(page.document, page.dialog.id);
+      page.document.dispatch('click', { target: page.trigger });
+      expect(page.scopeControls.project.checked).toBe(true);
+      expect(projectAssetsDefaultValues(page.fields)).toEqual(authoritative.project);
+      expect(page.dialog.open).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each([false, true])('reconciles a pending save after reopen without replacing newer input (%s)', async (newerInput) => {
+    const page = makeDialogPage({
+      standardDropdowns: true, projectAssetsDefaults: true, projectAssetsScope: true,
+      loadedScope: 'project', projectAssetsDefaultsAutosave: true,
+    });
+    const values = JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent);
+    setProjectAssetsDefaultValues(page.fields, values.project);
+    const pending = deferred();
+    const fetch = vi.fn(() => pending.promise);
+    const destination = 'http://creatorcrate.test/projects/1/assets?view=grid';
+    installFetchGlobals(page, fetch);
+    try {
+      enhanceProjectAssetsAutosavePage(page);
+      page.document.dispatch('click', { target: page.trigger });
+      changeProjectAssetsScope(page, 'global');
+      await flush();
+      closeAppDialogById(page.document, page.dialog.id);
+      page.document.dispatch('click', { target: page.trigger });
+      expect(page.scopeControls.project.checked).toBe(true);
+      expect(projectAssetsDefaultValues(page.fields)).toEqual(values.project);
+      if (newerInput) {
+        page.fields.sort.value = 'size';
+        // Input-only changes are newer intent even before a change queues a save.
+        page.fields.sort.dispatch('input');
+      }
+      pending.resolve(response({ url: destination, html: projectAssetsDefaultsHtml(values, 'global') }));
+      await flush();
+      const visibleScope = newerInput ? 'project' : 'global';
+      expect(page.dialog.open).toBe(true);
+      expect(page.scopeControls[visibleScope].checked).toBe(true);
+      expect(page.form.querySelector('input[name="loadedScope"]').value).toBe(visibleScope);
+      expect(projectAssetsDefaultValues(page.fields)).toEqual(newerInput
+        ? { ...values.project, sort: 'size' } : values.global);
+      expect(page.projectAssetsDefaultsRefreshOptions.refresh).toHaveBeenCalledWith(
+        page.document, destination, 17, { onError: expect.any(Function) },
+      );
+      expect(page.status.textContent).toBe('Settings saved.');
+      expect(fetch).toHaveBeenCalledOnce();
+      closeAppDialogById(page.document, page.dialog.id);
+      page.document.dispatch('click', { target: page.trigger });
+      expect(page.scopeControls.global.checked).toBe(true);
+      expect(projectAssetsDefaultValues(page.fields)).toEqual(values.global);
+      expect(fetch).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('uses response-active Project scope and sizing when Global was submitted', async () => {
+    const page = makeDialogPage({
+      standardDropdowns: true, projectAssetsDefaults: true, projectAssetsScope: true,
+      loadedScope: 'project', projectAssetsDefaultsAutosave: true,
+    });
+    const initial = JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent);
+    setProjectAssetsDefaultValues(page.fields, initial.project);
+    const values = {
+      global: { ...initial.global, gridSize: 'compact' },
+      project: { ...initial.project, sort: 'modified' },
+    };
+    const pending = deferred();
+    const fetch = vi.fn(() => pending.promise);
+    const storage = new Map();
+    vi.stubGlobal('localStorage', {
+      getItem: (key) => storage.get(key) ?? null,
+      setItem: (key, value) => storage.set(key, String(value)),
+    });
+    installFetchGlobals(page, fetch);
+    try {
+      enhanceProjectAssetsAutosavePage(page);
+      page.document.dispatch('click', { target: page.trigger });
+      changeProjectAssetsScope(page, 'global');
+      await flush();
+      expect(fetch.mock.calls[0][1].body.get('loadedScope')).toBe('global');
+      pending.resolve(response({ html: projectAssetsDefaultsHtml(values, 'project') }));
+      await flush();
+      expect(page.scopeControls.project.checked).toBe(true);
+      expect(page.form.querySelector('input[name="loadedScope"]').value).toBe('project');
+      expect(projectAssetsDefaultValues(page.fields)).toEqual(values.project);
+      expect(JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent)).toEqual(values);
+      expect(storage.get('creatorcrate-asset-grid-size')).toBe(values.project.gridSize);
+      expect(storage.get('creatorcrate-asset-list-size')).toBe(values.project.listSize);
+      expect(storage.get('creatorcrate-asset-grid-size')).not.toBe(values.global.gridSize);
+      closeAppDialogById(page.document, page.dialog.id);
+      page.document.dispatch('click', { target: page.trigger });
+      expect(page.scopeControls.project.checked).toBe(true);
+      expect(projectAssetsDefaultValues(page.fields)).toEqual(values.project);
+      expect(fetch).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('commits differing response authority while protecting a reopened newer draft and queued payload', async () => {
+    const page = makeDialogPage({
+      standardDropdowns: true, projectAssetsDefaults: true, projectAssetsScope: true,
+      loadedScope: 'project', projectAssetsDefaultsAutosave: true,
+    });
+    const values = JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent);
+    setProjectAssetsDefaultValues(page.fields, values.project);
+    const first = deferred();
+    const second = deferred();
+    const fetch = vi.fn().mockImplementationOnce(() => first.promise).mockImplementationOnce(() => second.promise);
+    installFetchGlobals(page, fetch);
+    try {
+      enhanceProjectAssetsAutosavePage(page);
+      page.document.dispatch('click', { target: page.trigger });
+      changeProjectAssetsScope(page, 'global');
+      await flush();
+      closeAppDialogById(page.document, page.dialog.id);
+      page.document.dispatch('click', { target: page.trigger });
+      changeProjectAssetsScope(page, 'global');
+      page.fields.sort.value = 'modified';
+      page.fields.sort.dispatch('change');
+      const queued = { ...values.global, sort: 'modified' };
+      page.fields.sort.value = 'size';
+      page.fields.sort.dispatch('input');
+      first.resolve(response({ html: projectAssetsDefaultsHtml(values, 'project') }));
+      await flush();
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(Object.fromEntries(fetch.mock.calls[1][1].body.entries())).toMatchObject({
+        scope: 'global', loadedScope: 'global', ...queued,
+      });
+      expect(page.scopeControls.global.checked).toBe(true);
+      expect(page.fields.sort.value).toBe('size');
+      expect(page.projectAssetsDefaultsRefreshOptions.refresh).not.toHaveBeenCalled();
+      // The queued request must not adopt the revision of a later input-only draft.
+      second.resolve(response({ html: projectAssetsDefaultsHtml({ ...values, global: queued }, 'project') }));
+      await flush();
+      expect(page.scopeControls.global.checked).toBe(true);
+      expect(page.fields.sort.value).toBe('size');
+      closeAppDialogById(page.document, page.dialog.id);
+      page.document.dispatch('click', { target: page.trigger });
+      expect(page.scopeControls.project.checked).toBe(true);
+      expect(projectAssetsDefaultValues(page.fields)).toEqual(values.project);
+      expect(JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent))
+        .toEqual({ ...values, global: queued });
+      expect(fetch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('persists a scope-only change even when both scopes have identical values', async () => {
+    const shared = { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' };
+    const page = makeDialogPage({
+      standardDropdowns: true,
+      projectAssetsDefaults: true,
+      projectAssetsScope: true,
+      projectAssetsScopeValues: { global: shared, project: shared },
+      projectAssetsDefaultsAutosave: true,
+    });
+    const fetch = vi.fn().mockResolvedValue(response({
+      html: projectAssetsDefaultsHtml({ global: shared, project: shared }, 'project'),
+    }));
+    installFetchGlobals(page, fetch);
+
+    try {
+      enhanceProjectAssetsAutosavePage(page);
+      changeProjectAssetsScope(page, 'project');
+      await flush();
+
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(Object.fromEntries(fetch.mock.calls[0][1].body.entries())).toMatchObject({
+        scope: 'project',
+        loadedScope: 'project',
+        ...shared,
+      });
+      closeAppDialogById(page.document, page.dialog.id);
+      page.document.dispatch('click', { target: page.trigger });
+      expect(page.scopeControls.project.checked).toBe(true);
+      expect(page.form.querySelector('input[name="loadedScope"]').value).toBe('project');
+      expect(projectAssetsDefaultValues(page.fields)).toEqual(shared);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('passes followed response HTML through the Project Assets acknowledgement detail', async () => {
+    const page = makeDialogPage({
+      standardDropdowns: true,
+      projectAssetsDefaults: true,
+      projectAssetsScope: true,
+      projectAssetsDefaultsAutosave: true,
+    });
+    const values = JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent);
+    const html = projectAssetsDefaultsHtml(values);
+    const onAcknowledged = vi.fn(() => true);
+    const fetch = vi.fn().mockResolvedValue(response({ html }));
+    installFetchGlobals(page, fetch);
+
+    try {
+      enhanceProjectAssetsAutosavePage(page, { onAcknowledged });
+      page.fields.sort.value = 'modified';
+      page.fields.sort.dispatch('change');
+      await flush();
+
+      expect(onAcknowledged).toHaveBeenCalledWith(expect.objectContaining({
+        form: page.form,
+        html,
+        superseded: false,
+      }));
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('reconciles a Project-only acknowledgement from both authoritative server snapshots', async () => {
+    const values = {
+      global: { view: 'grid', gridSize: 'compact', listSize: 'large', sort: 'filename', order: 'desc', pageSize: '25', extension: 'jpg', tag: '1' },
+      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'modified', order: 'asc', pageSize: '50', extension: 'png', tag: '2' },
+    };
+    const page = makeDialogPage({
+      standardDropdowns: true,
+      projectAssetsDefaults: true,
+      projectAssetsScope: true,
+      loadedScope: 'project',
+      projectAssetsDefaultsAutosave: true,
+    });
+    const initial = JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent);
+    setProjectAssetsDefaultValues(page.fields, initial.project);
+    const storage = new Map();
+    vi.stubGlobal('localStorage', {
+      getItem: (key) => storage.get(key) ?? null,
+      setItem: (key, value) => storage.set(key, String(value)),
+    });
+    const fetch = vi.fn().mockResolvedValue(response({
+      html: projectAssetsDefaultsHtml(values, 'project'),
+    }));
+    installFetchGlobals(page, fetch);
+
+    try {
+      enhanceProjectAssetsAutosavePage(page);
+      page.fields.sort.value = 'modified';
+      page.fields.sort.dispatch('change');
+      await flush();
+
+      expect(JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent)).toEqual(values);
+      expect(projectAssetsDefaultValues(page.fields)).toEqual(values.project);
+      expect(storage.get('creatorcrate-asset-grid-size')).toBe('large');
+      expect(storage.get('creatorcrate-asset-list-size')).toBe('compact');
+      changeProjectAssetsScope(page, 'global');
+      expect(projectAssetsDefaultValues(page.fields)).toEqual(values.global);
+      changeProjectAssetsScope(page, 'project');
+      expect(projectAssetsDefaultValues(page.fields)).toEqual(values.project);
+      await flush();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('serializes rapid Project Assets edits, commits only acknowledged snapshots, and syncs the latest saved sizes', async () => {
+    const page = makeDialogPage({
+      standardDropdowns: true,
+      projectAssetsDefaults: true,
+      projectAssetsScope: true,
+      projectAssetsDefaultsAutosave: true,
+    });
+    const first = deferred();
+    const second = deferred();
+    const initial = JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent);
+    const firstAuthoritative = {
+      global: { ...initial.global, gridSize: 'compact' },
+      project: { ...initial.project },
+    };
+    const finalAuthoritative = {
+      global: { ...initial.global, gridSize: 'large' },
+      project: { ...initial.project },
+    };
+    const fetch = vi.fn()
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+    const storage = new Map([
+      ['creatorcrate-asset-grid-size', 'default'],
+      ['creatorcrate-asset-list-size', 'large'],
+    ]);
+    vi.stubGlobal('localStorage', {
+      getItem: (key) => storage.get(key) ?? null,
+      setItem: (key, value) => storage.set(key, String(value)),
+    });
+    installFetchGlobals(page, fetch);
+
+    try {
+      enhanceProjectAssetsAutosavePage(page);
+      page.document.dispatch('click', { target: page.trigger });
+      await flush();
+
+      page.fields.gridSize.value = 'compact';
+      page.fields.gridSize.dispatch('change');
+      await flush();
+      page.fields.gridSize.value = 'large';
+      page.fields.gridSize.dispatch('change');
+
+      expect(fetch).toHaveBeenCalledOnce();
+      first.resolve(response({
+        url: 'http://creatorcrate.test/projects/1/assets?gridSize=compact',
+        html: projectAssetsDefaultsHtml(firstAuthoritative),
+      }));
+      await flush();
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(Object.fromEntries(fetch.mock.calls[1][1].body.entries())).toMatchObject({ gridSize: 'large' });
+      expect(page.projectAssetsDefaultsRefreshOptions.refresh).not.toHaveBeenCalled();
+
+      const finalUrl = 'http://creatorcrate.test/projects/1/assets?gridSize=large&notice=project_assets_defaults_saved';
+      second.resolve(response({
+        url: finalUrl,
+        html: projectAssetsDefaultsHtml(finalAuthoritative),
+      }));
+      await flush();
+
+      expect(page.projectAssetsDefaultsRefreshOptions.beginRefresh).toHaveBeenCalledOnce();
+      expect(page.projectAssetsDefaultsRefreshOptions.refresh).toHaveBeenCalledWith(
+        page.document,
+        finalUrl,
+        17,
+        { onError: expect.any(Function) },
+      );
+      expect(storage.get('creatorcrate-asset-grid-size')).toBe('large');
+      expect(storage.get('creatorcrate-asset-list-size')).toBe(finalAuthoritative.global.listSize);
+      closeAppDialogById(page.document, page.dialog.id);
+      page.document.dispatch('click', { target: page.trigger });
+      expect(page.fields.gridSize.value).toBe('large');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('queues an immutable scope snapshot behind an in-flight Defaults save', async () => {
+    const page = makeDialogPage({
+      standardDropdowns: true,
+      projectAssetsDefaults: true,
+      projectAssetsScope: true,
+      projectAssetsDefaultsAutosave: true,
+    });
+    const initial = JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent);
+    const globalAcknowledgement = {
+      global: { ...initial.global, sort: 'modified' },
+      project: { ...initial.project },
+    };
+    const pending = deferred();
+    const fetch = vi.fn()
+      .mockImplementationOnce(() => pending.promise)
+      .mockResolvedValueOnce(response({
+        url: 'http://creatorcrate.test/projects/1/assets?pageSize=50&notice=project_assets_defaults_saved',
+        html: projectAssetsDefaultsHtml(globalAcknowledgement, 'project'),
+      }));
+    installFetchGlobals(page, fetch);
+
+    try {
+      enhanceProjectAssetsAutosavePage(page);
+      page.fields.sort.value = 'modified';
+      page.fields.sort.dispatch('change');
+      await flush();
+      expect(Object.fromEntries(fetch.mock.calls[0][1].body.entries())).toMatchObject({
+        scope: 'global',
+        loadedScope: 'global',
+        sort: 'modified',
+      });
+      changeProjectAssetsScope(page, 'project');
+      await flush();
+
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(Object.fromEntries(fetch.mock.calls[0][1].body.entries())).toMatchObject({
+        scope: 'global',
+        loadedScope: 'global',
+        sort: 'modified',
+      });
+      pending.resolve(response({
+        url: 'http://creatorcrate.test/projects/1/assets?sort=modified&notice=project_assets_defaults_saved',
+        html: projectAssetsDefaultsHtml(globalAcknowledgement),
+      }));
+      await flush();
+      await flush();
+
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(Object.fromEntries(fetch.mock.calls[1][1].body.entries())).toMatchObject({
+        scope: 'project',
+        loadedScope: 'project',
+        sort: 'category',
+        view: 'list',
+        gridSize: 'large',
+        listSize: 'compact',
+        pageSize: '50',
+        extension: 'png',
+        tag: '2',
+      });
+      expect(JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent)).toMatchObject({
+        global: { sort: 'modified' },
+        project: { sort: 'category' },
+      });
+      expect(page.scopeControls.project.checked).toBe(true);
+      expect(page.form.querySelector('input[name="loadedScope"]').value).toBe('project');
+      expect(projectAssetsDefaultValues(page.fields)).toMatchObject({
+        sort: 'category',
+        view: 'list',
+        gridSize: 'large',
+      });
+      expect(page.projectAssetsDefaultsRefreshOptions.refresh).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('coalesces rapid scope changes through the existing queue so the latest scope wins', async () => {
+    const pending = deferred();
+    const page = makeDialogPage({
+      standardDropdowns: true,
+      projectAssetsDefaults: true,
+      projectAssetsScope: true,
+      projectAssetsDefaultsAutosave: true,
+    });
+    const initial = JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent);
+    const html = projectAssetsDefaultsHtml(initial);
+    const fetch = vi.fn()
+      .mockImplementationOnce(() => pending.promise)
+      .mockResolvedValueOnce(response({ html }));
+    installFetchGlobals(page, fetch);
+
+    try {
+      enhanceProjectAssetsAutosavePage(page);
+      changeProjectAssetsScope(page, 'project');
+      await flush();
+      changeProjectAssetsScope(page, 'global');
+
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(Object.fromEntries(fetch.mock.calls[0][1].body.entries())).toMatchObject({
+        scope: 'project',
+        loadedScope: 'project',
+        view: 'list',
+        sort: 'category',
+      });
+
+      pending.resolve(response({ html }));
+      await flush();
+      await flush();
+
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(Object.fromEntries(fetch.mock.calls[1][1].body.entries())).toMatchObject({
+        scope: 'global',
+        loadedScope: 'global',
+        view: 'grid',
+        sort: 'filename',
+      });
+      expect(page.scopeControls.global.checked).toBe(true);
+      expect(page.form.querySelector('input[name="loadedScope"]').value).toBe('global');
+      expect(projectAssetsDefaultValues(page.fields)).toMatchObject({
+        view: 'grid',
+        sort: 'filename',
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('does not queue a scope save when the target draft cannot be hydrated', async () => {
+    const values = {
+      global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
+      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'gif', tag: '2' },
+    };
+    const page = makeDialogPage({
+      standardDropdowns: true,
+      projectAssetsDefaults: true,
+      projectAssetsScope: true,
+      projectAssetsScopeValues: values,
+      projectAssetsDefaultsAutosave: true,
+    });
+    const fetch = vi.fn();
+    installFetchGlobals(page, fetch);
+
+    try {
+      enhanceProjectAssetsAutosavePage(page);
+      changeProjectAssetsScope(page, 'project');
+      await flush();
+
+      expect(fetch).not.toHaveBeenCalled();
+      expect(page.scopeControls.global.checked).toBe(true);
+      expect(page.form.querySelector('input[name="loadedScope"]').value).toBe('global');
+      expect(projectAssetsDefaultValues(page.fields)).toEqual(values.global);
+      expect(page.form.querySelector('[data-dialog-error-text]').textContent).toMatch(/could not be changed safely/i);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('keeps a failed scope choice usable without marking it committed', async () => {
+    const page = makeDialogPage({
+      standardDropdowns: true,
+      projectAssetsDefaults: true,
+      projectAssetsScope: true,
+      projectAssetsDefaultsAutosave: true,
+    });
+    const initial = JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent);
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(response({ ok: false, redirected: false }))
+      .mockResolvedValueOnce(response({ html: projectAssetsDefaultsHtml(initial, 'project') }));
+    installFetchGlobals(page, fetch);
+
+    try {
+      enhanceProjectAssetsAutosavePage(page);
+      changeProjectAssetsScope(page, 'project');
+      await flush();
+
+      expect(page.scopeControls.project.checked).toBe(true);
+      expect(page.form.querySelector('input[name="loadedScope"]').value).toBe('project');
+      expect(page.status.textContent).toBe('Could not save settings. Your current changes were kept.');
+
+      closeAppDialogById(page.document, page.dialog.id);
+      page.document.dispatch('click', { target: page.trigger });
+      expect(page.scopeControls.global.checked).toBe(true);
+      expect(page.form.querySelector('input[name="loadedScope"]').value).toBe('global');
+
+      changeProjectAssetsScope(page, 'project');
+      await flush();
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(page.scopeControls.project.checked).toBe(true);
+      expect(page.form.querySelector('input[name="loadedScope"]').value).toBe('project');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('keeps Project Assets edits on save failure and treats superseded refresh as a successful save', async () => {
+    const page = makeDialogPage({
+      standardDropdowns: true,
+      projectAssetsDefaults: true,
+      projectAssetsScope: true,
+      projectAssetsDefaultsAutosave: true,
+    });
+    const initial = JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent);
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(response({ ok: false, redirected: false }))
+      .mockResolvedValueOnce(response({
+        url: 'http://creatorcrate.test/projects/1/assets?sort=modified&notice=project_assets_defaults_saved',
+        html: projectAssetsDefaultsHtml({
+          global: { ...initial.global, sort: 'modified' },
+          project: { ...initial.project },
+        }),
+      }));
+    const refresh = vi.fn(() => 'superseded');
+    installFetchGlobals(page, fetch);
+
+    try {
+      enhanceProjectAssetsAutosavePage(page, { refresh });
+      page.document.dispatch('click', { target: page.trigger });
+      await flush();
+      page.fields.sort.value = 'size';
+      page.fields.sort.dispatch('change');
+      await flush();
+
+      expect(page.fields.sort.value).toBe('size');
+      expect(refresh).not.toHaveBeenCalled();
+      expect(page.status.textContent).toBe('Could not save settings. Your current changes were kept.');
+
+      page.fields.sort.value = 'modified';
+      page.fields.sort.dispatch('change');
+      await flush();
+
+      expect(refresh).toHaveBeenCalledOnce();
+      expect(page.status.textContent).toBe('Settings saved.');
+      expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('saved');
+      expect(page.dialog.open).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('reports saved-but-refresh-failed for Project Assets without reverting the acknowledged edit', async () => {
+    const page = makeDialogPage({
+      standardDropdowns: true,
+      projectAssetsDefaults: true,
+      projectAssetsScope: true,
+      projectAssetsDefaultsAutosave: true,
+    });
+    const initial = JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent);
+    const fetch = vi.fn().mockResolvedValue(response({
+      url: 'http://creatorcrate.test/projects/1/assets?sort=size&notice=project_assets_defaults_saved',
+      html: projectAssetsDefaultsHtml({
+        global: { ...initial.global, sort: 'size' },
+        project: { ...initial.project },
+      }),
+    }));
+    const refresh = vi.fn((_document, _url, _authority, { onError }) => {
+      onError();
+      return 'started';
+    });
+    installFetchGlobals(page, fetch);
+
+    try {
+      enhanceProjectAssetsAutosavePage(page, { refresh });
+      page.document.dispatch('click', { target: page.trigger });
+      await flush();
+      page.fields.sort.value = 'size';
+      page.fields.sort.dispatch('change');
+      await flush();
+
+      expect(page.fields.sort.value).toBe('size');
+      expect(page.status.textContent).toBe('Settings saved, but Project Assets could not refresh. Refresh the page to see the saved defaults.');
+      expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('saved-refresh-error');
+      expect(page.dialog.open).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each(['malformed', 'missing scope', 'invalid scope', 'missing snapshot'])('keeps committed scopes intact for %s response authority', async (failure) => {
+    const page = makeDialogPage({
+      standardDropdowns: true,
+      projectAssetsDefaults: true,
+      projectAssetsScope: true,
+      projectAssetsDefaultsAutosave: true,
+    });
+    const initial = JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent);
+    const html = {
+      malformed: '<main>Saved</main>',
+      'missing scope': projectAssetsDefaultsHtml(initial).replace(/<input[^>]*>/, ''),
+      'invalid scope': projectAssetsDefaultsHtml(initial, 'other'),
+      'missing snapshot': projectAssetsDefaultsHtml({ global: initial.global }, 'project'),
+    }[failure];
+    const fetch = vi.fn().mockResolvedValue(response({ html }));
+    installFetchGlobals(page, fetch);
+
+    try {
+      enhanceProjectAssetsAutosavePage(page);
+      page.fields.sort.value = 'modified';
+      page.fields.sort.dispatch('change');
+      await flush();
+
+      expect(JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent)).toEqual(initial);
+      expect(page.status.textContent).toMatch(/settings saved, but the returned Project Assets defaults could not be read/i);
+      expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('saved-refresh-error');
+      closeAppDialogById(page.document, page.dialog.id);
+      page.document.dispatch('click', { target: page.trigger });
+      expect(projectAssetsDefaultValues(page.fields)).toEqual(initial.global);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 
   it('sends complete snapshots serially and keeps the dialog open with the latest values', async () => {
     const page = makeDialogPage({ standardDropdowns: true, projectsDefaultsAutosave: true });

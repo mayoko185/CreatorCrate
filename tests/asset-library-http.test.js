@@ -389,7 +389,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(response.text).toContain('No tags available');
     expect(response.text).not.toContain('<select id="asset-tag"');
     expect(response.text).not.toMatch(/<form[^>]+method="post"/i);
-    expect(response.text).not.toMatch(/Scan Now|Rename|Move file|Add selected|Set as primary|selectedAssetIds/i);
+    expect(response.text).not.toMatch(/Manually scan project files|Rename|Move file|Add selected|Set as primary|selectedAssetIds/i);
 
     await request(app).post('/assets').expect(404);
   });

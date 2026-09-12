@@ -109,9 +109,13 @@ function saveProjectAssetsDefaults({
     }
   }
 
-  if (scope === 'global') {
-    pageDefaultsService.clearProjectPageDefaults(ASSET_PAGE_DEFAULTS_PAGE, { projectId });
-  }
+  pageDefaultsService.setPageDefaultScope(ASSET_PAGE_DEFAULTS_PAGE, scope, { projectId });
+  return pageDefaultsService.resolvePageDefaults(
+    ASSET_PAGE_DEFAULTS_PAGE,
+    {},
+    optionCatalogues,
+    { projectId },
+  );
 }
 
 
@@ -386,6 +390,7 @@ export function createAssetsRouter({
 
     const pageDefaultsService = getPageDefaultsService(req);
     const optionCatalogues = buildProjectAssetsDefaultOptionCatalogues(workflowQueryService);
+    let effectiveValues;
 
     handlePageDefaultsPost(req, res, next, {
       db,
@@ -395,13 +400,15 @@ export function createAssetsRouter({
       saveErrorMessage: 'Project Assets defaults could not be saved. No changes were made.',
       optionCatalogues,
       validateSubmission: validateProjectAssetsDefaultsScope,
-      saveValidatedValues: ({ validatedValues, submission }) => saveProjectAssetsDefaults({
-        pageDefaultsService,
-        validatedValues,
-        optionCatalogues,
-        projectId: id,
-        scope: submission.scope,
-      }),
+      saveValidatedValues: ({ validatedValues, submission }) => {
+        effectiveValues = saveProjectAssetsDefaults({
+          pageDefaultsService,
+          validatedValues,
+          optionCatalogues,
+          projectId: id,
+          scope: submission.scope,
+        });
+      },
       onValidationError: ({ submittedValues, errors, submission }) => {
         renderProjectAssetsPage(req, res, {
           appName,
@@ -418,8 +425,8 @@ export function createAssetsRouter({
           allowSavedDefaultsRedirect: false,
         }).catch(next);
       },
-      onSuccess: ({ validatedValues }) => {
-        res.redirect(buildProjectAssetsDefaultsSuccessUrl(req, id, validatedValues));
+      onSuccess: () => {
+        res.redirect(buildProjectAssetsDefaultsSuccessUrl(req, id, effectiveValues));
       },
     });
   });

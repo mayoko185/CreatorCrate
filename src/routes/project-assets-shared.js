@@ -304,9 +304,9 @@ export async function renderProjectAssetsPage(req, res, {
     nsfwFilterEnabled,
     inheritedFilterDefaults,
   );
-  const selectedProjectAssetsDefaultsScope = projectAssetsDefaultsSelectedScope === null
-    ? normalizeProjectAssetsDefaultsScope(projectAssetsScopedDefaults.scope)
-    : normalizeProjectAssetsDefaultsScope(projectAssetsDefaultsSelectedScope);
+  const selectedProjectAssetsDefaultsScope = normalizeProjectAssetsDefaultsScope(
+    projectAssetsDefaultsSelectedScope ?? projectAssetsScopedDefaults.scope,
+  );
   const pageUrl = renderModel.pageUrl({});
   const defaultsUrl = appendQueryValue(pageUrl, 'defaults', '1');
   const queryNotice = buildProjectAssetsQueryNotice(query);

@@ -1128,6 +1128,8 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
     }
   },
   onCreate(state, region) {
+    state.projectAssetsDefaultsRefreshGeneration = null;
+    state.projectAssetsDefaultsRefreshError = null;
     state.assetNsfwController = null;
     state.assetNsfwGeneration = 0;
     state.assetNsfwSubmitting = false;
@@ -1142,6 +1144,10 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
     bindProjectAssetsNsfwForm(state, region);
   },
   onInvalidate(state) {
+    if (state.projectAssetsDefaultsRefreshGeneration !== null) {
+      state.projectAssetsDefaultsRefreshGeneration = null;
+      state.projectAssetsDefaultsRefreshError = null;
+    }
     if (state.assetNsfwPostPending) {
       state.assetNsfwGeneration += 1;
       state.assetNsfwController?.abort?.();
@@ -1172,6 +1178,10 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
     updateProjectAssetsNsfwControls(nextRegion, renderedEnabled, true);
   },
   onLoadComplete(state, generation, region) {
+    if (state.projectAssetsDefaultsRefreshGeneration === generation) {
+      state.projectAssetsDefaultsRefreshGeneration = null;
+      state.projectAssetsDefaultsRefreshError = null;
+    }
     if (state.assetNsfwRefreshGeneration !== generation) return;
     state.assetNsfwRefreshGeneration = null;
     state.assetNsfwSubmitting = false;
@@ -1180,6 +1190,20 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
     updateProjectAssetsNsfwControls(region, state.assetNsfwEnabled);
   },
   onLoadError(state, generation) {
+    if (state.projectAssetsDefaultsRefreshGeneration === generation) {
+      const notifyRefreshError = state.projectAssetsDefaultsRefreshError;
+      state.projectAssetsDefaultsRefreshGeneration = null;
+      state.projectAssetsDefaultsRefreshError = null;
+      const region = projectAssetsLiveEngine.getRegion(state.document);
+      region?.removeAttribute?.('aria-busy');
+      projectAssetsLiveEngine.status(
+        region,
+        'Defaults were saved, but Project Assets could not refresh. Refresh the page to see the saved defaults.',
+        'error',
+      );
+      notifyRefreshError?.();
+      return true;
+    }
     if (state.assetNsfwRefreshGeneration !== generation) return false;
     state.assetNsfwRefreshGeneration = null;
     state.assetNsfwNeedsRefresh = false;
@@ -1229,6 +1253,56 @@ export function refreshProjectAssetsLiveRegion(scope = globalThis.document) {
   projectAssetsLiveEngine.invalidate(state);
   projectAssetsLiveEngine.load(state, url, 'none', form);
   return true;
+}
+
+export function beginProjectAssetsDefaultsLiveRefresh(scope = globalThis.document) {
+  const document = liveRegionDocument(scope);
+  const region = projectAssetsLiveEngine.getRegion(document);
+  if (!document || !region) return null;
+
+  projectAssetsLiveEngine.enhance(document);
+  const state = document.__creatorCrateProjectAssetsLiveFiltering;
+  if (!state || !projectAssetsLiveEngine.capabilities(state.window)) return null;
+
+  if (state.projectAssetsDefaultsRefreshGeneration !== null) {
+    projectAssetsLiveEngine.invalidate(state);
+  }
+  return state.generation;
+}
+
+export function refreshProjectAssetsDefaultsLiveRegion(
+  scope = globalThis.document,
+  destination,
+  authorityGeneration,
+  { onError = null } = {},
+) {
+  const document = liveRegionDocument(scope);
+  const region = projectAssetsLiveEngine.getRegion(document);
+  const state = document?.__creatorCrateProjectAssetsLiveFiltering;
+  if (!document || !region || !state || !projectAssetsLiveEngine.capabilities(state.window)) return 'unavailable';
+  if (state.generation !== authorityGeneration) return 'superseded';
+
+  let url;
+  try {
+    url = new URL(destination, state.window.location?.href || '/projects');
+  } catch {
+    return 'unavailable';
+  }
+  if (!projectAssetsLiveEngine.capabilities(state.window)
+    || !/^\/projects\/[1-9]\d*\/assets$/.test(url.pathname)) return 'unavailable';
+
+  if (state.timer) state.window.clearTimeout?.(state.timer);
+  state.timer = null;
+  projectAssetsLiveEngine.invalidate(state);
+  state.projectAssetsDefaultsRefreshGeneration = state.generation;
+  state.projectAssetsDefaultsRefreshError = typeof onError === 'function' ? onError : null;
+  projectAssetsLiveEngine.load(
+    state,
+    url,
+    'replace',
+    projectAssetsLiveEngine.getForm(projectAssetsLiveEngine.getRegion(document)),
+  );
+  return 'started';
 }
 
 export function enhanceProjectsLiveFiltering(scope = globalThis.document) {

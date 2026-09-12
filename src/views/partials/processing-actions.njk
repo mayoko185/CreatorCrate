@@ -2,23 +2,33 @@
    subcards. Rendered from both /projects/:id/assets action-panel branches
    (the complete-category/auto-rename surface and the ordinary/selection-only
    surface) so it never disappears when viewing All, a downgraded surface, or
-   Uncategorized. Not gated on Auto Rename availability. #}
+   Uncategorized, archived, or empty. Not gated on Auto Rename availability. #}
 {% import "partials/icons.njk" as icons %}
 
-{% macro render(isArchived) %}
+{% macro render(isArchived, autoRenameFormId) %}
 <section class="asset-action-group processing-action-group" data-processing-actions>
   <h3 class="asset-action-group-heading">Processing</h3>
   {% if isArchived %}
     <p class="processing-actions-archived-note">Archived projects cannot be processed. Unarchive the project to watermark assets, use the Image workflows editor, or create archives.</p>
     <div class="asset-action-group-controls">
+      <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top" disabled aria-disabled="true" aria-label="Auto Rename" data-tooltip="Auto Rename — unavailable for archived projects">{{ icons.icon('sort') }}</button>
       <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top" disabled aria-disabled="true" aria-label="Watermark" data-tooltip="Watermark — unavailable for archived projects">{{ icons.icon('watermark') }}</button>
-      <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top" disabled aria-disabled="true" aria-label="Image workflows editor" data-tooltip="Image workflows editor — unavailable for archived projects">{{ icons.icon('edit') }}</button>
+      <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top" disabled aria-disabled="true" aria-label="Image workflows editor" data-tooltip="Image workflows editor — unavailable for archived projects">{{ icons.icon('sliders-horizontal') }}</button>
       <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top" disabled aria-disabled="true" aria-label="Archives" data-tooltip="Archives — unavailable for archived projects">{{ icons.icon('database-backup') }}</button>
     </div>
   {% else %}
     <div class="asset-action-group-controls">
+      {% if autoRenameFormId %}
+        <button type="submit" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top"
+                form="{{ autoRenameFormId }}" data-auto-rename-submit disabled aria-disabled="true"
+                aria-label="Auto Rename" data-tooltip="Auto Rename">{{ icons.icon('sort') }}</button>
+      {% else %}
+        <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top"
+                disabled aria-disabled="true" aria-label="Auto Rename"
+                data-tooltip="Auto Rename — available only for a complete category with selected assets">{{ icons.icon('sort') }}</button>
+      {% endif %}
       <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top" data-dialog-open="processing-watermark-dialog" aria-label="Watermark" data-tooltip="Watermark">{{ icons.icon('watermark') }}</button>
-      <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top" data-dialog-open="processing-workflow-dialog" aria-label="Image workflows editor" data-tooltip="Image workflows editor">{{ icons.icon('edit') }}</button>
+      <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top" data-dialog-open="processing-workflow-dialog" aria-label="Image workflows editor" data-tooltip="Image workflows editor">{{ icons.icon('sliders-horizontal') }}</button>
       <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top" data-dialog-open="processing-archive-dialog" aria-label="Archives" data-tooltip="Archives">{{ icons.icon('database-backup') }}</button>
     </div>
   {% endif %}
