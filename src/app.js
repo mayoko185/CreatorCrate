@@ -168,12 +168,12 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     app.set('trust proxy', true);
   }
 
+  const assetMode = resolveAppAssetMode(opts);
   const env = nunjucks.configure(path.join(__dirname, 'views'), {
     autoescape: true,
     express: app,
-    noCache: true,
+    noCache: assetMode !== ASSET_MODES.PRODUCTION,
   });
-  const assetMode = resolveAppAssetMode(opts);
   const useViteAssets = assetMode === ASSET_MODES.PRODUCTION;
   const assetManifest = opts.assetManifest || createUnavailableAssetManifest();
   if (typeof assetManifest.entry !== 'function') {

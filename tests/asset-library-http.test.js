@@ -1026,9 +1026,9 @@ describe('cross-project Asset Viewer HTTP route', () => {
     const calls = [];
     app = createApp({ appName: 'CreatorCrate', db, projectsRoot }, {
       assetWorkflowMetadataService: {
-        async getImageDimensions(assetId) {
-          calls.push(assetId);
-          if (assetId === assets[0].id) throw new Error('Unreadable source');
+        async getImageDimensions(asset) {
+          calls.push(asset.id);
+          if (asset.id === assets[0].id) throw new Error('Unreadable source');
           return { width: 640, height: 480 };
         },
       },

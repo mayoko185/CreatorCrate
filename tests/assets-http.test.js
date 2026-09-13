@@ -609,7 +609,10 @@ describe('asset browser HTTP workflow', () => {
       .get(`/projects/${id}/assets?category=all&view=grid`)
       .expect(200);
     expect(getImageDimensions).toHaveBeenCalledTimes(1);
-    expect(getImageDimensions).toHaveBeenLastCalledWith(present.id);
+    expect(getImageDimensions).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: present.id, relative_path: present.relative_path }),
+      expect.objectContaining({ id, project_dir: path.basename(projectDir) }),
+    );
     expect(grid.text).toContain('<dt>Dimensions</dt>');
     expect(grid.text).toContain('96 × 64');
 
@@ -632,7 +635,10 @@ describe('asset browser HTTP workflow', () => {
       .get(`/projects/${id}/assets?category=all&view=grid&pageSize=all`)
       .expect(200);
     expect(getImageDimensions).toHaveBeenCalledTimes(2);
-    expect(getImageDimensions).toHaveBeenLastCalledWith(present.id);
+    expect(getImageDimensions).toHaveBeenLastCalledWith(
+      expect.objectContaining({ id: present.id, relative_path: present.relative_path }),
+      expect.objectContaining({ id, project_dir: path.basename(projectDir) }),
+    );
     expect(gridAll.text).toContain('96 × 64');
   });
 

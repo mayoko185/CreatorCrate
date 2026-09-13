@@ -1,7 +1,12 @@
 import fs from 'node:fs';
 import { createAssetRepository } from '../data/asset-repository.js';
 import { createProjectRepository } from '../data/project-repository.js';
-import { closeAssetFile, openAssetFile } from '../storage/asset-file.js';
+import {
+  closeAssetFile,
+  closeAssetFileAsync,
+  openAssetFile,
+  openAssetFileAsync,
+} from '../storage/asset-file.js';
 import { crc32, extractWorkflowMetadataFromPngReader } from './workflow-prompt-editor.js';
 
 export class AssetWorkflowMetadataError extends Error {
@@ -25,7 +30,7 @@ function isPngAsset(asset) {
   return String(asset.extension || '').toLowerCase() === 'png';
 }
 
-function isImageAsset(asset) {
+export function supportsImageDimensionInspection(asset) {
   return ['png', 'webp', 'jpg', 'jpeg', 'bmp', 'gif']
     .includes(String(asset.extension || '').toLowerCase());
 }
@@ -58,12 +63,26 @@ function readAssetRange(handle, offset, length) {
   return bytes.subarray(0, totalBytesRead);
 }
 
-function readImageHeader(handle, offset, length) {
-  return readAssetRange(handle, offset, length);
+async function readImageHeader(handle, offset, length) {
+  const bytes = Buffer.allocUnsafe(length);
+  let totalBytesRead = 0;
+
+  while (totalBytesRead < length) {
+    const { bytesRead } = await handle.read(
+      bytes,
+      totalBytesRead,
+      length - totalBytesRead,
+      offset + totalBytesRead
+    );
+    if (bytesRead === 0) break;
+    totalBytesRead += bytesRead;
+  }
+
+  return bytes.subarray(0, totalBytesRead);
 }
 
-function readPngDimensions(handle) {
-  const header = readImageHeader(handle, 0, 33);
+async function readPngDimensions(handle) {
+  const header = await readImageHeader(handle, 0, 33);
   if (
     header.length !== 33
     || !header.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
@@ -80,8 +99,8 @@ function readPngDimensions(handle) {
   });
 }
 
-function readGifDimensions(handle) {
-  const header = readImageHeader(handle, 0, 13);
+async function readGifDimensions(handle) {
+  const header = await readImageHeader(handle, 0, 13);
   if (
     header.length !== 13
     || !['GIF87a', 'GIF89a'].includes(header.toString('ascii', 0, 6))
@@ -95,8 +114,8 @@ function readGifDimensions(handle) {
   });
 }
 
-function readBmpDimensions(handle, size) {
-  const header = readImageHeader(handle, 0, 26);
+async function readBmpDimensions(handle, size) {
+  const header = await readImageHeader(handle, 0, 26);
   if (header.length !== 26 || header.toString('ascii', 0, 2) !== 'BM') return null;
 
   const dibHeaderSize = header.readUInt32LE(14);
@@ -114,8 +133,8 @@ function readBmpDimensions(handle, size) {
   return validDimensions({ width, height: Math.abs(height) });
 }
 
-function readWebpDimensions(handle, size) {
-  const riffHeader = readImageHeader(handle, 0, 12);
+async function readWebpDimensions(handle, size) {
+  const riffHeader = await readImageHeader(handle, 0, 12);
   if (
     riffHeader.length !== 12
     || riffHeader.toString('ascii', 0, 4) !== 'RIFF'
@@ -129,7 +148,7 @@ function readWebpDimensions(handle, size) {
 
   let offset = 12;
   while (offset + 8 <= riffEnd) {
-    const chunkHeader = readImageHeader(handle, offset, 8);
+    const chunkHeader = await readImageHeader(handle, offset, 8);
     if (chunkHeader.length !== 8) return null;
 
     const chunkType = chunkHeader.toString('ascii', 0, 4);
@@ -147,7 +166,7 @@ function readWebpDimensions(handle, size) {
 
     if (chunkType === 'VP8X') {
       if (chunkLength < 10) return null;
-      const header = readImageHeader(handle, payloadOffset, 10);
+      const header = await readImageHeader(handle, payloadOffset, 10);
       if (header.length !== 10) return null;
       return validDimensions({
         width: header.readUIntLE(4, 3) + 1,
@@ -156,7 +175,7 @@ function readWebpDimensions(handle, size) {
     }
     if (chunkType === 'VP8 ') {
       if (chunkLength < 10) return null;
-      const header = readImageHeader(handle, payloadOffset, 10);
+      const header = await readImageHeader(handle, payloadOffset, 10);
       if (
         header.length !== 10
         || !header.subarray(3, 6).equals(Buffer.from([0x9d, 0x01, 0x2a]))
@@ -170,7 +189,7 @@ function readWebpDimensions(handle, size) {
     }
     if (chunkType === 'VP8L') {
       if (chunkLength < 5) return null;
-      const header = readImageHeader(handle, payloadOffset, 5);
+      const header = await readImageHeader(handle, payloadOffset, 5);
       if (header.length !== 5 || header[0] !== 0x2f) return null;
       const bits = header.readUInt32LE(1);
       return validDimensions({
@@ -190,19 +209,19 @@ const JPEG_START_OF_FRAME_MARKERS = new Set([
   0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf,
 ]);
 
-function readJpegDimensions(handle, size) {
-  const signature = readImageHeader(handle, 0, 2);
+async function readJpegDimensions(handle, size) {
+  const signature = await readImageHeader(handle, 0, 2);
   if (signature.length !== 2 || signature[0] !== 0xff || signature[1] !== 0xd8) return null;
 
   let offset = 2;
   while (offset < size) {
-    const markerPrefix = readImageHeader(handle, offset, 1);
+    const markerPrefix = await readImageHeader(handle, offset, 1);
     if (markerPrefix.length !== 1 || markerPrefix[0] !== 0xff) return null;
     offset += 1;
 
     let marker;
     do {
-      const markerByte = readImageHeader(handle, offset, 1);
+      const markerByte = await readImageHeader(handle, offset, 1);
       if (markerByte.length !== 1) return null;
       marker = markerByte[0];
       offset += 1;
@@ -212,7 +231,7 @@ function readJpegDimensions(handle, size) {
     if (marker === 0xd9 || marker === 0xda) return null;
     if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue;
 
-    const segmentLengthBytes = readImageHeader(handle, offset, 2);
+    const segmentLengthBytes = await readImageHeader(handle, offset, 2);
     if (segmentLengthBytes.length !== 2) return null;
     const segmentLength = segmentLengthBytes.readUInt16BE(0);
     if (segmentLength < 2) return null;
@@ -221,7 +240,7 @@ function readJpegDimensions(handle, size) {
     if (!Number.isSafeInteger(nextOffset) || nextOffset <= offset || nextOffset > size) return null;
 
     if (JPEG_START_OF_FRAME_MARKERS.has(marker)) {
-      const frameHeader = readImageHeader(handle, offset + 2, 6);
+      const frameHeader = await readImageHeader(handle, offset + 2, 6);
       if (frameHeader.length !== 6) return null;
 
       const componentCount = frameHeader[5];
@@ -239,7 +258,7 @@ function readJpegDimensions(handle, size) {
   return null;
 }
 
-function readImageDimensions(handle, size, extension) {
+async function readImageDimensions(handle, size, extension) {
   switch (extension) {
     case 'png': return readPngDimensions(handle);
     case 'jpg':
@@ -325,21 +344,43 @@ export function createAssetWorkflowMetadataService({ db, projectsRoot } = {}) {
      * Read the dimensions of a supported image asset without decoding its
      * pixels. Returns null for non-image assets or unavailable dimensions.
      *
-     * @param {number} assetId
+     * Reuses a supplied asset/project row when the caller already loaded it;
+     * the numeric ID form remains available for single-asset callers.
+     *
+     * @param {number|object} assetOrId
+     * @param {object|null} [suppliedProject]
      * @returns {Promise<{ width: number, height: number }|null>}
      */
-    async getImageDimensions(assetId) {
-      const { asset, project } = requireAssetAndProject(assetId);
-      if (!isImageAsset(asset)) return null;
+    async getImageDimensions(assetOrId, suppliedProject = null) {
+      const suppliedAsset = assetOrId && typeof assetOrId === 'object'
+        ? assetOrId
+        : null;
+      const { asset, project } = suppliedAsset
+        ? {
+          asset: suppliedAsset,
+          project: suppliedProject ?? (
+            suppliedAsset.project_dir
+              ? { project_dir: suppliedAsset.project_dir }
+              : null
+          ),
+        }
+        : requireAssetAndProject(assetOrId);
 
-      const opened = openAssetFile(
+      if (!supportsImageDimensionInspection(asset)) return null;
+      if (!project?.project_dir) {
+        throw new AssetWorkflowMetadataError('Asset project is not available for inspection.', {
+          code: 'PROJECT_NOT_AVAILABLE',
+        });
+      }
+
+      const opened = await openAssetFileAsync(
         projectsRoot,
         project.project_dir,
         asset.relative_path
       );
       try {
         try {
-          return readImageDimensions(
+          return await readImageDimensions(
             opened.handle,
             opened.stat.size,
             String(asset.extension || '').toLowerCase()
@@ -348,7 +389,7 @@ export function createAssetWorkflowMetadataService({ db, projectsRoot } = {}) {
           return null;
         }
       } finally {
-        closeAssetFile(opened);
+        await closeAssetFileAsync(opened);
       }
     },
   };

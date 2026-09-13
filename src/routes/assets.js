@@ -2592,11 +2592,11 @@ async function buildAssetWorkflowInspectionRenderModel(asset, assetWorkflowMetad
   }
 }
 
-async function buildAssetImageDimensionsRenderModel(asset, assetWorkflowMetadataService) {
+async function buildAssetImageDimensionsRenderModel(asset, project, assetWorkflowMetadataService) {
   if (typeof assetWorkflowMetadataService?.getImageDimensions !== 'function') return null;
 
   try {
-    return await assetWorkflowMetadataService.getImageDimensions(asset.id);
+    return await assetWorkflowMetadataService.getImageDimensions(asset, project);
   } catch {
     return null;
   }
@@ -2623,6 +2623,7 @@ export async function buildAssetViewerRenderModel(
   );
   const imageDimensions = await buildAssetImageDimensionsRenderModel(
     data.asset,
+    data.project,
     assetWorkflowMetadataService,
   );
 

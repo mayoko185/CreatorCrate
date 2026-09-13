@@ -177,6 +177,7 @@ function makeHarness() {
     description: '',
     notes: '',
     status: 'tbd',
+    projectType: 'images',
     plannedDate: null,
     publishedDate: null,
     patreonUrl: null,
@@ -210,6 +211,7 @@ function makeHarness() {
 
   return {
     indexAsset,
+    project,
     projectPath,
     service: createAssetWorkflowMetadataService({ db, projectsRoot }),
     cleanup() {
@@ -217,6 +219,26 @@ function makeHarness() {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     },
   };
+}
+
+function captureAsyncFileHandles({ afterFirstRead } = {}) {
+  const originalOpen = fs.promises.open.bind(fs.promises);
+  const captures = [];
+  vi.spyOn(fs.promises, 'open').mockImplementation(async (...args) => {
+    const handle = await originalOpen(...args);
+    const originalRead = handle.read.bind(handle);
+    let readCount = 0;
+    const read = vi.spyOn(handle, 'read').mockImplementation(async (...readArgs) => {
+      const result = await originalRead(...readArgs);
+      readCount += 1;
+      if (readCount === 1) await afterFirstRead?.();
+      return result;
+    });
+    const close = vi.spyOn(handle, 'close');
+    captures.push({ handle, read, close });
+    return handle;
+  });
+  return captures;
 }
 
 describe('asset workflow metadata service', () => {
@@ -396,8 +418,14 @@ describe('asset workflow metadata service', () => {
     const image = harness.indexAsset('source/dimensions.png', {
       contents: Buffer.concat([imageBytes, Buffer.alloc(64 * 1024)]),
     });
-    const closeSpy = vi.spyOn(fs, 'closeSync');
-    const readSyncSpy = vi.spyOn(fs, 'readSync');
+    const captures = captureAsyncFileHandles();
+    const syncSpies = [
+      vi.spyOn(fs, 'openSync'),
+      vi.spyOn(fs, 'lstatSync'),
+      vi.spyOn(fs, 'fstatSync'),
+      vi.spyOn(fs, 'readSync'),
+      vi.spyOn(fs, 'closeSync'),
+    ];
     sharpSpy.mockClear();
 
     await expect(harness.service.getImageDimensions(image.id)).resolves.toEqual({
@@ -406,9 +434,10 @@ describe('asset workflow metadata service', () => {
     });
 
     expect(sharpSpy).not.toHaveBeenCalled();
-    expect(Math.max(...readSyncSpy.mock.calls.map(([, , , length]) => length)))
+    expect(Math.max(...captures[0].read.mock.calls.map(([, , length]) => length)))
       .toBeLessThanOrEqual(33);
-    expect(closeSpy).toHaveBeenCalledTimes(1);
+    expect(captures[0].close).toHaveBeenCalledTimes(1);
+    for (const spy of syncSpies) expect(spy).not.toHaveBeenCalled();
   });
 
   it('returns null for a PNG whose IHDR has an invalid declared payload length', async () => {
@@ -513,15 +542,10 @@ describe('asset workflow metadata service', () => {
     });
     const imagePath = path.join(harness.projectPath, 'source/replaced-dimensions.png');
     sharpSpy.mockClear();
-    const originalReadSync = fs.readSync;
-    let replaced = false;
-    vi.spyOn(fs, 'readSync').mockImplementation((handle, buffer, bufferOffset, length, position) => {
-      const bytesRead = originalReadSync(handle, buffer, bufferOffset, length, position);
-      if (!replaced) {
-        replaced = true;
+    captureAsyncFileHandles({
+      afterFirstRead() {
         fs.writeFileSync(imagePath, replacement);
-      }
-      return bytesRead;
+      },
     });
 
     await expect(harness.service.getImageDimensions(image.id)).resolves.toEqual({
@@ -536,12 +560,12 @@ describe('asset workflow metadata service', () => {
     const image = harness.indexAsset('source/corrupt-dimensions.png', {
       contents: makePng([textChunk('prompt', JSON.stringify(workflow))]),
     });
-    const closeSpy = vi.spyOn(fs, 'closeSync');
+    const captures = captureAsyncFileHandles();
     sharpSpy.mockClear();
 
     await expect(harness.service.getImageDimensions(image.id)).resolves.toBeNull();
     expect(sharpSpy).not.toHaveBeenCalled();
-    expect(closeSpy).toHaveBeenCalledTimes(1);
+    expect(captures[0].close).toHaveBeenCalledTimes(1);
     expect(harness.service.getWorkflowMetadata(image.id)).toEqual({
       metadataKey: 'prompt',
       workflow,
@@ -558,6 +582,17 @@ describe('asset workflow metadata service', () => {
 
     await expect(harness.service.getImageDimensions(document.id)).resolves.toBeNull();
     expect(sharpSpy).not.toHaveBeenCalled();
+  });
+
+  it('retains containment validation when supplied rows bypass database lookup', async () => {
+    const image = harness.indexAsset('source/contained.png', {
+      contents: makePng([]),
+    });
+
+    await expect(harness.service.getImageDimensions(
+      { ...image, relative_path: '../outside.png' },
+      harness.project,
+    )).rejects.toThrow(StorageError);
   });
 
   it('returns null for a GIF without its complete logical-screen descriptor', async () => {
@@ -622,8 +657,7 @@ describe('asset workflow metadata service', () => {
     const jpeg = addLargeApp1Segment(baseJpeg);
     await expect(sharp(jpeg).metadata()).resolves.toMatchObject({ width: 832, height: 1248 });
     const image = harness.indexAsset('source/large-app1.jpg', { contents: jpeg });
-    const closeSpy = vi.spyOn(fs, 'closeSync');
-    const readSyncSpy = vi.spyOn(fs, 'readSync');
+    const captures = captureAsyncFileHandles();
     sharpSpy.mockClear();
 
     await expect(harness.service.getImageDimensions(image.id)).resolves.toEqual({
@@ -632,10 +666,39 @@ describe('asset workflow metadata service', () => {
     });
 
     expect(sharpSpy).not.toHaveBeenCalled();
-    expect(Math.max(...readSyncSpy.mock.calls.map(([, , , length]) => length)))
+    expect(Math.max(...captures[0].read.mock.calls.map(([, , length]) => length)))
       .toBeLessThanOrEqual(24);
-    expect(readSyncSpy.mock.calls.some(([, , , , position]) => position > 64 * 1024)).toBe(true);
-    expect(closeSpy).toHaveBeenCalledTimes(1);
+    expect(captures[0].read.mock.calls.some(([, , , position]) => position > 64 * 1024)).toBe(true);
+    expect(captures[0].close).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes the async file handle when a dimension read fails', async () => {
+    const image = harness.indexAsset('source/read-failure.png', {
+      contents: makePng([]),
+    });
+    const close = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(fs.promises, 'open').mockResolvedValue({
+      stat: vi.fn().mockResolvedValue({ isFile: () => true, size: 33 }),
+      read: vi.fn().mockRejectedValue(new Error('read failed')),
+      close,
+    });
+
+    await expect(harness.service.getImageDimensions(image.id)).resolves.toBeNull();
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes the async file handle when opened-descriptor validation fails', async () => {
+    const image = harness.indexAsset('source/stat-failure.png', {
+      contents: makePng([]),
+    });
+    const close = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(fs.promises, 'open').mockResolvedValue({
+      stat: vi.fn().mockRejectedValue(new Error('stat failed')),
+      close,
+    });
+
+    await expect(harness.service.getImageDimensions(image.id)).rejects.toThrow(StorageError);
+    expect(close).toHaveBeenCalledTimes(1);
   });
 
   it('returns null for a non-PNG asset without opening or parsing it', () => {

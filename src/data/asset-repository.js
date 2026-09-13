@@ -1959,7 +1959,8 @@ export function createAssetRepository(db) {
           ${buildAssetBrowserSelectColumns({ includeCategorySlug: true })},
           p.title AS project_title,
           p.status AS project_status,
-          p.project_type AS project_type
+          p.project_type AS project_type,
+          p.project_dir AS project_dir
         FROM assets a
         JOIN projects p ON p.id = a.project_id
         ${CATEGORY_JOIN}

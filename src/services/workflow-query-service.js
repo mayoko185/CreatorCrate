@@ -60,6 +60,8 @@ import {
 } from './dashboard-defaults-service.js';
 import { formatLocalDate, formatLocalTime, getLocalTodayIso } from '../util/date.js';
 import { isProjectArchived } from './project-state.js';
+import { supportsImageDimensionInspection } from './asset-workflow-metadata-service.js';
+import { createProcessingConcurrencyService } from './processing-concurrency-service.js';
 
 const DEFAULT_LIMITS = Object.freeze({
   // Project workspace sections
@@ -71,6 +73,10 @@ const ASSET_BROWSER_DEFAULT_PAGE_SIZE = 25;
 const ASSET_BROWSER_MAX_PAGE_SIZE = 200;
 const ASSET_BROWSER_SEARCH_MAX_LENGTH = 128;
 const ASSET_BROWSER_ORDERING = 'a.filename COLLATE NOCASE ASC, a.id ASC';
+// Dimension probes perform only small positional header reads. A shared
+// 16-slot I/O pool overlaps filesystem latency while keeping View All and
+// concurrent requests from producing a file-descriptor spike.
+const IMAGE_DIMENSION_IO_CONCURRENCY = 16;
 
 const ASSET_LIBRARY_SORT_OPTIONS = Object.freeze([
   { value: 'filename', label: 'Filename' },
@@ -392,6 +398,7 @@ export function createWorkflowQueryService({
   socialPrepSettingsService: injectedSocialPrepSettingsService,
   tagRepository: injectedTagRepository,
   dashboardSectionRegistryProvider,
+  imageDimensionConcurrencyService: injectedImageDimensionConcurrencyService,
 }) {
   const projectRepository = createProjectRepository(db);
   const releaseRepository = injectedReleaseRepository ?? createReleaseRepository(db);
@@ -408,6 +415,8 @@ export function createWorkflowQueryService({
       projectRepository,
       assetCategoryRepository,
     });
+  const imageDimensionConcurrencyService = injectedImageDimensionConcurrencyService
+    ?? createProcessingConcurrencyService({ concurrency: IMAGE_DIMENSION_IO_CONCURRENCY });
 
   function formatAssetModified(value) {
     if (typeof value !== 'string' || value.length === 0) return '\u2014';
@@ -416,16 +425,17 @@ export function createWorkflowQueryService({
     return `${formatLocalDate(date)} ${formatLocalTime(date)}`;
   }
 
-  async function enrichAssetLibraryImageDimensions(assets) {
+  async function enrichAssetLibraryImageDimensions(assets, options = {}) {
     if (!Array.isArray(assets) || assets.length === 0) return [];
 
-    return Promise.all(assets.map(async (asset) => {
+    return imageDimensionConcurrencyService.mapBounded(assets, async (asset) => {
       let dimensions = null;
 
       if ((asset.is_present === 1 || asset.is_present === true)
+        && supportsImageDimensionInspection(asset)
         && typeof assetWorkflowMetadataService?.getImageDimensions === 'function') {
         try {
-          dimensions = await assetWorkflowMetadataService.getImageDimensions(asset.id);
+          dimensions = await assetWorkflowMetadataService.getImageDimensions(asset, options.project);
         } catch {
           dimensions = null;
         }
@@ -442,7 +452,7 @@ export function createWorkflowQueryService({
           ? `${dimensions.width} \u00d7 ${dimensions.height}`
           : '\u2014',
       };
-    }));
+    });
   }
 
   function buildAssetLibraryProjectOptionPresentation() {
@@ -499,7 +509,7 @@ export function createWorkflowQueryService({
     );
     const dimensionedAssets = options.includeImageDimensions === false
       ? presentedAssets
-      : await enrichAssetLibraryImageDimensions(presentedAssets);
+      : await enrichAssetLibraryImageDimensions(presentedAssets, { project });
 
     return dimensionedAssets.map((asset, index) => {
       const effectiveTags = asset.tags;

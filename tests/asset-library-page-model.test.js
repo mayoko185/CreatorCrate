@@ -2,8 +2,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import { fileURLToPath } from 'node:url';
-import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
+import { runMigrations, closeDatabase } from '../src/db.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
 import { createWorkflowQueryService } from '../src/services/workflow-query-service.js';
 import { createAssetWorkflowMetadataService } from '../src/services/asset-workflow-metadata-service.js';
@@ -103,10 +104,16 @@ describe('workflow query service — asset library page model', () => {
   let tmpDir;
   let service;
   let projectOptionCatalogueService;
+  let executedSql;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-asset-library-'));
-    db = openDatabase(path.join(tmpDir, 'test.db'));
+    executedSql = [];
+    db = new Database(path.join(tmpDir, 'test.db'), {
+      verbose: (sql) => executedSql.push(sql),
+    });
+    db.pragma('journal_mode = WAL');
+    db.pragma('foreign_keys = ON');
     runMigrations(db, MIGRATIONS_DIR);
     projectOptionCatalogueService = createTestProjectOptionCatalogueService(db);
     service = createWorkflowQueryService({ db, projectOptionCatalogueService });
@@ -358,12 +365,15 @@ describe('workflow query service — asset library page model', () => {
     fs.writeFileSync(path.join(projectsRoot, projectDir, corrupt.relative_path), 'not an image');
     fs.writeFileSync(path.join(projectsRoot, projectDir, unsupported.relative_path), 'krita source');
 
+    const assetWorkflowMetadataService = createAssetWorkflowMetadataService({ db, projectsRoot });
     const dimensionService = createWorkflowQueryService({
       db,
       projectOptionCatalogueService,
-      assetWorkflowMetadataService: createAssetWorkflowMetadataService({ db, projectsRoot }),
+      assetWorkflowMetadataService,
     });
     const page = dimensionService.getAssetLibraryPage({ pageSize: 10 });
+    expect(page.assets.every((asset) => asset.project_dir === projectDir)).toBe(true);
+    executedSql.length = 0;
     const enriched = await dimensionService.enrichAssetLibraryImageDimensions(page.assets);
     const byId = new Map(enriched.map((asset) => [asset.id, asset]));
 
@@ -377,6 +387,42 @@ describe('workflow query service — asset library page model', () => {
       extension: 'kra',
       formattedDimensions: '\u2014',
     });
+    expect(executedSql.filter((sql) => /^SELECT\b/i.test(sql))).toEqual([]);
+  });
+
+  it('rejects 25 unsupported rendered rows before dimension service or database work', async () => {
+    const projectsRoot = path.join(tmpDir, 'unsupported-projects');
+    fs.mkdirSync(projectsRoot);
+    const project = insertProject(db, { title: 'Unsupported Dimensions Project' });
+    db.prepare('UPDATE projects SET project_dir = ? WHERE id = ?')
+      .run('unsupported-dimensions-project', project.id);
+    const assets = Array.from({ length: 25 }, (_, index) => insertAsset(db, {
+      projectId: project.id,
+      relativePath: `source-${String(index + 1).padStart(2, '0')}.kra`,
+      extension: 'kra',
+    }));
+    const assetWorkflowMetadataService = createAssetWorkflowMetadataService({ db, projectsRoot });
+    const getImageDimensions = vi.spyOn(assetWorkflowMetadataService, 'getImageDimensions');
+    const dimensionService = createWorkflowQueryService({
+      db,
+      projectOptionCatalogueService,
+      assetWorkflowMetadataService,
+    });
+
+    executedSql.length = 0;
+    await Promise.all(assets.map((asset) => assetWorkflowMetadataService.getImageDimensions(asset.id)));
+    expect(executedSql.filter((sql) => /^SELECT\b/i.test(sql.trim()))).toHaveLength(50);
+
+    const page = dimensionService.getAssetLibraryPage({ pageSize: 25 });
+    getImageDimensions.mockClear();
+    executedSql.length = 0;
+
+    const enriched = await dimensionService.enrichAssetLibraryImageDimensions(page.assets);
+
+    expect(enriched).toHaveLength(assets.length);
+    expect(enriched.every((asset) => asset.formattedDimensions === '\u2014')).toBe(true);
+    expect(getImageDimensions).not.toHaveBeenCalled();
+    expect(executedSql.filter((sql) => /^SELECT\b/i.test(sql.trim()))).toEqual([]);
   });
 
   it('inspects only present assets in the supplied rendered page and isolates unavailable dimensions', async () => {
@@ -399,10 +445,10 @@ describe('workflow query service — asset library page model', () => {
       db,
       projectOptionCatalogueService,
       assetWorkflowMetadataService: {
-        async getImageDimensions(assetId) {
-          calls.push(assetId);
-          if (assetId === first.id) return { width: 832, height: 1248 };
-          if (assetId === corrupt.id) throw new Error('Unreadable source');
+        async getImageDimensions(asset) {
+          calls.push(asset.id);
+          if (asset.id === first.id) return { width: 832, height: 1248 };
+          if (asset.id === corrupt.id) throw new Error('Unreadable source');
           return null;
         },
       },
@@ -421,7 +467,7 @@ describe('workflow query service — asset library page model', () => {
       { ...firstPage.assets[0], id: missing.id, is_present: 0 },
       { ...firstPage.assets[0], id: unsupported.id, extension: 'kra', preview_url: '/generated-preview' },
     ]);
-    expect(calls).toEqual([first.id, corrupt.id, first.id, unsupported.id]);
+    expect(calls).toEqual([first.id, corrupt.id, first.id]);
     expect(unavailable[1].formattedDimensions).toBe('\u2014');
     expect(unavailable[2]).toMatchObject({
       preview_url: '/generated-preview',
@@ -429,6 +475,35 @@ describe('workflow query service — asset library page model', () => {
     });
     expect(calls).not.toContain(laterPage.id);
     expect(calls).not.toContain(missing.id);
+  });
+
+  it('bounds concurrent image-dimension reads while preserving row order', async () => {
+    let active = 0;
+    let maximumActive = 0;
+    const assets = Array.from({ length: 40 }, (_, index) => ({
+      id: index + 1,
+      extension: 'png',
+      is_present: 1,
+    }));
+    const dimensionService = createWorkflowQueryService({
+      db,
+      projectOptionCatalogueService,
+      assetWorkflowMetadataService: {
+        async getImageDimensions(asset) {
+          active += 1;
+          maximumActive = Math.max(maximumActive, active);
+          await new Promise((resolve) => setImmediate(resolve));
+          active -= 1;
+          return { width: asset.id, height: asset.id + 100 };
+        },
+      },
+    });
+
+    const enriched = await dimensionService.enrichAssetLibraryImageDimensions(assets);
+
+    expect(maximumActive).toBe(16);
+    expect(enriched.map((asset) => asset.id)).toEqual(assets.map((asset) => asset.id));
+    expect(enriched[39].formattedDimensions).toBe('40 × 140');
   });
 
   it('prepares Project Assets for Asset Information without repurposing assigned tags', async () => {
@@ -481,8 +556,8 @@ describe('workflow query service — asset library page model', () => {
       db,
       projectOptionCatalogueService,
       assetWorkflowMetadataService: {
-        async getImageDimensions(assetId) {
-          dimensionCalls.push(assetId);
+        async getImageDimensions(asset) {
+          dimensionCalls.push(asset.id);
           return { width: 2048, height: 3072 };
         },
       },

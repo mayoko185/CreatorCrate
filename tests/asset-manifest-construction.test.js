@@ -62,6 +62,10 @@ describe('Vite asset resolver app construction', () => {
       { assetManifest, assetMode: ASSET_MODES.PRODUCTION },
     );
 
+    expect(nunjucksInstrumentation.configure).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ noCache: false }),
+    );
     expect(nunjucksInstrumentation.addGlobal).toHaveBeenCalledWith('assetMode', ASSET_MODES.PRODUCTION);
     expect(nunjucksInstrumentation.addGlobal).toHaveBeenCalledWith('useViteAssets', true);
     expect(app.locals.assetMode).toBe(ASSET_MODES.PRODUCTION);
@@ -75,6 +79,10 @@ describe('Vite asset resolver app construction', () => {
       { assetManifest, assetMode: ASSET_MODES.DEVELOPMENT },
     );
 
+    expect(nunjucksInstrumentation.configure).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ noCache: true }),
+    );
     expect(nunjucksInstrumentation.addGlobal).toHaveBeenCalledWith('assetMode', ASSET_MODES.DEVELOPMENT);
     expect(nunjucksInstrumentation.addGlobal).toHaveBeenCalledWith('useViteAssets', false);
     expect(app.locals.assetMode).toBe(ASSET_MODES.DEVELOPMENT);

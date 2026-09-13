@@ -68,6 +68,44 @@ export function resolveProjectDir(projectsRoot, relPath) {
 }
 
 /**
+ * Asynchronous counterpart to {@link resolveProjectDir}. It applies the same
+ * lexical containment and symlink rules without blocking the event loop on
+ * filesystem inspection.
+ *
+ * @param {string} projectsRoot
+ * @param {string} relPath
+ * @returns {Promise<string>}
+ * @throws {StorageError} if any safety check fails
+ */
+export async function resolveProjectDirAsync(projectsRoot, relPath) {
+  if (!relPath) {
+    throw new StorageError('Project directory path must be a non-empty relative path.');
+  }
+  if (path.isAbsolute(relPath)) {
+    throw new StorageError('Project directory path must be relative to PROJECTS_ROOT.');
+  }
+
+  const normalizedRoot = path.resolve(projectsRoot);
+  const resolved = path.resolve(normalizedRoot, relPath);
+
+  if (resolved === normalizedRoot) {
+    throw new StorageError('Project directory path must be a subdirectory of PROJECTS_ROOT.');
+  }
+  if (path.dirname(resolved) !== normalizedRoot) {
+    throw new StorageError(
+      'Project directory path must be a direct child of PROJECTS_ROOT.'
+    );
+  }
+  if (!isContained(normalizedRoot, resolved)) {
+    throw new StorageError('Project directory path escapes PROJECTS_ROOT.');
+  }
+
+  await checkSymlinksAsync(normalizedRoot, resolved);
+
+  return resolved;
+}
+
+/**
  * @param {string} root - Normalized absolute root path (with trailing separator semantics)
  * @param {string} target - Normalized absolute target path
  * @returns {boolean}
@@ -105,6 +143,32 @@ function checkSymlinks(root, target) {
     } catch (err) {
       if (err instanceof StorageError) throw err;
       if (err.code === 'ENOENT') return; // Non-existent segment → further can't be vectors
+      throw new StorageError(
+        `Cannot access path component "${path.basename(current)}".`
+      );
+    }
+  }
+}
+
+async function checkSymlinksAsync(root, target) {
+  const relative = path.relative(root, target);
+  if (relative === '') return;
+
+  const parts = relative.split(path.sep);
+  let current = root;
+
+  for (const part of parts) {
+    current = path.join(current, part);
+    try {
+      const stats = await fs.promises.lstat(current);
+      if (stats.isSymbolicLink()) {
+        throw new StorageError(
+          `Project directory path contains a symbolic link at "${path.basename(current)}".`
+        );
+      }
+    } catch (err) {
+      if (err instanceof StorageError) throw err;
+      if (err.code === 'ENOENT') return;
       throw new StorageError(
         `Cannot access path component "${path.basename(current)}".`
       );

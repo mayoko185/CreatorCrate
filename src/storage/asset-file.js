@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { StorageError } from './path-manager.js';
-import { resolveProjectDir } from './project-storage.js';
+import { resolveProjectDir, resolveProjectDirAsync } from './project-storage.js';
 
 // ─── Safe contained-file resolver ───────────────────────────────────────
 //
@@ -41,7 +41,8 @@ import { resolveProjectDir } from './project-storage.js';
  * done, typically in a try/finally block.
  *
  * @typedef {Object} OpenedAssetFile
- * @property {number} handle        - Opened read-only file descriptor.
+ * @property {number|import('node:fs/promises').FileHandle} handle - Opened
+ *                                    read-only descriptor or file handle.
  * @property {string} absolutePath  - Validated absolute path. Not for route or
  *                                    template use; internal storage only.
  * @property {fs.Stats} stat        - fstat result from the opened descriptor.
@@ -156,6 +157,44 @@ export function resolveContainedAssetPath(projectDir, assetRelPath, { checkFinal
   return resolvedAsset;
 }
 
+async function resolveContainedAssetPathAsync(
+  projectDir,
+  assetRelPath,
+  { checkFinalSymlink = true } = {}
+) {
+  if (!assetRelPath || typeof assetRelPath !== 'string') {
+    throw new StorageError('Asset path must be a non-empty relative path.');
+  }
+  if (path.isAbsolute(assetRelPath)) {
+    throw new StorageError('Asset path must be relative to the project directory.');
+  }
+
+  const normalizedAsset = path.normalize(assetRelPath);
+  if (normalizedAsset === '.') {
+    throw new StorageError('Asset path must not resolve to the project directory.');
+  }
+  const firstSeg = normalizedAsset.split(path.sep)[0];
+  if (firstSeg === '..') {
+    throw new StorageError('Asset path escapes the project directory.');
+  }
+
+  const resolvedAsset = path.resolve(projectDir, normalizedAsset);
+  const relativeToProject = path.relative(projectDir, resolvedAsset);
+  if (
+    relativeToProject === ''
+    || relativeToProject.startsWith('..')
+    || path.isAbsolute(relativeToProject)
+  ) {
+    throw new StorageError('Asset path escapes the project directory.');
+  }
+
+  await checkAssetSymlinksAsync(projectDir, resolvedAsset, {
+    skipFinal: !checkFinalSymlink,
+  });
+
+  return resolvedAsset;
+}
+
 /**
  * Open an individual asset file inside a project directory with full
  * containment and symlink validation.
@@ -223,6 +262,52 @@ export function openAssetFile(projectsRoot, projectRelPath, assetRelPath) {
 }
 
 /**
+ * Asynchronous counterpart to {@link openAssetFile}. The same containment,
+ * symlink, read-only open, and opened-handle validation rules apply.
+ *
+ * @param {string} projectsRoot
+ * @param {string} projectRelPath
+ * @param {string} assetRelPath
+ * @returns {Promise<OpenedAssetFile>}
+ * @throws {StorageError} on any containment, symlink, or open failure
+ */
+export async function openAssetFileAsync(projectsRoot, projectRelPath, assetRelPath) {
+  const projectDir = await resolveProjectDirAsync(projectsRoot, projectRelPath);
+  const resolvedAsset = await resolveContainedAssetPathAsync(projectDir, assetRelPath);
+
+  let handle;
+  try {
+    handle = await fs.promises.open(resolvedAsset, 'r');
+  } catch (err) {
+    if (err.code === 'ENOENT') {
+      throw new StorageError('Asset file does not exist.');
+    }
+    if (err.code === 'EACCES') {
+      throw new StorageError('Asset file cannot be read.');
+    }
+    if (err.code === 'EISDIR') {
+      throw new StorageError('Asset path is a directory, not a file.');
+    }
+    throw new StorageError('Asset file cannot be opened.');
+  }
+
+  let stat;
+  try {
+    stat = await handle.stat();
+  } catch {
+    try { await handle.close(); } catch { /* best effort */ }
+    throw new StorageError('Opened asset descriptor cannot be stat.');
+  }
+
+  if (!stat.isFile()) {
+    try { await handle.close(); } catch { /* best effort */ }
+    throw new StorageError('Asset path does not point to a regular file.');
+  }
+
+  return { handle, absolutePath: resolvedAsset, stat };
+}
+
+/**
  * Close an opened asset file handle. Safe to call with null/undefined.
  * @param {OpenedAssetFile|null|undefined} opened
  */
@@ -230,6 +315,22 @@ export function closeAssetFile(opened) {
   if (!opened || opened.handle == null) return;
   try {
     fs.closeSync(opened.handle);
+  } catch {
+    // Closing an already-closed or invalid descriptor is a no-op best effort.
+  }
+}
+
+/**
+ * Close an asynchronously opened asset file handle. Safe to call with
+ * null/undefined and best-effort for an already-closed handle.
+ *
+ * @param {OpenedAssetFile|null|undefined} opened
+ * @returns {Promise<void>}
+ */
+export async function closeAssetFileAsync(opened) {
+  if (!opened || opened.handle == null) return;
+  try {
+    await opened.handle.close();
   } catch {
     // Closing an already-closed or invalid descriptor is a no-op best effort.
   }
@@ -274,6 +375,31 @@ function checkAssetSymlinks(projectDir, target, { skipFinal = false } = {}) {
     } catch (err) {
       if (err instanceof StorageError) throw err;
       if (err.code === 'ENOENT') return; // further components can't be vectors
+      throw new StorageError('Asset path component cannot be accessed.');
+    }
+  }
+}
+
+async function checkAssetSymlinksAsync(projectDir, target, { skipFinal = false } = {}) {
+  const relative = path.relative(projectDir, target);
+  if (relative === '') return;
+
+  const parts = relative.split(path.sep);
+  let current = projectDir;
+
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    if (part === '') continue;
+    current = path.join(current, part);
+    if (skipFinal && i === parts.length - 1) continue;
+    try {
+      const stats = await fs.promises.lstat(current);
+      if (stats.isSymbolicLink()) {
+        throw new StorageError('Asset path contains a symbolic link.');
+      }
+    } catch (err) {
+      if (err instanceof StorageError) throw err;
+      if (err.code === 'ENOENT') return;
       throw new StorageError('Asset path component cannot be accessed.');
     }
   }
