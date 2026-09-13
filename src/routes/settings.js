@@ -188,7 +188,15 @@ const DEFAULT_VALUE_LABELS = Object.freeze({
       category: 'Category & location',
     }),
     order: Object.freeze({ asc: 'Ascending', desc: 'Descending' }),
-    pageSize: Object.freeze({ 10: '10', 25: '25', 50: '50', 100: '100' }),
+    pageSize: Object.freeze({
+      10: '10',
+      25: '25',
+      50: '50',
+      100: '100',
+      150: '150',
+      200: '200',
+      all: 'View All',
+    }),
   }),
   assetViewer: Object.freeze({
     view: Object.freeze({ grid: 'Grid', list: 'List' }),

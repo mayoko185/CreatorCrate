@@ -15,7 +15,7 @@ export const ASSET_LIBRARY_QUERY_KEYS = Object.freeze([
   'view',
 ]);
 
-export const ASSET_LIBRARY_PAGE_SIZE_VALUES = Object.freeze([10, 25, 50, 100]);
+export const ASSET_LIBRARY_PAGE_SIZE_VALUES = Object.freeze([10, 25, 50, 100, 150, 200, 'all']);
 
 export const ASSET_LIBRARY_DEFAULTS = Object.freeze({
   category: 'all',
@@ -133,7 +133,7 @@ function parsePresentationValue(raw, key) {
   }
 
   return {
-    value: key === 'pageSize' ? Number(normalized) : normalized,
+    value: key === 'pageSize' && normalized !== 'all' ? Number(normalized) : normalized,
     state: 'valid',
   };
 }
@@ -185,7 +185,7 @@ export function isBareAssetLibraryRequest(rawQuery) {
  *   sort: 'filename'|'modified'|'size'|'category'|'project',
  *   order: 'asc'|'desc',
  *   page: number,
- *   pageSize: 10|25|50|100,
+ *   pageSize: 10|25|50|100|150|200|'all',
  *   view: 'grid'|'list',
  *   presentation: object,
  *   queryWasNonBare: boolean,
@@ -259,7 +259,7 @@ function normalizePresentationCandidate(value, key) {
     return { value: PRESENTATION_FALLBACKS[key], state: 'invalid' };
   }
   return {
-    value: key === 'pageSize' ? Number(normalized) : normalized,
+    value: key === 'pageSize' && normalized !== 'all' ? Number(normalized) : normalized,
     state: 'valid',
   };
 }

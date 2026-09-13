@@ -189,7 +189,7 @@
     {% if currentView == 'grid' %}
       <ul class="asset-grid" role="list" aria-label="Assets across active projects">
         {% for asset in assets %}
-          {% set detailUrl = "/projects/" ~ asset.project_id ~ "/assets/" ~ asset.id %}
+          {% set detailUrl = asset.detailUrl or ("/projects/" ~ asset.project_id ~ "/assets/" ~ asset.id) %}
           {% set displayName = asset.filename or asset.relative_path or 'Unnamed asset' %}
           <li class="asset-grid-item{% if not asset.is_present %} is-missing{% endif %}">
             <article class="asset-card asset-viewer-grid-card" data-asset-id="{{ asset.id }}">
@@ -209,7 +209,7 @@
     {% else %}
       <ul class="asset-list" role="list" aria-label="Assets across active projects">
         {% for asset in assets %}
-          {% set detailUrl = "/projects/" ~ asset.project_id ~ "/assets/" ~ asset.id %}
+          {% set detailUrl = asset.detailUrl or ("/projects/" ~ asset.project_id ~ "/assets/" ~ asset.id) %}
           {% set projectUrl = "/projects/" ~ asset.project_id %}
           {% set displayName = asset.filename or asset.relative_path or 'Unnamed asset' %}
           <li class="asset-list-item{% if not asset.is_present %} is-missing{% endif %}">

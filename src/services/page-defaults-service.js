@@ -61,7 +61,11 @@ export const PAGE_DEFAULT_DEFINITIONS = Object.freeze({
     listSize: definition('page_defaults.project_assets.list_size', ['compact', 'large'], 'large'),
     sort: definition('page_defaults.project_assets.sort', ['filename', 'modified', 'size', 'category'], 'filename'),
     order: definition('page_defaults.project_assets.order', ['asc', 'desc'], 'asc'),
-    pageSize: definition('page_defaults.project_assets.page_size', ['10', '25', '50', '100'], '25'),
+    pageSize: definition(
+      'page_defaults.project_assets.page_size',
+      ['10', '25', '50', '100', '150', '200', 'all'],
+      '25',
+    ),
     extension: definition('page_defaults.project_assets.extension', ['all'], 'all', { multi: true }),
     tag: definition('page_defaults.project_assets.tag', ['all'], 'all', { multi: true }),
   }),

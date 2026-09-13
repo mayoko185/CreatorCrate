@@ -26,6 +26,7 @@ function sampleProject(overrides = {}) {
     description: '',
     notes: '',
     status: 'tbd',
+    projectType: 'images',
     priority: 'normal',
     plannedDate: null,
     publishedDate: null,
@@ -1283,6 +1284,66 @@ describe('release service', () => {
       expect(page.assetPresentation.assets).toEqual([]);
       expect(page.candidates).toEqual([]);
       expect(page.candidateTotal).toBe(0);
+    });
+
+    it('does not slice release assets for explicit all and keeps single-page metadata', () => {
+      const assets = [];
+      for (let index = 0; index < 30; index++) {
+        assets.push(addAsset(`asset-${String(index).padStart(2, '0')}.txt`));
+      }
+      const release = service.createRelease(projectId, validInput());
+      service.selectAssets(release.id, [{ assetId: assets[0].id, role: 'primary', sortOrder: 0 }]);
+
+      const page = service.getReleaseAssetManagementPage(release.id, { page: '99', pageSize: 'all' });
+
+      expect(page.assetPage).toHaveLength(30);
+      expect(page.assetPageNumber).toBe(1);
+      expect(page.assetPageSize).toBe('all');
+      expect(page.assetPageCount).toBe(1);
+      expect(page.assetTotal).toBe(30);
+      expect(page.assetPresentation.selected.map((asset) => asset.id)).toEqual([assets[0].id]);
+      expect(page.candidates).toHaveLength(29);
+    });
+
+    it('keeps valid empty metadata for explicit all', () => {
+      const release = service.createRelease(projectId, validInput());
+      const page = service.getReleaseAssetManagementPage(release.id, { page: '99', pageSize: 'all' });
+
+      expect(page.assetPage).toEqual([]);
+      expect(page.assetTotal).toBe(0);
+      expect(page.assetPageNumber).toBe(1);
+      expect(page.assetPageSize).toBe('all');
+      expect(page.assetPageCount).toBe(1);
+    });
+
+    it('preserves finite slicing and malformed page-size fallback behavior', () => {
+      for (let index = 0; index < 30; index++) {
+        addAsset(`asset-${String(index).padStart(2, '0')}.txt`);
+      }
+      const release = service.createRelease(projectId, validInput());
+
+      const finite = service.getReleaseAssetManagementPage(release.id, { page: '2', pageSize: '10' });
+      expect(finite.assetPage).toHaveLength(10);
+      expect(finite.assetPageNumber).toBe(2);
+      expect(finite.assetPageSize).toBe(10);
+      expect(finite.assetPageCount).toBe(3);
+
+      const malformed = service.getReleaseAssetManagementPage(release.id, { pageSize: '1junk' });
+      expect(malformed.assetPage).toHaveLength(25);
+      expect(malformed.assetPageSize).toBe(25);
+      expect(malformed.assetPageCount).toBe(2);
+    });
+
+    it('normalizes requested release-asset page sizes without changing strict numeric semantics', () => {
+      expect(service.normalizeCandidateQuery({ pageSize: '150' }).pageSize).toBe(150);
+      expect(service.normalizeCandidateQuery({ pageSize: '200' }).pageSize).toBe(200);
+      expect(service.normalizeCandidateQuery({ pageSize: 'all' }).pageSize).toBe('all');
+      expect(service.normalizeCandidateQuery({ pageSize: '201' }).pageSize).toBe(200);
+      expect(service.normalizeCandidateQuery({ pageSize: '37' }).pageSize).toBe(37);
+
+      for (const pageSize of ['1junk', '2.5', '1e2', '+2', '-2', '0', '']) {
+        expect(service.normalizeCandidateQuery({ pageSize }).pageSize).toBe(25);
+      }
     });
 
     it('uses category validation for malformed IDs and not-found for missing or cross-project IDs', () => {

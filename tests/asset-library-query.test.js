@@ -8,6 +8,10 @@ import {
 } from '../src/routes/asset-library-query.js';
 
 describe('Asset Viewer query foundation', () => {
+  it('defines the exact supported page-size order', () => {
+    expect(ASSET_LIBRARY_PAGE_SIZE_VALUES).toEqual([10, 25, 50, 100, 150, 200, 'all']);
+  });
+
   it('normalizes every supported presentation value', () => {
     for (const view of ['grid', 'list']) {
       const parsed = parseAssetLibraryQuery({ view });
@@ -32,6 +36,7 @@ describe('Asset Viewer query foundation', () => {
       expect(parsed.pageSize).toBe(pageSize);
       expect(parsed.presentation.pageSize).toEqual({ value: pageSize, state: 'valid' });
     }
+
   });
 
   it('distinguishes omitted presentation values from explicit invalid values', () => {
@@ -154,7 +159,7 @@ describe('Asset Viewer query foundation', () => {
     });
   });
 
-  it('accepts positive pages and only the finite page-size allowlist', () => {
+  it('accepts positive pages and the supported page-size values', () => {
     expect(parseAssetLibraryQuery({ page: '7' }).page).toBe(7);
     expect(parseAssetLibraryQuery({ page: '0' }).page).toBe(1);
     expect(parseAssetLibraryQuery({ page: '-1' }).page).toBe(1);
@@ -162,7 +167,9 @@ describe('Asset Viewer query foundation', () => {
     expect(parseAssetLibraryQuery({ page: '1.5' }).page).toBe(1);
     expect(parseAssetLibraryQuery({ page: '1e2' }).page).toBe(1);
 
-    expect(parseAssetLibraryQuery({ pageSize: '50' }).pageSize).toBe(50);
+    expect(parseAssetLibraryQuery({ pageSize: '150' }).pageSize).toBe(150);
+    expect(parseAssetLibraryQuery({ pageSize: '200' }).pageSize).toBe(200);
+    expect(parseAssetLibraryQuery({ pageSize: 'all' }).pageSize).toBe('all');
     expect(parseAssetLibraryQuery({ pageSize: '20' }).pageSize).toBe(25);
     expect(parseAssetLibraryQuery({ pageSize: '101' }).pageSize).toBe(25);
     expect(parseAssetLibraryQuery({ pageSize: '0' }).pageSize).toBe(25);
@@ -269,6 +276,14 @@ describe('Asset Viewer query foundation', () => {
       order: 'invalid',
       pageSize: '20',
     }))).toBe('/asset-viewer');
+  });
+
+  it('round-trips View All through canonical URLs and view switching', () => {
+    const parsed = parseAssetLibraryQuery({ pageSize: 'all', view: 'grid' });
+
+    expect(buildAssetLibraryUrl(parsed)).toBe('/asset-viewer?pageSize=all&view=grid');
+    expect(buildAssetLibraryUrl(parsed, { view: 'list' }))
+      .toBe('/asset-viewer?pageSize=all&view=list');
   });
 
   it('retains route-marked neutral filters so saved defaults cannot reappear', () => {

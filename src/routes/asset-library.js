@@ -51,7 +51,10 @@ const ASSET_VIEWER_DEFAULT_LABELS = Object.freeze({
       project: 'Project',
     }),
     order: Object.freeze({ asc: 'Ascending', desc: 'Descending' }),
-    pageSize: Object.freeze(Object.fromEntries(ASSET_LIBRARY_PAGE_SIZE_VALUES.map((v) => [String(v), String(v)]))),
+    pageSize: Object.freeze(Object.fromEntries(ASSET_LIBRARY_PAGE_SIZE_VALUES.map((value) => [
+      String(value),
+      value === 'all' ? 'View All' : String(value),
+    ]))),
     extension: Object.freeze({ all: 'All extensions' }),
     category: Object.freeze({ all: 'All categories' }),
     presence: Object.freeze({ all: 'All assets', present: 'Present', missing: 'Missing' }),
@@ -70,7 +73,7 @@ function resolveAssetViewerDefaultsNotice(value) {
 function buildPageSizeOptions(selectedValue) {
   return ASSET_LIBRARY_PAGE_SIZE_VALUES.map((value) => ({
     value,
-    label: String(value),
+    label: value === 'all' ? 'View All' : String(value),
     selected: value === selectedValue,
   }));
 }
@@ -140,7 +143,7 @@ function readAssetViewerNsfwReturnUrl(req) {
 }
 
 function normalizeSavedPresentationValue(key, value) {
-  return key === 'pageSize' ? Number(value) : value;
+  return key === 'pageSize' && value !== 'all' ? Number(value) : value;
 }
 
 function buildAssetViewerOptionCatalogues(page, extensions) {
@@ -209,6 +212,20 @@ function resolveAssetViewerFilterDefaults(pageDefaultsService, optionCatalogues)
   };
 }
 
+function hasSameAssetViewerFilterState(current, resolved) {
+  return ['categories', 'tags', 'extensions', 'presence'].every((key) => {
+    const currentValue = current?.[key];
+    const resolvedValue = resolved[key];
+
+    if (!Array.isArray(currentValue) || !Array.isArray(resolvedValue)) {
+      return currentValue === resolvedValue;
+    }
+
+    return currentValue.length === resolvedValue.length
+      && currentValue.every((value) => resolvedValue.includes(value));
+  });
+}
+
 function resolveAssetLibraryPresentation(parsed, pageDefaultsService) {
   const values = {};
   const presentation = {};
@@ -266,7 +283,12 @@ function buildAssetLibraryRenderModel(page, state, {
 
   return {
     ...page,
-    assets: page.assets.map((asset) => withNsfwBlur(asset, nsfwFilterEnabled)),
+    assets: page.assets.map((asset) => ({
+      ...withNsfwBlur(asset, nsfwFilterEnabled),
+      detailUrl: page.pageSize === 'all'
+        ? `/projects/${asset.project_id}/assets/${asset.id}?pageSize=all`
+        : `/projects/${asset.project_id}/assets/${asset.id}`,
+    })),
     categoryFilterOptions,
     categoryFilterSelectedValues,
     tagFilterSelectedValues,
@@ -333,8 +355,13 @@ async function renderAssetLibraryPage(req, res, {
   );
 
   if (resetView || isBareAssetLibraryRequest(query)) {
-    Object.assign(input, resolveAssetViewerFilterDefaults(pageDefaultsService, optionCatalogues));
-    page = getAssetLibraryPage();
+    const resolvedFilterDefaults = resolveAssetViewerFilterDefaults(pageDefaultsService, optionCatalogues);
+    const defaultsChangedEffectiveQuery = !hasSameAssetViewerFilterState(
+      page.filters,
+      resolvedFilterDefaults,
+    );
+    Object.assign(input, resolvedFilterDefaults);
+    if (defaultsChangedEffectiveQuery) page = getAssetLibraryPage();
   }
 
   const state = {

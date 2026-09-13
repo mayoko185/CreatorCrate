@@ -336,6 +336,17 @@ function addViewLink(page, href) {
   return link;
 }
 
+function addPageSizeSelect(page, value = '25') {
+  const select = makeNode({
+    tagName: 'select',
+    attrs: { name: 'pageSize', value },
+    value,
+  });
+  select.form = page.form;
+  page.form.appendChild(select);
+  return select;
+}
+
 function addAssetViewerDefaults(page) {
   const dialog = makeNode({
     tagName: 'dialog',
@@ -434,6 +445,61 @@ async function flush() {
 }
 
 describe('Asset Viewer Project live filtering enhancement', () => {
+  it('preserves View All through live form replacement, view switching, and Back/Forward', async () => {
+    const initial = makePage();
+    const filtered = makePage();
+    const listed = makePage();
+    const restored = makePage();
+    const pageSize = addPageSizeSelect(initial);
+    addPageSizeSelect(filtered, 'all');
+    addPageSizeSelect(listed, 'all');
+    addPageSizeSelect(restored, 'all');
+    const viewLink = addViewLink(filtered, '/asset-viewer?pageSize=all&view=list');
+    const pages = new Map([
+      ['filtered-all', filtered.document],
+      ['listed-all', listed.document],
+      ['restored-all', restored.document],
+    ]);
+    const windowObject = makeWindow(initial.document, pages);
+    windowObject.fetch
+      .mockResolvedValueOnce({
+        ok: true,
+        url: 'http://creatorcrate.test/asset-viewer?pageSize=all',
+        text: async () => 'filtered-all',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        url: 'http://creatorcrate.test/asset-viewer?pageSize=all&view=list',
+        text: async () => 'listed-all',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        url: 'http://creatorcrate.test/asset-viewer?pageSize=all',
+        text: async () => 'restored-all',
+      });
+
+    enhanceAssetLibraryLiveFiltering(initial.document);
+    pageSize.value = 'all';
+    pageSize.dispatch('change');
+    await flush();
+
+    expect(new URL(windowObject.fetch.mock.calls[0][0]).searchParams.get('pageSize')).toBe('all');
+    expect(windowObject.history.pushes[0].url)
+      .toBe('http://creatorcrate.test/asset-viewer?pageSize=all');
+
+    viewLink.dispatch('click', { button: 0 });
+    await flush();
+    expect(windowObject.fetch.mock.calls[1][0])
+      .toBe('http://creatorcrate.test/asset-viewer?pageSize=all&view=list');
+
+    windowObject.location.href = 'http://creatorcrate.test/asset-viewer?pageSize=all';
+    windowObject.listeners.popstate();
+    await flush();
+    expect(windowObject.fetch.mock.calls[2][0])
+      .toBe('http://creatorcrate.test/asset-viewer?pageSize=all');
+    expect(initial.form.querySelector('select[name="pageSize"]').value).toBe('all');
+  });
+
   it('submits one request, replaces and re-enhances the selector, resets search, and restores focus', async () => {
     const initial = makePage(null, { dialogOpen: true });
     const next = makePage('1');

@@ -399,6 +399,27 @@ describe('tag repository', () => {
       expect(repository.listForAssetIds([])).toEqual([]);
     });
 
+    it('preserves every ordered asset-tag association across a 500-ID batch boundary', () => {
+      const projectId = Number(db.prepare(`
+        INSERT INTO projects (
+          title, slug, description, notes, status, project_type, patreon_url
+        ) VALUES ('Large Asset Tag Batch', 'large-asset-tag-batch', '', '', 'tbd', 'images', NULL)
+      `).run().lastInsertRowid);
+      const tag = createTag('Large Batch Tag');
+      const assetIds = [];
+      for (let index = 0; index < 501; index++) {
+        const assetId = createAsset(projectId, `source/asset-${String(index).padStart(3, '0')}.png`);
+        repository.assignToAsset(assetId, tag.id);
+        assetIds.push(assetId);
+      }
+
+      const rows = repository.listForAssetIds([...assetIds].reverse());
+
+      expect(rows).toHaveLength(501);
+      expect(rows.map((row) => row.asset_id)).toEqual(assetIds);
+      expect(rows.every((row) => row.id === tag.id)).toBe(true);
+    });
+
     it('lists asset tags in the same deterministic order as the global catalog', () => {
       const projectId = createProject();
       const assetId = createAsset(projectId, 'source/cover.png');

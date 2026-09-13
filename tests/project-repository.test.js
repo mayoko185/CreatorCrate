@@ -376,6 +376,46 @@ describe('project repository', () => {
     expect(backslash.rows[0].title).toBe('Path \\ Name');
   });
 
+  it('performs only the count query for an explicit zero-row request', () => {
+    repository.create(sampleProject({ title: 'Matching', status: 'planned' }));
+    repository.create(sampleProject({ title: 'Not matching', status: 'tbd' }));
+    const prepareSpy = vi.spyOn(db, 'prepare');
+
+    const result = repository.list({ status: 'planned', limit: 0 });
+    const statements = prepareSpy.mock.calls.map(([sql]) => String(sql));
+    prepareSpy.mockRestore();
+
+    expect(result).toEqual({ rows: [], total: 1 });
+    expect(statements).toHaveLength(1);
+    expect(statements[0]).toContain('SELECT COUNT(*) AS c FROM projects');
+    expect(statements[0]).toContain('status IN (?)');
+    expect(statements[0]).not.toContain('LIMIT ? OFFSET ?');
+  });
+
+  it('retains count, row, filtering, ordering, and metadata behavior for normal row requests', () => {
+    repository.create(sampleProject({ title: 'Planned B', status: 'planned' }));
+    repository.create(sampleProject({ title: 'Planned A', status: 'planned' }));
+    repository.create(sampleProject({ title: 'Other', status: 'tbd' }));
+    const prepareSpy = vi.spyOn(db, 'prepare');
+
+    const result = repository.list({
+      status: 'planned',
+      sortBy: 'title',
+      order: 'asc',
+      limit: 1,
+      offset: 0,
+    });
+    const statements = prepareSpy.mock.calls.map(([sql]) => String(sql));
+    prepareSpy.mockRestore();
+
+    expect(result.total).toBe(2);
+    expect(result.rows.map((project) => project.title)).toEqual(['Planned A']);
+    expect(statements).toHaveLength(2);
+    expect(statements[0]).toContain('SELECT COUNT(*) AS c FROM projects');
+    expect(statements[1]).toContain('ORDER BY title COLLATE NOCASE ASC LIMIT ? OFFSET ?');
+    expect(statements.every((sql) => sql.includes('status IN (?)'))).toBe(true);
+  });
+
   it('paginates results', () => {
     for (let i = 1; i <= 30; i += 1) {
       repository.create(sampleProject({ title: `Project ${String(i).padStart(2, '0')}` }));

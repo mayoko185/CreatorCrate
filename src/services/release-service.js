@@ -1345,7 +1345,7 @@ export function createReleaseService({ db, applicationLogger = null }) {
      * Normalize and validate release candidate query parameters.
      *
      * @param {Object} raw - raw query parameters
-     * @returns {{ search: string|null, extension: string|null, page: number, pageSize: number }}
+     * @returns {{ search: string|null, extension: string|null, page: number, pageSize: number|'all' }}
      */
     normalizeCandidateQuery(raw) {
       const search = typeof raw.search === 'string' && raw.search.trim() !== ''
@@ -1366,8 +1366,8 @@ export function createReleaseService({ db, applicationLogger = null }) {
       const page = pageRaw !== null ? pageRaw : 1;
 
       const pageSizeRaw = parseStrictPositiveInt(raw.pageSize);
-      let pageSize = pageSizeRaw !== null ? pageSizeRaw : 25;
-      if (pageSize > 100) pageSize = 100;
+      let pageSize = raw.pageSize === 'all' ? 'all' : (pageSizeRaw !== null ? pageSizeRaw : 25);
+      if (pageSize !== 'all' && pageSize > 200) pageSize = 200;
 
       return { search, extension, page, pageSize };
     },
@@ -1475,12 +1475,15 @@ export function createReleaseService({ db, applicationLogger = null }) {
           && matchesReleaseAssetFilters(asset, assetFilters, activeCategoryId));
       });
       const assetTotal = filteredAssets.length;
-      const assetPageCount = Math.max(1, Math.ceil(assetTotal / assetFilters.pageSize));
-      const assetPageNumber = Math.min(assetFilters.page, assetPageCount);
-      const assetPage = filteredAssets.slice(
-        (assetPageNumber - 1) * assetFilters.pageSize,
-        assetPageNumber * assetFilters.pageSize,
-      );
+      const showAll = assetFilters.pageSize === 'all';
+      const assetPageCount = showAll ? 1 : Math.max(1, Math.ceil(assetTotal / assetFilters.pageSize));
+      const assetPageNumber = showAll ? 1 : Math.min(assetFilters.page, assetPageCount);
+      const assetPage = showAll
+        ? filteredAssets
+        : filteredAssets.slice(
+          (assetPageNumber - 1) * assetFilters.pageSize,
+          assetPageNumber * assetFilters.pageSize,
+        );
       const pageCandidates = assetPage.filter((asset) => !selectedAssetIds.has(asset.id));
       const candidateTotal = filteredAssets.filter((asset) => !selectedAssetIds.has(asset.id)).length;
       const assetExtensions = assetRepository.getExtensions(release.project_id);

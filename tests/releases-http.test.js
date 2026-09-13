@@ -95,6 +95,45 @@ function optionValues(selectHtml) {
   return [...selectHtml.matchAll(/<option value="([^"]*)"/g)].map(([, value]) => value);
 }
 
+function installRecordLookupCounter(db) {
+  const originalPrepare = db.prepare.bind(db);
+  const counts = { release: 0, project: 0 };
+
+  db.prepare = (sql, ...args) => {
+    const statement = originalPrepare(sql, ...args);
+    const normalizedSql = String(sql).replace(/\s+/g, ' ').trim();
+    const lookup = normalizedSql.endsWith('FROM releases JOIN projects ON projects.id = releases.project_id WHERE releases.id = ?')
+      ? 'release'
+      : (normalizedSql.endsWith('FROM projects WHERE id = ?') ? 'project' : null);
+
+    if (!lookup) return statement;
+
+    return new Proxy(statement, {
+      get(target, prop, receiver) {
+        if (prop === 'get') {
+          return (...statementArgs) => {
+            counts[lookup] += 1;
+            return target.get(...statementArgs);
+          };
+        }
+        const value = Reflect.get(target, prop, receiver);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+  };
+
+  return {
+    counts,
+    reset() {
+      counts.release = 0;
+      counts.project = 0;
+    },
+    restorePrepare() {
+      db.prepare = originalPrepare;
+    },
+  };
+}
+
 function expectReleaseFormSectionCards(html) {
   const cards = html.match(/<div class="settings-section(?: release-project-section| scheduling-section)?">\s*<h3>[^<]+<\/h3>/g) || [];
   expect(cards).toHaveLength(4);
@@ -253,6 +292,7 @@ describe('release HTTP workflow', () => {
   let projectsRoot;
   let appDataRoot;
   let releaseRepository;
+  let recordLookupCounter;
   let agent;
   let csrfToken;
 
@@ -266,8 +306,10 @@ describe('release HTTP workflow', () => {
     db = openDatabase(dbPath);
     runMigrations(db, MIGRATIONS_DIR);
     releaseRepository = createReleaseRepository(db);
+    recordLookupCounter = installRecordLookupCounter(db);
     const { csrfPepper } = ensureAuthEnablement(appDataRoot);
     app = createApp({ appName: 'CreatorCrate', db, projectsRoot }, { appDataRoot, authState: { csrfPepper } });
+    recordLookupCounter.restorePrepare();
     ({ agent, csrfToken } = await getDisabledModeCsrf(app, appDataRoot));
   });
 
@@ -6287,10 +6329,12 @@ describe('release HTTP workflow', () => {
 
       it('GET /releases/:id/assets uses the project lead and compact asset sections', async () => {
         const { projectId, releaseLocation, assetId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
+        recordLookupCounter.reset();
         const res = await agent
           .get(releaseLocation + '/assets')
         .expect(200);
 
+        expect(recordLookupCounter.counts).toEqual({ release: 1, project: 1 });
         expect(res.text).toContain('— Assets');
         expect(res.text).not.toContain('Back to Project');
         const heading = res.text.match(/<header class="page-heading">[\s\S]*?<\/header>/)?.[0] || '';
@@ -6321,6 +6365,76 @@ describe('release HTTP workflow', () => {
           '<form method="post" action="' + releaseLocation + '/assets/' + assetId + '/role" class="inline-form release-asset-role-form">[\\s\\S]*?name="role"',
         ));
         expect(res.text).toContain('id="release-assets-form"');
+      });
+
+      it('GET /releases/:id/assets preserves View All and selected membership with one record lookup each', async () => {
+        const { releaseLocation, assetId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
+
+        recordLookupCounter.reset();
+        const res = await agent.get(`${releaseLocation}/assets?page=99&pageSize=all`).expect(200);
+
+        expect(recordLookupCounter.counts).toEqual({ release: 1, project: 1 });
+        expect(res.text).toContain('pageSize=all');
+        expect(res.text).toMatch(new RegExp(`<input type="checkbox" form="release-assets-form"[^>]*value="${assetId}"[^>]*checked`));
+      });
+
+      it.each(['published', 'archived release', 'archived parent'])(
+        'GET /releases/:id/assets loads release and project once for a %s page',
+        async (state) => {
+          const { releaseLocation, projectId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
+
+          if (state === 'published') {
+            setProjectStatusForReleaseTest(db, releaseLocation, 'ready');
+            await agent
+              .post(`${releaseLocation}/publish`)
+              .send('_csrf=' + encodeURIComponent(csrfToken))
+              .send('publishedDate=2025-06-15')
+              .set('Content-Type', 'application/x-www-form-urlencoded')
+              .expect(302);
+          } else if (state === 'archived release') {
+            await agent
+              .post(`${releaseLocation}/archive`)
+              .send('_csrf=' + encodeURIComponent(csrfToken))
+              .expect(302);
+          } else {
+            await agent
+              .post(`/projects/${projectId}/archive`)
+              .send('_csrf=' + encodeURIComponent(csrfToken))
+              .expect(302);
+          }
+
+          recordLookupCounter.reset();
+          const res = await agent.get(`${releaseLocation}/assets`).expect(200);
+
+          expect(recordLookupCounter.counts).toEqual({ release: 1, project: 1 });
+          expect(res.text).toContain('read-only');
+          expect(res.text).not.toContain('Save Selection');
+        },
+      );
+
+      it('GET /releases/:id/assets keeps missing-release handling at one lookup', async () => {
+        recordLookupCounter.reset();
+        const res = await agent.get('/releases/99999/assets').expect(404);
+
+        expect(recordLookupCounter.counts).toEqual({ release: 1, project: 0 });
+        expect(res.text).toContain('Not found');
+        expect(res.text).not.toContain('Release 99999 not found');
+      });
+
+      it('GET /releases/:id/assets rejects a broken project association in the authoritative release lookup', async () => {
+        const { releaseLocation, projectId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
+        const releaseId = Number(releaseLocation.replace('/releases/', ''));
+        db.pragma('foreign_keys = OFF');
+        db.prepare('DELETE FROM projects WHERE id = ?').run(projectId);
+        db.pragma('foreign_keys = ON');
+        expect(db.prepare('SELECT id FROM releases WHERE id = ?').get(releaseId)).toBeDefined();
+
+        recordLookupCounter.reset();
+        const res = await agent.get(`${releaseLocation}/assets`).expect(404);
+
+        expect(recordLookupCounter.counts).toEqual({ release: 1, project: 0 });
+        expect(res.text).toContain('Not found');
+        expect(res.text).not.toContain(`Release ${releaseId} not found`);
       });
 
       it('POST /releases/:id/publish still publishes', async () => {
@@ -8043,14 +8157,18 @@ describe('release HTTP workflow', () => {
       expect(res.text).toContain('id="asset-page-size" name="pageSize" class="cc-dropdown-native-select"');
     });
 
-    // The live filter form is serialized wholesale on every filter change, so any
-    // page size it cannot represent is silently rewritten to its first option.
-    it('live filter page-size control offers every supported page size', async () => {
+    // The live filter form is serialized wholesale on every filter change, so both
+    // editable controls must expose the same complete page-size contract.
+    it('both editable page-size controls offer the exact supported choices on one-page results', async () => {
       const { releaseLocation } = await setupBasicRelease();
       const res = await agent.get(`${releaseLocation}/assets`).expect(200);
       const filterSelect = sliceSelect(res.text, 'asset-page-size');
+      const footerSelect = sliceSelect(res.text, 'pageSize');
 
-      expect(optionValues(filterSelect)).toEqual(['10', '25', '50', '100']);
+      expect(optionValues(filterSelect)).toEqual(['10', '25', '50', '100', '150', '200', 'all']);
+      expect(optionValues(footerSelect)).toEqual(['10', '25', '50', '100', '150', '200', 'all']);
+      expect(visibleText(filterSelect)).toContain('10 25 50 100 150 200 View All');
+      expect(visibleText(footerSelect)).toContain('10 25 50 100 150 200 View All');
     });
 
     it('live filter page-size control marks an active pageSize=10 as selected', async () => {
@@ -9768,6 +9886,35 @@ describe('release HTTP workflow', () => {
         expect(releaseAssetsLiveRegion(filtered.text)).not.toContain('data-release-assets-reset');
       });
 
+      it('round-trips 150, 200, and all through both selectors and view URLs', async () => {
+        const { releaseLocation } = await setupReleaseWithAssets();
+
+        for (const pageSize of ['150', '200', 'all']) {
+          const res = await agent.get(`${releaseLocation}/assets?page=99&pageSize=${pageSize}`).expect(200);
+          const filterSelect = sliceSelect(res.text, 'asset-page-size');
+          const footerSelect = sliceSelect(res.text, 'pageSize');
+
+          expect(filterSelect).toMatch(new RegExp(`<option value="${pageSize}"\\s+selected>`));
+          expect(footerSelect).toMatch(new RegExp(`<option value="${pageSize}"\\s+selected>`));
+          expect(res.text).toContain(`pageSize=${pageSize}`);
+        }
+      });
+
+      it('keeps all canonical while filtering and clearing, with real totals and no slicing', async () => {
+        const { releaseLocation, allAssets } = await setupReleaseWithAssets();
+        const res = await agent.get(`${releaseLocation}/assets?search=a&page=99&pageSize=all`).expect(200);
+        const region = releaseAssetsLiveRegion(res.text);
+        const filterDialog = res.text.match(/<dialog id="release-assets-filter-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+        const clearHref = filterDialog.match(/href="([^"]*)"[^>]*data-release-assets-reset/)?.[1]
+          .replace(/&amp;/g, '&');
+
+        expect(region).toContain(`${allAssets.length} project assets match the current filters.`);
+        expect(getCandidateTiles(res.text)).toHaveLength(allAssets.length);
+        expect(region).not.toContain('class="pagination"');
+        expect(new URL(clearHref, 'http://localhost').searchParams.get('pageSize')).toBe('all');
+        expect(new URL(clearHref, 'http://localhost').searchParams.has('page')).toBe(false);
+      });
+
       it('renders controls, then one filtered count, then grid, list, or empty results', async () => {
         const { releaseLocation } = await setupReleaseWithAssets();
         const responses = [
@@ -10730,6 +10877,9 @@ describe('release HTTP workflow', () => {
 
     async function assertNoMutationControls(releaseLocation) {
       const res = await agent.get(`${releaseLocation}/assets`).expect(200);
+
+      expect(res.text).not.toContain('data-release-assets-live-page-size-form');
+      expect(res.text).not.toContain('id="asset-page-size"');
 
       // No Add forms
       const addForms = res.text.match(/action="[^"]*\/assets\/add"/g);

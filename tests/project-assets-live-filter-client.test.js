@@ -193,6 +193,7 @@ function makePage({
   inheritedFilterDefaults = '',
   nsfwEnabled = false,
   page = '2',
+  pageSize = '25',
   view = 'list',
   gridSizeDefault = 'default',
   listSizeDefault = 'large',
@@ -236,7 +237,7 @@ function makePage({
   const search = addInput(form, { id: 'search', name: 'search', type: 'search' });
   addInput(form, { name: 'page', type: 'hidden' }, page);
   addInput(form, { name: 'view', type: 'hidden' }, view);
-  addInput(form, { name: 'pageSize', type: 'hidden' }, '25');
+  addInput(form, { name: 'pageSize', type: 'hidden' }, pageSize);
   const tagInput = addInput(form, { name: 'tag', type: 'hidden' }, tag);
   const extensionInput = addInput(form, { name: 'extension', type: 'hidden' }, extension);
   const inheritedFilterDefaultsInput = inheritedFilterDefaults
@@ -1323,6 +1324,42 @@ describe('Project Assets live filtering enhancement', () => {
     enhanceProjectAssetsLiveFiltering(fallback.document);
     fallback.form.dispatch('change', { target: fallback.categoryRenders });
     expect(fallback.form.submit).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves View All through live replacement and Back/Forward restoration', async () => {
+    const initial = makePage({ page: '1', pageSize: 'all' });
+    const replacement = makePage({ page: '1', pageSize: 'all', presence: 'missing' });
+    const restored = makePage({ page: '1', pageSize: 'all' });
+    const pages = new Map([
+      ['replacement-all', replacement.document],
+      ['restored-all', restored.document],
+    ]);
+    const { windowObject, setLocation } = makeWindow(initial.document, pages);
+    windowObject.fetch
+      .mockResolvedValueOnce(htmlResponse(
+        'replacement-all',
+        'http://creatorcrate.test/projects/1/assets?presence=missing&pageSize=all',
+      ))
+      .mockResolvedValueOnce(htmlResponse(
+        'restored-all',
+        'http://creatorcrate.test/projects/1/assets?pageSize=all',
+      ));
+    enhanceProjectAssetsLiveFiltering(initial.document);
+
+    initial.presenceMissing.checked = true;
+    initial.presenceMissing.dispatch('change');
+    await flush();
+
+    expect(new URL(windowObject.fetch.mock.calls[0][0]).searchParams.get('pageSize')).toBe('all');
+    expect(windowObject.history.pushes.at(-1).url).toContain('pageSize=all');
+    expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(replacement.region);
+
+    setLocation('http://creatorcrate.test/projects/1/assets?pageSize=all');
+    windowObject.dispatch('popstate');
+    await flush();
+
+    expect(windowObject.fetch.mock.calls[1][0]).toBe('http://creatorcrate.test/projects/1/assets?pageSize=all');
+    expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(restored.region);
   });
 
   it('posts the NSFW state asynchronously, refreshes the region, and keeps history unchanged', async () => {

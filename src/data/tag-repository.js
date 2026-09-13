@@ -265,16 +265,24 @@ export function createTagRepository(db) {
         throw new TypeError('Project IDs must be an array.');
       }
 
-      const uniqueProjectIds = [...new Set(projectIds)];
+      const uniqueProjectIds = [...new Set(projectIds)].sort((a, b) => a - b);
       if (uniqueProjectIds.length === 0) return [];
 
-      const placeholders = uniqueProjectIds.map(() => '?').join(', ');
-      const stmt = db.prepare(`
-        ${SELECT_PROJECT_TAGS_FOR_IDS}
-        WHERE pt.project_id IN (${placeholders})
-        ${PROJECT_TAG_BATCH_ORDER}
-      `);
-      return stmt.all(...uniqueProjectIds);
+      const CHUNK_SIZE = 500;
+      const results = [];
+
+      for (let i = 0; i < uniqueProjectIds.length; i += CHUNK_SIZE) {
+        const chunk = uniqueProjectIds.slice(i, i + CHUNK_SIZE);
+        const placeholders = chunk.map(() => '?').join(', ');
+        const stmt = db.prepare(`
+          ${SELECT_PROJECT_TAGS_FOR_IDS}
+          WHERE pt.project_id IN (${placeholders})
+          ${PROJECT_TAG_BATCH_ORDER}
+        `);
+        results.push(...stmt.all(...chunk));
+      }
+
+      return results;
     },
 
     /**
@@ -338,16 +346,24 @@ export function createTagRepository(db) {
         throw new TypeError('Asset IDs must be an array.');
       }
 
-      const uniqueAssetIds = [...new Set(assetIds)];
+      const uniqueAssetIds = [...new Set(assetIds)].sort((a, b) => a - b);
       if (uniqueAssetIds.length === 0) return [];
 
-      const placeholders = uniqueAssetIds.map(() => '?').join(', ');
-      const stmt = db.prepare(`
-        ${SELECT_ASSET_TAGS_FOR_IDS}
-        WHERE at.asset_id IN (${placeholders})
-        ${ASSET_TAG_BATCH_ORDER}
-      `);
-      return stmt.all(...uniqueAssetIds);
+      const CHUNK_SIZE = 500;
+      const results = [];
+
+      for (let i = 0; i < uniqueAssetIds.length; i += CHUNK_SIZE) {
+        const chunk = uniqueAssetIds.slice(i, i + CHUNK_SIZE);
+        const placeholders = chunk.map(() => '?').join(', ');
+        const stmt = db.prepare(`
+          ${SELECT_ASSET_TAGS_FOR_IDS}
+          WHERE at.asset_id IN (${placeholders})
+          ${ASSET_TAG_BATCH_ORDER}
+        `);
+        results.push(...stmt.all(...chunk));
+      }
+
+      return results;
     },
 
     /**

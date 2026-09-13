@@ -66,6 +66,9 @@ const PROJECT_ASSETS_DEFAULT_LABELS = Object.freeze({
       '25': '25 assets',
       '50': '50 assets',
       '100': '100 assets',
+      '150': '150 assets',
+      '200': '200 assets',
+      all: 'View All',
     }),
   }),
 });
@@ -180,6 +183,16 @@ export function buildProjectAssetCategoryManagementModel({
   };
 }
 
+export function enrichProjectAssetsForRender(workflowQueryService, project, data) {
+  return workflowQueryService.enrichProjectAssetInformationAssets(
+    project,
+    data.assets,
+    {
+      includeImageDimensions: data.filters.view !== 'list' || data.completeCategorySurface,
+    },
+  );
+}
+
 export async function renderProjectAssetsPage(req, res, {
   appName,
   projectService,
@@ -289,10 +302,7 @@ export async function renderProjectAssetsPage(req, res, {
   );
   if (!data) return next ? next(createNotFound()) : null;
 
-  const enrichedAssets = await workflowQueryService.enrichProjectAssetInformationAssets(
-    project,
-    data.assets,
-  );
+  const enrichedAssets = await enrichProjectAssetsForRender(workflowQueryService, project, data);
 
   const nsfwFilterEnabled = getNsfwFilterSettingsService(req).isEnabled();
   const renderModel = buildBrowserRenderModel(
@@ -479,10 +489,11 @@ function isBareAssetBrowserRequest(query) {
 function parseAssetBrowserPageSize(value, fallback) {
   if (value === undefined || value === null) return Number(fallback);
   const normalized = String(value);
+  if (normalized === 'all') return 'all';
   if (!/^[1-9]\d*$/.test(normalized)) return Number(fallback);
   const parsed = Number(normalized);
   if (!Number.isSafeInteger(parsed) || parsed < 1) return Number(fallback);
-  return Math.min(parsed, 100);
+  return Math.min(parsed, 200);
 }
 
 export function resolveAssetBrowserPresentation(rawQuery, pageDefaultsService, context = undefined) {
@@ -499,7 +510,7 @@ export function resolveAssetBrowserPresentation(rawQuery, pageDefaultsService, c
     const resolvedValue = key === 'pageSize'
       ? (isExplicit
         ? parseAssetBrowserPageSize(explicitValue, fallback)
-        : Number(savedValue))
+        : (savedValue === 'all' ? 'all' : Number(savedValue)))
       : (isExplicit
         ? pageDefaultsService.resolve(
           ASSET_PAGE_DEFAULTS_PAGE,

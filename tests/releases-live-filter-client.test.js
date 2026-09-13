@@ -19,14 +19,14 @@ function templatePageSizeOptions(id) {
   const start = RELEASE_ASSETS_TEMPLATE.indexOf(`<select id="${id}"`);
   if (start >= 0) {
     const markup = RELEASE_ASSETS_TEMPLATE.slice(start, RELEASE_ASSETS_TEMPLATE.indexOf('</select>', start));
-    return [...markup.matchAll(/<option value="(\d+)"/g)].map(([, value]) => value);
+    return [...markup.matchAll(/<option value="(\d+|all)"/g)].map(([, value]) => value);
   }
   const macroStart = RELEASE_ASSETS_TEMPLATE.indexOf(`id: "${id}"`);
   const markup = RELEASE_ASSETS_TEMPLATE.slice(
     macroStart,
     RELEASE_ASSETS_TEMPLATE.indexOf('}) }}', macroStart),
   );
-  return [...markup.matchAll(/\{ value: "(\d+)", label:/g)].map(([, value]) => value);
+  return [...markup.matchAll(/\{ value: "(\d+|all)", label:/g)].map(([, value]) => value);
 }
 
 const FILTER_PAGE_SIZE_OPTIONS = templatePageSizeOptions('release-asset-page-size-dropdown');
@@ -545,6 +545,12 @@ describe('Releases live filtering enhancement', () => {
   beforeEach(() => { vi.useRealTimers(); });
   afterEach(() => { vi.useRealTimers(); });
 
+  it('reads the exact page-size contract from both editable Release Assets selectors', () => {
+    const expected = ['10', '25', '50', '100', '150', '200', 'all'];
+    expect(FILTER_PAGE_SIZE_OPTIONS).toEqual(expected);
+    expect(PAGE_SIZE_FORM_OPTIONS).toEqual(expected);
+  });
+
   it('refreshes Releases from the defaults redirect through the live engine and reconciles the external filter', async () => {
     const initial = makePage('/releases', { dialogOpen: true, sortValue: 'planned', orderValue: 'asc' });
     const next = makePage('/releases', { sortValue: 'title', orderValue: 'desc' });
@@ -998,13 +1004,13 @@ describe('Releases live filtering enhancement', () => {
     expect(initial.filter.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
   });
 
-  it('preserves an active pageSize=10 across Extension, Category, and Search changes', async () => {
+  it('preserves an active pageSize=all across Extension, Category, and Search changes', async () => {
     vi.useFakeTimers();
-    const initial = makeReleaseAssetsPage({ pageSize: '10' });
-    const afterExtension = makeReleaseAssetsPage({ extension: 'jpg', category: '3', pageSize: '10' });
-    const afterCategory = makeReleaseAssetsPage({ extension: 'jpg', category: '4', pageSize: '10' });
+    const initial = makeReleaseAssetsPage({ pageSize: 'all' });
+    const afterExtension = makeReleaseAssetsPage({ extension: 'jpg', category: '3', pageSize: 'all' });
+    const afterCategory = makeReleaseAssetsPage({ extension: 'jpg', category: '4', pageSize: 'all' });
     const afterSearch = makeReleaseAssetsPage({
-      extension: 'jpg', category: '4', search: 'needle', pageSize: '10',
+      extension: 'jpg', category: '4', search: 'needle', pageSize: 'all',
     });
     const pages = new Map([
       ['after-extension', afterExtension.document],
@@ -1012,15 +1018,15 @@ describe('Releases live filtering enhancement', () => {
       ['after-search', afterSearch.document],
     ]);
     const windowObject = makeWindow(initial.document, pages);
-    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets?pageSize=10';
+    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets?pageSize=all';
     windowObject.location.pathname = '/releases/7/assets';
     windowObject.fetch
-      .mockResolvedValueOnce(responseFor('after-extension', 'http://creatorcrate.test/releases/7/assets?view=grid&pageSize=10&extension=jpg&category=3'))
-      .mockResolvedValueOnce(responseFor('after-category', 'http://creatorcrate.test/releases/7/assets?view=grid&pageSize=10&extension=jpg&category=4'))
-      .mockResolvedValueOnce(responseFor('after-search', 'http://creatorcrate.test/releases/7/assets?view=grid&pageSize=10&search=needle&extension=jpg&category=4'));
+      .mockResolvedValueOnce(responseFor('after-extension', 'http://creatorcrate.test/releases/7/assets?view=grid&pageSize=all&extension=jpg&category=3'))
+      .mockResolvedValueOnce(responseFor('after-category', 'http://creatorcrate.test/releases/7/assets?view=grid&pageSize=all&extension=jpg&category=4'))
+      .mockResolvedValueOnce(responseFor('after-search', 'http://creatorcrate.test/releases/7/assets?view=grid&pageSize=all&search=needle&extension=jpg&category=4'));
 
     expect(enhanceReleaseAssetsLiveFiltering(initial.document)).toBe(2);
-    expect(initial.filterPageSize.value).toBe('10');
+    expect(initial.filterPageSize.value).toBe('all');
 
     initial.extensionPng.checked = false;
     initial.extensionJpg.checked = true;
@@ -1028,7 +1034,7 @@ describe('Releases live filtering enhancement', () => {
     await flush();
 
     let requested = new URL(windowObject.fetch.mock.calls[0][0]);
-    expect(requested.searchParams.get('pageSize')).toBe('10');
+    expect(requested.searchParams.get('pageSize')).toBe('all');
     expect(requested.searchParams.get('extension')).toBe('jpg');
     expect(requested.searchParams.has('page')).toBe(false);
     expect(requested.searchParams.has('selectedAssetIds')).toBe(false);
@@ -1039,7 +1045,7 @@ describe('Releases live filtering enhancement', () => {
     await flush();
 
     requested = new URL(windowObject.fetch.mock.calls[1][0]);
-    expect(requested.searchParams.get('pageSize')).toBe('10');
+    expect(requested.searchParams.get('pageSize')).toBe('all');
     expect(requested.searchParams.get('category')).toBe('4');
 
     afterCategory.searchInput.value = 'needle';
@@ -1049,8 +1055,67 @@ describe('Releases live filtering enhancement', () => {
 
     expect(windowObject.fetch).toHaveBeenCalledTimes(3);
     requested = new URL(windowObject.fetch.mock.calls[2][0]);
-    expect(requested.searchParams.get('pageSize')).toBe('10');
+    expect(requested.searchParams.get('pageSize')).toBe('all');
     expect(requested.searchParams.get('search')).toBe('needle');
+  });
+
+  it('switches all to finite and finite to all without changing draft selection', async () => {
+    const initial = makeReleaseAssetsPage({
+      pageSize: '25', assets: [{ id: '1', selected: false }], persistedSelectedIds: [],
+    });
+    const all = makeReleaseAssetsPage({
+      pageSize: 'all', assets: [{ id: '1', selected: false }, { id: '2', selected: false }], persistedSelectedIds: [],
+    });
+    const finite = makeReleaseAssetsPage({
+      pageSize: '50', assets: [{ id: '1', selected: false }], offPageSelectedIds: [], persistedSelectedIds: [],
+    });
+    const pages = new Map([['all', all.document], ['finite', finite.document]]);
+    const windowObject = makeWindow(initial.document, pages);
+    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets?page=4&pageSize=25';
+    windowObject.location.pathname = '/releases/7/assets';
+    windowObject.fetch
+      .mockResolvedValueOnce(responseFor('all', 'http://creatorcrate.test/releases/7/assets?pageSize=all'))
+      .mockResolvedValueOnce(responseFor('finite', 'http://creatorcrate.test/releases/7/assets?pageSize=50'));
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    initial.membershipCheckboxes[0].checked = true;
+    initial.membershipCheckboxes[0].dispatch('change');
+    initial.filterPageSize.value = 'all';
+    initial.filter.dispatch('change', { target: initial.filterPageSize });
+    await flush();
+
+    expect(new URL(windowObject.fetch.mock.calls[0][0]).searchParams.get('pageSize')).toBe('all');
+    expect(new URL(windowObject.fetch.mock.calls[0][0]).searchParams.has('page')).toBe(false);
+    expect(all.membershipCheckboxes[0].checked).toBe(true);
+
+    all.pageSize.value = '50';
+    all.pageSizeForm.dispatch('change', { target: all.pageSize });
+    await flush();
+
+    expect(new URL(windowObject.fetch.mock.calls[1][0]).searchParams.get('pageSize')).toBe('50');
+    expect(finite.membershipCheckboxes[0].checked).toBe(true);
+    expect(releaseMembershipPayload(windowObject, initial.selection)).toEqual(['1']);
+  });
+
+  it('keeps pageSize=all when Clear replaces the editable Release Assets region', async () => {
+    const initial = makeReleaseAssetsPage({ search: 'needle', pageSize: 'all' });
+    const cleared = makeReleaseAssetsPage({ search: '', extension: '', category: '', pageSize: 'all' });
+    const pages = new Map([['cleared', cleared.document]]);
+    const windowObject = makeWindow(initial.document, pages);
+    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets?search=needle&pageSize=all';
+    windowObject.location.pathname = '/releases/7/assets';
+    windowObject.fetch.mockResolvedValueOnce(responseFor(
+      'cleared',
+      'http://creatorcrate.test/releases/7/assets?pageSize=all',
+    ));
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    initial.reset.dispatch('click');
+    await flush();
+
+    expect(new URL(windowObject.fetch.mock.calls[0][0]).searchParams.get('pageSize')).toBe('all');
+    expect(cleared.filterPageSize.value).toBe('all');
+    expect(windowObject.history.pushes.at(-1).url).toBe('http://creatorcrate.test/releases/7/assets?pageSize=all');
   });
 
   it('handles Release Assets page size, pagination, reset, and views as live anchor/form navigation', async () => {
@@ -1151,7 +1216,7 @@ describe('Releases live filtering enhancement', () => {
   it('uses canonical response URLs, reconciles Back/Forward, and keeps the dialog usable after errors', async () => {
     const initial = makeReleaseAssetsPage({ dialogOpen: true });
     const canonical = makeReleaseAssetsPage({ extension: 'jpg', category: '4', pageSize: '25' });
-    const restored = makeReleaseAssetsPage({ extension: 'png', category: '3', search: 'back', pageSize: '50' });
+    const restored = makeReleaseAssetsPage({ extension: 'png', category: '3', search: 'back', pageSize: 'all' });
     const retried = makeReleaseAssetsPage({ extension: 'jpg', category: '3', pageSize: '50' });
     const pages = new Map([
       ['canonical', canonical.document],
@@ -1165,7 +1230,7 @@ describe('Releases live filtering enhancement', () => {
     const canonicalUrl = 'http://creatorcrate.test/releases/7/assets?view=grid&pageSize=25&extension=jpg&category=4';
     windowObject.fetch
       .mockResolvedValueOnce(responseFor('canonical', canonicalUrl))
-      .mockResolvedValueOnce(responseFor('restored', 'http://creatorcrate.test/releases/7/assets?search=back'))
+      .mockResolvedValueOnce(responseFor('restored', 'http://creatorcrate.test/releases/7/assets?search=back&pageSize=all'))
       .mockRejectedValueOnce(new Error('offline'))
       .mockResolvedValueOnce(responseFor('retried', 'http://creatorcrate.test/releases/7/assets?extension=jpg'));
 
@@ -1186,7 +1251,7 @@ describe('Releases live filtering enhancement', () => {
     expect(canonical.membershipCheckboxes[0].checked).toBe(false);
     expect(initial.dialog.open).toBe(true);
 
-    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets?search=back';
+    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets?search=back&pageSize=all';
     windowObject.location.pathname = '/releases/7/assets';
     windowObject.dispatch('popstate');
     await flush();
@@ -1194,6 +1259,7 @@ describe('Releases live filtering enhancement', () => {
     expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(restored.region);
     expect(initial.filter.contains(restored.searchInput)).toBe(true);
     expect(restored.searchInput.value).toBe('back');
+    expect(restored.filterPageSize.value).toBe('all');
     expect(restored.membershipCheckboxes[0].checked).toBe(false);
     expect(releaseMembershipPayload(windowObject, initial.selection)).toEqual([]);
     expect(initial.dialog.open).toBe(true);

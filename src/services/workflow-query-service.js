@@ -68,7 +68,7 @@ const DEFAULT_LIMITS = Object.freeze({
 });
 
 const ASSET_BROWSER_DEFAULT_PAGE_SIZE = 25;
-const ASSET_BROWSER_MAX_PAGE_SIZE = 100;
+const ASSET_BROWSER_MAX_PAGE_SIZE = 200;
 const ASSET_BROWSER_SEARCH_MAX_LENGTH = 128;
 const ASSET_BROWSER_ORDERING = 'a.filename COLLATE NOCASE ASC, a.id ASC';
 
@@ -497,7 +497,9 @@ export function createWorkflowQueryService({
       attachAssetLibraryReleaseTitles(attachAssetLibraryTags(normalizedAssets, tagRepository.list())),
       projectOptionPresentation,
     );
-    const dimensionedAssets = await enrichAssetLibraryImageDimensions(presentedAssets);
+    const dimensionedAssets = options.includeImageDimensions === false
+      ? presentedAssets
+      : await enrichAssetLibraryImageDimensions(presentedAssets);
 
     return dimensionedAssets.map((asset, index) => {
       const effectiveTags = asset.tags;
@@ -960,7 +962,7 @@ export function createWorkflowQueryService({
    * @param {'filename'|'modified'|'size'|'category'|'project'} [input.sort='filename']
    * @param {'asc'|'desc'} [input.order='asc']
    * @param {number} [input.page=1]
-   * @param {number} [input.pageSize=25]
+   * @param {number|'all'} [input.pageSize=25]
    * @param {'grid'|'list'} [input.view='grid']
    * @param {object} [options]
    * @param {object} [options.projectOptionPresentation] request-scoped prepared
@@ -969,7 +971,7 @@ export function createWorkflowQueryService({
    *   assets: Array,
    *   total: number,
    *   page: number,
-   *   pageSize: number,
+   *   pageSize: number|'all',
    *   pageCount: number,
    *   hasPreviousPage: boolean,
    *   hasNextPage: boolean,
@@ -1074,14 +1076,15 @@ export function createWorkflowQueryService({
     const slideshowSequence = buildSlideshowSequence(
       assetRepository.findAllAssetsSlideshowSequence(repositoryFilters),
     );
-    const pageCount = Math.max(1, Math.ceil(total / pageSize));
-    const page = Math.min(requestedPage, pageCount);
-    const offset = (page - 1) * pageSize;
+    const showAll = pageSize === 'all';
+    const pageCount = showAll ? 1 : Math.max(1, Math.ceil(total / pageSize));
+    const page = showAll ? 1 : Math.min(requestedPage, pageCount);
+    const offset = showAll ? 0 : (page - 1) * pageSize;
     const assets = attachAssetInformationPresentation(
       attachAssetLibraryReleaseTitles(attachAssetLibraryTags(assetRepository.findAllAssets({
         ...repositoryFilters,
-        limit: pageSize,
-        offset,
+        limit: showAll ? null : pageSize,
+        ...(showAll ? {} : { offset }),
       }).map((asset) => {
         const preview = buildAssetPreviewModel(asset);
         return {
@@ -1427,7 +1430,7 @@ export function createWorkflowQueryService({
    * @param {string[]} extensionChoices - normalized extensions available in the project scope
    * @param {Array<{id: number}>} projectCategories - the requesting project's own category rows
    * @param {Array<{id: number}>} tagCatalog - the global reusable tag rows
-   * @returns {{ search: string|null, tag: number[], extension: string|string[]|null, presence: 'all'|'present'|'missing', usage: 'all'|'used'|'unused', category: 'all'|'uncategorized'|number, categorySelection: string, categoryWasSupplied: boolean, sort: 'filename'|'modified'|'size'|'category', order: 'asc'|'desc', page: number, pageSize: number, view: 'list'|'grid', queryWasNonBare: boolean }}
+   * @returns {{ search: string|null, tag: number[], extension: string|string[]|null, presence: 'all'|'present'|'missing', usage: 'all'|'used'|'unused', category: 'all'|'uncategorized'|number, categorySelection: string, categoryWasSupplied: boolean, sort: 'filename'|'modified'|'size'|'category', order: 'asc'|'desc', page: number, pageSize: number|'all', view: 'list'|'grid', queryWasNonBare: boolean }}
    */
 function normalizeAssetBrowserQuery(
     raw = {},
@@ -1463,8 +1466,12 @@ function normalizeAssetBrowserQuery(
     const page = pageRaw !== null ? pageRaw : 1;
 
     const pageSizeRaw = parseStrictPositiveInt(safeRaw.pageSize);
-    let pageSize = pageSizeRaw !== null ? pageSizeRaw : ASSET_BROWSER_DEFAULT_PAGE_SIZE;
-    if (pageSize > ASSET_BROWSER_MAX_PAGE_SIZE) pageSize = ASSET_BROWSER_MAX_PAGE_SIZE;
+    let pageSize = safeRaw.pageSize === 'all'
+      ? 'all'
+      : (pageSizeRaw !== null ? pageSizeRaw : ASSET_BROWSER_DEFAULT_PAGE_SIZE);
+    if (pageSize !== 'all' && pageSize > ASSET_BROWSER_MAX_PAGE_SIZE) {
+      pageSize = ASSET_BROWSER_MAX_PAGE_SIZE;
+    }
 
     const view = normalizeAssetBrowserView(safeRaw.view);
 
@@ -1709,6 +1716,7 @@ function normalizeAssetBrowserQuery(
 
   function pageForPosition(position, pageSize) {
     if (!Number.isInteger(position) || position < 1) return null;
+    if (pageSize === 'all') return 1;
     return Math.ceil(position / pageSize);
   }
 
@@ -1944,7 +1952,7 @@ function normalizeAssetBrowserQuery(
    *   assets: Array,
    *   total: number,
    *   page: number,
-   *   pageSize: number,
+   *   pageSize: number|'all',
    *   pageCount: number,
    *   filters: object,
    *   extensionChoices: Array<{ value: string, label: string, selected: boolean }>,
@@ -2020,8 +2028,9 @@ function normalizeAssetBrowserQuery(
       assetRepository.findProjectAssetSlideshowSequence(projectId, filters),
     );
 
-    const pageCount = Math.max(1, Math.ceil(total / filters.pageSize));
-    const page = Math.min(filters.page, pageCount);
+    const showAll = filters.pageSize === 'all';
+    const pageCount = showAll ? 1 : Math.max(1, Math.ceil(total / filters.pageSize));
+    const page = showAll ? 1 : Math.min(filters.page, pageCount);
 
     const pageResult = assetRepository.findProjectAssetPage(projectId, {
       ...filters,

@@ -168,7 +168,7 @@ describe('page defaults service', () => {
       },
       pageSize: {
         key: 'page_defaults.project_assets.page_size',
-        values: ['10', '25', '50', '100'],
+        values: ['10', '25', '50', '100', '150', '200', 'all'],
         fallback: '25',
       },
       extension: {
@@ -205,7 +205,7 @@ describe('page defaults service', () => {
       },
       pageSize: {
         key: 'page_defaults.asset_viewer.page_size',
-        values: ['10', '25', '50', '100'],
+        values: ['10', '25', '50', '100', '150', '200', 'all'],
         fallback: '25',
       },
       extension: {
@@ -624,6 +624,38 @@ describe('page defaults service', () => {
     expect(service.saveDefault('projectAssets', 'listSize', 'large')).toBe('large');
     expect(repository.getValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.gridSize.key)).toBe('compact');
     expect(repository.getValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.listSize.key)).toBe('large');
+  });
+
+  it.each(['150', '200', 'all'])('supports %s as both Global and Project-only Project Assets page size', (pageSize) => {
+    expect(service.saveDefault('projectAssets', 'pageSize', pageSize)).toBe(pageSize);
+    expect(service.resolveGlobalPageDefaults('projectAssets').pageSize).toBe(pageSize);
+
+    expect(service.saveProjectDefault(
+      'projectAssets',
+      'pageSize',
+      pageSize,
+      undefined,
+      { projectId: 1 },
+    )).toBe(pageSize);
+    service.setPageDefaultScope('projectAssets', 'project', { projectId: 1 });
+
+    expect(service.resolvePageDefaults('projectAssets', {}, {}, { projectId: 1 }).pageSize).toBe(pageSize);
+    expect(service.resolvePageDefaults('projectAssets', {}, {}, { projectId: 2 }).pageSize).toBe(pageSize);
+  });
+
+  it('keeps a Project-only all page size ahead of a finite Global value', () => {
+    service.saveDefault('projectAssets', 'pageSize', '150');
+    service.saveProjectDefault('projectAssets', 'pageSize', 'all', undefined, { projectId: 1 });
+    service.setPageDefaultScope('projectAssets', 'project', { projectId: 1 });
+
+    expect(service.resolvePageDefaults('projectAssets', {}, {}, { projectId: 1 }).pageSize).toBe('all');
+    expect(service.resolvePageDefaults('projectAssets', {}, {}, { projectId: 2 }).pageSize).toBe('150');
+    expect(service.resolvePageDefaults(
+      'projectAssets',
+      { pageSize: '200' },
+      {},
+      { projectId: 1 },
+    ).pageSize).toBe('200');
   });
 
   it('resolves all page options with explicit values taking precedence', () => {

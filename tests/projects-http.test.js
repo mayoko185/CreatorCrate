@@ -292,6 +292,14 @@ async function capturePreparedSql(db, execute) {
   return statements;
 }
 
+function projectListBaseSql(statements) {
+  return statements.filter((sql) => {
+    const normalized = sql.replace(/\s+/g, ' ').trim();
+    return normalized.startsWith('SELECT COUNT(*) AS c FROM projects')
+      || normalized.startsWith('SELECT id, title, slug, description, notes, status, project_type, patreon_url, created_at, updated_at, archived_at, project_dir FROM projects');
+  });
+}
+
 describe('project HTTP workflow', () => {
   let db;
   let app;
@@ -453,6 +461,28 @@ describe('project HTTP workflow', () => {
     const explicitGridOverSavedList = await capture('/projects?view=grid');
     expect(assetBatchCount(explicitGridOverSavedList)).toBe(1);
     expect(releaseBatchCount(explicitGridOverSavedList)).toBe(1);
+  });
+
+  it.each(['grid', 'list'])('reuses the filtered total for the %s row page while keeping distinct populations separate', async (view) => {
+    await createProject({ title: 'Matching Planned Project', status: 'planned' });
+    await createProject({ title: 'Other Active Project', status: 'tbd' });
+    const archivedId = await createProject({ title: 'Archived Project', status: 'planned' });
+    db.prepare("UPDATE projects SET status = 'archived', archived_at = datetime('now') WHERE id = ?").run(archivedId);
+
+    const statements = await capturePreparedSql(
+      db,
+      () => agent.get(`/projects?status=planned&view=${view}`).expect(200),
+    );
+    const baseStatements = projectListBaseSql(statements);
+    const counts = baseStatements.filter((sql) => sql.includes('SELECT COUNT(*) AS c'));
+    const rowQueries = baseStatements.filter((sql) => sql.includes('LIMIT ? OFFSET ?'));
+
+    expect(baseStatements).toHaveLength(3);
+    expect(counts).toHaveLength(2);
+    expect(counts.filter((sql) => sql.includes('status IN (?)'))).toHaveLength(1);
+    expect(counts.filter((sql) => !sql.includes('WHERE'))).toHaveLength(1);
+    expect(rowQueries).toHaveLength(1);
+    expect(rowQueries[0]).toContain('status IN (?)');
   });
 
   it('renders Projects Filter, Defaults, and the NSFW toggle with Reset inside Filter', async () => {
@@ -3489,12 +3519,18 @@ describe('project HTTP workflow', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
 
-    const res = await agent.get('/projects?status=ready').expect(200);
+    let res;
+    const statements = await capturePreparedSql(db, async () => {
+      res = await agent.get('/projects?status=ready').expect(200);
+    });
+    const baseStatements = projectListBaseSql(statements);
     expect(res.text).toContain('No projects found');
     expect(res.text).toContain('Reset');
     expect(res.text).not.toContain('Reset Filters');
     expect(res.text).toContain('href="/projects"');
     expect(res.text).not.toContain('Create your first project to get started.');
+    expect(baseStatements.filter((sql) => sql.includes('SELECT COUNT(*) AS c'))).toHaveLength(2);
+    expect(baseStatements.filter((sql) => sql.includes('LIMIT ? OFFSET ?'))).toHaveLength(1);
   });
 
   it('pagination is bounded', async () => {
@@ -3526,10 +3562,17 @@ describe('project HTTP workflow', () => {
     expect(page2.text).toContain('Page Two Only Tag');
     expect(extractProjectCards(page2.text)).toHaveLength(5);
 
-    const huge = await agent.get('/projects?sort=title&order=asc&page=999').expect(200);
+    let huge;
+    const hugeStatements = await capturePreparedSql(db, async () => {
+      huge = await agent.get('/projects?sort=title&order=asc&page=999').expect(200);
+    });
     expect(huge.text).toContain('Page 2 of 2');
     expect(huge.text).toContain('href="/projects?sort=title&amp;order=asc&amp;page=1"');
     expect(huge.text).toContain('Page Two Only Tag');
+    expect(huge.headers.location).toBeUndefined();
+    expect(projectListBaseSql(hugeStatements)).toHaveLength(3);
+    expect(projectListBaseSql(hugeStatements).filter((sql) => sql.includes('SELECT COUNT(*) AS c'))).toHaveLength(2);
+    expect(projectListBaseSql(hugeStatements).filter((sql) => sql.includes('LIMIT ? OFFSET ?'))).toHaveLength(1);
   });
 
   it('unknown routes still return safe 404', async () => {

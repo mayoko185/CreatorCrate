@@ -409,6 +409,8 @@ export function createProjectRepository(db) {
      * @param {string} [options.order]
      * @param {number} [options.limit]
      * @param {number} [options.offset]
+     * @param {number} [options.knownTotal] - previously counted total for the
+     *   identical filters on a row-returning request
      * @returns {{ rows: ProjectRecord[], total: number }}
      */
     list(options = {}) {
@@ -426,6 +428,7 @@ export function createProjectRepository(db) {
         order = 'desc',
         limit = 25,
         offset = 0,
+        knownTotal,
       } = options;
 
       const selectedStatuses = normalizeStatusSelection(statuses === undefined ? status : statuses);
@@ -487,8 +490,13 @@ export function createProjectRepository(db) {
       const orderClause = buildOrderClause(sortBy, order);
 
       const countSql = `SELECT COUNT(*) AS c FROM projects ${where}`;
-      const countStmt = db.prepare(countSql);
-      const total = countStmt.get(...params).c;
+      const total = limit !== 0 && Number.isSafeInteger(knownTotal) && knownTotal >= 0
+        ? knownTotal
+        : db.prepare(countSql).get(...params).c;
+
+      if (limit === 0) {
+        return { rows: [], total };
+      }
 
       const listSql = `${SELECT_ALL} ${where} ${orderClause} LIMIT ? OFFSET ?`;
       const listStmt = db.prepare(listSql);

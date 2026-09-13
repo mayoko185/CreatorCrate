@@ -1483,21 +1483,30 @@ export function createReleaseRepository(db) {
         return [];
       }
 
-      const placeholders = assetIds.map(() => '?').join(',');
-      const sql = `
-        SELECT DISTINCT
-          ra.asset_id,
-          r.id AS release_id,
-          r.title
-        FROM release_assets ra
-        JOIN releases r ON r.id = ra.release_id
-        JOIN assets a ON a.id = ra.asset_id
-        WHERE ra.asset_id IN (${placeholders})
-          AND r.project_id = a.project_id
-        ORDER BY ra.asset_id ASC, r.title COLLATE NOCASE ASC, r.id ASC
-      `;
+      const unique = [...new Set(assetIds)].sort((a, b) => a - b);
+      const CHUNK_SIZE = 500;
+      const results = [];
 
-      return db.prepare(sql).all(...assetIds);
+      for (let i = 0; i < unique.length; i += CHUNK_SIZE) {
+        const chunk = unique.slice(i, i + CHUNK_SIZE);
+        const placeholders = chunk.map(() => '?').join(',');
+        const sql = `
+          SELECT DISTINCT
+            ra.asset_id,
+            r.id AS release_id,
+            r.title
+          FROM release_assets ra
+          JOIN releases r ON r.id = ra.release_id
+          JOIN assets a ON a.id = ra.asset_id
+          WHERE ra.asset_id IN (${placeholders})
+            AND r.project_id = a.project_id
+          ORDER BY ra.asset_id ASC, r.title COLLATE NOCASE ASC, r.id ASC
+        `;
+
+        results.push(...db.prepare(sql).all(...chunk));
+      }
+
+      return results;
     },
 
     findReleaseUsageForAssetIds(projectId, assetIds) {
@@ -1505,29 +1514,38 @@ export function createReleaseRepository(db) {
         return [];
       }
 
-      const placeholders = assetIds.map(() => '?').join(',');
-      const sql = `
-        SELECT
-          ra.asset_id,
-          r.id AS release_id,
-          r.title,
-          r.published_date,
-          p.status AS project_status,
-          r.archived_at AS release_archived_at,
-          p.archived_at AS project_archived_at,
-          ra.role,
-          ra.sort_order
-        FROM release_assets ra
-        JOIN releases r ON r.id = ra.release_id
-        JOIN projects p ON p.id = r.project_id
-        JOIN assets a ON a.id = ra.asset_id
-        WHERE ra.asset_id IN (${placeholders})
-          AND a.project_id = ?
-          AND r.project_id = ?
-        ORDER BY ra.asset_id ASC, r.title COLLATE NOCASE ASC, r.id ASC
-      `;
+      const unique = [...new Set(assetIds)].sort((a, b) => a - b);
+      const CHUNK_SIZE = 500;
+      const results = [];
 
-      return db.prepare(sql).all(...assetIds, projectId, projectId);
+      for (let i = 0; i < unique.length; i += CHUNK_SIZE) {
+        const chunk = unique.slice(i, i + CHUNK_SIZE);
+        const placeholders = chunk.map(() => '?').join(',');
+        const sql = `
+          SELECT
+            ra.asset_id,
+            r.id AS release_id,
+            r.title,
+            r.published_date,
+            p.status AS project_status,
+            r.archived_at AS release_archived_at,
+            p.archived_at AS project_archived_at,
+            ra.role,
+            ra.sort_order
+          FROM release_assets ra
+          JOIN releases r ON r.id = ra.release_id
+          JOIN projects p ON p.id = r.project_id
+          JOIN assets a ON a.id = ra.asset_id
+          WHERE ra.asset_id IN (${placeholders})
+            AND a.project_id = ?
+            AND r.project_id = ?
+          ORDER BY ra.asset_id ASC, r.title COLLATE NOCASE ASC, r.id ASC
+        `;
+
+        results.push(...db.prepare(sql).all(...chunk, projectId, projectId));
+      }
+
+      return results;
     },
   };
 }

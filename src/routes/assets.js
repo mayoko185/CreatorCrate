@@ -30,6 +30,7 @@ import {
   buildBrowserRenderModel,
   buildCanonicalContextQuery,
   createNotFound,
+  enrichProjectAssetsForRender,
   getNsfwFilterSettingsService,
   getOpenLocallySettingsService,
   getPageDefaultsService,
@@ -1158,10 +1159,7 @@ export function createAssetsRouter({
           const presentation = resolveAssetBrowserPresentation(req.body, pageDefaultsService, { projectId: id });
           const data = buildAssetBrowserPageData(workflowQueryService, id, project, presentation);
           if (!data) return next(createNotFound());
-          const enrichedAssets = await workflowQueryService.enrichProjectAssetInformationAssets(
-            project,
-            data.assets,
-          );
+          const enrichedAssets = await enrichProjectAssetsForRender(workflowQueryService, project, data);
 
           const normalizedSelection = normalizeSelectedAssetIds(req.body.selectedAssetIds);
           const submittedReleaseId = typeof req.body.releaseId === 'string' ? req.body.releaseId : '';
@@ -1236,10 +1234,7 @@ export function createAssetsRouter({
           const presentation = resolveAssetBrowserPresentation(body, pageDefaultsService, { projectId: id });
           const data = buildAssetBrowserPageData(workflowQueryService, id, project, presentation);
           if (!data) return next(createNotFound());
-          const enrichedAssets = await workflowQueryService.enrichProjectAssetInformationAssets(
-            project,
-            data.assets,
-          );
+          const enrichedAssets = await enrichProjectAssetsForRender(workflowQueryService, project, data);
 
           const normalizedSelection = normalizeSelectedAssetIds(body.selectedAssetIds);
           return res.status(status).render('projects/assets.njk', {
@@ -1284,10 +1279,7 @@ export function createAssetsRouter({
           const presentation = resolveAssetBrowserPresentation(req.body, pageDefaultsService, { projectId: id });
           const data = buildAssetBrowserPageData(workflowQueryService, id, project, presentation);
           if (!data) return next(createNotFound());
-          const enrichedAssets = await workflowQueryService.enrichProjectAssetInformationAssets(
-            project,
-            data.assets,
-          );
+          const enrichedAssets = await enrichProjectAssetsForRender(workflowQueryService, project, data);
           return res.status(status).render('projects/assets.njk', {
             appName,
             ...buildBrowserRenderModel(project, { ...data, assets: enrichedAssets }, pageDefaultsService, req, workflowQueryService, null, getProjectAssetsInheritedFilterDefaults(req.body)),
@@ -1375,10 +1367,7 @@ export function createAssetsRouter({
           const presentation = resolveAssetBrowserPresentation(req.body, pageDefaultsService, { projectId: id });
           const data = buildAssetBrowserPageData(workflowQueryService, id, project, presentation);
           if (!data) return next(createNotFound());
-          const enrichedAssets = await workflowQueryService.enrichProjectAssetInformationAssets(
-            project,
-            data.assets,
-          );
+          const enrichedAssets = await enrichProjectAssetsForRender(workflowQueryService, project, data);
           return res.status(status).render('projects/assets.njk', {
             appName,
             ...buildBrowserRenderModel(project, { ...data, assets: enrichedAssets }, pageDefaultsService, req, workflowQueryService, null, getProjectAssetsInheritedFilterDefaults(req.body)),
@@ -1466,10 +1455,7 @@ export function createAssetsRouter({
           const presentation = resolveAssetBrowserPresentation(body, pageDefaultsService, { projectId: id });
           const data = buildAssetBrowserPageData(workflowQueryService, id, project, presentation);
           if (!data) return next(createNotFound());
-          const enrichedAssets = await workflowQueryService.enrichProjectAssetInformationAssets(
-            project,
-            data.assets,
-          );
+          const enrichedAssets = await enrichProjectAssetsForRender(workflowQueryService, project, data);
           return res.status(status).render('projects/assets.njk', {
             appName,
             ...buildBrowserRenderModel(project, { ...data, assets: enrichedAssets }, pageDefaultsService, req, workflowQueryService, null, getProjectAssetsInheritedFilterDefaults(body)),
@@ -2024,7 +2010,7 @@ async function renderAutoRenameBrowserError({
     if (data) {
       data = {
         ...data,
-        assets: await workflowQueryService.enrichProjectAssetInformationAssets(project, data.assets),
+        assets: await enrichProjectAssetsForRender(workflowQueryService, project, data),
       };
     }
   } catch {
@@ -2803,7 +2789,7 @@ async function handleAssetBrowserActionFailure(err, {
     if (data) {
       data = {
         ...data,
-        assets: await workflowQueryService.enrichProjectAssetInformationAssets(project, data.assets),
+        assets: await enrichProjectAssetsForRender(workflowQueryService, project, data),
       };
     }
   } catch (renderErr) {

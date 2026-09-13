@@ -773,18 +773,20 @@
         {% endif %}
 
          {# Pagination #}
-         {% if not completeCategorySurface and pageCount > 1 %}
-          <nav class="pagination" aria-label="Asset list pages">
-            {% if page > 1 %}
-              <a href="{{ pageUrl({ page: page - 1 }) }}" class="pagination-prev">← Prev</a>
-            {% endif %}
+         {% if not completeCategorySurface %}
+          {% if pageCount > 1 %}
+            <nav class="pagination" aria-label="Asset list pages">
+              {% if page > 1 %}
+                <a href="{{ pageUrl({ page: page - 1 }) }}" class="pagination-prev">← Prev</a>
+              {% endif %}
 
-            <span class="pagination-info">Page {{ page }} of {{ pageCount }}</span>
+              <span class="pagination-info">Page {{ page }} of {{ pageCount }}</span>
 
-            {% if page < pageCount %}
-              <a href="{{ pageUrl({ page: page + 1 }) }}" class="pagination-next">Next →</a>
-            {% endif %}
-          </nav>
+              {% if page < pageCount %}
+                <a href="{{ pageUrl({ page: page + 1 }) }}" class="pagination-next">Next →</a>
+              {% endif %}
+            </nav>
+          {% endif %}
 
           <form class="page-size-form" method="get" action="/projects/{{ project.id }}/assets">
             {{ dropdown.singleSelect({
@@ -798,7 +800,10 @@
                 { value: "10", label: "10" },
                 { value: "25", label: "25" },
                 { value: "50", label: "50" },
-                { value: "100", label: "100" }
+                { value: "100", label: "100" },
+                { value: "150", label: "150" },
+                { value: "200", label: "200" },
+                { value: "all", label: "View All" }
               ],
               panelLabel: "Assets per page options",
               nativeSelect: {

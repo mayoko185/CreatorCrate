@@ -170,6 +170,9 @@ function makeModel(overrides = {}) {
       option(25, '25', pageSize === 25),
       option(50, '50', pageSize === 50),
       option(100, '100', pageSize === 100),
+      option(150, '150', pageSize === 150),
+      option(200, '200', pageSize === 200),
+      option('all', 'View All', pageSize === 'all'),
     ],
     nsfwFilterEnabled: false,
     _csrf: '',
@@ -296,7 +299,7 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).toMatch(/<input[^>]+name="sort"[^>]+type="radio"[^>]+value="project" checked>/);
     expect(html).toMatch(/<input[^>]+name="order"[^>]+type="radio"[^>]+value="desc" checked>/);
     expect(html).toMatch(/<input[^>]+name="pageSize"[^>]+type="radio"[^>]+value="50" checked>/);
-    for (const [name, count] of [['presence', 3], ['usage', 3], ['sort', 2], ['order', 2], ['pageSize', 4]]) {
+    for (const [name, count] of [['presence', 3], ['usage', 3], ['sort', 2], ['order', 2], ['pageSize', 7]]) {
       expect((html.match(new RegExp(`name="${name}"[^>]+type="radio"`, 'g')) || [])).toHaveLength(count);
     }
     expect((html.match(/data-cc-dropdown data-cc-dropdown-mode="(?:single|multiple)"/g) || [])).toHaveLength(10);
@@ -328,6 +331,18 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).toContain('data-tooltip="Asset Viewer defaults"');
     expect(html).toContain('data-dialog-open="asset-viewer-defaults-dialog"');
     expect(html).toContain('data-asset-viewer-defaults-link');
+  });
+
+  it('keeps the exact page-size selector available when View All has one page', () => {
+    const html = renderPage({ pageSize: 'all', pageCount: 1 });
+    const control = html.match(/<details[^>]*id="asset-page-size-filter"[\s\S]*?<\/details>/)?.[0] || '';
+
+    expect(control).not.toBe('');
+    expect([...control.matchAll(/name="pageSize"[^>]*value="([^"]+)"/g)].map(([, value]) => value))
+      .toEqual(['10', '25', '50', '100', '150', '200', 'all']);
+    expect(control).toMatch(/name="pageSize"[^>]*value="all" checked/);
+    expect(control).toContain('View All');
+    expect(html).not.toContain('aria-label="Asset Viewer pages"');
   });
 
   it('renders the Asset Viewer Filter trigger before Defaults and hosts the form in the shared dialog pattern', () => {
@@ -1046,10 +1061,32 @@ describe('cross-project Asset Viewer template', () => {
     expect(regionStart).toBeLessThan(gridStart);
   });
 
-  it('renders the view switcher in icon mode', () => {
+  it('renders accessible shared tooltip-only view-switcher links in icon mode', () => {
     const html = renderPage();
-    expect(html).toMatch(/class="[^"]*view-switcher-option--icon[^"]*"/);
-    expect(html).toContain('asset-tooltip');
+    const switcher = html.match(/<nav class="view-switcher" aria-label="Asset display">[\s\S]*?<\/nav>/)?.[0] ?? '';
+    const links = switcher.match(/<a\b[^>]*>[\s\S]*?<\/a>/g) ?? [];
+
+    expect(links).toHaveLength(2);
+    expect(links[0]).toContain('class="view-switcher-option view-switcher-option--icon asset-tooltip asset-tooltip--right"');
+    expect(links[0]).toMatch(/href="\/asset-viewer\?[^\"]*view=grid(?:&amp;[^\"]*)?"/);
+    expect(links[0]).toContain('aria-current="page"');
+    expect(links[0]).toContain('aria-label="Grid view"');
+    expect(links[0]).toContain('data-tooltip="Grid view"');
+    expect(links[1]).toMatch(/href="\/asset-viewer\?[^\"]*view=list(?:&amp;[^\"]*)?"/);
+    expect(links[1]).not.toContain('aria-current');
+    expect(links[1]).toContain('aria-label="List view"');
+    expect(links[1]).toContain('data-tooltip="List view"');
+    expect(switcher).not.toMatch(/\btitle=/);
+  });
+
+  it('keeps shared tooltips readable and unclipped without losing switcher corner rounding', () => {
+    const css = fs.readFileSync(STYLESHEET_PATH, 'utf8');
+
+    expect(css).toMatch(/\.asset-tooltip\[data-tooltip\]::after\s*\{[^}]*font-size:\s*0\.875rem/);
+    expect(css).toMatch(/\.asset-tooltip\[data-tooltip\]:focus-visible::after\s*\{[^}]*opacity:\s*1/);
+    expect(css).toMatch(/\.view-switcher\s*\{[^}]*border-radius:\s*var\(--radius-md\);[^}]*overflow:\s*visible/);
+    expect(css).toMatch(/\.view-switcher-option:first-child\s*\{[^}]*border-radius:\s*var\(--radius-md\) 0 0 var\(--radius-md\)/);
+    expect(css).toMatch(/\.view-switcher-option:last-child\s*\{[^}]*border-radius:\s*0 var\(--radius-md\) var\(--radius-md\) 0/);
   });
 
   it('renders interactive grid-size labels as buttons when in grid view', () => {

@@ -419,7 +419,7 @@ describe('asset browser HTTP workflow', () => {
     expect(assetExtensionFilterHtml(res2.text)).not.toMatch(/name="extension"[^>]*checked/);
   });
 
-  it('enriches ordinary and complete-category assets at the central Project Assets render boundary', async () => {
+  it('selects image-dimension enrichment by view at the central Project Assets render boundary', async () => {
     const created = await createProject('Central Asset Information Enrichment');
     const id = Number(created.headers.location.replace('/projects/', ''));
     const project = app.locals.projectService.findById(id);
@@ -484,17 +484,25 @@ describe('asset browser HTTP workflow', () => {
         { displayName: 'Assigned only', origin: 'direct' },
       ],
     };
-    const enrichProjectAssetInformationAssets = vi.fn(async (_project, assets) => (
-      assets.map((candidate) => ({ ...enrichedAsset, tags: candidate.tags }))
-    ));
+    const enrichProjectAssetInformationAssets = vi.fn(async (_project, assets, options = {}) => {
+      const { formattedDimensions: _formattedDimensions, ...assetWithoutDimensions } = enrichedAsset;
+      const source = options.includeImageDimensions === false
+        ? assetWithoutDimensions
+        : enrichedAsset;
+      return assets.map((candidate) => ({ ...source, tags: candidate.tags }));
+    });
     const workflowQueryService = {
       getProjectAssetsDefaultExtensions: () => ['png'],
       getProjectTagFilterOptions: () => [],
-      getProjectAssetBrowser: vi.fn(() => browserData),
-      getProjectAutoRenameCategory: vi.fn(() => ({
+      getProjectAssetBrowser: vi.fn((_projectId, query) => ({
+        ...browserData,
+        pageSize: query.pageSize,
+        filters: { ...browserData.filters, view: query.view },
+      })),
+      getProjectAutoRenameCategory: vi.fn((_projectId, query) => ({
         assets: [asset],
         total: 1,
-        view: 'grid',
+        view: query.view,
         orderedAssetIds: [asset.id],
         effectiveCategory: category,
       })),
@@ -536,7 +544,23 @@ describe('asset browser HTTP workflow', () => {
     });
     expect(ordinaryModel.assets[0].tags).toBe(assignedTags);
 
-    const completeCategoryModel = await renderCentral({ category: String(category.id), view: 'grid' });
+    const listModel = await renderCentral({ category: 'all', view: 'list', pageSize: 'all' });
+    expect(listModel).toMatchObject({
+      completeCategorySurface: false,
+      page: 1,
+      pageSize: 'all',
+      pageCount: 1,
+    });
+    expect(listModel.assets[0]).not.toHaveProperty('formattedDimensions');
+    expect(listModel.assets[0]).toMatchObject({
+      formattedModified: 'Sep 10, 2026 12:34 PM',
+      formattedSize: '1.5 KB',
+      release_titles: [{ id: 9, title: 'Central Release' }],
+      effectiveTags: enrichedAsset.effectiveTags,
+    });
+    expect(listModel.assets[0].tags).toBe(assignedTags);
+
+    const completeCategoryModel = await renderCentral({ category: String(category.id), view: 'list' });
     expect(completeCategoryModel.completeCategorySurface).toBe(true);
     expect(completeCategoryModel.assets[0]).toMatchObject({
       formattedDimensions: '640 × 480',
@@ -546,11 +570,73 @@ describe('asset browser HTTP workflow', () => {
       effectiveTags: enrichedAsset.effectiveTags,
     });
     expect(completeCategoryModel.assets[0].tags).toBe(assignedTags);
-    expect(enrichProjectAssetInformationAssets).toHaveBeenNthCalledWith(1, project, [asset]);
-    expect(enrichProjectAssetInformationAssets).toHaveBeenNthCalledWith(2, project, [asset]);
+    expect(enrichProjectAssetInformationAssets).toHaveBeenNthCalledWith(1, project, [asset], {
+      includeImageDimensions: true,
+    });
+    expect(enrichProjectAssetInformationAssets).toHaveBeenNthCalledWith(2, project, [asset], {
+      includeImageDimensions: false,
+    });
+    expect(enrichProjectAssetInformationAssets).toHaveBeenNthCalledWith(3, project, [asset], {
+      includeImageDimensions: true,
+    });
   });
 
-  it('enriches every direct Project Assets action and error rerender exactly once', async () => {
+  it('skips dimension reads for ordinary list and View All requests while preserving grid enrichment', async () => {
+    const created = await createProject('WP7 Dimension Enrichment Boundary');
+    const id = Number(created.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('WP7 Dimension Enrichment Boundary');
+    const present = writeIndexedAsset(id, projectDir, 'present.png', await makePng(96, 64));
+    const missing = writeIndexedAsset(id, projectDir, 'missing.png', await makePng(32, 24));
+    assetRepo.markMissingByProjectIdAndPathNotIn(id, ['present.png']);
+    const directTag = app.locals.tagService.createTag({ name: 'WP7 direct tag' });
+    app.locals.assetTagService.replaceAssetTags(present.id, [directTag.id]);
+
+    const getImageDimensions = vi.fn(async () => ({ width: 96, height: 64 }));
+    const appDataRoot = path.join(tmpDir, 'wp7-dimension-boundary-app');
+    fs.mkdirSync(appDataRoot, { recursive: true });
+    const { csrfPepper } = ensureAuthEnablement(appDataRoot);
+    const directApp = createApp(
+      { appName: 'CreatorCrate', db, projectsRoot, previewRoot },
+      {
+        appDataRoot,
+        authState: { csrfPepper },
+        assetWorkflowMetadataService: { getImageDimensions },
+      },
+    );
+    const { agent: directAgent } = await getDisabledModeCsrf(directApp, appDataRoot);
+
+    const grid = await directAgent
+      .get(`/projects/${id}/assets?category=all&view=grid`)
+      .expect(200);
+    expect(getImageDimensions).toHaveBeenCalledTimes(1);
+    expect(getImageDimensions).toHaveBeenLastCalledWith(present.id);
+    expect(grid.text).toContain('<dt>Dimensions</dt>');
+    expect(grid.text).toContain('96 × 64');
+
+    const listAll = await directAgent
+      .get(`/projects/${id}/assets?category=all&view=list&pageSize=all`)
+      .expect(200);
+    expect(getImageDimensions).toHaveBeenCalledTimes(1);
+    expect(listAll.text).toContain('<option value="all" selected>View All</option>');
+    expect(listAll.text).not.toContain('class="pagination"');
+    expect(listAll.text).not.toContain('<dt>Dimensions</dt>');
+    const presentCard = assetListCardHtml(listAll.text, present.id);
+    expect(presentCard).toContain('present');
+    expect(presentCard).toContain('WP7 direct tag');
+    expect(presentCard).toContain('asset-list-card-meta--size');
+    const missingCard = assetListCardHtml(listAll.text, missing.id);
+    expect(missingCard).toContain('Missing at last scan');
+    expect(missingCard).toContain('disabled');
+
+    const gridAll = await directAgent
+      .get(`/projects/${id}/assets?category=all&view=grid&pageSize=all`)
+      .expect(200);
+    expect(getImageDimensions).toHaveBeenCalledTimes(2);
+    expect(getImageDimensions).toHaveBeenLastCalledWith(present.id);
+    expect(gridAll.text).toContain('96 × 64');
+  });
+
+  it('keeps non-dimension enrichment on every ordinary list action error rerender', async () => {
     const projectResponse = await createProject('Direct Rerender Enrichment');
     const id = Number(projectResponse.headers.location.replace('/projects/', ''));
     const projectDir = getProjectDir('Direct Rerender Enrichment');
@@ -587,32 +673,32 @@ describe('asset browser HTTP workflow', () => {
 
     try {
       await directAgent.post(`/projects/${id}/assets/add-to-release`).type('form').send({
-        releaseId: String(releaseId), category: 'all', _csrf: directCsrf,
+        releaseId: String(releaseId), category: 'all', view: 'list', _csrf: directCsrf,
       }).expect(422);
       await directAgent.post(`/projects/${id}/assets/create-release`).type('form').send({
-        category: 'all', _csrf: directCsrf,
+        category: 'all', view: 'list', _csrf: directCsrf,
       }).expect(422);
       await directAgent.post(`/projects/${id}/assets/move-selected`).type('form').send({
-        category: 'all', destinationCategory: 'uncategorized', _csrf: directCsrf,
+        category: 'all', view: 'list', destinationCategory: 'uncategorized', _csrf: directCsrf,
       }).expect(422);
       await directAgent.post(`/projects/${id}/assets/copy-selected`).type('form').send({
-        category: 'all', destinationCategory: 'uncategorized', _csrf: directCsrf,
+        category: 'all', view: 'list', destinationCategory: 'uncategorized', _csrf: directCsrf,
       }).expect(422);
       await directAgent.post(`/projects/${id}/assets/delete-selected`).type('form').send({
-        category: 'all', _csrf: directCsrf,
+        category: 'all', view: 'list', _csrf: directCsrf,
       }).expect(422);
       await directAgent.post(`/projects/${id}/assets/auto-rename/preview`).type('form').send({
-        category: 'all', categoryId: 'invalid', _csrf: directCsrf,
+        category: 'all', view: 'list', categoryId: 'invalid', _csrf: directCsrf,
       }).expect(422);
       await directAgent.post(`/projects/${id}/assets/${asset.id}/rename`).type('form').send({
-        filename: 'bad/name', origin: 'assets', category: 'all', _csrf: directCsrf,
+        filename: 'bad/name', origin: 'assets', category: 'all', view: 'list', _csrf: directCsrf,
       }).expect(422);
     } finally {
       renderSpy.mockRestore();
     }
 
     expect(renderedModels).toHaveLength(7);
-    expect(getImageDimensions).toHaveBeenCalledTimes(7);
+    expect(getImageDimensions).not.toHaveBeenCalled();
     expect(renderedModels.map((model) => Boolean(
       model.bulkError
       || model.bulkMoveError
@@ -623,16 +709,17 @@ describe('asset browser HTTP workflow', () => {
     ))).toEqual([true, true, true, true, true, true, true]);
     for (const model of renderedModels) {
       expect(model.filters.category).toBe('all');
+      expect(model.filters.view).toBe('list');
       expect(model.assets).toHaveLength(1);
       expect(model.assets[0]).toMatchObject({
         id: asset.id,
-        formattedDimensions: '80 × 60',
         tags: [{ displayName: 'Direct information tag' }],
         effectiveTags: [
           { displayName: 'Direct information tag', origin: 'direct' },
           { displayName: 'Inherited information tag', origin: 'inherited' },
         ],
       });
+      expect(model.assets[0]).not.toHaveProperty('formattedDimensions');
     }
   });
 
@@ -2893,6 +2980,37 @@ describe('asset browser HTTP workflow', () => {
       expect(response.text).not.toContain('<div class="asset-auto-rename-surface"');
     });
 
+    it('preserves finite/all precedence and restores the effective scoped page-size default on Reset', async () => {
+      const first = await createProject('WP4 Scoped Page Size First');
+      const firstId = Number(first.headers.location.replace('/projects/', ''));
+      const second = await createProject('WP4 Scoped Page Size Second');
+      const secondId = Number(second.headers.location.replace('/projects/', ''));
+      writeIndexedAsset(firstId, getProjectDir('WP4 Scoped Page Size First'), 'first.png', 'png');
+      writeIndexedAsset(secondId, getProjectDir('WP4 Scoped Page Size Second'), 'second.png', 'png');
+
+      saveAssetDefault('pageSize', 'all');
+      const globalAll = await agent.get(`/projects/${firstId}/assets`).expect(302);
+      expect(new URL(globalAll.headers.location, 'http://localhost').searchParams.get('pageSize')).toBe('all');
+
+      const explicitFinite = await agent.get(`/projects/${firstId}/assets?pageSize=200`).expect(200);
+      expect(explicitFinite.text).toContain('<option value="200" selected>200</option>');
+      const resetToGlobalAll = await agent
+        .get(`/projects/${firstId}/assets?resetFilters=1&view=grid&pageSize=200`)
+        .expect(302);
+      expect(new URL(resetToGlobalAll.headers.location, 'http://localhost').searchParams.get('pageSize')).toBe('all');
+
+      saveAssetDefault('pageSize', '150');
+      saveProjectAssetDefault(firstId, 'pageSize', 'all');
+      app.locals.pageDefaultsService.setPageDefaultScope('projectAssets', 'project', { projectId: firstId });
+
+      const projectAll = await agent.get(`/projects/${firstId}/assets`).expect(302);
+      expect(new URL(projectAll.headers.location, 'http://localhost').searchParams.get('pageSize')).toBe('all');
+      const globalFinite = await agent.get(`/projects/${secondId}/assets`).expect(302);
+      expect(new URL(globalFinite.headers.location, 'http://localhost').searchParams.get('pageSize')).toBe('150');
+      const explicitAll = await agent.get(`/projects/${secondId}/assets?pageSize=all`).expect(200);
+      expect(explicitAll.text).toContain('<option value="all" selected>View All</option>');
+    });
+
     it('uses saved presentation defaults when filters are explicit but presentation options are omitted', async () => {
       saveAssetDefault('view', 'list');
       saveAssetDefault('sort', 'category');
@@ -3595,7 +3713,7 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).toContain('file0.png');
   });
 
-  it('out-of-range pageSize is capped at 100', async () => {
+  it('out-of-range pageSize is capped at 200', async () => {
     const res = await createProject('Large PageSize');
     const id = res.headers.location.replace('/projects/', '');
     const projectDir = getProjectDir('Large PageSize');
@@ -3609,9 +3727,10 @@ describe('asset browser HTTP workflow', () => {
     const res2 = await agent
       .get(`/projects/${id}/assets?pageSize=500`)
       .expect(200);
-    // pageSize clamps to 100; 5 assets render without error.
+    // pageSize clamps to 200; 5 assets render without error.
     expectNoAssetResultsCount(res2.text);
     expect(res2.text).toContain('file0.png');
+    expect(res2.text).toContain('<option value="200" selected>200</option>');
   });
 
   // ─── Slideshow sequence ────────────────────────────────────────────────
@@ -4279,6 +4398,41 @@ describe('asset browser HTTP workflow', () => {
     expect(submittedUrl.searchParams.has('view')).toBe(false);
   });
 
+  it('keeps the exact page-size choices reachable on one page and round-trips View All context', async () => {
+    const res = await createProject('WP4 Project Assets Page Sizes');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('WP4 Project Assets Page Sizes');
+    const asset = writeIndexedAsset(id, projectDir, 'only.png', 'png');
+
+    const finite = await agent.get(`/projects/${id}/assets?pageSize=200`).expect(200);
+    const finiteForm = finite.text.match(/<form class="page-size-form"[\s\S]*?<\/form>/)?.[0] || '';
+    const finiteSelect = finiteForm.match(/<select id="pageSize"[\s\S]*?<\/select>/)?.[0] || '';
+    expect([...finiteSelect.matchAll(/<option value="([^"]+)"(?: selected)?>([^<]+)<\/option>/g)]
+      .map(([, value, label]) => [value, label])).toEqual([
+      ['10', '10'],
+      ['25', '25'],
+      ['50', '50'],
+      ['100', '100'],
+      ['150', '150'],
+      ['200', '200'],
+      ['all', 'View All'],
+    ]);
+    expect(finiteSelect).toContain('<option value="200" selected>200</option>');
+    expect(finite.text).not.toContain('class="pagination"');
+
+    const all = await agent.get(`/projects/${id}/assets?pageSize=all`).expect(200);
+    const allForm = all.text.match(/<form class="page-size-form"[\s\S]*?<\/form>/)?.[0] || '';
+    expect(allForm).toContain('<option value="all" selected>View All</option>');
+    expect(all.text).not.toContain('class="pagination"');
+    expect(all.text).toContain(`/projects/${id}/assets/${asset.id}?pageSize=all`);
+
+    const listHref = all.text.match(/<a class="[^"]*view-switcher-option[^"]*" href="([^"]+)"[\s\S]*?aria-label="List view"/)?.[1];
+    expect(new URL(decodeHtmlHref(listHref), 'http://localhost').searchParams.get('pageSize')).toBe('all');
+
+    const backToFinite = await agent.get(`/projects/${id}/assets?pageSize=150`).expect(200);
+    expect(backToFinite.text).toContain('<option value="150" selected>150</option>');
+  });
+
   it('re-renders valid Project Assets multi selections when one member is invalid', async () => {
     const project = await createProject('Project Assets Defaults Multi Validation');
     const id = Number(project.headers.location.replace('/projects/', ''));
@@ -4340,6 +4494,10 @@ describe('asset browser HTTP workflow', () => {
     expect(pageSizeForm).toContain('value="25" selected');
     expect(pageSizeForm).toContain('value="50"');
     expect(pageSizeForm).toContain('value="100"');
+    expect(pageSizeForm).toContain('value="150"');
+    expect(pageSizeForm).toContain('value="200"');
+    expect(pageSizeForm).toContain('value="all"');
+    expect(pageSizeForm).toContain('>View All</option>');
 
     const defaultsDialog = response.text.match(/<dialog id="project-assets-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
     expect(defaultsDialog).toContain('data-app-dialog');
@@ -4405,7 +4563,15 @@ describe('asset browser HTTP workflow', () => {
         label: 'Page Size',
         id: 'projectAssets-default-pageSize',
         selected: '25',
-        options: [['10', '10 assets'], ['25', '25 assets'], ['50', '50 assets'], ['100', '100 assets']],
+        options: [
+          ['10', '10 assets'],
+          ['25', '25 assets'],
+          ['50', '50 assets'],
+          ['100', '100 assets'],
+          ['150', '150 assets'],
+          ['200', '200 assets'],
+          ['all', 'View All'],
+        ],
       },
       {
         name: 'extension',
@@ -6863,11 +7029,12 @@ describe('asset browser HTTP workflow', () => {
       sizeBytes: 10, modifiedAt: null,
     });
 
-    const res2 = await agent.get(`/projects/${id}/assets?category=${cat.id}&page=2&pageSize=1`).expect(200);
+    const res2 = await agent.get(`/projects/${id}/assets?category=${cat.id}&page=2&pageSize=all`).expect(200);
     expect(res2.text).toContain('keep.png');
       expect(res2.text).not.toContain('other.png');
       expect(res2.text).not.toMatch(/<p class="results-meta">[\s\S]*?complete Renders category[\s\S]*?<\/p>/);
       expect(res2.text).toContain('data-auto-rename-surface');
+      expect(res2.text).not.toContain('class="page-size-form"');
     expect(res2.text).toMatch(/<li\b[^>]*data-auto-rename-asset[^>]*data-auto-rename-asset-id="/);
     expect(res2.text).toMatch(/<article\b[^>]*class="asset-card asset-card--project"/);
     expect(res2.text).not.toContain('data-auto-rename-drag-handle');

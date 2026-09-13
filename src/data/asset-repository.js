@@ -1872,7 +1872,8 @@ export function createAssetRepository(db) {
     /**
      * Paginated asset list for the asset browser.
      * Each asset includes a distinct count of releases that reference it.
-     * Uses SQL LIMIT/OFFSET for efficient pagination.
+     * Uses SQL LIMIT/OFFSET for finite pagination and omits both for explicit
+     * `pageSize: 'all'` requests.
      *
      * @param {number} projectId
      * @param {object} [filters]
@@ -1883,7 +1884,7 @@ export function createAssetRepository(db) {
      * @param {number|number[]|null} [filters.tag=null]
      * @param {number[]} [filters.tags]
      * @param {number} [filters.page=1]
-     * @param {number} [filters.pageSize=25]
+     * @param {number|'all'} [filters.pageSize=25]
      * @returns {Array<{id: number, project_id: number, relative_path: string, filename: string, extension: string, mime_type: string, size_bytes: number, modified_at: string|null, is_present: number, last_seen_at: string|null, missing_since: string|null, release_usage_count: number}>}
      */
     findProjectAssetPage(projectId, filters = {}) {
@@ -1901,8 +1902,10 @@ export function createAssetRepository(db) {
         tag: tags ?? tag,
       });
 
-      const offset = (Math.max(1, page) - 1) * Math.max(1, pageSize);
+      const showAll = pageSize === 'all';
+      const offset = showAll ? 0 : (Math.max(1, page) - 1) * Math.max(1, pageSize);
       const orderClause = buildAssetBrowserOrderClause(sort, order);
+      const paginationClause = showAll ? '' : 'LIMIT ? OFFSET ?';
 
       const sql = `
         SELECT
@@ -1911,10 +1914,12 @@ export function createAssetRepository(db) {
         ${CATEGORY_JOIN}
         WHERE ${conditions.join(' AND ')}
         ${orderClause}
-        LIMIT ? OFFSET ?
+        ${paginationClause}
       `;
 
-      return db.prepare(sql).all(...params, pageSize, offset);
+      return showAll
+        ? db.prepare(sql).all(...params)
+        : db.prepare(sql).all(...params, pageSize, offset);
     },
 
     /**
@@ -1935,16 +1940,19 @@ export function createAssetRepository(db) {
      * @param {number[]} [filters.tags]
      * @param {'filename'|'modified'|'size'|'category'|'project'} [filters.sort='filename']
      * @param {'asc'|'desc'} [filters.order='asc']
-     * @param {number} [filters.limit=25]
+     * @param {number|null} [filters.limit=25] - null explicitly disables pagination
      * @param {number} [filters.offset=0]
      * @returns {Array}
      */
     findAllAssets(filters = {}) {
       const sort = filters.sort ?? filters.sortBy ?? 'filename';
       const order = filters.order ?? 'asc';
-      const limit = filters.limit ?? 25;
+      const limit = Object.hasOwn(filters, 'limit') && filters.limit === null
+        ? null
+        : (filters.limit ?? 25);
       const offset = filters.offset ?? 0;
       const { conditions, params } = buildAllAssetBrowserConditions(filters);
+      const paginationClause = limit === null ? '' : 'LIMIT ? OFFSET ?';
 
       const sql = `
         SELECT
@@ -1957,10 +1965,12 @@ export function createAssetRepository(db) {
         ${CATEGORY_JOIN}
         WHERE ${conditions.join(' AND ')}
         ${buildAssetBrowserOrderClause(sort, order, { includeProjectSort: true })}
-        LIMIT ? OFFSET ?
+        ${paginationClause}
       `;
 
-      return db.prepare(sql).all(...params, limit, offset);
+      return limit === null
+        ? db.prepare(sql).all(...params)
+        : db.prepare(sql).all(...params, limit, offset);
     },
 
     /**

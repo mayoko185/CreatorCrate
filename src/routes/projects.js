@@ -552,7 +552,8 @@ function renderProjectsPage(req, res, {
     projectsDefaultOptionCatalogues.projectType,
     parsedQuery.projectTypes,
   );
-  const { total } = projectService.list({ ...parsedQuery, limit: 0 });
+  const projectListOptions = { ...parsedQuery };
+  const { total } = projectService.list({ ...projectListOptions, limit: 0 });
   const { total: totalProjects } = projectService.list({ includeArchived: true, limit: 0 });
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const currentPage = Math.min(parsedQuery.page, pageCount);
@@ -563,9 +564,10 @@ function renderProjectsPage(req, res, {
   const offset = (currentPage - 1) * PAGE_SIZE;
   const nsfwFilterEnabled = getNsfwFilterSettingsService(req).isEnabled();
   const { rows } = workflowQueryService.getProjectList({
-    ...parsedQuery,
+    ...projectListOptions,
     offset,
     limit: PAGE_SIZE,
+    knownTotal: total,
     includeGridInformation: parsedQuery.view === 'grid',
   });
   const optionPresentation = getProjectOptionPresentation(req);

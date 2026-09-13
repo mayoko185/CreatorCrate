@@ -2736,12 +2736,13 @@ describe('workflow query service', () => {
       }
     });
 
-    it('pageSize above 100 is capped to 100', () => {
+    it('supports 150 and 200 and caps larger pageSize values to 200', () => {
       const project = insertProject(db, { title: 'Large PageSize' });
       insertAsset(db, { projectId: project.id, relativePath: 'a.txt', filename: 'a.txt', isPresent: 1 });
 
-      const result = service.getProjectAssetBrowser(project.id, { pageSize: 500 });
-      expect(result.pageSize).toBe(100);
+      expect(service.getProjectAssetBrowser(project.id, { pageSize: 150 }).pageSize).toBe(150);
+      expect(service.getProjectAssetBrowser(project.id, { pageSize: 200 }).pageSize).toBe(200);
+      expect(service.getProjectAssetBrowser(project.id, { pageSize: 500 }).pageSize).toBe(200);
     });
 
     it('returns exact pagination metadata', () => {
@@ -2757,6 +2758,27 @@ describe('workflow query service', () => {
       expect(result.pageSize).toBe(3);
       expect(result.pageCount).toBe(3);
       expect(result.assets).toHaveLength(3);
+    });
+
+    it('returns every matching project asset on one page for explicit all', () => {
+      const project = insertProject(db, { title: 'Project Assets View All' });
+      for (let i = 1; i <= 7; i++) {
+        insertAsset(db, { projectId: project.id, relativePath: `file${i}.txt`, filename: `file${i}.txt`, isPresent: 1 });
+      }
+
+      const result = service.getProjectAssetBrowser(project.id, { page: 99, pageSize: 'all' });
+
+      expect(result).toMatchObject({ total: 7, page: 1, pageSize: 'all', pageCount: 1 });
+      expect(result.assets).toHaveLength(7);
+    });
+
+    it('keeps valid metadata for an empty explicit-all project asset result', () => {
+      const project = insertProject(db, { title: 'Empty Project Assets View All' });
+
+      const result = service.getProjectAssetBrowser(project.id, { page: 99, pageSize: 'all' });
+
+      expect(result).toMatchObject({ total: 0, page: 1, pageSize: 'all', pageCount: 1 });
+      expect(result.assets).toEqual([]);
     });
 
     it('page beyond range is clamped to the last valid page', () => {
@@ -4148,6 +4170,26 @@ describe('workflow query service', () => {
       expectLocalUrl(third.backToAssetsLink.href, `/projects/${project.id}/assets`, {
         page: '2', pageSize: '2',
       });
+    });
+
+    it('resolves viewer return context to page 1 for explicit all', () => {
+      const project = insertProject(db, { title: 'Viewer View All Context' });
+      const assets = [];
+      for (let i = 1; i <= 5; i++) {
+        assets.push(addViewerAsset(project, `file${String(i).padStart(2, '0')}.txt`));
+      }
+
+      const result = service.getProjectAssetViewer(project.id, assets[3].id, {
+        page: '99',
+        pageSize: 'all',
+      });
+
+      expect(result.context.pageSize).toBe('all');
+      expect(result.currentPage).toBe(1);
+      expect(result.previousAssetLink.page).toBe(1);
+      expect(result.nextAssetLink.page).toBe(1);
+      expect(result.backToAssetsLink.page).toBe(1);
+      expectLocalUrl(result.backToAssetsLink.href, `/projects/${project.id}/assets`, { pageSize: 'all' });
     });
 
     it('uses the asset position, not an incorrect supplied page, for navigation URLs', () => {

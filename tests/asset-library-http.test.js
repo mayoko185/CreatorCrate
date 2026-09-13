@@ -101,6 +101,26 @@ describe('cross-project Asset Viewer HTTP route', () => {
     });
   }
 
+  function installAssetLibraryPageSpy() {
+    const projectOptionCatalogueService = app.locals.projectOptionCatalogueService;
+    const workflowQueryService = createWorkflowQueryService({
+      db,
+      projectOptionCatalogueService,
+    });
+    const observedInputs = [];
+    const originalGetAssetLibraryPage = workflowQueryService.getAssetLibraryPage.bind(workflowQueryService);
+    const getAssetLibraryPage = vi.spyOn(workflowQueryService, 'getAssetLibraryPage');
+    getAssetLibraryPage.mockImplementation((input, options) => {
+      observedInputs.push(structuredClone(input));
+      return originalGetAssetLibraryPage(input, options);
+    });
+    app = createApp({ appName: 'CreatorCrate', db, projectsRoot }, {
+      projectOptionCatalogueService,
+      workflowQueryService,
+    });
+    return { getAssetLibraryPage, observedInputs };
+  }
+
   it('redirects the legacy Asset Viewer URL to the canonical route', async () => {
     const response = await request(app).get('/assets').expect(302);
 
@@ -122,15 +142,26 @@ describe('cross-project Asset Viewer HTTP route', () => {
   );
 
   it.each([
-    ['/asset-viewer', 200],
-    ['/asset-viewer?resetFilters=1&view=grid', 302],
-  ])('loads Project option presentation once for repeated page calculation: %s', async (url, status) => {
+    ['/asset-viewer', 200, undefined],
+    ['/asset-viewer?resetFilters=1&view=grid', 302, '/asset-viewer?view=grid'],
+  ])('reuses the first page when neutral defaults leave the effective query unchanged: %s', async (url, status, location) => {
     const catalogueService = app.locals.projectOptionCatalogueService;
     const statusCatalogue = vi.spyOn(catalogueService, 'getStatusCatalogue');
     const projectTypeCatalogue = vi.spyOn(catalogueService, 'getProjectTypeCatalogue');
+    writeAssetViewerDefaults({
+      category: 'all', tag: 'all', extension: 'all', presence: 'all',
+    });
 
-    await request(app).get(url).expect(status);
+    const { getAssetLibraryPage, observedInputs } = installAssetLibraryPageSpy();
 
+    const response = await request(app).get(url).expect(status);
+
+    expect(response.headers.location).toBe(location);
+    expect(getAssetLibraryPage).toHaveBeenCalledTimes(1);
+    expect(observedInputs).toHaveLength(1);
+    expect(observedInputs[0]).toMatchObject({
+      categories: [], tags: [], extensions: [], presence: 'all', pageSize: 25,
+    });
     expect(statusCatalogue).toHaveBeenCalledTimes(1);
     expect(projectTypeCatalogue).toHaveBeenCalledTimes(1);
   });
@@ -275,6 +306,98 @@ describe('cross-project Asset Viewer HTTP route', () => {
     }
   }
 
+  it('rebuilds the page when saved defaults change the effective query', async () => {
+    const project = projectRepository.create(projectInput('Changed Filter Defaults', {
+      projectType: 'images',
+    }));
+    createAsset(project.id, 'included.png');
+    createAsset(project.id, 'excluded.jpg');
+    writeAssetViewerDefaults({ extension: 'png' });
+    const { getAssetLibraryPage, observedInputs } = installAssetLibraryPageSpy();
+
+    const redirect = await request(app).get('/asset-viewer').expect(302);
+
+    expect(redirect.headers.location).toBe('/asset-viewer?extension=png');
+    expect(getAssetLibraryPage).toHaveBeenCalledTimes(2);
+    expect(observedInputs[0].extensions).toEqual([]);
+    expect(observedInputs[1].extensions).toEqual(['png']);
+
+    getAssetLibraryPage.mockClear();
+    observedInputs.length = 0;
+    const rendered = await request(app).get(redirect.headers.location).expect(200);
+    expect(getAssetLibraryPage).toHaveBeenCalledTimes(1);
+    expect(observedInputs[0].extensions).toEqual(['png']);
+    expect(rendered.text).toContain('included.png');
+    expect(rendered.text).not.toContain('excluded.jpg');
+  });
+
+  it('keeps an explicit valid filter authoritative without rebuilding for a saved default', async () => {
+    const project = projectRepository.create(projectInput('Explicit Filter Override', {
+      projectType: 'images',
+    }));
+    createAsset(project.id, 'saved.png');
+    createAsset(project.id, 'explicit.jpg');
+    writeAssetViewerDefaults({ extension: 'png' });
+    const { getAssetLibraryPage, observedInputs } = installAssetLibraryPageSpy();
+
+    const rendered = await request(app).get('/asset-viewer?extension=jpg').expect(200);
+
+    expect(rendered.headers.location).toBeUndefined();
+    expect(getAssetLibraryPage).toHaveBeenCalledTimes(1);
+    expect(observedInputs[0].extensions).toEqual(['jpg']);
+    expect(rendered.text).toContain('explicit.jpg');
+    expect(rendered.text).not.toContain('saved.png');
+  });
+
+  it('preserves a saved View All page size while reusing the unchanged page model', async () => {
+    const project = projectRepository.create(projectInput('View All Default', {
+      projectType: 'images',
+    }));
+    createAsset(project.id, 'all.png');
+    writeAssetViewerDefaults({ pageSize: 'all' });
+    const { getAssetLibraryPage, observedInputs } = installAssetLibraryPageSpy();
+
+    const redirect = await request(app).get('/asset-viewer').expect(302);
+
+    expect(redirect.headers.location).toBe('/asset-viewer?pageSize=all');
+    expect(getAssetLibraryPage).toHaveBeenCalledTimes(1);
+    expect(observedInputs[0].pageSize).toBe('all');
+
+    getAssetLibraryPage.mockClear();
+    observedInputs.length = 0;
+    const rendered = await request(app).get(redirect.headers.location).expect(200);
+    expect(getAssetLibraryPage).toHaveBeenCalledTimes(1);
+    expect(observedInputs[0].pageSize).toBe('all');
+    expect(rendered.text).toMatch(/name="pageSize"[^>]+value="all" checked/);
+    expect(rendered.text).not.toContain('NaN');
+  });
+
+  it('rebuilds Reset only when its resolved filter defaults change the effective query', async () => {
+    const project = projectRepository.create(projectInput('Conditional Reset Rebuild', {
+      projectType: 'images',
+    }));
+    createAsset(project.id, 'reset.png');
+    writeAssetViewerDefaults({ extension: 'png' });
+    const { getAssetLibraryPage, observedInputs } = installAssetLibraryPageSpy();
+
+    const changed = await request(app)
+      .get('/asset-viewer?resetFilters=1&view=list')
+      .expect(302);
+    expect(changed.headers.location).toBe('/asset-viewer?extension=png&view=list');
+    expect(getAssetLibraryPage).toHaveBeenCalledTimes(2);
+    expect(observedInputs.map((input) => input.extensions)).toEqual([[], ['png']]);
+
+    writeAssetViewerDefaults({ extension: 'all' });
+    getAssetLibraryPage.mockClear();
+    observedInputs.length = 0;
+    const unchanged = await request(app)
+      .get('/asset-viewer?resetFilters=1&view=grid')
+      .expect(302);
+    expect(unchanged.headers.location).toBe('/asset-viewer?view=grid');
+    expect(getAssetLibraryPage).toHaveBeenCalledTimes(1);
+    expect(observedInputs[0].extensions).toEqual([]);
+  });
+
   function insertReleaseUsage(projectId, assetId) {
     return insertRelease(projectId, 'Used Asset Release', assetId);
   }
@@ -392,6 +515,69 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(response.text).not.toMatch(/Manually scan project files|Rename|Move file|Add selected|Set as primary|selectedAssetIds/i);
 
     await request(app).post('/assets').expect(404);
+  });
+
+  it('supports every WP3 page size across controls, defaults, URLs, Reset, views, and detail context', async () => {
+    const project = projectRepository.create(projectInput('WP3 Page Size Project', {
+      projectType: 'images',
+    }));
+    const asset = createAsset(project.id, 'wp3-page-size.png');
+
+    for (const pageSize of ['150', '200']) {
+      const response = await request(app).get(`/asset-viewer?pageSize=${pageSize}`).expect(200);
+      expect(response.headers.location).toBeUndefined();
+      expect(response.text).toMatch(new RegExp(`name="pageSize"[^>]+value="${pageSize}" checked`));
+    }
+
+    const all = await request(app).get('/asset-viewer?pageSize=all').expect(200);
+    const filterForm = all.text.match(/<form id="asset-filters"[\s\S]*?<\/form>/)?.[0] || '';
+    const defaultsForm = all.text.match(/<form id="asset-viewer-defaults-form"[\s\S]*?<\/form>/)?.[0] || '';
+    const defaultsPageSize = defaultsForm.match(/<select[^>]*name="pageSize"[\s\S]*?<\/select>/)?.[0] || '';
+    const filterPageSizes = [...filterForm.matchAll(/name="pageSize"[^>]*value="([^"]+)"/g)]
+      .map(([, value]) => value);
+    const defaultPageSizes = [...defaultsPageSize.matchAll(/<option value="([^"]+)"(?: selected)?>([^<]+)<\/option>/g)]
+      .map(([, value, label]) => [value, label]);
+
+    expect(filterPageSizes).toEqual(['10', '25', '50', '100', '150', '200', 'all']);
+    expect(filterForm).toMatch(/name="pageSize"[^>]*value="all" checked/);
+    expect(filterForm).toContain('View All');
+    expect(defaultPageSizes).toEqual([
+      ['10', '10'], ['25', '25'], ['50', '50'], ['100', '100'],
+      ['150', '150'], ['200', '200'], ['all', 'View All'],
+    ]);
+    expect(all.text).toContain('href="/asset-viewer?pageSize=all&amp;view=list"');
+    expect(all.text).not.toContain('aria-label="Asset Viewer pages"');
+    expect(all.text).toContain(
+      `href="/projects/${project.id}/assets/${asset.id}?pageSize=all"`,
+    );
+
+    const detail = await request(app)
+      .get(`/projects/${project.id}/assets/${asset.id}?pageSize=all`)
+      .expect(200);
+    expect(detail.text).toContain(`href="/projects/${project.id}/assets?pageSize=all"`);
+
+    for (const pageSize of ['150', '200', 'all']) {
+      await request(app)
+        .post('/asset-viewer/defaults')
+        .type('form')
+        .send({
+          view: 'grid', sort: 'filename', order: 'asc', pageSize,
+          extension: 'all', category: 'all', presence: 'all', tag: 'all',
+        })
+        .expect(302);
+      expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
+        .get(PAGE_DEFAULT_DEFINITIONS.assetViewer.pageSize.key).value).toBe(pageSize);
+    }
+
+    const bare = await request(app).get('/asset-viewer').expect(302);
+    expect(bare.headers.location).toBe('/asset-viewer?pageSize=all');
+
+    const explicitFinite = await request(app).get('/asset-viewer?pageSize=25').expect(200);
+    expect(explicitFinite.headers.location).toBeUndefined();
+    expect(explicitFinite.text).toMatch(/name="pageSize"[^>]+value="25" checked/);
+
+    const reset = await request(app).get('/asset-viewer?resetFilters=1&view=grid').expect(302);
+    expect(reset.headers.location).toBe('/asset-viewer?pageSize=all&view=grid');
   });
 
   it('renders effective tags in both views while exposing the reusable tag filter', async () => {

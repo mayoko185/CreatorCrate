@@ -1500,6 +1500,30 @@ describe('release repository', () => {
         { asset_id: otherAsset.id, release_id: otherRelease.id, title: 'Other Release' },
       ]);
     });
+
+    it('preserves every ordered title and usage association across a 500-ID batch boundary', () => {
+      const release = releaseRepo.create({
+        projectId,
+        ...sampleRelease({ title: 'Large Batch Release' }),
+      });
+      const assetIds = [];
+      for (let index = 0; index < 501; index++) {
+        const asset = insertAsset(projectId, `asset-${String(index).padStart(3, '0')}.txt`);
+        linkAssetToRelease(release.id, asset.id);
+        assetIds.push(asset.id);
+      }
+
+      const reversedIds = [...assetIds].reverse();
+      const titles = releaseRepo.findReleaseTitlesForAssetIds(reversedIds);
+      const usage = releaseRepo.findReleaseUsageForAssetIds(projectId, reversedIds);
+
+      expect(titles).toHaveLength(501);
+      expect(titles.map((row) => row.asset_id)).toEqual(assetIds);
+      expect(titles.every((row) => row.release_id === release.id)).toBe(true);
+      expect(usage).toHaveLength(501);
+      expect(usage.map((row) => row.asset_id)).toEqual(assetIds);
+      expect(usage.every((row) => row.release_id === release.id)).toBe(true);
+    });
   });
 
   // ─── Phase 9-1: Release Asset Candidate Discovery ──────────────────────

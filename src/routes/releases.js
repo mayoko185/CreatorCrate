@@ -705,18 +705,17 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
       return next(createNotFound());
     }
 
-    const release = releaseService.findRelease(id);
-    if (!release) {
-      return next(createNotFound());
+    let viewModel;
+    try {
+      // The page service is the single authority for loading and validating
+      // both the release and its parent project.
+      viewModel = releaseService.getReleaseAssetManagementPage(id, req.query);
+    } catch (err) {
+      if (err instanceof ReleaseNotFoundError) {
+        return next(createNotFound());
+      }
+      throw err;
     }
-
-    const project = projectService.findById(release.project_id);
-    if (!project) {
-      return next(createNotFound());
-    }
-
-    // Compose the full asset-management view-model through the service
-    const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query);
 
     res.render('releases/assets.njk', {
       appName,

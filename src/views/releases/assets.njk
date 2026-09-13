@@ -297,7 +297,7 @@
           </nav>
         {% endif %}
 
-        {% if displayAssets.length > 0 and not readOnly and totalPages > 1 %}
+        {% if not readOnly %}
           <form class="page-size-form" method="get" action="/releases/{{ release.id }}/assets" data-release-assets-live-page-size-form>
             <label for="pageSize">Assets per page:</label>
             <select id="pageSize" name="pageSize" data-autosubmit data-release-assets-live-page-size>
@@ -305,6 +305,9 @@
               <option value="25" {% if currentPageSize == 25 %}selected{% endif %}>25</option>
               <option value="50" {% if currentPageSize == 50 %}selected{% endif %}>50</option>
               <option value="100" {% if currentPageSize == 100 %}selected{% endif %}>100</option>
+              <option value="150" {% if currentPageSize == 150 %}selected{% endif %}>150</option>
+              <option value="200" {% if currentPageSize == 200 %}selected{% endif %}>200</option>
+              <option value="all" {% if currentPageSize == 'all' %}selected{% endif %}>View All</option>
             </select>
             {% if activeFilters.search %}
               <input type="hidden" name="search" value="{{ activeFilters.search }}">
@@ -424,7 +427,10 @@
                 { value: "10", label: "10" },
                 { value: "25", label: "25" },
                 { value: "50", label: "50" },
-                { value: "100", label: "100" }
+                { value: "100", label: "100" },
+                { value: "150", label: "150" },
+                { value: "200", label: "200" },
+                { value: "all", label: "View All" }
               ],
               panelLabel: "Page size options",
               nativeSelect: {

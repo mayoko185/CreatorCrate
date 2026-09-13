@@ -289,6 +289,24 @@ describe('workflow query service — asset library page model', () => {
     expect(projectTypeCatalogue).toHaveBeenCalledTimes(2);
   });
 
+  it('returns one true-total page for explicit all, including empty matches', () => {
+    const project = insertProject(db, { title: 'View All Project' });
+    for (let index = 0; index < 30; index++) {
+      insertAsset(db, {
+        projectId: project.id,
+        relativePath: `asset-${String(index).padStart(2, '0')}.png`,
+      });
+    }
+
+    const all = service.getAssetLibraryPage({ page: 99, pageSize: 'all' });
+    expect(all).toMatchObject({ total: 30, page: 1, pageSize: 'all', pageCount: 1 });
+    expect(all.assets).toHaveLength(30);
+
+    const empty = service.getAssetLibraryPage({ search: 'no-match', page: 99, pageSize: 'all' });
+    expect(empty).toMatchObject({ total: 0, page: 1, pageSize: 'all', pageCount: 1 });
+    expect(empty.assets).toEqual([]);
+  });
+
   it.each([null, '', 'not-a-timestamp'])(
     'uses the presentation fallback for an invalid or missing Modified value: %s',
     (modifiedAt) => {
@@ -477,6 +495,11 @@ describe('workflow query service — asset library page model', () => {
       project,
       [projectAsset],
     );
+    const [listEnriched] = await informationService.enrichProjectAssetInformationAssets(
+      project,
+      [projectAsset],
+      { includeImageDimensions: false },
+    );
     const [libraryAsset] = await informationService.enrichAssetLibraryImageDimensions(
       informationService.getAssetLibraryPage({ projectId: project.id, pageSize: 10 }).assets,
     );
@@ -506,6 +529,14 @@ describe('workflow query service — asset library page model', () => {
       formattedModified: libraryAsset.formattedModified,
       formattedDimensions: libraryAsset.formattedDimensions,
       release_titles: libraryAsset.release_titles,
+      effectiveTags: libraryAsset.tags,
+    });
+    expect(listEnriched).not.toHaveProperty('formattedDimensions');
+    expect(listEnriched).toMatchObject({
+      formattedSize: libraryAsset.formattedSize,
+      formattedModified: libraryAsset.formattedModified,
+      release_titles: libraryAsset.release_titles,
+      tags: [{ displayName: 'Beta Direct' }],
       effectiveTags: libraryAsset.tags,
     });
   });

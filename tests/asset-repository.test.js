@@ -922,6 +922,24 @@ describe('asset repository', () => {
       expect(result).toEqual([]);
     });
 
+    it('omits LIMIT/OFFSET only for explicit all and preserves the default page size', () => {
+      for (let index = 0; index < 30; index++) {
+        assetRepo.upsert(projectId, `asset-${String(index).padStart(2, '0')}.png`, {
+          filename: `asset-${String(index).padStart(2, '0')}.png`,
+          extension: 'png', mimeType: 'image/png', sizeBytes: 100, modifiedAt: null,
+        });
+      }
+      const prepareSpy = vi.spyOn(db, 'prepare');
+
+      expect(assetRepo.findProjectAssetPage(projectId)).toHaveLength(25);
+      const defaultSql = prepareSpy.mock.calls.at(-1)[0];
+      expect(defaultSql).toMatch(/LIMIT \? OFFSET \?/);
+
+      expect(assetRepo.findProjectAssetPage(projectId, { page: 99, pageSize: 'all' })).toHaveLength(30);
+      const allSql = prepareSpy.mock.calls.at(-1)[0];
+      expect(allSql).not.toMatch(/\bLIMIT\b|\bOFFSET\b/);
+    });
+
     it('returns assets with all default columns', () => {
       assetRepo.upsert(projectId, 'a.png', {
         filename: 'a.png', extension: 'png', mimeType: 'image/png',
@@ -1486,6 +1504,19 @@ describe('asset repository', () => {
         category_display_order: null,
         release_usage_count: 0,
       });
+    });
+
+    it('treats only explicit null as unbounded while omission keeps the 25-row default', () => {
+      for (let index = 0; index < 30; index++) {
+        addAsset(projectId, `asset-${String(index).padStart(2, '0')}.png`);
+      }
+      const prepareSpy = vi.spyOn(db, 'prepare');
+
+      expect(assetRepo.findAllAssets()).toHaveLength(25);
+      expect(prepareSpy.mock.calls.at(-1)[0]).toMatch(/LIMIT \? OFFSET \?/);
+
+      expect(assetRepo.findAllAssets({ limit: null })).toHaveLength(30);
+      expect(prepareSpy.mock.calls.at(-1)[0]).not.toMatch(/\bLIMIT\b|\bOFFSET\b/);
     });
 
     it('narrows the global list and count by project ID', () => {
