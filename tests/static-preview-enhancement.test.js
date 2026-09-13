@@ -4659,6 +4659,8 @@ describe('page-local asset selection enhancement', () => {
     checkbox.closest = () => card;
     const link = { closest: () => link };
     const renameForm = { closest: () => renameForm };
+    const roleSelect = { closest: () => roleSelect };
+    card.contains = (element) => element === card || element === link || element === renameForm || element === roleSelect;
     const scope = {
       querySelectorAll(selector) {
         if (selector === '[data-asset-selection-form]') return [form];
@@ -4678,6 +4680,8 @@ describe('page-local asset selection enhancement', () => {
     click(link);
     expect(checkbox.checked).toBe(true);
     click(renameForm);
+    expect(checkbox.checked).toBe(true);
+    click(roleSelect);
     expect(checkbox.checked).toBe(true);
 
     const keydown = listeners.find((entry) => entry.type === 'keydown').handler;

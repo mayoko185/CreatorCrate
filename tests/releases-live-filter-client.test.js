@@ -17,11 +17,19 @@ const RELEASE_ASSETS_TEMPLATE = fs.readFileSync(
 
 function templatePageSizeOptions(id) {
   const start = RELEASE_ASSETS_TEMPLATE.indexOf(`<select id="${id}"`);
-  const markup = RELEASE_ASSETS_TEMPLATE.slice(start, RELEASE_ASSETS_TEMPLATE.indexOf('</select>', start));
-  return [...markup.matchAll(/<option value="(\d+)"/g)].map(([, value]) => value);
+  if (start >= 0) {
+    const markup = RELEASE_ASSETS_TEMPLATE.slice(start, RELEASE_ASSETS_TEMPLATE.indexOf('</select>', start));
+    return [...markup.matchAll(/<option value="(\d+)"/g)].map(([, value]) => value);
+  }
+  const macroStart = RELEASE_ASSETS_TEMPLATE.indexOf(`id: "${id}"`);
+  const markup = RELEASE_ASSETS_TEMPLATE.slice(
+    macroStart,
+    RELEASE_ASSETS_TEMPLATE.indexOf('}) }}', macroStart),
+  );
+  return [...markup.matchAll(/\{ value: "(\d+)", label:/g)].map(([, value]) => value);
 }
 
-const FILTER_PAGE_SIZE_OPTIONS = templatePageSizeOptions('asset-page-size');
+const FILTER_PAGE_SIZE_OPTIONS = templatePageSizeOptions('release-asset-page-size-dropdown');
 const PAGE_SIZE_FORM_OPTIONS = templatePageSizeOptions('pageSize');
 
 function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } = {}) {
@@ -325,13 +333,23 @@ function makePage(action = '/releases', options = {}) {
 
 function makeReleaseAssetsPage({
   extension = 'png', category = '3', search = '', view = 'grid', pageSize: selectedPageSize = '50',
+  dialogOpen = false, assets = [{ id: '99', selected: true }], offPageSelectedIds = [],
+  persistedSelectedIds = [...assets.filter((asset) => asset.selected).map((asset) => String(asset.id)), ...offPageSelectedIds],
+  readOnly = false,
 } = {}) {
   const document = makeNode({ tagName: 'document' });
   document.nodeType = 9;
   document.ownerDocument = document;
   document.activeElement = null;
+  document.createElement = (tagName) => makeNode({ tagName });
   const region = makeNode({ attrs: { 'data-release-assets-live-region': '' } });
   const status = makeNode({ attrs: { 'data-release-assets-live-status': '' } });
+  const dialog = makeNode({ tagName: 'dialog', attrs: { id: 'release-assets-filter-dialog', 'data-app-dialog': '' } });
+  dialog.open = dialogOpen;
+  const filterTrigger = makeNode({
+    tagName: 'a',
+    attrs: { href: '#release-assets-filter-dialog', 'data-dialog-open': 'release-assets-filter-dialog' },
+  });
   const filter = makeNode({
     tagName: 'form',
     attrs: {
@@ -355,23 +373,31 @@ function makeReleaseAssetsPage({
   );
   filter.appendChild(filterPageSize);
   const searchInput = add({ name: 'search', type: 'search', 'data-release-assets-live-search': '' }, search);
+  const extensionAll = add({ name: 'extension', type: 'radio', value: '', 'data-release-assets-live-filter-control': '' }, '', extension === '');
   const extensionPng = add({ name: 'extension', type: 'radio', value: 'png', 'data-release-assets-live-filter-control': '' }, 'png', extension === 'png');
   const extensionJpg = add({ name: 'extension', type: 'radio', value: 'jpg', 'data-release-assets-live-filter-control': '' }, 'jpg', extension === 'jpg');
+  const categoryAll = add({ name: 'category', type: 'radio', value: '', 'data-release-assets-live-filter-control': '' }, '', category === '');
   const categoryThree = add({ name: 'category', type: 'radio', value: '3', 'data-release-assets-live-filter-control': '' }, '3', category === '3');
   const categoryFour = add({ name: 'category', type: 'radio', value: '4', 'data-release-assets-live-filter-control': '' }, '4', category === '4');
   const selection = makeNode({
     tagName: 'form',
-    attrs: { action: '/releases/7/assets', method: 'post', id: 'release-assets-form' },
+    attrs: {
+      action: '/releases/7/assets', method: 'post', id: 'release-assets-form', 'data-asset-selection-form': '',
+    },
   });
-  selection.appendChild(makeNode({
-    tagName: 'input',
-    attrs: { name: 'selectedAssetIds', type: 'checkbox', value: '99' },
-    value: '99',
-    checked: true,
-  }));
+  const hiddenMembership = makeNode({ tagName: 'span', attrs: { 'data-release-assets-hidden-membership': '' } });
+  offPageSelectedIds.forEach((assetId) => hiddenMembership.appendChild(makeNode({
+    tagName: 'input', attrs: { name: 'selectedAssetIds', type: 'hidden', value: String(assetId) }, value: String(assetId),
+  })));
+  selection.appendChild(hiddenMembership);
+  const persistedMembership = makeNode({ tagName: 'span', attrs: { 'data-release-assets-persisted-membership': '' } });
+  persistedSelectedIds.forEach((assetId) => persistedMembership.appendChild(makeNode({
+    tagName: 'input', attrs: { type: 'hidden', 'data-release-assets-persisted-id': '', value: String(assetId) }, value: String(assetId),
+  })));
+  selection.appendChild(persistedMembership);
   const disclosure = makeNode({
     tagName: 'details',
-    attrs: { 'data-asset-viewer-filter-disclosure': '' },
+    attrs: { id: 'release-extension-filter', 'data-asset-viewer-filter-disclosure': '' },
   });
   disclosure.appendChild(makeNode({ tagName: 'summary' }));
   const viewNav = makeNode({ tagName: 'nav', attrs: { class: 'view-switcher', 'aria-label': 'Asset display' } });
@@ -412,19 +438,35 @@ function makeReleaseAssetsPage({
     tagName: 'a',
     attrs: { href: `/releases/7/assets?view=${view}&pageSize=${selectedPageSize}`, 'data-release-assets-reset': '' },
   });
+  dialog.appendChild(filter);
+  filter.appendChild(reset);
+  filter.appendChild(disclosure);
   region.appendChild(status);
-  region.appendChild(selection);
+  const membershipCheckboxes = (readOnly ? [] : assets).map(({ id, selected = false }) => {
+    const checkbox = makeNode({
+      tagName: 'input',
+      attrs: {
+        name: 'selectedAssetIds', type: 'checkbox', value: String(id), form: 'release-assets-form',
+      },
+      value: String(id),
+      checked: selected,
+    });
+    region.appendChild(checkbox);
+    return checkbox;
+  });
   region.appendChild(viewNav);
-  region.appendChild(filter);
-  region.appendChild(pagination);
-  region.appendChild(pageSizeForm);
-  region.appendChild(reset);
-  region.appendChild(disclosure);
+  if (!readOnly) {
+    region.appendChild(filterTrigger);
+    region.appendChild(pagination);
+    region.appendChild(pageSizeForm);
+    document.appendChild(selection);
+  }
   document.appendChild(region);
+  if (!readOnly) document.appendChild(dialog);
   return {
-    document, region, status, filter, disclosure, view: viewField, page, filterPageSize, pageSize,
-    searchInput, extensionPng, extensionJpg, categoryThree, categoryFour, selection, viewNav,
-    grid, list, pagination, next, pageSizeForm, reset,
+    document, region, status, dialog, filterTrigger, filter, disclosure, view: viewField, page, filterPageSize, pageSize,
+    searchInput, extensionAll, extensionPng, extensionJpg, categoryAll, categoryThree, categoryFour, selection, viewNav,
+    grid, list, pagination, next, pageSizeForm, reset, hiddenMembership, membershipCheckboxes,
   };
 }
 
@@ -447,7 +489,14 @@ function makeWindow(document, pages = new Map()) {
     URLSearchParams,
     FormData: class FormDataMock {
       constructor(form) {
-        this.fields = form.querySelectorAll('input, select, textarea')
+        const formId = form.id || form.getAttribute?.('id');
+        const candidates = form.ownerDocument?.querySelectorAll?.('input, select, textarea')
+          || form.querySelectorAll('input, select, textarea');
+        this.fields = candidates
+          .filter((field) => (
+            form.contains?.(field) || field.form === form
+              || (Boolean(formId) && field.getAttribute?.('form') === formId)
+          ))
           .filter((field) => field.name && !field.disabled
             && (field.type !== 'checkbox' && field.type !== 'radio' || field.checked))
           .map((field) => [field.name, field.value]);
@@ -478,6 +527,18 @@ function responseFor(text, url) {
 
 async function flush() {
   for (let index = 0; index < 10; index += 1) await Promise.resolve();
+}
+
+function releaseMembershipPayload(windowObject, selectionForm) {
+  return Array.from(new windowObject.FormData(selectionForm).entries())
+    .filter(([name]) => name === 'selectedAssetIds')
+    .map(([, assetId]) => assetId);
+}
+
+function releaseHiddenMembership(selectionForm) {
+  return selectionForm.querySelectorAll(
+    '[data-release-assets-hidden-membership] input[type="hidden"][name="selectedAssetIds"]',
+  ).map((input) => input.value);
 }
 
 describe('Releases live filtering enhancement', () => {
@@ -558,9 +619,264 @@ describe('Releases live filtering enhancement', () => {
     expect(initial.region.getAttribute('data-releases-live-state')).toBe('error');
   });
 
+  it('initializes an ordinary persisted page without membership overrides', () => {
+    const initial = makeReleaseAssetsPage({
+      assets: [{ id: '1', selected: true }, { id: '2', selected: false }],
+      persistedSelectedIds: ['1'],
+    });
+    const windowObject = makeWindow(initial.document);
+    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets';
+    windowObject.location.pathname = '/releases/7/assets';
+
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    const selectionState = initial.document.__creatorCrateReleaseAssetsLiveFiltering.releaseAssetsSelection;
+    expect(selectionState.authoritativeSelected).toEqual(new Set(['1']));
+    expect(selectionState.overrides).toEqual(new Map());
+    expect(releaseMembershipPayload(windowObject, initial.selection)).toEqual(['1']);
+  });
+
+  it('preserves an explicit selection while hidden and when the asset returns', async () => {
+    const initial = makeReleaseAssetsPage({ assets: [{ id: '1', selected: false }] });
+    const hidden = makeReleaseAssetsPage({ assets: [{ id: '2', selected: false }] });
+    const returned = makeReleaseAssetsPage({ assets: [{ id: '1', selected: false }] });
+    const pages = new Map([['hidden', hidden.document], ['returned', returned.document]]);
+    const windowObject = makeWindow(initial.document, pages);
+    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets';
+    windowObject.location.pathname = '/releases/7/assets';
+    windowObject.fetch
+      .mockResolvedValueOnce(responseFor('hidden', 'http://creatorcrate.test/releases/7/assets?page=2'))
+      .mockResolvedValueOnce(responseFor('returned', 'http://creatorcrate.test/releases/7/assets'));
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    initial.membershipCheckboxes[0].checked = true;
+    initial.membershipCheckboxes[0].dispatch('change');
+    initial.next.dispatch('click');
+    await flush();
+
+    expect(releaseHiddenMembership(initial.selection)).toEqual(['1']);
+    hidden.next.dispatch('click');
+    await flush();
+
+    expect(returned.membershipCheckboxes[0].checked).toBe(true);
+    expect(releaseHiddenMembership(initial.selection)).toEqual([]);
+    expect(releaseMembershipPayload(windowObject, initial.selection)).toEqual(['1']);
+  });
+
+  it('preserves an explicit deselection while hidden and when the asset returns', async () => {
+    const initial = makeReleaseAssetsPage({ assets: [{ id: '1', selected: true }] });
+    const hidden = makeReleaseAssetsPage({ assets: [{ id: '2', selected: false }], offPageSelectedIds: ['1'] });
+    const returned = makeReleaseAssetsPage({ assets: [{ id: '1', selected: true }] });
+    const pages = new Map([['hidden-selected', hidden.document], ['returned-selected', returned.document]]);
+    const windowObject = makeWindow(initial.document, pages);
+    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets';
+    windowObject.location.pathname = '/releases/7/assets';
+    windowObject.fetch
+      .mockResolvedValueOnce(responseFor('hidden-selected', 'http://creatorcrate.test/releases/7/assets?page=2'))
+      .mockResolvedValueOnce(responseFor('returned-selected', 'http://creatorcrate.test/releases/7/assets'));
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    initial.membershipCheckboxes[0].checked = false;
+    initial.membershipCheckboxes[0].dispatch('change');
+    initial.next.dispatch('click');
+    await flush();
+
+    expect(releaseHiddenMembership(initial.selection)).toEqual([]);
+    hidden.next.dispatch('click');
+    await flush();
+
+    expect(returned.membershipCheckboxes[0].checked).toBe(false);
+    expect(releaseMembershipPayload(windowObject, initial.selection)).toEqual([]);
+  });
+
+  it('preserves draft membership across pages and page-size replacements', async () => {
+    const initial = makeReleaseAssetsPage({ assets: [{ id: '1', selected: false }] });
+    const secondPage = makeReleaseAssetsPage({ assets: [{ id: '2', selected: false }] });
+    const resized = makeReleaseAssetsPage({ assets: [{ id: '3', selected: false }], pageSize: '25' });
+    const returned = makeReleaseAssetsPage({ assets: [{ id: '1', selected: false }], pageSize: '25' });
+    const pages = new Map([
+      ['second-page', secondPage.document], ['resized', resized.document], ['page-return', returned.document],
+    ]);
+    const windowObject = makeWindow(initial.document, pages);
+    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets';
+    windowObject.location.pathname = '/releases/7/assets';
+    windowObject.fetch
+      .mockResolvedValueOnce(responseFor('second-page', 'http://creatorcrate.test/releases/7/assets?page=2'))
+      .mockResolvedValueOnce(responseFor('resized', 'http://creatorcrate.test/releases/7/assets?pageSize=25'))
+      .mockResolvedValueOnce(responseFor('page-return', 'http://creatorcrate.test/releases/7/assets?pageSize=25&page=1'));
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    initial.membershipCheckboxes[0].checked = true;
+    initial.membershipCheckboxes[0].dispatch('change');
+    initial.next.dispatch('click');
+    await flush();
+    secondPage.pageSize.value = '25';
+    secondPage.pageSizeForm.dispatch('change', { target: secondPage.pageSize });
+    await flush();
+    resized.next.dispatch('click');
+    await flush();
+
+    expect(returned.membershipCheckboxes[0].checked).toBe(true);
+    expect(releaseMembershipPayload(windowObject, initial.selection)).toEqual(['1']);
+  });
+
+  it('preserves draft membership through grid-list-grid replacements', async () => {
+    const initial = makeReleaseAssetsPage({ assets: [{ id: '1', selected: false }], view: 'grid' });
+    const list = makeReleaseAssetsPage({ assets: [{ id: '1', selected: false }], view: 'list' });
+    const grid = makeReleaseAssetsPage({ assets: [{ id: '1', selected: false }], view: 'grid' });
+    const pages = new Map([['list-view', list.document], ['grid-view', grid.document]]);
+    const windowObject = makeWindow(initial.document, pages);
+    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets';
+    windowObject.location.pathname = '/releases/7/assets';
+    windowObject.fetch
+      .mockResolvedValueOnce(responseFor('list-view', 'http://creatorcrate.test/releases/7/assets?view=list'))
+      .mockResolvedValueOnce(responseFor('grid-view', 'http://creatorcrate.test/releases/7/assets?view=grid'));
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    initial.membershipCheckboxes[0].checked = true;
+    initial.membershipCheckboxes[0].dispatch('change');
+    initial.list.dispatch('click');
+    await flush();
+    list.grid.dispatch('click');
+    await flush();
+
+    expect(grid.membershipCheckboxes[0].checked).toBe(true);
+    expect(releaseMembershipPayload(windowObject, initial.selection)).toEqual(['1']);
+  });
+
+  it('keeps a newer membership change authoritative over an in-flight response', async () => {
+    const initial = makeReleaseAssetsPage({ assets: [{ id: '1', selected: false }] });
+    const returned = makeReleaseAssetsPage({ assets: [{ id: '1', selected: false }] });
+    const pages = new Map([['race-result', returned.document]]);
+    const windowObject = makeWindow(initial.document, pages);
+    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets';
+    windowObject.location.pathname = '/releases/7/assets';
+    let resolveRequest;
+    windowObject.fetch.mockReturnValue(new Promise((resolve) => { resolveRequest = resolve; }));
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    initial.next.dispatch('click');
+    initial.membershipCheckboxes[0].checked = true;
+    initial.membershipCheckboxes[0].dispatch('change');
+    resolveRequest(responseFor('race-result', 'http://creatorcrate.test/releases/7/assets?page=2'));
+    await flush();
+
+    expect(returned.membershipCheckboxes[0].checked).toBe(true);
+    expect(releaseMembershipPayload(windowObject, initial.selection)).toEqual(['1']);
+  });
+
+  it('reconciles repeated replacements without duplicate hidden IDs or listeners', async () => {
+    const initial = makeReleaseAssetsPage({ assets: [{ id: '1', selected: false }] });
+    const hidden = makeReleaseAssetsPage({ assets: [{ id: '2', selected: false }] });
+    const hiddenAgain = makeReleaseAssetsPage({ assets: [{ id: '3', selected: false }] });
+    const pages = new Map([['hidden-once', hidden.document], ['hidden-twice', hiddenAgain.document]]);
+    const windowObject = makeWindow(initial.document, pages);
+    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets';
+    windowObject.location.pathname = '/releases/7/assets';
+    windowObject.fetch
+      .mockResolvedValueOnce(responseFor('hidden-once', 'http://creatorcrate.test/releases/7/assets?page=2'))
+      .mockResolvedValueOnce(responseFor('hidden-twice', 'http://creatorcrate.test/releases/7/assets?page=3'));
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+    const initialChangeListenerCount = initial.document.listeners.filter(({ type }) => type === 'change').length;
+
+    initial.membershipCheckboxes[0].checked = true;
+    initial.membershipCheckboxes[0].dispatch('change');
+    initial.next.dispatch('click');
+    await flush();
+    hidden.next.dispatch('click');
+    await flush();
+
+    expect(releaseHiddenMembership(initial.selection)).toEqual(['1']);
+    expect(initial.document.listeners.filter(({ type }) => type === 'change')).toHaveLength(initialChangeListenerCount);
+    expect(hiddenAgain.membershipCheckboxes[0].listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+  });
+
+  it('lets untouched assets follow authoritative rendered membership', async () => {
+    const initial = makeReleaseAssetsPage({ assets: [{ id: '1', selected: true }] });
+    const authoritative = makeReleaseAssetsPage({ assets: [{ id: '1', selected: false }] });
+    const pages = new Map([['authoritative', authoritative.document]]);
+    const windowObject = makeWindow(initial.document, pages);
+    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets';
+    windowObject.location.pathname = '/releases/7/assets';
+    windowObject.fetch.mockResolvedValue(responseFor(
+      'authoritative', 'http://creatorcrate.test/releases/7/assets?page=2',
+    ));
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    initial.next.dispatch('click');
+    await flush();
+
+    expect(authoritative.membershipCheckboxes[0].checked).toBe(false);
+    expect(releaseMembershipPayload(windowObject, initial.selection)).toEqual([]);
+  });
+
+  it('preserves submitted membership from a 422 document across a persisted live replacement', async () => {
+    const validation = makeReleaseAssetsPage({
+      assets: [{ id: '1', selected: true }, { id: '2', selected: false }],
+      persistedSelectedIds: ['2'],
+    });
+    const persisted = makeReleaseAssetsPage({
+      assets: [{ id: '1', selected: false }, { id: '2', selected: true }],
+      persistedSelectedIds: ['2'],
+    });
+    const pages = new Map([['persisted-live-result', persisted.document]]);
+    const windowObject = makeWindow(validation.document, pages);
+    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets';
+    windowObject.location.pathname = '/releases/7/assets';
+    windowObject.fetch.mockResolvedValue(responseFor(
+      'persisted-live-result', 'http://creatorcrate.test/releases/7/assets?page=2',
+    ));
+
+    enhanceReleaseAssetsLiveFiltering(validation.document);
+
+    const selectionState = validation.document.__creatorCrateReleaseAssetsLiveFiltering.releaseAssetsSelection;
+    expect(selectionState.authoritativeSelected).toEqual(new Set(['2']));
+    expect(selectionState.overrides).toEqual(new Map([['1', true], ['2', false]]));
+    expect(releaseMembershipPayload(windowObject, validation.selection)).toEqual(['1']);
+
+    validation.next.dispatch('click');
+    await flush();
+
+    expect(persisted.membershipCheckboxes[0].checked).toBe(true);
+    expect(persisted.membershipCheckboxes[1].checked).toBe(false);
+    expect(releaseMembershipPayload(windowObject, validation.selection)).toEqual(['1']);
+    expect(new Set(releaseMembershipPayload(windowObject, validation.selection)).size).toBe(1);
+  });
+
+  it('submits exact membership with no duplicates and explicit deselections absent', () => {
+    const initial = makeReleaseAssetsPage({
+      assets: [{ id: '1', selected: true }, { id: '3', selected: false }],
+      offPageSelectedIds: ['2'],
+    });
+    const windowObject = makeWindow(initial.document);
+    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets';
+    windowObject.location.pathname = '/releases/7/assets';
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    initial.membershipCheckboxes[0].checked = false;
+    initial.membershipCheckboxes[0].dispatch('change');
+    initial.membershipCheckboxes[1].checked = true;
+    initial.membershipCheckboxes[1].dispatch('change');
+
+    expect(releaseHiddenMembership(initial.selection)).toEqual(['2']);
+    expect(releaseMembershipPayload(windowObject, initial.selection)).toEqual(['2', '3']);
+    expect(new Set(releaseMembershipPayload(windowObject, initial.selection)).size).toBe(2);
+  });
+
+  it('does not introduce editable draft membership on read-only Release Assets', () => {
+    const page = makeReleaseAssetsPage({ readOnly: true, assets: [{ id: '1', selected: true }] });
+    makeWindow(page.document);
+
+    expect(enhanceReleaseAssetsLiveFiltering(page.document)).toBe(0);
+    expect(page.document.querySelector('#release-assets-form')).toBe(null);
+    expect(page.membershipCheckboxes).toEqual([]);
+    expect(page.document.__creatorCrateReleaseAssetsLiveFiltering.releaseAssetsSelection).toBeUndefined();
+    expect(page.document.listeners).toEqual([]);
+  });
+
   it('filters Release Assets immediately, preserves sibling state, and rebinds once per replacement', async () => {
     vi.useFakeTimers();
-    const initial = makeReleaseAssetsPage();
+    const initial = makeReleaseAssetsPage({ dialogOpen: true });
     const afterExtension = makeReleaseAssetsPage({ extension: 'jpg', category: '3' });
     const afterCategory = makeReleaseAssetsPage({ extension: 'jpg', category: '4' });
     const afterSearch = makeReleaseAssetsPage({ extension: 'jpg', category: '4', search: 'needle' });
@@ -581,13 +897,15 @@ describe('Releases live filtering enhancement', () => {
     expect(enhanceReleaseAssetsLiveFiltering(initial.document)).toBe(2);
     expect(initial.filter.listeners).toHaveLength(3);
     expect(initial.filter.listeners.filter(({ type }) => type === 'input')).toHaveLength(1);
-    expect(initial.region.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
+    expect(initial.grid.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
     expect(enhanceReleaseAssetsLiveFiltering(initial.document)).toBe(2);
     expect(initial.filter.listeners).toHaveLength(3);
     expect(initial.filter.listeners.filter(({ type }) => type === 'input')).toHaveLength(1);
 
     initial.extensionPng.checked = false;
     initial.extensionJpg.checked = true;
+    initial.disclosure.open = true;
+    initial.extensionJpg.focus();
     initial.filter.dispatch('change', { target: initial.extensionJpg });
     await flush();
 
@@ -600,13 +918,18 @@ describe('Releases live filtering enhancement', () => {
     expect(requested.searchParams.has('page')).toBe(false);
     expect(requested.searchParams.has('selectedAssetIds')).toBe(false);
     expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(afterExtension.region);
-    expect(afterExtension.filter.listeners).toHaveLength(3);
-    expect(afterExtension.filter.listeners.filter(({ type }) => type === 'input')).toHaveLength(1);
-    expect(afterExtension.region.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
+    expect(initial.document.querySelector('[data-release-assets-live-filter]')).toBe(initial.filter);
+    expect(initial.dialog.open).toBe(true);
+    expect(initial.filter.contains(afterExtension.extensionJpg)).toBe(true);
+    expect(afterExtension.disclosure.open).toBe(true);
+    expect(initial.document.activeElement).toBe(afterExtension.extensionJpg);
+    expect(initial.filter.listeners).toHaveLength(3);
+    expect(initial.filter.listeners.filter(({ type }) => type === 'input')).toHaveLength(1);
+    expect(afterExtension.grid.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
 
     afterExtension.categoryThree.checked = false;
     afterExtension.categoryFour.checked = true;
-    afterExtension.filter.dispatch('change', { target: afterExtension.categoryFour });
+    initial.filter.dispatch('change', { target: afterExtension.categoryFour });
     await flush();
 
     expect(windowObject.fetch).toHaveBeenCalledTimes(2);
@@ -616,7 +939,7 @@ describe('Releases live filtering enhancement', () => {
     expect(requested.searchParams.has('selectedAssetIds')).toBe(false);
 
     afterCategory.searchInput.value = 'needle';
-    afterCategory.searchInput.dispatch('input');
+    initial.filter.dispatch('input', { target: afterCategory.searchInput });
     vi.advanceTimersByTime(349);
     expect(windowObject.fetch).toHaveBeenCalledTimes(2);
     vi.advanceTimersByTime(1);
@@ -629,14 +952,50 @@ describe('Releases live filtering enhancement', () => {
     expect(requested.searchParams.get('category')).toBe('4');
     expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(afterSearch.region);
     expect(enhanceReleaseAssetsLiveFiltering(initial.document)).toBe(2);
-    expect(afterSearch.filter.listeners).toHaveLength(3);
-    expect(afterSearch.filter.listeners.filter(({ type }) => type === 'input')).toHaveLength(1);
+    expect(initial.filter.listeners).toHaveLength(3);
+    expect(initial.filter.listeners.filter(({ type }) => type === 'input')).toHaveLength(1);
 
     afterSearch.categoryFour.checked = false;
     afterSearch.categoryThree.checked = true;
-    afterSearch.filter.dispatch('change', { target: afterSearch.categoryThree });
+    initial.filter.dispatch('change', { target: afterSearch.categoryThree });
     await flush();
     expect(windowObject.fetch).toHaveBeenCalledTimes(4);
+  });
+
+  it('applies the explicit All extension and category options immediately', async () => {
+    const initial = makeReleaseAssetsPage({ extension: 'jpg', category: '4' });
+    const afterExtensionReset = makeReleaseAssetsPage({ extension: '', category: '4' });
+    const afterCategoryReset = makeReleaseAssetsPage({ extension: '', category: '' });
+    const pages = new Map([
+      ['after-extension-reset', afterExtensionReset.document],
+      ['after-category-reset', afterCategoryReset.document],
+    ]);
+    const windowObject = makeWindow(initial.document, pages);
+    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets?extension=jpg&category=4';
+    windowObject.location.pathname = '/releases/7/assets';
+    windowObject.fetch
+      .mockResolvedValueOnce(responseFor('after-extension-reset', 'http://creatorcrate.test/releases/7/assets?category=4'))
+      .mockResolvedValueOnce(responseFor('after-category-reset', 'http://creatorcrate.test/releases/7/assets'));
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+
+    initial.extensionJpg.checked = false;
+    initial.extensionAll.checked = true;
+    initial.filter.dispatch('change', { target: initial.extensionAll });
+    await flush();
+
+    let requested = new URL(windowObject.fetch.mock.calls[0][0]);
+    expect(requested.searchParams.has('extension')).toBe(false);
+    expect(requested.searchParams.get('category')).toBe('4');
+
+    afterExtensionReset.categoryFour.checked = false;
+    afterExtensionReset.categoryAll.checked = true;
+    initial.filter.dispatch('change', { target: afterExtensionReset.categoryAll });
+    await flush();
+
+    requested = new URL(windowObject.fetch.mock.calls[1][0]);
+    expect(requested.searchParams.has('extension')).toBe(false);
+    expect(requested.searchParams.has('category')).toBe(false);
+    expect(initial.filter.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
   });
 
   it('preserves an active pageSize=10 across Extension, Category, and Search changes', async () => {
@@ -676,7 +1035,7 @@ describe('Releases live filtering enhancement', () => {
 
     afterExtension.categoryThree.checked = false;
     afterExtension.categoryFour.checked = true;
-    afterExtension.filter.dispatch('change', { target: afterExtension.categoryFour });
+    initial.filter.dispatch('change', { target: afterExtension.categoryFour });
     await flush();
 
     requested = new URL(windowObject.fetch.mock.calls[1][0]);
@@ -684,7 +1043,7 @@ describe('Releases live filtering enhancement', () => {
     expect(requested.searchParams.get('category')).toBe('4');
 
     afterCategory.searchInput.value = 'needle';
-    afterCategory.searchInput.dispatch('input');
+    initial.filter.dispatch('input', { target: afterCategory.searchInput });
     vi.advanceTimersByTime(350);
     await flush();
 
@@ -751,8 +1110,114 @@ describe('Releases live filtering enhancement', () => {
     expect(windowObject.fetch.mock.calls[3][0]).toBe(new URL(afterReset.grid.getAttribute('href'), windowObject.location.href).href);
     expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(afterView.region);
     expect(afterView.pageSizeForm.listeners).toHaveLength(2);
-    expect(afterView.region.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
+    expect(afterView.grid.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
     expect(windowObject.history.pushes).toHaveLength(4);
+  });
+
+  it('suppresses stale Release Assets responses while keeping the external dialog authoritative', async () => {
+    const initial = makeReleaseAssetsPage({ dialogOpen: true });
+    const stale = makeReleaseAssetsPage({ extension: 'jpg', category: '3' });
+    const latest = makeReleaseAssetsPage({ extension: 'jpg', category: '4' });
+    const pages = new Map([
+      ['stale', stale.document],
+      ['latest', latest.document],
+    ]);
+    const windowObject = makeWindow(initial.document, pages);
+    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets';
+    windowObject.location.pathname = '/releases/7/assets';
+    const requests = [];
+    windowObject.fetch.mockImplementation((url) => new Promise((resolve) => requests.push({ url, resolve })));
+
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+    initial.extensionPng.checked = false;
+    initial.extensionJpg.checked = true;
+    initial.filter.dispatch('change', { target: initial.extensionJpg });
+    initial.categoryThree.checked = false;
+    initial.categoryFour.checked = true;
+    initial.filter.dispatch('change', { target: initial.categoryFour });
+
+    requests[1].resolve(responseFor('latest', 'http://creatorcrate.test/releases/7/assets?extension=jpg&category=4'));
+    await flush();
+    requests[0].resolve(responseFor('stale', 'http://creatorcrate.test/releases/7/assets?extension=jpg&category=3'));
+    await flush();
+
+    expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(latest.region);
+    expect(initial.filter.contains(latest.categoryFour)).toBe(true);
+    expect(initial.filter.contains(stale.categoryThree)).toBe(false);
+    expect(initial.dialog.open).toBe(true);
+    expect(windowObject.history.pushes).toHaveLength(1);
+  });
+
+  it('uses canonical response URLs, reconciles Back/Forward, and keeps the dialog usable after errors', async () => {
+    const initial = makeReleaseAssetsPage({ dialogOpen: true });
+    const canonical = makeReleaseAssetsPage({ extension: 'jpg', category: '4', pageSize: '25' });
+    const restored = makeReleaseAssetsPage({ extension: 'png', category: '3', search: 'back', pageSize: '50' });
+    const retried = makeReleaseAssetsPage({ extension: 'jpg', category: '3', pageSize: '50' });
+    const pages = new Map([
+      ['canonical', canonical.document],
+      ['restored', restored.document],
+      ['retried', retried.document],
+    ]);
+    const windowObject = makeWindow(initial.document, pages);
+    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets';
+    windowObject.location.pathname = '/releases/7/assets';
+    windowObject.location.assign = vi.fn();
+    const canonicalUrl = 'http://creatorcrate.test/releases/7/assets?view=grid&pageSize=25&extension=jpg&category=4';
+    windowObject.fetch
+      .mockResolvedValueOnce(responseFor('canonical', canonicalUrl))
+      .mockResolvedValueOnce(responseFor('restored', 'http://creatorcrate.test/releases/7/assets?search=back'))
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(responseFor('retried', 'http://creatorcrate.test/releases/7/assets?extension=jpg'));
+
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+    initial.membershipCheckboxes[0].checked = false;
+    initial.membershipCheckboxes[0].dispatch('change');
+    initial.extensionPng.checked = false;
+    initial.extensionJpg.checked = true;
+    initial.filter.dispatch('change', { target: initial.extensionJpg });
+    await flush();
+
+    expect(windowObject.history.pushes).toEqual([
+      expect.objectContaining({ url: canonicalUrl }),
+    ]);
+    expect(initial.document.querySelector('[data-release-assets-live-filter]')).toBe(initial.filter);
+    expect(initial.filter.contains(canonical.categoryFour)).toBe(true);
+    expect(canonical.filterPageSize.value).toBe('25');
+    expect(canonical.membershipCheckboxes[0].checked).toBe(false);
+    expect(initial.dialog.open).toBe(true);
+
+    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets?search=back';
+    windowObject.location.pathname = '/releases/7/assets';
+    windowObject.dispatch('popstate');
+    await flush();
+
+    expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(restored.region);
+    expect(initial.filter.contains(restored.searchInput)).toBe(true);
+    expect(restored.searchInput.value).toBe('back');
+    expect(restored.membershipCheckboxes[0].checked).toBe(false);
+    expect(releaseMembershipPayload(windowObject, initial.selection)).toEqual([]);
+    expect(initial.dialog.open).toBe(true);
+
+    restored.categoryThree.checked = false;
+    restored.categoryFour.checked = true;
+    initial.filter.dispatch('change', { target: restored.categoryFour });
+    await flush();
+
+    expect(windowObject.location.assign).not.toHaveBeenCalled();
+    expect(restored.status.textContent).toBe('Could not update Release Assets. Change the filters to try again.');
+    expect(restored.region.getAttribute('data-release-assets-live-state')).toBe('error');
+    expect(initial.dialog.open).toBe(true);
+    expect(initial.filter.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+
+    restored.categoryFour.checked = false;
+    restored.extensionPng.checked = false;
+    restored.extensionJpg.checked = true;
+    initial.filter.dispatch('change', { target: restored.extensionJpg });
+    await flush();
+
+    expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(retried.region);
+    expect(initial.dialog.open).toBe(true);
+    expect(windowObject.fetch).toHaveBeenCalledTimes(4);
   });
 
   it('serializes Schedule All by removing an active Schedule parameter', async () => {

@@ -2135,7 +2135,7 @@ describe('Phase 6B HTTP workflow', () => {
         expect(res.text).not.toMatch(/type="checkbox"[^>]*disabled/);
         // Save Selection button present and enabled
         expect(res.text).toContain('Save Selection');
-        expect(res.text).toMatch(/<button class="button button-primary" type="submit">Save Selection<\/button>/);
+        expect(res.text).toMatch(/<button class="button button-small button-primary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--left"\s+type="submit" aria-label="Save Selection" data-tooltip="Save Selection">[\s\S]*?<svg[^>]*aria-hidden="true"[^>]*focusable="false"/);
       });
 
       it('archived parent project has no checkboxes and no Save Selection', async () => {

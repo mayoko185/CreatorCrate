@@ -7,6 +7,14 @@ import {
   buildPreviewAltText,
   formatFileSize,
 } from './asset-presentation.js';
+import { formatLocalDate, formatLocalTime } from '../util/date.js';
+
+function formatAssetModified(value) {
+  if (typeof value !== 'string' || value.length === 0) return '\u2014';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '\u2014';
+  return `${formatLocalDate(date)} ${formatLocalTime(date)}`;
+}
 
 function assetIdFromRow(row, selected) {
   return selected ? (row?.asset_id ?? row?.id) : row?.id;
@@ -102,6 +110,7 @@ export function buildReleaseAssetPresentation(row, { selected = false, categorie
     size_bytes: asset.size_bytes,
     formattedSize: hasSize ? formatFileSize(asset.size_bytes) : null,
     modified_at: asset.modified_at,
+    formattedModified: formatAssetModified(asset.modified_at),
     is_present: asset.is_present,
     presence_state: asset.is_present ? 'present' : 'missing',
     presenceLabel: asset.is_present ? 'Present' : 'Missing at last scan',

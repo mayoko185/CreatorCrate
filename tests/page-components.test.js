@@ -597,6 +597,20 @@ describe('Phase 10.5A: Shared page-level components', () => {
       expect(lead.replace(/<[^>]+>/g, '').trim()).toBe('');
     });
 
+    it('groups an adjacent lead immediately after the primary lead', () => {
+      const env = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: true });
+      const html = env.renderString(
+        '{% import "partials/page-heading.njk" as pageHeading %}{{ pageHeading.render("", "", "", "/projects/7", "Back to project", "", "projects", "/releases/9", "Back to release", "", "releases") }}',
+        {}
+      );
+      const navigation = html.match(/<nav class="page-heading-navigation" aria-label="Page navigation">([\s\S]*?)<\/nav>/)?.[1] || '';
+
+      expect(navigation.indexOf('href="/projects/7"')).toBeLessThan(navigation.indexOf('href="/releases/9"'));
+      expect(navigation.match(/class="button button-secondary page-heading-lead page-heading-lead--icon asset-tooltip asset-tooltip--left"/g)).toHaveLength(2);
+      expect(navigation).toContain('aria-label="Back to project" data-tooltip="Back to project"');
+      expect(navigation).toContain('aria-label="Back to release" data-tooltip="Back to release"');
+    });
+
     it('renders the page-heading wrapper for a lead-only invocation', () => {
       const env = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: true });
       const html = env.renderString(

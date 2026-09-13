@@ -18,7 +18,11 @@
   <div data-releases-live-region>
     <span class="sr-only" data-releases-live-status aria-live="polite" aria-atomic="true"></span>
     {% call pageHeading.render() %}
-      <a class="button button-primary" href="/releases/new" data-dialog-open="release-create-dialog" data-dialog-invocation>New Release</a>
+      <a class="button button-small button-primary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--left"
+         href="/releases/new" data-dialog-open="release-create-dialog" data-dialog-invocation
+         aria-label="New Release" data-tooltip="New Release">
+        {{ icons.icon('plus') }}
+      </a>
     {% endcall %}
 
     {% if releasesDefaultsNotice %}
@@ -56,6 +60,7 @@
           <tr>
             <th>Title</th>
             <th>Project</th>
+            <th>Release status</th>
             <th>Project status</th>
             <th>Planned</th>
             <th>Social Posts</th>
@@ -70,6 +75,13 @@
                 <a href="/releases/{{ release.id }}">{{ release.title }}</a>
               </td>
               <td><a href="/projects/{{ release.project_id }}">{{ release.project_title }}</a></td>
+              <td>
+                {% if release.published_date %}
+                  <span class="status-badge status-badge--success">Published</span>
+                {% else %}
+                  —
+                {% endif %}
+              </td>
               <td>{% set status = release.project_status %}{% include "partials/status-badge.njk" %}</td>
               <td>{{ release.planned_date or '—' }}{% if release.planned_time %} {{ release.planned_time }}{% endif %}</td>
               <td>{{ socialPrepSummary.render(release.socialPreparation, false) }}</td>

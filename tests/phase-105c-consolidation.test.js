@@ -51,6 +51,14 @@ function extractSectionByHeading(html, heading) {
   return afterHeading.split('</section>')[0];
 }
 
+function extractReleaseAssetsSection(html) {
+  return html.match(/<section data-release-assets-live-region>[\s\S]*?<\/section>/)?.[0] || '';
+}
+
+function extractSelectedAssetsSection(html) {
+  return html.match(/<section class="asset-browser-layout" aria-label="Selected assets" data-selected-assets>[\s\S]*?<\/section>/)?.[0] || '';
+}
+
 /**
  * Resolve the flat project directory by scanning PROJECTS_ROOT for the
  * slug suffix. Status never participates: the project directory is a
@@ -419,7 +427,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
         .expect(302);
 
       const res = await agent.get(createRes.headers.location).expect(200);
-      const selectedSection = extractSectionByHeading(res.text, 'Selected Assets');
+      const selectedSection = extractSelectedAssetsSection(res.text);
       expect(selectedSection).toContain('<ul class="asset-grid" role="listbox" aria-label="Selected release assets">');
       expect(selectedSection).not.toContain('<table class="data-table">');
       expect(selectedSection).not.toContain('table-scroll');
@@ -670,7 +678,7 @@ describe('Phase 10.5C: Release page visual consolidation', () => {
         .expect(302);
 
       const res = await agent.get(`${relRes.headers.location}/assets`).expect(200);
-      const selectedSection = extractSectionByHeading(res.text, 'Release Assets');
+      const selectedSection = extractReleaseAssetsSection(res.text);
       const selectedId = byFilename('selected-primary-with-long-action-name.txt').id;
       const previewId = byFilename('selected-preview.txt').id;
       const candidateId = byFilename('candidate-available.txt').id;

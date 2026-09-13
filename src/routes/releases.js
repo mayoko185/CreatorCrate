@@ -1513,6 +1513,12 @@ function buildOffPageSelectedAssetIds(releaseAssets, assetPresentation) {
     .filter((assetId) => assetId !== undefined && assetId !== null && !visibleIds.has(String(assetId)));
 }
 
+function buildSelectedAssetIds(releaseAssets) {
+  return (Array.isArray(releaseAssets) ? releaseAssets : [])
+    .map((asset) => asset?.asset_id)
+    .filter((assetId) => assetId !== undefined && assetId !== null);
+}
+
 function buildAssetPageRenderModel(
   releaseId,
   req,
@@ -1548,6 +1554,7 @@ function buildAssetPageRenderModel(
     eligibleAssetCount: viewModel.eligibleAssetCount,
     eligibleCandidateCount: viewModel.eligibleCandidateCount,
     offPageSelectedAssetIds: buildOffPageSelectedAssetIds(releaseAssets, pagePresentation),
+    persistedSelectedAssetIds: buildSelectedAssetIds(viewModel.releaseAssets),
     view: resolveReleaseAssetView(req.query),
     errors,
     pageUrl: buildAssetPageUrl(releaseId, buildReleaseAssetPageQuery(viewModel, req.query)),

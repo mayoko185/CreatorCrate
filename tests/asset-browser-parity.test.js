@@ -21,6 +21,7 @@ import { getDisabledModeCsrf } from './helpers/auth.js';
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const PROJECT_ASSETS_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/projects/assets.njk', import.meta.url));
 const ASSET_PRESENTATION_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/partials/asset-presentation.njk', import.meta.url));
+const LIVE_REGIONS_CLIENT_PATH = fileURLToPath(new URL('../src/static/client/live-regions.js', import.meta.url));
 
 describe('asset-browser structural parity: releases vs projects', () => {
   let db;
@@ -113,17 +114,29 @@ describe('asset-browser structural parity: releases vs projects', () => {
       }
     });
 
-    it('filter form is inside asset-browser-content on both pages', async () => {
+    it('both pages expose Filter openers with external overlay dialogs', async () => {
       const [proj, rel] = await Promise.all([
         agent.get(`/projects/${projectId}/assets`).expect(200),
         agent.get(`${releaseLocation}/assets`).expect(200),
       ]);
-      for (const html of [proj.text, rel.text]) {
-        const contentStart = html.indexOf('asset-browser-content');
-        expect(contentStart).toBeGreaterThan(-1);
-        const filterPos = html.indexOf('class="filters');
-        expect(filterPos).toBeGreaterThan(contentStart);
+      for (const [html, prefix] of [[proj.text, 'project'], [rel.text, 'release']]) {
+        const dialogId = `${prefix}-assets-filter-dialog`;
+        expect(html).toContain(`href="#${dialogId}" aria-label="Filter assets"`);
+        expect(html).toContain(`data-dialog-open="${dialogId}"`);
+        const dialog = html.match(new RegExp(`<dialog id="${dialogId}"[^>]*>[\\s\\S]*?<\\/dialog>`));
+        expect(dialog).not.toBeNull();
+        expect(dialog[0]).toContain('class="app-dialog" data-app-dialog');
+        expect(dialog[0]).toContain(`aria-labelledby="${dialogId}-title"`);
+        expect(dialog[0]).toContain('class="app-dialog-card" role="document"');
+        expect(dialog[0]).toContain(`<h2 id="${dialogId}-title">Filter</h2>`);
+        expect(html.indexOf('</main>')).toBeGreaterThan(-1);
+        expect(html.indexOf(dialog[0])).toBeGreaterThan(html.indexOf('</main>'));
+        expect(html).not.toContain('class="filters');
       }
+      const releaseDialog = rel.text.match(/<dialog id="release-assets-filter-dialog"[^>]*>[\s\S]*?<\/dialog>/)[0];
+      expect(releaseDialog).toMatch(/<form id="release-assets-filter"[^>]*method="get"[^>]*>/);
+      expect(releaseDialog).toContain(`action="${releaseLocation}/assets"`);
+      expect(releaseDialog).toContain('data-release-assets-live-filter');
     });
   });
 
@@ -160,7 +173,7 @@ describe('asset-browser structural parity: releases vs projects', () => {
       }
     });
 
-    it('asset-card-top, asset-card-media, asset-card-body appear on both pages', async () => {
+    it('both pages use the preview-only grid card and shared information popover', async () => {
       const [proj, rel] = await Promise.all([
         agent.get(`/projects/${projectId}/assets`).expect(200),
         agent.get(`${releaseLocation}/assets`).expect(200),
@@ -168,9 +181,9 @@ describe('asset-browser structural parity: releases vs projects', () => {
       for (const html of [proj.text, rel.text]) {
         expect(html).toContain('class="asset-card-top"');
         expect(html).toContain('class="asset-card-media');
-        expect(html).toContain('class="asset-card-body"');
-        expect(html).toContain('class="asset-card-title-controls"');
-        expect(html).toContain('class="asset-card-title-row"');
+        expect(html).toContain('data-asset-viewer-preview');
+        expect(html).toContain('data-asset-info-card');
+        expect(html).not.toContain('class="asset-card-body"');
       }
     });
 
@@ -285,7 +298,7 @@ describe('asset-browser structural parity: releases vs projects', () => {
       expect(listTemplate).not.toContain('topStatus');
     });
 
-    it('scopes the project hierarchy to project list cards', async () => {
+    it('uses the project list hierarchy and sizing classes on both pages', async () => {
       const [proj, rel] = await Promise.all([
         agent.get(`/projects/${projectId}/assets?view=list`).expect(200),
         agent.get(`${releaseLocation}/assets?view=list`).expect(200),
@@ -294,36 +307,77 @@ describe('asset-browser structural parity: releases vs projects', () => {
       expect(proj.text).toContain('asset-list-card-identity');
       expect(proj.text).toContain('asset-list-card-primary-metadata');
       expect(proj.text).toContain('asset-list-card-associations-region');
-      expect(rel.text).not.toContain('asset-list-card-identity');
-      expect(rel.text).not.toContain('asset-list-card-primary-metadata');
-      expect(rel.text).not.toContain('asset-list-card-associations-region');
+      expect(rel.text).toContain('class="asset-list asset-list--project asset-list--release"');
+      expect(rel.text).toContain('data-list-size="large"');
+      expect(rel.text).toContain('asset-list-card--project asset-list-card--release');
+      expect(rel.text).toContain('asset-list-card-identity');
+      expect(rel.text).toContain('asset-list-card-primary-metadata');
+      expect(rel.text).toContain('asset-list-card-associations-region');
     });
   });
 
-  describe('project asset size control contract', () => {
-    it('keeps the grid control at Compact, Default, and Large', async () => {
-      const response = await agent.get(`/projects/${projectId}/assets?view=grid`).expect(200);
-      const controlStart = response.text.indexOf('data-asset-grid-size-controls');
-      const gridStart = response.text.indexOf('<ul class="asset-grid', controlStart);
-      const control = response.text.slice(controlStart, gridStart);
+  describe('shared asset size control contract', () => {
+    it('keeps the grid control at Compact, Default, and Large on both pages', async () => {
+      const responses = await Promise.all([
+        agent.get(`/projects/${projectId}/assets?view=grid`).expect(200),
+        agent.get(`${releaseLocation}/assets?view=grid`).expect(200),
+      ]);
 
-      expect(control).toContain('max="3"');
-      expect(control.match(/data-grid-size-option-label=/g)).toHaveLength(3);
-      expect(control).toContain('data-grid-size-option-label="default"');
+      for (const response of responses) {
+        const controlStart = response.text.indexOf('data-asset-grid-size-controls');
+        const gridStart = response.text.indexOf('<ul class="asset-grid', controlStart);
+        const control = response.text.slice(controlStart, gridStart);
+
+        expect(control).toContain('max="3"');
+        expect(control.match(/data-grid-size-option-label=/g)).toHaveLength(3);
+        expect(control).toContain('data-grid-size-option-label="default"');
+        expect(control).toContain('data-grid-size-labels-interactive');
+      }
     });
 
-    it('renders only Compact and Large for list view with Large as the default state', async () => {
-      const response = await agent.get(`/projects/${projectId}/assets?view=list`).expect(200);
-      const controlStart = response.text.indexOf('data-asset-list-size-controls');
-      const listStart = response.text.indexOf('<ul class="asset-list', controlStart);
-      const control = response.text.slice(controlStart, listStart);
+    it('renders Compact and Large list sizing with Large as the default on both pages', async () => {
+      const responses = await Promise.all([
+        agent.get(`/projects/${projectId}/assets?view=list`).expect(200),
+        agent.get(`${releaseLocation}/assets?view=list`).expect(200),
+      ]);
 
-      expect(control).toContain('max="2"');
-      expect(control.match(/data-grid-size-option-label=/g)).toHaveLength(2);
-      expect(control).not.toContain('data-grid-size-option-label="default"');
-      expect(control).toContain('aria-valuetext="Large"');
-      expect(response.text).toContain('class="asset-list asset-list--project" role="list" aria-label="Project assets" data-list-size="large"');
+      for (const response of responses) {
+        const controlStart = response.text.indexOf('data-asset-list-size-controls');
+        const listStart = response.text.indexOf('<ul class="asset-list', controlStart);
+        const control = response.text.slice(controlStart, listStart);
+
+        expect(control).toContain('max="2"');
+        expect(control.match(/data-grid-size-option-label=/g)).toHaveLength(2);
+        expect(control).not.toContain('data-grid-size-option-label="default"');
+        expect(control).toContain('aria-valuetext="Large"');
+        expect(control).toContain('data-grid-size-labels-interactive');
+        expect(response.text).toMatch(/class="asset-list asset-list--project(?: asset-list--release)?" role="list" aria-label="(?:Project|Release) assets" data-list-size="large"/);
+      }
     });
+  });
+
+  it('uses shared icon-mode view links while preserving Release Assets query state', async () => {
+    const response = await agent
+      .get(`${releaseLocation}/assets?view=list&search=alpha&pageSize=10`)
+      .expect(200);
+    const switcher = response.text.match(/<nav class="view-switcher"[\s\S]*?<\/nav>/)?.[0] || '';
+
+    expect(switcher.match(/view-switcher-option--icon/g)).toHaveLength(2);
+    expect(switcher).toContain('aria-label="Grid view"');
+    expect(switcher).toMatch(/aria-current="page"[\s\S]*aria-label="List view"/);
+    expect(switcher).toContain('search=alpha');
+    expect(switcher).toContain('pageSize=10');
+  });
+
+  it('re-enhances shared sizing and information cards after Release Assets replacement', () => {
+    const source = fs.readFileSync(LIVE_REGIONS_CLIENT_PATH, 'utf8');
+    const start = source.indexOf('function enhanceReleaseAssetsLiveRegion(region)');
+    const end = source.indexOf('\n}', start);
+    const enhancer = source.slice(start, end);
+
+    expect(enhancer).toContain('enhanceAssetViewerInfoCards(region)');
+    expect(enhancer).toContain('enhanceAssetGridSize(region)');
+    expect(enhancer).toContain('enhanceAssetListSize(region)');
   });
 
   // ── Page-size form contract ────────────────────────────────────────────
@@ -348,7 +402,8 @@ describe('asset-browser structural parity: releases vs projects', () => {
       for (const html of [proj.text, rel.text]) {
         const pageSizeFormStart = html.indexOf('page-size-form');
         expect(pageSizeFormStart).toBeGreaterThan(-1);
-        const formSection = html.slice(pageSizeFormStart, pageSizeFormStart + 200);
+        const pageSizeFormEnd = html.indexOf('</form>', pageSizeFormStart);
+        const formSection = html.slice(pageSizeFormStart, pageSizeFormEnd);
         expect(formSection).toContain('id="pageSize"');
       }
     });
@@ -448,16 +503,17 @@ describe('asset-browser structural parity: releases vs projects', () => {
       expect(rel.text).toMatch(/<article class="asset-card[^"]*"/);
     });
 
-    it('keeps project-only grid category markup out of release asset cards', async () => {
+    it('keeps unloaded Release metadata out of the shared information card', async () => {
       const [proj, rel] = await Promise.all([
         agent.get(`/projects/${projectId}/assets`).expect(200),
         agent.get(`${releaseLocation}/assets`).expect(200),
       ]);
 
-      expect(proj.text).toContain('asset-card-primary-metadata');
-      expect(rel.text).not.toContain('asset-card-primary-metadata');
-      expect(proj.text).toContain('asset-card-associations-region');
-      expect(rel.text).not.toContain('asset-card-associations-region');
+      expect(proj.text).toContain('Effective tags');
+      expect(proj.text).toContain('Release usage');
+      expect(rel.text).not.toContain('Effective tags');
+      expect(rel.text).not.toContain('Release usage');
+      expect(rel.text).not.toContain('No effective tags');
     });
 
     it('opts project preview links into the slideshow without changing release links', async () => {

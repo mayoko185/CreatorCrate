@@ -51,7 +51,11 @@
   {% else %}
     {% call pageHeading.render("", "", "", projectLeadHref, projectLeadLabel, "", "projects") %}
       {% if not isPublished %}
-        <a class="button button-primary" href="/releases/{{ release.id }}/publish" data-dialog-open="release-publish-dialog">Review &amp; Publish</a>
+        <a class="button button-small button-primary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--left"
+           href="/releases/{{ release.id }}/publish" data-dialog-open="release-publish-dialog"
+           aria-label="Review &amp; Publish" data-tooltip="Review &amp; Publish">
+          {{ icons.icon('share-2') }}
+        </a>
       {% endif %}
     {% endcall %}
 
@@ -167,14 +171,14 @@
     </section>
   {% endif %}
 
-  <section>
-    <h2>Selected Assets</h2>
-    <div class="project-detail-section-body">
+  <section class="asset-browser-layout" aria-label="Selected assets" data-selected-assets>
+    <div class="asset-browser-content">
       {% set selectedAssets = assetPresentation.selected or [] %}
+      <div class="asset-viewer-display-controls">
+        {{ viewSwitcher.render(view, pageUrl, "Asset display", true) }}
+      </div>
+      <p class="results-meta">{{ assetCount }} selected asset{% if assetCount != 1 %}s{% endif %}</p>
       {% if selectedAssets.length > 0 %}
-        <div class="asset-viewer-display-controls">
-          {{ viewSwitcher.render(view, pageUrl, "Asset display") }}
-        </div>
         {% if view == 'grid' %}
           <ul class="asset-grid" role="listbox" aria-label="Selected release assets">
             {% for asset in selectedAssets %}

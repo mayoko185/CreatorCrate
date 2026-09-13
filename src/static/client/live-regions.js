@@ -57,6 +57,10 @@ const RELEASE_ASSETS_LIVE_SEARCH_SELECTOR = '[data-release-assets-live-search]';
 const RELEASE_ASSETS_LIVE_STATUS_SELECTOR = '[data-release-assets-live-status]';
 const RELEASE_ASSETS_LIVE_STATE_ATTRIBUTE = 'data-release-assets-live-state';
 const RELEASE_ASSETS_LIVE_DEBOUNCE_MS = 350;
+const RELEASE_ASSETS_SELECTION_FORM_SELECTOR = '[data-asset-selection-form][id="release-assets-form"]';
+const RELEASE_ASSETS_SELECTION_CHECKBOX_SELECTOR = 'input[type="checkbox"][name="selectedAssetIds"][form="release-assets-form"]';
+const RELEASE_ASSETS_HIDDEN_MEMBERSHIP_SELECTOR = '[data-release-assets-hidden-membership]';
+const RELEASE_ASSETS_PERSISTED_MEMBERSHIP_SELECTOR = '[data-release-assets-persisted-membership]';
 
 function projectLiveNsfwForm(region) {
   return region?.querySelector?.(PROJECTS_NSFW_FORM_SELECTOR) || null;
@@ -843,10 +847,140 @@ const releasesLiveEngine = createLiveRegionEngine({
   },
 });
 
+function releaseAssetId(control) {
+  const rawId = control?.value ?? control?.getAttribute?.('value');
+  const id = String(rawId ?? '');
+  return /^[1-9]\d*$/.test(id) ? id : null;
+}
+
+function releaseAssetsSelectionControls(region, form) {
+  const checkboxes = Array.from(region?.querySelectorAll?.(RELEASE_ASSETS_SELECTION_CHECKBOX_SELECTOR) || []);
+  const hidden = Array.from(
+    form?.querySelector?.(RELEASE_ASSETS_HIDDEN_MEMBERSHIP_SELECTOR)?.querySelectorAll?.(
+      'input[type="hidden"][name="selectedAssetIds"]',
+    ) || [],
+  );
+  return { checkboxes, hidden };
+}
+
+function releaseAssetsRenderedMembership(region, form) {
+  const { checkboxes, hidden } = releaseAssetsSelectionControls(region, form);
+  return new Set([
+    ...hidden.map(releaseAssetId).filter(Boolean),
+    ...checkboxes.filter((checkbox) => checkbox.checked).map(releaseAssetId).filter(Boolean),
+  ]);
+}
+
+function releaseAssetsPersistedMembership(form) {
+  const container = form?.querySelector?.(RELEASE_ASSETS_PERSISTED_MEMBERSHIP_SELECTOR);
+  if (!container) return null;
+  return new Set(Array.from(container.querySelectorAll?.('[data-release-assets-persisted-id]') || [])
+    .map(releaseAssetId)
+    .filter(Boolean));
+}
+
+function releaseAssetsMembershipOverrides(authoritativeSelected, renderedSelected) {
+  const overrides = new Map();
+  const assetIds = new Set([...authoritativeSelected, ...renderedSelected]);
+  assetIds.forEach((assetId) => {
+    const authoritative = authoritativeSelected.has(assetId);
+    const rendered = renderedSelected.has(assetId);
+    if (authoritative !== rendered) overrides.set(assetId, rendered);
+  });
+  return overrides;
+}
+
+function releaseAssetsResultingMembership(selectionState) {
+  const selected = new Set(selectionState.authoritativeSelected);
+  selectionState.overrides.forEach((checked, assetId) => {
+    if (checked) selected.add(assetId);
+    else selected.delete(assetId);
+  });
+  return selected;
+}
+
+function reconcileReleaseAssetsSelection(state, region = releaseAssetsLiveEngine.getRegion(state.document)) {
+  const selectionState = state.releaseAssetsSelection;
+  if (!selectionState) return;
+  const form = state.document?.querySelector?.(RELEASE_ASSETS_SELECTION_FORM_SELECTOR);
+  const hiddenContainer = form?.querySelector?.(RELEASE_ASSETS_HIDDEN_MEMBERSHIP_SELECTOR);
+  if (!form || !hiddenContainer || !region) return;
+
+  const checkboxes = Array.from(region.querySelectorAll?.(RELEASE_ASSETS_SELECTION_CHECKBOX_SELECTOR) || []);
+  checkboxes.forEach((checkbox) => {
+    const assetId = releaseAssetId(checkbox);
+    if (assetId && selectionState.overrides.has(assetId)) {
+      checkbox.checked = selectionState.overrides.get(assetId);
+    }
+  });
+
+  const visibleIds = new Set(checkboxes.map(releaseAssetId).filter(Boolean));
+  const hiddenInputs = Array.from(releaseAssetsResultingMembership(selectionState))
+    .filter((assetId) => !visibleIds.has(assetId))
+    .map((assetId) => {
+      const input = state.document.createElement('input');
+      input.setAttribute('type', 'hidden');
+      input.setAttribute('name', 'selectedAssetIds');
+      input.value = assetId;
+      return input;
+    });
+  hiddenContainer.replaceChildren(...hiddenInputs);
+
+  // Keep the reviewed checkbox/card path responsible for styling, aria state,
+  // and idempotent interaction binding after every replacement.
+  enhanceAssetSelection(state.document);
+}
+
+function recordReleaseAssetsDraftMembership(state, checkbox) {
+  const selectionState = state.releaseAssetsSelection;
+  const assetId = releaseAssetId(checkbox);
+  if (!selectionState || !assetId) return;
+  const authoritative = selectionState.authoritativeSelected.has(assetId);
+  if (checkbox.checked === authoritative) selectionState.overrides.delete(assetId);
+  else selectionState.overrides.set(assetId, checkbox.checked);
+  reconcileReleaseAssetsSelection(state);
+}
+
+function bindReleaseAssetsDraftMembership(state) {
+  const form = state.document?.querySelector?.(RELEASE_ASSETS_SELECTION_FORM_SELECTOR);
+  const region = releaseAssetsLiveEngine.getRegion(state.document);
+  if (!form || !region) return;
+
+  const renderedSelected = releaseAssetsRenderedMembership(region, form);
+  const authoritativeSelected = releaseAssetsPersistedMembership(form) || renderedSelected;
+  state.releaseAssetsSelection = {
+    authoritativeSelected,
+    overrides: releaseAssetsMembershipOverrides(authoritativeSelected, renderedSelected),
+  };
+
+  const recordFromEvent = (event) => {
+    if (event.type === 'keydown' && !['Enter', ' '].includes(event.key)) return;
+    const checkbox = event.target?.matches?.(RELEASE_ASSETS_SELECTION_CHECKBOX_SELECTOR)
+      ? event.target
+      : event.target?.closest?.('[data-asset-selectable-card]')?.querySelector?.(
+        RELEASE_ASSETS_SELECTION_CHECKBOX_SELECTOR,
+      );
+    if (checkbox) recordReleaseAssetsDraftMembership(state, checkbox);
+  };
+  state.document.addEventListener?.('change', recordFromEvent);
+  state.document.addEventListener?.('click', recordFromEvent);
+  state.document.addEventListener?.('keydown', recordFromEvent);
+  reconcileReleaseAssetsSelection(state, region);
+}
+
+function updateReleaseAssetsAuthoritativeMembership(state, parsed, nextRegion) {
+  if (!state.releaseAssetsSelection) return;
+  const nextForm = parsed?.querySelector?.(RELEASE_ASSETS_SELECTION_FORM_SELECTOR);
+  if (!nextForm || !nextRegion) return;
+  state.releaseAssetsSelection.authoritativeSelected = releaseAssetsPersistedMembership(nextForm)
+    || releaseAssetsRenderedMembership(nextRegion, nextForm);
+}
+
 function enhanceReleaseAssetsLiveRegion(region) {
   enhancePreviewMedia(region);
+  enhanceAssetViewerInfoCards(region);
   enhanceNumberInputs(region);
-  enhanceAssetSelection(region);
+  enhanceAssetSelection(liveRegionDocument(region));
   enhanceAssetGridSize(region);
   enhanceAssetListSize(region);
   enhanceAutoSubmit(region);
@@ -854,12 +988,12 @@ function enhanceReleaseAssetsLiveRegion(region) {
   enhanceDropdowns(liveRegionDocument(region));
 }
 
-// WP5B opts only the actual filter controls into the WP5A region engine;
-// page size, pagination, clear, and presentation controls remain native for WP5C.
 const releaseAssetsLiveEngine = createLiveRegionEngine({
   regionSelector: RELEASE_ASSETS_LIVE_REGION_SELECTOR,
   formSelector: [RELEASE_ASSETS_LIVE_FILTER_SELECTOR, RELEASE_ASSETS_PAGE_SIZE_FORM_SELECTOR],
+  formScope: 'document',
   linkSelector: 'nav.view-switcher a, .pagination a, [data-release-assets-reset]',
+  linkScope: 'document',
   searchSelector: RELEASE_ASSETS_LIVE_SEARCH_SELECTOR,
   changeSelector: RELEASE_ASSETS_LIVE_FILTER_CONTROL_SELECTOR,
   debounceMs: RELEASE_ASSETS_LIVE_DEBOUNCE_MS,
@@ -873,6 +1007,29 @@ const releaseAssetsLiveEngine = createLiveRegionEngine({
   responseErrorMessage: 'Release Assets response failed.',
   missingRegionMessage: 'Release Assets response did not contain the live region.',
   enhanceRegion: enhanceReleaseAssetsLiveRegion,
+  onCreate(state) {
+    enhanceDropdowns(state.document);
+    enhanceAssetViewerFilterDisclosures(state.document);
+    bindReleaseAssetsDraftMembership(state);
+  },
+  onResponseParsed(state, parsed, nextRegion) {
+    reconcileExternalFilterForm(state, parsed, RELEASE_ASSETS_LIVE_FILTER_SELECTOR);
+    enhanceAssetViewerFilterDisclosures(state.document);
+    updateReleaseAssetsAuthoritativeMembership(state, parsed, nextRegion);
+  },
+  onRegionReplaced(state, region) {
+    reconcileReleaseAssetsSelection(state, region);
+  },
+  onLoadError(state) {
+    const region = releaseAssetsLiveEngine.getRegion(state.document);
+    region?.removeAttribute?.('aria-busy');
+    releaseAssetsLiveEngine.status(
+      region,
+      'Could not update Release Assets. Change the filters to try again.',
+      'error',
+    );
+    return true;
+  },
   isCurrentUrl(url) {
     return /^\/releases\/[1-9]\d*\/assets$/.test(url.pathname);
   },

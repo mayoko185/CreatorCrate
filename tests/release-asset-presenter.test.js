@@ -46,6 +46,7 @@ describe('release asset presenter', () => {
       locationLabel: 'renders',
       typeLabel: 'PNG',
       formattedSize: '2.0 KB',
+      formattedModified: expect.any(String),
       presence_state: 'present',
       presenceLabel: 'Present',
       viewerUrl: '/projects/7/assets/31',
@@ -56,6 +57,7 @@ describe('release asset presenter', () => {
       releaseContext: { selected: true, role: 'primary', sortOrder: 4 },
     });
     expect(view.preview.kind).toBe('image');
+    expect(view.formattedModified).not.toBe('—');
     expect(view.preview_url).toContain('/projects/7/assets/31/preview?');
     expect(view.thumbnail_url).toContain('/projects/7/assets/31/thumbnail?');
     expect(new URL(view.preview_url, 'https://creatorcrate.test').searchParams.get('v')).toBeTruthy();
@@ -115,6 +117,7 @@ describe('release asset presenter', () => {
       locationLabel: 'notes',
       typeLabel: 'TXT',
       formattedSize: null,
+      formattedModified: '—',
       preview_state: 'unsupported',
       previewAvailable: false,
       releaseContext: { selected: false, role: null, sortOrder: null },

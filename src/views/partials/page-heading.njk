@@ -21,11 +21,15 @@
   accepted through the Nunjucks caller block; do not pass arbitrary HTML strings.
 #}
 {% import "partials/icons.njk" as icons %}
-{% macro render(description='', badgeStatus='', badgeText='', leadHref='', leadLabel='', leadClass='', leadIcon='') %}
-{% if leadHref and leadLabel or badgeStatus or badgeText or caller is defined %}
+{% macro render(description='', badgeStatus='', badgeText='', leadHref='', leadLabel='', leadClass='', leadIcon='', adjacentLeadHref='', adjacentLeadLabel='', adjacentLeadClass='', adjacentLeadIcon='') %}
+{% if leadHref and leadLabel or adjacentLeadHref and adjacentLeadLabel or badgeStatus or badgeText or caller is defined %}
 <header class="page-heading">
   {% if leadHref and leadLabel %}
-    <a class="button button-secondary page-heading-lead{% if leadIcon %} page-heading-lead--icon asset-tooltip asset-tooltip--left{% endif %}{% if leadClass %} {{ leadClass }}{% endif %}" href="{{ leadHref }}"{% if leadIcon %} aria-label="{{ leadLabel }}" data-tooltip="{{ leadLabel }}"{% endif %}>{% if leadIcon %}{{ icons.icon(leadIcon) }}{% else %}{{ leadLabel }}{% endif %}</a>
+    {% if adjacentLeadHref and adjacentLeadLabel %}<nav class="page-heading-navigation" aria-label="Page navigation">{% endif %}
+      <a class="button button-secondary page-heading-lead{% if leadIcon %} page-heading-lead--icon asset-tooltip asset-tooltip--left{% endif %}{% if leadClass %} {{ leadClass }}{% endif %}" href="{{ leadHref }}"{% if leadIcon %} aria-label="{{ leadLabel }}" data-tooltip="{{ leadLabel }}"{% endif %}>{% if leadIcon %}{{ icons.icon(leadIcon) }}{% else %}{{ leadLabel }}{% endif %}</a>
+      {% if adjacentLeadHref and adjacentLeadLabel %}
+        <a class="button button-secondary page-heading-lead{% if adjacentLeadIcon %} page-heading-lead--icon asset-tooltip asset-tooltip--left{% endif %}{% if adjacentLeadClass %} {{ adjacentLeadClass }}{% endif %}" href="{{ adjacentLeadHref }}"{% if adjacentLeadIcon %} aria-label="{{ adjacentLeadLabel }}" data-tooltip="{{ adjacentLeadLabel }}"{% endif %}>{% if adjacentLeadIcon %}{{ icons.icon(adjacentLeadIcon) }}{% else %}{{ adjacentLeadLabel }}{% endif %}</a>
+      </nav>{% endif %}
   {% endif %}
   {% if badgeStatus or badgeText %}
     <div class="page-heading-copy">
