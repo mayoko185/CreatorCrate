@@ -92,14 +92,25 @@ public sealed class ProtocolRegistrar
     }
 
     /// <summary>
-    /// Remove the entire protocol registration tree. A missing registration
-    /// is not an error.
+    /// Remove the protocol registration only when its command still points to
+    /// this executable. A missing or independently replaced registration is
+    /// not an error and is left untouched.
     /// </summary>
-    public ProtocolRegistrationResult Unregister()
+    public ProtocolRegistrationResult Unregister(string? executablePath)
     {
+        if (string.IsNullOrWhiteSpace(executablePath))
+        {
+            return ProtocolRegistrationResult.Fail("Executable path must not be empty.");
+        }
+
         try
         {
-            _registry.DeleteTree(RootKeyPath);
+            string expectedCommand = $"\"{executablePath}\" \"%1\"";
+            string? registeredCommand = _registry.GetValue(CommandKeyPath, null);
+            if (string.Equals(registeredCommand, expectedCommand, StringComparison.OrdinalIgnoreCase))
+            {
+                _registry.DeleteTree(RootKeyPath);
+            }
             return ProtocolRegistrationResult.Ok();
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or SecurityException or PlatformNotSupportedException)

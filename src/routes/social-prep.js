@@ -10,7 +10,7 @@ import { SocialPrepMediaError, createSocialPrepMediaService } from '../services/
 
 const INVALID_INTENT_MESSAGE = 'Invalid or expired Social Preparation intent.';
 const SOCIAL_PREP_PLATFORM_STATUSES = new Set([
-  'pending', 'starting', 'preparing', 'uploading', 'auth_required', 'prepared', 'failed', 'cancelled',
+  'pending', 'starting', 'preparing', 'uploading', 'auth_required', 'prepared', 'staging', 'ready', 'failed', 'cancelled',
 ]);
 const DIAGNOSTIC_WORD = /^[a-z0-9_]{1,64}$/;
 const DIAGNOSTIC_CDP_CODE_MIN = -2_147_483_648;
@@ -176,6 +176,14 @@ function readActivationInput(body) {
   return { platforms: body.platforms, reprepare: body.reprepare ?? false };
 }
 
+function readReissueInput(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body)
+    || Object.keys(body).length !== 1 || typeof body.sessionId !== 'string' || body.sessionId.length === 0) {
+    return { issues: [{ code: 'invalid_input', severity: 'blocking' }] };
+  }
+  return { sessionId: body.sessionId };
+}
+
 function activationError(res, error) {
   if (!(error instanceof SocialPrepServiceError)) throw error;
   const payload = { ok: false, error: { code: error.code, message: error.message } };
@@ -203,6 +211,31 @@ function platformStatusPayload(row) {
     attempts: row.attempts,
     preparedAt: row.prepared_at,
   };
+}
+
+function postingConfirmationPayload({ target, completion }, sessionId) {
+  return {
+    ok: true,
+    sessionId,
+    platform: target.platform,
+    status: target.status,
+    postedAt: target.posted_at,
+    completion,
+  };
+}
+
+function hasEmptyRequestEntity(req) {
+  const transferEncoding = req.get('transfer-encoding');
+  if (transferEncoding !== undefined) return false;
+
+  const contentLength = req.get('content-length');
+  if (contentLength !== undefined) {
+    const normalized = contentLength.trim();
+    if (!/^0+$/.test(normalized)) return false;
+  }
+
+  return req.body === undefined
+    || (req.body && typeof req.body === 'object' && !Array.isArray(req.body) && Object.keys(req.body).length === 0);
 }
 
 function readPlatformStatusInput(body) {
@@ -286,6 +319,26 @@ export function createSocialPrepActivationRouter({ socialPrepService } = {}) {
       try { return activationError(res, error); } catch (unhandled) { return next(unhandled); }
     }
   });
+  router.post('/:id/social-prep/reissue', express.json(), (req, res, next) => {
+    const releaseId = parseReleaseId(req.params.id);
+    const input = readReissueInput(req.body);
+    if (releaseId === null) return invalidActivationInput(res, [{ code: 'invalid_release_id', severity: 'blocking' }]);
+    if (input.issues) return invalidActivationInput(res, input.issues);
+    try {
+      const intent = generateIntentToken();
+      const expiresAt = formatSocialPrepTimestamp(new Date(Date.now() + socialPrepService.intentTtlMinutes * 60_000));
+      const activation = socialPrepService.reissue({
+        releaseId,
+        sessionId: input.sessionId,
+        intentHash: digestToken(intent),
+        expiresAt,
+      });
+      const uri = buildSocialPrepUri({ origin: requestOrigin(req), intent });
+      return res.json({ ok: true, sessionId: activation.session.id, uri, platforms: activation.platforms });
+    } catch (error) {
+      try { return activationError(res, error); } catch (unhandled) { return next(unhandled); }
+    }
+  });
   return router;
 }
 
@@ -342,6 +395,41 @@ export function createSocialPrepCapabilityRouter({ socialPrepService, socialPrep
       return next(error);
     }
   });
+  router.get('/social-prep/:sessionId/platforms/:platform/posted', (req, res, next) => {
+    try {
+      const result = socialPrepService.readPostingConfirmation({
+        sessionId: req.params.sessionId,
+        platform: req.params.platform,
+        authenticate: () => capabilityService.authenticateConfirmation({
+          authorization: req.get('authorization'), sessionId: req.params.sessionId,
+        }),
+      });
+      return res.json(postingConfirmationPayload(result, req.params.sessionId));
+    } catch (error) {
+      if (error instanceof SocialPrepCapabilityError) return capabilityError(res, error);
+      if (error instanceof SocialPrepServiceError) return activationError(res, error);
+      return next(error);
+    }
+  });
+  router.post('/social-prep/:sessionId/platforms/:platform/posted', (req, res, next) => {
+    if (!hasEmptyRequestEntity(req)) {
+      return res.status(422).json({ ok: false, error: { code: 'validation_failed', message: 'Social Preparation validation failed.' } });
+    }
+    try {
+      const result = socialPrepService.confirmPlatformPosted({
+        sessionId: req.params.sessionId,
+        platform: req.params.platform,
+        authenticate: () => capabilityService.authenticateConfirmation({
+          authorization: req.get('authorization'), sessionId: req.params.sessionId,
+        }),
+      });
+      return res.json(postingConfirmationPayload(result, req.params.sessionId));
+    } catch (error) {
+      if (error instanceof SocialPrepCapabilityError) return capabilityError(res, error);
+      if (error instanceof SocialPrepServiceError) return activationError(res, error);
+      return next(error);
+    }
+  });
   router.patch('/social-prep/:sessionId/platforms/:platform', (req, res, next) => {
     try {
       const session = capabilityService.authenticate({ authorization: req.get('authorization'), sessionId: req.params.sessionId });
@@ -391,6 +479,7 @@ export function createSocialPrepCapabilityRouter({ socialPrepService, socialPrep
       return res.json({ ok: true, sessionId: session.id, platform: platformStatusPayload(updated) });
     } catch (error) {
       if (error instanceof SocialPrepCapabilityError) return capabilityError(res, error);
+      if (error instanceof SocialPrepServiceError) return activationError(res, error);
       return next(error);
     }
   });

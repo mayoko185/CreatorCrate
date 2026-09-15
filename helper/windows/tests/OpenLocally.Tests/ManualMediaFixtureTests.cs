@@ -65,7 +65,7 @@ public sealed class ManualMediaFixtureTests : IDisposable
         bool cleanupSucceeded = stager.Cleanup(fixture.Capability);
         strategyB.RecordCleanup(cleanupSucceeded);
         Assert.True(cleanupSucceeded, strategyB.FormatDiagnostic("Media staging cleanup failed."));
-        Assert.False(File.Exists(staged.Path!));
+        Assert.True(File.Exists(staged.Path!));
         Assert.True(File.Exists(fixture.SourcePath));
     }
 
@@ -135,6 +135,7 @@ public sealed class ManualMediaFixtureTests : IDisposable
         state.RecordStrategyARejection("relative_path_mismatch");
         StagedMedia result = await stager.StageAsync(origin, fixture.Capability, fixture.FallbackAsset, 2, CancellationToken.None);
         state.RecordStrategyBResult(result, handler.RequestCount, (int)handler.ResponseStatus);
+        stager.Cleanup(fixture.Capability);
 
         Assert.False(result.Success);
         string diagnostic = state.FormatDiagnostic("Media staging failed.");

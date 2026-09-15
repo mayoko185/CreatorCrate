@@ -20,6 +20,12 @@ internal sealed class WindowsRegistry : IRegistry
         key.SetValue(valueName, value);
     }
 
+    public string? GetValue(string keyPath, string? valueName)
+    {
+        using RegistryKey? key = Registry.CurrentUser.OpenSubKey(keyPath, writable: false);
+        return key?.GetValue(valueName) as string;
+    }
+
     public void DeleteTree(string keyPath)
     {
         Registry.CurrentUser.DeleteSubKeyTree(keyPath, throwOnMissingSubKey: false);

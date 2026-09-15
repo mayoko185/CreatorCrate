@@ -12,6 +12,7 @@ public sealed class SocialRedeemClient
 {
     public const int MaxJsonBytes = 8 * 1024 * 1024;
     private static readonly Regex TokenPattern = new("^[A-Za-z0-9_-]{43}$", RegexOptions.CultureInvariant);
+    private static readonly Regex ExtensionPattern = new("^\\.?[A-Za-z0-9]{1,16}$", RegexOptions.CultureInvariant);
     private readonly SocialHttpClient _http;
     private readonly OriginTrustService _trust;
 
@@ -37,108 +38,211 @@ public sealed class SocialRedeemClient
             Content = new StringContent($"{{\"intent\":\"{intent}\"}}", Encoding.UTF8, "application/json"),
         };
 
+        int? responseStatus = null;
         try
         {
             using HttpResponseMessage response = await _http.SendAsync(origin, request, transport, cancellationToken).ConfigureAwait(false);
-            if (response.StatusCode == HttpStatusCode.Unauthorized) return SocialRedeemResult.Fail("invalid_intent");
-            if ((int)response.StatusCode is >= 300 and < 400) return SocialRedeemResult.Fail("server_unreachable");
-            if (!response.IsSuccessStatusCode) return SocialRedeemResult.Fail("server_unreachable");
+            int status = (int)response.StatusCode;
+            responseStatus = status;
+            if (response.StatusCode == HttpStatusCode.Unauthorized)
+                return HttpFailure("invalid_intent", ManualSocialDiagnosticReason.HttpNonSuccess, status);
+            if (status is >= 300 and < 400)
+                return HttpFailure("server_unreachable", ManualSocialDiagnosticReason.RedirectRejected, status);
+            if (!response.IsSuccessStatusCode)
+                return HttpFailure("server_unreachable", ManualSocialDiagnosticReason.HttpNonSuccess, status);
 
             byte[] body = await ReadCappedAsync(response.Content, cancellationToken).ConfigureAwait(false);
-            return TryParseResponse(body, out SocialRedeemResponse? parsed)
+            return TryParseResponse(body, out SocialRedeemResponse? parsed, out ManualSocialDiagnostic? diagnostic)
                 ? SocialRedeemResult.Ok(parsed!)
-                : SocialRedeemResult.Fail("redeem_payload_invalid");
+                : SocialRedeemResult.Fail("redeem_payload_invalid", diagnostic! with { HttpStatus = status });
         }
-        catch (PayloadTooLargeException) { return SocialRedeemResult.Fail("redeem_payload_too_large"); }
-        catch (HttpRequestException ex) when (IsTlsValidationFailure(ex)) { return SocialRedeemResult.Fail("tls_validation_failed"); }
-        catch (HttpRequestException) { return SocialRedeemResult.Fail("server_unreachable"); }
+        catch (PayloadTooLargeException)
+        {
+            return SocialRedeemResult.Fail("redeem_payload_too_large", new(
+                "redeem_payload_too_large", ManualSocialDiagnosticStage.RedeemPreparation,
+                ManualSocialDiagnosticReason.ResponseTooLarge, HttpStatus: responseStatus));
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return SocialRedeemResult.Fail("server_unreachable", new(
+                "server_unreachable", ManualSocialDiagnosticStage.RedeemRequest,
+                ManualSocialDiagnosticReason.RequestNotSent));
+        }
+        catch (HttpRequestException ex) when (IsTlsValidationFailure(ex))
+        {
+            return SocialRedeemResult.Fail("tls_validation_failed", new(
+                "tls_validation_failed", ManualSocialDiagnosticStage.RedeemRequest,
+                ManualSocialDiagnosticReason.TlsTransportFailure));
+        }
+        catch (HttpRequestException)
+        {
+            return SocialRedeemResult.Fail("server_unreachable", new(
+                "server_unreachable", ManualSocialDiagnosticStage.RedeemRequest,
+                ManualSocialDiagnosticReason.RequestNotSent));
+        }
     }
 
     internal static bool TryParseResponse(ReadOnlySpan<byte> json, out SocialRedeemResponse? result)
+        => TryParseResponse(json, out result, out _);
+
+    internal static bool TryParseResponse(
+        ReadOnlySpan<byte> json, out SocialRedeemResponse? result, out ManualSocialDiagnostic? diagnostic)
     {
         result = null;
+        diagnostic = null;
         try
         {
             using JsonDocument document = JsonDocument.Parse(json.ToArray());
             JsonElement root = document.RootElement;
-            if (root.ValueKind != JsonValueKind.Object || !ExactProperties(root, "ok", "sessionId", "releaseId", "attemptDeadlineAt", "platforms", "mediaToken") ||
-                !root.GetProperty("ok").GetBoolean()) return false;
-            string sessionId = RequiredString(root.GetProperty("sessionId"));
-            string mediaToken = RequiredString(root.GetProperty("mediaToken"));
-            int releaseId = checked((int)RequiredPositiveInt(root.GetProperty("releaseId")));
-            if (!Guid.TryParse(sessionId, out _) || !TokenPattern.IsMatch(mediaToken)) return false;
-            if (!DateTime.TryParseExact(RequiredString(root.GetProperty("attemptDeadlineAt")), "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTime deadline)) return false;
-            if (root.GetProperty("platforms").ValueKind != JsonValueKind.Array) return false;
+            if (root.ValueKind != JsonValueKind.Object) return ParseFailure(out diagnostic, ManualSocialDiagnosticReason.RootNotObject);
+            if (!ValidateProperties(root, ["ok", "sessionId", "releaseId", "attemptDeadlineAt", "platforms", "mediaToken"], [], out ManualSocialDiagnosticReason rootPropertyFailure))
+                return ParseFailure(out diagnostic, rootPropertyFailure);
+            if (root.GetProperty("ok").ValueKind is not (JsonValueKind.True or JsonValueKind.False) || !root.GetProperty("ok").GetBoolean())
+                return ParseFailure(out diagnostic, ManualSocialDiagnosticReason.InvalidSuccessIndicator);
+            if (!TryRequiredString(root.GetProperty("sessionId"), out string? sessionId) || !Guid.TryParse(sessionId, out _))
+                return ParseFailure(out diagnostic, ManualSocialDiagnosticReason.InvalidSessionId);
+            if (!root.GetProperty("releaseId").TryGetInt32(out int releaseId) || releaseId <= 0)
+                return ParseFailure(out diagnostic, ManualSocialDiagnosticReason.InvalidReleaseId);
+            if (!TryRequiredString(root.GetProperty("attemptDeadlineAt"), out string? deadlineText) ||
+                !DateTime.TryParseExact(deadlineText, "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture, DateTimeStyles.None, out DateTime deadline))
+                return ParseFailure(out diagnostic, ManualSocialDiagnosticReason.InvalidDeadline);
+            if (root.GetProperty("platforms").ValueKind != JsonValueKind.Array)
+                return ParseFailure(out diagnostic, ManualSocialDiagnosticReason.InvalidPlatformCollection);
+            if (!TryRequiredString(root.GetProperty("mediaToken"), out string? mediaToken) || !TokenPattern.IsMatch(mediaToken!))
+                return ParseFailure(out diagnostic, ManualSocialDiagnosticReason.InvalidMediaToken);
 
             var platforms = new List<SocialRedeemPlatform>();
             var seenPlatforms = new HashSet<string>(StringComparer.Ordinal);
             foreach (JsonElement platform in root.GetProperty("platforms").EnumerateArray())
             {
-                if (platform.ValueKind != JsonValueKind.Object || !ExactProperties(platform, "platform", "title", "body", "assets")) return false;
-                string name = RequiredString(platform.GetProperty("platform"));
-                if (!new[] { "patreon", "x", "bluesky" }.Contains(name, StringComparer.Ordinal) || !seenPlatforms.Add(name)) return false;
-                string title = RequiredString(platform.GetProperty("title"));
-                string body = RequiredStringAllowEmpty(platform.GetProperty("body"));
+                int platformOrdinal = platforms.Count + 1;
+                if (platform.ValueKind != JsonValueKind.Object) return ParseFailure(out diagnostic, ManualSocialDiagnosticReason.InvalidPlatform, platformOrdinal);
+                if (!ValidateProperties(platform, ["platform", "title", "body", "assets"], [], out ManualSocialDiagnosticReason platformPropertyFailure))
+                    return ParseFailure(out diagnostic, platformPropertyFailure, platformOrdinal);
+                if (!TryRequiredString(platform.GetProperty("platform"), out string? name) ||
+                    !new[] { "patreon", "x", "bluesky" }.Contains(name, StringComparer.Ordinal))
+                    return ParseFailure(out diagnostic, ManualSocialDiagnosticReason.InvalidPlatform, platformOrdinal);
+                if (!seenPlatforms.Add(name!)) return ParseFailure(out diagnostic, ManualSocialDiagnosticReason.DuplicatePlatform, platformOrdinal);
+                if (!TryRequiredString(platform.GetProperty("title"), out string? title))
+                    return ParseFailure(out diagnostic, ManualSocialDiagnosticReason.InvalidTitle, platformOrdinal);
+                if (!TryStringAllowEmpty(platform.GetProperty("body"), out string? body))
+                    return ParseFailure(out diagnostic, ManualSocialDiagnosticReason.InvalidBody, platformOrdinal);
                 JsonElement assetsElement = platform.GetProperty("assets");
-                if (assetsElement.ValueKind != JsonValueKind.Array) return false;
+                if (assetsElement.ValueKind != JsonValueKind.Array)
+                    return ParseFailure(out diagnostic, ManualSocialDiagnosticReason.InvalidAssetCollection, platformOrdinal);
                 var assets = new List<SocialRedeemAsset>();
                 var seenAssets = new HashSet<long>();
                 foreach (JsonElement asset in assetsElement.EnumerateArray())
                 {
-                    if (asset.ValueKind != JsonValueKind.Object || !PropertiesMatch(asset, new[] { "assetId", "role", "sortOrder", "filename", "extension", "mimeType", "sizeBytes", "relativePath", "isPresent" }, "windowsPath")) return false;
-                    long id = RequiredPositiveInt(asset.GetProperty("assetId"));
-                    string role = RequiredString(asset.GetProperty("role"));
-                    long sort = RequiredNonNegativeInt(asset.GetProperty("sortOrder"));
-                    string filename = RequiredString(asset.GetProperty("filename"));
-                    string extension = RequiredString(asset.GetProperty("extension"));
-                    string mime = RequiredString(asset.GetProperty("mimeType"));
-                    long size = RequiredNonNegativeInt(asset.GetProperty("sizeBytes"));
-                    string relativePath = RequiredString(asset.GetProperty("relativePath"));
+                    int assetOrdinal = assets.Count + 1;
+                    if (asset.ValueKind != JsonValueKind.Object)
+                        return ParseFailure(out diagnostic, ManualSocialDiagnosticReason.InvalidAssetId, platformOrdinal, assetOrdinal);
+                    if (!ValidateProperties(asset,
+                        ["assetId", "role", "sortOrder", "filename", "extension", "mimeType", "sizeBytes", "relativePath", "isPresent"],
+                        ["windowsPath"], out ManualSocialDiagnosticReason assetPropertyFailure))
+                        return ParseFailure(out diagnostic, assetPropertyFailure, platformOrdinal, assetOrdinal);
+                    if (!TryPositiveInt64(asset.GetProperty("assetId"), out long id))
+                        return ParseFailure(out diagnostic, ManualSocialDiagnosticReason.InvalidAssetId, platformOrdinal, assetOrdinal);
+                    if (!seenAssets.Add(id)) return ParseFailure(out diagnostic, ManualSocialDiagnosticReason.DuplicateAsset, platformOrdinal, assetOrdinal);
+                    if (!TryRequiredString(asset.GetProperty("role"), out string? role) ||
+                        !new[] { "primary", "preview", "attachment" }.Contains(role, StringComparer.Ordinal))
+                        return ParseFailure(out diagnostic, ManualSocialDiagnosticReason.InvalidAssetRole, platformOrdinal, assetOrdinal);
+                    if (!TryNonNegativeInt64(asset.GetProperty("sortOrder"), out long sort))
+                        return ParseFailure(out diagnostic, ManualSocialDiagnosticReason.InvalidAssetOrder, platformOrdinal, assetOrdinal);
+                    if (!TryRequiredString(asset.GetProperty("filename"), out string? filename))
+                        return ParseFailure(out diagnostic, ManualSocialDiagnosticReason.InvalidAssetFilename, platformOrdinal, assetOrdinal);
+                    if (!TryRequiredString(asset.GetProperty("extension"), out string? extensionText) || !TryNormalizeExtension(extensionText!, out string? extension))
+                        return ParseFailure(out diagnostic, ManualSocialDiagnosticReason.InvalidAssetExtension, platformOrdinal, assetOrdinal);
+                    if (!filename!.EndsWith(extension!, StringComparison.OrdinalIgnoreCase))
+                        return ParseFailure(out diagnostic, ManualSocialDiagnosticReason.FilenameExtensionMismatch, platformOrdinal, assetOrdinal);
+                    if (!TryRequiredString(asset.GetProperty("mimeType"), out string? mime) || !mime!.Contains('/', StringComparison.Ordinal))
+                        return ParseFailure(out diagnostic, ManualSocialDiagnosticReason.InvalidMimeType, platformOrdinal, assetOrdinal);
+                    if (!TryNonNegativeInt64(asset.GetProperty("sizeBytes"), out long size))
+                        return ParseFailure(out diagnostic, ManualSocialDiagnosticReason.InvalidAssetSize, platformOrdinal, assetOrdinal);
+                    if (!TryRequiredString(asset.GetProperty("relativePath"), out string? relativePath))
+                        return ParseFailure(out diagnostic, ManualSocialDiagnosticReason.InvalidRelativePath, platformOrdinal, assetOrdinal);
                     JsonElement present = asset.GetProperty("isPresent");
-                    if (!present.TryGetInt32(out int presentValue) || presentValue is not (0 or 1) || !seenAssets.Add(id) ||
-                        !new[] { "primary", "preview", "attachment" }.Contains(role, StringComparer.Ordinal) ||
-                        !extension.StartsWith(".", StringComparison.Ordinal) || extension.Length < 2 ||
-                        !filename.EndsWith(extension, StringComparison.OrdinalIgnoreCase) || !mime.Contains('/', StringComparison.Ordinal) || string.IsNullOrEmpty(relativePath)) return false;
-                    string? windowsPath = asset.TryGetProperty("windowsPath", out JsonElement path) ? path.ValueKind switch
+                    if (!present.TryGetInt32(out int presentValue) || presentValue is not (0 or 1))
+                        return ParseFailure(out diagnostic, ManualSocialDiagnosticReason.InvalidPresence, platformOrdinal, assetOrdinal);
+                    string? windowsPath = null;
+                    if (asset.TryGetProperty("windowsPath", out JsonElement path))
                     {
-                        JsonValueKind.Null => null,
-                        JsonValueKind.String => path.GetString(),
-                        _ => throw new FormatException(),
-                    } : null;
-                    assets.Add(new SocialRedeemAsset(id, role, sort, filename, extension, mime, size, relativePath, presentValue == 1, windowsPath));
+                        if (path.ValueKind == JsonValueKind.String) windowsPath = path.GetString();
+                        else if (path.ValueKind != JsonValueKind.Null)
+                            return ParseFailure(out diagnostic, ManualSocialDiagnosticReason.InvalidWindowsPath, platformOrdinal, assetOrdinal);
+                    }
+                    assets.Add(new SocialRedeemAsset(id, role!, sort, filename, extension!, mime, size, relativePath!, presentValue == 1, windowsPath));
                 }
-                platforms.Add(new SocialRedeemPlatform(name, title, body, assets));
+                platforms.Add(new SocialRedeemPlatform(name!, title!, body!, assets));
             }
-            result = new SocialRedeemResponse(sessionId, deadline, platforms, mediaToken) { ReleaseId = releaseId };
+            result = new SocialRedeemResponse(sessionId!, deadline, platforms, mediaToken!) { ReleaseId = releaseId };
             return true;
         }
-        catch (JsonException) { return false; }
-        catch (FormatException) { return false; }
-        catch (InvalidOperationException) { return false; }
+        catch (JsonException) { return ParseFailure(out diagnostic, ManualSocialDiagnosticReason.MalformedJson); }
     }
 
-    private static bool ExactProperties(JsonElement element, params string[] expected)
+    private static bool ParseFailure(
+        out ManualSocialDiagnostic? diagnostic, ManualSocialDiagnosticReason reason,
+        int? platform = null, int? asset = null)
     {
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (JsonProperty property in element.EnumerateObject())
-            if (!seen.Add(property.Name) || !expected.Contains(property.Name, StringComparer.Ordinal)) return false;
-        return seen.Count == expected.Length;
+        diagnostic = new ManualSocialDiagnostic(
+            "redeem_payload_invalid", ManualSocialDiagnosticStage.RedeemPreparation,
+            reason, PlatformOrdinal: platform, AssetOrdinal: asset);
+        return false;
     }
-    private static bool PropertiesMatch(JsonElement element, string[] required, params string[] optional)
+
+    private static bool ValidateProperties(
+        JsonElement element, string[] required, string[] optional, out ManualSocialDiagnosticReason failure)
     {
         var allowed = new HashSet<string>(required.Concat(optional), StringComparer.Ordinal);
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        foreach (JsonProperty property in element.EnumerateObject()) if (!allowed.Contains(property.Name) || !seen.Add(property.Name)) return false;
-        return required.All(seen.Contains);
+        foreach (JsonProperty property in element.EnumerateObject())
+        {
+            if (!allowed.Contains(property.Name) || !seen.Add(property.Name))
+            {
+                failure = ManualSocialDiagnosticReason.UnexpectedProperty;
+                return false;
+            }
+        }
+        if (!required.All(seen.Contains))
+        {
+            failure = ManualSocialDiagnosticReason.MissingRequiredProperty;
+            return false;
+        }
+        failure = default;
+        return true;
     }
-    private static string RequiredString(JsonElement element) =>
-        element.ValueKind == JsonValueKind.String && element.GetString() is { Length: > 0 } value ? value : throw new FormatException();
-    private static string RequiredStringAllowEmpty(JsonElement element) =>
-        element.ValueKind == JsonValueKind.String && element.GetString() is { } value ? value : throw new FormatException();
-    private static long RequiredPositiveInt(JsonElement element) =>
-        element.TryGetInt64(out long value) && value > 0 ? value : throw new FormatException();
-    private static long RequiredNonNegativeInt(JsonElement element) =>
-        element.TryGetInt64(out long value) && value >= 0 ? value : throw new FormatException();
+
+    private static bool TryRequiredString(JsonElement element, out string? value)
+    {
+        value = element.ValueKind == JsonValueKind.String ? element.GetString() : null;
+        return value is { Length: > 0 };
+    }
+
+    private static bool TryStringAllowEmpty(JsonElement element, out string? value)
+    {
+        value = element.ValueKind == JsonValueKind.String ? element.GetString() : null;
+        return value is not null;
+    }
+
+    private static bool TryNormalizeExtension(string extension, out string? normalized)
+    {
+        normalized = null;
+        if (!ExtensionPattern.IsMatch(extension)) return false;
+        normalized = (extension.StartsWith(".", StringComparison.Ordinal) ? extension : "." + extension).ToLowerInvariant();
+        return true;
+    }
+
+    private static bool TryPositiveInt64(JsonElement element, out long value) =>
+        element.TryGetInt64(out value) && value > 0;
+
+    private static bool TryNonNegativeInt64(JsonElement element, out long value) =>
+        element.TryGetInt64(out value) && value >= 0;
+
+    private static SocialRedeemResult HttpFailure(
+        string code, ManualSocialDiagnosticReason reason, int status) =>
+        SocialRedeemResult.Fail(code, new ManualSocialDiagnostic(
+            code, ManualSocialDiagnosticStage.RedeemRequest, reason, HttpStatus: status));
 
     private static async Task<byte[]> ReadCappedAsync(HttpContent content, CancellationToken cancellationToken)
     {

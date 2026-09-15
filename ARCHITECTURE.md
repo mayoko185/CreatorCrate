@@ -1658,11 +1658,13 @@ functional suite.
 
 [`helper/windows/`](helper/windows/) is a **separate subsystem with its own
 language, toolchain, and lifecycle**: the `OpenLocally` assembly and
-`OpenLocally.exe` executable in `CreatorCrate.OpenLocally.sln`. It remains a
-`net8.0-windows` application with zero third-party production
-`PackageReference`s, registers its URI protocols per-user under `HKCU`, and has
-an Inno Setup installer. It ships as a self-contained single-file executable
-and is not part of the Node build, the Node test suite, or the server process.
+`OpenLocally.exe` executable in `CreatorCrate.OpenLocally.sln`. It targets .NET
+10 LTS (`net10.0-windows`), remains a Windows GUI (`WinExe`) application, and
+has zero third-party production `PackageReference`s. It registers its URI
+protocols per-user under `HKCU` and has an Inno Setup installer. It publishes
+as a self-contained single-file `win-x64` executable with trimming and
+NativeAOT disabled, and is not part of the Node build, the Node test suite, or
+the server process.
 
 The existing Open Locally boundary remains **one versioned URI contract**:
 
@@ -1703,36 +1705,68 @@ Social preparation is an **additive** second protocol family handled by the
 same executable, not a second helper:
 
 ```
-creatorcrate-social://prepare?v=1&server=<origin>&intent=<opaque-token>
+creatorcrate-social://prepare?v=2&server=<origin>&intent=<opaque-token>
 ```
 
 The activation envelope carries only the protocol version, the CreatorCrate
 server origin, and a short-lived opaque intent. The helper strictly parses
 that shape; a version it does not support produces update-required behavior.
 Content, media, and bearer capability material never enter the activation URI.
+Version 1 identifies the removed automated-browser lifecycle. Manual-companion
+handoffs use version 2 even though the envelope fields remain minimal and
+unchanged. The current helper rejects a structurally valid v1 activation with
+`unsupported_social_workflow` before trust, redemption, staging, or manual
+companion construction. There is no version fallback.
+
+An authenticated, CSRF-protected browser may replace a launch intent only by
+naming the exact current issued session. The service verifies that every
+platform still owned by that session is `pending`, conditionally expires the
+issued row, and creates the replacement through the shared validation,
+content, snapshot, and platform-assignment path inside one `BEGIN IMMEDIATE`
+transaction. The replacement receives a new session and intent; the old intent
+cannot redeem. A redeemed session, including one already in `staging`, cannot
+be expired through this path. The live-session unique index and conditional
+state update serialize concurrent reissue/redeem attempts without changing
+Release publication fields or activity.
 
 The command dispatcher preserves the Open Locally isolation boundary. A
 `creatorcrate-open://` activation takes its established path and does not
-initialize social trust, HTTP, media, Chrome, WebSocket, or CDP components.
+initialize social trust, HTTP, media, or manual-companion components.
 The existing `--register` and `--unregister` commands stay independent.
 `--register-social` and `--unregister-social` register only the
-`creatorcrate-social` protocol. Installer invocation of those social
-commands is intentionally not wired yet.
+`creatorcrate-social` protocol. The production installer invokes both command
+pairs around its lifecycle, with each quoted protocol command pointing to the
+same installed executable. Unregister removes a scheme tree only while its
+command is still owned by that executable.
 
-### Production availability gate
+### Unsupported v1 and manual v2 dispatch
 
-Milestone 2 deliberately ships an empty production adapter registry. Before
-constructing any social runtime dependency, the dispatcher verifies coverage
-for the frozen platform vocabulary. The current production result is
-`production_adapters_unavailable`; therefore it occurs before a trust
-prompt, DNS or network activity, redemption, media sweep or access, Chrome
-discovery, and WebSocket or CDP work. This preserves the real attempt: the
-activation URI does not name the selected platforms, so redeeming just to
-discover a missing adapter would mutate an attempt unnecessarily.
+The helper retains no implementation of the legacy v1 automated-browser
+workflow. A v1 activation fails deterministically with
+`unsupported_social_workflow` directly after strict URI parsing, before any
+trust prompt, DNS or network activity, redemption, media sweep, or companion
+construction.
 
-Production social preparation is consequently **not** platform-ready in this
-milestone. The runtime composition and orchestration seams exist so adapters
-can be supplied later without weakening this pre-side-effect gate.
+The v2 activation takes a separate manual preparation path. Its production
+composition owns only origin trust, the existing social HTTP/redeem/capability
+clients, the local-media resolver, and the staging service. It has no Chrome,
+remote-debugging, CDP, WebSocket-browser, readiness bridge, or platform-adapter
+dependency. After one redemption it moves every targeted platform to `staging`,
+resolves and immediately revalidates every selected asset in authoritative
+server order, constructs an immutable in-memory manual-session handoff, and
+then moves each platform to `ready`. The handoff retains the origin, release ID,
+server-supplied release title, exact per-platform title/body, complete asset
+metadata, provenance, and usable path; it exposes no bearer capability. Failure
+of any required asset produces
+`failed` for that platform and `cancelled` for the other unfinished targets,
+never a partial `ready`. The native manual publishing companion is implemented,
+and `ready` is reported only after its operator-ready boundary. At that terminal
+server-preparation boundary, the helper-owned staging lease transfers to the
+companion and remains held while its window is open; closing an already-ready
+window does not report cancellation or imply that publishing occurred. When the
+window closes, the local lease releases and normal 24-hour retention resumes,
+without extending the server capability or session through the human publishing
+period.
 
 ### Trusted CreatorCrate origins and capability use
 
@@ -1782,201 +1816,106 @@ Helper-owned session directories use a safe derived identifier rather than
 token material and carry an ownership marker. The helper validates the complete
 configured staging-root-to-session chain as non-reparse before it creates,
 reuses, or reads that marker; it never claims an existing unmarked directory.
-Cleanup is idempotent and refuses to traverse reparse points. The on-demand
-abandonment sweep deletes only positively owned directories older than 24 hours.
-There is no daemon, service, scheduled task, or resident cleanup loop, and
-Strategy A sources are excluded from cleanup.
+While a process actively uses a session directory it holds the marker open for
+shared read access without sharing writes or deletion. This prevents the live
+marker from being deleted, renamed, or replaced; other active helper processes
+may still hold the same read lease. A sweeper opens that marker with read and
+DELETE access under `FileShare.None`, so it conflicts with owners and other
+sweepers. It also opens the staging root and session directory without following
+reparse points, validates their handle attributes, and pins both identities by
+withholding delete sharing throughout cleanup. The marker remains intact while
+expected top-level children are removed. Only after that succeeds does the
+sweeper create durable recovery ownership metadata on the session directory,
+mark the marker delete-pending, and release its handle. Windows releases owner
+and sweeper leases automatically on process exit. Ending a preparation run
+disposes its lease deterministically but does not delete successfully staged
+media.
 
-### Chrome, CDP, and generic browser preparation
+A successfully finalized download creates dedicated last-use metadata. Its
+filesystem last-write timestamp is refreshed after finalization and after each
+successful pre-use revalidation; those are the only events that extend the
+retention clock. Completed media remains available through exactly 24 hours
+after that timestamp and becomes sweep-eligible only after the boundary. The
+on-demand sweep first acquires the directory lease and validates every child as
+an expected top-level regular staging file or metadata file. It removes safe
+abandoned partial files, and then deletes only expired, positively owned session
+directories without recursive traversal. Any nested directory, reparse point,
+or unexpected object fails closed. File replacement can at most make a
+non-recursive file deletion fail. Final session removal is committed with
+`SetFileInformationByHandle` against the already validated, pinned directory
+handle; it never resolves the session pathname again. The pinned staging-root
+and session handles prevent ancestor or session replacement during that final
+window. If final disposition fails after marker removal, the recovery metadata
+restores the ordinary marker; if recovery streams are unavailable, cleanup
+retains the marker and directory instead of attempting unsafe final removal.
+Older v1 marker directories without last-use metadata retain completed
+files using their newest file/directory timestamp, while failed or partial-only
+directories may be removed immediately. Missing directories and competing
+sweepers are benign. Malformed or reparse metadata fails closed. There is no
+daemon, service, scheduled task, or resident cleanup loop, and Strategy A
+sources are excluded from cleanup.
 
-The production browser architecture remains the frozen Milestone 0/Milestone 2
-model: the operator's normal installed stable Chrome profile and session. On
-each run the helper re-reads Chrome-owned `DevToolsActivePort`; it does not
-cache a browser WebSocket identifier, scan arbitrary ports, launch or relaunch
-Chrome with debugging flags, or create another profile. It accepts only the
-loopback browser endpoint, makes one BCL `ClientWebSocket` connection
-attempt, uses Chrome's normal Allow/Deny consent, reuses that approved
-connection throughout the preparation run, and never reconnects automatically.
-The Chrome prompt and banner are intentional.
+Before the manual companion exposes media, it revalidates the exact
+expected path, provenance, size, regular-file status, ownership/containment,
+and reparse safety. Failures return stable codes instead of dropping an item.
+A missing or size-mismatched helper-owned download can be restaged through the
+same authenticated capability client; capability expiry remains authoritative
+and requires a new preparation. External Strategy A sources are only
+revalidated and are never copied, renamed, deleted, or silently restaged by
+that recovery path. This local retention lifecycle remains separate from the
+server attempt, which may terminate at `ready` immediately.
 
-A run owns one WebSocket and one shared CDP transport. The transport assigns
-monotonically unique command IDs, correlates responses, reassembles fragmented
-messages, bounds message size and its event queue, routes browser-level and
-flattened-session events separately, honors command cancellation and bounded
-timeouts, and propagates terminal transport failure to pending calls.
-`CdpSession` is a session router over that transport; it neither owns nor
-reconnects the browser socket. The transport also retains an internal terminal
-reason (`local_dispose`, `remote_close`, `receive_failure`, `send_failure`, or a
-protocol/internal failure) for bounded lifecycle diagnostics. Caller command
-cancellation remains non-terminal and does not relabel the shared transport.
+Native thumbnail extraction uses a separate side-effect-free read lease,
+not the availability/recovery operation. Acquisition reuses the approved
+expected-path, provenance, staging-ownership, and external-root trust rules,
+then pins the validated boundary directories, ownership marker when applicable,
+and exact regular file with non-delete-sharing Windows handles for the bounded
+extraction duration. It performs no download, restaging, trust prompt, or
+retention refresh. A preview failure is local to preview presentation and does
+not change the prepared asset, selection, or drag eligibility. This lease is
+the exclusive filesystem boundary for the Shell/ImageList preview pipeline
+described below.
 
-The reusable browser foundation provides target enumeration and filtering,
-explicitly owned target creation, flattened attach/detach, navigation and
-readiness, DOM and accessibility discovery, ordinary input/textarea text
-insertion and root-value verification, direct `DOM.setFileInputFiles` against a
-known `backendNodeId`, optional chooser interception with session-exact
-`Page.fileChooserOpened` handling, and generic upload-ready observation. It
-has no platform-specific selectors. Generic rich-contenteditable exactness is
-not a foundation guarantee: platform adapters own rich-editor behavior,
-site-specific activation, exact readback evidence, and fail-closed handling
-when exact preparation cannot be shown. Only targets explicitly created by the
-fixture, test, or helper may be closed automatically; operator tabs are never
-closed arbitrarily, and a successfully prepared future composer tab may remain
-open.
+### Native manual Social Preparation helper
 
-### Preparation adapters and orchestration
+Social Preparation v2 is implemented exclusively as a native manual publishing workflow. The helper supports manual copying of prepared social text, dragging prepared local files, and explicit **Mark as posted** confirmation back to CreatorCrate after the operator manually publishes. Close, Copy, and Drag do not mean Posted. The helper does not post to, control, or automate social websites. It strictly parses and trusts the activation origin, redeems the single-use intent, uses the protected capability APIs, resolves and stages media with the existing containment and reparse protections, and presents the native manual publishing companion. The companion preserves Patreon title/body separation and the exact X and Bluesky post text supplied by the server.
 
-The adapter contract is preparation-only. An adapter identifies one platform
-and implements `PrepareAsync` with server-generated title/body and ordered
-resolved media. The orchestrator retains CreatorCrate lifecycle and status
-authority; adapters receive no capability and have no authority to submit or
-publish.
-
-**There is no submit, post, or publish method in the adapter or browser
-preparation contract.**
-
-The injected orchestration flow is reusable for multiple platforms: it trusts
-and redeems once, validates the capability, resolves media, opens one Chrome
-connection, and prepares platform adapters sequentially. Immediately before
-each platform, it performs an authoritative status probe; the orchestrator owns
-all status writes. An ordinary per-platform preparation failure does not erase
-platforms already prepared or prevent later platforms from being considered.
-By contrast, a terminal shared CDP transport failure aborts the remaining
-browser preparation: the current row is failed and each unstarted row is
-cancelled with `cdp_transport_failed`; no later adapter or reconnect runs.
-Supersession hard-aborts the obsolete run, an already-finished attempt is a soft
-successful stop, and expired or invalid capability outcomes terminate the run.
-Media cleanup executes on every exit path.
-
-### Test-only Manual foundation harness
-
-`NativeOperatorUiHost` owns the dedicated STA thread, checked input-desktop
-open/attachment, desktop lifetime, and bounded failure containment shared by
-Ready consent and the full-report failure dialog. Dialog content, controls,
-keyboard handling, and decisions remain separate. No dialog body runs after
-desktop attachment failure; visible window style alone is not operator visibility.
-
-Manual invocations may explicitly inject a correlated Ready response directory
-and unique request ID. Only after local Ready returns `DisplayFailed` and its
-thread/resources are gone may the parent present Ready once while the same child
-waits at consent. Responses are atomically published and consumed once before
-validation. Missing, stale, replayed, malformed, or mismatched responses fail
-closed. Child exit cancels parent presentation. Normal runtime uses local native
-consent and requires neither this bridge nor the harness.
-
-The harness `-VerifyReadyConsent` mode requires `CREATORCRATE_M2_MANUAL=1`, publishes
-the actual helper, and uses its existing redirected, no-console launch function
-with `--verify-ready-consent`. Dispatch requires both that exact sole argument
-and the manual gate. It invokes the real Ready implementation, reports bounded
-decision evidence, and exits directly without constructing browser dependencies;
-even Continue cannot reach Chrome in this mode. Real operator Continue and Cancel
-checks are required separately; machine markers are not proof of physical visibility.
-
-Manual social-preparation failures use the shared raw-Win32 full-report dialog;
-stderr and durable capture are secondary evidence, not the operator interface.
-`NativeFailureDialog.Show` returns bounded presentation evidence. Confirmation
-requires an input desktop, selected thread desktop, main window and required
-report/buttons, visibility, and a message loop ending after normal dismissal.
-The child reporter emits a fixed `CREATORCRATE_MANUAL_PRESENTATION` stdout
-record after presentation returns, without replacing the primary failure or
-its exit code. The parent accepts only one exact, valid completed-presentation
-record. After child exit, failed, missing, malformed, or multiple records cause
-one parent fallback attempt with the full report plus safe child presentation
-evidence. Confirmed child presentation or an attempted parent fallback prevents
-cleanup from presenting again. Native errors retain only fixed stages, numeric
-Win32/session values, and desktop/window flags, never raw exception text.
-
-`-VerifyPublishedManualPresentation` exercises the actual published helper and
-parent launch function with nonblocking offline outcomes. The explicit
-`-VerifyPublishedManualDesktop` mode uses the same path with real native UI and
-requires operator confirmation; automated outcomes are not desktop evidence.
-Both use the existing invalid-argument manual preflight before environment,
-browser, or platform access. Only the exact three-argument offline invocation
-in `Program` can select stub outcomes; normal manual invocations cannot.
-
-Manual Patreon execution owns a bounded `ManualPreparationEvidence` snapshot
-from composition through runtime disposal. The wrapper, Chrome consent workflow,
-socket owner, and browser-wrapper construction record their actual boundary
-states (`not_started`, `entered`, `completed`, `failed`). Socket setup is distinct
-from the connection attempt. Consent records only the child-consumed decision,
-the existing parent bridge's Requested/Accepted flags, and a fixed local
-presentation result; presentation success never implies Continue. No Ready
-transport, retry, or platform behavior is changed by this observation.
-
-The primary adapter diagnostic (including Create-resolution, CDP, lifecycle,
-and cleanup evidence) is retained before outer runtime disposal can replace its
-exception. Disposal still has its existing exception/return-code authority;
-its state and safe exception category supplement the primary report. Adapter-
-owned cleanup remains in the adapter diagnostic, not a fabricated wrapper
-disposal boundary. Returned failures and caught exceptions have distinct fixed
-failure kinds. `Serialize()` and `FormatForDisplay()` use the same manual evidence
-payload, with no raw exception messages, type names, IDs, paths, or endpoints.
-The existing 6144-byte UTF-8 transport bound applies to the combined diagnostic;
-the server explicitly reconstructs the fixed manual schema and rejects malformed
-or unknown nested fields. The existing native dialog displays the full report.
-
-The existing xUnit test project contains a complete Manual foundation harness.
-It is test-only and requires caller-provided `CREATORCRATE_M2_MANUAL=1`; ordinary
-automated tests cannot activate its live side effects. Safe verifier and recovery
-modes dispatch and return before the live activation guard. The wrapper never
-self-authorizes: it validates that exact incoming value before it creates its
-Manual workspace, publishes the helper, or starts any parent/testhost process.
-Its controlled fixtures cover
-CreatorCrate, trust and media behavior, and harmless browser preparation. The
-browser fixture creates, attaches, navigates, verifies ordinary input/textarea
-text, assigns its existing file input directly, observes upload readiness, and
-closes one helper-owned target over the existing shared transport. It neither
-tests generic rich-contenteditable exactness nor activates chooser
-interception. The one target has a three-second total cleanup deadline and no
-reconnect. A terminal transport stops further close commands and the session
-subscription is then released locally. If preparation and cleanup both fail,
-the original preparation exception remains primary and the cleanup result is
-emitted as bounded secondary Manual diagnostics. A cleanup-only failure instead
-surfaces the fixture-specific `owned_target_cleanup_failed` lifecycle result.
-The wrapper snapshots and
-restores the relevant registry state, publishes the helper to an isolated
-temporary workspace, and can later exercise the normal-Chrome foundation at
-the operator checkpoint. Before it starts VSTest,
-the wrapper verifies the real published apphost's existence, full and final
-path, readable attributes, and an owned working directory, then runs its safe
-production-adapter gate preflight. Operator evidence confirms that both the
-parent PowerShell launch and the VSTest/testhost launch currently reach the
-managed production-adapter gate under the corrected launch configuration. The
-historical native apphost startup failure remains unexplained and is not
-otherwise generalized. The testhost performs the same preflight before its own
-process launch and records its selected safe launch context; the wrapper
-compares that record with its parent-PowerShell launch context. The actual
-testhost process-stage ownership is retained until that differential evidence
-proves a context failure. Its one deterministic workflow fact emits each stage
-checkpoint to the wrapper before starting the stage; the writer serializes,
-newline-terminates, locks, and flushes JSONL records, and the wrapper parses
-only complete newline-terminated records while retaining a trailing fragment
-across reads. Testhost never reads operator input: it emits a correlated
-operator-confirmation event and waits for one matching response. The parent
-wrapper is the canonical operator-facing owner, asks for an explicit Y/N
-answer, atomically writes a JSON response in its owned workspace, and the
-testhost claims that response once before it accepts only an affirmative
-answer. Stage cancellation bounds an absent response; stale request IDs cannot
-satisfy later checkpoints. The wrapper enforces each announced stage timeout
-before its existing restoration `finally` runs. The wrapper owns only its unique
-workspace: it retries
-transient testhost/VSTest file locks for a bounded eight-second window, reports
-one workspace-level failure if cleanup remains blocked, and keeps the recovery
-export. `-RecoverFrom` restores registry state and retries that workspace
-cleanup without running the Manual workflow. The Manual checkpoint remains
-**incomplete**.
+The production helper contains no Chrome discovery or control, remote-debugging support, CDP transport, browser WebSocket connection, DOM evaluation, automated typing or upload, browser readiness/approval bridge, platform adapter, or site-specific composer automation. It never exposes media URLs or bearer tokens as a fallback. The retained native operator-host and failure-dialog infrastructure provide desktop-safe manual UI only; they do not connect to or manipulate a browser.
 
 ### Deferred social-preparation work
+
+After a successful Release publication initializes at least one configured
+Social Preparation target, the existing publication route redirects once to the
+Release detail page with `prep=1`. That exact marker invokes the same release-level
+publishing-companion action that remains available for explicit use: client
+initialization removes only `prep` with `history.replaceState` and submits the
+action once. The Social Preparation service projects the safe mode from current
+session/platform state: active/non-reissuable attempts suppress reopening;
+issued unredeemed intents use exact-session reissue; and failed/cancelled or
+otherwise server-retryable work uses normal server-authoritative activation.
+Only when Reopen is the authoritative action does the release-level reprepare
+target the full safe configured set of completed `ready` and legacy `prepared`
+platforms, preserving their existing deterministic order in one fresh session,
+single-use intent, and v2 URI. The existing authenticated, CSRF-protected
+activation and reissue routes remain the only mutation paths, and none of these
+actions republishes the Release.
+
+Every successful activation, reprepare, or reissue response replaces the page's
+ephemeral current session ID before one best-effort `location.assign` attempt
+with the fresh v2 URI. The next click therefore performs exact-session reissue
+without a refresh, even when the protocol call throws. Neither the URI nor its
+intent is written to markup or browser storage, and the browser attempt is never
+interpreted as helper success or used to mutate preparation status. Requests are
+serialized per page action; failures and `409` conflicts remain bounded local
+feedback and cannot change Release publication metadata or activity.
 
 The following work remains deliberately outside Milestone 2:
 
 - production Patreon, X, and Bluesky adapters;
 - real platform selectors and composer behavior;
-- automatic Review & Publish-to-helper activation;
-- release-page Social Preparation status/retry UI, Send to helper again, and Prepare again;
+- live Social Preparation polling or social-publication tracking;
 - final submission, posting, publishing, and platform API posting;
-- installer social-protocol wiring and helper download replacement; and
-- .NET 10 migration plus NativeAOT, ReadyToRun, and trimming decisions.
+- NativeAOT, ReadyToRun, and trimming decisions.
 
 #### Partial Social Preparation checkpoint — pause/resume (WP-E)
 
@@ -1987,33 +1926,280 @@ the following is the current restart status. A release may target multiple
 platforms. `prepared` means a composer prepared for human submission, not posted;
 normal final social submission remains human-operated.
 
-**Closed / reuse:** Milestone 1 server foundation, Milestone 2 helper/Chrome
-foundation, Milestone 3 WP-3A, Bluesky and X adapters (both closed/pass), and
-reviewed native/diagnostic failure-reporting work. This checkpoint completes
-read-only release Social Preparation presentation on release detail, the canonical
-release list (including its project-filtered form), and project-detail recent
-release summaries. Patreon is substantially implemented, but live validation
-and normal production adapter registration/integration are incomplete.
+The native manual-publishing workflow extends the persisted platform-state
+vocabulary without rewriting that history. `staging` means the companion is
+resolving and making outgoing content and files available; `ready` means those
+materials are available for manual publishing. `ready` is terminal only for the
+preparation attempt and is not evidence that the operator posted or published
+anything. `posted` is separate current-state evidence created only by explicit
+operator confirmation, with its first server UTC time stored in `posted_at`.
+Legacy `prepared` rows and `prepared_at` timestamps keep their original
+browser-composer meaning and are never interpreted as posting evidence.
 
-**Frozen Ready blocker:** child presentation failed at `set_thread_desktop`
-with Win32 code `170`. The parent Ready request was accepted, but the decision
-became `display_failed`. Chrome discovery never began, no platform adapter ran,
-and no automated post/publication occurred. **Do not resume by immediately
-rerunning live validation.** The next technical step is read-only diagnosis using
-retained Ready evidence; no cause is inferred here.
+The manual lifecycle is `pending -> staging -> ready`, with `failed` and
+`cancelled` allowed while work is pending or staging. `staging` participates in
+the existing 15-minute inactivity and 30-minute hard-deadline recovery policy;
+`ready` is terminal and immediately contributes to finishing the redeemed
+session, so manual composition after handoff cannot extend the capability.
 
-**Incomplete / deferred:** Ready presentation diagnosis/fix; Patreon final live
-**no-submit** validation and operator inspection/discard of its prepared draft;
-normal production adapter registration/integration; Patreon creator vanity sourced
-from CreatorCrate Settings/database; working **Send to helper again** and
-**Prepare again** recovery actions; remaining runtime/performance work; and
-installer/documentation work outside this checkpoint. Current release-detail
-recovery presentation is read-only/unavailable and does not fulfill the eventual
-working recovery requirement.
+Redeeming a v2 manual session also fixes a distinct 24-hour
+`manual_confirmation_expires_at` deadline on the already-redeemed bearer digest.
+The preparation/media capability remains governed by its existing shorter
+deadline and redeemed-state rules; finishing a preparation session does not
+reopen media or preparation-status authority. The confirmation-specific
+authentication path accepts only redeemed or finished, non-superseded sessions
+within the confirmation deadline. In one `BEGIN IMMEDIATE` transaction,
+`POST /social-prep/:sessionId/platforms/:platform/posted` reauthenticates that
+narrow authority, verifies current target ownership, and changes only `ready ->
+posted`. The POST accepts no request entity: positive `Content-Length` or any
+`Transfer-Encoding` framing is rejected before confirmation. Repeating a
+`posted -> posted` transition returns the original `posted_at`. The
+matching confirmation-specific GET provides canonical readback when a committed
+POST response is lost.
 
-**Patreon privacy:** the real creator vanity must never be hardcoded or committed
-in source, tests, defaults, documentation, or committed configuration. Keep private
-live evidence out of this record.
+Manual Social Posts completion is a configured-platform aggregate, not Release
+publication: at least one currently configured platform must exist and every
+configured platform must have a current `posted` row. Missing configured rows
+remain incomplete, while retained rows for platforms no longer configured are
+excluded from the denominator. Explicit reprepare honors the requested platform
+subset. Selecting a posted target creates fresh session ownership, resets only
+that target to preparation state, and clears only its `posted_at`; other posted
+targets retain their evidence. Each currently configured Posted target exposes
+an explicit per-platform `Prepare another post` action. This targeted action is
+the only normal UI path that intentionally starts a new attempt and clears that
+target's posting confirmation; unrelated Posted targets remain untouched. An
+untargeted ordinary reopen continues to cover
+only `ready` and legacy `prepared`, so it cannot silently clear posting evidence.
+
+The production v2 helper presents one raw-Win32, resizable manual publishing
+window on the existing `NativeOperatorUiHost` STA/input-desktop path. The window
+shows release/origin identity, switches only among the authoritative prepared
+Patreon/X/Bluesky targets, copies the exact immutable prepared strings, and keeps
+ordered asset selections mapped to the prepared asset objects for the later drag
+package. `NativeFailureDialog` and this companion share the single
+`NativeUnicodeClipboard` CF_UNICODETEXT implementation. The companion contains
+no browser, CDP, adapter, embedded web surface, upload, or publish behavior. Its
+asset report is also the source for generic Windows filesystem drag/drop. A
+native `SysListView32` `LVN_BEGINDRAG` notification snapshots the full selected
+set through stable prepared-asset ordinals in authoritative server order, feeds
+that immutable snapshot into the existing drag coordinator, asynchronously
+revalidates it through the WP4 availability path, and returns to the same STA for
+copy-only OLE `CF_HDROP` dragging.
+
+The companion's native visual layer is deliberately local to that window and
+reuses CreatorCrate's web hierarchy rather than introducing a helper-wide UI
+framework. In Windows dark app mode its page, surface, card, hover, border,
+text, cyan/violet accent, focus, success, and danger values map directly to the
+authoritative tokens in `src/static/creatorcrate.css`. Windows light app mode
+uses a restrained companion-only adaptation of the same hierarchy and product
+accents; it is not a canonical or pre-existing CreatorCrate web palette. Windows
+High Contrast takes precedence over both palettes and uses system window,
+text, highlight, highlight-text, and disabled-text colors with native focus
+indicators and meaningful status text.
+
+The executable embeds the supported Common Controls v6 dependency through its
+MSBuild `ApplicationManifest`; no adjacent arbitrarily named manifest controls
+activation. The raw-Win32 window uses DPI-scaled Segoe UI heading, body/control,
+section, and metadata fonts plus one bounded owner for its GDI brushes/fonts.
+Documented control-color, common-control theme, and custom-draw paths theme the
+platform ComboBox, action Buttons, status, and native
+asset ListView/report control without changing its keyboard or multiple-selection
+semantics. Native click, Ctrl, Shift, and keyboard selection retain every valid
+visible row by stable ordinal, including an unavailable row explicitly selected
+by the operator; initial selection and Select All remain available-only. Report
+rows expose File, Role, Size, Status, and Path/staged-name text;
+the File column now combines that filename with a DPI-scaled native thumbnail or
+purpose-specific placeholder from a 32-bit-alpha ListView ImageList. Image
+previews are extracted with `IShellItemImageFactory` only while one reviewed
+`ManualAssetPreviewAccess` read lease pins the validated pathname. The UI installs
+the placeholder and enqueues every preview request; only a background worker may
+acquire a fresh lease and then consult the cache. Each lease exposes immutable
+cache identity derived from its already-pinned handle: volume serial, 128-bit file
+ID, verified size, and handle-reported change time. A same-path, same-size file
+replacement or in-place content change therefore cannot authorize stale pixels.
+If the filesystem cannot provide the complete strong identity and version, that
+acquisition remains previewable through Shell extraction but is not eligible for
+cache lookup or insertion. Two dedicated background threads are configured as STA
+before either thread starts; each then balances its successful explicit
+`CoInitializeEx(COINIT_APARTMENTTHREADED)` call with one `CoUninitialize`. These
+workers bound the Shell work; on a miss each copies the returned HBITMAP into CreatorCrate-owned
+BGRA pixels, releases the Shell bitmap and COM interface, and then disposes that
+extraction's lease. A small synchronized per-window LRU stores only copied pixels
+keyed by stable asset/path/provenance/expected-size, requested pixel size, and the
+proven pinned-file identity/version. It never stores a lease or filesystem handle.
+
+Preview requests and results carry the window generation, platform identity,
+stable asset ordinal/reference, and DPI pixel size. The UI applies a result only
+when all identities still match, so platform switches, DPI changes, and close
+discard stale completion safely. Unavailable assets, non-image files, preview
+access failures, and Shell extraction failures use distinct neutral/generated
+placeholders; none changes Status, selection, prepared availability, drag
+eligibility, server state, retention, staging, or capability use. Preview failure
+has no network or restaging fallback. DPI and theme changes recreate the
+ImageList/placeholders; each accepted request reacquires preview access and may
+then use same-size cached pixels for the unchanged pinned file, while
+one 256-item budget bounds all accepted work across the request queue, active
+Shell extraction, and completed results awaiting the UI. Completed-result storage
+has its own 64-item bound; overflow is discarded without blocking Shell workers
+and releases its total-budget charge. A single interlocked notification latch
+coalesces result-ready window messages, and the drain resets then rechecks the
+bounded result queue so a completion racing that reset cannot be stranded.
+Window shutdown synchronizes request acceptance with queue completion, drops
+queued work, lets an active Shell call release its lease safely, discards late
+results, and destroys the ImageList/cache after the workers finish. The documented DWM immersive dark-mode window attribute is
+best-effort and nonfatal. DPI, system-color, theme, and settings notifications
+rebuild the scoped resources and recalculate the header, framed
+platform/content and asset sections, and footer layout.
+
+Window creation, required controls, initial content, visibility, and the usable
+message-loop boundary all precede the server `ready` writes. After those writes,
+server state remains terminal `ready`, while a narrow companion availability
+service retains the capability solely for WP4 revalidation and controlled
+restaging until the operator closes the window. A pre-ready presentation failure
+reports a bounded preparation failure and never reports `ready`; normal closure
+after `ready` does not relabel the completed attempt as cancelled.
+
+Manual-social failures carry a bounded structured diagnostic beginning at v2
+activation-URI parsing and continuing through redeem parsing, preparation, command
+dispatch, and process-level reporting. Stable machine
+codes remain available alongside fixed stage and reason vocabulary, optional safe
+platform/asset ordinals, validated numeric release identity, and numeric HTTP
+status. The existing native failure dialog presents and copies that safe context,
+and stderr receives the same bounded report when available. Raw activation URIs,
+intent or media tokens, response bodies, outgoing social text, filenames/paths,
+credentials, protected URLs, exception messages, and stack traces are never
+displayed or logged by this path.
+
+The production Windows helper treats native companion usability as the final
+precondition for `ready`. After redeem and `staging`, it resolves, stages, and
+revalidates the authoritative content and ordered assets, opens one resizable
+raw-Win32 companion on the existing `NativeOperatorUiHost` STA/input-desktop
+path, and waits until the main window and required controls are visible and
+usable. Only then does it write `ready` once per target. The server runtime stays
+locally owned until window close only so selected media can use the approved WP4
+availability operation; it performs no later platform-status writes. Closing an
+already-ready window therefore does not write `cancelled` or claim that
+publishing occurred.
+
+`ManualSocialSession` remains the immutable source for Patreon title/body and
+X/Bluesky post text. Copy commands use those exact strings through the shared
+native Unicode clipboard implementation rather than reading rendered controls.
+The helper retains the redeemed posting-confirmation authority separately in a
+private companion-lifetime client; the bearer, session identifier, and optional
+server deadline do not enter `ManualSocialSession` or native presentation rows.
+A narrow controller exposes independent Ready, Confirming, Posted, and
+confirmation-unknown state for each captured platform. Its empty-entity POST
+uses the confirmation endpoint directly, while an ambiguous POST is reconciled
+through the matching authenticated GET before Posted can be shown. A lost or
+unreachable response never implies Posted, retries from unknown reconcile first,
+and only canonical server responses supply `posted_at` and replace the retained
+configured-platform completion aggregate. The helper accepts that aggregate
+only when its non-negative integer counts are ordered and `isComplete` exactly
+matches `totalCount > 0 && postedCount == totalCount`. The controller serializes
+complete cross-platform confirmation workflows—including an ambiguous POST and
+its reconciliation GET—so the last completed local workflow retains the newest
+authoritative aggregate without assuming that counts are monotonic. The
+orchestrator remains the controller's sole owner and disposer; the native
+companion borrows it only until the companion closes.
+
+The native companion exposes one explicit per-platform **Mark as posted** action.
+That action is enabled only for the current Ready or confirmation-unknown target,
+captures that platform identity, and runs the controller workflow off the native
+message loop. The UI shows Posted only after canonical server acknowledgment;
+ambiguous delivery remains confirmation-unknown and offers the controller-owned
+reconciliation/retry path. Switching platforms while a request is pending changes
+only the displayed platform, while the eventual response remains attached to the
+captured target. Close, window X, Escape, copy, drag, platform switching, and the
+preparation `ready` transition never invoke posting confirmation. The controller's
+retained server aggregate alone drives the compact count and all-posted message;
+the all-posted state leaves the window open for review and Close.
+
+The companion keeps server asset order and maps native multi-selection directly
+to the prepared asset objects. At `LVN_BEGINDRAG`, the complete current native
+selection is resolved in authoritative order; any unavailable selected row
+rejects the whole drag locally before coordinator preparation, while an eligible
+set becomes an immutable selection snapshot. The retained WP4 availability path
+then remains authoritative for later revalidation. Helper-owned files may be restaged
+only through the retained authenticated WP4 path; external files are only
+revalidated. The dedicated OLE data object exposes only Unicode `CF_HDROP` in
+movable `HGLOBAL` storage and creates independently owned storage for every
+`GetData` call. `DoDragDrop` offers COPY only. No browser, CDP, or platform
+adapter dependency exists in this v2 path.
+
+When helper-owned media exists, `SocialMediaStager` transfers its existing
+exclusive marker lease to the companion. The terminal preparation attempt is not
+reopened; its capability remains encapsulated by the local availability service
+until close and expiry remains authoritative. The companion releases the local
+lease only after pending preparation and any active `DoDragDrop` have ended,
+then the existing 24-hour last-use retention policy again governs sweeping.
+Successful, cancelled, and rejected drops do not shorten that lifetime. External
+source files never produce or receive this lease and remain untouched.
+
+The raw-Win32 companion now uses two production WinUI 3 `RichEditBox` islands as
+its only social text presentation surfaces: one reusable Patreon-title surface
+and one reusable Patreon-body/X-post/Bluesky-post surface. The islands share the
+companion STA dispatcher and XAML environment, use
+`DesktopWindowXamlSource`/`SiteBridge` for parenting, and take their physical
+bounds directly from the current native `NativeCompanionLayout` title/body
+rectangles. Platform switching updates the plain-text documents, accessible
+names, visibility, and tab participation without recreating either island. The
+immutable `ManualSocialSession` strings remain authoritative; dedicated Copy
+buttons continue to write those exact model strings rather than reading XAML
+documents, while presentation-only newline conversion is confined to the
+display boundary. Those two islands inherit CreatorCrate's visual language from
+the same palette hierarchy as the native companion: in dark mode the card
+background frames a nested graphite surface with the authoritative primary text,
+subtle/strong borders, and focus-blue values from `creatorcrate.css`; light mode
+uses the existing companion-only card, surface, text, border, and focus
+adaptation. High Contrast is detected by the native `SPI_GETHIGHCONTRAST` theme
+boundary, switches each island to `ElementTheme.Default`, removes every
+CreatorCrate foreground/background/border/focus resource, and clears any
+previously resolved editor brush values. Text, background, selection, and focus
+then remain owned by Windows system resources.
+
+Both content surfaces use 16-effective-pixel Segoe UI Variable Text with normal
+body weight, while the Patreon title uses the same size and semibold weight. A
+12-by-8-effective-pixel inset, one-pixel border, six-pixel corner radius, and
+1.35-times document paragraph line spacing apply inside the existing native
+island rectangles; paragraph before/after spacing remains zero so model-owned
+blank lines keep their meaning. Wrapping and the standard WinUI vertical
+scrollbar remain enabled, horizontal scrolling remains disabled, and focus keeps
+the WinUI system focus visual plus the CreatorCrate focus-border resource.
+
+Each visible `RichEditBox` is a UIA Control-view `Edit` with class
+`RichEditBox`, a platform-specific accessible name, `TextPattern`, current text,
+read-only text attributes, selection ranges, and keyboard focus. The hidden
+Patreon title is removed from Control view as well as tab and hit-test routing
+for X and Bluesky, then restored on Patreon without recreating its island.
+Out-of-process Windows UI Automation exercises these contracts against the
+production companion rather than a detached proof control.
+
+The 16-pixel `FontSize` values are effective XAML pixels and
+`IsTextScaleFactorEnabled` remains enabled, so WinUI applies the Windows
+accessibility text scale without a CreatorCrate multiplier. That text scale is
+independent of Per-Monitor v2 DPI: native layout owns the physical island
+rectangles for the current monitor DPI, while WinUI scales and scrolls text
+inside those fixed rectangles. DPI changes and settings/theme changes update
+the existing islands on the companion STA; they do not recreate islands or add
+Windows settings event subscriptions.
+
+WinUI initialization, both island creations, initial content application, and
+native layout now precede manual-companion readiness. Initialization failure is
+bounded, unwinds partial XAML state, and fails readiness with reinstall guidance;
+there is no classic social-text `Edit` fallback. Dark and light companion theme
+refreshes update `RequestedTheme` without island recreation, while system High
+Contrast remains `Default` so system behavior takes precedence. Automated WP10C2
+coverage establishes the UIA, resource-clearing, text-scale opt-in, keyboard,
+layout, theme-refresh, and lifecycle contracts, but does not claim spoken
+Narrator output, genuine High Contrast visuals, non-default Windows Text Size,
+or physical mixed-monitor movement; those remain manual acceptance items. By explicit approval,
+clean-machine Windows 11, offline private-runtime launch, and Visual C++
+prerequisite validation are deferred to WP10D installer/deployment validation;
+this production-surface change does not claim those gates or alter the installer.
+
+The removed legacy browser workflow used the historical `prepared` state. Existing persisted `prepared` rows and timestamps remain readable compatibility data, but the helper can no longer create them. Current v2 runs use only the manual `staging` and terminal `ready` lifecycle described above. Completed `ready` and historical `prepared` targets can be opened again only through the explicit release-level reprepare activation, which creates a new session and leaves the published Release and prior session unchanged.
+
+**Current helper state:** the reviewed v2 manual companion is the only production Social Preparation implementation. The old Chrome/CDP/browser transport, browser readiness bridge, automated X, Bluesky, and Patreon adapters, legacy orchestrator/runtime, and automation-only diagnostic harnesses have been removed. The stable per-user installer now delivers that helper and registers both `creatorcrate-open` and `creatorcrate-social` to the same executable.
 
 **Git hygiene (approved; closed once committed):** test-project generated `bin`/`obj`
 output is excluded from future tracking and is no longer intended to remain tracked.
@@ -2032,18 +2218,6 @@ internal executable/project naming; and compatibility with the existing helper
 download/distribution path. No mechanics are decided here. This checkpoint does
 not rename projects, executables, installer files, download routes, or internal
 namespaces, and does not modify the installer.
-
-**Resume order (not scheduled or begun):**
-
-1. Inspect retained Ready evidence read-only.
-2. Resolve the Ready presentation blocker using the established native UI/harness;
-   do not reopen proven browser/adapter infrastructure absent a concrete regression.
-3. Complete Patreon live no-submit validation and operator draft inspection/discard.
-4. Complete normal production adapter registration/integration and Settings/database
-   Patreon creator configuration.
-5. Implement and test working recovery actions.
-6. Separately plan future helper packaging/modular installation.
-7. Continue later milestone/runtime/performance work only under new operator direction.
 
 ---
 
@@ -2103,10 +2277,3 @@ the `opts.x || createX()` fallbacks (a test seam, not a plugin system), and
 the `app.locals` surface (an escape hatch for out-of-band callers, not a
 service locator for request handlers — routers receive their dependencies
 explicitly).
-
-
-## Manual workflow operator-confirmation boundary
-
-The Windows PowerShell Manual wrapper owns operator input; it uses bounded console-key polling rather than a blocking host read. A confirmation retains the currently announced stage deadline, reports the correlated question code on timeout, and writes only the existing one-use structured response file.
-
-A structured testhost `stage-failed` event is a workflow result: the wrapper records it, drains final JSONL events, and grants a finite normal-exit window for testhost cleanup before any forced termination. Wrapper infrastructure failures—such as timeout, EOF, invalid input, response-write failure, malformed event data, or a controlled-failure cleanup overrun—use the exact owned VSTest Process object with Windows `taskkill /PID <pid> /T /F`. The taskkill helper has one absolute three-second total deadline, including any post-timeout Kill cleanup; the owned-child observation remains a separate five-second policy. Terminator timeout/nonzero and a child that remains alive are reported separately. This cleanup boundary does not change the production trust, Chrome, media-staging, or Manual workflow contracts.

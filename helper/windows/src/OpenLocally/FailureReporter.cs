@@ -16,6 +16,26 @@ namespace OpenLocally;
 /// </summary>
 internal static class FailureReporter
 {
+    public static int Report(CommandDispatchResult result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        return Report(result, GetStderr, ShowMessageBox, NativeFailureDialog.Show, Console.Out.WriteLine);
+    }
+
+    internal static int Report(
+        CommandDispatchResult result,
+        Func<TextWriter?> getStderr,
+        Action<string> showMessageBox,
+        Func<string, string, NativePresentationResult> showDialog,
+        Action<string>? writeMarker = null)
+    {
+        if (!result.RequiresManualFailurePresentation)
+            return Report(result.Error!, result.Detail, getStderr, showMessageBox);
+        return result.Diagnostic is not null
+            ? ReportManualSocialFailure(result.Diagnostic, getStderr, showDialog, writeMarker)
+            : ReportManualSocialFailure(result.Error!, result.Detail, getStderr, showDialog, writeMarker);
+    }
+
     /// <summary>
     /// Report a failure message. Returns the process exit code to use (1).
     /// </summary>
@@ -32,6 +52,12 @@ internal static class FailureReporter
     public static int ReportManualSocialFailure(string message, string? detail)
     {
         return ReportManualSocialFailure(message, detail, GetStderr, NativeFailureDialog.Show, Console.Out.WriteLine);
+    }
+
+    public static int ReportManualSocialFailure(ManualSocialDiagnostic diagnostic)
+    {
+        ArgumentNullException.ThrowIfNull(diagnostic);
+        return ReportManualSocialFailure(diagnostic, GetStderr, NativeFailureDialog.Show, Console.Out.WriteLine);
     }
 
     /// <summary>Presentation is best effort: it can never replace the original failure outcome.</summary>
@@ -61,7 +87,7 @@ internal static class FailureReporter
         Action<string>? writeMarker = null)
     {
         string report = string.IsNullOrEmpty(detail) ? BuildManualFallbackReport(message) : detail;
-        try { getStderr()?.WriteLine(BuildReport(message, detail)); } catch { }
+        try { getStderr()?.WriteLine(report); } catch { }
         NativePresentationResult outcome;
         try { outcome = showDialog(BuildSummary(report), report); }
         catch { outcome = new NativePresentationResult { Stage = NativePresentationStage.unexpected }; }
@@ -69,21 +95,19 @@ internal static class FailureReporter
         return 1;
     }
 
-    // Only Program's exact offline verification invocation selects this seam.
-    // Dispatch has already produced its ordinary invalid-argument preflight failure.
-    internal static int ReportOfflineManualFailure(string message, string? detail, string scenario)
+    internal static int ReportManualSocialFailure(
+        ManualSocialDiagnostic diagnostic,
+        Func<TextWriter?> getStderr,
+        Func<string, string, NativePresentationResult> showDialog,
+        Action<string>? writeMarker = null)
     {
-        return ReportManualSocialFailure(message, detail, GetStderr,
-            (_, _) => scenario == "presented"
-                ? new NativePresentationResult {
-                    State = NativePresentationState.PresentedAndDismissed, Stage = NativePresentationStage.completed,
-                    InputDesktopOpened = true, ThreadDesktopSelected = true, WindowCreated = true,
-                    WindowVisible = true, NormalDismissal = true }
-                : new NativePresentationResult { Stage = NativePresentationStage.open_input_desktop, Win32Code = 5 },
-            marker => {
-                if (scenario == "missing") return;
-                Console.Out.WriteLine(scenario == "malformed" ? "CREATORCRATE_MANUAL_PRESENTATION;state=invalid" : marker);
-            });
+        string report = diagnostic.FormatForDisplay();
+        try { getStderr()?.WriteLine(report); } catch { }
+        NativePresentationResult outcome;
+        try { outcome = showDialog(diagnostic.Summary, report); }
+        catch { outcome = new NativePresentationResult { Stage = NativePresentationStage.unexpected }; }
+        try { writeMarker?.Invoke(outcome.ToMarker()); } catch { }
+        return 1;
     }
 
     /// <summary>Combines the stable failure headline and its safe detail without shortening either.</summary>
@@ -99,8 +123,11 @@ internal static class FailureReporter
         return $"{char.ToUpperInvariant(platform[0])}{platform[1..]} preparation failed during {phase}.{Environment.NewLine}{Environment.NewLine}Stable error: {stableError}{Environment.NewLine}Error class: {errorClass}";
     }
 
-    private static string BuildManualFallbackReport(string message) =>
-        $"Social Preparation failed{Environment.NewLine}Platform: unknown{Environment.NewLine}Phase: manual_preparation{Environment.NewLine}Stable error: {message}{Environment.NewLine}Outcome: failed{Environment.NewLine}Error class: unexpected";
+    private static string BuildManualFallbackReport(string message)
+    {
+        string code = ManualSocialDiagnostic.SafeCode(message);
+        return $"Social Preparation failed{Environment.NewLine}Platform: unknown{Environment.NewLine}Phase: manual_preparation{Environment.NewLine}Stable error: {code}{Environment.NewLine}Outcome: failed{Environment.NewLine}Error class: unexpected";
+    }
 
     private static string? ValueFor(string report, string label)
     {

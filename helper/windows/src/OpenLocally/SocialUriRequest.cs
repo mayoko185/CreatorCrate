@@ -8,12 +8,24 @@ namespace OpenLocally;
 /// and the opaque server-issued intent capability. This parser deliberately
 /// performs no origin trust checks or network activity.
 /// </summary>
-public sealed record SocialUriRequest(Uri ServerOrigin, string Intent);
+public sealed record SocialUriRequest(int Version, Uri ServerOrigin, string Intent);
 
 public enum SocialUriParseFailure
 {
     InvalidRequest,
     HelperUpdateRequired,
+}
+
+public enum SocialUriParseFailureReason
+{
+    InvalidActivationUri,
+    InvalidActivationShape,
+    MissingActivationParameter,
+    DuplicateActivationParameter,
+    UnsupportedActivationParameter,
+    InvalidActivationVersion,
+    InvalidServerOrigin,
+    InvalidIntent,
 }
 
 /// <summary>
@@ -25,27 +37,35 @@ public sealed record SocialUriParseResult(
     bool Success,
     SocialUriRequest? Request,
     SocialUriParseFailure? Failure,
-    string? Error)
+    SocialUriParseFailureReason? Reason)
 {
     public static SocialUriParseResult Ok(SocialUriRequest request) => new(true, request, null, null);
 
-    public static SocialUriParseResult Fail(string error) => new(false, null, SocialUriParseFailure.InvalidRequest, error);
+    public static SocialUriParseResult Fail(SocialUriParseFailureReason reason) =>
+        new(false, null, SocialUriParseFailure.InvalidRequest, reason);
 
     public static SocialUriParseResult HelperUpdateRequired() =>
-        new(false, null, SocialUriParseFailure.HelperUpdateRequired, "helper_update_required");
+        new(false, null, SocialUriParseFailure.HelperUpdateRequired, SocialUriParseFailureReason.InvalidActivationVersion);
+
+    public string? Error => Failure switch
+    {
+        SocialUriParseFailure.InvalidRequest => "social_uri_invalid",
+        SocialUriParseFailure.HelperUpdateRequired => "helper_update_required",
+        _ => null,
+    };
 }
 
 /// <summary>
-/// Strict parser for creatorcrate-social://prepare?v=1&server=&lt;origin&gt;&amp;intent=&lt;token&gt;.
-/// It parses only the activation envelope; trust, HTTP, media, and browser
-/// behavior deliberately belong to later social work packages.
+/// Strict parser for creatorcrate-social://prepare?v=&lt;1|2&gt;&amp;server=&lt;origin&gt;&amp;intent=&lt;token&gt;.
+/// It parses only the activation envelope; trust, HTTP, media, and manual
+/// companion behavior deliberately belong to later social work packages.
 /// </summary>
 public static partial class SocialUriRequestParser
 {
     public const string Scheme = "creatorcrate-social";
     public const string Host = "prepare";
-    public const string Version = "1";
-
+    public const int LegacyVersion = 1;
+    public const int ManualVersion = 2;
     private const int IntentLength = 43;
 
     [GeneratedRegex("^[A-Za-z0-9_-]{43}$", RegexOptions.CultureInvariant)]
@@ -55,31 +75,31 @@ public static partial class SocialUriRequestParser
     {
         if (string.IsNullOrEmpty(uri))
         {
-            return SocialUriParseResult.Fail("Social URI must not be empty.");
+            return SocialUriParseResult.Fail(SocialUriParseFailureReason.InvalidActivationUri);
         }
 
         int schemeSeparator = uri.IndexOf("://", StringComparison.Ordinal);
         if (schemeSeparator < 0)
         {
-            return SocialUriParseResult.Fail("Social URI must use the 'scheme://' form.");
+            return SocialUriParseResult.Fail(SocialUriParseFailureReason.InvalidActivationUri);
         }
 
         string scheme = uri[..schemeSeparator];
         if (scheme != Scheme)
         {
-            return SocialUriParseResult.Fail("Unsupported social URI scheme.");
+            return SocialUriParseResult.Fail(SocialUriParseFailureReason.InvalidActivationUri);
         }
 
         string remainder = uri[(schemeSeparator + 3)..];
         if (remainder.Contains('#'))
         {
-            return SocialUriParseResult.Fail("Social URI must not contain a fragment.");
+            return SocialUriParseResult.Fail(SocialUriParseFailureReason.InvalidActivationShape);
         }
 
         int queryStart = remainder.IndexOf('?');
         if (queryStart < 0)
         {
-            return SocialUriParseResult.Fail("Social URI is missing its query string.");
+            return SocialUriParseResult.Fail(SocialUriParseFailureReason.InvalidActivationShape);
         }
 
         string authority = remainder[..queryStart];
@@ -89,12 +109,12 @@ public static partial class SocialUriRequestParser
 
         if (host != Host)
         {
-            return SocialUriParseResult.Fail("Unsupported social URI action.");
+            return SocialUriParseResult.Fail(SocialUriParseFailureReason.InvalidActivationShape);
         }
 
         if (hostPath.Length > 0 && hostPath != "/")
         {
-            return SocialUriParseResult.Fail("Unsupported social URI path.");
+            return SocialUriParseResult.Fail(SocialUriParseFailureReason.InvalidActivationShape);
         }
 
         string? version = null;
@@ -107,19 +127,19 @@ public static partial class SocialUriRequestParser
             int equals = pair.IndexOf('=');
             if (equals < 0)
             {
-                return SocialUriParseResult.Fail("Malformed social URI query parameter.");
+                return SocialUriParseResult.Fail(SocialUriParseFailureReason.InvalidActivationShape);
             }
 
             string key = pair[..equals];
             string value = pair[(equals + 1)..];
             if (key.Length == 0)
             {
-                return SocialUriParseResult.Fail("Social URI query parameter name must not be empty.");
+                return SocialUriParseResult.Fail(SocialUriParseFailureReason.InvalidActivationShape);
             }
 
             if (!seen.Add(key))
             {
-                return SocialUriParseResult.Fail($"Duplicate social URI query parameter '{key}'.");
+                return SocialUriParseResult.Fail(SocialUriParseFailureReason.DuplicateActivationParameter);
             }
 
             switch (key)
@@ -127,39 +147,39 @@ public static partial class SocialUriRequestParser
                 case "v": version = value; break;
                 case "server": server = value; break;
                 case "intent": intent = value; break;
-                default: return SocialUriParseResult.Fail($"Unknown social URI query parameter '{key}'.");
+                default: return SocialUriParseResult.Fail(SocialUriParseFailureReason.UnsupportedActivationParameter);
             }
         }
 
-        if (version is null) return SocialUriParseResult.Fail("Missing social URI query parameter 'v'.");
-        if (server is null) return SocialUriParseResult.Fail("Missing social URI query parameter 'server'.");
-        if (intent is null) return SocialUriParseResult.Fail("Missing social URI query parameter 'intent'.");
-        if (version.Length == 0) return SocialUriParseResult.Fail("Social URI query parameter 'v' must not be empty.");
-        if (server.Length == 0) return SocialUriParseResult.Fail("Social URI query parameter 'server' must not be empty.");
-        if (intent.Length == 0) return SocialUriParseResult.Fail("Social URI query parameter 'intent' must not be empty.");
+        if (version is null || server is null || intent is null ||
+            version.Length == 0 || server.Length == 0 || intent.Length == 0)
+            return SocialUriParseResult.Fail(SocialUriParseFailureReason.MissingActivationParameter);
 
-        if (version != Version)
+        int parsedVersion = version switch
         {
-            return SocialUriParseResult.HelperUpdateRequired();
-        }
+            "1" => LegacyVersion,
+            "2" => ManualVersion,
+            _ => 0,
+        };
+        if (parsedVersion == 0) return SocialUriParseResult.HelperUpdateRequired();
 
         if (intent.Length != IntentLength || !IntentPattern().IsMatch(intent))
         {
-            return SocialUriParseResult.Fail("Social URI intent is malformed.");
+            return SocialUriParseResult.Fail(SocialUriParseFailureReason.InvalidIntent);
         }
 
         string? decodedServer = PercentDecode(server);
         if (decodedServer is null)
         {
-            return SocialUriParseResult.Fail("Malformed percent encoding in social URI server origin.");
+            return SocialUriParseResult.Fail(SocialUriParseFailureReason.InvalidServerOrigin);
         }
 
         if (!TryParseOrigin(decodedServer, out Uri? origin))
         {
-            return SocialUriParseResult.Fail("Social URI server must be an absolute HTTP or HTTPS origin.");
+            return SocialUriParseResult.Fail(SocialUriParseFailureReason.InvalidServerOrigin);
         }
 
-        return SocialUriParseResult.Ok(new SocialUriRequest(origin, intent));
+        return SocialUriParseResult.Ok(new SocialUriRequest(parsedVersion, origin!, intent));
     }
 
     private static bool TryParseOrigin(string value, out Uri? origin)

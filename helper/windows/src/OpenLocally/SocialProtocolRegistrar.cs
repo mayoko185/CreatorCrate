@@ -53,11 +53,25 @@ public sealed class SocialProtocolRegistrar
         }
     }
 
-    public ProtocolRegistrationResult Unregister()
+    /// <summary>
+    /// Remove only a registration whose command still points to this
+    /// executable. Missing or independently replaced registrations are kept.
+    /// </summary>
+    public ProtocolRegistrationResult Unregister(string? executablePath)
     {
+        if (string.IsNullOrWhiteSpace(executablePath))
+        {
+            return ProtocolRegistrationResult.Fail("Executable path must not be empty.");
+        }
+
         try
         {
-            _registry.DeleteTree(RootKeyPath);
+            string expectedCommand = $"\"{executablePath}\" \"%1\"";
+            string? registeredCommand = _registry.GetValue(CommandKeyPath, null);
+            if (string.Equals(registeredCommand, expectedCommand, StringComparison.OrdinalIgnoreCase))
+            {
+                _registry.DeleteTree(RootKeyPath);
+            }
             return ProtocolRegistrationResult.Ok();
         }
         catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or SecurityException or PlatformNotSupportedException)

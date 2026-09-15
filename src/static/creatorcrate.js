@@ -59,6 +59,7 @@ import {
 } from './client/pickers.js';
 import { enhanceNumberInputs } from './client/number-input.js';
 import { enhanceProjectAssetsDefaultsScope } from './client/project-assets-defaults-scope.js';
+import { enhanceReleaseSocialPrepAutoLaunch } from './client/release-social-prep-auto-launch.js';
 import {
   AUTO_REFRESH_INTERVAL_MS,
   enhanceLogViewerAutoRefresh,
@@ -147,6 +148,7 @@ export {
   enhanceAppConfirmationControls as enhanceConfirmations,
   enhanceNumberInputs,
   enhanceProjectAssetsDefaultsScope,
+  enhanceReleaseSocialPrepAutoLaunch,
   AUTO_REFRESH_INTERVAL_MS,
   enhanceLogViewerAutoRefresh,
   formatLogTimestamp,
@@ -233,6 +235,7 @@ if (typeof document !== 'undefined') {
       refreshFailureMessage: 'Settings saved, but Asset Viewer could not refresh. Refresh the page to see the saved defaults.',
     });
     enhanceProjectAssetsDefaultsScope(document);
+    enhanceReleaseSocialPrepAutoLaunch(document);
     enhanceProjectAssetsDefaultsFetchSave(document);
     enhanceAppDialogs(document);
     enhanceNoteDialogUnsavedChanges(document);

@@ -8,6 +8,14 @@ public sealed record LocalMediaResolution(bool Resolved, string? Path, string? R
     public static LocalMediaResolution Source(string path, string root) => new(true, path, root);
 }
 
+public sealed record LocalMediaAvailability(bool Available, string? ErrorCode)
+{
+    public static LocalMediaAvailability Ready() => new(true, null);
+    public static LocalMediaAvailability Fail(string code) => new(false, code);
+}
+
+internal sealed record LocalMediaReadBoundary(string Path, string Root);
+
 /// <summary>Validates a server hint as a Windows source file only after exact origin/root approval.</summary>
 public sealed class LocalMediaResolver
 {
@@ -30,6 +38,42 @@ public sealed class LocalMediaResolver
         return LocalMediaResolution.Source(candidate!, root!);
     }
 
+    /// <summary>Revalidates an already-approved external source without prompting or mutating it.</summary>
+    public LocalMediaAvailability Revalidate(SocialOrigin origin, SocialRedeemAsset asset, string expectedPath)
+    {
+        if (!TryGetTrustedReadBoundary(origin, asset, expectedPath, out LocalMediaReadBoundary? boundary, out string? errorCode))
+            return LocalMediaAvailability.Fail(errorCode!);
+        return InspectExistingFile(boundary!.Path, boundary.Root, asset.SizeBytes) switch
+        {
+            ExistingFileState.Ready => LocalMediaAvailability.Ready(),
+            ExistingFileState.Missing => LocalMediaAvailability.Fail("media_file_missing"),
+            ExistingFileState.SizeMismatch => LocalMediaAvailability.Fail("media_size_mismatch"),
+            _ => LocalMediaAvailability.Fail("media_file_unsafe"),
+        };
+    }
+
+    /// <summary>Resolves an already-approved path/root pair without inspecting or mutating the filesystem.</summary>
+    internal bool TryGetTrustedReadBoundary(
+        SocialOrigin origin, SocialRedeemAsset asset, string expectedPath,
+        out LocalMediaReadBoundary? boundary, out string? errorCode)
+    {
+        boundary = null;
+        errorCode = null;
+        if (!TryDeriveRoot(asset.WindowsPath ?? string.Empty, asset.RelativePath, out string? candidate, out string? root) ||
+            !string.Equals(candidate, expectedPath, StringComparison.OrdinalIgnoreCase))
+        {
+            errorCode = "validation_failed";
+            return false;
+        }
+        if (!_store.IsTrusted(origin, root!))
+        {
+            errorCode = "media_source_untrusted";
+            return false;
+        }
+        boundary = new LocalMediaReadBoundary(candidate!, root!);
+        return true;
+    }
+
     internal static bool TryDeriveRoot(string candidate, string relativePath, out string? normalizedCandidate, out string? normalizedRoot)
     {
         normalizedCandidate = normalizedRoot = null;
@@ -43,7 +87,7 @@ public sealed class LocalMediaResolver
         return true;
     }
 
-    private static bool TryNormalizeAbsolute(string value, out string? path)
+    internal static bool TryNormalizeAbsolute(string value, out string? path)
     {
         path = null;
         if (string.IsNullOrWhiteSpace(value)) return false;
@@ -73,14 +117,20 @@ public sealed class LocalMediaResolver
     }
 
     private static bool IsSafeExistingFile(string path, string root, long expectedSize)
+        => InspectExistingFile(path, root, expectedSize) == ExistingFileState.Ready;
+
+    private static ExistingFileState InspectExistingFile(string path, string root, long expectedSize)
     {
         try
         {
-            if (!path.StartsWith(root + "\\", StringComparison.OrdinalIgnoreCase) || HasReparsePointInChain(root, path)) return false;
+            if (!path.StartsWith(root + "\\", StringComparison.OrdinalIgnoreCase) || HasReparsePointInChain(root, path)) return ExistingFileState.Unsafe;
             var info = new FileInfo(path);
-            return info.Exists && (info.Attributes & FileAttributes.Directory) == 0 && info.Length == expectedSize;
+            if (!info.Exists) return ExistingFileState.Missing;
+            if ((info.Attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0) return ExistingFileState.Unsafe;
+            return info.Length == expectedSize ? ExistingFileState.Ready : ExistingFileState.SizeMismatch;
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { return false; }
+        catch (Exception ex) when (ex is DirectoryNotFoundException or FileNotFoundException) { return ExistingFileState.Missing; }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException) { return ExistingFileState.Unsafe; }
     }
 
     private static bool HasReparsePointInChain(string root, string file)
@@ -102,4 +152,6 @@ public sealed class LocalMediaResolver
         return name is "CON" or "PRN" or "AUX" or "NUL" or "CLOCK$" ||
             (name.Length == 4 && (name.StartsWith("COM", StringComparison.Ordinal) || name.StartsWith("LPT", StringComparison.Ordinal)) && name[3] is >= '1' and <= '9');
     });
+
+    private enum ExistingFileState { Ready, Missing, SizeMismatch, Unsafe }
 }

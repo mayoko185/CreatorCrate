@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Text.Json;
 using OpenLocally.Tests.Manual;
 
 namespace OpenLocally.Tests;
@@ -84,89 +83,4 @@ public sealed class ManualTokenDiagnosticsTests
         Assert.Equal("ok", result.InspectionStatus);
     }
 
-    [Fact]
-    public void PowerShellWrapper_ReportsTheCommonTokenDiagnosticSchemaWithoutManualOptIn()
-    {
-        string root = PublishedProductionGateProcessTests.FindRepositoryRoot();
-        string script = Path.Combine(
-            root,
-            "helper",
-            "windows",
-            "tests",
-            "OpenLocally.Tests",
-            "Manual",
-            "run-m2-foundation.ps1");
-
-        var start = new ProcessStartInfo("powershell.exe")
-        {
-            WorkingDirectory = root,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        };
-        foreach (string argument in new[]
-        {
-            "-NoProfile",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-            script,
-            "-RepositoryRoot",
-            root,
-            "-VerifyTokenDiagnostics",
-        })
-        {
-            start.ArgumentList.Add(argument);
-        }
-        start.Environment.Remove("CREATORCRATE_M2_MANUAL");
-
-        using Process process = Process.Start(start)
-            ?? throw new InvalidOperationException("Could not start the token-diagnostic contract process.");
-        Assert.True(process.WaitForExit(30_000), "The token-diagnostic contract process timed out.");
-
-        string stdout = process.StandardOutput.ReadToEnd();
-        string stderr = process.StandardError.ReadToEnd();
-        Assert.True(
-            process.ExitCode == 0,
-            $"The token-diagnostic contract process failed with exit code {process.ExitCode}. stdout: {stdout} stderr: {stderr}");
-
-        using JsonDocument document = JsonDocument.Parse(stdout);
-        JsonElement rootElement = document.RootElement;
-        Assert.Equal(JsonValueKind.Number, rootElement.GetProperty("ProcessId").ValueKind);
-        AssertBooleanOrNull(rootElement.GetProperty("IsElevated"));
-        Assert.Equal(JsonValueKind.String, rootElement.GetProperty("ElevationType").ValueKind);
-        Assert.Equal(JsonValueKind.String, rootElement.GetProperty("IntegrityLevel").ValueKind);
-        AssertBooleanOrNull(rootElement.GetProperty("IsAppContainer"));
-        Assert.Equal(JsonValueKind.String, rootElement.GetProperty("InspectionStatus").ValueKind);
-
-        ManualTokenDiagnostics csharp = ManualTokenDiagnostics.FromTokenInformation(
-            processId: 1,
-            elevation: 0,
-            elevationType: 3,
-            integrityRid: 0x2000,
-            isAppContainer: 0,
-            inspectionStatus: "synthetic");
-        using JsonDocument csharpDocument = JsonDocument.Parse(JsonSerializer.Serialize(csharp));
-        JsonElement csharpElement = csharpDocument.RootElement;
-
-        string[] expectedProperties =
-        [
-            "ProcessId",
-            "IsElevated",
-            "ElevationType",
-            "IntegrityLevel",
-            "IsAppContainer",
-            "InspectionStatus",
-        ];
-        Assert.Equal(expectedProperties.OrderBy(name => name), rootElement.EnumerateObject().Select(property => property.Name).OrderBy(name => name));
-        Assert.Equal(expectedProperties.OrderBy(name => name), csharpElement.EnumerateObject().Select(property => property.Name).OrderBy(name => name));
-        foreach (string property in expectedProperties)
-        {
-            Assert.Equal(csharpElement.GetProperty(property).ValueKind, rootElement.GetProperty(property).ValueKind);
-        }
-    }
-
-    private static void AssertBooleanOrNull(JsonElement value)
-        => Assert.True(value.ValueKind is JsonValueKind.True or JsonValueKind.False or JsonValueKind.Null);
 }

@@ -26,6 +26,14 @@ internal sealed class InMemoryRegistry : IRegistry
         _keys[keyPath][valueName ?? string.Empty] = value;
     }
 
+    public string? GetValue(string keyPath, string? valueName)
+    {
+        return _keys.TryGetValue(keyPath, out Dictionary<string, string>? values)
+            && values.TryGetValue(valueName ?? string.Empty, out string? value)
+                ? value
+                : null;
+    }
+
     public void DeleteTree(string keyPath)
     {
         foreach (string existing in _keys.Keys.Where(k => k.Equals(keyPath, StringComparison.OrdinalIgnoreCase) || k.StartsWith(keyPath + "\\", StringComparison.OrdinalIgnoreCase)).ToList())
@@ -104,7 +112,7 @@ public class ProtocolRegistrarTests
     {
         _registrar.Register(@"C:\Tools\OpenLocally.exe");
 
-        ProtocolRegistrationResult result = _registrar.Unregister();
+        ProtocolRegistrationResult result = _registrar.Unregister(@"C:\Tools\OpenLocally.exe");
 
         Assert.True(result.Success);
         Assert.Null(result.Error);
@@ -114,7 +122,7 @@ public class ProtocolRegistrarTests
     [Fact]
     public void Unregister_WhenNotRegistered_IsNotAnError()
     {
-        ProtocolRegistrationResult result = _registrar.Unregister();
+        ProtocolRegistrationResult result = _registrar.Unregister(@"C:\Tools\OpenLocally.exe");
 
         Assert.True(result.Success);
         Assert.Null(result.Error);
@@ -126,9 +134,20 @@ public class ProtocolRegistrarTests
         _registry.SetValue(@"Software\Classes\other-protocol", null, "Other");
         _registrar.Register(@"C:\Tools\OpenLocally.exe");
 
-        _registrar.Unregister();
+        _registrar.Unregister(@"C:\Tools\OpenLocally.exe");
 
         Assert.True(_registry.Keys.ContainsKey(@"Software\Classes\other-protocol"));
         Assert.DoesNotContain(_registry.Keys.Keys, k => k.StartsWith(RootKey, StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Unregister_WhenCommandIsNotOwned_PreservesTheProtocolTree()
+    {
+        _registrar.Register(@"C:\Other\OpenLocally.exe");
+
+        ProtocolRegistrationResult result = _registrar.Unregister(@"C:\Tools\OpenLocally.exe");
+
+        Assert.True(result.Success);
+        Assert.Contains(RootKey, _registry.Keys.Keys);
     }
 }

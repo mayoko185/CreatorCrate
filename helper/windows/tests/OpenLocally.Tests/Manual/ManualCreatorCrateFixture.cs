@@ -32,7 +32,6 @@ internal sealed class ManualCreatorCrateFixture : IAsyncDisposable
 
     public static Task<ManualCreatorCrateFixture> StartAsync()
     {
-        ManualFoundationGuard.RequireOptIn();
         var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         return Task.FromResult(new ManualCreatorCrateFixture(listener));

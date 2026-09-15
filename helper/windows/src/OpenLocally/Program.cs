@@ -4,7 +4,7 @@
 //
 // Usage:
 //   OpenLocally.exe "creatorcrate-open://open?v=2&path=<absolute-windows-path>&select=<0|1>"
-//   OpenLocally.exe "creatorcrate-social://prepare?v=1&server=<origin>&intent=<token>"
+//   OpenLocally.exe "creatorcrate-social://prepare?v=<1|2>&server=<origin>&intent=<token>"
 //   OpenLocally.exe --register | --unregister
 //   OpenLocally.exe --register-social | --unregister-social
 //
@@ -12,30 +12,16 @@
 // never crashes on them. The dispatcher keeps the original Open Locally
 // activation lazy: that branch never constructs social-only dependencies.
 
-var dispatcher = new CommandDispatcher();
-CommandDispatchResult result = dispatcher.Dispatch(args);
+if (DpiAwarenessProbe.TryRun(args, out int dpiProbeExitCode)) return dpiProbeExitCode;
+return HelperProgram.Run(args, new CommandDispatcher(), FailureReporter.Report);
 
-// Explicit offline selection never falls through into another UI or browser path,
-// including when the required manual opt-in is absent.
-if (args.Length > 0 && args[0] == CommandDispatcher.VerifyReadyConsentCommand)
+internal static class HelperProgram
 {
-    if (!result.Success) { try { Console.Error.WriteLine(result.Error); } catch { } }
-    return result.Success ? 0 : 1;
+    internal static int Run(
+        string[] args, CommandDispatcher dispatcher,
+        Func<CommandDispatchResult, int> reportFailure)
+    {
+        CommandDispatchResult result = dispatcher.Dispatch(args);
+        return result.Success ? 0 : reportFailure(result);
+    }
 }
-
-if (!result.Success)
-{
-    // Explicit offline-only verification; the extra arguments force Dispatch to
-    // reject before environment, browser, or platform access. No ambient bypass.
-    if (result.RequiresManualFailurePresentation && args.Length == 3 &&
-        args[0] == CommandDispatcher.ValidatePatreonPreparationCommand &&
-        args[1] == "--offline-presentation-verification" &&
-        args[2] is "presented" or "failed" or "missing" or "malformed")
-        return FailureReporter.ReportOfflineManualFailure(result.Error!, result.Detail, args[2]);
-
-    return result.RequiresManualFailurePresentation
-        ? FailureReporter.ReportManualSocialFailure(result.Error!, result.Detail)
-        : FailureReporter.Report(result.Error!, result.Detail);
-}
-
-return 0;

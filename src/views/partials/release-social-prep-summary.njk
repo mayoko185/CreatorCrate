@@ -1,12 +1,15 @@
-{# Display-only; accepts the shared presenter's socialPreparation projection. #}
-{% macro render(socialPreparation, showVisibleLabel = true) %}
+{% import "partials/release-social-prep-companion-action.njk" as companionControl %}
+{% macro render(socialPreparation, releaseId, csrfToken, showVisibleLabel = true) %}
   {% if socialPreparation.targets.length %}
     <div class="release-social-prep-summary" role="group" aria-label="Social posts">
       {% if showVisibleLabel %}<small>Social posts</small>{% endif %}
       {% for target in socialPreparation.targets %}
-        {% set compactLabels = { prepared: 'Prepared', failed: 'Failed', cancelled: 'Cancelled' } %}
+        {% set compactLabels = { prepared: 'Prepared', staging: 'Preparing for manual publishing', ready: 'Ready for manual publishing — not marked as posted', posted: 'Posted — confirmed by you', failed: 'Failed', cancelled: 'Cancelled' } %}
         {% set label = 'Not attempted' if target.noPreparationRequested else (compactLabels[target.status] or target.statusLabel) %}
         <span class="status-badge status-badge--neutral">{{ target.platformName }} · {{ label }}</span>
+        {% if target.prepareAnotherPostAction %}
+          {{ companionControl.render(target.prepareAnotherPostAction, releaseId, csrfToken) }}
+        {% endif %}
       {% endfor %}
     </div>
   {% endif %}

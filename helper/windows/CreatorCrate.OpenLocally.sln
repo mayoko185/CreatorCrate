@@ -11,6 +11,8 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{AD85F6A8
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OpenLocally.Tests", "tests\OpenLocally.Tests\OpenLocally.Tests.csproj", "{C6A348A3-AED4-40E9-8AF4-6C29DE78597D}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "OpenLocally.WinUiHost.Proof", "tests\OpenLocally.WinUiHost.Proof\OpenLocally.WinUiHost.Proof.csproj", "{D52C2DBE-E542-45B8-BDB6-F08037C6A528}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -28,9 +30,14 @@ Global
 		{C6A348A3-AED4-40E9-8AF4-6C29DE78597D}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{C6A348A3-AED4-40E9-8AF4-6C29DE78597D}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{C6A348A3-AED4-40E9-8AF4-6C29DE78597D}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D52C2DBE-E542-45B8-BDB6-F08037C6A528}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D52C2DBE-E542-45B8-BDB6-F08037C6A528}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{D52C2DBE-E542-45B8-BDB6-F08037C6A528}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{D52C2DBE-E542-45B8-BDB6-F08037C6A528}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{225414A6-B6A8-4407-9AF9-AF498B08262F} = {B11318D5-822F-453A-8855-C715ED8971DD}
 		{C6A348A3-AED4-40E9-8AF4-6C29DE78597D} = {AD85F6A8-E6E8-43AB-86D2-306895729257}
+		{D52C2DBE-E542-45B8-BDB6-F08037C6A528} = {AD85F6A8-E6E8-43AB-86D2-306895729257}
 	EndGlobalSection
 EndGlobal

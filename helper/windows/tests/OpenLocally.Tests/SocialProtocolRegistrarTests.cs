@@ -32,11 +32,24 @@ public class SocialProtocolRegistrarTests
         openRegistrar.Register(@"C:\Tools\OpenLocally.exe");
         socialRegistrar.Register(@"C:\Tools\OpenLocally.exe");
 
-        ProtocolRegistrationResult result = socialRegistrar.Unregister();
+        ProtocolRegistrationResult result = socialRegistrar.Unregister(@"C:\Tools\OpenLocally.exe");
 
         Assert.True(result.Success);
         Assert.DoesNotContain(registry.Keys.Keys, key => key.StartsWith(SocialRoot, StringComparison.OrdinalIgnoreCase));
         Assert.Contains(OpenRoot, registry.Keys.Keys);
+    }
+
+    [Fact]
+    public void Unregister_WhenCommandIsNotOwned_PreservesSocialProtocolTree()
+    {
+        var registry = new InMemoryRegistry();
+        var registrar = new SocialProtocolRegistrar(registry);
+        registrar.Register(@"C:\Other\OpenLocally.exe");
+
+        ProtocolRegistrationResult result = registrar.Unregister(@"C:\Tools\OpenLocally.exe");
+
+        Assert.True(result.Success);
+        Assert.Contains(SocialRoot, registry.Keys.Keys);
     }
 
     [Theory]

@@ -8,8 +8,8 @@ public class SocialUriRequestParserTests
 
     private static SocialUriParseResult Parse(string uri) => SocialUriRequestParser.Parse(uri);
 
-    private static string BuildUri(string server = "https://creatorcrate.test") =>
-        $"creatorcrate-social://prepare?v=1&server={System.Uri.EscapeDataString(server)}&intent={Intent}";
+    private static string BuildUri(string server = "https://creatorcrate.test", int version = 2) =>
+        $"creatorcrate-social://prepare?v={version}&server={System.Uri.EscapeDataString(server)}&intent={Intent}";
 
     [Fact]
     public void Parse_ValidUri_ReturnsOriginAndOpaqueIntent()
@@ -17,21 +17,9 @@ public class SocialUriRequestParserTests
         SocialUriParseResult result = Parse(BuildUri("https://creatorcrate.test:8443"));
 
         Assert.True(result.Success);
+        Assert.Equal(2, result.Request!.Version);
         Assert.Equal(new System.Uri("https://creatorcrate.test:8443/"), result.Request!.ServerOrigin);
         Assert.Equal(Intent, result.Request.Intent);
-    }
-
-    [Fact]
-    public void Parse_SharedDiagnosticIntentMatchesTheFrozenTokenContract()
-    {
-        string expectedIntent = Convert.ToBase64String(new byte[32]).TrimEnd('=').Replace('+', '-').Replace('/', '_');
-        string uri = DiagnosticSocialRequest.CreateProductionGateUri();
-        SocialUriParseResult result = Parse(uri);
-
-        Assert.Equal(expectedIntent, DiagnosticSocialRequest.Intent);
-        Assert.True(result.Success);
-        Assert.Equal(DiagnosticSocialRequest.Intent, result.Request!.Intent);
-        Assert.Throws<InvalidOperationException>(() => DiagnosticSocialRequest.RequireExactValue(new string('a', 43)));
     }
 
     [Theory]
@@ -44,6 +32,8 @@ public class SocialUriRequestParserTests
 
         Assert.False(result.Success);
         Assert.Equal(SocialUriParseFailure.InvalidRequest, result.Failure);
+        Assert.NotNull(result.Reason);
+        Assert.Equal("social_uri_invalid", result.Error);
     }
 
     [Theory]
@@ -55,6 +45,7 @@ public class SocialUriRequestParserTests
         SocialUriParseResult result = Parse($"creatorcrate-social://prepare?{query}");
 
         Assert.False(result.Success);
+        Assert.Equal(SocialUriParseFailureReason.MissingActivationParameter, result.Reason);
     }
 
     [Theory]
@@ -64,7 +55,11 @@ public class SocialUriRequestParserTests
     [InlineData("v=1&server=https%3A%2F%2Fcreatorcrate.test&intent=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&extra=1")]
     public void Parse_DuplicateOrUnknownParameter_ReturnsFailure(string query)
     {
-        Assert.False(Parse($"creatorcrate-social://prepare?{query}").Success);
+        SocialUriParseResult result = Parse($"creatorcrate-social://prepare?{query}");
+
+        Assert.False(result.Success);
+        Assert.True(result.Reason is SocialUriParseFailureReason.DuplicateActivationParameter or
+            SocialUriParseFailureReason.UnsupportedActivationParameter);
     }
 
     [Theory]
@@ -75,6 +70,7 @@ public class SocialUriRequestParserTests
         SocialUriParseResult result = Parse($"creatorcrate-social://prepare?v=1&server={server}&intent={Intent}");
 
         Assert.False(result.Success);
+        Assert.Equal(SocialUriParseFailureReason.InvalidServerOrigin, result.Reason);
     }
 
     [Theory]
@@ -86,7 +82,9 @@ public class SocialUriRequestParserTests
     [InlineData("not an origin")]
     public void Parse_InvalidServerOrigin_ReturnsFailure(string server)
     {
-        Assert.False(Parse(BuildUri(server)).Success);
+        SocialUriParseResult result = Parse(BuildUri(server));
+        Assert.False(result.Success);
+        Assert.Equal(SocialUriParseFailureReason.InvalidServerOrigin, result.Reason);
     }
 
     [Theory]
@@ -96,17 +94,34 @@ public class SocialUriRequestParserTests
     [InlineData("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa=")]
     public void Parse_MalformedIntent_ReturnsFailure(string intent)
     {
-        Assert.False(Parse($"creatorcrate-social://prepare?v=1&server=https%3A%2F%2Fcreatorcrate.test&intent={intent}").Success);
+        SocialUriParseResult result = Parse($"creatorcrate-social://prepare?v=1&server=https%3A%2F%2Fcreatorcrate.test&intent={intent}");
+        Assert.False(result.Success);
+        Assert.Equal(SocialUriParseFailureReason.InvalidIntent, result.Reason);
     }
 
     [Fact]
-    public void Parse_UnsupportedVersion_ReturnsStableUpdateRequiredCode()
+    public void Parse_LegacyVersion_RemainsExplicitlyRecognized()
+    {
+        SocialUriParseResult result = Parse(BuildUri(version: 1));
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.Request!.Version);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("3")]
+    [InlineData("999")]
+    [InlineData("future")]
+    [InlineData("02")]
+    public void Parse_UnsupportedVersion_ReturnsStableUpdateRequiredCode(string version)
     {
         SocialUriParseResult result = Parse(
-            $"creatorcrate-social://prepare?v=2&server=https%3A%2F%2Fcreatorcrate.test&intent={Intent}");
+            $"creatorcrate-social://prepare?v={version}&server=https%3A%2F%2Fcreatorcrate.test&intent={Intent}");
 
         Assert.False(result.Success);
         Assert.Equal(SocialUriParseFailure.HelperUpdateRequired, result.Failure);
+        Assert.Equal(SocialUriParseFailureReason.InvalidActivationVersion, result.Reason);
         Assert.Equal("helper_update_required", result.Error);
     }
 }

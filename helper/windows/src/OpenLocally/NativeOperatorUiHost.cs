@@ -9,30 +9,94 @@ internal static class NativeOperatorUiHost
 {
     internal class Native : IDisposable
     {
+        private const int ErrorBusy = 170;
+        private const int UoiName = 2;
         private IntPtr desktop;
         private int error;
         public virtual int LastError { get { return error; } }
         public virtual bool Execute(NativePresentationStage stage, NativePresentationResult result)
         {
-            bool success;
             if (stage == NativePresentationStage.open_input_desktop)
             {
-                desktop = OpenInputDesktop(0, false, 0x0001 | 0x0002 | 0x0080);
-                success = desktop != IntPtr.Zero;
+                desktop = OpenInputDesktopHandle();
+                bool opened = desktop != IntPtr.Zero;
+                error = opened ? 0 : CaptureLastError();
+                return opened;
             }
-            else if (stage == NativePresentationStage.set_thread_desktop) success = SetThreadDesktop(desktop);
-            else return false;
-            error = success ? 0 : Marshal.GetLastWin32Error();
-            return success;
+            if (stage != NativePresentationStage.set_thread_desktop) return false;
+
+            if (SetThreadDesktopHandle(desktop))
+            {
+                error = 0;
+                return true;
+            }
+
+            // SetThreadDesktop can report ERROR_BUSY when this STA thread is already
+            // attached to the requested input desktop. No other error is recoverable.
+            error = CaptureLastError();
+            if (error != ErrorBusy) return false;
+
+            IntPtr currentDesktop = GetCurrentThreadDesktopHandle();
+            if (currentDesktop == IntPtr.Zero) return false;
+
+            bool inputIdentityRead = TryGetDesktopName(desktop, out string inputIdentity);
+            bool currentIdentityRead = TryGetDesktopName(currentDesktop, out string currentIdentity);
+            bool alreadyAttached = inputIdentityRead && currentIdentityRead
+                && !string.IsNullOrEmpty(inputIdentity)
+                && !string.IsNullOrEmpty(currentIdentity)
+                && string.Equals(inputIdentity, currentIdentity, StringComparison.Ordinal);
+            if (alreadyAttached) error = 0;
+            return alreadyAttached;
         }
         public virtual void Dispose() { }
         internal void ReleaseDesktop()
         {
             // The selected thread must have exited before closing its desktop.
-            if (desktop != IntPtr.Zero) { CloseDesktop(desktop); desktop = IntPtr.Zero; }
+            if (desktop != IntPtr.Zero) { CloseDesktopHandle(desktop); desktop = IntPtr.Zero; }
+        }
+        internal virtual IntPtr OpenInputDesktopHandle()
+        {
+            return OpenInputDesktop(0, false, 0x0001 | 0x0002 | 0x0080);
+        }
+        internal virtual bool SetThreadDesktopHandle(IntPtr desktopHandle)
+        {
+            return SetThreadDesktop(desktopHandle);
+        }
+        internal virtual int CaptureLastError()
+        {
+            return Marshal.GetLastWin32Error();
+        }
+        internal virtual IntPtr GetCurrentThreadDesktopHandle()
+        {
+            return GetThreadDesktop(GetCurrentThreadId());
+        }
+        internal virtual bool TryGetDesktopName(IntPtr desktopHandle, out string name)
+        {
+            name = string.Empty;
+            GetUserObjectInformation(desktopHandle, UoiName, IntPtr.Zero, 0, out uint requiredBytes);
+            if (requiredBytes == 0) return false;
+
+            IntPtr buffer = Marshal.AllocHGlobal(checked((int)requiredBytes));
+            try
+            {
+                if (!GetUserObjectInformation(desktopHandle, UoiName, buffer, requiredBytes, out _)) return false;
+                name = Marshal.PtrToStringUni(buffer) ?? string.Empty;
+                return true;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+        internal virtual bool CloseDesktopHandle(IntPtr desktopHandle)
+        {
+            return CloseDesktop(desktopHandle);
         }
         [DllImport("user32.dll", SetLastError = true)] private static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
         [DllImport("user32.dll", SetLastError = true)] private static extern bool SetThreadDesktop(IntPtr desktop);
+        [DllImport("user32.dll")] private static extern IntPtr GetThreadDesktop(uint threadId);
+        [DllImport("user32.dll", EntryPoint = "GetUserObjectInformationW", ExactSpelling = true, SetLastError = true)]
+        private static extern bool GetUserObjectInformation(IntPtr handle, int index, IntPtr information, uint length, out uint requiredLength);
         [DllImport("user32.dll", SetLastError = true)] private static extern bool CloseDesktop(IntPtr desktop);
     }
 

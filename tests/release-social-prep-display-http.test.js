@@ -57,16 +57,16 @@ describe('release Social Preparation detail display', () => {
   });
 
   // Synthetic persisted states belong only to this temporary database.
-  function target(platform, status = 'pending', attempts = 1, preparedAt = null) {
+  function target(platform, status = 'pending', attempts = 1, preparedAt = null, postedAt = null) {
     app.locals.socialPrepRepository.ensurePlatforms(releaseId, [platform]);
     db.prepare(`UPDATE release_social_platforms SET status = ?, attempts = ?,
-      prepared_at = ?, updated_at = ?, message = ?, detail_code = ?
-      WHERE release_id = ? AND platform = ?`).run(status, attempts, preparedAt, UPDATED,
+      prepared_at = ?, posted_at = ?, updated_at = ?, message = ?, detail_code = ?
+      WHERE release_id = ? AND platform = ?`).run(status, attempts, preparedAt, postedAt, UPDATED,
       'PRIVATE_MESSAGE token=PRIVATE_TOKEN C:\\PRIVATE_PATH creator=PRIVATE_CREATOR <script>PRIVATE_SCRIPT</script>',
       'PRIVATE_DETAIL_CODE', releaseId, platform);
   }
 
-  async function detail() {
+  async function detail({ allowPostedState = false } = {}) {
     const response = await agent.get(`/releases/${releaseId}`).expect(200);
     const section = response.text.match(/<section id="release-social-preparation"[\s\S]*?<\/section>/)?.[0];
     expect(section).toBeTruthy();
@@ -74,12 +74,29 @@ describe('release Social Preparation detail display', () => {
     expect(section).not.toMatch(/<h2\b[^>]*>Social Preparation<\/h2>/);
     expect(section).not.toContain('Preparation opens a composer for human submission. Prepared does not mean posted.');
     expect(section).not.toContain('Helper preparation actions are not available in this checkpoint.');
-    expect(section).not.toMatch(/<form\b|<button\b|<input\b|data-dialog|data-social/i);
-    expect(response.text).not.toMatch(/PRIVATE_|openlocally:|creatorcrate-social:|\/social-prep\/activate|\/social-preparation\/activate/i);
-    // Preparation states must not claim publication or submission.
-    expect(section).not.toMatch(/\b(posted|published|submitted|sent successfully)\b/i);
-    expect(section).not.toMatch(/Full report|Complete diagnostic|Native report|Prepare again|Reprepare|Retry|Send to helper again/i);
+    expect(section).not.toMatch(/<form\b|<input\b|data-dialog/i);
+    expect(response.text).not.toMatch(/PRIVATE_|openlocally:|creatorcrate-social:/i);
+    // Preparation states must not claim publication or submission. The posting
+    // aggregate and explicit confirmation wording are the only exceptions.
+    let publicationNeutral = section
+      .replace(/\d+ of \d+ platforms marked as posted\./gi, '')
+      .replace(/All social posts marked as posted\./gi, '')
+      .replace(/not marked as posted/gi, '');
+    if (allowPostedState) publicationNeutral = publicationNeutral
+      .replace(/Posted — confirmed by you/gi, '')
+      .replace(/Posted confirmation/gi, '');
+    expect(publicationNeutral).not.toMatch(/\b(posted|published|submitted|sent successfully)\b/i);
+    expect(section).not.toMatch(/Full report|Complete diagnostic|Native report|Prepare again|Send to helper again/i);
     return { html: response.text, section };
+  }
+
+  function companionAction(section) {
+    return section.match(/<span data-release-social-prep-companion[\s\S]*?<\/button>/)?.[0];
+  }
+
+  function companionActions(section) {
+    return [...section.matchAll(/<span data-release-social-prep-companion[\s\S]*?<\/button>/g)]
+      .map((match) => match[0]);
   }
 
   function platformSection(section, platform) {
@@ -202,6 +219,51 @@ describe('release Social Preparation detail display', () => {
     });
   });
 
+  it.each([
+    ['staging', 'Preparing for manual publishing'],
+    ['ready', 'Ready for manual publishing — not marked as posted'],
+  ])('renders compact %s wording without claiming social publication', async (state, label) => {
+    target('x', state);
+    const { text } = await agent.get('/releases').expect(200);
+    const row = text.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/g)
+      ?.find((candidate) => candidate.includes(`href="/releases/${releaseId}"`));
+    const summary = row?.match(/<div class="release-social-prep-summary"[\s\S]*?<\/div>/)?.[0];
+    expect(summary).toContain(`>X · ${label}</span>`);
+    expect(summary.replace(/not marked as posted/gi, '')).not.toMatch(/\b(posted|published|submitted|sent successfully)\b/i);
+  });
+
+  it('renders compact posted confirmation wording', async () => {
+    db.prepare("UPDATE releases SET published_date = '2026-08-01' WHERE id = ?").run(releaseId);
+    target('x', 'posted', 1, null, FIRST);
+    const { text } = await agent.get('/releases').expect(200);
+    const row = text.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/g)
+      ?.find((candidate) => candidate.includes(`href="/releases/${releaseId}"`));
+    const summary = row?.match(/<div class="release-social-prep-summary"[\s\S]*?<\/div>/)?.[0];
+    expect(summary).toContain('>X · Posted — confirmed by you</span>');
+    const [action] = companionActions(summary);
+    expect(action).toContain('data-target-platform="x"');
+    expect(action).toContain('aria-label="Prepare another X post"');
+    expect(action).toContain('>Prepare another post</button>');
+  });
+
+  it('renders independent posted-target actions in the shared summary on both release surfaces', async () => {
+    db.prepare("UPDATE releases SET published_date = '2026-08-01' WHERE id = ?").run(releaseId);
+    target('patreon', 'posted', 1, null, FIRST);
+    target('x', 'posted', 1, null, UPDATED);
+    target('bluesky', 'ready', 1);
+
+    for (const url of ['/releases', `/projects/${projectId}`]) {
+      const { text } = await agent.get(url).expect(200);
+      const summary = text.match(/<div class="release-social-prep-summary"[\s\S]*?<\/div>/)?.[0];
+      const actions = companionActions(summary);
+      expect(actions).toHaveLength(2);
+      expect(actions[0]).toMatch(/data-target-platform="patreon"[\s\S]*aria-label="Prepare another Patreon post"/);
+      expect(actions[1]).toMatch(/data-target-platform="x"[\s\S]*aria-label="Prepare another X post"/);
+      expect(summary).toContain('>Bluesky · Ready for manual publishing — not marked as posted</span>');
+      expect(summary).not.toContain('data-target-platform="bluesky"');
+    }
+  });
+
   it('renders separate mixed platforms in presenter order with distinct timestamps and safe failure context', async () => {
     target('bluesky', 'failed', 3, FIRST);
     target('x', 'prepared', 1, FIRST);
@@ -227,6 +289,8 @@ describe('release Social Preparation detail display', () => {
     ['pending', 'Preparation request pending'], ['starting', 'Starting'],
     ['preparing', 'Preparing'], ['uploading', 'Uploading'],
     ['auth_required', 'Authentication required'], ['prepared', 'Composer prepared for human submission'],
+    ['staging', 'Preparing content and files for manual publishing'],
+    ['ready', 'Ready for manual publishing — not marked as posted'],
     ['failed', 'Preparation failed'], ['cancelled', 'Preparation cancelled'],
   ])('renders %s as a last recorded state, not a running process or publication outcome', async (state, label) => {
     target('x', state);
@@ -241,6 +305,53 @@ describe('release Social Preparation detail display', () => {
       expect(section).toContain('retained diagnostic context');
       expect(section).toContain('href="/settings/logs?subsystem=social_preparation"');
     } else expect(section).not.toContain('/settings/logs');
+  });
+
+  it('renders explicit posted confirmation, timestamp, and configured-platform aggregate without claiming release publication', async () => {
+    target('patreon', 'posted', 1, null, FIRST);
+    target('x', 'posted', 1, null, UPDATED);
+    settings.setPlatforms(['patreon', 'x']);
+    const { section } = await detail({ allowPostedState: true });
+    expect(section).toContain('2 of 2 platforms marked as posted.');
+    expect(section).toContain('All social posts marked as posted.');
+    expect(platformSection(section, 'patreon')).toContain('Posted — confirmed by you');
+    expect(platformSection(section, 'patreon')).toMatch(new RegExp(`<dt>Posted confirmation</dt>\\s*<dd>${FIRST}</dd>`));
+    expect(section).not.toMatch(/Release published|release is published/i);
+  });
+
+  it('keeps all-posted completion visible while rendering one targeted action beside each platform', async () => {
+    db.prepare("UPDATE releases SET published_date = '2026-08-01' WHERE id = ?").run(releaseId);
+    target('patreon', 'posted', 1, null, FIRST);
+    target('x', 'posted', 1, null, UPDATED);
+    target('bluesky', 'posted', 1, null, FIRST);
+
+    const { section } = await detail({ allowPostedState: true });
+    expect(section).toContain('3 of 3 platforms marked as posted.');
+    expect(section).toContain('All social posts marked as posted.');
+    expect(companionActions(platformSection(section, 'patreon'))[0]).toContain('data-target-platform="patreon"');
+    expect(companionActions(platformSection(section, 'x'))[0]).toContain('data-target-platform="x"');
+    expect(companionActions(platformSection(section, 'bluesky'))[0]).toContain('data-target-platform="bluesky"');
+    expect(companionActions(section).filter((action) => action.includes('Prepare another post'))).toHaveLength(3);
+  });
+
+  it('renders mixed posted actions only for configured posted targets and does not mutate on repeated GETs', async () => {
+    db.prepare("UPDATE releases SET published_date = '2026-08-01' WHERE id = ?").run(releaseId);
+    target('patreon', 'posted', 1, null, FIRST);
+    target('x', 'failed', 2);
+    target('bluesky', 'ready', 1);
+    settings.setPlatforms(['patreon', 'bluesky']);
+    const before = app.locals.socialPrepRepository.listPlatformsByReleaseId(releaseId);
+    const sessionCount = db.prepare('SELECT COUNT(*) AS count FROM social_prep_sessions').get().count;
+
+    const first = await detail({ allowPostedState: true });
+    const second = await detail({ allowPostedState: true });
+
+    expect(companionActions(platformSection(first.section, 'patreon'))[0]).toContain('data-target-platform="patreon"');
+    expect(platformSection(first.section, 'x')).not.toContain('Prepare another post');
+    expect(platformSection(first.section, 'bluesky')).not.toContain('Prepare another post');
+    expect(second.section).toContain(FIRST);
+    expect(app.locals.socialPrepRepository.listPlatformsByReleaseId(releaseId)).toEqual(before);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM social_prep_sessions').get().count).toBe(sessionCount);
   });
 
   it.each([true, false])('retains a saved removed platform without substituting Settings targets (enabled=%s)', async (enabled) => {
@@ -290,25 +401,75 @@ describe('release Social Preparation detail display', () => {
     expect(html).not.toContain('data-dialog-open="release-publish-dialog"');
   });
 
-  it('performs no preparation service/token calls or database mutations on detail GET', async () => {
+  it('uses only read-only preparation policy and performs no token or database mutation on detail GET', async () => {
     target('x', 'prepared', 1, FIRST);
-    const service = app.locals.socialPrepService;
-    app.locals.socialPrepService = Object.fromEntries(Object.entries(service).map(([key, value]) => [
-      key, typeof value === 'function' ? vi.fn(() => { throw new Error('Display must not call preparation service'); }) : value,
-    ]));
-    const serviceSpies = Object.values(app.locals.socialPrepService).filter(vi.isMockFunction);
     const tokenSpies = Object.values(socialTokens).filter(vi.isMockFunction);
-    expect(serviceSpies.length).toBeGreaterThan(0);
     expect(tokenSpies.length).toBeGreaterThan(0);
     tokenSpies.forEach((spy) => spy.mockClear());
     const before = db.prepare('SELECT total_changes() AS n').get().n;
-    try {
-      await detail();
-      expect(db.prepare('SELECT total_changes() AS n').get().n).toBe(before);
-      [...serviceSpies, ...tokenSpies].forEach((spy) => expect(spy).not.toHaveBeenCalled());
-    } finally {
-      app.locals.socialPrepService = service;
+    await detail();
+    expect(db.prepare('SELECT total_changes() AS n').get().n).toBe(before);
+    tokenSpies.forEach((spy) => expect(spy).not.toHaveBeenCalled());
+  });
+
+  it.each([
+    ['pending', 'Open publishing companion', 'activate'],
+    ['failed', 'Open publishing companion', 'activate'],
+    ['cancelled', 'Open publishing companion', 'activate'],
+    ['ready', 'Reopen publishing companion', 'reprepare'],
+    ['prepared', 'Reopen publishing companion', 'reprepare'],
+  ])('renders the server-selected %s action as %s', async (status, label, mode) => {
+    db.prepare("UPDATE releases SET published_date = '2026-08-01' WHERE id = ?").run(releaseId);
+    target('x', status, status === 'pending' ? 0 : 1, status === 'prepared' ? FIRST : null);
+    const { section } = await detail();
+    const action = companionAction(section);
+    expect(action).toContain(`data-action-mode="${mode}"`);
+    expect(action).toContain(`>${label}</button>`);
+    expect(action).not.toContain('data-platform=');
+    expect(action).not.toMatch(/creatorcrate-social:|intent=|data-activation-uri/i);
+  });
+
+  it.each([
+    ['two ready targets', [['x', 'ready'], ['bluesky', 'ready']]],
+    ['two legacy prepared targets', [['x', 'prepared'], ['bluesky', 'prepared']]],
+    ['mixed completed targets', [['patreon', 'ready'], ['x', 'prepared'], ['bluesky', 'ready']]],
+  ])('renders one release-level Reopen action for %s', async (_name, completedTargets) => {
+    db.prepare("UPDATE releases SET published_date = '2026-08-01' WHERE id = ?").run(releaseId);
+    for (const [platform, status] of completedTargets) {
+      target(platform, status, 1, status === 'prepared' ? FIRST : null);
     }
+    const { section } = await detail();
+    const actions = section.match(/data-release-social-prep-companion-action/g) || [];
+    expect(actions).toHaveLength(1);
+    expect(companionAction(section)).toContain('data-action-mode="reprepare"');
+    expect(companionAction(section)).toContain('>Reopen publishing companion</button>');
+    expect(companionAction(section)).not.toContain('data-platform=');
+  });
+
+  it('renders exact-session Retry for issued unredeemed state without exposing a URI', async () => {
+    db.prepare("UPDATE releases SET published_date = '2026-08-01' WHERE id = ?").run(releaseId);
+    target('x', 'pending', 0);
+    const issued = app.locals.socialPrepService.activate({
+      releaseId, platforms: ['x'], intentHash: 'server-only-digest', expiresAt: new Date(Date.now() + 60_000),
+    });
+    const { section } = await detail();
+    const action = companionAction(section);
+    expect(action).toContain('data-action-mode="reissue"');
+    expect(action).toContain(`data-session-id="${issued.session.id}"`);
+    expect(action).toContain('>Retry opening companion</button>');
+    expect(action).not.toMatch(/server-only-digest|creatorcrate-social:|intent=/i);
+  });
+
+  it('suppresses the action for a redeemed active staging attempt', async () => {
+    db.prepare("UPDATE releases SET published_date = '2026-08-01' WHERE id = ?").run(releaseId);
+    target('x', 'pending', 0);
+    const issued = app.locals.socialPrepService.activate({
+      releaseId, platforms: ['x'], intentHash: 'intent-hash', expiresAt: new Date(Date.now() + 60_000),
+    });
+    app.locals.socialPrepService.redeem({ sessionId: issued.session.id, intentHash: 'intent-hash', mediaTokenHash: 'media-hash' });
+    app.locals.socialPrepService.recordPlatformStatus({ releaseId, platform: 'x', sessionId: issued.session.id, status: 'staging' });
+    const { section } = await detail();
+    expect(companionAction(section)).toBeUndefined();
   });
 
   it('places Social Preparation after release details and leaves ordinary publication metadata and controls separate', async () => {
@@ -320,7 +481,8 @@ describe('release Social Preparation detail display', () => {
     expect(draft.html.indexOf(draft.section)).toBeLessThan(draft.html.indexOf('<h2>Selected Assets</h2>'));
     db.prepare("UPDATE releases SET published_date = '2026-08-01' WHERE id = ?").run(releaseId);
     const published = await detail();
-    expect(published.section).toBe(draft.section);
+    expect(companionAction(draft.section)).toBeUndefined();
+    expect(companionAction(published.section)).toContain('Reopen publishing companion');
     expect(published.html).toContain('<h2>Publication Summary</h2>');
     expect(published.html).toContain('2026-08-01 <small>(release published)</small>');
     expect(published.html).not.toContain('data-dialog-open="release-publish-dialog"');

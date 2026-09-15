@@ -13,8 +13,10 @@ public sealed record SocialRedeemResponse(
     public int? ReleaseId { get; init; }
 }
 
-public sealed record SocialRedeemResult(bool Success, string? ErrorCode, SocialRedeemResponse? Response)
+public sealed record SocialRedeemResult(
+    bool Success, string? ErrorCode, SocialRedeemResponse? Response, ManualSocialDiagnostic? Diagnostic = null)
 {
     public static SocialRedeemResult Ok(SocialRedeemResponse response) => new(true, null, response);
-    public static SocialRedeemResult Fail(string errorCode) => new(false, errorCode, null);
+    public static SocialRedeemResult Fail(string errorCode, ManualSocialDiagnostic? diagnostic = null) =>
+        new(false, errorCode, null, diagnostic);
 }

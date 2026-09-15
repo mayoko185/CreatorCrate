@@ -8,6 +8,9 @@ const STATUS_LABELS = Object.freeze({
   uploading: 'Uploading',
   auth_required: 'Authentication required',
   prepared: 'Composer prepared for human submission',
+  staging: 'Preparing content and files for manual publishing',
+  ready: 'Ready for manual publishing — not marked as posted',
+  posted: 'Posted — confirmed by you',
   failed: 'Preparation failed',
   cancelled: 'Preparation cancelled',
 });
@@ -27,9 +30,14 @@ function timestamp(value) {
  * Timestamps retain the repository's UTC SQLite format; null means unrecorded.
  * No aggregate status is inferred from the independent platform states.
  */
-export function buildReleaseSocialPrepPresentation(rows, { enabled = false, platforms = [] } = {}) {
+export function buildReleaseSocialPrepPresentation(
+  rows,
+  { enabled = false, platforms = [] } = {},
+  { allowActions = true } = {},
+) {
   if (!Array.isArray(rows) || !Array.isArray(platforms)
     || typeof enabled !== 'boolean'
+    || typeof allowActions !== 'boolean'
     || platforms.some((platform) => !SOCIAL_PREP_SUPPORTED_PLATFORMS.includes(platform))) {
     throw new TypeError('Invalid Social Preparation presentation input.');
   }
@@ -37,22 +45,45 @@ export function buildReleaseSocialPrepPresentation(rows, { enabled = false, plat
   const targets = rows.map((row) => {
     if (!row || !SOCIAL_PREP_SUPPORTED_PLATFORMS.includes(row.platform)
       || typeof row.status !== 'string' || !Object.hasOwn(STATUS_LABELS, row.status)
-      || !Number.isSafeInteger(row.attempts) || row.attempts < 0) {
+      || !Number.isSafeInteger(row.attempts) || row.attempts < 0
+      || (row.status === 'posted') !== (row.posted_at != null)) {
       throw new TypeError('Invalid recorded Social Preparation platform state.');
     }
+    const platformName = PLATFORM_NAMES[row.platform];
+    const prepareAnotherPostAction = allowActions && enabled
+      && configuredPlatforms.includes(row.platform) && row.status === 'posted'
+      ? {
+          mode: 'reprepare',
+          label: 'Prepare another post',
+          accessibleLabel: `Prepare another ${platformName} post`,
+          description: `Starts a new manual post attempt for ${platformName}.`,
+          platform: row.platform,
+          reprepare: true,
+        }
+      : null;
     return {
       platform: row.platform,
-      platformName: PLATFORM_NAMES[row.platform],
+      platformName,
       status: row.status,
       statusLabel: STATUS_LABELS[row.status],
       preparationRequestCount: row.attempts,
       noPreparationRequested: row.attempts === 0,
       lastUpdatedAt: timestamp(row.updated_at),
       firstPreparedAt: timestamp(row.prepared_at),
+      postedAt: timestamp(row.posted_at),
       absentFromCurrentConfiguration: !configuredPlatforms.includes(row.platform),
+      ...(prepareAnotherPostAction ? { prepareAnotherPostAction } : {}),
     };
   }).sort((left, right) => SOCIAL_PREP_SUPPORTED_PLATFORMS.indexOf(left.platform)
     - SOCIAL_PREP_SUPPORTED_PLATFORMS.indexOf(right.platform));
 
-  return { globallyEnabled: enabled, configuredPlatforms, targets };
+  const targetsByPlatform = new Map(targets.map((target) => [target.platform, target]));
+  const postedCount = configuredPlatforms.filter((platform) => targetsByPlatform.get(platform)?.status === 'posted').length;
+  const totalCount = configuredPlatforms.length;
+  return {
+    globallyEnabled: enabled,
+    configuredPlatforms,
+    targets,
+    postingCompletion: { postedCount, totalCount, isComplete: totalCount > 0 && postedCount === totalCount },
+  };
 }

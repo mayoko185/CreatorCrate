@@ -16,8 +16,8 @@ describe('social preparation repository', () => {
     runMigrations(db, MIGRATIONS_DIR);
     repository = createSocialPrepRepository(db);
     projectId = Number(db.prepare(`
-      INSERT INTO projects (title, slug, description, notes, status, patreon_url)
-      VALUES ('Project', 'project', '', '', 'tbd', NULL)
+      INSERT INTO projects (title, slug, description, notes, status, project_type, patreon_url)
+      VALUES ('Project', 'project', '', '', 'tbd', 'images', NULL)
     `).run().lastInsertRowid);
     releaseId = Number(db.prepare("INSERT INTO releases (project_id, title) VALUES (?, 'Release')").run(projectId).lastInsertRowid);
   });
@@ -124,6 +124,10 @@ describe('social preparation repository', () => {
     repository.updatePlatformIfOwned({ releaseId, platform: 'mastodon', sessionId: 'session-1', status: 'prepared' });
     repository.updatePlatformIfOwned({ releaseId, platform: 'x', sessionId: 'session-1', status: 'failed' });
     expect(repository.countSessionNonTerminalPlatforms('session-1')).toBe(1);
+    repository.updatePlatformIfOwned({ releaseId, platform: 'bluesky', sessionId: 'session-1', status: 'staging' });
+    expect(repository.countSessionNonTerminalPlatforms('session-1')).toBe(1);
+    repository.updatePlatformIfOwned({ releaseId, platform: 'bluesky', sessionId: 'session-1', status: 'ready' });
+    expect(repository.countSessionNonTerminalPlatforms('session-1')).toBe(0);
   });
 
   it('calculates last activity across the session and session-owned platforms in timestamp order', () => {

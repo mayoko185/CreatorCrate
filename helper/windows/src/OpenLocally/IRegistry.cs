@@ -22,6 +22,12 @@ public interface IRegistry
     void SetValue(string keyPath, string? valueName, string value);
 
     /// <summary>
+    /// Read a string value from a key under HKCU. A missing key or value
+    /// returns null.
+    /// </summary>
+    string? GetValue(string keyPath, string? valueName);
+
+    /// <summary>
     /// Delete a key and its entire subtree under HKCU. A missing key is
     /// ignored, not an error.
     /// </summary>

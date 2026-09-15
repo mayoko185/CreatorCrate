@@ -650,7 +650,10 @@ export function createWorkflowQueryService({
     let recentReleases = attachReleaseThumbnails(
       releaseRepository.findRecentByProjectId(projectId, limits.recentReleases)
     );
-    const enrichedReleases = attachReleaseSocialPreparation([...activeReleases, ...recentReleases]);
+    const enrichedReleases = attachReleaseSocialPreparation(
+      [...activeReleases, ...recentReleases],
+      { allowActions: !isArchived },
+    );
     recentReleases = enrichedReleases.slice(activeReleases.length);
     activeReleases = enrichedReleases.slice(0, activeReleases.length);
     const releaseCount = releaseRepository.countFiltered({
@@ -1253,7 +1256,7 @@ export function createWorkflowQueryService({
 
   // One saved-target batch and one current Settings snapshot per displayed union.
   // Keep each occurrence's existing fields (including recent-only thumbnails).
-  function attachReleaseSocialPreparation(releases) {
+  function attachReleaseSocialPreparation(releases, { allowActions: allowReleaseActions = true } = {}) {
     if (releases.length === 0) return [];
     const ids = [...new Set(releases.map((release) => release.id))];
     const rowsByReleaseId = new Map(ids.map((id) => [id, []]));
@@ -1261,9 +1264,13 @@ export function createWorkflowQueryService({
       rowsByReleaseId.get(row.release_id)?.push(row);
     }
     const settings = socialPrepSettingsService.getSettings();
-    const presentationById = new Map(ids.map((id) => [
-      id, buildReleaseSocialPrepPresentation(rowsByReleaseId.get(id), settings),
-    ]));
+    const releasesById = new Map(releases.map((release) => [release.id, release]));
+    const presentationById = new Map(ids.map((id) => {
+      const release = releasesById.get(id);
+      const allowActions = allowReleaseActions && release?.published_date != null && release?.archived_at == null
+        && release?.project_status !== 'archived';
+      return [id, buildReleaseSocialPrepPresentation(rowsByReleaseId.get(id), settings, { allowActions })];
+    }));
     return releases.map((release) => ({ ...release, socialPreparation: presentationById.get(release.id) }));
   }
 

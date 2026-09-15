@@ -58,7 +58,7 @@ function parseStoredPlatforms(value) {
 
 /**
  * Owns app-wide Social Preparation enablement and platform selection only.
- * Release preparation, persistence, and browser automation stay outside this
+ * Release preparation, persistence, and manual companion behavior stay outside this
  * service.
  */
 export function createSocialPrepSettingsService({ appMetaRepository } = {}) {

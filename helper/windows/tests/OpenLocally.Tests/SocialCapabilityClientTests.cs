@@ -39,6 +39,22 @@ public class SocialCapabilityClientTests
     }
 
     [Theory]
+    [InlineData("staging")]
+    [InlineData("ready")]
+    public async Task Patch_AcceptsManualPreparationStates(string status)
+    {
+        var handler = new CaptureHandler(_ => Json(HttpStatusCode.OK,
+            $"{{\"ok\":true,\"sessionId\":\"00000000-0000-0000-0000-000000000001\",\"platform\":{{\"platform\":\"x\",\"status\":\"{status}\",\"detailCode\":null,\"attempts\":1,\"preparedAt\":null}}}}"));
+        var client = CreateClient(handler);
+
+        SocialPlatformStatusResult result = await client.PatchPlatformStatusAsync(
+            Origin(), Capability, "x", status, null, null, CancellationToken.None);
+
+        Assert.True(result.Success);
+        Assert.Equal($"{{\"status\":\"{status}\",\"detailCode\":null,\"message\":null}}", handler.Body);
+    }
+
+    [Theory]
     [InlineData("media_token_missing", HttpStatusCode.Unauthorized)]
     [InlineData("media_token_malformed", HttpStatusCode.Unauthorized)]
     [InlineData("media_token_invalid", HttpStatusCode.Forbidden)]

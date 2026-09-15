@@ -51,6 +51,7 @@ describe('release Social Preparation publishing', () => {
     initializedPlatforms = [];
     observedPublishedDate = null;
     const socialPrepService = {
+      ...baseSocialPrepService,
       initializePlatformState(releaseId, platforms) {
         observedPublishedDate = releaseService.findRelease(releaseId).published_date;
         initializedPlatforms = platforms;
@@ -141,7 +142,7 @@ describe('release Social Preparation publishing', () => {
         { platform: 'x', status: 'prepared', preparationRequestCount: 1, absentFromCurrentConfiguration: false },
         { platform: 'bluesky', status: 'failed', preparationRequestCount: 2, firstPreparedAt: '2029-01-01 00:00:00', absentFromCurrentConfiguration: true },
       ] });
-      expect(response.text).not.toMatch(/PRIVATE|message|detail_code|session|token|helper|posted|published/i);
+      expect(response.text).not.toMatch(/PRIVATE|message|detail_code|session|token|helper|published/i);
       expect(repository.listPlatformsByReleaseId(releaseId)).toEqual(before);
       expect(db.prepare('SELECT total_changes() AS n').get().n).toBe(changes);
       expect(initializedPlatforms).toEqual([]);
@@ -160,7 +161,12 @@ describe('release Social Preparation publishing', () => {
     });
     try {
       const response = await agent.get(releaseLocation).expect(200);
-      expect(JSON.parse(response.text)).toEqual({ globallyEnabled: true, configuredPlatforms: ['patreon', 'x', 'bluesky'], targets: [] });
+      expect(JSON.parse(response.text)).toEqual({
+        globallyEnabled: true,
+        configuredPlatforms: ['patreon', 'x', 'bluesky'],
+        targets: [],
+        postingCompletion: { postedCount: 0, totalCount: 3, isComplete: false },
+      });
       expect(platformRows(releaseId)).toEqual([]);
       expect(initializedPlatforms).toEqual([]);
       expect(db.prepare('SELECT total_changes() AS n').get().n).toBe(changes);
@@ -174,6 +180,8 @@ describe('release Social Preparation publishing', () => {
 
     const detail = await agent.get(releaseLocation).expect(200);
     expect(detail.text).not.toContain('release-publish-social-preparation-heading');
+    const unsupportedLaunch = await agent.get(`${releaseLocation}?prep=1`).expect(200);
+    expect(unsupportedLaunch.text).not.toContain('data-auto-launch="true"');
 
     const published = await agent
       .post(`${releaseLocation}/publish`)
@@ -246,6 +254,31 @@ describe('release Social Preparation publishing', () => {
     expect(initializedPlatforms).toEqual(['x', 'malicious']);
     expect(platformRows(releaseId)).toEqual([{ platform: 'x', status: 'pending' }]);
     expect(published.headers.location).toBe(`${releaseLocation}?prep=1`);
+    expect(db.prepare('SELECT published_date FROM releases WHERE id = ?').get(releaseId).published_date).toBe('2026-08-02');
+
+    const launchPage = await agent.get(published.headers.location).expect(200);
+    expect(launchPage.text).toContain('data-release-social-prep-companion');
+    expect(launchPage.text).toContain('data-action-mode="activate"');
+    expect(launchPage.text).toContain('data-auto-launch="true"');
+    expect(launchPage.text).toContain(`data-activation-url="${releaseLocation}/social-prep/activate"`);
+    expect(launchPage.text).toContain(`data-reissue-url="${releaseLocation}/social-prep/reissue"`);
+    expect(launchPage.text).toContain(`data-csrf-token="${csrfToken}"`);
+    expect(launchPage.text).not.toContain('creatorcrate-social:');
+
+    const nonLaunchingQueries = [
+      { case: 'missing marker', query: '' },
+      { case: 'empty marker', query: '?prep=' },
+      { case: 'zero marker', query: '?prep=0' },
+      { case: 'boolean-like marker', query: '?prep=true' },
+      { case: 'arbitrary marker', query: '?prep=yes' },
+      { case: 'ambiguous repeated marker', query: '?prep=1&prep=0' },
+      { case: 'repeated valid marker', query: '?prep=1&prep=1' },
+    ];
+    for (const requestCase of nonLaunchingQueries) {
+      const ordinaryPage = await agent.get(`${releaseLocation}${requestCase.query}`).expect(200);
+      expect(ordinaryPage.text, requestCase.case).toContain('data-release-social-prep-companion');
+      expect(ordinaryPage.text, requestCase.case).not.toContain('data-auto-launch="true"');
+    }
     expect(db.prepare('SELECT published_date FROM releases WHERE id = ?').get(releaseId).published_date).toBe('2026-08-02');
   });
 

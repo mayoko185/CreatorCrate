@@ -1,11 +1,11 @@
 const SESSION_COLUMNS = [
   'id', 'release_id', 'kind', 'state', 'intent_hash', 'media_token_hash', 'redeemed_at',
-  'attempt_deadline_at', 'expires_at', 'created_at', 'updated_at',
+  'attempt_deadline_at', 'manual_confirmation_expires_at', 'expires_at', 'created_at', 'updated_at',
 ];
 
 const PLATFORM_COLUMNS = [
   'release_id', 'platform', 'session_id', 'status', 'detail_code', 'message',
-  'attempts', 'prepared_at', 'created_at', 'updated_at',
+  'attempts', 'prepared_at', 'posted_at', 'created_at', 'updated_at',
 ];
 
 const SNAPSHOT_COLUMNS = [
@@ -16,7 +16,7 @@ const SNAPSHOT_COLUMNS = [
 const SESSION_SELECT = SESSION_COLUMNS.join(', ');
 const PLATFORM_SELECT = PLATFORM_COLUMNS.join(', ');
 const SNAPSHOT_SELECT = SNAPSHOT_COLUMNS.join(', ');
-const NON_TERMINAL_PLATFORM_STATUSES = ['pending', 'starting', 'preparing', 'uploading'];
+const NON_TERMINAL_PLATFORM_STATUSES = ['pending', 'starting', 'preparing', 'uploading', 'staging'];
 
 export class SocialPrepRepositoryError extends Error {
   constructor(message, { code } = {}) {
@@ -101,6 +101,12 @@ export function createSocialPrepRepository(db) {
     WHERE id = ? AND state IN ('issued', 'redeemed')
     RETURNING ${SESSION_SELECT}
   `);
+  const expireIssuedSession = db.prepare(`
+    UPDATE social_prep_sessions
+    SET state = 'expired', updated_at = ?
+    WHERE id = ? AND release_id = ? AND state = 'issued'
+    RETURNING ${SESSION_SELECT}
+  `);
   const redeemSession = db.prepare(`
     UPDATE social_prep_sessions
     SET state = 'redeemed', updated_at = ?
@@ -109,13 +115,15 @@ export function createSocialPrepRepository(db) {
   `);
   const redeemSessionWithTokens = db.prepare(`
     UPDATE social_prep_sessions
-    SET state = 'redeemed', media_token_hash = ?, redeemed_at = ?, attempt_deadline_at = ?, updated_at = ?
+    SET state = 'redeemed', media_token_hash = ?, redeemed_at = ?, attempt_deadline_at = ?,
+        manual_confirmation_expires_at = ?, updated_at = ?
     WHERE id = ? AND state = 'issued' AND intent_hash = ? AND expires_at > ?
     RETURNING ${SESSION_SELECT}
   `);
   const redeemSessionWithTokensByIntentHash = db.prepare(`
     UPDATE social_prep_sessions
-    SET state = 'redeemed', media_token_hash = ?, redeemed_at = ?, attempt_deadline_at = ?, updated_at = ?
+    SET state = 'redeemed', media_token_hash = ?, redeemed_at = ?, attempt_deadline_at = ?,
+        manual_confirmation_expires_at = ?, updated_at = ?
     WHERE state = 'issued' AND intent_hash = ? AND expires_at > ?
     RETURNING ${SESSION_SELECT}
   `);
@@ -139,7 +147,7 @@ export function createSocialPrepRepository(db) {
   const reassignPlatforms = (placeholders) => db.prepare(`
     UPDATE release_social_platforms
     SET session_id = ?, status = 'pending', detail_code = NULL, message = NULL,
-        attempts = attempts + 1, updated_at = ?
+        attempts = attempts + 1, posted_at = NULL, updated_at = ?
     WHERE release_id = (SELECT release_id FROM social_prep_sessions WHERE id = ?)
       AND platform IN (${placeholders})
   `);
@@ -153,6 +161,12 @@ export function createSocialPrepRepository(db) {
     SELECT COUNT(*) AS count
     FROM release_social_platforms
     WHERE session_id = ? AND status IN (${NON_TERMINAL_PLATFORM_STATUSES.map(() => '?').join(', ')})
+  `);
+  const markOwnedPlatformPosted = db.prepare(`
+    UPDATE release_social_platforms
+    SET status = 'posted', posted_at = ?, updated_at = ?
+    WHERE release_id = ? AND platform = ? AND session_id = ? AND status = 'ready'
+    RETURNING ${PLATFORM_SELECT}
   `);
   const insertSnapshot = db.prepare(`
     INSERT INTO social_prep_session_assets (${SNAPSHOT_COLUMNS.join(', ')})
@@ -207,6 +221,14 @@ export function createSocialPrepRepository(db) {
       return updateSessionState.get('expired', formatSocialPrepTimestamp(now), requireText(sessionId, 'session ID'));
     },
 
+    expireIssuedSession(sessionId, releaseId, { now = new Date() } = {}) {
+      return expireIssuedSession.get(
+        formatSocialPrepTimestamp(now),
+        requireText(sessionId, 'session ID'),
+        requirePositiveInteger(releaseId, 'release ID'),
+      );
+    },
+
     supersedeSession(sessionId, { now = new Date() } = {}) {
       return updateSessionState.get('superseded', formatSocialPrepTimestamp(now), requireText(sessionId, 'session ID'));
     },
@@ -219,12 +241,13 @@ export function createSocialPrepRepository(db) {
       return redeemSession.get(formatSocialPrepTimestamp(now), requireText(sessionId, 'session ID'));
     },
 
-    redeemSessionWithTokens({ sessionId, intentHash, mediaTokenHash, attemptDeadlineAt, now = new Date() }) {
+    redeemSessionWithTokens({ sessionId, intentHash, mediaTokenHash, attemptDeadlineAt, manualConfirmationExpiresAt, now = new Date() }) {
       const timestamp = formatSocialPrepTimestamp(now);
       return redeemSessionWithTokens.get(
         requireText(mediaTokenHash, 'media token hash'),
         timestamp,
         formatSocialPrepTimestamp(attemptDeadlineAt),
+        formatSocialPrepTimestamp(manualConfirmationExpiresAt),
         timestamp,
         requireText(sessionId, 'session ID'),
         requireText(intentHash, 'intent hash'),
@@ -232,12 +255,13 @@ export function createSocialPrepRepository(db) {
       );
     },
 
-    redeemSessionWithTokensByIntentHash({ intentHash, mediaTokenHash, attemptDeadlineAt, now = new Date() }) {
+    redeemSessionWithTokensByIntentHash({ intentHash, mediaTokenHash, attemptDeadlineAt, manualConfirmationExpiresAt, now = new Date() }) {
       const timestamp = formatSocialPrepTimestamp(now);
       return redeemSessionWithTokensByIntentHash.get(
         requireText(mediaTokenHash, 'media token hash'),
         timestamp,
         formatSocialPrepTimestamp(attemptDeadlineAt),
+        formatSocialPrepTimestamp(manualConfirmationExpiresAt),
         timestamp,
         requireText(intentHash, 'intent hash'),
         timestamp,
@@ -304,6 +328,17 @@ export function createSocialPrepRepository(db) {
 
     countSessionNonTerminalPlatforms(sessionId) {
       return countSessionNonTerminalPlatforms.get(requireText(sessionId, 'session ID'), ...NON_TERMINAL_PLATFORM_STATUSES).count;
+    },
+
+    markPlatformPostedIfReady({ releaseId, platform, sessionId, now = new Date() }) {
+      const timestamp = formatSocialPrepTimestamp(now);
+      return markOwnedPlatformPosted.get(
+        timestamp,
+        timestamp,
+        requirePositiveInteger(releaseId, 'release ID'),
+        requireText(platform, 'platform'),
+        requireText(sessionId, 'session ID'),
+      );
     },
 
     insertSessionAsset({ sessionId, assetId, projectId, role, sortOrder, relativePath, nestedPath = '', filename, extension = '', mimeType, sizeBytes, isPresent }) {

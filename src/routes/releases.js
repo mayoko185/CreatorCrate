@@ -1463,6 +1463,25 @@ function buildReleaseDetailRenderModel({
     prefillDate: release.published_date || getLocalTodayIso(),
     errors: {},
   };
+  const socialPreparation = buildReleaseSocialPrepPresentation(
+    req.app.locals.socialPrepRepository.listPlatformsByReleaseId(release.id),
+    req.app.locals.socialPrepSettingsService.getSettings(),
+    { allowActions: editAvailable && release.published_date != null },
+  );
+  const companionAction = editAvailable && release.published_date != null
+    ? req.app.locals.socialPrepService.getCompanionAction(release.id)
+    : null;
+  if (companionAction) {
+    socialPreparation.companionAction = {
+      ...companionAction,
+      label: companionAction.mode === 'reissue'
+        ? 'Retry opening companion'
+        : companionAction.mode === 'reprepare'
+          ? 'Reopen publishing companion'
+          : 'Open publishing companion',
+      autoLaunch: req?.query?.prep === '1',
+    };
+  }
 
   return {
     appName,
@@ -1481,10 +1500,7 @@ function buildReleaseDetailRenderModel({
     publishDialogOpen: publishAvailable && !resolvedEditDialogOpen && (publishDialogOpen || req?.query?.publish === '1'),
     publishDialogForm: resolvedPublishDialogForm,
     socialPrepPublish: publishAvailable ? buildSocialPrepPublishModel(req, release, selectedAssets) : null,
-    socialPreparation: buildReleaseSocialPrepPresentation(
-      req.app.locals.socialPrepRepository.listPlatformsByReleaseId(release.id),
-      req.app.locals.socialPrepSettingsService.getSettings(),
-    ),
+    socialPreparation,
   };
 }
 

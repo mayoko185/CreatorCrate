@@ -26,7 +26,6 @@ internal sealed class ManualTlsFixture : IAsyncDisposable
 
     internal static Task<ManualTlsFixture> StartAsync()
     {
-        ManualFoundationGuard.RequireOptIn();
         using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         var request = new CertificateRequest("CN=CreatorCrate Manual TLS Fixture", key, HashAlgorithmName.SHA256);
         request.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, false));

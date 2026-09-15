@@ -659,6 +659,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     socialPrepRepository,
     socialPrepSettingsService,
     releaseService,
+    now: opts.now,
   });
   app.locals.socialPrepService = socialPrepService;
   const assetWorkflowMetadataService = opts.assetWorkflowMetadataService || (projectsRoot

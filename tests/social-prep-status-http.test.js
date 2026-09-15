@@ -26,7 +26,7 @@ describe('Social Preparation status capability HTTP', () => {
     db = openDatabase(path.join(tmpDir, 'test.db'));
     runMigrations(db, MIGRATIONS_DIR);
     projectId = Number(db.prepare(
-      "INSERT INTO projects (title, slug, project_dir, description, notes, status, patreon_url) VALUES ('Project', 'project', 'project-dir', '', '', 'tbd', NULL)"
+      "INSERT INTO projects (title, slug, project_dir, description, notes, status, project_type, patreon_url) VALUES ('Project', 'project', 'project-dir', '', '', 'tbd', 'images', NULL)"
     ).run().lastInsertRowid);
     releaseId = Number(db.prepare(
       "INSERT INTO releases (project_id, title, description, notes, published_date) VALUES (?, 'Title', 'Public body', 'Private Notes', '2026-08-01')"
@@ -113,7 +113,7 @@ describe('Social Preparation status capability HTTP', () => {
     expect(repository.listPlatformsByReleaseId(releaseId)).toEqual(beforePlatforms);
   });
 
-  it('accepts only preparation statuses and records owned platform activity without changing attempts', async () => {
+  it('accepts the legacy preparation path and rejects regressions without changing attempts', async () => {
     const attempt = createRedeemedAttempt(['x', 'bluesky']);
     db.prepare("UPDATE release_social_platforms SET updated_at = '2000-01-01 00:00:00' WHERE release_id = ? AND platform = 'x'").run(releaseId);
 
@@ -123,9 +123,11 @@ describe('Social Preparation status capability HTTP', () => {
     const prepared = await request(app).patch(`/social-prep/${attempt.id}/platforms/x`).set('Authorization', attempt.authorization)
       .send({ status: 'prepared', detailCode: null, message: null }).expect(200);
     const firstPreparedAt = prepared.body.platform.preparedAt;
-    await request(app).patch(`/social-prep/${attempt.id}/platforms/x`).set('Authorization', attempt.authorization).send({ status: 'uploading' }).expect(200);
+    const regression = await request(app).patch(`/social-prep/${attempt.id}/platforms/x`).set('Authorization', attempt.authorization)
+      .send({ status: 'uploading' }).expect(422);
     const repeated = await request(app).patch(`/social-prep/${attempt.id}/platforms/x`).set('Authorization', attempt.authorization).send({ status: 'prepared' }).expect(200);
 
+    expect(regression.body.error.code).toBe('invalid_status_transition');
     expect(firstPreparedAt).toBeTruthy();
     expect(repeated.body.platform.preparedAt).toBe(firstPreparedAt);
     expect(platformRow('x')).toMatchObject({ attempts: 1, status: 'prepared', prepared_at: firstPreparedAt });
@@ -134,6 +136,26 @@ describe('Social Preparation status capability HTTP', () => {
     for (const status of ['posted', 'submitted', 'unknown']) {
       await request(app).patch(`/social-prep/${attempt.id}/platforms/x`).set('Authorization', attempt.authorization).send({ status }).expect(422);
     }
+  });
+
+  it('records the manual staging to ready path and rejects ready before staging', async () => {
+    const attempt = createRedeemedAttempt(['x', 'bluesky']);
+    const outOfOrder = await request(app).patch(`/social-prep/${attempt.id}/platforms/x`)
+      .set('Authorization', attempt.authorization).send({ status: 'ready' }).expect(422);
+    expect(outOfOrder.body.error.code).toBe('invalid_status_transition');
+    expect(platformRow('x').status).toBe('pending');
+
+    await request(app).patch(`/social-prep/${attempt.id}/platforms/x`)
+      .set('Authorization', attempt.authorization).send({ status: 'staging' }).expect(200);
+    const ready = await request(app).patch(`/social-prep/${attempt.id}/platforms/x`)
+      .set('Authorization', attempt.authorization).send({ status: 'ready' }).expect(200);
+    expect(ready.body.platform).toMatchObject({ status: 'ready', preparedAt: null });
+    expect(repository.findSessionById(attempt.id).state).toBe('redeemed');
+
+    const terminalRegression = await request(app).patch(`/social-prep/${attempt.id}/platforms/x`)
+      .set('Authorization', attempt.authorization).send({ status: 'staging' }).expect(422);
+    expect(terminalRegression.body.error.code).toBe('invalid_status_transition');
+    expect(platformRow('x').status).toBe('ready');
   });
 
   it('rejects absent or reassigned platform rows without extending their activity', async () => {
@@ -156,9 +178,16 @@ describe('Social Preparation status capability HTTP', () => {
   });
 
   it('atomically finishes sessions after each terminal status and excludes rows assigned to a newer session', async () => {
-    for (const status of ['prepared', 'failed', 'auth_required', 'cancelled']) {
+    for (const status of ['prepared', 'ready', 'failed', 'auth_required', 'cancelled']) {
       const platform = `terminal-${status}`;
       const attempt = createRedeemedAttempt([platform]);
+      if (['prepared', 'auth_required'].includes(status)) {
+        await request(app).patch(`/social-prep/${attempt.id}/platforms/${platform}`).set('Authorization', attempt.authorization)
+          .send({ status: 'starting' }).expect(200);
+      } else if (status === 'ready') {
+        await request(app).patch(`/social-prep/${attempt.id}/platforms/${platform}`).set('Authorization', attempt.authorization)
+          .send({ status: 'staging' }).expect(200);
+      }
       await request(app).patch(`/social-prep/${attempt.id}/platforms/${platform}`).set('Authorization', attempt.authorization)
         .send({ status }).expect(200);
       expect(repository.findSessionById(attempt.id).state).toBe('finished');
@@ -171,6 +200,8 @@ describe('Social Preparation status capability HTTP', () => {
     });
     repository.reassignPlatformsToSession('newer-owner', ['newer-owned']);
     await request(app).patch(`/social-prep/${attempt.id}/platforms/old-owned`).set('Authorization', attempt.authorization)
+      .send({ status: 'starting' }).expect(200);
+    await request(app).patch(`/social-prep/${attempt.id}/platforms/old-owned`).set('Authorization', attempt.authorization)
       .send({ status: 'prepared' }).expect(200);
 
     expect(repository.findSessionById(attempt.id).state).toBe('finished');
@@ -179,12 +210,13 @@ describe('Social Preparation status capability HTTP', () => {
 
   it('rejects late calls to a finished session before any further mutation', async () => {
     const attempt = createRedeemedAttempt();
-    await request(app).patch(`/social-prep/${attempt.id}/platforms/x`).set('Authorization', attempt.authorization).send({ status: 'prepared' }).expect(200);
+    await request(app).patch(`/social-prep/${attempt.id}/platforms/x`).set('Authorization', attempt.authorization).send({ status: 'staging' }).expect(200);
+    await request(app).patch(`/social-prep/${attempt.id}/platforms/x`).set('Authorization', attempt.authorization).send({ status: 'ready' }).expect(200);
     const before = platformRow('x');
 
     await request(app).get(`/social-prep/${attempt.id}/status`).set('Authorization', attempt.authorization).expect(409)
       .expect(({ body }) => expect(body.error.code).toBe('attempt_finished'));
-    await request(app).patch(`/social-prep/${attempt.id}/platforms/x`).set('Authorization', attempt.authorization).send({ status: 'prepared' }).expect(409)
+    await request(app).patch(`/social-prep/${attempt.id}/platforms/x`).set('Authorization', attempt.authorization).send({ status: 'ready' }).expect(409)
       .expect(({ body }) => expect(body.error.code).toBe('attempt_finished'));
     expect(platformRow('x')).toEqual(before);
   });

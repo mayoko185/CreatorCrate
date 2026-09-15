@@ -1,5 +1,6 @@
 const INTENT_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/u;
+export const SOCIAL_PREP_PROTOCOL_VERSION = 2;
 
 export function isSocialPrepIntentToken(value) {
   return typeof value === 'string' && INTENT_TOKEN_PATTERN.test(value);
@@ -25,5 +26,5 @@ export function buildSocialPrepUri({ origin, intent } = {}) {
   const serverOrigin = cleanServerOrigin(origin);
   if (serverOrigin === null) throw new TypeError('Social Preparation server origin must be a clean HTTP(S) origin.');
   if (!isSocialPrepIntentToken(intent)) throw new TypeError('Social Preparation intent must be a 43-character base64url token.');
-  return `creatorcrate-social://prepare?v=1&server=${encodeURIComponent(serverOrigin)}&intent=${intent}`;
+  return `creatorcrate-social://prepare?v=${SOCIAL_PREP_PROTOCOL_VERSION}&server=${encodeURIComponent(serverOrigin)}&intent=${intent}`;
 }

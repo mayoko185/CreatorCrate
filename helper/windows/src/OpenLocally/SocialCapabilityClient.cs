@@ -12,7 +12,7 @@ public sealed class SocialCapabilityClient
     private const int MaxJsonBytes = 1024 * 1024;
     private static readonly Regex TokenPattern = new("^[A-Za-z0-9_-]{43}$", RegexOptions.CultureInvariant);
     private static readonly HashSet<string> Platforms = new(StringComparer.Ordinal) { "patreon", "x", "bluesky" };
-    private static readonly HashSet<string> Statuses = new(StringComparer.Ordinal) { "pending", "starting", "preparing", "uploading", "auth_required", "prepared", "failed", "cancelled" };
+    private static readonly HashSet<string> Statuses = new(StringComparer.Ordinal) { "pending", "starting", "preparing", "uploading", "auth_required", "prepared", "staging", "ready", "failed", "cancelled" };
     private readonly SocialHttpClient _http;
     private readonly OriginTrustService _trust;
 

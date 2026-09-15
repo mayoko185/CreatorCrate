@@ -1,0 +1,32 @@
+CreatorCrate WinUI 3 interactive visual proof
+
+Run OpenLocally.WinUiHost.Proof.exe directly from this folder. It uses only local fixture data and requires no server or network.
+
+F6 switches both WinUI islands between local Dark and Light themes. This does not change the Windows system theme. The dedicated Model copy buttons copy the exact backing fixture; Ctrl+C inside a RichEditBox copies its current selection. Escape closes the companion.
+
+Manual accessibility acceptance checklist (do not treat the automated proof as completing these items):
+
+- Narrator identifies Patreon title/body, X post text, and Bluesky post text; reads content and read-only state; and follows selection/focus movement.
+- Tab and Shift+Tab traverse each platform flow without trapping focus. Enter inside text activates no command; Escape still closes when no XAML popup consumes it.
+- Shift+Arrow, Ctrl+A, Ctrl+C, arrows, Home/End, Page Up/Page Down, mouse selection, and scrolling remain usable. Typing and paste do not mutate content.
+- Dark, Light, and genuine Windows High Contrast keep text, selection, focus, emoji, and controls readable.
+- Windows Text Size at 100%, 125%, 150%, 200%, and the highest practical setting scales text within the fixed scrollable islands without overlap or inaccessible title clipping.
+- At 96, 144, and 192 DPI, repeat default and elevated Text Size checks. If available, move the window between physical mixed-DPI monitors and verify crisp text, stable text scale, bounds, focus, and selection.
+- Confirm 😀, ❤️, ✅, 👩🏽‍💻, Japanese, and combining marks remain intact.
+
+Optional High Contrast check: enable Windows High Contrast manually, then inspect text readability, selection, focus indication, and both surfaces. The proof never changes High Contrast itself.
+
+This disposable proof does not establish clean-machine launch, offline clean-machine launch, or VC++ prerequisite behavior.
+
+WP10C interactive UIA proof
+
+From the repository root, run:
+
+powershell -NoProfile -ExecutionPolicy Bypass -File .\helper\windows\tests\OpenLocally.WinUiHost.Proof\run-interactive-uia-proof.ps1
+
+Keep the desktop unlocked and do not switch windows while it runs. The proof publishes under the ignored
+test-results\winui-accessibility-proof directory, creates two fully local production companion fixtures, and
+uses an out-of-process UIA client with the Windows inbox client-side provider table explicitly registered.
+
+Optional Narrator check: enable Narrator manually, navigate to Mark as posted, confirm it is announced as a
+button, and activate it with the normal Narrator activation command. The proof never starts Narrator itself.

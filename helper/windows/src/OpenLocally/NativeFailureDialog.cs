@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
-using System.Text;
 using System.Threading;
 
 namespace OpenLocally
@@ -80,8 +79,6 @@ public static class NativeFailureDialog
     private const int VK_RETURN = 0x0D;
     private const int VK_TAB = 0x09;
     private const int GWLP_USERDATA = -21;
-    private const uint CF_UNICODETEXT = 13;
-    private const uint GMEM_MOVEABLE = 0x0002;
     private const int DEFAULT_GUI_FONT = 17;
     private const int COLOR_WINDOW = 5;
     private const uint SWP_NOSIZE = 0x0001;
@@ -363,7 +360,7 @@ public static class NativeFailureDialog
             return;
         }
         if (id != CopyId) return;
-        bool copied = TryCopyReport(state.Report, new WindowsClipboard(window));
+        bool copied = TryCopyReport(state.Report, new ClipboardAdapter(new NativeUnicodeClipboard(window)));
         SetWindowText(state.StatusControl, copied ? "Report copied to clipboard" : "Unable to copy report");
         ShowWindow(state.StatusControl, SW_SHOW);
     }
@@ -402,43 +399,15 @@ public static class NativeFailureDialog
         FlashWindowEx(ref info);
     }
 
-    internal interface IFailureReportClipboard
+    internal interface IFailureReportClipboard : IUnicodeClipboard { }
+
+    private sealed class ClipboardAdapter : IFailureReportClipboard
     {
-        bool TrySetText(string text);
-    }
+        private readonly IUnicodeClipboard _clipboard;
 
-    private sealed class WindowsClipboard : IFailureReportClipboard
-    {
-        private readonly IntPtr _owner;
+        public ClipboardAdapter(IUnicodeClipboard clipboard) { _clipboard = clipboard; }
 
-        public WindowsClipboard(IntPtr owner) { _owner = owner; }
-
-        public bool TrySetText(string text)
-        {
-            IntPtr memory = IntPtr.Zero;
-            bool transferred = false;
-            try
-            {
-                if (!OpenClipboard(_owner)) return false;
-                if (!EmptyClipboard()) return false;
-                byte[] bytes = Encoding.Unicode.GetBytes(text + '\0');
-                memory = GlobalAlloc(GMEM_MOVEABLE, (UIntPtr)bytes.Length);
-                if (memory == IntPtr.Zero) return false;
-                IntPtr target = GlobalLock(memory);
-                if (target == IntPtr.Zero) return false;
-                Marshal.Copy(bytes, 0, target, bytes.Length);
-                GlobalUnlock(memory);
-                if (SetClipboardData(CF_UNICODETEXT, memory) == IntPtr.Zero) return false;
-                transferred = true;
-                return true;
-            }
-            catch { return false; }
-            finally
-            {
-                if (memory != IntPtr.Zero && !transferred) GlobalFree(memory);
-                CloseClipboard();
-            }
-        }
+        public bool TrySetText(string text) { return _clipboard.TrySetText(text); }
     }
 
     private sealed class DialogState
@@ -502,14 +471,6 @@ public static class NativeFailureDialog
     [DllImport("user32.dll")] private static extern uint GetDpiForWindow(IntPtr window);
     [DllImport("user32.dll")] private static extern IntPtr GetSysColorBrush(int color);
     [DllImport("gdi32.dll")] private static extern IntPtr GetStockObject(int objectIndex);
-    [DllImport("user32.dll")] private static extern bool OpenClipboard(IntPtr owner);
-    [DllImport("user32.dll")] private static extern bool CloseClipboard();
-    [DllImport("user32.dll")] private static extern bool EmptyClipboard();
-    [DllImport("user32.dll")] private static extern IntPtr SetClipboardData(uint format, IntPtr memory);
-    [DllImport("kernel32.dll")] private static extern IntPtr GlobalAlloc(uint flags, UIntPtr bytes);
-    [DllImport("kernel32.dll")] private static extern IntPtr GlobalLock(IntPtr memory);
-    [DllImport("kernel32.dll")] private static extern bool GlobalUnlock(IntPtr memory);
-    [DllImport("kernel32.dll")] private static extern IntPtr GlobalFree(IntPtr memory);
 }
 
 }

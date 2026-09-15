@@ -1,0 +1,17 @@
+{% macro render(action, releaseId, csrfToken, autoLaunch = false) %}
+  <span data-release-social-prep-companion
+        data-action-mode="{{ action.mode }}"
+        data-activation-url="/releases/{{ releaseId }}/social-prep/activate"
+        data-reissue-url="/releases/{{ releaseId }}/social-prep/reissue"
+        data-csrf-token="{{ csrfToken }}"
+        {% if action.platform %}data-target-platform="{{ action.platform }}"{% endif %}
+        {% if action.sessionId %}data-session-id="{{ action.sessionId }}"{% endif %}
+        {% if autoLaunch %}data-auto-launch="true"{% endif %}>
+    <button class="button button-small button-secondary" type="button"
+            data-release-social-prep-companion-action
+            {% if action.accessibleLabel %}aria-label="{{ action.accessibleLabel }}"{% endif %}
+            {% if action.description %}title="{{ action.description }}"{% endif %}>{{ action.label }}</button>
+    <span role="status" aria-live="polite" aria-atomic="true" hidden
+          data-release-social-prep-companion-status></span>
+  </span>
+{% endmacro %}

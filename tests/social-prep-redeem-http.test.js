@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import request from 'supertest';
 import { createApp } from '../src/app.js';
@@ -10,6 +11,7 @@ import { closeDatabase, openDatabase, runMigrations } from '../src/db.js';
 import { digestToken, generateIntentToken } from '../src/services/social-prep-tokens.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
+const SESSION_ID = '00000000-0000-0000-0000-000000000001';
 
 function failureReport(platform = 'x') {
   return {
@@ -47,7 +49,7 @@ describe('Social Preparation redemption HTTP', () => {
     db = openDatabase(path.join(tmpDir, 'test.db'));
     runMigrations(db, MIGRATIONS_DIR);
     projectId = Number(db.prepare(
-      "INSERT INTO projects (title, slug, project_dir, description, notes, status, patreon_url) VALUES ('Project', 'project', 'project-dir', '', '', 'tbd', NULL)"
+      "INSERT INTO projects (title, slug, project_dir, description, notes, status, project_type, patreon_url) VALUES ('Project', 'project', 'project-dir', '', '', 'tbd', 'images', NULL)"
     ).run().lastInsertRowid);
     releaseId = Number(db.prepare(
       "INSERT INTO releases (project_id, title, description, notes, published_date) VALUES (?, 'Snapshot title', 'Snapshot body', 'Private Notes', '2026-08-01')"
@@ -58,18 +60,18 @@ describe('Social Preparation redemption HTTP', () => {
     app.locals.openLocallySettingsService.setWindowsProjectsPath('D:\\Projects');
     intent = generateIntentToken();
     repository.insertSession({
-      id: 'session-1', releaseId, kind: 'initial', intentHash: digestToken(intent),
+      id: SESSION_ID, releaseId, kind: 'initial', intentHash: digestToken(intent),
       expiresAt: new Date('2030-01-01T00:00:00.000Z'), now: new Date('2029-12-31T23:59:00.000Z'),
     });
     repository.ensurePlatforms(releaseId, ['patreon', 'x', 'bluesky']);
-    repository.reassignPlatformsToSession('session-1', ['patreon', 'x', 'bluesky']);
+    repository.reassignPlatformsToSession(SESSION_ID, ['patreon', 'x', 'bluesky']);
     repository.insertSessionAsset({
-      sessionId: 'session-1', assetId: 2, projectId, role: 'attachment', sortOrder: 0,
-      relativePath: 'final/second.png', filename: 'second.png', extension: '.png', mimeType: 'image/png', sizeBytes: 2, isPresent: true,
+      sessionId: SESSION_ID, assetId: 2, projectId, role: 'attachment', sortOrder: 0,
+      relativePath: 'final/second.png', filename: 'second.png', extension: 'png', mimeType: 'image/png', sizeBytes: 2, isPresent: true,
     });
     repository.insertSessionAsset({
-      sessionId: 'session-1', assetId: 1, projectId, role: 'primary', sortOrder: 1,
-      relativePath: 'final/first.png', filename: 'first.png', extension: '.png', mimeType: 'image/png', sizeBytes: 1, isPresent: true,
+      sessionId: SESSION_ID, assetId: 1, projectId, role: 'primary', sortOrder: 1,
+      relativePath: 'final/first.png', filename: 'first.png', extension: 'png', mimeType: 'image/png', sizeBytes: 1, isPresent: true,
     });
   });
 
@@ -81,7 +83,7 @@ describe('Social Preparation redemption HTTP', () => {
   it('bypasses browser session and CSRF, redeems once, and returns only snapshot-derived helper data', async () => {
     const redeemed = await request(app).post('/social-prep/redeem').send({ intent }).expect(200);
     expect(redeemed.headers['set-cookie']).toBeUndefined();
-    expect(redeemed.body).toMatchObject({ ok: true, sessionId: 'session-1', releaseId });
+    expect(redeemed.body).toMatchObject({ ok: true, sessionId: SESSION_ID, releaseId });
     expect(redeemed.body.mediaToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
     expect(JSON.stringify(redeemed.body)).not.toContain('Private Notes');
     expect(redeemed.body.platforms.find((entry) => entry.platform === 'patreon')).toMatchObject({
@@ -99,13 +101,48 @@ describe('Social Preparation redemption HTTP', () => {
         ],
       });
     }
-    const stored = db.prepare('SELECT media_token_hash FROM social_prep_sessions WHERE id = ?').get('session-1');
+    const stored = db.prepare('SELECT media_token_hash FROM social_prep_sessions WHERE id = ?').get(SESSION_ID);
     expect(stored.media_token_hash).toMatch(/^[0-9a-f]{64}$/);
     expect(stored.media_token_hash).not.toBe(redeemed.body.mediaToken);
 
     const replay = await request(app).post('/social-prep/redeem').send({ intent }).expect(401);
     const malformed = await request(app).post('/social-prep/redeem').send({ intent: 'invalid' }).expect(401);
     expect(replay.body).toEqual(malformed.body);
+  });
+
+  it('serializes scanner-style extensions that the real helper parser consumes', async () => {
+    const redeemed = await request(app).post('/social-prep/redeem').send({ intent }).expect(200);
+    expect(redeemed.body.platforms.map(({ platform }) => platform)).toEqual(['bluesky', 'patreon', 'x']);
+    expect(redeemed.body.platforms.flatMap(({ assets }) => assets).every(({ extension }) => extension === 'png')).toBe(true);
+    const fixturePath = path.join(tmpDir, 'server-redeem-response.json');
+    fs.writeFileSync(fixturePath, Buffer.from(redeemed.text, 'utf8'));
+
+    const helperResult = spawnSync('dotnet', [
+      'test', 'helper/windows/tests/OpenLocally.Tests/OpenLocally.Tests.csproj',
+      '--nologo', '--no-restore', '--verbosity', 'quiet',
+      '--filter', 'FullyQualifiedName=OpenLocally.Tests.GeneratedRedeemContractTests.CurrentServerRedeemResponse_IsConsumedByHelperParser',
+    ], {
+      cwd: fileURLToPath(new URL('..', import.meta.url)),
+      encoding: 'utf8',
+      env: { ...process.env, CREATORCRATE_REDEEM_CONTRACT_FIXTURE: fixturePath },
+    });
+
+    expect(helperResult.status, `${helperResult.stdout}\n${helperResult.stderr}`).toBe(0);
+  }, 120_000);
+
+  it('rebuilds outgoing text from current release content while retaining activation-time asset snapshots', async () => {
+    db.prepare("UPDATE releases SET title = 'Current title', description = 'Current body' WHERE id = ?").run(releaseId);
+
+    const redeemed = await request(app).post('/social-prep/redeem').send({ intent }).expect(200);
+
+    expect(redeemed.body.platforms.find((entry) => entry.platform === 'patreon')).toMatchObject({
+      title: 'Current title', body: 'Current body',
+      assets: [
+        { assetId: 2, filename: 'second.png' },
+        { assetId: 1, filename: 'first.png' },
+      ],
+    });
+    expect(redeemed.body.platforms.find((entry) => entry.platform === 'x').body).toBe('Current title\n\nCurrent body');
   });
 
   it('treats an expired or query-supplied intent as the same private failure', async () => {
@@ -132,7 +169,7 @@ describe('Social Preparation redemption HTTP', () => {
       arbitrary_nested_value: { marker: 'vermilion crescent' },
     };
     const response = await request(app)
-      .patch('/social-prep/session-1/platforms/x')
+      .patch(`/social-prep/${SESSION_ID}/platforms/x`)
       .set('Authorization', `Bearer ${redeemed.body.mediaToken}`)
       .send({ status: 'failed', detailCode: 'platform_preparation_failed', message: JSON.stringify(report) })
       .expect(200);
@@ -166,12 +203,12 @@ describe('Social Preparation redemption HTTP', () => {
 
     const redeemed = await request(app).post('/social-prep/redeem').send({ intent }).expect(200);
     const accepted = await request(app)
-      .patch('/social-prep/session-1/platforms/x')
+      .patch(`/social-prep/${SESSION_ID}/platforms/x`)
       .set('Authorization', `Bearer ${redeemed.body.mediaToken}`)
       .send({ status: 'failed', detailCode: 'platform_preparation_failed', message: acceptedMessage })
       .expect(200);
     const oversized = await request(app)
-      .patch('/social-prep/session-1/platforms/bluesky')
+      .patch(`/social-prep/${SESSION_ID}/platforms/bluesky`)
       .set('Authorization', `Bearer ${redeemed.body.mediaToken}`)
       .send({ status: 'failed', detailCode: 'platform_preparation_failed', message: oversizedMessage })
       .expect(200);
@@ -211,7 +248,7 @@ describe('Social Preparation redemption HTTP', () => {
       message = JSON.stringify(report);
       expect(Buffer.byteLength(message, 'utf8')).toBe(paddingBytes);
     }
-    const response = await request(app).patch('/social-prep/session-1/platforms/patreon')
+    const response = await request(app).patch(`/social-prep/${SESSION_ID}/platforms/patreon`)
       .set('Authorization', `Bearer ${redeemed.body.mediaToken}`)
       .send({ status: 'failed', detailCode: 'platform_preparation_failed', message }).expect(200);
     expect(response.body.platform.status).toBe('failed');
@@ -285,7 +322,7 @@ describe('Social Preparation redemption HTTP', () => {
 
   async function retainResolution(createResolution) {
     const redeemed = await request(app).post('/social-prep/redeem').send({ intent }).expect(200);
-    await request(app).patch('/social-prep/session-1/platforms/patreon')
+    await request(app).patch(`/social-prep/${SESSION_ID}/platforms/patreon`)
       .set('Authorization', `Bearer ${redeemed.body.mediaToken}`)
       .send({ status: 'failed', detailCode: 'platform_preparation_failed', message: JSON.stringify({
         ...failureReport('patreon'), create_resolution: createResolution,
@@ -359,7 +396,7 @@ describe('Social Preparation redemption HTTP', () => {
     };
 
     const response = await request(app)
-      .patch('/social-prep/session-1/platforms/x')
+      .patch(`/social-prep/${SESSION_ID}/platforms/x`)
       .set('Authorization', `Bearer ${redeemed.body.mediaToken}`)
       .send({ status: 'failed', detailCode: 'platform_preparation_failed', message: JSON.stringify(failureReport()) })
       .expect(200);
@@ -375,7 +412,7 @@ describe('Social Preparation redemption HTTP', () => {
   it('correlates same-platform same-attempt failures to their safe release IDs', async () => {
     const firstRedeemed = await request(app).post('/social-prep/redeem').send({ intent }).expect(200);
     await request(app)
-      .patch('/social-prep/session-1/platforms/x')
+      .patch(`/social-prep/${SESSION_ID}/platforms/x`)
       .set('Authorization', `Bearer ${firstRedeemed.body.mediaToken}`)
       .send({ status: 'failed', detailCode: 'platform_preparation_failed', message: JSON.stringify(failureReport()) })
       .expect(200);
@@ -406,7 +443,7 @@ describe('Social Preparation redemption HTTP', () => {
     const serializedContexts = JSON.stringify(contexts);
     expect(serializedContexts).not.toContain(firstRedeemed.body.mediaToken);
     expect(serializedContexts).not.toContain(secondRedeemed.body.mediaToken);
-    expect(serializedContexts).not.toContain('session-1');
+    expect(serializedContexts).not.toContain(SESSION_ID);
     expect(serializedContexts).not.toContain('session-2');
 
     const settingsLogs = await request(app).get('/settings/logs?subsystem=social_preparation').expect(200);

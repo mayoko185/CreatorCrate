@@ -44,6 +44,27 @@ public class LocalMediaResolverTests : IDisposable
         Assert.Equal(0, prompt.Calls);
     }
 
+    [Fact]
+    public void Revalidate_ReportsReadyMissingAndSizeMismatchWithoutPromptingOrMutatingSource()
+    {
+        string source = Path.Combine(_root, "project", "final", "a.png");
+        Directory.CreateDirectory(Path.GetDirectoryName(source)!);
+        File.WriteAllText(source, "abc");
+        var store = new Store();
+        var prompt = new Prompt(true);
+        var resolver = new LocalMediaResolver(store, prompt);
+        SocialOrigin origin = Origin("https://one.test");
+        var asset = new SocialRedeemAsset(1, "attachment", 0, "a.png", ".png", "image/png", 3, "final/a.png", true, source);
+        Assert.True(resolver.Resolve(origin, asset).Resolved);
+
+        Assert.True(resolver.Revalidate(origin, asset, source).Available);
+        File.WriteAllText(source, "abcd");
+        Assert.Equal("media_size_mismatch", resolver.Revalidate(origin, asset, source).ErrorCode);
+        File.Delete(source);
+        Assert.Equal("media_file_missing", resolver.Revalidate(origin, asset, source).ErrorCode);
+        Assert.Equal(1, prompt.Calls);
+    }
+
     public void Dispose() { if (Directory.Exists(_root)) Directory.Delete(_root, true); }
     private static SocialOrigin Origin(string value) { Assert.True(SocialOrigin.TryParse(value, out SocialOrigin? origin)); return origin!; }
     private sealed class Store : ITrustedMediaRootStore

@@ -84,7 +84,7 @@
               </td>
               <td>{% set status = release.project_status %}{% include "partials/status-badge.njk" %}</td>
               <td>{{ release.planned_date or '—' }}{% if release.planned_time %} {{ release.planned_time }}{% endif %}</td>
-              <td>{{ socialPrepSummary.render(release.socialPreparation, false) }}</td>
+              <td>{{ socialPrepSummary.render(release.socialPreparation, release.id, _csrf, false) }}</td>
               <td>
                 {{ release.selected_asset_count }}
                 {% if release.missing_asset_count > 0 %}

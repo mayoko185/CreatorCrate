@@ -22,6 +22,8 @@ public class SocialRedeemClientTests
 
         Assert.False(result.Success);
         Assert.Equal("server_unreachable", result.ErrorCode);
+        Assert.Equal(ManualSocialDiagnosticReason.RedirectRejected, result.Diagnostic!.Reason);
+        Assert.Equal(302, result.Diagnostic.HttpStatus);
         Assert.Equal(1, handler.Calls);
         Assert.Equal(HttpMethod.Post, handler.Method);
         Assert.Equal("/social-prep/redeem", handler.Path);
@@ -38,6 +40,8 @@ public class SocialRedeemClientTests
         SocialRedeemResult result = await client.RedeemAsync(Origin("https://creatorcrate.test"), Intent, CancellationToken.None);
 
         Assert.Equal("invalid_intent", result.ErrorCode);
+        Assert.Equal(ManualSocialDiagnosticReason.HttpNonSuccess, result.Diagnostic!.Reason);
+        Assert.Equal(401, result.Diagnostic.HttpStatus);
         Assert.DoesNotContain(Intent, result.ErrorCode!);
     }
 
@@ -53,6 +57,7 @@ public class SocialRedeemClientTests
 
         Assert.False(result.Success);
         Assert.Equal("server_unreachable", result.ErrorCode);
+        Assert.Equal(ManualSocialDiagnosticReason.RequestNotSent, result.Diagnostic!.Reason);
     }
 
     [Fact]
@@ -68,6 +73,7 @@ public class SocialRedeemClientTests
 
         Assert.False(result.Success);
         Assert.Equal("tls_validation_failed", result.ErrorCode);
+        Assert.Equal(ManualSocialDiagnosticReason.TlsTransportFailure, result.Diagnostic!.Reason);
     }
 
     [Fact]
@@ -82,6 +88,94 @@ public class SocialRedeemClientTests
 
         Assert.False(result.Success);
         Assert.Equal("tls_validation_failed", result.ErrorCode);
+        Assert.Equal(ManualSocialDiagnosticReason.TlsTransportFailure, result.Diagnostic!.Reason);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Redeem_MapsNonCallerCancellationToBoundedRequestFailure(bool taskCanceled)
+    {
+        const string sentinel = "SECRET_TIMEOUT_EXCEPTION_SENTINEL";
+        OperationCanceledException timeout = taskCanceled
+            ? new TaskCanceledException(sentinel)
+            : new OperationCanceledException(sentinel);
+        var handler = new CaptureHandler(_ => throw timeout);
+
+        SocialRedeemResult result = await CreateClient(handler)
+            .RedeemAsync(Origin("https://creatorcrate.test"), Intent, CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Equal("server_unreachable", result.ErrorCode);
+        Assert.Equal(ManualSocialDiagnosticStage.RedeemRequest, result.Diagnostic!.Stage);
+        Assert.Equal(ManualSocialDiagnosticReason.RequestNotSent, result.Diagnostic.Reason);
+        Assert.Null(result.Diagnostic.HttpStatus);
+        Assert.DoesNotContain(sentinel, result.Diagnostic.FormatForDisplay(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Redeem_PreservesCallerCancellation()
+    {
+        const string sentinel = "SECRET_CALLER_CANCELLATION_SENTINEL";
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var handler = new CaptureHandler(_ => throw new OperationCanceledException(sentinel, cancellation.Token));
+
+        OperationCanceledException error = await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            CreateClient(handler).RedeemAsync(Origin("https://creatorcrate.test"), Intent, cancellation.Token));
+
+        Assert.Equal(sentinel, error.Message);
+    }
+
+    [Fact]
+    public async Task Redeem_NonSuccessIncludesOnlyNumericStatusAndNoBody()
+    {
+        const string secret = "SECRET_POST_BODY_SENTINEL";
+        var handler = new CaptureHandler(_ => new HttpResponseMessage(HttpStatusCode.UnprocessableEntity)
+        {
+            Content = new StringContent(secret),
+        });
+
+        SocialRedeemResult result = await CreateClient(handler)
+            .RedeemAsync(Origin("https://creatorcrate.test"), Intent, CancellationToken.None);
+
+        Assert.Equal("server_unreachable", result.ErrorCode);
+        Assert.Equal(ManualSocialDiagnosticReason.HttpNonSuccess, result.Diagnostic!.Reason);
+        Assert.Equal(422, result.Diagnostic.HttpStatus);
+        Assert.DoesNotContain(secret, result.Diagnostic.FormatForDisplay());
+    }
+
+    [Fact]
+    public async Task Redeem_InvalidPayloadCarriesParserReasonAndHttpStatusWithoutBody()
+    {
+        const string secret = "SECRET_BEARER_SENTINEL";
+        var handler = new CaptureHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{\"" + secret + "\":true}"),
+        });
+
+        SocialRedeemResult result = await CreateClient(handler)
+            .RedeemAsync(Origin("https://creatorcrate.test"), Intent, CancellationToken.None);
+
+        Assert.Equal("redeem_payload_invalid", result.ErrorCode);
+        Assert.Equal(ManualSocialDiagnosticReason.UnexpectedProperty, result.Diagnostic!.Reason);
+        Assert.Equal(200, result.Diagnostic.HttpStatus);
+        Assert.DoesNotContain(secret, result.Diagnostic.FormatForDisplay());
+    }
+
+    [Fact]
+    public async Task Redeem_OversizedResponseHasBoundedDiagnostic()
+    {
+        var content = new ByteArrayContent([0]);
+        content.Headers.ContentLength = SocialRedeemClient.MaxJsonBytes + 1L;
+        var handler = new CaptureHandler(_ => new HttpResponseMessage(HttpStatusCode.OK) { Content = content });
+
+        SocialRedeemResult result = await CreateClient(handler)
+            .RedeemAsync(Origin("https://creatorcrate.test"), Intent, CancellationToken.None);
+
+        Assert.Equal("redeem_payload_too_large", result.ErrorCode);
+        Assert.Equal(ManualSocialDiagnosticReason.ResponseTooLarge, result.Diagnostic!.Reason);
+        Assert.Equal(200, result.Diagnostic.HttpStatus);
     }
 
     private static SocialOrigin Origin(string text) { Assert.True(SocialOrigin.TryParse(text, out SocialOrigin? origin)); return origin!; }
