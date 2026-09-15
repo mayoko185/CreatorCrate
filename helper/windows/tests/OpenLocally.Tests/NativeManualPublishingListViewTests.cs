@@ -3,8 +3,403 @@ using System.Runtime.InteropServices;
 
 namespace OpenLocally.Tests;
 
+[Collection("Native header resource isolation")]
 public sealed class NativeManualPublishingListViewTests
 {
+    [Fact]
+    public async Task ProductionColumns_UseActualClientWidthAcrossResizeCycleAndPreserveSelection()
+    {
+        var model = Model(
+            Prepared(1, "short.png", true),
+            Prepared(2, "a-representative-long-filename-that-clips.png", true),
+            Prepared(3, "third.png", true));
+        await using var harness = await ProductionHeaderHarness.StartAsync(model);
+        IntPtr listView = harness.Window.AssetListHandleForTesting;
+        NativeManualPublishingCompanion.NativeWindow.SetNativeSelection(listView, new HashSet<int> { 0, 2 }, 3);
+        Assert.Equal([0, 2], NativeManualPublishingCompanion.NativeWindow.SelectedOrdinals(listView));
+
+        (int ClientWidth, int Dpi, int[] Widths) Capture(int logicalWidth)
+        {
+            NativeProductionLayoutProbe layout =
+                harness.Window.ResizeAndCaptureLayoutForTesting(0, logicalWidth, 920);
+            Assert.True(GetClientRect(listView, out Rect client));
+            int[] widths = ColumnWidths(listView);
+            Assert.Equal(
+                NativeManualPublishingCompanion.NativeWindow.AssetColumns(client.right, layout.Dpi)
+                    .Select(column => column.LogicalWidth),
+                widths);
+            Assert.Equal([0, 2], NativeManualPublishingCompanion.NativeWindow.SelectedOrdinals(listView));
+            Assert.Equal("2 of 3 selected", WindowText(harness.Window.AssetCountHandle));
+            Assert.Equal("Drag any selected file to attach all selected files.",
+                WindowText(harness.Window.DragGuidanceHandle));
+            return (client.right, layout.Dpi, widths);
+        }
+
+        var minimum = Capture(820);
+        var normal = Capture(980);
+        var wide = Capture(1600);
+        var minimumAgain = Capture(820);
+
+        Assert.Equal(minimum.Widths, minimumAgain.Widths);
+        Assert.True(normal.Widths[0] > minimum.Widths[0]);
+        Assert.True(wide.Widths[0] > normal.Widths[0]);
+        Assert.Equal(minimum.Widths[1..4], normal.Widths[1..4]);
+        Assert.Equal(normal.Widths[1..4], wide.Widths[1..4]);
+        Assert.InRange(wide.Widths[4], 180 * wide.Dpi / 96, 280 * wide.Dpi / 96);
+        Assert.All(minimum.Widths, width => Assert.True(width > 0));
+        Assert.True(minimum.Widths.Sum() >= minimum.ClientWidth);
+    }
+
+    [Fact]
+    public async Task ProductionColumns_PreserveManualDividerUntilStructuralResize()
+    {
+        await using var harness = await ProductionHeaderHarness.StartAsync(Model(Prepared(1, "a.png", true)));
+        IntPtr listView = harness.Window.AssetListHandleForTesting;
+        NativeProductionLayoutProbe normal = harness.Window.ResizeAndCaptureLayoutForTesting(0, 980, 920);
+        int manualFileWidth = 333 * normal.Dpi / 96;
+        SendMessage(listView, 0x1000 + 30, IntPtr.Zero, new IntPtr(manualFileWidth));
+
+        harness.Window.ResizeAndCaptureLayoutForTesting(0, 980, 920);
+        Assert.Equal(manualFileWidth, ColumnWidths(listView)[0]);
+
+        NativeProductionLayoutProbe wide = harness.Window.ResizeAndCaptureLayoutForTesting(0, 1600, 920);
+        Assert.True(GetClientRect(listView, out Rect client));
+        Assert.Equal(
+            NativeManualPublishingCompanion.NativeWindow.AssetColumns(client.right, wide.Dpi)
+                .Select(column => column.LogicalWidth),
+            ColumnWidths(listView));
+    }
+
+    [Fact]
+    public async Task ProductionColumns_KeepPlatformLocalSelectionsAcrossResizeAndSwitch()
+    {
+        var model = new ManualPublishingCompanionModel(Session(
+            new ManualPreparedPlatform("patreon", "Release", "Body",
+                [Prepared(1, "a.png", true), Prepared(2, "b.png", true), Prepared(3, "c.png", true)]),
+            new ManualPreparedPlatform("x", "Release", "Post",
+                [Prepared(4, "x.png", true), Prepared(5, "y.png", true)])));
+        await using var harness = await ProductionHeaderHarness.StartAsync(model);
+        IntPtr listView = harness.Window.AssetListHandleForTesting;
+
+        NativeManualPublishingCompanion.NativeWindow.SetNativeSelection(listView, new HashSet<int> { 0, 2 }, 3);
+        harness.Window.ResizeAndCaptureLayoutForTesting(1, 980, 920);
+        NativeManualPublishingCompanion.NativeWindow.SetNativeSelection(listView, new HashSet<int> { 1 }, 2);
+        harness.Window.ResizeAndCaptureLayoutForTesting(0, 820, 754);
+        Assert.Equal([0, 2], NativeManualPublishingCompanion.NativeWindow.SelectedOrdinals(listView));
+        Assert.Equal("2 of 3 selected", WindowText(harness.Window.AssetCountHandle));
+
+        NativeProductionLayoutProbe wide = harness.Window.ResizeAndCaptureLayoutForTesting(1, 1600, 920);
+        Assert.Equal([1], NativeManualPublishingCompanion.NativeWindow.SelectedOrdinals(listView));
+        Assert.Equal("1 of 2 selected", WindowText(harness.Window.AssetCountHandle));
+        Assert.True(GetClientRect(listView, out Rect client));
+        Assert.Equal(
+            NativeManualPublishingCompanion.NativeWindow.AssetColumns(client.right, wide.Dpi)
+                .Select(column => column.LogicalWidth),
+            ColumnWidths(listView));
+    }
+
+    [Fact]
+    public async Task NativeHeaderPostpaint_NormalizesParentRectanglesAfterHorizontalScrollAndResize()
+    {
+        await using var harness = await ProductionHeaderHarness.StartAsync(Model(Prepared(1, "a.png", true)));
+        IntPtr listView = harness.Window.AssetListHandleForTesting;
+
+        SendMessage(listView, 0x1000 + 30, new IntPtr(4), new IntPtr(600));
+        harness.Window.ScrollAssetListHorizontallyForTesting(180);
+        AssertPostpaintUsesHeaderClientCoordinates(harness, listView);
+        AssertHeaderCustomDrawStages(harness.Window.PaintHeaderForTesting(NativeCompanionPalette.Dark));
+
+        harness.Window.ResizeAndCaptureLayoutForTesting(0, 900, 800);
+        SendMessage(listView, 0x1000 + 30, new IntPtr(4), new IntPtr(600));
+        harness.Window.ScrollAssetListHorizontallyForTesting(180);
+        AssertPostpaintUsesHeaderClientCoordinates(harness, listView);
+        AssertHeaderCustomDrawStages(harness.Window.PaintHeaderForTesting(NativeCompanionPalette.Dark));
+    }
+
+    [Fact]
+    public void EmptyAndLongRows_DoNotChangeStableColumnPolicy()
+    {
+        using var harness = new NotificationHarness(Model());
+        int[] empty = ColumnWidths(harness.ListView);
+        NativeManualPublishingCompanion.NativeWindow.PopulateAssetRows(harness.ListView,
+        [
+            new ManualAssetListRow(
+                new ManualPreparedPlatform("x", "Release", "Post", []), 0,
+                new ManualPreparedAsset(
+                    new SocialRedeemAsset(1, new string('r', 200), 1, new string('f', 200) + ".png",
+                        ".png", "image/png", long.MaxValue, "release/" + new string('p', 300), true, null),
+                    @"C:\stage\" + new string('s', 200) + ".png", StagedMediaProvenance.HelperOwned))
+        ]);
+
+        Assert.Equal(empty, ColumnWidths(harness.ListView));
+    }
+
+    private static void AssertPostpaintUsesHeaderClientCoordinates(
+        ProductionHeaderHarness harness, IntPtr listView)
+    {
+        NativeHeaderPostpaintProbe probe =
+            harness.Window.PaintHeaderPostpaintForTesting(NativeCompanionPalette.Dark);
+        Assert.True(probe.CoordinateMappingSucceeded);
+        Assert.True(GetClientRect(harness.Header, out Rect client));
+        Assert.Equal(new NativeLayoutRect(0, 0, client.right, client.bottom), probe.Client);
+
+        int itemCount = SendMessage(harness.Header, 0x1200, IntPtr.Zero, IntPtr.Zero).ToInt32();
+        var parentItems = new List<NativeLayoutRect>(itemCount);
+        var expectedItems = new List<NativeLayoutRect>(itemCount);
+        for (int index = 0; index < itemCount; index++)
+        {
+            Assert.True(SendMessageHeaderRect(harness.Header, 0x1200 + 7, new IntPtr(index), out Rect item));
+            parentItems.Add(new(item.left, item.top, item.right - item.left, item.bottom - item.top));
+            var points = new[]
+            {
+                new Point { x = item.left, y = item.top },
+                new Point { x = item.right, y = item.bottom },
+            };
+            SetLastError(0);
+            Assert.True(MapWindowPoints(listView, harness.Header, points, 2) != 0 ||
+                Marshal.GetLastWin32Error() == 0);
+            expectedItems.Add(new(points[0].x, points[0].y,
+                points[1].x - points[0].x, points[1].y - points[0].y));
+        }
+
+        Assert.Equal(expectedItems, probe.Items);
+        Assert.NotEqual(parentItems[0].X, expectedItems[0].X);
+        NativeLayoutRect expectedTrailing = NativeCompanionTheme.HeaderTrailingBounds(probe.Client, expectedItems);
+        Assert.Equal(expectedTrailing, probe.Trailing);
+        Assert.All(expectedItems.Where(item => item.Right > probe.Client.X && item.X < probe.Client.Right),
+            item => Assert.True(probe.Trailing.Width == 0 || probe.Trailing.X >= item.Right));
+    }
+
+    private static int[] ColumnWidths(IntPtr listView) =>
+        Enumerable.Range(0, 5)
+            .Select(index => SendMessage(listView, 0x1000 + 29, new IntPtr(index), IntPtr.Zero).ToInt32())
+            .ToArray();
+
+    private static string WindowText(IntPtr window)
+    {
+        var value = new System.Text.StringBuilder(256);
+        GetWindowText(window, value, value.Capacity);
+        return value.ToString();
+    }
+
+    [Fact]
+    public async Task NativeHeaderCustomDraw_UsesRealProductionHeaderNotificationPathAndDocumentedStageFlags()
+    {
+        await using var harness = await ProductionHeaderHarness.StartAsync(Model(Prepared(1, "a.png", true)));
+
+        Assert.NotEqual(IntPtr.Zero, harness.Header);
+        Assert.Equal("SysHeader32", harness.HeaderClassName);
+        Assert.Equal(["File", "Role", "Size", "Status", "Path / staged name"], harness.HeaderTexts);
+
+        harness.Window.ResizeAndCaptureLayoutForTesting(0, 820, 754);
+        IReadOnlyList<NativeHeaderDrawStageProbe> dark = harness.Window.PaintHeaderForTesting(NativeCompanionPalette.Dark);
+        AssertHeaderCustomDrawStages(dark);
+        AssertHeaderCustomDrawStages(harness.Window.PaintHeaderForTesting(NativeCompanionPalette.Light));
+        AssertHeaderCustomDrawStages(harness.Window.PaintHeaderForTesting(NativeCompanionPalette.Dark));
+
+        IReadOnlyList<NativeHeaderDrawStageProbe> highContrastDraws =
+            harness.Window.PaintHeaderForTesting(NativeCompanionPalette.HighContrast);
+        NativeHeaderDrawStageProbe highContrast = Assert.Single(highContrastDraws);
+        Assert.Equal(0x00000001u, highContrast.Stage);
+        Assert.Equal(IntPtr.Zero, highContrast.Result);
+    }
+
+    [Fact]
+    public async Task NativeRowCustomDraw_UsesRealSelectedStateAndPersistsWhenFocusLeavesListView()
+    {
+        await using var harness = await ProductionHeaderHarness.StartAsync(Model(
+            Prepared(1, "a.png", true), Prepared(2, "b.png", false), Prepared(3, "c.png", true)));
+        IntPtr listView = harness.Window.AssetListHandleForTesting;
+        NativeManualPublishingCompanion.NativeWindow.SetNativeSelection(listView, new HashSet<int> { 0, 1 }, 3);
+
+        IReadOnlyList<NativeListViewRowDrawProbe> focused =
+            harness.Window.PaintAssetRowsForTesting(NativeCompanionPalette.Dark, 96, true, focusedItem: 0);
+        AssertRowSelection(focused, NativeCompanionPalette.Dark, [0, 1], focusedItem: 0);
+
+        IReadOnlyList<NativeListViewRowDrawProbe> focusElsewhere =
+            harness.Window.PaintAssetRowsForTesting(NativeCompanionPalette.Dark, 96, false, focusedItem: 0);
+        AssertRowSelection(focusElsewhere, NativeCompanionPalette.Dark, [0, 1], focusedItem: null);
+        Assert.Equal([0, 1], NativeManualPublishingCompanion.NativeWindow.SelectedOrdinals(listView));
+        Assert.All(ItemPrepaints(focusElsewhere), draw => Assert.False(draw.KeyboardFocused));
+
+        // The previous implementation had no selected-item postpaint stage, so this
+        // production assertion proves the old weak row path would fail the regression.
+        Assert.Equal([0, 1], ItemPostpaints(focusElsewhere).Select(draw => draw.ItemIndex).Order());
+    }
+
+    [Fact]
+    public async Task NativeRowCustomDraw_TracksZeroOneMultipleAndDeselectWithoutStaleAccent()
+    {
+        await using var harness = await ProductionHeaderHarness.StartAsync(Model(
+            Prepared(1, "a.png", true), Prepared(2, "b.png", true), Prepared(3, "c.png", true)));
+        IntPtr listView = harness.Window.AssetListHandleForTesting;
+
+        NativeManualPublishingCompanion.NativeWindow.SetNativeSelection(listView, new HashSet<int>(), 3);
+        IReadOnlyList<NativeListViewRowDrawProbe> zero =
+            harness.Window.PaintAssetRowsForTesting(NativeCompanionPalette.Light, 96, false);
+        AssertRowSelection(zero, NativeCompanionPalette.Light, [], focusedItem: null);
+        Assert.Empty(ItemPostpaints(zero));
+
+        NativeManualPublishingCompanion.NativeWindow.SetNativeSelection(listView, new HashSet<int> { 1 }, 3);
+        IReadOnlyList<NativeListViewRowDrawProbe> one =
+            harness.Window.PaintAssetRowsForTesting(NativeCompanionPalette.Light, 96, false);
+        AssertRowSelection(one, NativeCompanionPalette.Light, [1], focusedItem: null);
+
+        NativeManualPublishingCompanion.NativeWindow.SetNativeSelection(listView, new HashSet<int> { 0, 1, 2 }, 3);
+        IReadOnlyList<NativeListViewRowDrawProbe> multiple =
+            harness.Window.PaintAssetRowsForTesting(NativeCompanionPalette.Light, 96, false);
+        AssertRowSelection(multiple, NativeCompanionPalette.Light, [0, 1, 2], focusedItem: null);
+
+        NativeManualPublishingCompanion.NativeWindow.SetNativeSelection(listView, new HashSet<int> { 0, 2 }, 3);
+        IReadOnlyList<NativeListViewRowDrawProbe> deselected =
+            harness.Window.PaintAssetRowsForTesting(NativeCompanionPalette.Light, 96, false);
+        AssertRowSelection(deselected, NativeCompanionPalette.Light, [0, 2], focusedItem: null);
+        Assert.DoesNotContain(ItemPostpaints(deselected), draw => draw.ItemIndex == 1);
+    }
+
+    [Fact]
+    public async Task NativeRowCustomDraw_FollowsPlatformRestoreResizeAndVisibleLeadingEdgeAfterHorizontalScroll()
+    {
+        var model = new ManualPublishingCompanionModel(Session(
+            new ManualPreparedPlatform("patreon", "Release", "Body",
+                [Prepared(1, "a.png", true), Prepared(2, "b.png", true), Prepared(3, "c.png", true)]),
+            new ManualPreparedPlatform("x", "Release", "Post",
+                [Prepared(4, "x.png", true), Prepared(5, "y.png", true)])));
+        await using var harness = await ProductionHeaderHarness.StartAsync(model);
+        IntPtr listView = harness.Window.AssetListHandleForTesting;
+
+        NativeManualPublishingCompanion.NativeWindow.SetNativeSelection(listView, new HashSet<int> { 0, 2 }, 3);
+        harness.Window.ResizeAndCaptureLayoutForTesting(1, 980, 920);
+        NativeManualPublishingCompanion.NativeWindow.SetNativeSelection(listView, new HashSet<int> { 1 }, 2);
+        SendMessage(listView, 0x1000 + 30, new IntPtr(4), new IntPtr(600));
+        harness.Window.ScrollAssetListHorizontallyForTesting(180);
+        IReadOnlyList<NativeListViewRowDrawProbe> x =
+            harness.Window.PaintAssetRowsForTesting(NativeCompanionPalette.Dark, 144, false);
+        AssertRowSelection(x, NativeCompanionPalette.Dark, [1], focusedItem: null);
+        Assert.All(ItemPostpaints(x), draw =>
+        {
+            Assert.Equal(0, draw.Accent.X);
+            Assert.Equal(3, draw.Accent.Width);
+        });
+
+        harness.Window.ResizeAndCaptureLayoutForTesting(0, 980, 920);
+        IReadOnlyList<NativeListViewRowDrawProbe> patreon =
+            harness.Window.PaintAssetRowsForTesting(NativeCompanionPalette.Dark, 192, false);
+        AssertRowSelection(patreon, NativeCompanionPalette.Dark, [0, 2], focusedItem: null);
+        Assert.All(ItemPostpaints(patreon), draw => Assert.Equal(4, draw.Accent.Width));
+    }
+
+    [Fact]
+    public async Task NativeRowCustomDraw_HighContrastDefersToSystemSelectionAndFocus()
+    {
+        await using var harness = await ProductionHeaderHarness.StartAsync(Model(
+            Prepared(1, "a.png", true), Prepared(2, "b.png", true)));
+        IntPtr listView = harness.Window.AssetListHandleForTesting;
+        NativeManualPublishingCompanion.NativeWindow.SetNativeSelection(listView, new HashSet<int> { 0, 1 }, 2);
+
+        IReadOnlyList<NativeListViewRowDrawProbe> draws =
+            harness.Window.PaintAssetRowsForTesting(NativeCompanionPalette.HighContrast, 192, true);
+
+        NativeListViewRowDrawProbe prepaint = Assert.Single(draws);
+        Assert.Equal(0x00000001u, prepaint.Stage);
+        Assert.False(prepaint.UsesCustomSelection);
+        Assert.Equal(IntPtr.Zero, prepaint.Result);
+        Assert.Equal(default, prepaint.Accent);
+        Assert.Equal([0, 1], NativeManualPublishingCompanion.NativeWindow.SelectedOrdinals(listView));
+    }
+
+    private static IReadOnlyList<NativeListViewRowDrawProbe> ItemPrepaints(
+        IReadOnlyList<NativeListViewRowDrawProbe> draws) =>
+        draws.Where(draw => draw.Stage == 0x00010001).ToArray();
+
+    private static IReadOnlyList<NativeListViewRowDrawProbe> ItemPostpaints(
+        IReadOnlyList<NativeListViewRowDrawProbe> draws) =>
+        draws.Where(draw => draw.Stage == 0x00010002).ToArray();
+
+    private static void AssertRowSelection(
+        IReadOnlyList<NativeListViewRowDrawProbe> draws, NativeCompanionPalette palette,
+        IReadOnlyList<int> selectedItems, int? focusedItem)
+    {
+        int[] expected = selectedItems.Order().ToArray();
+        NativeListViewRowDrawProbe[] prepaints = ItemPrepaints(draws).ToArray();
+        Assert.NotEmpty(prepaints);
+        Assert.Equal(expected, prepaints.Where(draw => draw.Selected).Select(draw => draw.ItemIndex).Order());
+        Assert.Equal(expected, ItemPostpaints(draws).Select(draw => draw.ItemIndex).Order());
+        Assert.All(prepaints.Where(draw => draw.Selected), draw =>
+        {
+            Assert.True(draw.UsesCustomSelection);
+            Assert.Equal(palette.SelectionBackground, draw.Background);
+            Assert.Equal(palette.SelectionText, draw.Text);
+            Assert.Equal(new IntPtr(0x00000002 | 0x00000010), draw.Result);
+        });
+        Assert.All(prepaints.Where(draw => !draw.Selected), draw =>
+        {
+            Assert.Equal(palette.Page, draw.Background);
+            Assert.Equal(palette.Text, draw.Text);
+            Assert.Equal(new IntPtr(0x00000002), draw.Result);
+        });
+        Assert.Equal(focusedItem is null ? [] : [focusedItem.Value],
+            prepaints.Where(draw => draw.KeyboardFocused).Select(draw => draw.ItemIndex));
+        Assert.All(ItemPostpaints(draws), draw =>
+        {
+            Assert.Equal(0, draw.Accent.X);
+            Assert.True(draw.Accent.Width > 0);
+            Assert.True(draw.Accent.Height > 0);
+        });
+    }
+
+    private static void AssertHeaderCustomDrawStages(IReadOnlyList<NativeHeaderDrawStageProbe> draws)
+    {
+        Assert.Contains(draws, draw =>
+            draw.Stage == 0x00000001 && draw.Result == new IntPtr(0x00000020 | 0x00000010));
+        Assert.True(5 == draws.Count(draw =>
+                draw.Stage == 0x00010001 && draw.Result == new IntPtr(0x00000004)),
+            string.Join(", ", draws.Select(draw => $"0x{draw.Stage:X8}=0x{draw.Result.ToInt64():X}")));
+        Assert.Contains(draws, draw => draw.Stage == 0x00000002);
+    }
+
+    [Fact]
+    public async Task NativeHeaderCustomDraw_RepeatedOpenCloseKeepsGuiResourceCountsStable()
+    {
+        async Task ExerciseAsync()
+        {
+            await using var harness = await ProductionHeaderHarness.StartAsync(Model(Prepared(1, "a.png", true)));
+            AssertHeaderCustomDrawStages(harness.Window.PaintHeaderForTesting(NativeCompanionPalette.Dark));
+            AssertHeaderCustomDrawStages(harness.Window.PaintHeaderForTesting(NativeCompanionPalette.Light));
+            Assert.NotEmpty(harness.Window.PaintAssetRowsForTesting(NativeCompanionPalette.Dark, 96, true));
+            Assert.NotEmpty(harness.Window.PaintAssetRowsForTesting(NativeCompanionPalette.Light, 192, false));
+        }
+
+        static void CollectFinalizers()
+        {
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+        }
+
+        for (int warmup = 0; warmup < 10; warmup++) await ExerciseAsync();
+        CollectFinalizers();
+        uint gdiBefore = GetGuiResources(GetCurrentProcess(), 0);
+        uint userBefore = GetGuiResources(GetCurrentProcess(), 1);
+        for (int iteration = 0; iteration < 5; iteration++) await ExerciseAsync();
+        CollectFinalizers();
+        uint gdiAfter = GetGuiResources(GetCurrentProcess(), 0);
+        uint userAfter = GetGuiResources(GetCurrentProcess(), 1);
+
+        Assert.True(gdiAfter <= gdiBefore + 1, $"GDI resources grew from {gdiBefore} to {gdiAfter}.");
+        Assert.True(userAfter <= userBefore + 1, $"USER resources grew from {userBefore} to {userAfter}.");
+    }
+
+    [Fact]
+    public void ThreeAvailableRows_StartSelectedWithCountAndDragGuidance()
+    {
+        var model = Model(Prepared(1, "a.png", true), Prepared(2, "b.png", true), Prepared(3, "c.png", true));
+        using var harness = new NotificationHarness(model);
+        Assert.Equal([0, 1, 2], harness.NativeSelection);
+        Assert.Equal("3 of 3 selected", harness.CountText);
+        Assert.Equal("Drag any selected file to attach all selected files.", harness.GuidanceText);
+    }
+
     [Fact]
     public async Task ProductionPreviewMessage_ReplacesRealPngPlaceholderWithoutChangingSelectionOrIdentity()
     {
@@ -25,6 +420,7 @@ public sealed class NativeManualPublishingListViewTests
         Assert.Equal(0, NativeManualPublishingCompanion.NativeWindow.ItemOrdinal(harness.ListView, 0));
         Assert.Equal([0], harness.NativeSelection);
         Assert.Equal([0], model.SelectedOrdinals);
+        Assert.Equal("1 of 1 selected", harness.CountText);
     }
 
     [Fact]
@@ -47,13 +443,13 @@ public sealed class NativeManualPublishingListViewTests
         NativeManualPublishingCompanion.NativeWindow.SetItemImage(harness.ListView, 2, 9);
         Assert.Equal(9, NativeManualPublishingCompanion.NativeWindow.ItemImage(harness.ListView, 2));
         Assert.Equal([0, 2], harness.NativeSelection);
-        Assert.Equal("2 selected", model.SelectedCountText);
+        Assert.Equal("2 of 3 selected", model.SelectedCountText);
         harness.BeginDrag(2);
         Assert.Equal([0, 2], Assert.Single(harness.CoordinatorSelections).Select(asset => asset.Ordinal));
     }
 
     [Fact]
-    public void SelectAll_BeginDragNotificationStartsCoordinatorWithAuthoritativeImmutableSnapshot()
+    public void InitialAvailableSelection_BeginDragNotificationStartsCoordinatorWithAuthoritativeImmutableSnapshot()
     {
         ManualPreparedAsset[] assets =
         [
@@ -65,8 +461,8 @@ public sealed class NativeManualPublishingListViewTests
             new ManualPreparedPlatform("x", "Release", "Post", [Prepared(5, "x.png", true)])));
         using var harness = new NotificationHarness(model);
 
-        harness.SelectAll();
         Assert.Equal([0, 1, 2, 3], harness.NativeSelection);
+        Assert.Equal("4 of 4 selected", harness.CountText);
         harness.BeginDrag(1);
 
         IReadOnlyList<ManualDragAsset> snapshot = Assert.Single(harness.CoordinatorSelections);
@@ -130,7 +526,7 @@ public sealed class NativeManualPublishingListViewTests
         harness.SetSelection(0, 1);
         Assert.Equal([0, 1], harness.NativeSelection);
         Assert.Equal([0, 1], model.SelectedOrdinals);
-        Assert.Equal("2 selected", model.SelectedCountText);
+        Assert.Equal("2 of 3 selected", model.SelectedCountText);
 
         harness.BeginDrag(1);
 
@@ -140,18 +536,35 @@ public sealed class NativeManualPublishingListViewTests
     }
 
     [Fact]
-    public void SelectAll_ExcludesUnavailableRowAndDragsAllAvailableRows()
+    public void InitialSelection_ExcludesUnavailableRowAndDragsAllAvailableRows()
     {
         var model = Model(Prepared(1, "a.png", true), Prepared(2, "b.png", false), Prepared(3, "c.png", true));
         using var harness = new NotificationHarness(model);
-        harness.SetSelection(1);
-
-        harness.SelectAll();
-
         Assert.Equal([0, 2], harness.NativeSelection);
-        Assert.Equal("2 selected", model.SelectedCountText);
+        Assert.Equal("2 of 3 selected", harness.CountText);
+        Assert.Equal("Drag any selected file to attach all selected files.", harness.GuidanceText);
         harness.BeginDrag(0);
         Assert.Equal([0, 2], Assert.Single(harness.CoordinatorSelections).Select(asset => asset.Ordinal));
+    }
+
+    [Fact]
+    public void NativeSelection_UpdatesCountAndGuidanceForUnavailableAndZeroSets()
+    {
+        var model = Model(Prepared(1, "a.png", true), Prepared(2, "b.png", false), Prepared(3, "c.png", true));
+        using var harness = new NotificationHarness(model);
+        Assert.Equal([0, 2], harness.NativeSelection);
+        Assert.Equal("2 of 3 selected", harness.CountText);
+
+        harness.SetSelection(0, 1, 2);
+        Assert.Equal([0, 1, 2], harness.NativeSelection);
+        Assert.Equal("3 of 3 selected", harness.CountText);
+        Assert.Equal("Selection includes unavailable files and cannot be dragged.", harness.GuidanceText);
+
+        harness.SetSelection();
+        Assert.Equal("0 of 3 selected", harness.CountText);
+        Assert.Equal("Select files to attach.", harness.GuidanceText);
+        harness.BeginDrag(0);
+        Assert.Empty(harness.CoordinatorSelections);
     }
 
     [Fact]
@@ -163,6 +576,9 @@ public sealed class NativeManualPublishingListViewTests
         harness.SetSelection(0, 1);
 
         assets[1] = Prepared(2, "b.png", false);
+        harness.RestorePlatformSelection();
+        Assert.Equal("2 of 2 selected", harness.CountText);
+        Assert.Equal("Selection includes unavailable files and cannot be dragged.", harness.GuidanceText);
         harness.BeginDrag(0);
 
         Assert.Equal([0, 1], harness.NativeSelection);
@@ -180,7 +596,7 @@ public sealed class NativeManualPublishingListViewTests
         harness.SetSelection(1);
         Assert.Equal([1], harness.NativeSelection);
         Assert.Equal([1], model.SelectedOrdinals);
-        Assert.Equal("1 selected", model.SelectedCountText);
+        Assert.Equal("1 of 2 selected", model.SelectedCountText);
         Assert.Empty(harness.CoordinatorSelections);
 
         harness.BeginDrag(-1);
@@ -201,12 +617,15 @@ public sealed class NativeManualPublishingListViewTests
         harness.SetSelection(0, 1);
         model.SelectPlatform(1);
         harness.RestorePlatformSelection();
+        Assert.Equal("2 of 2 selected", harness.CountText);
         harness.SetSelection(1);
         model.SelectPlatform(0);
         harness.RestorePlatformSelection();
 
         Assert.Equal([0, 1], harness.NativeSelection);
-        Assert.Equal("2 selected", model.SelectedCountText);
+        Assert.Equal("2 of 3 selected", model.SelectedCountText);
+        Assert.Equal("2 of 3 selected", harness.CountText);
+        Assert.Equal("Selection includes unavailable files and cannot be dragged.", harness.GuidanceText);
         harness.BeginDrag(0);
         Assert.Empty(harness.CoordinatorSelections);
         Assert.Equal("Selected files include unavailable media.", harness.StatusText);
@@ -222,6 +641,80 @@ public sealed class NativeManualPublishingListViewTests
         new(new SocialRedeemAsset(id, "attachment", id, filename, ".png", "image/png", id * 100,
             $"release/{filename}", present, null), present ? $@"C:\stage\{filename}" : string.Empty,
             StagedMediaProvenance.HelperOwned);
+
+    private sealed class ProductionHeaderHarness : IAsyncDisposable
+    {
+        private readonly TaskCompletionSource<Exception?> _closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly Thread _thread;
+
+        private ProductionHeaderHarness(ManualPublishingCompanionModel model)
+        {
+            Lifecycle = new ManualCompanionLifecycle();
+            Window = new NativeManualPublishingCompanion.NativeWindow(
+                model, Lifecycle, confirmation: null, disableWinUiForNativeOnlyTests: true);
+            _thread = new Thread(Run) { IsBackground = true, Name = "Native header custom-draw test" };
+            _thread.SetApartmentState(ApartmentState.STA);
+        }
+
+        public NativeManualPublishingCompanion.NativeWindow Window { get; }
+        private ManualCompanionLifecycle Lifecycle { get; }
+        public IntPtr Header => Window.AssetHeaderHandleForTesting;
+        public string HeaderClassName
+        {
+            get
+            {
+                var value = new System.Text.StringBuilder(64);
+                GetClassName(Header, value, value.Capacity);
+                return value.ToString();
+            }
+        }
+        public IReadOnlyList<string> HeaderTexts => Enumerable.Range(0,
+            SendMessage(Header, 0x1200, IntPtr.Zero, IntPtr.Zero).ToInt32()).Select(HeaderText).ToArray();
+
+        public static async Task<ProductionHeaderHarness> StartAsync(ManualPublishingCompanionModel model)
+        {
+            var harness = new ProductionHeaderHarness(model);
+            harness._thread.Start();
+            await harness.Lifecycle.Ready.WaitAsync(TimeSpan.FromSeconds(5));
+            return harness;
+        }
+
+        public async ValueTask DisposeAsync()
+        {
+            if (!_closed.Task.IsCompleted) Window.RequestClose();
+            Exception? failure = await _closed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(_thread.Join(TimeSpan.FromSeconds(5)));
+            if (failure is not null) throw failure;
+        }
+
+        private string HeaderText(int index)
+        {
+            IntPtr buffer = Marshal.AllocHGlobal(512);
+            try
+            {
+                var item = new HeaderItem { mask = 0x0002, pszText = buffer, cchTextMax = 256 };
+                Assert.NotEqual(IntPtr.Zero,
+                    SendMessageHeaderItem(Header, 0x1200 + 11, new IntPtr(index), ref item));
+                return Marshal.PtrToStringUni(buffer) ?? string.Empty;
+            }
+            finally { Marshal.FreeHGlobal(buffer); }
+        }
+
+        private void Run()
+        {
+            Exception? failure = null;
+            try { Window.Run(new NativePresentationResult()); }
+            catch (Exception exception) { failure = exception; }
+            finally
+            {
+                try { Window.ShutdownAsync(new NoOpLease()).GetAwaiter().GetResult(); }
+                catch (Exception exception) { failure ??= exception; }
+                _closed.TrySetResult(failure);
+            }
+        }
+    }
+
+    private sealed class NoOpLease : IDisposable { public void Dispose() { } }
 
     private sealed class NotificationHarness : IDisposable
     {
@@ -248,13 +741,19 @@ public sealed class NativeManualPublishingListViewTests
                 WsChildVisible | NativeManualPublishingCompanion.NativeWindow.AssetListStyle,
                 0, 0, 1000, 400, Parent, new IntPtr(206), IntPtr.Zero, IntPtr.Zero);
             Assert.NotEqual(IntPtr.Zero, ListView);
+            AssetCount = CreateWindowEx(0, "Static", string.Empty, WsChildVisible,
+                0, 0, 160, 20, Parent, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+            DragGuidance = CreateWindowEx(0, "Static", string.Empty, WsChildVisible,
+                0, 0, 600, 20, Parent, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
+            Assert.NotEqual(IntPtr.Zero, AssetCount);
+            Assert.NotEqual(IntPtr.Zero, DragGuidance);
 
             _window = new NativeManualPublishingCompanion.NativeWindow(
                 model, RejectingAvailability.Instance, lifecycle: null,
                 tryBeginDrag: selected => { CoordinatorSelections.Add(selected); return true; },
                 dragSessionAvailable: () => true,
                 previewAccess: previewAccess);
-            _window.AttachNotificationHarness(Parent, ListView);
+            _window.AttachNotificationHarness(Parent, ListView, AssetCount, DragGuidance);
             _self = GCHandle.Alloc(this);
             Assert.True(SetWindowSubclass(Parent, ParentProcedure, UIntPtr.Zero, GCHandle.ToIntPtr(_self)));
             NativeManualPublishingCompanion.NativeWindow.ConfigureAssetList(ListView, 96);
@@ -263,22 +762,27 @@ public sealed class NativeManualPublishingListViewTests
 
         public IntPtr Parent { get; }
         public IntPtr ListView { get; }
+        public IntPtr AssetCount { get; }
+        public IntPtr DragGuidance { get; }
         public List<IReadOnlyList<ManualDragAsset>> CoordinatorSelections { get; } = [];
         public SemaphoreSlim PreviewApplied { get; } = new(0);
         public IReadOnlyList<int> NativeSelection =>
             NativeManualPublishingCompanion.NativeWindow.SelectedOrdinals(ListView);
         public string StatusText => _window.StatusText;
+        public string CountText => Text(AssetCount);
+        public string GuidanceText => Text(DragGuidance);
+
+        private static string Text(IntPtr window)
+        {
+            var value = new System.Text.StringBuilder(256);
+            GetWindowText(window, value, value.Capacity);
+            return value.ToString();
+        }
 
         public void SetSelection(params int[] ordinals)
         {
             NativeManualPublishingCompanion.NativeWindow.SetNativeSelection(
                 ListView, ordinals.ToHashSet(), _model.Platform.Assets.Count);
-            ThrowIfCallbackFailed();
-        }
-
-        public void SelectAll()
-        {
-            _window.SelectAllForTesting();
             ThrowIfCallbackFailed();
         }
 
@@ -332,6 +836,7 @@ public sealed class NativeManualPublishingListViewTests
         public void Dispose()
         {
             _window.StopPreviewsForTesting().AsTask().GetAwaiter().GetResult();
+            _window.DisposeThemeForTesting();
             RemoveWindowSubclass(Parent, ParentProcedure, UIntPtr.Zero);
             if (_self.IsAllocated) _self.Free();
             if (Parent != IntPtr.Zero) Assert.True(DestroyWindow(Parent));
@@ -350,7 +855,8 @@ public sealed class NativeManualPublishingListViewTests
             if (harness is null) return DefSubclassProc(window, message, wParam, lParam);
             try
             {
-                if (message == WmNotify) return harness._window.HandleNotifyForTesting(lParam);
+                if (message == WmNotify)
+                    return harness._window.HandleNotifyForTesting(lParam);
                 if (message == NativeManualPublishingCompanion.NativeWindow.PreviewReadyMessage)
                 {
                     harness._window.HandlePreviewReadyForTesting();
@@ -378,6 +884,9 @@ public sealed class NativeManualPublishingListViewTests
     private struct Point { public int x, y; }
 
     [StructLayout(LayoutKind.Sequential)]
+    private struct Rect { public int left, top, right, bottom; }
+
+    [StructLayout(LayoutKind.Sequential)]
     private struct NotifyHeader { public IntPtr hwndFrom; public UIntPtr idFrom; public int code; }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -388,6 +897,20 @@ public sealed class NativeManualPublishingListViewTests
         public uint uNewState, uOldState, uChanged;
         public Point ptAction;
         public IntPtr lParam;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct HeaderItem
+    {
+        public uint mask;
+        public int cxy;
+        public IntPtr pszText, hbm;
+        public int cchTextMax, fmt;
+        public IntPtr lParam;
+        public int iImage, iOrder;
+        public uint type;
+        public IntPtr pvFilter;
+        public uint state;
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -408,6 +931,15 @@ public sealed class NativeManualPublishingListViewTests
     [DllImport("comctl32.dll", SetLastError = true)]
     private static extern bool InitCommonControlsEx(ref InitCommonControls controls);
 
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("kernel32.dll")]
+    private static extern void SetLastError(uint errorCode);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetGuiResources(IntPtr process, uint flags);
+
     [DllImport("comctl32.dll", SetLastError = true)]
     private static extern bool SetWindowSubclass(
         IntPtr window, SubclassProc callback, UIntPtr subclassId, IntPtr reference);
@@ -425,6 +957,24 @@ public sealed class NativeManualPublishingListViewTests
     [DllImport("user32.dll", EntryPoint = "SendMessageW", ExactSpelling = true)]
     private static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
 
+    [DllImport("user32.dll", EntryPoint = "SendMessageW", ExactSpelling = true)]
+    private static extern bool SendMessageHeaderRect(IntPtr window, uint message, IntPtr wParam, out Rect rectangle);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetClientRect(IntPtr window, out Rect rectangle);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern int MapWindowPoints(IntPtr from, IntPtr to, [In, Out] Point[] points, uint count);
+
+    [DllImport("user32.dll", EntryPoint = "SendMessageW", ExactSpelling = true)]
+    private static extern IntPtr SendMessageHeaderItem(IntPtr window, uint message, IntPtr wParam, ref HeaderItem item);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr window, System.Text.StringBuilder className, int maximum);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowTextW", CharSet = CharSet.Unicode, ExactSpelling = true)]
+    private static extern int GetWindowText(IntPtr window, System.Text.StringBuilder value, int maximum);
+
     [DllImport("user32.dll", EntryPoint = "PeekMessageW", ExactSpelling = true)]
     private static extern bool PeekMessage(out NativeMessage message, IntPtr window, uint minimum, uint maximum, uint remove);
 
@@ -437,3 +987,6 @@ public sealed class NativeManualPublishingListViewTests
     [DllImport("user32.dll")]
     private static extern bool DestroyWindow(IntPtr window);
 }
+
+[CollectionDefinition("Native header resource isolation", DisableParallelization = true)]
+public sealed class NativeHeaderResourceIsolationCollection;

@@ -192,11 +192,6 @@ public class NativeManualPublishingCompanionTests
         Assert.Equal(2, model.SelectedAssets.Count);
         Assert.Same(unavailable, model.SelectedAssets[0]);
         Assert.Same(third, model.SelectedAssets[1]);
-        model.SelectAllAvailable();
-        Assert.Equal(2, model.SelectedAssets.Count);
-        Assert.Same(first, model.SelectedAssets[0]);
-        Assert.Same(third, model.SelectedAssets[1]);
-
         model.SetNativeSelectedOrdinals([2, 0]);
         IReadOnlyList<ManualDragAsset> snapshot = model.SnapshotSelectedAssets();
         Assert.Equal(new[] { first, third }, snapshot.Select(item => item.Prepared));
@@ -441,16 +436,16 @@ public class NativeManualPublishingCompanionTests
 
         model.SetNativeSelectedOrdinals([2, 1]);
         Assert.Equal([1, 2], model.SelectedOrdinals);
-        Assert.Equal("2 selected", model.SelectedCountText);
+        Assert.Equal("2 of 3 selected", model.SelectedCountText);
+        Assert.Equal("Selection includes unavailable files and cannot be dragged.", model.DragGuidanceText);
         model.SelectPlatform(1);
         Assert.Equal([0], model.SelectedOrdinals);
         model.SetNativeSelectedOrdinals([]);
-        Assert.Equal("0 selected", model.SelectedCountText);
+        Assert.Equal("0 of 1 selected", model.SelectedCountText);
+        Assert.Equal("Select files to attach.", model.DragGuidanceText);
         model.SelectPlatform(0);
         Assert.Equal([1, 2], model.SelectedOrdinals);
-        model.SelectAllAvailable();
-        Assert.Equal([0, 2], model.SelectedOrdinals);
-        Assert.Equal("2 selected", model.SelectedCountText);
+        Assert.Equal("2 of 3 selected", model.SelectedCountText);
     }
 
     [Fact]
@@ -462,6 +457,7 @@ public class NativeManualPublishingCompanionTests
         const uint lvsSingleSel = 0x0004;
         const uint lvsShowSelAlways = 0x0008;
         const uint lvsExFullRowSelect = 0x00000020;
+        const uint lvsExHeaderDragDrop = 0x00000010;
         const uint lvsExDoubleBuffer = 0x00010000;
 
         uint style = NativeManualPublishingCompanion.NativeWindow.AssetListStyle;
@@ -471,20 +467,52 @@ public class NativeManualPublishingCompanionTests
         Assert.Equal(lvsReport, style & lvsReport);
         Assert.Equal(lvsShowSelAlways, style & lvsShowSelAlways);
         Assert.Equal(0u, style & lvsSingleSel);
+        Assert.Equal(0u, NativeManualPublishingCompanion.NativeWindow.AssetListExtendedStyle & lvsExHeaderDragDrop);
         Assert.Equal(lvsExFullRowSelect, NativeManualPublishingCompanion.NativeWindow.AssetListExtendedStyle & lvsExFullRowSelect);
         Assert.Equal(lvsExDoubleBuffer, NativeManualPublishingCompanion.NativeWindow.AssetListExtendedStyle & lvsExDoubleBuffer);
     }
 
     [Theory]
-    [InlineData(96, 260, 100, 100, 105, 360)]
-    [InlineData(192, 520, 200, 200, 210, 720)]
-    public void AssetColumns_AreDpiScaledAndKeepLongMetadataReachable(
-        int dpi, int file, int role, int size, int status, int path)
+    [InlineData(96)]
+    [InlineData(144)]
+    [InlineData(192)]
+    public void AssetColumns_AreDpiScaledResponsiveAndKeepUsefulMinimums(int dpi)
     {
-        IReadOnlyList<ManualAssetListColumn> columns = NativeManualPublishingCompanion.NativeWindow.AssetColumns(dpi);
+        int Scale(int logical) => logical * dpi / 96;
+        IReadOnlyList<ManualAssetListColumn> narrow =
+            NativeManualPublishingCompanion.NativeWindow.AssetColumns(Scale(640), dpi);
+        IReadOnlyList<ManualAssetListColumn> normal =
+            NativeManualPublishingCompanion.NativeWindow.AssetColumns(Scale(880), dpi);
+        IReadOnlyList<ManualAssetListColumn> wide =
+            NativeManualPublishingCompanion.NativeWindow.AssetColumns(Scale(1120), dpi);
 
-        Assert.Equal(["File", "Role", "Size", "Status", "Path / staged name"], columns.Select(column => column.Title));
-        Assert.Equal([file, role, size, status, path], columns.Select(column => column.LogicalWidth));
+        Assert.Equal(["File", "Role", "Size", "Status", "Path / staged name"], narrow.Select(column => column.Title));
+        Assert.Equal([Scale(220), Scale(88), Scale(112), Scale(104), Scale(180)],
+            narrow.Select(column => column.LogicalWidth));
+        Assert.True(narrow.Sum(column => column.LogicalWidth) > Scale(640));
+
+        Assert.Equal(Scale(880), normal.Sum(column => column.LogicalWidth));
+        Assert.Equal(Scale(1120), wide.Sum(column => column.LogicalWidth));
+        Assert.True(normal[0].LogicalWidth > narrow[0].LogicalWidth);
+        Assert.True(wide[0].LogicalWidth > normal[0].LogicalWidth);
+        Assert.Equal(narrow.Skip(1).Take(3).Select(column => column.LogicalWidth),
+            normal.Skip(1).Take(3).Select(column => column.LogicalWidth));
+        Assert.Equal(normal.Skip(1).Take(3).Select(column => column.LogicalWidth),
+            wide.Skip(1).Take(3).Select(column => column.LogicalWidth));
+        Assert.InRange(normal[4].LogicalWidth, Scale(180), Scale(280));
+        Assert.Equal(Scale(280), wide[4].LogicalWidth);
+        Assert.All(wide, column => Assert.True(column.LogicalWidth > 0));
+    }
+
+    [Fact]
+    public void AssetColumns_UseIntegerRemainderWithoutOverflowOrDrift()
+    {
+        IReadOnlyList<ManualAssetListColumn> columns =
+            NativeManualPublishingCompanion.NativeWindow.AssetColumns(1001, 144);
+
+        Assert.Equal(1056, columns.Sum(column => column.LogicalWidth));
+        Assert.All(columns, column => Assert.True(column.LogicalWidth > 0));
+        Assert.Equal([330, 132, 168, 156, 270], columns.Select(column => column.LogicalWidth));
     }
 
     private static NativeManualPublishingCompanion.NativeWindow.Message Message(uint id) => new() { message = id };

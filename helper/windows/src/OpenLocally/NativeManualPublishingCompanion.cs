@@ -43,8 +43,19 @@ internal sealed record NativeProductionLayoutProbe(
     NativeLayoutRect BodyLabel, NativeLayoutRect BodyText, NativeLayoutRect CopyMain,
     NativeLayoutRect PostingStatus, NativeLayoutRect PostingHelper, NativeLayoutRect PostingAction,
     NativeLayoutRect PostingAggregate, NativeLayoutRect AssetsCard, NativeLayoutRect AssetsHeading,
-    NativeLayoutRect AssetCount, NativeLayoutRect SelectAll, NativeLayoutRect AssetList,
+    NativeLayoutRect AssetCount, NativeLayoutRect DragGuidance, NativeLayoutRect AssetList,
     NativeLayoutRect Footer, NativeLayoutRect Status, NativeLayoutRect Close);
+
+internal readonly record struct NativeHeaderDrawStageProbe(uint Stage, IntPtr Result);
+
+internal sealed record NativeHeaderPostpaintProbe(
+    NativeLayoutRect Client, IReadOnlyList<NativeLayoutRect> Items,
+    NativeLayoutRect Trailing, bool CoordinateMappingSucceeded);
+
+internal readonly record struct NativeListViewRowDrawProbe(
+    uint Stage, int ItemIndex, bool Selected, bool CustomDrawReportedSelected,
+    bool KeyboardFocused, bool UsesCustomSelection, int Background, int Text,
+    NativeLayoutRect Accent, IntPtr Result);
 
 internal sealed record NativeProductionTextSurfaceProbe(
     string Platform, string TitleText, string BodyText,
@@ -264,15 +275,11 @@ internal sealed class ManualPublishingCompanionModel
             if (ordinal >= 0 && ordinal < Platform.Assets.Count) selected.Add(ordinal);
     }
 
-    public void SelectAllAvailable()
-    {
-        HashSet<int> selected = _selection[Platform];
-        selected.Clear();
-        foreach (int ordinal in Enumerable.Range(0, Platform.Assets.Count))
-            if (IsAvailable(Platform.Assets[ordinal])) selected.Add(ordinal);
-    }
-
-    public string SelectedCountText => $"{SelectedAssets.Count} selected";
+    public string SelectedCountText => $"{SelectedAssets.Count} of {Platform.Assets.Count} selected";
+    public string DragGuidanceText => SelectedOrdinals.Count == 0 ? "Select files to attach." :
+        SelectedOrdinals.Any(ordinal => !IsAvailable(Platform.Assets[ordinal]))
+            ? "Selection includes unavailable files and cannot be dragged."
+            : "Drag any selected file to attach all selected files.";
 }
 
 /// <summary>Coordinates one native drag preparation without owning window or selection state.</summary>
@@ -549,7 +556,7 @@ internal sealed class NativeManualPublishingCompanion :
         internal const uint PreviewReadyMessage = 0x8000 + 0x53;
         internal const uint PostingConfirmationCompletedMessage = 0x8000 + 0x54;
         private const uint TestingInvokeMessage = 0x8000 + 0x55;
-        private const uint WM_NCCREATE = 0x0081, WM_SIZE = 0x0005, WM_SETFOCUS = 0x0007,
+        private const uint WM_NCCREATE = 0x0081, WM_SIZE = 0x0005, WM_SETFOCUS = 0x0007, WM_KILLFOCUS = 0x0008,
             WM_GETMINMAXINFO = 0x0024, WM_COMMAND = 0x0111, WM_NOTIFY = 0x004E, WM_CLOSE = 0x0010, WM_DESTROY = 0x0002,
             WM_SETFONT = 0x0030, WM_KEYDOWN = 0x0100, WM_PAINT = 0x000F,
             WM_MOUSEMOVE = 0x0200, WM_MOUSELEAVE = 0x02A3,
@@ -570,23 +577,30 @@ internal sealed class NativeManualPublishingCompanion :
         private const int SW_SHOW = 5, SW_HIDE = 0, VK_ESCAPE = 0x1B, VK_RETURN = 0x0D, VK_TAB = 0x09,
             GWLP_USERDATA = -21, CBN_SELCHANGE = 1;
         private const uint OdsSelected = 0x0001, OdsDisabled = 0x0004, OdsFocus = 0x0010,
-            DtCenter = 0x00000001, DtVCenter = 0x00000004, DtSingleLine = 0x00000020, DtEndEllipsis = 0x00008000,
+            DtCenter = 0x00000001, DtVCenter = 0x00000004, DtSingleLine = 0x00000020,
+            DtNoPrefix = 0x00000800, DtEndEllipsis = 0x00008000,
             TmeLeave = 0x00000002,
             SwpNoZOrder = 0x0004, SwpNoActivate = 0x0010,
-            CdrfDodefault = 0x00000000, CdrfNewFont = 0x00000002,
-            CdrfNotifyItemDraw = 0x00000020,
-            CddsPrepaint = 0x00000001, CddsItemPrepaint = 0x00010001;
+            CdrfDodefault = 0x00000000, CdrfNewFont = 0x00000002, CdrfSkipDefault = 0x00000004,
+            CdrfNotifyPostpaint = 0x00000010, CdrfNotifyItemDraw = 0x00000020,
+            CddsPrepaint = 0x00000001, CddsPostpaint = 0x00000002,
+            CddsItemPrepaint = 0x00010001, CddsItemPostpaint = 0x00010002;
         private const uint BM_CLICK = 0x00F5, CB_ADDSTRING = 0x0143, CB_GETCURSEL = 0x0147, CB_GETLBTEXT = 0x0148,
             CB_GETLBTEXTLEN = 0x0149, CB_SETCURSEL = 0x014E,
             LVM_FIRST = 0x1000, LVM_GETITEM = LVM_FIRST + 75, LVM_INSERTITEM = LVM_FIRST + 77,
-            LVM_DELETEALLITEMS = LVM_FIRST + 9, LVM_GETNEXTITEM = LVM_FIRST + 12,
+            LVM_DELETEALLITEMS = LVM_FIRST + 9, LVM_GETITEMCOUNT = LVM_FIRST + 4,
+            LVM_GETSELECTEDCOUNT = LVM_FIRST + 50, LVM_GETNEXTITEM = LVM_FIRST + 12,
+            LVM_GETITEMSTATE = LVM_FIRST + 44, LVM_GETITEMRECT = LVM_FIRST + 14,
             LVM_SETITEMSTATE = LVM_FIRST + 43, LVM_SETITEMTEXT = LVM_FIRST + 116,
+            LVM_SCROLL = LVM_FIRST + 20,
             LVM_INSERTCOLUMN = LVM_FIRST + 97, LVM_SETCOLUMNWIDTH = LVM_FIRST + 30,
             LVM_SETEXTENDEDLISTVIEWSTYLE = LVM_FIRST + 54, LVM_GETHEADER = LVM_FIRST + 31,
             LVM_SETIMAGELIST = LVM_FIRST + 3, LVM_SETITEM = LVM_FIRST + 76,
             LVM_SETBKCOLOR = LVM_FIRST + 1, LVM_SETTEXTCOLOR = LVM_FIRST + 36,
-            LVM_SETTEXTBKCOLOR = LVM_FIRST + 38;
-        private const uint LvifText = 0x0001, LvifImage = 0x0002, LvifParam = 0x0004, LvisSelected = 0x0002,
+            LVM_SETTEXTBKCOLOR = LVM_FIRST + 38,
+            HDM_FIRST = 0x1200, HDM_GETITEMCOUNT = HDM_FIRST, HDM_GETITEMRECT = HDM_FIRST + 7;
+        private const uint LvifText = 0x0001, LvifImage = 0x0002, LvifParam = 0x0004,
+            LvisFocused = 0x0001, LvisSelected = 0x0002,
             LvniSelected = 0x0002, LvcfFmt = 0x0001, LvcfWidth = 0x0002, LvcfText = 0x0004,
             LvifState = 0x0008, CdisSelected = 0x0001;
         internal const int LvnItemChanged = -101, LvnBeginDrag = -109, NmCustomDraw = -12;
@@ -594,9 +608,10 @@ internal sealed class NativeManualPublishingCompanion :
         internal const int CopyTitleId = 204, CopyMainId = 205;
         internal const uint CloseMessage = WM_CLOSE, DestroyMessage = WM_DESTROY;
         private const int AssetListId = 206;
-        internal const int SelectAllId = 207, CloseId = 208, PostingConfirmationId = 209;
+        internal const int CloseId = 208, PostingConfirmationId = 209;
         private static readonly WindowProc Procedure = WindowProcedure;
         private static readonly SubclassProc ButtonProcedure = ButtonWindowProcedure;
+        private static readonly SubclassProc AssetListProcedure = AssetListWindowProcedure;
 
         private readonly WindowState _state;
         private readonly ManualCompanionLifecycle _lifecycle;
@@ -625,7 +640,13 @@ internal sealed class NativeManualPublishingCompanion :
         private int _previewClosing;
         private int _confirmationClosing;
         private int _closeRequested;
+        private int _assetColumnClientWidth = -1;
+        private int _assetColumnDpi = -1;
         private uint _uiThreadId;
+        private GCHandle _assetListSubclassHandle;
+        private Action<uint, IntPtr>? _headerDrawObserver;
+        private Action<NativeHeaderPostpaintProbe>? _headerPostpaintObserver;
+        private Action<NativeListViewRowDrawProbe>? _listViewDrawObserver;
 
         public NativeWindow(
             ManualPublishingCompanionModel model, ManualCompanionLifecycle? lifecycle = null,
@@ -676,19 +697,23 @@ internal sealed class NativeManualPublishingCompanion :
         internal IntPtr WindowHandle => _window;
         internal IntPtr PlatformHandle => _state.Platform;
         internal IntPtr PostingStatusHandle => _state.PostingStatus;
+        internal IntPtr PostingHelperHandle => _state.PostingHelper;
         internal IntPtr PostingActionHandle => _state.PostingAction;
         internal IntPtr PostingAggregateHandle => _state.PostingAggregate;
+        internal IntPtr AssetCountHandle => _state.AssetCount;
+        internal IntPtr DragGuidanceHandle => _state.DragGuidance;
         internal event Action? PostingPresentationChanged;
 
         internal NativeProductionLayoutProbe ResizeToMinimumAndCaptureLayoutForTesting(int platformIndex) =>
             RunOnUiThreadForTesting(() => ResizeToMinimumAndCaptureLayoutCore(platformIndex));
 
+        internal NativeProductionLayoutProbe ResizeAndCaptureLayoutForTesting(
+            int platformIndex, int logicalWidth, int logicalHeight) =>
+            RunOnUiThreadForTesting(() => ResizeAndCaptureLayoutCore(platformIndex, logicalWidth, logicalHeight));
+
         private NativeProductionLayoutProbe ResizeToMinimumAndCaptureLayoutCore(int platformIndex)
         {
             if (_window == IntPtr.Zero) throw new InvalidOperationException("The production companion window is not running.");
-            SendMessage(_state.Platform, CB_SETCURSEL, new IntPtr(platformIndex), IntPtr.Zero);
-            HandleCommand(PlatformId, CBN_SELCHANGE);
-
             int dpi = DpiForWindow(_window);
             IntPtr pointer = Marshal.AllocHGlobal(Marshal.SizeOf<MinMaxInfo>());
             NativeLayoutSize minimum;
@@ -701,7 +726,18 @@ internal sealed class NativeManualPublishingCompanion :
             }
             finally { Marshal.FreeHGlobal(pointer); }
 
-            if (!SetWindowPos(_window, IntPtr.Zero, 0, 0, minimum.Width, minimum.Height, SwpNoZOrder | SwpNoActivate))
+            return ResizeAndCaptureLayoutCore(platformIndex, 820, 754, minimum);
+        }
+
+        private NativeProductionLayoutProbe ResizeAndCaptureLayoutCore(
+            int platformIndex, int logicalWidth, int logicalHeight, NativeLayoutSize? minimumTrack = null)
+        {
+            if (_window == IntPtr.Zero) throw new InvalidOperationException("The production companion window is not running.");
+            SendMessage(_state.Platform, CB_SETCURSEL, new IntPtr(platformIndex), IntPtr.Zero);
+            HandleCommand(PlatformId, CBN_SELCHANGE);
+            int dpi = DpiForWindow(_window);
+            NativeLayoutSize outer = OuterSizeForLogicalClient(logicalWidth, logicalHeight, dpi);
+            if (!SetWindowPos(_window, IntPtr.Zero, 0, 0, outer.Width, outer.Height, SwpNoZOrder | SwpNoActivate))
                 throw NativeFailure();
             Layout();
             if (!GetClientRect(_window, out Rect client) || _layout is null) throw NativeFailure();
@@ -717,7 +753,8 @@ internal sealed class NativeManualPublishingCompanion :
             }
 
             return new(
-                _state.Model.Platform.Platform, new(client.right, client.bottom), minimum, dpi,
+                _state.Model.Platform.Platform, new(client.right, client.bottom),
+                minimumTrack ?? MinimumOuterSizeForDpi(dpi), dpi,
                 Actual(_state.Header), Actual(_state.HeaderMetadata), _layout.PlatformCard,
                 Actual(_state.PlatformHeading), Actual(_state.Platform), Actual(_state.TitleLabel),
                 _winUiTextSurfaces is null ? _layout.TitleText : Actual(_winUiTextSurfaces.TitleWindow),
@@ -725,7 +762,7 @@ internal sealed class NativeManualPublishingCompanion :
                 _winUiTextSurfaces is null ? _layout.BodyText : Actual(_winUiTextSurfaces.BodyWindow),
                 Actual(_state.CopyMain), Actual(_state.PostingStatus),
                 Actual(_state.PostingHelper), Actual(_state.PostingAction), Actual(_state.PostingAggregate),
-                _layout.AssetsCard, Actual(_state.AssetLabel), Actual(_state.AssetCount), Actual(_state.SelectAll),
+                _layout.AssetsCard, Actual(_state.AssetLabel), Actual(_state.AssetCount), Actual(_state.DragGuidance),
                 Actual(_state.AssetList), _layout.Footer, Actual(_state.Status), Actual(_state.Close));
         }
 
@@ -789,9 +826,6 @@ internal sealed class NativeManualPublishingCompanion :
                     MoveFocusByTab(previous: false);
                     valid &= GetFocus() == _state.AssetList;
                     SetFocus(_state.AssetList);
-                    MoveFocusByTab(previous: false);
-                    valid &= GetFocus() == _state.SelectAll;
-                    SetFocus(_state.SelectAll);
                     MoveFocusByTab(previous: false);
                     return valid && GetFocus() == _state.Close;
                 }
@@ -914,16 +948,95 @@ internal sealed class NativeManualPublishingCompanion :
             return focus == parent || (focus != IntPtr.Zero && IsChild(parent, focus));
         }
 
-        internal void AttachNotificationHarness(IntPtr parentWindow, IntPtr assetList)
+        internal void AttachNotificationHarness(IntPtr parentWindow, IntPtr assetList,
+            IntPtr assetCount = default, IntPtr dragGuidance = default)
         {
             _window = parentWindow;
             _state.Window = parentWindow;
             _state.AssetList = assetList;
+            _state.AssetHeader = IntPtr.Zero;
+            _state.AssetCount = assetCount;
+            _state.DragGuidance = dragGuidance;
+            AttachAssetHeaderNotifications();
         }
 
         internal IntPtr HandleNotifyForTesting(IntPtr pointer) => HandleNotify(pointer);
+        internal IntPtr AssetHeaderHandleForTesting => ResolveAssetHeader();
+        internal IntPtr AssetListHandleForTesting => _state.AssetList;
 
-        internal void SelectAllForTesting() => HandleCommand(SelectAllId, 0);
+        internal IReadOnlyList<NativeHeaderDrawStageProbe> PaintHeaderForTesting(NativeCompanionPalette palette) =>
+            RunOnUiThreadForTesting(() =>
+            {
+                ApplyThemeForTesting(palette, DpiForWindow(_window));
+                var draws = new List<NativeHeaderDrawStageProbe>();
+                _headerDrawObserver = (stage, result) => draws.Add(new(stage, result));
+                try
+                {
+                    IntPtr header = ResolveAssetHeader();
+                    if (header == IntPtr.Zero) throw NativeFailure();
+                    InvalidateRect(header, IntPtr.Zero, true);
+                    UpdateWindow(header);
+                    return (IReadOnlyList<NativeHeaderDrawStageProbe>)draws.ToArray();
+                }
+                finally { _headerDrawObserver = null; }
+            });
+
+        internal NativeHeaderPostpaintProbe PaintHeaderPostpaintForTesting(NativeCompanionPalette palette) =>
+            RunOnUiThreadForTesting(() =>
+            {
+                ApplyThemeForTesting(palette, DpiForWindow(_window));
+                NativeHeaderPostpaintProbe? probe = null;
+                _headerPostpaintObserver = value => probe = value;
+                try
+                {
+                    IntPtr header = ResolveAssetHeader();
+                    if (header == IntPtr.Zero) throw NativeFailure();
+                    InvalidateRect(header, IntPtr.Zero, true);
+                    UpdateWindow(header);
+                    return probe ?? throw new InvalidOperationException("Header postpaint did not run.");
+                }
+                finally { _headerPostpaintObserver = null; }
+            });
+
+        internal IReadOnlyList<NativeListViewRowDrawProbe> PaintAssetRowsForTesting(
+            NativeCompanionPalette palette, int dpi, bool listHasKeyboardFocus, int focusedItem = 0) =>
+            RunOnUiThreadForTesting(() =>
+            {
+                ApplyThemeForTesting(palette, dpi);
+                SetNativeFocusedItem(_state.AssetList, focusedItem);
+                SetFocus(listHasKeyboardFocus ? _state.AssetList : _state.Close);
+                var draws = new List<NativeListViewRowDrawProbe>();
+                _listViewDrawObserver = draws.Add;
+                try
+                {
+                    InvalidateRect(_state.AssetList, IntPtr.Zero, true);
+                    UpdateWindow(_state.AssetList);
+                    return (IReadOnlyList<NativeListViewRowDrawProbe>)draws.ToArray();
+                }
+                finally { _listViewDrawObserver = null; }
+            });
+
+        internal void ScrollAssetListHorizontallyForTesting(int pixels) =>
+            RunOnUiThreadForTesting(() =>
+            {
+                SendMessage(_state.AssetList, LVM_SCROLL, new IntPtr(pixels), IntPtr.Zero);
+                return true;
+            });
+
+        internal void ApplyThemeForTesting(NativeCompanionPalette palette, int dpi)
+        {
+            NativeCompanionTheme? previous = _theme;
+            _theme = new NativeCompanionTheme(dpi, palette);
+            try { ApplyTheme(); }
+            finally { previous?.Dispose(); }
+        }
+
+        internal void DisposeThemeForTesting()
+        {
+            _theme?.Dispose();
+            _theme = null;
+            DetachAssetHeaderNotifications();
+        }
 
         internal void RestorePlatformSelectionForTesting()
         {
@@ -1059,6 +1172,7 @@ internal sealed class NativeManualPublishingCompanion :
                 DisposeWinUiTextSurfaces();
                 _ole?.Dispose();
                 _ole = null;
+                DetachAssetHeaderNotifications();
                 _theme?.Dispose();
                 _theme = null;
             }
@@ -1132,7 +1246,7 @@ internal sealed class NativeManualPublishingCompanion :
             if (!InitCommonControlsEx(ref commonControls)) throw NativeFailure();
             _state.Header = Child("Static", _state.Model.Session.ReleaseTitle, 0, 0, instance);
             _state.HeaderMetadata = Child("Static", HeaderMetadataText(), 0, 0, instance);
-            _state.PlatformHeading = Child("Static", "PLATFORM & CONTENT", 0, 0, instance);
+            _state.PlatformHeading = Child("Static", "CONTENT", 0, 0, instance);
             _state.PlatformLabel = Child("Static", "Platform:", 0, 0, instance);
             _state.Platform = Child("ComboBox", string.Empty, WS_TABSTOP | CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL, PlatformId, instance);
             _state.TitleLabel = Child("Static", "Title:", 0, 0, instance);
@@ -1146,10 +1260,10 @@ internal sealed class NativeManualPublishingCompanion :
                 _state.PostingAction = Child("Button", "Mark as posted", WS_TABSTOP | BS_OWNERDRAW, PostingConfirmationId, instance);
                 _state.PostingAggregate = Child("Static", string.Empty, 0, 0, instance);
             }
-            _state.AssetLabel = Child("Static", "ASSETS", 0, 0, instance);
-            _state.AssetCount = Child("Static", string.Empty, 0, 0, instance);
+            _state.AssetLabel = Child("Static", "Assets", 0, 0, instance);
+            _state.AssetCount = Child("Static", string.Empty, 0x00000002, 0, instance); // SS_RIGHT
+            _state.DragGuidance = Child("Static", string.Empty, 0, 0, instance);
             _state.AssetList = Child("SysListView32", string.Empty, AssetListStyle, AssetListId, instance);
-            _state.SelectAll = Child("Button", "Select All", WS_TABSTOP | BS_OWNERDRAW, SelectAllId, instance);
             _state.Status = Child("Static", string.Empty, 0, 0, instance);
             _state.Close = Child("Button", "Close", WS_TABSTOP | BS_OWNERDRAW, CloseId, instance);
             if (_state.RequiredControls.Any(control => control == IntPtr.Zero) ||
@@ -1159,6 +1273,8 @@ internal sealed class NativeManualPublishingCompanion :
                 if (!SetWindowSubclass(button, ButtonProcedure, UIntPtr.Zero, IntPtr.Zero))
                     throw NativeFailure();
             ConfigureAssetList(_state.AssetList, _theme?.Dpi ?? SystemDpi());
+            if (ResolveAssetHeader() == IntPtr.Zero) throw NativeFailure();
+            AttachAssetHeaderNotifications();
             RebuildPreviewImageList(_theme?.Dpi ?? SystemDpi());
         }
 
@@ -1205,14 +1321,6 @@ internal sealed class NativeManualPublishingCompanion :
             ScheduleCurrentPlatformPreviews();
         }
 
-        private void ApplySelection()
-        {
-            _suppressAssetNotifications = true;
-            try { ApplySelectionCore(); }
-            finally { _suppressAssetNotifications = false; }
-            UpdateSelectedCount();
-        }
-
         private void ApplySelectionCore()
         {
             HashSet<int> selected = _state.Model.SelectedOrdinals.ToHashSet();
@@ -1226,18 +1334,49 @@ internal sealed class NativeManualPublishingCompanion :
             UpdateSelectedCount();
         }
 
-        private void UpdateSelectedCount() => SetWindowText(_state.AssetCount, _state.Model.SelectedCountText);
+        private void UpdateSelectedCount()
+        {
+            IReadOnlyList<int> ordinals = SelectedOrdinals(_state.AssetList);
+            int selected = checked((int)SendMessage(_state.AssetList, LVM_GETSELECTEDCOUNT, IntPtr.Zero, IntPtr.Zero).ToInt64());
+            int rows = checked((int)SendMessage(_state.AssetList, LVM_GETITEMCOUNT, IntPtr.Zero, IntPtr.Zero).ToInt64());
+            if (_state.AssetCount != IntPtr.Zero) SetWindowText(_state.AssetCount, $"{selected} of {rows} selected");
+            if (_state.DragGuidance != IntPtr.Zero)
+            {
+                string guidance = selected == 0 ? "Select files to attach." :
+                    ordinals.Any(ordinal => ordinal >= 0 && ordinal < _state.Model.Platform.Assets.Count &&
+                        !ManualPublishingCompanionModel.IsAvailable(_state.Model.Platform.Assets[ordinal]))
+                        ? "Selection includes unavailable files and cannot be dragged."
+                        : "Drag any selected file to attach all selected files.";
+                SetWindowText(_state.DragGuidance, guidance);
+            }
+        }
 
-        internal static IReadOnlyList<ManualAssetListColumn> AssetColumns(int dpi)
+        internal static IReadOnlyList<ManualAssetListColumn> AssetColumns(int clientWidth, int dpi)
         {
             int ScaleColumn(int width) => width * Math.Max(96, dpi) / 96;
+            int fileMinimum = ScaleColumn(220);
+            int filePreferred = ScaleColumn(360);
+            int role = ScaleColumn(88);
+            int size = ScaleColumn(112);
+            int status = ScaleColumn(104);
+            int pathMinimum = ScaleColumn(180);
+            int pathMaximum = ScaleColumn(280);
+            int minimumTotal = fileMinimum + role + size + status + pathMinimum;
+            int remaining = Math.Max(0, clientWidth - minimumTotal);
+
+            int file = fileMinimum + Math.Min(remaining, filePreferred - fileMinimum);
+            remaining -= file - fileMinimum;
+            int path = pathMinimum + Math.Min(remaining, pathMaximum - pathMinimum);
+            remaining -= path - pathMinimum;
+            file += remaining;
+
             return
             [
-                new("File", ScaleColumn(260)),
-                new("Role", ScaleColumn(100)),
-                new("Size", ScaleColumn(100)),
-                new("Status", ScaleColumn(105)),
-                new("Path / staged name", ScaleColumn(360)),
+                new("File", file),
+                new("Role", role),
+                new("Size", size),
+                new("Status", status),
+                new("Path / staged name", path),
             ];
         }
 
@@ -1246,7 +1385,7 @@ internal sealed class NativeManualPublishingCompanion :
             SendMessage(listView, LVM_SETEXTENDEDLISTVIEWSTYLE,
                 new IntPtr(AssetListExtendedStyle), new IntPtr(AssetListExtendedStyle));
             int index = 0;
-            foreach (ManualAssetListColumn column in AssetColumns(dpi))
+            foreach (ManualAssetListColumn column in AssetColumns(0, dpi))
             {
                 var native = new ListViewColumn
                 {
@@ -1321,6 +1460,23 @@ internal sealed class NativeManualPublishingCompanion :
                 SendMessageListViewItem(listView, LVM_SETITEMSTATE, new IntPtr(itemIndex), ref item);
             }
         }
+
+        private static void SetNativeFocusedItem(IntPtr listView, int focusedItem)
+        {
+            int itemCount = checked((int)SendMessage(listView, LVM_GETITEMCOUNT, IntPtr.Zero, IntPtr.Zero).ToInt64());
+            for (int itemIndex = 0; itemIndex < itemCount; itemIndex++)
+            {
+                var item = new ListViewItem
+                {
+                    stateMask = LvisFocused,
+                    state = itemIndex == focusedItem ? LvisFocused : 0,
+                };
+                SendMessageListViewItem(listView, LVM_SETITEMSTATE, new IntPtr(itemIndex), ref item);
+            }
+        }
+
+        private static uint NativeItemState(IntPtr listView, int itemIndex, uint mask) =>
+            unchecked((uint)SendMessage(listView, LVM_GETITEMSTATE, new IntPtr(itemIndex), new IntPtr(mask)).ToInt64());
 
         internal static IReadOnlyList<int> SelectedOrdinals(IntPtr listView)
         {
@@ -1436,6 +1592,7 @@ internal sealed class NativeManualPublishingCompanion :
             foreach (IntPtr control in new[]
                      { _state.PostingStatus, _state.PostingHelper, _state.PostingAction, _state.PostingAggregate })
                 InvalidateRect(control, IntPtr.Zero, true);
+            Layout();
             PostingPresentationChanged?.Invoke();
         }
 
@@ -1476,7 +1633,6 @@ internal sealed class NativeManualPublishingCompanion :
                 int index = unchecked((int)SendMessage(_state.Platform, CB_GETCURSEL, IntPtr.Zero, IntPtr.Zero).ToInt64());
                 if (index >= 0) { _state.Model.SelectPlatform(index); RefreshPlatform(); }
             }
-            else if (id == SelectAllId) { _state.Model.SelectAllAvailable(); ApplySelection(); }
             else if (CopyCommandForControl(id, _state.Model.IsPatreon) is ManualCopyCommand command) Copy(command);
             else if (IsPostingConfirmationCommand(id)) BeginPostingConfirmation();
             else if (id == CloseId) { BeginClose(); DisposeWinUiTextSurfaces(); DestroyWindow(_window); }
@@ -1554,7 +1710,7 @@ internal sealed class NativeManualPublishingCompanion :
             {
                 IntPtr focus = GetFocus();
                 int id = GetDlgCtrlID(focus);
-                if (id is CopyTitleId or CopyMainId or SelectAllId or CloseId or PostingConfirmationId)
+                if (id is CopyTitleId or CopyMainId or CloseId or PostingConfirmationId)
                     SendMessage(focus, BM_CLICK, IntPtr.Zero, IntPtr.Zero);
                 return;
             }
@@ -1606,23 +1762,66 @@ internal sealed class NativeManualPublishingCompanion :
             ApplyFont(_state.PlatformHeading, NativeCompanionFontRole.SectionHeading);
             ApplyFont(_state.AssetLabel, NativeCompanionFontRole.SectionHeading);
             ApplyFont(_state.AssetCount, NativeCompanionFontRole.Metadata);
+            ApplyFont(_state.DragGuidance, NativeCompanionFontRole.Metadata);
             ApplyFont(_state.Status, NativeCompanionFontRole.Metadata);
             ApplyFont(_state.PostingStatus, NativeCompanionFontRole.Body);
             ApplyFont(_state.PostingHelper, NativeCompanionFontRole.Metadata);
             ApplyFont(_state.PostingAggregate, NativeCompanionFontRole.Metadata);
             foreach (IntPtr control in new[] { _state.PlatformLabel, _state.Platform, _state.TitleLabel,
                          _state.CopyTitle, _state.BodyLabel, _state.CopyMain, _state.AssetList,
-                         _state.PostingAction, _state.SelectAll, _state.Close })
+                         _state.PostingAction, _state.Close })
                 ApplyFont(control, NativeCompanionFontRole.Body);
             _theme.ApplyControlChrome(_state.Platform, NativeCompanionChromeRole.Combo);
             _theme.ApplyControlChrome(_state.AssetList, NativeCompanionChromeRole.ListView);
-            IntPtr header = SendMessage(_state.AssetList, LVM_GETHEADER, IntPtr.Zero, IntPtr.Zero);
+            IntPtr header = ResolveAssetHeader();
             _theme.ApplyControlChrome(header, NativeCompanionChromeRole.ListViewHeader);
             ApplyFont(header, NativeCompanionFontRole.Metadata);
             ApplyListViewPalette();
             _theme.ApplyTitleBar(_window);
             InvalidateRect(_window, IntPtr.Zero, true);
             foreach (IntPtr control in _state.Controls) InvalidateRect(control, IntPtr.Zero, true);
+            if (header != IntPtr.Zero) InvalidateRect(header, IntPtr.Zero, true);
+        }
+
+        private IntPtr ResolveAssetHeader()
+        {
+            if (_state.AssetList == IntPtr.Zero || !IsWindow(_state.AssetList))
+            {
+                _state.AssetHeader = IntPtr.Zero;
+                return IntPtr.Zero;
+            }
+
+            IntPtr header = SendMessage(_state.AssetList, LVM_GETHEADER, IntPtr.Zero, IntPtr.Zero);
+            _state.AssetHeader = header != IntPtr.Zero && IsWindow(header) ? header : IntPtr.Zero;
+            return _state.AssetHeader;
+        }
+
+        private bool IsAssetHeader(IntPtr candidate)
+        {
+            if (candidate == IntPtr.Zero) return false;
+            IntPtr header = _state.AssetHeader;
+            if (header == IntPtr.Zero || !IsWindow(header) || GetParent(header) != _state.AssetList)
+                header = ResolveAssetHeader();
+            return candidate == header;
+        }
+
+        private void AttachAssetHeaderNotifications()
+        {
+            if (_state.AssetList == IntPtr.Zero || _assetListSubclassHandle.IsAllocated) return;
+            if (ResolveAssetHeader() == IntPtr.Zero) throw NativeFailure();
+            _assetListSubclassHandle = GCHandle.Alloc(this);
+            if (SetWindowSubclass(_state.AssetList, AssetListProcedure, UIntPtr.Zero,
+                    GCHandle.ToIntPtr(_assetListSubclassHandle))) return;
+            _assetListSubclassHandle.Free();
+            throw NativeFailure();
+        }
+
+        private void DetachAssetHeaderNotifications()
+        {
+            if (!_assetListSubclassHandle.IsAllocated) return;
+            if (_state.AssetList != IntPtr.Zero && IsWindow(_state.AssetList))
+                RemoveWindowSubclass(_state.AssetList, AssetListProcedure, UIntPtr.Zero);
+            _assetListSubclassHandle.Free();
         }
 
         private void ApplyFont(IntPtr control, NativeCompanionFontRole role)
@@ -1635,7 +1834,6 @@ internal sealed class NativeManualPublishingCompanion :
         {
             NativeCompanionTheme replacement = new(dpi);
             NativeCompanionTheme? previous = _theme;
-            bool dpiChanged = previous?.Dpi != replacement.Dpi;
             _theme = replacement;
             try
             {
@@ -1643,7 +1841,6 @@ internal sealed class NativeManualPublishingCompanion :
                 _winUiTextSurfaces?.SetTheme(ElementThemeFor(replacement.Palette.Mode));
             }
             finally { previous?.Dispose(); }
-            if (dpiChanged) ResizeAssetColumns(replacement.Dpi);
             if (_state.AssetList != IntPtr.Zero)
             {
                 RebuildPreviewImageList(replacement.Dpi);
@@ -1660,11 +1857,19 @@ internal sealed class NativeManualPublishingCompanion :
             Layout();
         }
 
-        private void ResizeAssetColumns(int dpi)
+        private void ResizeAssetColumnsToClient(int dpi)
         {
+            if (_state.AssetList == IntPtr.Zero || !GetClientRect(_state.AssetList, out Rect client)) return;
+            int clientWidth = Math.Max(0, client.right - client.left);
+            if (clientWidth == _assetColumnClientWidth && dpi == _assetColumnDpi) return;
+            _assetColumnClientWidth = clientWidth;
+            _assetColumnDpi = dpi;
+
             int index = 0;
-            foreach (ManualAssetListColumn column in AssetColumns(dpi))
+            foreach (ManualAssetListColumn column in AssetColumns(clientWidth, dpi))
                 SendMessage(_state.AssetList, LVM_SETCOLUMNWIDTH, new IntPtr(index++), new IntPtr(column.LogicalWidth));
+            IntPtr header = ResolveAssetHeader();
+            if (header != IntPtr.Zero) InvalidateRect(header, IntPtr.Zero, false);
         }
 
         private void RebuildPreviewImageList(int dpi)
@@ -1785,7 +1990,7 @@ internal sealed class NativeManualPublishingCompanion :
             NativeCompanionPalette palette = _theme.Palette;
             int background = control == _state.Status ? palette.Surface :
                 control == _state.Header || control == _state.HeaderMetadata ? palette.Page : palette.Card;
-            int text = control == _state.HeaderMetadata || control == _state.AssetCount || control == _state.PlatformHeading ||
+            int text = control == _state.HeaderMetadata || control == _state.AssetCount || control == _state.DragGuidance || control == _state.PlatformHeading ||
                 control == _state.AssetLabel || control == _state.PlatformLabel || control == _state.TitleLabel ||
                 control == _state.BodyLabel ? palette.MutedText : palette.Text;
             if (control == _state.Status && palette.Mode != NativeCompanionThemeMode.HighContrast)
@@ -1841,19 +2046,181 @@ internal sealed class NativeManualPublishingCompanion :
             return IntPtr.Zero;
         }
 
+        private IntPtr DrawHeader(IntPtr pointer)
+        {
+            NativeCustomDraw draw = Marshal.PtrToStructure<NativeCustomDraw>(pointer);
+            IntPtr result = new(CdrfDodefault);
+            if (_theme is not null && _theme.Palette.UsesDecorativeColors)
+            {
+                if (draw.dwDrawStage == CddsPrepaint)
+                    result = new IntPtr(CdrfNotifyItemDraw | CdrfNotifyPostpaint);
+                else if (draw.dwDrawStage == CddsItemPrepaint)
+                {
+                    PaintHeaderItem(draw);
+                    result = new IntPtr(CdrfSkipDefault);
+                }
+                else if (draw.dwDrawStage == CddsPostpaint)
+                    PaintHeaderTrailingArea(draw.hdc);
+            }
+            _headerDrawObserver?.Invoke(draw.dwDrawStage, result);
+            return result;
+        }
+
+        private void PaintHeaderItem(NativeCustomDraw draw)
+        {
+            if (_theme is null || draw.hdc == IntPtr.Zero) return;
+            NativeHeaderChromeStyle style = NativeCompanionTheme.HeaderChromeStyle(_theme.Palette);
+            Rect cell = draw.rc;
+            FillRect(draw.hdc, ref cell, _theme.Brush(style.Background));
+
+            int itemIndex = checked((int)draw.dwItemSpec.ToUInt64());
+            IReadOnlyList<ManualAssetListColumn> columns = AssetColumns(0, _theme.Dpi);
+            string text = itemIndex >= 0 && itemIndex < columns.Count ? columns[itemIndex].Title : string.Empty;
+            NativeLayoutRect textLayout = NativeCompanionTheme.HeaderTextBounds(ToLayoutRect(cell), _theme.Dpi);
+            Rect textBounds = ToRect(textLayout);
+            IntPtr previousFont = SelectObject(draw.hdc, _theme.Font(NativeCompanionFontRole.Metadata));
+            try
+            {
+                _theme.PrepareTextDevice(draw.hdc, style.Text, style.Background, transparent: true);
+                DrawText(draw.hdc, text, -1, ref textBounds, DtVCenter | DtSingleLine | DtNoPrefix | DtEndEllipsis);
+            }
+            finally
+            {
+                if (previousFont != IntPtr.Zero && previousFont != new IntPtr(-1)) SelectObject(draw.hdc, previousFont);
+            }
+
+            int stroke = NativeCompanionTheme.HeaderStrokeWidth(_theme.Dpi);
+            Rect divider = new()
+            {
+                left = Math.Max(cell.left, cell.right - stroke),
+                top = cell.top,
+                right = cell.right,
+                bottom = cell.bottom,
+            };
+            FillRect(draw.hdc, ref divider, _theme.Brush(style.Divider));
+            PaintHeaderBottomEdge(draw.hdc, ref cell, style.BottomEdge, stroke);
+        }
+
+        private void PaintHeaderTrailingArea(IntPtr device)
+        {
+            if (_theme is null || device == IntPtr.Zero || _state.AssetHeader == IntPtr.Zero ||
+                !GetClientRect(_state.AssetHeader, out Rect client)) return;
+            NativeHeaderChromeStyle style = NativeCompanionTheme.HeaderChromeStyle(_theme.Palette);
+            int itemCount = SendMessage(_state.AssetHeader, HDM_GETITEMCOUNT, IntPtr.Zero, IntPtr.Zero).ToInt32();
+            if (itemCount < 0)
+            {
+                SkipHeaderTrailingFill(device, ref client, style, []);
+                return;
+            }
+            var items = new List<NativeLayoutRect>(Math.Max(0, itemCount));
+            for (int index = 0; index < itemCount; index++)
+            {
+                if (!SendMessageHeaderRect(_state.AssetHeader, HDM_GETITEMRECT, new IntPtr(index), out Rect item))
+                {
+                    SkipHeaderTrailingFill(device, ref client, style, items);
+                    return;
+                }
+                var points = new[]
+                {
+                    new Point { x = item.left, y = item.top },
+                    new Point { x = item.right, y = item.bottom },
+                };
+                SetLastError(0);
+                if (MapWindowPoints(_state.AssetList, _state.AssetHeader, points, 2) == 0 &&
+                    Marshal.GetLastWin32Error() != 0)
+                {
+                    SkipHeaderTrailingFill(device, ref client, style, items);
+                    return;
+                }
+                items.Add(new NativeLayoutRect(
+                    points[0].x, points[0].y,
+                    points[1].x - points[0].x, points[1].y - points[0].y));
+            }
+            NativeLayoutRect trailingLayout = NativeCompanionTheme.HeaderTrailingBounds(ToLayoutRect(client), items);
+            _headerPostpaintObserver?.Invoke(new(
+                ToLayoutRect(client), items.ToArray(), trailingLayout, CoordinateMappingSucceeded: true));
+            Rect trailing = ToRect(trailingLayout);
+            if (trailing.right > trailing.left)
+                FillRect(device, ref trailing, _theme.Brush(style.Background));
+            int stroke = NativeCompanionTheme.HeaderStrokeWidth(_theme.Dpi);
+            PaintHeaderBottomEdge(device, ref client, style.BottomEdge, stroke);
+        }
+
+        private void SkipHeaderTrailingFill(
+            IntPtr device, ref Rect client, NativeHeaderChromeStyle style,
+            IReadOnlyList<NativeLayoutRect> mappedItems)
+        {
+            if (_theme is null) return;
+            _headerPostpaintObserver?.Invoke(new(
+                ToLayoutRect(client), mappedItems.ToArray(), default, CoordinateMappingSucceeded: false));
+            PaintHeaderBottomEdge(device, ref client, style.BottomEdge,
+                NativeCompanionTheme.HeaderStrokeWidth(_theme.Dpi));
+        }
+
+        private void PaintHeaderBottomEdge(IntPtr device, ref Rect bounds, int color, int stroke)
+        {
+            if (_theme is null || bounds.bottom <= bounds.top) return;
+            Rect bottom = new()
+            {
+                left = bounds.left,
+                top = Math.Max(bounds.top, bounds.bottom - stroke),
+                right = bounds.right,
+                bottom = bounds.bottom,
+            };
+            FillRect(device, ref bottom, _theme.Brush(color));
+        }
+
         private IntPtr DrawListView(IntPtr pointer)
         {
-            if (_theme is null || _theme.Palette.Mode == NativeCompanionThemeMode.HighContrast)
-                return new IntPtr(CdrfDodefault);
             ListViewCustomDraw draw = Marshal.PtrToStructure<ListViewCustomDraw>(pointer);
-            if (draw.nmcd.dwDrawStage == CddsPrepaint) return new IntPtr(CdrfNotifyItemDraw);
-            if (draw.nmcd.dwDrawStage != CddsItemPrepaint) return new IntPtr(CdrfDodefault);
+            bool custom = _theme is not null && _theme.Palette.UsesDecorativeColors;
+            if (draw.nmcd.dwDrawStage == CddsPrepaint)
+            {
+                IntPtr prepaintResult = new(custom ? CdrfNotifyItemDraw : CdrfDodefault);
+                _listViewDrawObserver?.Invoke(new(
+                    draw.nmcd.dwDrawStage, -1, false, false, false, custom, 0, 0, default, prepaintResult));
+                return prepaintResult;
+            }
+            if (!custom || _theme is null) return new IntPtr(CdrfDodefault);
+            if (draw.nmcd.dwDrawStage != CddsItemPrepaint && draw.nmcd.dwDrawStage != CddsItemPostpaint)
+                return new IntPtr(CdrfDodefault);
 
-            bool selected = (draw.nmcd.uItemState & CdisSelected) != 0;
-            draw.clrText = selected ? _theme.Palette.SelectionText : _theme.Palette.Text;
-            draw.clrTextBk = selected ? _theme.Palette.SelectionBackground : _theme.Palette.Page;
-            Marshal.StructureToPtr(draw, pointer, false);
-            return new IntPtr(CdrfNewFont);
+            int itemIndex = checked((int)draw.nmcd.dwItemSpec.ToUInt64());
+            uint nativeState = NativeItemState(_state.AssetList, itemIndex, LvisSelected | LvisFocused);
+            bool selected = (nativeState & LvisSelected) != 0;
+            bool keyboardFocused = GetFocus() == _state.AssetList && (nativeState & LvisFocused) != 0;
+            bool customDrawReportedSelected = (draw.nmcd.uItemState & CdisSelected) != 0;
+            NativeListViewSelectionStyle style = NativeCompanionTheme.ListViewSelectionStyle(_theme.Palette);
+            NativeLayoutRect accent = default;
+            IntPtr result = new(CdrfDodefault);
+
+            if (draw.nmcd.dwDrawStage == CddsItemPrepaint)
+            {
+                draw.clrText = selected ? style.Text : _theme.Palette.Text;
+                draw.clrTextBk = selected ? style.Background : _theme.Palette.Page;
+                Marshal.StructureToPtr(draw, pointer, false);
+                result = new IntPtr(CdrfNewFont | (selected ? CdrfNotifyPostpaint : 0));
+            }
+            else if (selected && GetClientRect(_state.AssetList, out Rect client))
+            {
+                Rect row = draw.nmcd.rc;
+                row.left = 0; // LVIR_BOUNDS
+                if (!SendMessageListViewRect(_state.AssetList, LVM_GETITEMRECT, new IntPtr(itemIndex), ref row))
+                    row = draw.nmcd.rc;
+                accent = NativeCompanionTheme.ListViewSelectionAccentBounds(
+                    ToLayoutRect(client), ToLayoutRect(row), _theme.Dpi);
+                if (accent.Width > 0 && accent.Height > 0)
+                {
+                    Rect accentRect = ToRect(accent);
+                    FillRect(draw.nmcd.hdc, ref accentRect, _theme.Brush(style.Accent));
+                }
+            }
+
+            _listViewDrawObserver?.Invoke(new(
+                draw.nmcd.dwDrawStage, itemIndex, selected, customDrawReportedSelected,
+                keyboardFocused, true, selected ? style.Background : _theme.Palette.Page,
+                selected ? style.Text : _theme.Palette.Text, accent, result));
+            return result;
         }
 
         private void FillAndFrame(IntPtr device, NativeLayoutRect layout, int fill, int border)
@@ -1941,6 +2308,9 @@ internal sealed class NativeManualPublishingCompanion :
             return text.ToString();
         }
 
+        private static NativeLayoutRect ToLayoutRect(Rect rect) =>
+            new(rect.left, rect.top, Math.Max(0, rect.right - rect.left), Math.Max(0, rect.bottom - rect.top));
+
         private static Rect ToRect(NativeLayoutRect rect) => new()
         {
             left = rect.X, top = rect.Y, right = rect.Right, bottom = rect.Bottom,
@@ -1950,7 +2320,8 @@ internal sealed class NativeManualPublishingCompanion :
         {
             if (_window == IntPtr.Zero || !GetClientRect(_window, out Rect client)) return;
             int dpi = DpiForWindow(_window);
-            _layout = NativeCompanionLayout.Calculate(client.right, client.bottom, dpi, _state.Model.IsPatreon);
+            _layout = NativeCompanionLayout.Calculate(client.right, client.bottom, dpi, _state.Model.IsPatreon,
+                WindowText(_state.PostingStatus), WindowText(_state.PostingHelper), _confirmation is not null);
             Move(_state.Header, _layout.HeaderTitle);
             Move(_state.HeaderMetadata, _layout.HeaderMetadata);
             Move(_state.PlatformHeading, _layout.PlatformHeading);
@@ -1970,8 +2341,9 @@ internal sealed class NativeManualPublishingCompanion :
             Move(_state.PostingAggregate, _layout.PostingAggregate);
             Move(_state.AssetLabel, _layout.AssetsHeading);
             Move(_state.AssetCount, _layout.AssetCount);
-            Move(_state.SelectAll, _layout.SelectAll);
+            Move(_state.DragGuidance, _layout.DragGuidance);
             Move(_state.AssetList, _layout.AssetList);
+            ResizeAssetColumnsToClient(dpi);
             Move(_state.Status, _layout.Status);
             Move(_state.Close, _layout.Close);
             InvalidateRect(_window, IntPtr.Zero, true);
@@ -2068,6 +2440,25 @@ internal sealed class NativeManualPublishingCompanion :
             else if (message == WM_MOUSELEAVE && owner is not null && owner._hoveredButtons.Remove(window))
                 InvalidateRect(window, IntPtr.Zero, false);
             return DefSubclassProc(window, message, wParam, lParam);
+        }
+
+        private static IntPtr AssetListWindowProcedure(
+            IntPtr window, uint message, IntPtr wParam, IntPtr lParam,
+            UIntPtr subclassId, IntPtr referenceData)
+        {
+            NativeWindow? owner = referenceData == IntPtr.Zero
+                ? null
+                : GCHandle.FromIntPtr(referenceData).Target as NativeWindow;
+            if (message == WM_NOTIFY && owner is not null && lParam != IntPtr.Zero)
+            {
+                NotifyHeader header = Marshal.PtrToStructure<NotifyHeader>(lParam);
+                if (header.code == NmCustomDraw && owner.IsAssetHeader(header.hwndFrom))
+                    return owner.DrawHeader(lParam);
+            }
+            IntPtr result = DefSubclassProc(window, message, wParam, lParam);
+            if ((message == WM_SETFOCUS || message == WM_KILLFOCUS) && owner is not null)
+                InvalidateRect(window, IntPtr.Zero, false);
+            return result;
         }
 
         internal static bool ProcessLifecycleMessage(
@@ -2218,16 +2609,16 @@ internal sealed class NativeManualPublishingCompanion :
             private NativeWindow? _owner;
             public void Attach(NativeWindow owner) { _owner = owner; }
             public GCHandle Handle; public IntPtr Window, Header, HeaderMetadata, PlatformHeading, PlatformLabel, Platform,
-                TitleLabel, CopyTitle, BodyLabel, CopyMain, AssetLabel, AssetCount, AssetList,
-                PostingStatus, PostingHelper, PostingAction, PostingAggregate, SelectAll, Status, Close;
-            public IEnumerable<IntPtr> Buttons => new[] { CopyTitle, CopyMain, PostingAction, SelectAll, Close }.Where(value => value != IntPtr.Zero);
+                TitleLabel, CopyTitle, BodyLabel, CopyMain, AssetLabel, AssetCount, DragGuidance, AssetList,
+                AssetHeader, PostingStatus, PostingHelper, PostingAction, PostingAggregate, Status, Close;
+            public IEnumerable<IntPtr> Buttons => new[] { CopyTitle, CopyMain, PostingAction, Close }.Where(value => value != IntPtr.Zero);
             public IEnumerable<IntPtr> RequiredControls => new[] { Header, HeaderMetadata, PlatformHeading, PlatformLabel, Platform,
-                TitleLabel, CopyTitle, BodyLabel, CopyMain, AssetLabel, AssetCount, AssetList,
-                SelectAll, Status, Close };
+                TitleLabel, CopyTitle, BodyLabel, CopyMain, AssetLabel, AssetCount, DragGuidance, AssetList,
+                Status, Close };
             public IEnumerable<IntPtr> PostingControls => new[] { PostingStatus, PostingHelper, PostingAction, PostingAggregate };
             public IEnumerable<IntPtr> Controls => new[] { Header, HeaderMetadata, PlatformHeading, PlatformLabel, Platform,
                 TitleLabel, CopyTitle, BodyLabel, CopyMain, PostingStatus, PostingHelper,
-                PostingAction, PostingAggregate, AssetLabel, AssetCount, AssetList, SelectAll, Status, Close }
+                PostingAction, PostingAggregate, AssetLabel, AssetCount, DragGuidance, AssetList, Status, Close }
                 .Where(value => value != IntPtr.Zero);
         }
 
@@ -2347,6 +2738,10 @@ internal sealed class NativeManualPublishingCompanion :
         [DllImport("user32.dll", EntryPoint = "GetWindowTextLengthW", CharSet = CharSet.Unicode, ExactSpelling = true)] private static extern int GetWindowTextLength(IntPtr window);
         [DllImport("user32.dll", EntryPoint = "GetWindowTextW", CharSet = CharSet.Unicode, ExactSpelling = true)] private static extern int GetWindowText(IntPtr window, System.Text.StringBuilder text, int maximumCount);
         [DllImport("user32.dll", EntryPoint = "SendMessageW", CharSet = CharSet.Unicode, ExactSpelling = true)] private static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+        [DllImport("user32.dll", EntryPoint = "SendMessageW", ExactSpelling = true)]
+        private static extern bool SendMessageHeaderRect(IntPtr window, uint message, IntPtr wParam, out Rect rectangle);
+        [DllImport("user32.dll", EntryPoint = "SendMessageW", ExactSpelling = true)]
+        private static extern bool SendMessageListViewRect(IntPtr window, uint message, IntPtr wParam, ref Rect rectangle);
         [DllImport("user32.dll", EntryPoint = "SendMessageW", CharSet = CharSet.Unicode, ExactSpelling = true)] private static extern IntPtr SendMessageBuilder(IntPtr window, uint message, IntPtr wParam, System.Text.StringBuilder lParam);
         [DllImport("user32.dll", EntryPoint = "SendMessageW", CharSet = CharSet.Unicode, ExactSpelling = true)] private static extern IntPtr SendMessageListViewItem(IntPtr window, uint message, IntPtr wParam, ref ListViewItem item);
         [DllImport("user32.dll", EntryPoint = "SendMessageW", CharSet = CharSet.Unicode, ExactSpelling = true)] private static extern IntPtr SendMessageListViewColumn(IntPtr window, uint message, IntPtr wParam, ref ListViewColumn column);
@@ -2388,6 +2783,8 @@ internal sealed class NativeManualPublishingCompanion :
         [DllImport("comctl32.dll", SetLastError = true)] private static extern bool InitCommonControlsEx(ref InitCommonControls controls);
         [DllImport("comctl32.dll")] private static extern bool SetWindowSubclass(
             IntPtr window, SubclassProc procedure, UIntPtr subclassId, IntPtr referenceData);
+        [DllImport("comctl32.dll")] private static extern bool RemoveWindowSubclass(
+            IntPtr window, SubclassProc procedure, UIntPtr subclassId);
         [DllImport("comctl32.dll")] private static extern IntPtr DefSubclassProc(
             IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
     }

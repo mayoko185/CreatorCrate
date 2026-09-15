@@ -144,8 +144,10 @@ internal static class DpiAwarenessProbe
             state.SuggestedBoundsProcessed = state.SuggestedBoundsProcessed ||
                 (bounds.right - bounds.left == 720 && bounds.bottom - bounds.top == 540);
             NativeCompanionLayout? finalLayout = state.Layout;
+            NativeCompanionLayout expectedLayout = NativeCompanionLayout.Calculate(
+                bounds.right - bounds.left, bounds.bottom - bounds.top, state.FinalDpi, patreon: true);
             state.LayoutUpdated = finalLayout is not null && finalLayout != initialLayout &&
-                finalLayout.HeaderTitle.X == 24 * state.FinalDpi / 96;
+                finalLayout.HeaderTitle == expectedLayout.HeaderTitle;
 
             return new DpiAwarenessProbeResult(
                 threadV2, windowV2, state.InitialDpi, state.FinalDpi, state.DpiChangedReceived,

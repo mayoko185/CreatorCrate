@@ -16,6 +16,12 @@ internal readonly record struct NativeCompanionFontSpec(string Family, int Point
 internal readonly record struct NativeCompanionControlStyle(
     NativeCompanionFontRole FontRole, int Background, int Text, bool CustomDraw);
 
+internal readonly record struct NativeHeaderChromeStyle(
+    int Background, int Text, int Divider, int BottomEdge, bool CustomDraw);
+
+internal readonly record struct NativeListViewSelectionStyle(
+    int Background, int Text, int Accent, bool CustomDraw);
+
 internal readonly record struct NativeCompanionPalette(
     NativeCompanionThemeMode Mode,
     int Page,
@@ -133,6 +139,8 @@ internal sealed class NativeCompanionTheme : IDisposable
 
     public NativeCompanionTheme(int dpi) => Refresh(dpi);
 
+    internal NativeCompanionTheme(int dpi, NativeCompanionPalette palette) => Refresh(dpi, palette);
+
     public NativeCompanionPalette Palette { get; private set; }
     public int Dpi { get; private set; }
 
@@ -159,15 +167,57 @@ internal sealed class NativeCompanionTheme : IDisposable
         NativeCompanionControlRole.Button => new(NativeCompanionFontRole.Body, palette.Surface, palette.Text, true),
         NativeCompanionControlRole.Status => new(NativeCompanionFontRole.Metadata, palette.Surface, palette.MutedText, false),
         NativeCompanionControlRole.ListView => new(NativeCompanionFontRole.Body, palette.Page, palette.Text, true),
-        NativeCompanionControlRole.ListViewHeader => new(NativeCompanionFontRole.Metadata, palette.Card, palette.Text, false),
+        NativeCompanionControlRole.ListViewHeader => new(
+            NativeCompanionFontRole.Metadata, palette.Hover, palette.Text, palette.UsesDecorativeColors),
         _ => throw new ArgumentOutOfRangeException(nameof(role)),
     };
 
-    public void Refresh(int dpi)
+    internal static NativeHeaderChromeStyle HeaderChromeStyle(NativeCompanionPalette palette) =>
+        new(palette.Hover, palette.Text, palette.Border, palette.BorderStrong, palette.UsesDecorativeColors);
+
+    internal static NativeListViewSelectionStyle ListViewSelectionStyle(NativeCompanionPalette palette) =>
+        new(palette.SelectionBackground, palette.SelectionText, palette.Accent, palette.UsesDecorativeColors);
+
+    internal static int ListViewSelectionAccentWidth(int dpi) =>
+        Math.Max(1, 2 * Math.Max(96, dpi) / 96);
+
+    internal static NativeLayoutRect ListViewSelectionAccentBounds(
+        NativeLayoutRect client, NativeLayoutRect row, int dpi)
+    {
+        int left = Math.Max(client.X, row.X);
+        int top = Math.Max(client.Y, row.Y);
+        int right = Math.Min(client.Right, row.Right);
+        int bottom = Math.Min(client.Bottom, row.Bottom);
+        if (right <= left || bottom <= top) return default;
+        int width = Math.Min(ListViewSelectionAccentWidth(dpi), right - left);
+        return new(left, top, width, bottom - top);
+    }
+
+    internal static int HeaderTextInset(int dpi) => Math.Max(1, 8 * Math.Max(96, dpi) / 96);
+
+    internal static NativeLayoutRect HeaderTextBounds(NativeLayoutRect cell, int dpi)
+    {
+        int inset = HeaderTextInset(dpi);
+        return new(cell.X + inset, cell.Y, Math.Max(0, cell.Width - inset * 2), cell.Height);
+    }
+
+    internal static NativeLayoutRect HeaderTrailingBounds(NativeLayoutRect client, IEnumerable<NativeLayoutRect> items)
+    {
+        int clientRight = Math.Max(client.X, client.Right);
+        int finalRight = items.Select(item => item.Right).DefaultIfEmpty(client.X).Max();
+        int left = Math.Clamp(finalRight, client.X, clientRight);
+        return new(left, client.Y, clientRight - left, Math.Max(0, client.Height));
+    }
+
+    internal static int HeaderStrokeWidth(int dpi) => Math.Max(1, Math.Max(96, dpi) / 96);
+
+    public void Refresh(int dpi) => Refresh(dpi, null);
+
+    private void Refresh(int dpi, NativeCompanionPalette? palette)
     {
         ReleaseResources();
         Dpi = Math.Max(96, dpi);
-        Palette = NativeCompanionThemeDetector.Detect();
+        Palette = palette ?? NativeCompanionThemeDetector.Detect();
         try
         {
             foreach (NativeCompanionFontRole role in Enum.GetValues<NativeCompanionFontRole>())
@@ -266,76 +316,104 @@ internal sealed record NativeCompanionLayout(
     NativeLayoutRect TitleLabel, NativeLayoutRect TitleText, NativeLayoutRect CopyTitle,
     NativeLayoutRect BodyLabel, NativeLayoutRect BodyText, NativeLayoutRect CopyMain,
     NativeLayoutRect PostingStatus, NativeLayoutRect PostingHelper, NativeLayoutRect PostingAction, NativeLayoutRect PostingAggregate,
-    NativeLayoutRect AssetsCard, NativeLayoutRect AssetsHeading, NativeLayoutRect AssetCount, NativeLayoutRect SelectAll,
+    NativeLayoutRect AssetsCard, NativeLayoutRect AssetsHeading, NativeLayoutRect AssetCount, NativeLayoutRect DragGuidance,
     NativeLayoutRect AssetList, NativeLayoutRect Footer, NativeLayoutRect Status, NativeLayoutRect Close)
 {
-    // Patreon is the tallest production mode: 24 top inset + 30 heading + 20 metadata +
-    // 12 gap + 404 content card + 12 gap + 168 asset card + 12 gap + 72 footer.
-    // 820 is the supported usable desktop width; 754 is the current Patreon layout's
-    // geometrically required height. The outer tracking size is derived from these
-    // logical client dimensions and the window's current DPI/non-client chrome.
+    // 820 by 754 is the supported usable client minimum. Content height is measured
+    // from its visible groups; extra height is shared with the editor and Assets.
     internal const int SupportedMinimumLogicalClientWidth = 820;
     internal const int RequiredLogicalClientHeight = 754;
     internal static NativeLayoutSize SupportedMinimumLogicalClientSize { get; } =
         new(SupportedMinimumLogicalClientWidth, RequiredLogicalClientHeight);
 
-    public static NativeCompanionLayout Calculate(int clientWidth, int clientHeight, int dpi, bool patreon)
+    public static NativeCompanionLayout Calculate(int clientWidth, int clientHeight, int dpi, bool patreon,
+        string postingStatusText = "", string postingHelperText = "", bool hasPosting = true)
     {
         int S(int value) => Math.Max(1, value * Math.Max(96, dpi) / 96);
-        int outer = S(24), cardPad = S(16), gap = S(12), controlH = S(36), labelH = S(20);
-        int contentWidth = Math.Max(S(480), clientWidth - outer * 2);
+        int outer = S(24), cardPad = S(16), sectionGap = S(16), fieldGap = S(12);
+        int actionH = S(30), labelH = S(20), selectorH = S(36);
+        int contentWidth = Math.Min(S(1152), Math.Max(S(480), clientWidth - outer * 2));
+        int contentX = (clientWidth - contentWidth) / 2;
         int headerTitleH = S(30), metadataH = S(20);
-        var headerTitle = new NativeLayoutRect(outer, outer, contentWidth, headerTitleH);
-        var headerMetadata = new NativeLayoutRect(outer, headerTitle.Bottom, contentWidth, metadataH);
-        int platformTop = headerMetadata.Bottom + gap;
-        int platformHeight = patreon ? S(404) : S(336);
+        var headerTitle = new NativeLayoutRect(contentX, outer, contentWidth, headerTitleH);
+        var headerMetadata = new NativeLayoutRect(contentX, headerTitle.Bottom, contentWidth, metadataH);
+        int platformTop = headerMetadata.Bottom + S(12);
         int footerHeight = S(72);
         int footerTop = clientHeight - footerHeight;
-        int assetTop = platformTop + platformHeight + gap;
-        int assetHeight = Math.Max(S(168), footerTop - gap - assetTop);
-        var platformCard = new NativeLayoutRect(outer, platformTop, contentWidth, platformHeight);
         var footer = new NativeLayoutRect(0, footerTop, clientWidth, footerHeight);
-        var assetsCard = new NativeLayoutRect(outer, assetTop, contentWidth, assetHeight);
+        int innerX = contentX + cardPad, innerWidth = contentWidth - cardPad * 2;
+        var platformHeading = new NativeLayoutRect(innerX, platformTop + cardPad + S(8), S(112), labelH);
+        var platformLabel = new NativeLayoutRect(platformHeading.Right + S(12), platformHeading.Y, S(76), labelH);
+        var platform = new NativeLayoutRect(platformLabel.Right + S(8), platformTop + cardPad, S(240), selectorH);
+        int contentY = platformTop + cardPad + selectorH + S(8);
 
-        int innerX = platformCard.X + cardPad, innerWidth = platformCard.Width - cardPad * 2;
-        var platformHeading = new NativeLayoutRect(innerX, platformCard.Y + cardPad, innerWidth, labelH);
-        int selectorY = platformHeading.Bottom + S(8);
-        var platformLabel = new NativeLayoutRect(innerX, selectorY + S(8), S(76), labelH);
-        var platform = new NativeLayoutRect(platformLabel.Right + S(8), selectorY, S(240), S(240));
-        int contentY = selectorY + controlH + gap;
-        int postingActionWidth = S(168);
-        var postingAction = new NativeLayoutRect(platformCard.Right - cardPad - postingActionWidth, contentY, postingActionWidth, controlH);
-        int postingTextWidth = Math.Max(S(220), postingAction.X - innerX - gap);
-        var postingStatus = new NativeLayoutRect(innerX, contentY, postingTextWidth, labelH);
-        var postingHelper = new NativeLayoutRect(innerX, postingStatus.Bottom + S(4), postingTextWidth, labelH);
-        var postingAggregate = new NativeLayoutRect(innerX, postingAction.Bottom + S(8), innerWidth, labelH);
-        contentY = postingAggregate.Bottom + gap;
+        // Native Static controls wrap at word boundaries. Reserve the number of lines
+        // implied by the current bounded text instead of a permanent posting row.
+        int postingTextWidth = Math.Min(S(320), innerWidth - S(168) - fieldGap);
+        int Lines(string value, int width)
+        {
+            if (string.IsNullOrEmpty(value)) return 1;
+            int columns = Math.Max(1, width * 96 / Math.Max(96, dpi) / 7);
+            int lines = 1, used = 0;
+            foreach (string word in value.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            {
+                int length = word.Length + (used == 0 ? 0 : 1);
+                if (used > 0 && used + length > columns) { lines++; used = word.Length; }
+                else used += length;
+            }
+            return lines;
+        }
+        int statusH = hasPosting ? Math.Max(actionH, S(20 * Lines(postingStatusText, postingTextWidth))) : 0;
+        int helperH = hasPosting ? S(20 * Lines(postingHelperText, innerWidth)) : 0;
+        int postingH = hasPosting ? statusH + S(4) + helperH + fieldGap : 0;
+        int titleGroupH = patreon ? actionH + S(4) + S(48) + fieldGap : 0;
+        int plannedBodyH = patreon ? S(96) : S(144);
+        int fixedHeight = cardPad + selectorH + S(8) + titleGroupH + actionH + S(4) +
+            postingH + cardPad;
+        int maximumCardHeight = footerTop - sectionGap - S(152) - sectionGap - platformTop;
+        int bodyBaseH = Math.Min(plannedBodyH, Math.Max(S(72), maximumCardHeight - fixedHeight));
+        int minimumCardHeight = fixedHeight + bodyBaseH;
+        int availableCardHeight = Math.Max(minimumCardHeight,
+            maximumCardHeight);
+        int editorGrowth = Math.Min(S(240) - bodyBaseH, Math.Max(0, availableCardHeight - minimumCardHeight) / 2);
+        int bodyH = bodyBaseH + editorGrowth;
+        int platformHeight = fixedHeight + bodyH;
+        var platformCard = new NativeLayoutRect(contentX, platformTop, contentWidth, platformHeight);
+        int assetTop = platformCard.Bottom + sectionGap;
+        int assetHeight = Math.Min(S(440), Math.Max(S(152), footerTop - sectionGap - assetTop));
+        var assetsCard = new NativeLayoutRect(contentX, assetTop, contentWidth, assetHeight);
         NativeLayoutRect titleLabel = default, titleText = default, copyTitle = default;
         if (patreon)
         {
-            titleLabel = new NativeLayoutRect(innerX, contentY, innerWidth, labelH);
-            int titleY = titleLabel.Bottom + S(4);
-            copyTitle = new NativeLayoutRect(platformCard.Right - cardPad - S(112), titleY, S(112), controlH);
-            titleText = new NativeLayoutRect(innerX, titleY, copyTitle.X - innerX - S(8), S(64));
-            contentY = titleText.Bottom + gap;
+            copyTitle = new NativeLayoutRect(innerX + innerWidth - S(112), contentY, S(112), actionH);
+            titleLabel = new NativeLayoutRect(innerX, contentY + S(5), copyTitle.X - innerX - S(8), labelH);
+            titleText = new NativeLayoutRect(innerX, copyTitle.Bottom + S(4), innerWidth, S(48));
+            contentY = titleText.Bottom + fieldGap;
         }
-        var bodyLabel = new NativeLayoutRect(innerX, contentY, innerWidth, labelH);
-        int bodyY = bodyLabel.Bottom + S(4);
-        var copyMain = new NativeLayoutRect(platformCard.Right - cardPad - S(144), platformCard.Bottom - cardPad - controlH, S(144), controlH);
-        var bodyText = new NativeLayoutRect(innerX, bodyY, innerWidth, Math.Max(S(52), copyMain.Y - S(8) - bodyY));
+        var copyMain = new NativeLayoutRect(innerX + innerWidth - S(144), contentY, S(144), actionH);
+        var bodyLabel = new NativeLayoutRect(innerX, contentY + S(5), copyMain.X - innerX - S(8), labelH);
+        var bodyText = new NativeLayoutRect(innerX, copyMain.Bottom + S(4), innerWidth, bodyH);
+        contentY = bodyText.Bottom + (hasPosting ? fieldGap : 0);
+        var postingStatus = hasPosting ? new NativeLayoutRect(innerX, contentY, postingTextWidth, statusH) : default;
+        var postingAction = hasPosting ? new NativeLayoutRect(postingStatus.Right + fieldGap, contentY, S(168), actionH) : default;
+        var postingHelper = hasPosting ? new NativeLayoutRect(innerX, postingStatus.Bottom + S(4), innerWidth, helperH) : default;
+        int footerActionX = clientWidth - outer - S(104);
+        var postingAggregate = hasPosting ? new NativeLayoutRect(contentX, footer.Y + S(4),
+            Math.Min(contentWidth, footerActionX - contentX - fieldGap), labelH) : default;
 
         int assetInnerX = assetsCard.X + cardPad, assetInnerWidth = assetsCard.Width - cardPad * 2;
         var assetsHeading = new NativeLayoutRect(assetInnerX, assetsCard.Y + cardPad, S(100), labelH);
-        var selectAll = new NativeLayoutRect(assetsCard.Right - cardPad - S(104), assetsCard.Y + S(10), S(104), controlH);
-        var assetCount = new NativeLayoutRect(assetsHeading.Right + S(8), assetsHeading.Y, Math.Max(S(80), selectAll.X - assetsHeading.Right - S(16)), labelH);
-        int listY = Math.Max(assetsHeading.Bottom, selectAll.Bottom) + S(8);
+        var assetCount = new NativeLayoutRect(assetsCard.Right - cardPad - S(160), assetsHeading.Y, S(160), labelH);
+        var dragGuidance = new NativeLayoutRect(assetInnerX, assetsHeading.Bottom + S(4), assetInnerWidth, labelH);
+        int listY = dragGuidance.Bottom + S(8);
         var assetList = new NativeLayoutRect(assetInnerX, listY, assetInnerWidth, Math.Max(S(72), assetsCard.Bottom - cardPad - listY));
 
-        var close = new NativeLayoutRect(clientWidth - outer - S(104), footer.Y + S(18), S(104), controlH);
-        var status = new NativeLayoutRect(outer, footer.Y + S(14), Math.Max(S(160), close.X - outer - gap), S(44));
+        var close = new NativeLayoutRect(clientWidth - outer - S(104), footer.Y + S(18), S(104), S(36));
+        var status = new NativeLayoutRect(contentX, footer.Y + S(27),
+            Math.Max(S(160), close.X - contentX - fieldGap), S(32));
         return new(headerTitle, headerMetadata, platformCard, platformHeading, platformLabel, platform,
             titleLabel, titleText, copyTitle, bodyLabel, bodyText, copyMain,
             postingStatus, postingHelper, postingAction, postingAggregate,
-            assetsCard, assetsHeading, assetCount, selectAll, assetList, footer, status, close);
+            assetsCard, assetsHeading, assetCount, dragGuidance, assetList, footer, status, close);
     }
 }

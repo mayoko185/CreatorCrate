@@ -252,6 +252,16 @@ static void VerifyProductionSurfaces(
     if (classicEditFound) throw new InvalidOperationException("A classic social content Edit HWND still exists.");
 
     IntPtr? titleWindow = null, bodyWindow = null;
+    NativeProductionLayoutProbe minimum = window.ResizeAndCaptureLayoutForTesting(0, 820, 754);
+    NativeProductionLayoutProbe normal = window.ResizeAndCaptureLayoutForTesting(0, 980, 920);
+    NativeProductionLayoutProbe large = window.ResizeAndCaptureLayoutForTesting(0, 980, 1400);
+    NativeProductionLayoutProbe wide = window.ResizeAndCaptureLayoutForTesting(0, 1600, 920);
+    if (normal.BodyText.Height <= minimum.BodyText.Height || normal.AssetList.Height <= minimum.AssetList.Height ||
+        large.BodyText.Height > 240 * large.Dpi / 96 || large.AssetsCard.Height > 440 * large.Dpi / 96 ||
+        wide.PlatformCard.Width != 1152 * wide.Dpi / 96 ||
+        wide.PlatformCard.X != (wide.Client.Width - wide.PlatformCard.Width) / 2)
+        throw new InvalidOperationException("Production minimum/normal/large/wide growth failed.");
+    Console.WriteLine($"production-layout-growth=passed; minimum-body={minimum.BodyText.Height}; normal-body={normal.BodyText.Height}; large-body={large.BodyText.Height}; large-assets={large.AssetsCard.Height}; wide-card={wide.PlatformCard.X},{wide.PlatformCard.Width}");
     foreach ((int index, string platform) in new[] { (0, "patreon"), (1, "x"), (2, "bluesky"), (0, "patreon") })
     {
         NativeProductionTextSurfaceProbe surface = window.CaptureTextSurfacesForTesting(index);
@@ -534,7 +544,8 @@ static void VerifyCurrentIslandBounds(IntPtr parent, NativeManualPublishingCompa
     foreach ((int index, bool patreon) in new[] { (0, true), (1, false), (2, false) })
     {
         NativeProductionTextSurfaceProbe surface = window.CaptureTextSurfacesForTesting(index);
-        NativeCompanionLayout expected = NativeCompanionLayout.Calculate(client.Right, client.Bottom, dpi, patreon);
+        NativeCompanionLayout expected = NativeCompanionLayout.Calculate(client.Right, client.Bottom, dpi, patreon,
+            WindowText(window.PostingStatusHandle), WindowText(window.PostingHelperHandle));
         NativeLayoutRect body = ChildRect(parent, surface.BodyWindow);
         if (body != expected.BodyText)
             throw new InvalidOperationException($"Stale body island after resize for {surface.Platform}: expected {expected.BodyText}, actual {body}.");
@@ -550,6 +561,14 @@ static NativeLayoutRect ChildRect(IntPtr parent, IntPtr child)
     var points = new[] { new Point { X = rectangle.Left, Y = rectangle.Top }, new Point { X = rectangle.Right, Y = rectangle.Bottom } };
     MapWindowPoints(IntPtr.Zero, parent, points, 2);
     return new(points[0].X, points[0].Y, points[1].X - points[0].X, points[1].Y - points[0].Y);
+}
+
+static string WindowText(IntPtr window)
+{
+    if (window == IntPtr.Zero) return string.Empty;
+    var text = new System.Text.StringBuilder(1024);
+    GetWindowText(window, text, text.Capacity);
+    return text.ToString();
 }
 
 int ArgumentValue(string name, int fallback)
@@ -612,6 +631,9 @@ static extern bool EnumChildWindows(IntPtr parent, EnumWindowProc callback, IntP
 
 [DllImport("user32.dll", CharSet = CharSet.Unicode)]
 static extern int GetClassName(IntPtr window, System.Text.StringBuilder className, int maximumCount);
+
+[DllImport("user32.dll", EntryPoint = "GetWindowTextW", CharSet = CharSet.Unicode, ExactSpelling = true)]
+static extern int GetWindowText(IntPtr window, System.Text.StringBuilder text, int maximumCount);
 
 [DllImport("user32.dll")]
 static extern bool IsWindowVisible(IntPtr window);

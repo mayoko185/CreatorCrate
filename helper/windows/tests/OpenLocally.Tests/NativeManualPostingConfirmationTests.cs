@@ -20,7 +20,7 @@ public sealed class NativeManualPostingConfirmationTests
         foreach ((int index, string platform) in new[] { (0, "x"), (1, "patreon"), (2, "bluesky") })
         {
             NativeProductionLayoutProbe probe = harness.CaptureMinimumLayout(index);
-            int gap = 12 * probe.Dpi / 96;
+            int gap = 16 * probe.Dpi / 96;
             Console.WriteLine($"{platform}: {probe.Dpi} DPI, minimum outer {probe.MinimumTrack.Width}x{probe.MinimumTrack.Height}, client {probe.Client.Width}x{probe.Client.Height}, list {probe.AssetList.Width}x{probe.AssetList.Height}");
 
             Assert.Equal(platform, probe.Platform);
@@ -37,11 +37,14 @@ public sealed class NativeManualPostingConfirmationTests
             AssertWithin(probe.PostingStatus, probe.PlatformCard);
             AssertWithin(probe.PostingHelper, probe.PlatformCard);
             AssertWithin(probe.PostingAction, probe.PlatformCard);
-            AssertWithin(probe.PostingAggregate, probe.PlatformCard);
+            AssertWithin(probe.PostingAggregate, probe.Footer);
             Assert.False(probe.PostingStatus.Intersects(probe.PostingAction));
             Assert.False(probe.PostingHelper.Intersects(probe.PostingAction));
             Assert.False(probe.BodyText.Intersects(probe.CopyMain));
-            Assert.True(probe.PostingAggregate.Bottom < probe.BodyLabel.Y);
+            Assert.True(probe.PostingStatus.Y >= probe.BodyText.Bottom);
+            Assert.Equal(probe.BodyLabel.Y, probe.CopyMain.Y + 5 * probe.Dpi / 96);
+            Assert.Equal(probe.PlatformHeading.Y, probe.PlatformSelector.Y + 8 * probe.Dpi / 96);
+            Assert.Equal(12 * probe.Dpi / 96, probe.PostingAction.X - probe.PostingStatus.Right);
             if (platform == "patreon")
             {
                 AssertWithin(probe.TitleLabel, probe.PlatformCard);
@@ -53,16 +56,56 @@ public sealed class NativeManualPostingConfirmationTests
             Assert.Equal(gap, probe.AssetsCard.Y - probe.PlatformCard.Bottom);
             AssertWithin(probe.AssetsHeading, probe.AssetsCard);
             AssertWithin(probe.AssetCount, probe.AssetsCard);
-            AssertWithin(probe.SelectAll, probe.AssetsCard);
+            AssertWithin(probe.DragGuidance, probe.AssetsCard);
             AssertWithin(probe.AssetList, probe.AssetsCard);
             Assert.True(probe.AssetList.Height > 0);
-            Assert.False(probe.AssetList.Intersects(probe.SelectAll));
-            Assert.Equal(gap, probe.Footer.Y - probe.AssetsCard.Bottom);
+            Assert.True(probe.DragGuidance.Bottom < probe.AssetList.Y);
+            Assert.True(probe.Footer.Y - probe.AssetsCard.Bottom >= gap);
             AssertWithin(probe.Status, probe.Footer);
             AssertWithin(probe.Close, probe.Footer);
             AssertWithinClient(probe.Footer, probe.Client);
             Assert.False(probe.AssetList.Intersects(probe.Status));
             Assert.False(probe.AssetList.Intersects(probe.Close));
+        }
+    }
+
+    [Fact]
+    public async Task CompleteProductionCompanion_ResizesAndSwitchesWithContainedChildWindows()
+    {
+        using var controller = Controller(new RecordingTransport());
+        await using NativeWindowHarness harness = await NativeWindowHarness.StartAsync(controller);
+        NativeProductionLayoutProbe minimum = harness.Window.ResizeAndCaptureLayoutForTesting(1, 820, 754);
+        NativeProductionLayoutProbe normal = harness.Window.ResizeAndCaptureLayoutForTesting(1, 980, 920);
+        NativeProductionLayoutProbe large = harness.Window.ResizeAndCaptureLayoutForTesting(1, 980, 1400);
+        NativeProductionLayoutProbe wide = harness.Window.ResizeAndCaptureLayoutForTesting(1, 1600, 920);
+
+        Assert.True(normal.BodyText.Height > minimum.BodyText.Height);
+        Assert.True(normal.AssetList.Height > minimum.AssetList.Height);
+        Assert.True(large.BodyText.Height <= 240 * large.Dpi / 96);
+        Assert.True(large.AssetsCard.Height <= 440 * large.Dpi / 96);
+        Assert.Equal(1152 * wide.Dpi / 96, wide.PlatformCard.Width);
+        Assert.Equal((wide.Client.Width - wide.PlatformCard.Width) / 2, wide.PlatformCard.X);
+
+        foreach ((int index, string platform) in new[] { (1, "patreon"), (0, "x"), (2, "bluesky"), (1, "patreon") })
+        {
+            NativeProductionLayoutProbe probe = harness.Window.ResizeAndCaptureLayoutForTesting(index, 820, 754);
+            Assert.Equal(platform, probe.Platform);
+            AssertWithin(probe.BodyText, probe.PlatformCard);
+            AssertWithin(probe.CopyMain, probe.PlatformCard);
+            AssertWithin(probe.PostingStatus, probe.PlatformCard);
+            AssertWithin(probe.PostingHelper, probe.PlatformCard);
+            AssertWithin(probe.PostingAggregate, probe.Footer);
+            Assert.False(probe.BodyText.Intersects(probe.PostingStatus));
+            Assert.False(probe.BodyText.Intersects(probe.CopyMain));
+            Assert.Equal(probe.BodyLabel.Y, probe.CopyMain.Y + 5 * probe.Dpi / 96);
+            Assert.True(probe.AssetsCard.Y >= probe.PlatformCard.Bottom + 16 * probe.Dpi / 96);
+            if (platform == "patreon")
+            {
+                AssertWithin(probe.TitleText, probe.PlatformCard);
+                Assert.Equal(probe.TitleLabel.Y, probe.CopyTitle.Y + 5 * probe.Dpi / 96);
+                Assert.True(probe.BodyLabel.Y > probe.TitleText.Bottom);
+            }
+            else Assert.True(probe.BodyLabel.Y < minimum.BodyLabel.Y);
         }
     }
 
@@ -395,9 +438,19 @@ public sealed class NativeManualPostingConfirmationTests
         Assert.False(NativeManualPublishingCompanion.NativeWindow.IsPostingConfirmationCommand(
             NativeManualPublishingCompanion.NativeWindow.CopyMainId));
         Assert.False(NativeManualPublishingCompanion.NativeWindow.IsPostingConfirmationCommand(
-            NativeManualPublishingCompanion.NativeWindow.SelectAllId));
-        Assert.False(NativeManualPublishingCompanion.NativeWindow.IsPostingConfirmationCommand(
             NativeManualPublishingCompanion.NativeWindow.CloseId));
+    }
+
+    [Fact]
+    public async Task ProductionAssetsHeader_ExposesZeroCountAndGuidanceWithoutSelectAllControl()
+    {
+        using var controller = Controller(new RecordingTransport());
+        await using NativeWindowHarness harness = await NativeWindowHarness.StartAsync(controller);
+        Assert.Equal(IntPtr.Zero, GetDlgItem(harness.Window.WindowHandle, 207));
+        Assert.Equal("0 of 0 selected", Text(harness.Window.AssetCountHandle));
+        Assert.Equal("Select files to attach.", Text(harness.Window.DragGuidanceHandle));
+        Assert.Equal("Static", ClassName(harness.Window.AssetCountHandle));
+        Assert.Equal("Static", ClassName(harness.Window.DragGuidanceHandle));
     }
 
     private static ManualPostingConfirmationPresentation Map(
@@ -419,6 +472,13 @@ public sealed class NativeManualPostingConfirmationTests
         int length = GetWindowTextLength(window);
         var value = new StringBuilder(length + 1);
         GetWindowText(window, value, value.Capacity);
+        return value.ToString();
+    }
+
+    private static string ClassName(IntPtr window)
+    {
+        var value = new StringBuilder(64);
+        GetClassName(window, value, value.Capacity);
         return value.ToString();
     }
 

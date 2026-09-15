@@ -144,7 +144,98 @@ public sealed class NativeCompanionThemeTests
         Assert.Equal(palette.Surface, NativeCompanionTheme.ControlStyle(NativeCompanionControlRole.Status, palette).Background);
         Assert.True(NativeCompanionTheme.ControlStyle(NativeCompanionControlRole.ListView, palette).CustomDraw);
         Assert.Equal(palette.Page, NativeCompanionTheme.ControlStyle(NativeCompanionControlRole.ListView, palette).Background);
-        Assert.Equal(palette.Card, NativeCompanionTheme.ControlStyle(NativeCompanionControlRole.ListViewHeader, palette).Background);
+        Assert.Equal(palette.Hover, NativeCompanionTheme.ControlStyle(NativeCompanionControlRole.ListViewHeader, palette).Background);
+        Assert.True(NativeCompanionTheme.ControlStyle(NativeCompanionControlRole.ListViewHeader, palette).CustomDraw);
+    }
+
+    [Fact]
+    public void HeaderChrome_UsesCreatorCrateRolesAndBypassesHighContrast()
+    {
+        NativeHeaderChromeStyle dark = NativeCompanionTheme.HeaderChromeStyle(NativeCompanionPalette.Dark);
+        NativeHeaderChromeStyle light = NativeCompanionTheme.HeaderChromeStyle(NativeCompanionPalette.Light);
+        NativeHeaderChromeStyle highContrast = NativeCompanionTheme.HeaderChromeStyle(NativeCompanionPalette.HighContrast);
+
+        Assert.Equal(NativeCompanionPalette.Dark.Hover, dark.Background);
+        Assert.Equal(NativeCompanionPalette.Dark.Text, dark.Text);
+        Assert.Equal(NativeCompanionPalette.Dark.Border, dark.Divider);
+        Assert.Equal(NativeCompanionPalette.Dark.BorderStrong, dark.BottomEdge);
+        Assert.True(dark.CustomDraw);
+        Assert.Equal(NativeCompanionPalette.Light.Hover, light.Background);
+        Assert.Equal(NativeCompanionPalette.Light.Text, light.Text);
+        Assert.Equal(NativeCompanionPalette.Light.Border, light.Divider);
+        Assert.Equal(NativeCompanionPalette.Light.BorderStrong, light.BottomEdge);
+        Assert.True(light.CustomDraw);
+        Assert.False(highContrast.CustomDraw);
+    }
+
+    [Fact]
+    public void ListViewSelectionChrome_UsesExistingThemeRolesAndScalesAccentOnce()
+    {
+        NativeListViewSelectionStyle dark =
+            NativeCompanionTheme.ListViewSelectionStyle(NativeCompanionPalette.Dark);
+        NativeListViewSelectionStyle light =
+            NativeCompanionTheme.ListViewSelectionStyle(NativeCompanionPalette.Light);
+        NativeListViewSelectionStyle highContrast =
+            NativeCompanionTheme.ListViewSelectionStyle(NativeCompanionPalette.HighContrast);
+
+        Assert.Equal(NativeCompanionPalette.Dark.SelectionBackground, dark.Background);
+        Assert.Equal(NativeCompanionPalette.Dark.SelectionText, dark.Text);
+        Assert.Equal(NativeCompanionPalette.Dark.Accent, dark.Accent);
+        Assert.True(dark.CustomDraw);
+        Assert.Equal(NativeCompanionPalette.Light.SelectionBackground, light.Background);
+        Assert.Equal(NativeCompanionPalette.Light.Accent, light.Accent);
+        Assert.True(light.CustomDraw);
+        Assert.False(highContrast.CustomDraw);
+
+        Assert.Equal(2, NativeCompanionTheme.ListViewSelectionAccentWidth(96));
+        Assert.Equal(3, NativeCompanionTheme.ListViewSelectionAccentWidth(144));
+        Assert.Equal(4, NativeCompanionTheme.ListViewSelectionAccentWidth(192));
+        Assert.Equal(new NativeLayoutRect(0, 24, 3, 48),
+            NativeCompanionTheme.ListViewSelectionAccentBounds(
+                new NativeLayoutRect(0, 0, 800, 400),
+                new NativeLayoutRect(-180, 24, 1100, 48), 144));
+        Assert.Equal(default,
+            NativeCompanionTheme.ListViewSelectionAccentBounds(
+                new NativeLayoutRect(0, 0, 800, 400),
+                new NativeLayoutRect(-180, 420, 1100, 48), 144));
+    }
+
+    [Theory]
+    [InlineData(96, 8, 1)]
+    [InlineData(144, 12, 1)]
+    [InlineData(192, 16, 2)]
+    public void HeaderGeometry_ScalesTextInsetsAndStrokesWithoutClipping(int dpi, int inset, int stroke)
+    {
+        var cell = new NativeLayoutRect(10, 0, 260 * dpi / 96, 28 * dpi / 96);
+        NativeLayoutRect text = NativeCompanionTheme.HeaderTextBounds(cell, dpi);
+
+        Assert.Equal(inset, text.X - cell.X);
+        Assert.Equal(cell.Width - inset * 2, text.Width);
+        Assert.Equal(cell.Height, text.Height);
+        Assert.True(text.X >= cell.X && text.Right <= cell.Right);
+        Assert.Equal(stroke, NativeCompanionTheme.HeaderStrokeWidth(dpi));
+    }
+
+    [Fact]
+    public void HeaderTrailingBounds_UsesAlreadyNormalizedHeaderClientCoordinates()
+    {
+        var normal = new NativeLayoutRect(0, 0, 1000, 28);
+        NativeLayoutRect trailing = NativeCompanionTheme.HeaderTrailingBounds(normal,
+            [new(0, 0, 260, 28), new(260, 0, 100, 28), new(360, 0, 100, 28)]);
+        NativeLayoutRect wide = NativeCompanionTheme.HeaderTrailingBounds(new(0, 0, 1400, 28),
+            [new(0, 0, 260, 28), new(260, 0, 100, 28), new(360, 0, 100, 28)]);
+        NativeLayoutRect exact = NativeCompanionTheme.HeaderTrailingBounds(normal,
+            [new(0, 0, 600, 28), new(600, 0, 400, 28)]);
+        NativeLayoutRect overflow = NativeCompanionTheme.HeaderTrailingBounds(normal,
+            [new(0, 0, 700, 28), new(700, 0, 700, 28)]);
+        NativeLayoutRect inverted = NativeCompanionTheme.HeaderTrailingBounds(
+            new(20, 0, -10, 28), [new(0, 0, 30, 28)]);
+
+        Assert.Equal(new NativeLayoutRect(460, 0, 540, 28), trailing);
+        Assert.Equal(new NativeLayoutRect(460, 0, 940, 28), wide);
+        Assert.Equal(new NativeLayoutRect(1000, 0, 0, 28), exact);
+        Assert.Equal(new NativeLayoutRect(1000, 0, 0, 28), overflow);
+        Assert.Equal(new NativeLayoutRect(20, 0, 0, 28), inverted);
     }
 
     [Theory]
@@ -203,17 +294,24 @@ public sealed class NativeCompanionThemeTests
             client.Width, client.Height, dpi, platform == "patreon");
 
         Assert.Equal(24 * dpi / 96, layout.HeaderTitle.X);
-        Assert.Equal(36 * dpi / 96, layout.CopyMain.Height);
+        Assert.Equal(30 * dpi / 96, layout.CopyMain.Height);
         Assert.True(layout.PlatformCard.Bottom < layout.AssetsCard.Y);
         Assert.True(layout.AssetsCard.Bottom < layout.Footer.Y);
-        Assert.Equal(12 * dpi / 96, layout.AssetsCard.Y - layout.PlatformCard.Bottom);
-        Assert.Equal(12 * dpi / 96, layout.Footer.Y - layout.AssetsCard.Bottom);
+        Assert.Equal(16 * dpi / 96, layout.AssetsCard.Y - layout.PlatformCard.Bottom);
+        Assert.True(layout.Footer.Y - layout.AssetsCard.Bottom >= 16 * dpi / 96);
         Assert.False(layout.TitleText.Intersects(layout.CopyTitle));
         Assert.False(layout.BodyText.Intersects(layout.CopyMain));
         Assert.False(layout.PostingStatus.Intersects(layout.PostingAction));
         Assert.False(layout.PostingHelper.Intersects(layout.PostingAction));
-        Assert.True(layout.PostingAggregate.Bottom < layout.BodyLabel.Y);
-        Assert.False(layout.AssetList.Intersects(layout.SelectAll));
+        Assert.True(layout.PostingAggregate.Y >= layout.Footer.Y);
+        if (platform == "patreon") Assert.Equal(layout.TitleLabel.Y, layout.CopyTitle.Y + 5 * dpi / 96);
+        Assert.Equal(layout.BodyLabel.Y, layout.CopyMain.Y + 5 * dpi / 96);
+        Assert.Equal(layout.PlatformHeading.Y, layout.PlatformLabel.Y);
+        Assert.True(layout.PostingStatus.Y >= layout.BodyText.Bottom);
+        Assert.Equal(12 * dpi / 96, layout.PostingAction.X - layout.PostingStatus.Right);
+        Assert.True(layout.BodyText.Height >= 96 * dpi / 96);
+        Assert.True(layout.DragGuidance.Bottom < layout.AssetList.Y);
+        Assert.False(layout.AssetCount.Intersects(layout.AssetsHeading));
         Assert.True(layout.CopyTitle.Right <= client.Width);
         Assert.True(layout.CopyMain.Right <= client.Width);
         Assert.True(layout.PostingAction.Right <= client.Width);
@@ -259,6 +357,41 @@ public sealed class NativeCompanionThemeTests
     }
 
     [Fact]
+    public void ContentAndAssetsShareNormalGrowthAndBoundLargeAndWideWindows()
+    {
+        NativeCompanionLayout minimum = NativeCompanionLayout.Calculate(820, 754, 96, true);
+        NativeCompanionLayout normal = NativeCompanionLayout.Calculate(980, 920, 96, true);
+        NativeCompanionLayout large = NativeCompanionLayout.Calculate(980, 1400, 96, true);
+        NativeCompanionLayout wide = NativeCompanionLayout.Calculate(1600, 920, 96, true);
+
+        Assert.True(normal.BodyText.Height > minimum.BodyText.Height);
+        Assert.True(normal.AssetList.Height > minimum.AssetList.Height);
+        Assert.True(large.BodyText.Height <= 240);
+        Assert.True(large.AssetsCard.Height <= 440);
+        Assert.True(large.Footer.Y - large.AssetsCard.Bottom >= 16);
+        Assert.Equal(1152, wide.PlatformCard.Width);
+        Assert.Equal((1600 - 1152) / 2, wide.PlatformCard.X);
+        Assert.Equal(wide.PlatformCard.X, wide.AssetsCard.X);
+    }
+
+    [Theory]
+    [InlineData("Ready for manual publishing — not marked as posted", "After you publish this post on Patreon, mark it as posted here.")]
+    [InlineData("Marking as posted…", "After you publish this post on Patreon, mark it as posted here.")]
+    [InlineData("Posted — confirmed by you", "")]
+    [InlineData("Confirmation outcome is unknown; retry confirmation", "After you publish this post on Patreon, mark it as posted here.")]
+    [InlineData("Confirmation was rejected because the targeted platform is no longer owned by this preparation session", "Publish manually on the social site, then confirm only the corresponding platform here; retry preparation if the target is no longer available.")]
+    public void PostingStateTextIsMeasuredAndContained(string status, string helper)
+    {
+        NativeCompanionLayout layout = NativeCompanionLayout.Calculate(820, 754, 96, true, status, helper);
+        Assert.True(layout.PostingStatus.Height >= 30);
+        Assert.True(layout.PostingHelper.Y >= layout.PostingStatus.Bottom);
+        Assert.True(layout.PostingHelper.Bottom <= layout.PlatformCard.Bottom - 16);
+        Assert.False(layout.PostingHelper.Intersects(layout.AssetsCard));
+        Assert.False(layout.BodyText.Intersects(layout.PostingStatus));
+        Assert.True(layout.AssetsCard.Bottom <= layout.Footer.Y - 16);
+    }
+
+    [Fact]
     public void ApplicationManifest_ActivatesCommonControlsV6ThroughTheProject()
     {
         string root = FindRepositoryRoot();
@@ -294,7 +427,7 @@ public sealed class NativeCompanionThemeTests
         layout.TitleLabel, layout.TitleText, layout.CopyTitle,
         layout.BodyLabel, layout.BodyText, layout.CopyMain,
         layout.PostingStatus, layout.PostingHelper, layout.PostingAction, layout.PostingAggregate,
-        layout.AssetsCard, layout.AssetsHeading, layout.AssetCount, layout.SelectAll, layout.AssetList,
+        layout.AssetsCard, layout.AssetsHeading, layout.AssetCount, layout.DragGuidance, layout.AssetList,
         layout.Footer, layout.Status, layout.Close,
     ];
 

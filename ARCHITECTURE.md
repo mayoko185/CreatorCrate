@@ -1997,6 +1997,41 @@ High Contrast takes precedence over both palettes and uses system window,
 text, highlight, highlight-text, and disabled-text colors with native focus
 indicators and meaningful status text.
 
+The companion's current A1 hierarchy places compact release identity above one
+Content card, then Assets, then the existing footer. Content begins with its
+integrated platform selector. Patreon title and body, or the X/Bluesky post,
+each put the model-backed Copy button in the field header immediately above the
+reusable WinUI editor. The platform posting status, action, and measured helper
+guidance follow the editor as one bounded group; canonical aggregate completion
+is displayed in a neutral footer row. Native layout keeps the supported 820 by
+754 logical client minimum, shares normal height growth between the post editor
+and Assets, bounds editor and Assets growth on very tall windows, and centers a
+main column capped at 1152 logical pixels on wide windows. A2 removes Select
+All and adds selection count and drag guidance to Assets. B1 owns the ListView
+header, B2A owns responsive columns, B2B owns selection chrome, and C owns final
+button, footer, and native chrome styling.
+
+A1 changes layout and hierarchy only. B2A keeps the native report columns
+responsive to the actual ListView client width: File is the flexible primary
+column, Role, Size, and Status retain compact DPI-scaled widths, and Path/staged
+name remains available within a bounded useful region. If the useful minimums
+exceed the viewport, the existing native horizontal scrolling remains the
+overflow mechanism. Automatic sizing runs only when ListView client geometry or
+DPI changes, so ordinary selection, posting, preview, and platform refreshes do
+not overwrite a manual header-divider adjustment; native column reordering
+remains disabled. B2B keeps the native `LVIS_SELECTED` item state authoritative
+and extends the production ListView custom-draw path without replacing native
+thumbnail or text painting. In dark and light modes, every selected row retains
+a full-row selected surface after keyboard focus leaves the ListView and receives
+a clipped, DPI-scaled CreatorCrate accent edge at the visible client leading edge.
+The edge is decorative only; native focused-item state and system focus painting
+remain separate from selection. High Contrast bypasses the custom selected-row
+surface and accent entirely so Windows supplies system selection and focus colors.
+B2 is complete through B2A and B2B; Package C styling remains unfinished. The real
+Windows one-file drag defect remains unresolved; visual redesign is not
+drag/`CF_HDROP` fix evidence, and drag diagnosis and correction remain a separate
+follow-up package.
+
 The executable embeds the supported Common Controls v6 dependency through its
 MSBuild `ApplicationManifest`; no adjacent arbitrarily named manifest controls
 activation. The raw-Win32 window uses DPI-scaled Segoe UI heading, body/control,
@@ -2006,8 +2041,27 @@ platform ComboBox, action Buttons, status, and native
 asset ListView/report control without changing its keyboard or multiple-selection
 semantics. Native click, Ctrl, Shift, and keyboard selection retain every valid
 visible row by stable ordinal, including an unavailable row explicitly selected
-by the operator; initial selection and Select All remain available-only. Report
+by the operator. All available assets start selected; unavailable assets start
+unselected. The operator adjusts each platform's selection through the native
+ListView, and Assets shows `N of M selected` for all displayed rows plus guidance
+for dragging the selected set or explaining an empty or unavailable selection.
+The real Windows one-file drag defect remains unresolved and separate. Report
 rows expose File, Role, Size, Status, and Path/staged-name text;
+
+The report header remains the ListView-owned native `SysHeader32`, resolved with
+documented `LVM_GETHEADER`; it is not replaced and retains native column and
+accessibility semantics. Because that header sends `WM_NOTIFY` to its immediate
+ListView parent, a narrow ListView subclass routes only the real header's
+`NM_CUSTOMDRAW` notifications to an `NMCUSTOMDRAW` handler, while top-level
+ListView notification validation remains unchanged. Dark and light modes use
+documented prepaint, item-prepaint, and postpaint stages to paint the existing
+labels, restrained dividers and bottom edge, and unused trailing header area
+from companion theme roles. Parent-relative item rectangles are mapped into the
+Header client before that trailing area is calculated; mapping failure skips the
+trailing fill. High Contrast returns to system/native header drawing. B2A owns
+responsive column sizing while B2B still owns selected-row chrome; this header
+work does not address the separate real one-file drag defect or Package C chrome.
+
 the File column now combines that filename with a DPI-scaled native thumbnail or
 purpose-specific placeholder from a 32-bit-alpha ListView ImageList. Image
 previews are extracted with `IShellItemImageFactory` only while one reviewed
