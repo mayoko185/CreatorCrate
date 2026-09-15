@@ -46,6 +46,9 @@ public sealed class WinUiAccessibilityProcessTests
 
         Assert.True(process.ExitCode == 0, $"Exit {process.ExitCode}{Environment.NewLine}{error}{Environment.NewLine}{output}");
         Assert.Contains("production-uia-check=passed", output, StringComparison.Ordinal);
+        Assert.Contains(
+            "selection-items=Patreon,X,Bluesky; selection-item-pattern=true; collapsed-in-finally=true",
+            output, StringComparison.Ordinal);
         Assert.Contains("high-contrast-contract=passed", output, StringComparison.Ordinal);
         Assert.Contains("winui-scaling-enabled=true", output, StringComparison.Ordinal);
         Assert.Contains("minimum-containment=passed", output, StringComparison.Ordinal);

@@ -4,6 +4,7 @@ using System.Text;
 
 namespace OpenLocally.Tests;
 
+[Collection("Native header resource isolation")]
 public sealed class NativeManualPostingConfirmationTests
 {
     [Fact]
@@ -61,11 +62,12 @@ public sealed class NativeManualPostingConfirmationTests
             Assert.True(probe.AssetList.Height > 0);
             Assert.True(probe.DragGuidance.Bottom < probe.AssetList.Y);
             Assert.True(probe.Footer.Y - probe.AssetsCard.Bottom >= gap);
-            AssertWithin(probe.Status, probe.Footer);
+            Assert.Equal(default, probe.Status);
             AssertWithin(probe.Close, probe.Footer);
             AssertWithinClient(probe.Footer, probe.Client);
             Assert.False(probe.AssetList.Intersects(probe.Status));
             Assert.False(probe.AssetList.Intersects(probe.Close));
+            AssertCompactProductionFooter(probe);
         }
     }
 
@@ -85,6 +87,17 @@ public sealed class NativeManualPostingConfirmationTests
         Assert.True(large.AssetsCard.Height <= 440 * large.Dpi / 96);
         Assert.Equal(1152 * wide.Dpi / 96, wide.PlatformCard.Width);
         Assert.Equal((wide.Client.Width - wide.PlatformCard.Width) / 2, wide.PlatformCard.X);
+        AssertCompactProductionFooter(minimum);
+        AssertCompactProductionFooter(normal);
+        AssertCompactProductionFooter(wide);
+
+        string feedback = string.Join(' ', Enumerable.Repeat("status", 24));
+        NativeProductionLayoutProbe wideFeedback = harness.Window.ResizeAndCaptureLayoutForTesting(
+            1, 1600, 920, feedback);
+        Assert.Equal(40 * wideFeedback.Dpi / 96, wideFeedback.Status.Height);
+        Assert.Equal(wideFeedback.PlatformCard.X + 16 * wideFeedback.Dpi / 96, wideFeedback.Status.X);
+        Assert.True(wideFeedback.Status.Right <= wideFeedback.Close.X - 12 * wideFeedback.Dpi / 96);
+        Assert.False(wideFeedback.Status.Intersects(wideFeedback.Close));
 
         foreach ((int index, string platform) in new[] { (1, "patreon"), (0, "x"), (2, "bluesky"), (1, "patreon") })
         {
@@ -144,12 +157,13 @@ public sealed class NativeManualPostingConfirmationTests
         Assert.Equal(ManualPostingConfirmationController.RejectedReason, rejected.StatusText);
         Assert.False(rejected.ShowAction);
         Assert.False(rejected.ActionEnabled);
-        Assert.Equal("2 of 3 platforms marked as posted", rejected.AggregateText);
+        Assert.Equal("2 of 3 platforms marked as posted.", rejected.AggregateText);
     }
 
     [Theory]
-    [InlineData(1, 3, false, "1 of 3 platforms marked as posted")]
-    [InlineData(2, 3, false, "2 of 3 platforms marked as posted")]
+    [InlineData(0, 3, false, "0 of 3 platforms marked as posted.")]
+    [InlineData(1, 3, false, "1 of 3 platforms marked as posted.")]
+    [InlineData(2, 3, false, "2 of 3 platforms marked as posted.")]
     [InlineData(3, 3, true, "All social posts marked as posted.")]
     public void AggregatePresentation_UsesCanonicalServerValues(
         int posted, int total, bool complete, string expected)
@@ -160,8 +174,9 @@ public sealed class NativeManualPostingConfirmationTests
     }
 
     [Theory]
-    [InlineData(1, 3, false, "1 of 3 platforms marked as posted")]
-    [InlineData(2, 3, false, "2 of 3 platforms marked as posted")]
+    [InlineData(0, 3, false, "0 of 3 platforms marked as posted.")]
+    [InlineData(1, 3, false, "1 of 3 platforms marked as posted.")]
+    [InlineData(2, 3, false, "2 of 3 platforms marked as posted.")]
     [InlineData(3, 3, true, "All social posts marked as posted.")]
     public async Task ActualNativeAggregate_UsesCanonicalServerPresentation(
         int posted, int total, bool complete, string expected)
@@ -212,7 +227,7 @@ public sealed class NativeManualPostingConfirmationTests
         held.SetResult(Authoritative("x", "posted", new DateTime(2030, 1, 1), 1, 3, false));
         harness.WaitForPresentation();
         Assert.Equal("Ready for manual publishing — not marked as posted", Text(harness.Window.PostingStatusHandle));
-        Assert.Equal("1 of 3 platforms marked as posted", Text(harness.Window.PostingAggregateHandle));
+        Assert.Equal("1 of 3 platforms marked as posted.", Text(harness.Window.PostingAggregateHandle));
 
         harness.SelectPlatform(0);
         Assert.Equal("Posted — confirmed by you", Text(harness.Window.PostingStatusHandle));
@@ -226,18 +241,21 @@ public sealed class NativeManualPostingConfirmationTests
     {
         using var controller = Controller(new RecordingTransport());
         await using NativeWindowHarness harness = await NativeWindowHarness.StartAsync(controller);
-        IntPtr[] buttons =
+        harness.SelectPlatform(1);
+        (IntPtr Handle, NativeCompanionButtonRole Role)[] buttons =
         [
-            GetDlgItem(harness.Window.WindowHandle, NativeManualPublishingCompanion.NativeWindow.CopyMainId),
-            harness.Window.PostingActionHandle,
-            GetDlgItem(harness.Window.WindowHandle, NativeManualPublishingCompanion.NativeWindow.CloseId),
+            (GetDlgItem(harness.Window.WindowHandle, NativeManualPublishingCompanion.NativeWindow.CopyTitleId), NativeCompanionButtonRole.Secondary),
+            (GetDlgItem(harness.Window.WindowHandle, NativeManualPublishingCompanion.NativeWindow.CopyMainId), NativeCompanionButtonRole.Secondary),
+            (harness.Window.PostingActionHandle, NativeCompanionButtonRole.Primary),
+            (GetDlgItem(harness.Window.WindowHandle, NativeManualPublishingCompanion.NativeWindow.CloseId), NativeCompanionButtonRole.Secondary),
         ];
 
-        foreach (IntPtr button in buttons)
+        foreach ((IntPtr button, NativeCompanionButtonRole role) in buttons)
         {
             var className = new StringBuilder(32);
             Assert.True(GetClassName(button, className, className.Capacity) > 0);
             Assert.Equal("Button", className.ToString());
+            Assert.Equal(role, harness.Window.ButtonRoleForTesting(button));
             Assert.Equal(
                 NativeManualPublishingCompanion.NativeWindow.ProductionButtonStyle,
                 unchecked((uint)GetWindowLongPtr(button, -16).ToInt64()));
@@ -245,6 +263,244 @@ public sealed class NativeManualPostingConfirmationTests
                 NativeManualPublishingCompanion.NativeWindow.ProductionButtonExtendedStyle,
                 unchecked((uint)GetWindowLongPtr(button, -20).ToInt64()));
         }
+    }
+
+    [Fact]
+    public async Task PlatformSelector_RemainsOneNativeComboBoxAcrossSwitchThemeFocusAndDropdownCycles()
+    {
+        using var controller = Controller(new RecordingTransport());
+        await using NativeWindowHarness harness = await NativeWindowHarness.StartAsync(controller);
+
+        NativePlatformComboProbe initial = harness.Window.CapturePlatformComboForTesting();
+        Assert.Equal("ComboBox", initial.ClassName);
+        Assert.Equal(NativeManualPublishingCompanion.NativeWindow.ProductionPlatformRuntimeStyle, initial.Style);
+        Assert.Equal(NativeManualPublishingCompanion.NativeWindow.ProductionPlatformExtendedStyle, initial.ExtendedStyle);
+        Assert.Equal(NativeManualPublishingCompanion.NativeWindow.PlatformId, initial.ControlId);
+        Assert.Equal(harness.Window.WindowHandle, initial.Parent);
+        Assert.Equal(3, initial.ItemCount);
+        Assert.Equal("ComboLBox", initial.ListClassName);
+        Assert.NotEqual(IntPtr.Zero, initial.ListHandle);
+        int initialSelectionFieldHeight = initial.SelectionFieldHeight;
+
+        foreach ((int index, string label) in new[]
+                 {
+                     (1, "Patreon"), (0, "X"), (2, "Bluesky"), (1, "Patreon"),
+                 })
+        {
+            harness.SelectPlatform(index);
+            NativePlatformComboProbe switched = harness.Window.CapturePlatformComboForTesting();
+            Assert.Equal(initial.Handle, switched.Handle);
+            Assert.Equal(index, switched.SelectedIndex);
+            Assert.Equal(label, switched.SelectedText);
+        }
+
+        NativePlatformComboProbe dark = harness.Window.ApplyThemeAndCapturePlatformForTesting(
+            NativeCompanionPalette.Dark, 96);
+        NativePlatformComboProbe light = harness.Window.ApplyThemeAndCapturePlatformForTesting(
+            NativeCompanionPalette.Light, 144);
+        NativePlatformComboProbe highContrast = harness.Window.ApplyThemeAndCapturePlatformForTesting(
+            NativeCompanionPalette.HighContrast, 192);
+        NativePlatformComboProbe darkAgain = harness.Window.ApplyThemeAndCapturePlatformForTesting(
+            NativeCompanionPalette.Dark, 96);
+        Assert.All(new[] { dark, light, highContrast, darkAgain }, probe =>
+        {
+            Assert.Equal(initial.Handle, probe.Handle);
+            Assert.Equal("Patreon", probe.SelectedText);
+            Assert.Equal(initialSelectionFieldHeight, probe.SelectionFieldHeight);
+        });
+        Assert.Equal(NativeCompanionThemeMode.Dark, dark.ThemeMode);
+        Assert.Equal(NativeCompanionThemeMode.Light, light.ThemeMode);
+        Assert.Equal(NativeCompanionThemeMode.HighContrast, highContrast.ThemeMode);
+        Assert.Equal(96, dark.Dpi);
+        Assert.Equal(144, light.Dpi);
+        Assert.Equal(192, highContrast.Dpi);
+        Assert.Equal(32, dark.ListItemHeight);
+        Assert.Equal(48, light.ListItemHeight);
+        Assert.Equal(64, highContrast.ListItemHeight);
+        Assert.Equal(32, darkAgain.ListItemHeight);
+
+        Assert.True(harness.Window.FocusPlatformForTesting().KeyboardFocused);
+        Assert.True(harness.Window.SetPlatformHoverForTesting(hovered: true).Hovered);
+        NativePlatformComboProbe pointerLeft = harness.Window.SetPlatformHoverForTesting(hovered: false);
+        Assert.False(pointerLeft.Hovered);
+        Assert.True(pointerLeft.KeyboardFocused);
+
+        NativePlatformComboProbe open = harness.Window.ShowPlatformDropdownForTesting(show: true);
+        Assert.True(open.Dropped);
+        NativePlatformComboProbe closed = harness.Window.ShowPlatformDropdownForTesting(show: false);
+        Assert.False(closed.Dropped);
+        Assert.Equal("Patreon", closed.SelectedText);
+    }
+
+    [Fact]
+    public async Task PlatformDropdown_RediscoversAndThemesTheLivePopupOnEveryOpening()
+    {
+        using var controller = Controller(new RecordingTransport());
+        await using NativeWindowHarness harness = await NativeWindowHarness.StartAsync(controller);
+        NativePlatformComboProbe initial = harness.Window.CapturePlatformComboForTesting();
+        int selectedIndex = initial.SelectedIndex;
+        string selectedText = initial.SelectedText;
+        var observed = new List<NativePlatformPopupDiscoveryObservation>();
+        var perOpening = new List<NativePlatformPopupDiscoveryObservation>();
+
+        harness.Window.SetPlatformPopupDiscoveryObserverForTesting(observed.Add);
+        try
+        {
+            foreach ((NativeCompanionPalette palette, int dpi, NativeCompanionThemeMode mode) in new[]
+                     {
+                         (NativeCompanionPalette.Dark, 96, NativeCompanionThemeMode.Dark),
+                         (NativeCompanionPalette.Light, 144, NativeCompanionThemeMode.Light),
+                         (NativeCompanionPalette.HighContrast, 192, NativeCompanionThemeMode.HighContrast),
+                         (NativeCompanionPalette.Dark, 96, NativeCompanionThemeMode.Dark),
+                     })
+            {
+                NativePlatformComboProbe themed = harness.Window.ApplyThemeAndCapturePlatformForTesting(palette, dpi);
+                Assert.Equal(initial.Handle, themed.Handle);
+
+                // ApplyTheme also discovers the popup. Exclude that event so only the real
+                // CB_SHOWDROPDOWN -> CBN_DROPDOWN production route can satisfy this assertion.
+                observed.Clear();
+                NativePlatformComboProbe open = harness.Window.ShowPlatformDropdownForTesting(show: true);
+                Assert.True(open.Dropped);
+                NativePlatformPopupDiscoveryObservation observation = Assert.Single(observed);
+
+                ComboBoxInfo actual = new() { cbSize = (uint)Marshal.SizeOf<ComboBoxInfo>() };
+                Assert.True(GetComboBoxInfo(initial.Handle, ref actual));
+                Assert.Equal(initial.Handle, observation.ComboHandle);
+                Assert.Equal(actual.hwndList, observation.PopupHandle);
+                Assert.NotEqual(IntPtr.Zero, observation.PopupHandle);
+                Assert.True(IsWindow(observation.PopupHandle));
+                Assert.Equal("ComboLBox", ClassName(observation.PopupHandle));
+                Assert.Equal(mode, observation.ThemeMode);
+                Assert.True(observation.ThemeApplied);
+                perOpening.Add(observation);
+
+                Assert.False(harness.Window.ShowPlatformDropdownForTesting(show: false).Dropped);
+            }
+        }
+        finally
+        {
+            harness.Window.SetPlatformPopupDiscoveryObserverForTesting(null);
+        }
+
+        Assert.Equal(4, perOpening.Count);
+        Assert.All(perOpening, observation => Assert.Equal(initial.Handle, observation.ComboHandle));
+        Assert.Equal(selectedIndex, harness.Window.CapturePlatformComboForTesting().SelectedIndex);
+        Assert.Equal(selectedText, harness.Window.CapturePlatformComboForTesting().SelectedText);
+    }
+
+    [Theory]
+    [InlineData((int)NativeCompanionThemeMode.Dark, -1, "DarkMode_Explorer", false)]
+    [InlineData((int)NativeCompanionThemeMode.HighContrast, -1, null, false)]
+    [InlineData((int)NativeCompanionThemeMode.HighContrast, 0, null, true)]
+    public async Task PlatformDropdown_ReportsActualNativeThemeOrSystemResetResult(
+        int modeValue, int hresult, string? expectedThemeName, bool expectedApplied)
+    {
+        using var controller = Controller(new RecordingTransport());
+        await using NativeWindowHarness harness = await NativeWindowHarness.StartAsync(controller);
+        NativeCompanionThemeMode mode = (NativeCompanionThemeMode)modeValue;
+        NativeCompanionPalette palette = mode == NativeCompanionThemeMode.Dark
+            ? NativeCompanionPalette.Dark
+            : NativeCompanionPalette.HighContrast;
+        var nativeCalls = new List<(IntPtr Handle, string? ThemeName)>();
+        var observed = new List<NativePlatformPopupDiscoveryObservation>();
+
+        harness.Window.SetPlatformPopupDiscoveryObserverForTesting(observed.Add);
+        try
+        {
+            harness.Window.ApplyThemeAndCapturePlatformForTesting(
+                palette,
+                96,
+                (handle, themeName, _) =>
+                {
+                    nativeCalls.Add((handle, themeName));
+                    return hresult;
+                });
+            observed.Clear();
+            nativeCalls.Clear();
+
+            Assert.True(harness.Window.ShowPlatformDropdownForTesting(show: true).Dropped);
+            NativePlatformPopupDiscoveryObservation observation = Assert.Single(observed);
+            (IntPtr Handle, string? ThemeName) nativeCall = Assert.Single(nativeCalls);
+
+            Assert.Equal(observation.PopupHandle, nativeCall.Handle);
+            Assert.Equal(expectedThemeName, nativeCall.ThemeName);
+            Assert.Equal(mode, observation.ThemeMode);
+            Assert.Equal(expectedApplied, observation.ThemeApplied);
+            Assert.False(harness.Window.ShowPlatformDropdownForTesting(show: false).Dropped);
+        }
+        finally
+        {
+            harness.Window.SetPlatformPopupDiscoveryObserverForTesting(null);
+        }
+    }
+
+    [Fact]
+    public async Task ProductionButtons_DarkLightDarkThemeSwitchPreservesEveryNativeHandleAndRole()
+    {
+        using var controller = Controller(new RecordingTransport());
+        await using NativeWindowHarness harness = await NativeWindowHarness.StartAsync(controller);
+
+        IReadOnlyList<IntPtr> dark = harness.Window.ApplyThemeAndCaptureButtonHandlesForTesting(
+            NativeCompanionPalette.Dark);
+        IReadOnlyList<IntPtr> light = harness.Window.ApplyThemeAndCaptureButtonHandlesForTesting(
+            NativeCompanionPalette.Light);
+        IReadOnlyList<IntPtr> darkAgain = harness.Window.ApplyThemeAndCaptureButtonHandlesForTesting(
+            NativeCompanionPalette.Dark);
+
+        Assert.Equal(dark, light);
+        Assert.Equal(dark, darkAgain);
+        Assert.Equal(
+            [NativeCompanionButtonRole.Secondary, NativeCompanionButtonRole.Secondary,
+             NativeCompanionButtonRole.Primary, NativeCompanionButtonRole.Secondary],
+            dark.Select(button => harness.Window.ButtonRoleForTesting(button)!.Value));
+        Assert.All(dark, button => Assert.Equal("Button", ClassName(button)));
+    }
+
+    [Fact]
+    public async Task OwnerDrawRouting_RequiresExactProductionTypeIdHandleAndParent()
+    {
+        using var controller = Controller(new RecordingTransport());
+        await using NativeWindowHarness harness = await NativeWindowHarness.StartAsync(controller);
+        harness.SelectPlatform(1);
+
+        IntPtr window = harness.Window.WindowHandle;
+        IntPtr platform = harness.Window.PlatformHandle;
+        IntPtr copyTitle = GetDlgItem(window, NativeManualPublishingCompanion.NativeWindow.CopyTitleId);
+        IntPtr copyMain = GetDlgItem(window, NativeManualPublishingCompanion.NativeWindow.CopyMainId);
+        IntPtr posting = harness.Window.PostingActionHandle;
+        IntPtr close = GetDlgItem(window, NativeManualPublishingCompanion.NativeWindow.CloseId);
+
+        Assert.Equal(NativeCompanionOwnerDrawTarget.PlatformCombo,
+            harness.Window.OwnerDrawTargetForTesting(3, NativeManualPublishingCompanion.NativeWindow.PlatformId, platform));
+        Assert.Equal(NativeCompanionOwnerDrawTarget.PrimaryButton,
+            harness.Window.OwnerDrawTargetForTesting(4, NativeManualPublishingCompanion.NativeWindow.PostingConfirmationId, posting));
+        Assert.Equal(NativeCompanionOwnerDrawTarget.SecondaryButton,
+            harness.Window.OwnerDrawTargetForTesting(4, NativeManualPublishingCompanion.NativeWindow.CopyTitleId, copyTitle));
+        Assert.Equal(NativeCompanionOwnerDrawTarget.SecondaryButton,
+            harness.Window.OwnerDrawTargetForTesting(4, NativeManualPublishingCompanion.NativeWindow.CopyMainId, copyMain));
+        Assert.Equal(NativeCompanionOwnerDrawTarget.SecondaryButton,
+            harness.Window.OwnerDrawTargetForTesting(4, NativeManualPublishingCompanion.NativeWindow.CloseId, close));
+
+        Assert.Null(harness.Window.OwnerDrawTargetForTesting(
+            4, NativeManualPublishingCompanion.NativeWindow.PostingConfirmationId, platform));
+        Assert.Null(harness.Window.OwnerDrawTargetForTesting(
+            4, NativeManualPublishingCompanion.NativeWindow.CopyTitleId, posting));
+        Assert.Null(harness.Window.OwnerDrawTargetForTesting(
+            4, NativeManualPublishingCompanion.NativeWindow.PostingConfirmationId, copyTitle));
+        Assert.Null(harness.Window.OwnerDrawTargetForTesting(
+            4, NativeManualPublishingCompanion.NativeWindow.CloseId, posting));
+        Assert.Null(harness.Window.OwnerDrawTargetForTesting(4, 999, platform));
+        Assert.Null(harness.Window.OwnerDrawTargetForTesting(
+            1, NativeManualPublishingCompanion.NativeWindow.PostingConfirmationId, posting));
+        Assert.Null(harness.Window.OwnerDrawTargetForTesting(
+            3, NativeManualPublishingCompanion.NativeWindow.PlatformId, posting));
+        Assert.Null(harness.Window.OwnerDrawTargetForTesting(
+            3, NativeManualPublishingCompanion.NativeWindow.CopyMainId, platform));
+        Assert.Null(harness.Window.OwnerDrawTargetForTesting(
+            4, NativeManualPublishingCompanion.NativeWindow.CloseId, window));
+        Assert.Null(harness.Window.OwnerDrawTargetForTesting(
+            4, NativeManualPublishingCompanion.NativeWindow.CloseId, IntPtr.Zero));
     }
 
     [Fact]
@@ -347,6 +603,8 @@ public sealed class NativeManualPostingConfirmationTests
         Assert.Equal("Confirmation not received. Retry.", Text(harness.Window.PostingStatusHandle));
         Assert.Equal("Retry confirmation", Text(harness.Window.PostingActionHandle));
         Assert.True(IsWindowEnabled(harness.Window.PostingActionHandle));
+        Assert.Equal(NativeCompanionButtonRole.Primary,
+            harness.Window.ButtonRoleForTesting(harness.Window.PostingActionHandle));
 
         SendMessage(harness.Window.PostingActionHandle, BmClick, IntPtr.Zero, IntPtr.Zero);
         Assert.Equal(ManualPostingConfirmationStatus.Confirming, controller.GetState("x").Status);
@@ -611,9 +869,40 @@ public sealed class NativeManualPostingConfirmationTests
         Assert.True(actual.Right <= client.Width && actual.Bottom <= client.Height);
     }
 
+    private static void AssertCompactProductionFooter(NativeProductionLayoutProbe probe)
+    {
+        Assert.Equal(60 * probe.Dpi / 96, probe.Footer.Height);
+        Assert.Equal(16 * probe.Dpi / 96, probe.PostingAggregate.X - probe.PlatformCard.X);
+        Assert.Equal(16 * probe.Dpi / 96, probe.PlatformCard.Right - probe.Close.Right);
+        Assert.Equal(12 * probe.Dpi / 96, probe.Close.Y - probe.Footer.Y);
+        Assert.Equal(default, probe.Status);
+        Assert.False(probe.PostingAggregate.Intersects(probe.Close));
+    }
+
     private const uint BmClick = 0x00F5, CbSetCurSel = 0x014E, WmClose = 0x0010,
         WmCommand = 0x0111, WmKeyDown = 0x0100;
     private const int CbnSelChange = 1, VkEscape = 0x1B;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ComboRect
+    {
+        public int left;
+        public int top;
+        public int right;
+        public int bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ComboBoxInfo
+    {
+        public uint cbSize;
+        public ComboRect rcItem;
+        public ComboRect rcButton;
+        public uint stateButton;
+        public IntPtr hwndCombo;
+        public IntPtr hwndItem;
+        public IntPtr hwndList;
+    }
 
     [DllImport("user32.dll", EntryPoint = "SendMessageW", ExactSpelling = true)]
     private static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
@@ -621,6 +910,8 @@ public sealed class NativeManualPostingConfirmationTests
     private static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")] private static extern bool IsWindowEnabled(IntPtr window);
     [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr window);
+    [DllImport("user32.dll")] private static extern bool GetComboBoxInfo(IntPtr combo, ref ComboBoxInfo info);
     [DllImport("user32.dll")] private static extern IntPtr GetDlgItem(IntPtr parent, int id);
     [DllImport("user32.dll", EntryPoint = "GetClassNameW", CharSet = CharSet.Unicode, ExactSpelling = true)]
     private static extern int GetClassName(IntPtr window, StringBuilder className, int maximumCount);

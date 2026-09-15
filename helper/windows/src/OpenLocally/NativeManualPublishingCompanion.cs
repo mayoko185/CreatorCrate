@@ -6,6 +6,7 @@ using Microsoft.UI.Xaml.Controls;
 namespace OpenLocally;
 
 internal enum ManualCopyCommand { Title, Body, Post }
+internal enum NativeCompanionOwnerDrawTarget { PlatformCombo, PrimaryButton, SecondaryButton }
 
 internal enum ManualCompanionLifecycleState { Initializing, Ready, ClosingOrClosed, Failed }
 
@@ -95,6 +96,17 @@ internal sealed record NativeProductionKeyboardProbe(
 internal sealed record NativePostingActionProbe(
     IntPtr Handle, string Text, bool IsWindow, bool Visible, bool Enabled, bool HasKeyboardFocus);
 
+internal sealed record NativePlatformComboProbe(
+    IntPtr Handle, string ClassName, uint Style, uint ExtendedStyle,
+    int ControlId, IntPtr Parent, string SelectedText, int SelectedIndex, int ItemCount,
+    IntPtr ListHandle, string ListClassName, bool KeyboardFocused, bool Dropped,
+    bool Hovered, NativeCompanionThemeMode ThemeMode, int Dpi,
+    int ListItemHeight, int SelectionFieldHeight);
+
+internal sealed record NativePlatformPopupDiscoveryObservation(
+    IntPtr ComboHandle, IntPtr PopupHandle, NativeCompanionThemeMode ThemeMode,
+    bool ThemeApplied);
+
 /// <summary>Maps controller-owned state to safe native control text without adding confirmation decisions.</summary>
 internal static class ManualPostingConfirmationPresentationMapper
 {
@@ -106,7 +118,7 @@ internal static class ManualPostingConfirmationPresentationMapper
         string aggregate = completion switch
         {
             { IsComplete: true } => "All social posts marked as posted.",
-            { } value => $"{value.PostedCount} of {value.TotalCount} platforms marked as posted",
+            { } value => $"{value.PostedCount} of {value.TotalCount} platforms marked as posted.",
             _ => string.Empty,
         };
 
@@ -559,9 +571,9 @@ internal sealed class NativeManualPublishingCompanion :
         private const uint WM_NCCREATE = 0x0081, WM_SIZE = 0x0005, WM_SETFOCUS = 0x0007, WM_KILLFOCUS = 0x0008,
             WM_GETMINMAXINFO = 0x0024, WM_COMMAND = 0x0111, WM_NOTIFY = 0x004E, WM_CLOSE = 0x0010, WM_DESTROY = 0x0002,
             WM_SETFONT = 0x0030, WM_KEYDOWN = 0x0100, WM_PAINT = 0x000F,
-            WM_MOUSEMOVE = 0x0200, WM_MOUSELEAVE = 0x02A3,
+            WM_LBUTTONDOWN = 0x0201, WM_LBUTTONUP = 0x0202, WM_MOUSEMOVE = 0x0200, WM_MOUSELEAVE = 0x02A3,
             WM_ERASEBKGND = 0x0014, WM_DRAWITEM = 0x002B, WM_MEASUREITEM = 0x002C,
-            WM_CTLCOLORSTATIC = 0x0138,
+            WM_CTLCOLORSTATIC = 0x0138, WM_CTLCOLORLISTBOX = 0x0134,
             WM_SETTINGCHANGE = 0x001A, WM_SYSCOLORCHANGE = 0x0015, WM_THEMECHANGED = 0x031A, WM_DPICHANGED = 0x02E0;
         internal const uint ProductionWindowStyle = 0x00CF0000; // WS_OVERLAPPEDWINDOW
         internal const uint ProductionWindowExtendedStyle = 0;
@@ -572,11 +584,18 @@ internal sealed class NativeManualPublishingCompanion :
             LVS_REPORT = 0x0001, LVS_SHOWSELALWAYS = 0x0008;
         internal const uint ProductionButtonStyle = WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW;
         internal const uint ProductionButtonExtendedStyle = 0;
+        internal const uint ProductionPlatformStyle = WS_CHILD | WS_VISIBLE | WS_TABSTOP |
+            CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL;
+        // USER32 owns the popup ListBox scrollbar and normalizes WS_VSCROLL off the ComboBox HWND.
+        internal const uint ProductionPlatformRuntimeStyle = ProductionPlatformStyle & ~WS_VSCROLL;
+        internal const uint ProductionPlatformExtendedStyle = 0;
         internal const uint AssetListStyle = WS_TABSTOP | WS_BORDER | WS_HSCROLL | WS_VSCROLL | LVS_REPORT | LVS_SHOWSELALWAYS;
         internal const uint AssetListExtendedStyle = 0x00000020 | 0x00010000; // LVS_EX_FULLROWSELECT | LVS_EX_DOUBLEBUFFER
         private const int SW_SHOW = 5, SW_HIDE = 0, VK_ESCAPE = 0x1B, VK_RETURN = 0x0D, VK_TAB = 0x09,
-            GWLP_USERDATA = -21, CBN_SELCHANGE = 1;
-        private const uint OdsSelected = 0x0001, OdsDisabled = 0x0004, OdsFocus = 0x0010,
+            GWLP_USERDATA = -21, GWL_STYLE = -16, GWL_EXSTYLE = -20,
+            CBN_SELCHANGE = 1, CBN_DROPDOWN = 7, CBN_CLOSEUP = 8;
+        private const uint OdtComboBox = 3, OdtButton = 4,
+            OdsSelected = 0x0001, OdsDisabled = 0x0004, OdsFocus = 0x0010,
             DtCenter = 0x00000001, DtVCenter = 0x00000004, DtSingleLine = 0x00000020,
             DtNoPrefix = 0x00000800, DtEndEllipsis = 0x00008000,
             TmeLeave = 0x00000002,
@@ -585,8 +604,12 @@ internal sealed class NativeManualPublishingCompanion :
             CdrfNotifyPostpaint = 0x00000010, CdrfNotifyItemDraw = 0x00000020,
             CddsPrepaint = 0x00000001, CddsPostpaint = 0x00000002,
             CddsItemPrepaint = 0x00010001, CddsItemPostpaint = 0x00010002;
-        private const uint BM_CLICK = 0x00F5, CB_ADDSTRING = 0x0143, CB_GETCURSEL = 0x0147, CB_GETLBTEXT = 0x0148,
-            CB_GETLBTEXTLEN = 0x0149, CB_SETCURSEL = 0x014E,
+        private const uint DfcButton = 4, DfcsButtonPush = 0x0010, DfcsInactive = 0x0100,
+            DfcsPushed = 0x0200, DfcsHot = 0x1000;
+        private const uint BM_CLICK = 0x00F5, CB_GETCOUNT = 0x0146, CB_ADDSTRING = 0x0143,
+            CB_GETCURSEL = 0x0147, CB_GETLBTEXT = 0x0148, CB_GETLBTEXTLEN = 0x0149,
+            CB_SETCURSEL = 0x014E, CB_SHOWDROPDOWN = 0x014F, CB_SETITEMHEIGHT = 0x0153,
+            CB_GETITEMHEIGHT = 0x0154, CB_GETDROPPEDSTATE = 0x0157,
             LVM_FIRST = 0x1000, LVM_GETITEM = LVM_FIRST + 75, LVM_INSERTITEM = LVM_FIRST + 77,
             LVM_DELETEALLITEMS = LVM_FIRST + 9, LVM_GETITEMCOUNT = LVM_FIRST + 4,
             LVM_GETSELECTEDCOUNT = LVM_FIRST + 50, LVM_GETNEXTITEM = LVM_FIRST + 12,
@@ -611,6 +634,7 @@ internal sealed class NativeManualPublishingCompanion :
         internal const int CloseId = 208, PostingConfirmationId = 209;
         private static readonly WindowProc Procedure = WindowProcedure;
         private static readonly SubclassProc ButtonProcedure = ButtonWindowProcedure;
+        private static readonly SubclassProc PlatformComboProcedure = PlatformComboWindowProcedure;
         private static readonly SubclassProc AssetListProcedure = AssetListWindowProcedure;
 
         private readonly WindowState _state;
@@ -632,6 +656,8 @@ internal sealed class NativeManualPublishingCompanion :
         private WinUiTextSurfaceHost? _winUiTextSurfaces;
         private StatusKind _statusKind;
         private bool _suppressAssetNotifications;
+        private bool _aggregateComplete;
+        private bool _platformHovered;
         private IntPtr _window;
         private IntPtr _imageList;
         private long _previewGeneration;
@@ -647,6 +673,7 @@ internal sealed class NativeManualPublishingCompanion :
         private Action<uint, IntPtr>? _headerDrawObserver;
         private Action<NativeHeaderPostpaintProbe>? _headerPostpaintObserver;
         private Action<NativeListViewRowDrawProbe>? _listViewDrawObserver;
+        private Action<NativePlatformPopupDiscoveryObservation>? _platformPopupDiscoveryObserver;
 
         public NativeWindow(
             ManualPublishingCompanionModel model, ManualCompanionLifecycle? lifecycle = null,
@@ -704,12 +731,91 @@ internal sealed class NativeManualPublishingCompanion :
         internal IntPtr DragGuidanceHandle => _state.DragGuidance;
         internal event Action? PostingPresentationChanged;
 
+        internal NativePlatformComboProbe CapturePlatformComboForTesting() =>
+            RunOnUiThreadForTesting(CapturePlatformComboCore);
+
+        internal NativePlatformComboProbe ApplyThemeAndCapturePlatformForTesting(
+            NativeCompanionPalette palette, int dpi,
+            Func<IntPtr, string?, string?, int>? setWindowTheme = null) =>
+            RunOnUiThreadForTesting(() =>
+            {
+                ApplyThemeForTesting(palette, dpi, setWindowTheme);
+                return CapturePlatformComboCore();
+            });
+
+        internal NativePlatformComboProbe ShowPlatformDropdownForTesting(bool show) =>
+            RunOnUiThreadForTesting(() =>
+            {
+                SendMessage(_state.Platform, CB_SHOWDROPDOWN, new IntPtr(show ? 1 : 0), IntPtr.Zero);
+                return CapturePlatformComboCore();
+            });
+
+        internal NativePlatformComboProbe FocusPlatformForTesting() =>
+            RunOnUiThreadForTesting(() =>
+            {
+                SetFocus(_state.Platform);
+                return CapturePlatformComboCore();
+            });
+
+        internal NativePlatformComboProbe SetPlatformHoverForTesting(bool hovered) =>
+            RunOnUiThreadForTesting(() =>
+            {
+                SendMessage(_state.Platform, hovered ? WM_MOUSEMOVE : WM_MOUSELEAVE, IntPtr.Zero, IntPtr.Zero);
+                return CapturePlatformComboCore();
+            });
+
+        private NativePlatformComboProbe CapturePlatformComboCore()
+        {
+            IntPtr combo = _state.Platform;
+            ComboBoxInfo info = new() { cbSize = (uint)Marshal.SizeOf<ComboBoxInfo>() };
+            if (!GetComboBoxInfo(combo, ref info)) throw NativeFailure();
+            int selected = unchecked((int)SendMessage(combo, CB_GETCURSEL, IntPtr.Zero, IntPtr.Zero).ToInt64());
+            int count = unchecked((int)SendMessage(combo, CB_GETCOUNT, IntPtr.Zero, IntPtr.Zero).ToInt64());
+            return new NativePlatformComboProbe(
+                combo, WindowClassName(combo),
+                unchecked((uint)GetWindowLongPtr(combo, GWL_STYLE).ToInt64()),
+                unchecked((uint)GetWindowLongPtr(combo, GWL_EXSTYLE).ToInt64()),
+                GetDlgCtrlID(combo), GetParent(combo), ComboItemText(combo, uint.MaxValue), selected, count,
+                info.hwndList, WindowClassName(info.hwndList), GetFocus() == combo,
+                SendMessage(combo, CB_GETDROPPEDSTATE, IntPtr.Zero, IntPtr.Zero) != IntPtr.Zero,
+                _platformHovered, _theme?.Palette.Mode ?? NativeCompanionThemeMode.Light,
+                _theme?.Dpi ?? DpiForWindow(_window),
+                unchecked((int)SendMessage(combo, CB_GETITEMHEIGHT, IntPtr.Zero, IntPtr.Zero).ToInt64()),
+                unchecked((int)SendMessage(combo, CB_GETITEMHEIGHT, new IntPtr(-1), IntPtr.Zero).ToInt64()));
+        }
+
+        internal void SetPlatformPopupDiscoveryObserverForTesting(
+            Action<NativePlatformPopupDiscoveryObservation>? observer) =>
+            RunOnUiThreadForTesting(() =>
+            {
+                _platformPopupDiscoveryObserver = observer;
+                return true;
+            });
+
+        internal NativeCompanionOwnerDrawTarget? OwnerDrawTargetForTesting(
+            uint controlType, uint controlId, IntPtr itemWindow) =>
+            ResolveOwnerDrawTarget(controlType, controlId, itemWindow);
+
+        internal NativeCompanionButtonRole? ButtonRoleForTesting(IntPtr button)
+        {
+            int controlId = GetDlgCtrlID(button);
+            NativeCompanionOwnerDrawTarget? target = ResolveOwnerDrawTarget(
+                OdtButton, unchecked((uint)controlId), button);
+            return target switch
+            {
+                NativeCompanionOwnerDrawTarget.PrimaryButton => NativeCompanionButtonRole.Primary,
+                NativeCompanionOwnerDrawTarget.SecondaryButton => NativeCompanionButtonRole.Secondary,
+                _ => null,
+            };
+        }
+
         internal NativeProductionLayoutProbe ResizeToMinimumAndCaptureLayoutForTesting(int platformIndex) =>
             RunOnUiThreadForTesting(() => ResizeToMinimumAndCaptureLayoutCore(platformIndex));
 
         internal NativeProductionLayoutProbe ResizeAndCaptureLayoutForTesting(
-            int platformIndex, int logicalWidth, int logicalHeight) =>
-            RunOnUiThreadForTesting(() => ResizeAndCaptureLayoutCore(platformIndex, logicalWidth, logicalHeight));
+            int platformIndex, int logicalWidth, int logicalHeight, string operationalStatusText = "") =>
+            RunOnUiThreadForTesting(() => ResizeAndCaptureLayoutCore(
+                platformIndex, logicalWidth, logicalHeight, operationalStatusText: operationalStatusText));
 
         private NativeProductionLayoutProbe ResizeToMinimumAndCaptureLayoutCore(int platformIndex)
         {
@@ -730,11 +836,14 @@ internal sealed class NativeManualPublishingCompanion :
         }
 
         private NativeProductionLayoutProbe ResizeAndCaptureLayoutCore(
-            int platformIndex, int logicalWidth, int logicalHeight, NativeLayoutSize? minimumTrack = null)
+            int platformIndex, int logicalWidth, int logicalHeight, NativeLayoutSize? minimumTrack = null,
+            string operationalStatusText = "")
         {
             if (_window == IntPtr.Zero) throw new InvalidOperationException("The production companion window is not running.");
             SendMessage(_state.Platform, CB_SETCURSEL, new IntPtr(platformIndex), IntPtr.Zero);
-            HandleCommand(PlatformId, CBN_SELCHANGE);
+            HandleCommand(PlatformId, CBN_SELCHANGE, _state.Platform);
+            if (!string.IsNullOrEmpty(operationalStatusText))
+                SetStatus(operationalStatusText, StatusKind.Neutral);
             int dpi = DpiForWindow(_window);
             NativeLayoutSize outer = OuterSizeForLogicalClient(logicalWidth, logicalHeight, dpi);
             if (!SetWindowPos(_window, IntPtr.Zero, 0, 0, outer.Width, outer.Height, SwpNoZOrder | SwpNoActivate))
@@ -770,7 +879,7 @@ internal sealed class NativeManualPublishingCompanion :
             RunOnUiThreadForTesting(() =>
             {
                 SendMessage(_state.Platform, CB_SETCURSEL, new IntPtr(platformIndex), IntPtr.Zero);
-                HandleCommand(PlatformId, CBN_SELCHANGE);
+                HandleCommand(PlatformId, CBN_SELCHANGE, _state.Platform);
                 WinUiTextSurfaceHost host = _winUiTextSurfaces ??
                     throw new InvalidOperationException("Production WinUI text surfaces are not running.");
                 return new NativeProductionTextSurfaceProbe(
@@ -939,7 +1048,7 @@ internal sealed class NativeManualPublishingCompanion :
         private void SelectPlatformForKeyboardProbe(int platformIndex)
         {
             SendMessage(_state.Platform, CB_SETCURSEL, new IntPtr(platformIndex), IntPtr.Zero);
-            HandleCommand(PlatformId, CBN_SELCHANGE);
+            HandleCommand(PlatformId, CBN_SELCHANGE, _state.Platform);
         }
 
         private bool FocusWithin(IntPtr parent)
@@ -1023,13 +1132,26 @@ internal sealed class NativeManualPublishingCompanion :
                 return true;
             });
 
-        internal void ApplyThemeForTesting(NativeCompanionPalette palette, int dpi)
+        internal void ApplyThemeForTesting(
+            NativeCompanionPalette palette,
+            int dpi,
+            Func<IntPtr, string?, string?, int>? setWindowTheme = null)
         {
             NativeCompanionTheme? previous = _theme;
-            _theme = new NativeCompanionTheme(dpi, palette);
+            _theme = setWindowTheme is null
+                ? new NativeCompanionTheme(dpi, palette)
+                : new NativeCompanionTheme(dpi, palette, setWindowTheme);
             try { ApplyTheme(); }
             finally { previous?.Dispose(); }
         }
+
+        internal IReadOnlyList<IntPtr> ApplyThemeAndCaptureButtonHandlesForTesting(
+            NativeCompanionPalette palette) =>
+            RunOnUiThreadForTesting(() =>
+            {
+                ApplyThemeForTesting(palette, DpiForWindow(_window));
+                return (IReadOnlyList<IntPtr>)_state.Buttons.ToArray();
+            });
 
         internal void DisposeThemeForTesting()
         {
@@ -1169,6 +1291,7 @@ internal sealed class NativeManualPublishingCompanion :
             }
             finally
             {
+                _platformPopupDiscoveryObserver = null;
                 DisposeWinUiTextSurfaces();
                 _ole?.Dispose();
                 _ole = null;
@@ -1248,7 +1371,9 @@ internal sealed class NativeManualPublishingCompanion :
             _state.HeaderMetadata = Child("Static", HeaderMetadataText(), 0, 0, instance);
             _state.PlatformHeading = Child("Static", "CONTENT", 0, 0, instance);
             _state.PlatformLabel = Child("Static", "Platform:", 0, 0, instance);
-            _state.Platform = Child("ComboBox", string.Empty, WS_TABSTOP | CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL, PlatformId, instance);
+            _state.Platform = Child("ComboBox", string.Empty,
+                WS_TABSTOP | CBS_DROPDOWNLIST | CBS_OWNERDRAWFIXED | CBS_HASSTRINGS | WS_VSCROLL,
+                PlatformId, instance);
             _state.TitleLabel = Child("Static", "Title:", 0, 0, instance);
             _state.CopyTitle = Child("Button", "Copy title", WS_TABSTOP | BS_OWNERDRAW, CopyTitleId, instance);
             _state.BodyLabel = Child("Static", "Body:", 0, 0, instance);
@@ -1272,6 +1397,8 @@ internal sealed class NativeManualPublishingCompanion :
             foreach (IntPtr button in _state.Buttons)
                 if (!SetWindowSubclass(button, ButtonProcedure, UIntPtr.Zero, IntPtr.Zero))
                     throw NativeFailure();
+            if (!SetWindowSubclass(_state.Platform, PlatformComboProcedure, UIntPtr.Zero, IntPtr.Zero))
+                throw NativeFailure();
             ConfigureAssetList(_state.AssetList, _theme?.Dpi ?? SystemDpi());
             if (ResolveAssetHeader() == IntPtr.Zero) throw NativeFailure();
             AttachAssetHeaderNotifications();
@@ -1575,6 +1702,7 @@ internal sealed class NativeManualPublishingCompanion :
                 SetWindowText(_state.Status, message);
                 InvalidateRect(_state.Status, IntPtr.Zero, true);
             }
+            Layout();
         }
 
         private void RefreshPostingConfirmation()
@@ -1587,6 +1715,7 @@ internal sealed class NativeManualPublishingCompanion :
             SetWindowText(_state.PostingHelper, presentation.HelperText);
             SetWindowText(_state.PostingAction, presentation.ActionText);
             SetWindowText(_state.PostingAggregate, presentation.AggregateText);
+            _aggregateComplete = _confirmation.Completion?.IsComplete == true;
             ShowWindow(_state.PostingAction, presentation.ShowAction ? SW_SHOW : SW_HIDE);
             EnableWindow(_state.PostingAction, presentation.ActionEnabled);
             foreach (IntPtr control in new[]
@@ -1626,12 +1755,23 @@ internal sealed class NativeManualPublishingCompanion :
                 PostMessage(window, PostingConfirmationCompletedMessage, IntPtr.Zero, IntPtr.Zero);
         }
 
-        private void HandleCommand(int id, int notification)
+        private void HandleCommand(int id, int notification, IntPtr control)
         {
-            if (id == PlatformId && notification == CBN_SELCHANGE)
+            if (id == PlatformId && control != _state.Platform) return;
+            if (id == PlatformId && notification is CBN_DROPDOWN or CBN_CLOSEUP)
+            {
+                if (notification == CBN_DROPDOWN) ApplyCurrentPlatformPopupTheme();
+                InvalidateRect(_state.Platform, IntPtr.Zero, false);
+            }
+            else if (id == PlatformId && notification == CBN_SELCHANGE)
             {
                 int index = unchecked((int)SendMessage(_state.Platform, CB_GETCURSEL, IntPtr.Zero, IntPtr.Zero).ToInt64());
-                if (index >= 0) { _state.Model.SelectPlatform(index); RefreshPlatform(); }
+                if (index >= 0)
+                {
+                    _state.Model.SelectPlatform(index);
+                    RefreshPlatform();
+                    InvalidateRect(_state.Platform, IntPtr.Zero, false);
+                }
             }
             else if (CopyCommandForControl(id, _state.Model.IsPatreon) is ManualCopyCommand command) Copy(command);
             else if (IsPostingConfirmationCommand(id)) BeginPostingConfirmation();
@@ -1772,6 +1912,8 @@ internal sealed class NativeManualPublishingCompanion :
                          _state.PostingAction, _state.Close })
                 ApplyFont(control, NativeCompanionFontRole.Body);
             _theme.ApplyControlChrome(_state.Platform, NativeCompanionChromeRole.Combo);
+            ApplyPlatformListItemHeight();
+            ApplyCurrentPlatformPopupTheme();
             _theme.ApplyControlChrome(_state.AssetList, NativeCompanionChromeRole.ListView);
             IntPtr header = ResolveAssetHeader();
             _theme.ApplyControlChrome(header, NativeCompanionChromeRole.ListViewHeader);
@@ -1781,6 +1923,29 @@ internal sealed class NativeManualPublishingCompanion :
             InvalidateRect(_window, IntPtr.Zero, true);
             foreach (IntPtr control in _state.Controls) InvalidateRect(control, IntPtr.Zero, true);
             if (header != IntPtr.Zero) InvalidateRect(header, IntPtr.Zero, true);
+        }
+
+        private void ApplyPlatformListItemHeight()
+        {
+            if (_theme is null || _state.Platform == IntPtr.Zero || !IsWindow(_state.Platform)) return;
+            SendMessage(_state.Platform, CB_SETITEMHEIGHT, IntPtr.Zero,
+                new IntPtr(NativeCompanionTheme.ComboItemHeight(_theme.Dpi)));
+        }
+
+        private IntPtr ApplyCurrentPlatformPopupTheme()
+        {
+            if (_theme is null || _state.Platform == IntPtr.Zero || !IsWindow(_state.Platform))
+                return IntPtr.Zero;
+            ComboBoxInfo comboInfo = new() { cbSize = (uint)Marshal.SizeOf<ComboBoxInfo>() };
+            if (!GetComboBoxInfo(_state.Platform, ref comboInfo)) return IntPtr.Zero;
+            IntPtr popup = comboInfo.hwndList;
+            if (popup == IntPtr.Zero || !IsWindow(popup) || WindowClassName(popup) != "ComboLBox")
+                return IntPtr.Zero;
+            bool themeApplied = _theme.ApplyControlChrome(popup, NativeCompanionChromeRole.ListView);
+            _platformPopupDiscoveryObserver?.Invoke(new NativePlatformPopupDiscoveryObservation(
+                _state.Platform, popup, _theme.Palette.Mode, themeApplied));
+            InvalidateRect(popup, IntPtr.Zero, true);
+            return popup;
         }
 
         private IntPtr ResolveAssetHeader()
@@ -1988,13 +2153,24 @@ internal sealed class NativeManualPublishingCompanion :
         {
             if (_theme is null) return IntPtr.Zero;
             NativeCompanionPalette palette = _theme.Palette;
-            int background = control == _state.Status ? palette.Surface :
+            if (message == WM_CTLCOLORLISTBOX)
+            {
+                ComboBoxInfo info = new() { cbSize = (uint)Marshal.SizeOf<ComboBoxInfo>() };
+                if (!GetComboBoxInfo(_state.Platform, ref info) || control != info.hwndList)
+                    return IntPtr.Zero;
+                int listBackground = palette.Mode == NativeCompanionThemeMode.HighContrast
+                    ? palette.Page : palette.Surface;
+                return _theme.PrepareTextDevice(device, palette.Text, listBackground);
+            }
+            int background = control == _state.Status || control == _state.PostingAggregate ? palette.Surface :
                 control == _state.Header || control == _state.HeaderMetadata ? palette.Page : palette.Card;
             int text = control == _state.HeaderMetadata || control == _state.AssetCount || control == _state.DragGuidance || control == _state.PlatformHeading ||
                 control == _state.AssetLabel || control == _state.PlatformLabel || control == _state.TitleLabel ||
                 control == _state.BodyLabel ? palette.MutedText : palette.Text;
             if (control == _state.Status && palette.Mode != NativeCompanionThemeMode.HighContrast)
                 text = _statusKind == StatusKind.Success ? palette.Success : _statusKind == StatusKind.Error ? palette.Danger : palette.MutedText;
+            if (control == _state.PostingAggregate && palette.Mode != NativeCompanionThemeMode.HighContrast)
+                text = _aggregateComplete ? palette.Success : palette.MutedText;
             return _theme.PrepareTextDevice(device, text, background, transparent: true);
         }
 
@@ -2230,14 +2406,17 @@ internal sealed class NativeManualPublishingCompanion :
             DrawRoundedRect(device, ref rect, fill, border, Scale(8, _theme.Dpi));
         }
 
-        private void DrawRoundedRect(IntPtr device, ref Rect rect, int fill, int border, int radius)
+        private void DrawRoundedRect(
+            IntPtr device, ref Rect rect, int fill, int border, int radius, int borderWidth = 0)
         {
             if (_theme is null) return;
-            IntPtr pen = CreatePen(0, Math.Max(1, Scale(1, _theme.Dpi)), border);
+            IntPtr pen = CreatePen(0,
+                borderWidth > 0 ? borderWidth : Math.Max(1, Scale(1, _theme.Dpi)), border);
             if (pen == IntPtr.Zero) throw NativeFailure();
             IntPtr previousPen = SelectObject(device, pen);
             IntPtr previousBrush = SelectObject(device, _theme.Brush(fill));
-            try { RoundRect(device, rect.left, rect.top, rect.right, rect.bottom, radius, radius); }
+            int ellipse = NativeCompanionTheme.RoundedRectEllipseDiameter(radius);
+            try { RoundRect(device, rect.left, rect.top, rect.right, rect.bottom, ellipse, ellipse); }
             finally
             {
                 if (previousBrush != IntPtr.Zero && previousBrush != new IntPtr(-1)) SelectObject(device, previousBrush);
@@ -2246,45 +2425,186 @@ internal sealed class NativeManualPublishingCompanion :
             }
         }
 
-        private void DrawItem(IntPtr pointer)
+        private NativeCompanionOwnerDrawTarget? ResolveOwnerDrawTarget(
+            uint controlType, uint controlId, IntPtr itemWindow)
         {
-            if (_theme is null || pointer == IntPtr.Zero) return;
+            if (itemWindow == IntPtr.Zero || !IsWindow(itemWindow) || GetParent(itemWindow) != _window)
+                return null;
+
+            if (controlType == OdtComboBox)
+                return controlId == PlatformId && itemWindow == _state.Platform
+                    ? NativeCompanionOwnerDrawTarget.PlatformCombo
+                    : null;
+
+            if (controlType != OdtButton) return null;
+            return controlId switch
+            {
+                CopyTitleId when itemWindow == _state.CopyTitle => NativeCompanionOwnerDrawTarget.SecondaryButton,
+                CopyMainId when itemWindow == _state.CopyMain => NativeCompanionOwnerDrawTarget.SecondaryButton,
+                PostingConfirmationId when itemWindow == _state.PostingAction => NativeCompanionOwnerDrawTarget.PrimaryButton,
+                CloseId when itemWindow == _state.Close => NativeCompanionOwnerDrawTarget.SecondaryButton,
+                _ => null,
+            };
+        }
+
+        private bool DrawItem(IntPtr pointer)
+        {
+            if (_theme is null || pointer == IntPtr.Zero) return false;
             DrawItemStruct item = Marshal.PtrToStructure<DrawItemStruct>(pointer);
+            NativeCompanionOwnerDrawTarget? target = ResolveOwnerDrawTarget(item.CtlType, item.CtlID, item.hwndItem);
+            if (target is null) return false;
+
             NativeCompanionPalette palette = _theme.Palette;
             bool disabled = (item.itemState & OdsDisabled) != 0;
             bool selected = (item.itemState & OdsSelected) != 0;
             bool focused = (item.itemState & OdsFocus) != 0;
-            bool button = item.CtlType == 4;
-            int background;
-            int foreground;
-            int border;
+            bool button = target is NativeCompanionOwnerDrawTarget.PrimaryButton or
+                NativeCompanionOwnerDrawTarget.SecondaryButton;
+            int background, foreground;
+            NativeCompanionButtonStyle buttonStyle = default;
+            NativeCompanionComboItemStyle comboItemStyle = default;
             if (button)
             {
-                bool primary = item.CtlID is CopyTitleId or CopyMainId or PostingConfirmationId;
-                background = disabled ? palette.Card : primary ? palette.Accent :
-                    selected || _hoveredButtons.Contains(item.hwndItem) ? palette.Hover : palette.Surface;
-                foreground = disabled ? palette.MutedText : primary ? palette.PrimaryButtonText : palette.Text;
-                border = focused ? palette.Focus : primary ? palette.Accent : palette.BorderStrong;
+                NativeCompanionButtonState state = disabled ? NativeCompanionButtonState.Disabled :
+                    NativeCompanionButtonState.Normal;
+                if (selected) state |= NativeCompanionButtonState.Pressed;
+                if (_hoveredButtons.Contains(item.hwndItem)) state |= NativeCompanionButtonState.Hover;
+                if (focused) state |= NativeCompanionButtonState.Focused;
+                NativeCompanionButtonRole role = target == NativeCompanionOwnerDrawTarget.PrimaryButton
+                    ? NativeCompanionButtonRole.Primary
+                    : NativeCompanionButtonRole.Secondary;
+                buttonStyle = NativeCompanionTheme.ButtonStyle(
+                    role, state, palette, _theme.Dpi);
+                background = buttonStyle.Background;
+                foreground = buttonStyle.Text;
             }
             else
             {
-                background = selected ? palette.SelectionBackground : palette.Page;
-                foreground = selected ? palette.SelectionText : palette.Text;
-                border = focused ? palette.Focus : palette.BorderStrong;
+                comboItemStyle = NativeCompanionTheme.ComboItemStyle(selected, disabled, focused, palette);
+                background = comboItemStyle.Background;
+                foreground = comboItemStyle.Text;
             }
-            if (button) DrawRoundedRect(item.hDC, ref item.rcItem, background, border, Scale(6, _theme.Dpi));
+            if (button && buttonStyle.UsesSystemFrame)
+            {
+                uint frameState = DfcsButtonPush |
+                    (disabled ? DfcsInactive : 0) |
+                    (selected ? DfcsPushed : 0) |
+                    (_hoveredButtons.Contains(item.hwndItem) ? DfcsHot : 0);
+                DrawFrameControl(item.hDC, ref item.rcItem, DfcButton, frameState);
+            }
+            else if (button)
+                DrawRoundedRect(item.hDC, ref item.rcItem, background, buttonStyle.Border,
+                    Scale(6, _theme.Dpi), buttonStyle.BorderWidth);
             else
             {
                 FillRect(item.hDC, ref item.rcItem, _theme.Brush(background));
-                FrameRect(item.hDC, ref item.rcItem, _theme.Brush(border));
             }
             string text = button ? WindowText(item.hwndItem) : ComboItemText(item.hwndItem, item.itemID);
             Rect textRect = item.rcItem;
-            int inset = Scale(8, _theme.Dpi);
+            int inset = button ? Scale(8, _theme.Dpi) : NativeCompanionTheme.ComboItemInset(_theme.Dpi);
             textRect.left += inset; textRect.right -= inset;
-            _theme.PrepareTextDevice(item.hDC, foreground, background, transparent: true);
-            DrawText(item.hDC, text, text.Length, ref textRect, DtCenter | DtVCenter | DtSingleLine | DtEndEllipsis);
-            if (focused) DrawFocusRect(item.hDC, ref item.rcItem);
+            if (buttonStyle.ContentOffset > 0)
+            {
+                textRect.left += buttonStyle.ContentOffset;
+                textRect.right += buttonStyle.ContentOffset;
+                textRect.top += buttonStyle.ContentOffset;
+                textRect.bottom += buttonStyle.ContentOffset;
+            }
+            IntPtr previousFont = IntPtr.Zero;
+            if (!button) previousFont = SelectObject(item.hDC, _theme.Font(NativeCompanionFontRole.Body));
+            try
+            {
+                _theme.PrepareTextDevice(item.hDC, foreground, background, transparent: true);
+                uint format = DtVCenter | DtSingleLine | DtEndEllipsis | DtNoPrefix;
+                if (button) format |= DtCenter;
+                DrawText(item.hDC, text, text.Length, ref textRect, format);
+            }
+            finally
+            {
+                if (previousFont != IntPtr.Zero && previousFont != new IntPtr(-1))
+                    SelectObject(item.hDC, previousFont);
+            }
+            if (focused || (!button && comboItemStyle.DrawFocusCue))
+            {
+                Rect focus = item.rcItem;
+                int focusInset = Math.Max(2, Scale(3, _theme.Dpi));
+                focus.left += focusInset; focus.top += focusInset;
+                focus.right -= focusInset; focus.bottom -= focusInset;
+                DrawFocusRect(item.hDC, ref focus);
+            }
+            return true;
+        }
+
+        private void PaintPlatformCombo(IntPtr combo)
+        {
+            if (_theme is null) return;
+            IntPtr device = BeginPaint(combo, out PaintStruct paint);
+            if (device == IntPtr.Zero) return;
+            try
+            {
+                if (!GetClientRect(combo, out Rect client)) return;
+                NativeCompanionPalette palette = _theme.Palette;
+                FillRect(device, ref client, _theme.Brush(palette.Card));
+
+                NativeCompanionComboState state = NativeCompanionComboState.Normal;
+                if (_platformHovered) state |= NativeCompanionComboState.Hover;
+                if (GetFocus() == combo) state |= NativeCompanionComboState.Focused;
+                if (!IsWindowEnabled(combo)) state |= NativeCompanionComboState.Disabled;
+                if (SendMessage(combo, CB_GETDROPPEDSTATE, IntPtr.Zero, IntPtr.Zero) != IntPtr.Zero)
+                    state |= NativeCompanionComboState.Dropped;
+                NativeCompanionComboStyle style = NativeCompanionTheme.ComboStyle(state, palette, _theme.Dpi);
+
+                Rect control = client;
+                DrawRoundedRect(device, ref control, style.Background, style.Border,
+                    Scale(6, _theme.Dpi), style.BorderWidth);
+
+                int arrowWidth = Math.Min(client.right - client.left,
+                    NativeCompanionTheme.ComboArrowWidth(_theme.Dpi));
+                int arrowCenterX = client.right - arrowWidth / 2;
+                int arrowCenterY = (client.top + client.bottom) / 2;
+                int arrowHalfWidth = Math.Max(2, Scale(4, _theme.Dpi));
+                int arrowHalfHeight = Math.Max(1, Scale(2, _theme.Dpi));
+                IntPtr arrowPen = CreatePen(0, NativeCompanionTheme.ComboStrokeWidth(_theme.Dpi), style.Arrow);
+                if (arrowPen == IntPtr.Zero) throw NativeFailure();
+                IntPtr previousPen = SelectObject(device, arrowPen);
+                try
+                {
+                    MoveToEx(device, arrowCenterX - arrowHalfWidth, arrowCenterY - arrowHalfHeight, IntPtr.Zero);
+                    LineTo(device, arrowCenterX, arrowCenterY + arrowHalfHeight);
+                    LineTo(device, arrowCenterX + arrowHalfWidth, arrowCenterY - arrowHalfHeight);
+                }
+                finally
+                {
+                    if (previousPen != IntPtr.Zero && previousPen != new IntPtr(-1)) SelectObject(device, previousPen);
+                    DeleteObject(arrowPen);
+                }
+
+                Rect text = client;
+                text.left += NativeCompanionTheme.ComboTextInset(_theme.Dpi);
+                text.right -= arrowWidth;
+                IntPtr previousFont = SelectObject(device, _theme.Font(NativeCompanionFontRole.Body));
+                try
+                {
+                    _theme.PrepareTextDevice(device, style.Text, style.Background, transparent: true);
+                    string value = ComboItemText(combo, uint.MaxValue);
+                    DrawText(device, value, value.Length, ref text,
+                        DtVCenter | DtSingleLine | DtEndEllipsis | DtNoPrefix);
+                }
+                finally
+                {
+                    if (previousFont != IntPtr.Zero && previousFont != new IntPtr(-1)) SelectObject(device, previousFont);
+                }
+
+                if (state.HasFlag(NativeCompanionComboState.Focused))
+                {
+                    Rect focus = client;
+                    int focusInset = Math.Max(2, Scale(3, _theme.Dpi));
+                    focus.left += focusInset; focus.top += focusInset;
+                    focus.right -= focusInset; focus.bottom -= focusInset;
+                    DrawFocusRect(device, ref focus);
+                }
+            }
+            finally { EndPaint(combo, ref paint); }
         }
 
         private string ComboItemText(IntPtr combo, uint itemId)
@@ -2308,6 +2628,13 @@ internal sealed class NativeManualPublishingCompanion :
             return text.ToString();
         }
 
+        private static string WindowClassName(IntPtr window)
+        {
+            if (window == IntPtr.Zero) return string.Empty;
+            var name = new System.Text.StringBuilder(64);
+            return GetClassName(window, name, name.Capacity) > 0 ? name.ToString() : string.Empty;
+        }
+
         private static NativeLayoutRect ToLayoutRect(Rect rect) =>
             new(rect.left, rect.top, Math.Max(0, rect.right - rect.left), Math.Max(0, rect.bottom - rect.top));
 
@@ -2321,7 +2648,8 @@ internal sealed class NativeManualPublishingCompanion :
             if (_window == IntPtr.Zero || !GetClientRect(_window, out Rect client)) return;
             int dpi = DpiForWindow(_window);
             _layout = NativeCompanionLayout.Calculate(client.right, client.bottom, dpi, _state.Model.IsPatreon,
-                WindowText(_state.PostingStatus), WindowText(_state.PostingHelper), _confirmation is not null);
+                WindowText(_state.PostingStatus), WindowText(_state.PostingHelper), _confirmation is not null,
+                StatusText);
             Move(_state.Header, _layout.HeaderTitle);
             Move(_state.HeaderMetadata, _layout.HeaderMetadata);
             Move(_state.PlatformHeading, _layout.PlatformHeading);
@@ -2387,15 +2715,18 @@ internal sealed class NativeManualPublishingCompanion :
                 if (message == WM_SIZE) { state?.Owner.Layout(); return IntPtr.Zero; }
                 if (message == WM_SETFOCUS) { if (state is not null) SetFocus(state.Platform); return IntPtr.Zero; }
                 if (message == WM_GETMINMAXINFO) { SetMinimum(window, lParam); return IntPtr.Zero; }
-                if (message == WM_COMMAND) { state?.Owner.HandleCommand(LowWord(wParam), HighWord(wParam)); return IntPtr.Zero; }
+                if (message == WM_COMMAND) { state?.Owner.HandleCommand(LowWord(wParam), HighWord(wParam), lParam); return IntPtr.Zero; }
                 if (message == WM_NOTIFY) return state?.Owner.HandleNotify(lParam) ?? IntPtr.Zero;
-                if (message == WM_CTLCOLORSTATIC)
+                if (message is WM_CTLCOLORSTATIC or WM_CTLCOLORLISTBOX)
                     return state?.Owner.ControlColor(message, wParam, lParam) ?? IntPtr.Zero;
-                if (message == WM_DRAWITEM) { state?.Owner.DrawItem(lParam); return new IntPtr(1); }
+                if (message == WM_DRAWITEM && state?.Owner.DrawItem(lParam) == true) return new IntPtr(1);
                 if (message == WM_MEASUREITEM && state is not null)
                 {
                     MeasureItemStruct measure = Marshal.PtrToStructure<MeasureItemStruct>(lParam);
-                    measure.itemHeight = (uint)Scale(32, state.Owner._theme?.Dpi ?? DpiForWindow(window));
+                    if (measure.CtlType != OdtComboBox || measure.CtlID != PlatformId)
+                        return DefWindowProcW(window, message, wParam, lParam);
+                    measure.itemHeight = (uint)NativeCompanionTheme.ComboItemHeight(
+                        state.Owner._theme?.Dpi ?? DpiForWindow(window));
                     Marshal.StructureToPtr(measure, lParam, false);
                     return new IntPtr(1);
                 }
@@ -2440,6 +2771,45 @@ internal sealed class NativeManualPublishingCompanion :
             else if (message == WM_MOUSELEAVE && owner is not null && owner._hoveredButtons.Remove(window))
                 InvalidateRect(window, IntPtr.Zero, false);
             return DefSubclassProc(window, message, wParam, lParam);
+        }
+
+        private static IntPtr PlatformComboWindowProcedure(
+            IntPtr window, uint message, IntPtr wParam, IntPtr lParam,
+            UIntPtr subclassId, IntPtr referenceData)
+        {
+            NativeWindow? owner = State(GetParent(window))?.Owner;
+            bool customChrome = owner?._theme?.Palette.Mode is
+                NativeCompanionThemeMode.Dark or NativeCompanionThemeMode.Light;
+            if (customChrome && message == WM_PAINT)
+            {
+                owner!.PaintPlatformCombo(window);
+                return IntPtr.Zero;
+            }
+            if (customChrome && message == WM_ERASEBKGND) return new IntPtr(1);
+
+            if (message == WM_MOUSEMOVE && owner is not null && !owner._platformHovered)
+            {
+                owner._platformHovered = true;
+                var tracking = new TrackMouseEventStruct
+                {
+                    cbSize = (uint)Marshal.SizeOf<TrackMouseEventStruct>(),
+                    dwFlags = TmeLeave,
+                    hwndTrack = window,
+                };
+                TrackMouseEvent(ref tracking);
+                InvalidateRect(window, IntPtr.Zero, false);
+            }
+            else if (message == WM_MOUSELEAVE && owner is not null && owner._platformHovered)
+            {
+                owner._platformHovered = false;
+                InvalidateRect(window, IntPtr.Zero, false);
+            }
+
+            IntPtr result = DefSubclassProc(window, message, wParam, lParam);
+            if (owner is not null &&
+                message is WM_SETFOCUS or WM_KILLFOCUS or WM_LBUTTONDOWN or WM_LBUTTONUP)
+                InvalidateRect(window, IntPtr.Zero, false);
+            return result;
         }
 
         private static IntPtr AssetListWindowProcedure(
@@ -2714,6 +3084,13 @@ internal sealed class NativeManualPublishingCompanion :
             public IntPtr hwndTrack;
             public uint dwHoverTime;
         }
+        [StructLayout(LayoutKind.Sequential)] private struct ComboBoxInfo
+        {
+            public uint cbSize;
+            public Rect rcItem, rcButton;
+            public uint stateButton;
+            public IntPtr hwndCombo, hwndItem, hwndList;
+        }
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr GetModuleHandle(string? moduleName);
         [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
@@ -2737,6 +3114,8 @@ internal sealed class NativeManualPublishingCompanion :
         [DllImport("user32.dll", EntryPoint = "SetWindowTextW", CharSet = CharSet.Unicode, ExactSpelling = true)] private static extern bool SetWindowText(IntPtr window, string text);
         [DllImport("user32.dll", EntryPoint = "GetWindowTextLengthW", CharSet = CharSet.Unicode, ExactSpelling = true)] private static extern int GetWindowTextLength(IntPtr window);
         [DllImport("user32.dll", EntryPoint = "GetWindowTextW", CharSet = CharSet.Unicode, ExactSpelling = true)] private static extern int GetWindowText(IntPtr window, System.Text.StringBuilder text, int maximumCount);
+        [DllImport("user32.dll", EntryPoint = "GetClassNameW", CharSet = CharSet.Unicode, ExactSpelling = true)] private static extern int GetClassName(IntPtr window, System.Text.StringBuilder className, int maximumCount);
+        [DllImport("user32.dll")] private static extern bool GetComboBoxInfo(IntPtr combo, ref ComboBoxInfo info);
         [DllImport("user32.dll", EntryPoint = "SendMessageW", CharSet = CharSet.Unicode, ExactSpelling = true)] private static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
         [DllImport("user32.dll", EntryPoint = "SendMessageW", ExactSpelling = true)]
         private static extern bool SendMessageHeaderRect(IntPtr window, uint message, IntPtr wParam, out Rect rectangle);
@@ -2763,12 +3142,15 @@ internal sealed class NativeManualPublishingCompanion :
         [DllImport("gdi32.dll")] private static extern IntPtr SelectObject(IntPtr device, IntPtr value);
         [DllImport("gdi32.dll", SetLastError = true)] private static extern IntPtr CreatePen(int style, int width, int color);
         [DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr value);
+        [DllImport("gdi32.dll")] private static extern bool MoveToEx(IntPtr device, int x, int y, IntPtr previousPoint);
+        [DllImport("gdi32.dll")] private static extern bool LineTo(IntPtr device, int x, int y);
         [DllImport("user32.dll")] private static extern IntPtr LoadCursor(IntPtr instance, IntPtr cursor);
         [DllImport("user32.dll")] private static extern IntPtr LoadIcon(IntPtr instance, IntPtr icon);
         [DllImport("user32.dll")] private static extern IntPtr BeginPaint(IntPtr window, out PaintStruct paint);
         [DllImport("user32.dll")] private static extern bool EndPaint(IntPtr window, ref PaintStruct paint);
         [DllImport("user32.dll")] private static extern int FillRect(IntPtr device, ref Rect rect, IntPtr brush);
         [DllImport("user32.dll")] private static extern int FrameRect(IntPtr device, ref Rect rect, IntPtr brush);
+        [DllImport("user32.dll")] private static extern bool DrawFrameControl(IntPtr device, ref Rect rect, uint type, uint state);
         [DllImport("gdi32.dll")] private static extern bool RoundRect(IntPtr device, int left, int top, int right, int bottom, int width, int height);
         [DllImport("user32.dll")] private static extern bool DrawFocusRect(IntPtr device, ref Rect rect);
         [DllImport("user32.dll", EntryPoint = "DrawTextW", CharSet = CharSet.Unicode, ExactSpelling = true)]

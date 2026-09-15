@@ -129,6 +129,166 @@ public sealed class NativeCompanionThemeTests
     }
 
     [Fact]
+    public void ButtonHierarchy_UsesCreatorCrateRolesAcrossEveryInteractiveState()
+    {
+        foreach (NativeCompanionPalette palette in new[] { NativeCompanionPalette.Dark, NativeCompanionPalette.Light })
+        {
+            NativeCompanionButtonStyle primary = NativeCompanionTheme.ButtonStyle(
+                NativeCompanionButtonRole.Primary, NativeCompanionButtonState.Normal, palette, 96);
+            NativeCompanionButtonStyle secondary = NativeCompanionTheme.ButtonStyle(
+                NativeCompanionButtonRole.Secondary, NativeCompanionButtonState.Normal, palette, 96);
+            NativeCompanionButtonStyle hover = NativeCompanionTheme.ButtonStyle(
+                NativeCompanionButtonRole.Primary, NativeCompanionButtonState.Hover, palette, 96);
+            NativeCompanionButtonStyle pressed = NativeCompanionTheme.ButtonStyle(
+                NativeCompanionButtonRole.Primary, NativeCompanionButtonState.Pressed, palette, 96);
+            NativeCompanionButtonStyle focused = NativeCompanionTheme.ButtonStyle(
+                NativeCompanionButtonRole.Secondary,
+                NativeCompanionButtonState.Hover | NativeCompanionButtonState.Focused, palette, 96);
+            NativeCompanionButtonStyle disabled = NativeCompanionTheme.ButtonStyle(
+                NativeCompanionButtonRole.Primary, NativeCompanionButtonState.Disabled, palette, 96);
+
+            Assert.Equal(palette.Accent, primary.Background);
+            Assert.Equal(palette.PrimaryButtonText, primary.Text);
+            Assert.Equal(palette.Surface, secondary.Background);
+            Assert.NotEqual(primary.Background, secondary.Background);
+            Assert.Equal(palette.Focus, hover.Background);
+            Assert.Equal(palette.AccentSecondary, pressed.Background);
+            Assert.True(pressed.ContentOffset > 0);
+            Assert.Equal(palette.Focus, focused.Border);
+            Assert.True(focused.BorderWidth > secondary.BorderWidth);
+            Assert.Equal(palette.Card, disabled.Background);
+            Assert.Equal(palette.MutedText, disabled.Text);
+            Assert.False(primary.UsesSystemFrame);
+        }
+    }
+
+    [Fact]
+    public void LightButtonStates_MeetOrdinaryTextContrastAndRemainDistinct()
+    {
+        NativeCompanionPalette palette = NativeCompanionPalette.Light;
+        NativeCompanionButtonState[] states =
+        [
+            NativeCompanionButtonState.Normal,
+            NativeCompanionButtonState.Hover,
+            NativeCompanionButtonState.Pressed,
+            NativeCompanionButtonState.Disabled,
+        ];
+
+        foreach (NativeCompanionButtonRole role in Enum.GetValues<NativeCompanionButtonRole>())
+        {
+            NativeCompanionButtonStyle[] styles = states
+                .Select(state => NativeCompanionTheme.ButtonStyle(role, state, palette, 96))
+                .ToArray();
+
+            Assert.All(styles, style => Assert.True(
+                ContrastRatio(style.Text, style.Background) >= 4.5,
+                $"{role} contrast was {ContrastRatio(style.Text, style.Background):F2}:1 for " +
+                $"{NativeCompanionPalette.Hex(style.Text)} on {NativeCompanionPalette.Hex(style.Background)}."));
+            if (role == NativeCompanionButtonRole.Primary)
+                Assert.Equal(styles.Length, styles.Select(style => style.Background).Distinct().Count());
+            else
+                Assert.Equal(styles.Length, styles.Distinct().Count());
+        }
+    }
+
+    [Fact]
+    public void HighContrastButtons_UseSystemFaceTextDisabledTextAndFrame()
+    {
+        NativeCompanionPalette palette = NativeCompanionPalette.HighContrast;
+        NativeCompanionButtonStyle normal = NativeCompanionTheme.ButtonStyle(
+            NativeCompanionButtonRole.Primary, NativeCompanionButtonState.Normal, palette, 192);
+        NativeCompanionButtonStyle disabled = NativeCompanionTheme.ButtonStyle(
+            NativeCompanionButtonRole.Secondary, NativeCompanionButtonState.Disabled, palette, 192);
+
+        Assert.Equal(palette.ButtonFace, normal.Background);
+        Assert.Equal(palette.ButtonText, normal.Text);
+        Assert.Equal(palette.DisabledText, disabled.Text);
+        Assert.True(normal.UsesSystemFrame);
+        Assert.True(disabled.UsesSystemFrame);
+    }
+
+    [Fact]
+    public void PlatformCombo_UsesCreatorCrateSurfaceHoverFocusAndSelectionRoles()
+    {
+        foreach (NativeCompanionPalette palette in new[] { NativeCompanionPalette.Dark, NativeCompanionPalette.Light })
+        {
+            NativeCompanionComboStyle normal = NativeCompanionTheme.ComboStyle(
+                NativeCompanionComboState.Normal, palette, 96);
+            NativeCompanionComboStyle hover = NativeCompanionTheme.ComboStyle(
+                NativeCompanionComboState.Hover, palette, 96);
+            NativeCompanionComboStyle focused = NativeCompanionTheme.ComboStyle(
+                NativeCompanionComboState.Hover | NativeCompanionComboState.Focused, palette, 96);
+            NativeCompanionComboItemStyle item = NativeCompanionTheme.ComboItemStyle(
+                selected: false, disabled: false, focused: false, palette);
+            NativeCompanionComboItemStyle selected = NativeCompanionTheme.ComboItemStyle(
+                selected: true, disabled: false, focused: true, palette);
+
+            Assert.Equal(palette.Surface, normal.Background);
+            Assert.Equal(palette.Text, normal.Text);
+            Assert.Equal(palette.Text, normal.Arrow);
+            Assert.Equal(palette.Border, normal.Border);
+            Assert.False(normal.UsesSystemChrome);
+            Assert.Equal(palette.Hover, hover.Background);
+            Assert.Equal(palette.BorderStrong, hover.Border);
+            Assert.Equal(palette.Focus, focused.Border);
+            Assert.True(focused.BorderWidth > normal.BorderWidth);
+            Assert.Equal(palette.Surface, item.Background);
+            Assert.Equal(palette.Text, item.Text);
+            Assert.Equal(palette.SelectionBackground, selected.Background);
+            Assert.Equal(palette.SelectionText, selected.Text);
+            Assert.True(selected.DrawFocusCue);
+            Assert.True(ContrastRatio(normal.Text, normal.Background) >= 4.5);
+            Assert.True(ContrastRatio(selected.Text, selected.Background) >= 4.5);
+        }
+    }
+
+    [Fact]
+    public void PlatformCombo_HighContrastUsesOnlySystemChromeAndColors()
+    {
+        NativeCompanionPalette palette = NativeCompanionPalette.HighContrast;
+        NativeCompanionComboStyle normal = NativeCompanionTheme.ComboStyle(
+            NativeCompanionComboState.Focused, palette, 192);
+        NativeCompanionComboStyle disabled = NativeCompanionTheme.ComboStyle(
+            NativeCompanionComboState.Disabled, palette, 192);
+        NativeCompanionComboItemStyle selected = NativeCompanionTheme.ComboItemStyle(
+            selected: true, disabled: false, focused: true, palette);
+        NativeCompanionComboItemStyle disabledItem = NativeCompanionTheme.ComboItemStyle(
+            selected: false, disabled: true, focused: false, palette);
+
+        Assert.True(normal.UsesSystemChrome);
+        Assert.Equal(palette.ButtonFace, normal.Background);
+        Assert.Equal(palette.ButtonText, normal.Text);
+        Assert.Equal(palette.ButtonText, normal.Arrow);
+        Assert.Equal(palette.DisabledText, disabled.Text);
+        Assert.Equal(palette.SelectionBackground, selected.Background);
+        Assert.Equal(palette.SelectionText, selected.Text);
+        Assert.True(selected.DrawFocusCue);
+        Assert.Equal(palette.DisabledText, disabledItem.Text);
+    }
+
+    [Theory]
+    [InlineData(96, 12, 32, 32, 1)]
+    [InlineData(144, 18, 48, 48, 2)]
+    [InlineData(192, 24, 64, 64, 2)]
+    public void PlatformComboGeometry_ScalesInsetsArrowAndItemsExactlyOnce(
+        int dpi, int textInset, int arrowWidth, int itemHeight, int strokeWidth)
+    {
+        Assert.Equal(textInset, NativeCompanionTheme.ComboTextInset(dpi));
+        Assert.Equal(textInset, NativeCompanionTheme.ComboItemInset(dpi));
+        Assert.Equal(arrowWidth, NativeCompanionTheme.ComboArrowWidth(dpi));
+        Assert.Equal(itemHeight, NativeCompanionTheme.ComboItemHeight(dpi));
+        Assert.Equal(strokeWidth, NativeCompanionTheme.ComboStrokeWidth(dpi));
+    }
+
+    [Theory]
+    [InlineData(-1, 0)]
+    [InlineData(0, 0)]
+    [InlineData(6, 12)]
+    [InlineData(8, 16)]
+    public void RoundedRectRadius_IsConvertedToWin32EllipseDiameter(int radius, int expected) =>
+        Assert.Equal(expected, NativeCompanionTheme.RoundedRectEllipseDiameter(radius));
+
+    [Fact]
     public void ChildThemeRoles_CoverTheCompanionAndListViewPalette()
     {
         NativeCompanionPalette palette = NativeCompanionPalette.Dark;
@@ -274,6 +434,29 @@ public sealed class NativeCompanionThemeTests
     }
 
     [Theory]
+    [InlineData(int.MinValue, false)]
+    [InlineData(-1, false)]
+    [InlineData(0, true)]
+    [InlineData(1, true)]
+    public void ApplyControlChrome_ReportsAnyNonnegativeHResultAsSuccess(int hresult, bool expected)
+    {
+        using var theme = new NativeCompanionTheme(
+            96, NativeCompanionPalette.Dark, (_, _, _) => hresult);
+
+        Assert.Equal(expected, theme.ApplyControlChrome(new IntPtr(1), NativeCompanionChromeRole.ListView));
+    }
+
+    [Fact]
+    public void ApplyControlChrome_ReportsNativeCallExceptionAsFailure()
+    {
+        using var theme = new NativeCompanionTheme(
+            96, NativeCompanionPalette.Dark,
+            (_, _, _) => throw new InvalidOperationException("Simulated native theme failure."));
+
+        Assert.False(theme.ApplyControlChrome(new IntPtr(1), NativeCompanionChromeRole.ListView));
+    }
+
+    [Theory]
     [InlineData(96, "patreon")]
     [InlineData(144, "patreon")]
     [InlineData(192, "patreon")]
@@ -317,7 +500,7 @@ public sealed class NativeCompanionThemeTests
         Assert.True(layout.PostingAction.Right <= client.Width);
         Assert.True(layout.PostingAggregate.Right <= client.Width);
         Assert.True(layout.Close.Right <= client.Width);
-        Assert.True(layout.Status.Width >= 160 * dpi / 96);
+        Assert.Equal(default, layout.Status);
         Assert.True(layout.AssetList.Width > 0);
         Assert.True(layout.AssetList.Height > 0);
         Assert.True(layout.AssetList.Right <= client.Width);
@@ -372,6 +555,57 @@ public sealed class NativeCompanionThemeTests
         Assert.Equal(1152, wide.PlatformCard.Width);
         Assert.Equal((1600 - 1152) / 2, wide.PlatformCard.X);
         Assert.Equal(wide.PlatformCard.X, wide.AssetsCard.X);
+    }
+
+    [Theory]
+    [InlineData(820, 754)]
+    [InlineData(980, 920)]
+    [InlineData(1600, 920)]
+    public void CompactFooter_ContainsAggregateAndSecondaryCloseWithoutPermanentFeedbackArea(
+        int width, int height)
+    {
+        NativeCompanionLayout layout = NativeCompanionLayout.Calculate(width, height, 96, patreon: true);
+
+        Assert.Equal(60, layout.Footer.Height);
+        Assert.Equal(layout.PlatformCard.X + 16, layout.PostingAggregate.X);
+        Assert.Equal(16, layout.PlatformCard.Right - layout.Close.Right);
+        Assert.Equal(12, layout.Close.Y - layout.Footer.Y);
+        Assert.Equal(default, layout.Status);
+        Assert.False(layout.PostingAggregate.Intersects(layout.Close));
+    }
+
+    [Fact]
+    public void ExceptionalFooterFeedback_AddsOnlyMeasuredSecondLine()
+    {
+        NativeCompanionLayout oneLine = NativeCompanionLayout.Calculate(
+            820, 754, 96, true, operationalStatusText: "Copied to clipboard.");
+        NativeCompanionLayout twoLines = NativeCompanionLayout.Calculate(
+            820, 754, 96, true,
+            operationalStatusText: string.Join(' ', Enumerable.Repeat("unavailable", 70)));
+
+        Assert.Equal(76, oneLine.Footer.Height);
+        Assert.Equal(20, oneLine.Status.Height);
+        Assert.True(oneLine.Status.Y >= oneLine.PostingAggregate.Bottom);
+        Assert.True(oneLine.Status.Bottom <= oneLine.Footer.Bottom - 12);
+        Assert.True(twoLines.Footer.Height > oneLine.Footer.Height);
+        Assert.True(twoLines.Status.Height > oneLine.Status.Height);
+        Assert.False(oneLine.Status.Intersects(oneLine.Close));
+    }
+
+    [Fact]
+    public void WideFeedback_UsesBoundedFooterWidthAndCannotOverlapClose()
+    {
+        string feedback = string.Join(' ', Enumerable.Repeat("status", 24));
+        NativeCompanionLayout layout = NativeCompanionLayout.Calculate(
+            1600, 920, 96, true, operationalStatusText: feedback);
+
+        Assert.Equal(224, layout.PlatformCard.X);
+        Assert.Equal(1152, layout.PlatformCard.Width);
+        Assert.Equal(layout.PlatformCard.X + 16, layout.Status.X);
+        Assert.Equal(40, layout.Status.Height);
+        Assert.Equal(96, layout.Footer.Height);
+        Assert.True(layout.Status.Right <= layout.Close.X - 12);
+        Assert.False(layout.Status.Intersects(layout.Close));
     }
 
     [Theory]
@@ -430,6 +664,26 @@ public sealed class NativeCompanionThemeTests
         layout.AssetsCard, layout.AssetsHeading, layout.AssetCount, layout.DragGuidance, layout.AssetList,
         layout.Footer, layout.Status, layout.Close,
     ];
+
+    private static double ContrastRatio(int foreground, int background)
+    {
+        static double Luminance(int color)
+        {
+            static double Linear(int component)
+            {
+                double channel = component / 255d;
+                return channel <= 0.04045 ? channel / 12.92 : Math.Pow((channel + 0.055) / 1.055, 2.4);
+            }
+
+            return 0.2126 * Linear(color & 0xff) +
+                0.7152 * Linear(color >> 8 & 0xff) +
+                0.0722 * Linear(color >> 16 & 0xff);
+        }
+
+        double lighter = Math.Max(Luminance(foreground), Luminance(background));
+        double darker = Math.Min(Luminance(foreground), Luminance(background));
+        return (lighter + 0.05) / (darker + 0.05);
+    }
 
     private static void AssertWithinClient(NativeLayoutRect rectangle, NativeLayoutSize client)
     {

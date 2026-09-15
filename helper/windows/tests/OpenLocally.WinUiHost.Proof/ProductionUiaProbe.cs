@@ -161,6 +161,9 @@ internal static class ProductionUiaProbe
         {
             "-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script,
             "-WindowHandle", window.WindowHandle.ToInt64().ToString(System.Globalization.CultureInfo.InvariantCulture),
+            "-PlatformHandle", window.PlatformHandle.ToInt64().ToString(
+                System.Globalization.CultureInfo.InvariantCulture),
+            "-PlatformSelection", PlatformLabel(surface.Platform),
             "-BodyName", bodyName,
             "-BodyTextBase64", Convert.ToBase64String(Encoding.UTF8.GetBytes(surface.BodyText)),
             "-TitleExpected", titleExpected ? "true" : "false",
@@ -195,4 +198,12 @@ internal static class ProductionUiaProbe
             throw new InvalidOperationException($"UIA failed for {bodyName} (exit {process.ExitCode}): {error}{output}");
         Console.Write(output);
     }
+
+    private static string PlatformLabel(string platform) => platform.ToLowerInvariant() switch
+    {
+        "x" => "X",
+        "bluesky" => "Bluesky",
+        "patreon" => "Patreon",
+        _ => platform,
+    };
 }

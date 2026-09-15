@@ -368,6 +368,30 @@ public sealed class NativeManualPublishingListViewTests
             AssertHeaderCustomDrawStages(harness.Window.PaintHeaderForTesting(NativeCompanionPalette.Light));
             Assert.NotEmpty(harness.Window.PaintAssetRowsForTesting(NativeCompanionPalette.Dark, 96, true));
             Assert.NotEmpty(harness.Window.PaintAssetRowsForTesting(NativeCompanionPalette.Light, 192, false));
+            IReadOnlyList<IntPtr> darkButtons = harness.Window.ApplyThemeAndCaptureButtonHandlesForTesting(
+                NativeCompanionPalette.Dark);
+            Assert.Equal(darkButtons, harness.Window.ApplyThemeAndCaptureButtonHandlesForTesting(
+                NativeCompanionPalette.Light));
+            Assert.Equal(darkButtons, harness.Window.ApplyThemeAndCaptureButtonHandlesForTesting(
+                NativeCompanionPalette.Dark));
+            IntPtr platform = harness.Window.CapturePlatformComboForTesting().Handle;
+            int selectionFieldHeight = harness.Window.CapturePlatformComboForTesting().SelectionFieldHeight;
+            foreach ((NativeCompanionPalette palette, int dpi) in new[]
+                     {
+                         (NativeCompanionPalette.Dark, 96),
+                         (NativeCompanionPalette.Light, 144),
+                         (NativeCompanionPalette.HighContrast, 192),
+                         (NativeCompanionPalette.Dark, 96),
+                     })
+            {
+                NativePlatformComboProbe themed =
+                    harness.Window.ApplyThemeAndCapturePlatformForTesting(palette, dpi);
+                Assert.Equal(platform, themed.Handle);
+                Assert.Equal(NativeCompanionTheme.ComboItemHeight(dpi), themed.ListItemHeight);
+                Assert.Equal(selectionFieldHeight, themed.SelectionFieldHeight);
+                Assert.True(harness.Window.ShowPlatformDropdownForTesting(show: true).Dropped);
+                Assert.False(harness.Window.ShowPlatformDropdownForTesting(show: false).Dropped);
+            }
         }
 
         static void CollectFinalizers()

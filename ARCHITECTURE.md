@@ -1995,7 +1995,10 @@ uses a restrained companion-only adaptation of the same hierarchy and product
 accents; it is not a canonical or pre-existing CreatorCrate web palette. Windows
 High Contrast takes precedence over both palettes and uses system window,
 text, highlight, highlight-text, and disabled-text colors with native focus
-indicators and meaningful status text.
+indicators and meaningful status text. Owner-drawn companion Buttons delegate
+their High Contrast frame to the Windows system button renderer and use system
+button-face, button-text, disabled-text, and focus cues rather than decorative
+CreatorCrate colors.
 
 The companion's current A1 hierarchy places compact release identity above one
 Content card, then Assets, then the existing footer. Content begins with its
@@ -2003,13 +2006,46 @@ integrated platform selector. Patreon title and body, or the X/Bluesky post,
 each put the model-backed Copy button in the field header immediately above the
 reusable WinUI editor. The platform posting status, action, and measured helper
 guidance follow the editor as one bounded group; canonical aggregate completion
-is displayed in a neutral footer row. Native layout keeps the supported 820 by
-754 logical client minimum, shares normal height growth between the post editor
-and Assets, bounds editor and Assets growth on very tall windows, and centers a
-main column capped at 1152 logical pixels on wide windows. A2 removes Select
+is displayed as readable text at the left of a compact divided footer, with the
+secondary Close action aligned at the right. The footer background and divider may
+span the full window, while aggregate text, operational feedback, and Close align
+to the bounded A1 content column. The footer normally uses 12 logical pixels of
+vertical and 16 logical pixels of column-relative horizontal padding and adds a measured,
+bounded second line only for transient operational feedback. Native layout keeps
+the supported 820 by 754 logical client minimum, shares normal height growth
+between the post editor and Assets, bounds editor and Assets growth on very tall
+windows, and centers a main column capped at 1152 logical pixels on wide windows. A2 removes Select
 All and adds selection count and drag guidance to Assets. B1 owns the ListView
 header, B2A owns responsive columns, B2B owns selection chrome, and C owns final
 button, footer, and native chrome styling.
+
+Package C1 establishes the native Button hierarchy without replacing any Button
+HWND: Mark as posted and its reconciliation-only Retry confirmation state are the
+single primary action role, while model-backed Copy actions and Close use the
+restrained secondary role. Dark and light modes provide distinct normal, hover,
+pressed, keyboard-focus, and disabled treatments; pressed geometry and visible
+focus cues supplement color changes. The compact footer retains the controller's
+server-authoritative aggregate, may use the existing success role only for the
+readable all-posted message, and does not infer completion from preparation actions.
+
+Package C2A keeps Platform as the production native `ComboBox` with its existing
+selection and platform-change authority. It harmonizes only the closed selector,
+dropdown rows, local arrow chrome, border, hover, and visible focus presentation
+with the companion's dark and light theme roles. Native keyboard navigation,
+dropdown behavior, UI Automation patterns, and selection items remain supplied by
+Windows; High Contrast retains system-owned control chrome and system colors.
+The authoritative theme refresh reapplies the DPI-derived owner-drawn dropdown-row
+height to the live ComboBox, while leaving its separately sized closed selection
+field unchanged. Each legitimate dropdown opening reacquires the current
+`ComboLBox` through `GetComboBoxInfo` and immediately applies the active local
+dark, light, or system-owned High Contrast theme; popup identity is not retained
+as a lifecycle invariant. Per-opening observation records the actual native
+theme-operation result; in High Contrast, success specifically means the native
+reset to system-owned chrome succeeded. Regression coverage proves this supported
+per-opening reacquisition path against the real USER32-owned popup; it does not manufacture
+or require popup replacement while the production ComboBox remains alive.
+The broader C2B typography, surface, and native/WinUI seam pass is still unfinished,
+and the separate real one-file drag defect remains unresolved.
 
 A1 changes layout and hierarchy only. B2A keeps the native report columns
 responsive to the actual ListView client width: File is the flexible primary
@@ -2027,7 +2063,9 @@ a clipped, DPI-scaled CreatorCrate accent edge at the visible client leading edg
 The edge is decorative only; native focused-item state and system focus painting
 remain separate from selection. High Contrast bypasses the custom selected-row
 surface and accent entirely so Windows supplies system selection and focus colors.
-B2 is complete through B2A and B2B; Package C styling remains unfinished. The real
+B2 is complete through B2A and B2B; Package C1 button/footer styling and C2A
+Platform selector presentation are implemented, but C2B broad typography and
+remaining whole-window native chrome harmonization remain unfinished. The real
 Windows one-file drag defect remains unresolved; visual redesign is not
 drag/`CF_HDROP` fix evidence, and drag diagnosis and correction remain a separate
 follow-up package.
