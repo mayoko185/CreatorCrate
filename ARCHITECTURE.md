@@ -2044,8 +2044,36 @@ theme-operation result; in High Contrast, success specifically means the native
 reset to system-owned chrome succeeded. Regression coverage proves this supported
 per-opening reacquisition path against the real USER32-owned popup; it does not manufacture
 or require popup replacement while the production ComboBox remains alive.
-The broader C2B typography, surface, and native/WinUI seam pass is still unfinished,
-and the separate real one-file drag defect remains unresolved.
+Package C2B completes the code implementation of the whole-window presentation
+system without replacing native controls or changing A1 geometry. Native typography
+has four DPI-aware logical-pixel roles built through one GDI path: a 20-pixel
+semibold release heading, 12-pixel semibold section headings, 14-pixel normal
+labels/body controls, and 12-pixel normal supporting text. These logical-pixel
+values become negative `LOGFONT` heights at the current window DPI; they are not
+point sizes and do not add a Windows Text Size multiplier. WinUI continues to own
+its separately documented 16-effective-pixel accessible text scaling.
+
+C2B also makes the shared presentation hierarchy explicit: the page surrounds
+12-pixel-radius section surfaces, each section uses a compact inset raised header
+panel with an 8-pixel radius, and nested editor/ListView details use the raised
+surface and six-pixel control radius where the owning control safely supports it.
+The native and WinUI sides now share section, nested, normal-border, strong-border,
+text, muted, focus, success, and danger roles. Primary field labels and selected
+asset information remain primary text; release metadata, helper guidance, and
+supplementary status remain supporting text. Ready/confirming/posted/unknown state
+is still stated in text, with success or danger color only as a supplement.
+
+Dark and light use the same structural hierarchy. High Contrast bypasses C2B
+decorative section panels and radii, keeps system colors/focus/selection
+authoritative, and removes WinUI decorative resource overrides. Theme refreshes
+reuse the production native HWNDs and both WinUI islands. Automated role, real-HWND
+font, 96/144/192-DPI construction, native/WinUI resource, transition, accessibility,
+and lifetime coverage verifies objective behavior but did not establish subjective
+visual quality. Integrated manual visual acceptance has passed through user desktop
+inspection of the completed visual packages, including the content-aware Assets
+viewport correction and executable/window icon. The
+separate real one-file drag defect remains unresolved, and WP10D clean-machine,
+offline-runtime, prerequisite, and installer validation remains outstanding.
 
 A1 changes layout and hierarchy only. B2A keeps the native report columns
 responsive to the actual ListView client width: File is the flexible primary
@@ -2063,12 +2091,14 @@ a clipped, DPI-scaled CreatorCrate accent edge at the visible client leading edg
 The edge is decorative only; native focused-item state and system focus painting
 remain separate from selection. High Contrast bypasses the custom selected-row
 surface and accent entirely so Windows supplies system selection and focus colors.
-B2 is complete through B2A and B2B; Package C1 button/footer styling and C2A
-Platform selector presentation are implemented, but C2B broad typography and
-remaining whole-window native chrome harmonization remain unfinished. The real
+B2 is complete through B2A and B2B; Package C1 button/footer styling, C2A
+Platform selector presentation, and C2B whole-window presentation harmonization
+are code-complete, and their integrated manual visual acceptance passed through
+user desktop inspection rather than automated aesthetic proof. The real
 Windows one-file drag defect remains unresolved; visual redesign is not
 drag/`CF_HDROP` fix evidence, and drag diagnosis and correction remain a separate
-follow-up package.
+follow-up package. WP10D installer/deployment validation also remains outstanding;
+this visual acceptance did not finalize the installer.
 
 The executable embeds the supported Common Controls v6 dependency through its
 MSBuild `ApplicationManifest`; no adjacent arbitrarily named manifest controls
@@ -2239,8 +2269,8 @@ immutable `ManualSocialSession` strings remain authoritative; dedicated Copy
 buttons continue to write those exact model strings rather than reading XAML
 documents, while presentation-only newline conversion is confined to the
 display boundary. Those two islands inherit CreatorCrate's visual language from
-the same palette hierarchy as the native companion: in dark mode the card
-background frames a nested graphite surface with the authoritative primary text,
+the same palette hierarchy as the native companion: in dark mode the section
+surface frames a nested raised graphite surface with the authoritative primary text,
 subtle/strong borders, and focus-blue values from `creatorcrate.css`; light mode
 uses the existing companion-only card, surface, text, border, and focus
 adaptation. High Contrast is detected by the native `SPI_GETHIGHCONTRAST` theme

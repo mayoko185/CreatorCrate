@@ -47,6 +47,15 @@ internal sealed record NativeProductionLayoutProbe(
     NativeLayoutRect AssetCount, NativeLayoutRect DragGuidance, NativeLayoutRect AssetList,
     NativeLayoutRect Footer, NativeLayoutRect Status, NativeLayoutRect Close);
 
+internal readonly record struct NativeAuthoritativeTextLayoutProbe(
+    string Platform, bool TitleVisible, NativeLayoutRect TitleText, NativeLayoutRect BodyText);
+
+internal sealed record NativeAssetViewportProbe(
+    int DisplayedAssetCount, int VisibleRowTarget, int Dpi,
+    NativeLayoutRect ListWindow, NativeLayoutRect ListClient, NativeLayoutRect Header,
+    IReadOnlyList<NativeLayoutRect> Items, int DesiredListHeight,
+    int ScrollMinimum, int ScrollMaximum, int ScrollPage, int ScrollPosition);
+
 internal readonly record struct NativeHeaderDrawStageProbe(uint Stage, IntPtr Result);
 
 internal sealed record NativeHeaderPostpaintProbe(
@@ -66,7 +75,19 @@ internal sealed record NativeProductionTextSurfaceProbe(
     bool TitleColorFontEnabled, bool BodyColorFontEnabled,
     bool TitleTextScaleEnabled, bool BodyTextScaleEnabled,
     int SurfaceCount, ElementTheme Theme, IntPtr TitleWindow, IntPtr BodyWindow,
-    WinUiTextSurfacePresentationProbe Presentation);
+    WinUiTextSurfacePresentationProbe Presentation,
+    WinUiTextSurfaceResourceProbe TitleResources,
+    WinUiTextSurfaceResourceProbe BodyResources,
+    WinUiTextSelectionProbe TitleSelection,
+    WinUiTextSelectionProbe BodySelection);
+
+internal sealed record WinUiTextSurfaceResourceProbe(
+    bool HasDecorativeResourceOverrides,
+    bool HasLocalEditorBrushValues,
+    string RootBackground, string Background, string Foreground, string Border,
+    string PointerBorder, string FocusBorder);
+
+internal readonly record struct WinUiTextSelectionProbe(int Start, int End);
 
 internal sealed record WinUiTextSurfacePresentationProbe(
     string FontFamily,
@@ -106,6 +127,23 @@ internal sealed record NativePlatformComboProbe(
 internal sealed record NativePlatformPopupDiscoveryObservation(
     IntPtr ComboHandle, IntPtr PopupHandle, NativeCompanionThemeMode ThemeMode,
     bool ThemeApplied);
+
+internal sealed record NativeProductionControlPresentationProbe(
+    string Name, IntPtr Handle, NativeCompanionFontRole FontRole,
+    string FontFamily, int FontHeight, int FontWeight,
+    int Background, int Text);
+
+internal sealed record NativeProductionThemeProbe(
+    NativeCompanionThemeMode Mode, int Dpi,
+    IntPtr Window, IntPtr Platform, IntPtr AssetList, IntPtr AssetHeader,
+    IntPtr TitleIsland, IntPtr BodyIsland,
+    NativeCompanionSurfaceStyle WindowStyle,
+    NativeCompanionSurfaceStyle SectionStyle,
+    NativeCompanionSurfaceStyle SectionHeaderStyle,
+    NativeCompanionSurfaceStyle NestedStyle,
+    NativeCompanionSurfaceStyle FooterStyle,
+    int AssetListBackground,
+    IReadOnlyList<NativeProductionControlPresentationProbe> Controls);
 
 /// <summary>Maps controller-owned state to safe native control text without adding confirmation decisions.</summary>
 internal static class ManualPostingConfirmationPresentationMapper
@@ -570,7 +608,7 @@ internal sealed class NativeManualPublishingCompanion :
         private const uint TestingInvokeMessage = 0x8000 + 0x55;
         private const uint WM_NCCREATE = 0x0081, WM_SIZE = 0x0005, WM_SETFOCUS = 0x0007, WM_KILLFOCUS = 0x0008,
             WM_GETMINMAXINFO = 0x0024, WM_COMMAND = 0x0111, WM_NOTIFY = 0x004E, WM_CLOSE = 0x0010, WM_DESTROY = 0x0002,
-            WM_SETFONT = 0x0030, WM_KEYDOWN = 0x0100, WM_PAINT = 0x000F,
+            WM_SETFONT = 0x0030, WM_GETFONT = 0x0031, WM_KEYDOWN = 0x0100, WM_PAINT = 0x000F,
             WM_LBUTTONDOWN = 0x0201, WM_LBUTTONUP = 0x0202, WM_MOUSEMOVE = 0x0200, WM_MOUSELEAVE = 0x02A3,
             WM_ERASEBKGND = 0x0014, WM_DRAWITEM = 0x002B, WM_MEASUREITEM = 0x002C,
             WM_CTLCOLORSTATIC = 0x0138, WM_CTLCOLORLISTBOX = 0x0134,
@@ -594,6 +632,10 @@ internal sealed class NativeManualPublishingCompanion :
         private const int SW_SHOW = 5, SW_HIDE = 0, VK_ESCAPE = 0x1B, VK_RETURN = 0x0D, VK_TAB = 0x09,
             GWLP_USERDATA = -21, GWL_STYLE = -16, GWL_EXSTYLE = -20,
             CBN_SELCHANGE = 1, CBN_DROPDOWN = 7, CBN_CLOSEUP = 8;
+        private const int ImageIcon = 1, SmCxIcon = 11, SmCyIcon = 12, SmCxSmallIcon = 49, SmCySmallIcon = 50;
+        private const uint LrShared = 0x00008000;
+        private const int SbVert = 1;
+        private const uint SifAll = 0x0017;
         private const uint OdtComboBox = 3, OdtButton = 4,
             OdsSelected = 0x0001, OdsDisabled = 0x0004, OdsFocus = 0x0010,
             DtCenter = 0x00000001, DtVCenter = 0x00000004, DtSingleLine = 0x00000020,
@@ -615,11 +657,11 @@ internal sealed class NativeManualPublishingCompanion :
             LVM_GETSELECTEDCOUNT = LVM_FIRST + 50, LVM_GETNEXTITEM = LVM_FIRST + 12,
             LVM_GETITEMSTATE = LVM_FIRST + 44, LVM_GETITEMRECT = LVM_FIRST + 14,
             LVM_SETITEMSTATE = LVM_FIRST + 43, LVM_SETITEMTEXT = LVM_FIRST + 116,
-            LVM_SCROLL = LVM_FIRST + 20,
+            LVM_SCROLL = LVM_FIRST + 20, LVM_ENSUREVISIBLE = LVM_FIRST + 19,
             LVM_INSERTCOLUMN = LVM_FIRST + 97, LVM_SETCOLUMNWIDTH = LVM_FIRST + 30,
             LVM_SETEXTENDEDLISTVIEWSTYLE = LVM_FIRST + 54, LVM_GETHEADER = LVM_FIRST + 31,
             LVM_SETIMAGELIST = LVM_FIRST + 3, LVM_SETITEM = LVM_FIRST + 76,
-            LVM_SETBKCOLOR = LVM_FIRST + 1, LVM_SETTEXTCOLOR = LVM_FIRST + 36,
+            LVM_SETBKCOLOR = LVM_FIRST + 1, LVM_GETBKCOLOR = LVM_FIRST + 0, LVM_SETTEXTCOLOR = LVM_FIRST + 36,
             LVM_SETTEXTBKCOLOR = LVM_FIRST + 38,
             HDM_FIRST = 0x1200, HDM_GETITEMCOUNT = HDM_FIRST, HDM_GETITEMRECT = HDM_FIRST + 7;
         private const uint LvifText = 0x0001, LvifImage = 0x0002, LvifParam = 0x0004,
@@ -655,6 +697,7 @@ internal sealed class NativeManualPublishingCompanion :
         private readonly HashSet<IntPtr> _hoveredButtons = [];
         private WinUiTextSurfaceHost? _winUiTextSurfaces;
         private StatusKind _statusKind;
+        private StatusKind _postingStatusKind;
         private bool _suppressAssetNotifications;
         private bool _aggregateComplete;
         private bool _platformHovered;
@@ -730,6 +773,41 @@ internal sealed class NativeManualPublishingCompanion :
         internal IntPtr AssetCountHandle => _state.AssetCount;
         internal IntPtr DragGuidanceHandle => _state.DragGuidance;
         internal event Action? PostingPresentationChanged;
+
+        internal IReadOnlyList<int?> CaptureAssetImagesForTesting() =>
+            RunOnUiThreadForTesting(() => Enumerable.Range(0, _state.Model.Platform.Assets.Count)
+                .Select(index => ItemImage(_state.AssetList, index)).ToArray());
+
+        internal NativeAssetViewportProbe CaptureAssetViewportForTesting() =>
+            RunOnUiThreadForTesting(CaptureAssetViewportCore);
+
+        internal NativeAssetViewportProbe CaptureAssetViewportAtMetricDpiForTesting(
+            NativeCompanionPalette palette, int dpi) =>
+            RunOnUiThreadForTesting(() =>
+            {
+                ApplyThemeForTesting(palette, dpi);
+                RebuildPreviewImageList(dpi);
+                _suppressAssetNotifications = true;
+                try
+                {
+                    PopulateAssetRowsWithPlaceholders();
+                    ApplySelectionCore();
+                }
+                finally { _suppressAssetNotifications = false; }
+                MoveWindow(_state.AssetList, 0, 0, Scale(800, dpi), Scale(800, dpi), true);
+                ResizeAssetColumnsToClient(dpi);
+                return CaptureAssetViewportCore() with { Dpi = dpi };
+            });
+
+        internal NativeAssetViewportProbe EnsureLastAssetVisibleForTesting() =>
+            RunOnUiThreadForTesting(() =>
+            {
+                int count = checked((int)SendMessage(
+                    _state.AssetList, LVM_GETITEMCOUNT, IntPtr.Zero, IntPtr.Zero).ToInt64());
+                if (count > 0)
+                    SendMessage(_state.AssetList, LVM_ENSUREVISIBLE, new IntPtr(count - 1), new IntPtr(1));
+                return CaptureAssetViewportCore();
+            });
 
         internal NativePlatformComboProbe CapturePlatformComboForTesting() =>
             RunOnUiThreadForTesting(CapturePlatformComboCore);
@@ -817,6 +895,16 @@ internal sealed class NativeManualPublishingCompanion :
             RunOnUiThreadForTesting(() => ResizeAndCaptureLayoutCore(
                 platformIndex, logicalWidth, logicalHeight, operationalStatusText: operationalStatusText));
 
+        internal NativeAuthoritativeTextLayoutProbe CaptureAuthoritativeTextLayoutForTesting() =>
+            RunOnUiThreadForTesting(() =>
+            {
+                NativeCompanionLayout layout = _layout ??
+                    throw new InvalidOperationException("The production companion layout is not available.");
+                return new NativeAuthoritativeTextLayoutProbe(
+                    _state.Model.Platform.Platform, _state.Model.IsPatreon,
+                    layout.TitleText, layout.BodyText);
+            });
+
         private NativeProductionLayoutProbe ResizeToMinimumAndCaptureLayoutCore(int platformIndex)
         {
             if (_window == IntPtr.Zero) throw new InvalidOperationException("The production companion window is not running.");
@@ -880,17 +968,18 @@ internal sealed class NativeManualPublishingCompanion :
             {
                 SendMessage(_state.Platform, CB_SETCURSEL, new IntPtr(platformIndex), IntPtr.Zero);
                 HandleCommand(PlatformId, CBN_SELCHANGE, _state.Platform);
-                WinUiTextSurfaceHost host = _winUiTextSurfaces ??
-                    throw new InvalidOperationException("Production WinUI text surfaces are not running.");
-                return new NativeProductionTextSurfaceProbe(
-                    _state.Model.Platform.Platform, host.TitleText, host.BodyText,
-                    host.TitleAccessibleName, host.BodyAccessibleName,
-                    host.TitleVisible, host.TitleIsTabStop, host.BodyIsTabStop,
-                    host.TitleIsReadOnly, host.BodyIsReadOnly,
-                    host.TitleColorFontEnabled, host.BodyColorFontEnabled,
-                    host.TitleTextScaleEnabled, host.BodyTextScaleEnabled,
-                    host.SurfaceCount, host.Theme, host.TitleWindow, host.BodyWindow,
-                    host.Presentation);
+                return CaptureTextSurfacesCore();
+            });
+
+        internal NativeProductionTextSurfaceProbe CaptureCurrentTextSurfacesForTesting() =>
+            RunOnUiThreadForTesting(CaptureTextSurfacesCore);
+
+        internal void SetBodyTextSelectionForTesting(int start, int end) =>
+            RunOnUiThreadForTesting(() =>
+            {
+                (_winUiTextSurfaces ?? throw new InvalidOperationException(
+                    "Production WinUI text surfaces are not running.")).SetBodySelectionForTesting(start, end);
+                return true;
             });
 
         internal void SetTextSurfaceThemeForTesting(ElementTheme theme) =>
@@ -900,6 +989,22 @@ internal sealed class NativeManualPublishingCompanion :
                     "Production WinUI text surfaces are not running.")).SetTheme(theme);
                 return true;
             });
+
+        private NativeProductionTextSurfaceProbe CaptureTextSurfacesCore()
+        {
+            WinUiTextSurfaceHost host = _winUiTextSurfaces ??
+                throw new InvalidOperationException("Production WinUI text surfaces are not running.");
+            return new NativeProductionTextSurfaceProbe(
+                _state.Model.Platform.Platform, host.TitleText, host.BodyText,
+                host.TitleAccessibleName, host.BodyAccessibleName,
+                host.TitleVisible, host.TitleIsTabStop, host.BodyIsTabStop,
+                host.TitleIsReadOnly, host.BodyIsReadOnly,
+                host.TitleColorFontEnabled, host.BodyColorFontEnabled,
+                host.TitleTextScaleEnabled, host.BodyTextScaleEnabled,
+                host.SurfaceCount, host.Theme, host.TitleWindow, host.BodyWindow,
+                host.Presentation, host.TitleResources, host.BodyResources,
+                host.TitleSelection, host.BodySelection);
+        }
 
         internal NativeProductionKeyboardProbe CaptureKeyboardIntegrationForTesting(
             string expectedPostingAction = "Mark as posted") =>
@@ -1141,7 +1246,11 @@ internal sealed class NativeManualPublishingCompanion :
             _theme = setWindowTheme is null
                 ? new NativeCompanionTheme(dpi, palette)
                 : new NativeCompanionTheme(dpi, palette, setWindowTheme);
-            try { ApplyTheme(); }
+            try
+            {
+                ApplyTheme();
+                _winUiTextSurfaces?.SetTheme(ElementThemeFor(palette.Mode));
+            }
             finally { previous?.Dispose(); }
         }
 
@@ -1151,6 +1260,48 @@ internal sealed class NativeManualPublishingCompanion :
             {
                 ApplyThemeForTesting(palette, DpiForWindow(_window));
                 return (IReadOnlyList<IntPtr>)_state.Buttons.ToArray();
+            });
+
+        internal NativeProductionThemeProbe ApplyThemeAndCapturePresentationForTesting(
+            NativeCompanionPalette palette, int dpi) =>
+            RunOnUiThreadForTesting(() =>
+            {
+                ApplyThemeForTesting(palette, dpi);
+                NativeProductionControlPresentationProbe Control(
+                    string name, IntPtr handle, NativeCompanionFontRole fontRole)
+                {
+                    NativeCompanionTextStyle style = StaticTextStyle(handle, palette);
+                    IntPtr font = SendMessage(handle, WM_GETFONT, IntPtr.Zero, IntPtr.Zero);
+                    var native = new LogFont();
+                    if (font == IntPtr.Zero || GetObject(font, Marshal.SizeOf<LogFont>(), ref native) == 0)
+                        throw NativeFailure();
+                    return new(name, handle, fontRole, native.lfFaceName ?? string.Empty,
+                        native.lfHeight, native.lfWeight, style.Background, style.Text);
+                }
+
+                return new NativeProductionThemeProbe(
+                    palette.Mode, _theme?.Dpi ?? dpi,
+                    _window, _state.Platform, _state.AssetList, ResolveAssetHeader(),
+                    _winUiTextSurfaces?.TitleWindow ?? IntPtr.Zero,
+                    _winUiTextSurfaces?.BodyWindow ?? IntPtr.Zero,
+                    NativeCompanionTheme.SurfaceStyle(NativeCompanionSurfaceRole.Window, palette),
+                    NativeCompanionTheme.SurfaceStyle(NativeCompanionSurfaceRole.Section, palette),
+                    NativeCompanionTheme.SurfaceStyle(NativeCompanionSurfaceRole.SectionHeader, palette),
+                    NativeCompanionTheme.SurfaceStyle(NativeCompanionSurfaceRole.Nested, palette),
+                    NativeCompanionTheme.SurfaceStyle(NativeCompanionSurfaceRole.Footer, palette),
+                    unchecked((int)SendMessage(_state.AssetList, LVM_GETBKCOLOR, IntPtr.Zero, IntPtr.Zero).ToInt64()),
+                    [
+                        Control("release-title", _state.Header, NativeCompanionFontRole.ReleaseHeading),
+                        Control("release-metadata", _state.HeaderMetadata, NativeCompanionFontRole.Supporting),
+                        Control("content-heading", _state.PlatformHeading, NativeCompanionFontRole.SectionHeading),
+                        Control("field-label", _state.BodyLabel, NativeCompanionFontRole.Body),
+                        Control("posting-status", _state.PostingStatus, NativeCompanionFontRole.Body),
+                        Control("posting-helper", _state.PostingHelper, NativeCompanionFontRole.Supporting),
+                        Control("assets-heading", _state.AssetLabel, NativeCompanionFontRole.SectionHeading),
+                        Control("selected-count", _state.AssetCount, NativeCompanionFontRole.Supporting),
+                        Control("drag-guidance", _state.DragGuidance, NativeCompanionFontRole.Supporting),
+                        Control("footer-aggregate", _state.PostingAggregate, NativeCompanionFontRole.Supporting),
+                    ]);
             });
 
         internal void DisposeThemeForTesting()
@@ -1213,9 +1364,11 @@ internal sealed class NativeManualPublishingCompanion :
                 if (RegisterClassOnce(instance) == 0) throw NativeFailure();
                 _state.Handle = GCHandle.Alloc(_state);
                 int dpi = SystemDpi();
-                _theme = new NativeCompanionTheme(dpi);
+                _theme = _winUiProofOptions?.InitialNativePalette is { } initialPalette
+                    ? new NativeCompanionTheme(dpi, initialPalette)
+                    : new NativeCompanionTheme(dpi);
                 result.Stage = NativePresentationStage.create_main_window;
-                NativeLayoutSize initialOuter = OuterSizeForLogicalClient(980, 760, dpi);
+                NativeLayoutSize initialOuter = OuterSizeForLogicalClient(980, 920, dpi);
                 _window = CreateWindowEx(ProductionWindowExtendedStyle, ClassName, WindowTitle, ProductionWindowStyle,
                     100, 80, initialOuter.Width, initialOuter.Height, IntPtr.Zero, IntPtr.Zero, instance, GCHandle.ToIntPtr(_state.Handle));
                 if (_window == IntPtr.Zero) throw NativeFailure();
@@ -1715,6 +1868,13 @@ internal sealed class NativeManualPublishingCompanion :
             SetWindowText(_state.PostingHelper, presentation.HelperText);
             SetWindowText(_state.PostingAction, presentation.ActionText);
             SetWindowText(_state.PostingAggregate, presentation.AggregateText);
+            _postingStatusKind = state.Status switch
+            {
+                ManualPostingConfirmationStatus.Posted => StatusKind.Success,
+                ManualPostingConfirmationStatus.ConfirmationUnknown => StatusKind.Error,
+                ManualPostingConfirmationStatus.Ready when !string.IsNullOrWhiteSpace(state.Reason) => StatusKind.Error,
+                _ => StatusKind.Neutral,
+            };
             _aggregateComplete = _confirmation.Completion?.IsComplete == true;
             ShowWindow(_state.PostingAction, presentation.ShowAction ? SW_SHOW : SW_HIDE);
             EnableWindow(_state.PostingAction, presentation.ActionEnabled);
@@ -1897,16 +2057,16 @@ internal sealed class NativeManualPublishingCompanion :
         private void ApplyTheme()
         {
             if (_theme is null) return;
-            ApplyFont(_state.Header, NativeCompanionFontRole.Heading);
-            ApplyFont(_state.HeaderMetadata, NativeCompanionFontRole.Metadata);
+            ApplyFont(_state.Header, NativeCompanionFontRole.ReleaseHeading);
+            ApplyFont(_state.HeaderMetadata, NativeCompanionFontRole.Supporting);
             ApplyFont(_state.PlatformHeading, NativeCompanionFontRole.SectionHeading);
             ApplyFont(_state.AssetLabel, NativeCompanionFontRole.SectionHeading);
-            ApplyFont(_state.AssetCount, NativeCompanionFontRole.Metadata);
-            ApplyFont(_state.DragGuidance, NativeCompanionFontRole.Metadata);
-            ApplyFont(_state.Status, NativeCompanionFontRole.Metadata);
+            ApplyFont(_state.AssetCount, NativeCompanionFontRole.Supporting);
+            ApplyFont(_state.DragGuidance, NativeCompanionFontRole.Supporting);
+            ApplyFont(_state.Status, NativeCompanionFontRole.Supporting);
             ApplyFont(_state.PostingStatus, NativeCompanionFontRole.Body);
-            ApplyFont(_state.PostingHelper, NativeCompanionFontRole.Metadata);
-            ApplyFont(_state.PostingAggregate, NativeCompanionFontRole.Metadata);
+            ApplyFont(_state.PostingHelper, NativeCompanionFontRole.Supporting);
+            ApplyFont(_state.PostingAggregate, NativeCompanionFontRole.Supporting);
             foreach (IntPtr control in new[] { _state.PlatformLabel, _state.Platform, _state.TitleLabel,
                          _state.CopyTitle, _state.BodyLabel, _state.CopyMain, _state.AssetList,
                          _state.PostingAction, _state.Close })
@@ -1917,7 +2077,7 @@ internal sealed class NativeManualPublishingCompanion :
             _theme.ApplyControlChrome(_state.AssetList, NativeCompanionChromeRole.ListView);
             IntPtr header = ResolveAssetHeader();
             _theme.ApplyControlChrome(header, NativeCompanionChromeRole.ListViewHeader);
-            ApplyFont(header, NativeCompanionFontRole.Metadata);
+            ApplyFont(header, NativeCompanionFontRole.Supporting);
             ApplyListViewPalette();
             _theme.ApplyTitleBar(_window);
             InvalidateRect(_window, IntPtr.Zero, true);
@@ -2144,8 +2304,10 @@ internal sealed class NativeManualPublishingCompanion :
         {
             if (_theme is null || _state.AssetList == IntPtr.Zero) return;
             NativeCompanionPalette palette = _theme.Palette;
-            SendMessage(_state.AssetList, LVM_SETBKCOLOR, IntPtr.Zero, new IntPtr(palette.Page));
-            SendMessage(_state.AssetList, LVM_SETTEXTBKCOLOR, IntPtr.Zero, new IntPtr(palette.Page));
+            NativeCompanionSurfaceStyle nested = NativeCompanionTheme.SurfaceStyle(
+                NativeCompanionSurfaceRole.Nested, palette);
+            SendMessage(_state.AssetList, LVM_SETBKCOLOR, IntPtr.Zero, new IntPtr(nested.Background));
+            SendMessage(_state.AssetList, LVM_SETTEXTBKCOLOR, IntPtr.Zero, new IntPtr(nested.Background));
             SendMessage(_state.AssetList, LVM_SETTEXTCOLOR, IntPtr.Zero, new IntPtr(palette.Text));
         }
 
@@ -2162,17 +2324,40 @@ internal sealed class NativeManualPublishingCompanion :
                     ? palette.Page : palette.Surface;
                 return _theme.PrepareTextDevice(device, palette.Text, listBackground);
             }
-            int background = control == _state.Status || control == _state.PostingAggregate ? palette.Surface :
-                control == _state.Header || control == _state.HeaderMetadata ? palette.Page : palette.Card;
-            int text = control == _state.HeaderMetadata || control == _state.AssetCount || control == _state.DragGuidance || control == _state.PlatformHeading ||
-                control == _state.AssetLabel || control == _state.PlatformLabel || control == _state.TitleLabel ||
-                control == _state.BodyLabel ? palette.MutedText : palette.Text;
-            if (control == _state.Status && palette.Mode != NativeCompanionThemeMode.HighContrast)
-                text = _statusKind == StatusKind.Success ? palette.Success : _statusKind == StatusKind.Error ? palette.Danger : palette.MutedText;
-            if (control == _state.PostingAggregate && palette.Mode != NativeCompanionThemeMode.HighContrast)
-                text = _aggregateComplete ? palette.Success : palette.MutedText;
-            return _theme.PrepareTextDevice(device, text, background, transparent: true);
+            NativeCompanionTextStyle style = StaticTextStyle(control, palette);
+            return _theme.PrepareTextDevice(device, style.Text, style.Background, transparent: true);
         }
+
+        private NativeCompanionTextStyle StaticTextStyle(IntPtr control, NativeCompanionPalette palette)
+        {
+            NativeCompanionSurfaceRole surface = control == _state.Header || control == _state.HeaderMetadata
+                ? NativeCompanionSurfaceRole.Window
+                : control == _state.Status || control == _state.PostingAggregate
+                    ? NativeCompanionSurfaceRole.Footer
+                    : control == _state.PlatformHeading || control == _state.PlatformLabel ||
+                        control == _state.AssetLabel || control == _state.AssetCount
+                        ? NativeCompanionSurfaceRole.SectionHeader
+                        : NativeCompanionSurfaceRole.Section;
+            NativeCompanionTextRole role = control == _state.Header ? NativeCompanionTextRole.ReleaseHeading :
+                control == _state.PlatformHeading || control == _state.AssetLabel ? NativeCompanionTextRole.SectionHeading :
+                control == _state.HeaderMetadata || control == _state.DragGuidance || control == _state.PostingHelper
+                    ? NativeCompanionTextRole.Supporting :
+                control == _state.PlatformLabel || control == _state.TitleLabel || control == _state.BodyLabel ||
+                    control == _state.AssetCount ? NativeCompanionTextRole.Label :
+                control == _state.Status ? StatusTextRole(_statusKind) :
+                control == _state.PostingStatus ? StatusTextRole(_postingStatusKind) :
+                control == _state.PostingAggregate && _aggregateComplete ? NativeCompanionTextRole.Success :
+                control == _state.PostingAggregate ? NativeCompanionTextRole.Supporting :
+                NativeCompanionTextRole.Body;
+            return NativeCompanionTheme.TextStyle(role, surface, palette);
+        }
+
+        private static NativeCompanionTextRole StatusTextRole(StatusKind kind) => kind switch
+        {
+            StatusKind.Success => NativeCompanionTextRole.Success,
+            StatusKind.Error => NativeCompanionTextRole.Danger,
+            _ => NativeCompanionTextRole.Status,
+        };
 
         private void PaintWindow()
         {
@@ -2183,16 +2368,44 @@ internal sealed class NativeManualPublishingCompanion :
             {
                 GetClientRect(_window, out Rect client);
                 NativeCompanionPalette palette = _theme.Palette;
-                FillRect(device, ref client, _theme.Brush(palette.Page));
+                NativeCompanionSurfaceStyle window = NativeCompanionTheme.SurfaceStyle(
+                    NativeCompanionSurfaceRole.Window, palette);
+                FillRect(device, ref client, _theme.Brush(window.Background));
                 if (_layout is null) return;
-                FillAndFrame(device, _layout.PlatformCard, palette.Card, palette.Border);
-                FillAndFrame(device, _layout.AssetsCard, palette.Card, palette.Border);
+                PaintSection(device, _layout.PlatformCard, includesPlatformSelector: true);
+                PaintSection(device, _layout.AssetsCard, includesPlatformSelector: false);
                 Rect footer = ToRect(_layout.Footer);
-                FillRect(device, ref footer, _theme.Brush(palette.Surface));
+                NativeCompanionSurfaceStyle footerStyle = NativeCompanionTheme.SurfaceStyle(
+                    NativeCompanionSurfaceRole.Footer, palette);
+                FillRect(device, ref footer, _theme.Brush(footerStyle.Background));
                 Rect divider = new() { left = footer.left, top = footer.top, right = footer.right, bottom = footer.top + Math.Max(1, Scale(1, _theme.Dpi)) };
-                FillRect(device, ref divider, _theme.Brush(palette.Border));
+                FillRect(device, ref divider, _theme.Brush(footerStyle.Border));
             }
             finally { EndPaint(_window, ref paint); }
+        }
+
+        private void PaintSection(IntPtr device, NativeLayoutRect bounds, bool includesPlatformSelector)
+        {
+            if (_theme is null) return;
+            NativeCompanionSurfaceStyle section = NativeCompanionTheme.SurfaceStyle(
+                NativeCompanionSurfaceRole.Section, _theme.Palette);
+            Rect sectionRect = ToRect(bounds);
+            if (section.Decorative)
+                DrawRoundedRect(device, ref sectionRect, section.Background, section.Border,
+                    Scale(section.Radius, _theme.Dpi));
+            else
+            {
+                FillRect(device, ref sectionRect, _theme.Brush(section.Background));
+                FrameRect(device, ref sectionRect, _theme.Brush(section.Border));
+                return;
+            }
+
+            NativeCompanionSurfaceStyle header = NativeCompanionTheme.SurfaceStyle(
+                NativeCompanionSurfaceRole.SectionHeader, _theme.Palette);
+            Rect headerRect = ToRect(NativeCompanionTheme.SectionHeaderBounds(
+                bounds, _theme.Dpi, includesPlatformSelector));
+            DrawRoundedRect(device, ref headerRect, header.Background, header.Border,
+                Scale(header.Radius, _theme.Dpi));
         }
 
         private IntPtr HandleNotify(IntPtr pointer)
@@ -2254,7 +2467,7 @@ internal sealed class NativeManualPublishingCompanion :
             string text = itemIndex >= 0 && itemIndex < columns.Count ? columns[itemIndex].Title : string.Empty;
             NativeLayoutRect textLayout = NativeCompanionTheme.HeaderTextBounds(ToLayoutRect(cell), _theme.Dpi);
             Rect textBounds = ToRect(textLayout);
-            IntPtr previousFont = SelectObject(draw.hdc, _theme.Font(NativeCompanionFontRole.Metadata));
+            IntPtr previousFont = SelectObject(draw.hdc, _theme.Font(NativeCompanionFontRole.Supporting));
             try
             {
                 _theme.PrepareTextDevice(draw.hdc, style.Text, style.Background, transparent: true);
@@ -2373,7 +2586,8 @@ internal sealed class NativeManualPublishingCompanion :
             if (draw.nmcd.dwDrawStage == CddsItemPrepaint)
             {
                 draw.clrText = selected ? style.Text : _theme.Palette.Text;
-                draw.clrTextBk = selected ? style.Background : _theme.Palette.Page;
+                draw.clrTextBk = selected ? style.Background : NativeCompanionTheme.SurfaceStyle(
+                    NativeCompanionSurfaceRole.Nested, _theme.Palette).Background;
                 Marshal.StructureToPtr(draw, pointer, false);
                 result = new IntPtr(CdrfNewFont | (selected ? CdrfNotifyPostpaint : 0));
             }
@@ -2394,16 +2608,10 @@ internal sealed class NativeManualPublishingCompanion :
 
             _listViewDrawObserver?.Invoke(new(
                 draw.nmcd.dwDrawStage, itemIndex, selected, customDrawReportedSelected,
-                keyboardFocused, true, selected ? style.Background : _theme.Palette.Page,
+                keyboardFocused, true, selected ? style.Background : NativeCompanionTheme.SurfaceStyle(
+                    NativeCompanionSurfaceRole.Nested, _theme.Palette).Background,
                 selected ? style.Text : _theme.Palette.Text, accent, result));
             return result;
-        }
-
-        private void FillAndFrame(IntPtr device, NativeLayoutRect layout, int fill, int border)
-        {
-            if (_theme is null) return;
-            Rect rect = ToRect(layout);
-            DrawRoundedRect(device, ref rect, fill, border, Scale(8, _theme.Dpi));
         }
 
         private void DrawRoundedRect(
@@ -2647,9 +2855,19 @@ internal sealed class NativeManualPublishingCompanion :
         {
             if (_window == IntPtr.Zero || !GetClientRect(_window, out Rect client)) return;
             int dpi = DpiForWindow(_window);
-            _layout = NativeCompanionLayout.Calculate(client.right, client.bottom, dpi, _state.Model.IsPatreon,
+            NativeCompanionLayout bootstrap = NativeCompanionLayout.Calculate(
+                client.right, client.bottom, dpi, _state.Model.IsPatreon,
                 WindowText(_state.PostingStatus), WindowText(_state.PostingHelper), _confirmation is not null,
                 StatusText);
+            if (!GetWindowRect(_state.AssetList, out Rect currentList) || currentList.bottom <= currentList.top)
+            {
+                Move(_state.AssetList, bootstrap.AssetList);
+                ResizeAssetColumnsToClient(dpi);
+            }
+            int desiredAssetListHeight = MeasureDesiredAssetListHeight();
+            _layout = NativeCompanionLayout.Calculate(client.right, client.bottom, dpi, _state.Model.IsPatreon,
+                WindowText(_state.PostingStatus), WindowText(_state.PostingHelper), _confirmation is not null,
+                StatusText, desiredAssetListHeight);
             Move(_state.Header, _layout.HeaderTitle);
             Move(_state.HeaderMetadata, _layout.HeaderMetadata);
             Move(_state.PlatformHeading, _layout.PlatformHeading);
@@ -2675,6 +2893,91 @@ internal sealed class NativeManualPublishingCompanion :
             Move(_state.Status, _layout.Status);
             Move(_state.Close, _layout.Close);
             InvalidateRect(_window, IntPtr.Zero, true);
+        }
+
+        private int MeasureDesiredAssetListHeight()
+        {
+            if (_state.AssetList == IntPtr.Zero || !GetWindowRect(_state.AssetList, out Rect window) ||
+                !GetClientRect(_state.AssetList, out Rect client))
+                throw NativeFailure();
+            IntPtr headerHandle = ResolveAssetHeader();
+            if (headerHandle == IntPtr.Zero || !GetWindowRect(headerHandle, out Rect headerWindow))
+                throw NativeFailure();
+            NativeLayoutRect header = ToParentLayoutRect(_state.AssetList, headerWindow);
+            int count = checked((int)SendMessage(
+                _state.AssetList, LVM_GETITEMCOUNT, IntPtr.Zero, IntPtr.Zero).ToInt64());
+            int requiredClientBottom = header.Bottom;
+            if (count > 0)
+            {
+                var firstItem = new Rect();
+                if (!SendMessageListViewRect(
+                        _state.AssetList, LVM_GETITEMRECT, IntPtr.Zero, ref firstItem))
+                    throw NativeFailure();
+                int rowHeight = firstItem.bottom - firstItem.top;
+                if (rowHeight <= 0) throw new InvalidOperationException("The production ListView reported an invalid row height.");
+                requiredClientBottom = Math.Max(requiredClientBottom,
+                    firstItem.top + rowHeight * Math.Min(count, 5));
+            }
+            int windowHeight = Math.Max(0, window.bottom - window.top);
+            int clientHeight = Math.Max(0, client.bottom - client.top);
+            return Math.Max(0, windowHeight - clientHeight) + requiredClientBottom;
+        }
+
+        private NativeAssetViewportProbe CaptureAssetViewportCore()
+        {
+            if (_state.AssetList == IntPtr.Zero || !GetWindowRect(_state.AssetList, out Rect window) ||
+                !GetClientRect(_state.AssetList, out Rect client))
+                throw NativeFailure();
+
+            NativeLayoutRect listWindow = ToParentLayoutRect(_window, window);
+            NativeLayoutRect listClient = ToLayoutRect(client);
+            IntPtr headerHandle = ResolveAssetHeader();
+            NativeLayoutRect header = default;
+            if (headerHandle != IntPtr.Zero && GetWindowRect(headerHandle, out Rect headerWindow))
+                header = ToParentLayoutRect(_state.AssetList, headerWindow);
+
+            int count = checked((int)SendMessage(
+                _state.AssetList, LVM_GETITEMCOUNT, IntPtr.Zero, IntPtr.Zero).ToInt64());
+            var items = new List<NativeLayoutRect>(count);
+            for (int index = 0; index < count; index++)
+            {
+                var item = new Rect();
+                if (!SendMessageListViewRect(_state.AssetList, LVM_GETITEMRECT, new IntPtr(index), ref item))
+                    throw NativeFailure();
+                items.Add(ToLayoutRect(item));
+            }
+
+            int visibleRowTarget = Math.Min(count, 5);
+            int requiredClientBottom = header.Bottom;
+            if (visibleRowTarget > 0)
+            {
+                NativeLayoutRect first = items[0];
+                int rowHeight = first.Height;
+                if (rowHeight <= 0) throw new InvalidOperationException("The production ListView reported an invalid row height.");
+                requiredClientBottom = Math.Max(requiredClientBottom, first.Y + rowHeight * visibleRowTarget);
+            }
+            int nonClientHeight = Math.Max(0, listWindow.Height - listClient.Height);
+            int desiredListHeight = nonClientHeight + requiredClientBottom;
+
+            var scroll = new ScrollInfo { cbSize = (uint)Marshal.SizeOf<ScrollInfo>(), fMask = SifAll };
+            if (!GetScrollInfo(_state.AssetList, SbVert, ref scroll)) scroll = default;
+            return new(
+                count, visibleRowTarget, DpiForWindow(_window), listWindow, listClient, header,
+                items, desiredListHeight, scroll.nMin, scroll.nMax, checked((int)scroll.nPage), scroll.nPos);
+        }
+
+        private static NativeLayoutRect ToParentLayoutRect(IntPtr parent, Rect screen)
+        {
+            var points = new[]
+            {
+                new Point { x = screen.left, y = screen.top },
+                new Point { x = screen.right, y = screen.bottom },
+            };
+            SetLastError(0);
+            if (MapWindowPoints(IntPtr.Zero, parent, points, 2) == 0 && Marshal.GetLastWin32Error() != 0)
+                throw NativeFailure();
+            return new(points[0].x, points[0].y,
+                points[1].x - points[0].x, points[1].y - points[0].y);
         }
 
         private static void Move(IntPtr window, NativeLayoutRect rect) =>
@@ -2870,12 +3173,21 @@ internal sealed class NativeManualPublishingCompanion :
 
         private static ushort RegisterClassOnce(IntPtr instance)
         {
+            IntPtr largeIcon = LoadApplicationIcon(instance, SmCxIcon, SmCyIcon);
+            IntPtr smallIcon = LoadApplicationIcon(instance, SmCxSmallIcon, SmCySmallIcon);
             var definition = new WindowClass { cbSize = (uint)Marshal.SizeOf<WindowClass>(), hInstance = instance,
                 lpszClassName = ClassName, lpfnWndProc = Marshal.GetFunctionPointerForDelegate(Procedure),
-                hCursor = LoadCursor(IntPtr.Zero, new IntPtr(32512)), hIcon = LoadIcon(IntPtr.Zero, new IntPtr(32512)),
+                hCursor = LoadCursor(IntPtr.Zero, new IntPtr(32512)), hIcon = largeIcon, hIconSm = smallIcon,
                 hbrBackground = IntPtr.Zero };
             ushort atom = RegisterClassEx(ref definition);
             return atom != 0 || Marshal.GetLastWin32Error() == 1410 ? (ushort)1 : (ushort)0;
+        }
+
+        private static IntPtr LoadApplicationIcon(IntPtr instance, int widthMetric, int heightMetric)
+        {
+            IntPtr icon = LoadImage(instance, new IntPtr(32512), ImageIcon,
+                GetSystemMetrics(widthMetric), GetSystemMetrics(heightMetric), LrShared);
+            return icon != IntPtr.Zero ? icon : LoadIcon(IntPtr.Zero, new IntPtr(32512));
         }
 
         private static void SetMinimum(IntPtr window, IntPtr pointer)
@@ -3007,6 +3319,13 @@ internal sealed class NativeManualPublishingCompanion :
         [StructLayout(LayoutKind.Sequential)] internal struct Message { public IntPtr hwnd; public uint message; public IntPtr wParam, lParam; public uint time; public Point pt; public uint lPrivate; }
         [StructLayout(LayoutKind.Sequential)] internal struct Point { public int x, y; }
         [StructLayout(LayoutKind.Sequential)] private struct Rect { public int left, top, right, bottom; }
+        [StructLayout(LayoutKind.Sequential)] private struct ScrollInfo
+        {
+            public uint cbSize, fMask;
+            public int nMin, nMax;
+            public uint nPage;
+            public int nPos, nTrackPos;
+        }
         [StructLayout(LayoutKind.Sequential)] private struct MinMaxInfo { public Point ptReserved, ptMaxSize, ptMaxPosition, ptMinTrackSize, ptMaxTrackSize; }
         [StructLayout(LayoutKind.Sequential)] private struct InitCommonControls { public uint dwSize, dwICC; }
         [StructLayout(LayoutKind.Sequential)] private struct NotifyHeader
@@ -3091,6 +3410,13 @@ internal sealed class NativeManualPublishingCompanion :
             public uint stateButton;
             public IntPtr hwndCombo, hwndItem, hwndList;
         }
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] private struct LogFont
+        {
+            public int lfHeight, lfWidth, lfEscapement, lfOrientation, lfWeight;
+            public byte lfItalic, lfUnderline, lfStrikeOut, lfCharSet;
+            public byte lfOutPrecision, lfClipPrecision, lfQuality, lfPitchAndFamily;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string? lfFaceName;
+        }
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr GetModuleHandle(string? moduleName);
         [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
@@ -3117,6 +3443,7 @@ internal sealed class NativeManualPublishingCompanion :
         [DllImport("user32.dll", EntryPoint = "GetClassNameW", CharSet = CharSet.Unicode, ExactSpelling = true)] private static extern int GetClassName(IntPtr window, System.Text.StringBuilder className, int maximumCount);
         [DllImport("user32.dll")] private static extern bool GetComboBoxInfo(IntPtr combo, ref ComboBoxInfo info);
         [DllImport("user32.dll", EntryPoint = "SendMessageW", CharSet = CharSet.Unicode, ExactSpelling = true)] private static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+        [DllImport("user32.dll", SetLastError = true)] private static extern bool GetScrollInfo(IntPtr window, int bar, ref ScrollInfo info);
         [DllImport("user32.dll", EntryPoint = "SendMessageW", ExactSpelling = true)]
         private static extern bool SendMessageHeaderRect(IntPtr window, uint message, IntPtr wParam, out Rect rectangle);
         [DllImport("user32.dll", EntryPoint = "SendMessageW", ExactSpelling = true)]
@@ -3140,12 +3467,17 @@ internal sealed class NativeManualPublishingCompanion :
         [DllImport("user32.dll")] private static extern short GetKeyState(int key);
         [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int key);
         [DllImport("gdi32.dll")] private static extern IntPtr SelectObject(IntPtr device, IntPtr value);
+        [DllImport("gdi32.dll", EntryPoint = "GetObjectW", CharSet = CharSet.Unicode)]
+        private static extern int GetObject(IntPtr value, int bufferSize, ref LogFont buffer);
         [DllImport("gdi32.dll", SetLastError = true)] private static extern IntPtr CreatePen(int style, int width, int color);
         [DllImport("gdi32.dll")] private static extern bool DeleteObject(IntPtr value);
         [DllImport("gdi32.dll")] private static extern bool MoveToEx(IntPtr device, int x, int y, IntPtr previousPoint);
         [DllImport("gdi32.dll")] private static extern bool LineTo(IntPtr device, int x, int y);
         [DllImport("user32.dll")] private static extern IntPtr LoadCursor(IntPtr instance, IntPtr cursor);
         [DllImport("user32.dll")] private static extern IntPtr LoadIcon(IntPtr instance, IntPtr icon);
+        [DllImport("user32.dll", EntryPoint = "LoadImageW", ExactSpelling = true)]
+        private static extern IntPtr LoadImage(IntPtr instance, IntPtr name, uint type, int width, int height, uint loadFlags);
+        [DllImport("user32.dll")] private static extern int GetSystemMetrics(int index);
         [DllImport("user32.dll")] private static extern IntPtr BeginPaint(IntPtr window, out PaintStruct paint);
         [DllImport("user32.dll")] private static extern bool EndPaint(IntPtr window, ref PaintStruct paint);
         [DllImport("user32.dll")] private static extern int FillRect(IntPtr device, ref Rect rect, IntPtr brush);

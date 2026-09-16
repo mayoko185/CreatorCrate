@@ -33,4 +33,9 @@
                       ReferenceOutputAssembly="false" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Include="..\OpenLocally.WinUiHost.Proof\ManualVisualProofFixture.cs"
+             Link="ManualVisualProofFixture.cs" />
+  </ItemGroup>
+
 </Project>

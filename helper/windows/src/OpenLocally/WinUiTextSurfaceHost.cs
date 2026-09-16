@@ -22,6 +22,7 @@ internal sealed record WinUiHostProofOptions(
     ElementTheme? ThemeAfterFirstRender = null,
     bool SelectBodyTextAfterRender = false,
     int FailAfterSurfaceCount = 0,
+    NativeCompanionPalette? InitialNativePalette = null,
     Action<IntPtr>? WindowShown = null,
     Action<IntPtr>? MainWindowCreated = null,
     Action<IReadOnlyList<IntPtr>>? NativeControlsCreated = null,
@@ -70,7 +71,7 @@ internal static class WinUiTextSurfacePresentation
             _ => throw new ArgumentOutOfRangeException(nameof(theme)),
         };
         return new(
-            palette.Card, palette.Surface, palette.Surface,
+            palette.Surface, palette.Card, palette.Hover,
             palette.Text, palette.Border, palette.BorderStrong, palette.Focus);
     }
 }
@@ -145,6 +146,10 @@ internal sealed class WinUiTextSurfaceHost : IDisposable
     internal bool TitleTextScaleEnabled => _title?.Editor.IsTextScaleFactorEnabled == true;
     internal bool BodyTextScaleEnabled => _body?.Editor.IsTextScaleFactorEnabled == true;
     internal WinUiTextSurfacePresentationProbe Presentation => CapturePresentation();
+    internal WinUiTextSurfaceResourceProbe TitleResources => CaptureResources(_title!);
+    internal WinUiTextSurfaceResourceProbe BodyResources => CaptureResources(_body!);
+    internal WinUiTextSelectionProbe TitleSelection => CaptureSelection(_title!);
+    internal WinUiTextSelectionProbe BodySelection => CaptureSelection(_body!);
 
     internal void SetContent(string platform, string title, string body)
     {
@@ -185,6 +190,12 @@ internal sealed class WinUiTextSurfaceHost : IDisposable
         ThrowIfDisposed();
         _body!.Editor.Document.Selection.SetRange(0, 17);
         _body.Editor.Focus(FocusState.Programmatic);
+    }
+
+    internal void SetBodySelectionForTesting(int start, int end)
+    {
+        ThrowIfDisposed();
+        _body!.Editor.Document.Selection.SetRange(start, end);
     }
 
     internal bool NavigateFromNative(IntPtr current, IntPtr platform, IntPtr copyTitle, IntPtr copyBody, bool previous)
@@ -234,8 +245,6 @@ internal sealed class WinUiTextSurfaceHost : IDisposable
         {
             source.Initialize(new Microsoft.UI.WindowId { Value = unchecked((ulong)parentWindow.ToInt64()) });
             var root = new Grid();
-            ApplyThemeResources(root, theme);
-            root.RequestedTheme = theme;
 
             var editor = new RichEditBox
             {
@@ -264,6 +273,7 @@ internal sealed class WinUiTextSurfaceHost : IDisposable
 
             root.Children.Add(editor);
             source.Content = root;
+            ApplyTheme(root, editor, theme);
 
             Surface? surface = null;
             TypedEventHandler<DesktopWindowXamlSource, DesktopWindowXamlSourceTakeFocusRequestedEventArgs> handler =
@@ -306,6 +316,7 @@ internal sealed class WinUiTextSurfaceHost : IDisposable
         Surface title = _title ?? throw new ObjectDisposedException(nameof(WinUiTextSurfaceHost));
         Surface body = _body ?? throw new ObjectDisposedException(nameof(WinUiTextSurfaceHost));
         ITextParagraphFormat paragraph = body.Editor.Document.GetRange(0, 0).ParagraphFormat;
+        WinUiTextSurfaceResourceProbe resources = CaptureResources(body);
         return new(
             title.Editor.FontFamily.Source,
             title.Editor.FontSize, title.Editor.FontWeight.Weight,
@@ -318,29 +329,53 @@ internal sealed class WinUiTextSurfaceHost : IDisposable
             paragraph.SpaceBefore, paragraph.SpaceAfter,
             body.Editor.UseSystemFocusVisuals,
             title.Editor.IsTextScaleFactorEnabled, body.Editor.IsTextScaleFactorEnabled,
-            body.Root.Resources.Keys.Cast<object>().Any(key =>
-                WinUiTextSurfacePresentation.DecorativeResourceKeys.Contains(key as string, StringComparer.Ordinal)),
-            HasLocalBrushValue(body.Editor, Control.BackgroundProperty) ||
-                HasLocalBrushValue(body.Editor, Control.ForegroundProperty) ||
-                HasLocalBrushValue(body.Editor, Control.BorderBrushProperty),
-            BrushColor(body.Root.Background), BrushColor(body.Editor.Background),
-            BrushColor(body.Editor.Foreground), BrushColor(body.Editor.BorderBrush),
-            ResourceBrushColor(body.Root, "TextControlBorderBrushPointerOver"),
-            ResourceBrushColor(body.Root, "TextControlBorderBrushFocused"),
+            resources.HasDecorativeResourceOverrides,
+            resources.HasLocalEditorBrushValues,
+            resources.RootBackground, resources.Background,
+            resources.Foreground, resources.Border,
+            resources.PointerBorder, resources.FocusBorder,
             body.Root.Resources.Keys.Cast<object>().Any(key =>
                 Equals(key, "TextControlSelectionHighlightColor")));
     }
 
-    private static void ApplyTheme(Surface surface, ElementTheme theme)
+    private static WinUiTextSurfaceResourceProbe CaptureResources(Surface surface) => new(
+        surface.Root.Resources.Keys.Cast<object>().Any(key =>
+            WinUiTextSurfacePresentation.DecorativeResourceKeys.Contains(key as string, StringComparer.Ordinal)),
+        HasLocalBrushValue(surface.Editor, Control.BackgroundProperty) ||
+            HasLocalBrushValue(surface.Editor, Control.ForegroundProperty) ||
+            HasLocalBrushValue(surface.Editor, Control.BorderBrushProperty),
+        BrushColor(surface.Root.Background), BrushColor(surface.Editor.Background),
+        BrushColor(surface.Editor.Foreground), BrushColor(surface.Editor.BorderBrush),
+        ResourceBrushColor(surface.Root, "TextControlBorderBrushPointerOver"),
+        ResourceBrushColor(surface.Root, "TextControlBorderBrushFocused"));
+
+    private static WinUiTextSelectionProbe CaptureSelection(Surface surface)
     {
-        ApplyThemeResources(surface.Root, theme);
-        surface.Root.RequestedTheme = theme;
+        ITextSelection selection = surface.Editor.Document.Selection;
+        return new(selection.StartPosition, selection.EndPosition);
+    }
+
+    private static void ApplyTheme(Surface surface, ElementTheme theme) =>
+        ApplyTheme(surface.Root, surface.Editor, theme);
+
+    private static void ApplyTheme(Grid root, RichEditBox editor, ElementTheme theme)
+    {
         if (theme == ElementTheme.Default)
         {
-            surface.Editor.ClearValue(Control.ForegroundProperty);
-            surface.Editor.ClearValue(Control.BackgroundProperty);
-            surface.Editor.ClearValue(Control.BorderBrushProperty);
+            ApplyThemeResources(root, theme);
+            editor.ClearValue(Control.ForegroundProperty);
+            editor.ClearValue(Control.BackgroundProperty);
+            editor.ClearValue(Control.BorderBrushProperty);
+            root.RequestedTheme = theme;
+            return;
         }
+
+        root.RequestedTheme = theme;
+        ApplyThemeResources(root, theme);
+        WinUiTextSurfacePalette palette = WinUiTextSurfacePresentation.Palette(theme);
+        editor.Background = Brush(palette.Background);
+        editor.Foreground = Brush(palette.Foreground);
+        editor.BorderBrush = Brush(palette.Border);
     }
 
     private static void ApplyThemeResources(Grid root, ElementTheme theme)

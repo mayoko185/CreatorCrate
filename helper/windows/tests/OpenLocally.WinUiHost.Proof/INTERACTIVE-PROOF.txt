@@ -1,22 +1,54 @@
-CreatorCrate WinUI 3 interactive visual proof
+CreatorCrate integrated manual visual proof
 
-Run OpenLocally.WinUiHost.Proof.exe directly from this folder. It uses only local fixture data and requires no server or network.
+Run from the repository root:
 
-F6 switches both WinUI islands between local Dark and Light themes. This does not change the Windows system theme. The dedicated Model copy buttons copy the exact backing fixture; Ctrl+C inside a RichEditBox copies its current selection. Escape closes the companion.
+powershell -NoProfile -ExecutionPolicy Bypass -File .\helper\windows\tests\OpenLocally.WinUiHost.Proof\run-manual-visual-proof.ps1 -PostingState Ready -Theme Dark
 
-Manual accessibility acceptance checklist (do not treat the automated proof as completing these items):
+PostingState accepts Ready, Confirming, Unknown, or Posted. Theme accepts Dark or Light. Recommended visual-gate launches:
 
-- Narrator identifies Patreon title/body, X post text, and Bluesky post text; reads content and read-only state; and follows selection/focus movement.
-- Tab and Shift+Tab traverse each platform flow without trapping focus. Enter inside text activates no command; Escape still closes when no XAML popup consumes it.
-- Shift+Arrow, Ctrl+A, Ctrl+C, arrows, Home/End, Page Up/Page Down, mouse selection, and scrolling remain usable. Typing and paste do not mutate content.
-- Dark, Light, and genuine Windows High Contrast keep text, selection, focus, emoji, and controls readable.
-- Windows Text Size at 100%, 125%, 150%, 200%, and the highest practical setting scales text within the fixed scrollable islands without overlap or inaccessible title clipping.
-- At 96, 144, and 192 DPI, repeat default and elevated Text Size checks. If available, move the window between physical mixed-DPI monitors and verify crisp text, stable text scale, bounds, focus, and selection.
-- Confirm 😀, ❤️, ✅, 👩🏽‍💻, Japanese, and combining marks remain intact.
+-PostingState Ready -Theme Dark
+-PostingState Confirming -Theme Dark
+-PostingState Unknown -Theme Dark
+-PostingState Posted -Theme Dark
+-PostingState Ready -Theme Light
 
-Optional High Contrast check: enable Windows High Contrast manually, then inspect text readability, selection, focus indication, and both surfaces. The proof never changes High Contrast itself.
+Each launch opens the actual NativeManualPublishingCompanion with the production WinUI RichEditBoxes, native Buttons, Platform ComboBox, Assets ListView/Header, and footer. Use the real Platform ComboBox to inspect Patreon, X, and Bluesky. The fixture is fully local and does not use a server or network.
 
-This disposable proof does not establish clean-machine launch, offline clean-machine launch, or VC++ prerequisite behavior.
+The Assets table contains representative production-model data: two available images with real Shell thumbnails, one available text attachment, and one actually unavailable image. The available rows begin selected (3 of 4 selected). Use the real ListView with click, Ctrl+click, and Shift+click to inspect row selection, count changes, unavailable guidance, responsive columns, and the one intentionally long filename/path.
+
+F6 is not implemented. Theme is selected at launch and applies through the production whole-window refresh path to native chrome and both WinUI islands together.
+
+Genuine Windows High Contrast acceptance uses this sequence:
+
+1. Launch the production manual proof normally, preferably with -Theme Dark.
+2. Keep that production companion window open.
+3. Enable a genuine Windows Contrast Theme in Windows Settings.
+4. Wait for the real Windows settings-change notification.
+5. Inspect the SAME live production companion window for High Contrast readability.
+6. Optionally disable the Contrast Theme while the window remains open and verify that production refreshes again.
+
+There is no launcher -Theme HighContrast argument. The -Theme Dark and -Theme Light arguments select proof presentation only; neither substitutes for genuine Windows High Contrast. High Contrast acceptance depends on the real Windows settings-change path after launch. Do not simulate High Contrast through proof arguments.
+
+Manual visual checklist:
+
+- Overall CreatorCrate feel; release title versus metadata; Content hierarchy.
+- Platform selector; Patreon title/body; X and Bluesky post editors; emoji and Unicode.
+- Copy versus Mark-as-posted hierarchy; posting status, helper, action, and footer aggregate.
+- Assets heading; all four fixture rows visible without vertical scrolling; populated thumbnails; File, Role, Size, Status, and Path / staged name columns. More than five rows may use the native vertical scrollbar.
+- Selected-row appearance; initial 3 of 4 count; count and guidance after click/Ctrl+click/Shift+click, including selecting the unavailable row.
+- Responsive columns and long-value clipping/scroll behavior; footer; no bright native patches.
+- Dark and Light whole-window consistency.
+- Ready, Confirming, Unknown/Retry, and Posted production presentations.
+
+Additional manual accessibility gates (not completed by automated proof):
+
+- With the proof already open, enable a genuine Windows Contrast Theme and repeat the visual/readability checks on that same live window.
+- Test Windows Text Size at 100%, 125%, 150%, 200%, and the highest practical setting.
+- At 96, 144, and 192 DPI, repeat default and elevated Text Size checks. If available, move the window between physical mixed-DPI monitors and verify crisp text, stable bounds, focus, and selection.
+- With Narrator, verify platform content, read-only state, control names, and focus movement.
+- Verify Tab/Shift+Tab, text selection/copy/navigation, scrolling, Escape, and non-editability.
+
+Important scope boundary: the known real one-file drag defect remains unresolved. This visual gate permits inspection of selection and drag guidance only. Do not drag files and do not accept or close the drag defect from this proof.
 
 WP10C interactive UIA proof
 
@@ -24,9 +56,4 @@ From the repository root, run:
 
 powershell -NoProfile -ExecutionPolicy Bypass -File .\helper\windows\tests\OpenLocally.WinUiHost.Proof\run-interactive-uia-proof.ps1
 
-Keep the desktop unlocked and do not switch windows while it runs. The proof publishes under the ignored
-test-results\winui-accessibility-proof directory, creates two fully local production companion fixtures, and
-uses an out-of-process UIA client with the Windows inbox client-side provider table explicitly registered.
-
-Optional Narrator check: enable Narrator manually, navigate to Mark as posted, confirm it is announced as a
-button, and activate it with the normal Narrator activation command. The proof never starts Narrator itself.
+Keep the desktop unlocked and do not switch windows while it runs. The UIA proof uses local production companion fixtures and the Windows inbox client-side provider table. It does not replace the manual visual, High Contrast, Text Size, or mixed-DPI gates.

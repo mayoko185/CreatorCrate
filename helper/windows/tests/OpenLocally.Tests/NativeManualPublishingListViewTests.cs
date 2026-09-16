@@ -6,6 +6,192 @@ namespace OpenLocally.Tests;
 [Collection("Native header resource isolation")]
 public sealed class NativeManualPublishingListViewTests
 {
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(4)]
+    [InlineData(5)]
+    [InlineData(6)]
+    public async Task ProductionViewport_UsesContentAwareFiveRowCapWithCompleteNativeRows(int assetCount)
+    {
+        ManualPreparedAsset[] assets = Enumerable.Range(1, assetCount)
+            .Select(index => Prepared(index, $"asset-{index}.png", true)).ToArray();
+        await using var harness = await ProductionHeaderHarness.StartAsync(Model(assets));
+
+        NativeProductionLayoutProbe layout =
+            harness.Window.ResizeAndCaptureLayoutForTesting(0, 980, 920);
+        NativeAssetViewportProbe viewport = harness.Window.CaptureAssetViewportForTesting();
+
+        Assert.Equal(assetCount, viewport.DisplayedAssetCount);
+        Assert.Equal(Math.Min(assetCount, 5), viewport.VisibleRowTarget);
+        Assert.Equal(viewport.DesiredListHeight, layout.AssetList.Height);
+        Assert.Equal(viewport.DesiredListHeight, viewport.ListWindow.Height);
+        Assert.Equal(assetCount, viewport.Items.Count);
+        Assert.True(viewport.Header.Height > 0);
+        Assert.True(viewport.Header.Bottom <= viewport.ListClient.Bottom);
+
+        for (int index = 0; index < Math.Min(assetCount, 5); index++)
+            Assert.True(viewport.Items[index].Bottom <= viewport.ListClient.Bottom,
+                $"Row {index} was clipped: row bottom {viewport.Items[index].Bottom}, client bottom {viewport.ListClient.Bottom}.");
+
+        if (assetCount <= 5)
+        {
+            Assert.All(viewport.Items,
+                item => Assert.True(item.Bottom <= viewport.ListClient.Bottom));
+            if (assetCount > 0)
+                Assert.True(viewport.ScrollMaximum - viewport.ScrollMinimum + 1 <= viewport.ScrollPage);
+        }
+        else
+        {
+            Assert.True(viewport.Items[5].Bottom > viewport.ListClient.Bottom);
+            Assert.True(viewport.ScrollMaximum - viewport.ScrollMinimum + 1 > viewport.ScrollPage);
+            NativeAssetViewportProbe scrolled = harness.Window.EnsureLastAssetVisibleForTesting();
+            Assert.True(scrolled.Items[^1].Bottom <= scrolled.ListClient.Bottom);
+            Assert.True(scrolled.ScrollPosition > scrolled.ScrollMinimum);
+        }
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(4)]
+    [InlineData(5)]
+    public async Task AuthoritativeTextLayoutSnapshot_TracksResizePlatformAndMeasuredAssetViewport(int assetCount)
+    {
+        ManualPreparedAsset[] assets = Enumerable.Range(1, assetCount)
+            .Select(index => Prepared(index, $"asset-{index}.png", true)).ToArray();
+        var model = new ManualPublishingCompanionModel(Session(
+            new ManualPreparedPlatform("patreon", "Release", "Body", assets),
+            new ManualPreparedPlatform("x", "Release", "Post", assets),
+            new ManualPreparedPlatform("bluesky", "Release", "Post", assets)));
+        await using var harness = await ProductionHeaderHarness.StartAsync(model);
+
+        foreach ((int platformIndex, string platform, bool titleVisible) in new[]
+                 { (0, "patreon", true), (1, "x", false), (2, "bluesky", false), (0, "patreon", true) })
+        {
+            NativeProductionLayoutProbe actual =
+                harness.Window.ResizeAndCaptureLayoutForTesting(platformIndex, 980, 920);
+            NativeAuthoritativeTextLayoutProbe authoritative =
+                harness.Window.CaptureAuthoritativeTextLayoutForTesting();
+            NativeAssetViewportProbe viewport = harness.Window.CaptureAssetViewportForTesting();
+
+            Assert.Equal(platform, authoritative.Platform);
+            Assert.Equal(titleVisible, authoritative.TitleVisible);
+            Assert.Equal(authoritative.BodyText, actual.BodyText);
+            Assert.Equal(authoritative.TitleText, actual.TitleText);
+            Assert.Equal(Math.Min(assetCount, 5), viewport.VisibleRowTarget);
+            Assert.Equal(viewport.DesiredListHeight, actual.AssetList.Height);
+            if (!titleVisible) Assert.Equal(default, authoritative.TitleText);
+        }
+    }
+
+    [Fact]
+    public async Task ProductionViewport_RecalculatesAcrossPlatformSwitchAndDoesNotKeepStaleHeight()
+    {
+        ManualPreparedAsset[] Assets(int count, int offset) => Enumerable.Range(1, count)
+            .Select(index => Prepared(offset + index, $"asset-{offset + index}.png", true)).ToArray();
+        var model = new ManualPublishingCompanionModel(Session(
+            new ManualPreparedPlatform("patreon", "Release", "Body", Assets(4, 0)),
+            new ManualPreparedPlatform("x", "Release", "Post", Assets(2, 100)),
+            new ManualPreparedPlatform("bluesky", "Release", "Post", Assets(7, 200))));
+        await using var harness = await ProductionHeaderHarness.StartAsync(model);
+
+        NativeAssetViewportProbe patreon = Capture(0);
+        NativeAssetViewportProbe x = Capture(1);
+        NativeAssetViewportProbe bluesky = Capture(2);
+        NativeAssetViewportProbe patreonAgain = Capture(0);
+
+        Assert.True(x.ListWindow.Height < patreon.ListWindow.Height);
+        Assert.True(patreon.ListWindow.Height < bluesky.ListWindow.Height);
+        Assert.Equal(patreon.ListWindow.Height, patreonAgain.ListWindow.Height);
+        Assert.Equal(5, bluesky.VisibleRowTarget);
+        Assert.True(bluesky.Items[5].Bottom > bluesky.ListClient.Bottom);
+
+        NativeAssetViewportProbe Capture(int platformIndex)
+        {
+            harness.Window.ResizeAndCaptureLayoutForTesting(platformIndex, 980, 920);
+            return harness.Window.CaptureAssetViewportForTesting();
+        }
+    }
+
+    [Fact]
+    public async Task ProductionViewport_RemainsFiveRowsAtLargeAndWideSizesWithoutUnboundedGrowth()
+    {
+        await using var harness = await ProductionHeaderHarness.StartAsync(Model(
+            Enumerable.Range(1, 8).Select(index => Prepared(index, $"asset-{index}.png", true)).ToArray()));
+
+        NativeAssetViewportProbe normal = Capture(980, 920);
+        NativeAssetViewportProbe large = Capture(980, 1400);
+        NativeAssetViewportProbe wide = Capture(1600, 920);
+
+        Assert.Equal(normal.DesiredListHeight, large.ListWindow.Height);
+        Assert.Equal(normal.DesiredListHeight, wide.ListWindow.Height);
+        Assert.Equal(5, normal.VisibleRowTarget);
+
+        NativeAssetViewportProbe Capture(int width, int height)
+        {
+            harness.Window.ResizeAndCaptureLayoutForTesting(0, width, height);
+            return harness.Window.CaptureAssetViewportForTesting();
+        }
+    }
+
+    [Fact]
+    public async Task SupportedMinimum_StaysContainedWhenFiveNativeRowsCannotFitWithoutBreakingContent()
+    {
+        ManualPreparedAsset[] assets = Enumerable.Range(1, 5)
+            .Select(index => Prepared(index, $"asset-{index}.png", true)).ToArray();
+        await using var harness = await ProductionHeaderHarness.StartAsync(
+            new ManualPublishingCompanionModel(Session(
+                new ManualPreparedPlatform("patreon", "Release", "Body", assets))));
+
+        NativeProductionLayoutProbe minimum =
+            harness.Window.ResizeAndCaptureLayoutForTesting(0, 820, 754);
+        NativeAssetViewportProbe minimumViewport = harness.Window.CaptureAssetViewportForTesting();
+        Assert.True(minimumViewport.ListWindow.Height < minimumViewport.DesiredListHeight);
+        Assert.True(minimum.PlatformCard.Bottom < minimum.AssetsCard.Y);
+        Assert.True(minimum.AssetsCard.Bottom <= minimum.Footer.Y - 16);
+        Assert.True(minimum.BodyText.Height >= 72);
+
+        NativeProductionLayoutProbe normal =
+            harness.Window.ResizeAndCaptureLayoutForTesting(0, 980, 920);
+        NativeAssetViewportProbe normalViewport = harness.Window.CaptureAssetViewportForTesting();
+        Assert.Equal(normalViewport.DesiredListHeight, normal.AssetList.Height);
+        Assert.All(normalViewport.Items,
+            item => Assert.True(item.Bottom <= normalViewport.ListClient.Bottom));
+    }
+
+    [Fact]
+    public async Task ProductionViewport_UsesRealHeaderAndImageListRowMetricsAtSupportedDpiValues()
+    {
+        await using var harness = await ProductionHeaderHarness.StartAsync(Model(
+            Enumerable.Range(1, 6).Select(index => Prepared(index, $"asset-{index}.png", true)).ToArray()));
+
+        NativeAssetViewportProbe dpi96 = Capture(96, NativeCompanionPalette.Dark);
+        NativeAssetViewportProbe dpi144 = Capture(144, NativeCompanionPalette.Dark);
+        NativeAssetViewportProbe dpi192 = Capture(192, NativeCompanionPalette.Dark);
+        AssertMetricComposition(dpi96);
+        AssertMetricComposition(dpi144);
+        AssertMetricComposition(dpi192);
+        Assert.True(dpi96.Items[0].Height < dpi144.Items[0].Height);
+        Assert.True(dpi144.Items[0].Height < dpi192.Items[0].Height);
+        Assert.True(dpi96.Header.Height < dpi144.Header.Height);
+        Assert.True(dpi144.Header.Height < dpi192.Header.Height);
+
+        int dark = dpi96.DesiredListHeight;
+        Assert.Equal(dark, Capture(96, NativeCompanionPalette.Light).DesiredListHeight);
+        Assert.Equal(dark, Capture(96, NativeCompanionPalette.HighContrast).DesiredListHeight);
+
+        NativeAssetViewportProbe Capture(int dpi, NativeCompanionPalette palette) =>
+            harness.Window.CaptureAssetViewportAtMetricDpiForTesting(palette, dpi);
+
+        static void AssertMetricComposition(NativeAssetViewportProbe viewport)
+        {
+            int nonClientHeight = viewport.ListWindow.Height - viewport.ListClient.Height;
+            int expected = nonClientHeight + viewport.Items[0].Y +
+                viewport.Items[0].Height * viewport.VisibleRowTarget;
+            Assert.Equal(expected, viewport.DesiredListHeight);
+        }
+    }
+
     [Fact]
     public async Task ProductionColumns_UseActualClientWidthAcrossResizeCycleAndPreserveSelection()
     {
@@ -334,7 +520,8 @@ public sealed class NativeManualPublishingListViewTests
         });
         Assert.All(prepaints.Where(draw => !draw.Selected), draw =>
         {
-            Assert.Equal(palette.Page, draw.Background);
+            Assert.Equal(NativeCompanionTheme.SurfaceStyle(
+                NativeCompanionSurfaceRole.Nested, palette).Background, draw.Background);
             Assert.Equal(palette.Text, draw.Text);
             Assert.Equal(new IntPtr(0x00000002), draw.Result);
         });

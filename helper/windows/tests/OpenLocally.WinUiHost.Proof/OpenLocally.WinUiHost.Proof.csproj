@@ -9,6 +9,7 @@
     <WindowsAppSdkAutoInitialize>false</WindowsAppSdkAutoInitialize>
     <WindowsAppSdkUndockedRegFreeWinRTInitialize>false</WindowsAppSdkUndockedRegFreeWinRTInitialize>
     <ApplicationManifest>..\..\src\OpenLocally\OpenLocally.CommonControls.manifest</ApplicationManifest>
+    <ApplicationIcon>..\..\src\OpenLocally\CreatorCrate.ico</ApplicationIcon>
     <PublishSingleFile>false</PublishSingleFile>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -25,6 +26,10 @@
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>
     <Content Include="interactive-uia-client.ps1">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+    </Content>
+    <Content Include="run-manual-visual-proof.ps1">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
     </Content>

@@ -82,7 +82,7 @@ public sealed class NativeManualPostingConfirmationTests
         NativeProductionLayoutProbe wide = harness.Window.ResizeAndCaptureLayoutForTesting(1, 1600, 920);
 
         Assert.True(normal.BodyText.Height > minimum.BodyText.Height);
-        Assert.True(normal.AssetList.Height > minimum.AssetList.Height);
+        Assert.Equal(minimum.AssetList.Height, normal.AssetList.Height);
         Assert.True(large.BodyText.Height <= 240 * large.Dpi / 96);
         Assert.True(large.AssetsCard.Height <= 440 * large.Dpi / 96);
         Assert.Equal(1152 * wide.Dpi / 96, wide.PlatformCard.Width);
@@ -120,6 +120,58 @@ public sealed class NativeManualPostingConfirmationTests
             }
             else Assert.True(probe.BodyLabel.Y < minimum.BodyLabel.Y);
         }
+    }
+
+    [Fact]
+    public async Task CompleteProductionCompanion_FitsFiveRowsAndScrollsTheSixthAtNormalLaunchSize()
+    {
+        static ManualPreparedAsset Asset(long id) => new(
+            new SocialRedeemAsset(id, "attachment", id, $"asset-{id}.png", ".png", "image/png",
+                id * 100, $"release/asset-{id}.png", true, null),
+            $@"C:\stage\asset-{id}.png", StagedMediaProvenance.HelperOwned);
+        var session = new ManualSocialSession(
+            new Uri("https://creatorcrate.test/"), 42, "Release title",
+            [
+                new ManualPreparedPlatform("x", "Release title", "X post", []),
+                new ManualPreparedPlatform("patreon", "Patreon title", "Patreon body",
+                    Enumerable.Range(1, 5).Select(index => Asset(index)).ToArray()),
+                new ManualPreparedPlatform("bluesky", "Release title", "Bluesky post",
+                    Enumerable.Range(1, 6).Select(index => Asset(100 + index)).ToArray()),
+            ]);
+        using var controller = Controller(new RecordingTransport());
+        await using NativeWindowHarness harness = await NativeWindowHarness.StartAsync(
+            controller, session: session);
+
+        harness.Window.ResizeAndCaptureLayoutForTesting(1, 980, 920);
+        NativeAssetViewportProbe five = harness.Window.CaptureAssetViewportForTesting();
+        Assert.Equal(5, five.DisplayedAssetCount);
+        Assert.All(five.Items, item => Assert.True(item.Bottom <= five.ListClient.Bottom));
+        Assert.True(five.ScrollMaximum - five.ScrollMinimum + 1 <= five.ScrollPage);
+
+        harness.Window.ResizeAndCaptureLayoutForTesting(2, 980, 920);
+        NativeAssetViewportProbe six = harness.Window.CaptureAssetViewportForTesting();
+        Assert.Equal(5, six.VisibleRowTarget);
+        Assert.True(six.Items[4].Bottom <= six.ListClient.Bottom);
+        Assert.True(six.Items[5].Bottom > six.ListClient.Bottom);
+        Assert.True(six.ScrollMaximum - six.ScrollMinimum + 1 > six.ScrollPage);
+
+        int firstFiveRowHeight = -1;
+        for (int logicalHeight = NativeCompanionLayout.RequiredLogicalClientHeight;
+             logicalHeight <= 920; logicalHeight++)
+        {
+            harness.Window.ResizeAndCaptureLayoutForTesting(1, 820, logicalHeight);
+            NativeAssetViewportProbe candidate = harness.Window.CaptureAssetViewportForTesting();
+            if (candidate.Items.All(item => item.Bottom <= candidate.ListClient.Bottom))
+            {
+                firstFiveRowHeight = logicalHeight;
+                break;
+            }
+        }
+        Assert.True(firstFiveRowHeight > NativeCompanionLayout.RequiredLogicalClientHeight);
+        harness.Window.ResizeAndCaptureLayoutForTesting(1, 820, firstFiveRowHeight - 1);
+        NativeAssetViewportProbe predecessor = harness.Window.CaptureAssetViewportForTesting();
+        Assert.Contains(predecessor.Items, item => item.Bottom > predecessor.ListClient.Bottom);
+        Console.WriteLine($"First 96-DPI logical client height fitting five production rows: {firstFiveRowHeight}");
     }
 
     [Fact]
@@ -458,6 +510,74 @@ public sealed class NativeManualPostingConfirmationTests
     }
 
     [Fact]
+    public async Task ProductionTypographyAndSurfaceRoles_ScaleAndSurviveDarkLightHighContrastDark()
+    {
+        using var controller = Controller(new RecordingTransport());
+        await using NativeWindowHarness harness = await NativeWindowHarness.StartAsync(controller);
+
+        NativeProductionThemeProbe dark = harness.Window.ApplyThemeAndCapturePresentationForTesting(
+            NativeCompanionPalette.Dark, 96);
+        NativeProductionThemeProbe light = harness.Window.ApplyThemeAndCapturePresentationForTesting(
+            NativeCompanionPalette.Light, 144);
+        NativeProductionThemeProbe highContrast = harness.Window.ApplyThemeAndCapturePresentationForTesting(
+            NativeCompanionPalette.HighContrast, 192);
+        NativeProductionThemeProbe darkAgain = harness.Window.ApplyThemeAndCapturePresentationForTesting(
+            NativeCompanionPalette.Dark, 96);
+
+        IntPtr[] Handles(NativeProductionThemeProbe probe) =>
+        [
+            probe.Window, probe.Platform, probe.AssetList, probe.AssetHeader,
+            .. probe.Controls.Select(control => control.Handle),
+        ];
+        Assert.Equal(Handles(dark), Handles(light));
+        Assert.Equal(Handles(dark), Handles(highContrast));
+        Assert.Equal(Handles(dark), Handles(darkAgain));
+        Assert.All(dark.Controls, control => Assert.Equal("Segoe UI", control.FontFamily));
+
+        NativeProductionControlPresentationProbe release = dark.Controls.Single(control => control.Name == "release-title");
+        NativeProductionControlPresentationProbe field = dark.Controls.Single(control => control.Name == "field-label");
+        NativeProductionControlPresentationProbe metadata = dark.Controls.Single(control => control.Name == "release-metadata");
+        NativeProductionControlPresentationProbe section = dark.Controls.Single(control => control.Name == "content-heading");
+        NativeProductionControlPresentationProbe selected = dark.Controls.Single(control => control.Name == "selected-count");
+        Assert.True(Math.Abs(release.FontHeight) > Math.Abs(field.FontHeight));
+        Assert.True(Math.Abs(field.FontHeight) > Math.Abs(metadata.FontHeight));
+        Assert.Equal(600, release.FontWeight);
+        Assert.Equal(600, section.FontWeight);
+        Assert.Equal(400, field.FontWeight);
+        Assert.Equal(NativeCompanionPalette.Dark.Text, field.Text);
+        Assert.Equal(NativeCompanionPalette.Dark.Text, selected.Text);
+        Assert.Equal(NativeCompanionPalette.Dark.MutedText, metadata.Text);
+
+        foreach ((NativeProductionThemeProbe probe, int dpi) in new[]
+                 { (dark, 96), (light, 144), (highContrast, 192), (darkAgain, 96) })
+        {
+            foreach (NativeProductionControlPresentationProbe control in probe.Controls)
+            {
+                NativeCompanionFontSpec expected = NativeCompanionTheme.FontSpec(control.FontRole);
+                Assert.Equal(-(expected.LogicalPixelHeight * dpi / 96), control.FontHeight);
+                Assert.Equal(expected.Weight, control.FontWeight);
+            }
+            Assert.Equal(probe.NestedStyle.Background, probe.AssetListBackground);
+        }
+
+        Assert.Equal(NativeCompanionPalette.Dark.Page, dark.WindowStyle.Background);
+        Assert.Equal(NativeCompanionPalette.Dark.Surface, dark.SectionStyle.Background);
+        Assert.Equal(NativeCompanionPalette.Dark.Card, dark.SectionHeaderStyle.Background);
+        Assert.Equal(NativeCompanionPalette.Dark.Card, dark.NestedStyle.Background);
+        Assert.Equal(NativeCompanionPalette.Dark.Surface, dark.FooterStyle.Background);
+        Assert.True(dark.SectionStyle.Decorative);
+        Assert.True(light.SectionStyle.Decorative);
+        Assert.False(highContrast.SectionStyle.Decorative);
+        Assert.Equal(0, highContrast.SectionStyle.Radius);
+        Assert.All(highContrast.Controls, control =>
+            Assert.Contains(control.Text, new[]
+            {
+                NativeCompanionPalette.HighContrast.Text,
+                NativeCompanionPalette.HighContrast.MutedText,
+            }));
+    }
+
+    [Fact]
     public async Task OwnerDrawRouting_RequiresExactProductionTypeIdHandleAndParent()
     {
         using var controller = Controller(new RecordingTransport());
@@ -605,6 +725,10 @@ public sealed class NativeManualPostingConfirmationTests
         Assert.True(IsWindowEnabled(harness.Window.PostingActionHandle));
         Assert.Equal(NativeCompanionButtonRole.Primary,
             harness.Window.ButtonRoleForTesting(harness.Window.PostingActionHandle));
+        NativeProductionThemeProbe unknown = harness.Window.ApplyThemeAndCapturePresentationForTesting(
+            NativeCompanionPalette.Dark, 96);
+        Assert.Equal(NativeCompanionPalette.Dark.Danger,
+            unknown.Controls.Single(control => control.Name == "posting-status").Text);
 
         SendMessage(harness.Window.PostingActionHandle, BmClick, IntPtr.Zero, IntPtr.Zero);
         Assert.Equal(ManualPostingConfirmationStatus.Confirming, controller.GetState("x").Status);
@@ -615,6 +739,10 @@ public sealed class NativeManualPostingConfirmationTests
 
         Assert.Equal("Posted — confirmed by you", Text(harness.Window.PostingStatusHandle));
         Assert.False(IsWindowVisible(harness.Window.PostingActionHandle));
+        NativeProductionThemeProbe posted = harness.Window.ApplyThemeAndCapturePresentationForTesting(
+            NativeCompanionPalette.Dark, 96);
+        Assert.Equal(NativeCompanionPalette.Dark.Success,
+            posted.Controls.Single(control => control.Name == "posting-status").Text);
         Assert.Equal(2, transport.PostCalls);
         Assert.Equal(2, transport.GetCalls);
     }
@@ -748,11 +876,12 @@ public sealed class NativeManualPostingConfirmationTests
 
         private NativeWindowHarness(
             ManualPostingConfirmationController controller,
-            Func<IntPtr, IUnicodeClipboard>? clipboardFactory)
+            Func<IntPtr, IUnicodeClipboard>? clipboardFactory,
+            ManualSocialSession? session)
         {
             var lifecycle = new ManualCompanionLifecycle();
             Window = new NativeManualPublishingCompanion.NativeWindow(
-                new ManualPublishingCompanionModel(Session()), lifecycle, controller, clipboardFactory,
+                new ManualPublishingCompanionModel(session ?? Session()), lifecycle, controller, clipboardFactory,
                 disableWinUiForNativeOnlyTests: true);
             Window.PostingPresentationChanged += () => _presentation.Set();
             _thread = new Thread(() => Run(lifecycle)) { IsBackground = true, Name = "Native confirmation test" };
@@ -765,9 +894,10 @@ public sealed class NativeManualPostingConfirmationTests
 
         public static async Task<NativeWindowHarness> StartAsync(
             ManualPostingConfirmationController controller,
-            Func<IntPtr, IUnicodeClipboard>? clipboardFactory = null)
+            Func<IntPtr, IUnicodeClipboard>? clipboardFactory = null,
+            ManualSocialSession? session = null)
         {
-            var harness = new NativeWindowHarness(controller, clipboardFactory);
+            var harness = new NativeWindowHarness(controller, clipboardFactory, session);
             harness._thread.Start();
             await harness.Lifecycle.Ready.WaitAsync(TimeSpan.FromSeconds(5));
             return harness;

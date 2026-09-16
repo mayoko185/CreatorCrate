@@ -4,7 +4,12 @@ using System.Runtime.InteropServices;
 namespace OpenLocally;
 
 internal enum NativeCompanionThemeMode { Dark, Light, HighContrast }
-internal enum NativeCompanionFontRole { Heading, SectionHeading, Body, Metadata }
+internal enum NativeCompanionFontRole { ReleaseHeading, SectionHeading, Body, Supporting }
+internal enum NativeCompanionSurfaceRole { Window, Section, SectionHeader, Nested, Footer }
+internal enum NativeCompanionTextRole
+{
+    ReleaseHeading, SectionHeading, Label, Body, Supporting, Status, Success, Danger,
+}
 internal enum NativeCompanionChromeRole { Edit, Combo, ListView, ListViewHeader }
 internal enum NativeCompanionButtonRole { Primary, Secondary }
 [Flags]
@@ -17,7 +22,10 @@ internal enum NativeCompanionControlRole
     PrimaryButton, Button, Status, ListView, ListViewHeader,
 }
 
-internal readonly record struct NativeCompanionFontSpec(string Family, int PointSize, int Weight);
+internal readonly record struct NativeCompanionFontSpec(string Family, int LogicalPixelHeight, int Weight);
+internal readonly record struct NativeCompanionSurfaceStyle(
+    int Background, int Border, int Radius, bool Decorative);
+internal readonly record struct NativeCompanionTextStyle(int Background, int Text);
 internal readonly record struct NativeCompanionControlStyle(
     NativeCompanionFontRole FontRole, int Background, int Text, bool CustomDraw);
 
@@ -180,29 +188,66 @@ internal sealed class NativeCompanionTheme : IDisposable
 
     public static NativeCompanionFontSpec FontSpec(NativeCompanionFontRole role) => role switch
     {
-        NativeCompanionFontRole.Heading => new("Segoe UI", 16, 600),
-        NativeCompanionFontRole.SectionHeading => new("Segoe UI", 9, 600),
-        NativeCompanionFontRole.Metadata => new("Segoe UI", 9, 400),
-        _ => new("Segoe UI", 10, 400),
+        NativeCompanionFontRole.ReleaseHeading => new("Segoe UI", 20, 600),
+        NativeCompanionFontRole.SectionHeading => new("Segoe UI", 12, 600),
+        NativeCompanionFontRole.Supporting => new("Segoe UI", 12, 400),
+        _ => new("Segoe UI", 14, 400),
     };
+
+    internal static NativeCompanionSurfaceStyle SurfaceStyle(
+        NativeCompanionSurfaceRole role, NativeCompanionPalette palette) => role switch
+    {
+        NativeCompanionSurfaceRole.Window => new(palette.Page, palette.Border, 0, false),
+        NativeCompanionSurfaceRole.Section => new(
+            palette.Surface, palette.Border, palette.UsesDecorativeColors ? 12 : 0, palette.UsesDecorativeColors),
+        NativeCompanionSurfaceRole.SectionHeader => new(
+            palette.Card, palette.Border, palette.UsesDecorativeColors ? 8 : 0, palette.UsesDecorativeColors),
+        NativeCompanionSurfaceRole.Nested => new(
+            palette.Card, palette.Border, palette.UsesDecorativeColors ? 6 : 0, palette.UsesDecorativeColors),
+        NativeCompanionSurfaceRole.Footer => new(palette.Surface, palette.Border, 0, palette.UsesDecorativeColors),
+        _ => throw new ArgumentOutOfRangeException(nameof(role)),
+    };
+
+    internal static NativeCompanionTextStyle TextStyle(
+        NativeCompanionTextRole role, NativeCompanionSurfaceRole surface,
+        NativeCompanionPalette palette)
+    {
+        int background = SurfaceStyle(surface, palette).Background;
+        return role switch
+        {
+            NativeCompanionTextRole.ReleaseHeading =>
+                new(background, palette.Text),
+            NativeCompanionTextRole.SectionHeading =>
+                new(background, palette.Text),
+            NativeCompanionTextRole.Label or NativeCompanionTextRole.Body =>
+                new(background, palette.Text),
+            NativeCompanionTextRole.Supporting =>
+                new(background, palette.MutedText),
+            NativeCompanionTextRole.Success =>
+                new(background, palette.UsesDecorativeColors ? palette.Success : palette.Text),
+            NativeCompanionTextRole.Danger =>
+                new(background, palette.UsesDecorativeColors ? palette.Danger : palette.Text),
+            _ => new(background, palette.Text),
+        };
+    }
 
     public static NativeCompanionControlStyle ControlStyle(
         NativeCompanionControlRole role, NativeCompanionPalette palette) => role switch
     {
         NativeCompanionControlRole.TopLevel => new(NativeCompanionFontRole.Body, palette.Page, palette.Text, false),
-        NativeCompanionControlRole.Heading => new(NativeCompanionFontRole.Heading, palette.Page, palette.Text, false),
-        NativeCompanionControlRole.Metadata => new(NativeCompanionFontRole.Metadata, palette.Page, palette.MutedText, false),
-        NativeCompanionControlRole.Card => new(NativeCompanionFontRole.Body, palette.Card, palette.Text, false),
-        NativeCompanionControlRole.SectionHeading => new(NativeCompanionFontRole.SectionHeading, palette.Card, palette.MutedText, false),
-        NativeCompanionControlRole.Label => new(NativeCompanionFontRole.Body, palette.Card, palette.Text, false),
-        NativeCompanionControlRole.Edit => new(NativeCompanionFontRole.Body, palette.Page, palette.Text, false),
+        NativeCompanionControlRole.Heading => new(NativeCompanionFontRole.ReleaseHeading, palette.Page, palette.Text, false),
+        NativeCompanionControlRole.Metadata => new(NativeCompanionFontRole.Supporting, palette.Page, palette.MutedText, false),
+        NativeCompanionControlRole.Card => new(NativeCompanionFontRole.Body, palette.Surface, palette.Text, false),
+        NativeCompanionControlRole.SectionHeading => new(NativeCompanionFontRole.SectionHeading, palette.Card, palette.Text, false),
+        NativeCompanionControlRole.Label => new(NativeCompanionFontRole.Body, palette.Surface, palette.Text, false),
+        NativeCompanionControlRole.Edit => new(NativeCompanionFontRole.Body, palette.Card, palette.Text, false),
         NativeCompanionControlRole.Combo => new(NativeCompanionFontRole.Body, palette.Page, palette.Text, true),
         NativeCompanionControlRole.PrimaryButton => new(NativeCompanionFontRole.Body, palette.Accent, palette.PrimaryButtonText, true),
         NativeCompanionControlRole.Button => new(NativeCompanionFontRole.Body, palette.Surface, palette.Text, true),
-        NativeCompanionControlRole.Status => new(NativeCompanionFontRole.Metadata, palette.Surface, palette.MutedText, false),
-        NativeCompanionControlRole.ListView => new(NativeCompanionFontRole.Body, palette.Page, palette.Text, true),
+        NativeCompanionControlRole.Status => new(NativeCompanionFontRole.Supporting, palette.Surface, palette.MutedText, false),
+        NativeCompanionControlRole.ListView => new(NativeCompanionFontRole.Body, palette.Card, palette.Text, true),
         NativeCompanionControlRole.ListViewHeader => new(
-            NativeCompanionFontRole.Metadata, palette.Hover, palette.Text, palette.UsesDecorativeColors),
+            NativeCompanionFontRole.Supporting, palette.Hover, palette.Text, palette.UsesDecorativeColors),
         _ => throw new ArgumentOutOfRangeException(nameof(role)),
     };
 
@@ -301,6 +346,19 @@ internal sealed class NativeCompanionTheme : IDisposable
 
     internal static int RoundedRectEllipseDiameter(int radius) => Math.Max(0, radius) * 2;
 
+    internal static NativeLayoutRect SectionHeaderBounds(
+        NativeLayoutRect section, int dpi, bool includesPlatformSelector)
+    {
+        int scale = Math.Max(96, dpi);
+        int inset = 8 * scale / 96;
+        int height = (includesPlatformSelector ? 44 : 32) * scale / 96;
+        return new(
+            section.X + inset,
+            section.Y + inset,
+            Math.Max(0, section.Width - inset * 2),
+            Math.Min(Math.Max(0, section.Height - inset * 2), height));
+    }
+
     internal static int ListViewSelectionAccentWidth(int dpi) =>
         Math.Max(1, 2 * Math.Max(96, dpi) / 96);
 
@@ -346,7 +404,7 @@ internal sealed class NativeCompanionTheme : IDisposable
             foreach (NativeCompanionFontRole role in Enum.GetValues<NativeCompanionFontRole>())
             {
                 NativeCompanionFontSpec spec = FontSpec(role);
-                int height = -MulDiv(spec.PointSize, Dpi, 72);
+                int height = -MulDiv(spec.LogicalPixelHeight, Dpi, 96);
                 IntPtr font = CreateFont(height, 0, 0, 0, spec.Weight, 0, 0, 0, 1, 0, 0, 5, 0, spec.Family);
                 if (font == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
                 _fonts[role] = font;
@@ -451,7 +509,7 @@ internal sealed record NativeCompanionLayout(
 
     public static NativeCompanionLayout Calculate(int clientWidth, int clientHeight, int dpi, bool patreon,
         string postingStatusText = "", string postingHelperText = "", bool hasPosting = true,
-        string operationalStatusText = "")
+        string operationalStatusText = "", int desiredAssetListHeight = 0)
     {
         int S(int value) => Math.Max(1, value * Math.Max(96, dpi) / 96);
         int outer = S(24), cardPad = S(16), sectionGap = S(16), fieldGap = S(12);
@@ -503,17 +561,45 @@ internal sealed record NativeCompanionLayout(
         int plannedBodyH = patreon ? S(96) : S(144);
         int fixedHeight = cardPad + selectorH + S(8) + titleGroupH + actionH + S(4) +
             postingH + cardPad;
-        int maximumCardHeight = footerTop - sectionGap - S(152) - sectionGap - platformTop;
-        int bodyBaseH = Math.Min(plannedBodyH, Math.Max(S(72), maximumCardHeight - fixedHeight));
-        int minimumCardHeight = fixedHeight + bodyBaseH;
-        int availableCardHeight = Math.Max(minimumCardHeight,
-            maximumCardHeight);
-        int editorGrowth = Math.Min(S(240) - bodyBaseH, Math.Max(0, availableCardHeight - minimumCardHeight) / 2);
-        int bodyH = bodyBaseH + editorGrowth;
-        int platformHeight = fixedHeight + bodyH;
+        int assetChromeHeight = cardPad + labelH + S(4) + labelH + S(8) + cardPad;
+        int desiredAssetsHeight = desiredAssetListHeight > 0
+            ? assetChromeHeight + desiredAssetListHeight
+            : S(152);
+        int availableCardsHeight = Math.Max(0, footerTop - sectionGap - platformTop - sectionGap);
+        int minimumBodyH = S(72);
+        int minimumPlatformHeight = fixedHeight + minimumBodyH;
+        int preferredPlatformHeight = fixedHeight + plannedBodyH;
+        int maximumPlatformHeight = fixedHeight + S(240);
+        int platformHeight;
+        int assetHeight;
+        if (desiredAssetListHeight <= 0)
+        {
+            int maximumCardHeight = footerTop - sectionGap - S(152) - sectionGap - platformTop;
+            int bodyBaseH = Math.Min(plannedBodyH, Math.Max(minimumBodyH, maximumCardHeight - fixedHeight));
+            int minimumCardHeight = fixedHeight + bodyBaseH;
+            int availableCardHeight = Math.Max(minimumCardHeight, maximumCardHeight);
+            int editorGrowth = Math.Min(S(240) - bodyBaseH,
+                Math.Max(0, availableCardHeight - minimumCardHeight) / 2);
+            platformHeight = fixedHeight + bodyBaseH + editorGrowth;
+            assetHeight = Math.Min(S(440), Math.Max(S(152),
+                footerTop - sectionGap - (platformTop + platformHeight + sectionGap)));
+        }
+        else if (availableCardsHeight >= preferredPlatformHeight + desiredAssetsHeight)
+        {
+            platformHeight = Math.Min(maximumPlatformHeight,
+                preferredPlatformHeight + availableCardsHeight - preferredPlatformHeight - desiredAssetsHeight);
+            assetHeight = desiredAssetsHeight;
+        }
+        else
+        {
+            platformHeight = Math.Max(minimumPlatformHeight,
+                Math.Min(preferredPlatformHeight, availableCardsHeight - desiredAssetsHeight));
+            assetHeight = Math.Max(assetChromeHeight,
+                Math.Min(desiredAssetsHeight, availableCardsHeight - platformHeight));
+        }
+        int bodyH = Math.Max(minimumBodyH, platformHeight - fixedHeight);
         var platformCard = new NativeLayoutRect(contentX, platformTop, contentWidth, platformHeight);
         int assetTop = platformCard.Bottom + sectionGap;
-        int assetHeight = Math.Min(S(440), Math.Max(S(152), footerTop - sectionGap - assetTop));
         var assetsCard = new NativeLayoutRect(contentX, assetTop, contentWidth, assetHeight);
         NativeLayoutRect titleLabel = default, titleText = default, copyTitle = default;
         if (patreon)
@@ -539,7 +625,8 @@ internal sealed record NativeCompanionLayout(
         var assetCount = new NativeLayoutRect(assetsCard.Right - cardPad - S(160), assetsHeading.Y, S(160), labelH);
         var dragGuidance = new NativeLayoutRect(assetInnerX, assetsHeading.Bottom + S(4), assetInnerWidth, labelH);
         int listY = dragGuidance.Bottom + S(8);
-        var assetList = new NativeLayoutRect(assetInnerX, listY, assetInnerWidth, Math.Max(S(72), assetsCard.Bottom - cardPad - listY));
+        var assetList = new NativeLayoutRect(assetInnerX, listY, assetInnerWidth,
+            Math.Max(0, assetsCard.Bottom - cardPad - listY));
 
         var close = new NativeLayoutRect(footerActionX, footerRowY, S(104), S(36));
         var status = operationalStatusLines > 0

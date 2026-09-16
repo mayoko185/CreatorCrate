@@ -55,15 +55,15 @@ public sealed class NativeCompanionThemeTests
         WinUiTextSurfacePalette dark = WinUiTextSurfacePresentation.Palette(ElementTheme.Dark);
         WinUiTextSurfacePalette light = WinUiTextSurfacePresentation.Palette(ElementTheme.Light);
 
-        Assert.Equal("#1d222b", NativeCompanionPalette.Hex(dark.RootBackground));
-        Assert.Equal("#171b22", NativeCompanionPalette.Hex(dark.Background));
+        Assert.Equal("#171b22", NativeCompanionPalette.Hex(dark.RootBackground));
+        Assert.Equal("#1d222b", NativeCompanionPalette.Hex(dark.Background));
         Assert.Equal("#e8ecf1", NativeCompanionPalette.Hex(dark.Foreground));
         Assert.Equal("#262c37", NativeCompanionPalette.Hex(dark.Border));
         Assert.Equal("#3a4353", NativeCompanionPalette.Hex(dark.PointerBorder));
         Assert.Equal("#58a6ff", NativeCompanionPalette.Hex(dark.FocusBorder));
 
-        Assert.Equal("#f8fafc", NativeCompanionPalette.Hex(light.RootBackground));
-        Assert.Equal("#ffffff", NativeCompanionPalette.Hex(light.Background));
+        Assert.Equal("#ffffff", NativeCompanionPalette.Hex(light.RootBackground));
+        Assert.Equal("#f8fafc", NativeCompanionPalette.Hex(light.Background));
         Assert.Equal("#17202b", NativeCompanionPalette.Hex(light.Foreground));
         Assert.Equal("#d7dee8", NativeCompanionPalette.Hex(light.Border));
         Assert.Equal("#aab6c5", NativeCompanionPalette.Hex(light.PointerBorder));
@@ -126,6 +126,59 @@ public sealed class NativeCompanionThemeTests
         Assert.False(palette.UsesDecorativeColors);
         Assert.Equal(palette.SelectionBackground, palette.Accent);
         Assert.Equal(palette.SelectionText, palette.PrimaryButtonText);
+    }
+
+    [Fact]
+    public void SurfaceAndStaticTextRoles_PreserveOneHierarchyAcrossThemesAndBypassDecorationInHighContrast()
+    {
+        foreach (NativeCompanionPalette palette in new[]
+                 { NativeCompanionPalette.Dark, NativeCompanionPalette.Light })
+        {
+            NativeCompanionSurfaceStyle window = NativeCompanionTheme.SurfaceStyle(
+                NativeCompanionSurfaceRole.Window, palette);
+            NativeCompanionSurfaceStyle section = NativeCompanionTheme.SurfaceStyle(
+                NativeCompanionSurfaceRole.Section, palette);
+            NativeCompanionSurfaceStyle header = NativeCompanionTheme.SurfaceStyle(
+                NativeCompanionSurfaceRole.SectionHeader, palette);
+            NativeCompanionSurfaceStyle nested = NativeCompanionTheme.SurfaceStyle(
+                NativeCompanionSurfaceRole.Nested, palette);
+            NativeCompanionSurfaceStyle footer = NativeCompanionTheme.SurfaceStyle(
+                NativeCompanionSurfaceRole.Footer, palette);
+
+            Assert.Equal(palette.Page, window.Background);
+            Assert.Equal(palette.Surface, section.Background);
+            Assert.Equal(palette.Card, header.Background);
+            Assert.Equal(palette.Card, nested.Background);
+            Assert.Equal(palette.Surface, footer.Background);
+            Assert.Equal(12, section.Radius);
+            Assert.Equal(8, header.Radius);
+            Assert.Equal(6, nested.Radius);
+            Assert.True(section.Decorative);
+            Assert.True(header.Decorative);
+            Assert.True(nested.Decorative);
+
+            NativeCompanionTextStyle heading = NativeCompanionTheme.TextStyle(
+                NativeCompanionTextRole.SectionHeading, NativeCompanionSurfaceRole.SectionHeader, palette);
+            NativeCompanionTextStyle label = NativeCompanionTheme.TextStyle(
+                NativeCompanionTextRole.Label, NativeCompanionSurfaceRole.Section, palette);
+            NativeCompanionTextStyle helper = NativeCompanionTheme.TextStyle(
+                NativeCompanionTextRole.Supporting, NativeCompanionSurfaceRole.Section, palette);
+            Assert.Equal(palette.Text, heading.Text);
+            Assert.Equal(palette.Text, label.Text);
+            Assert.Equal(palette.MutedText, helper.Text);
+        }
+
+        NativeCompanionPalette highContrast = NativeCompanionPalette.HighContrast;
+        Assert.All(Enum.GetValues<NativeCompanionSurfaceRole>(), role =>
+        {
+            NativeCompanionSurfaceStyle style = NativeCompanionTheme.SurfaceStyle(role, highContrast);
+            Assert.False(style.Decorative);
+            Assert.Equal(0, style.Radius);
+        });
+        Assert.Equal(highContrast.Text, NativeCompanionTheme.TextStyle(
+            NativeCompanionTextRole.Success, NativeCompanionSurfaceRole.Footer, highContrast).Text);
+        Assert.Equal(highContrast.Text, NativeCompanionTheme.TextStyle(
+            NativeCompanionTextRole.Danger, NativeCompanionSurfaceRole.Section, highContrast).Text);
     }
 
     [Fact]
@@ -294,16 +347,16 @@ public sealed class NativeCompanionThemeTests
         NativeCompanionPalette palette = NativeCompanionPalette.Dark;
 
         Assert.Equal(palette.Page, NativeCompanionTheme.ControlStyle(NativeCompanionControlRole.TopLevel, palette).Background);
-        Assert.Equal(NativeCompanionFontRole.Heading, NativeCompanionTheme.ControlStyle(NativeCompanionControlRole.Heading, palette).FontRole);
+        Assert.Equal(NativeCompanionFontRole.ReleaseHeading, NativeCompanionTheme.ControlStyle(NativeCompanionControlRole.Heading, palette).FontRole);
         Assert.Equal(palette.MutedText, NativeCompanionTheme.ControlStyle(NativeCompanionControlRole.Metadata, palette).Text);
         Assert.Equal(palette.Card, NativeCompanionTheme.ControlStyle(NativeCompanionControlRole.SectionHeading, palette).Background);
-        Assert.Equal(palette.Page, NativeCompanionTheme.ControlStyle(NativeCompanionControlRole.Edit, palette).Background);
+        Assert.Equal(palette.Card, NativeCompanionTheme.ControlStyle(NativeCompanionControlRole.Edit, palette).Background);
         Assert.True(NativeCompanionTheme.ControlStyle(NativeCompanionControlRole.Combo, palette).CustomDraw);
         Assert.True(NativeCompanionTheme.ControlStyle(NativeCompanionControlRole.PrimaryButton, palette).CustomDraw);
         Assert.True(NativeCompanionTheme.ControlStyle(NativeCompanionControlRole.Button, palette).CustomDraw);
         Assert.Equal(palette.Surface, NativeCompanionTheme.ControlStyle(NativeCompanionControlRole.Status, palette).Background);
         Assert.True(NativeCompanionTheme.ControlStyle(NativeCompanionControlRole.ListView, palette).CustomDraw);
-        Assert.Equal(palette.Page, NativeCompanionTheme.ControlStyle(NativeCompanionControlRole.ListView, palette).Background);
+        Assert.Equal(palette.Card, NativeCompanionTheme.ControlStyle(NativeCompanionControlRole.ListView, palette).Background);
         Assert.Equal(palette.Hover, NativeCompanionTheme.ControlStyle(NativeCompanionControlRole.ListViewHeader, palette).Background);
         Assert.True(NativeCompanionTheme.ControlStyle(NativeCompanionControlRole.ListViewHeader, palette).CustomDraw);
     }
@@ -399,19 +452,63 @@ public sealed class NativeCompanionThemeTests
     }
 
     [Theory]
-    [InlineData((int)NativeCompanionFontRole.Heading, 16, 600)]
-    [InlineData((int)NativeCompanionFontRole.SectionHeading, 9, 600)]
-    [InlineData((int)NativeCompanionFontRole.Body, 10, 400)]
-    [InlineData((int)NativeCompanionFontRole.Metadata, 9, 400)]
+    [InlineData((int)NativeCompanionFontRole.ReleaseHeading, 20, 600)]
+    [InlineData((int)NativeCompanionFontRole.SectionHeading, 12, 600)]
+    [InlineData((int)NativeCompanionFontRole.Body, 14, 400)]
+    [InlineData((int)NativeCompanionFontRole.Supporting, 12, 400)]
     public void Fonts_UseSegoeUiRolesInsteadOfDefaultGuiFont(
-        int roleValue, int points, int weight)
+        int roleValue, int logicalPixelHeight, int weight)
     {
         NativeCompanionFontRole role = (NativeCompanionFontRole)roleValue;
         NativeCompanionFontSpec font = NativeCompanionTheme.FontSpec(role);
 
         Assert.Equal("Segoe UI", font.Family);
-        Assert.Equal(points, font.PointSize);
+        Assert.Equal(logicalPixelHeight, font.LogicalPixelHeight);
         Assert.Equal(weight, font.Weight);
+    }
+
+    [Theory]
+    [InlineData(96, 8, 44, 32)]
+    [InlineData(144, 12, 66, 48)]
+    [InlineData(192, 16, 88, 64)]
+    public void SectionHeaderStrips_ScaleOnceAndRemainInset(
+        int dpi, int inset, int contentHeight, int assetsHeight)
+    {
+        var section = new NativeLayoutRect(24, 80, 900, 400);
+        NativeLayoutRect content = NativeCompanionTheme.SectionHeaderBounds(section, dpi, true);
+        NativeLayoutRect assets = NativeCompanionTheme.SectionHeaderBounds(section, dpi, false);
+
+        Assert.Equal(section.X + inset, content.X);
+        Assert.Equal(section.Right - inset, content.Right);
+        Assert.Equal(section.Y + inset, content.Y);
+        Assert.Equal(contentHeight, content.Height);
+        Assert.Equal(assetsHeight, assets.Height);
+        Assert.True(content.Right <= section.Right && content.Bottom <= section.Bottom);
+        Assert.True(assets.Right <= section.Right && assets.Bottom <= section.Bottom);
+    }
+
+    [Theory]
+    [InlineData(96)]
+    [InlineData(144)]
+    [InlineData(192)]
+    public void ProductionSectionHeaderPanels_ContainOnlyTheirFrozenHeaderRows(int dpi)
+    {
+        NativeCompanionLayout layout = NativeCompanionLayout.Calculate(
+            820 * dpi / 96, 754 * dpi / 96, dpi, patreon: true);
+        NativeLayoutRect content = NativeCompanionTheme.SectionHeaderBounds(
+            layout.PlatformCard, dpi, includesPlatformSelector: true);
+        NativeLayoutRect assets = NativeCompanionTheme.SectionHeaderBounds(
+            layout.AssetsCard, dpi, includesPlatformSelector: false);
+
+        static bool Contains(NativeLayoutRect outer, NativeLayoutRect inner) =>
+            inner.X >= outer.X && inner.Y >= outer.Y && inner.Right <= outer.Right && inner.Bottom <= outer.Bottom;
+
+        Assert.True(Contains(content, layout.PlatformHeading));
+        Assert.True(Contains(content, layout.PlatformLabel));
+        Assert.True(Contains(content, layout.Platform));
+        Assert.True(Contains(assets, layout.AssetsHeading));
+        Assert.True(Contains(assets, layout.AssetCount));
+        Assert.False(assets.Intersects(layout.DragGuidance));
     }
 
     [Theory]
@@ -423,9 +520,9 @@ public sealed class NativeCompanionThemeTests
         using var theme = new NativeCompanionTheme(dpi);
 
         Assert.Equal(dpi, theme.Dpi);
-        Assert.NotEqual(IntPtr.Zero, theme.Font(NativeCompanionFontRole.Heading));
+        Assert.NotEqual(IntPtr.Zero, theme.Font(NativeCompanionFontRole.ReleaseHeading));
         Assert.NotEqual(IntPtr.Zero, theme.Font(NativeCompanionFontRole.Body));
-        Assert.NotEqual(IntPtr.Zero, theme.Font(NativeCompanionFontRole.Metadata));
+        Assert.NotEqual(IntPtr.Zero, theme.Font(NativeCompanionFontRole.Supporting));
         Assert.NotEqual(IntPtr.Zero, theme.Brush(theme.Palette.Page));
 
         theme.Refresh(dpi == 192 ? 96 : dpi + 48);

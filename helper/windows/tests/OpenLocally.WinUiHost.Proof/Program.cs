@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using OpenLocally;
+using OpenLocally.ManualVisualProof;
 
 if (args.Contains("--interactive-uia-proof", StringComparer.Ordinal))
     return InteractiveUiaProof.Run();
@@ -17,18 +18,27 @@ bool autoClose = args.Contains("--auto-close", StringComparer.Ordinal);
 int failAfter = ArgumentValue("--fail-after", 0);
 bool closeBeforeReady = args.Contains("--close-before-ready", StringComparer.Ordinal);
 string? capturePath = ArgumentString("--capture");
-bool lightTheme = args.Contains("--light-theme", StringComparer.Ordinal);
+if (args.Contains("--light-theme", StringComparer.Ordinal))
+{
+    Console.Error.WriteLine("--light-theme was removed because it themed only WinUI. Use --theme=Light for the whole production companion.");
+    return 64;
+}
+bool manualVisualProof = args.Contains("--manual-visual-proof", StringComparer.Ordinal) ||
+    ArgumentString("--posting-state") is not null || ArgumentString("--theme") is not null;
+ProofPostingState postingState = ManualVisualProofFixture.ParsePostingState(ArgumentString("--posting-state"));
+ProofTheme proofTheme = ManualVisualProofFixture.ParseTheme(ArgumentString("--theme"));
 bool resizeCheck = args.Contains("--resize-check", StringComparer.Ordinal);
 bool productionSurfaceCheck = args.Contains("--production-surface-check", StringComparer.Ordinal);
 bool productionTextCheck = args.Contains("--production-text-check", StringComparer.Ordinal);
 bool accessibilityCheck = args.Contains("--accessibility-check", StringComparer.Ordinal);
+bool themeCycleCheck = args.Contains("--theme-cycle-check", StringComparer.Ordinal);
 bool expectInitFailure = args.Contains("--expect-init-failure", StringComparer.Ordinal);
 bool proofDesktop = !args.Contains("--production-desktop-check", StringComparer.Ordinal);
 bool moduleProvenance = !args.Contains("--no-module-provenance", StringComparer.Ordinal);
-bool observeShownWindow = capturePath is not null || lightTheme || resizeCheck || productionSurfaceCheck ||
-    productionTextCheck || accessibilityCheck || moduleProvenance;
+bool observeShownWindow = manualVisualProof || capturePath is not null || resizeCheck || productionSurfaceCheck ||
+    productionTextCheck || accessibilityCheck || themeCycleCheck || moduleProvenance;
 
-Console.WriteLine("proof-build=WP10C2 accessibility and system integration 1");
+Console.WriteLine("proof-build=WP10C2B final presentation harmonization 1");
 Console.WriteLine($"windows-app-sdk-runtime-package={RuntimePackageVersion}");
 Console.WriteLine($"winui-package={WinUiPackageVersion}");
 Console.WriteLine("network-or-server-required=false");
@@ -46,7 +56,10 @@ var resourceSamples = new List<(uint User, uint Gdi)>();
 
 for (int cycle = 0; cycle < cycles; cycle++)
 {
-    var session = new ManualSocialSession(
+    using ManualVisualProofFixture? fixture = manualVisualProof
+        ? ManualVisualProofFixture.Create(FindRepositoryRoot())
+        : null;
+    var automatedSession = new ManualSocialSession(
         new Uri("https://creatorcrate.example"),
         10,
         "WinUI 3 interactive visual proof",
@@ -55,12 +68,18 @@ for (int cycle = 0; cycle < cycles; cycle++)
             new ManualPreparedPlatform("x", "ignored", XFixture, []),
             new ManualPreparedPlatform("bluesky", "ignored", BlueskyFixture, []),
         ]);
+    ManualSocialSession session = fixture?.Session ?? automatedSession;
     var lifecycle = new ManualCompanionLifecycle();
-    var postingTransport = new ControlledPostingTransport();
-    using var postingController = new ManualPostingConfirmationController(
-        postingTransport, session.Platforms.Select(platform => platform.Platform));
+    ControlledPostingTransport? postingTransport = manualVisualProof ? null : new ControlledPostingTransport();
+    FixturePostingTransport? fixturePostingTransport = null;
+    using ManualPostingConfirmationController postingController = manualVisualProof
+        ? ManualVisualProofFixture.CreatePostingController(
+            postingState, session.Platforms.Select(platform => platform.Platform), out fixturePostingTransport)
+        : new ManualPostingConfirmationController(
+            postingTransport!, session.Platforms.Select(platform => platform.Platform));
     var recordingClipboard = new RecordingClipboard();
     using var windowShown = new ManualResetEventSlim();
+    using var fixtureSettled = new ManualResetEventSlim(!manualVisualProof);
     IntPtr capturedMainWindow = IntPtr.Zero;
     var capturedNativeControls = new List<IntPtr>();
     var capturedIslandWindows = new List<IntPtr>();
@@ -70,20 +89,23 @@ for (int cycle = 0; cycle < cycles; cycle++)
         new ManualPublishingCompanionModel(session),
         new UnavailableAssets(),
         lifecycle,
+        previewAccess: fixture?.PreviewAccess,
         confirmation: postingController,
         clipboardFactory: _ => recordingClipboard,
         winUiProofOptions: new WinUiHostProofOptions(
             TitleFixture,
             Fixture,
-            $"WP10C2 accessibility proof 1   •   Windows App SDK Runtime {RuntimePackageVersion}   •   WinUI {WinUiPackageVersion}   •   No server/network",
-            Theme: Microsoft.UI.Xaml.ElementTheme.Dark,
-            ThemeAfterFirstRender: lightTheme ? Microsoft.UI.Xaml.ElementTheme.Light : null,
-            SelectBodyTextAfterRender: lightTheme,
+            manualVisualProof
+                ? "Release ID: 4242   •   Server: creatorcrate.example   •   Manual publishing"
+                : $"WP10C2 accessibility proof 1   •   Windows App SDK Runtime {RuntimePackageVersion}   •   WinUI {WinUiPackageVersion}   •   No server/network",
+            Theme: manualVisualProof
+                ? ManualVisualProofFixture.ElementTheme(proofTheme)
+                : Microsoft.UI.Xaml.ElementTheme.Dark,
             FailAfterSurfaceCount: failAfter,
             MainWindowCreated: handle => capturedMainWindow = handle,
             NativeControlsCreated: handles => capturedNativeControls.AddRange(handles),
-            SurfaceCreated: handle => capturedIslandWindows.Add(handle),
-            WindowShown: observeShownWindow ? handle =>
+            InitialNativePalette: manualVisualProof ? ManualVisualProofFixture.Palette(proofTheme) : null,
+            WindowShown: observeShownWindow ? (Action<IntPtr>)(handle =>
             {
                 try
                 {
@@ -91,10 +113,13 @@ for (int cycle = 0; cycle < cycles; cycle++)
                     if (productionSurfaceCheck)
                         VerifyProductionSurfaces(
                             window ?? throw new InvalidOperationException("Production window was not assigned."),
-                            postingTransport, recordingClipboard);
+                            postingTransport ?? throw new InvalidOperationException("Controlled transport was not assigned."), recordingClipboard);
                     if (productionTextCheck)
                         VerifyProductionTextPresentation(
                             window ?? throw new InvalidOperationException("Production window was not assigned."), session);
+                    if (themeCycleCheck)
+                        VerifyWholeWindowThemeCycle(
+                            window ?? throw new InvalidOperationException("Production window was not assigned."));
                     if (accessibilityCheck)
                     {
                         NativeManualPublishingCompanion.NativeWindow productionWindow = window ??
@@ -103,7 +128,9 @@ for (int cycle = 0; cycle < cycles; cycle++)
                         automationThread = new Thread(() =>
                         {
                             try { ProductionUiaProbe.Verify(
-                                productionWindow, postingController, postingTransport, recordingClipboard); }
+                                productionWindow, postingController,
+                                postingTransport ?? throw new InvalidOperationException("Controlled transport was not assigned."),
+                                recordingClipboard); }
                             catch (Exception exception)
                             {
                                 captureFailure = exception;
@@ -121,11 +148,61 @@ for (int cycle = 0; cycle < cycles; cycle++)
                             Console.WriteLine($"resize-check={width}x{height}");
                             if (!SetWindowPos(handle, IntPtr.Zero, 0, 0, width, height, 0x0004 | 0x0010))
                                 throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
-                            VerifyCurrentIslandBounds(handle, window ?? throw new InvalidOperationException("Production window was not assigned."));
+                            VerifyCurrentIslandBounds(handle,
+                                window ?? throw new InvalidOperationException("Production window was not assigned."),
+                                width, height);
                         }
                     }
-                    if (lightTheme)
-                        Console.WriteLine("requested-theme-transition=Dark->Light; body-selection=0..17; focus=programmatic");
+                    if (manualVisualProof)
+                    {
+                        NativeManualPublishingCompanion.NativeWindow productionWindow = window ??
+                            throw new InvalidOperationException("Production window was not assigned.");
+                        Console.WriteLine($"manual-proof=true; posting-state={postingState}; theme={proofTheme}; platforms=patreon,x,bluesky");
+                        Console.WriteLine($"asset-fixture=production-model; rows={session.Platforms[0].Assets.Count}; available={session.Platforms[0].Assets.Count(ManualPublishingCompanionModel.IsAvailable)}; unavailable={session.Platforms[0].Assets.Count(asset => !ManualPublishingCompanionModel.IsAvailable(asset))}; initially-selected={new ManualPublishingCompanionModel(session).SelectedAssets.Count}");
+                        Console.WriteLine("preview-path=ManualAssetPreviewAccess->NativeAssetPreviewPipeline->NativeShellThumbnailExtractor->ListView/ImageList");
+                        Console.WriteLine("network-used=false; drag-proof=excluded");
+                        foreach (ManualPreparedPlatform platform in session.Platforms)
+                        {
+                            ManualPostingPlatformState state = postingController.GetState(platform.Platform);
+                            Console.WriteLine($"posting-platform={platform.Platform}; state={state.Status}");
+                        }
+                        NativeProductionThemeProbe themed = productionWindow.ApplyThemeAndCapturePresentationForTesting(
+                            ManualVisualProofFixture.Palette(proofTheme), checked((int)GetDpiForWindow(handle)));
+                        NativeProductionTextSurfaceProbe text = productionWindow.CaptureTextSurfacesForTesting(0);
+                        NativeAssetViewportProbe assets = productionWindow.CaptureAssetViewportForTesting();
+                        if (assets.DisplayedAssetCount != 4 || assets.VisibleRowTarget != 4 ||
+                            assets.Items.Any(item => item.Bottom > assets.ListClient.Bottom) ||
+                            assets.ScrollMaximum - assets.ScrollMinimum + 1 > assets.ScrollPage)
+                            throw new InvalidOperationException(
+                                "The four-asset production fixture requires vertical ListView scrolling.");
+                        Console.WriteLine($"whole-window-theme={themed.Mode}; native={themed.Mode}; winui={text.Theme}; hwnd-preserved=true");
+                        Console.WriteLine($"asset-viewport=passed; rows={assets.DisplayedAssetCount}; visible={assets.VisibleRowTarget}; list-height={assets.ListWindow.Height}; header-height={assets.Header.Height}; row-height={assets.Items[0].Height}; vertical-scroll-required=false");
+                        automationThread = new Thread(() =>
+                        {
+                            try
+                            {
+                                DateTime deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+                                while (DateTime.UtcNow < deadline)
+                                {
+                                    IReadOnlyList<int?> images = productionWindow.CaptureAssetImagesForTesting();
+                                    if (images.Count >= 2 && images[0] is >= 3 && images[1] is >= 3)
+                                    {
+                                        Console.WriteLine($"fixture-thumbnails=settled; real-thumbnails=2; image-indices={string.Join(',', images)}");
+                                        return;
+                                    }
+                                    Thread.Sleep(25);
+                                }
+                                throw new TimeoutException("Fixture thumbnails did not settle through the production preview path.");
+                            }
+                            catch (Exception exception)
+                            {
+                                captureFailure = exception;
+                                Console.WriteLine($"fixture-thumbnails=failed; error={exception.Message}");
+                            }
+                            finally { fixtureSettled.Set(); }
+                        }) { IsBackground = true, Name = "Manual visual proof thumbnail readiness" };
+                        automationThread.Start();
+                    }
                     if (moduleProvenance) DescribeRuntimeModules();
                     if (capturePath is not null)
                         CompositorWindowCapture.CaptureAsync(handle, capturePath).GetAwaiter().GetResult();
@@ -141,7 +218,8 @@ for (int cycle = 0; cycle < cycles; cycle++)
                     if (accessibilityCheck && automationThread is null)
                         window?.RequestClose();
                 }
-            } : null));
+            }) : null,
+            SurfaceCreated: handle => capturedIslandWindows.Add(handle)));
 
     if (closeBeforeReady) window.RequestClose();
     if (autoClose)
@@ -150,6 +228,8 @@ for (int cycle = 0; cycle < cycles; cycle++)
             {
                 if (observeShownWindow && !windowShown.Wait(TimeSpan.FromSeconds(10)))
                     Console.WriteLine("window-shown timeout");
+                if (manualVisualProof && !fixtureSettled.Wait(TimeSpan.FromSeconds(12)))
+                    Console.WriteLine("fixture-settled timeout");
                 window.RequestClose();
             },
             CancellationToken.None,
@@ -256,7 +336,7 @@ static void VerifyProductionSurfaces(
     NativeProductionLayoutProbe normal = window.ResizeAndCaptureLayoutForTesting(0, 980, 920);
     NativeProductionLayoutProbe large = window.ResizeAndCaptureLayoutForTesting(0, 980, 1400);
     NativeProductionLayoutProbe wide = window.ResizeAndCaptureLayoutForTesting(0, 1600, 920);
-    if (normal.BodyText.Height <= minimum.BodyText.Height || normal.AssetList.Height <= minimum.AssetList.Height ||
+    if (normal.BodyText.Height <= minimum.BodyText.Height ||
         large.BodyText.Height > 240 * large.Dpi / 96 || large.AssetsCard.Height > 440 * large.Dpi / 96 ||
         wide.PlatformCard.Width != 1152 * wide.Dpi / 96 ||
         wide.PlatformCard.X != (wide.Client.Width - wide.PlatformCard.Width) / 2)
@@ -316,6 +396,7 @@ static void VerifyProductionSurfaces(
     if (postingTransport.PostCalls != 0 || postingTransport.GetCalls != 0 || clipboard.Values.Count != 0)
         throw new InvalidOperationException("RichEditBox Enter invoked posting or Copy through the controlled seams.");
     VerifyPresentationThemeCycle(window);
+    VerifyWholeWindowThemeCycle(window);
     Console.WriteLine(
         $"posting-action-required=true; hwnd=0x{posting.Handle.ToInt64():X}; is-window=true; visible=true; enabled=true; text={posting.Text}");
     Console.WriteLine("ready-forward-tab=passed; platforms=patreon,x,bluesky; posting-and-native-controls=included");
@@ -324,21 +405,219 @@ static void VerifyProductionSurfaces(
     Console.WriteLine("production-surface-check=passed; shared-surfaces=2; classic-edits=0; minimum-containment=passed; tab-order=passed; enter-safety=passed");
 }
 
+static void VerifyWholeWindowThemeCycle(NativeManualPublishingCompanion.NativeWindow window)
+{
+    NativeProductionThemeProbe dark = window.ApplyThemeAndCapturePresentationForTesting(
+        NativeCompanionPalette.Dark, 96);
+    NativeProductionTextSurfaceProbe darkText = window.CaptureTextSurfacesForTesting(0);
+    window.SetBodyTextSelectionForTesting(2, 9);
+    darkText = window.CaptureCurrentTextSurfacesForTesting();
+    NativeProductionThemeProbe light = window.ApplyThemeAndCapturePresentationForTesting(
+        NativeCompanionPalette.Light, 144);
+    NativeProductionTextSurfaceProbe lightText = window.CaptureCurrentTextSurfacesForTesting();
+    NativeProductionThemeProbe highContrast = window.ApplyThemeAndCapturePresentationForTesting(
+        NativeCompanionPalette.HighContrast, 192);
+    NativeProductionTextSurfaceProbe highContrastText = window.CaptureCurrentTextSurfacesForTesting();
+    NativeProductionThemeProbe restored = window.ApplyThemeAndCapturePresentationForTesting(
+        NativeCompanionPalette.Dark, 96);
+    NativeProductionTextSurfaceProbe restoredText = window.CaptureCurrentTextSurfacesForTesting();
+    NativeProductionThemeProbe highContrastAgain = window.ApplyThemeAndCapturePresentationForTesting(
+        NativeCompanionPalette.HighContrast, 192);
+    NativeProductionTextSurfaceProbe highContrastAgainText = window.CaptureCurrentTextSurfacesForTesting();
+    NativeProductionThemeProbe lightRestored = window.ApplyThemeAndCapturePresentationForTesting(
+        NativeCompanionPalette.Light, 144);
+    NativeProductionTextSurfaceProbe lightRestoredText = window.CaptureCurrentTextSurfacesForTesting();
+
+    IntPtr[] Handles(NativeProductionThemeProbe probe) =>
+    [
+        probe.Window, probe.Platform, probe.AssetList, probe.AssetHeader,
+        probe.TitleIsland, probe.BodyIsland,
+        .. probe.Controls.Select(control => control.Handle),
+    ];
+    if (!Handles(dark).SequenceEqual(Handles(light)) ||
+        !Handles(dark).SequenceEqual(Handles(highContrast)) ||
+        !Handles(dark).SequenceEqual(Handles(restored)) ||
+        !Handles(dark).SequenceEqual(Handles(highContrastAgain)) ||
+        !Handles(dark).SequenceEqual(Handles(lightRestored)))
+        throw new InvalidOperationException("Whole-window theme refresh recreated a native control or WinUI island.");
+    if (dark.AssetListBackground != dark.NestedStyle.Background ||
+        light.AssetListBackground != light.NestedStyle.Background ||
+        restored.AssetListBackground != restored.NestedStyle.Background ||
+        !dark.SectionStyle.Decorative || !light.SectionStyle.Decorative ||
+        highContrast.SectionStyle.Decorative || highContrast.SectionStyle.Radius != 0)
+        throw new InvalidOperationException("Whole-window surface hierarchy or High Contrast bypass is invalid.");
+    DescribeThemeStage("Dark", dark, darkText);
+    DescribeThemeStage("Light", light, lightText);
+    DescribeThemeStage("HighContrast/Default", highContrast, highContrastText);
+    DescribeThemeStage("Dark restored", restored, restoredText);
+    DescribeThemeStage("HighContrast/Default before Light restore", highContrastAgain, highContrastAgainText);
+    DescribeThemeStage("Light restored", lightRestored, lightRestoredText);
+
+    AssertThemeStage("Dark", dark, darkText, NativeCompanionThemeMode.Dark,
+        Microsoft.UI.Xaml.ElementTheme.Dark,
+        "#171b22", "#1d222b", "#e8ecf1", "#262c37", "#3a4353", "#58a6ff");
+    AssertThemeStage("Light", light, lightText, NativeCompanionThemeMode.Light,
+        Microsoft.UI.Xaml.ElementTheme.Light,
+        "#ffffff", "#f8fafc", "#17202b", "#d7dee8", "#aab6c5", "#0969da");
+    AssertHighContrastStage("HighContrast/Default", highContrast, highContrastText);
+    AssertThemeStage("Dark restored", restored, restoredText, NativeCompanionThemeMode.Dark,
+        Microsoft.UI.Xaml.ElementTheme.Dark,
+        "#171b22", "#1d222b", "#e8ecf1", "#262c37", "#3a4353", "#58a6ff");
+    AssertHighContrastStage(
+        "HighContrast/Default before Light restore", highContrastAgain, highContrastAgainText);
+    AssertThemeStage("Light restored", lightRestored, lightRestoredText, NativeCompanionThemeMode.Light,
+        Microsoft.UI.Xaml.ElementTheme.Light,
+        "#ffffff", "#f8fafc", "#17202b", "#d7dee8", "#aab6c5", "#0969da");
+
+    foreach (NativeProductionTextSurfaceProbe stage in new[]
+             { lightText, highContrastText, restoredText, highContrastAgainText, lightRestoredText })
+    {
+        AssertThemeValue("content", "host", "platform", darkText.Platform, stage.Platform);
+        AssertThemeValue("content", "title", "text", darkText.TitleText, stage.TitleText);
+        AssertThemeValue("content", "body", "text", darkText.BodyText, stage.BodyText);
+        AssertThemeValue("content", "title", "selection", darkText.TitleSelection, stage.TitleSelection);
+        AssertThemeValue("content", "body", "selection", darkText.BodySelection, stage.BodySelection);
+    }
+
+    foreach ((NativeProductionThemeProbe probe, int dpi) in new[]
+             { (dark, 96), (light, 144), (highContrast, 192), (restored, 96),
+               (highContrastAgain, 192), (lightRestored, 144) })
+    {
+        foreach (NativeProductionControlPresentationProbe control in probe.Controls)
+        {
+            NativeCompanionFontSpec spec = NativeCompanionTheme.FontSpec(control.FontRole);
+            if (control.FontFamily != "Segoe UI" ||
+                control.FontHeight != -(spec.LogicalPixelHeight * dpi / 96) ||
+                control.FontWeight != spec.Weight)
+                throw new InvalidOperationException($"Production native font role is invalid: {control}.");
+        }
+    }
+
+    uint userBeforeRepeatedThemes = GuiResources(1);
+    uint gdiBeforeRepeatedThemes = GuiResources(0);
+    for (int cycle = 0; cycle < 5; cycle++)
+    {
+        NativeProductionThemeProbe repeatedHighContrast = window.ApplyThemeAndCapturePresentationForTesting(
+            NativeCompanionPalette.HighContrast, 192);
+        NativeProductionTextSurfaceProbe repeatedHighContrastText = window.CaptureCurrentTextSurfacesForTesting();
+        AssertHighContrastStage($"Repeated HighContrast/Default {cycle + 1}",
+            repeatedHighContrast, repeatedHighContrastText);
+        NativeProductionThemeProbe repeatedDark = window.ApplyThemeAndCapturePresentationForTesting(
+            NativeCompanionPalette.Dark, 96);
+        NativeProductionTextSurfaceProbe repeatedDarkText = window.CaptureCurrentTextSurfacesForTesting();
+        AssertThemeStage($"Repeated Dark {cycle + 1}", repeatedDark, repeatedDarkText,
+            NativeCompanionThemeMode.Dark, Microsoft.UI.Xaml.ElementTheme.Dark,
+            "#171b22", "#1d222b", "#e8ecf1", "#262c37", "#3a4353", "#58a6ff");
+        if (!Handles(dark).SequenceEqual(Handles(repeatedDark)))
+            throw new InvalidOperationException($"Repeated theme cycle {cycle + 1} recreated a native control or WinUI island.");
+        AssertThemeValue($"Repeated Dark {cycle + 1}", "content", "body-selection",
+            darkText.BodySelection, repeatedDarkText.BodySelection);
+    }
+    uint userAfterRepeatedThemes = GuiResources(1);
+    uint gdiAfterRepeatedThemes = GuiResources(0);
+    AssertThemeValue("Repeated themes", "process", "USER objects", userBeforeRepeatedThemes, userAfterRepeatedThemes);
+    AssertThemeValue("Repeated themes", "process", "GDI objects", gdiBeforeRepeatedThemes, gdiAfterRepeatedThemes);
+
+    Console.WriteLine("whole-window-theme-cycle=Dark->Light->HighContrast->Dark; hwnd-and-islands=same; content-and-selection=same; native-font-roles=passed; surface-hierarchy=passed; high-contrast-bypass=passed");
+    Console.WriteLine("whole-window-theme-cycle=Dark->HighContrast->Light; hwnd-and-islands=same; content-and-selection=same; resources-current=passed");
+    Console.WriteLine("theme-resource-lifetime=passed; repeated-same-island-cycles=5; USER-growth=0; GDI-growth=0");
+}
+
+static void DescribeThemeStage(
+    string stage,
+    NativeProductionThemeProbe native,
+    NativeProductionTextSurfaceProbe text)
+{
+    Console.WriteLine(
+        $"theme-stage={stage}; native-mode={native.Mode}; winui-theme={text.Theme}; " +
+        $"title-island=0x{text.TitleWindow.ToInt64():X}; body-island=0x{text.BodyWindow.ToInt64():X}; " +
+        $"platform={text.Platform}; title-selection={text.TitleSelection}; body-selection={text.BodySelection}");
+    DescribeResourceSurface(stage, "title", text.TitleResources);
+    DescribeResourceSurface(stage, "body", text.BodyResources);
+}
+
+static void DescribeResourceSurface(
+    string stage, string surface, WinUiTextSurfaceResourceProbe resources) =>
+    Console.WriteLine(
+        $"theme-resource-stage={stage}; surface={surface}; root={resources.RootBackground}; " +
+        $"editor={resources.Background}; foreground={resources.Foreground}; border={resources.Border}; " +
+        $"pointer-border={resources.PointerBorder}; focus-border={resources.FocusBorder}; " +
+        $"decorative={resources.HasDecorativeResourceOverrides}; " +
+        $"local-editor-brushes={resources.HasLocalEditorBrushValues}");
+
+static void AssertThemeStage(
+    string stage,
+    NativeProductionThemeProbe native,
+    NativeProductionTextSurfaceProbe text,
+    NativeCompanionThemeMode expectedNativeMode,
+    Microsoft.UI.Xaml.ElementTheme expectedTheme,
+    string root, string background, string foreground,
+    string border, string pointerBorder, string focusBorder)
+{
+    AssertThemeValue(stage, "native", "mode", expectedNativeMode, native.Mode);
+    AssertThemeValue(stage, "WinUI", "requested-theme", expectedTheme, text.Theme);
+    AssertThemeResources(stage, "title", text.TitleResources,
+        root, background, foreground, border, pointerBorder, focusBorder);
+    AssertThemeResources(stage, "body", text.BodyResources,
+        root, background, foreground, border, pointerBorder, focusBorder);
+}
+
+static void AssertThemeResources(
+    string stage, string surface, WinUiTextSurfaceResourceProbe actual,
+    string root, string background, string foreground,
+    string border, string pointerBorder, string focusBorder)
+{
+    AssertThemeValue(stage, surface, "decorative-overrides", true, actual.HasDecorativeResourceOverrides);
+    AssertThemeValue(stage, surface, "local-editor-brushes", true, actual.HasLocalEditorBrushValues);
+    AssertThemeValue(stage, surface, "root-background", root, actual.RootBackground);
+    AssertThemeValue(stage, surface, "editor-background", background, actual.Background);
+    AssertThemeValue(stage, surface, "foreground", foreground, actual.Foreground);
+    AssertThemeValue(stage, surface, "border", border, actual.Border);
+    AssertThemeValue(stage, surface, "pointer-border", pointerBorder, actual.PointerBorder);
+    AssertThemeValue(stage, surface, "focus-border", focusBorder, actual.FocusBorder);
+}
+
+static void AssertHighContrastStage(
+    string stage, NativeProductionThemeProbe native, NativeProductionTextSurfaceProbe text)
+{
+    AssertThemeValue(stage, "native", "mode", NativeCompanionThemeMode.HighContrast, native.Mode);
+    AssertThemeValue(stage, "WinUI", "requested-theme", Microsoft.UI.Xaml.ElementTheme.Default, text.Theme);
+    foreach ((string surface, WinUiTextSurfaceResourceProbe actual) in new[]
+             { ("title", text.TitleResources), ("body", text.BodyResources) })
+    {
+        AssertThemeValue(stage, surface, "decorative-overrides", false, actual.HasDecorativeResourceOverrides);
+        AssertThemeValue(stage, surface, "local-editor-brushes", false, actual.HasLocalEditorBrushValues);
+        AssertThemeValue(stage, surface, "root-background", string.Empty, actual.RootBackground);
+        if (actual.Background.Length == 0 || actual.Foreground.Length == 0 || actual.Border.Length == 0)
+            throw new InvalidOperationException(
+                $"Theme mismatch: stage={stage}; surface={surface}; property=system-owned-editor-resources; " +
+                $"expected=non-empty system values; actual=background:{actual.Background},foreground:{actual.Foreground},border:{actual.Border}.");
+    }
+}
+
+static void AssertThemeValue<T>(
+    string stage, string surface, string property, T expected, T actual)
+{
+    if (!EqualityComparer<T>.Default.Equals(expected, actual))
+        throw new InvalidOperationException(
+            $"Theme mismatch: stage={stage}; surface={surface}; property={property}; expected={expected}; actual={actual}.");
+}
+
 static void VerifyPresentationThemeCycle(NativeManualPublishingCompanion.NativeWindow window)
 {
     NativeProductionTextSurfaceProbe dark = window.CaptureTextSurfacesForTesting(0);
     AssertPresentation(dark.Presentation, Microsoft.UI.Xaml.ElementTheme.Dark,
-        "#1d222b", "#171b22", "#e8ecf1", "#262c37", "#3a4353", "#58a6ff");
+        "#171b22", "#1d222b", "#e8ecf1", "#262c37", "#3a4353", "#58a6ff");
 
     window.SetTextSurfaceThemeForTesting(Microsoft.UI.Xaml.ElementTheme.Light);
     NativeProductionTextSurfaceProbe light = window.CaptureTextSurfacesForTesting(0);
     AssertPresentation(light.Presentation, Microsoft.UI.Xaml.ElementTheme.Light,
-        "#f8fafc", "#ffffff", "#17202b", "#d7dee8", "#aab6c5", "#0969da");
+        "#ffffff", "#f8fafc", "#17202b", "#d7dee8", "#aab6c5", "#0969da");
 
     window.SetTextSurfaceThemeForTesting(Microsoft.UI.Xaml.ElementTheme.Dark);
     NativeProductionTextSurfaceProbe darkAgain = window.CaptureTextSurfacesForTesting(0);
     AssertPresentation(darkAgain.Presentation, Microsoft.UI.Xaml.ElementTheme.Dark,
-        "#1d222b", "#171b22", "#e8ecf1", "#262c37", "#3a4353", "#58a6ff");
+        "#171b22", "#1d222b", "#e8ecf1", "#262c37", "#3a4353", "#58a6ff");
 
     if (dark.TitleWindow != light.TitleWindow || dark.BodyWindow != light.BodyWindow ||
         dark.TitleWindow != darkAgain.TitleWindow || dark.BodyWindow != darkAgain.BodyWindow ||
@@ -375,7 +654,7 @@ static void VerifyAccessibilitySystemContracts(NativeManualPublishingCompanion.N
         restored.TitleText != original.TitleText || restored.BodyText != original.BodyText)
         throw new InvalidOperationException("Accessibility theme refresh recreated an island or changed content.");
     if (!restored.Presentation.HasDecorativeResourceOverrides ||
-        restored.Presentation.RootBackground != "#1d222b" ||
+        restored.Presentation.RootBackground != "#171b22" ||
         restored.Presentation.PointerBorder != "#3a4353" ||
         restored.Presentation.FocusBorder != "#58a6ff")
         throw new InvalidOperationException("CreatorCrate resources were not restored after the High Contrast contract check.");
@@ -537,22 +816,35 @@ static void AssertWithin(NativeLayoutRect actual, NativeLayoutRect container, st
         throw new InvalidOperationException($"{name} is outside the Platform Content card.");
 }
 
-static void VerifyCurrentIslandBounds(IntPtr parent, NativeManualPublishingCompanion.NativeWindow window)
+static void VerifyCurrentIslandBounds(
+    IntPtr parent, NativeManualPublishingCompanion.NativeWindow window, int outerWidth, int outerHeight)
 {
     if (!GetClientRect(parent, out Rect client)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
     int dpi = checked((int)GetDpiForWindow(parent));
     foreach ((int index, bool patreon) in new[] { (0, true), (1, false), (2, false) })
     {
         NativeProductionTextSurfaceProbe surface = window.CaptureTextSurfacesForTesting(index);
-        NativeCompanionLayout expected = NativeCompanionLayout.Calculate(client.Right, client.Bottom, dpi, patreon,
-            WindowText(window.PostingStatusHandle), WindowText(window.PostingHelperHandle));
+        NativeAuthoritativeTextLayoutProbe authoritative = window.CaptureAuthoritativeTextLayoutForTesting();
+        if (authoritative.Platform != surface.Platform || authoritative.TitleVisible != patreon)
+            throw new InvalidOperationException($"Authoritative text layout state does not match {surface.Platform}.");
         NativeLayoutRect body = ChildRect(parent, surface.BodyWindow);
-        if (body != expected.BodyText)
-            throw new InvalidOperationException($"Stale body island after resize for {surface.Platform}: expected {expected.BodyText}, actual {body}.");
-        if (patreon && ChildRect(parent, surface.TitleWindow) != expected.TitleText)
-            throw new InvalidOperationException("Stale Patreon title island after resize.");
+        if (body != authoritative.BodyText)
+            throw new InvalidOperationException(
+                $"Stale body island after resize for {surface.Platform}: authoritative {authoritative.BodyText}, actual {body}.");
+        NativeLayoutRect title = ChildRect(parent, surface.TitleWindow);
+        if (title != authoritative.TitleText || surface.TitleVisible != patreon)
+            throw new InvalidOperationException(
+                $"Stale title island after resize for {surface.Platform}: authoritative {authoritative.TitleText}, actual {title}, visible={surface.TitleVisible}.");
+        if (!patreon && authoritative.TitleText != default)
+            throw new InvalidOperationException($"Hidden {surface.Platform} title layout was not zeroed: {authoritative.TitleText}.");
+        if (outerWidth == 1200 && outerHeight == 900 && authoritative.BodyText.Height != 240 * dpi / 96)
+            throw new InvalidOperationException(
+                $"The 1200x900 authoritative body height was {authoritative.BodyText.Height}, expected {240 * dpi / 96} at {dpi} DPI.");
+        Console.WriteLine(
+            $"resize-island-platform={surface.Platform}; authoritative-body={authoritative.BodyText}; actual-body={body}; " +
+            $"authoritative-title={authoritative.TitleText}; actual-title={title}; title-visible={surface.TitleVisible}; immediate=true");
     }
-    Console.WriteLine($"resize-island-bounds=passed; client={client.Right}x{client.Bottom}; dpi={dpi}");
+    Console.WriteLine($"resize-island-bounds=passed; outer={outerWidth}x{outerHeight}; client={client.Right}x{client.Bottom}; dpi={dpi}; source=production-layout; immediate=true");
 }
 
 static NativeLayoutRect ChildRect(IntPtr parent, IntPtr child)
@@ -561,14 +853,6 @@ static NativeLayoutRect ChildRect(IntPtr parent, IntPtr child)
     var points = new[] { new Point { X = rectangle.Left, Y = rectangle.Top }, new Point { X = rectangle.Right, Y = rectangle.Bottom } };
     MapWindowPoints(IntPtr.Zero, parent, points, 2);
     return new(points[0].X, points[0].Y, points[1].X - points[0].X, points[1].Y - points[0].Y);
-}
-
-static string WindowText(IntPtr window)
-{
-    if (window == IntPtr.Zero) return string.Empty;
-    var text = new System.Text.StringBuilder(1024);
-    GetWindowText(window, text, text.Capacity);
-    return text.ToString();
 }
 
 int ArgumentValue(string name, int fallback)
@@ -583,6 +867,18 @@ string? ArgumentString(string name)
     string prefix = name + "=";
     string? value = args.FirstOrDefault(argument => argument.StartsWith(prefix, StringComparison.Ordinal));
     return value?[prefix.Length..];
+}
+
+static string FindRepositoryRoot()
+{
+    DirectoryInfo? current = new(AppContext.BaseDirectory);
+    while (current is not null)
+    {
+        if (File.Exists(Path.Combine(current.FullName, "helper", "windows", "CreatorCrate.OpenLocally.sln")))
+            return current.FullName;
+        current = current.Parent;
+    }
+    throw new DirectoryNotFoundException("CreatorCrate repository root was not found.");
 }
 
 static void DescribeChildren(IntPtr parent)
@@ -631,9 +927,6 @@ static extern bool EnumChildWindows(IntPtr parent, EnumWindowProc callback, IntP
 
 [DllImport("user32.dll", CharSet = CharSet.Unicode)]
 static extern int GetClassName(IntPtr window, System.Text.StringBuilder className, int maximumCount);
-
-[DllImport("user32.dll", EntryPoint = "GetWindowTextW", CharSet = CharSet.Unicode, ExactSpelling = true)]
-static extern int GetWindowText(IntPtr window, System.Text.StringBuilder text, int maximumCount);
 
 [DllImport("user32.dll")]
 static extern bool IsWindowVisible(IntPtr window);
