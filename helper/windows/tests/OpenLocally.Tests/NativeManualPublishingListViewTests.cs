@@ -660,6 +660,143 @@ public sealed class NativeManualPublishingListViewTests
     }
 
     [Fact]
+    public async Task RealNativeGesture_SelectedRowDragPreservesCompleteSelectionAtControlGeneratedBeginDrag()
+    {
+        var snapshotObserved = new TaskCompletionSource<IReadOnlyList<ManualDragAsset>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var harness = await ProductionHeaderHarness.StartAsync(
+            Model(Prepared(1, "a.png", true), Prepared(2, "b.png", true), Prepared(3, "c.png", true)),
+            selected => { snapshotObserved.TrySetResult(selected.ToArray()); return true; });
+        IntPtr listView = harness.Window.AssetListHandleForTesting;
+
+        Assert.Equal(3, SendMessage(listView, 0x1000 + 50, IntPtr.Zero, IntPtr.Zero).ToInt32());
+        Assert.Equal([0, 1, 2], NativeManualPublishingCompanion.NativeWindow.SelectedItemIndices(listView));
+        Assert.Equal([0, 1, 2], NativeManualPublishingCompanion.NativeWindow.SelectedOrdinals(listView));
+
+        var observed = new TaskCompletionSource<NativeListViewBeginDragProbe>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        harness.Window.ObserveNextListViewBeginDragForTesting(value => observed.TrySetResult(value));
+        DragRowAcrossNativeThreshold(listView, itemIndex: 1);
+
+        NativeListViewBeginDragProbe drag = await observed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(1, drag.OriginItemIndex);
+        Assert.Equal([0, 1, 2], drag.SelectedItemIndices);
+        Assert.Equal([0, 1, 2], drag.SelectedOrdinals);
+        IReadOnlyList<ManualDragAsset> snapshot =
+            await snapshotObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal([0, 1, 2], snapshot.Select(asset => asset.Ordinal));
+        Assert.Equal(["a.png", "b.png", "c.png"], snapshot.Select(asset => asset.Prepared.Asset.Filename));
+    }
+
+    [Fact]
+    public async Task RealNativeGesture_SelectedRowClickCollapsesSelectionOnClickCompletion()
+    {
+        var model = Model(
+            Prepared(1, "a.png", true), Prepared(2, "b.png", true), Prepared(3, "c.png", true));
+        await using var harness = await ProductionHeaderHarness.StartAsync(model);
+        IntPtr listView = harness.Window.AssetListHandleForTesting;
+
+        Assert.Equal([0, 1, 2], NativeManualPublishingCompanion.NativeWindow.SelectedOrdinals(listView));
+        ClickRow(listView, itemIndex: 1);
+        await WaitForSelectionAsync(listView, [1]);
+
+        Assert.Equal([1], NativeManualPublishingCompanion.NativeWindow.SelectedItemIndices(listView));
+        Assert.Equal([1], model.SelectedOrdinals);
+    }
+
+    [Fact]
+    public async Task RealNativeGesture_UnselectedRowDragSelectsAndSnapshotsOnlyOrigin()
+    {
+        var snapshotObserved = new TaskCompletionSource<IReadOnlyList<ManualDragAsset>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var model = Model(
+            Prepared(1, "a.png", true), Prepared(2, "b.png", true), Prepared(3, "c.png", true));
+        await using var harness = await ProductionHeaderHarness.StartAsync(model,
+            selected => { snapshotObserved.TrySetResult(selected.ToArray()); return true; });
+        IntPtr listView = harness.Window.AssetListHandleForTesting;
+        NativeManualPublishingCompanion.NativeWindow.SetNativeSelection(listView, new HashSet<int> { 0, 1 }, 3);
+        Assert.Equal([0, 1], NativeManualPublishingCompanion.NativeWindow.SelectedOrdinals(listView));
+
+        var observed = new TaskCompletionSource<NativeListViewBeginDragProbe>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        harness.Window.ObserveNextListViewBeginDragForTesting(value => observed.TrySetResult(value));
+        DragRowAcrossNativeThreshold(listView, itemIndex: 2);
+
+        NativeListViewBeginDragProbe drag = await observed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        IReadOnlyList<ManualDragAsset> snapshot =
+            await snapshotObserved.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(2, drag.OriginItemIndex);
+        Assert.Equal([2], drag.SelectedItemIndices);
+        Assert.Equal([2], drag.SelectedOrdinals);
+        Assert.Equal([2], snapshot.Select(asset => asset.Ordinal));
+        Assert.Equal([2], model.SelectedOrdinals);
+    }
+
+    [Fact]
+    public async Task RealNativeGesture_CtrlAndShiftClicksRetainNativeModifierSemantics()
+    {
+        var model = Model(
+            Prepared(1, "a.png", true), Prepared(2, "b.png", true), Prepared(3, "c.png", true));
+        await using var harness = await ProductionHeaderHarness.StartAsync(model);
+        IntPtr listView = harness.Window.AssetListHandleForTesting;
+
+        ClickRow(listView, itemIndex: 1, mouseKeys: 0x0008); // MK_CONTROL
+        await WaitForSelectionAsync(listView, [0, 2]);
+        Assert.Equal([0, 2], model.SelectedOrdinals);
+
+        ClickRow(listView, itemIndex: 0);
+        await WaitForSelectionAsync(listView, [0]);
+        ClickRow(listView, itemIndex: 2, mouseKeys: 0x0004); // MK_SHIFT
+        await WaitForSelectionAsync(listView, [0, 1, 2]);
+        Assert.Equal([0, 1, 2], model.SelectedOrdinals);
+    }
+
+    [Fact]
+    public async Task RealNativeKeyboard_ArrowNavigationRemainsAuthoritativeNativeSelection()
+    {
+        var model = Model(
+            Prepared(1, "a.png", true), Prepared(2, "b.png", true), Prepared(3, "c.png", true));
+        await using var harness = await ProductionHeaderHarness.StartAsync(model);
+        IntPtr listView = harness.Window.AssetListHandleForTesting;
+
+        ClickRow(listView, itemIndex: 0);
+        await WaitForSelectionAsync(listView, [0]);
+        SendMessage(listView, 0x0100, new IntPtr(0x28), IntPtr.Zero); // WM_KEYDOWN, VK_DOWN
+        SendMessage(listView, 0x0101, new IntPtr(0x28), IntPtr.Zero); // WM_KEYUP, VK_DOWN
+        await WaitForSelectionAsync(listView, [1]);
+
+        Assert.Equal([1], NativeManualPublishingCompanion.NativeWindow.SelectedItemIndices(listView));
+        Assert.Equal([1], model.SelectedOrdinals);
+        var className = new System.Text.StringBuilder(64);
+        Assert.NotEqual(0, GetClassName(listView, className, className.Capacity));
+        Assert.Equal("SysListView32", className.ToString());
+    }
+
+    [Fact]
+    public async Task RealNativeGesture_UnavailableSelectionRejectsWholeDragAndPreservesSelection()
+    {
+        var model = Model(
+            Prepared(1, "a.png", true), Prepared(2, "b.png", true), Prepared(3, "d.png", false));
+        await using var harness = await ProductionHeaderHarness.StartAsync(model, selected =>
+            throw new InvalidOperationException("Unavailable selection reached the drag lifecycle boundary."));
+        IntPtr listView = harness.Window.AssetListHandleForTesting;
+        NativeManualPublishingCompanion.NativeWindow.SetNativeSelection(
+            listView, new HashSet<int> { 0, 1, 2 }, 3);
+
+        var observed = new TaskCompletionSource<NativeListViewBeginDragProbe>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        harness.Window.ObserveNextListViewBeginDragForTesting(value => observed.TrySetResult(value));
+        DragRowAcrossNativeThreshold(listView, itemIndex: 1);
+
+        NativeListViewBeginDragProbe drag = await observed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await WaitForConditionAsync(() =>
+            harness.Window.StatusText == "Selected files include unavailable media.");
+        Assert.Equal([0, 1, 2], drag.SelectedOrdinals);
+        Assert.Equal([0, 1, 2], NativeManualPublishingCompanion.NativeWindow.SelectedOrdinals(listView));
+        Assert.Equal([0, 1, 2], model.SelectedOrdinals);
+    }
+
+    [Fact]
     public void InitialAvailableSelection_BeginDragNotificationStartsCoordinatorWithAuthoritativeImmutableSnapshot()
     {
         ManualPreparedAsset[] assets =
@@ -853,16 +990,66 @@ public sealed class NativeManualPublishingListViewTests
             $"release/{filename}", present, null), present ? $@"C:\stage\{filename}" : string.Empty,
             StagedMediaProvenance.HelperOwned);
 
+    private static void DragRowAcrossNativeThreshold(IntPtr listView, int itemIndex)
+    {
+        Rect bounds = new() { left = 0 };
+        Assert.NotEqual(IntPtr.Zero,
+            SendMessageRect(listView, 0x1000 + 14, new IntPtr(itemIndex), ref bounds));
+        int x = bounds.left + Math.Min(24, Math.Max(1, bounds.right - bounds.left - 1));
+        int y = bounds.top + Math.Max(1, (bounds.bottom - bounds.top) / 2);
+        int dragX = Math.Max(1, GetSystemMetrics(68)); // SM_CXDRAG
+        int dragY = Math.Max(1, GetSystemMetrics(69)); // SM_CYDRAG
+
+        Assert.True(PostMessage(listView, 0x0201, new IntPtr(0x0001), MakeLParam(x, y))); // WM_LBUTTONDOWN, MK_LBUTTON
+        Assert.True(PostMessage(listView, 0x0200, new IntPtr(0x0001),
+            MakeLParam(x + dragX + 1, y + dragY + 1))); // WM_MOUSEMOVE, MK_LBUTTON
+        Assert.True(PostMessage(listView, 0x0202, IntPtr.Zero,
+            MakeLParam(x + dragX + 1, y + dragY + 1))); // WM_LBUTTONUP
+    }
+
+    private static void ClickRow(IntPtr listView, int itemIndex, int mouseKeys = 0)
+    {
+        Rect bounds = new() { left = 0 };
+        Assert.NotEqual(IntPtr.Zero,
+            SendMessageRect(listView, 0x1000 + 14, new IntPtr(itemIndex), ref bounds));
+        int x = bounds.left + Math.Min(24, Math.Max(1, bounds.right - bounds.left - 1));
+        int y = bounds.top + Math.Max(1, (bounds.bottom - bounds.top) / 2);
+        Assert.True(PostMessage(listView, 0x0201, new IntPtr(0x0001 | mouseKeys), MakeLParam(x, y)));
+        Assert.True(PostMessage(listView, 0x0202, new IntPtr(mouseKeys), MakeLParam(x, y)));
+    }
+
+    private static async Task WaitForSelectionAsync(IntPtr listView, IReadOnlyList<int> expected) =>
+        await WaitForConditionAsync(() =>
+            NativeManualPublishingCompanion.NativeWindow.SelectedOrdinals(listView).SequenceEqual(expected));
+
+    private static async Task WaitForConditionAsync(Func<bool> condition)
+    {
+        DateTime deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (!condition())
+        {
+            if (DateTime.UtcNow >= deadline) Assert.Fail("The native control did not reach the expected state.");
+            await Task.Delay(10);
+        }
+    }
+
+    private static IntPtr MakeLParam(int x, int y) =>
+        new(unchecked((int)((uint)(ushort)x | ((uint)(ushort)y << 16))));
+
     private sealed class ProductionHeaderHarness : IAsyncDisposable
     {
         private readonly TaskCompletionSource<Exception?> _closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly Thread _thread;
 
-        private ProductionHeaderHarness(ManualPublishingCompanionModel model)
+        private ProductionHeaderHarness(
+            ManualPublishingCompanionModel model,
+            Func<IReadOnlyList<ManualDragAsset>, bool>? tryBeginDrag)
         {
             Lifecycle = new ManualCompanionLifecycle();
             Window = new NativeManualPublishingCompanion.NativeWindow(
-                model, Lifecycle, confirmation: null, disableWinUiForNativeOnlyTests: true);
+                model, RejectingAvailability.Instance, Lifecycle,
+                tryBeginDrag: tryBeginDrag,
+                dragSessionAvailable: tryBeginDrag is null ? null : () => true,
+                disableWinUiForNativeOnlyTests: true);
             _thread = new Thread(Run) { IsBackground = true, Name = "Native header custom-draw test" };
             _thread.SetApartmentState(ApartmentState.STA);
         }
@@ -882,9 +1069,11 @@ public sealed class NativeManualPublishingListViewTests
         public IReadOnlyList<string> HeaderTexts => Enumerable.Range(0,
             SendMessage(Header, 0x1200, IntPtr.Zero, IntPtr.Zero).ToInt32()).Select(HeaderText).ToArray();
 
-        public static async Task<ProductionHeaderHarness> StartAsync(ManualPublishingCompanionModel model)
+        public static async Task<ProductionHeaderHarness> StartAsync(
+            ManualPublishingCompanionModel model,
+            Func<IReadOnlyList<ManualDragAsset>, bool>? tryBeginDrag = null)
         {
-            var harness = new ProductionHeaderHarness(model);
+            var harness = new ProductionHeaderHarness(model, tryBeginDrag);
             harness._thread.Start();
             await harness.Lifecycle.Ready.WaitAsync(TimeSpan.FromSeconds(5));
             return harness;
@@ -1167,6 +1356,15 @@ public sealed class NativeManualPublishingListViewTests
 
     [DllImport("user32.dll", EntryPoint = "SendMessageW", ExactSpelling = true)]
     private static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", EntryPoint = "SendMessageW", ExactSpelling = true)]
+    private static extern IntPtr SendMessageRect(IntPtr window, uint message, IntPtr wParam, ref Rect lParam);
+
+    [DllImport("user32.dll", EntryPoint = "PostMessageW", ExactSpelling = true, SetLastError = true)]
+    private static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern int GetSystemMetrics(int index);
 
     [DllImport("user32.dll", EntryPoint = "SendMessageW", ExactSpelling = true)]
     private static extern bool SendMessageHeaderRect(IntPtr window, uint message, IntPtr wParam, out Rect rectangle);

@@ -26,7 +26,8 @@ internal sealed record WinUiHostProofOptions(
     Action<IntPtr>? WindowShown = null,
     Action<IntPtr>? MainWindowCreated = null,
     Action<IReadOnlyList<IntPtr>>? NativeControlsCreated = null,
-    Action<IntPtr>? SurfaceCreated = null);
+    Action<IntPtr>? SurfaceCreated = null,
+    Action? WindowClosing = null);
 
 internal sealed class WinUiHostInitializationException : InvalidOperationException
 {

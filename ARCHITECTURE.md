@@ -2071,9 +2071,10 @@ font, 96/144/192-DPI construction, native/WinUI resource, transition, accessibil
 and lifetime coverage verifies objective behavior but did not establish subjective
 visual quality. Integrated manual visual acceptance has passed through user desktop
 inspection of the completed visual packages, including the content-aware Assets
-viewport correction and executable/window icon. The
-separate real one-file drag defect remains unresolved, and WP10D clean-machine,
-offline-runtime, prerequisite, and installer validation remains outstanding.
+viewport correction and executable/window icon. The later real browser drop proves
+the production generic multi-file source path; the earlier one-file outcome is not
+reproducible as a generalized source defect. WP10D clean-machine, offline-runtime,
+prerequisite, and installer validation remains outstanding.
 
 A1 changes layout and hierarchy only. B2A keeps the native report columns
 responsive to the actual ListView client width: File is the flexible primary
@@ -2094,10 +2095,10 @@ surface and accent entirely so Windows supplies system selection and focus color
 B2 is complete through B2A and B2B; Package C1 button/footer styling, C2A
 Platform selector presentation, and C2B whole-window presentation harmonization
 are code-complete, and their integrated manual visual acceptance passed through
-user desktop inspection rather than automated aesthetic proof. The real
-Windows one-file drag defect remains unresolved; visual redesign is not
-drag/`CF_HDROP` fix evidence, and drag diagnosis and correction remain a separate
-follow-up package. WP10D installer/deployment validation also remains outstanding;
+user desktop inspection rather than automated aesthetic proof. Visual redesign was
+not drag/`CF_HDROP` fix evidence and no production source fix was needed: later real
+browser acceptance proved the unchanged generic multi-file drag path. Individual
+destination acceptance and WP10D installer/deployment validation remain outstanding;
 this visual acceptance did not finalize the installer.
 
 The executable embeds the supported Common Controls v6 dependency through its
@@ -2113,8 +2114,9 @@ by the operator. All available assets start selected; unavailable assets start
 unselected. The operator adjusts each platform's selection through the native
 ListView, and Assets shows `N of M selected` for all displayed rows plus guidance
 for dragging the selected set or explaining an empty or unavailable selection.
-The real Windows one-file drag defect remains unresolved and separate. Report
-rows expose File, Role, Size, Status, and Path/staged-name text;
+The unchanged production multi-file path was later proven through a real browser
+drop; the earlier one-file result is not a generalized source defect. Report rows
+expose File, Role, Size, Status, and Path/staged-name text;
 
 The report header remains the ListView-owned native `SysHeader32`, resolved with
 documented `LVM_GETHEADER`; it is not replaced and retains native column and
@@ -2127,8 +2129,9 @@ labels, restrained dividers and bottom edge, and unused trailing header area
 from companion theme roles. Parent-relative item rectangles are mapped into the
 Header client before that trailing area is calculated; mapping failure skips the
 trailing fill. High Contrast returns to system/native header drawing. B2A owns
-responsive column sizing while B2B still owns selected-row chrome; this header
-work does not address the separate real one-file drag defect or Package C chrome.
+responsive column sizing while B2B still owns selected-row chrome; this header work
+did not change drag behavior or Package C chrome. Later browser acceptance proved
+the unchanged generic multi-file path independently.
 
 the File column now combines that filename with a DPI-scaled native thumbnail or
 purpose-specific placeholder from a 32-bit-alpha ListView ImageList. Image
@@ -2247,6 +2250,34 @@ revalidated. The dedicated OLE data object exposes only Unicode `CF_HDROP` in
 movable `HGLOBAL` storage and creates independently owned storage for every
 `GetData` call. `DoDragDrop` offers COPY only. No browser, CDP, or platform
 adapter dependency exists in this v2 path.
+
+A production-window component regression drives the real `SysListView32` with
+native left-button messages and crosses `SM_CXDRAG`/`SM_CYDRAG`; Common Controls,
+not the test, generates `LVN_BEGINDRAG`. It proves that an unmodified drag from an
+already selected row preserves the full native multi-selection at that boundary,
+while click completion collapses to that row and dragging an unselected row makes
+it the sole selected drag target. `LVIS_SELECTED` remains the only selection
+authority, so Ctrl/Shift pointer selection and keyboard navigation stay native.
+The regression stops at the immutable coordinator snapshot. A later real physical
+pointer drag from the production companion into a browser/web destination proved
+the generic CreatorCrate OLE delivery boundary: all three initially selected
+available assets arrived in Release/list order, repeatably, regardless of which
+selected row began the drag. The original one-file outcome is therefore not
+reproducible as a generalized CreatorCrate source defect; this evidence does not
+guarantee that every destination accepts every file or preserves the same semantics.
+
+Package B adds an opt-in proof-only local native window beside the unchanged
+production companion. On the companion STA and message pump it registers a real
+`IDropTarget`, accepts COPY-only `CF_HDROP` (`DVASPECT_CONTENT`, `lindex=-1`,
+`TYMED_HGLOBAL`), calls the incoming `IDataObject.GetData`, enumerates the received
+`HDROP` with `DragQueryFileW`, and releases the caller-owned `STGMEDIUM` before
+returning. The drag-proof fixture availability provider is local-only: it validates
+the three real generated fixture paths in incoming snapshot order and still rejects
+the unavailable fourth row. The receiver never copies or moves files. This harness
+isolates real production `WindowsFileDrag`/`DoDragDrop` delivery from browsers; the
+local harness is diagnostic/test infrastructure and is not a prerequisite for the
+production result already demonstrated through the real browser drop. Patreon, X,
+and Bluesky remain destination-specific manual acceptance boundaries.
 
 When helper-owned media exists, `SocialMediaStager` transfers its existing
 exclusive marker lease to the companion. The terminal preparation attempt is not

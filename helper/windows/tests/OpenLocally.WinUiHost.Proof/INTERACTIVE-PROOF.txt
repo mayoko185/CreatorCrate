@@ -48,7 +48,39 @@ Additional manual accessibility gates (not completed by automated proof):
 - With Narrator, verify platform content, read-only state, control names, and focus movement.
 - Verify Tab/Shift+Tab, text selection/copy/navigation, scrolling, Escape, and non-editability.
 
-Important scope boundary: the known real one-file drag defect remains unresolved. This visual gate permits inspection of selection and drag guidance only. Do not drag files and do not accept or close the drag defect from this proof.
+Important scope boundary: the production multi-file drag path is proven by a real physical drop into a browser/web destination: all three initially selected available assets arrived in Release/list order regardless of which selected row began the drag. The original one-file result is not reproducible as a generalized CreatorCrate source defect. Individual social-site acceptance remains destination-specific.
+
+Package B local OLE drop-target proof
+
+Run from the repository root:
+
+powershell -NoProfile -ExecutionPolicy Bypass -File .\helper\windows\tests\OpenLocally.WinUiHost.Proof\run-manual-visual-proof.ps1 -DragProof
+
+This opens the actual production NativeManualPublishingCompanion and a separate test-only local IDropTarget. The fixture creates these available paths in stable Release/list order:
+
+0. campaign-cover.bmp
+1. launch-assets\final-approved-media\creatorcrate-autumn-product-launch-behind-the-scenes-wide-preview.bmp
+2. posting-notes.txt
+
+The fourth row, missing-community-photo.png, is genuinely unavailable. The console prints the full generated absolute paths for the current run.
+
+Primary interactive proof:
+
+1. Confirm rows A+B+C (ordinals 0+1+2) are selected; do not select unavailable row D.
+2. Click-hold and drag ANY one selected row from the production ListView onto the local target.
+3. Release over the target.
+4. Read DROP PASS/FAIL, origin, count, effect, and exact received path order in the console.
+
+Expected for origins A, B, or C: count=3 and paths 0,1,2 in Release/list order. The target requests COPY and only inspects the received CF_HDROP; it does not copy, move, or write files.
+
+Secondary cases:
+
+- Ordinary single-click B intentionally collapses selection to B. Drag B and expect one received path: ordinal 1.
+- Starting with A+B selected and C unselected, drag C and expect C only.
+- If unavailable D is selected with available rows, production rejects the whole selection before OLE delivery. The target receives no Drop.
+- Ctrl/Shift selection remains native Windows ListView behavior.
+
+Use a real mouse pointer. First click the local target and confirm it displays CLICK RECEIVED, then perform the drag; clicking does not simulate a drop. Do not invoke a test command or synthesize LVN_BEGINDRAG. Close the production companion to end the proof; the target registration, both windows, fixture files, controller, and process are then cleaned up. This local harness is diagnostic infrastructure, not a prerequisite for the already proven generic browser/OLE contract. Patreon, X, and Bluesky acceptance remains destination-specific.
 
 WP10C interactive UIA proof
 

@@ -41,6 +41,45 @@ public sealed class ManualVisualProofFixtureTests
         Assert.False(fixture.PreviewAccess.TryAcquireRead(platform.Assets[3], 3).Success);
     }
 
+    [Fact]
+    public async Task DragProofAvailability_ReturnsExistingFixturePathsInIncomingOrdinalOrder()
+    {
+        using ManualVisualProofFixture fixture = ManualVisualProofFixture.Create(RepositoryRoot());
+        var availability = new FixtureDragAvailability(fixture.Session);
+        ManualPreparedPlatform platform = fixture.Session.Platforms[0];
+        ManualDragAsset[] selected =
+        [
+            new(platform.Assets[0], 0),
+            new(platform.Assets[1], 1),
+            new(platform.Assets[2], 2),
+        ];
+
+        ManualDragPreparation prepared = await availability.PrepareAsync(selected, CancellationToken.None);
+
+        Assert.True(prepared.Success);
+        Assert.Equal(fixture.ExpectedAvailablePaths, prepared.Paths);
+        Assert.All(prepared.Paths, path =>
+        {
+            Assert.True(Path.IsPathFullyQualified(path));
+            Assert.True(File.Exists(path));
+        });
+    }
+
+    [Fact]
+    public async Task DragProofAvailability_RejectsUnavailableFixtureAssetWithoutNetworkOrPartialPaths()
+    {
+        using ManualVisualProofFixture fixture = ManualVisualProofFixture.Create(RepositoryRoot());
+        var availability = new FixtureDragAvailability(fixture.Session);
+        ManualPreparedPlatform platform = fixture.Session.Platforms[0];
+
+        ManualDragPreparation prepared = await availability.PrepareAsync(
+            [new(platform.Assets[0], 0), new(platform.Assets[3], 3)], CancellationToken.None);
+
+        Assert.False(prepared.Success);
+        Assert.Equal("validation_failed", prepared.ErrorCode);
+        Assert.Empty(prepared.Paths);
+    }
+
     [Theory]
     [InlineData("Ready", "Ready")]
     [InlineData("Confirming", "Confirming")]
@@ -127,7 +166,7 @@ public sealed class ManualVisualProofFixtureTests
         Assert.Contains("neither substitutes for genuine Windows High Contrast", instructions, StringComparison.Ordinal);
         Assert.Contains("depends on the real Windows settings-change path after launch", instructions, StringComparison.Ordinal);
         Assert.Contains("Do not simulate High Contrast through proof arguments", instructions, StringComparison.Ordinal);
-        Assert.Contains("one-file drag defect remains unresolved", instructions, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("production multi-file drag path is proven", instructions, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("F6 switches", instructions, StringComparison.Ordinal);
         Assert.Contains("-Theme Dark", instructions, StringComparison.Ordinal);
         Assert.Contains("-Theme Light", instructions, StringComparison.Ordinal);
@@ -181,6 +220,31 @@ public sealed class ManualVisualProofFixtureTests
         Assert.Contains("fixture-thumbnails=settled; real-thumbnails=2", result.StandardOutput, StringComparison.Ordinal);
         AssertNoNewProofProcesses(result.ProofProcessIdsBefore);
         Assert.False(Directory.Exists(FixtureDirectory()), "The valid launcher smoke left its fixture directory behind.");
+    }
+
+    [Fact]
+    public void DragProofLauncher_StartsRealCompanionAndRegisteredLocalTargetThenCleansUp()
+    {
+        ProcessRunResult result = RunProcess(
+            PowerShellLauncherStartInfo("-DragProof", "-AutoClose"),
+            TimeSpan.FromSeconds(90));
+        string diagnostic = result.StandardError + Environment.NewLine + result.StandardOutput;
+
+        Assert.True(result.ExitCode == 0, $"Exit {result.ExitCode}{Environment.NewLine}{diagnostic}");
+        Assert.True(result.ObservedProofProcess);
+        Assert.True(result.ObservedProofWindow);
+        Assert.Contains("drag-proof-ready=true", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("drop-target-registered=True", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("drag-proof-smoke=passed", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("visible-hwnd:", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("registered-hwnd:", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("register-hr:0x00000000", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("nchittest:1", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("companion-window=True; target-window=True; target-visible=True; target-enabled=True; target-hit-testable=True; registered=True; selected=0,1,2", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("drag-proof-cleanup=passed", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("drop-target-revoked=True", result.StandardOutput, StringComparison.Ordinal);
+        AssertNoNewProofProcesses(result.ProofProcessIdsBefore);
+        Assert.False(Directory.Exists(FixtureDirectory()), "The drag proof smoke left its fixture directory behind.");
     }
 
     private static ManualPreviewFileLease AssertPreviewReady(ManualPreviewAccessResult result)

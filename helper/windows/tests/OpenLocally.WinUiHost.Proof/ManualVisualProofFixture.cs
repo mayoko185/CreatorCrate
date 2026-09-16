@@ -25,6 +25,11 @@ internal sealed class ManualVisualProofFixture : IDisposable
 
     internal ManualSocialSession Session { get; }
     internal IManualAssetPreviewAccess PreviewAccess { get; }
+    internal IReadOnlyList<string> ExpectedAvailablePaths =>
+        Session.Platforms[0].Assets
+            .Where(ManualPublishingCompanionModel.IsAvailable)
+            .Select(asset => asset.Path)
+            .ToArray();
 
     internal static ManualVisualProofFixture Create(string repositoryRoot)
     {
@@ -190,6 +195,37 @@ internal sealed class ManualVisualProofFixture : IDisposable
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
             throw new InvalidOperationException("The manual visual proof must not use the network.");
+    }
+}
+
+internal sealed class FixtureDragAvailability(ManualSocialSession session) : IManualAssetAvailability
+{
+    public Task<ManualDragPreparation> PrepareAsync(
+        IReadOnlyList<ManualDragAsset> selected,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(selected);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (selected.Count == 0)
+            return Task.FromResult(ManualDragPreparation.Fail("no_assets_selected"));
+
+        IReadOnlyList<ManualPreparedAsset> fixtureAssets = session.Platforms[0].Assets;
+        var paths = new List<string>(selected.Count);
+        foreach (ManualDragAsset item in selected)
+        {
+            if (item.Ordinal < 0 || item.Ordinal >= fixtureAssets.Count)
+                return Task.FromResult(ManualDragPreparation.Fail("validation_failed"));
+            ManualPreparedAsset expected = fixtureAssets[item.Ordinal];
+            if (expected.Asset.AssetId != item.Prepared.Asset.AssetId ||
+                !string.Equals(expected.Path, item.Prepared.Path, StringComparison.OrdinalIgnoreCase) ||
+                !ManualPublishingCompanionModel.IsAvailable(expected) ||
+                !Path.IsPathFullyQualified(expected.Path) ||
+                !File.Exists(expected.Path))
+                return Task.FromResult(ManualDragPreparation.Fail(
+                    "validation_failed", item.Prepared.Asset.Filename));
+            paths.Add(expected.Path);
+        }
+        return Task.FromResult(ManualDragPreparation.Ready(paths));
     }
 }
 

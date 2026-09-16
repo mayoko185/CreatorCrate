@@ -5,6 +5,10 @@ using OpenLocally.ManualVisualProof;
 
 if (args.Contains("--interactive-uia-proof", StringComparer.Ordinal))
     return InteractiveUiaProof.Run();
+if (args.Contains("--drag-proof", StringComparer.Ordinal))
+    return DragProof.Run(
+        FindRepositoryRoot(),
+        args.Contains("--auto-close", StringComparer.Ordinal));
 
 const string TitleFixture = "\nPatreon title\r\ncafé 日本語 😀 ❤️ ✅ e\u0301 👩🏽‍💻\r\n\r\n";
 const string Fixture = "line1\n\nline2\nCRLF\r\nlone CR\rUnicode café 日本語 😀 ❤️ ✅ e\u0301 👩🏽‍💻\n\r\n\r";

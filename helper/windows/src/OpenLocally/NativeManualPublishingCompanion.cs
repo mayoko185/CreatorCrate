@@ -67,6 +67,10 @@ internal readonly record struct NativeListViewRowDrawProbe(
     bool KeyboardFocused, bool UsesCustomSelection, int Background, int Text,
     NativeLayoutRect Accent, IntPtr Result);
 
+internal readonly record struct NativeListViewBeginDragProbe(
+    int OriginItemIndex, IReadOnlyList<int> SelectedItemIndices,
+    IReadOnlyList<int> SelectedOrdinals);
+
 internal sealed record NativeProductionTextSurfaceProbe(
     string Platform, string TitleText, string BodyText,
     string TitleAccessibleName, string BodyAccessibleName,
@@ -716,6 +720,7 @@ internal sealed class NativeManualPublishingCompanion :
         private Action<uint, IntPtr>? _headerDrawObserver;
         private Action<NativeHeaderPostpaintProbe>? _headerPostpaintObserver;
         private Action<NativeListViewRowDrawProbe>? _listViewDrawObserver;
+        private Action<NativeListViewBeginDragProbe>? _listViewBeginDragObserver;
         private Action<NativePlatformPopupDiscoveryObservation>? _platformPopupDiscoveryObserver;
 
         public NativeWindow(
@@ -1177,6 +1182,13 @@ internal sealed class NativeManualPublishingCompanion :
         internal IntPtr HandleNotifyForTesting(IntPtr pointer) => HandleNotify(pointer);
         internal IntPtr AssetHeaderHandleForTesting => ResolveAssetHeader();
         internal IntPtr AssetListHandleForTesting => _state.AssetList;
+
+        internal void ObserveNextListViewBeginDragForTesting(Action<NativeListViewBeginDragProbe> observer) =>
+            RunOnUiThreadForTesting(() =>
+            {
+                _listViewBeginDragObserver = observer ?? throw new ArgumentNullException(nameof(observer));
+                return true;
+            });
 
         internal IReadOnlyList<NativeHeaderDrawStageProbe> PaintHeaderForTesting(NativeCompanionPalette palette) =>
             RunOnUiThreadForTesting(() =>
@@ -1761,14 +1773,22 @@ internal sealed class NativeManualPublishingCompanion :
         internal static IReadOnlyList<int> SelectedOrdinals(IntPtr listView)
         {
             var selected = new List<int>();
+            foreach (int itemIndex in SelectedItemIndices(listView))
+                if (ItemOrdinal(listView, itemIndex) is int ordinal) selected.Add(ordinal);
+            selected.Sort();
+            return selected;
+        }
+
+        internal static IReadOnlyList<int> SelectedItemIndices(IntPtr listView)
+        {
+            var selected = new List<int>();
             int itemIndex = -1;
             while (true)
             {
                 itemIndex = checked((int)SendMessage(listView, LVM_GETNEXTITEM, new IntPtr(itemIndex), new IntPtr(LvniSelected)).ToInt64());
                 if (itemIndex < 0) break;
-                if (ItemOrdinal(listView, itemIndex) is int ordinal) selected.Add(ordinal);
+                selected.Add(itemIndex);
             }
-            selected.Sort();
             return selected;
         }
 
@@ -1940,6 +1960,7 @@ internal sealed class NativeManualPublishingCompanion :
 
         private void BeginClose()
         {
+            _listViewBeginDragObserver = null;
             Interlocked.Exchange(ref _confirmationClosing, 1);
             Interlocked.Exchange(ref _previewClosing, 1);
             Interlocked.Increment(ref _previewGeneration);
@@ -2428,6 +2449,11 @@ internal sealed class NativeManualPublishingCompanion :
             if (header.code == LvnBeginDrag)
             {
                 NotifyListView drag = Marshal.PtrToStructure<NotifyListView>(pointer);
+                Action<NativeListViewBeginDragProbe>? observer = _listViewBeginDragObserver;
+                _listViewBeginDragObserver = null;
+                observer?.Invoke(new NativeListViewBeginDragProbe(
+                    drag.iItem, SelectedItemIndices(_state.AssetList),
+                    SelectedOrdinals(_state.AssetList)));
                 BeginListViewDrag(drag.iItem);
                 return IntPtr.Zero;
             }
@@ -3011,7 +3037,13 @@ internal sealed class NativeManualPublishingCompanion :
                 if (state is not null && ProcessLifecycleMessage(
                     message, state.Lifecycle,
                     () => window != IntPtr.Zero && IsWindow(window),
-                    () => { state.Owner.BeginClose(); state.Owner.DisposeWinUiTextSurfaces(); DestroyWindow(window); },
+                    () =>
+                    {
+                        state.Owner.BeginClose();
+                        state.Owner._winUiProofOptions?.WindowClosing?.Invoke();
+                        state.Owner.DisposeWinUiTextSurfaces();
+                        DestroyWindow(window);
+                    },
                     () => { state.Owner.BeginClose(); PostQuitMessage(0); })) return IntPtr.Zero;
                 if (message == WM_PAINT) { state?.Owner.PaintWindow(); return IntPtr.Zero; }
                 if (message == WM_ERASEBKGND) return new IntPtr(1);

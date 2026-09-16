@@ -36,6 +36,8 @@
   <ItemGroup>
     <Compile Include="..\OpenLocally.WinUiHost.Proof\ManualVisualProofFixture.cs"
              Link="ManualVisualProofFixture.cs" />
+    <Compile Include="..\OpenLocally.WinUiHost.Proof\LocalOleDropTarget.cs"
+             Link="LocalOleDropTarget.cs" />
   </ItemGroup>
 
 </Project>
