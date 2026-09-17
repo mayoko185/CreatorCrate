@@ -90,19 +90,29 @@ internal static class DragProof
                         IsWindow(companionHandle) && IsWindow(targetHandle);
                     bool registered = receiver?.Registered == true;
                     bool selectedState = selected.SequenceEqual([0, 1, 2]);
-                    LocalDropTargetWindowProbe probe = receiver?.CaptureProbe() ??
+                    LocalDropTargetWindowProbe probe = receiver?.WaitForHitTestable(
+                        companionHandle,
+                        TimeSpan.FromSeconds(2),
+                        TimeSpan.FromMilliseconds(25)) ??
                         throw new InvalidOperationException("The local drop target was not available.");
-                    bool targetState = probe.Visible && probe.Enabled &&
-                        probe.VisibleWindow == probe.RegisteredWindow &&
-                        probe.RegisterDragDropResult == 0 &&
-                        probe.WindowAtClientPoint == probe.VisibleWindow &&
-                        probe.ClientHitTest == 1 && probe.Registered;
+                    bool targetState = probe.HitTestable;
                     Console.WriteLine(
-                        $"drop-target-probe=visible:{probe.Visible}; enabled:{probe.Enabled}; " +
+                        $"drop-target-probe=attempts:{probe.Attempts}; verification-positioned:{probe.VerificationPositioned}; " +
+                        $"verification-position-error:{probe.VerificationPositionError}; visible:{probe.Visible}; enabled:{probe.Enabled}; " +
                         $"visible-hwnd:0x{probe.VisibleWindow.ToInt64():X}; registered-hwnd:0x{probe.RegisteredWindow.ToInt64():X}; " +
-                        $"register-hr:0x{probe.RegisterDragDropResult:X8}; window-from-point:0x{probe.WindowAtClientPoint.ToInt64():X}; " +
-                        $"nchittest:{probe.ClientHitTest}; parent:0x{probe.Parent.ToInt64():X}; owner:0x{probe.Owner.ToInt64():X}; " +
-                        $"style:0x{probe.Style:X}; ex-style:0x{probe.ExtendedStyle:X}; region-type:{probe.WindowRegionType}");
+                        $"registered:{probe.Registered}; register-hr:0x{probe.RegisterDragDropResult:X8}; " +
+                        $"window-rect-ok:{probe.WindowRectAvailable}; window-rect:{probe.WindowRect}; window-rect-nonempty:{probe.WindowRectNonEmpty}; " +
+                        $"client-rect-ok:{probe.ClientRectAvailable}; client-rect:{probe.ClientRect}; client-rect-nonempty:{probe.ClientRectNonEmpty}; " +
+                        $"client-center:({probe.ClientCenter.X},{probe.ClientCenter.Y}); client-center-inside:{probe.ClientCenterInside}; " +
+                        $"client-to-screen:{probe.ClientToScreenSucceeded}; client-to-screen-error:{probe.ClientToScreenError}; " +
+                        $"screen-center:({probe.ScreenCenter.X},{probe.ScreenCenter.Y}); " +
+                        $"window-from-point:0x{probe.WindowAtClientPoint.ToInt64():X}; window-from-point-equals-target:{probe.WindowFromPointMatches}; " +
+                        $"nchittest:{probe.ClientHitTest}; nchittest-is-htclient:{probe.ClientHitTestMatches}; " +
+                        $"companion-hwnd:0x{probe.CompanionWindow.ToInt64():X}; companion-rect-ok:{probe.CompanionWindowRectAvailable}; " +
+                        $"companion-rect:{probe.CompanionWindowRect}; parent:0x{probe.Parent.ToInt64():X}; owner:0x{probe.Owner.ToInt64():X}; " +
+                        $"foreground:0x{probe.ForegroundWindow.ToInt64():X}; window-above:0x{probe.WindowAbove.ToInt64():X}; " +
+                        $"style:0x{probe.Style:X}; ex-style:0x{probe.ExtendedStyle:X}; region-type:{probe.WindowRegionType}; " +
+                        $"failed-conjuncts:{probe.FailedConjuncts()}");
                     Console.WriteLine(
                         $"drag-proof-smoke={(windowsExist && registered && selectedState && targetState ? "passed" : "failed")}; " +
                         $"companion-window={IsWindow(companionHandle)}; target-window={IsWindow(targetHandle)}; " +

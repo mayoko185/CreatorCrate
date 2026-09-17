@@ -463,9 +463,17 @@ Assert-Condition ((Get-InnoSetting $setup 'UninstallDisplayIcon') -ieq '{app}\{#
     'Installed Apps icon uses the installed OpenLocally.exe' `
     'Expected UninstallDisplayIcon={app}\{#MyAppExeName}.'
 
-Assert-Condition ((Get-InnoDefine $iss 'MyAppVersion') -eq '1.1.0') `
-    'Installer version remains 1.1.0' `
-    'D2A must not bump the installer version.'
+Assert-Condition ((Get-InnoDefine $iss 'MyAppVersion') -eq '1.2.0') `
+    'Installer version is 1.2.0' `
+    'D3 requires the 1.2.0 installer version.'
+$appVersion = Get-InnoSetting $setup 'AppVersion'
+$versionInfoVersion = Get-InnoSetting $setup 'VersionInfoVersion'
+Assert-Condition ($appVersion -eq '{#MyAppVersion}') `
+    'AppVersion derives from canonical MyAppVersion' `
+    'Expected AppVersion={#MyAppVersion}; the display version must not duplicate the release version.'
+Assert-Condition ($versionInfoVersion -eq '{#MyAppVersion}') `
+    'Setup FileVersion derives from canonical MyAppVersion' `
+    'Expected VersionInfoVersion={#MyAppVersion}; the PE file version must exist and must not duplicate or diverge from the canonical release version.'
 Assert-Condition ((Get-InnoDefine $iss 'MyAppId') -eq '{{8F1D5C4E-6A2B-4E9D-9C3F-7B0A2E5D1C84}') `
     'Stable installer AppId is preserved' `
     'The established AppId must not change.'

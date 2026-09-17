@@ -54,6 +54,22 @@ public sealed class LocalOleDropTargetTests
     }
 
     [Fact]
+    public void ProbeDiagnostics_DistinguishWindowFromPointFromNcHitTestFailure()
+    {
+        LocalDropTargetWindowProbe windowFromPointFailure = Probe(
+            windowAtClientPoint: new IntPtr(456),
+            clientHitTest: LocalDropTargetWindowProbe.HtClient);
+        LocalDropTargetWindowProbe hitTestFailure = Probe(
+            windowAtClientPoint: new IntPtr(123),
+            clientHitTest: -1);
+
+        Assert.Contains("window-from-point-equals-target(actual=0x1C8)", windowFromPointFailure.FailedConjuncts());
+        Assert.DoesNotContain("wm-nchittest-htclient", windowFromPointFailure.FailedConjuncts());
+        Assert.Contains("wm-nchittest-htclient(actual=-1)", hitTestFailure.FailedConjuncts());
+        Assert.DoesNotContain("window-from-point-equals-target", hitTestFailure.FailedConjuncts());
+    }
+
+    [Fact]
     public void MissingCfHDrop_IsRejectedWithNoEffect()
     {
         var target = new LocalOleDropTarget();
@@ -168,6 +184,40 @@ public sealed class LocalOleDropTargetTests
         var target = new LocalOleDropTarget();
         return (new LocalDropRegistration(new IntPtr(123), target, native), new WeakReference(target));
     }
+
+    private static LocalDropTargetWindowProbe Probe(IntPtr windowAtClientPoint, int clientHitTest) => new(
+        VisibleWindow: new IntPtr(123),
+        RegisteredWindow: new IntPtr(123),
+        RegisterDragDropResult: 0,
+        Visible: true,
+        Enabled: true,
+        WindowRectAvailable: true,
+        WindowRect: new NativeRectangle(10, 10, 110, 110),
+        WindowRectNonEmpty: true,
+        ClientRectAvailable: true,
+        ClientRect: new NativeRectangle(0, 0, 80, 80),
+        ClientRectNonEmpty: true,
+        ClientCenter: new NativePoint(40, 40),
+        ClientCenterInside: true,
+        ClientToScreenSucceeded: true,
+        ClientToScreenError: 0,
+        ScreenCenter: new NativePoint(50, 50),
+        WindowAtClientPoint: windowAtClientPoint,
+        ClientHitTest: clientHitTest,
+        CompanionWindow: new IntPtr(999),
+        CompanionWindowRectAvailable: true,
+        CompanionWindowRect: new NativeRectangle(0, 0, 500, 500),
+        Parent: IntPtr.Zero,
+        Owner: new IntPtr(999),
+        ForegroundWindow: new IntPtr(999),
+        WindowAbove: IntPtr.Zero,
+        Style: 0,
+        ExtendedStyle: 0,
+        WindowRegionType: 0,
+        Registered: true,
+        VerificationPositioned: true,
+        VerificationPositionError: 0,
+        Attempts: 1);
 
     private static LocalDropResult Drop(IReadOnlyList<string> paths, RecordingMediumReleaser release)
     {

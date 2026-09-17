@@ -261,14 +261,84 @@ internal sealed record LocalDropTargetWindowProbe(
     int RegisterDragDropResult,
     bool Visible,
     bool Enabled,
+    bool WindowRectAvailable,
+    NativeRectangle WindowRect,
+    bool WindowRectNonEmpty,
+    bool ClientRectAvailable,
+    NativeRectangle ClientRect,
+    bool ClientRectNonEmpty,
+    NativePoint ClientCenter,
+    bool ClientCenterInside,
+    bool ClientToScreenSucceeded,
+    int ClientToScreenError,
+    NativePoint ScreenCenter,
     IntPtr WindowAtClientPoint,
     int ClientHitTest,
+    IntPtr CompanionWindow,
+    bool CompanionWindowRectAvailable,
+    NativeRectangle CompanionWindowRect,
     IntPtr Parent,
     IntPtr Owner,
+    IntPtr ForegroundWindow,
+    IntPtr WindowAbove,
     nint Style,
     nint ExtendedStyle,
     int WindowRegionType,
-    bool Registered);
+    bool Registered,
+    bool VerificationPositioned,
+    int VerificationPositionError,
+    int Attempts)
+{
+    internal const int HtClient = 1;
+    internal const int HitTestUnavailable = int.MinValue;
+
+    internal bool WindowFromPointMatches =>
+        ClientToScreenSucceeded && WindowAtClientPoint == VisibleWindow;
+    internal bool ClientHitTestMatches => ClientHitTest == HtClient;
+    internal bool HitTestable =>
+        VerificationPositioned && Visible && Enabled &&
+        VisibleWindow != IntPtr.Zero && VisibleWindow == RegisteredWindow &&
+        RegisterDragDropResult == 0 && Registered &&
+        WindowRectAvailable && WindowRectNonEmpty &&
+        ClientRectAvailable && ClientRectNonEmpty && ClientCenterInside &&
+        ClientToScreenSucceeded && WindowFromPointMatches && ClientHitTestMatches;
+
+    internal string FailedConjuncts()
+    {
+        var failures = new List<string>();
+        if (!VerificationPositioned) failures.Add($"verification-positioned(error={VerificationPositionError})");
+        if (!Visible) failures.Add("target-visible");
+        if (!Enabled) failures.Add("target-enabled");
+        if (VisibleWindow == IntPtr.Zero) failures.Add("target-hwnd-nonzero");
+        if (VisibleWindow != RegisteredWindow) failures.Add("registered-hwnd-equals-target");
+        if (RegisterDragDropResult != 0) failures.Add($"register-drag-drop-hr=0x{RegisterDragDropResult:X8}");
+        if (!Registered) failures.Add("target-registered");
+        if (!WindowRectAvailable) failures.Add("get-window-rect");
+        else if (!WindowRectNonEmpty) failures.Add("window-rect-nonempty");
+        if (!ClientRectAvailable) failures.Add("get-client-rect");
+        else
+        {
+            if (!ClientRectNonEmpty) failures.Add("client-rect-nonempty");
+            if (!ClientCenterInside) failures.Add("client-center-inside");
+        }
+        if (!ClientToScreenSucceeded) failures.Add($"client-to-screen(error={ClientToScreenError})");
+        if (ClientToScreenSucceeded && !WindowFromPointMatches)
+            failures.Add($"window-from-point-equals-target(actual=0x{WindowAtClientPoint.ToInt64():X})");
+        if (!ClientHitTestMatches)
+            failures.Add(ClientHitTest == HitTestUnavailable
+                ? "wm-nchittest-unavailable"
+                : $"wm-nchittest-htclient(actual={ClientHitTest})");
+        return failures.Count == 0 ? "none" : string.Join(',', failures);
+    }
+}
+
+internal readonly record struct NativeRectangle(int Left, int Top, int Right, int Bottom)
+{
+    internal int Width => Right - Left;
+    internal int Height => Bottom - Top;
+    internal bool NonEmpty => Width > 0 && Height > 0;
+    public override string ToString() => $"({Left},{Top})-({Right},{Bottom})[{Width}x{Height}]";
+}
 
 internal sealed class LocalDropTargetWindow : IDisposable
 {
@@ -282,6 +352,11 @@ internal sealed class LocalDropTargetWindow : IDisposable
     private const int GwlpStyle = -16;
     private const int GwlpExtendedStyle = -20;
     private const uint GwOwner = 4;
+    private const uint GwHwndPrev = 3;
+    private const uint SwpNoActivate = 0x0010;
+    private const uint SwpShowWindow = 0x0040;
+    private const uint MonitorDefaultToNearest = 2;
+    private static readonly IntPtr HwndTop = IntPtr.Zero;
     private readonly LocalDropRegistration _registration;
     private bool _disposed;
 
@@ -338,16 +413,56 @@ internal sealed class LocalDropTargetWindow : IDisposable
         if (!_disposed && IsWindow(Handle)) SetWindowText(Handle, text);
     }
 
-    internal LocalDropTargetWindowProbe CaptureProbe()
+    internal LocalDropTargetWindowProbe WaitForHitTestable(
+        IntPtr companionWindow,
+        TimeSpan timeout,
+        TimeSpan retryInterval)
     {
-        if (!GetClientRect(Handle, out NativeRect client))
-            throw new Win32Exception(Marshal.GetLastWin32Error());
-        var point = new NativePoint(
-            client.Left + (client.Right - client.Left) / 2,
-            client.Top + (client.Bottom - client.Top) / 2);
-        if (!ClientToScreen(Handle, ref point))
-            throw new Win32Exception(Marshal.GetLastWin32Error());
-        IntPtr coordinate = new(unchecked((point.Y << 16) | (point.X & 0xffff)));
+        DateTime deadline = DateTime.UtcNow + timeout;
+        LocalDropTargetWindowProbe? last = null;
+        int attempts = 0;
+        do
+        {
+            attempts++;
+            (bool positioned, int positionError) = PositionForVerification(companionWindow);
+            last = CaptureProbe(companionWindow, positioned, positionError, attempts);
+            if (last.HitTestable) return last;
+            if (DateTime.UtcNow >= deadline) return last;
+            Thread.Sleep(retryInterval);
+        } while (true);
+    }
+
+    internal LocalDropTargetWindowProbe CaptureProbe(
+        IntPtr companionWindow = default,
+        bool verificationPositioned = true,
+        int verificationPositionError = 0,
+        int attempts = 1)
+    {
+        bool windowRectAvailable = GetWindowRect(Handle, out NativeRect windowRectNative);
+        NativeRectangle windowRect = Rectangle(windowRectNative);
+        bool clientRectAvailable = GetClientRect(Handle, out NativeRect clientRectNative);
+        NativeRectangle clientRect = Rectangle(clientRectNative);
+        var clientCenter = clientRectAvailable
+            ? new NativePoint(clientRect.Left + clientRect.Width / 2, clientRect.Top + clientRect.Height / 2)
+            : default;
+        bool clientCenterInside = clientRectAvailable && clientRect.NonEmpty &&
+            clientCenter.X >= clientRect.Left && clientCenter.X < clientRect.Right &&
+            clientCenter.Y >= clientRect.Top && clientCenter.Y < clientRect.Bottom;
+        var screenCenter = clientCenter;
+        Marshal.SetLastPInvokeError(0);
+        bool clientToScreenSucceeded = clientCenterInside && ClientToScreen(Handle, ref screenCenter);
+        int clientToScreenError = clientToScreenSucceeded ? 0 : Marshal.GetLastPInvokeError();
+        IntPtr windowAtPoint = clientToScreenSucceeded ? WindowFromPoint(screenCenter) : IntPtr.Zero;
+        int clientHitTest = LocalDropTargetWindowProbe.HitTestUnavailable;
+        if (clientToScreenSucceeded)
+        {
+            IntPtr coordinate = new(unchecked((screenCenter.Y << 16) | (screenCenter.X & 0xffff)));
+            clientHitTest = unchecked((int)SendMessage(Handle, WmNcHitTest, IntPtr.Zero, coordinate).ToInt64());
+        }
+        NativeRect companionRectNative = default;
+        bool companionRectAvailable = companionWindow != IntPtr.Zero &&
+            GetWindowRect(companionWindow, out companionRectNative);
+        NativeRectangle companionRect = Rectangle(companionRectNative);
         IntPtr region = CreateRectRgn(0, 0, 0, 0);
         if (region == IntPtr.Zero) throw new Win32Exception(Marshal.GetLastWin32Error());
         int regionType;
@@ -359,15 +474,80 @@ internal sealed class LocalDropTargetWindow : IDisposable
             _registration.RegistrationResult,
             IsWindowVisible(Handle),
             IsWindowEnabled(Handle),
-            WindowFromPoint(point),
-            unchecked((int)SendMessage(Handle, WmNcHitTest, IntPtr.Zero, coordinate).ToInt64()),
+            windowRectAvailable,
+            windowRect,
+            windowRectAvailable && windowRect.NonEmpty,
+            clientRectAvailable,
+            clientRect,
+            clientRectAvailable && clientRect.NonEmpty,
+            clientCenter,
+            clientCenterInside,
+            clientToScreenSucceeded,
+            clientToScreenError,
+            screenCenter,
+            windowAtPoint,
+            clientHitTest,
+            companionWindow,
+            companionRectAvailable,
+            companionRect,
             GetParent(Handle),
             GetWindow(Handle, GwOwner),
+            GetForegroundWindow(),
+            GetWindow(Handle, GwHwndPrev),
             GetWindowLongPtr(Handle, GwlpStyle),
             GetWindowLongPtr(Handle, GwlpExtendedStyle),
             regionType,
-            Registered);
+            Registered,
+            verificationPositioned,
+            verificationPositionError,
+            attempts);
     }
+
+    private (bool Positioned, int Error) PositionForVerification(IntPtr companionWindow)
+    {
+        if (!GetWindowRect(Handle, out NativeRect target) || !GetWindowRect(companionWindow, out NativeRect companion))
+            return (false, Marshal.GetLastPInvokeError());
+        IntPtr monitor = MonitorFromWindow(companionWindow, MonitorDefaultToNearest);
+        var monitorInfo = new MonitorInfo { Size = (uint)Marshal.SizeOf<MonitorInfo>() };
+        if (monitor == IntPtr.Zero || !GetMonitorInfo(monitor, ref monitorInfo))
+            return (false, Marshal.GetLastPInvokeError());
+
+        NativeRect work = monitorInfo.Work;
+        int width = target.Right - target.Left;
+        int height = target.Bottom - target.Top;
+        if (width <= 0 || height <= 0 || work.Right <= work.Left || work.Bottom <= work.Top)
+            return (false, 0);
+        (int x, int y) = VerificationPosition(companion, work, width, height);
+        Marshal.SetLastPInvokeError(0);
+        bool positioned = SetWindowPos(
+            Handle, HwndTop, x, y, width, height, SwpNoActivate | SwpShowWindow);
+        int error = positioned ? 0 : Marshal.GetLastPInvokeError();
+        if (positioned) UpdateWindow(Handle);
+        return (positioned, error);
+    }
+
+    private static (int X, int Y) VerificationPosition(
+        NativeRect companion,
+        NativeRect work,
+        int width,
+        int height)
+    {
+        const int gap = 16;
+        int yBeside = Math.Clamp(companion.Top, work.Top, Math.Max(work.Top, work.Bottom - height));
+        if (companion.Right + gap + width <= work.Right) return (companion.Right + gap, yBeside);
+        if (companion.Left - gap - width >= work.Left) return (companion.Left - gap - width, yBeside);
+
+        int xAboveOrBelow = Math.Clamp(companion.Left, work.Left, Math.Max(work.Left, work.Right - width));
+        if (companion.Bottom + gap + height <= work.Bottom) return (xAboveOrBelow, companion.Bottom + gap);
+        if (companion.Top - gap - height >= work.Top) return (xAboveOrBelow, companion.Top - gap - height);
+
+        return (
+            Math.Clamp(companion.Left + gap, work.Left, Math.Max(work.Left, work.Right - width)),
+            Math.Clamp(companion.Top + gap, work.Top, Math.Max(work.Top, work.Bottom - height)));
+    }
+
+    private static NativeRectangle Rectangle(NativeRect rectangle) =>
+        new(rectangle.Left, rectangle.Top, rectangle.Right, rectangle.Bottom);
 
     private void OnResultReceived(LocalDropResult result) => SetDisplay(result.DropReceived
         ? $"CreatorCrate local OLE drop proof\r\n\r\nReceived {result.Count} file{(result.Count == 1 ? string.Empty : "s")}.\r\n\r\nChecking release order in console…"
@@ -407,7 +587,7 @@ internal sealed class LocalDropTargetWindow : IDisposable
     [DllImport("user32.dll")]
     private static extern bool IsWindow(IntPtr window);
 
-    [DllImport("user32.dll")]
+    [DllImport("user32.dll", SetLastError = true)]
     private static extern bool GetWindowRect(IntPtr window, out NativeRect rectangle);
 
     [DllImport("user32.dll")]
@@ -458,6 +638,15 @@ internal sealed class LocalDropTargetWindow : IDisposable
         public int Left, Top, Right, Bottom;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MonitorInfo
+    {
+        public uint Size;
+        public NativeRect Monitor;
+        public NativeRect Work;
+        public uint Flags;
+    }
+
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool GetClientRect(IntPtr window, out NativeRect rectangle);
 
@@ -466,6 +655,16 @@ internal sealed class LocalDropTargetWindow : IDisposable
 
     [DllImport("user32.dll")]
     private static extern IntPtr WindowFromPoint(NativePoint point);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool SetWindowPos(
+        IntPtr window, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromWindow(IntPtr window, uint flags);
+
+    [DllImport("user32.dll", EntryPoint = "GetMonitorInfoW", SetLastError = true)]
+    private static extern bool GetMonitorInfo(IntPtr monitor, ref MonitorInfo information);
 
     [DllImport("user32.dll", EntryPoint = "SendMessageW")]
     private static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
@@ -481,6 +680,9 @@ internal sealed class LocalDropTargetWindow : IDisposable
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetWindow(IntPtr window, uint command);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
 
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
     private static extern nint GetWindowLongPtr(IntPtr window, int index);

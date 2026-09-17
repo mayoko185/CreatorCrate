@@ -186,10 +186,10 @@ public sealed class ManualVisualProofFixtureTests
     }
 
     [Theory]
-    [InlineData("-PostingState", "Bogus", "PostingState")]
-    [InlineData("-Theme", "Bogus", "Theme")]
+    [InlineData("-PostingState", "Bogus", "PostingState", "Ready|Confirming|Unknown|Posted")]
+    [InlineData("-Theme", "Bogus", "Theme", "Dark|Light")]
     public void InvalidLauncherValue_PowerShellValidationRejectsBeforeProofLaunch(
-        string parameter, string invalidValue, string diagnosticName)
+        string parameter, string invalidValue, string diagnosticName, string allowedValues)
     {
         ProcessStartInfo start = PowerShellLauncherStartInfo(parameter, invalidValue);
         ProcessRunResult result = RunProcess(start, TimeSpan.FromSeconds(20));
@@ -198,10 +198,71 @@ public sealed class ManualVisualProofFixtureTests
         Assert.NotEqual(0, result.ExitCode);
         Assert.Contains(diagnosticName, diagnostic, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(invalidValue, diagnostic, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("does not belong to the set", diagnostic, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ParameterArgumentValidationError", diagnostic, StringComparison.OrdinalIgnoreCase);
+        foreach (string allowedValue in allowedValues.Split('|'))
+        {
+            Assert.Contains(allowedValue, diagnostic, StringComparison.OrdinalIgnoreCase);
+        }
+
         Assert.False(result.ObservedProofProcess);
         Assert.False(result.ObservedProofWindow);
         AssertRejectedLaunchLeftNoSideEffects(result);
+    }
+
+    [Theory]
+    [InlineData("PostingState", "Ready|Confirming|Unknown|Posted")]
+    [InlineData("Theme", "Dark|Light")]
+    public void LauncherValidateSetMetadata_MatchesExactExpectedSet(
+        string parameterName, string expectedValues)
+    {
+        string[] actualValues = ReadValidateSetValues(LauncherScript(), parameterName);
+
+        AssertValidateSetEquals(expectedValues.Split('|'), actualValues);
+    }
+
+    [Fact]
+    public void LauncherValidateSetMetadata_RejectsUnexpectedExtraValue()
+    {
+        string temporaryLauncher = CreateTemporaryLauncher(
+            "[ValidateSet('Dark', 'Light')]",
+            "[ValidateSet('Dark', 'Light', 'Sepia')]");
+        try
+        {
+            string[] actualValues = ReadValidateSetValues(temporaryLauncher, "Theme");
+
+            Xunit.Sdk.XunitException exception = Assert.ThrowsAny<Xunit.Sdk.XunitException>(
+                () => AssertValidateSetEquals(["Dark", "Light"], actualValues));
+            Assert.Contains("Expected: {Dark, Light}", exception.Message, StringComparison.Ordinal);
+            Assert.Contains("Actual: {Dark, Light, Sepia}", exception.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(temporaryLauncher)!, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void LauncherValidateSetMetadata_AllowsDeclarationOrderChanges()
+    {
+        string temporaryLauncher = CreateTemporaryLauncher(
+            "[ValidateSet('Dark', 'Light')]",
+            "[ValidateSet('Light', 'Dark')]");
+        try
+        {
+            string[] actualValues = ReadValidateSetValues(temporaryLauncher, "Theme");
+
+            AssertValidateSetEquals(["Dark", "Light"], actualValues);
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(temporaryLauncher)!, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ValidateSetComparison_IsCaseInsensitive()
+    {
+        AssertValidateSetEquals(["Dark", "Light"], ["DARK", "light"]);
     }
 
     [Fact]
@@ -297,6 +358,83 @@ public sealed class ManualVisualProofFixtureTests
             "OpenLocally.WinUiHost.Proof", "run-manual-visual-proof.ps1"));
         foreach (string argument in arguments) start.ArgumentList.Add(argument);
         return start;
+    }
+
+    private static string LauncherScript() => Path.Combine(
+        RepositoryRoot(), "helper", "windows", "tests", "OpenLocally.WinUiHost.Proof",
+        "run-manual-visual-proof.ps1");
+
+    private static string[] ReadValidateSetValues(string launcherScript, string parameterName)
+    {
+        const string inspectMetadata =
+            "$ErrorActionPreference = 'Stop'; " +
+            "$command = Get-Command -Name $env:CREATORCRATE_METADATA_SCRIPT -CommandType ExternalScript; " +
+            "$attribute = @($command.Parameters[$env:CREATORCRATE_METADATA_PARAMETER].Attributes | " +
+            "Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] }); " +
+            "if ($attribute.Count -ne 1) { throw \"Expected exactly one ValidateSetAttribute; found $($attribute.Count).\" }; " +
+            "$attribute[0].ValidValues | ForEach-Object { [Console]::Out.WriteLine($_) }";
+        var start = new ProcessStartInfo("powershell.exe")
+        {
+            WorkingDirectory = RepositoryRoot(),
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        start.ArgumentList.Add("-NoProfile");
+        start.ArgumentList.Add("-NonInteractive");
+        start.ArgumentList.Add("-ExecutionPolicy");
+        start.ArgumentList.Add("Bypass");
+        start.ArgumentList.Add("-Command");
+        start.ArgumentList.Add(inspectMetadata);
+        start.Environment["CREATORCRATE_METADATA_SCRIPT"] = launcherScript;
+        start.Environment["CREATORCRATE_METADATA_PARAMETER"] = parameterName;
+
+        using var process = new Process { StartInfo = start };
+        Assert.True(process.Start());
+        string output = process.StandardOutput.ReadToEnd();
+        string error = process.StandardError.ReadToEnd();
+        Assert.True(process.WaitForExit(20_000), "PowerShell metadata inspection timed out.");
+        Assert.True(process.ExitCode == 0,
+            $"PowerShell metadata inspection failed with exit {process.ExitCode}:{Environment.NewLine}{error}");
+        return output.Split(["\r\n", "\n"], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    }
+
+    private static void AssertValidateSetEquals(IEnumerable<string> expectedValues, IEnumerable<string> actualValues)
+    {
+        string[] expected = expectedValues.ToArray();
+        string[] actual = actualValues.ToArray();
+        var comparer = StringComparer.OrdinalIgnoreCase;
+        string expectedDisplay = FormatSet(expected);
+        string actualDisplay = FormatSet(actual);
+        string[] expectedDuplicates = expected.GroupBy(value => value, comparer)
+            .Where(group => group.Count() > 1).Select(group => group.Key).ToArray();
+        string[] actualDuplicates = actual.GroupBy(value => value, comparer)
+            .Where(group => group.Count() > 1).Select(group => group.Key).ToArray();
+
+        Assert.True(expectedDuplicates.Length == 0,
+            $"Expected set contains duplicate values: {string.Join(", ", expectedDuplicates)}. " +
+            $"Expected: {expectedDisplay}; Actual: {actualDisplay}");
+        Assert.True(actualDuplicates.Length == 0,
+            $"Actual ValidateSet contains duplicate values: {string.Join(", ", actualDuplicates)}. " +
+            $"Expected: {expectedDisplay}; Actual: {actualDisplay}");
+        Assert.True(new HashSet<string>(expected, comparer).SetEquals(actual),
+            $"ValidateSet values differ. Expected: {expectedDisplay}; Actual: {actualDisplay}");
+    }
+
+    private static string FormatSet(IEnumerable<string> values) =>
+        "{" + string.Join(", ", values.OrderBy(value => value, StringComparer.OrdinalIgnoreCase)) + "}";
+
+    private static string CreateTemporaryLauncher(string oldText, string newText)
+    {
+        string source = File.ReadAllText(LauncherScript());
+        string mutated = source.Replace(oldText, newText, StringComparison.Ordinal);
+        Assert.NotEqual(source, mutated);
+        string temporaryDirectory = Path.Combine(Path.GetTempPath(), $"creatorcrate-validateset-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(temporaryDirectory);
+        string temporaryLauncher = Path.Combine(temporaryDirectory, "run-manual-visual-proof.ps1");
+        File.WriteAllText(temporaryLauncher, mutated);
+        return temporaryLauncher;
     }
 
     private static ProcessRunResult RunProcess(ProcessStartInfo start, TimeSpan timeout)
