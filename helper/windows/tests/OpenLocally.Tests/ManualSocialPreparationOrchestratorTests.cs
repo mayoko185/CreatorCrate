@@ -19,32 +19,92 @@ public class ManualSocialPreparationOrchestratorTests
             .ToArray();
 
         Assert.IsType<ProductionManualSocialPreparationRuntime>(runtime);
-        Assert.DoesNotContain(dependencyTypes, type =>
-            type.Contains("Chrome", StringComparison.Ordinal) ||
-            type.Contains("Cdp", StringComparison.Ordinal) ||
-            type.Contains("WebSocket", StringComparison.Ordinal) ||
-            type.Contains("Adapter", StringComparison.Ordinal) ||
-            type.Contains("Browser", StringComparison.Ordinal));
+        Assert.DoesNotContain(dependencyTypes, IsLegacyBrowserAutomationType);
         await runtime.DisposeAsync();
     }
 
     [Fact]
     public void ProductionAssembly_ContainsNoLegacyBrowserAutomationTypes()
     {
-        string[] forbiddenTypeFragments =
-        [
-            "Chrome", "Cdp", "BrowserPreparation", "WebSocketConnection",
-            "SocialPreparationAdapter", "SocialAdapterRegistry",
-            "ProductionSocialPreparationRuntime",
-        ];
         string[] productionTypes = typeof(CommandDispatcher).Assembly
             .GetTypes()
             .Select(type => type.FullName ?? type.Name)
             .ToArray();
+        string[] productionReferences = typeof(CommandDispatcher).Assembly
+            .GetReferencedAssemblies()
+            .Select(reference => reference.Name ?? string.Empty)
+            .ToArray();
 
-        foreach (string fragment in forbiddenTypeFragments)
-            Assert.DoesNotContain(productionTypes, type => type.Contains(fragment, StringComparison.Ordinal));
+        Assert.DoesNotContain(productionTypes, IsLegacyBrowserAutomationType);
+        Assert.DoesNotContain(productionReferences, IsBrowserAutomationAssembly);
     }
+
+    [Fact]
+    public void LegacyBrowserAutomationGuard_AllowsNativeWindowChromeIdentifiers()
+    {
+        Assert.False(IsLegacyBrowserAutomationType("OpenLocally.NativeCompanionChromeRole"));
+        Assert.False(IsLegacyBrowserAutomationType("OpenLocally.NativeHeaderChromeStyle"));
+    }
+
+    [Theory]
+    [InlineData("OpenLocally.CdpTransport")]
+    [InlineData("OpenLocally.ChromeConnectionWorkflow")]
+    [InlineData("OpenLocally.NativeChromeConnectionConsent")]
+    [InlineData("OpenLocally.IChromeDiscoveryFile")]
+    [InlineData("OpenLocally.ChromeDiscoveryFile")]
+    [InlineData("OpenLocally.ChromeEndpoint")]
+    [InlineData("OpenLocally.BrowserDomNode")]
+    [InlineData("OpenLocally.BrowserPreparationSession")]
+    [InlineData("OpenLocally.PatreonSocialPreparationAdapter")]
+    [InlineData("OpenLocally.WebSocketConnectionException")]
+    [InlineData("OpenLocally.WebSocketCloseOutcome")]
+    [InlineData("OpenLocally.SocialAdapterRegistry")]
+    [InlineData("OpenLocally.ProductionSocialPreparationRuntime")]
+    public void LegacyBrowserAutomationGuard_RejectsRepresentativeRemovedTypes(string typeName)
+    {
+        Assert.True(IsLegacyBrowserAutomationType(typeName));
+    }
+
+    private static readonly string[] LegacyBrowserAutomationTypeRoots =
+    [
+        "BlueskySocialPreparationAdapter",
+        "BrowserFileChooser",
+        "BrowserDomNode",
+        "BrowserNavigationResult",
+        "BrowserPreparation",
+        "BrowserTargetSelector",
+        "BrowserText",
+        "ChromeConnection",
+        "ChromeDiscovery",
+        "ChromeEndpoint",
+        "ChromeEnvironment",
+        "ClientWebSocketConnection",
+        "IChromeConnection",
+        "IChromeDiscovery",
+        "IChromeEnvironment",
+        "ISocialPreparationAdapter",
+        "IWebSocketConnection",
+        "NativeChromeConnection",
+        "PatreonSocialPreparationAdapter",
+        "ProductionSocialPreparationRuntime",
+        "SocialAdapterRegistry",
+        "WebSocketClose",
+        "WebSocketConnection",
+        "XSocialPreparationAdapter",
+    ];
+
+    private static bool IsLegacyBrowserAutomationType(string fullName)
+    {
+        string typeName = fullName[(fullName.LastIndexOf('.') + 1)..];
+        return typeName.StartsWith("Cdp", StringComparison.Ordinal) ||
+            LegacyBrowserAutomationTypeRoots.Any(root =>
+                typeName.StartsWith(root, StringComparison.Ordinal));
+    }
+
+    private static bool IsBrowserAutomationAssembly(string assemblyName) =>
+        assemblyName.Equals("Microsoft.Playwright", StringComparison.Ordinal) ||
+        assemblyName.Equals("WebDriver", StringComparison.Ordinal) ||
+        assemblyName.Equals("PuppeteerSharp", StringComparison.Ordinal);
 
     [Fact]
     public async Task RunAsync_RedeemsOnce_PreservesExactContentAndAssetOrder_AndUsesOnlyManualStates()

@@ -32,4 +32,12 @@
     <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="2.3.6" />
   </ItemGroup>
 
+  <Target Name="CopyExecutablePriToProductionPublish"
+          AfterTargets="Publish"
+          Condition="'$(PublishProfile)' == 'Production'">
+    <Copy SourceFiles="$(TargetDir)$(AssemblyName).pri"
+          DestinationFolder="$(PublishDir)"
+          Condition="Exists('$(TargetDir)$(AssemblyName).pri')" />
+  </Target>
+
 </Project>

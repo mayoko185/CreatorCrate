@@ -13,6 +13,7 @@ param(
     [string]$InvokePostingAction = 'false',
     [string]$VerifySharedButtons = 'false',
     [string]$VerifyTextEditors = 'true',
+    [string]$InteractiveDesktop = 'false',
     [string]$TitleName = '',
     [string]$TitleTextBase64 = ''
 )
@@ -90,7 +91,8 @@ function Find-Button([System.Windows.Automation.AutomationElement]$Root, [string
 function Assert-Editor(
     [System.Windows.Automation.AutomationElement]$Element,
     [string]$Name,
-    [string]$ExpectedText) {
+    [string]$ExpectedText,
+    [bool]$UseInteractiveDesktop) {
     if ($null -eq $Element) { throw "UIA did not expose $Name." }
     $current = $Element.Current
     if ($current.ControlType -ne [System.Windows.Automation.ControlType]::Edit -or
@@ -128,29 +130,32 @@ function Assert-Editor(
         throw "$Name did not expose its selection range."
     }
 
-    $Element.SetFocus()
-    $focused = $false
-    for ($attempt = 0; $attempt -lt 80; $attempt++) {
-        if ($Element.Current.HasKeyboardFocus) { $focused = $true; break }
-        Start-Sleep -Milliseconds 25
-    }
-    if (-not $focused) { throw "$Name did not receive keyboard focus through UIA." }
+    if ($UseInteractiveDesktop) {
+        $Element.SetFocus()
+        $focused = $false
+        for ($attempt = 0; $attempt -lt 80; $attempt++) {
+            if ($Element.Current.HasKeyboardFocus) { $focused = $true; break }
+            Start-Sleep -Milliseconds 25
+        }
+        if (-not $focused) { throw "$Name did not receive keyboard focus through UIA." }
 
-    Add-Type -AssemblyName System.Windows.Forms
-    [System.Windows.Forms.SendKeys]::SendWait('z')
-    [System.Windows.Forms.SendKeys]::SendWait('^v')
-    Start-Sleep -Milliseconds 50
-    $afterInput = Normalize-Text $textPattern.DocumentRange.GetText(-1)
-    if ($afterInput -eq "$expected`n") { $afterInput = $afterInput.Substring(0, $afterInput.Length - 1) }
-    if ($afterInput -cne $expected) { throw "Typing or paste mutated read-only content for $Name." }
-    [System.Windows.Forms.SendKeys]::SendWait('^a')
-    [System.Windows.Forms.SendKeys]::SendWait('+{LEFT}')
-    [System.Windows.Forms.SendKeys]::SendWait('{RIGHT}')
-    [System.Windows.Forms.SendKeys]::SendWait('{HOME}')
-    [System.Windows.Forms.SendKeys]::SendWait('{END}')
-    [System.Windows.Forms.SendKeys]::SendWait('{PGUP}')
-    [System.Windows.Forms.SendKeys]::SendWait('{PGDN}')
-    Write-Output "uia=$Name; name=$Name; type=Edit; class=RichEditBox; text-pattern=true; read-only=true; selection-ranges=$($selected.Count); keyboard-focus=true; typing-paste-rejected=true; keyboard-navigation=true; code-units=$($expected.Length)"
+        Add-Type -AssemblyName System.Windows.Forms
+        [System.Windows.Forms.SendKeys]::SendWait('z')
+        [System.Windows.Forms.SendKeys]::SendWait('^v')
+        Start-Sleep -Milliseconds 50
+        $afterInput = Normalize-Text $textPattern.DocumentRange.GetText(-1)
+        if ($afterInput -eq "$expected`n") { $afterInput = $afterInput.Substring(0, $afterInput.Length - 1) }
+        if ($afterInput -cne $expected) { throw "Typing or paste mutated read-only content for $Name." }
+        [System.Windows.Forms.SendKeys]::SendWait('^a')
+        [System.Windows.Forms.SendKeys]::SendWait('+{LEFT}')
+        [System.Windows.Forms.SendKeys]::SendWait('{RIGHT}')
+        [System.Windows.Forms.SendKeys]::SendWait('{HOME}')
+        [System.Windows.Forms.SendKeys]::SendWait('{END}')
+        [System.Windows.Forms.SendKeys]::SendWait('{PGUP}')
+        [System.Windows.Forms.SendKeys]::SendWait('{PGDN}')
+        Write-Output "uia-interactive=$Name; keyboard-focus=true; typing-paste-rejected=true; keyboard-navigation=true"
+    }
+    Write-Output "uia=$Name; name=$Name; type=Edit; class=RichEditBox; text-pattern=true; read-only=true; selection-ranges=$($selected.Count); keyboard-focusable=true; code-units=$($expected.Length)"
 }
 
 function Assert-PostingButton(
@@ -221,7 +226,8 @@ function Assert-SharedButton([System.Windows.Automation.AutomationElement]$Eleme
 
 function Assert-PlatformCombo(
     [System.Windows.Automation.AutomationElement]$Element,
-    [string]$ExpectedSelection) {
+    [string]$ExpectedSelection,
+    [bool]$UseInteractiveDesktop) {
     if ($null -eq $Element) { throw 'UIA did not expose the production Platform ComboBox.' }
     $current = $Element.Current
     if ($current.NativeWindowHandle -ne $PlatformHandle -or
@@ -242,6 +248,16 @@ function Assert-PlatformCombo(
     }
 
     $expandPattern = [System.Windows.Automation.ExpandCollapsePattern]$expand
+    $selected = ([System.Windows.Automation.SelectionPattern]$selection).Current.GetSelection()
+    if ($selected.Count -ne 1 -or $selected[0].Current.Name -cne $ExpectedSelection) {
+        $actual = if ($selected.Count -eq 0) { '<none>' } else { $selected[0].Current.Name }
+        throw "Platform ComboBox selection differs; expected=$ExpectedSelection; actual=$actual; count=$($selected.Count)."
+    }
+    if (-not $UseInteractiveDesktop) {
+        Write-Output "uia=Platform; hwnd=$PlatformHandle; type=ComboBox; class=ComboBox; name=$($current.Name); keyboard-focusable=true; expand-collapse-pattern=true; expand-collapse-state=$($expandPattern.Current.ExpandCollapseState); selection=$ExpectedSelection"
+        return
+    }
+
     $provedItems = $false
     try {
         $expandPattern.Expand()
@@ -297,11 +313,6 @@ function Assert-PlatformCombo(
         foreach ($name in $expectedNames) {
             if (-not $seen.ContainsKey($name)) { throw "Missing Platform item '$name'." }
         }
-        $selected = ([System.Windows.Automation.SelectionPattern]$selection).Current.GetSelection()
-        if ($selected.Count -ne 1 -or $selected[0].Current.Name -cne $ExpectedSelection) {
-            $actual = if ($selected.Count -eq 0) { '<none>' } else { $selected[0].Current.Name }
-            throw "Platform ComboBox selection differs; expected=$ExpectedSelection; actual=$actual; count=$($selected.Count)."
-        }
         $provedItems = $true
     }
     finally {
@@ -326,7 +337,7 @@ function Assert-PlatformCombo(
 $root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]::new($WindowHandle))
 Assert-PlatformCombo (
     [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]::new($PlatformHandle))) `
-    $PlatformSelection
+    $PlatformSelection ([bool]::Parse($InteractiveDesktop))
 $posting = Find-Button $root $PostingActionName
 $expectsPosting = [bool]::Parse($PostingExpectedVisible)
 if ($expectsPosting) {
@@ -345,12 +356,12 @@ if ([bool]::Parse($VerifyTextEditors)) {
     $expectsTitle = [bool]::Parse($TitleExpected)
     if ($expectsTitle) {
         $titleText = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($TitleTextBase64))
-        Assert-Editor $title $TitleName $titleText
+        Assert-Editor $title $TitleName $titleText ([bool]::Parse($InteractiveDesktop))
     }
     elseif ($null -ne $title) {
         throw 'UIA exposed the hidden Patreon title in Control view.'
     }
 
     $bodyText = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($BodyTextBase64))
-    Assert-Editor (Find-Edit $root $BodyName) $BodyName $bodyText
+    Assert-Editor (Find-Edit $root $BodyName) $BodyName $bodyText ([bool]::Parse($InteractiveDesktop))
 }

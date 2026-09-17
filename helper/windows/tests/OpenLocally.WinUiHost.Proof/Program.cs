@@ -35,12 +35,13 @@ bool resizeCheck = args.Contains("--resize-check", StringComparer.Ordinal);
 bool productionSurfaceCheck = args.Contains("--production-surface-check", StringComparer.Ordinal);
 bool productionTextCheck = args.Contains("--production-text-check", StringComparer.Ordinal);
 bool accessibilityCheck = args.Contains("--accessibility-check", StringComparer.Ordinal);
+bool interactiveAccessibilityCheck = args.Contains("--interactive-accessibility-check", StringComparer.Ordinal);
 bool themeCycleCheck = args.Contains("--theme-cycle-check", StringComparer.Ordinal);
 bool expectInitFailure = args.Contains("--expect-init-failure", StringComparer.Ordinal);
 bool proofDesktop = !args.Contains("--production-desktop-check", StringComparer.Ordinal);
 bool moduleProvenance = !args.Contains("--no-module-provenance", StringComparer.Ordinal);
 bool observeShownWindow = manualVisualProof || capturePath is not null || resizeCheck || productionSurfaceCheck ||
-    productionTextCheck || accessibilityCheck || themeCycleCheck || moduleProvenance;
+    productionTextCheck || accessibilityCheck || interactiveAccessibilityCheck || themeCycleCheck || moduleProvenance;
 
 Console.WriteLine("proof-build=WP10C2B final presentation harmonization 1");
 Console.WriteLine($"windows-app-sdk-runtime-package={RuntimePackageVersion}");
@@ -124,7 +125,7 @@ for (int cycle = 0; cycle < cycles; cycle++)
                     if (themeCycleCheck)
                         VerifyWholeWindowThemeCycle(
                             window ?? throw new InvalidOperationException("Production window was not assigned."));
-                    if (accessibilityCheck)
+                    if (accessibilityCheck || interactiveAccessibilityCheck)
                     {
                         NativeManualPublishingCompanion.NativeWindow productionWindow = window ??
                             throw new InvalidOperationException("Production window was not assigned.");
@@ -134,7 +135,7 @@ for (int cycle = 0; cycle < cycles; cycle++)
                             try { ProductionUiaProbe.Verify(
                                 productionWindow, postingController,
                                 postingTransport ?? throw new InvalidOperationException("Controlled transport was not assigned."),
-                                recordingClipboard); }
+                                recordingClipboard, interactiveAccessibilityCheck); }
                             catch (Exception exception)
                             {
                                 captureFailure = exception;

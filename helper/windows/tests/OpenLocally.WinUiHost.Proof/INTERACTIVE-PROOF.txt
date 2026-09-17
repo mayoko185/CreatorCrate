@@ -89,3 +89,17 @@ From the repository root, run:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\helper\windows\tests\OpenLocally.WinUiHost.Proof\run-interactive-uia-proof.ps1
 
 Keep the desktop unlocked and do not switch windows while it runs. The UIA proof uses local production companion fixtures and the Windows inbox client-side provider table. It does not replace the manual visual, High Contrast, Text Size, or mixed-DPI gates.
+
+WP10D interactive desktop test set
+
+The deterministic Windows-helper gate is:
+
+powershell -NoProfile -ExecutionPolicy Bypass -File .\helper\windows\tests\run-deterministic-gate.ps1
+
+It runs the normal helper suite, including deterministic UIA contracts, and excludes tests explicitly marked Category=InteractiveDesktop or Category=DiagnosticStress. InteractiveDesktop proofs require foreground interaction; DiagnosticStress tests are excluded separately because they are intentionally long-running diagnostics.
+
+From the repository root, run on an unlocked foreground-capable Windows desktop:
+
+dotnet test .\helper\windows\tests\OpenLocally.Tests\OpenLocally.Tests.csproj -c Release --no-restore --filter "Category=InteractiveDesktop"
+
+This explicitly classified test exercises physical UIA focus, SendKeys input rejection, InvokePattern.Invoke(), and ComboBox ExpandCollapse transitions/item enumeration. It is excluded from the deterministic helper gate because those operations depend on foreground desktop access. All UIA provider, control type, name, enabled, focusable, Text/Selection/Invoke/ExpandCollapse pattern, read-only, current selection, and production-structure assertions remain in the deterministic test.

@@ -1659,12 +1659,30 @@ functional suite.
 [`helper/windows/`](helper/windows/) is a **separate subsystem with its own
 language, toolchain, and lifecycle**: the `OpenLocally` assembly and
 `OpenLocally.exe` executable in `CreatorCrate.OpenLocally.sln`. It targets .NET
-10 LTS (`net10.0-windows`), remains a Windows GUI (`WinExe`) application, and
+10 LTS (`net10.0-windows10.0.17763.0`), remains a Windows GUI (`WinExe`) application, and
 has zero third-party production `PackageReference`s. It registers its URI
-protocols per-user under `HKCU` and has an Inno Setup installer. It publishes
-as a self-contained single-file `win-x64` executable with trimming and
-NativeAOT disabled, and is not part of the Node build, the Node test suite, or
-the server process.
+protocols per-user under `HKCU` and has an Inno Setup installer. Its canonical
+production publish is a self-contained, unpackaged, multi-file `win-x64`
+payload with the private .NET and Windows App SDK/WinUI runtimes included;
+trimming, NativeAOT, and ReadyToRun are disabled. The installer recursively
+preserves that validated publish tree and writes setup artifacts to a separate
+directory, so its output cannot become its own input. The helper remains
+outside the Node build, the Node test suite, and the server process.
+
+The stable Inno AppId also defines the per-user uninstall identity under
+`HKCU`. Setup reads that identity's `DisplayVersion` during `InitializeSetup`
+and uses Inno's numeric packed-version comparison against the canonical
+`MyAppVersion`: upgrades and same-version repair remain allowed, while a newer
+installed helper blocks an older candidate before installation mutates files or
+protocol registration. Missing or malformed installed version metadata is
+logged and allowed as repair rather than silently treated as newer.
+
+Direct inspection of the retained 1.0.0 and shipped 1.1.0 setup binaries,
+cross-checked against their historical `[Files]` rules, proves that each
+installed only `OpenLocally.exe` under the application directory. They shipped
+no loose browser/CDP automation files or directories, and the current package
+naturally replaces that executable. No manifest-backed obsolete file is known;
+cleanup remains a D2B2 decision and no deletion rule is present in D2B1.
 
 The existing Open Locally boundary remains **one versioned URI contract**:
 

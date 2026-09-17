@@ -61,6 +61,46 @@ public sealed class WinUiAccessibilityProcessTests
     [Fact]
     public void ProductionCompanion_RequiresAccessiblePostingButtonAndSafeReadOnlyRichEditBoxesAcrossPlatforms()
     {
+        string output = RunAccessibilityProof("--accessibility-check");
+
+        Assert.Contains("production-uia-check=passed; mode=deterministic;", output, StringComparison.Ordinal);
+        Assert.Contains("expand-collapse-pattern=true", output, StringComparison.Ordinal);
+        Assert.Contains("high-contrast-contract=passed", output, StringComparison.Ordinal);
+        Assert.Contains("winui-scaling-enabled=true", output, StringComparison.Ordinal);
+        Assert.Contains("resize-island-bounds=passed; outer=1200x900;", output, StringComparison.Ordinal);
+        Assert.Contains("source=production-layout; immediate=true", output, StringComparison.Ordinal);
+        Assert.DoesNotContain("Height = 173", output, StringComparison.Ordinal);
+        Assert.Contains("minimum-containment=passed", output, StringComparison.Ordinal);
+        Assert.Contains("hidden-title=absent", output, StringComparison.Ordinal);
+        Assert.Contains("posting-action-required=true", output, StringComparison.Ordinal);
+        Assert.Contains("ready-forward-tab=passed", output, StringComparison.Ordinal);
+        Assert.Contains("ready-reverse-tab=passed", output, StringComparison.Ordinal);
+        Assert.Contains("richedit-enter=passed", output, StringComparison.Ordinal);
+        Assert.Contains("whole-window-theme-cycle=Dark->Light->HighContrast->Dark", output, StringComparison.Ordinal);
+        Assert.Contains("native-font-roles=passed", output, StringComparison.Ordinal);
+        Assert.Contains("surface-hierarchy=passed", output, StringComparison.Ordinal);
+        Assert.Contains("posting-requests=0", output, StringComparison.Ordinal);
+        Assert.Contains("copy-invocations=0", output, StringComparison.Ordinal);
+        Assert.Contains("mark-enter=passed", output, StringComparison.Ordinal);
+        Assert.Contains("retry-tab=passed", output, StringComparison.Ordinal);
+        Assert.Contains("retry-enter=passed", output, StringComparison.Ordinal);
+        Assert.Contains("escape-with-posting-ui=passed", output, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    [Trait("Category", "InteractiveDesktop")]
+    public void ProductionCompanion_PhysicalUiaFocusInputInvokeAndExpandCollapse()
+    {
+        string output = RunAccessibilityProof("--interactive-accessibility-check");
+
+        Assert.Contains("production-uia-check=passed; mode=interactive-desktop;", output, StringComparison.Ordinal);
+        Assert.Contains("selection-items=Patreon,X,Bluesky; selection-item-pattern=true; collapsed-in-finally=true", output, StringComparison.Ordinal);
+        Assert.Contains("typing-paste-rejected=true", output, StringComparison.Ordinal);
+        Assert.Contains("uia-invoke=Mark as posted; dispatched=true", output, StringComparison.Ordinal);
+    }
+
+    private static string RunAccessibilityProof(string mode)
+    {
         string root = FindRepositoryRoot();
 #if DEBUG
         const string configuration = "Debug";
@@ -83,7 +123,7 @@ public sealed class WinUiAccessibilityProcessTests
                 RedirectStandardError = true,
             },
         };
-        process.StartInfo.ArgumentList.Add("--accessibility-check");
+        process.StartInfo.ArgumentList.Add(mode);
         process.StartInfo.ArgumentList.Add("--production-surface-check");
         process.StartInfo.ArgumentList.Add("--production-text-check");
         process.StartInfo.ArgumentList.Add("--resize-check");
@@ -99,31 +139,7 @@ public sealed class WinUiAccessibilityProcessTests
         }
 
         Assert.True(process.ExitCode == 0, $"Exit {process.ExitCode}{Environment.NewLine}{error}{Environment.NewLine}{output}");
-        Assert.Contains("production-uia-check=passed", output, StringComparison.Ordinal);
-        Assert.Contains(
-            "selection-items=Patreon,X,Bluesky; selection-item-pattern=true; collapsed-in-finally=true",
-            output, StringComparison.Ordinal);
-        Assert.Contains("high-contrast-contract=passed", output, StringComparison.Ordinal);
-        Assert.Contains("winui-scaling-enabled=true", output, StringComparison.Ordinal);
-        Assert.Contains("resize-island-bounds=passed; outer=1200x900;", output, StringComparison.Ordinal);
-        Assert.Contains("source=production-layout; immediate=true", output, StringComparison.Ordinal);
-        Assert.DoesNotContain("Height = 173", output, StringComparison.Ordinal);
-        Assert.Contains("minimum-containment=passed", output, StringComparison.Ordinal);
-        Assert.Contains("typing-paste-rejected=true", output, StringComparison.Ordinal);
-        Assert.Contains("hidden-title=absent", output, StringComparison.Ordinal);
-        Assert.Contains("posting-action-required=true", output, StringComparison.Ordinal);
-        Assert.Contains("ready-forward-tab=passed", output, StringComparison.Ordinal);
-        Assert.Contains("ready-reverse-tab=passed", output, StringComparison.Ordinal);
-        Assert.Contains("richedit-enter=passed", output, StringComparison.Ordinal);
-        Assert.Contains("whole-window-theme-cycle=Dark->Light->HighContrast->Dark", output, StringComparison.Ordinal);
-        Assert.Contains("native-font-roles=passed", output, StringComparison.Ordinal);
-        Assert.Contains("surface-hierarchy=passed", output, StringComparison.Ordinal);
-        Assert.Contains("posting-requests=0", output, StringComparison.Ordinal);
-        Assert.Contains("copy-invocations=0", output, StringComparison.Ordinal);
-        Assert.Contains("mark-enter=passed", output, StringComparison.Ordinal);
-        Assert.Contains("retry-tab=passed", output, StringComparison.Ordinal);
-        Assert.Contains("retry-enter=passed", output, StringComparison.Ordinal);
-        Assert.Contains("escape-with-posting-ui=passed", output, StringComparison.Ordinal);
+        return output;
     }
 
     private static string FindRepositoryRoot()

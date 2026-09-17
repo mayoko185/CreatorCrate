@@ -8,7 +8,8 @@ internal static class ProductionUiaProbe
         NativeManualPublishingCompanion.NativeWindow window,
         ManualPostingConfirmationController controller,
         ControlledPostingTransport transport,
-        RecordingClipboard clipboard)
+        RecordingClipboard clipboard,
+        bool interactiveDesktop)
     {
         ArgumentNullException.ThrowIfNull(window);
         string script = Path.Combine(AppContext.BaseDirectory, "production-uia-probe.ps1");
@@ -18,35 +19,39 @@ internal static class ProductionUiaProbe
         Exception? uiaFailure = null;
         CaptureFailure(ref uiaFailure, () => VerifyPlatform(
             window, script, 0, "Patreon title", "Patreon body", titleExpected: true,
-            "Mark as posted", postingExpectedEnabled: true, verifySharedButtons: true));
+            "Mark as posted", postingExpectedEnabled: true, verifySharedButtons: true,
+            interactiveDesktop: interactiveDesktop));
         Console.WriteLine("uia-ready-probes=completed");
         CaptureFailure(ref uiaFailure, () => VerifyPlatform(
             window, script, 1, null, "X post text", titleExpected: false,
-            "Mark as posted", postingExpectedEnabled: true));
+            "Mark as posted", postingExpectedEnabled: true, interactiveDesktop: interactiveDesktop));
         CaptureFailure(ref uiaFailure, () => VerifyPlatform(
             window, script, 2, null, "Bluesky post text", titleExpected: false,
-            "Mark as posted", postingExpectedEnabled: true));
+            "Mark as posted", postingExpectedEnabled: true, interactiveDesktop: interactiveDesktop));
         CaptureFailure(ref uiaFailure, () => VerifyPlatform(
             window, script, 0, "Patreon title", "Patreon body", titleExpected: true,
-            "Mark as posted", postingExpectedEnabled: true));
+            "Mark as posted", postingExpectedEnabled: true, interactiveDesktop: interactiveDesktop));
 
         if (transport.PostCalls != 0 || transport.GetCalls != 0 || clipboard.Values.Count != 0)
             throw new InvalidOperationException("UIA RichEditBox input invoked posting or Copy.");
 
-        CaptureFailure(ref uiaFailure, () => VerifyPlatform(
-            window, script, 0, "Patreon title", "Patreon body", titleExpected: true,
-            "Mark as posted", postingExpectedEnabled: true,
-            postingExpectedFocused: true, verifySharedButtons: true, verifyTextEditors: false,
-            focusPostingAfterClientStarts: true));
-        window.MoveFocusPastPostingActionByTabForTesting();
-        CaptureFailure(ref uiaFailure, () => VerifyPlatform(
-            window, script, 0, "Patreon title", "Patreon body", titleExpected: true,
-            "Mark as posted", postingExpectedEnabled: true,
-            postingExpectedFocused: false, verifyTextEditors: false));
-        CaptureFailure(ref uiaFailure, () => VerifyPlatform(
-            window, script, 0, "Patreon title", "Patreon body", titleExpected: true,
-            "Mark as posted", postingExpectedEnabled: true,
-            invokePostingAction: true, verifyTextEditors: false));
+        if (interactiveDesktop)
+        {
+            CaptureFailure(ref uiaFailure, () => VerifyPlatform(
+                window, script, 0, "Patreon title", "Patreon body", titleExpected: true,
+                "Mark as posted", postingExpectedEnabled: true,
+                postingExpectedFocused: true, verifySharedButtons: true, verifyTextEditors: false,
+                focusPostingAfterClientStarts: true, interactiveDesktop: true));
+            window.MoveFocusPastPostingActionByTabForTesting();
+            CaptureFailure(ref uiaFailure, () => VerifyPlatform(
+                window, script, 0, "Patreon title", "Patreon body", titleExpected: true,
+                "Mark as posted", postingExpectedEnabled: true,
+                postingExpectedFocused: false, verifyTextEditors: false, interactiveDesktop: true));
+            CaptureFailure(ref uiaFailure, () => VerifyPlatform(
+                window, script, 0, "Patreon title", "Patreon body", titleExpected: true,
+                "Mark as posted", postingExpectedEnabled: true,
+                invokePostingAction: true, verifyTextEditors: false, interactiveDesktop: true));
+        }
         if (transport.PostCalls == 0) window.InvokePostingActionByEnterForTesting();
         WaitUntil(() => transport.PostCalls == 1 &&
             controller.GetState("patreon").Status == ManualPostingConfirmationStatus.Confirming,
@@ -57,7 +62,8 @@ internal static class ProductionUiaProbe
             throw new InvalidOperationException($"Invalid confirming posting action: {confirming}.");
         CaptureFailure(ref uiaFailure, () => VerifyPlatform(
             window, script, 0, "Patreon title", "Patreon body", titleExpected: true,
-            "Mark as posted", postingExpectedEnabled: false, verifyTextEditors: false));
+            "Mark as posted", postingExpectedEnabled: false, verifyTextEditors: false,
+            interactiveDesktop: interactiveDesktop));
         window.InvokePostingActionByEnterForTesting();
         if (transport.PostCalls != 1 || transport.GetCalls != 0)
             throw new InvalidOperationException("Disabled Mark-as-posted accepted a duplicate Enter activation.");
@@ -69,7 +75,7 @@ internal static class ProductionUiaProbe
             "Retry confirmation presentation did not appear");
         CaptureFailure(ref uiaFailure, () => VerifyPlatform(
             window, script, 0, "Patreon title", "Patreon body", titleExpected: true,
-            "Retry confirmation", postingExpectedEnabled: true));
+            "Retry confirmation", postingExpectedEnabled: true, interactiveDesktop: interactiveDesktop));
         Console.WriteLine("uia-retry-probe=completed");
 
         NativeProductionKeyboardProbe retryKeyboard =
@@ -93,7 +99,7 @@ internal static class ProductionUiaProbe
         CaptureFailure(ref uiaFailure, () => VerifyPlatform(
             window, script, 0, "Patreon title", "Patreon body", titleExpected: true,
             "Retry confirmation", postingExpectedEnabled: false, postingExpectedVisible: false,
-            verifyTextEditors: false));
+            verifyTextEditors: false, interactiveDesktop: interactiveDesktop));
         Console.WriteLine("retry-enter-probe=completed");
 
         int postsBeforeEscape = transport.PostCalls;
@@ -111,7 +117,7 @@ internal static class ProductionUiaProbe
         Console.WriteLine("platform-switch-with-posting-ui=passed; action-state=platform-local; rich-edit-enter-safe=true");
         if (uiaFailure is not null)
             throw new InvalidOperationException("The required production posting action failed UI Automation.", uiaFailure);
-        Console.WriteLine("production-uia-check=passed; client-process=Windows-PowerShell; control-type=Edit,Button; class=RichEditBox,Button; text-pattern=available; read-only=true; selection=available; focus=available; posting-enabled-state=verified; hidden-title=absent");
+        Console.WriteLine($"production-uia-check=passed; mode={(interactiveDesktop ? "interactive-desktop" : "deterministic")}; client-process=Windows-PowerShell; control-type=Edit,Button,ComboBox; class=RichEditBox,Button,ComboBox; text-pattern=available; read-only=true; selection=available; keyboard-focusable=true; expand-collapse-pattern=available; posting-enabled-state=verified; hidden-title=absent");
     }
 
     private static void CaptureFailure(ref Exception? firstFailure, Action action)
@@ -144,7 +150,8 @@ internal static class ProductionUiaProbe
         bool invokePostingAction = false,
         bool verifySharedButtons = false,
         bool verifyTextEditors = true,
-        bool focusPostingAfterClientStarts = false)
+        bool focusPostingAfterClientStarts = false,
+        bool interactiveDesktop = false)
     {
         NativeProductionTextSurfaceProbe surface = window.CaptureTextSurfacesForTesting(platformIndex);
         using var process = new Process
@@ -176,6 +183,7 @@ internal static class ProductionUiaProbe
             "-InvokePostingAction", invokePostingAction ? "true" : "false",
             "-VerifySharedButtons", verifySharedButtons ? "true" : "false",
             "-VerifyTextEditors", verifyTextEditors ? "true" : "false",
+            "-InteractiveDesktop", interactiveDesktop ? "true" : "false",
         }) process.StartInfo.ArgumentList.Add(argument);
         if (titleExpected)
         {
