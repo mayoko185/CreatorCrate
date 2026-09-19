@@ -80,7 +80,7 @@ test('Book, Chapter, and Page detail contents preserve hierarchy while Pages use
           await expect(page.locator('.notes-page-detail-content > .notes-page-previews')).toBeVisible();
           await expect(page.locator('.asset-viewer-display-controls')).toBeVisible();
           await expect(page.getByRole('link', { name: 'Edit book', exact: true })).toBeVisible();
-          await expect(page.getByRole('link', { name: 'Change order', exact: true })).toBeVisible();
+          await expect(page.getByRole('link', { name: 'Reorder book contents', exact: true })).toBeVisible();
           await expect(page.getByRole('link', { name: 'Book defaults', exact: true })).toBeVisible();
         } else {
           await expect(nav.locator('.notes-book-nav-book-link')).toHaveAttribute('href', `/notes/books/${book.id}`);

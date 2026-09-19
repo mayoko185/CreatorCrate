@@ -150,7 +150,11 @@ describe('Notes Page detail hierarchy and layout contract', () => {
     expect(bookDetailTemplate).toContain('New Page');
     expect(bookDetailTemplate).toContain('New Chapter');
     expect(bookDetailTemplate).toContain('Edit Book');
-    expect(bookDetailTemplate).toContain('Change order');
+    expect(bookDetailTemplate).toContain('Reorder book contents');
+    expect(bookDetailTemplate).not.toContain("'Change order'");
+    expect(bookDetailTemplate).not.toContain('<a class="button button-secondary" href="/notes">Back to book list</a>');
+    expect(bookDetailTemplate).toContain("pageHeading.render(leadHref='/notes', leadLabel='Back to book list', leadIcon='chevron-left')");
+    expect(bookDetailTemplate).not.toContain('data-book-reset');
     expect(bookDetailTemplate).toContain('{% include "partials/book-navigator.njk" %}');
     expect(bookDetailTemplate).toContain('{% include "partials/book-page-previews.njk" %}');
     expect(bookDetailTemplate).not.toContain('<nav class="book-outline"');
@@ -198,6 +202,8 @@ describe('Notes Page detail hierarchy and layout contract', () => {
     });
 
     expect(html).toContain('<form id="notes-book-order-form" method="post" action="/notes/books/7/hierarchy/reorder" data-book-hierarchy-form');
+    expect(html).toContain('<h2 id="book-order-dialog-title">Reorder book contents</h2>');
+    expect(html).toContain('data-dialog-close aria-label="Close Reorder book contents"');
     expect(html.match(/name="hierarchy"/g)).toHaveLength(1);
     const hierarchyValue = html.match(/name="hierarchy" data-book-hierarchy-input value="([^"]+)"/)?.[1];
     expect(hierarchyValue).toBeTruthy();
@@ -240,12 +246,13 @@ describe('Notes Page detail hierarchy and layout contract', () => {
     expect(directItemKeys(rootContainer)).not.toContain('page:21');
     expect(rootContainer).toContain(chapterContainer);
     expect(html).not.toContain('data-book-content-reorder-');
-    expect(html).toContain('Use the handles with Up, Down, Home, or End to reorder within the current container. Use each Page destination and Move control to move it between the Book root and Chapters. Dragging remains available. Select Save to apply the draft hierarchy.');
+    expect(html).toContain('Changes are saved immediately.');
     expect(html).toContain('notes-book-content-list');
     const hierarchyForm = html.match(/<form id="notes-book-order-form"[\s\S]*?<\/form>/)?.[0];
     expect(hierarchyForm).toBeTruthy();
-    expect(hierarchyForm).toMatch(/<button class="button button-primary" type="submit" form="notes-book-order-form" data-dialog-submit>Save<\/button>/);
-    expect(hierarchyForm).toMatch(/<button class="button button-secondary" type="button" data-dialog-close>Cancel<\/button>/);
+    expect(hierarchyForm).not.toMatch(/data-dialog-submit>Save<\/button>/);
+    expect(hierarchyForm).toContain('data-book-hierarchy-status');
+    expect(hierarchyForm).not.toContain('data-dialog-close');
 
     const emptyHtml = env.render('notes/books/order.njk', {
       book: { id: 7 },
@@ -407,7 +414,10 @@ describe('Notes Page detail hierarchy and layout contract', () => {
     expect(dialog).toContain('aria-label="Close Edit Book"');
     const classes = dialog.match(/<dialog\b[^>]*class="([^"]+)"/)?.[1].split(/\s+/);
     expect(classes).toEqual(expect.arrayContaining(['app-dialog', 'project-form-dialog']));
-    for (const part of ['header', 'body', 'footer']) expect(dialog).toContain('class="app-dialog-' + part + '"');
+    for (const part of ['header', 'body']) expect(dialog).toContain('class="app-dialog-' + part + '"');
+    expect(dialog).not.toContain('class="app-dialog-footer"');
+    expect(dialog).not.toContain('data-dialog-submit');
+    expect(dialog).not.toContain('>Save</button>');
     const sections = [...dialog.matchAll(/<section\b[^>]*>[\s\S]*?<\/section>/g)].map(([section]) => section);
     expect(sections).toHaveLength(2);
     for (const section of sections) {
@@ -435,8 +445,8 @@ describe('Notes Page detail hierarchy and layout contract', () => {
     expect(dialog).not.toContain('Danger zone');
     expect(dialog).not.toContain('>Manage<');
     expect(dialog).not.toContain('form="book-form">Edit</button>');
-    expect(dialog).toContain('type="submit" data-dialog-submit>Save</button>');
-    expect(dialog).toContain('data-dialog-form data-dialog-async="false"');
+    expect(dialog).not.toContain('data-dialog-submit');
+    expect(dialog).toContain('data-dialog-form data-dialog-async="false" data-book-edit-autosave');
     const forms = [...dialog.matchAll(/<form\b[^>]*>[\s\S]*?<\/form>/g)].map(([form]) => form);
     expect(forms).toHaveLength(2);
     expect(forms[0]).toContain('id="book-form" method="post" action="/notes/books/7"');

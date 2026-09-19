@@ -15,6 +15,7 @@ import { BookValidationError } from '../src/services/book-service.js';
 import { updateBookWithUploadedCover as updateBookWithUploadedCoverHandler } from '../src/middleware/book-edit-multipart.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
+import { makeAnimatedWebp } from './helpers/animated-webp.js';
 
 vi.mock('../src/services/managed-image-service.js', async (original) => {
   const actual = await original();
@@ -85,6 +86,71 @@ describe('WP7D2B Edit Book multipart HTTP', () => {
     counts(1, 0);
     expect(files()).toHaveLength(0);
   });
+  it('acknowledges immediate title persistence without invoking managed ingestion', async () => {
+    const ingestion = vi.spyOn(app.locals.managedImageService, 'createCommittedImage');
+    const res = await agent.post(`/notes/books/${book.id}`).set('Accept', 'application/json').type('form').send({
+      title: '  Immediate title  ',
+      _csrf: csrfToken,
+    }).expect(200);
+
+    expect(res.body).toEqual({
+      status: 'success',
+      book: { id: book.id, title: 'Immediate title' },
+      currentCover: { kind: 'none', id: '' },
+      refreshUrl: `/notes/books/${book.id}`,
+    });
+    expect(app.locals.bookService.getBook(book.id).title).toBe('Immediate title');
+    expect(ingestion).not.toHaveBeenCalled();
+    expect(files()).toHaveLength(0);
+  });
+  it('returns field validation and preserves the rejected immediate title', async () => {
+    const res = await agent.post(`/notes/books/${book.id}`).set('Accept', 'application/json').type('form').send({
+      title: '   ',
+      _csrf: csrfToken,
+    }).expect(422);
+
+    expect(res.body).toMatchObject({
+      status: 'error',
+      code: 'BOOK_INVALID',
+      errors: { title: 'Title is required.' },
+      values: { title: '   ' },
+      currentCover: { kind: 'none', id: '' },
+    });
+    expect(app.locals.bookService.getBook(book.id).title).toBe('Original');
+  });
+  it('acknowledges immediate multipart cover persistence with the new expected identity', async () => {
+    const res = await post().set('Accept', 'application/json').field('title', 'Cover title')
+      .attach('cover', bytes, 'cover.png').expect(200);
+    const source = app.locals.bookPrimaryImageService.getPrimaryImageSource(book.id);
+
+    expect(res.body).toEqual({
+      status: 'success',
+      book: { id: book.id, title: 'Cover title' },
+      currentCover: source,
+      refreshUrl: `/notes/books/${book.id}`,
+    });
+    expect(source).toMatchObject({ kind: 'managed_asset' });
+    counts(1, 1);
+    expect(files()).toHaveLength(1);
+  });
+  it('returns current cover authority after an immediate stale-cover conflict', async () => {
+    await post().field('title', 'First cover').attach('cover', bytes, 'first.png').expect(302);
+    const current = app.locals.bookPrimaryImageService.getPrimaryImageSource(book.id);
+    const res = await agent.post(`/notes/books/${book.id}`).set('Accept', 'application/json')
+      .field('_csrf', csrfToken).field('title', 'Stale attempt')
+      .field('expectedCoverKind', 'none').field('coverReplacementConfirmed', 'false')
+      .attach('cover', bytes, 'second.png').expect(409);
+
+    expect(res.body).toMatchObject({
+      status: 'error',
+      code: 'STALE_SOURCE',
+      currentCover: current,
+    });
+    expect(app.locals.bookPrimaryImageService.getPrimaryImageSource(book.id)).toEqual(current);
+    expect(app.locals.bookService.getBook(book.id).title).toBe('First cover');
+    counts(1, 1);
+    expect(files()).toHaveLength(1);
+  });
   it('threads Books-list return metadata through multipart validation and a successful cover update', async () => {
     const returnTo = '/notes?sort=title&page=2#book-7';
     const invalid = await post().field('title', '   ').field('returnTo', returnTo).attach('cover', bytes, 'private.png').expect(422);
@@ -134,7 +200,7 @@ describe('WP7D2B Edit Book multipart HTTP', () => {
     expect(res.headers['content-type']).toMatch(/^application\/json/);
     expect(res.body).toEqual({
       status: 'error', code: 'INVALID_IMAGE',
-      message: 'A valid, single still PNG, JPEG or WebP image within the managed image limits is required.',
+      message: 'A valid PNG, JPEG or WebP image, including bounded animated WebP, within the managed image limits is required.',
     });
     expect(res.text).not.toMatch(/private|stack|storage_key/);
     counts();
@@ -203,7 +269,7 @@ describe('WP7D2B Edit Book multipart HTTP', () => {
       const { record } = await app.locals.managedImageService.createCommittedImage({ bytes, namespace: 'book-covers' });
       return { kind, id: record.id };
     }
-    const project = createProjectRepository(db).create({ title: label, slug: label,
+    const project = createProjectRepository(db).create({ title: label, slug: label, projectType: 'images',
       description: '', notes: '', status: 'tbd', priority: 'normal', plannedDate: null,
       publishedDate: null, patreonUrl: null });
     const asset = createAssetRepository(db).upsert(project.id, `${label}.png`, {
@@ -245,6 +311,40 @@ describe('WP7D2B Edit Book multipart HTTP', () => {
     if (confirmed !== undefined && confirmed !== null) submission = submission.field('coverReplacementConfirmed', confirmed);
     return submission.attach('cover', image, 'cover.png');
   }
+  it.each(['none', 'still managed', 'animated managed', 'Project-backed'])
+  ('replaces %s cover with an animated managed WebP through existing expected-source authority', async (kind) => {
+    let current = null;
+    let currentBytes = null;
+    if (kind === 'still managed') {
+      current = await makeSource('managed_asset', 'still-managed');
+      currentBytes = bytes;
+    } else if (kind === 'animated managed') {
+      currentBytes = await makeAnimatedWebp(2, { width: 3, height: 2 });
+      const { record } = await app.locals.managedImageService.createCommittedImage({
+        bytes: currentBytes, namespace: 'book-covers',
+      });
+      current = { kind: 'managed_asset', id: record.id };
+    } else if (kind === 'Project-backed') current = await makeSource('project_asset', 'project-backed');
+    select(current);
+
+    const replacement = await makeAnimatedWebp(3, { width: 6, height: 4 });
+    await upload(current, current ? 'true' : null, replacement).expect(302)
+      .expect('Location', `/notes/books/${book.id}`);
+    const selected = app.locals.bookPrimaryImageService.getPrimaryImageSource(book.id);
+    const record = app.locals.managedAssetRepository.findById(selected.id);
+    expect(selected).toEqual({ kind: 'managed_asset', id: record.id });
+    expect(record).toMatchObject({ namespace: 'book-covers', mime_type: 'image/webp',
+      size_bytes: replacement.length, width: 6, height: 4 });
+    expect(fs.readFileSync(path.join(tmp, 'assets', record.storage_key))).toEqual(replacement);
+    if (current?.kind === 'managed_asset') {
+      const retainedRecord = app.locals.managedAssetRepository.findById(current.id);
+      expect(retainedRecord).toBeDefined();
+      expect(fs.readFileSync(path.join(tmp, 'assets', retainedRecord.storage_key))).toEqual(currentBytes);
+    } else if (current?.kind === 'project_asset') {
+      expect(createAssetRepository(db).findById(current.id)).toBeDefined();
+    }
+    counts(1, 1 + Number(current?.kind === 'managed_asset'));
+  });
   function retained(source) {
     if (source.kind === 'project_asset') expect(createAssetRepository(db).findById(source.id)).toBeDefined();
     else {
@@ -266,7 +366,7 @@ describe('WP7D2B Edit Book multipart HTTP', () => {
     expect(res.text).toContain(`/notes/books/${book.id}/chapters/new`);
     const dialog = res.text.match(/<dialog[^>]*id="book-edit-dialog"[^>]*\bopen[\s\S]*?<\/dialog>/)?.[0];
     expect(dialog).toContain('value="Updated"');
-    expect(dialog).toContain('<div class="error-summary" role="alert"><p>A valid, single still PNG, JPEG or WebP image within the managed image limits is required.</p></div>');
+    expect(dialog).toContain('<div class="error-summary" role="alert"><p>A valid PNG, JPEG or WebP image, including bounded animated WebP, within the managed image limits is required.</p></div>');
     expectBookCoverForm(res.text, current);
     expect(res.text).not.toMatch(/private invalid bytes|storage_key/);
     expect(res.text).not.toContain(tmp);
@@ -334,6 +434,30 @@ describe('WP7D2B Edit Book multipart HTTP', () => {
     retained(newer);
     expect(db.prepare("SELECT * FROM application_logs WHERE event = 'book.updated'").all()).toHaveLength(0);
   });
+  it('rejects a stale animated replacement and compensates only its newly owned row and file', async () => {
+    const currentBytes = await makeAnimatedWebp(2, { width: 3, height: 2 });
+    const newerBytes = await makeAnimatedWebp(2, { width: 4, height: 3 });
+    const currentRecord = (await app.locals.managedImageService.createCommittedImage({ bytes: currentBytes })).record;
+    const newerRecord = (await app.locals.managedImageService.createCommittedImage({ bytes: newerBytes })).record;
+    const current = { kind: 'managed_asset', id: currentRecord.id };
+    const newer = { kind: 'managed_asset', id: newerRecord.id };
+    select(current);
+    const original = app.locals.bookService.updateBookWithManagedPrimaryImage;
+    vi.spyOn(app.locals.bookService, 'updateBookWithManagedPrimaryImage').mockImplementation((...args) => {
+      select(newer);
+      return original(...args);
+    });
+    const rollback = vi.spyOn(app.locals.managedAssetRepository, 'rollbackCommitted');
+
+    const res = await upload(current, 'true', await makeAnimatedWebp(3, { width: 5, height: 4 })).expect(409);
+    expect(res.body.code).toBe('STALE_SOURCE');
+    expect(rollback).toHaveBeenCalledOnce();
+    expect(app.locals.bookPrimaryImageService.getPrimaryImageSource(book.id)).toEqual(newer);
+    expect(db.prepare('SELECT count(*) AS n FROM managed_assets').get().n).toBe(2);
+    expect(files()).toHaveLength(2);
+    expect(fs.readFileSync(path.join(tmp, 'assets', currentRecord.storage_key))).toEqual(currentBytes);
+    expect(fs.readFileSync(path.join(tmp, 'assets', newerRecord.storage_key))).toEqual(newerBytes);
+  });
   it.each(['project_asset', 'managed_asset'])('no-cover edit preserves %s and ignores upload-only fields', async (kind) => {
     const old = await makeSource(kind, 'old');
     select(old);
@@ -360,6 +484,16 @@ describe('WP7D2B Edit Book multipart HTTP', () => {
     expect(files()).toHaveLength(before);
     counts(1, kind === 'managed_asset' ? 1 : 0);
     retained(old);
+  });
+  it('compensates an animated replacement when compound persistence fails and retains the prior original', async () => {
+    const old = await makeSource('managed_asset', 'old-animated-failure');
+    select(old);
+    db.exec("CREATE TEMP TRIGGER fail_animated_replace BEFORE UPDATE ON book_primary_images BEGIN SELECT RAISE(ABORT, 'private failure'); END");
+    await upload(old, 'true', await makeAnimatedWebp(2, { width: 4, height: 3 })).expect(500);
+    expect(app.locals.bookPrimaryImageService.getPrimaryImageSource(book.id)).toEqual(old);
+    retained(old);
+    counts(1, 1);
+    expect(files()).toHaveLength(1);
   });
   it.each(['project_asset', 'managed_asset'])('invalid image preserves current %s and Book fields', async (kind) => {
     const old = await makeSource(kind, 'old');

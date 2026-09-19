@@ -87,6 +87,8 @@ function createState(form, options) {
 
 function queueSave(state) {
   const { form } = state;
+  if (typeof state.options.shouldQueue === 'function'
+    && state.options.shouldQueue({ form }) === false) return;
   const body = new globalThis.URLSearchParams(new globalThis.FormData(form));
   const payload = body.toString();
 
@@ -96,6 +98,27 @@ function queueSave(state) {
   }
 
   startSave(state, { body, payload });
+}
+
+function handOffUncertain(state, request, outcome) {
+  if (typeof state.options.onUncertain !== 'function') return false;
+  const { form } = state;
+  const queuedRequest = state.queuedPayload;
+  state.pending = false;
+  state.activePayload = '';
+  state.queuedPayload = null;
+  notify(state.options.onUncertain, {
+    form,
+    ...outcome,
+    payload: request.payload,
+    queuedRequest,
+    resume: (nextRequest) => {
+      if (!nextRequest || state.pending) return false;
+      startSave(state, nextRequest);
+      return true;
+    },
+  });
+  return true;
 }
 
 function finishOrContinue(state, outcome) {
@@ -135,12 +158,23 @@ function startSave(state, request) {
   Promise.resolve().then(() => globalThis.fetch(action, {
     method,
     body: request.body,
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+    headers: {
+      'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+      ...(state.options.headers || {}),
+    },
     credentials: 'same-origin',
     redirect: 'follow',
   })).then(async (response) => {
     const html = await responseHtml(response);
-    if (!response?.ok || !response.redirected) {
+    const acknowledgement = typeof state.options.parseAcknowledgement === 'function'
+      ? state.options.parseAcknowledgement({ response, body: html })
+      : null;
+    const acknowledged = typeof state.options.parseAcknowledgement === 'function'
+      ? Boolean(acknowledgement)
+      : Boolean(response?.ok && response.redirected);
+    if (!acknowledged) {
+      if (response?.ok === true
+        && handOffUncertain(state, request, { response, html, type: 'response' })) return;
       const superseded = state.queuedPayload !== null;
       finishOrContinue(state, { response, html, type: 'response' });
       notify(state.options.onValidationError, {
@@ -158,6 +192,7 @@ function startSave(state, request) {
       form,
       response,
       html,
+      acknowledgement,
       payload: request.payload,
       superseded: next !== null,
     });
@@ -173,6 +208,7 @@ function startSave(state, request) {
     setFetchSaveStatus(form, 'Settings saved.', 'saved');
     notify(state.options.onSuccess, { form, response, html, payload: request.payload });
   }).catch((error) => {
+    if (handOffUncertain(state, request, { error, type: 'network' })) return;
     finishOrContinue(state, { error, type: 'network' });
   });
 }

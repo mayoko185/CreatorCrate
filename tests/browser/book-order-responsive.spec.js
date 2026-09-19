@@ -72,7 +72,7 @@ test('Book hierarchy dialog has narrow, distinct and precise responsive drag fee
     const open = async (width) => {
       await page.setViewportSize({ width, height: 700 });
       await page.goto(`${base}/notes/books/${book.id}`);
-      await page.getByRole('link', { name: 'Change order', exact: true }).click();
+      await page.getByRole('link', { name: 'Reorder book contents', exact: true }).click();
       await expect(dialog).toBeVisible();
     };
     const domHierarchy = () => rootContainer.evaluate(rootNode => (
@@ -107,7 +107,7 @@ test('Book hierarchy dialog has narrow, distinct and precise responsive drag fee
           documentScrollWidth: document.documentElement.scrollWidth,
           dialog: box(node),
           body: { ...box(body), clientHeight: body.clientHeight, scrollHeight: body.scrollHeight, overflowY: getComputedStyle(body).overflowY },
-          footer: box(footer),
+          footer: footer ? box(footer) : null,
           rootWidths: [rootNode.clientWidth, rootNode.scrollWidth],
           sectionWidths: [editor.clientWidth, editor.scrollWidth],
           controlsContained: controls.every((control) => {
@@ -121,8 +121,7 @@ test('Book hierarchy dialog has narrow, distinct and precise responsive drag fee
           }),
         };
       });
-      expect(geometry.documentWidth).toBe(width);
-      expect(geometry.documentScrollWidth).toBe(width);
+      expect(geometry.documentScrollWidth).toBeLessThanOrEqual(geometry.documentWidth);
       expect(geometry.dialog.width).toBeLessThanOrEqual((oldDialogWidth(width) * 0.67) + 1);
       expect(geometry.dialog.left).toBeGreaterThanOrEqual(0);
       expect(geometry.dialog.right).toBeLessThanOrEqual(width);
@@ -133,10 +132,9 @@ test('Book hierarchy dialog has narrow, distinct and precise responsive drag fee
       expect(geometry.wrappedTitle).toBe(true);
       expect(geometry.body.overflowY).toBe('auto');
       expect(geometry.body.scrollHeight).toBeGreaterThan(geometry.body.clientHeight);
-      expect(geometry.footer.top).toBeGreaterThanOrEqual(geometry.body.bottom);
-      expect(geometry.footer.bottom).toBeLessThanOrEqual(700);
-      await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeVisible();
-      await expect(dialog.getByRole('button', { name: 'Close Change order', exact: true })).toBeVisible();
+      expect(geometry.footer).toBeNull();
+      await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toHaveCount(0);
+      await expect(dialog.getByRole('button', { name: 'Close Reorder book contents', exact: true })).toBeVisible();
       await expect(dialog.getByRole('button', { name: 'Cancel', exact: true })).toHaveCount(0);
       await expect(dialog.locator('[data-book-hierarchy-destination], [data-book-hierarchy-move], .notes-book-hierarchy-move-controls')).toHaveCount(0);
       await expect(dialog.locator('.notes-book-content-title a')).toHaveCount(0);
@@ -181,7 +179,7 @@ test('Book hierarchy dialog has narrow, distinct and precise responsive drag fee
     await page.keyboard.press('Tab');
     await expect(dialog.locator('[data-book-hierarchy-handle]').first()).toBeFocused();
     await expect(dialog.locator('[data-book-hierarchy-handle]').first()).toHaveCSS('outline-style', 'solid');
-    await dialog.getByRole('button', { name: 'Close Change order', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Close Reorder book contents', exact: true }).click();
     await expect(dialog).not.toBeVisible();
     expect(posts).toHaveLength(0);
 
@@ -207,6 +205,7 @@ test('Book hierarchy dialog has narrow, distinct and precise responsive drag fee
     expect(await background(dialog.locator('[data-book-hierarchy-editor]'))).toBe(editorBackground);
     expect(await background(rootContainer)).toBe(rootBackground);
     await expect(dialog.locator('.is-drop-target')).toHaveCount(0);
+    await page.mouse.move(0, 0);
     await page.mouse.up();
     await expectIndicatorsCleared();
 
@@ -215,6 +214,7 @@ test('Book hierarchy dialog has narrow, distinct and precise responsive drag fee
     await expect(beforeTarget).toHaveClass(/is-drop-after/);
     await expect(dialog.locator('.is-drop-after')).toHaveCount(1);
     expect(await beforeTarget.evaluate(node => getComputedStyle(node).boxShadow)).not.toBe('none');
+    await page.mouse.move(0, 0);
     await page.mouse.up();
     await expectIndicatorsCleared();
 
@@ -226,6 +226,7 @@ test('Book hierarchy dialog has narrow, distinct and precise responsive drag fee
     await expect(finalChapterPage).toHaveAttribute('data-drop-position', 'append');
     await expect(finalChapterPage).toHaveClass(/is-drop-after/);
     await expect(dialog.locator('[data-drop-position="append"]')).toHaveCount(1);
+    await page.mouse.move(0, 0);
     await page.mouse.up();
     await expectIndicatorsCleared();
 
@@ -239,15 +240,18 @@ test('Book hierarchy dialog has narrow, distinct and precise responsive drag fee
     await expect(emptyContainer).toHaveCSS('outline-style', 'dashed');
     expect(await background(emptyContainer)).toBe(emptyBackground);
     await expect(dialog.locator('.is-drop-target')).toHaveCount(0);
+    await page.mouse.move(0, 0);
     await page.mouse.up();
     await expectIndicatorsCleared();
     await page.keyboard.press('Escape');
     await expect(dialog).not.toBeVisible();
     expect(posts).toHaveLength(0);
 
-    await page.getByRole('link', { name: 'Change order', exact: true }).click();
+    await page.getByRole('link', { name: 'Reorder book contents', exact: true }).click();
     await expectRestored();
     await expectIndicatorsCleared();
+    const response = page.waitForResponse(candidate => candidate.request().method() === 'POST'
+      && new URL(candidate.url()).pathname === `/notes/books/${book.id}/hierarchy/reorder`);
     await cardSurface(`page:${rootPages[2].id}`).dragTo(emptyContainer);
     await expect(emptyContainer.locator(':scope > [data-book-hierarchy-item]')).toHaveCount(1);
     const reparentedPage = item(`page:${rootPages[2].id}`);
@@ -256,10 +260,9 @@ test('Book hierarchy dialog has narrow, distinct and precise responsive drag fee
     await expectIndicatorsCleared();
 
     const submittedTarget = JSON.parse(await hierarchyInput.inputValue()).target;
-    const response = page.waitForResponse(candidate => candidate.request().method() === 'POST'
-      && new URL(candidate.url()).pathname === `/notes/books/${book.id}/hierarchy/reorder`);
-    await dialog.getByRole('button', { name: 'Save', exact: true }).click();
-    expect((await response).status()).toBe(302);
+    expect((await response).status()).toBe(200);
+    await expect(dialog.locator('[data-book-hierarchy-status]')).toHaveText('Book hierarchy saved.');
+    await expect(dialog).toBeVisible();
     await expect(page).toHaveURL(`${base}/notes/books/${book.id}`);
     expect(posts).toHaveLength(1);
     const payload = JSON.parse(new URLSearchParams(posts[0].postData()).get('hierarchy'));

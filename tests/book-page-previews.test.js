@@ -185,6 +185,33 @@ describe('Book Page preview HTTP rendering', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  it('persists the complete Book defaults payload through the existing atomic route with global and per-Book scope', async () => {
+    const firstBook = app.locals.bookService.createBook({ title: 'First Defaults Book' });
+    const secondBook = app.locals.bookService.createBook({ title: 'Second Defaults Book' });
+    const firstPage = app.locals.noteService.createNote({ bookId: firstBook.id, title: 'First selected Page' });
+    const secondPage = app.locals.noteService.createNote({ bookId: firstBook.id, title: 'Second selected Page' });
+
+    await agent.post(`/notes/books/${firstBook.id}/defaults`).type('form').send({
+      _csrf: csrfToken,
+      navigation: 'collapsed',
+      previewMode: 'selected',
+      randomPageCount: '12',
+      selectedPageIds: [String(firstPage.id), String(secondPage.id)],
+    }).expect(302).expect('Location', `/notes/books/${firstBook.id}?notice=book_detail_defaults_saved`);
+
+    expect(app.locals.pageDefaultsService.resolvePageDefaults('bookDetail')).toEqual({ navigation: 'collapsed' });
+    expect(app.locals.bookPagePreviewSettingsService.getBookPagePreviewSettings(firstBook.id)).toEqual({
+      mode: 'selected',
+      randomCount: 12,
+      selectedPageIds: [firstPage.id, secondPage.id],
+    });
+    expect(app.locals.bookPagePreviewSettingsService.getBookPagePreviewSettings(secondBook.id)).toEqual({
+      mode: 'random',
+      randomCount: 5,
+      selectedPageIds: [],
+    });
+  });
+
   it('uses Random/5 by default, includes a single Book Page, and re-samples per request', async () => {
     const book = app.locals.bookService.createBook({ title: 'Book Random Model' });
     const first = app.locals.noteService.createNote({ bookId: book.id, title: 'First Eligible' });

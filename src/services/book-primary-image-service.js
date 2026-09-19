@@ -64,6 +64,18 @@ function eligibleManagedAsset(asset) {
     && ['image/png', 'image/jpeg', 'image/webp'].includes(asset.mime_type);
 }
 
+export function classifyBookPrimaryImageAssetEligibility(asset, { kritaQuality = null } = {}) {
+  if (asset?.is_present !== 1 && asset?.is_present !== true) {
+    return { eligible: false, reason: 'asset_missing' };
+  }
+  const classification = classifyPreviewable(asset);
+  if (!classification.supported) return { eligible: false, reason: 'asset_unsupported' };
+  if (classification.kind === 'image') return { eligible: true, classification };
+  if (classification.kind === 'krita' && classification.extension === 'kra'
+    && kritaQuality === 'merged') return { eligible: true, classification };
+  return { eligible: false, reason: 'asset_unsupported', classification };
+}
+
 /**
  * Book primary-image domain service.
  *
@@ -128,24 +140,15 @@ export function createBookPrimaryImageService({
 
   function requireEligiblePresentAsset(assetId, { kritaQuality = null } = {}) {
     const asset = requireAsset(assetId);
-    if (asset.is_present !== 1 && asset.is_present !== true) {
+    const eligibility = classifyBookPrimaryImageAssetEligibility(asset, { kritaQuality });
+    if (eligibility.reason === 'asset_missing') {
       throw new BookPrimaryImageError(
         `Asset ${assetId} is marked missing and cannot be selected.`,
         { code: BOOK_PRIMARY_IMAGE_ERROR_CODES.ASSET_MISSING },
       );
     }
-
-    const classification = classifyPreviewable(asset);
-    if (!classification.supported) throw unsupportedAsset(assetId);
-    if (classification.kind === 'image') return asset;
-    if (
-      classification.kind === 'krita'
-      && classification.extension === 'kra'
-      && kritaQuality === 'merged'
-    ) {
-      return asset;
-    }
-    throw unsupportedAsset(assetId);
+    if (!eligibility.eligible) throw unsupportedAsset(assetId);
+    return asset;
   }
 
   function databaseFailure(err) {

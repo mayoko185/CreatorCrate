@@ -268,7 +268,7 @@ test('New and Edit Page primary sections have compact overall padding', async ({
     }
     await page.setViewportSize({ width: 375, height: 800 });
     await page.goto(`${base}/notes/books/${singleBook.id}`);
-    await expect(page.locator('.asset-viewer-display-controls .project-filter-control')).toHaveCount(3);
+    await expect(page.locator('.asset-viewer-display-controls .project-filter-control')).toHaveCount(2);
     await page.getByRole('link', { name: 'New Page', exact: true }).click();
     const singleDisclosure = page.locator('dialog[open] .notes-book-contents-disclosure');
     for (const state of ['collapsed', 'expanded', 'collapsed-again']) {

@@ -4,6 +4,9 @@ import { createBookWithUploadedCover } from '../middleware/book-create-multipart
 import { updateBookWithUploadedCover } from '../middleware/book-edit-multipart.js';
 import { isSafeRedirectTarget } from '../middleware/auth.js';
 import { BookPrimaryImageError } from '../services/book-primary-image-service.js';
+import { BookExportError } from '../services/book-export-service.js';
+import { BookImportError, parseBookImportArchive } from '../services/book-import-service.js';
+import { BookImportMultipartError } from '../services/book-import-multipart.js';
 import { ManagedImageError } from '../services/managed-image-service.js';
 import { AssetPickerCursorError } from '../data/asset-picker-pagination.js';
 import {
@@ -358,11 +361,18 @@ function resolveNsfwAssetIds(assets, tagRepository, filterEnabled) {
 
 export function createNotesRouter({
   appName, db, bookService, bookPrimaryImageService, bookPagePreviewSettingsService,
-  chapterService, noteService, markdownRenderer,
+  bookExportService, bookImportOrchestrationService, chapterService, noteService, markdownRenderer,
   projectService, assetRepository, tagRepository, nsfwFilterSettingsService, managedMediaService, managedImageService,
 } = {}) {
   if (!bookService || typeof bookService.listBooks !== 'function') {
     throw new Error('createNotesRouter requires a bookService dependency.');
+  }
+  if (!bookExportService || typeof bookExportService.createExport !== 'function') {
+    throw new Error('createNotesRouter requires a bookExportService dependency.');
+  }
+  if (!bookImportOrchestrationService
+    || typeof bookImportOrchestrationService.importValidatedPlan !== 'function') {
+    throw new Error('createNotesRouter requires a bookImportOrchestrationService dependency.');
   }
   if (!bookPrimaryImageService || typeof bookPrimaryImageService.attachPrimaryImages !== 'function') {
     throw new Error('createNotesRouter requires bookPrimaryImageService.attachPrimaryImages support.');
@@ -649,13 +659,91 @@ export function createNotesRouter({
   }));
 
   // This literal route must precede POST /books/:bookId.
+  router.post('/books/export', async (req, res, next) => {
+    let exported;
+    try {
+      const bookIds = parseExportBookIds(req.body?.bookIds);
+      exported = await bookExportService.createExport(bookIds);
+      res.set('Cache-Control', 'no-store');
+      return res.download(exported.filePath, exported.filename, (error) => {
+        exported.cleanup();
+        if (!error) return;
+        if (!res.headersSent) next(error);
+        else res.destroy(error);
+      });
+    } catch (error) {
+      exported?.cleanup?.();
+      if (error instanceof BookExportError) {
+        return res.status(error.status).json({
+          status: 'error',
+          code: error.code,
+          message: error.message,
+        });
+      }
+      return next(error);
+    }
+  });
+
+  // Literal transfer routes must precede POST /books/:bookId.
+  router.post('/books/import', async (req, res, next) => {
+    const archiveBytes = res.locals.bookImportArchiveBytes;
+    delete res.locals.bookImportArchiveBytes;
+    res.set('Cache-Control', 'no-store');
+    try {
+      if (!archiveBytes) {
+        throw new BookImportMultipartError(
+          /^multipart\/form-data(?:\s*;|\s*$)/i.test(req.headers['content-type'] || '')
+            ? 'MISSING_FILE' : 'CONTENT_TYPE',
+        );
+      }
+      const validatedPlan = await parseBookImportArchive(archiveBytes);
+      const result = await bookImportOrchestrationService.importValidatedPlan(validatedPlan);
+      return res.json({
+        success: true,
+        importedBookCount: result.importedBookCount,
+        destinationBookIds: result.destinationBookIds,
+        books: result.books.map((book) => ({
+          sourceTitle: book.sourceTitle,
+          destinationBookId: book.destinationBookId,
+          destinationTitle: book.destinationTitle,
+          renamed: book.renamed,
+          coverOutcome: book.coverOutcome,
+          associations: book.associations,
+        })),
+        associations: result.associations,
+        activity: result.activity,
+        refreshUrl: '/notes',
+      });
+    } catch (error) {
+      if (error instanceof BookImportError || error instanceof BookImportMultipartError) {
+        return res.status(error.status).json({
+          success: false,
+          code: error.code,
+          message: error.message,
+        });
+      }
+      return next(error);
+    }
+  });
+
   router.post('/books/reorder', async (req, res, next) => {
+    const wantsJson = req.accepts(['html', 'json']) === 'json';
+    const currentOrder = () => bookService.listBooks().map((book) => book.id);
     try {
       const orderedIds = parseOrderedBookIds(req.body?.orderedBookIds);
       bookService.reorderBooks(orderedIds);
+      if (wantsJson) return res.json({ status: 'success', orderedBookIds: currentOrder() });
       return res.redirect('/notes?notice=book_reordered');
     } catch (err) {
       if (err instanceof BookValidationError) {
+        if (wantsJson) {
+          return res.status(422).json({
+            status: 'error',
+            code: 'BOOK_REORDER_INVALID',
+            message: resolveNotice('book_reorder_invalid').text,
+            orderedBookIds: currentOrder(),
+          });
+        }
         try {
           await renderBooksIndex(res, {
             status: 422,
@@ -670,6 +758,14 @@ export function createNotesRouter({
         } catch (renderError) {
           return next(renderError);
         }
+      }
+      if (wantsJson) {
+        return res.status(500).json({
+          status: 'error',
+          code: 'BOOK_REORDER_FAILED',
+          message: resolveNotice('book_reorder_failed').text,
+          orderedBookIds: currentOrder(),
+        });
       }
       return res.redirect('/notes?notice=book_reorder_failed');
     }
@@ -705,6 +801,7 @@ export function createNotesRouter({
   router.post('/books/:bookId/defaults', (req, res, next) => {
     const bookId = parseId(req.params.bookId);
     if (bookId === null) return next(createNotFound());
+    const bookDefaultsAutosave = req.get('X-CreatorCrate-Enhancement') === 'book-defaults-autosave';
 
     try {
       bookService.getBook(bookId);
@@ -749,6 +846,10 @@ export function createNotesRouter({
           });
         },
         onSuccess: () => {
+          if (bookDefaultsAutosave) {
+            res.json({ status: 'success', refreshUrl: `/notes/books/${bookId}` });
+            return;
+          }
           res.redirect(`/notes/books/${bookId}?notice=book_detail_defaults_saved`);
         },
       });
@@ -763,7 +864,12 @@ export function createNotesRouter({
     const id = parseId(req.params.bookId);
     if (id === null) return next(createNotFound());
     const body = req.body || {};
+    const wantsJson = req.accepts(['html', 'json']) === 'json';
     const bookEditReturnTo = readBookEditReturnLocation(body.returnTo);
+    const currentCover = () => {
+      const source = bookPrimaryImageService.getPrimaryImageSource(id);
+      return { kind: source?.kind || 'none', id: source?.id ?? '' };
+    };
 
     try {
       const cover = res.locals.bookCoverUpload;
@@ -772,6 +878,14 @@ export function createNotesRouter({
         ? await updateBookWithUploadedCover(req, res, { bookService, managedImageService }, id, cover.bytes)
         : bookService.updateBook(id, { title: body.title });
       if (!book) return;
+      if (wantsJson) {
+        return res.json({
+          status: 'success',
+          book: { id: book.id, title: book.title },
+          currentCover: currentCover(),
+          refreshUrl: `/notes/books/${book.id}`,
+        });
+      }
       return res.redirect(bookEditReturnTo || `/notes/books/${book.id}`);
     } catch (err) {
       if (err instanceof ManagedImageError && err.code === 'INVALID_IMAGE'
@@ -792,10 +906,22 @@ export function createNotesRouter({
         });
       }
       if (err instanceof BookPrimaryImageError) {
-        return res.status(err.status).json({ status: 'error', code: err.code, message: err.message });
+        return res.status(err.status).json({
+          status: 'error', code: err.code, message: err.message, currentCover: currentCover(),
+        });
       }
       if (err instanceof BookNotFoundError) return next(createNotFound());
       if (err instanceof BookValidationError) {
+        if (wantsJson) {
+          return res.status(422).json({
+            status: 'error',
+            code: 'BOOK_INVALID',
+            message: err.message,
+            errors: err.errors || { general: err.message },
+            values: { title: body.title ?? '' },
+            currentCover: currentCover(),
+          });
+        }
         try {
           await renderBookDetail(req, res, {
             appName, bookService, bookPrimaryImageService, bookId: id,
@@ -936,16 +1062,39 @@ export function createNotesRouter({
   router.post('/books/:bookId/hierarchy/reorder', async (req, res, next) => {
     const bookId = parseId(req.params.bookId);
     if (bookId === null) return next(createNotFound());
+    const wantsJson = req.accepts(['html', 'json']) === 'json';
 
     let submission = null;
     try {
       submission = parseBookHierarchyPayload(req.body?.hierarchy);
-      noteService.reorderBookHierarchy(bookId, submission);
+      const outcome = noteService.reorderBookHierarchy(bookId, submission);
+      if (wantsJson) {
+        return res.json({
+          status: 'success',
+          hierarchy: outcome.hierarchy,
+          refreshUrl: `/notes/books/${bookId}`,
+        });
+      }
       return res.redirect(`/notes/books/${bookId}`);
     } catch (err) {
       if (err instanceof BookNotFoundError) return next(createNotFound());
       if (err instanceof BookHierarchyValidationError) {
         const stale = err.code === 'HIERARCHY_STALE';
+        const notice = resolveNotice(stale ? 'book_hierarchy_stale' : 'book_hierarchy_invalid');
+        if (wantsJson) {
+          try {
+            return res.status(stale ? 409 : 422).json({
+              status: 'error',
+              code: stale ? 'HIERARCHY_STALE' : 'HIERARCHY_INVALID',
+              message: notice.text,
+              hierarchy: noteService.getBookHierarchy(bookId),
+              refreshUrl: `/notes/books/${bookId}`,
+            });
+          } catch (readError) {
+            if (readError instanceof BookNotFoundError) return next(createNotFound());
+            return next(readError);
+          }
+        }
         try {
           await renderBookDetail(req, res, {
             status: stale ? 409 : 422,
@@ -954,7 +1103,7 @@ export function createNotesRouter({
             bookPrimaryImageService,
             bookId,
             bookOrderDialogOpen: true,
-            bookOrderNotice: resolveNotice(stale ? 'book_hierarchy_stale' : 'book_hierarchy_invalid'),
+            bookOrderNotice: notice,
             bookHierarchyTarget: stale ? null : submission?.target,
           });
           return;
@@ -1961,6 +2110,25 @@ function parseOrderedBookIds(raw) {
     throw new BookValidationError({ orderedBookIds: 'Book IDs must be safe positive integers.' });
   }
   return ids;
+}
+
+function parseExportBookIds(raw) {
+  if (raw === undefined || raw === null || raw === '') return [];
+  const values = Array.isArray(raw) ? raw : [raw];
+  if (values.some((value) => typeof value !== 'string' || !/^[1-9]\d*$/.test(value))) {
+    throw new BookExportError('Book IDs must be canonical positive integers.', {
+      code: 'MALFORMED_SELECTION',
+      status: 422,
+    });
+  }
+  const ids = values.map(Number);
+  if (ids.some((id, index) => !Number.isSafeInteger(id) || String(id) !== values[index])) {
+    throw new BookExportError('Book IDs must be safe canonical positive integers.', {
+      code: 'MALFORMED_SELECTION',
+      status: 422,
+    });
+  }
+  return [...new Set(ids)];
 }
 
 /**

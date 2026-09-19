@@ -15,6 +15,8 @@ import {
   enhanceSettingsFetchSave,
   enhanceCategoryReorder,
   enhanceBookReorder,
+  enhanceBookDefaultsFetchSave,
+  enhanceBookEditFetchSave,
   enhanceChapterPageReorder,
   enhanceBookContentReorder,
   enhanceBookHierarchyReorder,
@@ -29,11 +31,13 @@ import {
   enhanceProjectGridSize,
   enhanceProjectAssetCategoryFilter,
   enhanceAssetViewerFilterDisclosures,
+  enhanceDropdowns,
   enhanceAssetViewerInfoCards,
   enhanceProjectInfoCards,
   enhanceDatePickers,
   enhanceTimePickers,
 } from '../src/static/creatorcrate.js';
+import { parseBookCoverAuthority } from '../src/static/client/book-edit-fetch-save.js';
 
 function makeElement(props = {}) {
   const listeners = [];
@@ -188,30 +192,57 @@ function makePreview({ complete = false, naturalWidth = 0, src = '/thumbnail.web
     );
   }
   const fallback = makeElement({ hidden: true });
+  const loading = makeElement();
   const root = makeElement({ dataset: { previewState: 'loading' } });
   root.querySelector = (selector) => {
     if (selector === '[data-preview-image]') return image;
+    if (selector === '[data-preview-loading]') return loading;
     if (selector === '[data-preview-fallback]') return fallback;
     return null;
   };
-  return { root, image, fallback, previewLink };
+  return { root, image, loading, fallback, previewLink };
 }
 
 describe('static preview enhancement helpers', () => {
+  it('server-renders the shared Book cover loading presentation with an unchanged image alt', () => {
+    const viewsPath = fileURLToPath(new URL('../src/views', import.meta.url));
+    const environment = new nunjucks.Environment(new nunjucks.FileSystemLoader(viewsPath));
+    const html = environment.renderString(`{% import "partials/book-primary-image.njk" as cover %}
+      {{ cover.render(book, 'preview') }}`, {
+      book: {
+        id: 7,
+        title: 'Slow cover',
+        primaryImage: {
+          state: 'available',
+          previewUrl: '/preview.webp',
+          thumbnailUrl: '/thumbnail.webp',
+          alt: 'Cover for Slow cover',
+        },
+      },
+    });
+
+    expect(html).toContain('data-preview-state="loading"');
+    expect(html).toContain('data-preview-loading');
+    expect(html).toContain('Loading cover…');
+    expect(html).toContain('alt="Cover for Slow cover"');
+    expect(html).toContain('data-preview-fallback hidden>Image unavailable</span>');
+  });
+
   it('handles cached success with the final loaded state', () => {
-    const { root, image, fallback } = makePreview({ complete: true, naturalWidth: 128 });
+    const { root, image, loading, fallback } = makePreview({ complete: true, naturalWidth: 128 });
 
     expect(enhancePreview(root)).toBe('loaded');
 
     expect(root.dataset.previewState).toBe('loaded');
     expect(root.dataset.previewState).not.toBe('loading');
     expect(image.hidden).toBe(false);
+    expect(loading.hidden).toBe(true);
     expect(fallback.hidden).toBe(true);
     expect(image.listeners).toEqual([]);
   });
 
   it('handles load success without announcements or focus changes', () => {
-    const { root, image, fallback } = makePreview();
+    const { root, image, loading, fallback } = makePreview();
 
     expect(enhancePreview(root)).toBe('listening');
     expect(image.listeners.map((listener) => listener.type)).toEqual(['load', 'error']);
@@ -222,11 +253,12 @@ describe('static preview enhancement helpers', () => {
     expect(root.dataset.previewState).toBe('loaded');
     expect(root.dataset.previewState).not.toBe('loading');
     expect(image.hidden).toBe(false);
+    expect(loading.hidden).toBe(true);
     expect(fallback.hidden).toBe(true);
   });
 
   it('handles image errors by hiding the image and revealing the fallback', () => {
-    const { root, image, fallback } = makePreview();
+    const { root, image, loading, fallback } = makePreview();
 
     enhancePreview(root);
     image.dispatch('error');
@@ -234,7 +266,40 @@ describe('static preview enhancement helpers', () => {
     expect(root.dataset.previewState).toBe('failed');
     expect(root.dataset.previewState).not.toBe('loading');
     expect(image.hidden).toBe(true);
+    expect(loading.hidden).toBe(true);
     expect(fallback.hidden).toBe(false);
+  });
+
+  it('handles an already-complete failed image immediately', () => {
+    const { root, image, loading, fallback } = makePreview({ complete: true, naturalWidth: 0 });
+
+    expect(enhancePreview(root)).toBe('failed');
+
+    expect(root.dataset.previewState).toBe('failed');
+    expect(image.hidden).toBe(true);
+    expect(loading.hidden).toBe(true);
+    expect(fallback.hidden).toBe(false);
+    expect(image.listeners).toEqual([]);
+  });
+
+  it('does not bind duplicate preview listeners when re-enhanced', () => {
+    const { root, image } = makePreview();
+
+    expect(enhancePreview(root)).toBe('listening');
+    expect(enhancePreview(root)).toBe('listening');
+    expect(image.listeners.map((listener) => listener.type)).toEqual(['load', 'error']);
+  });
+
+  it('does not mutate a preview after its root is detached', () => {
+    const { root, image, loading } = makePreview();
+    root.isConnected = true;
+    enhancePreview(root);
+
+    root.isConnected = false;
+    image.dispatch('load');
+
+    expect(root.dataset.previewState).toBe('loading');
+    expect(loading.hidden).toBe(false);
   });
 
   it('hides a clickable preview link when its image fails', () => {
@@ -440,6 +505,7 @@ function makeCheckbox({ checked = false, disabled = false } = {}) {
 
 class TestFormData {
   constructor(form) {
+    form ||= {};
     this.form = form;
     const values = {
       _csrf: [form.csrfToken || 'csrf-token'],
@@ -452,11 +518,17 @@ class TestFormData {
     if (orderInput) values.orderedCategoryIds = [orderInput.value || ''];
     const noteOrderInput = form.querySelector?.('[data-note-order-input]');
     if (noteOrderInput) values.orderedNoteIds = [noteOrderInput.value || ''];
+    const bookOrderInput = form.querySelector?.('[data-book-order-input]');
+    if (bookOrderInput) values.orderedBookIds = [bookOrderInput.value || ''];
     this.values = values;
   }
 
   getAll(name) {
     return this.values[name] || [];
+  }
+
+  set(name, value) {
+    this.values[name] = [value];
   }
 
   // Iterable of [name, value] pairs so the enhancement's
@@ -661,8 +733,16 @@ describe('native autosubmit navigation', () => {
 
 function makeFetchSaveFixture({ action = '/settings/defaults', values = { value: 'initial' } } = {}) {
   const status = {
-    textContent: '',
+    _textContent: '',
+    children: [],
     attributes: new Map(),
+    get textContent() { return this._textContent; },
+    set textContent(value) {
+      this._textContent = String(value);
+      this.children.forEach((child) => { child.parentNode = null; });
+      this.children = [];
+    },
+    appendChild(child) { this.children.push(child); child.parentNode = this; },
     setAttribute(name, value) { this.attributes.set(name, String(value)); },
   };
   const attributes = new Map();
@@ -747,6 +827,1698 @@ async function withDefaultsDomParser(parser, callback) {
     globalThis.DOMParser = originalDOMParser;
   }
 }
+
+function makeBookDefaultsFetchFixture() {
+  const fixture = makeFetchSaveFixture({
+    action: '/notes/books/7/defaults',
+    values: {
+      navigation: 'expanded',
+      previewMode: 'random',
+      randomPageCount: '5',
+      selectedPageIds: '41',
+    },
+  });
+  fixture.form.setAttribute('data-book-defaults-autosave', '');
+  fixture.form.matches = (selector) => selector === '#book-defaults-form';
+  const makeOptions = (values) => values.map((value) => ({ value }));
+  fixture.controls[0].options = makeOptions(['expanded', 'collapsed']);
+  fixture.controls[1].options = makeOptions(['random', 'selected']);
+  fixture.controls[2].options = makeOptions(['5', '8', '12']);
+  fixture.controls[3].options = makeOptions(['41', '42']);
+  const body = {
+    parentNode: {},
+    children: [],
+    contains(target) {
+      return fixture.form.controls.some((control) => (
+        target === control
+          || target === control.__bookDefaultsDropdown
+          || target === control.__bookDefaultsDropdown?.querySelector?.('summary')
+      )) || this.children.includes(target);
+    },
+    replaceWith(next) {
+      currentBody = next;
+      if (next.controls) fixture.form.controls = next.controls;
+    },
+    appendChild(child) { this.children.push(child); },
+  };
+  let currentBody = body;
+  fixture.form.ownerDocument = {
+    activeElement: null,
+    defaultView: { location: { href: 'http://creatorcrate.local/notes/books/7' } },
+    createElement() {
+      return {
+        attributes: new Map(),
+        listeners: new Map(),
+        setAttribute(name, value) { this.attributes.set(name, String(value)); },
+        addEventListener(type, handler) { this.listeners.set(type, handler); },
+        focus() {
+          this.focused = true;
+          fixture.form.ownerDocument.activeElement = this;
+        },
+        remove() {
+          this.removed = true;
+          if (this.parentNode?.children) {
+            this.parentNode.children = this.parentNode.children.filter((child) => child !== this);
+          }
+          this.parentNode = null;
+        },
+        dispatch(type) { this.listeners.get(type)?.({ preventDefault() {} }); },
+      };
+    },
+  };
+  const querySelector = fixture.form.querySelector.bind(fixture.form);
+  fixture.form.querySelector = (selector) => {
+    if (selector === '.app-dialog-body') return currentBody;
+    const named = selector.match(/^\[name="([^"]+)"\]$/);
+    if (named) return fixture.form.controls.find((control) => control.name === named[1]) || null;
+    return querySelector(selector);
+  };
+  fixture.form.querySelectorAll = (selector) => {
+    if (selector === '[data-autosubmit="fetch"]') return fixture.form.controls;
+    return [];
+  };
+  const close = {
+    focus() {
+      this.focused = true;
+      fixture.form.ownerDocument.activeElement = this;
+    },
+  };
+  const dialog = {
+    open: true,
+    querySelector(selector) { return selector === '[data-dialog-close]' ? close : null; },
+  };
+  fixture.form.closest = (selector) => selector === '[data-app-dialog]' ? dialog : null;
+  return {
+    ...fixture,
+    dialog,
+    close,
+    body,
+    scope: { querySelectorAll: (selector) => selector === '#book-defaults-form' ? [fixture.form] : [] },
+  };
+}
+
+function attachBookDefaultsDropdowns(fixture) {
+  const surfaces = fixture.form.controls.map((control) => {
+    const multiple = control.name === 'selectedPageIds';
+    const dropdownAttributes = new Map();
+    const summaryAttributes = new Map([['aria-label', `${control.name}: ${control.value}`]]);
+    const summary = {
+      id: `${control.name}-dropdown-trigger`,
+      disabled: false,
+      tabIndex: 0,
+      getAttribute(name) { return summaryAttributes.get(name) ?? null; },
+      setAttribute(name, value) { summaryAttributes.set(name, String(value)); },
+      removeAttribute(name) { summaryAttributes.delete(name); },
+      focus() {
+        this.focused = true;
+        fixture.form.ownerDocument.activeElement = this;
+      },
+      closest(selector) { return selector === '[data-cc-dropdown]' ? dropdown : null; },
+    };
+    const currentSummary = { textContent: '' };
+    const inputs = control.options.map((option) => ({
+      type: multiple ? 'checkbox' : 'radio',
+      value: option.value,
+      checked: multiple ? Boolean(option.selected) : option.value === control.value,
+      disabled: false,
+      getAttribute() { return null; },
+      closest(selector) {
+        if (selector === 'label') return { textContent: option.value };
+        if (selector === '[data-cc-dropdown]') return dropdown;
+        return null;
+      },
+    }));
+    const dropdown = {
+      dataset: {
+        ccDropdownMode: multiple ? 'multiple' : 'single',
+        ccDropdownEmptySummary: 'None selected',
+        ccDropdownCountLabel: 'Pages',
+      },
+      open: false,
+      getAttribute(name) { return dropdownAttributes.get(name) ?? null; },
+      hasAttribute(name) { return dropdownAttributes.has(name); },
+      setAttribute(name, value = '') { dropdownAttributes.set(name, String(value)); },
+      removeAttribute(name) {
+        if (name === 'hidden') this.initializationCount = (this.initializationCount || 0) + 1;
+        dropdownAttributes.delete(name);
+      },
+      closest(selector) { return selector === 'form' ? fixture.form : null; },
+      querySelector(selector) {
+        if (selector === '[data-cc-dropdown-native-select]') return control;
+        if (selector === 'summary') return summary;
+        if (selector === '[data-cc-dropdown-summary-current]') return currentSummary;
+        if (selector === 'input[type="radio"]:checked') {
+          return inputs.find((input) => input.type === 'radio' && input.checked) || null;
+        }
+        return null;
+      },
+      querySelectorAll(selector) {
+        if (selector === 'input[type="radio"]') return inputs.filter((input) => input.type === 'radio');
+        if (selector === 'input[type="checkbox"]') return inputs.filter((input) => input.type === 'checkbox');
+        return [];
+      },
+    };
+    const field = {
+      querySelector(selector) {
+        if (selector === '[data-cc-dropdown-native-select]') return control;
+        if (selector === '[data-cc-dropdown]') return dropdown;
+        return null;
+      },
+    };
+    dropdown.parentElement = field;
+    dropdown.parentNode = field;
+    control.parentElement = field;
+    control.parentNode = field;
+    control.__bookDefaultsDropdown = dropdown;
+    return { control, dropdown, inputs, summary, summaryAttributes, currentSummary };
+  });
+
+  const querySelectorAll = fixture.form.querySelectorAll.bind(fixture.form);
+  fixture.form.querySelectorAll = (selector) => {
+    if (selector === '[data-cc-dropdown]') {
+      return fixture.form.controls
+        .map((control) => control.__bookDefaultsDropdown)
+        .filter(Boolean);
+    }
+    return querySelectorAll(selector);
+  };
+  return surfaces;
+}
+
+function bookDefaultsAuthority(fixture, values = {}) {
+  const canonical = makeBookDefaultsFetchFixture();
+  Object.entries(values).forEach(([name, value]) => {
+    const control = canonical.form.controls.find((candidate) => candidate.name === name);
+    if (control) control.value = value;
+  });
+  return {
+    destination: 'http://creatorcrate.local/notes/books/7',
+    detailRegion: { authority: values },
+    canonicalForm: canonical.form,
+    dialogBody: {
+      parentNode: {},
+      controls: canonical.form.controls,
+      children: [],
+      contains(target) {
+        return this.controls.some((control) => (
+          target === control
+            || target === control.__bookDefaultsDropdown
+            || target === control.__bookDefaultsDropdown?.querySelector?.('summary')
+        )) || this.children.includes(target);
+      },
+      replaceWith() {},
+      appendChild(child) { this.children.push(child); },
+    },
+  };
+}
+
+function bookDefaultsAcknowledgement(bookId = 7) {
+  return {
+    ok: true,
+    redirected: false,
+    status: 200,
+    text: async () => JSON.stringify({
+      status: 'success',
+      refreshUrl: `/notes/books/${bookId}`,
+    }),
+  };
+}
+
+describe('Book defaults immediate persistence enhancement', () => {
+  it('queues rapid committed changes as complete payloads and refreshes once after the newest acknowledgement', async () => {
+    const fixture = makeBookDefaultsFetchFixture();
+    const requests = [];
+    const beginRefresh = vi.fn(() => 8);
+    const refresh = vi.fn(() => 'started');
+
+    await withBrowserGlobals((action, options) => new Promise((resolve) => {
+      requests.push({ action, options, resolve });
+    }), async () => {
+      expect(enhanceBookDefaultsFetchSave(fixture.scope, { beginRefresh, refresh })).toBe(4);
+      fixture.controls[0].value = 'collapsed';
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+
+      fixture.controls[1].value = 'selected';
+      fixture.controls[2].value = '12';
+      fixture.controls[3].value = '42';
+      fixture.controls[3].dispatch('change');
+      expect(requests).toHaveLength(1);
+      expect(requests[0].options.body.get('navigation')).toBe('collapsed');
+      expect(requests[0].options.body.get('previewMode')).toBe('random');
+      expect(requests[0].options.body.get('randomPageCount')).toBe('5');
+      expect(requests[0].options.body.get('selectedPageIds')).toBe('41');
+      expect(requests[0].options.headers['X-CreatorCrate-Enhancement']).toBe('book-defaults-autosave');
+
+      requests[0].resolve(bookDefaultsAcknowledgement());
+      await flushAsync();
+      expect(requests).toHaveLength(2);
+      expect(requests[1].options.body.get('navigation')).toBe('collapsed');
+      expect(requests[1].options.body.get('previewMode')).toBe('selected');
+      expect(requests[1].options.body.get('randomPageCount')).toBe('12');
+      expect(requests[1].options.body.get('selectedPageIds')).toBe('42');
+      expect(refresh).not.toHaveBeenCalled();
+
+      requests[1].resolve(bookDefaultsAcknowledgement());
+      await flushAsync();
+
+      expect(beginRefresh).toHaveBeenCalledTimes(1);
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect(refresh).toHaveBeenCalledWith(
+        fixture.form.ownerDocument,
+        '/notes/books/7',
+        8,
+        expect.objectContaining({ onError: expect.any(Function) }),
+      );
+      expect(fixture.dialog.open).toBe(true);
+      expect(fixture.form.submitCount).toBe(0);
+      expect(fixture.status.textContent).toBe('Settings saved.');
+    });
+  });
+
+  it('refreshes to the last acknowledged state when a newer queued mutation fails without retrying it', async () => {
+    const fixture = makeBookDefaultsFetchFixture();
+    const requests = [];
+    const refresh = vi.fn(() => 'started');
+
+    await withBrowserGlobals((action, options) => new Promise((resolve) => {
+      requests.push({ action, options, resolve });
+    }), async () => {
+      enhanceBookDefaultsFetchSave(fixture.scope, { beginRefresh: () => 3, refresh });
+      fixture.controls[0].value = 'collapsed';
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+      fixture.controls[1].value = 'selected';
+      fixture.controls[1].dispatch('change');
+
+      requests[0].resolve(bookDefaultsAcknowledgement());
+      await flushAsync();
+      expect(requests).toHaveLength(2);
+      expect(refresh).not.toHaveBeenCalled();
+
+      requests[1].resolve({
+        ok: false,
+        redirected: false,
+        status: 422,
+        text: async () => '<!doctype html><html></html>',
+      });
+      await flushAsync();
+
+      expect(requests).toHaveLength(2);
+      expect(refresh).toHaveBeenCalledTimes(1);
+      expect(refresh.mock.calls[0][1]).toBe('/notes/books/7');
+      expect(fixture.status.textContent).toBe('Could not save defaults. Your current changes were kept.');
+      expect(fixture.attributes.get('data-settings-fetch-save-state')).toBe('error');
+      expect(fixture.dialog.open).toBe(true);
+      expect(fixture.controls[1].value).toBe('selected');
+    });
+  });
+
+  it('distinguishes a committed save from a failed detail refresh', async () => {
+    const fixture = makeBookDefaultsFetchFixture();
+    const requests = [];
+    await withBrowserGlobals(async (action, options) => {
+      requests.push({ action, options });
+      return bookDefaultsAcknowledgement();
+    }, async () => {
+      enhanceBookDefaultsFetchSave(fixture.scope, {
+        beginRefresh: () => 1,
+        refresh: () => 'unavailable',
+      });
+      fixture.controls[2].value = '8';
+      fixture.controls[2].dispatch('change');
+      await flushAsync();
+
+      expect(fixture.status.textContent).toContain('Defaults were saved, but the Book detail could not refresh.');
+      expect(fixture.attributes.get('data-settings-fetch-save-state')).toBe('saved-refresh-error');
+      expect(requests).toHaveLength(1);
+      expect(fixture.status.children).toHaveLength(1);
+      expect(fixture.status.children[0].type).toBe('button');
+      expect(fixture.status.children[0].textContent).toBe('Retry refresh');
+    });
+  });
+
+  it('retries an acknowledged Defaults presentation with GET-only authority until it installs', async () => {
+    const fixture = makeBookDefaultsFetchFixture();
+    const posts = [];
+    const authority = bookDefaultsAuthority(fixture, {
+      navigation: 'collapsed',
+      previewMode: 'selected',
+      randomPageCount: '8',
+      selectedPageIds: '42',
+    });
+    const fetchAuthority = vi.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(authority);
+    const installDetail = vi.fn(() => 'installed');
+
+    await withBrowserGlobals(async (action, options) => {
+      posts.push({ action, options });
+      return bookDefaultsAcknowledgement();
+    }, async () => {
+      enhanceBookDefaultsFetchSave(fixture.scope, {
+        beginRefresh: () => 5,
+        refresh: () => 'unavailable',
+        fetchAuthority,
+        installDetail,
+      });
+      fixture.controls[0].value = 'collapsed';
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+
+      fixture.status.children[0].dispatch('click');
+      await flushAsync();
+      expect(fixture.status.children).toHaveLength(1);
+      expect(fixture.status.children[0].textContent).toBe('Retry refresh');
+
+      fixture.status.children[0].dispatch('click');
+      await flushAsync();
+      await flushAsync();
+
+      expect(posts).toHaveLength(1);
+      expect(posts[0].options.method).toBe('POST');
+      expect(fetchAuthority).toHaveBeenCalledTimes(2);
+      expect(installDetail).toHaveBeenCalledOnce();
+      expect(fixture.status.children).toHaveLength(0);
+      expect(fixture.status.textContent).toBe('Settings saved. Book detail refreshed.');
+      expect(fixture.attributes.get('data-settings-fetch-save-state')).toBe('saved');
+    });
+  });
+
+  it('reissues an acknowledged refresh under the current generation without looping', async () => {
+    const fixture = makeBookDefaultsFetchFixture();
+    const generations = [8, 11];
+    const beginRefresh = vi.fn(() => generations.shift());
+    const refresh = vi.fn()
+      .mockReturnValueOnce('superseded')
+      .mockReturnValueOnce('started');
+
+    await withBrowserGlobals(async () => bookDefaultsAcknowledgement(), async () => {
+      enhanceBookDefaultsFetchSave(fixture.scope, { beginRefresh, refresh });
+      fixture.controls[0].value = 'collapsed';
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+
+      expect(beginRefresh).toHaveBeenCalledTimes(2);
+      expect(refresh.mock.calls.map((call) => call[2])).toEqual([8, 11]);
+      expect(fixture.status.textContent).toBe('Settings saved.');
+    });
+
+    const repeated = makeBookDefaultsFetchFixture();
+    const alwaysSuperseded = vi.fn(() => 'superseded');
+    await withBrowserGlobals(async () => bookDefaultsAcknowledgement(), async () => {
+      enhanceBookDefaultsFetchSave(repeated.scope, {
+        beginRefresh: vi.fn().mockReturnValueOnce(2).mockReturnValueOnce(3),
+        refresh: alwaysSuperseded,
+      });
+      repeated.controls[0].dispatch('change');
+      await flushAsync();
+      expect(alwaysSuperseded).toHaveBeenCalledTimes(2);
+      expect(repeated.status.textContent).toContain('Defaults were saved, but the Book detail could not refresh.');
+    });
+  });
+
+  it('reconciles an uncertain acknowledgement to canonical Defaults and keeps the active mutation single-shot', async () => {
+    const fixture = makeBookDefaultsFetchFixture();
+    const authority = bookDefaultsAuthority(fixture, {
+      navigation: 'collapsed',
+      previewMode: 'selected',
+      randomPageCount: '8',
+      selectedPageIds: '42',
+    });
+    const installDetail = vi.fn(() => 'installed');
+    let posts = 0;
+    await withBrowserGlobals(async () => {
+      posts += 1;
+      throw new TypeError('network interrupted');
+    }, async () => {
+      enhanceBookDefaultsFetchSave(fixture.scope, {
+        beginRefresh: () => 1,
+        refresh: vi.fn(),
+        fetchAuthority: async () => authority,
+        installDetail,
+      });
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+      await flushAsync();
+
+      expect(fixture.status.textContent).toContain('Current Book Defaults were restored.');
+      expect(fixture.status.textContent).not.toContain('Could not save defaults.');
+      expect(fixture.form.controls.map(({ value }) => value)).toEqual(['collapsed', 'selected', '8', '42']);
+      expect(installDetail).toHaveBeenCalledWith(
+        fixture.form.ownerDocument,
+        authority.destination,
+        1,
+        authority.detailRegion,
+      );
+      expect(posts).toBe(1);
+      expect(fixture.dialog.open).toBe(true);
+    });
+  });
+
+  it('restores a focused custom Defaults dropdown to its equivalent mounted summary after reconciliation', async () => {
+    const fixture = makeBookDefaultsFetchFixture();
+    const currentSurfaces = attachBookDefaultsDropdowns(fixture);
+    const authority = bookDefaultsAuthority(fixture, { previewMode: 'selected' });
+    const canonicalFixture = { form: { controls: authority.dialogBody.controls } };
+    canonicalFixture.form.querySelectorAll = () => [];
+    canonicalFixture.form.ownerDocument = fixture.form.ownerDocument;
+    const canonicalSurfaces = attachBookDefaultsDropdowns(canonicalFixture);
+
+    await withBrowserGlobals(async () => { throw new TypeError('response lost'); }, async () => {
+      enhanceBookDefaultsFetchSave(fixture.scope, {
+        beginRefresh: () => 1,
+        refresh: vi.fn(),
+        fetchAuthority: async () => authority,
+        installDetail: vi.fn(() => 'installed'),
+      });
+      currentSurfaces[1].summary.focus();
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+      await flushAsync();
+
+      expect(fixture.form.ownerDocument.activeElement).toBe(canonicalSurfaces[1].summary);
+      expect(fixture.form.ownerDocument.activeElement).not.toBe(currentSurfaces[1].summary);
+      expect(authority.dialogBody.contains(fixture.form.ownerDocument.activeElement)).toBe(true);
+      expect(canonicalSurfaces[1].summary.disabled).toBe(false);
+      expect(canonicalSurfaces[1].summary.tabIndex).toBe(0);
+    });
+  });
+
+  it('falls back to the first mounted Defaults dropdown when focused content has no stable identity', async () => {
+    const fixture = makeBookDefaultsFetchFixture();
+    const authority = bookDefaultsAuthority(fixture);
+    const canonicalFixture = { form: { controls: authority.dialogBody.controls } };
+    canonicalFixture.form.querySelectorAll = () => [];
+    canonicalFixture.form.ownerDocument = fixture.form.ownerDocument;
+    const canonicalSurfaces = attachBookDefaultsDropdowns(canonicalFixture);
+    const unmapped = {
+      focus() { fixture.form.ownerDocument.activeElement = this; },
+      closest() { return null; },
+      getAttribute() { return null; },
+    };
+    fixture.body.children.push(unmapped);
+
+    await withBrowserGlobals(async () => { throw new TypeError('response lost'); }, async () => {
+      enhanceBookDefaultsFetchSave(fixture.scope, {
+        beginRefresh: () => 1,
+        refresh: vi.fn(),
+        fetchAuthority: async () => authority,
+        installDetail: vi.fn(() => 'installed'),
+      });
+      unmapped.focus();
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+      await flushAsync();
+
+      expect(fixture.form.ownerDocument.activeElement).toBe(canonicalSurfaces[0].summary);
+      expect(fixture.form.ownerDocument.activeElement).not.toBe(unmapped);
+      expect(authority.dialogBody.contains(fixture.form.ownerDocument.activeElement)).toBe(true);
+    });
+  });
+
+  it('does not move focus during an acknowledged autosave that does not replace the dialog body', async () => {
+    const fixture = makeBookDefaultsFetchFixture();
+    const surfaces = attachBookDefaultsDropdowns(fixture);
+
+    await withBrowserGlobals(async () => bookDefaultsAcknowledgement(), async () => {
+      enhanceBookDefaultsFetchSave(fixture.scope, {
+        beginRefresh: () => 1,
+        refresh: vi.fn(() => 'started'),
+      });
+      surfaces[1].summary.focus();
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+
+      expect(fixture.form.ownerDocument.activeElement).toBe(surfaces[1].summary);
+    });
+  });
+
+  it('classifies an unusable successful acknowledgement as uncertain rather than a definite rejection', async () => {
+    const fixture = makeBookDefaultsFetchFixture();
+    const fetchAuthority = vi.fn(async () => bookDefaultsAuthority(fixture));
+    await withBrowserGlobals(async () => ({
+      ok: true,
+      status: 200,
+      text: async () => '{malformed acknowledgement',
+    }), async () => {
+      enhanceBookDefaultsFetchSave(fixture.scope, {
+        beginRefresh: () => 3,
+        refresh: vi.fn(),
+        fetchAuthority,
+        installDetail: vi.fn(() => 'installed'),
+      });
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+      await flushAsync();
+
+      expect(fetchAuthority).toHaveBeenCalledOnce();
+      expect(fixture.status.textContent).toContain('Current Book Defaults were restored.');
+      expect(fixture.status.textContent).not.toContain('Could not save defaults.');
+    });
+  });
+
+  it('blocks dispatch until canonical authority is installed, then sends one valid queued complete payload', async () => {
+    const fixture = makeBookDefaultsFetchFixture();
+    const surfaces = attachBookDefaultsDropdowns(fixture);
+    enhanceDropdowns(fixture.form);
+    const requests = [];
+    let releaseAuthority;
+    const authority = bookDefaultsAuthority(fixture, {
+      navigation: 'expanded',
+      previewMode: 'random',
+      randomPageCount: '5',
+      selectedPageIds: '41',
+    });
+    const canonicalFixture = { form: { controls: authority.dialogBody.controls } };
+    canonicalFixture.form.querySelectorAll = () => [];
+    const canonicalSurfaces = attachBookDefaultsDropdowns(canonicalFixture);
+    await withBrowserGlobals((action, options) => new Promise((resolve, reject) => {
+      requests.push({ action, options, resolve, reject });
+    }), async () => {
+      enhanceBookDefaultsFetchSave(fixture.scope, {
+        beginRefresh: () => 4,
+        refresh: vi.fn(() => 'started'),
+        fetchAuthority: () => new Promise((resolve) => { releaseAuthority = () => resolve(authority); }),
+        installDetail: vi.fn(() => 'installed'),
+      });
+      fixture.controls[0].value = 'collapsed';
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+      fixture.controls[1].value = 'selected';
+      fixture.controls[2].value = '8';
+      fixture.controls[3].value = '42';
+      fixture.controls[3].dispatch('change');
+      requests[0].reject(new TypeError('response lost'));
+      await flushAsync();
+
+      expect(requests).toHaveLength(1);
+      expect(fixture.controls.every(({ disabled }) => disabled)).toBe(true);
+      expect(surfaces.every(({ dropdown, inputs, summary, summaryAttributes }) => (
+        dropdown.hasAttribute('data-cc-dropdown-disabled')
+          && inputs.every(({ disabled }) => disabled)
+          && summary.disabled
+          && summary.tabIndex === -1
+          && summaryAttributes.get('aria-disabled') === 'true'
+      ))).toBe(true);
+      fixture.controls[0].dispatch('change');
+      expect(requests).toHaveLength(1);
+
+      releaseAuthority();
+      await flushAsync();
+      await flushAsync();
+      expect(requests).toHaveLength(2);
+      expect(requests[1].options.body.get('navigation')).toBe('collapsed');
+      expect(requests[1].options.body.get('previewMode')).toBe('selected');
+      expect(requests[1].options.body.get('randomPageCount')).toBe('8');
+      expect(requests[1].options.body.get('selectedPageIds')).toBe('42');
+      expect(canonicalSurfaces.every(({ dropdown, inputs, summary, summaryAttributes }) => (
+        !dropdown.hasAttribute('data-cc-dropdown-disabled')
+          && dropdown.initializationCount === 1
+          && inputs.every(({ disabled }) => !disabled)
+          && !summary.disabled
+          && summary.tabIndex === 0
+          && !summaryAttributes.has('aria-disabled')
+      ))).toBe(true);
+      expect(canonicalSurfaces.map(({ currentSummary }) => currentSummary.textContent))
+        .toEqual(['collapsed', 'selected', '8', '42']);
+
+      requests[1].resolve(bookDefaultsAcknowledgement());
+      await flushAsync();
+      expect(requests).toHaveLength(2);
+    });
+  });
+
+  it('rejects an invalid queued Page selection after canonical reconciliation instead of sending it', async () => {
+    const fixture = makeBookDefaultsFetchFixture();
+    const requests = [];
+    const authority = bookDefaultsAuthority(fixture, { selectedPageIds: '41' });
+    authority.dialogBody.controls.find(({ name }) => name === 'selectedPageIds').options = [{ value: '41' }];
+    await withBrowserGlobals((action, options) => new Promise((resolve, reject) => {
+      requests.push({ action, options, resolve, reject });
+    }), async () => {
+      enhanceBookDefaultsFetchSave(fixture.scope, {
+        beginRefresh: () => 2,
+        refresh: vi.fn(),
+        fetchAuthority: async () => authority,
+        installDetail: vi.fn(() => 'installed'),
+      });
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+      fixture.controls[3].value = '42';
+      fixture.controls[3].dispatch('change');
+      requests[0].reject(new TypeError('response lost'));
+      await flushAsync();
+      await flushAsync();
+
+      expect(requests).toHaveLength(1);
+      expect(fixture.status.textContent).toContain('was not applied');
+      expect(fixture.attributes.get('data-settings-fetch-save-state')).toBe('reconciled-queued-invalid');
+    });
+  });
+
+  it.each(['superseded', 'unavailable'])(
+    'does not publish canonical Defaults markup when detail publication is %s',
+    async (publicationOutcome) => {
+      const fixture = makeBookDefaultsFetchFixture();
+      const surfaces = attachBookDefaultsDropdowns(fixture);
+      enhanceDropdowns(fixture.form);
+      const originalControls = fixture.form.controls;
+      const authority = bookDefaultsAuthority(fixture, {
+        navigation: 'collapsed',
+        previewMode: 'selected',
+      });
+      const requests = [];
+
+      await withBrowserGlobals((action, options) => new Promise((resolve, reject) => {
+        requests.push({ action, options, resolve, reject });
+      }), async () => {
+        enhanceBookDefaultsFetchSave(fixture.scope, {
+          beginRefresh: () => 9,
+          refresh: vi.fn(),
+          fetchAuthority: async () => authority,
+          installDetail: vi.fn(() => publicationOutcome),
+        });
+        fixture.controls[0].dispatch('change');
+        await flushAsync();
+        fixture.controls[1].value = 'selected';
+        fixture.controls[1].dispatch('change');
+        requests[0].reject(new TypeError('response lost'));
+        await flushAsync();
+        await flushAsync();
+
+        expect(requests).toHaveLength(1);
+        expect(fixture.form.controls).toBe(originalControls);
+        expect(fixture.form.controls).not.toBe(authority.dialogBody.controls);
+        expect(fixture.controls.every(({ disabled }) => disabled)).toBe(true);
+        expect(surfaces.every(({ dropdown, inputs, summary }) => (
+          dropdown.hasAttribute('data-cc-dropdown-disabled')
+            && inputs.every(({ disabled }) => disabled)
+            && summary.disabled
+        ))).toBe(true);
+        const retry = fixture.body.children.find((child) => (
+          child.attributes?.has('data-book-defaults-reconciliation-retry')
+        ));
+        expect(retry?.focused).toBe(true);
+        expect(fixture.status.textContent).toContain('changes remain blocked');
+      });
+    },
+  );
+
+  it('keeps autosave blocked after reconciliation failure and Retry restores normal dispatch without replaying POST', async () => {
+    const fixture = makeBookDefaultsFetchFixture();
+    const requests = [];
+    const authority = bookDefaultsAuthority(fixture);
+    const canonicalFixture = { form: { controls: authority.dialogBody.controls } };
+    canonicalFixture.form.querySelectorAll = () => [];
+    canonicalFixture.form.ownerDocument = fixture.form.ownerDocument;
+    const canonicalSurfaces = attachBookDefaultsDropdowns(canonicalFixture);
+    const installDetail = vi.fn()
+      .mockReturnValueOnce('unavailable')
+      .mockReturnValueOnce('installed');
+    await withBrowserGlobals((action, options) => new Promise((resolve, reject) => {
+      requests.push({ action, options, resolve, reject });
+    }), async () => {
+      enhanceBookDefaultsFetchSave(fixture.scope, {
+        beginRefresh: () => 6,
+        refresh: vi.fn(() => 'started'),
+        fetchAuthority: async () => authority,
+        installDetail,
+      });
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+      requests[0].reject(new TypeError('response lost'));
+      await flushAsync();
+      await flushAsync();
+
+      expect(requests).toHaveLength(1);
+      expect(fixture.status.textContent).toContain('changes remain blocked');
+      expect(fixture.form.controls).not.toBe(authority.dialogBody.controls);
+      const retry = fixture.body.children.find((child) => child.attributes?.has('data-book-defaults-reconciliation-retry'));
+      expect(retry?.focused).toBe(true);
+      fixture.controls[1].dispatch('change');
+      expect(requests).toHaveLength(1);
+
+      retry.dispatch('click');
+      await flushAsync();
+      await flushAsync();
+      expect(requests).toHaveLength(1);
+      expect(fixture.status.textContent).toContain('Current Book Defaults were restored.');
+      expect(fixture.form.ownerDocument.activeElement).toBe(canonicalSurfaces[0].summary);
+      expect(fixture.form.ownerDocument.activeElement).not.toBe(retry);
+      expect(authority.dialogBody.contains(fixture.form.ownerDocument.activeElement)).toBe(true);
+      expect(installDetail).toHaveBeenCalledTimes(2);
+
+      const canonicalControl = fixture.form.controls[0];
+      canonicalControl.value = 'collapsed';
+      canonicalControl.dispatch('change');
+      await flushAsync();
+      expect(requests).toHaveLength(2);
+    });
+  });
+});
+
+function makeBookEditFetchFixture() {
+  const listeners = new Map();
+  const control = (attrs = {}) => ({
+    value: '',
+    files: [],
+    disabled: false,
+    isConnected: true,
+    ...attrs,
+    addEventListener(type, handler) { listeners.set(`${attrs.kind}:${type}`, handler); },
+    dispatch(type) { listeners.get(`${attrs.kind}:${type}`)?.({ target: this }); },
+    closest() { return null; },
+    removeAttribute() {},
+    setAttribute() {},
+    focus() { this.ownerDocument.activeElement = this; },
+  });
+  const title = control({ kind: 'title', id: 'title', value: 'Book', type: 'text' });
+  const cover = control({ kind: 'cover', id: 'book-cover', type: 'file' });
+  const status = {
+    _textContent: '',
+    children: [],
+    get textContent() { return this._textContent; },
+    set textContent(value) {
+      this._textContent = String(value);
+      this.children.forEach((child) => { child.parentNode = null; });
+      this.children = [];
+    },
+    appendChild(child) {
+      this.children.push(child);
+      child.parentNode = this;
+      child.isConnected = true;
+    },
+  };
+  const csrf = { value: 'csrf-book-edit' };
+  const expectedKind = { value: 'none' };
+  const expectedId = { value: '' };
+  const confirmed = { value: 'false' };
+  const attributes = new Map();
+  const createdButtons = [];
+  const body = {
+    children: [],
+    appendChild(child) {
+      this.children.push(child);
+      child.parentNode = this;
+      child.isConnected = true;
+    },
+    prepend() {},
+    contains(element) { return element === title || element === cover || this.children.includes(element); },
+    querySelector(selector) {
+      if (selector === '#title') return title;
+      if (selector === '#book-cover') return cover;
+      return null;
+    },
+  };
+  const document = {
+    title: 'CreatorCrate',
+    body: { tagName: 'BODY', isConnected: true },
+    activeElement: null,
+    defaultView: { location: { href: 'http://creatorcrate.local/notes/books/7' } },
+    querySelector() { return null; },
+    getElementById(id) {
+      if (id === 'title') return title;
+      if (id === 'book-cover') return cover;
+      return null;
+    },
+    createElement(tagName) {
+      const handlers = new Map();
+      const element = {
+        tagName,
+        ownerDocument: document,
+        isConnected: false,
+        attributes: new Map(),
+        addEventListener(type, handler) { handlers.set(type, handler); },
+        dispatch(type) { handlers.get(type)?.({ target: this }); },
+        setAttribute(name, value) { this.attributes.set(name, String(value)); },
+        remove() {
+          if (!this.parentNode) return;
+          this.parentNode.children = this.parentNode.children.filter((child) => child !== this);
+          this.parentNode = null;
+          this.isConnected = false;
+          if (document.activeElement === this) document.activeElement = document.body;
+        },
+        focus() { document.activeElement = this; },
+      };
+      if (tagName === 'button') createdButtons.push(element);
+      return element;
+    },
+  };
+  title.ownerDocument = document;
+  cover.ownerDocument = document;
+  const close = {
+    isConnected: true,
+    focus() { document.activeElement = this; },
+  };
+  const dialog = {
+    open: true,
+    contains(element) { return element === close || body.contains(element); },
+    querySelector(selector) { return selector === '[data-dialog-close]' ? close : null; },
+  };
+  const form = {
+    ownerDocument: document,
+    action: '/notes/books/7',
+    dataset: {},
+    querySelector(selector) {
+      return ({
+        '[data-book-title-autosave]': title,
+        '[data-book-cover-autosave]': cover,
+        '[data-book-edit-save-status]': status,
+        'input[name="_csrf"]': csrf,
+        'input[name="expectedCoverKind"]': expectedKind,
+        'input[name="expectedCoverId"]': expectedId,
+        'input[name="coverReplacementConfirmed"]': confirmed,
+        '.app-dialog-body': body,
+      })[selector] || null;
+    },
+    querySelectorAll() { return []; },
+    addEventListener(type, handler) { listeners.set(`form:${type}`, handler); },
+    setAttribute(name, value) { attributes.set(name, String(value)); },
+    removeAttribute(name) { attributes.delete(name); },
+    getAttribute(name) { return attributes.get(name) || null; },
+    closest(selector) { return selector === '[data-app-dialog]' ? dialog : null; },
+  };
+  return {
+    form, title, cover, status, attributes, body, createdButtons, document, dialog, close,
+    scope: { querySelectorAll: () => [form] },
+  };
+}
+
+function acknowledgedCoverPresentationOptions(fixture) {
+  return {
+    fetchAuthority: async (state) => ({
+      destination: '/notes/books/7',
+      detailRegion: {},
+      coverPresentation: {},
+      title: state.acknowledgedTitle,
+      currentCover: {
+        kind: fixture.form.querySelector('input[name="expectedCoverKind"]').value,
+        id: fixture.form.querySelector('input[name="expectedCoverId"]').value,
+      },
+    }),
+    installDialogPresentation: () => true,
+    publishDetailAndDialog: (document, destination, generation, detailRegion, publishDialog) => (
+      publishDialog() ? 'installed' : 'unavailable'
+    ),
+  };
+}
+
+describe('Book edit immediate persistence enhancement', () => {
+  it.each([
+    ['none', '', { kind: 'none', id: '' }],
+    ['project_asset', '42', { kind: 'project_asset', id: '42' }],
+    ['managed_asset', '4fb0c5e1-2c9a-4d9a-a8e1-83ad0d843730', {
+      kind: 'managed_asset', id: '4fb0c5e1-2c9a-4d9a-a8e1-83ad0d843730',
+    }],
+    ['managed_asset', 'opaque:Managed-Cover/Value', {
+      kind: 'managed_asset', id: 'opaque:Managed-Cover/Value',
+    }],
+  ])('accepts canonical %s cover authority without coercing its ID', (kind, id, expected) => {
+    expect(parseBookCoverAuthority(kind, id)).toEqual(expected);
+  });
+
+  it.each([
+    ['none', '1'],
+    ['project_asset', ''],
+    ['project_asset', 'abc'],
+    ['project_asset', '01'],
+    ['project_asset', '9007199254740992'],
+    ['managed_asset', ''],
+    ['unsupported', '1'],
+  ])('rejects malformed %s cover authority with ID %j', (kind, id) => {
+    expect(parseBookCoverAuthority(kind, id)).toBeNull();
+  });
+
+  it.each([
+    ['managed UUID', { kind: 'managed_asset', id: '4fb0c5e1-2c9a-4d9a-a8e1-83ad0d843730' }],
+    ['project-backed numeric ID', { kind: 'project_asset', id: '42' }],
+  ])('publishes an acknowledged %s cover through canonical detail and dialog authority without replaying it', async (
+    label,
+    currentCover,
+  ) => {
+    const fixture = makeBookEditFetchFixture();
+    const detailRegion = {};
+    const coverPresentation = {};
+    const fetchAuthority = vi.fn(async () => ({
+      destination: '/notes/books/7', detailRegion, coverPresentation,
+      title: 'Book', currentCover,
+    }));
+    const installDialogPresentation = vi.fn(() => true);
+    const publishDetailAndDialog = vi.fn((document, destination, generation, region, publishDialog) => (
+      publishDialog() ? 'installed' : 'unavailable'
+    ));
+    const requests = [];
+
+    await withBrowserGlobals(async (action, options) => {
+      requests.push({ action, options });
+      return {
+        ok: true,
+        json: async () => ({
+          status: 'success',
+          refreshUrl: '/notes/books/7',
+          currentCover,
+          book: { title: 'Book' },
+        }),
+      };
+    }, async () => {
+      enhanceBookEditFetchSave(fixture.scope, {
+        beginRefresh: () => 4,
+        fetchAuthority,
+        installDialogPresentation,
+        publishDetailAndDialog,
+      });
+      fixture.cover.files = [{ name: 'cover.png' }];
+      fixture.cover.dispatch('change');
+      await flushAsync();
+
+      expect(requests).toHaveLength(1);
+      expect(fetchAuthority).toHaveBeenCalledOnce();
+      expect(publishDetailAndDialog).toHaveBeenCalledWith(
+        fixture.form.ownerDocument, '/notes/books/7', 4, detailRegion, expect.any(Function),
+      );
+      expect(installDialogPresentation).toHaveBeenCalledWith(
+        expect.any(Object), expect.objectContaining({ coverPresentation, currentCover }),
+      );
+      expect(fixture.form.querySelector('input[name="expectedCoverKind"]').value).toBe(currentCover.kind);
+      expect(fixture.form.querySelector('input[name="expectedCoverId"]').value).toBe(currentCover.id);
+      expect(fixture.status.textContent).toBe('Book cover saved.');
+    });
+  });
+
+  it('keeps acknowledged cover authority and does not replay POST when canonical presentation refresh fails', async () => {
+    const fixture = makeBookEditFetchFixture();
+    const requests = [];
+    const currentCover = { kind: 'managed_asset', id: 'saved-cover-id' };
+
+    await withBrowserGlobals(async (action, options) => {
+      requests.push({ action, options });
+      return {
+        ok: true,
+        json: async () => ({
+          status: 'success', refreshUrl: '/notes/books/7', currentCover, book: { title: 'Book' },
+        }),
+      };
+    }, async () => {
+      enhanceBookEditFetchSave(fixture.scope, {
+        beginRefresh: () => 4,
+        fetchAuthority: async () => null,
+        publishDetailAndDialog: vi.fn(),
+      });
+      fixture.cover.files = [{ name: 'cover.png' }];
+      fixture.cover.dispatch('change');
+      await flushAsync();
+
+      expect(requests).toHaveLength(1);
+      expect(fixture.form.querySelector('input[name="expectedCoverKind"]').value).toBe(currentCover.kind);
+      expect(fixture.form.querySelector('input[name="expectedCoverId"]').value).toBe(currentCover.id);
+      expect(fixture.attributes.get('data-book-edit-save-state')).toBe('saved-refresh-error');
+      expect(fixture.status.textContent).toContain('The Book was saved');
+      expect(fixture.body.children).toHaveLength(1);
+      expect(fixture.body.children[0].textContent).toBe('Retry refresh');
+      expect(fixture.body.children[0].attributes.get('aria-describedby')).toBe('book-edit-save-status');
+    });
+  });
+
+  it('recovers an acknowledged title presentation through repeated GET-only Retry without replaying POST', async () => {
+    const fixture = makeBookEditFetchFixture();
+    const posts = [];
+    const authority = {
+      destination: '/notes/books/7', detailRegion: {}, coverPresentation: {},
+      title: 'Canonical saved title', currentCover: { kind: 'none', id: '' },
+    };
+    const fetchAuthority = vi.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(authority);
+    const publishDetailAndDialog = vi.fn((document, destination, generation, detailRegion, publishDialog) => (
+      publishDialog() ? 'installed' : 'unavailable'
+    ));
+
+    await withBrowserGlobals(async (action, options) => {
+      posts.push({ action, options });
+      return {
+        ok: true,
+        json: async () => ({
+          status: 'success', refreshUrl: '/notes/books/7',
+          currentCover: { kind: 'none', id: '' }, book: { title: 'Saved title' },
+        }),
+      };
+    }, async () => {
+      enhanceBookEditFetchSave(fixture.scope, {
+        beginRefresh: () => 4,
+        refresh: () => 'unavailable',
+        fetchAuthority,
+        installDialogPresentation: () => true,
+        publishDetailAndDialog,
+      });
+      fixture.title.value = 'Saved title';
+      fixture.title.dispatch('change');
+      await flushAsync();
+
+      fixture.body.children[0].focus();
+      fixture.body.children[0].dispatch('click');
+      await flushAsync();
+      expect(fixture.body.children).toHaveLength(1);
+      expect(fixture.document.activeElement).toBe(fixture.body.children[0]);
+
+      fixture.body.children[0].dispatch('click');
+      await flushAsync();
+      await flushAsync();
+
+      expect(posts).toHaveLength(1);
+      expect(posts[0].options.method).toBe('POST');
+      expect(fetchAuthority).toHaveBeenCalledTimes(2);
+      expect(publishDetailAndDialog).toHaveBeenCalledOnce();
+      expect(fixture.title.value).toBe('Canonical saved title');
+      expect(fixture.body.children).toHaveLength(0);
+      expect(fixture.status.textContent).toBe('Book saved. Presentation refreshed.');
+      expect(fixture.document.activeElement).toBe(fixture.title);
+    });
+  });
+
+  it('recovers an acknowledged cover presentation through GET-only Retry without resending multipart data', async () => {
+    const fixture = makeBookEditFetchFixture();
+    const requests = [];
+    const acknowledgedCover = { kind: 'managed_asset', id: 'saved-cover-id' };
+    const authority = {
+      destination: '/notes/books/7', detailRegion: {}, coverPresentation: {},
+      title: 'Book', currentCover: acknowledgedCover,
+    };
+    const fetchAuthority = vi.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(authority);
+
+    await withBrowserGlobals(async (action, options) => {
+      requests.push({ action, options });
+      return {
+        ok: true,
+        json: async () => ({
+          status: 'success', refreshUrl: '/notes/books/7',
+          currentCover: acknowledgedCover, book: { title: 'Book' },
+        }),
+      };
+    }, async () => {
+      enhanceBookEditFetchSave(fixture.scope, {
+        beginRefresh: () => 6,
+        fetchAuthority,
+        installDialogPresentation: () => true,
+        publishDetailAndDialog: (document, destination, generation, detailRegion, publishDialog) => (
+          publishDialog() ? 'installed' : 'unavailable'
+        ),
+      });
+      fixture.cover.files = [{ name: 'cover.png' }];
+      fixture.cover.dispatch('change');
+      await flushAsync();
+
+      expect(fixture.form.querySelector('input[name="expectedCoverId"]').value).toBe('saved-cover-id');
+      fixture.body.children[0].focus();
+      fixture.body.children[0].dispatch('click');
+      await flushAsync();
+      await flushAsync();
+
+      expect(requests).toHaveLength(1);
+      expect(requests[0].options.body).toBeInstanceOf(TestFormData);
+      expect(fetchAuthority).toHaveBeenCalledTimes(2);
+      expect(fixture.form.querySelector('input[name="expectedCoverId"]').value).toBe('saved-cover-id');
+      expect(fixture.body.children).toHaveLength(0);
+      expect(fixture.status.textContent).toBe('Book saved. Presentation refreshed.');
+      expect(fixture.document.activeElement).toBe(fixture.title);
+    });
+  });
+
+  it('submits the acknowledged title with a cover while preserving and later committing local title typing', async () => {
+    const fixture = makeBookEditFetchFixture();
+    const requests = [];
+
+    await withBrowserGlobals(async (action, options) => {
+      requests.push({ action, options });
+      const title = options.body instanceof URLSearchParams
+        ? options.body.get('title')
+        : options.body.getAll('title')[0];
+      return {
+        ok: true,
+        json: async () => ({
+          status: 'success', refreshUrl: '/notes/books/7',
+          currentCover: { kind: 'managed_asset', id: '44' }, book: { title },
+        }),
+      };
+    }, async () => {
+      enhanceBookEditFetchSave(fixture.scope, {
+        beginRefresh: () => 4,
+        refresh: vi.fn(() => 'started'),
+        ...acknowledgedCoverPresentationOptions(fixture),
+      });
+      fixture.title.value = 'Uncommitted title';
+      fixture.cover.files = [{ name: 'cover.png' }];
+      fixture.cover.dispatch('change');
+      await flushAsync();
+
+      expect(requests).toHaveLength(1);
+      expect(requests[0].options.body.getAll('title')).toEqual(['Book']);
+      expect(fixture.title.value).toBe('Uncommitted title');
+      expect(fixture.status.textContent).toBe('Book cover saved.');
+
+      fixture.title.dispatch('change');
+      await flushAsync();
+      expect(requests).toHaveLength(2);
+      expect(requests[1].options.body.get('title')).toBe('Uncommitted title');
+      expect(fixture.status.textContent).toBe('Book title saved.');
+    });
+  });
+
+  it('does not let an uncommitted blank title block an otherwise valid cover save', async () => {
+    const fixture = makeBookEditFetchFixture();
+    const requests = [];
+
+    await withBrowserGlobals(async (action, options) => {
+      requests.push({ action, options });
+      return {
+        ok: true,
+        json: async () => ({
+          status: 'success', refreshUrl: '/notes/books/7',
+          currentCover: { kind: 'managed_asset', id: '45' }, book: { title: 'Book' },
+        }),
+      };
+    }, async () => {
+      enhanceBookEditFetchSave(fixture.scope, {
+        beginRefresh: () => 4,
+        refresh: vi.fn(() => 'started'),
+        ...acknowledgedCoverPresentationOptions(fixture),
+      });
+      fixture.title.value = '';
+      fixture.cover.files = [{ name: 'cover.png' }];
+      fixture.cover.dispatch('change');
+      await flushAsync();
+
+      expect(requests[0].options.body.getAll('title')).toEqual(['Book']);
+      expect(fixture.title.value).toBe('');
+      expect(fixture.status.textContent).toBe('Book cover saved.');
+    });
+  });
+
+  it('uses a newly acknowledged title when a cover waits behind its active title mutation', async () => {
+    const fixture = makeBookEditFetchFixture();
+    const requests = [];
+
+    await withBrowserGlobals((action, options) => {
+      requests.push({ action, options });
+      if (requests.length === 1) return new Promise((resolve) => { requests[0].resolve = resolve; });
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          status: 'success', refreshUrl: '/notes/books/7',
+          currentCover: { kind: 'managed_asset', id: '46' }, book: { title: 'Title B' },
+        }),
+      });
+    }, async () => {
+      enhanceBookEditFetchSave(fixture.scope, {
+        beginRefresh: () => 4,
+        refresh: vi.fn(() => 'started'),
+        ...acknowledgedCoverPresentationOptions(fixture),
+      });
+      fixture.title.value = 'Title B';
+      fixture.title.dispatch('change');
+      fixture.cover.files = [{ name: 'cover.png' }];
+      fixture.cover.dispatch('change');
+      expect(requests).toHaveLength(1);
+
+      requests[0].resolve({
+        ok: true,
+        json: async () => ({
+          status: 'success', refreshUrl: '/notes/books/7',
+          currentCover: { kind: 'none', id: '' }, book: { title: 'Title B' },
+        }),
+      });
+      await flushAsync();
+      await flushAsync();
+
+      expect(requests).toHaveLength(2);
+      expect(requests[1].options.body.getAll('title')).toEqual(['Title B']);
+      expect(fixture.status.textContent).toBe('Book cover saved.');
+    });
+  });
+
+  it('lets a newer title commit finish after an active cover without the cover overwriting it', async () => {
+    const fixture = makeBookEditFetchFixture();
+    const requests = [];
+
+    await withBrowserGlobals((action, options) => {
+      requests.push({ action, options });
+      if (requests.length === 1) return new Promise((resolve) => { requests[0].resolve = resolve; });
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          status: 'success', refreshUrl: '/notes/books/7',
+          currentCover: { kind: 'managed_asset', id: '47' }, book: { title: 'Title B' },
+        }),
+      });
+    }, async () => {
+      enhanceBookEditFetchSave(fixture.scope, {
+        beginRefresh: () => 4,
+        refresh: vi.fn(() => 'started'),
+        ...acknowledgedCoverPresentationOptions(fixture),
+      });
+      fixture.cover.files = [{ name: 'cover.png' }];
+      fixture.cover.dispatch('change');
+      await flushAsync();
+      fixture.title.value = 'Title B';
+      fixture.title.dispatch('change');
+      expect(requests[0].options.body.getAll('title')).toEqual(['Book']);
+
+      requests[0].resolve({
+        ok: true,
+        json: async () => ({
+          status: 'success', refreshUrl: '/notes/books/7',
+          currentCover: { kind: 'managed_asset', id: '47' }, book: { title: 'Book' },
+        }),
+      });
+      await flushAsync();
+      await flushAsync();
+
+      expect(requests).toHaveLength(2);
+      expect(requests[1].options.body.get('title')).toBe('Title B');
+      expect(fixture.title.value).toBe('Title B');
+      expect(fixture.status.textContent).toBe('Book title saved.');
+    });
+  });
+
+  it('reconciles an uncertain title acknowledgement before dispatching one queued newer title', async () => {
+    const fixture = makeBookEditFetchFixture();
+    const requests = [];
+    const canonicalRegion = { canonical: true };
+
+    await withBrowserGlobals((action, options) => {
+      if (options.method === 'POST' && requests.length === 0) {
+        return new Promise((resolve, reject) => requests.push({ kind: 'post', action, options, resolve, reject }));
+      }
+      requests.push({ kind: 'post', action, options });
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          status: 'success', refreshUrl: '/notes/books/7',
+          currentCover: { kind: 'managed_asset', id: '81' },
+          book: { title: 'Queued title' },
+        }),
+      });
+    }, async () => {
+      const installDetail = vi.fn(() => 'installed');
+      enhanceBookEditFetchSave(fixture.scope, {
+        beginRefresh: () => 4,
+        refresh: vi.fn(() => 'started'),
+        installDetail,
+        installDialogPresentation: () => true,
+        fetchAuthority: vi.fn(async () => ({
+          destination: '/notes/books/7', detailRegion: canonicalRegion,
+          title: 'Committed uncertain title', currentCover: { kind: 'managed_asset', id: '80' },
+        })),
+      });
+
+      fixture.title.value = 'Committed uncertain title';
+      fixture.title.dispatch('change');
+      fixture.title.value = 'Queued title';
+      fixture.title.dispatch('change');
+      requests[0].reject(new Error('response lost'));
+      await flushAsync();
+      await flushAsync();
+
+      expect(installDetail).toHaveBeenCalledWith(fixture.form.ownerDocument, '/notes/books/7', 4, canonicalRegion);
+      expect(requests.filter(({ kind }) => kind === 'post')).toHaveLength(2);
+      expect(requests[1].options.body.get('title')).toBe('Queued title');
+      expect(fixture.attributes.get('data-book-edit-save-state')).toBe('saved');
+      expect(fixture.attributes.has('aria-busy')).toBe(false);
+      expect(fixture.title.disabled).toBe(false);
+    });
+  });
+
+  it('does not replay an uncertain cover and sends a distinct never-dispatched cover with fresh identity', async () => {
+    const fixture = makeBookEditFetchFixture();
+    const requests = [];
+
+    await withBrowserGlobals((action, options) => {
+      if (requests.length === 0) return new Promise((resolve, reject) => requests.push({ action, options, resolve, reject }));
+      requests.push({ action, options });
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          status: 'success', refreshUrl: '/notes/books/7',
+          currentCover: { kind: 'managed_asset', id: '92' }, book: { title: 'Canonical title' },
+        }),
+      });
+    }, async () => {
+      enhanceBookEditFetchSave(fixture.scope, {
+        beginRefresh: () => 7,
+        refresh: vi.fn(() => 'started'),
+        installDetail: () => 'installed',
+        installDialogPresentation: () => true,
+        confirmCover: async () => true,
+        fetchAuthority: vi.fn()
+          .mockResolvedValueOnce({
+            destination: '/notes/books/7', detailRegion: {}, coverPresentation: {},
+            title: 'Canonical title', currentCover: { kind: 'managed_asset', id: '91' },
+          })
+          .mockResolvedValueOnce({
+            destination: '/notes/books/7', detailRegion: {}, coverPresentation: {},
+            title: 'Canonical title', currentCover: { kind: 'managed_asset', id: '92' },
+          }),
+        publishDetailAndDialog: (document, destination, generation, detailRegion, publishDialog) => (
+          publishDialog() ? 'installed' : 'unavailable'
+        ),
+      });
+      const uncertainFile = { name: 'uncertain.png' };
+      const laterFile = { name: 'later.png' };
+      fixture.cover.files = [uncertainFile];
+      fixture.cover.dispatch('change');
+      await flushAsync();
+      fixture.cover.files = [laterFile];
+      fixture.cover.dispatch('change');
+      requests[0].reject(new Error('response lost'));
+      await flushAsync();
+      await flushAsync();
+
+      expect(requests).toHaveLength(2);
+      expect(requests[1].options.body.values.cover[0]).toBe(laterFile);
+      expect(requests[1].options.body.getAll('title')).toEqual(['Canonical title']);
+      expect(requests[1].options.body.getAll('expectedCoverId')).toEqual(['91']);
+      expect(fixture.form.querySelector('input[name="expectedCoverId"]').value).toBe('92');
+    });
+  });
+
+  it('canonically reconciles a controlled stale cover before accepting a deliberate replacement', async () => {
+    const fixture = makeBookEditFetchFixture();
+    const staleFile = { name: 'stale-selection.png' };
+    const replacementFile = { name: 'replacement.png' };
+    const managedId = '4fb0c5e1-2c9a-4d9a-a8e1-83ad0d843730';
+    const requests = [];
+    let resolveAuthority;
+    fixture.form.querySelector('input[name="expectedCoverKind"]').value = 'managed_asset';
+    fixture.form.querySelector('input[name="expectedCoverId"]').value = 'cover-a';
+
+    await withBrowserGlobals(async (action, options) => {
+      requests.push({ action, options });
+      if (requests.length === 1) {
+        return {
+          ok: false,
+          status: 409,
+          json: async () => ({
+            status: 'error', code: 'STALE_SOURCE', message: 'Book cover changed since it was read.',
+            currentCover: { kind: 'managed_asset', id: managedId },
+          }),
+        };
+      }
+      const submittedTitle = options.body instanceof URLSearchParams
+        ? options.body.get('title')
+        : options.body.getAll('title')[0];
+      return {
+        ok: true,
+        json: async () => ({
+          status: 'success', refreshUrl: '/notes/books/7',
+          currentCover: { kind: 'managed_asset', id: 'cover-d' },
+          book: { title: submittedTitle },
+        }),
+      };
+    }, async () => {
+      const installDetail = vi.fn(() => 'installed');
+      const installDialogPresentation = vi.fn(() => true);
+      const fetchAuthority = vi.fn()
+        .mockImplementationOnce(() => new Promise((resolve) => { resolveAuthority = resolve; }))
+        .mockResolvedValueOnce({
+          destination: '/notes/books/7', detailRegion: {}, coverPresentation: {},
+          title: 'Canonical title', currentCover: { kind: 'managed_asset', id: 'cover-d' },
+        });
+      enhanceBookEditFetchSave(fixture.scope, {
+        beginRefresh: () => 9,
+        refresh: vi.fn(() => 'started'),
+        fetchAuthority,
+        installDetail,
+        installDialogPresentation,
+        publishDetailAndDialog: (document, destination, generation, detailRegion, publishDialog) => (
+          publishDialog() ? 'installed' : 'unavailable'
+        ),
+        confirmCover: async () => true,
+      });
+
+      fixture.title.value = 'Local uncommitted title';
+      fixture.cover.value = 'C:\\fakepath\\stale-selection.png';
+      fixture.cover.files = [staleFile];
+      fixture.cover.dispatch('change');
+      await flushAsync();
+      await flushAsync();
+
+      expect(requests).toHaveLength(1);
+      expect(fetchAuthority).toHaveBeenCalledOnce();
+      expect(fixture.cover.value).toBe('');
+      expect(fixture.title.disabled).toBe(true);
+      expect(fixture.cover.disabled).toBe(true);
+      expect(fixture.status.textContent).toContain('selected replacement was not applied');
+      expect(fixture.status.textContent).not.toContain('confirm whether');
+
+      const detailRegion = { canonical: 'detail-b' };
+      const coverPresentation = { canonical: 'cover-b' };
+      resolveAuthority({
+        destination: '/notes/books/7', detailRegion, coverPresentation,
+        title: 'Canonical title', currentCover: { kind: 'managed_asset', id: managedId },
+      });
+      await flushAsync();
+      await flushAsync();
+
+      expect(installDetail).toHaveBeenCalledWith(fixture.form.ownerDocument, '/notes/books/7', 9, detailRegion);
+      expect(installDialogPresentation).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({ coverPresentation }),
+      );
+      expect(fixture.form.querySelector('input[name="expectedCoverKind"]').value).toBe('managed_asset');
+      expect(fixture.form.querySelector('input[name="expectedCoverId"]').value).toBe(managedId);
+      expect(fixture.title.value).toBe('Local uncommitted title');
+      expect(fixture.title.disabled).toBe(false);
+      expect(fixture.cover.disabled).toBe(false);
+      expect(fixture.status.textContent).toContain('current cover was refreshed');
+      expect(fixture.status.textContent).toContain('choose the file again');
+      expect(requests).toHaveLength(1);
+
+      fixture.cover.files = [replacementFile];
+      fixture.cover.dispatch('change');
+      await flushAsync();
+      await flushAsync();
+      expect(requests).toHaveLength(2);
+      expect(requests[1].options.body.getAll('expectedCoverKind')).toEqual(['managed_asset']);
+      expect(requests[1].options.body.getAll('expectedCoverId')).toEqual([managedId]);
+      expect(requests[1].options.body.getAll('title')).toEqual(['Canonical title']);
+      expect(requests[1].options.body.values.cover[0]).toBe(replacementFile);
+
+      fixture.title.dispatch('change');
+      await flushAsync();
+      expect(requests).toHaveLength(3);
+      expect(requests[2].options.body.get('title')).toBe('Local uncommitted title');
+      expect(fixture.status.textContent).toBe('Book title saved.');
+    });
+  });
+
+  it('keeps a controlled stale cover blocked through GET failure and Retry without replaying it', async () => {
+    const fixture = makeBookEditFetchFixture();
+    const rejectedFile = { name: 'rejected.png' };
+    const requests = [];
+    const fetchAuthority = vi.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        destination: '/notes/books/7', detailRegion: {}, coverPresentation: {},
+        title: 'Canonical title', currentCover: { kind: 'project_asset', id: '42' },
+      });
+
+    await withBrowserGlobals(async (action, options) => {
+      requests.push({ action, options });
+      return {
+        ok: false,
+        status: 409,
+        json: async () => ({
+          status: 'error', code: 'STALE_SOURCE', message: 'Book cover changed since it was read.',
+          currentCover: { kind: 'project_asset', id: '42' },
+        }),
+      };
+    }, async () => {
+      enhanceBookEditFetchSave(fixture.scope, {
+        beginRefresh: () => 3,
+        fetchAuthority,
+        installDetail: () => 'installed',
+        installDialogPresentation: () => true,
+        confirmCover: async () => true,
+      });
+      fixture.cover.value = 'C:\\fakepath\\rejected.png';
+      fixture.cover.files = [rejectedFile];
+      fixture.cover.dispatch('change');
+      await flushAsync();
+      await flushAsync();
+
+      expect(requests).toHaveLength(1);
+      expect(fixture.cover.value).toBe('');
+      expect(fixture.title.disabled).toBe(true);
+      expect(fixture.cover.disabled).toBe(true);
+      expect(fixture.attributes.get('aria-busy')).toBe('true');
+      expect(fixture.status.textContent).toContain('selected replacement was not applied');
+      expect(fixture.status.textContent).toContain('Retry reconciliation');
+
+      fixture.body.children[0].focus();
+      fixture.body.children[0].dispatch('click');
+      await flushAsync();
+      await flushAsync();
+
+      expect(fetchAuthority).toHaveBeenCalledTimes(2);
+      expect(requests).toHaveLength(1);
+      expect(fixture.form.querySelector('input[name="expectedCoverKind"]').value).toBe('project_asset');
+      expect(fixture.form.querySelector('input[name="expectedCoverId"]').value).toBe('42');
+      expect(fixture.title.disabled).toBe(false);
+      expect(fixture.cover.disabled).toBe(false);
+      expect(fixture.attributes.has('aria-busy')).toBe(false);
+      expect(fixture.status.textContent).toContain('choose the file again');
+      expect(fixture.document.activeElement).toBe(fixture.title);
+    });
+  });
+
+  it('keeps Edit Book non-authoritative and blocked when uncertain reconciliation fails', async () => {
+    const fixture = makeBookEditFetchFixture();
+    const requests = [];
+    await withBrowserGlobals((action, options) => {
+      requests.push({ action, options });
+      return Promise.reject(new Error('response lost'));
+    }, async () => {
+      enhanceBookEditFetchSave(fixture.scope, {
+        beginRefresh: () => 3,
+        fetchAuthority: async () => null,
+        installDetail: vi.fn(),
+      });
+      fixture.title.value = 'Uncertain';
+      fixture.title.dispatch('change');
+      await flushAsync();
+      await flushAsync();
+
+      expect(requests).toHaveLength(1);
+      expect(fixture.title.disabled).toBe(true);
+      expect(fixture.cover.disabled).toBe(true);
+      expect(fixture.attributes.get('aria-busy')).toBe('true');
+      expect(fixture.status.textContent).toContain('Retry reconciliation');
+      expect(fixture.status.textContent).not.toContain('Could not save');
+    });
+  });
+
+  it('retries canonical reconciliation until a managed UUID authority is installed without replaying POST', async () => {
+    const fixture = makeBookEditFetchFixture();
+    const requests = [];
+    const managedId = '4fb0c5e1-2c9a-4d9a-a8e1-83ad0d843730';
+    const fetchAuthority = vi.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        destination: '/notes/books/7', detailRegion: {}, title: 'Canonical title',
+        currentCover: parseBookCoverAuthority('managed_asset', managedId),
+      });
+
+    await withBrowserGlobals((action, options) => {
+      requests.push({ action, options });
+      return Promise.reject(new Error('response lost'));
+    }, async () => {
+      enhanceBookEditFetchSave(fixture.scope, {
+        beginRefresh: () => 3,
+        fetchAuthority,
+        installDetail: () => 'installed',
+        installDialogPresentation: () => true,
+      });
+      fixture.title.value = 'Uncertain';
+      fixture.title.dispatch('change');
+      await flushAsync();
+      await flushAsync();
+
+      fixture.body.children[0].focus();
+      fixture.body.children[0].dispatch('click');
+      await flushAsync();
+      await flushAsync();
+      expect(fixture.document.activeElement).toBe(fixture.body.children[0]);
+      fixture.body.children[0].dispatch('click');
+      await flushAsync();
+      await flushAsync();
+
+      expect(fetchAuthority).toHaveBeenCalledTimes(3);
+      expect(requests).toHaveLength(1);
+      expect(fixture.form.querySelector('input[name="expectedCoverKind"]').value).toBe('managed_asset');
+      expect(fixture.form.querySelector('input[name="expectedCoverId"]').value).toBe(managedId);
+      expect(fixture.body.children).toHaveLength(0);
+      expect(fixture.attributes.get('data-book-edit-save-state')).toBe('reconciled');
+      expect(fixture.title.disabled).toBe(false);
+      expect(fixture.cover.disabled).toBe(false);
+      expect(fixture.document.activeElement).toBe(fixture.title);
+    });
+  });
+
+  it('does not restore Retry focus into Edit Book after the dialog closes during recovery', async () => {
+    const fixture = makeBookEditFetchFixture();
+    let resolveAuthority;
+    const authority = {
+      destination: '/notes/books/7', detailRegion: {}, coverPresentation: {},
+      title: 'Canonical saved title', currentCover: { kind: 'none', id: '' },
+    };
+    const fetchAuthority = vi.fn(() => new Promise((resolve) => { resolveAuthority = resolve; }));
+    const outside = { focus() { fixture.document.activeElement = this; } };
+
+    await withBrowserGlobals(async () => ({
+      ok: true,
+      json: async () => ({
+        status: 'success', refreshUrl: '/notes/books/7',
+        currentCover: { kind: 'none', id: '' }, book: { title: 'Saved title' },
+      }),
+    }), async () => {
+      enhanceBookEditFetchSave(fixture.scope, {
+        beginRefresh: () => 4,
+        refresh: () => 'unavailable',
+        fetchAuthority,
+        installDialogPresentation: () => true,
+        publishDetailAndDialog: (document, destination, generation, detailRegion, publishDialog) => (
+          publishDialog() ? 'installed' : 'unavailable'
+        ),
+      });
+      fixture.title.value = 'Saved title';
+      fixture.title.dispatch('change');
+      await flushAsync();
+
+      const retry = fixture.body.children[0];
+      retry.focus();
+      retry.dispatch('click');
+      fixture.dialog.open = false;
+      outside.focus();
+      resolveAuthority(authority);
+      await flushAsync();
+      await flushAsync();
+
+      expect(fixture.document.activeElement).toBe(outside);
+      expect(fixture.body.children).toHaveLength(0);
+    });
+  });
+
+  it('installs canonical title authority without overwriting newer uncommitted typing', async () => {
+    const fixture = makeBookEditFetchFixture();
+    const requests = [];
+    await withBrowserGlobals((action, options) => new Promise((resolve, reject) => {
+      requests.push({ action, options, resolve, reject });
+    }), async () => {
+      enhanceBookEditFetchSave(fixture.scope, {
+        beginRefresh: () => 5,
+        installDetail: () => 'installed',
+        installDialogPresentation: () => true,
+        fetchAuthority: async () => ({
+          destination: '/notes/books/7', detailRegion: {}, title: 'Canonical committed title',
+          currentCover: { kind: 'none', id: '' },
+        }),
+      });
+      fixture.title.value = 'Submitted title';
+      fixture.title.dispatch('change');
+      fixture.title.value = 'Still typing';
+      requests[0].reject(new Error('response lost'));
+      await flushAsync();
+      await flushAsync();
+
+      expect(fixture.title.value).toBe('Still typing');
+      expect(requests).toHaveLength(1);
+      expect(fixture.attributes.has('aria-busy')).toBe(false);
+    });
+  });
+});
 
 describe('Settings fetch autosave enhancement', () => {
   it('uses an explicit opt-in mode without changing the existing bare or submit modes', async () => {
@@ -2430,7 +4202,19 @@ function makeCategoryNode({ tagName = 'div', attrs = {}, className = '', rect = 
       child.parentElement = this;
       child.parentNode = this;
       child.ownerDocument = this.ownerDocument || (this.tagName === 'DOCUMENT' ? this : null);
+      const adopt = (current, ownerDocument) => {
+        current.ownerDocument = ownerDocument;
+        current.children.forEach((descendant) => adopt(descendant, ownerDocument));
+      };
+      adopt(child, child.ownerDocument);
       return child;
+    },
+    remove() {
+      if (!this.parentElement) return;
+      const index = this.parentElement.children.indexOf(this);
+      if (index >= 0) this.parentElement.children.splice(index, 1);
+      this.parentElement = null;
+      this.parentNode = null;
     },
     replaceChildren(...nextChildren) {
       children.forEach((child) => {
@@ -2439,6 +4223,27 @@ function makeCategoryNode({ tagName = 'div', attrs = {}, className = '', rect = 
       });
       children.splice(0, children.length);
       nextChildren.forEach((child) => this.appendChild(child));
+    },
+    replaceWith(replacement) {
+      if (!this.parentElement) return;
+      const parent = this.parentElement;
+      const index = parent.children.indexOf(this);
+      if (index < 0) return;
+      if (replacement.parentElement) {
+        const replacementIndex = replacement.parentElement.children.indexOf(replacement);
+        if (replacementIndex >= 0) replacement.parentElement.children.splice(replacementIndex, 1);
+      }
+      parent.children[index] = replacement;
+      replacement.parentElement = parent;
+      replacement.parentNode = parent;
+      const ownerDocument = parent.ownerDocument || (parent.tagName === 'DOCUMENT' ? parent : null);
+      const adopt = (current) => {
+        current.ownerDocument = ownerDocument;
+        current.children.forEach(adopt);
+      };
+      adopt(replacement);
+      this.parentElement = null;
+      this.parentNode = null;
     },
     insertBefore(child, reference) {
       if (child === reference) return child;
@@ -2573,6 +4378,11 @@ function makeDedicatedReorderFixture({
 } = {}) {
   const document = makeCategoryNode({ tagName: 'document' });
   document.ownerDocument = document;
+  document.createElement = (tagName) => {
+    const element = makeCategoryNode({ tagName });
+    element.ownerDocument = document;
+    return element;
+  };
   document.getElementById = (id) => document
     .querySelectorAll(`[${formAttribute}]`)
     .find((form) => form.getAttribute('id') === id) || null;
@@ -2590,6 +4400,7 @@ function makeDedicatedReorderFixture({
     'data-reorder-form-target': formId,
   } });
   const live = makeCategoryNode({ attrs: { [liveAttribute]: '' } });
+  const status = makeCategoryNode({ attrs: { 'data-book-reorder-status': '' } });
   const items = ids.map((id, index) => {
     const item = makeCategoryNode({
       tagName: 'li',
@@ -2615,12 +4426,14 @@ function makeDedicatedReorderFixture({
   form.appendChild(list);
   items.forEach((item) => list.appendChild(item));
   form.appendChild(live);
+  form.appendChild(status);
   return {
     document,
     form,
     orderInput,
     list,
     live,
+    status,
     items,
     order() { return list.querySelectorAll(`[${itemAttribute}]`).map((item) => item.dataset[idDataset]); },
   };
@@ -2631,7 +4444,7 @@ function makeBookReorderFixture({
   csrfToken = 'csrf-book-reorder',
   bookIds = ['101', '202', '303'],
 } = {}) {
-  return makeDedicatedReorderFixture({
+  const fixture = makeDedicatedReorderFixture({
     action,
     csrfToken,
     ids: bookIds,
@@ -2647,6 +4460,32 @@ function makeBookReorderFixture({
     positionAttribute: 'data-book-order-position',
     handleAttribute: 'data-book-reorder-handle',
   });
+  const dialog = makeCategoryNode({ tagName: 'dialog', attrs: { 'data-app-dialog': '' } });
+  dialog.__creatorCrateAppDialogState = { form: fixture.form };
+  fixture.document.appendChild(dialog);
+  dialog.appendChild(fixture.form);
+  fixture.dialog = dialog;
+  return fixture;
+}
+
+function makeBookReorderAuthority(bookIds, generation = 1) {
+  const fixture = makeBookReorderFixture({ bookIds });
+  const shelf = makeCategoryNode({ attrs: { 'data-notes-books-live-region': '' } });
+  bookIds.forEach((bookId) => {
+    const title = makeCategoryNode({ attrs: { class: 'notes-book-card-title' } });
+    title.appendChild(makeCategoryNode({ tagName: 'a', attrs: { href: `/notes/books/${bookId}` } }));
+    shelf.appendChild(title);
+  });
+  return {
+    fixture,
+    snapshot: {
+      kind: 'active',
+      generation,
+      replacementShelf: shelf,
+      replacementForm: fixture.form,
+      authority: [...bookIds],
+    },
+  };
 }
 
 function makeChapterPageReorderFixture({
@@ -2714,7 +4553,14 @@ function makeBookHierarchyReorderFixture() {
   };
   const dialog = makeCategoryNode({ tagName: 'dialog', attrs: { 'data-app-dialog': '' } });
   dialog.__creatorCrateAppDialogState = { onOpen: null, onClose: null };
-  const form = makeCategoryNode({ tagName: 'form', attrs: { 'data-book-hierarchy-form': '' } });
+  const form = makeCategoryNode({
+    tagName: 'form',
+    attrs: {
+      'data-book-hierarchy-form': '',
+      action: '/notes/books/7/hierarchy/reorder',
+      method: 'post',
+    },
+  });
   const input = makeCategoryNode({ tagName: 'input', attrs: { 'data-book-hierarchy-input': '', name: 'hierarchy' } });
   input.value = JSON.stringify({ version: 1, expected, target: expected });
   const legacyItems = makeCategoryNode({ tagName: 'input', attrs: { name: 'orderedItems' } });
@@ -2767,6 +4613,7 @@ function makeBookHierarchyReorderFixture() {
   root.appendChild(makeChapter(3, [], 150));
   root.appendChild(makeItem('page', 22, 200));
   const live = makeCategoryNode({ attrs: { 'data-book-hierarchy-live': '', 'aria-live': 'polite' } });
+  const status = makeCategoryNode({ attrs: { 'data-book-hierarchy-status': '', role: 'status' } });
   editor.appendChild(live);
   document.appendChild(dialog);
   dialog.appendChild(form);
@@ -2776,6 +4623,7 @@ function makeBookHierarchyReorderFixture() {
   form.appendChild(legacyItems);
   form.appendChild(legacyNotes);
   form.appendChild(editor);
+  form.appendChild(status);
   editor.appendChild(root);
 
   const target = () => JSON.parse(input.value).target;
@@ -2786,7 +4634,38 @@ function makeBookHierarchyReorderFixture() {
     eventTarget.dispatch('drop', { clientY, dataTransfer: {} });
   };
   return {
-    document, dialog, form, input, foreignInput, legacyItems, legacyNotes, editor, root, items, containers, live, expected, target, drag,
+    document, dialog, form, input, foreignInput, legacyItems, legacyNotes, editor, root, items, containers, live, status, expected, target, drag,
+  };
+}
+
+function removeBookHierarchyItem(fixture, key) {
+  const item = fixture.items.get(key);
+  const parent = item?.parentElement;
+  const index = parent?.children.indexOf(item) ?? -1;
+  if (index >= 0) parent.children.splice(index, 1);
+  if (item) {
+    item.parentElement = null;
+    item.parentNode = null;
+  }
+  fixture.items.delete(key);
+  const hierarchy = fixture.expected
+    .filter((entry) => `${entry.type}:${entry.id}` !== key)
+    .map((entry) => ({ ...entry, pages: entry.pages ? [...entry.pages] : undefined }))
+    .map((entry) => entry.pages === undefined ? { type: entry.type, id: entry.id } : entry);
+  fixture.input.value = JSON.stringify({ version: 1, expected: hierarchy, target: hierarchy });
+  return hierarchy;
+}
+
+function bookHierarchyAuthority(fixture, hierarchy) {
+  const canonical = JSON.parse(JSON.stringify(hierarchy));
+  fixture.input.value = JSON.stringify({ version: 1, expected: canonical, target: canonical });
+  return {
+    kind: 'active',
+    destination: '/notes/books/7',
+    replacementEditor: fixture.editor,
+    replacementInput: fixture.input,
+    replacementDetail: makeCategoryNode({ attrs: { 'data-book-detail-live-region': '' } }),
+    hierarchy: canonical,
   };
 }
 
@@ -3116,15 +4995,33 @@ describe('top-level Book reorder enhancement', () => {
     expect(enhanceBookReorder(scope)).toBe(0);
   });
 
-  it('moves rows from the whole card while excluding interactive descendants, updates the hidden order, and does not persist until Save', () => {
+  it('moves rows from the whole card, excludes interactive descendants, and persists a completed drop immediately', () => {
     const fixture = makeBookReorderFixture();
     const calls = [];
+    const authority = makeBookReorderAuthority(['202', '303', '101']);
+    let authorityFetches = 0;
+    let shelfInstalls = 0;
 
     return withBrowserGlobals((...args) => {
       calls.push(args);
-      return Promise.resolve({ ok: true });
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ status: 'success', orderedBookIds: [202, 303, 101] }),
+      });
     }, async () => {
-      expect(enhanceBookReorder(fixture.document)).toBe(1);
+      expect(enhanceBookReorder(fixture.document, {
+        beginShelfRefresh: () => 1,
+        installShelf: (_scope, generation, shelf) => {
+          expect(generation).toBe(1);
+          expect(shelf).toBe(authority.snapshot.replacementShelf);
+          shelfInstalls += 1;
+          return 'installed';
+        },
+        fetchAuthority: async () => {
+          authorityFetches += 1;
+          return authority.snapshot;
+        },
+      })).toBe(1);
 
       const link = makeCategoryNode({ tagName: 'a' });
       fixture.items[0].appendChild(link);
@@ -3156,57 +5053,640 @@ describe('top-level Book reorder enhancement', () => {
       expect(fixture.orderInput.value).toBe('202,303,101');
       expect(fixture.items[0].classList.contains('is-dragging')).toBe(false);
       expect(fixture.items[2].classList.contains('is-drop-after')).toBe(false);
-      expect(calls).toHaveLength(0);
-
-      fixture.items[0].handle.dispatch('dragstart', { dataTransfer: { setData() {} } });
-      fixture.list.dispatch('dragover', {
-        target: fixture.items[1],
-        clientY: 0,
-        dataTransfer: {},
+      await flushAsync();
+      await flushAsync();
+      expect(calls).toHaveLength(1);
+      expect(calls[0][0]).toBe('/notes/books/reorder');
+      expect(calls[0][1]).toMatchObject({
+        method: 'POST',
+        credentials: 'same-origin',
+        redirect: 'error',
+        headers: { Accept: 'application/json' },
       });
-      fixture.list.dispatch('drop', { target: fixture.items[1] });
-      expect(fixture.order()).toEqual(['101', '202', '303']);
-      expect(fixture.orderInput.value).toBe('101,202,303');
-      expect(new Set(fixture.order())).toEqual(new Set(['101', '202', '303']));
-      expect(calls).toHaveLength(0);
-
-      const submit = fixture.form.dispatch('submit');
-      expect(submit.defaultPrevented).toBe(false);
-      expect(fixture.orderInput.value).toBe('101,202,303');
-      expect(calls).toHaveLength(0);
-      expect(new Set(fixture.order())).toEqual(new Set(['101', '202', '303']));
+      expect(calls[0][1].body.get('orderedBookIds')).toBe('202,303,101');
+      expect(authorityFetches).toBe(1);
+      expect(shelfInstalls).toBe(1);
+      expect(fixture.list.__creatorCrateBookReorderState.acknowledgedIds).toEqual(['202', '303', '101']);
+      expect(fixture.status.textContent).toBe('Book order saved.');
     });
   });
 
-  it('supports keyboard moves, position announcements, focus retention, and boundaries without a request', () => {
+  it('queues rapid keyboard moves and acknowledges the newest complete order', async () => {
     const fixture = makeBookReorderFixture();
-    const originalFetch = globalThis.fetch;
-    let requestCount = 0;
-    globalThis.fetch = () => {
-      requestCount += 1;
-      return Promise.resolve({ ok: true });
-    };
+    const requests = [];
+    const authority = makeBookReorderAuthority(['303', '202', '101']);
+    let authorityFetches = 0;
 
-    try {
-      enhanceBookReorder(fixture.document);
+    await withBrowserGlobals((url, options) => new Promise((resolve) => {
+      requests.push({ url, options, resolve });
+    }), async () => {
+      enhanceBookReorder(fixture.document, {
+        beginShelfRefresh: () => 2,
+        installShelf: () => 'installed',
+        fetchAuthority: async () => {
+          authorityFetches += 1;
+          return authority.snapshot;
+        },
+      });
       fixture.items[1].handle.dispatch('keydown', { key: 'ArrowUp' });
+      await flushAsync();
 
       expect(fixture.order()).toEqual(['202', '101', '303']);
-      expect(fixture.orderInput.value).toBe('202,101,303');
       expect(fixture.items[1].position.textContent).toBe('Position 1 of 3');
       expect(fixture.items[1].getAttribute('aria-posinset')).toBe('1');
       expect(fixture.items[1].getAttribute('aria-setsize')).toBe('3');
       expect(fixture.items[1].handle.focused).toBe(true);
       expect(fixture.live.textContent).toContain('moved to position 1 of 3');
-      expect(requestCount).toBe(0);
+      expect(requests).toHaveLength(1);
 
-      fixture.items[1].handle.dispatch('keydown', { key: 'Home' });
-      expect(fixture.order()).toEqual(['202', '101', '303']);
-      fixture.items[2].handle.dispatch('keydown', { key: 'End' });
-      expect(fixture.order()).toEqual(['202', '101', '303']);
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
+      fixture.items[2].handle.dispatch('keydown', { key: 'Home' });
+      expect(fixture.order()).toEqual(['303', '202', '101']);
+      expect(requests).toHaveLength(1);
+
+      requests[0].resolve({
+        ok: true,
+        json: async () => ({ status: 'success', orderedBookIds: [202, 101, 303] }),
+      });
+      await flushAsync();
+      await flushAsync();
+      expect(requests).toHaveLength(2);
+      expect(requests[1].options.body.get('orderedBookIds')).toBe('303,202,101');
+      expect(authorityFetches).toBe(0);
+
+      requests[1].resolve({
+        ok: true,
+        json: async () => ({ status: 'success', orderedBookIds: [303, 202, 101] }),
+      });
+      await flushAsync();
+      await flushAsync();
+      await flushAsync();
+      expect(fixture.order()).toEqual(['303', '202', '101']);
+      expect(fixture.form.getAttribute('aria-busy')).toBe(null);
+      expect(fixture.status.textContent).toBe('Book order saved.');
+      expect(authorityFetches).toBe(1);
+      expect(fixture.list.__creatorCrateBookReorderState.acknowledgedIds).toEqual(['303', '202', '101']);
+    });
+  });
+
+  it('does not treat a rejected response as success and restores server authority', async () => {
+    const fixture = makeBookReorderFixture();
+    const authority = makeBookReorderAuthority(['101', '202', '303']);
+    let authorityFetches = 0;
+
+    await withBrowserGlobals(() => Promise.resolve({
+      ok: false,
+      status: 422,
+      json: async () => ({
+        status: 'error',
+        message: 'The submitted book order is invalid.',
+        orderedBookIds: [101, 202, 303],
+      }),
+    }), async () => {
+      enhanceBookReorder(fixture.document, {
+        beginShelfRefresh: () => 3,
+        installShelf: () => 'installed',
+        fetchAuthority: async () => {
+          authorityFetches += 1;
+          return authority.snapshot;
+        },
+      });
+      fixture.items[1].handle.dispatch('keydown', { key: 'ArrowUp' });
+      await flushAsync();
+      await flushAsync();
+
+      expect(fixture.order()).toEqual(['101', '202', '303']);
+      expect(fixture.orderInput.value).toBe('101,202,303');
+      expect(fixture.form.getAttribute('data-book-reorder-state')).toBe('error');
+      expect(fixture.status.textContent).toContain('invalid');
+      expect(authorityFetches).toBe(1);
+      expect(fixture.list.__creatorCrateBookReorderState.acknowledgedIds).toEqual(['101', '202', '303']);
+    });
+  });
+
+  it('installs same-membership rejection authority before dispatching one queued newer order', async () => {
+    const fixture = makeBookReorderFixture();
+    const requests = [];
+    let canonicalOrder = ['101', '303', '202'];
+    let releaseAuthority;
+    let authorityFetches = 0;
+    let shelfInstalls = 0;
+
+    await withBrowserGlobals((url, options) => new Promise((resolve) => {
+      requests.push({ url, options, resolve, displayedOrder: fixture.order() });
+    }), async () => {
+      enhanceBookReorder(fixture.document, {
+        beginShelfRefresh: () => 4,
+        installShelf: () => {
+          shelfInstalls += 1;
+          return 'installed';
+        },
+        fetchAuthority: async () => {
+          authorityFetches += 1;
+          if (authorityFetches === 1) await new Promise((resolve) => { releaseAuthority = resolve; });
+          return makeBookReorderAuthority(canonicalOrder, 4).snapshot;
+        },
+      });
+      fixture.items[1].handle.dispatch('keydown', { key: 'ArrowUp' });
+      await flushAsync();
+      const rejectedActive = fixture.order();
+      fixture.items[2].handle.dispatch('keydown', { key: 'Home' });
+      const queuedOrder = fixture.order();
+
+      requests[0].resolve({
+        ok: false,
+        status: 422,
+        json: async () => ({
+          status: 'error',
+          message: 'The submitted book order is stale.',
+          orderedBookIds: [101, 303, 202],
+        }),
+      });
+      await flushAsync();
+      await flushAsync();
+
+      expect(authorityFetches).toBe(1);
+      expect(shelfInstalls).toBe(0);
+      expect(requests).toHaveLength(1);
+      expect(fixture.form.getAttribute('aria-busy')).toBe('true');
+      expect(fixture.form.dispatch('submit').defaultPrevented).toBe(true);
+      fixture.items[0].handle.dispatch('keydown', { key: 'ArrowUp' });
+      fixture.items[0].handle.dispatch('dragstart', { dataTransfer: { setData() {} } });
+      fixture.list.dispatch('drop', { target: fixture.items[1] });
+      expect(requests).toHaveLength(1);
+
+      releaseAuthority();
+      await flushAsync();
+      await flushAsync();
+
+      expect(shelfInstalls).toBe(1);
+      expect(requests).toHaveLength(2);
+      expect(requests[1].options.body.get('orderedBookIds')).toBe(queuedOrder.join(','));
+      expect(requests[1].displayedOrder).toEqual(queuedOrder);
+      expect(requests[1].displayedOrder).not.toEqual(rejectedActive);
+
+      requests[1].resolve({
+        ok: true,
+        json: async () => ({ status: 'success', orderedBookIds: queuedOrder.map(Number) }),
+      });
+      canonicalOrder = queuedOrder;
+      await flushAsync();
+      await flushAsync();
+      await flushAsync();
+
+      fixture.items[0].handle.dispatch('keydown', { key: 'ArrowUp' });
+      await flushAsync();
+      expect(requests).toHaveLength(3);
+      expect(requests[2].options.body.get('orderedBookIds')).toBe('303,101,202');
+      requests[2].resolve({
+        ok: true,
+        json: async () => ({ status: 'success', orderedBookIds: [303, 101, 202] }),
+      });
+      canonicalOrder = ['303', '101', '202'];
+      await flushAsync();
+      await flushAsync();
+    });
+  });
+
+  it('does not apply queued intent when canonical membership changes after a controlled rejection', async () => {
+    const fixture = makeBookReorderFixture();
+    const requests = [];
+    let freshFixture;
+    let authorityFetches = 0;
+    let shelfInstalls = 0;
+
+    await withBrowserGlobals((url, options) => new Promise((resolve) => {
+      requests.push({ url, options, resolve });
+    }), async () => {
+      enhanceBookReorder(fixture.document, {
+        beginShelfRefresh: () => 7,
+        installShelf: (_scope, generation) => {
+          expect(generation).toBe(7);
+          shelfInstalls += 1;
+          return 'installed';
+        },
+        fetchAuthority: async () => {
+          authorityFetches += 1;
+          freshFixture = makeBookReorderFixture({ bookIds: ['202', '101', '404'] });
+          return {
+            generation: 7,
+            replacementShelf: makeCategoryNode({ attrs: { 'data-notes-books-live-region': '' } }),
+            replacementForm: freshFixture.form,
+            authority: ['202', '101', '404'],
+          };
+        },
+      });
+      fixture.items[1].handle.dispatch('keydown', { key: 'ArrowUp' });
+      await flushAsync();
+      fixture.items[2].handle.dispatch('keydown', { key: 'Home' });
+      const queuedOrder = fixture.order();
+
+      requests[0].resolve({
+        ok: false,
+        status: 422,
+        json: async () => ({
+          status: 'error',
+          message: 'The submitted book order is invalid.',
+          orderedBookIds: [101, 303, 202],
+        }),
+      });
+      await flushAsync();
+      await flushAsync();
+
+      expect(fixture.form.getAttribute('aria-busy')).toBe('true');
+      expect(fixture.form.dispatch('submit').defaultPrevented).toBe(true);
+      const blockedOrder = fixture.order();
+      expect(blockedOrder).toEqual(['101', '303', '202']);
+      fixture.items[0].handle.dispatch('keydown', { key: 'ArrowUp' });
+      fixture.items[0].handle.dispatch('dragstart', { dataTransfer: { setData() {} } });
+      fixture.list.dispatch('drop', { target: fixture.items[1] });
+      expect(fixture.order()).toEqual(blockedOrder);
+      expect(requests).toHaveLength(1);
+
+      await flushAsync();
+      await flushAsync();
+      expect(authorityFetches).toBe(1);
+      expect(shelfInstalls).toBe(1);
+      expect(fixture.list.__creatorCrateBookReorderState.retired).toBe(true);
+      expect(fixture.dialog.querySelector('[data-book-reorder-form]')).toBe(freshFixture.form);
+      expect(freshFixture.list.__creatorCrateBookReorderState.acknowledgedIds)
+        .toEqual(['202', '101', '404']);
+      expect(freshFixture.status.textContent).toContain('pending local reorder was not applied');
+      expect(freshFixture.items[0].handle.focused).not.toBe(true);
+      expect(fixture.dialog.querySelector('[data-book-reorder-form]')).toBe(freshFixture.form);
+      fixture.dialog.open = true;
+      expect(fixture.dialog.querySelector('[data-book-reorder-form]')).toBe(freshFixture.form);
+      expect(requests).toHaveLength(1);
+
+      fixture.items[0].handle.dispatch('keydown', { key: 'ArrowUp' });
+      expect(requests).toHaveLength(1);
+
+      freshFixture.items[0].handle.dispatch('keydown', { key: 'End' });
+      await flushAsync();
+      expect(requests).toHaveLength(2);
+      expect(requests[1].options.body.get('orderedBookIds')).toBe('101,404,202');
+      requests[1].resolve({
+        ok: true,
+        json: async () => ({ status: 'success', orderedBookIds: [101, 404, 202] }),
+      });
+      await flushAsync();
+    });
+  });
+
+  it('publishes empty canonical authority and reports that queued intent was not applied', async () => {
+    const fixture = makeBookReorderFixture();
+    const requests = [];
+    const emptyForm = makeCategoryNode({
+      tagName: 'form',
+      attrs: { 'data-book-reorder-form': '' },
+    });
+    const emptyStatus = makeCategoryNode({ attrs: { 'data-book-reorder-status': '' } });
+    emptyForm.appendChild(emptyStatus);
+
+    await withBrowserGlobals((url, options) => new Promise((resolve) => {
+      requests.push({ url, options, resolve });
+    }), async () => {
+      enhanceBookReorder(fixture.document, {
+        beginShelfRefresh: () => 8,
+        installShelf: () => 'installed',
+        fetchAuthority: async () => ({
+          kind: 'empty',
+          generation: 8,
+          replacementShelf: makeCategoryNode({ attrs: { 'data-notes-books-live-region': '' } }),
+          replacementForm: emptyForm,
+          authority: [],
+        }),
+      });
+      fixture.items[1].handle.dispatch('keydown', { key: 'ArrowUp' });
+      await flushAsync();
+      fixture.items[2].handle.dispatch('keydown', { key: 'Home' });
+
+      requests[0].resolve({
+        ok: false,
+        status: 422,
+        json: async () => ({
+          status: 'error',
+          message: 'The submitted book order is stale.',
+          orderedBookIds: [101, 303, 202],
+        }),
+      });
+      await flushAsync();
+      await flushAsync();
+
+      expect(requests).toHaveLength(1);
+      expect(fixture.list.__creatorCrateBookReorderState).toMatchObject({
+        retired: true,
+        acknowledgedIds: [],
+        queuedIds: null,
+      });
+      expect(fixture.dialog.querySelector('[data-book-reorder-form]')).toBe(emptyForm);
+      expect(emptyStatus.textContent).toContain('pending local reorder was not applied');
+    });
+  });
+
+  it('keeps queued intent blocked across controlled-rejection synchronization failure and Retry', async () => {
+    const fixture = makeBookReorderFixture();
+    const requests = [];
+    const canonicalIds = ['101', '303', '202'];
+    let authorityFetches = 0;
+
+    await withBrowserGlobals((url, options) => new Promise((resolve) => {
+      requests.push({ url, options, resolve });
+    }), async () => {
+      enhanceBookReorder(fixture.document, {
+        beginShelfRefresh: () => 9,
+        installShelf: () => 'installed',
+        fetchAuthority: async () => {
+          authorityFetches += 1;
+          return authorityFetches === 1 ? null : makeBookReorderAuthority(canonicalIds, 9).snapshot;
+        },
+      });
+      fixture.items[1].handle.dispatch('keydown', { key: 'ArrowUp' });
+      await flushAsync();
+      fixture.items[2].handle.dispatch('keydown', { key: 'Home' });
+      const queuedOrder = fixture.order();
+
+      requests[0].resolve({
+        ok: false,
+        status: 422,
+        json: async () => ({
+          status: 'error',
+          message: 'The submitted book order is stale.',
+          orderedBookIds: canonicalIds.map(Number),
+        }),
+      });
+      await flushAsync();
+      await flushAsync();
+
+      const retry = fixture.status.querySelector('[data-book-reorder-reconciliation-retry]');
+      expect(retry).toBeTruthy();
+      expect(requests).toHaveLength(1);
+      expect(fixture.list.__creatorCrateBookReorderState.retired).toBe(true);
+      fixture.items[0].handle.dispatch('keydown', { key: 'End' });
+      expect(requests).toHaveLength(1);
+
+      retry.dispatch('click');
+      await flushAsync();
+      await flushAsync();
+
+      expect(authorityFetches).toBe(2);
+      expect(requests).toHaveLength(2);
+      expect(requests[1].options.body.get('orderedBookIds')).toBe(queuedOrder.join(','));
+      requests[1].resolve({
+        ok: true,
+        json: async () => ({ status: 'success', orderedBookIds: queuedOrder.map(Number) }),
+      });
+      await flushAsync();
+      await flushAsync();
+      expect(requests).toHaveLength(2);
+    });
+  });
+
+  it('keeps the retired controller blocked and exposes one functional Retry after recovery failure', async () => {
+    const fixture = makeBookReorderFixture();
+    const requests = [];
+    let freshFixture;
+    let recoveryAttempts = 0;
+
+    await withBrowserGlobals((url, options) => new Promise((resolve) => {
+      requests.push({ url, options, resolve });
+    }), async () => {
+      enhanceBookReorder(fixture.document, {
+        beginShelfRefresh: () => 3,
+        installShelf: () => 'installed',
+        fetchAuthority: async () => {
+          recoveryAttempts += 1;
+          if (recoveryAttempts === 1) return null;
+          freshFixture = makeBookReorderFixture({ bookIds: ['303', '202'] });
+          return {
+            generation: 3,
+            replacementShelf: makeCategoryNode({ attrs: { 'data-notes-books-live-region': '' } }),
+            replacementForm: freshFixture.form,
+            authority: ['303', '202'],
+          };
+        },
+      });
+      fixture.items[1].handle.dispatch('keydown', { key: 'ArrowUp' });
+      await flushAsync();
+      requests[0].resolve({
+        ok: false,
+        status: 422,
+        json: async () => ({
+          status: 'error',
+          message: 'The submitted book order is stale.',
+          orderedBookIds: [303, 202],
+        }),
+      });
+      await flushAsync();
+      await flushAsync();
+
+      const retry = fixture.status.querySelector('[data-book-reorder-reconciliation-retry]');
+      expect(retry).toBeTruthy();
+      expect(retry.tagName).toBe('BUTTON');
+      expect(retry.focused).not.toBe(true);
+      expect(fixture.status.textContent).not.toContain('close and reopen');
+      expect(fixture.list.__creatorCrateBookReorderState.retired).toBe(true);
+      fixture.items[0].handle.dispatch('keydown', { key: 'End' });
+      expect(requests).toHaveLength(1);
+
+      retry.dispatch('click');
+      await flushAsync();
+      await flushAsync();
+      expect(recoveryAttempts).toBe(2);
+      expect(fixture.dialog.querySelectorAll('[data-book-reorder-reconciliation-retry]')).toHaveLength(0);
+      expect(fixture.dialog.querySelector('[data-book-reorder-form]')).toBe(freshFixture.form);
+
+      freshFixture.items[0].handle.dispatch('keydown', { key: 'End' });
+      await flushAsync();
+      expect(requests).toHaveLength(2);
+      expect(requests[1].options.body.get('orderedBookIds')).toBe('202,303');
+      requests[1].resolve({
+        ok: true,
+        json: async () => ({ status: 'success', orderedBookIds: [202, 303] }),
+      });
+      await flushAsync();
+    });
+  });
+
+  it('detects a failed controlled-authority DOM restoration and remains reconciling', async () => {
+    const fixture = makeBookReorderFixture();
+    const requests = [];
+    const authority = makeBookReorderAuthority(['101', '202', '303'], 5);
+
+    await withBrowserGlobals((url, options) => new Promise((resolve) => {
+      requests.push({ url, options, resolve });
+    }), async () => {
+      enhanceBookReorder(fixture.document, {
+        beginShelfRefresh: () => 5,
+        installShelf: () => 'unavailable',
+        fetchAuthority: async () => authority.snapshot,
+      });
+      fixture.items[1].handle.dispatch('keydown', { key: 'ArrowUp' });
+      await flushAsync();
+      requests[0].resolve({
+        ok: false,
+        status: 422,
+        json: async () => ({ status: 'error', orderedBookIds: [101, 202, 303] }),
+      });
+      await flushAsync();
+      await flushAsync();
+
+      expect(fixture.status.querySelector('[data-book-reorder-reconciliation-retry]')).toBeTruthy();
+      expect(fixture.form.getAttribute('aria-busy')).toBe('true');
+      expect(fixture.order()).toEqual(['101', '202', '303']);
+      expect(requests).toHaveLength(1);
+    });
+  });
+
+  it('blocks stale interaction and preserves a queued newer order across lost-response reconciliation', async () => {
+    const fixture = makeBookReorderFixture();
+    let freshFixture;
+    let authorityFetches = 0;
+    let shelfInstalls = 0;
+    let releaseAuthority;
+    const canonicalIds = ['202', '101', '303'];
+    const requests = [];
+
+    await withBrowserGlobals((url, options) => new Promise((resolve, reject) => {
+      requests.push({
+        url,
+        options,
+        resolve,
+        reject,
+        displayedOrder: freshFixture ? freshFixture.order() : fixture.order(),
+      });
+    }), async () => {
+      enhanceBookReorder(fixture.document, {
+        refreshShelf: (_scope, callbacks) => {
+          callbacks.onComplete();
+          return 'started';
+        },
+        beginShelfRefresh: () => 11,
+        installShelf: (_scope, generation) => {
+          expect(generation).toBe(11);
+          shelfInstalls += 1;
+          return 'installed';
+        },
+        fetchAuthority: async () => {
+          authorityFetches += 1;
+          if (authorityFetches > 1) {
+            return makeBookReorderAuthority(['303', '202', '101'], 11).snapshot;
+          }
+          await new Promise((resolve) => { releaseAuthority = resolve; });
+          freshFixture = makeBookReorderFixture({ bookIds: canonicalIds });
+          return {
+            kind: 'active',
+            generation: 11,
+            replacementShelf: makeCategoryNode({ attrs: { 'data-notes-books-live-region': '' } }),
+            replacementForm: freshFixture.form,
+            authority: canonicalIds,
+          };
+        },
+      });
+      fixture.items[1].handle.dispatch('keydown', { key: 'ArrowUp' });
+      await flushAsync();
+      fixture.items[2].handle.dispatch('keydown', { key: 'Home' });
+      const queuedOrder = ['303', '202', '101'];
+      expect(fixture.order()).toEqual(queuedOrder);
+      expect(requests).toHaveLength(1);
+
+      requests[0].reject(new Error('response lost'));
+      await flushAsync();
+      await flushAsync();
+      expect(fixture.form.getAttribute('aria-busy')).toBe('true');
+
+      expect(fixture.form.dispatch('submit').defaultPrevented).toBe(true);
+      fixture.items[0].handle.dispatch('keydown', { key: 'ArrowUp' });
+      fixture.items[0].handle.dispatch('dragstart', { dataTransfer: { setData() {} } });
+      fixture.list.dispatch('drop', { target: fixture.items[1] });
+      expect(fixture.order()).toEqual(queuedOrder);
+      expect(requests).toHaveLength(1);
+
+      releaseAuthority();
+      await flushAsync();
+      await flushAsync();
+
+      expect(authorityFetches).toBe(1);
+      expect(shelfInstalls).toBe(1);
+      expect(requests).toHaveLength(2);
+      expect(requests[1].options.body.get('orderedBookIds')).toBe(queuedOrder.join(','));
+      expect(requests[1].displayedOrder).toEqual(queuedOrder);
+      expect(freshFixture.orderInput.value).toBe(queuedOrder.join(','));
+
+      requests[1].resolve({
+        ok: true,
+        json: async () => ({ status: 'success', orderedBookIds: queuedOrder.map(Number) }),
+      });
+      await flushAsync();
+      await flushAsync();
+      await flushAsync();
+      expect(freshFixture.form.getAttribute('aria-busy')).toBe(null);
+
+      freshFixture.items[0].handle.dispatch('keydown', { key: 'ArrowUp' });
+      await flushAsync();
+      expect(requests).toHaveLength(3);
+      expect(requests[2].options.body.get('orderedBookIds')).toBe('202,303,101');
+      requests[2].resolve({
+        ok: false,
+        status: 409,
+        json: async () => ({ status: 'error', orderedBookIds: queuedOrder.map(Number) }),
+      });
+      await flushAsync();
+      await flushAsync();
+      expect(freshFixture.order()).toEqual(queuedOrder);
+      expect(freshFixture.orderInput.value).toBe(queuedOrder.join(','));
+    });
+  });
+
+  it('uses one complete authority snapshot when uncertain recovery discovers changed membership', async () => {
+    const fixture = makeBookReorderFixture();
+    const requests = [];
+    let freshFixture;
+    let authorityFetches = 0;
+    let shelfInstalls = 0;
+
+    await withBrowserGlobals((url, options) => new Promise((resolve, reject) => {
+      requests.push({ url, options, resolve, reject });
+    }), async () => {
+      enhanceBookReorder(fixture.document, {
+        beginShelfRefresh: () => 13,
+        installShelf: () => {
+          shelfInstalls += 1;
+          return 'installed';
+        },
+        fetchAuthority: async () => {
+          authorityFetches += 1;
+          freshFixture = makeBookReorderFixture({ bookIds: ['202', '101'] });
+          return {
+            kind: 'active',
+            generation: 13,
+            replacementShelf: makeCategoryNode({ attrs: { 'data-notes-books-live-region': '' } }),
+            replacementForm: freshFixture.form,
+            authority: ['202', '101'],
+          };
+        },
+      });
+      fixture.items[1].handle.dispatch('keydown', { key: 'ArrowUp' });
+      await flushAsync();
+      fixture.items[2].handle.dispatch('keydown', { key: 'Home' });
+      requests[0].reject(new Error('response lost'));
+      await flushAsync();
+      await flushAsync();
+
+      expect(authorityFetches).toBe(1);
+      expect(shelfInstalls).toBe(1);
+      expect(freshFixture.status.textContent).toContain('pending local reorder was not applied');
+      expect(fixture.form.getAttribute('aria-busy')).toBe('true');
+      expect(fixture.list.__creatorCrateBookReorderState.retired).toBe(true);
+      expect(fixture.dialog.querySelector('[data-book-reorder-form]')).toBe(freshFixture.form);
+
+      const blockedOrder = fixture.order();
+      fixture.items[0].handle.dispatch('keydown', { key: 'ArrowUp' });
+      fixture.items[0].handle.dispatch('dragstart', { dataTransfer: { setData() {} } });
+      fixture.list.dispatch('drop', { target: fixture.items[1] });
+      await flushAsync();
+      expect(fixture.order()).toEqual(blockedOrder);
+      expect(requests).toHaveLength(1);
+    });
   });
 
   it('is idempotent and keeps native form submission intact', () => {
@@ -3588,57 +6068,1012 @@ describe('connected Book hierarchy reorder enhancement', () => {
     expect(fixture.live.textContent).toBe('Chapter “Chapter 2” moved to position 5 of 5.');
   });
 
-  it('restores drag and keyboard drafts to the rendered baseline on close without touching expected', () => {
+  it('serializes rapid drag and keyboard moves, advances expected, and keeps acknowledged state on close', async () => {
     const fixture = makeBookHierarchyReorderFixture();
-    enhanceBookHierarchyReorder(fixture.document);
-    const initial = fixture.input.value;
+    const requests = [];
+    const fetchAuthority = vi.fn(async (state) => bookHierarchyAuthority(fixture, state.acknowledgedHierarchy));
+    const previousClose = vi.fn();
+    fixture.dialog.__creatorCrateAppDialogState.onClose = previousClose;
 
-    fixture.drag(fixture.items.get('page:21'), fixture.containers.get('chapter:3'));
-    fixture.items.get('page:11').handle.dispatch('keydown', { key: 'End' });
-    expect(fixture.input.value).not.toBe(initial);
-    fixture.dialog.__creatorCrateAppDialogState.onClose();
+    await withBrowserGlobals((action, options) => new Promise((resolve) => {
+      requests.push({ action, options, resolve });
+    }), async () => {
+      enhanceBookHierarchyReorder(fixture.document, {
+        beginDetailRefresh: () => 1,
+        installDetail: () => 'installed',
+        fetchAuthority,
+      });
+      fixture.drag(fixture.items.get('page:21'), fixture.containers.get('chapter:3'));
+      expect(requests).toHaveLength(1);
+      const first = JSON.parse(requests[0].options.body.get('hierarchy'));
+      expect(first.expected).toEqual(fixture.expected);
 
-    expect(fixture.input.value).toBe(initial);
-    expect(fixture.target()).toEqual(fixture.expected);
-    expect(fixture.containers.get('chapter:3').children).toHaveLength(0);
-    expect(JSON.parse(fixture.input.value).expected).toEqual(fixture.expected);
+      fixture.items.get('page:11').handle.dispatch('keydown', { key: 'End' });
+      expect(requests).toHaveLength(1);
+      const newestDesired = fixture.target();
+
+      requests[0].resolve({
+        ok: true,
+        json: async () => ({ status: 'success', hierarchy: first.target, refreshUrl: '/notes/books/7' }),
+      });
+      await flushAsync();
+      await flushAsync();
+      expect(requests).toHaveLength(2);
+      expect(fetchAuthority).toHaveBeenCalledTimes(1);
+      const second = JSON.parse(requests[1].options.body.get('hierarchy'));
+      expect(second.expected).toEqual(first.target);
+      expect(second.target).toEqual(newestDesired);
+
+      requests[1].resolve({
+        ok: true,
+        json: async () => ({ status: 'success', hierarchy: second.target, refreshUrl: '/notes/books/7' }),
+      });
+      await flushAsync();
+      await flushAsync();
+      expect(JSON.parse(fixture.input.value)).toEqual({
+        version: 1,
+        expected: newestDesired,
+        target: newestDesired,
+      });
+      expect(fetchAuthority).toHaveBeenCalledTimes(2);
+      expect(fixture.status.textContent).toBe('Book hierarchy saved.');
+      expect(fixture.form.getAttribute('aria-busy')).toBe(null);
+
+      fixture.dialog.__creatorCrateAppDialogState.onClose();
+      expect(previousClose).toHaveBeenCalledOnce();
+      expect(fixture.target()).toEqual(newestDesired);
+    });
   });
 
-  it('uses the rendered target rather than expected as the close baseline and preserves Save drafts', () => {
+  it('reconciles a stale response to server authority without replaying the rejected move', async () => {
     const fixture = makeBookHierarchyReorderFixture();
-    const page = fixture.items.get('page:21');
-    fixture.containers.get('chapter:3').appendChild(page);
-    const loadedTarget = [
+    const fresh = makeBookHierarchyReorderFixture();
+    const authority = [
+      { type: 'page', id: 22 },
+      ...fixture.expected.slice(0, -1),
+    ];
+    fresh.root.insertBefore(fresh.items.get('page:22'), fresh.root.children[0]);
+    fresh.input.value = JSON.stringify({ version: 1, expected: authority, target: authority });
+    const requests = [];
+    const fetchAuthority = vi.fn(async () => ({
+      destination: '/notes/books/7',
+      replacementEditor: fresh.editor,
+      replacementInput: fresh.input,
+      replacementDetail: makeCategoryNode({ attrs: { 'data-book-detail-live-region': '' } }),
+      hierarchy: authority,
+    }));
+
+    await withBrowserGlobals(async (action, options) => {
+      requests.push({ action, options });
+      return {
+        ok: false,
+        status: 409,
+        json: async () => ({
+          status: 'error',
+          code: 'HIERARCHY_STALE',
+          message: 'The current hierarchy has been refreshed.',
+          hierarchy: authority,
+          refreshUrl: '/notes/books/7',
+        }),
+      };
+    }, async () => {
+      enhanceBookHierarchyReorder(fixture.document, {
+        beginDetailRefresh: () => 1,
+        installDetail: () => 'installed',
+        fetchAuthority,
+      });
+      fixture.drag(fixture.items.get('page:21'), fixture.containers.get('chapter:3'));
+      const rejected = fixture.target();
+      await flushAsync();
+      await flushAsync();
+
+      expect(requests).toHaveLength(1);
+      expect(fetchAuthority).toHaveBeenCalledOnce();
+      expect(fixture.target()).toEqual(authority);
+      expect(JSON.parse(fixture.input.value).expected).toEqual(authority);
+      expect(fixture.target()).not.toEqual(rejected);
+      expect(fixture.form.querySelector('[data-book-hierarchy-editor]')).toBe(fresh.editor);
+      expect(fixture.editor.__creatorCrateBookHierarchyState.retired).toBe(true);
+      expect(fixture.status.textContent).toContain('Current hierarchy synchronized.');
+      expect(fixture.form.getAttribute('data-book-hierarchy-state')).toBe('error');
+    });
+  });
+
+  it('keeps a same-membership rejection blocked through canonical failure and retries GET-only', async () => {
+    const fixture = makeBookHierarchyReorderFixture();
+    const fresh = makeBookHierarchyReorderFixture();
+    const authority = [
+      { type: 'page', id: 22 },
+      ...fixture.expected.slice(0, -1),
+    ];
+    fresh.root.insertBefore(fresh.items.get('page:22'), fresh.root.children[0]);
+    fresh.input.value = JSON.stringify({ version: 1, expected: authority, target: authority });
+    const requests = [];
+    const refreshDetail = vi.fn(() => 'started');
+    const installDetail = vi.fn(() => 'installed');
+    const fetchAuthority = vi.fn()
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        destination: '/notes/books/7',
+        replacementEditor: fresh.editor,
+        replacementInput: fresh.input,
+        replacementDetail: makeCategoryNode({ attrs: { 'data-book-detail-live-region': '' } }),
+        hierarchy: authority,
+      });
+
+    await withBrowserGlobals(async (action, options) => {
+      requests.push({ action, options });
+      return {
+        ok: false,
+        status: 409,
+        json: async () => ({
+          status: 'error',
+          code: 'HIERARCHY_STALE',
+          message: 'Nothing was saved because the Book hierarchy changed.',
+          hierarchy: authority,
+          refreshUrl: '/notes/books/7',
+        }),
+      };
+    }, async () => {
+      enhanceBookHierarchyReorder(fixture.document, {
+        beginDetailRefresh: () => 4,
+        refreshDetail,
+        installDetail,
+        fetchAuthority,
+      });
+      fixture.drag(fixture.items.get('page:21'), fixture.containers.get('chapter:3'));
+      const rejectedTarget = fixture.target();
+      await flushAsync();
+      await flushAsync();
+
+      expect(requests).toHaveLength(1);
+      expect(fetchAuthority).toHaveBeenCalledOnce();
+      expect(refreshDetail).not.toHaveBeenCalled();
+      expect(installDetail).not.toHaveBeenCalled();
+      expect(fixture.target()).toEqual(rejectedTarget);
+      expect(JSON.parse(fixture.input.value).expected).toEqual(fixture.expected);
+      expect(fixture.status.textContent).toContain('Current hierarchy could not be synchronized.');
+      expect(fixture.status.textContent).not.toContain('Could not confirm whether');
+      expect(fixture.form.getAttribute('aria-busy')).toBe('true');
+
+      const blockedTarget = fixture.target();
+      fixture.items.get('page:11').handle.dispatch('keydown', { key: 'Home' });
+      expect(fixture.target()).toEqual(blockedTarget);
+      const retry = fixture.status.querySelector('[data-book-hierarchy-reconciliation-retry]');
+      retry.dispatch('click');
+      await flushAsync();
+      await flushAsync();
+
+      expect(requests).toHaveLength(1);
+      expect(fetchAuthority).toHaveBeenCalledTimes(2);
+      expect(installDetail).toHaveBeenCalledOnce();
+      expect(refreshDetail).not.toHaveBeenCalled();
+      expect(fixture.form.querySelector('[data-book-hierarchy-editor]')).toBe(fresh.editor);
+      expect(fixture.editor.__creatorCrateBookHierarchyState.retired).toBe(true);
+      expect(JSON.parse(fixture.input.value).expected).toEqual(authority);
+      expect(fixture.status.querySelector('[data-book-hierarchy-reconciliation-retry]')).toBe(null);
+      expect(fixture.form.getAttribute('aria-busy')).toBe(null);
+    });
+  });
+
+  it('carries one queued hierarchy through same-membership 409 using fresh expected authority', async () => {
+    const fixture = makeBookHierarchyReorderFixture();
+    const fresh = makeBookHierarchyReorderFixture();
+    const authority = [
+      { type: 'page', id: 22 },
+      ...fixture.expected.slice(0, -1),
+    ];
+    fresh.root.insertBefore(fresh.items.get('page:22'), fresh.root.children[0]);
+    fresh.input.value = JSON.stringify({ version: 1, expected: authority, target: authority });
+    const requests = [];
+    let authorityFetches = 0;
+
+    await withBrowserGlobals((action, options) => new Promise((resolve) => {
+      requests.push({ action, options, resolve });
+    }), async () => {
+      enhanceBookHierarchyReorder(fixture.document, {
+        refreshDetail: () => 'started',
+        beginDetailRefresh: () => 1,
+        installDetail: () => 'installed',
+        fetchAuthority: async (state) => {
+          if (authorityFetches++ > 0) return bookHierarchyAuthority(fresh, state.acknowledgedHierarchy);
+          return {
+            destination: '/notes/books/7',
+            replacementEditor: fresh.editor,
+            replacementInput: fresh.input,
+            replacementDetail: makeCategoryNode({ attrs: { 'data-book-detail-live-region': '' } }),
+            hierarchy: authority,
+          };
+        },
+      });
+      fixture.drag(fixture.items.get('page:21'), fixture.containers.get('chapter:3'));
+      const rejectedActive = fixture.target();
+      fixture.items.get('page:11').handle.dispatch('keydown', { key: 'End' });
+      const queuedHierarchy = fixture.target();
+
+      requests[0].resolve({
+        ok: false,
+        status: 409,
+        json: async () => ({
+          status: 'error',
+          code: 'HIERARCHY_STALE',
+          message: 'The current hierarchy has been refreshed.',
+          hierarchy: authority,
+          refreshUrl: '/notes/books/7',
+        }),
+      });
+      await flushAsync();
+      await flushAsync();
+
+      expect(requests).toHaveLength(2);
+      const carried = JSON.parse(requests[1].options.body.get('hierarchy'));
+      expect(carried.expected).toEqual(authority);
+      expect(carried.target).toEqual(queuedHierarchy);
+      expect(carried.target).not.toEqual(rejectedActive);
+      expect(fixture.editor.__creatorCrateBookHierarchyState.retired).toBe(true);
+      expect(fixture.form.querySelector('[data-book-hierarchy-editor]')).toBe(fresh.editor);
+
+      requests[1].resolve({
+        ok: true,
+        json: async () => ({ status: 'success', hierarchy: queuedHierarchy, refreshUrl: '/notes/books/7' }),
+      });
+      await flushAsync();
+      await flushAsync();
+
+      fresh.items.get('page:12').handle.dispatch('keydown', { key: 'ArrowDown' });
+      await flushAsync();
+      expect(requests).toHaveLength(3);
+      expect(JSON.parse(requests[2].options.body.get('hierarchy')).expected).toEqual(queuedHierarchy);
+      requests[2].resolve({
+        ok: true,
+        json: async () => ({
+          status: 'success',
+          hierarchy: JSON.parse(requests[2].options.body.get('hierarchy')).target,
+          refreshUrl: '/notes/books/7',
+        }),
+      });
+      await flushAsync();
+    });
+  });
+
+  it('starts the canonical snapshot fetch from a production-resolved single-digit Book action', async () => {
+    const fixture = makeBookHierarchyReorderFixture();
+    fixture.form.action = 'http://creatorcrate.local/notes/books/7/hierarchy/reorder';
+    const fresh = makeBookHierarchyReorderFixture();
+    const authority = removeBookHierarchyItem(fresh, 'page:22');
+    const detail = makeCategoryNode({ attrs: { 'data-book-detail-live-region': '' } });
+    fixture.document.appendChild(detail);
+    fixture.form.replaceChild = (next, previous) => {
+      const index = fixture.form.children.indexOf(previous);
+      fixture.form.children[index] = next;
+      previous.parentElement = null;
+      previous.parentNode = null;
+      next.parentElement = fixture.form;
+      next.parentNode = fixture.form;
+      next.ownerDocument = fixture.document;
+    };
+    const oldHandle = fixture.items.get('page:11').handle;
+    const refreshDetail = vi.fn(() => 'started');
+    const installDetail = vi.fn(() => 'installed');
+    const originalDOMParser = globalThis.DOMParser;
+    globalThis.DOMParser = class {
+      parseFromString() {
+        return {
+          querySelector(selector) {
+            return ({
+              '[data-book-hierarchy-form]': fresh.form,
+              '[data-book-hierarchy-editor]': fresh.editor,
+              '[data-book-hierarchy-input]': fresh.input,
+              '[data-book-detail-live-region]': detail,
+            })[selector] || null;
+          },
+        };
+      }
+    };
+    const requests = [];
+
+    try {
+      await withBrowserGlobals(async (action, options) => {
+        requests.push({ action, options });
+        if (requests.length === 1) {
+          return {
+            ok: false,
+            status: 409,
+            json: async () => ({
+              status: 'error',
+              code: 'HIERARCHY_STALE',
+              message: 'The hierarchy membership changed.',
+              hierarchy: authority,
+              refreshUrl: '/notes/books/7',
+            }),
+          };
+        }
+        if (options.method === 'GET') {
+          if (requests.length > 2) {
+            const current = fresh.target();
+            fresh.input.value = JSON.stringify({ version: 1, expected: current, target: current });
+          }
+          return { ok: true, text: async () => '<html></html>' };
+        }
+        const submission = JSON.parse(options.body.get('hierarchy'));
+        return {
+          ok: true,
+          json: async () => ({ status: 'success', hierarchy: submission.target, refreshUrl: '/notes/books/7' }),
+        };
+      }, async () => {
+        enhanceBookHierarchyReorder(fixture.document, {
+          beginDetailRefresh: () => 5,
+          refreshDetail,
+          installDetail,
+        });
+        fixture.items.get('page:11').handle.dispatch('keydown', { key: 'End' });
+        await flushAsync();
+        await flushAsync();
+
+        expect(requests).toHaveLength(2);
+        expect(requests[1].options.method).toBe('GET');
+        expect(new URL(requests[1].action).pathname).toBe('/notes/books/7/order');
+        expect(refreshDetail).not.toHaveBeenCalled();
+        expect(installDetail).toHaveBeenCalledWith(
+          fixture.document,
+          'http://creatorcrate.local/notes/books/7',
+          5,
+          detail,
+        );
+        expect(fixture.form.querySelector('[data-book-hierarchy-editor]')).toBe(fresh.editor);
+        expect(JSON.parse(fixture.input.value).expected).toEqual(authority);
+        expect(fresh.editor.listeners.filter(({ type }) => type === 'keydown')).toHaveLength(1);
+        expect(fixture.form.getAttribute('data-book-hierarchy-state')).toBe('error');
+        expect(fixture.dialog.getAttribute('data-dialog-state')).toBe('error');
+
+        oldHandle.dispatch('keydown', { key: 'Home' });
+        await flushAsync();
+        expect(requests).toHaveLength(2);
+
+        fresh.items.get('page:11').handle.dispatch('keydown', { key: 'End' });
+        await flushAsync();
+        await flushAsync();
+        expect(requests).toHaveLength(4);
+        expect(JSON.parse(requests[2].options.body.get('hierarchy')).expected).toEqual(authority);
+
+      });
+    } finally {
+      globalThis.DOMParser = originalDOMParser;
+    }
+  });
+
+  it('retires a membership-stale controller immediately and explicitly accounts for queued intent', async () => {
+    const fixture = makeBookHierarchyReorderFixture();
+    const fresh = makeBookHierarchyReorderFixture();
+    const authority = removeBookHierarchyItem(fresh, 'page:22');
+    const detail = makeCategoryNode({ attrs: { 'data-book-detail-live-region': '' } });
+    fixture.document.appendChild(detail);
+    fixture.form.replaceChild = (next, previous) => {
+      const index = fixture.form.children.indexOf(previous);
+      fixture.form.children[index] = next;
+      previous.parentElement = null;
+      previous.parentNode = null;
+      next.parentElement = fixture.form;
+      next.parentNode = fixture.form;
+      next.ownerDocument = fixture.document;
+    };
+    const refreshDetail = vi.fn(() => 'started');
+    const installDetail = vi.fn(() => 'installed');
+    const originalDOMParser = globalThis.DOMParser;
+    globalThis.DOMParser = class {
+      parseFromString() {
+        return {
+          querySelector(selector) {
+            return ({
+              '[data-book-hierarchy-form]': fresh.form,
+              '[data-book-detail-live-region]': detail,
+            })[selector] || null;
+          },
+        };
+      }
+    };
+    const requests = [];
+
+    try {
+      await withBrowserGlobals((action, options) => {
+        if (requests.length === 0) {
+          return new Promise((resolve) => requests.push({ action, options, resolve }));
+        }
+        requests.push({ action, options });
+        if (requests.length === 2) return Promise.resolve({ ok: true, text: async () => '<html></html>' });
+        const submission = JSON.parse(options.body.get('hierarchy'));
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ status: 'success', hierarchy: submission.target, refreshUrl: '/notes/books/7' }),
+        });
+      }, async () => {
+        enhanceBookHierarchyReorder(fixture.document, {
+          beginDetailRefresh: () => 17,
+          refreshDetail,
+          installDetail,
+          fetchAuthority: async (state) => {
+            requests.push({ action: '/notes/books/7/order', options: { method: 'GET' } });
+            if (state.editor === fresh.editor) {
+              return bookHierarchyAuthority(fresh, state.acknowledgedHierarchy);
+            }
+            return {
+              destination: '/notes/books/7', replacementEditor: fresh.editor,
+              replacementInput: fresh.input, replacementDetail: detail, hierarchy: authority,
+            };
+          },
+        });
+        fixture.drag(fixture.items.get('page:21'), fixture.containers.get('chapter:3'));
+        expect(requests).toHaveLength(1);
+        fixture.items.get('page:11').handle.dispatch('keydown', { key: 'End' });
+        const queuedHierarchy = fixture.target();
+
+        requests[0].resolve({
+          ok: false,
+          status: 409,
+          json: async () => ({
+            status: 'error',
+            code: 'HIERARCHY_STALE',
+            message: 'The hierarchy membership changed.',
+            hierarchy: authority,
+            refreshUrl: '/notes/books/7',
+          }),
+        });
+        await flushAsync();
+        await flushAsync();
+
+        expect(requests).toHaveLength(2);
+        expect(refreshDetail).not.toHaveBeenCalled();
+        expect(installDetail).toHaveBeenCalledWith(fixture.document, '/notes/books/7', 17, detail);
+        expect(fixture.status.textContent).toContain('newer queued hierarchy change was not applied');
+        expect(fixture.target()).not.toEqual(queuedHierarchy);
+
+        const retiredHierarchy = fixture.target();
+        fixture.items.get('page:11').handle.dispatch('keydown', { key: 'Home' });
+        fixture.drag(fixture.items.get('page:21'), fixture.containers.get('chapter:3'));
+        await flushAsync();
+        expect(fixture.target()).toEqual(retiredHierarchy);
+        expect(requests).toHaveLength(2);
+
+        expect(fixture.form.querySelector('[data-book-hierarchy-editor]')).toBe(fresh.editor);
+        expect(fresh.editor.listeners.filter(({ type }) => type === 'keydown')).toHaveLength(1);
+
+        fresh.items.get('page:11').handle.dispatch('keydown', { key: 'End' });
+        await flushAsync();
+        await flushAsync();
+        expect(requests).toHaveLength(4);
+        expect(JSON.parse(requests[2].options.body.get('hierarchy')).expected).toEqual(authority);
+      });
+    } finally {
+      globalThis.DOMParser = originalDOMParser;
+    }
+  });
+
+  it('keeps changed-membership failure retired and recovers through an explicit single-snapshot Retry', async () => {
+    const fixture = makeBookHierarchyReorderFixture();
+    fixture.form.action = 'http://creatorcrate.local/notes/books/7/hierarchy/reorder';
+    const fresh = makeBookHierarchyReorderFixture();
+    const authority = removeBookHierarchyItem(fresh, 'page:22');
+    const oldDetail = makeCategoryNode({ attrs: { 'data-book-detail-live-region': '' } });
+    const freshDetail = makeCategoryNode({ attrs: { 'data-book-detail-live-region': '' } });
+    const close = makeCategoryNode({ tagName: 'button', attrs: { 'data-dialog-close': '' } });
+    fixture.document.appendChild(oldDetail);
+    fixture.dialog.appendChild(close);
+    fixture.form.replaceChild = (next, previous) => {
+      const index = fixture.form.children.indexOf(previous);
+      fixture.form.children[index] = next;
+      previous.parentElement = null;
+      previous.parentNode = null;
+      next.parentElement = fixture.form;
+      next.parentNode = fixture.form;
+      next.ownerDocument = fixture.document;
+    };
+    const installDetail = vi.fn((_scope, _destination, _generation, replacement) => {
+      expect(replacement).toBe(freshDetail);
+      return 'installed';
+    });
+    const beginDetailRefresh = vi.fn().mockReturnValueOnce(9).mockReturnValueOnce(12);
+    const originalDOMParser = globalThis.DOMParser;
+    globalThis.DOMParser = class {
+      parseFromString() {
+        return { querySelector: (selector) => ({
+          '[data-book-hierarchy-form]': fresh.form,
+          '[data-book-detail-live-region]': freshDetail,
+        })[selector] || null };
+      }
+    };
+    const requests = [];
+
+    try {
+      await withBrowserGlobals(async (action, options) => {
+        requests.push({ action, options });
+        if (requests.length === 1) {
+          return {
+            ok: false,
+            status: 409,
+            json: async () => ({
+              status: 'error',
+              code: 'HIERARCHY_STALE',
+              message: 'The hierarchy membership changed.',
+              hierarchy: authority,
+              refreshUrl: '/notes/books/7',
+            }),
+          };
+        }
+        if (options.method === 'GET') {
+          const getCount = requests.filter(({ options: requestOptions }) => requestOptions.method === 'GET').length;
+          if (getCount > 2) {
+            const current = fresh.target();
+            fresh.input.value = JSON.stringify({ version: 1, expected: current, target: current });
+          }
+          return getCount === 1
+            ? { ok: false, status: 503, text: async () => '' }
+            : { ok: true, text: async () => '<html></html>' };
+        }
+        const submission = JSON.parse(options.body.get('hierarchy'));
+        return {
+          ok: true,
+          json: async () => ({ status: 'success', hierarchy: submission.target, refreshUrl: '/notes/books/7' }),
+        };
+      }, async () => {
+        enhanceBookHierarchyReorder(fixture.document, { beginDetailRefresh, installDetail });
+        fixture.items.get('page:11').handle.dispatch('keydown', { key: 'End' });
+        await flushAsync();
+        await flushAsync();
+
+        expect(requests).toHaveLength(2);
+        expect(new URL(requests[1].action).pathname).toBe('/notes/books/7/order');
+        expect(installDetail).not.toHaveBeenCalled();
+        expect(fixture.document.querySelector('[data-book-detail-live-region]')).toBe(oldDetail);
+        expect(fixture.form.querySelector('[data-book-hierarchy-editor]')).toBe(fixture.editor);
+        expect(JSON.parse(fixture.input.value).expected).toEqual(fixture.expected);
+        expect(fixture.status.textContent).toContain('Retry reconciliation');
+        expect(fixture.status.textContent).toContain('hierarchy membership changed');
+        expect(fixture.form.getAttribute('aria-busy')).toBe('true');
+        const retry = fixture.status.querySelector('[data-book-hierarchy-reconciliation-retry]');
+        expect(retry).toBeTruthy();
+        expect(fixture.document.activeElement).toBe(retry);
+
+        const retiredHierarchy = fixture.target();
+        fixture.items.get('page:11').handle.dispatch('keydown', { key: 'Home' });
+        fixture.drag(fixture.items.get('page:21'), fixture.containers.get('chapter:3'));
+        await flushAsync();
+        expect(fixture.target()).toEqual(retiredHierarchy);
+        expect(requests).toHaveLength(2);
+
+        retry.dispatch('click');
+        await flushAsync();
+        await flushAsync();
+
+        expect(requests).toHaveLength(3);
+        expect(new URL(requests[2].action).pathname).toBe('/notes/books/7/order');
+        expect(beginDetailRefresh).toHaveBeenNthCalledWith(2, fixture.document);
+        expect(installDetail).toHaveBeenCalledWith(
+          fixture.document,
+          'http://creatorcrate.local/notes/books/7',
+          12,
+          freshDetail,
+        );
+        expect(fixture.form.querySelector('[data-book-hierarchy-editor]')).toBe(fresh.editor);
+        expect(JSON.parse(fixture.input.value).expected).toEqual(authority);
+        expect(fresh.editor.listeners.filter(({ type }) => type === 'keydown')).toHaveLength(1);
+        expect(fixture.form.getAttribute('aria-busy')).toBe(null);
+        expect(fixture.form.getAttribute('data-book-hierarchy-state')).toBe('error');
+        expect(fixture.dialog.getAttribute('data-dialog-state')).toBe('error');
+        expect(fixture.document.activeElement).toBe(close);
+
+        fresh.items.get('page:11').handle.dispatch('keydown', { key: 'End' });
+        await flushAsync();
+        expect(requests).toHaveLength(5);
+        expect(JSON.parse(requests[3].options.body.get('hierarchy')).expected).toEqual(authority);
+      });
+    } finally {
+      globalThis.DOMParser = originalDOMParser;
+    }
+  });
+
+  it('keeps one usable Retry after repeated changed-membership reconciliation failures', async () => {
+    const fixture = makeBookHierarchyReorderFixture();
+    const authority = fixture.expected.slice(0, -1);
+    const requests = [];
+    const fetchAuthority = vi.fn().mockResolvedValue(null);
+
+    await withBrowserGlobals(async (action, options) => {
+      requests.push({ action, options });
+      return {
+        ok: false,
+        status: 409,
+        json: async () => ({
+          status: 'error',
+          code: 'HIERARCHY_STALE',
+          message: 'The hierarchy membership changed.',
+          hierarchy: authority,
+          refreshUrl: '/notes/books/7',
+        }),
+      };
+    }, async () => {
+      enhanceBookHierarchyReorder(fixture.document, {
+        beginDetailRefresh: () => 12,
+        fetchAuthority,
+      });
+      fixture.items.get('page:11').handle.dispatch('keydown', { key: 'End' });
+      await flushAsync();
+      await flushAsync();
+
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const retries = fixture.status.querySelectorAll('[data-book-hierarchy-reconciliation-retry]');
+        expect(retries).toHaveLength(1);
+        expect(fixture.document.activeElement).toBe(retries[0]);
+        retries[0].dispatch('click');
+        await flushAsync();
+        await flushAsync();
+      }
+
+      expect(fetchAuthority).toHaveBeenCalledTimes(3);
+      expect(requests).toHaveLength(1);
+      expect(fixture.status.querySelectorAll('[data-book-hierarchy-reconciliation-retry]')).toHaveLength(1);
+      expect(fixture.form.querySelector('[data-book-hierarchy-editor]')).toBe(fixture.editor);
+      expect(fixture.form.getAttribute('aria-busy')).toBe('true');
+
+      const blocked = fixture.target();
+      fixture.items.get('page:12').handle.dispatch('keydown', { key: 'End' });
+      fixture.drag(fixture.items.get('page:21'), fixture.containers.get('chapter:3'));
+      expect(fixture.target()).toEqual(blocked);
+    });
+  });
+
+  it('keeps an uncertain hierarchy non-authoritative and blocked when canonical reconciliation fails', async () => {
+    const fixture = makeBookHierarchyReorderFixture();
+    const requests = [];
+
+    await withBrowserGlobals(async (action, options) => {
+      requests.push({ action, options });
+      return { ok: false, status: 503, json: async () => null };
+    }, async () => {
+      enhanceBookHierarchyReorder(fixture.document, {
+        beginDetailRefresh: () => 3,
+        fetchAuthority: async () => {
+          requests.push({ action: '/notes/books/7/order', options: { method: 'GET' } });
+          return null;
+        },
+      });
+      fixture.items.get('page:11').handle.dispatch('keydown', { key: 'End' });
+      await flushAsync();
+      await flushAsync();
+
+      expect(fixture.target()).not.toEqual(fixture.expected);
+      expect(JSON.parse(fixture.input.value).expected).toEqual(fixture.expected);
+      expect(fixture.status.textContent).toContain('Retry reconciliation');
+      expect(fixture.form.getAttribute('aria-busy')).toBe('true');
+      expect(requests).toHaveLength(2);
+
+      const blocked = fixture.target();
+      fixture.items.get('page:12').handle.dispatch('keydown', { key: 'End' });
+      expect(fixture.target()).toEqual(blocked);
+      expect(requests).toHaveLength(2);
+    });
+  });
+
+  it('reconciles an uncertain hierarchy from one canonical snapshot and dispatches one valid queued move', async () => {
+    const fixture = makeBookHierarchyReorderFixture();
+    const fresh = makeBookHierarchyReorderFixture();
+    fresh.containers.get('chapter:3').appendChild(fresh.items.get('page:21'));
+    const canonical = [
       { type: 'chapter', id: 1, pages: [11, 12] },
       { type: 'chapter', id: 2, pages: [13] },
       { type: 'chapter', id: 3, pages: [21] },
       { type: 'page', id: 22 },
     ];
-    fixture.input.value = JSON.stringify({ version: 1, expected: fixture.expected, target: loadedTarget });
-    enhanceBookHierarchyReorder(fixture.document);
+    fresh.input.value = JSON.stringify({ version: 1, expected: canonical, target: canonical });
+    const detail = makeCategoryNode({ attrs: { 'data-book-detail-live-region': '' } });
+    fixture.document.appendChild(makeCategoryNode({ attrs: { 'data-book-detail-live-region': '' } }));
+    fixture.form.replaceChild = (next, previous) => {
+      const index = fixture.form.children.indexOf(previous);
+      fixture.form.children[index] = next;
+      previous.parentElement = null;
+      previous.parentNode = null;
+      next.parentElement = fixture.form;
+      next.parentNode = fixture.form;
+      next.ownerDocument = fixture.document;
+    };
+    const originalDOMParser = globalThis.DOMParser;
+    globalThis.DOMParser = class {
+      parseFromString() {
+        return { querySelector: (selector) => ({
+          '[data-book-hierarchy-form]': fresh.form,
+          '[data-book-detail-live-region]': detail,
+        })[selector] || null };
+      }
+    };
+    const requests = [];
+    const installDetail = vi.fn(() => 'installed');
 
-    fixture.drag(page, fixture.root, fixture.items.get('chapter:2'), 1000);
-    fixture.dialog.__creatorCrateAppDialogState.onClose();
-    expect(fixture.target()).toEqual(loadedTarget);
-    expect(JSON.parse(fixture.input.value).expected).toEqual(fixture.expected);
+    try {
+      await withBrowserGlobals((action, options) => {
+        if (requests.length === 0) {
+          return new Promise((resolve, reject) => requests.push({ action, options, resolve, reject }));
+        }
+        requests.push({ action, options });
+        if (options.method === 'GET') return Promise.resolve({ ok: true, text: async () => '<html></html>' });
+        const submission = JSON.parse(options.body.get('hierarchy'));
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ status: 'success', hierarchy: submission.target, refreshUrl: '/notes/books/7' }),
+        });
+      }, async () => {
+        enhanceBookHierarchyReorder(fixture.document, {
+          beginDetailRefresh: () => 19,
+          installDetail,
+          refreshDetail: vi.fn(() => 'started'),
+          fetchAuthority: async (state) => {
+            requests.push({ action: '/notes/books/7/order', options: { method: 'GET' } });
+            if (state.editor === fresh.editor) {
+              return bookHierarchyAuthority(fresh, state.acknowledgedHierarchy);
+            }
+            return {
+              destination: '/notes/books/7', replacementEditor: fresh.editor,
+              replacementInput: fresh.input, replacementDetail: detail, hierarchy: canonical,
+            };
+          },
+        });
+        fixture.drag(fixture.items.get('page:21'), fixture.containers.get('chapter:3'));
+        fixture.items.get('page:11').handle.dispatch('keydown', { key: 'End' });
+        const queued = fixture.target();
+        requests[0].reject(new Error('response lost'));
+        await flushAsync();
+        await flushAsync();
 
-    fixture.dialog.__creatorCrateAppDialogState.onOpen();
-    fixture.drag(page, fixture.containers.get('chapter:2'));
-    const savedDraft = fixture.input.value;
-    const submit = fixture.form.dispatch('submit');
-    expect(submit.defaultPrevented).toBe(false);
-    expect(JSON.parse(savedDraft)).toEqual({
-      version: 1,
-      expected: fixture.expected,
-      target: [
-        { type: 'chapter', id: 1, pages: [11, 12] },
-        { type: 'chapter', id: 2, pages: [13, 21] },
-        { type: 'chapter', id: 3, pages: [] },
-        { type: 'page', id: 22 },
-      ],
+        expect(requests).toHaveLength(4);
+        expect(requests.filter(({ options }) => options.method !== 'GET')).toHaveLength(2);
+        expect(installDetail).toHaveBeenCalledWith(fixture.document, '/notes/books/7', 19, detail);
+        const replay = JSON.parse(requests[2].options.body.get('hierarchy'));
+        expect(replay.expected).toEqual(canonical);
+        expect(replay.target).toEqual(queued);
+        expect(fixture.status.textContent).toBe('Book hierarchy saved.');
+      });
+    } finally {
+      globalThis.DOMParser = originalDOMParser;
+    }
+  });
+
+  it.each([
+    {
+      name: 'accounts for a queued newer hierarchy before uncertain reconciliation publishes empty authority while closed',
+      queueNewer: true,
+      status: 'Current hierarchy restored. A pending hierarchy change was not applied because the Book contents changed; make the move again if it is still wanted.',
+      statusKind: 'error',
+    },
+    {
+      name: 'reports ordinary success when uncertain reconciliation publishes empty authority without a queued hierarchy',
+      queueNewer: false,
+      status: 'Current hierarchy restored.',
+      statusKind: 'saved',
+    },
+  ])('$name', async ({ queueNewer, status, statusKind }) => {
+    const fixture = makeBookHierarchyReorderFixture();
+    const emptyEditor = makeCategoryNode({ attrs: { 'data-book-hierarchy-editor': '' } });
+    const emptyInput = makeCategoryNode({ tagName: 'input', attrs: { 'data-book-hierarchy-input': '', name: 'hierarchy' } });
+    const emptyDetail = makeCategoryNode({ attrs: { 'data-book-detail-live-region': '' } });
+    const focusGuard = makeCategoryNode({ tagName: 'button' });
+    emptyInput.value = JSON.stringify({ version: 1, expected: [], target: [] });
+    fixture.document.appendChild(makeCategoryNode({ attrs: { 'data-book-detail-live-region': '' } }));
+    fixture.document.appendChild(focusGuard);
+    fixture.dialog.__creatorCrateAppDialogState.open = false;
+    fixture.form.replaceChild = (next, previous) => {
+      const index = fixture.form.children.indexOf(previous);
+      fixture.form.children[index] = next;
+      previous.parentElement = null;
+      previous.parentNode = null;
+      next.parentElement = fixture.form;
+      next.parentNode = fixture.form;
+      next.ownerDocument = fixture.document;
+    };
+    const requests = [];
+
+    await withBrowserGlobals((action, options) => {
+      requests.push({ action, options });
+      return new Promise((_resolve, reject) => { requests[0].reject = reject; });
+    }, async () => {
+      enhanceBookHierarchyReorder(fixture.document, {
+        beginDetailRefresh: () => 23,
+        installDetail: () => 'installed',
+        fetchAuthority: async () => ({
+          kind: 'empty',
+          destination: '/notes/books/7',
+          replacementEditor: emptyEditor,
+          replacementInput: emptyInput,
+          replacementDetail: emptyDetail,
+          hierarchy: [],
+        }),
+      });
+      fixture.drag(fixture.items.get('page:21'), fixture.containers.get('chapter:3'));
+      const state = fixture.editor.__creatorCrateBookHierarchyState;
+      if (queueNewer) {
+        fixture.items.get('page:11').handle.dispatch('keydown', { key: 'End' });
+        const queued = JSON.parse(JSON.stringify(state.queuedHierarchy));
+        expect(queued).not.toEqual(state.activeHierarchy);
+      } else {
+        expect(state.queuedHierarchy).toBe(null);
+      }
+      focusGuard.focus();
+
+      requests[0].reject(new Error('response lost'));
+      await flushAsync();
+      await flushAsync();
+
+      expect(requests).toHaveLength(1);
+      expect(state.retired).toBe(true);
+      expect(state.expected).toEqual([]);
+      expect(state.acknowledgedHierarchy).toEqual([]);
+      expect(state.desiredHierarchy).toEqual([]);
+      expect(state.activeHierarchy).toBe(null);
+      expect(state.queuedHierarchy).toBe(null);
+      expect(state.pendingUncertainHierarchy).toBe(null);
+      expect(fixture.input.value).toBe(JSON.stringify({ version: 1, expected: [], target: [] }));
+      expect(fixture.status.textContent).toBe(status);
+      expect(fixture.form.getAttribute('data-book-hierarchy-state')).toBe(statusKind);
+      expect(fixture.form.getAttribute('aria-busy')).toBe(null);
+      expect(fixture.document.activeElement).toBe(focusGuard);
+      expect(fixture.form.querySelector('[data-book-hierarchy-editor]')).toBe(emptyEditor);
     });
-    fixture.dialog.__creatorCrateAppDialogState.onClose();
-    expect(fixture.input.value).toBe(savedDraft);
+  });
+
+  it('reports rather than merges a queued hierarchy when canonical membership changed', async () => {
+    const fixture = makeBookHierarchyReorderFixture();
+    const fresh = makeBookHierarchyReorderFixture();
+    const canonical = removeBookHierarchyItem(fresh, 'page:22');
+    const detail = makeCategoryNode({ attrs: { 'data-book-detail-live-region': '' } });
+    fixture.document.appendChild(makeCategoryNode({ attrs: { 'data-book-detail-live-region': '' } }));
+    fixture.form.replaceChild = (next, previous) => {
+      const index = fixture.form.children.indexOf(previous);
+      fixture.form.children[index] = next;
+      previous.parentElement = null;
+      previous.parentNode = null;
+      next.parentElement = fixture.form;
+      next.parentNode = fixture.form;
+      next.ownerDocument = fixture.document;
+    };
+    const originalDOMParser = globalThis.DOMParser;
+    globalThis.DOMParser = class {
+      parseFromString() {
+        return { querySelector: (selector) => ({
+          '[data-book-hierarchy-form]': fresh.form,
+          '[data-book-detail-live-region]': detail,
+        })[selector] || null };
+      }
+    };
+    const requests = [];
+
+    try {
+      await withBrowserGlobals((action, options) => {
+        requests.push({ action, options });
+        if (requests.length === 1) return new Promise((_resolve, reject) => { requests[0].reject = reject; });
+        return Promise.resolve({ ok: true, text: async () => '<html></html>' });
+      }, async () => {
+        enhanceBookHierarchyReorder(fixture.document, {
+          beginDetailRefresh: () => 21,
+          installDetail: () => 'installed',
+          fetchAuthority: async () => {
+            requests.push({ action: '/notes/books/7/order', options: { method: 'GET' } });
+            return {
+              destination: '/notes/books/7', replacementEditor: fresh.editor,
+              replacementInput: fresh.input, replacementDetail: detail, hierarchy: canonical,
+            };
+          },
+        });
+        fixture.drag(fixture.items.get('page:21'), fixture.containers.get('chapter:3'));
+        fixture.items.get('page:11').handle.dispatch('keydown', { key: 'End' });
+        requests[0].reject(new Error('response lost'));
+        await flushAsync();
+        await flushAsync();
+
+        expect(requests).toHaveLength(2);
+        expect(JSON.parse(fixture.input.value).expected).toEqual(canonical);
+        expect(fixture.status.textContent).toContain('queued move was not applied');
+        expect(fixture.form.getAttribute('aria-busy')).toBe(null);
+      });
+    } finally {
+      globalThis.DOMParser = originalDOMParser;
+    }
+  });
+
+  it('blocks a stale successful controller until changed membership is canonically synchronized', async () => {
+    const fixture = makeBookHierarchyReorderFixture();
+    const fresh = makeBookHierarchyReorderFixture();
+    const canonical = removeBookHierarchyItem(fresh, 'page:22');
+    let resolveAuthority;
+    const fetchAuthority = vi.fn((state) => {
+      if (state.editor === fixture.editor) {
+        return new Promise((resolve) => { resolveAuthority = resolve; });
+      }
+      return Promise.resolve(bookHierarchyAuthority(fresh, state.acknowledgedHierarchy));
+    });
+    const requests = [];
+
+    await withBrowserGlobals(async (action, options) => {
+      requests.push({ action, options });
+      const submission = JSON.parse(options.body.get('hierarchy'));
+      return {
+        ok: true,
+        json: async () => ({
+          status: 'success',
+          hierarchy: submission.target,
+          refreshUrl: '/notes/books/7',
+        }),
+      };
+    }, async () => {
+      enhanceBookHierarchyReorder(fixture.document, {
+        beginDetailRefresh: () => 12,
+        installDetail: () => 'installed',
+        fetchAuthority,
+      });
+      fixture.items.get('page:11').handle.dispatch('keydown', { key: 'End' });
+      await flushAsync();
+
+      expect(fetchAuthority).toHaveBeenCalledOnce();
+      expect(fixture.form.getAttribute('aria-busy')).toBe('true');
+      fixture.items.get('page:12').handle.dispatch('keydown', { key: 'End' });
+      expect(requests).toHaveLength(1);
+
+      resolveAuthority({
+        kind: 'active',
+        destination: '/notes/books/7',
+        replacementEditor: fresh.editor,
+        replacementInput: fresh.input,
+        replacementDetail: makeCategoryNode({ attrs: { 'data-book-detail-live-region': '' } }),
+        hierarchy: canonical,
+      });
+      await flushAsync();
+      await flushAsync();
+
+      expect(fixture.editor.__creatorCrateBookHierarchyState.retired).toBe(true);
+      expect(fixture.form.querySelector('[data-book-hierarchy-editor]')).toBe(fresh.editor);
+      expect(JSON.parse(fixture.input.value).expected).toEqual(canonical);
+      fresh.items.get('page:11').handle.dispatch('keydown', { key: 'End' });
+      await flushAsync();
+      await flushAsync();
+      expect(requests).toHaveLength(2);
+      expect(JSON.parse(requests[1].options.body.get('hierarchy')).expected).toEqual(canonical);
+    });
+  });
+
+  it('reports post-success synchronization failure and retries only the canonical snapshot', async () => {
+    const fixture = makeBookHierarchyReorderFixture();
+    const requests = [];
+    const fetchAuthority = vi.fn()
+      .mockResolvedValueOnce(null)
+      .mockImplementation(async (state) => bookHierarchyAuthority(fixture, state.acknowledgedHierarchy));
+
+    await withBrowserGlobals(async (action, options) => {
+      requests.push({ action, options });
+      const submission = JSON.parse(options.body.get('hierarchy'));
+      return {
+        ok: true,
+        json: async () => ({ status: 'success', hierarchy: submission.target, refreshUrl: '/notes/books/7' }),
+      };
+    }, async () => {
+      enhanceBookHierarchyReorder(fixture.document, {
+        beginDetailRefresh: () => 12,
+        installDetail: () => 'installed',
+        fetchAuthority,
+      });
+      fixture.items.get('page:11').handle.dispatch('keydown', { key: 'End' });
+      await flushAsync();
+      await flushAsync();
+
+      expect(requests).toHaveLength(1);
+      expect(fixture.status.textContent).toContain('Book hierarchy saved, but current Book contents could not be synchronized.');
+      expect(fixture.status.textContent).toContain('Retry reconciliation');
+      expect(fixture.form.getAttribute('aria-busy')).toBe('true');
+      const retry = fixture.status.querySelector('[data-book-hierarchy-reconciliation-retry]');
+      retry.dispatch('click');
+      await flushAsync();
+      await flushAsync();
+
+      expect(fetchAuthority).toHaveBeenCalledTimes(2);
+      expect(requests).toHaveLength(1);
+      expect(fixture.form.getAttribute('aria-busy')).toBe(null);
+      expect(fixture.status.textContent).toBe('Book hierarchy saved.');
+    });
   });
 });
 

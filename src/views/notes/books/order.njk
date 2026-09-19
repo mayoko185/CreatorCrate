@@ -1,6 +1,6 @@
 {% import "partials/dialog.njk" as dialog %}
 
-{% call dialog.render('book-order-dialog', 'Change order', bookOrderDialogOpen, '', '', 'project-form-dialog', [], false) %}
+{% call dialog.render('book-order-dialog', 'Reorder book contents', bookOrderDialogOpen, '', '', 'project-form-dialog') %}
   <form id="notes-book-order-form" method="post" action="/notes/books/{{ book.id }}/hierarchy/reorder" data-book-hierarchy-form
         class="app-dialog-form project-form project-edit-dialog-form" data-dialog-form data-dialog-async="false">
     <input type="hidden" name="_csrf" value="{{ _csrf }}">
@@ -14,7 +14,7 @@
         <div class="project-edit-dialog-section-body">
         {% if bookHierarchy.items.length > 0 %}
           <p class="help-text" id="notes-book-order-instructions">
-            Drag cards to reorder. Select Save to apply changes.
+            Drag cards to reorder, or focus a handle and use Arrow Up, Arrow Down, Home, or End. Changes are saved immediately.
           </p>
           <p class="sr-only" aria-live="polite" aria-atomic="true" data-book-hierarchy-live></p>
           <ol class="notes-book-content-list notes-book-order-list notes-reorder-list"
@@ -68,10 +68,6 @@
         </div>
       </section>
     </div>
-    <footer class="app-dialog-footer">
-      {% if bookHierarchy.items.length > 0 %}
-        <button class="button button-primary" type="submit" form="notes-book-order-form" data-dialog-submit>Save</button>
-      {% endif %}
-    </footer>
+    <div class="app-dialog-status" data-book-hierarchy-status role="status" aria-live="polite" aria-atomic="true"></div>
   </form>
 {% endcall %}

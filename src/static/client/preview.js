@@ -8,6 +8,7 @@ import { enhanceClickableCards } from './clickable-cards.js';
 
 const PREVIEW_ROOT_SELECTOR = '[data-preview-enhancement]';
 const PREVIEW_IMAGE_SELECTOR = '[data-preview-image]';
+const PREVIEW_LOADING_SELECTOR = '[data-preview-loading]';
 const PREVIEW_FALLBACK_SELECTOR = '[data-preview-fallback]';
 const PROJECT_CARD_SELECTOR = '[data-project-card]';
 const PROJECT_CARD_LINK_SELECTOR = '[data-project-card-link]';
@@ -37,10 +38,12 @@ function setPreviewState(root, state) {
 export function markPreviewLoaded(root) {
   if (!root || root.dataset?.previewState === 'failed') return 'failed';
   const image = root.querySelector?.(PREVIEW_IMAGE_SELECTOR);
+  const loading = root.querySelector?.(PREVIEW_LOADING_SELECTOR);
   const fallback = root.querySelector?.(PREVIEW_FALLBACK_SELECTOR);
 
   setPreviewState(root, 'loaded');
   showElement(image);
+  hideElement(loading);
   hideElement(fallback);
   return 'loaded';
 }
@@ -50,11 +53,13 @@ export function markPreviewFailed(root) {
   if (root.dataset?.previewState === 'failed') return 'failed';
 
   const image = root.querySelector?.(PREVIEW_IMAGE_SELECTOR);
+  const loading = root.querySelector?.(PREVIEW_LOADING_SELECTOR);
   const fallback = root.querySelector?.(PREVIEW_FALLBACK_SELECTOR);
   const previewLink = image?.closest?.('.asset-preview-link');
 
   setPreviewState(root, 'failed');
   hideElement(image);
+  hideElement(loading);
   hideElement(previewLink);
   showElement(fallback);
   return 'failed';
@@ -82,8 +87,14 @@ export function enhancePreview(root) {
 
   if (typeof image.addEventListener !== 'function') return 'skipped';
 
-  image.addEventListener('load', () => markPreviewLoaded(root), { once: true });
-  image.addEventListener('error', () => markPreviewFailed(root), { once: true });
+  image.addEventListener('load', () => {
+    if (root.isConnected === false) return;
+    markPreviewLoaded(root);
+  }, { once: true });
+  image.addEventListener('error', () => {
+    if (root.isConnected === false) return;
+    markPreviewFailed(root);
+  }, { once: true });
   return 'listening';
 }
 

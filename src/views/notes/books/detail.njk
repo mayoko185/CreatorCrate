@@ -8,9 +8,17 @@
 {% set page_title = "Notes — " ~ book.title %}
 
 {% block content %}
-  {% call pageHeading.render() %}
-    <a class="button button-primary" href="/notes/new?bookId={{ book.id }}" data-dialog-open="note-create-dialog">New Page</a>
-    <a class="button" href="/notes/books/{{ book.id }}/chapters/new" data-dialog-open="chapter-create-dialog">New Chapter</a>
+  {% call pageHeading.render(leadHref='/notes', leadLabel='Back to book list', leadIcon='chevron-left') %}
+    <a class="button button-small button-primary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--left"
+       href="/notes/new?bookId={{ book.id }}" data-dialog-open="note-create-dialog" data-dialog-invocation
+       aria-label="New Page" data-tooltip="New Page">
+      {{ icons.icon('plus') }}
+    </a>
+    <a class="button button-small button-secondary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--right"
+       href="/notes/books/{{ book.id }}/chapters/new" data-dialog-open="chapter-create-dialog" data-dialog-invocation
+       aria-label="New Chapter" data-tooltip="New Chapter">
+      {{ icons.icon('plus') }}
+    </a>
   {% endcall %}
 
   {% if notice %}
@@ -20,33 +28,28 @@
   {% endif %}
 
   <div class="asset-viewer-display-controls" data-book-detail-toolbar>
-    <a class="button button-secondary" href="/notes">Back to book list</a>
     <div class="project-filter-actions project-filter-actions--projects">
-      <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
+      <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--right"
          href="/notes/books/{{ book.id }}/edit" data-dialog-open="book-edit-dialog"
          aria-label="Edit book" data-tooltip="Edit book">
         {{ icons.icon('edit') }}
       </a>
       {% if canChangeOrder %}
-        <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
+        <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--right"
            href="/notes/books/{{ book.id }}/order" data-dialog-open="book-order-dialog"
-           aria-label="Change order" data-tooltip="Change order">
+           aria-label="Reorder book contents" data-tooltip="Reorder book contents">
           {{ icons.icon('sort') }}
         </a>
       {% endif %}
-      <a class="asset-viewer-defaults-link button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
+      <a class="asset-viewer-defaults-link button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--right"
          href="/notes/books/{{ book.id }}?defaults=1" data-dialog-open="book-defaults-dialog"
          aria-label="Book defaults" data-tooltip="Book defaults" data-book-defaults-link>
         {{ icons.icon('settings') }}
       </a>
-      <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--right"
-         href="/notes/books/{{ book.id }}" aria-label="Reset to default"
-         data-tooltip="Reset to default" data-book-reset>
-        {{ icons.icon('reset') }}
-      </a>
     </div>
   </div>
 
+  <div data-book-detail-live-region>
   <div class="notes-page-detail-layout">
     <div class="notes-page-sidebar">
       <aside class="notes-page-detail-sidebar notes-book-detail-sidebar notes-surface notes-surface--compact">
@@ -70,6 +73,8 @@
       {% include "partials/book-page-previews.njk" %}
     </div>
   </div>
+  <div class="visually-hidden" data-book-detail-live-status role="status" aria-live="polite" aria-atomic="true"></div>
+  </div>
 {% endblock %}
 
 {% block overlay %}
@@ -78,7 +83,7 @@
 
   {% call dialog.render('book-defaults-dialog', 'Book defaults', bookDefaultsDialogOpen, 'book-defaults-description', 'book-defaults-form') %}
     <form id="book-defaults-form" method="post" action="/notes/books/{{ book.id }}/defaults" class="app-dialog-form project-form"
-          data-dialog-form data-dialog-async novalidate>
+          data-dialog-form data-dialog-async="false" data-book-defaults-autosave novalidate>
       <p id="book-defaults-description" class="app-dialog-description">
         Navigation applies across Books. Page previews apply only to this Book.
       </p>
@@ -94,7 +99,7 @@
         <div class="page-defaults-grid">
           {% for field in bookDefaults.fields %}
           {% set submittedOption = none %}
-          {% set nativeAttributes = [["required", true]] %}
+          {% set nativeAttributes = [["required", true], ["data-autosubmit", "fetch"]] %}
           {% set summaryAttributes = [] %}
           {% if field.showSubmittedValue %}
             {% set submittedOption = {
@@ -106,7 +111,7 @@
             } %}
           {% endif %}
           {% if field.error %}
-            {% set nativeAttributes = [["required", true], ["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] %}
+            {% set nativeAttributes = [["required", true], ["data-autosubmit", "fetch"], ["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] %}
             {% set summaryAttributes = [["aria-describedby", field.id ~ '-error'], ["aria-invalid", true]] %}
           {% endif %}
           <div class="field app-dialog-field{% if field.error %} field-error{% endif %}" data-dialog-field="{{ field.name }}">
@@ -117,6 +122,7 @@
               options: field.options,
               selected: field.selectedValue,
               optionIdPrefix: field.id,
+              dispatchNativeChange: true,
               leadingOption: submittedOption,
               summaryAttributes: summaryAttributes,
               nativeSelect: {
@@ -147,11 +153,12 @@
               options: bookPreviewDefaults.modeOptions,
               selected: bookPreviewDefaults.mode,
               optionIdPrefix: 'book-preview-mode',
+              dispatchNativeChange: true,
               leadingOption: modeSubmittedOption,
               summaryAttributes: [["aria-describedby", "book-preview-mode-error" if modeError else none], ["aria-invalid", true if modeError else none]],
               nativeSelect: {
                 id: 'book-preview-mode',
-                attributes: [["required", true], ["aria-describedby", "book-preview-mode-error" if modeError else none], ["aria-invalid", true if modeError else none]]
+                attributes: [["required", true], ["data-autosubmit", "fetch"], ["aria-describedby", "book-preview-mode-error" if modeError else none], ["aria-invalid", true if modeError else none]]
               }
             }) }}
             {% if modeError %}<span class="field-error-message" id="book-preview-mode-error">{{ modeError }}</span>{% endif %}
@@ -176,11 +183,12 @@
               options: bookPreviewDefaults.countOptions,
               selected: bookPreviewDefaults.randomCount,
               optionIdPrefix: 'book-preview-count',
+              dispatchNativeChange: true,
               leadingOption: countSubmittedOption,
               summaryAttributes: [["aria-describedby", "book-preview-count-error" if countError else none], ["aria-invalid", true if countError else none]],
               nativeSelect: {
                 id: 'book-preview-count',
-                attributes: [["required", true], ["aria-describedby", "book-preview-count-error" if countError else none], ["aria-invalid", true if countError else none]]
+                attributes: [["required", true], ["data-autosubmit", "fetch"], ["aria-describedby", "book-preview-count-error" if countError else none], ["aria-invalid", true if countError else none]]
               }
             }) }}
             {% if countError %}<span class="field-error-message" id="book-preview-count-error">{{ countError }}</span>{% endif %}
@@ -204,10 +212,11 @@
               emptyOptionText: 'No Pages are available in this Book.',
               classes: 'asset-project-filter-disclosure',
               optionIdPrefix: 'book-preview-page',
+              dispatchNativeChange: true,
               summaryAttributes: [["aria-describedby", "book-preview-pages-error" if pagesError else none], ["aria-invalid", true if pagesError else none]],
               nativeSelect: {
                 id: 'book-preview-pages',
-                attributes: [["aria-describedby", "book-preview-pages-error" if pagesError else none], ["aria-invalid", true if pagesError else none]]
+                attributes: [["data-autosubmit", "fetch"], ["aria-describedby", "book-preview-pages-error" if pagesError else none], ["aria-invalid", true if pagesError else none]]
               }
             }) }}
             {% if pagesError %}<span class="field-error-message" id="book-preview-pages-error">{{ pagesError }}</span>{% endif %}
@@ -215,11 +224,8 @@
         </div>
       </div>
 
-      <div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>
+      <div class="app-dialog-status" data-dialog-status data-settings-fetch-save-status role="status" aria-live="polite" aria-atomic="true"></div>
 
-      <footer class="app-dialog-footer">
-        <button class="button button-primary" type="submit" data-dialog-submit>Save defaults</button>
-      </footer>
     </form>
   {% endcall %}
 
@@ -247,7 +253,7 @@
   {% set bookCoverSource = bookEditForm.book.primaryImage.selectedSource %}
   {% call dialog.render('book-edit-dialog', 'Edit Book', bookEditDialogOpen, '', '', 'project-form-dialog') %}
     <form id="book-form" method="post" action="{{ bookEditForm.submitUrl }}" enctype="multipart/form-data" class="app-dialog-form project-form project-edit-dialog-form"
-          data-dialog-form data-dialog-async="false" novalidate>
+          data-dialog-form data-dialog-async="false" data-book-edit-autosave novalidate>
       <input type="hidden" name="_csrf" value="{{ _csrf }}">
       {% if bookEditReturnTo %}
         <input type="hidden" name="returnTo" value="{{ bookEditReturnTo }}" data-dialog-return-location>
@@ -257,10 +263,8 @@
           <div class="error-summary" role="alert"><p>{{ errors.general }}</p></div>
         {% endif %}
         {% include "notes/books/form-fields.njk" %}
+        <div class="visually-hidden" data-book-edit-save-status role="status" aria-live="polite" aria-atomic="true"></div>
       </div>
-      <footer class="app-dialog-footer">
-        <button class="button button-primary" type="submit" data-dialog-submit>Save</button>
-      </footer>
     </form>
 
     <form id="book-delete-form" method="post" action="/notes/books/{{ book.id }}/delete">

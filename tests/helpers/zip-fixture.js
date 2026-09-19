@@ -53,7 +53,7 @@ function localHeader(entry) {
 function centralHeader(entry) {
   return Buffer.concat([
     Buffer.from('PK\x01\x02', 'binary'),
-    writeUInt16(20),
+    writeUInt16(entry.versionMadeBy),
     writeUInt16(20),
     writeUInt16(entry.flags),
     writeUInt16(entry.compressionMethod),
@@ -67,7 +67,7 @@ function centralHeader(entry) {
     writeUInt16(0),
     writeUInt16(0),
     writeUInt16(0),
-    writeUInt32(0),
+    writeUInt32(entry.externalFileAttributes),
     writeUInt32(entry.localOffset),
     entry.nameBuffer,
     entry.extra,
@@ -77,7 +77,7 @@ function centralHeader(entry) {
 /**
  * Build a small single-disk ZIP fixture without using an archive executable
  * or production parser. Entries may override metadata to exercise malformed
- * and resource-limit paths.
+ * and resource-limit paths; declaredCrc32 can intentionally corrupt CRC metadata.
  */
 export function makeZip(entries, { entryCount } = {}) {
   const localParts = [];
@@ -95,7 +95,7 @@ export function makeZip(entries, { entryCount } = {}) {
     const normalized = {
       flags: input.flags ?? 0x800,
       compressionMethod,
-      crc32: input.crc32 ?? crc32(data),
+      crc32: input.declaredCrc32 ?? crc32(data),
       compressedSize: input.compressedSize ?? compressedData.length,
       uncompressedSize: input.uncompressedSize ?? data.length,
       localCompressedSize: input.localCompressedSize ?? input.compressedSize ?? compressedData.length,
@@ -103,6 +103,8 @@ export function makeZip(entries, { entryCount } = {}) {
       nameBuffer,
       extra,
       localOffset,
+      versionMadeBy: input.versionMadeBy ?? 20,
+      externalFileAttributes: input.externalFileAttributes ?? 0,
     };
     const local = localHeader(normalized);
     localParts.push(local, compressedData);

@@ -567,17 +567,22 @@ describe('generic dropdown enhancement', () => {
     enhanceDropdowns(fixture.scope);
     expect(fixture.inputs.every((input) => input.disabled)).toBe(true);
     expect(fixture.summary.disabled).toBe(true);
+    expect(fixture.summary.tabIndex).toBe(-1);
     expect(fixture.summaryAttrs['aria-disabled']).toBe('true');
 
     fixture.dropdown.open = true;
     const click = fixture.scope.dispatch('click', fixture.summary);
     expect(click.defaultPrevented).toBe(true);
     expect(fixture.dropdown.open).toBe(false);
+    fixture.dropdown.open = true;
+    fixture.scope.dispatch('toggle', fixture.dropdown);
+    expect(fixture.dropdown.open).toBe(false);
 
     fixture.nativeSelect.disabled = false;
     fixture.scope.dispatch('change', fixture.nativeSelect);
     expect(fixture.inputs.every((input) => !input.disabled)).toBe(true);
     expect(fixture.summary.disabled).toBe(false);
+    expect(fixture.summary.tabIndex).toBe(0);
     expect(fixture.summaryAttrs['aria-disabled']).toBeUndefined();
   });
 

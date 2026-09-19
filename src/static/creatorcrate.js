@@ -49,6 +49,9 @@ import {
   noteDialogIsDirty,
 } from './client/note-dialog-dirty.js';
 import { enhanceBookCoverUploads } from './client/book-cover-upload.js';
+import { enhanceBookEditFetchSave } from './client/book-edit-fetch-save.js';
+import { enhanceBookDefaultsFetchSave } from './client/book-defaults-fetch-save.js';
+import { enhanceBookTransfer } from './client/book-transfer.js';
 import {
   enhanceAssetViewerInfoCards,
   enhanceProjectInfoCards,
@@ -95,6 +98,7 @@ import {
 
 import {
   beginAssetViewerDefaultsLiveRefresh,
+  beginBookDetailDefaultsLiveRefresh,
   beginProjectAssetsDefaultsLiveRefresh,
   beginProjectsDefaultsLiveRefresh,
   beginReleasesDefaultsLiveRefresh,
@@ -105,6 +109,8 @@ import {
   enhanceProjectsLiveFiltering,
   enhanceReleasesLiveFiltering,
   refreshAssetViewerLiveRegion,
+  refreshBookDetailLiveRegion,
+  refreshNotesBooksLiveRegion,
   refreshProjectAssetsDefaultsLiveRegion,
   refreshProjectsLiveRegion,
   refreshReleasesLiveRegion,
@@ -127,8 +133,11 @@ export {
   directorySlugFromDisplayName,
   enhanceCategorySlugAutofill,
   enhanceBookContentReorder,
+  enhanceBookEditFetchSave,
   enhanceBookHierarchyReorder,
   enhanceBookReorder,
+  enhanceBookDefaultsFetchSave,
+  enhanceBookTransfer,
   enhanceChapterPageReorder,
   enhanceDashboardDefaultsDialog,
   enhanceCategoryDetails,
@@ -177,6 +186,7 @@ export {
 
 export {
   beginAssetViewerDefaultsLiveRefresh,
+  beginBookDetailDefaultsLiveRefresh,
   beginProjectAssetsDefaultsLiveRefresh,
   beginProjectsDefaultsLiveRefresh,
   beginReleasesDefaultsLiveRefresh,
@@ -187,6 +197,8 @@ export {
   enhanceProjectsLiveFiltering,
   enhanceReleasesLiveFiltering,
   refreshAssetViewerLiveRegion,
+  refreshBookDetailLiveRegion,
+  refreshNotesBooksLiveRegion,
   refreshProjectAssetsDefaultsLiveRegion,
   refreshProjectsLiveRegion,
   refreshReleasesLiveRegion,
@@ -212,6 +224,9 @@ if (typeof document !== 'undefined') {
     enhanceCategoryReorder(document);
     enhanceCategorySlugAutofill(document);
     enhanceBookReorder(document);
+    enhanceBookEditFetchSave(document);
+    enhanceBookDefaultsFetchSave(document);
+    enhanceBookTransfer(document);
     enhanceChapterPageReorder(document);
     enhanceBookContentReorder(document);
     enhanceNotesEditor(document);

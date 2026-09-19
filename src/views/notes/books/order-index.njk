@@ -1,16 +1,14 @@
 {% import "partials/dialog.njk" as dialog %}
-{% call dialog.render('books-order-dialog', 'Change order', booksOrderDialogOpen, '', '', 'project-form-dialog') %}
+{% call dialog.render('books-order-dialog', 'Change book order', booksOrderDialogOpen, '', '', 'project-form-dialog') %}
   <form id="notes-books-order-form" method="post" action="/notes/books/reorder" data-book-reorder-form
         class="app-dialog-form project-form project-edit-dialog-form" data-dialog-form data-dialog-async="false">
     <input type="hidden" name="_csrf" value="{{ _csrf }}">
     <div class="app-dialog-body">
       {% if booksOrderNotice %}<div class="error-summary" role="alert"><p>{{ booksOrderNotice.text }}</p></div>{% endif %}
-      <section class="notes-books-order" data-notes-book-order-page aria-labelledby="notes-books-order-heading">
-        <h3 id="notes-books-order-heading">Books</h3>
-
+      <section class="notes-books-order" data-notes-book-order-page>
         {% if books.length > 0 %}
           <p class="help-text" id="notes-books-order-instructions">
-            Drag a Book card to move it, or focus its handle and use Arrow Up, Arrow Down, Home, or End. Select Save to keep the new order.
+            Drag a Book card to move it, or focus its handle and use Arrow Up, Arrow Down, Home, or End. Changes are saved immediately.
           </p>
 
             <input type="hidden" name="orderedBookIds" data-book-order-input value="{% for book in books %}{{ book.id }}{% if not loop.last %},{% endif %}{% endfor %}">
@@ -51,7 +49,7 @@
             <div class="notes-books-order-live-region notes-reorder-live-region sr-only" data-book-reorder-live aria-live="polite" aria-atomic="true"></div>
 
           <noscript>
-            <p class="help-text">JavaScript is required to move Books. Save still submits the current ordered Book ID list.</p>
+            <p class="help-text">JavaScript is required to move and save Books.</p>
           </noscript>
         {% else %}
           {% set emptyHeading = "No books yet" %}
@@ -63,10 +61,6 @@
         {% endif %}
       </section>
     </div>
-    <footer class="app-dialog-footer">
-      {% if books.length > 0 %}
-        <button class="button button-primary" type="submit" form="notes-books-order-form" data-dialog-submit>Save</button>
-      {% endif %}
-    </footer>
+    <div class="app-dialog-status" data-book-reorder-status role="status" aria-live="polite" aria-atomic="true"></div>
   </form>
 {% endcall %}

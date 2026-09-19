@@ -54,6 +54,7 @@ function expectDisclosure(html, edit, images) {
   expect(cover).toMatch(/^<details class="notes-workspace-disclosure">\s*<summary>Book cover<\/summary>\s*<div class="notes-workspace-disclosure-content">/);
   expect(cover).toContain('type="file" id="book-cover" name="cover"');
   expect(cover).toContain('id="book-cover-help"');
+  expect(cover).toContain('animated WebP is supported. GIF and APNG uploads are not supported.');
   expect(cover.match(/<img\b/g) || []).toHaveLength(images);
   expect(cover).not.toMatch(/<h[1-6]\b/);
   expect(html.match(/>Book actions<\/h3>/g)).toHaveLength(1);

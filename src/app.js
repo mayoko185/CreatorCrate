@@ -2,6 +2,7 @@ import { managedUploadTracker, beginReplacementMaintenance } from './services/ma
 import path from 'node:path';
 import { admitBookUpload, isBookMultipartRequest, withBookUploadLifetime, BOOK_CREATE_MULTIPART_PATH, BOOK_EDIT_MULTIPART_PATH } from './middleware/book-upload-lifetime.js';
 import { parseBookCreateMultipart } from './middleware/book-create-multipart.js';
+import { BOOK_IMPORT_MULTIPART_PATH, parseBookImportUpload } from './middleware/book-import-multipart.js';
 import { createManagedAssetRepository } from './data/managed-asset-repository.js';
 import { createManagedImageService } from './services/managed-image-service.js';
 import express from 'express';
@@ -86,6 +87,8 @@ import { createAssetWorkflowMetadataService } from './services/asset-workflow-me
 import { createPreviewService } from './services/preview-service.js';
 import { createManagedMediaService } from './services/managed-media-service.js';
 import { createMediaService } from './services/media-service.js';
+import { createBookExportService } from './services/book-export-service.js';
+import { createBookImportOrchestrationService } from './services/book-import-orchestration-service.js';
 import { createBackupService } from './services/backup-service.js';
 import { createAuthService } from './services/auth-service.js';
 import { createTagService } from './services/tag-service.js';
@@ -686,6 +689,21 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
 
   app.locals.mediaService = mediaService;
 
+  const bookExportService = opts.bookExportService || createBookExportService({
+    db,
+    managedMediaService: app.locals.managedMediaService,
+    mediaService,
+    tempRoot: opts.bookExportTempRoot,
+  });
+  app.locals.bookExportService = bookExportService;
+  const bookImportOrchestrationService = opts.bookImportOrchestrationService
+    || createBookImportOrchestrationService({
+      db,
+      managedImageService: app.locals.managedImageService,
+      applicationLogger,
+    });
+  app.locals.bookImportOrchestrationService = bookImportOrchestrationService;
+
   // Phase 11.2: backup/restore. `databasePath`/`appDataRoot` default to the
   // live connection's own file path (better-sqlite3 exposes it as `db.name`)
   // so callers that already have an open `db` never need to repeat the path.
@@ -796,6 +814,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.post(BOOK_CREATE_MULTIPART_PATH, withBookUploadLifetime(parseBookCreateMultipart));
   // Numeric Edit Book endpoint only; do not parse reorder or other Book actions.
   app.post(BOOK_EDIT_MULTIPART_PATH, withBookUploadLifetime(parseBookCreateMultipart));
+  app.post(BOOK_IMPORT_MULTIPART_PATH, requireAuth, parseBookImportUpload);
   app.use(requireCsrf);
 
   if (authService) {
@@ -949,6 +968,8 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     bookService,
     bookPrimaryImageService,
     bookPagePreviewSettingsService,
+    bookExportService,
+    bookImportOrchestrationService,
     chapterService,
     noteService,
     markdownRenderer,

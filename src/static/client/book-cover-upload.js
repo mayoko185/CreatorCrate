@@ -1,6 +1,15 @@
 import { requestAppConfirmation } from './confirm-dialog.js';
 import { isEnhancementBound, markEnhancementBound } from './dom.js';
 
+export function requestBookCoverReplacementConfirmation(document, opener) {
+  return requestAppConfirmation(document, {
+    title: 'Replace cover image?',
+    message: 'This Book already has a cover image. Continuing will replace its current cover image. The previous image or Asset will not be deleted.',
+    confirmLabel: 'Replace cover',
+    opener,
+  });
+}
+
 export function enhanceBookCoverUploads(scope = globalThis.document) {
   let count = 0;
   scope?.querySelectorAll?.('form[enctype="multipart/form-data"]').forEach((form) => {
@@ -50,12 +59,10 @@ export function enhanceBookCoverUploads(scope = globalThis.document) {
       pending = true;
       const submitter = event.submitter;
       try {
-        requestAppConfirmation(form.ownerDocument, {
-          title: 'Replace cover image?',
-          message: 'This Book already has a cover image. Continuing will replace its current cover image. The previous image or Asset will not be deleted.',
-          confirmLabel: 'Replace cover',
-          opener: submitter || form.ownerDocument.activeElement || cover,
-        }).then((approved) => {
+        requestBookCoverReplacementConfirmation(
+          form.ownerDocument,
+          submitter || form.ownerDocument.activeElement || cover,
+        ).then((approved) => {
           if (!approved || form.isConnected === false || submitter?.disabled
             || (submitter && submitter.form !== form)) return;
           // requestSubmit preserves validation, submitter overrides and native multipart encoding.

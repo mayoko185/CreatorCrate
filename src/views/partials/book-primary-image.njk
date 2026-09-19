@@ -6,6 +6,10 @@
     <a class="notes-book-cover-link{% if image.state != 'available' %} notes-book-cover-link--fallback{% endif %}" href="/notes/books/{{ book.id }}" aria-label="View Book {{ book.title }}">
       {% if image.state == 'available' %}
         <img class="notes-book-cover-image{% if book.nsfwBlur %} asset-image--nsfw-blurred{% endif %}{% if image.mediaModifier %} notes-book-cover-image--{{ image.mediaModifier }}{% endif %}" data-preview-image src="{{ imageUrl }}" alt="{{ image.alt }}" loading="lazy" decoding="async">
+        <span class="notes-book-cover-loading" data-preview-loading>
+          <span class="notes-book-cover-loading-indicator" aria-hidden="true"></span>
+          <span>Loading cover…</span>
+        </span>
         <span class="notes-book-cover-fallback" data-preview-fallback hidden>Image unavailable</span>
       {% elif image.state == 'unavailable' %}
         <span>Image unavailable</span>

@@ -1,0 +1,56 @@
+{% call dialog.render('book-transfer-dialog', 'Import/Export Books', false, '', '', 'project-form-dialog book-transfer-dialog') %}
+  <div class="app-dialog-body book-transfer-dialog-body" data-book-transfer-content>
+    <section class="settings-section project-form-section project-edit-dialog-section book-transfer-section"
+             aria-labelledby="book-transfer-export-heading">
+      <h3 id="book-transfer-export-heading">Export Books</h3>
+      <div class="project-edit-dialog-section-body">
+        <form method="post" action="/notes/books/export" target="book-transfer-download"
+              data-book-export-form novalidate>
+          <input type="hidden" name="_csrf" value="{{ _csrf }}">
+          {% if books.length > 0 %}
+            <div class="book-transfer-selection-heading">
+              <p>Select one or more Books to include.</p>
+              <button class="button button-small button-secondary" type="button"
+                      data-book-export-select-all aria-pressed="false">Select all</button>
+            </div>
+            <ul class="book-transfer-book-list" aria-label="Books available to export">
+              {% for book in books %}
+                <li>
+                  <label class="book-transfer-book-option">
+                    <input type="checkbox" name="bookIds" value="{{ book.id }}" data-book-export-choice>
+                    <span>{{ book.title }}</span>
+                  </label>
+                </li>
+              {% endfor %}
+            </ul>
+            <button class="button button-primary" type="submit" data-book-export-submit>Export selected</button>
+          {% else %}
+            <p class="help-text" data-book-export-empty>No Books are available to export.</p>
+            <button class="button button-primary" type="submit" data-book-export-submit disabled>Export selected</button>
+          {% endif %}
+          <p class="book-transfer-status" data-book-export-status role="status" aria-live="polite" aria-atomic="true"></p>
+        </form>
+      </div>
+    </section>
+
+    <section class="settings-section project-form-section project-edit-dialog-section book-transfer-section"
+             aria-labelledby="book-transfer-import-heading">
+      <h3 id="book-transfer-import-heading">Import Books</h3>
+      <div class="project-edit-dialog-section-body">
+        <form method="post" action="/notes/books/import" enctype="multipart/form-data"
+              data-book-import-form novalidate>
+          <input type="hidden" name="_csrf" value="{{ _csrf }}">
+          <div class="field">
+            <label for="book-transfer-archive">CreatorCrate Books ZIP</label>
+            <input id="book-transfer-archive" type="file" name="archive" accept=".zip,application/zip"
+                   data-book-import-archive>
+          </div>
+          <button class="button button-primary" type="submit" data-book-import-submit>Import books</button>
+          <p class="book-transfer-status" data-book-import-status role="status" aria-live="polite" aria-atomic="true"></p>
+          <div class="book-transfer-result" data-book-import-result role="status" aria-live="polite" tabindex="-1" hidden></div>
+        </form>
+      </div>
+    </section>
+  </div>
+{% endcall %}
+<iframe hidden name="book-transfer-download" title="Book export download" data-book-transfer-download></iframe>

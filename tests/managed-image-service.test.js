@@ -8,9 +8,13 @@ import sharp from 'sharp';
 import { fileURLToPath } from 'node:url';
 import { openDatabase, closeDatabase, runMigrations } from '../src/db.js';
 import { createManagedAssetRepository } from '../src/data/managed-asset-repository.js';
-import { createManagedImageService, MANAGED_IMAGE_LIMITS } from '../src/services/managed-image-service.js';
+import { createManagedImageService, MANAGED_IMAGE_LIMITS,
+  revalidateCommittedManagedImageBuffer, validateManagedImageBuffer } from '../src/services/managed-image-service.js';
 import { createManagedAssetStorage } from '../src/storage/managed-asset-storage.js';
 import { createApp } from '../src/app.js';
+import { buildDerivativePipeline } from '../src/services/preview-service.js';
+import { makeAnimatedWebp, makeSolidAnimatedWebp, rebuildWebp, setWebpCanvas,
+  webpChunks as inspectWebpChunks } from './helpers/animated-webp.js';
 
 const id = '01234567-0123-4123-8123-0123456789ab';
 const image = (format = 'png', width = 8, height = 6) => sharp({ create: {
@@ -53,7 +57,7 @@ describe.each(['native', 'mutable fallback', 'unavailable'])('managed image inge
   async function invalid(bytes) {
     await expect(service.createCommittedImage({ bytes })).rejects.toMatchObject({
       name: 'ManagedImageError', code: 'INVALID_IMAGE',
-      message: 'A valid, single still PNG, JPEG or WebP image within the managed image limits is required.',
+      message: 'A valid PNG, JPEG or WebP image, including bounded animated WebP, within the managed image limits is required.',
     });
     expect(staging(root)).toEqual([]);
     expect(db.prepare('SELECT count(*) n FROM managed_assets').get().n).toBe(0);
@@ -155,7 +159,7 @@ describe.each(['native', 'mutable fallback', 'unavailable'])('managed image inge
     await expect(sharp(malformed).raw().toBuffer()).resolves.toBeInstanceOf(Buffer);
     await expect(service.createCommittedImage({ bytes: malformed })).rejects.toMatchObject({
       name: 'ManagedImageError', code: 'INVALID_IMAGE',
-      message: 'A valid, single still PNG, JPEG or WebP image within the managed image limits is required.',
+      message: 'A valid PNG, JPEG or WebP image, including bounded animated WebP, within the managed image limits is required.',
     });
     expect(db.prepare('SELECT count(*) n FROM managed_assets').get().n).toBe(0);
     expect(staging(root)).toEqual([]);
@@ -311,14 +315,18 @@ describe.each(['native', 'mutable fallback', 'unavailable'])('managed image inge
     const { record } = await service.createCommittedImage({ bytes });
     expect(record.mime_type).toBe('image/jpeg');
   });
-  it('rejects animated WebP and multi-page TIFF', async () => {
+  it('accepts animated WebP but continues rejecting multi-page TIFF', async () => {
     const raw = Buffer.alloc(4 * 8 * 3, 100);
     raw.fill(200, 4 * 4 * 3);
-    for (const format of ['webp', 'tiff']) {
+    for (const format of ['tiff', 'webp']) {
       const bytes = await sharp(raw, { raw: { width: 4, height: 8, channels: 3, pageHeight: 4 } })
         .toFormat(format).toBuffer();
       expect((await sharp(bytes).metadata()).pages).toBe(2);
-      await invalid(bytes);
+      if (format === 'webp') {
+        const { record } = await service.createCommittedImage({ bytes });
+        expect(record).toMatchObject({ width: 4, height: 4, mime_type: 'image/webp' });
+        expect(fs.readFileSync(path.join(root, record.storage_key))).toEqual(bytes);
+      } else await invalid(bytes);
     }
   });
   it('rejects encoded overflow, empty/multiple images and unsupported namespace', async () => {
@@ -528,5 +536,304 @@ describe.each(['native', 'mutable fallback', 'unavailable'])('managed image inge
     const { record } = await app.locals.managedImageService.createCommittedImage({ bytes: await image() });
     expect(fs.existsSync(path.join(root, record.storage_key))).toBe(true);
     expect(app.locals.managedAssetRepository.findById(record.id)).toEqual(record);
+  });
+});
+
+describe('managed animated WebP validation', () => {
+  async function expectInvalid(bytes) {
+    await expect(validateManagedImageBuffer(bytes)).rejects.toMatchObject({
+      name: 'ManagedImageError', code: 'INVALID_IMAGE',
+    });
+  }
+
+  it('preserves a real two-frame animation and reports canvas metadata', async () => {
+    const bytes = await makeAnimatedWebp(2, { width: 5, height: 3, delay: [100, 65000], loop: 7 });
+    const original = Buffer.from(bytes);
+    const result = await validateManagedImageBuffer(bytes);
+    expect(result).toMatchObject({ width: 5, height: 3, mimeType: 'image/webp',
+      extension: 'webp', animated: true, frameCount: 2 });
+    expect(bytes).toEqual(original);
+    const metadata = await sharp(bytes, { animated: true }).metadata();
+    expect(metadata).toMatchObject({ width: 5, height: 6, pageHeight: 3, pages: 2,
+      delay: [100, 65000], loop: 7 });
+  });
+
+  it('accepts the full WebP delay and loop fields without timing normalization', async () => {
+    const bytes = Buffer.from(await makeAnimatedWebp(3));
+    const chunks = inspectWebpChunks(bytes);
+    const anim = chunks.find((entry) => entry.type === 'ANIM');
+    const frames = chunks.filter((entry) => entry.type === 'ANMF');
+    bytes.writeUInt16LE(0xffff, anim.start + 4);
+    for (const [index, duration] of [0, 1, 0xffffff].entries()) {
+      bytes.writeUIntLE(duration, frames[index].start + 12, 3);
+    }
+    await expect(validateManagedImageBuffer(bytes)).resolves.toMatchObject({ animated: true, frameCount: 3 });
+    expect(await sharp(bytes).metadata()).toMatchObject({ loop: 0xffff, delay: [0, 1, 0xffffff] });
+  });
+
+  it('cross-checks animated VP8L transparency against the VP8X alpha feature', async () => {
+    const transparent = Buffer.from(await makeAnimatedWebp(2));
+    const transparentVp8x = inspectWebpChunks(transparent).find((entry) => entry.type === 'VP8X');
+    transparent[transparentVp8x.start] &= ~0x10;
+    await expectInvalid(transparent);
+
+    const opaque = Buffer.from(await makeAnimatedWebp(2, { transparent: false }));
+    const opaqueVp8x = inspectWebpChunks(opaque).find((entry) => entry.type === 'VP8X');
+    opaque[opaqueVp8x.start] |= 0x10;
+    await expectInvalid(opaque);
+  });
+
+  it('accepts the animation-preserving Project preview generated from a real GIF', async () => {
+    const sourceFrames = [];
+    for (const background of ['#123456', '#654321', '#336699']) {
+      sourceFrames.push(await sharp({ create: { width: 6, height: 4, channels: 3, background } }).png().toBuffer());
+    }
+    const gif = await sharp(sourceFrames, { join: { animated: true } }).gif({ delay: [100, 200, 300], loop: 5 }).toBuffer();
+    const preview = await (await buildDerivativePipeline(gif, {
+      width: 1600, height: 1600, quality: 85, animated: true,
+    })).toBuffer();
+    expect(await sharp(preview).metadata()).toMatchObject({ format: 'webp', pages: 3 });
+    await expect(validateManagedImageBuffer(preview)).resolves.toMatchObject({
+      mimeType: 'image/webp', width: 6, height: 4, animated: true, frameCount: 3,
+    });
+  });
+
+  it('keeps one-frame WebP on still semantics', async () => {
+    const result = await validateManagedImageBuffer(await image('webp', 3, 2));
+    expect(result).toMatchObject({ width: 3, height: 2, animated: false, frameCount: 1 });
+  });
+
+  it('accepts a structurally animated one-frame WebP as animated', async () => {
+    const bytes = await makeAnimatedWebp(2);
+    const chunks = inspectWebpChunks(bytes);
+    const frames = chunks.filter((entry) => entry.type === 'ANMF');
+    const oneFrame = rebuildWebp(chunks.filter((entry) => entry.type !== 'ANMF').concat(frames.at(-1)));
+    await expect(validateManagedImageBuffer(oneFrame)).resolves.toMatchObject({
+      width: 2, height: 2, animated: true, frameCount: 1,
+    });
+  });
+
+  it.each([2, 119, 120])('accepts %s bounded tiny frames', async (frameCount) => {
+    const result = await validateManagedImageBuffer(await makeAnimatedWebp(frameCount, { width: 1, height: 1 }));
+    expect(result).toMatchObject({ width: 1, height: 1, animated: true, frameCount });
+  });
+
+  it('rejects 121 frames before decode', async () => {
+    await expectInvalid(await makeAnimatedWebp(121, { width: 1, height: 1 }));
+  });
+
+  it('keeps the canvas limit at 40M while allowing 100M cumulative animated pixels', () => {
+    expect(MANAGED_IMAGE_LIMITS).toMatchObject({
+      pixels: 40_000_000,
+      cumulativePixels: 100_000_000,
+      frames: 120,
+    });
+  });
+
+  it('fully validates a real animation above 40M and below 100M cumulative pixels', async () => {
+    const frameCount = 41;
+    const width = 988;
+    const height = 988;
+    expect(width * height * frameCount).toBeGreaterThan(40_000_000);
+    expect(width * height * frameCount).toBeLessThan(MANAGED_IMAGE_LIMITS.cumulativePixels);
+    await expect(validateManagedImageBuffer(await makeSolidAnimatedWebp(frameCount, { width, height })))
+      .resolves.toMatchObject({ width, height, frameCount, animated: true });
+  });
+
+  it('accepts exactly 100M cumulative pixels in preflight and rejects one over', async () => {
+    const frames = await makeAnimatedWebp(100, { width: 1, height: 1, transparent: false });
+    const exact = setWebpCanvas(frames, 1000, 1000);
+    const mockSharp = vi.fn((_bytes, options = {}) => {
+      const fullAnimation = options.animated === true;
+      let raw = false;
+      const pipeline = {
+        metadata: async () => fullAnimation
+          ? { format: 'webp', width: 1000, height: 100_000, pageHeight: 1000, pages: 100 }
+          : { format: 'webp', width: 1, height: 1, pages: 1 },
+        ensureAlpha() { return pipeline; },
+        raw() { raw = true; return pipeline; },
+        async toBuffer() {
+          if (!raw) return Buffer.alloc(0);
+          return fullAnimation
+            ? { data: Buffer.alloc(0), info: { width: 1000, height: 100_000, pageHeight: 1000, pages: 100 } }
+            : { data: Buffer.from([0, 0, 0, 255]), info: { width: 1, height: 1, channels: 4, pages: 1 } };
+        },
+      };
+      return pipeline;
+    });
+    mockSharp.concurrency = vi.fn();
+    mockSharp.cache = vi.fn();
+    vi.resetModules();
+    vi.doMock('sharp', () => ({ default: mockSharp }));
+    try {
+      const { validateManagedImageBuffer: validateWithMock } = await import('../src/services/managed-image-service.js');
+      await expect(validateWithMock(exact)).resolves.toMatchObject({
+        width: 1000, height: 1000, frameCount: 100, animated: true,
+      });
+    } finally {
+      vi.doUnmock('sharp');
+      vi.resetModules();
+    }
+    await expectInvalid(setWebpCanvas(frames, 1000, 1001));
+  });
+
+  it('rejects a canvas above 40M even when cumulative work is below 100M', async () => {
+    const frames = await makeAnimatedWebp(2, { width: 1, height: 1 });
+    await expectInvalid(setWebpCanvas(frames, 6325, 6325));
+  });
+
+  it('rejects hostile maximum-width canvas metadata without unsafe arithmetic', async () => {
+    const frames = await makeAnimatedWebp(2, { width: 1, height: 1 });
+    await expectInvalid(setWebpCanvas(frames, 0x1000000, 1));
+  });
+
+  it.each([
+    ['frame outside canvas', (bytes) => {
+      const result = Buffer.from(bytes);
+      const frame = inspectWebpChunks(result).find((entry) => entry.type === 'ANMF');
+      result.writeUIntLE(2, frame.start, 3);
+      return result;
+    }],
+    ['invalid frame dimensions', (bytes) => {
+      const result = Buffer.from(bytes);
+      const frame = inspectWebpChunks(result).find((entry) => entry.type === 'ANMF');
+      result.writeUIntLE(2, frame.start + 6, 3);
+      return result;
+    }],
+    ['reserved frame bits', (bytes) => {
+      const result = Buffer.from(bytes);
+      const frame = inspectWebpChunks(result).find((entry) => entry.type === 'ANMF');
+      result[frame.start + 15] |= 0x80;
+      return result;
+    }],
+    ['malformed nested length', (bytes) => {
+      const result = Buffer.from(bytes);
+      const frame = inspectWebpChunks(result).find((entry) => entry.type === 'ANMF');
+      result.writeUInt32LE(0xffffffff, frame.start + 20);
+      return result;
+    }],
+    ['invalid nested padding', (bytes) => {
+      const result = Buffer.from(bytes);
+      const frame = inspectWebpChunks(result).find((entry) => entry.type === 'ANMF');
+      const nestedOffset = frame.start + 16;
+      const length = result.readUInt32LE(nestedOffset + 4);
+      result.writeUInt32LE(length - 1, nestedOffset + 4);
+      result[nestedOffset + 8 + length - 1] = 1;
+      return result;
+    }],
+    ['nested RIFF', (bytes) => {
+      const result = Buffer.from(bytes);
+      const frame = inspectWebpChunks(result).find((entry) => entry.type === 'ANMF');
+      result.write('RIFF', frame.start + 16);
+      return result;
+    }],
+  ])('rejects malformed animation structure: %s', async (_name, mutate) => {
+    await expectInvalid(mutate(await makeAnimatedWebp(2)));
+  });
+
+  it('rejects missing or misplaced ANIM and conflicting top-level image data', async () => {
+    const bytes = await makeAnimatedWebp(2);
+    const chunks = inspectWebpChunks(bytes);
+    const vp8x = chunks.find((entry) => entry.type === 'VP8X');
+    const anim = chunks.find((entry) => entry.type === 'ANIM');
+    const frames = chunks.filter((entry) => entry.type === 'ANMF');
+    await expectInvalid(rebuildWebp([vp8x, ...frames]));
+    await expectInvalid(rebuildWebp([vp8x, frames[0], anim, ...frames.slice(1)]));
+    const still = await sharp({ create: { width: 2, height: 2, channels: 3, background: '#123456' } }).webp().toBuffer();
+    const stillImage = inspectWebpChunks(still).find((entry) => entry.type === 'VP8 ' || entry.type === 'VP8L');
+    await expectInvalid(rebuildWebp([...chunks, stillImage]));
+  });
+
+  it('rejects a structurally framed animation whose compressed payload cannot decode', async () => {
+    const bytes = await makeAnimatedWebp(2, { lossless: false, transparent: false });
+    const result = Buffer.from(bytes);
+    const frame = inspectWebpChunks(result).filter((entry) => entry.type === 'ANMF').at(-1);
+    const payloadStart = frame.start + 16 + 8;
+    result.fill(0xff, payloadStart + 5, frame.end);
+    await expectInvalid(result);
+  });
+});
+
+describe('committed managed image revalidation', () => {
+  it('rediscovers trusted animation metadata without weakening the full validator', async () => {
+    const bytes = await makeAnimatedWebp(3, { width: 5, height: 3,
+      delay: [80, 120, 160], loop: 4 });
+    const admitted = await validateManagedImageBuffer(bytes);
+    await expect(revalidateCommittedManagedImageBuffer(bytes, admitted)).resolves.toMatchObject({
+      width: 5,
+      height: 3,
+      mimeType: 'image/webp',
+      animated: true,
+      frameCount: 3,
+      delay: [80, 120, 160],
+      loop: 4,
+    });
+  });
+
+  it.each([
+    ['size', (authority) => ({ ...authority, sizeBytes: authority.sizeBytes + 1 })],
+    ['hash', (authority) => ({ ...authority, sha256: '0'.repeat(64) })],
+    ['MIME', (authority) => ({ ...authority, mimeType: 'image/png' })],
+    ['width', (authority) => ({ ...authority, width: authority.width + 1 })],
+    ['height', (authority) => ({ ...authority, height: authority.height + 1 })],
+  ])('rejects committed authority with mismatched %s', async (_label, change) => {
+    const bytes = await image('webp', 8, 6);
+    const admitted = await validateManagedImageBuffer(bytes);
+    await expect(revalidateCommittedManagedImageBuffer(bytes, change(admitted)))
+      .rejects.toMatchObject({ name: 'ManagedImageError', code: 'INVALID_IMAGE' });
+  });
+
+  it('still rejects malformed container framing after the bytes match authority', async () => {
+    const valid = await image('png', 8, 6);
+    const bytes = Buffer.concat([valid, Buffer.from('tail')]);
+    const authority = { sizeBytes: bytes.length,
+      sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+      mimeType: 'image/png', width: 8, height: 6 };
+    await expect(revalidateCommittedManagedImageBuffer(bytes, authority))
+      .rejects.toMatchObject({ name: 'ManagedImageError', code: 'INVALID_IMAGE' });
+  });
+
+  it('uses metadata only and never enters a raw pixel pipeline', async () => {
+    const bytes = await makeAnimatedWebp(3, { width: 5, height: 3,
+      delay: [80, 120, 160], loop: 4 });
+    const authority = { sizeBytes: bytes.length,
+      sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+      mimeType: 'image/webp', width: 5, height: 3 };
+    const metadata = vi.fn(async () => ({ format: 'webp', width: 5, height: 9,
+      pageHeight: 3, pages: 3, delay: [80, 120, 160], loop: 4 }));
+    const mockSharp = vi.fn(() => ({ metadata }));
+    mockSharp.concurrency = vi.fn();
+    mockSharp.cache = vi.fn();
+    vi.resetModules();
+    vi.doMock('sharp', () => ({ default: mockSharp }));
+    try {
+      const { revalidateCommittedManagedImageBuffer: revalidate } = await import('../src/services/managed-image-service.js');
+      await expect(revalidate(bytes, authority)).resolves.toMatchObject({ animated: true, frameCount: 3 });
+      expect(metadata).toHaveBeenCalledOnce();
+      expect(mockSharp).toHaveBeenCalledOnce();
+    } finally {
+      vi.doUnmock('sharp');
+      vi.resetModules();
+    }
+  });
+
+  it('propagates unexpected metadata runtime failures', async () => {
+    const bytes = await image('png', 8, 6);
+    const authority = { sizeBytes: bytes.length,
+      sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
+      mimeType: 'image/png', width: 8, height: 6 };
+    const failure = new TypeError('synthetic metadata runtime failure');
+    const mockSharp = vi.fn(() => ({ metadata: async () => { throw failure; } }));
+    mockSharp.concurrency = vi.fn();
+    mockSharp.cache = vi.fn();
+    vi.resetModules();
+    vi.doMock('sharp', () => ({ default: mockSharp }));
+    try {
+      const { revalidateCommittedManagedImageBuffer: revalidate } = await import('../src/services/managed-image-service.js');
+      await expect(revalidate(bytes, authority)).rejects.toBe(failure);
+    } finally {
+      vi.doUnmock('sharp');
+      vi.resetModules();
+    }
   });
 });

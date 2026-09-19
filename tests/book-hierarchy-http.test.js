@@ -136,6 +136,54 @@ describe('Book hierarchy HTTP integration', () => {
     }
   });
 
+  it('returns canonical JSON authority for immediate saves and stale reconciliation', async () => {
+    const fixture = createHierarchy('Immediate Hierarchy Book');
+    app.locals.bookPagePreviewSettingsService.replaceBookPagePreviewSettings(fixture.book.id, {
+      mode: 'selected',
+      randomCount: 5,
+      selectedPageIds: [fixture.rootA.id, fixture.pageA1.id],
+    });
+    const initial = await loadSubmission(fixture.book.id);
+    const target = [...initial.target].reverse();
+    const success = await agent.post(`/notes/books/${fixture.book.id}/hierarchy/reorder`)
+      .set('Accept', 'application/json')
+      .type('form')
+      .send({ _csrf: csrfToken, hierarchy: JSON.stringify({ ...initial, target }) })
+      .expect(200);
+
+    expect(success.body).toEqual({
+      status: 'success',
+      hierarchy: target,
+      refreshUrl: `/notes/books/${fixture.book.id}`,
+    });
+    expect(app.locals.noteService.getBookHierarchy(fixture.book.id)).toEqual(target);
+    expect(app.locals.bookPagePreviewSettingsService.getBookPagePreviewSettings(fixture.book.id).selectedPageIds)
+      .toEqual([fixture.rootA.id, fixture.pageA1.id]);
+
+    const concurrent = app.locals.noteService.createNote({
+      bookId: fixture.book.id,
+      title: 'Concurrent Page',
+      content: '',
+    });
+    const staleTarget = [...target].reverse();
+    const conflict = await agent.post(`/notes/books/${fixture.book.id}/hierarchy/reorder`)
+      .set('Accept', 'application/json')
+      .type('form')
+      .send({
+        _csrf: csrfToken,
+        hierarchy: JSON.stringify({ version: 1, expected: target, target: staleTarget }),
+      })
+      .expect(409);
+
+    expect(conflict.body).toMatchObject({
+      status: 'error',
+      code: 'HIERARCHY_STALE',
+      refreshUrl: `/notes/books/${fixture.book.id}`,
+    });
+    expect(conflict.body.hierarchy.at(-1)).toEqual({ type: 'page', id: concurrent.id });
+    expect(app.locals.noteService.getBookHierarchy(fixture.book.id)).toEqual(conflict.body.hierarchy);
+  });
+
   it('accepts an unchanged hierarchy as a successful no-op', async () => {
     const fixture = createHierarchy('No-op Book');
     const emptyChapter = app.locals.chapterService.createChapter({
@@ -143,12 +191,14 @@ describe('Book hierarchy HTTP integration', () => {
       title: 'Empty Chapter',
     });
     const response = await agent.get(`/notes/books/${fixture.book.id}/order`).expect(200);
+    expect(response.text).toContain('data-book-detail-live-region');
     const dialog = orderDialog(response.text);
     const emptyChapterList = dialog.match(new RegExp(
       `<ol\\b[^>]*data-book-hierarchy-container="chapter:${emptyChapter.id}"[^>]*>[\\s\\S]*?<\\/ol>`,
     ))?.[0] || '';
     expect(dialog).toContain(`data-content-key="chapter:${emptyChapter.id}"`);
-    expect(dialog).toContain(`<a href="/notes/chapters/${emptyChapter.id}">Empty Chapter</a>`);
+    expect(dialog).toContain('<h3 class="notes-book-content-title">Empty Chapter</h3>');
+    expect(dialog).not.toContain(`<a href="/notes/chapters/${emptyChapter.id}">Empty Chapter</a>`);
     expect(emptyChapterList).not.toBe('');
     expect(emptyChapterList.match(/data-book-hierarchy-item/g) || []).toHaveLength(0);
 

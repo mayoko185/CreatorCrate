@@ -1318,7 +1318,7 @@ test.describe('CreatorCrate development browser smoke', () => {
     assertNoBrowserDiagnostics(diagnostics);
   });
 
-  test('keeps Book edit compact with Save/Cancel and a separate delete disclosure', async ({ page, devServer }) => {
+  test('keeps Book edit compact with immediate persistence and a separate delete disclosure', async ({ page, devServer }) => {
     const diagnostics = observeBrowser(page, devServer.baseURL);
     const originalBookTitle = `Browser Book Edit ${Date.now()}`;
     const chapterTitle = 'Book Edit Chapter';
@@ -1328,7 +1328,7 @@ test.describe('CreatorCrate development browser smoke', () => {
     await createBrowserDirectPage(page, devServer.baseURL, bookId, directPageTitle);
     const bookUrl = `${devServer.baseURL}/notes/books/${bookId}`;
     const editUrl = `${bookUrl}/edit`;
-    const editedBookTitle = `${originalBookTitle} Saved`;
+    const editedBookTitle = `${originalBookTitle} Updated`;
 
     for (const viewport of [
       { width: 1280, height: 800 },
@@ -1345,7 +1345,7 @@ test.describe('CreatorCrate development browser smoke', () => {
       );
       await expect(editDialog).toBeVisible();
       await expect(editDialog.getByRole('heading', { name: 'Edit Book', exact: true })).toBeVisible();
-      await expect(editDialog.getByRole('button', { name: 'Save', exact: true })).toBeVisible();
+      await expect(editDialog.getByRole('button', { name: 'Save', exact: true })).toHaveCount(0);
       await expect(editDialog.locator('#title')).toHaveValue(viewport.width > 1024 ? originalBookTitle : editedBookTitle);
       await expect(editDialog.locator('#book-form .settings-section')).toHaveCount(2);
       await expect(editDialog.locator('#book-form form')).toHaveCount(0);
@@ -1377,22 +1377,28 @@ test.describe('CreatorCrate development browser smoke', () => {
       expect(layoutState.mainRight).toBeLessThanOrEqual(layoutState.viewportWidth);
 
       if (viewport.width > 1024) {
+        const titleSaved = page.waitForResponse((response) => (
+          response.request().method() === 'POST'
+            && new URL(response.url()).pathname === `/notes/books/${bookId}`
+        ));
         await editDialog.locator('#title').fill(editedBookTitle);
-        await Promise.all([
-          page.waitForURL(new RegExp(`/notes/books/${bookId}$`)),
-          editDialog.getByRole('button', { name: 'Save', exact: true }).click(),
-        ]);
+        await editDialog.locator('#title').press('Tab');
+        expect((await titleSaved).ok()).toBe(true);
+        await expect(editDialog.locator('[data-book-edit-save-status]')).toHaveText('Book title saved.');
+        await expect(editDialog).toHaveAttribute('open', '');
+        await expect(page).toHaveURL(bookUrl);
         await expect(page.locator('h1.app-section-title')).toContainText(editedBookTitle);
         await expect(page.locator('.notes-book-detail-sidebar:not(.notes-book-detail-sidebar--embedded) .notes-book-nav-chapter-title'))
           .toHaveText(chapterTitle);
         await expect(page.locator('.notes-book-detail-sidebar:not(.notes-book-detail-sidebar--embedded) .notes-book-nav')
           .getByRole('link', { name: directPageTitle, exact: true })).toBeVisible();
 
-        await page.getByRole('link', { name: 'Edit book', exact: true }).click();
-        await page.locator('#book-edit-dialog[open] #title').fill('Unsaved Book Title');
         await page.locator('#book-edit-dialog[open] [data-dialog-close]').click();
         await expect(page.locator('#book-edit-dialog')).not.toHaveAttribute('open', '');
         await expect(page.locator('h1.app-section-title')).toContainText(editedBookTitle);
+        await page.getByRole('link', { name: 'Edit book', exact: true }).click();
+        await expect(page.locator('#book-edit-dialog[open] #title')).toHaveValue(editedBookTitle);
+        await page.locator('#book-edit-dialog[open] [data-dialog-close]').click();
       }
     }
 
@@ -1428,7 +1434,7 @@ test.describe('CreatorCrate development browser smoke', () => {
     await expect(page.locator('h1.app-section-title')).toHaveText('Notes');
     await expect(page.locator('.page-heading-actions').getByRole('link', { name: 'New Book', exact: true })).toBeVisible();
      await expect(page.locator('.notes-books-index > .empty-state')).toContainText('No books yet');
-    await expect(page.getByRole('link', { name: 'Change order', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('link', { name: 'Change book order', exact: true })).toHaveCount(0);
     await expect(page.locator('.notes-books-index .notes-book-card')).toHaveCount(0);
     await expect(page.locator('.table-scroll, .data-table')).toHaveCount(0);
 
@@ -1438,13 +1444,13 @@ test.describe('CreatorCrate development browser smoke', () => {
     await expect(page.locator('.notes-books-index .notes-book-card')).toHaveCount(1);
     await expect(page.getByRole('link', { name: firstBookTitle, exact: true })).toHaveCount(1);
     await expect(page.getByRole('link', { name: `Edit Book: ${firstBookTitle}`, exact: true })).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Change order', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('link', { name: 'Change book order', exact: true })).toHaveCount(0);
 
     const secondBookTitle = `Browser Landing Book Two ${Date.now()}`;
     await createBrowserBook(page, devServer.baseURL, secondBookTitle);
     await page.goto(`${devServer.baseURL}/notes`, { waitUntil: 'domcontentloaded' });
     await expect(page.locator('.notes-books-index .notes-book-card')).toHaveCount(2);
-    await expect(page.getByRole('link', { name: 'Change order', exact: true })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Change book order', exact: true })).toBeVisible();
     await expect(page.getByRole('link', { name: `Edit Book: ${firstBookTitle}`, exact: true })).toBeVisible();
     await expect(page.getByRole('link', { name: `Edit Book: ${secondBookTitle}`, exact: true })).toBeVisible();
     await expect(page.locator('main#main-content')).not.toContainText('Manage');
@@ -1471,19 +1477,19 @@ test.describe('CreatorCrate development browser smoke', () => {
     expect(desktopState.documentWidth).toBeLessThanOrEqual(desktopState.viewportWidth);
     expect(desktopState.rowRight).toBeLessThanOrEqual(desktopState.viewportWidth);
 
-    await page.getByRole('link', { name: 'Change order', exact: true }).click();
+    await page.getByRole('link', { name: 'Change book order', exact: true }).click();
     await expect(page).toHaveURL(`${devServer.baseURL}/notes`);
     await expect(page.locator('#books-order-dialog[open]')).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'Change order', exact: true, level: 2 })).toBeVisible();
-    await expect(page.locator('#books-order-dialog[open]').getByRole('button', { name: 'Close Change order', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Change book order', exact: true, level: 2 })).toBeVisible();
+    await expect(page.locator('#books-order-dialog[open]').getByRole('button', { name: 'Close Change book order', exact: true })).toBeVisible();
     await expect(page.locator('.notes-books-order .notes-book-content-row')).toHaveCount(2);
-    await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeVisible();
+    await expect(page.locator('#books-order-dialog[open]').getByRole('button', { name: 'Save', exact: true })).toHaveCount(0);
     await expect(page.locator('#notes-books-order-form')).toHaveAttribute('action', '/notes/books/reorder');
     await expect(page.locator('#notes-books-order-form input[name="orderedBookIds"]')).toHaveValue(/\d+,\d+/);
     await expect(page.locator('[data-book-reorder-handle]')).toHaveCount(2);
   });
 
-  test('reorders top-level Books by drag and keyboard, saves once, and cancels unsaved changes', async ({ page, devServer }) => {
+  test('reorders top-level Books immediately by drag and keyboard', async ({ page, devServer }) => {
     const diagnostics = observeBrowser(page, devServer.baseURL);
     const titles = [
       `Browser Order Book One ${Date.now()}`,
@@ -1532,19 +1538,20 @@ test.describe('CreatorCrate development browser smoke', () => {
     const lastRow = page.locator('[data-book-reorder-item]').last();
     const lastRowBox = await lastRow.boundingBox();
     expect(lastRowBox).not.toBeNull();
+    const dragResponse = page.waitForResponse((response) => (
+      response.request().method() === 'POST'
+        && new URL(response.url()).pathname === '/notes/books/reorder'
+    ));
     await firstRow.locator('[data-book-reorder-handle]').dragTo(lastRow, {
       targetPosition: { x: Math.min(20, lastRowBox.width - 1), y: Math.max(1, lastRowBox.height - 2) },
     });
+    expect((await dragResponse).status()).toBe(200);
     expect(await orderTitles()).toEqual(expectedDragOrder);
     expect(await page.locator('#notes-books-order-form input[name="orderedBookIds"]').inputValue())
       .toBe(`${bookIds[1]},${bookIds[2]},${bookIds[0]}`);
-    expect(reorderRequests).toHaveLength(0);
-
-    await Promise.all([
-      page.waitForURL((url) => url.pathname === '/notes'),
-      page.getByRole('button', { name: 'Save', exact: true }).click(),
-    ]);
     expect(reorderRequests).toHaveLength(1);
+    await expect(page.locator('#books-order-dialog[open]')).toBeVisible();
+    await expect(page.locator('[data-book-reorder-status]')).toHaveText('Book order saved.');
     await expect(page.locator('.notes-books-index .notes-book-card')).toHaveCount(3);
     await expect(page.locator('.notes-books-index .notes-book-card').nth(0)).toContainText(titles[1]);
     await expect(page.locator('.notes-books-index .notes-book-card').nth(1)).toContainText(titles[2]);
@@ -1556,28 +1563,33 @@ test.describe('CreatorCrate development browser smoke', () => {
     expect(await orderTitles()).toEqual(expectedDragOrder);
     await assertOrderPageLayout();
 
+    const keyboardResponse = page.waitForResponse((response) => (
+      response.request().method() === 'POST'
+        && new URL(response.url()).pathname === '/notes/books/reorder'
+    ));
     await page.locator('[data-book-reorder-item]').last().locator('[data-book-reorder-handle]').focus();
     await page.keyboard.press('ArrowUp');
+    expect((await keyboardResponse).status()).toBe(200);
     expect(await orderTitles()).toEqual(expectedKeyboardOrder);
     expect(await page.locator('[data-book-reorder-live]').textContent()).toContain('moved to position 2 of 3');
-    expect(reorderRequests).toHaveLength(1);
+    expect(reorderRequests).toHaveLength(2);
 
     await page.setViewportSize({ width: 375, height: 800 });
     await assertOrderPageLayout();
-    await expect(page.getByRole('button', { name: 'Save', exact: true })).toBeVisible();
+    await expect(page.locator('#books-order-dialog[open]').getByRole('button', { name: 'Save', exact: true })).toHaveCount(0);
 
-    await page.locator('#books-order-dialog[open]').getByRole('button', { name: 'Close Change order', exact: true }).click();
+    await page.locator('#books-order-dialog[open]').getByRole('button', { name: 'Close Change book order', exact: true }).click();
     await expect(page.locator('#books-order-dialog')).not.toHaveAttribute('open', '');
     await expect(page).toHaveURL(`${devServer.baseURL}/notes/books/order`);
     await page.goto(`${devServer.baseURL}/notes`, { waitUntil: 'domcontentloaded' });
-    expect(reorderRequests).toHaveLength(1);
+    expect(reorderRequests).toHaveLength(2);
     const landingRows = page.locator('.notes-books-index .notes-book-card');
     await expect(landingRows.nth(0)).toContainText(titles[1]);
-    await expect(landingRows.nth(1)).toContainText(titles[2]);
-    await expect(landingRows.nth(2)).toContainText(titles[0]);
+    await expect(landingRows.nth(1)).toContainText(titles[0]);
+    await expect(landingRows.nth(2)).toContainText(titles[2]);
 
     await page.goto(`${devServer.baseURL}/notes/books/order`, { waitUntil: 'domcontentloaded' });
-    expect(await orderTitles()).toEqual(expectedDragOrder);
+    expect(await orderTitles()).toEqual(expectedKeyboardOrder);
     await assertOrderPageLayout();
     assertNoBrowserDiagnostics(diagnostics);
   });
@@ -1805,7 +1817,7 @@ test.describe('CreatorCrate development browser smoke', () => {
     await expect(page.locator('.asset-viewer-display-controls')).toBeVisible();
     await expect(page.getByRole('link', { name: 'Edit book', exact: true })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Book defaults', exact: true })).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Change order', exact: true })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Reorder book contents', exact: true })).toBeVisible();
 
     for (const viewport of [
       { width: 1280, height: 800 },
@@ -1864,13 +1876,13 @@ test.describe('CreatorCrate development browser smoke', () => {
     await expect(page.locator('h1.app-section-title')).toContainText(chapterXTitle);
 
     await page.goto(bookUrl, { waitUntil: 'domcontentloaded' });
-    await page.getByRole('link', { name: 'Change order', exact: true }).click();
+    await page.getByRole('link', { name: 'Reorder book contents', exact: true }).click();
     const orderDialog = page.locator('#book-order-dialog[open]');
     await expect(orderDialog).toBeVisible();
-    await expect(page.getByRole('heading', { name: 'Change order', exact: true, level: 2 })).toBeVisible();
-    await expect(orderDialog.locator('[data-notes-book-order-page]')).toContainText(
-      'Use each Page destination and Move control to move it between the Book root and Chapters.',
-    );
+    await expect(page.getByRole('heading', { name: 'Reorder book contents', exact: true, level: 2 })).toBeVisible();
+    await expect(orderDialog.getByText('Changes are saved immediately.', { exact: false })).toBeVisible();
+    await expect(orderDialog.getByRole('button', { name: 'Save', exact: true })).toHaveCount(0);
+    await expect(orderDialog.getByRole('button', { name: 'Cancel', exact: true })).toHaveCount(0);
     await expect(page.locator('#notes-book-order-form')).toHaveAttribute('action', `/notes/books/${bookId}/hierarchy/reorder`);
     await expect(page.locator('#notes-book-order-form input[name="_csrf"]')).toHaveCount(1);
     await expect(page.locator('#notes-book-order-form input[name="hierarchy"]')).toHaveCount(1);
@@ -1879,6 +1891,8 @@ test.describe('CreatorCrate development browser smoke', () => {
     await expect(orderDialog.locator('[data-book-hierarchy-container="root"]')).toHaveCount(1);
     await expect(orderDialog.locator(`[data-book-hierarchy-container="chapter:${chapterXId}"]`)).toHaveCount(1);
     await expect(orderDialog.locator('[data-book-hierarchy-handle]')).toHaveCount(7);
+    await expect(orderDialog.locator('[data-book-hierarchy-destination]')).toHaveCount(0);
+    await expect(orderDialog.locator('[data-book-hierarchy-move]')).toHaveCount(0);
     expect(await orderDialog.locator('[data-book-hierarchy-container="root"] > [data-book-hierarchy-item]').evaluateAll(
       (items) => items.map((item) => item.getAttribute('data-content-key')),
     )).toEqual([
@@ -1889,7 +1903,8 @@ test.describe('CreatorCrate development browser smoke', () => {
     ]);
     await expect(orderDialog.locator(`[data-book-hierarchy-container="chapter:${chapterXId}"] > [data-book-hierarchy-item]`))
       .toHaveCount(3);
-    await expect(orderDialog.getByRole('link', { name: nestedPageTitles[0], exact: true })).toBeVisible();
+    await expect(orderDialog.locator(`[data-book-hierarchy-container="chapter:${chapterXId}"]`)
+      .getByText(nestedPageTitles[0], { exact: true })).toBeVisible();
 
     const hierarchyRequests = [];
     const pageMoveRequests = [];
@@ -1904,59 +1919,44 @@ test.describe('CreatorCrate development browser smoke', () => {
       if (pathname === `/notes/books/${bookId}/chapters/reorder`) chapterReorderRequests.push(request);
     });
 
-    const pageARow = orderDialog.locator(`[data-book-hierarchy-item][data-content-key="page:${pageAId}"]`);
-    await pageARow.locator('[data-book-hierarchy-destination]').selectOption(`chapter:${chapterYId}`);
-    await pageARow.locator('[data-book-hierarchy-move]').click();
-    const draft = JSON.parse(await page.locator('#notes-book-order-form input[name="hierarchy"]').inputValue());
-    expect(draft).toEqual({
-      version: 1,
-      expected: [
-        { type: 'page', id: Number(pageAId) },
-        { type: 'chapter', id: Number(chapterXId), pages: nestedPageIds.map(Number) },
-        { type: 'page', id: Number(pageBId) },
-        { type: 'chapter', id: Number(chapterYId), pages: [] },
-      ],
-      target: [
-        { type: 'chapter', id: Number(chapterXId), pages: nestedPageIds.map(Number) },
-        { type: 'page', id: Number(pageBId) },
-        { type: 'chapter', id: Number(chapterYId), pages: [Number(pageAId)] },
-      ],
-    });
-    expect(hierarchyRequests).toHaveLength(0);
-    expect(pageMoveRequests).toHaveLength(0);
-    expect(legacyReorderRequests).toHaveLength(0);
-    expect(chapterReorderRequests).toHaveLength(0);
-    await Promise.all([
-      page.waitForURL((url) => url.pathname === `/notes/books/${bookId}`),
-      page.getByRole('button', { name: 'Save', exact: true }).click(),
-    ]);
+    const hierarchySaved = page.waitForResponse((response) => (
+      response.request().method() === 'POST'
+        && new URL(response.url()).pathname === `/notes/books/${bookId}/hierarchy/reorder`
+    ));
+    const pageAHandle = orderDialog
+      .locator(`[data-book-hierarchy-item][data-content-key="page:${pageAId}"]`)
+      .locator(':scope > [data-book-hierarchy-handle]');
+    await pageAHandle.press('End');
+    expect((await hierarchySaved).ok()).toBe(true);
+    await expect(orderDialog.locator('[data-book-hierarchy-status]')).toHaveText('Book hierarchy saved.');
+    await expect(orderDialog).toHaveAttribute('open', '');
+    await expect(page).toHaveURL(bookUrl);
     expect(hierarchyRequests).toHaveLength(1);
     expect(pageMoveRequests).toHaveLength(0);
     expect(legacyReorderRequests).toHaveLength(0);
     expect(chapterReorderRequests).toHaveLength(0);
-    expect(JSON.parse(new URLSearchParams(hierarchyRequests[0].postData()).get('hierarchy'))).toEqual(draft);
-    expect(await bookNavTopLevelTitles()).toEqual([chapterXTitle, pageBTitle, chapterYTitle]);
-    const persistedPageAPreview = page.locator('.notes-page-preview-item')
-      .filter({ has: page.getByRole('link', { name: pageATitle, exact: true }) });
-    await expect(persistedPageAPreview.locator('.notes-page-preview-context')).toHaveText(`Chapter: ${chapterYTitle}`);
+    const acknowledgedHierarchy = JSON.parse(await page.locator('#notes-book-order-form input[name="hierarchy"]').inputValue());
+    expect(acknowledgedHierarchy.expected).toEqual(acknowledgedHierarchy.target);
+    expect(await bookNavTopLevelTitles()).toEqual([chapterXTitle, pageBTitle, chapterYTitle, pageATitle]);
     await expect(page.locator('.notes-page-preview-title')).toHaveText([
       ...nestedPageTitles,
       pageBTitle,
       pageATitle,
     ]);
 
-    await page.goto(`${devServer.baseURL}/notes/books/${bookId}/order`, { waitUntil: 'domcontentloaded' });
-    await expect(page.locator('#book-order-dialog[open]')).toBeVisible();
+    await orderDialog.getByRole('button', { name: 'Close Reorder book contents', exact: true }).click();
+    await expect(page.locator('#book-order-dialog')).not.toHaveAttribute('open', '');
+    await page.getByRole('link', { name: 'Reorder book contents', exact: true }).click();
+    await expect(orderDialog).toBeVisible();
     const persistedHierarchy = JSON.parse(await page.locator('#notes-book-order-form input[name="hierarchy"]').inputValue());
-    expect(persistedHierarchy.expected).toEqual(draft.target);
-    expect(persistedHierarchy.target).toEqual(draft.target);
-    const pageBRow = page.locator(`[data-book-hierarchy-item][data-content-key="page:${pageBId}"]`);
-    await pageBRow.locator('[data-book-hierarchy-destination]').selectOption(`chapter:${chapterYId}`);
-    await pageBRow.locator('[data-book-hierarchy-move]').click();
-    const cancelledDraft = JSON.parse(await page.locator('#notes-book-order-form input[name="hierarchy"]').inputValue());
-    expect(cancelledDraft.target).toEqual([
-      { type: 'chapter', id: Number(chapterXId), pages: nestedPageIds.map(Number) },
-      { type: 'chapter', id: Number(chapterYId), pages: [Number(pageAId), Number(pageBId)] },
+    expect(persistedHierarchy).toEqual(acknowledgedHierarchy);
+    expect(await orderDialog.locator('[data-book-hierarchy-container="root"] > [data-book-hierarchy-item]').evaluateAll(
+      (items) => items.map((item) => item.getAttribute('data-content-key')),
+    )).toEqual([
+      `chapter:${chapterXId}`,
+      `page:${pageBId}`,
+      `chapter:${chapterYId}`,
+      `page:${pageAId}`,
     ]);
     expect(hierarchyRequests).toHaveLength(1);
     expect(pageMoveRequests).toHaveLength(0);
@@ -1972,32 +1972,246 @@ test.describe('CreatorCrate development browser smoke', () => {
     }));
     expect(orderLayout.documentWidth).toBeLessThanOrEqual(orderLayout.viewportWidth);
     expect(orderLayout.rowRight).toBeLessThanOrEqual(orderLayout.viewportWidth);
-    await page.locator('#book-order-dialog[open]').getByRole('button', { name: 'Cancel', exact: true }).click();
+    await page.locator('#book-order-dialog[open]').getByRole('button', { name: 'Close Reorder book contents', exact: true }).click();
     await expect(page.locator('#book-order-dialog')).not.toHaveAttribute('open', '');
-    await page.goto(bookUrl, { waitUntil: 'domcontentloaded' });
     expect(hierarchyRequests).toHaveLength(1);
     expect(pageMoveRequests).toHaveLength(0);
     expect(legacyReorderRequests).toHaveLength(0);
     expect(chapterReorderRequests).toHaveLength(0);
-    expect(await bookNavTopLevelTitles()).toEqual([chapterXTitle, pageBTitle, chapterYTitle]);
-    await expect(nav.locator('.notes-book-nav-list > .notes-book-nav-page > a')).toHaveText(pageBTitle);
+    expect(await bookNavTopLevelTitles()).toEqual([chapterXTitle, pageBTitle, chapterYTitle, pageATitle]);
+    await expect(nav.locator('.notes-book-nav-list > .notes-book-nav-page > a')).toHaveText([pageBTitle, pageATitle]);
     await expect(page.locator('.book-outline')).toHaveCount(0);
-    for (const mode of ['collapsed', 'expanded']) {
+    for (const mode of ['expanded', 'collapsed']) {
       await page.getByRole('link', { name: 'Book defaults', exact: true }).click();
       const defaults = page.locator('#book-defaults-dialog[open]');
       await expect(defaults.locator('#book-preview-mode')).toHaveValue('random');
       await expect(defaults.locator('#book-preview-count')).toHaveValue('5');
       const navigation = defaults.locator('[data-dialog-field="navigation"]');
       await navigation.locator('summary').click();
+      const acknowledged = page.waitForResponse((response) => (
+        response.request().method() === 'POST'
+          && new URL(response.url()).pathname === `/notes/books/${bookId}/defaults`
+      ));
+      const refreshed = page.waitForResponse((response) => (
+        response.request().method() === 'GET'
+          && new URL(response.url()).pathname === new URL(bookUrl).pathname
+          && new URL(response.url()).search === ''
+      ));
       await navigation.locator(`input[type="radio"][value="${mode}"]`).check();
-      await defaults.getByRole('button', { name: 'Save defaults', exact: true }).click();
-      await expect(page.locator('#book-defaults-dialog')).not.toHaveAttribute('open', '');
-      await page.goto(bookUrl, { waitUntil: 'domcontentloaded' });
+      const [acknowledgement, refresh] = await Promise.all([acknowledged, refreshed]);
+      expect(acknowledgement.ok()).toBe(true);
+      expect(await acknowledgement.json()).toEqual({ status: 'success', refreshUrl: `/notes/books/${bookId}` });
+      expect(refresh.ok()).toBe(true);
+      await expect(defaults).toHaveAttribute('open', '');
+      await expect(defaults.locator('[data-settings-fetch-save-status]')).toHaveText('Settings saved.');
       await expect(nav.locator('.notes-book-nav-disclosure[open]')).toHaveCount(mode === 'expanded' ? 2 : 0);
-      expect(await bookNavTopLevelTitles()).toEqual([chapterXTitle, pageBTitle, chapterYTitle]);
+      expect(await bookNavTopLevelTitles()).toEqual([chapterXTitle, pageBTitle, chapterYTitle, pageATitle]);
       await expect(previews.locator('.notes-page-preview-item')).toHaveCount(5);
+      await defaults.getByRole('button', { name: 'Close Book defaults', exact: true }).click();
+      await expect(page.locator('#book-defaults-dialog')).not.toHaveAttribute('open', '');
     }
     assertNoBrowserDiagnostics(diagnostics);
+  });
+
+  test('persists Book defaults immediately while keeping the dialog open', async ({ page, devServer }) => {
+    const diagnostics = observeBrowser(page, devServer.baseURL);
+    const bookId = await createBrowserBook(page, devServer.baseURL, `Book defaults autosave ${Date.now()}`);
+    const chapterId = await createBrowserChapter(page, devServer.baseURL, bookId, 'Autosave preview Chapter');
+    await createBrowserPage(page, devServer.baseURL, chapterId, 'Autosave preview Page');
+    const bookUrl = `${devServer.baseURL}/notes/books/${bookId}`;
+    await page.goto(bookUrl, { waitUntil: 'domcontentloaded' });
+
+    await page.getByRole('link', { name: 'Book defaults', exact: true }).click();
+    const defaults = page.locator('#book-defaults-dialog[open]');
+    await expect(defaults.getByRole('button', { name: 'Save defaults', exact: true })).toHaveCount(0);
+    const navigation = defaults.locator('[data-dialog-field="navigation"]');
+    await navigation.locator('summary').click();
+    const acknowledged = page.waitForResponse((response) => (
+      response.request().method() === 'POST'
+        && new URL(response.url()).pathname === `/notes/books/${bookId}/defaults`
+    ));
+    const refreshed = page.waitForResponse((response) => (
+      response.request().method() === 'GET'
+        && new URL(response.url()).pathname === `/notes/books/${bookId}`
+        && new URL(response.url()).search === ''
+    ));
+    await navigation.locator('input[type="radio"][value="expanded"]').check();
+    const [acknowledgement, refresh] = await Promise.all([acknowledged, refreshed]);
+    expect(acknowledgement.ok()).toBe(true);
+    expect(await acknowledgement.json()).toEqual({ status: 'success', refreshUrl: `/notes/books/${bookId}` });
+    expect(refresh.ok()).toBe(true);
+
+    await expect(defaults).toHaveAttribute('open', '');
+    await expect(defaults.locator('[data-settings-fetch-save-status]')).toHaveText('Settings saved.');
+    await expect(navigation.locator('summary')).toBeFocused();
+    await expect(page.locator('[data-book-detail-live-region] .notes-book-nav-disclosure[open]')).toHaveCount(1);
+    expect(page.url()).toBe(bookUrl);
+    assertNoBrowserDiagnostics(diagnostics);
+  });
+
+  test('retries an acknowledged Book Defaults refresh with GET only', async ({ page, devServer }) => {
+    const bookId = await createBrowserBook(page, devServer.baseURL, `Book defaults refresh Retry ${Date.now()}`);
+    const chapterId = await createBrowserChapter(page, devServer.baseURL, bookId, 'Retry Chapter');
+    await createBrowserPage(page, devServer.baseURL, chapterId, 'Retry Page');
+    const bookUrl = `${devServer.baseURL}/notes/books/${bookId}`;
+    await page.goto(bookUrl, { waitUntil: 'domcontentloaded' });
+    await page.getByRole('link', { name: 'Book defaults', exact: true }).click();
+    const defaults = page.locator('#book-defaults-dialog[open]');
+    let failedGetsRemaining = 2;
+    let postCount = 0;
+    await page.route(`**/notes/books/${bookId}`, async (route) => {
+      if (route.request().method() === 'GET' && failedGetsRemaining > 0) {
+        failedGetsRemaining -= 1;
+        await route.abort('failed');
+        return;
+      }
+      await route.continue();
+    });
+    page.on('request', (request) => {
+      if (request.method() === 'POST'
+        && new URL(request.url()).pathname === `/notes/books/${bookId}/defaults`) postCount += 1;
+    });
+
+    const navigation = defaults.locator('[data-dialog-field="navigation"]');
+    await navigation.locator('summary').click();
+    await navigation.locator('input[type="radio"][value="expanded"]').check();
+
+    const status = defaults.locator('[data-settings-fetch-save-status]');
+    await expect(status).toContainText('Defaults were saved, but the Book detail could not refresh.');
+    const retry = defaults.getByRole('button', { name: 'Retry refresh', exact: true });
+    await expect(retry).toHaveCount(1);
+    await retry.focus();
+    await retry.press('Enter');
+    await expect(status).toContainText('Defaults were saved, but the Book detail could not refresh.');
+    await expect(defaults.getByRole('button', { name: 'Retry refresh', exact: true })).toHaveCount(1);
+
+    await defaults.getByRole('button', { name: 'Retry refresh', exact: true }).click();
+    await expect(status).toHaveText('Settings saved. Book detail refreshed.');
+    await expect(defaults.getByRole('button', { name: 'Retry refresh', exact: true })).toHaveCount(0);
+    await expect(defaults.locator('select[name="navigation"]')).toHaveValue('expanded');
+    await expect(defaults.locator('[data-dialog-field="navigation"] summary')).toBeFocused();
+    await expect(page.locator('[data-book-detail-live-region] .notes-book-nav-disclosure[open]')).toHaveCount(1);
+    expect(postCount).toBe(1);
+    expect(failedGetsRemaining).toBe(0);
+    expect(page.url()).toBe(bookUrl);
+  });
+
+  test('reconciles a committed Book defaults POST whose acknowledgement is lost before saving a later change', async ({ page, devServer }) => {
+    const bookId = await createBrowserBook(page, devServer.baseURL, `Book defaults reconciliation ${Date.now()}`);
+    const chapterId = await createBrowserChapter(page, devServer.baseURL, bookId, 'Reconciliation Chapter');
+    await createBrowserPage(page, devServer.baseURL, chapterId, 'Reconciliation Page');
+    const bookUrl = `${devServer.baseURL}/notes/books/${bookId}`;
+    const postBodies = [];
+    let firstCommitted;
+    const committed = new Promise((resolve) => { firstCommitted = resolve; });
+    let loseAcknowledgement;
+    const releaseLostAcknowledgement = new Promise((resolve) => { loseAcknowledgement = resolve; });
+    let interceptFirst = true;
+
+    await page.route(`**/notes/books/${bookId}/defaults`, async (route) => {
+      if (route.request().method() !== 'POST' || !interceptFirst) {
+        await route.continue();
+        return;
+      }
+      interceptFirst = false;
+      const response = await route.fetch();
+      expect(response.ok()).toBe(true);
+      firstCommitted();
+      await releaseLostAcknowledgement;
+      await route.abort('failed');
+    });
+    page.on('request', (request) => {
+      if (request.method() === 'POST'
+        && new URL(request.url()).pathname === `/notes/books/${bookId}/defaults`) {
+        postBodies.push(request.postData() || '');
+      }
+    });
+
+    await page.goto(bookUrl, { waitUntil: 'domcontentloaded' });
+    await page.getByRole('link', { name: 'Book defaults', exact: true }).click();
+    const defaults = page.locator('#book-defaults-dialog[open]');
+    const navigation = defaults.locator('[data-dialog-field="navigation"]');
+    await navigation.locator('summary').click();
+    await navigation.locator('input[type="radio"][value="expanded"]').check();
+    await committed;
+
+    const previewMode = defaults.locator('[data-dialog-field="previewMode"]');
+    await previewMode.locator('summary').click();
+    await previewMode.locator('input[type="radio"][value="selected"]').check();
+    expect(postBodies).toHaveLength(1);
+    loseAcknowledgement();
+
+    await expect(defaults.locator('[data-settings-fetch-save-status]')).toHaveText('Settings saved.');
+    await expect(defaults.locator('#book-preview-mode')).toHaveValue('selected');
+    await expect(defaults.locator('[data-settings-fetch-save-status]')).not.toContainText('Retry reconciliation');
+    await expect(page.locator('[data-book-detail-live-region] .notes-book-nav-disclosure[open]')).toHaveCount(1);
+    await expect.poll(() => postBodies.length).toBe(2);
+    expect(postBodies.filter((body) => new URLSearchParams(body).get('navigation') === 'expanded')).toHaveLength(2);
+    expect(postBodies.filter((body) => new URLSearchParams(body).get('previewMode') === 'selected')).toHaveLength(1);
+    await expect(defaults.getByRole('button', { name: 'Save defaults', exact: true })).toHaveCount(0);
+    const replacementPreviewSummary = defaults.locator('[data-dialog-field="previewMode"] summary');
+    await expect(replacementPreviewSummary).toBeFocused();
+    expect(await replacementPreviewSummary.evaluate((element) => ({
+      connected: element.isConnected,
+      insideDialog: Boolean(element.closest('#book-defaults-dialog[open]')),
+    }))).toEqual({ connected: true, insideDialog: true });
+    await replacementPreviewSummary.press('Enter');
+    await expect(defaults.locator('[data-dialog-field="previewMode"] [data-cc-dropdown]')).toHaveAttribute('open', '');
+    await replacementPreviewSummary.press('Escape');
+    await expect(replacementPreviewSummary).toBeFocused();
+  });
+
+  test('keeps the mounted Book Defaults body when canonical detail publication is superseded', async ({ page, devServer }) => {
+    const bookId = await createBrowserBook(page, devServer.baseURL, `Book defaults atomic reconciliation ${Date.now()}`);
+    const bookUrl = `${devServer.baseURL}/notes/books/${bookId}`;
+    let postCount = 0;
+    let supersedeCanonicalGet = true;
+
+    await page.goto(bookUrl, { waitUntil: 'domcontentloaded' });
+    await page.getByRole('link', { name: 'Book defaults', exact: true }).click();
+    const defaults = page.locator('#book-defaults-dialog[open]');
+    const body = defaults.locator('.app-dialog-body');
+    await body.evaluate((element) => element.setAttribute('data-atomic-reconciliation-original', ''));
+
+    await page.route(`**/notes/books/${bookId}/defaults`, async (route) => {
+      if (route.request().method() !== 'POST') {
+        await route.continue();
+        return;
+      }
+      postCount += 1;
+      const response = await route.fetch();
+      expect(response.ok()).toBe(true);
+      await route.abort('failed');
+    });
+    await page.route(`**/notes/books/${bookId}`, async (route) => {
+      if (route.request().method() !== 'GET' || !supersedeCanonicalGet) {
+        await route.continue();
+        return;
+      }
+      supersedeCanonicalGet = false;
+      const response = await route.fetch();
+      await page.evaluate(() => {
+        document.__creatorCrateBookDetailLiveRegion.generation += 1;
+      });
+      await route.fulfill({ response });
+    });
+
+    const navigation = defaults.locator('[data-dialog-field="navigation"]');
+    await navigation.locator('summary').click();
+    await navigation.locator('input[type="radio"][value="expanded"]').check();
+
+    await expect(defaults.locator('[data-settings-fetch-save-status]')).toContainText('changes remain blocked');
+    await expect(defaults.locator('.app-dialog-body[data-atomic-reconciliation-original]')).toHaveCount(1);
+    await expect(defaults.locator('select[name="navigation"]')).toBeDisabled();
+    await expect(defaults.getByRole('button', { name: 'Retry reconciliation', exact: true })).toBeFocused();
+    expect(postCount).toBe(1);
+
+    await defaults.getByRole('button', { name: 'Retry reconciliation', exact: true }).click();
+    await expect(defaults.locator('[data-settings-fetch-save-status]')).toContainText('Current Book Defaults were restored.');
+    await expect(defaults.locator('.app-dialog-body[data-atomic-reconciliation-original]')).toHaveCount(0);
+    await expect(defaults.locator('select[name="navigation"]')).toBeEnabled();
+    await expect(defaults.locator('[data-dialog-field="navigation"] summary')).toBeFocused();
+    expect(postCount).toBe(1);
   });
 
   test('browses, selects, persists, and clears Notes picker assets', async ({ page, devServer }) => {
@@ -2219,6 +2433,81 @@ test.describe('CreatorCrate development browser smoke', () => {
 });
 
 test.describe('CreatorCrate production browser smoke', () => {
+  test('contains Notes heading action tooltips at desktop and narrow widths', async ({ page, productionServer }) => {
+    const baseURL = productionServer.baseURL;
+    const firstBookId = await createBrowserBook(page, baseURL, `Tooltip Book One ${Date.now()}`);
+
+    const expectContainedTooltip = async (action, label) => {
+      await expect(action).toHaveAccessibleName(label);
+      await action.focus();
+      await expect.poll(() => action.evaluate(node => getComputedStyle(node, '::after').opacity)).toBe('1');
+      const geometry = await action.evaluate((node) => {
+        const control = node.getBoundingClientRect();
+        const pseudo = getComputedStyle(node, '::after');
+        const width = parseFloat(pseudo.width) + parseFloat(pseudo.paddingLeft) + parseFloat(pseudo.paddingRight)
+          + parseFloat(pseudo.borderLeftWidth) + parseFloat(pseudo.borderRightWidth);
+        const left = pseudo.right === '0px' ? control.right - width
+          : (pseudo.left === '0px' ? control.left : control.left + (control.width - width) / 2);
+        return {
+          clientWidth: document.documentElement.clientWidth,
+          scrollWidth: document.documentElement.scrollWidth,
+          tooltipContent: pseudo.content,
+          left,
+          right: left + width,
+        };
+      });
+      expect(geometry.tooltipContent).toBe(`"${label}"`);
+      expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth);
+      expect(geometry.left).toBeGreaterThanOrEqual(0);
+      expect(geometry.right).toBeLessThanOrEqual(geometry.clientWidth);
+    };
+
+    for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+      await page.setViewportSize(viewport);
+      await page.goto(`${baseURL}/notes`, { waitUntil: 'domcontentloaded' });
+      const landingActions = page.locator('.page-heading-actions .project-assets-heading-action');
+      await expect(landingActions).toHaveCount(2);
+      await expectContainedTooltip(landingActions.nth(0), 'New Book');
+      await expectContainedTooltip(landingActions.nth(1), 'Import/Export Books');
+    }
+
+    await createBrowserBook(page, baseURL, `Tooltip Book Two ${Date.now()}`);
+
+    for (const viewport of [{ width: 1280, height: 800 }, { width: 390, height: 844 }]) {
+      await page.setViewportSize(viewport);
+      await page.goto(`${baseURL}/notes`, { waitUntil: 'domcontentloaded' });
+      const landingActions = page.locator('.page-heading-actions .project-assets-heading-action');
+      await expect(landingActions).toHaveCount(3);
+      await expectContainedTooltip(landingActions.nth(0), 'New Book');
+      await expectContainedTooltip(landingActions.nth(1), 'Import/Export Books');
+      await expectContainedTooltip(landingActions.nth(2), 'Change book order');
+
+      await page.goto(`${baseURL}/notes/books/${firstBookId}`, { waitUntil: 'domcontentloaded' });
+      const detailActions = page.locator('.page-heading-actions .project-assets-heading-action');
+      await expect(detailActions).toHaveCount(2);
+      await expect(detailActions.nth(0)).toHaveAccessibleName('New Page');
+      await expect(detailActions.nth(1)).toHaveAccessibleName('New Chapter');
+      await expect(page.locator('.page-heading-lead')).toHaveAccessibleName('Back to book list');
+      await expectContainedTooltip(detailActions.last(), 'New Chapter');
+    }
+
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.goto(`${baseURL}/notes`, { waitUntil: 'domcontentloaded' });
+    await page.getByRole('link', { name: 'New Book', exact: true }).click();
+    await expect(page.locator('#book-create-dialog[open]')).toBeVisible();
+    await page.getByRole('button', { name: 'Close New Book', exact: true }).click();
+    await page.getByRole('link', { name: 'Change book order', exact: true }).click();
+    await expect(page.locator('#books-order-dialog[open]')).toBeVisible();
+    await page.getByRole('button', { name: 'Close Change book order', exact: true }).click();
+
+    await page.goto(`${baseURL}/notes/books/${firstBookId}`, { waitUntil: 'domcontentloaded' });
+    await page.getByRole('link', { name: 'New Page', exact: true }).click();
+    await expect(page.locator('#note-create-dialog[open]')).toBeVisible();
+    await page.getByRole('button', { name: 'Close New Page', exact: true }).click();
+    await page.getByRole('link', { name: 'New Chapter', exact: true }).click();
+    await expect(page.locator('#chapter-create-dialog[open]')).toBeVisible();
+  });
+
   test('loads hashed production assets, executes browser code, and has no Vite client or HMR socket', async ({ page, productionServer }) => {
     const diagnostics = observeBrowser(page, productionServer.baseURL);
 

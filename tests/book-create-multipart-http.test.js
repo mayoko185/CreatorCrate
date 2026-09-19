@@ -8,6 +8,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 import http from 'node:http';
+import crypto from 'node:crypto';
+import { crc32 } from 'node:zlib';
 import { EventEmitter } from 'node:events';
 import { admitBookUpload } from '../src/middleware/book-upload-lifetime.js';
 import { createApp } from '../src/app.js';
@@ -16,6 +18,7 @@ import { AUTH_CONFIG, authenticate } from './helpers/auth.js';
 import { BookValidationError } from '../src/services/book-service.js';
 import { createBookWithUploadedCover as createBookWithUploadedCoverHandler } from '../src/middleware/book-create-multipart.js';
 import { parseBookCoverMultipart } from '../src/services/book-cover-multipart.js';
+import { makeAnimatedWebp, makeSolidAnimatedWebp, setWebpCanvas, webpChunks } from './helpers/animated-webp.js';
 
 vi.mock('../src/services/book-cover-multipart.js', async (original) => {
   const actual = await original();
@@ -250,12 +253,76 @@ describe('WP7D2A New Book multipart HTTP', () => {
     expect(files()).toHaveLength(1);
     expect(db.prepare("SELECT * FROM application_logs WHERE event = 'book.created'").all()).toHaveLength(1);
   });
+  it('commits an animated WebP unchanged with authoritative canvas metadata and managed Book selection', async () => {
+    const upload = await makeAnimatedWebp(3, { width: 7, height: 5 });
+    const expectedSha = crypto.createHash('sha256').update(upload).digest('hex');
+    const res = await post().field('title', 'Animated cover').attach('cover', upload, {
+      filename: 'misleading.gif', contentType: 'image/gif',
+    }).expect(302);
+
+    const book = db.prepare('SELECT * FROM books').get();
+    const record = source();
+    expect(res.headers.location).toBe(`/notes/books/${book.id}`);
+    expect(record).toMatchObject({ namespace: 'book-covers', mime_type: 'image/webp',
+      size_bytes: upload.length, sha256: expectedSha, width: 7, height: 5 });
+    expect(record.storage_key).toBe(`book-covers/${record.id}/source.webp`);
+    expect(app.locals.bookPrimaryImageService.getPrimaryImageSource(book.id))
+      .toEqual({ kind: 'managed_asset', id: record.id });
+    expect(fs.readFileSync(path.join(tmp, 'assets', record.storage_key))).toEqual(upload);
+    expect(db.pragma('table_info(managed_assets)').map((column) => column.name))
+      .not.toEqual(expect.arrayContaining(['animated', 'frame_count', 'loop_count', 'duration']));
+    counts(1, 1);
+    expect(files()).toHaveLength(1);
+  });
+  it('commits an animation above 40M and below 100M cumulative pixels', async () => {
+    const upload = await makeSolidAnimatedWebp(41, { width: 988, height: 988 });
+    const res = await post().field('title', 'Larger animated cover').attach('cover', upload, {
+      filename: 'larger.webp', contentType: 'image/webp',
+    }).expect(302);
+    const book = db.prepare('SELECT * FROM books').get();
+    const record = source();
+    expect(res.headers.location).toBe(`/notes/books/${book.id}`);
+    expect(record).toMatchObject({ width: 988, height: 988, size_bytes: upload.length });
+    expect(fs.readFileSync(path.join(tmp, 'assets', record.storage_key))).toEqual(upload);
+    counts(1, 1);
+  });
+  it('rejects over-limit or malformed animation, direct GIF and APNG without committing a Book or asset', async () => {
+    const malformed = Buffer.from(await makeAnimatedWebp(2));
+    const malformedFrame = webpChunks(malformed).find((chunk) => chunk.type === 'ANMF');
+    malformed.writeUInt32LE(0xffffffff, malformedFrame.start + 20);
+    const pixelCorrupt = Buffer.from(await makeAnimatedWebp(2, { lossless: false, transparent: false }));
+    const laterFrame = webpChunks(pixelCorrupt).filter((chunk) => chunk.type === 'ANMF').at(-1);
+    pixelCorrupt.fill(0xff, laterFrame.start + 16 + 8 + 5, laterFrame.end);
+    const png = await sharp(bytes).png().toBuffer();
+    const animationControl = Buffer.alloc(20);
+    animationControl.writeUInt32BE(8);
+    animationControl.write('acTL', 4);
+    animationControl.writeUInt32BE(2, 8);
+    animationControl.writeUInt32BE(crc32(animationControl.subarray(4, 16)), 16);
+    const apng = Buffer.concat([png.subarray(0, 33), animationControl, png.subarray(33)]);
+    const cases = [
+      ['121-frame WebP', await makeAnimatedWebp(121, { width: 1, height: 1 })],
+      ['cumulative-pixel WebP', setWebpCanvas(await makeAnimatedWebp(101, { width: 1, height: 1 }), 1000, 1000)],
+      ['malformed animated WebP', malformed],
+      ['later-frame pixel-corrupt WebP', pixelCorrupt],
+      ['GIF', await sharp(bytes).gif().toBuffer()],
+      ['APNG', apng],
+    ];
+
+    for (const [label, upload] of cases) {
+      const res = await post().set('Accept', 'application/json').field('title', label)
+        .attach('cover', upload, `${label}.bin`).expect(422);
+      expect(res.body).toMatchObject({ status: 'error', code: 'INVALID_IMAGE' });
+      counts();
+      expect(files()).toHaveLength(0);
+    }
+  });
   it('rejects invalid image with a sanitized error and cleans staging', async () => {
     const res = await post().set('Accept', 'application/json').field('title', 'Valid title').attach('cover', Buffer.from('private invalid bytes'), 'C-private.png').expect(422);
     expect(res.headers['content-type']).toMatch(/^application\/json/);
     expect(res.body).toEqual({
       status: 'error', code: 'INVALID_IMAGE',
-      message: 'A valid, single still PNG, JPEG or WebP image within the managed image limits is required.',
+      message: 'A valid PNG, JPEG or WebP image, including bounded animated WebP, within the managed image limits is required.',
     });
     expect(res.text).not.toMatch(/private|stack|storage_key/);
     counts();
@@ -268,7 +335,7 @@ describe('WP7D2A New Book multipart HTTP', () => {
     expect(res.text).toContain('class="notes-books-index"');
     const dialog = res.text.match(/<dialog[^>]*id="book-create-dialog"[^>]*\bopen[\s\S]*?<\/dialog>/)?.[0];
     expect(dialog).toContain('value="Preserved upload title"');
-    expect(dialog).toContain('<div class="error-summary" role="alert"><p>A valid, single still PNG, JPEG or WebP image within the managed image limits is required.</p></div>');
+    expect(dialog).toContain('<div class="error-summary" role="alert"><p>A valid PNG, JPEG or WebP image, including bounded animated WebP, within the managed image limits is required.</p></div>');
     expectBookCoverForm(res.text);
     expect(res.text).not.toMatch(/C-private|private invalid bytes|storage_key/);
     expect(res.text).not.toContain(tmp);
@@ -289,6 +356,15 @@ describe('WP7D2A New Book multipart HTTP', () => {
     expect(res.text).not.toContain('private failure');
     expect(rollback).toHaveBeenCalledOnce();
     expect(db.prepare("SELECT * FROM application_logs WHERE event = 'book.created'").all()).toHaveLength(0);
+    counts();
+    expect(files()).toHaveLength(0);
+  });
+  it('compensates an animated WebP when compound Book creation fails', async () => {
+    const upload = await makeAnimatedWebp(2, { width: 4, height: 3 });
+    const rollback = vi.spyOn(app.locals.managedAssetRepository, 'rollbackCommitted');
+    db.exec("CREATE TEMP TRIGGER fail_animated_cover BEFORE INSERT ON book_primary_images BEGIN SELECT RAISE(ABORT, 'private failure'); END");
+    await post().field('title', 'Animated failure').attach('cover', upload, 'cover.webp').expect(500);
+    expect(rollback).toHaveBeenCalledOnce();
     counts();
     expect(files()).toHaveLength(0);
   });

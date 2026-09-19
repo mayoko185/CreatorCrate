@@ -36,6 +36,7 @@ import {
   SLIDESHOW_SCAFFOLD_SELECTOR,
   SLIDESHOW_SEQUENCE_SELECTOR,
 } from './slideshow.js';
+import { enhanceNotesCodeBlocks } from './notes-editor.js';
 const PROJECTS_LIVE_REGION_SELECTOR = '[data-projects-live-region]';
 const PROJECTS_FILTER_SELECTOR = '#project-filters';
 const PROJECTS_LIVE_STATUS_SELECTOR = '[data-projects-live-status]';
@@ -61,6 +62,12 @@ const RELEASE_ASSETS_SELECTION_FORM_SELECTOR = '[data-asset-selection-form][id="
 const RELEASE_ASSETS_SELECTION_CHECKBOX_SELECTOR = 'input[type="checkbox"][name="selectedAssetIds"][form="release-assets-form"]';
 const RELEASE_ASSETS_HIDDEN_MEMBERSHIP_SELECTOR = '[data-release-assets-hidden-membership]';
 const RELEASE_ASSETS_PERSISTED_MEMBERSHIP_SELECTOR = '[data-release-assets-persisted-membership]';
+const NOTES_BOOKS_LIVE_REGION_SELECTOR = '[data-notes-books-live-region]';
+const NOTES_BOOKS_LIVE_STATUS_SELECTOR = '[data-notes-books-live-status]';
+const NOTES_BOOKS_LIVE_STATE_ATTRIBUTE = 'data-notes-books-live-state';
+const BOOK_DETAIL_LIVE_REGION_SELECTOR = '[data-book-detail-live-region]';
+const BOOK_DETAIL_LIVE_STATUS_SELECTOR = '[data-book-detail-live-status]';
+const BOOK_DETAIL_LIVE_STATE_ATTRIBUTE = 'data-book-detail-live-state';
 
 function projectLiveNsfwForm(region) {
   return region?.querySelector?.(PROJECTS_NSFW_FORM_SELECTOR) || null;
@@ -297,18 +304,13 @@ export function createLiveRegionEngine(config) {
     state.controller = null;
   }
 
-  function replaceRegion(state, responseText, requestedUrl, historyMode) {
+  function installRegion(state, nextRegion, requestedUrl, historyMode) {
     const document = state.document;
     const windowObject = state.window;
-    const parser = new windowObject.DOMParser();
-    const parsed = parser.parseFromString(responseText, 'text/html');
-    const nextRegion = parsed.querySelector?.(regionSelector);
     const currentRegion = regionFor(document);
     if (!nextRegion || !currentRegion || !currentRegion.parentNode) {
       throw new Error(missingRegionMessage);
     }
-
-    onResponseParsed?.(state, parsed, nextRegion, engine);
 
     const captured = liveRegionCaptureState(currentRegion, document);
     if (typeof currentRegion.replaceWith === 'function') currentRegion.replaceWith(nextRegion);
@@ -326,6 +328,15 @@ export function createLiveRegionEngine(config) {
     onRegionReplaced?.(state, nextRegion, engine);
     liveRegionRestoreState(nextRegion, document, captured);
     status(nextRegion, '', null);
+  }
+
+  function replaceRegion(state, responseText, requestedUrl, historyMode) {
+    const parser = new state.window.DOMParser();
+    const parsed = parser.parseFromString(responseText, 'text/html');
+    const nextRegion = parsed.querySelector?.(regionSelector);
+    if (!nextRegion) throw new Error(missingRegionMessage);
+    onResponseParsed?.(state, parsed, nextRegion, engine);
+    installRegion(state, nextRegion, requestedUrl, historyMode);
   }
 
   function fallback(state, form, requestedUrl, useRequestedUrl = false) {
@@ -550,6 +561,7 @@ export function createLiveRegionEngine(config) {
     status,
     controller,
     invalidate,
+    installRegion,
     load,
   };
 
@@ -851,6 +863,259 @@ function releaseAssetId(control) {
   const rawId = control?.value ?? control?.getAttribute?.('value');
   const id = String(rawId ?? '');
   return /^[1-9]\d*$/.test(id) ? id : null;
+}
+
+const notesBooksLiveEngine = createLiveRegionEngine({
+  regionSelector: NOTES_BOOKS_LIVE_REGION_SELECTOR,
+  formSelector: '[data-notes-books-live-form]',
+  defaultAction: '/notes',
+  stateKey: '__creatorCrateNotesBooksLiveRegion',
+  statusSelector: NOTES_BOOKS_LIVE_STATUS_SELECTOR,
+  statusStateAttribute: NOTES_BOOKS_LIVE_STATE_ATTRIBUTE,
+  loadingMessage: 'Refreshing books.',
+  responseErrorMessage: 'Books response failed.',
+  missingRegionMessage: 'Books response did not contain the live region.',
+  enhanceRegion: enhancePreviewMedia,
+  onCreate(state) {
+    state.notesBooksRefreshComplete = null;
+    state.notesBooksRefreshError = null;
+  },
+  onLoadComplete(state) {
+    const complete = state.notesBooksRefreshComplete;
+    state.notesBooksRefreshComplete = null;
+    state.notesBooksRefreshError = null;
+    complete?.();
+  },
+  onLoadError(state) {
+    const error = state.notesBooksRefreshError;
+    state.notesBooksRefreshComplete = null;
+    state.notesBooksRefreshError = null;
+    const region = notesBooksLiveEngine.getRegion(state.document);
+    region?.removeAttribute?.('aria-busy');
+    notesBooksLiveEngine.status(region, 'Books could not refresh.', 'error');
+    error?.();
+    return true;
+  },
+  isCurrentUrl(url) {
+    return url.pathname === '/notes';
+  },
+});
+
+export function refreshNotesBooksLiveRegion(
+  scope = globalThis.document,
+  { onComplete = null, onError = null } = {},
+) {
+  const document = liveRegionDocument(scope);
+  const region = notesBooksLiveEngine.getRegion(document);
+  if (!document || !region) return 'unavailable';
+
+  notesBooksLiveEngine.enhance(document);
+  const state = document.__creatorCrateNotesBooksLiveRegion;
+  if (!state || !notesBooksLiveEngine.capabilities(state.window)) return 'unavailable';
+
+  let url;
+  try {
+    url = new URL('/notes', state.window.location?.href || 'http://creatorcrate.local/notes');
+  } catch {
+    return 'unavailable';
+  }
+
+  state.notesBooksRefreshComplete = typeof onComplete === 'function' ? onComplete : null;
+  state.notesBooksRefreshError = typeof onError === 'function' ? onError : null;
+  notesBooksLiveEngine.invalidate(state);
+  notesBooksLiveEngine.load(state, url, 'none', null);
+  return 'started';
+}
+
+export function beginNotesBooksLiveRefresh(scope = globalThis.document) {
+  const document = liveRegionDocument(scope);
+  const region = notesBooksLiveEngine.getRegion(document);
+  if (!document || !region) return null;
+
+  notesBooksLiveEngine.enhance(document);
+  const state = document.__creatorCrateNotesBooksLiveRegion;
+  if (!state || !notesBooksLiveEngine.capabilities(state.window)) return null;
+  return state.generation;
+}
+
+export function installNotesBooksLiveRegionSnapshot(
+  scope = globalThis.document,
+  authorityGeneration,
+  nextRegion,
+) {
+  const document = liveRegionDocument(scope);
+  const state = document?.__creatorCrateNotesBooksLiveRegion;
+  if (!document || !nextRegion || !state) return 'unavailable';
+  if (state.generation !== authorityGeneration) return 'superseded';
+
+  let url;
+  try {
+    url = new URL('/notes', state.window.location?.href || '/notes');
+  } catch {
+    return 'unavailable';
+  }
+
+  try {
+    notesBooksLiveEngine.invalidate(state);
+    state.response = { url: url.href };
+    notesBooksLiveEngine.installRegion(state, nextRegion, url, 'none');
+    const region = notesBooksLiveEngine.getRegion(document);
+    region?.removeAttribute?.('aria-busy');
+    notesBooksLiveEngine.status(region, '', null);
+    return 'installed';
+  } catch {
+    return 'unavailable';
+  }
+}
+
+const bookDetailLiveEngine = createLiveRegionEngine({
+  regionSelector: BOOK_DETAIL_LIVE_REGION_SELECTOR,
+  formSelector: [],
+  defaultAction: '/notes',
+  stateKey: '__creatorCrateBookDetailLiveRegion',
+  statusSelector: BOOK_DETAIL_LIVE_STATUS_SELECTOR,
+  statusStateAttribute: BOOK_DETAIL_LIVE_STATE_ATTRIBUTE,
+  loadingMessage: 'Refreshing Book detail.',
+  responseErrorMessage: 'Book detail response failed.',
+  missingRegionMessage: 'Book detail response did not contain the live region.',
+  enhanceRegion(region) {
+    enhancePreviewMedia(region);
+    enhanceNotesCodeBlocks(region);
+  },
+  onCreate(state) {
+    state.bookDetailRefreshWaiters = [];
+  },
+  onLoadComplete(state) {
+    const waiters = state.bookDetailRefreshWaiters.splice(0);
+    waiters.forEach(({ onComplete }) => onComplete?.());
+  },
+  onLoadError(state) {
+    const waiters = state.bookDetailRefreshWaiters.splice(0);
+    const region = bookDetailLiveEngine.getRegion(state.document);
+    region?.removeAttribute?.('aria-busy');
+    bookDetailLiveEngine.status(region, 'Book detail could not refresh.', 'error');
+    waiters.forEach(({ onError }) => onError?.());
+    return true;
+  },
+  isCurrentUrl(url) {
+    return /^\/notes\/books\/[1-9]\d*$/.test(url.pathname);
+  },
+});
+
+export function beginBookDetailDefaultsLiveRefresh(scope = globalThis.document) {
+  const document = liveRegionDocument(scope);
+  const region = bookDetailLiveEngine.getRegion(document);
+  if (!document || !region) return null;
+
+  bookDetailLiveEngine.enhance(document);
+  const state = document.__creatorCrateBookDetailLiveRegion;
+  if (!state || !bookDetailLiveEngine.capabilities(state.window)) return null;
+  return state.generation;
+}
+
+export function refreshBookDetailLiveRegion(
+  scope = globalThis.document,
+  destination,
+  authorityGeneration,
+  { onComplete = null, onError = null } = {},
+) {
+  const document = liveRegionDocument(scope);
+  const region = bookDetailLiveEngine.getRegion(document);
+  const state = document?.__creatorCrateBookDetailLiveRegion;
+  if (!document || !region || !state || !bookDetailLiveEngine.capabilities(state.window)) return 'unavailable';
+  if (state.generation !== authorityGeneration) return 'superseded';
+
+  let url;
+  try {
+    url = new URL(destination, state.window.location?.href || '/notes');
+  } catch {
+    return 'unavailable';
+  }
+  if (!/^\/notes\/books\/[1-9]\d*$/.test(url.pathname)) return 'unavailable';
+
+  url.search = '';
+  url.hash = '';
+  bookDetailLiveEngine.invalidate(state);
+  state.bookDetailRefreshWaiters.push({
+    onComplete: typeof onComplete === 'function' ? onComplete : null,
+    onError: typeof onError === 'function' ? onError : null,
+  });
+  bookDetailLiveEngine.load(state, url, 'none', null);
+  return 'started';
+}
+
+export function installBookDetailLiveRegionSnapshot(
+  scope = globalThis.document,
+  destination,
+  authorityGeneration,
+  nextRegion,
+) {
+  const document = liveRegionDocument(scope);
+  const state = document?.__creatorCrateBookDetailLiveRegion;
+  if (!document || !nextRegion || !state) return 'unavailable';
+  if (state.generation !== authorityGeneration) return 'superseded';
+
+  let url;
+  try {
+    url = new URL(destination, state.window.location?.href || '/notes');
+  } catch {
+    return 'unavailable';
+  }
+  if (!/^\/notes\/books\/[1-9]\d*$/.test(url.pathname)) return 'unavailable';
+
+  url.search = '';
+  url.hash = '';
+  try {
+    bookDetailLiveEngine.invalidate(state);
+    state.response = { url: url.href };
+    bookDetailLiveEngine.installRegion(state, nextRegion, url, 'none');
+    return 'installed';
+  } catch {
+    return 'unavailable';
+  }
+}
+
+export function publishBookDetailLiveRegionSnapshotAtomically(
+  scope = globalThis.document,
+  destination,
+  authorityGeneration,
+  nextRegion,
+  publishPeer,
+) {
+  const document = liveRegionDocument(scope);
+  const state = document?.__creatorCrateBookDetailLiveRegion;
+  const currentRegion = bookDetailLiveEngine.getRegion(document);
+  if (!document || !nextRegion || !state || !currentRegion || !currentRegion.parentNode
+    || typeof publishPeer !== 'function') return 'unavailable';
+  if (state.generation !== authorityGeneration) return 'superseded';
+
+  let url;
+  try {
+    url = new URL(destination, state.window.location?.href || '/notes');
+  } catch {
+    return 'unavailable';
+  }
+  if (!/^\/notes\/books\/[1-9]\d*$/.test(url.pathname)) return 'unavailable';
+
+  url.search = '';
+  url.hash = '';
+  const previousResponse = state.response;
+  try {
+    bookDetailLiveEngine.invalidate(state);
+    state.response = { url: url.href };
+    bookDetailLiveEngine.installRegion(state, nextRegion, url, 'none');
+    if (publishPeer() !== true) throw new Error('Peer publication failed.');
+    return 'installed';
+  } catch {
+    const publishedRegion = bookDetailLiveEngine.getRegion(document);
+    if (publishedRegion !== currentRegion && publishedRegion?.parentNode) {
+      if (typeof publishedRegion.replaceWith === 'function') publishedRegion.replaceWith(currentRegion);
+      else publishedRegion.parentNode.replaceChild(currentRegion, publishedRegion);
+    }
+    state.region = currentRegion;
+    state.response = previousResponse;
+    return 'unavailable';
+  }
 }
 
 function releaseAssetsSelectionControls(region, form) {

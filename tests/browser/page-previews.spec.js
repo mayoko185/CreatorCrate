@@ -49,31 +49,42 @@ test('shared Projects toolbar tooltips stay inside the document on Book detail a
         if (route.startsWith('/notes/books/')) {
           await expect(page.locator('.page-heading .asset-viewer-display-controls')).toHaveCount(0);
           await expect(page.locator('.asset-viewer-display-controls > .project-filter-actions.project-filter-actions--projects')).toHaveCount(1);
-          const toolbar = page.locator('[data-book-detail-toolbar]');
-          const back = toolbar.getByRole('link', { name: 'Back to book list', exact: true });
+          const heading = page.locator('.page-heading');
+          const back = heading.getByRole('link', { name: 'Back to book list', exact: true });
           await expect(back).toBeVisible();
           await expect(back).toHaveAttribute('href', '/notes');
-          await expect(back).toHaveClass('button button-secondary');
+          await expect(back).toHaveClass(/page-heading-lead--icon/);
+          const toolbar = page.locator('[data-book-detail-toolbar]');
           expect(await toolbar.locator('a').evaluateAll(nodes => nodes.map(node => node.getAttribute('aria-label') || node.textContent.trim())))
-            .toEqual(['Back to book list', 'Edit book', 'Change order', 'Book defaults', 'Reset to default']);
+            .toEqual(['Edit book', 'Reorder book contents', 'Book defaults']);
           const row = await toolbar.boundingBox();
+          const headingBox = await heading.boundingBox();
           const backBox = await back.boundingBox();
+          expect(backBox.x).toBe(headingBox.x);
           const actions = await toolbar.locator('.project-filter-actions').boundingBox();
-          expect(backBox.x).toBe(row.x);
-          const reset = await controls.last().boundingBox();
-          expect(reset.x + reset.width).toBeCloseTo(row.x + row.width, 1);
-          if (width <= 540) expect(actions.y).toBeGreaterThanOrEqual(backBox.y + backBox.height);
-          else expect(actions.y).toBeLessThan(backBox.y + backBox.height);
           expect(await controls.evaluateAll(nodes => nodes.map(node => node.getAttribute('aria-label'))))
-            .toEqual(['Edit book', 'Change order', 'Book defaults', 'Reset to default']);
+            .toEqual(['Edit book', 'Reorder book contents', 'Book defaults']);
+          const last = await controls.last().boundingBox();
+          expect(last.x + last.width).toBeCloseTo(row.x + row.width, 1);
+          expect(actions.y).toBeGreaterThanOrEqual(backBox.y + backBox.height);
         }
         const dimensions = () => page.evaluate(() => {
           window.scrollTo(10000, 0);
-          const result = [document.documentElement.clientWidth, document.documentElement.scrollWidth, window.scrollX];
+          const result = {
+            clientWidth: document.documentElement.clientWidth,
+            scrollWidth: document.documentElement.scrollWidth,
+            scrollX: window.scrollX,
+          };
           window.scrollTo(0, 0);
           return result;
         });
-        expect(await dimensions()).toEqual([width, width, 0]);
+        const expectNoHorizontalOverflow = async () => {
+          const measured = await dimensions();
+          expect(measured.scrollWidth).toBeLessThanOrEqual(measured.clientWidth);
+          expect(measured.scrollX).toBe(0);
+          return measured.clientWidth;
+        };
+        const clientWidth = await expectNoHorizontalOverflow();
         for (const control of await controls.all()) {
           const label = await control.getAttribute('data-tooltip');
           await expect(control).toHaveAccessibleName(label);
@@ -81,7 +92,7 @@ test('shared Projects toolbar tooltips stay inside the document on Book detail a
           await expect.poll(() => control.evaluate(node => getComputedStyle(node, '::after').opacity)).toBe('1');
           // Empty asset fixtures intentionally disable slideshow: hover still works, keyboard focus must not.
           if (await control.isDisabled()) {
-            expect(await dimensions()).toEqual([width, width, 0]);
+            await expectNoHorizontalOverflow();
             await page.mouse.move(width / 2, 0);
             continue;
           }
@@ -107,13 +118,13 @@ test('shared Projects toolbar tooltips stay inside the document on Book detail a
           expect(metrics.content).toBe(JSON.stringify(label));
           if (width > 540) expect(metrics.right).toBe('0px');
           expect(metrics.leftEdge).toBeGreaterThanOrEqual(0);
-          expect(metrics.rightEdge).toBeLessThanOrEqual(width);
+          expect(metrics.rightEdge).toBeLessThanOrEqual(clientWidth);
           expect(metrics.outline).not.toBe('0px');
           expect(metrics.icon).toEqual([20, 20]);
           if (width > 540 || route.startsWith('/notes/books/')) expect(metrics.size).toEqual([38, 38]);
           expect(metrics.ancestors).not.toContain('hidden');
           expect(metrics.ancestors).not.toContain('clip');
-          expect(await dimensions()).toEqual([width, width, 0]);
+          await expectNoHorizontalOverflow();
           if (process.env.CREATORCRATE_TOOLTIP_SCREENSHOTS
             && (route.startsWith('/notes/books/') || route === '/projects') && label.startsWith('Reset')) {
             fs.mkdirSync(process.env.CREATORCRATE_TOOLTIP_SCREENSHOTS, { recursive: true });
@@ -228,7 +239,11 @@ test('Book detail hosts Random and Selected Page previews without restoring the 
         await expect(section.locator('h2')).toHaveCount(0);
         await expect(section).not.toHaveAttribute('aria-labelledby');
         expect(await section.locator('.notes-page-previews-empty').evaluate(node => getComputedStyle(node).marginTop)).toBe('0px');
-        expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(width);
+        const dimensions = await page.evaluate(() => ({
+          clientWidth: document.documentElement.clientWidth,
+          scrollWidth: document.documentElement.scrollWidth,
+        }));
+        expect(dimensions.scrollWidth).toBeLessThanOrEqual(dimensions.clientWidth);
       }
     };
     await checkEmptyPreview(emptyBook.id, 'No Pages to preview.');

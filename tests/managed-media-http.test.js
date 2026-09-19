@@ -9,6 +9,7 @@ import { createApp } from '../src/app.js';
 import { openDatabase, closeDatabase, runMigrations } from '../src/db.js';
 import { AUTH_CONFIG, authenticate } from './helpers/auth.js';
 import { buildBookPrimaryImageModel, resolveBookPrimaryImageMedia } from '../src/services/primary-image-presenter.js';
+import { makeAnimatedWebp } from './helpers/animated-webp.js';
 
 function captureChapterDetailLocals(app) {
   const renders = [];
@@ -62,6 +63,24 @@ describe('WP7C2 managed media HTTP and Book presentation', () => {
     expect((await sharp(res.body).metadata()).format).toBe('webp');
     expect(res.body).toEqual((await app.locals.managedMediaService.getDerivative(record.id, kind)).bytes);
   });
+  it('serves animated managed preview bytes while its thumbnail stays static and cacheable', async () => {
+    const bytes = await makeAnimatedWebp(3, { width: 20, height: 10,
+      delay: [80, 120, 160], loop: 4, transparent: true });
+    const animated = await app.locals.managedImageService.createCommittedImage({ bytes });
+    const thumbnail = await agent.get(url(animated.record.id, 'thumbnail')).expect(200);
+    const preview = await agent.get(url(animated.record.id, 'preview')).expect(200);
+    expect(thumbnail.headers['content-type']).toBe('image/webp');
+    expect(preview.headers['content-type']).toBe('image/webp');
+    const thumbnailMetadata = await sharp(thumbnail.body, { animated: true, pages: -1 }).metadata();
+    expect(thumbnailMetadata).toMatchObject({ format: 'webp', width: 20, height: 10 });
+    expect(thumbnailMetadata.pages ?? 1).toBe(1);
+    expect(await sharp(preview.body, { animated: true, pages: -1 }).metadata())
+      .toMatchObject({ format: 'webp', width: 20, height: 30, pageHeight: 10,
+        pages: 3, delay: [80, 120, 160], loop: 4 });
+    const repeated = await agent.get(url(animated.record.id, 'preview')).expect(200);
+    expect(repeated.body).toEqual(preview.body);
+    expect((await app.locals.managedMediaService.getDerivative(animated.record.id, 'preview')).cacheHit).toBe(true);
+  });
   it.each(['missing', 'corrupt'])('keeps %s source selected and returns safe unavailable media and cover', async (damage) => {
     if (damage === 'missing') fs.unlinkSync(sourceFile);
     else fs.writeFileSync(sourceFile, 'corrupt');
@@ -90,6 +109,26 @@ describe('WP7C2 managed media HTTP and Book presentation', () => {
     expect(res.text).toBe('Preview unavailable');
     expect(res.headers['cache-control']).toBe('no-store');
     selected();
+  });
+  it('maps a cache read EIO to 503 rather than 404', async () => {
+    const first = await app.locals.managedMediaService.getDerivative(record.id, 'thumbnail');
+    const file = path.join(tmp, 'previews', 'managed-assets', record.id, first.revision, 'thumbnail.webp');
+    const open = fs.openSync;
+    vi.spyOn(fs, 'openSync').mockImplementation((candidate, ...args) => {
+      if (candidate === file) throw Object.assign(new Error('cache read failed'), { code: 'EIO' });
+      return open(candidate, ...args);
+    });
+    const res = await agent.get(url(record.id)).expect(503);
+    expect(res.text).toBe('Preview unavailable');
+    expect(res.headers['cache-control']).toBe('no-store');
+  });
+  it('routes unexpected repository failures through the controlled 500 handler', async () => {
+    const failure = new TypeError('repository runtime failure');
+    vi.spyOn(app.locals.managedAssetRepository, 'findById').mockImplementation(() => { throw failure; });
+    const res = await agent.get(url(record.id)).expect(500);
+    expect(res.text).toContain('Something went wrong.');
+    expect(res.text).not.toContain(failure.message);
+    expect(res.headers['cache-control']).toBe('no-store');
   });
   it('rejects missing/malformed IDs before repository access and ignores path inputs', async () => {
     const lookup = vi.spyOn(app.locals.managedAssetRepository, 'findById');

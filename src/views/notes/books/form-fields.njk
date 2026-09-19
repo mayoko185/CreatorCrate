@@ -3,7 +3,7 @@
       <div class="project-form-section-body project-edit-dialog-section-body">
       <div class="field app-dialog-field {% if errors.title %}field-error{% endif %}">
         <label for="title">Title <span class="required" aria-label="required">*</span></label>
-        <input type="text" id="title" name="title" value="{{ values.title or '' }}" maxlength="200" required{% if errors.title %} aria-describedby="title-error" aria-invalid="true"{% endif %}>
+        <input type="text" id="title" name="title" value="{{ values.title or '' }}" maxlength="200" required{% if bookEditForm %} data-book-title-autosave{% endif %}{% if errors.title %} aria-describedby="title-error" aria-invalid="true"{% endif %}>
         {% if errors.title %}<span class="field-error-message" id="title-error">{{ errors.title }}</span>{% endif %}
       </div>
     </div>
@@ -14,16 +14,18 @@
         <details class="notes-workspace-disclosure">
           <summary>Book cover</summary>
           <div class="notes-workspace-disclosure-content">
-            {% if bookEditForm and bookEditForm.book.primaryImage.state != 'none' %}
-              {{ bookPrimaryImage.render(bookEditForm.book, 'preview') }}
-            {% endif %}
+            <div data-book-current-cover-presentation>
+              {% if bookEditForm and bookEditForm.book.primaryImage.state != 'none' %}
+                {{ bookPrimaryImage.render(bookEditForm.book, 'preview') }}
+              {% endif %}
+            </div>
             <input type="hidden" name="expectedCoverKind" value="{{ bookCoverSource.kind or 'none' }}">
             <input type="hidden" name="expectedCoverId" value="{{ bookCoverSource.id or '' }}">
             <input type="hidden" name="coverReplacementConfirmed" value="false">
             <div class="field app-dialog-field">
               <label for="book-cover">Book cover image</label>
-              <input type="file" id="book-cover" name="cover" accept="image/png,image/jpeg,image/webp" aria-describedby="book-cover-help">
-              <span class="help-text" id="book-cover-help">Optional. PNG, JPEG, or WebP. Uploads are stored by CreatorCrate, not in a Project. After a validation error, select the file again.</span>
+              <input type="file" id="book-cover" name="cover" accept="image/png,image/jpeg,image/webp" aria-describedby="book-cover-help"{% if bookEditForm %} data-book-cover-autosave{% endif %}>
+              <span class="help-text" id="book-cover-help">Optional. PNG, JPEG, or WebP; animated WebP is supported. GIF and APNG uploads are not supported. Uploads are stored by CreatorCrate, not in a Project. After a validation error, select the file again.</span>
             </div>
           </div>
         </details>

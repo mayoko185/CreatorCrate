@@ -8,7 +8,7 @@ import { createApp } from '../../src/app.js';
 import { openDatabase, closeDatabase, runMigrations } from '../../src/db.js';
 import { ensureAuthEnablement } from '../../src/auth/auth-state.js';
 
-test('actual New/Edit Book cover disclosures preserve native interaction and replacement warning', async ({ page }) => {
+test('actual New/Edit Book cover disclosures preserve create submission and immediate-edit replacement warning', async ({ page }) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-cover-disclosure-'));
   const projectsRoot = path.join(root, 'projects');
   const appDataRoot = path.join(root, 'app');
@@ -44,7 +44,7 @@ test('actual New/Edit Book cover disclosures preserve native interaction and rep
       await expect(disclosure.locator('[name="cover"]')).toBeVisible();
     };
 
-    const expectBookSpacing = async bookDialog => {
+    const expectBookSpacing = async (bookDialog, hasFooter = true) => {
       await expect(bookDialog.getByRole('heading', { name: 'Book details', exact: true })).toHaveCount(1);
       const spacing = await bookDialog.evaluate(node => {
         const readPadding = element => {
@@ -73,7 +73,8 @@ test('actual New/Edit Book cover disclosures preserve native interaction and rep
       expect(spacing.disclosureContentBottom).toBe('0px');
       expect(spacing.dialogBodyBottom).toBe('8px');
       expect(spacing.headingMargins).toBe('0px');
-      await expect(bookDialog.locator('.app-dialog-footer').getByRole('button')).toBeVisible();
+      await expect(bookDialog.locator('.app-dialog-footer')).toHaveCount(hasFooter ? 1 : 0);
+      if (hasFooter) await expect(bookDialog.locator('.app-dialog-footer').getByRole('button')).toBeVisible();
     };
     await expectBookSpacing(create);
     await expect(create).toBeVisible();
@@ -113,7 +114,6 @@ test('actual New/Edit Book cover disclosures preserve native interaction and rep
     await disclosure.locator('summary').click();
     await disclosure.locator('[name="cover"]').setInputFiles(file);
     expect(await disclosure.locator('[name="cover"]').evaluate(n => n.files.length)).toBe(1);
-    await edit.getByRole('button', { name: 'Save', exact: true }).click();
     const warning = page.getByRole('dialog', { name: 'Replace cover image?' });
     await expect(warning).toBeVisible();
     await expect(warning).toContainText('The previous image or Asset will not be deleted.');
@@ -122,7 +122,7 @@ test('actual New/Edit Book cover disclosures preserve native interaction and rep
     await expect(edit.locator('[name="coverReplacementConfirmed"]')).toHaveValue('false');
     await expect(edit.getByRole('heading', { name: 'Book actions', exact: true })).toHaveCount(1);
 
-    await expectBookSpacing(edit);
+    await expectBookSpacing(edit, false);
     await expect(edit.locator('img')).toHaveCount(1);
     await expect(page.locator('form form')).toHaveCount(0);
     expect(await page.locator('[id]').evaluateAll(nodes => new Set(nodes.map(n => n.id)).size === nodes.length)).toBe(true);
@@ -131,9 +131,10 @@ test('actual New/Edit Book cover disclosures preserve native interaction and rep
     await expect(cover(edit).locator('img, .notes-book-cover')).toHaveCount(0);
     await toggle(cover(edit));
     await cover(edit).locator('[name="cover"]').setInputFiles(file);
-    expect(await cover(edit).locator('[name="cover"]').evaluate(n => n.files.length)).toBe(1);
+    await expect.poll(() => app.locals.bookPrimaryImageService.getPrimaryImageSource(empty.id)?.kind).toBe('managed_asset');
+    await expect(cover(edit).locator('[name="cover"]')).toHaveValue('');
     await page.setViewportSize({ width: 390, height: 640 });
-    await expectBookSpacing(edit);
+    await expectBookSpacing(edit, false);
   } finally {
     if (server) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
     closeDatabase(db);
