@@ -863,6 +863,7 @@
         {% if emptyState.kind != 'no-assets' and emptyState.kind != 'no-assets-archived' %}
            {% set emptyActionUrl = resetFiltersUrl %}
           {% set emptyActionLabel = "Reset Filters" %}
+          {% set emptyActionAttributes = [["data-project-assets-reset", true]] %}
         {% endif %}
         {% include "partials/empty-state.njk" %}
       {% endif %}

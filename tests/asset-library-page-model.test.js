@@ -872,9 +872,6 @@ describe('workflow query service — asset library page model', () => {
   });
 
   it('exposes canonical multi-value selections and selected option metadata', () => {
-    insertGlobalCategory(db, { displayName: 'Final', directorySlug: 'final', displayOrder: 1 });
-    insertGlobalCategory(db, { displayName: 'KRZ', directorySlug: 'krz', displayOrder: 2 });
-
     const project = insertProject(db, { title: 'Multi-Value Project' });
     const finalCategory = insertProjectCategory(db, {
       projectId: project.id,
@@ -933,6 +930,7 @@ describe('workflow query service — asset library page model', () => {
   });
 
   it('passes normalized filters through and preserves them with the requested presentation state', () => {
+    insertGlobalCategory(db, { displayName: 'Source', directorySlug: 'source' });
     const project = insertProject(db, { title: 'Filtered Project' });
     const category = insertProjectCategory(db, {
       projectId: project.id,

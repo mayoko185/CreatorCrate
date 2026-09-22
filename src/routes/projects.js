@@ -3,11 +3,6 @@ import {
   ProjectNotFoundError,
   ProjectValidationError,
 } from '../services/project-service.js';
-import {
-  ProjectNotFoundError as ProjectTagProjectNotFoundError,
-  ProjectTagValidationError,
-  TagNotFoundError as ProjectTagTagNotFoundError,
-} from '../services/project-tag-service.js';
 import { NSFW_TAG_NAME } from '../services/nsfw-filter-settings-service.js';
 import {
   AssetCategoryValidationError,
@@ -199,10 +194,12 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
     const parsedTags = parseProjectFormTagIds(req.body?.tagIds);
 
     try {
+      if (!parsedTags.valid) {
+        throw new ProjectValidationError({ tagIds: parsedTags.error });
+      }
       validateSubmittedTagsExist(req, parsedTags);
       const input = parseProjectInput(req.body);
-      const project = projectService.create(input);
-      persistProjectTags(req, project.id, parsedTags);
+      const project = projectService.create(input, { tagIds: parsedTags.tagIds });
       res.redirect(`/projects/${project.id}`);
     } catch (err) {
       if (err instanceof ProjectValidationError) {
@@ -277,13 +274,15 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
     const projectEditReturnTo = readProjectEditReturnLocation(req.body?.returnTo, id);
 
     try {
+      if (!parsedTags.valid) {
+        throw new ProjectValidationError({ tagIds: parsedTags.error });
+      }
       validateSubmittedTagsExist(req, parsedTags);
       const input = parseProjectInput(req.body);
-      const project = projectService.update(id, input);
+      const project = projectService.update(id, input, { tagIds: parsedTags.tagIds });
       if (!project) {
         return next(createNotFound());
       }
-      persistProjectTags(req, project.id, parsedTags);
       res.redirect(projectEditReturnTo || `/projects/${project.id}`);
     } catch (err) {
       if (err instanceof ProjectNotFoundError) {
@@ -872,35 +871,6 @@ function validateSubmittedTagsExist(req, parsedTags) {
     throw new ProjectValidationError({
       tagIds: 'One or more selected tags no longer exists. Refresh and try again.',
     });
-  }
-}
-
-function persistProjectTags(req, projectId, parsedTags) {
-  if (!parsedTags.valid) {
-    return;
-  }
-
-  try {
-    getProjectTagService(req).replaceProjectTags(projectId, parsedTags.tagIds);
-  } catch (err) {
-    if (err instanceof ProjectTagProjectNotFoundError) {
-      // The project was just created/updated by projectService, so this should
-      // not happen in normal operation. Re-throw as a standard 404 path.
-      throw createNotFound();
-    }
-    if (err instanceof ProjectTagTagNotFoundError) {
-      // A selected tag was removed between form render and submission. Treat
-      // as a stale-selection error without breaking project creation/update.
-      throw new ProjectValidationError({
-        tagIds: 'One or more selected tags no longer exists. Refresh and try again.',
-      });
-    }
-    if (err instanceof ProjectTagValidationError) {
-      throw new ProjectValidationError(err.errors || {
-        tagIds: err.message || 'Tag selection is invalid.',
-      });
-    }
-    throw err;
   }
 }
 

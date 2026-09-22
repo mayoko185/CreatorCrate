@@ -119,8 +119,8 @@ function expectEditNoteDialog(html, noteId, open) {
 function insertProject(db, title) {
   return Number(db
     .prepare(
-      `INSERT INTO projects (title, slug, description, notes, status, patreon_url)
-       VALUES (?, ?, '', '', 'tbd', NULL)`
+      `INSERT INTO projects (title, slug, description, notes, status, patreon_url, project_type)
+       VALUES (?, ?, '', '', 'tbd', NULL, 'images')`
     )
     .run(title, title.toLowerCase().replace(/\s+/g, '-')).lastInsertRowid);
 }

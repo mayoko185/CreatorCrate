@@ -1455,7 +1455,9 @@ describe('asset action service', () => {
 
     it('no filesystem mutation occurs during preflight phase failure', () => {
       const src = createEnabledCategory('Archive', 'archive');
-      const dst = createEnabledCategory('Final', 'final');
+      const dst = assetCategoryRepository.listProjectCategories(project.id)
+        .find((category) => category.directory_slug === 'final');
+      expect(dst).toBeDefined();
       writeFile('archive/a.png', 'aaa');
       writeFile('archive/b.png', 'bbb'); // b.png also present
       const assetA = createAsset('archive/a.png', { categoryId: src.id });
@@ -1466,16 +1468,31 @@ describe('asset action service', () => {
 
       const renameSpy = vi.spyOn(fs, 'renameSync');
       try {
-        actionService.moveAssets(project.id, [assetA.id, assetB.id], dst.id);
-        expect.unreachable();
-      } catch (err) {
-        expect(err.code).toBe('BATCH_DESTINATION_CONFLICT');
-      }
-      expect(renameSpy).not.toHaveBeenCalled();
-      renameSpy.mockRestore();
+        let error;
+        try {
+          actionService.moveAssets(project.id, [assetA.id, assetB.id], dst.id);
+        } catch (err) {
+          error = err;
+        }
 
-      expect(fs.existsSync(path.join(absPath, 'archive', 'a.png'))).toBe(true);
-      expect(fs.existsSync(path.join(absPath, 'archive', 'b.png'))).toBe(true);
+        expect(error).toMatchObject({ code: 'BATCH_DESTINATION_CONFLICT' });
+        expect(renameSpy).not.toHaveBeenCalled();
+
+        expect(fs.existsSync(path.join(absPath, 'archive', 'a.png'))).toBe(true);
+        expect(fs.existsSync(path.join(absPath, 'archive', 'b.png'))).toBe(true);
+        expect(fs.readFileSync(path.join(absPath, 'archive', 'a.png'), 'utf8')).toBe('aaa');
+        expect(fs.readFileSync(path.join(absPath, 'archive', 'b.png'), 'utf8')).toBe('bbb');
+        expect(fs.existsSync(path.join(absPath, 'final', 'a.png'))).toBe(false);
+        expect(fs.readFileSync(path.join(absPath, 'final', 'b.png'), 'utf8')).toBe('squatter');
+        expect(assetRepository.findById(assetA.id)).toMatchObject({
+          relative_path: 'archive/a.png', category_id: src.id, nested_path: '',
+        });
+        expect(assetRepository.findById(assetB.id)).toMatchObject({
+          relative_path: 'archive/b.png', category_id: src.id, nested_path: '',
+        });
+      } finally {
+        renameSpy.mockRestore();
+      }
     });
 
     // ── Partial failure semantics ──────────────────────────────────────

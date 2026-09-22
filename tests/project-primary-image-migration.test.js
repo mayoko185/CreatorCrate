@@ -29,6 +29,7 @@ function createProject(projectRepository, title) {
     description: '',
     notes: '',
     status: 'tbd',
+    projectType: 'images',
     priority: 'normal',
     plannedDate: null,
     publishedDate: null,

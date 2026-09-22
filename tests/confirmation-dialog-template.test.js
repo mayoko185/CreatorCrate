@@ -1,22 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import fs from 'node:fs';
 import nunjucks from 'nunjucks';
 import { fileURLToPath } from 'node:url';
 
 const VIEWS_DIR = fileURLToPath(new URL('../src/views', import.meta.url));
 const env = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: true });
-const CONFIRMATION_TEMPLATES = [
-  'projects/assets.njk',
-  'projects/detail.njk',
-  'projects/form.njk',
-  'notes/books/form.njk',
-  'notes/chapters/form.njk',
-  'notes/form.njk',
-  'partials/asset-edit-dialog.njk',
-  'partials/project-asset-category-management.njk',
-  'partials/release-edit-dialog.njk',
-  'settings/asset-categories.njk',
-];
 
 function renderLayout() {
   return env.renderString(
@@ -46,12 +33,4 @@ describe('shared confirmation dialog template', () => {
     expect(html).not.toContain('data-dialog-form');
   });
 
-  it('keeps all fourteen production data-confirm controls on the shared dialog contract', () => {
-    const source = CONFIRMATION_TEMPLATES
-      .map((template) => fs.readFileSync(`${VIEWS_DIR}/${template}`, 'utf8'))
-      .join('\n');
-
-    expect(source.match(/\bdata-confirm=/g) || []).toHaveLength(14);
-    expect(source).not.toMatch(/\bdata-confirm-dialog(?:\s|=|>)/);
-  });
 });

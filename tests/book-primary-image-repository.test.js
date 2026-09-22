@@ -41,6 +41,7 @@ describe('book primary-image repository', () => {
       plannedDate: null,
       publishedDate: null,
       patreonUrl: null,
+      projectType: 'images',
     });
   }
 

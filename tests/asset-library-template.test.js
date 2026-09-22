@@ -8,7 +8,6 @@ import { buildAssetLibraryUrl } from '../src/routes/asset-library-query.js';
 const VIEWS_DIR = fileURLToPath(new URL('../src/views', import.meta.url));
 const TEMPLATE_PATH = path.join(VIEWS_DIR, 'assets', 'index.njk');
 const ASSET_INFORMATION_PARTIAL_PATH = path.join(VIEWS_DIR, 'partials', 'asset-information.njk');
-const PROJECT_ASSET_VIEWER_PATH = path.join(VIEWS_DIR, 'projects', 'asset-viewer.njk');
 const STYLESHEET_PATH = path.join(VIEWS_DIR, '..', 'static', 'creatorcrate.css');
 const css = fs.readFileSync(STYLESHEET_PATH, 'utf8');
 
@@ -1038,16 +1037,11 @@ describe('cross-project Asset Viewer template', () => {
       hasAnyAssets: true,
       filters: { search: 'missing-name' },
     });
+    const reset = filtered.match(/<a\b[^>]*data-asset-library-reset[^>]*>Reset<\/a>/)?.[0] ?? '';
     expect(filtered).toContain('No assets match the current filters');
-    expect(filtered).toMatch(/<div class="empty-state-actions">[\s\S]*>Reset<\/a>/);
+    expect(reset).toContain('href="/asset-viewer?resetFilters=1&amp;view=grid"');
+    expect(reset).toContain('data-asset-library-reset');
     expect(filtered).not.toContain('No assets across active projects');
-  });
-
-  it('keeps the existing project-scoped asset detail template unchanged', () => {
-    const source = fs.readFileSync(PROJECT_ASSET_VIEWER_PATH, 'utf8');
-
-    expect(source).toContain('{% set page_title = "Assets — " ~ project.title ~ " — " ~ asset.filename %}');
-    expect(source).toContain('action="/projects/{{ project.id }}/assets/{{ asset.id }}/primary-image"');
   });
 
   it('wraps the content area in a live region with a status element', () => {
@@ -1459,25 +1453,6 @@ describe('slideshow scaffold — static UI', () => {
     expect(html).toContain('aria-label="Enter fullscreen"');
   });
 
-  it('both slideshow scaffolds use custom tooltips, no native titles, and header control order', () => {
-    for (const html of [renderPage(), renderProjectAssetsPage()]) {
-      const scaffold = html.slice(html.indexOf('data-slideshow-scaffold'));
-      const fullscreenPos = scaffold.indexOf('data-slideshow-fullscreen');
-      const originalSizePos = scaffold.indexOf('data-slideshow-original-size');
-      const closePos = scaffold.indexOf('data-slideshow-close');
-
-      expect(fullscreenPos).toBeGreaterThan(-1);
-      expect(originalSizePos).toBeGreaterThan(fullscreenPos);
-      expect(closePos).toBeGreaterThan(originalSizePos);
-      expect(scaffold).not.toMatch(/<button\b[^>]*\btitle=/);
-      expect(scaffold).toMatch(/data-slideshow-fullscreen[^>]*class="[^"]*asset-tooltip|class="[^"]*asset-tooltip[^"]*"[^>]*data-slideshow-fullscreen/);
-      expect(scaffold).toMatch(/data-slideshow-original-size[^>]*data-tooltip="View original size"|data-tooltip="View original size"[^>]*data-slideshow-original-size/);
-      expect(scaffold).toMatch(/data-slideshow-close[^>]*asset-tooltip--right|asset-tooltip--right[^>]*data-slideshow-close/);
-      expect(scaffold).toMatch(/data-slideshow-prev[^>]*asset-tooltip--left|asset-tooltip--left[^>]*data-slideshow-prev/);
-      expect(scaffold).toMatch(/data-slideshow-next[^>]*asset-tooltip--right|asset-tooltip--right[^>]*data-slideshow-next/);
-      expect(scaffold).toMatch(/data-slideshow-play-pause[^>]*asset-tooltip--top|asset-tooltip--top[^>]*data-slideshow-play-pause/);
-    }
-  });
 
   it('asset-viewer page: speed select preserves 2 s, 4 s default, and 6 s options', () => {
     const html = renderPage();

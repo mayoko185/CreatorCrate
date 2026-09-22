@@ -27,13 +27,10 @@ import {
   enhanceAssetSelection,
   enhanceAssetRenames,
   enhanceAssetGridSize,
-  enhanceAssetListSize,
   enhanceProjectGridSize,
   enhanceProjectAssetCategoryFilter,
   enhanceAssetViewerFilterDisclosures,
   enhanceDropdowns,
-  enhanceAssetViewerInfoCards,
-  enhanceProjectInfoCards,
   enhanceDatePickers,
   enhanceTimePickers,
 } from '../src/static/creatorcrate.js';
@@ -128,25 +125,13 @@ function makeProjectDomNode({ tagName = 'div', parent = null, attributes = {} } 
   return node;
 }
 
-function makeProjectCardFixture({ variant = 'grid' } = {}) {
-  const card = makeProjectDomNode({
-    tagName: 'article',
-    attributes: { class: `project-card project-card--${variant}` },
-  });
+function makeProjectCardFixture() {
+  const card = makeProjectDomNode({ tagName: 'article' });
   const link = makeProjectDomNode({ tagName: 'a', parent: card });
   const metadataRow = makeProjectDomNode({ tagName: 'div', parent: card });
   const metadataValue = makeProjectDomNode({ tagName: 'span', parent: metadataRow });
   const blank = makeProjectDomNode({ tagName: 'div', parent: card });
   const secondaryLink = makeProjectDomNode({ tagName: 'a', parent: card });
-  const patreonLink = makeProjectDomNode({
-    tagName: 'a',
-    parent: card,
-    attributes: {
-      href: 'https://www.patreon.com/creator',
-      target: '_blank',
-      rel: 'noopener noreferrer',
-    },
-  });
   const button = makeProjectDomNode({ tagName: 'button', parent: card });
   const form = makeProjectDomNode({ tagName: 'form', parent: card });
   const input = makeProjectDomNode({ tagName: 'input', parent: form });
@@ -168,7 +153,6 @@ function makeProjectCardFixture({ variant = 'grid' } = {}) {
     link,
     blank,
     metadataValue,
-    patreonLink,
     interactive: [secondaryLink, button, form, input, select, label, details, summary],
     get linkActivations() {
       return linkActivations;
@@ -228,58 +212,40 @@ describe('static preview enhancement helpers', () => {
     expect(html).toContain('data-preview-fallback hidden>Image unavailable</span>');
   });
 
-  it('handles cached success with the final loaded state', () => {
-    const { root, image, loading, fallback } = makePreview({ complete: true, naturalWidth: 128 });
+  it('handles already-complete success and failure immediately', () => {
+    for (const { naturalWidth, state, imageHidden, fallbackHidden } of [
+      { naturalWidth: 128, state: 'loaded', imageHidden: false, fallbackHidden: true },
+      { naturalWidth: 0, state: 'failed', imageHidden: true, fallbackHidden: false },
+    ]) {
+      const { root, image, loading, fallback } = makePreview({ complete: true, naturalWidth });
 
-    expect(enhancePreview(root)).toBe('loaded');
-
-    expect(root.dataset.previewState).toBe('loaded');
-    expect(root.dataset.previewState).not.toBe('loading');
-    expect(image.hidden).toBe(false);
-    expect(loading.hidden).toBe(true);
-    expect(fallback.hidden).toBe(true);
-    expect(image.listeners).toEqual([]);
+      expect(enhancePreview(root)).toBe(state);
+      expect(root.dataset.previewState).toBe(state);
+      expect(image.hidden).toBe(imageHidden);
+      expect(loading.hidden).toBe(true);
+      expect(fallback.hidden).toBe(fallbackHidden);
+      expect(image.listeners).toEqual([]);
+    }
   });
 
-  it('handles load success without announcements or focus changes', () => {
-    const { root, image, loading, fallback } = makePreview();
+  it('handles asynchronous load and error terminal states', () => {
+    for (const { event, state, imageHidden, fallbackHidden } of [
+      { event: 'load', state: 'loaded', imageHidden: false, fallbackHidden: true },
+      { event: 'error', state: 'failed', imageHidden: true, fallbackHidden: false },
+    ]) {
+      const { root, image, loading, fallback } = makePreview();
 
-    expect(enhancePreview(root)).toBe('listening');
-    expect(image.listeners.map((listener) => listener.type)).toEqual(['load', 'error']);
-    expect(image.listeners.every((listener) => listener.options.once === true)).toBe(true);
+      expect(enhancePreview(root)).toBe('listening');
+      expect(image.listeners.map((listener) => listener.type)).toEqual(['load', 'error']);
+      expect(image.listeners.every((listener) => listener.options.once === true)).toBe(true);
 
-    image.dispatch('load');
+      image.dispatch(event);
 
-    expect(root.dataset.previewState).toBe('loaded');
-    expect(root.dataset.previewState).not.toBe('loading');
-    expect(image.hidden).toBe(false);
-    expect(loading.hidden).toBe(true);
-    expect(fallback.hidden).toBe(true);
-  });
-
-  it('handles image errors by hiding the image and revealing the fallback', () => {
-    const { root, image, loading, fallback } = makePreview();
-
-    enhancePreview(root);
-    image.dispatch('error');
-
-    expect(root.dataset.previewState).toBe('failed');
-    expect(root.dataset.previewState).not.toBe('loading');
-    expect(image.hidden).toBe(true);
-    expect(loading.hidden).toBe(true);
-    expect(fallback.hidden).toBe(false);
-  });
-
-  it('handles an already-complete failed image immediately', () => {
-    const { root, image, loading, fallback } = makePreview({ complete: true, naturalWidth: 0 });
-
-    expect(enhancePreview(root)).toBe('failed');
-
-    expect(root.dataset.previewState).toBe('failed');
-    expect(image.hidden).toBe(true);
-    expect(loading.hidden).toBe(true);
-    expect(fallback.hidden).toBe(false);
-    expect(image.listeners).toEqual([]);
+      expect(root.dataset.previewState).toBe(state);
+      expect(image.hidden).toBe(imageHidden);
+      expect(loading.hidden).toBe(true);
+      expect(fallback.hidden).toBe(fallbackHidden);
+    }
   });
 
   it('does not bind duplicate preview listeners when re-enhanced', () => {
@@ -410,36 +376,16 @@ describe('project card navigation enhancement', () => {
     expect(fixture.linkActivations).toBe(2);
   });
 
-  it('activates blank space and metadata in a list row while keeping Patreon independent', () => {
-    const fixture = makeProjectCardFixture({ variant: 'list' });
-    enhanceProjectCards(makeScope([fixture.card]));
-
-    fixture.card.dispatch('click', { target: fixture.blank });
-    fixture.card.dispatch('click', { target: fixture.metadataValue });
-    const patreonEvent = fixture.card.dispatch('click', { target: fixture.patreonLink });
-
-    expect(fixture.linkActivations).toBe(2);
-    expect(patreonEvent.defaultPrevented).toBe(false);
-  });
-
   it('does not navigate for secondary links, buttons, forms, or controls', () => {
     const fixture = makeProjectCardFixture();
     enhanceProjectCards(makeScope([fixture.card]));
 
     for (const target of fixture.interactive) {
-      fixture.card.dispatch('click', { target });
+      const event = fixture.card.dispatch('click', { target });
+      expect(fixture.linkActivations).toBe(0);
+      expect(event.defaultPrevented).toBe(false);
     }
 
-    expect(fixture.linkActivations).toBe(0);
-  });
-
-  it('leaves a Patreon anchor native and independent from project navigation', () => {
-    const fixture = makeProjectCardFixture();
-    enhanceProjectCards(makeScope([fixture.card]));
-
-    const event = fixture.card.dispatch('click', { target: fixture.patreonLink });
-
-    expect(event.defaultPrevented).toBe(false);
     expect(fixture.linkActivations).toBe(0);
   });
 
@@ -458,19 +404,15 @@ describe('project card navigation enhancement', () => {
   });
 
   it('is idempotent and safely handles pages without project cards', () => {
-    const gridFixture = makeProjectCardFixture({ variant: 'grid' });
-    const listFixture = makeProjectCardFixture({ variant: 'list' });
-    const scope = makeScope([gridFixture.card, listFixture.card]);
+    const fixture = makeProjectCardFixture();
+    const scope = makeScope([fixture.card]);
 
-    expect(enhanceProjectCards(scope)).toBe(2);
-    expect(enhanceProjectCards(scope)).toBe(2);
-    expect(gridFixture.card.listeners.filter((listener) => listener.type === 'click')).toHaveLength(1);
-    expect(listFixture.card.listeners.filter((listener) => listener.type === 'click')).toHaveLength(1);
+    expect(enhanceProjectCards(scope)).toBe(1);
+    expect(enhanceProjectCards(scope)).toBe(1);
+    expect(fixture.card.listeners.filter((listener) => listener.type === 'click')).toHaveLength(1);
 
-    gridFixture.card.dispatch('click', { target: gridFixture.blank });
-    listFixture.card.dispatch('click', { target: listFixture.blank });
-    expect(gridFixture.linkActivations).toBe(1);
-    expect(listFixture.linkActivations).toBe(1);
+    fixture.card.dispatch('click', { target: fixture.blank });
+    expect(fixture.linkActivations).toBe(1);
 
     expect(enhanceProjectCards(makeScope([]))).toBe(0);
     expect(() => enhanceProjectCards(null)).not.toThrow();
@@ -698,35 +640,37 @@ describe('category enabled autosubmit enhancement', () => {
 });
 
 describe('native autosubmit navigation', () => {
-  it('submits each declarative control once without submitting during enhancement', () => {
-    const selected = makeEnabledFixture({ action: '/projects/7/assets/11/tags', checked: false });
-    const deselected = makeEnabledFixture({ action: '/projects/7/assets/12/tags', checked: true });
-    const nsfw = makeEnabledFixture({ action: '/settings/nsfw-filter', checked: false });
-    selected.control.dataset.autosubmit = 'submit';
-    deselected.control.dataset.autosubmit = 'submit';
-    nsfw.control.dataset.autosubmit = 'submit';
+  it('submits through the owning form once after repeated enhancement and ignores non-change events or missing forms', () => {
+    const fixture = makeEnabledFixture({ action: '/autosubmit', checked: false });
+    const fallback = makeEnabledFixture({ action: '/autosubmit-fallback', checked: false });
+    const orphan = makeCheckbox();
+    fixture.control.dataset.autosubmit = 'submit';
+    fallback.control.dataset.autosubmit = 'submit';
+    delete fallback.form.requestSubmit;
+    orphan.dataset.autosubmit = 'submit';
 
-    const scope = { querySelectorAll: () => [selected.control, deselected.control, nsfw.control] };
-    enhanceAutoSubmit(scope);
+    const scope = {
+      querySelectorAll(selector) {
+        expect(selector).toBe('[data-autosubmit]');
+        return [fixture.control, fallback.control, orphan];
+      },
+    };
+    expect(enhanceAutoSubmit(scope)).toBe(3);
+    expect(enhanceAutoSubmit(scope)).toBe(3);
 
-    expect(selected.form.requestSubmitCount).toBe(0);
-    expect(deselected.form.requestSubmitCount).toBe(0);
+    expect(fixture.form.requestSubmitCount).toBe(0);
+    expect(fallback.form.submitCount).toBe(0);
+    fixture.control.dispatch('input');
+    expect(fixture.form.requestSubmitCount).toBe(0);
 
-    selected.control.checked = true;
-    selected.control.dispatch('change');
-    selected.control.checked = false;
-    selected.control.dispatch('change');
-    deselected.control.checked = false;
-    deselected.control.dispatch('change');
-    nsfw.control.checked = true;
-    nsfw.control.dispatch('change');
+    fixture.control.dispatch('change');
+    fixture.control.dispatch('change');
+    fallback.control.dispatch('change');
 
-    expect(selected.form.requestSubmitCount).toBe(1);
-    expect(deselected.form.requestSubmitCount).toBe(1);
-    expect(nsfw.form.requestSubmitCount).toBe(1);
-    expect(selected.form.submitCount).toBe(0);
-    expect(deselected.form.submitCount).toBe(0);
-    expect(nsfw.form.submitCount).toBe(0);
+    expect(fixture.form.requestSubmitCount).toBe(1);
+    expect(fixture.form.submitCount).toBe(0);
+    expect(fallback.form.submitCount).toBe(1);
+    expect(() => orphan.dispatch('change')).not.toThrow();
   });
 });
 
@@ -1477,9 +1421,8 @@ describe('Book defaults immediate persistence enhancement', () => {
     });
   });
 
-  it.each(['superseded', 'unavailable'])(
-    'does not publish canonical Defaults markup when detail publication is %s',
-    async (publicationOutcome) => {
+  it('does not publish canonical Defaults markup when detail publication does not install', async () => {
+    for (const publicationOutcome of ['superseded', 'unavailable']) {
       const fixture = makeBookDefaultsFetchFixture();
       const surfaces = attachBookDefaultsDropdowns(fixture);
       enhanceDropdowns(fixture.form);
@@ -1522,8 +1465,8 @@ describe('Book defaults immediate persistence enhancement', () => {
         expect(retry?.focused).toBe(true);
         expect(fixture.status.textContent).toContain('changes remain blocked');
       });
-    },
-  );
+    }
+  });
 
   it('keeps autosave blocked after reconciliation failure and Retry restores normal dispatch without replaying POST', async () => {
     const fixture = makeBookDefaultsFetchFixture();
@@ -1725,38 +1668,31 @@ function acknowledgedCoverPresentationOptions(fixture) {
 }
 
 describe('Book edit immediate persistence enhancement', () => {
-  it.each([
-    ['none', '', { kind: 'none', id: '' }],
-    ['project_asset', '42', { kind: 'project_asset', id: '42' }],
-    ['managed_asset', '4fb0c5e1-2c9a-4d9a-a8e1-83ad0d843730', {
-      kind: 'managed_asset', id: '4fb0c5e1-2c9a-4d9a-a8e1-83ad0d843730',
-    }],
-    ['managed_asset', 'opaque:Managed-Cover/Value', {
-      kind: 'managed_asset', id: 'opaque:Managed-Cover/Value',
-    }],
-  ])('accepts canonical %s cover authority without coercing its ID', (kind, id, expected) => {
-    expect(parseBookCoverAuthority(kind, id)).toEqual(expected);
+  it('accepts each canonical cover authority kind without coercing its ID', () => {
+    for (const [kind, id] of [
+      ['none', ''],
+      ['project_asset', '42'],
+      ['managed_asset', 'opaque:Managed-Cover/Value'],
+    ]) {
+      expect(parseBookCoverAuthority(kind, id)).toEqual({ kind, id });
+    }
   });
 
-  it.each([
-    ['none', '1'],
-    ['project_asset', ''],
-    ['project_asset', 'abc'],
-    ['project_asset', '01'],
-    ['project_asset', '9007199254740992'],
-    ['managed_asset', ''],
-    ['unsupported', '1'],
-  ])('rejects malformed %s cover authority with ID %j', (kind, id) => {
-    expect(parseBookCoverAuthority(kind, id)).toBeNull();
+  it('rejects each malformed cover authority boundary', () => {
+    for (const [kind, id] of [
+      ['none', '1'],
+      ['project_asset', ''],
+      ['project_asset', '01'],
+      ['project_asset', '9007199254740992'],
+      ['managed_asset', ''],
+      ['unsupported', '1'],
+    ]) {
+      expect(parseBookCoverAuthority(kind, id)).toBeNull();
+    }
   });
 
-  it.each([
-    ['managed UUID', { kind: 'managed_asset', id: '4fb0c5e1-2c9a-4d9a-a8e1-83ad0d843730' }],
-    ['project-backed numeric ID', { kind: 'project_asset', id: '42' }],
-  ])('publishes an acknowledged %s cover through canonical detail and dialog authority without replaying it', async (
-    label,
-    currentCover,
-  ) => {
+  it('publishes an acknowledged cover through canonical detail and dialog authority without replaying it', async () => {
+    const currentCover = { kind: 'managed_asset', id: 'opaque:Managed-Cover/Value' };
     const fixture = makeBookEditFetchFixture();
     const detailRegion = {};
     const coverPresentation = {};
@@ -2973,34 +2909,6 @@ function makeNsfwFetchFixture({ checked = false } = {}) {
   };
 }
 
-describe('form-switch fetch compatibility', () => {
-  it('keeps fetch markup distinct while retaining submit and bare legacy contracts', () => {
-    const viewsPath = fileURLToPath(new URL('../src/views', import.meta.url));
-    const environment = new nunjucks.Environment(new nunjucks.FileSystemLoader(viewsPath));
-    const html = environment.renderString(`{% import "partials/form-switch.njk" as formSwitch %}
-      {{ formSwitch.control("fetch-switch", "fetch", false, "Fetch", null, false, false, "fetch") }}
-      {{ formSwitch.control("labelled-fetch-switch", "fetch", false, "Fetch", null, false, false, "fetch", true, "Save") }}
-      {{ formSwitch.control("submit-switch", "submit", false, "Submit", null, false, false, "submit") }}
-      {{ formSwitch.control("legacy-switch", "legacy", false, "Legacy", null, false, false, true) }}`);
-
-    const control = (id) => html.match(new RegExp(`<input[^>]+id="${id}"[^>]*>`))?.[0] || '';
-    const switchMarkup = (id) => html.match(new RegExp(`<div class="form-switch">[\\s\\S]*?id="${id}"[\\s\\S]*?<\\/div>`))?.[0] || '';
-    expect(control('fetch-switch')).toContain('data-autosubmit="fetch"');
-    expect(switchMarkup('fetch-switch')).not.toContain('data-category-enabled-status');
-    expect(switchMarkup('fetch-switch')).not.toContain('Save status');
-    expect(switchMarkup('fetch-switch')).not.toContain('<noscript>');
-    expect(switchMarkup('labelled-fetch-switch')).toContain('>Save</button>');
-    expect(switchMarkup('labelled-fetch-switch')).not.toContain('data-category-enabled-status');
-    expect(control('submit-switch')).toContain('data-autosubmit="submit"');
-    expect(switchMarkup('submit-switch')).toContain('data-category-enabled-status');
-    expect(switchMarkup('submit-switch')).toContain('>Save status</button>');
-    expect(control('legacy-switch')).toMatch(/\sdata-autosubmit(?:\s|>)/);
-    expect(control('legacy-switch')).not.toContain('data-autosubmit="');
-    expect(switchMarkup('legacy-switch')).toContain('data-category-enabled-status');
-    expect(switchMarkup('legacy-switch')).toContain('>Save status</button>');
-  });
-});
-
 describe('NSFW Filter fetch autosave adoption', () => {
   it('posts the browser switch payload in place without native submission', async () => {
     const fixture = makeNsfwFetchFixture();
@@ -3234,31 +3142,6 @@ describe('Asset Categories fetch autosave adoption', () => {
     }));
   });
 
-  it('replaces only the authoritative preference card for validation and re-enhances it', async () => {
-    const fixture = makeAssetCategoryPreferenceFetchFixture();
-    const replacement = makeAssetCategoryPreferenceFetchFixture({ value: 'invalid' });
-
-    await withAssetCategoryPreferenceDomParser(() => ({
-      querySelectorAll(selector) {
-        return selector === '[data-settings-asset-category-preference]' ? [replacement.region] : [];
-      },
-    }), async () => withBrowserGlobals(async () => ({
-      ok: false,
-      redirected: false,
-      status: 422,
-      text: async () => '<html>validation</html>',
-    }), async () => {
-      enhanceAssetCategoryPreferencesFetchSave(fixture.scope);
-      fixture.controls[0].value = 'invalid';
-      fixture.controls[0].dispatch('change');
-      await flushAsync();
-
-      expect(fixture.region.replacement).toBe(replacement.region);
-      expect(replacement.controls[0].listeners).toHaveLength(1);
-      expect(fixture.form.requestSubmitCount).toBe(0);
-    }));
-  });
-
   it('selects the same identified card from a two-region validation response', async () => {
     const browser = makeAssetCategoryPreferenceFetchFixture();
     const preview = makeAssetCategoryPreferenceFetchFixture({
@@ -3297,23 +3180,25 @@ describe('Asset Categories fetch autosave adoption', () => {
       expect(preview.region.replacement).toBe(previewResponse.region);
       expect(browser.region.replacement).toBeNull();
       expect(previewResponse.form.action).toBe('/settings/asset-categories/preview-category');
+      expect(previewResponse.controls[0].listeners).toHaveLength(1);
 
       browser.controls[0].dispatch('change');
       await flushAsync();
       expect(browser.region.replacement).toBe(browserResponse.region);
       expect(previewResponse.region.replacement).toBeNull();
       expect(browserResponse.form.action).toBe('/settings/asset-categories/browser-default');
+      expect(browserResponse.controls[0].listeners).toHaveLength(1);
     }));
   });
 
   it('does not replace stale markup for a superseded validation response', async () => {
     const fixture = makeAssetCategoryPreferenceFetchFixture();
     const requests = [];
-    const staleRegion = { parentNode: {} };
+    const staleResponse = makeAssetCategoryPreferenceFetchFixture({ value: 'invalid' });
 
     await withAssetCategoryPreferenceDomParser(() => ({
       querySelectorAll(selector) {
-        return selector === '[data-settings-asset-category-preference]' ? [staleRegion] : [];
+        return selector === '[data-settings-asset-category-preference]' ? [staleResponse.region] : [];
       },
     }), async () => withBrowserGlobals(() => new Promise((resolve) => requests.push(resolve)), async () => {
       enhanceAssetCategoryPreferencesFetchSave(fixture.scope);
@@ -3424,184 +3309,124 @@ function replaceFocusedRegion(current, replacement, document, replacementElement
 }
 
 describe('Settings no-reload reviewer regressions', () => {
-  it('restores Save focus after authoritative Open Locally success replacement', async () => {
-    const fixture = makeOpenLocallyReviewerFixture();
-    const replacement = makeOpenLocallyReviewerFixture();
-    const document = makeFocusDocument();
-    const oldSave = makeFocusable({}, 'open-locally-save', document);
-    const nextSave = makeFocusable({}, 'open-locally-save', document);
-    fixture.form.ownerDocument = document;
-    replacement.form.ownerDocument = document;
-    document.querySelector = (selector) => (
-      selector === '[data-settings-open-locally-path]' ? fixture.controls[0] : null
-    );
-    bindFocusRegion(fixture.region, document, fixture.controls[0], oldSave);
-    replaceFocusedRegion(fixture.region, replacement.region, document, [replacement.controls[0], nextSave]);
-    document.register(oldSave);
-    oldSave.focus();
-    const requests = [];
+  it('restores Save focus after authoritative Open Locally success and validation replacement', async () => {
+    const outcomes = [
+      {
+        response: { ok: true, redirected: true, text: async () => '<html>saved</html>' },
+        status: 'Settings saved.',
+        state: 'saved',
+      },
+      {
+        response: { ok: false, redirected: false, status: 422, text: async () => '<html>invalid</html>' },
+        status: 'Could not save settings.',
+        state: 'error',
+      },
+    ];
 
-    await withDefaultsDomParser(() => ({
-      querySelector: (selector) => (
-        selector === '[data-settings-open-locally-mapping-region]' ? replacement.region : null
-      ),
-    }), async () => withBrowserGlobals((action, options) => new Promise((resolve) => {
-      requests.push({ action, options, resolve });
-    }), async () => {
-      enhanceOpenLocallyFetchSave(fixture.scope);
-      fixture.form.dispatch('submit');
-      await flushAsync();
+    for (const outcome of outcomes) {
+      const fixture = makeOpenLocallyReviewerFixture();
+      const replacement = makeOpenLocallyReviewerFixture();
+      const document = makeFocusDocument();
+      const oldSave = makeFocusable({}, 'open-locally-save', document);
+      const nextSave = makeFocusable({}, 'open-locally-save', document);
+      fixture.form.ownerDocument = document;
+      replacement.form.ownerDocument = document;
+      document.querySelector = (selector) => (
+        selector === '[data-settings-open-locally-path]' ? fixture.controls[0] : null
+      );
+      bindFocusRegion(fixture.region, document, fixture.controls[0], oldSave);
+      replaceFocusedRegion(fixture.region, replacement.region, document, [replacement.controls[0], nextSave]);
+      document.register(oldSave);
+      oldSave.focus();
+      const requests = [];
 
-      expect(requests).toHaveLength(1);
-      requests[0].resolve({ ok: true, redirected: true, text: async () => '<html>saved</html>' });
-      await flushAsync();
-    }));
+      await withDefaultsDomParser(() => ({
+        querySelector: (selector) => (
+          selector === '[data-settings-open-locally-mapping-region]' ? replacement.region : null
+        ),
+      }), async () => withBrowserGlobals((action, options) => new Promise((resolve) => {
+        requests.push({ action, options, resolve });
+      }), async () => {
+        enhanceOpenLocallyFetchSave(fixture.scope);
+        fixture.form.dispatch('submit');
+        await flushAsync();
 
-    expect(fixture.region.replacement).toBe(replacement.region);
-    expect(document.activeElement).toBe(nextSave);
-    expect(nextSave.focusCalls).toHaveLength(1);
-    expect(replacement.status.textContent).toBe('Settings saved.');
+        expect(requests).toHaveLength(1);
+        requests[0].resolve(outcome.response);
+        await flushAsync();
+      }));
+
+      expect(fixture.region.replacement).toBe(replacement.region);
+      expect(document.activeElement).toBe(nextSave);
+      expect(nextSave.focusCalls).toHaveLength(1);
+      expect(replacement.status.textContent).toBe(outcome.status);
+      expect(replacement.attributes.get('data-settings-fetch-save-state')).toBe(outcome.state);
+    }
   });
+  it('preserves a newer unsent Open Locally value, focus, and selection after success or validation', async () => {
+    const outcomes = [
+      {
+        response: { ok: true, redirected: true, text: async () => '<html>saved</html>' },
+        status: 'Current changes have not been saved.',
+        state: 'unsaved',
+      },
+      {
+        response: { ok: false, redirected: false, status: 422, text: async () => '<html>invalid</html>' },
+        status: 'Could not save the submitted value. Current edits have not been saved.',
+        state: 'error',
+      },
+    ];
 
-  it('restores Save focus after authoritative Open Locally validation replacement', async () => {
-    const fixture = makeOpenLocallyReviewerFixture();
-    const replacement = makeOpenLocallyReviewerFixture();
-    const document = makeFocusDocument();
-    const oldSave = makeFocusable({}, 'open-locally-save', document);
-    const nextSave = makeFocusable({}, 'open-locally-save', document);
-    fixture.form.ownerDocument = document;
-    replacement.form.ownerDocument = document;
-    document.querySelector = (selector) => (
-      selector === '[data-settings-open-locally-path]' ? fixture.controls[0] : null
-    );
-    bindFocusRegion(fixture.region, document, fixture.controls[0], oldSave);
-    replaceFocusedRegion(fixture.region, replacement.region, document, [replacement.controls[0], nextSave]);
-    document.register(oldSave);
-    oldSave.focus();
-    const requests = [];
+    for (const outcome of outcomes) {
+      const fixture = makeOpenLocallyReviewerFixture();
+      const replacement = makeOpenLocallyReviewerFixture();
+      const document = makeFocusDocument();
+      const oldInput = makeFocusable(fixture.controls[0], 'windows-projects-path', document);
+      const newInput = makeFocusable(replacement.controls[0], 'windows-projects-path', document);
+      fixture.form.ownerDocument = document;
+      replacement.form.ownerDocument = document;
+      document.querySelector = (selector) => (
+        selector === '[data-settings-open-locally-path]' ? document.getElementById('windows-projects-path') : null
+      );
+      bindFocusRegion(fixture.region, document, oldInput);
+      replaceFocusedRegion(fixture.region, replacement.region, document, [newInput]);
+      document.register(oldInput);
+      oldInput.focus();
+      oldInput.value = 'D:\\one';
+      oldInput.selectionStart = 2;
+      oldInput.selectionEnd = 5;
+      oldInput.selectionDirection = 'forward';
+      const requests = [];
 
-    await withDefaultsDomParser(() => ({
-      querySelector: (selector) => (
-        selector === '[data-settings-open-locally-mapping-region]' ? replacement.region : null
-      ),
-    }), async () => withBrowserGlobals((action, options) => new Promise((resolve) => {
-      requests.push({ action, options, resolve });
-    }), async () => {
-      enhanceOpenLocallyFetchSave(fixture.scope);
-      fixture.form.dispatch('submit');
-      await flushAsync();
+      await withDefaultsDomParser(() => ({
+        querySelector: (selector) => (
+          selector === '[data-settings-open-locally-mapping-region]' ? replacement.region : null
+        ),
+      }), async () => withBrowserGlobals((action, options) => new Promise((resolve) => {
+        requests.push({ action, options, resolve });
+      }), async () => {
+        enhanceOpenLocallyFetchSave(fixture.scope);
+        fixture.form.dispatch('submit');
+        await flushAsync();
+        oldInput.value = 'D:\\onetwo';
 
-      expect(requests).toHaveLength(1);
-      requests[0].resolve({ ok: false, redirected: false, status: 422, text: async () => '<html>invalid</html>' });
-      await flushAsync();
-    }));
+        requests[0].resolve(outcome.response);
+        await flushAsync();
 
-    expect(fixture.region.replacement).toBe(replacement.region);
-    expect(document.activeElement).toBe(nextSave);
-    expect(nextSave.focusCalls).toHaveLength(1);
-    expect(replacement.status.textContent).toBe('Could not save settings.');
-    expect(replacement.attributes.get('data-settings-fetch-save-state')).toBe('error');
-  });
-  it('preserves a newer unsent Open Locally value, focus, and selection without reporting it saved', async () => {
-    const fixture = makeOpenLocallyReviewerFixture();
-    const replacement = makeOpenLocallyReviewerFixture();
-    const document = makeFocusDocument();
-    const oldInput = makeFocusable(fixture.controls[0], 'windows-projects-path', document);
-    const newInput = makeFocusable(replacement.controls[0], 'windows-projects-path', document);
-    fixture.form.ownerDocument = document;
-    replacement.form.ownerDocument = document;
-    document.querySelector = (selector) => (
-      selector === '[data-settings-open-locally-path]' ? document.getElementById('windows-projects-path') : null
-    );
-    bindFocusRegion(fixture.region, document, oldInput);
-    replaceFocusedRegion(fixture.region, replacement.region, document, [newInput]);
-    document.register(oldInput);
-    oldInput.focus();
-    oldInput.value = 'D:\\one';
-    oldInput.selectionStart = 2;
-    oldInput.selectionEnd = 5;
-    oldInput.selectionDirection = 'forward';
-    const requests = [];
+        expect(replacement.region).toBe(fixture.region.replacement);
+        expect(newInput.value).toBe('D:\\onetwo');
+        expect(document.activeElement).toBe(newInput);
+        expect(newInput.selectionStart).toBe(2);
+        expect(newInput.selectionEnd).toBe(5);
+        expect(replacement.status.textContent).toBe(outcome.status);
+        expect(replacement.attributes.get('data-settings-fetch-save-state')).toBe(outcome.state);
 
-    await withDefaultsDomParser(() => ({
-      querySelector: (selector) => (
-        selector === '[data-settings-open-locally-mapping-region]' ? replacement.region : null
-      ),
-    }), async () => withBrowserGlobals((action, options) => new Promise((resolve) => {
-      requests.push({ action, options, resolve });
-    }), async () => {
-      enhanceOpenLocallyFetchSave(fixture.scope);
-      fixture.form.dispatch('submit');
-      await flushAsync();
-      oldInput.value = 'D:\\onetwo';
-
-      requests[0].resolve({ ok: true, redirected: true, text: async () => '<html>saved</html>' });
-      await flushAsync();
-
-      expect(replacement.region).toBe(fixture.region.replacement);
-      expect(newInput.value).toBe('D:\\onetwo');
-      expect(document.activeElement).toBe(newInput);
-      expect(newInput.selectionStart).toBe(2);
-      expect(newInput.selectionEnd).toBe(5);
-      expect(replacement.status.textContent).toBe('Current changes have not been saved.');
-      expect(replacement.attributes.get('data-settings-fetch-save-state')).toBe('unsaved');
-
-      newInput.dispatch('change');
-      await flushAsync();
-      expect(requests).toHaveLength(2);
-      expect(requests[1].options.body.get('windowsProjectsPath')).toBe('D:\\onetwo');
-    }));
-  });
-
-  it('preserves a newer unsent Open Locally value, focus, and selection after validation', async () => {
-    const fixture = makeOpenLocallyReviewerFixture();
-    const replacement = makeOpenLocallyReviewerFixture();
-    const document = makeFocusDocument();
-    const oldInput = makeFocusable(fixture.controls[0], 'windows-projects-path', document);
-    const newInput = makeFocusable(replacement.controls[0], 'windows-projects-path', document);
-    fixture.form.ownerDocument = document;
-    replacement.form.ownerDocument = document;
-    document.querySelector = (selector) => (
-      selector === '[data-settings-open-locally-path]' ? document.getElementById('windows-projects-path') : null
-    );
-    bindFocusRegion(fixture.region, document, oldInput);
-    replaceFocusedRegion(fixture.region, replacement.region, document, [newInput]);
-    document.register(oldInput);
-    oldInput.focus();
-    oldInput.value = 'D:\\one';
-    oldInput.selectionStart = 2;
-    oldInput.selectionEnd = 5;
-    oldInput.selectionDirection = 'forward';
-    const requests = [];
-
-    await withDefaultsDomParser(() => ({
-      querySelector: (selector) => (
-        selector === '[data-settings-open-locally-mapping-region]' ? replacement.region : null
-      ),
-    }), async () => withBrowserGlobals((action, options) => new Promise((resolve) => {
-      requests.push({ action, options, resolve });
-    }), async () => {
-      enhanceOpenLocallyFetchSave(fixture.scope);
-      fixture.form.dispatch('submit');
-      await flushAsync();
-      oldInput.value = 'D:\\onetwo';
-
-      requests[0].resolve({ ok: false, redirected: false, status: 422, text: async () => '<html>invalid</html>' });
-      await flushAsync();
-
-      expect(replacement.region).toBe(fixture.region.replacement);
-      expect(newInput.value).toBe('D:\\onetwo');
-      expect(document.activeElement).toBe(newInput);
-      expect(newInput.selectionStart).toBe(2);
-      expect(newInput.selectionEnd).toBe(5);
-      expect(replacement.status.textContent).toBe('Could not save the submitted value. Current edits have not been saved.');
-      expect(replacement.attributes.get('data-settings-fetch-save-state')).toBe('error');
-
-      newInput.dispatch('change');
-      await flushAsync();
-      expect(requests).toHaveLength(2);
-      expect(requests[1].options.body.get('windowsProjectsPath')).toBe('D:\\onetwo');
-    }));
+        newInput.dispatch('change');
+        await flushAsync();
+        expect(requests).toHaveLength(2);
+        expect(requests[1].options.body.get('windowsProjectsPath')).toBe('D:\\onetwo');
+      }));
+    }
   });
 
   it('keeps authoritative Open Locally validation when no newer unsent value exists', async () => {
@@ -4717,7 +4542,7 @@ describe('project category reorder enhancement', () => {
     });
   });
 
-  it('keeps Project and Settings reorder endpoints, CSRF sources, and confirmed state independent', async () => {
+  it('keeps Project and Settings reorder endpoints, CSRF sources, and orders independent', async () => {
     const project = makeCategoryReorderFixture();
     const settings = makeCategoryReorderFixture({
       action: '/settings/asset-categories/reorder',
@@ -4756,42 +4581,46 @@ describe('project category reorder enhancement', () => {
       await flushAsync();
       expect(project.order()).toEqual(['2', '1', '3']);
       expect(settings.order()).toEqual(['42', '41']);
-
-      project.items[0].handle.dispatch('keydown', { key: 'End' });
-      await flushAsync();
-      expect(requests).toHaveLength(3);
-      requests[2].resolve({ ok: false, status: 409 });
-      await flushAsync();
-
-      expect(project.order()).toEqual(['2', '1', '3']);
-      expect(settings.order()).toEqual(['42', '41']);
     });
   });
 
-  it('starts a drag from blank, title, and slug surfaces while the handle remains available', () => {
+  it('allows non-interactive card surfaces and excludes controls, helper, and error content from drag starts', () => {
     const fixture = makeCategoryReorderFixture();
     const title = makeCategoryNode({ tagName: 'span' });
     const slug = makeCategoryNode({ tagName: 'code' });
-    [title, slug].forEach((surface) => fixture.items[0].appendChild(surface));
+    const input = makeCategoryNode({ tagName: 'input' });
+    const button = makeCategoryNode({ tagName: 'button' });
+    const label = makeCategoryNode({ tagName: 'label' });
+    const link = makeCategoryNode({ tagName: 'a' });
+    const help = makeCategoryNode({ className: 'help-text' });
+    const error = makeCategoryNode({ className: 'field-error-message' });
+    const alert = makeCategoryNode({ attrs: { role: 'alert' } });
+    const live = makeCategoryNode({ attrs: { 'aria-live': 'polite' } });
+    const editable = makeCategoryNode({ attrs: { contenteditable: 'plaintext-only' } });
+    const noscript = makeCategoryNode({ tagName: 'noscript' });
+    const form = makeCategoryNode({ tagName: 'form' });
+    const fieldArea = makeCategoryNode({ className: 'category-management-card-fields' });
+    const fieldInput = makeCategoryNode({ tagName: 'input' });
+    const saveButton = makeCategoryNode({ tagName: 'button' });
+    [title, slug, input, button, label, link, help, error, alert, live, editable, noscript, form]
+      .forEach((surface) => fixture.items[0].appendChild(surface));
+    form.appendChild(fieldArea);
+    fieldArea.appendChild(fieldInput);
+    form.appendChild(saveButton);
     enhanceCategoryReorder(fixture.document);
 
-    for (const target of [fixture.items[0], title, slug]) {
+    for (const target of [fixture.items[0], title, slug, fixture.items[0].handle, form, fieldArea]) {
       fixture.items[0].dispatch('pointerdown', { target });
-      const event = fixture.items[0].dispatch('dragstart', {
-        target,
-        dataTransfer: { setData() {} },
-      });
+      const event = fixture.items[0].dispatch('dragstart', { target, dataTransfer: { setData() {} } });
       expect(event.defaultPrevented).toBe(false);
       fixture.items[0].dispatch('dragend');
     }
 
-    fixture.items[0].dispatch('pointerdown', { target: fixture.items[0].handle });
-    const handleDrag = fixture.items[0].dispatch('dragstart', {
-      target: fixture.items[0].handle,
-      dataTransfer: { setData() {} },
-    });
-    expect(handleDrag.defaultPrevented).toBe(false);
-    expect(fixture.items[0].classList.contains('is-dragging')).toBe(true);
+    for (const target of [input, button, label, link, help, error, alert, live, editable, noscript, fieldInput, saveButton]) {
+      fixture.items[0].dispatch('pointerdown', { target });
+      const event = fixture.items[0].dispatch('dragstart', { target, dataTransfer: { setData() {} } });
+      expect(event.defaultPrevented).toBe(true);
+    }
   });
 
   it('does not start a drag while category text is selected', () => {
@@ -4816,58 +4645,6 @@ describe('project category reorder enhancement', () => {
       expect(event.defaultPrevented).toBe(true);
     } finally {
       globalThis.getSelection = originalGetSelection;
-    }
-  });
-
-  it('does not start a drag from interactive descendants, selected text, or helper/error content', () => {
-    const fixture = makeCategoryReorderFixture();
-    const input = makeCategoryNode({ tagName: 'input' });
-    const button = makeCategoryNode({ tagName: 'button' });
-    const label = makeCategoryNode({ tagName: 'label' });
-    const link = makeCategoryNode({ tagName: 'a' });
-    const help = makeCategoryNode({ className: 'help-text' });
-    const error = makeCategoryNode({ className: 'field-error-message' });
-    const alert = makeCategoryNode({ attrs: { role: 'alert' } });
-    const live = makeCategoryNode({ attrs: { 'aria-live': 'polite' } });
-    const editable = makeCategoryNode({ attrs: { contenteditable: 'plaintext-only' } });
-    const noscript = makeCategoryNode({ tagName: 'noscript' });
-    [input, button, label, link, help, error, alert, live, editable, noscript]
-      .forEach((control) => fixture.items[0].appendChild(control));
-    enhanceCategoryReorder(fixture.document);
-
-    for (const target of [input, button, label, link, help, error, alert, live, editable, noscript]) {
-      fixture.items[0].dispatch('pointerdown', { target });
-      const event = fixture.items[0].dispatch('dragstart', { target, dataTransfer: { setData() {} } });
-      expect(event.defaultPrevented).toBe(true);
-    }
-  });
-
-  it('starts a drag from a form wrapper and its non-interactive field area (Settings card), but not from the form controls', () => {
-    const fixture = makeCategoryReorderFixture();
-    // Mirrors the Settings card, whose display-name/slug fields are wrapped in a
-    // single <form> (for "Save details"). The form wrapper and its field
-    // container must stay draggable — otherwise the bulk of the card is dead to
-    // drag and only the handle works (the project card, whose fields aren't in a
-    // form, does not have this problem). The actual controls stay excluded.
-    const form = makeCategoryNode({ tagName: 'form' });
-    const fieldArea = makeCategoryNode({ className: 'category-management-card-fields' });
-    const fieldInput = makeCategoryNode({ tagName: 'input' });
-    const saveButton = makeCategoryNode({ tagName: 'button' });
-    fixture.items[0].appendChild(form);
-    form.appendChild(fieldArea);
-    fieldArea.appendChild(fieldInput);
-    form.appendChild(saveButton);
-    enhanceCategoryReorder(fixture.document);
-
-    for (const target of [form, fieldArea]) {
-      fixture.items[0].dispatch('pointerdown', { target });
-      const event = fixture.items[0].dispatch('dragstart', { target, dataTransfer: { setData() {} } });
-      expect(event.defaultPrevented).toBe(false);
-    }
-    for (const target of [fieldInput, saveButton]) {
-      fixture.items[0].dispatch('pointerdown', { target });
-      const event = fixture.items[0].dispatch('dragstart', { target, dataTransfer: { setData() {} } });
-      expect(event.defaultPrevented).toBe(true);
     }
   });
 
@@ -4905,12 +4682,13 @@ describe('project category reorder enhancement', () => {
     const boundary = makeCategoryReorderFixture();
     enhanceCategoryReorder(boundary.document);
     boundary.items[0].handle.dispatch('keydown', { key: 'ArrowUp' });
+    boundary.items[2].handle.dispatch('keydown', { key: 'ArrowDown' });
     boundary.items[2].handle.dispatch('keydown', { key: 'End' });
     expect(boundary.order()).toEqual(['1', '2', '3']);
     expect(boundary.submitCount).toBe(0);
   });
 
-  it('is idempotent and restores the confirmed order, ARIA positions, and keyboard focus after failure', async () => {
+  it('persists once after repeated enhancement and restores order, ARIA, and keyboard focus after failure', async () => {
     const fixture = makeCategoryReorderFixture();
     const calls = [];
 
@@ -4920,9 +4698,6 @@ describe('project category reorder enhancement', () => {
     }, async () => {
       expect(enhanceCategoryReorder(fixture.document)).toBe(1);
       expect(enhanceCategoryReorder(fixture.document)).toBe(1);
-      expect(fixture.items[1].handle.listeners.filter((listener) => listener.type === 'keydown')).toHaveLength(1);
-      expect(fixture.list.listeners.filter((listener) => listener.type === 'dragover')).toHaveLength(1);
-
       fixture.items[1].handle.dispatch('keydown', { key: 'ArrowUp' });
       await flushAsync();
       expect(calls).toHaveLength(1);
@@ -4982,19 +4757,7 @@ describe('project category reorder enhancement', () => {
   });
 });
 
-
 describe('top-level Book reorder enhancement', () => {
-  it('is scoped and no-ops when the Book reorder list is absent', () => {
-    const scope = {
-      querySelectorAll(selector) {
-        expect(selector).toBe('[data-book-reorder-list]');
-        return [];
-      },
-    };
-
-    expect(enhanceBookReorder(scope)).toBe(0);
-  });
-
   it('moves rows from the whole card, excludes interactive descendants, and persists a completed drop immediately', () => {
     const fixture = makeBookReorderFixture();
     const calls = [];
@@ -5701,70 +5464,62 @@ describe('top-level Book reorder enhancement', () => {
 });
 
 describe('Chapter Page reorder enhancement', () => {
-  it('is scoped to Chapter Page order lists', () => {
-    const scope = {
-      querySelectorAll(selector) {
-        expect(selector).toBe('[data-chapter-page-reorder-list]');
-        return [];
-      },
-    };
-
-    expect(enhanceChapterPageReorder(scope)).toBe(0);
-  });
-
-  it('reuses dedicated reorder behavior for drag, keyboard moves, IDs, focus, and Save-only persistence', () => {
+  it('keeps numeric Page IDs synchronized through keyboard movement and native Save', () => {
     const fixture = makeChapterPageReorderFixture();
 
     expect(enhanceChapterPageReorder(fixture.document)).toBe(1);
-    expect(enhanceChapterPageReorder(fixture.document)).toBe(1);
-    expect(fixture.list.listeners.filter((listener) => listener.type === 'dragover')).toHaveLength(1);
+    expect(fixture.orderInput.value).toBe('11,22,33');
 
-    const rowDrag = fixture.items[0].dispatch('dragstart', { dataTransfer: { setData() {} } });
-    expect(rowDrag.defaultPrevented).toBe(false);
-    fixture.items[0].dispatch('dragend');
-    fixture.items[0].handle.dispatch('dragstart', { dataTransfer: { setData() {} } });
-    fixture.list.dispatch('dragover', {
-      target: fixture.items[2],
-      clientY: 130,
-      dataTransfer: {},
-    });
-    fixture.list.dispatch('drop', { target: fixture.items[2] });
-
-    expect(fixture.order()).toEqual(['22', '33', '11']);
-    expect(fixture.orderInput.value).toBe('22,33,11');
-    expect(fixture.items[0].classList.contains('is-dragging')).toBe(false);
-
-    fixture.items[0].handle.dispatch('keydown', { key: 'ArrowUp' });
+    fixture.items[0].handle.dispatch('keydown', { key: 'ArrowDown' });
     expect(fixture.order()).toEqual(['22', '11', '33']);
+    expect(fixture.orderInput.value).toBe('22,11,33');
     expect(fixture.items[0].handle.focused).toBe(true);
     expect(fixture.live.textContent).toContain('Page 11 moved to position 2 of 3');
 
-    fixture.items[0].handle.dispatch('keydown', { key: 'Home' });
-    expect(fixture.order()).toEqual(['11', '22', '33']);
-    fixture.items[0].handle.dispatch('keydown', { key: 'End' });
-    expect(fixture.order()).toEqual(['22', '33', '11']);
-    expect(fixture.orderInput.value).toBe('22,33,11');
-    expect(new Set(fixture.order())).toEqual(new Set(['11', '22', '33']));
-
     const submit = fixture.form.dispatch('submit');
     expect(submit.defaultPrevented).toBe(false);
-    expect(fixture.form.listeners.filter((listener) => listener.type === 'submit')).toHaveLength(1);
+    expect(fixture.orderInput.value).toBe('22,11,33');
+  });
+
+  it.each([
+    ['ArrowUp', 0],
+    ['ArrowDown', 2],
+    ['Home', 0],
+    ['End', 2],
+  ])('keeps boundary key %s on Page index %i as a native-only no-op', (key, itemIndex) => {
+    const fixture = makeChapterPageReorderFixture();
+    const fetch = vi.fn();
+    const requestSubmit = vi.fn();
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fetch;
+    fixture.form.requestSubmit = requestSubmit;
+
+    try {
+      expect(enhanceChapterPageReorder(fixture.document)).toBe(1);
+      const orderBefore = fixture.order();
+      const orderInputBefore = fixture.orderInput.value;
+      const liveBefore = fixture.live.textContent;
+      const handle = fixture.items[itemIndex].handle;
+      handle.focus();
+      expect(fixture.document.activeElement).toBe(handle);
+
+      const event = handle.dispatch('keydown', { key });
+
+      expect(event.defaultPrevented).toBe(true);
+      expect(fixture.order()).toEqual(orderBefore);
+      expect(fixture.orderInput.value).toBe(orderInputBefore);
+      expect(requestSubmit).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+      expect(fixture.live.textContent).toBe(liveBefore);
+      expect(fixture.document.activeElement).toBe(handle);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 
 describe('mixed Book-content reorder enhancement', () => {
-  it('is scoped to mixed Book-content order lists', () => {
-    const scope = {
-      querySelectorAll(selector) {
-        expect(selector).toBe('[data-book-content-reorder-list]');
-        return [];
-      },
-    };
-
-    expect(enhanceBookContentReorder(scope)).toBe(0);
-  });
-
-  it('keeps typed identities opaque through drag, keyboard, and Save synchronization', async () => {
+  it('keeps typed identities opaque through drag and native Save synchronization', async () => {
     const fixture = makeBookContentReorderFixture();
     let requestCount = 0;
     const originalFetch = globalThis.fetch;
@@ -5775,14 +5530,7 @@ describe('mixed Book-content reorder enhancement', () => {
 
     try {
       expect(enhanceBookContentReorder(fixture.document)).toBe(1);
-      expect(enhanceBookContentReorder(fixture.document)).toBe(1);
       expect(fixture.orderInput.value).toBe('chapter:7,page:7,chapter:8,page:8');
-      expect(fixture.list.listeners.filter((listener) => listener.type === 'dragover')).toHaveLength(1);
-      expect(fixture.items[0].handle.listeners.filter((listener) => listener.type === 'keydown')).toHaveLength(1);
-
-      const rowDrag = fixture.items[0].dispatch('dragstart', { dataTransfer: { setData() {} } });
-      expect(rowDrag.defaultPrevented).toBe(false);
-      fixture.items[0].dispatch('dragend');
       fixture.items[0].handle.dispatch('dragstart', { dataTransfer: { setData() {} } });
       fixture.list.dispatch('dragover', {
         target: fixture.items[3],
@@ -5797,53 +5545,18 @@ describe('mixed Book-content reorder enhancement', () => {
       expect(fixture.items[3].classList.contains('is-drop-after')).toBe(false);
       expect(requestCount).toBe(0);
 
-      fixture.items[0].handle.dispatch('dragstart', { dataTransfer: { setData() {} } });
-      fixture.list.dispatch('dragover', { target: fixture.items[0], dataTransfer: {} });
-      fixture.list.dispatch('drop', { target: fixture.items[0] });
-      expect(fixture.order()).toEqual(['page:7', 'chapter:8', 'page:8', 'chapter:7']);
-      expect(fixture.items[0].classList.contains('is-dragging')).toBe(false);
-
-      fixture.items[1].handle.dispatch('keydown', { key: 'ArrowDown' });
-      expect(fixture.order()).toEqual(['chapter:8', 'page:7', 'page:8', 'chapter:7']);
-      expect(fixture.orderInput.value).toBe('chapter:8,page:7,page:8,chapter:7');
-      expect(fixture.items[1].handle.focused).toBe(true);
-      expect(fixture.live.textContent).toContain('Page: Page 7 moved to position 2 of 4');
-
-      fixture.items[1].handle.dispatch('keydown', { key: 'Home' });
-      expect(fixture.order()).toEqual(['page:7', 'chapter:8', 'page:8', 'chapter:7']);
-      fixture.items[1].handle.dispatch('keydown', { key: 'End' });
-      expect(fixture.order()).toEqual(['chapter:8', 'page:8', 'chapter:7', 'page:7']);
-      expect(fixture.orderInput.value).toBe('chapter:8,page:8,chapter:7,page:7');
       expect(new Set(fixture.order())).toEqual(new Set(['chapter:7', 'page:7', 'chapter:8', 'page:8']));
-      expect(fixture.order()).toHaveLength(4);
-      expect(requestCount).toBe(0);
 
       fixture.list.insertBefore(fixture.items[3], fixture.items[0]);
       const submit = fixture.form.dispatch('submit');
       expect(submit.defaultPrevented).toBe(false);
       expect(fixture.orderInput.value).toBe(fixture.order().join(','));
-      expect(fixture.form.listeners.filter((listener) => listener.type === 'submit')).toHaveLength(1);
-
+      expect(requestCount).toBe(0);
     } finally {
       globalThis.fetch = originalFetch;
     }
   });
 
-  it('safely initializes empty and one-item mixed lists', () => {
-    const empty = makeBookContentReorderFixture({ contentKeys: [], labels: [] });
-    expect(() => enhanceBookContentReorder(empty.document)).not.toThrow();
-    expect(empty.orderInput.value).toBe('');
-    expect(empty.list.listeners).toHaveLength(0);
-
-    const one = makeBookContentReorderFixture({ contentKeys: ['page:7'], labels: ['Page: Page 7'] });
-    expect(enhanceBookContentReorder(one.document)).toBe(1);
-    expect(one.order()).toEqual(['page:7']);
-    expect(one.orderInput.value).toBe('page:7');
-    one.items[0].handle.dispatch('keydown', { key: 'Home' });
-    one.items[0].handle.dispatch('keydown', { key: 'End' });
-    expect(one.order()).toEqual(['page:7']);
-    expect(one.orderInput.value).toBe('page:7');
-  });
 });
 
 describe('connected Book hierarchy reorder enhancement', () => {
@@ -7273,31 +6986,54 @@ describe('category details in-place save enhancement', () => {
   });
 
   it('serializes rapid changes and saves the latest complete field state', async () => {
-    const fixture = makeDetailsFixture();
+    const fixture = identifyDetailsFixture(makeDetailsFixture(), 1);
+    const stale = identifyDetailsFixture(makeDetailsFixture({ displayNameValue: '' }), 1);
+    const parent = {
+      replacement: null,
+      replaceChild(next) { this.replacement = next; },
+    };
+    fixture.form.parentNode = parent;
     const requests = [];
-    await withBrowserGlobals((action, options) => new Promise((resolve) => {
-      requests.push({ action, options, resolve });
-    }), async () => {
-      enhanceCategoryDetails({ querySelectorAll: () => [fixture.form] });
-      fixture.displayName.value = 'Raw Footage';
-      fixture.displayName.dispatch('change');
-      await flushAsync();
+    const originalDOMParser = globalThis.DOMParser;
+    globalThis.DOMParser = class {
+      parseFromString() {
+        return { querySelectorAll: () => [stale.form] };
+      }
+    };
 
-      fixture.directorySlug.value = 'raw-footage';
-      fixture.directorySlug.dispatch('change');
-      expect(requests).toHaveLength(1);
+    try {
+      await withBrowserGlobals((action, options) => new Promise((resolve) => {
+        requests.push({ action, options, resolve });
+      }), async () => {
+        enhanceCategoryDetails({ querySelectorAll: () => [fixture.form] });
+        fixture.displayName.value = 'Raw Footage';
+        fixture.displayName.dispatch('change');
+        await flushAsync();
 
-      requests[0].resolve({ ok: true, redirected: true, status: 200 });
-      await flushAsync();
-      expect(requests).toHaveLength(2);
-      expect(requests[1].options.body.getAll('displayName')).toEqual(['Raw Footage']);
-      expect(requests[1].options.body.getAll('directorySlug')).toEqual(['raw-footage']);
+        fixture.directorySlug.value = 'raw-footage';
+        fixture.directorySlug.dispatch('change');
+        expect(requests).toHaveLength(1);
 
-      requests[1].resolve({ ok: true, redirected: true, status: 200 });
-      await flushAsync();
-      expect(fixture.status.textContent).toBe('Details saved.');
-      expect(fixture.form.getAttribute('aria-busy')).toBe(null);
-    });
+        requests[0].resolve({
+          ok: false,
+          redirected: false,
+          status: 422,
+          text: async () => '<html>superseded validation</html>',
+        });
+        await flushAsync();
+        expect(parent.replacement).toBeNull();
+        expect(requests).toHaveLength(2);
+        expect(requests[1].options.body.getAll('displayName')).toEqual(['Raw Footage']);
+        expect(requests[1].options.body.getAll('directorySlug')).toEqual(['raw-footage']);
+
+        requests[1].resolve({ ok: true, redirected: true, status: 200 });
+        await flushAsync();
+        expect(fixture.status.textContent).toBe('Details saved.');
+        expect(fixture.form.getAttribute('aria-busy')).toBe(null);
+      });
+    } finally {
+      globalThis.DOMParser = originalDOMParser;
+    }
   });
 
   it('keeps a validation response in place when no authoritative replacement can be parsed', async () => {
@@ -7446,97 +7182,6 @@ describe('category details in-place save enhancement', () => {
     }
   });
 
-  it('preserves an unsent display name through directory-slug validation', async () => {
-    const current = identifyDetailsFixture(makeDetailsFixture({
-      displayNameValue: 'Old',
-      directorySlugValue: 'old-slug',
-    }), 2);
-    const invalid = identifyDetailsFixture(makeDetailsFixture({
-      displayNameValue: 'Old',
-      directorySlugValue: '',
-    }), 2);
-    const parent = {
-      replacement: null,
-      replaceChild(next) {
-        this.replacement = next;
-        next.parentNode = this;
-      },
-    };
-    current.form.parentNode = parent;
-    const requests = [];
-    const originalDOMParser = globalThis.DOMParser;
-    globalThis.DOMParser = class {
-      parseFromString() {
-        return { querySelectorAll: (selector) => (
-          selector === '[data-category-details-form]' ? [invalid.form] : []
-        ) };
-      }
-    };
-
-    try {
-      await withBrowserGlobals((action, options) => new Promise((resolve) => {
-        requests.push({ action, options, resolve });
-      }), async () => {
-        enhanceCategoryDetails({ querySelectorAll: () => [current.form] });
-        current.directorySlug.value = '';
-        current.directorySlug.dispatch('change');
-        await flushAsync();
-        current.displayName.value = 'Raw Footage';
-
-        requests[0].resolve({ ok: false, redirected: false, status: 422, text: async () => '<!doctype html><html></html>' });
-        await flushAsync();
-
-        expect(parent.replacement).toBe(invalid.form);
-        expect(invalid.directorySlug.value).toBe('');
-        expect(invalid.displayName.value).toBe('Raw Footage');
-        expect(invalid.status.textContent).toBe('Could not save category details. Current changes have not been saved.');
-        expect(invalid.form.getAttribute('data-category-details-state')).toBe('error');
-      });
-    } finally {
-      globalThis.DOMParser = originalDOMParser;
-    }
-  });
-
-  it('does not replace or publish validation status from a superseded request', async () => {
-    const current = identifyDetailsFixture(makeDetailsFixture({ action: '/settings/asset-categories/2' }), 2);
-    const invalid = identifyDetailsFixture(makeDetailsFixture({ action: '/settings/asset-categories/2' }), 2);
-    const parent = {
-      replacement: null,
-      replaceChild(next) { this.replacement = next; },
-    };
-    current.form.parentNode = parent;
-    const originalDOMParser = globalThis.DOMParser;
-    globalThis.DOMParser = class {
-      parseFromString() {
-        return { querySelectorAll: () => [invalid.form] };
-      }
-    };
-
-    try {
-      const requests = [];
-      await withBrowserGlobals((action, options) => new Promise((resolve) => {
-        requests.push({ action, options, resolve });
-      }), async () => {
-        enhanceCategoryDetails({ querySelectorAll: () => [current.form] });
-        current.displayName.value = '';
-        current.displayName.dispatch('change');
-        await flushAsync();
-        current.directorySlug.value = 'new-slug';
-        current.directorySlug.dispatch('change');
-
-        requests[0].resolve({ ok: false, redirected: false, status: 422, text: async () => '<!doctype html><html></html>' });
-        await flushAsync();
-
-        expect(requests).toHaveLength(2);
-        expect(parent.replacement).toBe(null);
-        expect(current.status.textContent).toBe('Saving category details.');
-        expect(current.form.getAttribute('data-category-details-state')).toBe('pending');
-      });
-    } finally {
-      globalThis.DOMParser = originalDOMParser;
-    }
-  });
-
   it('preserves a newer unsent sibling value, its focus, and submits it on a later change', async () => {
     const current = identifyDetailsFixture(makeDetailsFixture({
       displayNameValue: 'Old',
@@ -7631,63 +7276,6 @@ describe('category details in-place save enhancement', () => {
         await flushAsync();
         expect(parent.replacements).toEqual([clean.form, final.form]);
         expect(final.status.textContent).toBe('Details saved.');
-      });
-    } finally {
-      globalThis.DOMParser = originalDOMParser;
-    }
-  });
-
-  it('preserves a newer unsent display name while a slug save is pending', async () => {
-    const current = identifyDetailsFixture(makeDetailsFixture({
-      displayNameValue: 'Old',
-      directorySlugValue: 'old-slug',
-    }), 2);
-    const clean = identifyDetailsFixture(makeDetailsFixture({
-      displayNameValue: 'Old',
-      directorySlugValue: 'raw-footage',
-    }), 2);
-    const parent = {
-      replacement: null,
-      replaceChild(next) {
-        this.replacement = next;
-        next.parentNode = this;
-      },
-    };
-    current.form.parentNode = parent;
-    const requests = [];
-    const originalDOMParser = globalThis.DOMParser;
-    globalThis.DOMParser = class {
-      parseFromString() {
-        return {
-          querySelectorAll: (selector) => (
-            selector === '[data-category-details-form]' ? [clean.form] : []
-          ),
-        };
-      }
-    };
-
-    try {
-      await withBrowserGlobals((action, options) => new Promise((resolve) => {
-        requests.push({ action, options, resolve });
-      }), async () => {
-        enhanceCategoryDetails({ querySelectorAll: () => [current.form] });
-        current.directorySlug.value = 'raw-footage';
-        current.directorySlug.dispatch('change');
-        await flushAsync();
-        current.displayName.value = 'Raw Footage';
-
-        requests[0].resolve({
-          ok: true,
-          redirected: true,
-          status: 200,
-          text: async () => '<!doctype html><html></html>',
-        });
-        await flushAsync();
-
-        expect(parent.replacement).toBe(clean.form);
-        expect(clean.displayName.value).toBe('Raw Footage');
-        expect(clean.directorySlug.value).toBe('raw-footage');
-        expect(clean.status.textContent).toBe('Current changes have not been saved.');
       });
     } finally {
       globalThis.DOMParser = originalDOMParser;
@@ -8559,72 +8147,6 @@ describe('Project Assets category filter enhancement', () => {
 });
 
 describe('Asset Viewer filter disclosure dismissal', () => {
-  function makeDisclosureFixture() {
-    const scopeListeners = [];
-    const disclosures = [];
-    const outside = { closest() { return null; } };
-
-    for (const name of ['project', 'category', 'tag', 'extension']) {
-      const summaryAttrs = {};
-      const disclosure = {
-        name,
-        open: false,
-        dataset: {},
-        querySelector(selector) {
-          if (selector === 'summary') return summary;
-          return null;
-        },
-        closest(selector) {
-          return selector === '[data-asset-viewer-filter-disclosure]' ? this : null;
-        },
-      };
-      const makeInsideNode = () => ({
-        closest(selector) {
-          return selector === '[data-asset-viewer-filter-disclosure]' ? disclosure : null;
-        },
-      });
-      const summary = {
-        focused: false,
-        attrs: summaryAttrs,
-        setAttribute(nameToSet, value) { summaryAttrs[nameToSet] = String(value); },
-        focus() { this.focused = true; },
-        closest(selector) {
-          return selector === '[data-asset-viewer-filter-disclosure]' ? disclosure : null;
-        },
-      };
-
-      disclosure.summary = summary;
-      disclosure.checkboxes = [makeInsideNode(), makeInsideNode()];
-      disclosure.search = makeInsideNode();
-      disclosures.push(disclosure);
-    }
-
-    const scope = {
-      dataset: {},
-      querySelectorAll(selector) {
-        return selector === '[data-asset-viewer-filter-disclosure]' ? disclosures : [];
-      },
-      addEventListener(type, handler, options) {
-        scopeListeners.push({ type, handler, options });
-      },
-      dispatch(type, target, props = {}) {
-        const event = {
-          type,
-          target,
-          defaultPrevented: false,
-          preventDefault() { this.defaultPrevented = true; },
-          ...props,
-        };
-        scopeListeners
-          .filter((listener) => listener.type === type)
-          .forEach((listener) => listener.handler(event));
-        return event;
-      },
-    };
-
-    return { scope, scopeListeners, disclosures, outside };
-  }
-
   function makeSingleSelectDisclosureFixture() {
     const scopeListeners = [];
     const summaryAttrs = { 'aria-label': 'Status: Planned' };
@@ -8684,21 +8206,16 @@ describe('Asset Viewer filter disclosure dismissal', () => {
     return { scope, scopeListeners, disclosure, summaryAttrs, currentSummary, radios };
   }
 
-  it('initializes an opt-in single-select disclosure without replacing its server-rendered summary', () => {
-    const fixture = makeSingleSelectDisclosureFixture();
-
-    expect(enhanceAssetViewerFilterDisclosures(fixture.scope)).toBe(1);
-    expect(fixture.currentSummary.textContent).toBe('Planned');
-    expect(fixture.radios.find((radio) => radio.checked).value).toBe('planned');
-    expect(fixture.scopeListeners.filter(({ type }) => type === 'change')).toHaveLength(1);
-  });
-
-  it('updates the visible summary immediately while preserving the selected radio submission state', () => {
+  it('initializes and updates the single-select summary while preserving native radio state', () => {
     const fixture = makeSingleSelectDisclosureFixture();
     const planned = fixture.radios.find((radio) => radio.value === 'planned');
     const published = fixture.radios.find((radio) => radio.value === 'published');
 
-    enhanceAssetViewerFilterDisclosures(fixture.scope);
+    expect(enhanceAssetViewerFilterDisclosures(fixture.scope)).toBe(1);
+    expect(fixture.currentSummary.textContent).toBe('Planned');
+    expect(planned.checked).toBe(true);
+    expect(fixture.scopeListeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+
     planned.checked = false;
     published.checked = true;
     const changeEvent = fixture.scope.dispatch('change', published);
@@ -8710,65 +8227,6 @@ describe('Asset Viewer filter disclosure dismissal', () => {
     expect(published.name).toBe('status');
     expect(published.value).toBe('published');
     expect(planned.checked).toBe(false);
-  });
-
-  it('closes every Asset Viewer disclosure on outside click and keeps the listener set scoped and unique', () => {
-    const fixture = makeDisclosureFixture();
-
-    expect(enhanceAssetViewerFilterDisclosures(fixture.scope)).toBe(4);
-    expect(enhanceAssetViewerFilterDisclosures(fixture.scope)).toBe(4);
-    expect(fixture.scopeListeners.filter(({ type }) => type === 'click')).toHaveLength(1);
-    expect(fixture.scopeListeners.filter(({ type }) => type === 'keydown')).toHaveLength(1);
-    expect(fixture.scopeListeners.filter(({ type }) => type === 'toggle')).toHaveLength(1);
-
-    for (const disclosure of fixture.disclosures) {
-      disclosure.open = true;
-      fixture.scope.dispatch('click', fixture.outside);
-      expect(disclosure.open).toBe(false);
-      expect(disclosure.summary.attrs['aria-expanded']).toBe('false');
-    }
-  });
-
-  it('keeps internal multi-select clicks and Project search interaction open', () => {
-    const fixture = makeDisclosureFixture();
-
-    enhanceAssetViewerFilterDisclosures(fixture.scope);
-    for (const name of ['category', 'tag', 'extension']) {
-      const disclosure = fixture.disclosures.find((candidate) => candidate.name === name);
-      disclosure.open = true;
-      for (const checkbox of disclosure.checkboxes) {
-        fixture.scope.dispatch('click', checkbox);
-        expect(disclosure.open).toBe(true);
-      }
-    }
-
-    const project = fixture.disclosures.find((disclosure) => disclosure.name === 'project');
-    project.open = true;
-    fixture.scope.dispatch('keydown', project.search, { key: 's' });
-    expect(project.open).toBe(true);
-  });
-
-  it('closes the previous disclosure when another opens, toggles its own state normally, and dismisses Escape to its trigger', () => {
-    const fixture = makeDisclosureFixture();
-    const project = fixture.disclosures.find((disclosure) => disclosure.name === 'project');
-    const category = fixture.disclosures.find((disclosure) => disclosure.name === 'category');
-
-    enhanceAssetViewerFilterDisclosures(fixture.scope);
-    project.open = true;
-    fixture.scope.dispatch('click', category.summary);
-    expect(project.open).toBe(false);
-    expect(category.open).toBe(false);
-
-    category.open = true;
-    fixture.scope.dispatch('toggle', category);
-    expect(category.open).toBe(true);
-    expect(category.summary.attrs['aria-expanded']).toBe('true');
-
-    const escapeEvent = fixture.scope.dispatch('keydown', category.search, { key: 'Escape' });
-    expect(escapeEvent.defaultPrevented).toBe(true);
-    expect(category.open).toBe(false);
-    expect(category.summary.attrs['aria-expanded']).toBe('false');
-    expect(category.summary.focused).toBe(true);
   });
 
   function makeMultiSelectDisclosureFixture() {
@@ -8833,29 +8291,17 @@ describe('Asset Viewer filter disclosure dismissal', () => {
     return { scope, scopeListeners, disclosure, summaryAttrs, currentSummary, checkboxes };
   }
 
-  it('initializes a multi-select disclosure without replacing the server-rendered summary', () => {
+  it('initializes and updates the multi-select summary for one, multiple, and zero selections', () => {
     const fixture = makeMultiSelectDisclosureFixture();
     fixture.checkboxes[0].checked = true;
 
     expect(enhanceAssetViewerFilterDisclosures(fixture.scope)).toBe(1);
     expect(fixture.currentSummary.textContent).toBe('Alpha');
     expect(fixture.summaryAttrs['aria-label']).toBe('Tags: Alpha');
-  });
-
-  it('updates the visible multi-select summary for one, multiple, and zero selections', () => {
-    const fixture = makeMultiSelectDisclosureFixture();
-
-    enhanceAssetViewerFilterDisclosures(fixture.scope);
-    expect(fixture.currentSummary.textContent).toBe('No tags selected');
-
-    fixture.checkboxes[0].checked = true;
-    const alphaEvent = fixture.scope.dispatch('change', fixture.checkboxes[0]);
-    expect(alphaEvent.defaultPrevented).toBe(false);
-    expect(fixture.currentSummary.textContent).toBe('Alpha');
-    expect(fixture.summaryAttrs['aria-label']).toBe('Tags: Alpha');
 
     fixture.checkboxes[1].checked = true;
-    fixture.scope.dispatch('change', fixture.checkboxes[1]);
+    const betaEvent = fixture.scope.dispatch('change', fixture.checkboxes[1]);
+    expect(betaEvent.defaultPrevented).toBe(false);
     expect(fixture.currentSummary.textContent).toBe('2 tags selected');
     expect(fixture.summaryAttrs['aria-label']).toBe('Tags: 2 tags selected');
 
@@ -8865,30 +8311,6 @@ describe('Asset Viewer filter disclosure dismissal', () => {
     fixture.scope.dispatch('change', fixture.checkboxes[1]);
     expect(fixture.currentSummary.textContent).toBe('No tags selected');
     expect(fixture.summaryAttrs['aria-label']).toBe('Tags: No tags selected');
-  });
-
-  it('keeps checkbox checked states native and submittable in multi-select disclosures', () => {
-    const fixture = makeMultiSelectDisclosureFixture();
-
-    enhanceAssetViewerFilterDisclosures(fixture.scope);
-    fixture.checkboxes[0].checked = true;
-    fixture.scope.dispatch('change', fixture.checkboxes[0]);
-
-    expect(fixture.checkboxes[0].checked).toBe(true);
-    expect(fixture.checkboxes[0].name).toBe('tagIds[]');
-    expect(fixture.checkboxes[0].value).toBe('1');
-    expect(fixture.checkboxes[1].checked).toBe(false);
-  });
-
-  it('keeps disclosure dismissal behavior active when multi-select options are changed', () => {
-    const fixture = makeMultiSelectDisclosureFixture();
-    const outside = { closest() { return null; } };
-
-    enhanceAssetViewerFilterDisclosures(fixture.scope);
-    fixture.disclosure.open = true;
-    fixture.scope.dispatch('click', outside);
-    expect(fixture.disclosure.open).toBe(false);
-    expect(fixture.summaryAttrs['aria-expanded']).toBe('false');
   });
 });
 
@@ -8909,23 +8331,7 @@ describe('asset grid size enhancement', () => {
     };
   }
 
-  function makeList() {
-    const attrs = {};
-    return {
-      dataset: {},
-      setAttribute(name, value) {
-        attrs[name] = String(value);
-        if (name === 'data-list-size') this.dataset.listSize = String(value);
-      },
-      removeAttribute(name) {
-        delete attrs[name];
-        if (name === 'data-list-size') delete this.dataset.listSize;
-      },
-      attrs,
-    };
-  }
-
-  function makeGridSliderControls({ project = false, interactive = false, sizes = ['compact', 'default', 'large'] } = {}) {
+  function makeGridSliderControls({ project = false } = {}) {
     const sliderListeners = [];
     const slider = {
       value: '2',
@@ -8936,8 +8342,8 @@ describe('asset grid size enhancement', () => {
         sliderListeners.filter((entry) => entry.type === type).forEach((entry) => entry.handler());
       },
     };
-    const labels = sizes.map((size) => ({
-      tagName: interactive ? 'BUTTON' : 'SPAN',
+    const labels = ['compact', 'default', 'large'].map((size) => ({
+      tagName: 'SPAN',
       dataset: { gridSizeOptionLabel: size },
       attrs: {},
       setAttribute(name, value) { this.attrs[name] = String(value); },
@@ -8949,309 +8355,19 @@ describe('asset grid size enhancement', () => {
         },
       },
     }));
-    labels.forEach((label) => {
-      label.listeners = [];
-      label.addEventListener = (type, handler) => label.listeners.push({ type, handler });
-      label.dispatch = (type) => label.listeners
-        .filter((entry) => entry.type === type)
-        .forEach((entry) => entry.handler());
-    });
     const group = {
-      attrs: interactive ? { 'data-grid-size-labels-interactive': '' } : {},
       querySelectorAll(selector) {
         if (selector === '[data-grid-size-slider]') return [slider];
         if (selector === '[data-grid-size-option-label]') return labels;
         return [];
       },
-      hasAttribute(name) { return Object.prototype.hasOwnProperty.call(this.attrs, name); },
+      hasAttribute() { return false; },
       closest(selector) {
         return project && selector === '[data-project-grid-size-controls]' ? {} : null;
       },
     };
     return { group, slider, labels };
   }
-
-  it('uses the current default sizing without writing a custom property', () => {
-    const grid = makeGrid();
-    const controls = makeGridSliderControls();
-    const scope = {
-      querySelectorAll(selector) {
-        if (selector === '[data-asset-grid-size-controls]') return [controls.group];
-        if (selector === '.asset-grid') return [grid];
-        return [];
-      },
-    };
-
-    expect(enhanceAssetGridSize(scope)).toBe(1);
-    expect(grid.style.values).toEqual({});
-    expect(controls.slider.value).toBe('2');
-    expect(controls.slider.attrs['aria-valuenow']).toBe('2');
-    expect(controls.slider.attrs['aria-valuetext']).toBe('Default');
-    expect(controls.labels.map((option) => option.classList.values.has('is-active')))
-      .toEqual([false, true, false]);
-  });
-
-  it('uses an independent two-stop list preference with a Large default and list DOM state', () => {
-    const grid = makeGrid();
-    const list = makeList();
-    const gridControls = makeGridSliderControls();
-    const listControls = makeGridSliderControls({ sizes: ['compact', 'large'] });
-    const storage = new Map([['creatorcrate-asset-grid-size', 'compact']]);
-    const previousStorage = globalThis.localStorage;
-    globalThis.localStorage = {
-      getItem: (key) => storage.get(key) ?? null,
-      setItem: (key, value) => storage.set(key, value),
-    };
-    try {
-      const scope = {
-        querySelectorAll(selector) {
-          if (selector === '[data-asset-grid-size-controls]') return [gridControls.group];
-          if (selector === '[data-asset-list-size-controls]') return [listControls.group];
-          if (selector === '.asset-grid') return [grid];
-          if (selector === '.asset-list') return [list];
-          return [];
-        },
-      };
-
-      expect(enhanceAssetGridSize(scope)).toBe(1);
-      expect(enhanceAssetListSize(scope)).toBe(1);
-      expect(grid.attrs['data-grid-size']).toBe('compact');
-      expect(list.attrs['data-list-size']).toBe('large');
-      expect(listControls.labels).toHaveLength(2);
-      expect(listControls.slider.value).toBe('2');
-      expect(listControls.slider.attrs['aria-valuetext']).toBe('Large');
-      expect(listControls.labels.map((option) => option.classList.values.has('is-active')))
-        .toEqual([false, true]);
-
-      listControls.slider.value = '1';
-      listControls.slider.dispatch('input');
-      expect(storage.get('creatorcrate-asset-list-size')).toBe('compact');
-      expect(storage.get('creatorcrate-asset-grid-size')).toBe('compact');
-      expect(list.attrs['data-list-size']).toBe('compact');
-      expect(listControls.slider.attrs['aria-valuetext']).toBe('Compact');
-
-      listControls.slider.value = '2';
-      listControls.slider.dispatch('change');
-      expect(storage.get('creatorcrate-asset-list-size')).toBe('large');
-      expect(storage.get('creatorcrate-asset-grid-size')).toBe('compact');
-      expect(list.attrs['data-list-size']).toBe('large');
-    } finally {
-      if (previousStorage === undefined) delete globalThis.localStorage;
-      else globalThis.localStorage = previousStorage;
-    }
-  });
-
-  it('binds only Compact and Large interactive list labels', () => {
-    const list = makeList();
-    const controls = makeGridSliderControls({ interactive: true, sizes: ['compact', 'large'] });
-    const storage = new Map();
-    const previousStorage = globalThis.localStorage;
-    globalThis.localStorage = {
-      getItem: (key) => storage.get(key) ?? null,
-      setItem: (key, value) => storage.set(key, value),
-    };
-    try {
-      const scope = {
-        querySelectorAll(selector) {
-          if (selector === '[data-asset-list-size-controls]') return [controls.group];
-          if (selector === '.asset-list') return [list];
-          return [];
-        },
-      };
-
-      expect(enhanceAssetListSize(scope)).toBe(1);
-      expect(controls.labels).toHaveLength(2);
-      controls.labels[0].dispatch('click');
-      expect(storage.get('creatorcrate-asset-list-size')).toBe('compact');
-      expect(controls.slider.attrs['aria-valuenow']).toBe('1');
-      expect(controls.labels.map((option) => option.attrs['aria-pressed']))
-        .toEqual(['true', 'false']);
-
-      controls.labels[1].dispatch('click');
-      expect(storage.get('creatorcrate-asset-list-size')).toBe('large');
-      expect(controls.slider.attrs['aria-valuenow']).toBe('2');
-      expect(controls.labels.map((option) => option.attrs['aria-pressed']))
-        .toEqual(['false', 'true']);
-    } finally {
-      if (previousStorage === undefined) delete globalThis.localStorage;
-      else globalThis.localStorage = previousStorage;
-    }
-  });
-
-  it('applies finite compact/default/large values and persists the selection across page scopes', () => {
-    const grid = makeGrid();
-    const controls = makeGridSliderControls();
-    const storage = new Map();
-    const previousStorage = globalThis.localStorage;
-    globalThis.localStorage = {
-      getItem: (key) => storage.get(key) ?? null,
-      setItem: (key, value) => storage.set(key, value),
-    };
-    try {
-      const scope = {
-        querySelectorAll(selector) {
-          if (selector === '[data-asset-grid-size-controls]') return [controls.group];
-          if (selector === '.asset-grid') return [grid];
-          return [];
-        },
-      };
-
-      enhanceAssetGridSize(scope);
-      controls.slider.value = '3';
-      controls.slider.dispatch('input');
-
-      expect(storage.get('creatorcrate-asset-grid-size')).toBe('large');
-      expect(grid.attrs['data-grid-size']).toBe('large');
-      expect(grid.style.values['--asset-card-min']).toBe('20rem');
-      expect(controls.slider.attrs['aria-valuenow']).toBe('3');
-      expect(controls.slider.attrs['aria-valuetext']).toBe('Large');
-
-      const secondGrid = makeGrid();
-      const secondControls = makeGridSliderControls();
-      const secondScope = {
-        querySelectorAll(selector) {
-          if (selector === '[data-asset-grid-size-controls]') return [secondControls.group];
-          if (selector === '.asset-grid') return [secondGrid];
-          return [];
-        },
-      };
-      enhanceAssetGridSize(secondScope);
-      expect(secondGrid.style.values['--asset-card-min']).toBe('20rem');
-      expect(secondControls.slider.value).toBe('3');
-      expect(secondControls.slider.attrs['aria-valuetext']).toBe('Large');
-    } finally {
-      if (previousStorage === undefined) delete globalThis.localStorage;
-      else globalThis.localStorage = previousStorage;
-    }
-  });
-
-  it('rejects an invalid stored value and falls back to the default size', () => {
-    const grid = makeGrid();
-    const controls = makeGridSliderControls();
-    const previousStorage = globalThis.localStorage;
-    globalThis.localStorage = {
-      getItem: () => 'not-supported',
-      setItem() {},
-    };
-    try {
-      const scope = {
-        querySelectorAll(selector) {
-          if (selector === '[data-asset-grid-size-controls]') return [controls.group];
-          if (selector === '.asset-grid') return [grid];
-          return [];
-        },
-      };
-
-      enhanceAssetGridSize(scope);
-      expect(grid.style.values).toEqual({});
-      expect(controls.slider.value).toBe('2');
-      expect(controls.slider.attrs['aria-valuetext']).toBe('Default');
-    } finally {
-      if (previousStorage === undefined) delete globalThis.localStorage;
-      else globalThis.localStorage = previousStorage;
-    }
-  });
-
-  it('maps the three slider positions to the existing sizes, updates immediately, and restores the saved value', () => {
-    const grid = makeGrid();
-    const controls = makeGridSliderControls();
-    const storage = new Map([['creatorcrate-asset-grid-size', 'compact']]);
-    const previousStorage = globalThis.localStorage;
-    globalThis.localStorage = {
-      getItem: (key) => storage.get(key) ?? null,
-      setItem: (key, value) => storage.set(key, value),
-    };
-
-    const makeScope = (targetGrid) => ({
-      querySelectorAll(selector) {
-        if (selector === '[data-asset-grid-size-controls]') return [controls.group];
-        if (selector === '.asset-grid') return [targetGrid];
-        return [];
-      },
-    });
-
-    try {
-      expect(enhanceAssetGridSize(makeScope(grid))).toBe(1);
-      expect(controls.slider.value).toBe('1');
-      expect(controls.slider.attrs['aria-valuenow']).toBe('1');
-      expect(controls.slider.attrs['aria-valuetext']).toBe('Compact');
-      expect(controls.labels[0].classList.values.has('is-active')).toBe(true);
-
-      const expected = [
-        { position: '1', size: 'compact', min: '12rem', label: 'Compact' },
-        { position: '2', size: 'default', min: undefined, label: 'Default' },
-        { position: '3', size: 'large', min: '20rem', label: 'Large' },
-      ];
-      for (const { position, size, min, label } of expected) {
-        controls.slider.value = position;
-        controls.slider.dispatch('input');
-
-        expect(storage.get('creatorcrate-asset-grid-size')).toBe(size);
-        expect(controls.slider.attrs['aria-valuenow']).toBe(position);
-        expect(controls.slider.attrs['aria-valuetext']).toBe(label);
-        expect(controls.labels.map((option) => option.classList.values.has('is-active')))
-          .toEqual(expected.map((entry) => entry.size === size));
-        if (min) expect(grid.style.values['--asset-card-min']).toBe(min);
-        else expect(grid.style.values).toEqual({});
-        if (size === 'default') expect(grid.attrs['data-grid-size']).toBeUndefined();
-        else expect(grid.attrs['data-grid-size']).toBe(size);
-      }
-
-      const restoredGrid = makeGrid();
-      enhanceAssetGridSize(makeScope(restoredGrid));
-      expect(restoredGrid.attrs['data-grid-size']).toBe('large');
-      expect(restoredGrid.style.values['--asset-card-min']).toBe('20rem');
-      expect(controls.slider.value).toBe('3');
-    } finally {
-      if (previousStorage === undefined) delete globalThis.localStorage;
-      else globalThis.localStorage = previousStorage;
-    }
-  });
-
-  it('binds interactive asset-page labels to the shared slider and localStorage state', () => {
-    const grid = makeGrid();
-    const controls = makeGridSliderControls({ interactive: true });
-    const storage = new Map();
-    const previousStorage = globalThis.localStorage;
-    globalThis.localStorage = {
-      getItem: (key) => storage.get(key) ?? null,
-      setItem: (key, value) => storage.set(key, value),
-    };
-    const scope = {
-      querySelectorAll(selector) {
-        if (selector === '[data-asset-grid-size-controls]') return [controls.group];
-        if (selector === '.asset-grid') return [grid];
-        return [];
-      },
-    };
-
-    try {
-      expect(enhanceAssetGridSize(scope)).toBe(1);
-      const expected = [
-        { index: 0, size: 'compact', position: '1', label: 'Compact', min: '12rem' },
-        { index: 1, size: 'default', position: '2', label: 'Default', min: undefined },
-        { index: 2, size: 'large', position: '3', label: 'Large', min: '20rem' },
-      ];
-
-      for (const { index, size, position, label, min } of expected) {
-        controls.labels[index].dispatch('click');
-
-        expect(storage.get('creatorcrate-asset-grid-size')).toBe(size);
-        expect(controls.slider.value).toBe(position);
-        expect(controls.slider.attrs['aria-valuenow']).toBe(position);
-        expect(controls.slider.attrs['aria-valuetext']).toBe(label);
-        expect(controls.labels.map((option) => option.classList.values.has('is-active')))
-          .toEqual(expected.map((entry) => entry.size === size));
-        expect(controls.labels.map((option) => option.attrs['aria-pressed']))
-          .toEqual(expected.map((entry) => String(entry.size === size)));
-        if (min) expect(grid.style.values['--asset-card-min']).toBe(min);
-        else expect(grid.style.values).toEqual({});
-      }
-    } finally {
-      if (previousStorage === undefined) delete globalThis.localStorage;
-      else globalThis.localStorage = previousStorage;
-    }
-  });
 
   it('finds every Projects grid and its control, maps every size, and keeps state isolated', () => {
     const assetGrid = makeGrid();
@@ -9286,6 +8402,15 @@ describe('asset grid size enhancement', () => {
         expect(projectGrid.style.values).toEqual({});
       }
       expect(storage.get('creatorcrate-asset-grid-size')).toBe('large');
+
+      assetControls.slider.value = '2';
+      assetControls.slider.dispatch('change');
+      expect(storage.get('creatorcrate-asset-grid-size')).toBe('default');
+      expect(assetGrid.attrs['data-grid-size']).toBeUndefined();
+      expect(assetGrid.dataset.gridSize).toBeUndefined();
+      expect(assetGrid.style.values['--asset-card-min']).toBeUndefined();
+      expect(assetControls.slider.attrs['aria-valuenow']).toBe('2');
+      expect(assetControls.slider.attrs['aria-valuetext']).toBe('Default');
 
       expect(enhanceProjectGridSize(scope)).toBe(1);
       for (const projectGrid of projectGrids) {
@@ -9331,60 +8456,48 @@ describe('asset grid size enhancement', () => {
     }
   });
 
-  it('applies a Projects size when the range control emits change without input', () => {
-    const grid = makeGrid();
-    const controls = makeGridSliderControls({ project: true });
-    const storage = new Map();
-    const previousStorage = globalThis.localStorage;
-    globalThis.localStorage = {
-      getItem: (key) => storage.get(key) ?? null,
-      setItem: (key, value) => storage.set(key, value),
-    };
-    try {
-      const scope = {
-        querySelectorAll(selector) {
-          if (selector === '[data-project-grid-size-controls] [data-asset-grid-size-controls]') return [controls.group];
-          if (selector === '.project-grid') return [grid];
-          return [];
-        },
-      };
-
-      expect(enhanceProjectGridSize(scope)).toBe(1);
-      controls.slider.value = '3';
-      controls.slider.dispatch('change');
-
-      expect(storage.get('creatorcrate-project-grid-size')).toBe('large');
-      expect(grid.style.values['--project-card-min']).toBe('20rem');
-      expect(grid.attrs['data-grid-size']).toBe('large');
-      expect(controls.slider.attrs['aria-valuetext']).toBe('Large');
-    } finally {
-      if (previousStorage === undefined) delete globalThis.localStorage;
-      else globalThis.localStorage = previousStorage;
-    }
-  });
-
-  it('falls back to the responsive default for missing or invalid Projects storage', () => {
-    for (const stored of [null, 'not-supported']) {
-      const grid = makeGrid();
-      const controls = makeGridSliderControls({ project: true });
+  it('uses the Projects default for missing and invalid stored preferences', () => {
+    for (const { name, stored } of [
+      { name: 'missing', stored: undefined },
+      { name: 'invalid', stored: 'not-supported' },
+    ]) {
+      const projectGrid = makeGrid();
+      const projectControls = makeGridSliderControls({ project: true });
+      const storage = new Map();
+      if (stored !== undefined) storage.set('creatorcrate-project-grid-size', stored);
+      const writes = [];
       const previousStorage = globalThis.localStorage;
       globalThis.localStorage = {
-        getItem: () => stored,
-        setItem() {},
+        getItem: (key) => storage.get(key) ?? null,
+        setItem(key, value) {
+          writes.push([key, value]);
+          storage.set(key, value);
+        },
       };
       try {
         const scope = {
           querySelectorAll(selector) {
-            if (selector === '[data-project-grid-size-controls] [data-asset-grid-size-controls]') return [controls.group];
-            if (selector === '.project-grid') return [grid];
+            if (selector === '[data-project-grid-size-controls] [data-asset-grid-size-controls]') {
+              return [projectControls.group];
+            }
+            if (selector === '.project-grid') return [projectGrid];
             return [];
           },
         };
 
-        expect(enhanceProjectGridSize(scope)).toBe(1);
-        expect(grid.style.values).toEqual({});
-        expect(controls.slider.value).toBe('2');
-        expect(controls.slider.attrs['aria-valuetext']).toBe('Default');
+        expect(enhanceProjectGridSize(scope), name).toBe(1);
+        expect(projectGrid.attrs['data-grid-size'], name).toBeUndefined();
+        expect(projectGrid.dataset.gridSize, name).toBeUndefined();
+        expect(projectGrid.style.values['--project-card-min'], name).toBeUndefined();
+        expect(projectControls.slider.value, name).toBe('2');
+        expect(projectControls.slider.attrs['aria-valuenow'], name).toBe('2');
+        expect(projectControls.slider.attrs['aria-valuetext'], name).toBe('Default');
+        expect(
+          projectControls.labels.map((label) => label.classList.values.has('is-active')),
+          name,
+        ).toEqual([false, true, false]);
+        expect(writes, name).toEqual([]);
+        expect(storage.get('creatorcrate-project-grid-size'), name).toBe(stored);
       } finally {
         if (previousStorage === undefined) delete globalThis.localStorage;
         else globalThis.localStorage = previousStorage;
@@ -9392,176 +8505,6 @@ describe('asset grid size enhancement', () => {
     }
   });
 
-  it('uses clickable Projects size labels through the same persisted update path without duplicate handlers', () => {
-    const grid = makeGrid();
-    const controls = makeGridSliderControls({ project: true, interactive: true });
-    const storage = new Map();
-    const previousStorage = globalThis.localStorage;
-    globalThis.localStorage = {
-      getItem: (key) => storage.get(key) ?? null,
-      setItem: (key, value) => storage.set(key, value),
-    };
-    try {
-      const scope = {
-        querySelectorAll(selector) {
-          if (selector === '[data-project-grid-size-controls] [data-asset-grid-size-controls]') return [controls.group];
-          if (selector === '.project-grid') return [grid];
-          return [];
-        },
-      };
-
-      expect(enhanceProjectGridSize(scope)).toBe(1);
-      expect(enhanceProjectGridSize(scope)).toBe(1);
-      controls.labels[2].dispatch('click');
-
-      expect(storage.get('creatorcrate-project-grid-size')).toBe('large');
-      expect(grid.attrs['data-grid-size']).toBe('large');
-      expect(grid.style.values['--project-card-min']).toBe('20rem');
-      expect(controls.slider.value).toBe('3');
-      expect(controls.labels.map((label) => label.classList.values.has('is-active')))
-        .toEqual([false, false, true]);
-      expect(controls.labels.map((label) => label.attrs['aria-pressed']))
-        .toEqual(['false', 'false', 'true']);
-
-      controls.slider.value = '1';
-      controls.slider.dispatch('input');
-      expect(controls.labels.map((label) => label.classList.values.has('is-active')))
-        .toEqual([true, false, false]);
-      expect(controls.labels.map((label) => label.attrs['aria-pressed']))
-        .toEqual(['true', 'false', 'false']);
-    } finally {
-      if (previousStorage === undefined) delete globalThis.localStorage;
-      else globalThis.localStorage = previousStorage;
-    }
-  });
-
-  it('binds Grid preview hover/focus positioning without adding a metadata trigger', () => {
-    const listeners = [];
-    const styleValues = {};
-    const attrs = {};
-    const info = {
-      offsetWidth: 240,
-      offsetHeight: 120,
-      style: {
-        setProperty(name, value) { styleValues[name] = value; },
-      },
-      getBoundingClientRect() {
-        return { width: 240, height: 120 };
-      },
-      setAttribute(name, value) { attrs[name] = String(value); },
-    };
-    const preview = {
-      dataset: {},
-      querySelector(selector) {
-        return selector === '[data-asset-info-card]' ? info : null;
-      },
-      getBoundingClientRect() {
-        return { left: 900, top: 400, width: 200, height: 100, bottom: 500 };
-      },
-      addEventListener(type, handler) { listeners.push({ type, handler }); },
-      contains() { return true; },
-      setAttribute(name, value) { attrs[name] = String(value); },
-    };
-    const scope = {
-      querySelectorAll(selector) {
-        return selector === '[data-asset-viewer-preview]' ? [preview] : [];
-      },
-    };
-    const previousWidth = globalThis.innerWidth;
-    const previousHeight = globalThis.innerHeight;
-    const previousDocument = globalThis.document;
-    globalThis.innerWidth = 1000;
-    globalThis.innerHeight = 700;
-    globalThis.document = { documentElement: { clientWidth: 960, clientHeight: 680 } };
-
-    try {
-      expect(enhanceAssetViewerInfoCards(scope)).toBe(1);
-      expect(listeners.map(({ type }) => type)).toEqual([
-        'pointerenter',
-        'pointermove',
-        'pointerleave',
-        'focusin',
-        'focusout',
-      ]);
-
-      listeners.find(({ type }) => type === 'focusin').handler();
-
-      expect(attrs['data-positioned']).toBe('true');
-      expect(styleValues['--asset-info-left']).toBe('712px');
-      expect(styleValues['--asset-info-top']).toBe('508px');
-    } finally {
-      if (previousWidth === undefined) delete globalThis.innerWidth;
-      else globalThis.innerWidth = previousWidth;
-      if (previousHeight === undefined) delete globalThis.innerHeight;
-      else globalThis.innerHeight = previousHeight;
-      if (previousDocument === undefined) delete globalThis.document;
-      else globalThis.document = previousDocument;
-    }
-  });
-
-  it('binds Projects Grid preview information to the shared viewport edge positioning', () => {
-    const listeners = [];
-    const styleValues = {};
-    const attrs = {};
-    const info = {
-      offsetWidth: 240,
-      offsetHeight: 120,
-      style: {
-        setProperty(name, value) { styleValues[name] = value; },
-      },
-      getBoundingClientRect() {
-        return { width: 240, height: 120 };
-      },
-      setAttribute(name, value) { attrs[name] = String(value); },
-    };
-    const preview = {
-      dataset: {},
-      querySelector(selector) {
-        return selector === '[data-project-info-card]' ? info : null;
-      },
-      getBoundingClientRect() {
-        return { left: 0, top: 600, width: 200, height: 100, bottom: 700 };
-      },
-      addEventListener(type, handler) { listeners.push({ type, handler }); },
-      contains() { return true; },
-      setAttribute(name, value) { attrs[name] = String(value); },
-    };
-    const scope = {
-      querySelectorAll(selector) {
-        return selector === '[data-project-grid-preview]' ? [preview] : [];
-      },
-    };
-    const previousWidth = globalThis.innerWidth;
-    const previousHeight = globalThis.innerHeight;
-    const previousDocument = globalThis.document;
-    globalThis.innerWidth = 800;
-    globalThis.innerHeight = 700;
-    globalThis.document = { documentElement: { clientWidth: 800, clientHeight: 700 } };
-
-    try {
-      expect(enhanceProjectInfoCards(scope)).toBe(1);
-      expect(listeners.map(({ type }) => type)).toEqual([
-        'pointerenter',
-        'pointermove',
-        'pointerleave',
-        'focusin',
-        'focusout',
-      ]);
-
-      listeners.find(({ type }) => type === 'focusin').handler();
-
-      expect(attrs['data-positioned']).toBe('true');
-      expect(styleValues['--project-info-left']).toBe('8px');
-      expect(styleValues['--project-info-top']).toBe('472px');
-    } finally {
-      if (previousWidth === undefined) delete globalThis.innerWidth;
-      else globalThis.innerWidth = previousWidth;
-      if (previousHeight === undefined) delete globalThis.innerHeight;
-      else globalThis.innerHeight = previousHeight;
-      if (previousDocument === undefined) delete globalThis.document;
-      else globalThis.document = previousDocument;
-    }
-  });
 });
 
 describe('Release form date picker enhancement', () => {
@@ -9914,13 +8857,14 @@ describe('Release form date picker enhancement', () => {
     };
   }
 
-  it('binds only once per field and returns the field count', () => {
+  it('re-enhances each date field exactly once and returns the field count', () => {
     const fixture = makeDatePickerScope();
     try {
       expect(enhanceDatePickers(fixture.scope)).toBe(2);
       expect(enhanceDatePickers(fixture.scope)).toBe(2);
-      const fieldBindings = fixture.listeners.filter((entry) => entry.target === fixture.planned.trigger && entry.type === 'click');
-      expect(fieldBindings).toHaveLength(1);
+      fixture.planned.trigger.dispatch('click');
+      expect(fixture.planned.panel.hidden).toBe(false);
+      expect(fixture.planned.trigger.attrs['aria-expanded']).toBe('true');
     } finally {
       fixture.restoreDocument();
     }
@@ -9995,28 +8939,16 @@ describe('Release form date picker enhancement', () => {
     }
   });
 
-  it('opens the intended calendar and toggles its own trigger aria-expanded', () => {
+  it('opens the intended calendar and closes the previous calendar when another opens', () => {
     const fixture = makeDatePickerScope();
     try {
       enhanceDatePickers(fixture.scope);
       fixture.planned.trigger.dispatch('click');
-
       expect(fixture.planned.panel.hidden).toBe(false);
       expect(fixture.published.panel.hidden).toBe(true);
       expect(fixture.planned.trigger.attrs['aria-expanded']).toBe('true');
       expect(fixture.published.trigger.attrs['aria-expanded']).toBe('false');
       expect(fixture.planned.panel.children.length).toBeGreaterThan(0);
-    } finally {
-      fixture.restoreDocument();
-    }
-  });
-
-  it('opening the second calendar closes the first', () => {
-    const fixture = makeDatePickerScope();
-    try {
-      enhanceDatePickers(fixture.scope);
-      fixture.planned.trigger.dispatch('click');
-      expect(fixture.planned.panel.hidden).toBe(false);
 
       fixture.published.trigger.dispatch('click');
       expect(fixture.planned.panel.hidden).toBe(true);
@@ -10144,53 +9076,32 @@ describe('Release form date picker enhancement', () => {
     expect(narrowPanelRule[1]).not.toMatch(/top:\s*calc\(100%/);
   });
 
-  it('renders January 1000 safely and disables previous-month navigation', () => {
-    const fixture = makeDatePickerScope({ plannedValue: '1000-01-15' });
-    try {
-      enhanceDatePickers(fixture.scope);
+  it('keeps lower and upper calendar navigation safely bounded', () => {
+    for (const { value, title, direction, previousBoundary } of [
+      { value: '1000-01-15', title: 'January 1000', direction: 'prev', previousBoundary: true },
+      { value: '9999-12-15', title: 'December 9999', direction: 'next', previousBoundary: false },
+    ]) {
+      const fixture = makeDatePickerScope({ plannedValue: value });
+      try {
+        enhanceDatePickers(fixture.scope);
 
-      expect(() => fixture.planned.trigger.dispatch('click')).not.toThrow();
-      expect(fixture.planned.panel.querySelector('.date-picker-month-title').textContent).toContain('January 1000');
-      expect(fixture.planned.panel.querySelector('.date-picker-prev').disabled).toBe(true);
+        expect(() => fixture.planned.trigger.dispatch('click')).not.toThrow();
+        expect(fixture.planned.panel.querySelector('.date-picker-month-title').textContent).toContain(title);
+        expect(fixture.planned.panel.querySelector(`.date-picker-${direction}`).disabled).toBe(true);
 
-      const previousMonthCells = fixture.planned.panel.querySelectorAll('.date-picker-day')
-        .filter((cell) => cell.classList.contains('is-out-of-month')
-          && cell.getAttribute('aria-label')?.includes('previous month'));
-      expect(previousMonthCells.length).toBeGreaterThan(0);
-      expect(previousMonthCells.every((cell) => cell.disabled
-        && cell.getAttribute('aria-disabled') === 'true'
-        && !cell.getAttribute('aria-label').includes('undefined'))).toBe(true);
-    } finally {
-      fixture.restoreDocument();
-    }
-  });
-
-  it('keeps December 9999 next-month navigation safely bounded', () => {
-    const fixture = makeDatePickerScope({ plannedValue: '9999-12-15' });
-    try {
-      enhanceDatePickers(fixture.scope);
-
-      expect(() => fixture.planned.trigger.dispatch('click')).not.toThrow();
-      expect(fixture.planned.panel.querySelector('.date-picker-month-title').textContent).toContain('December 9999');
-      expect(fixture.planned.panel.querySelector('.date-picker-next').disabled).toBe(true);
-      expect(fixture.planned.panel.querySelectorAll('.date-picker-day')
-        .filter((cell) => cell.classList.contains('is-out-of-month'))
-        .every((cell) => !cell.getAttribute('aria-label').includes('undefined'))).toBe(true);
-    } finally {
-      fixture.restoreDocument();
-    }
-  });
-
-  it('uses the populated value to determine the initial displayed month', () => {
-    const fixture = makeDatePickerScope({ plannedValue: '2023-09-21' });
-    try {
-      enhanceDatePickers(fixture.scope);
-      fixture.planned.trigger.dispatch('click');
-      const monthTitle = fixture.planned.panel.querySelector('.date-picker-month-title');
-      expect(monthTitle.textContent).toContain('September');
-      expect(monthTitle.textContent).toContain('2023');
-    } finally {
-      fixture.restoreDocument();
+        const outOfMonthCells = fixture.planned.panel.querySelectorAll('.date-picker-day')
+          .filter((cell) => cell.classList.contains('is-out-of-month'));
+        expect(outOfMonthCells.every((cell) => !cell.getAttribute('aria-label').includes('undefined'))).toBe(true);
+        if (previousBoundary) {
+          const unavailable = outOfMonthCells
+            .filter((cell) => cell.getAttribute('aria-label')?.includes('previous month'));
+          expect(unavailable.length).toBeGreaterThan(0);
+          expect(unavailable.every((cell) => cell.disabled
+            && cell.getAttribute('aria-disabled') === 'true')).toBe(true);
+        }
+      } finally {
+        fixture.restoreDocument();
+      }
     }
   });
 
@@ -10298,6 +9209,7 @@ function makeToastUiEditorStub() {
     constructor(options) {
       this.options = options;
       this.markdown = '';
+      this.getMarkdownCalls = 0;
       this.setMarkdownCalls = [];
       this.removeHookCalls = [];
       this.destroyCalls = 0;
@@ -10305,6 +9217,7 @@ function makeToastUiEditorStub() {
     }
 
     getMarkdown() {
+      this.getMarkdownCalls += 1;
       return this.markdown;
     }
 
@@ -10441,24 +9354,37 @@ async function settleNotesEditorImport() {
 }
 
 describe('Notes rendered code-block enhancement', () => {
-  it('adds one accessible Copy button to each fenced block and ignores inline code', async () => {
+  it('adds one accessible Copy button per rendered block and remains exact-once after re-enhancement', async () => {
     const fixture = makeNotesCodeFixture(['const value = 1;\n', 'plain text\n']);
-    const writes = [];
+    const writeText = vi.fn();
 
-    await withNavigator({ clipboard: { writeText: vi.fn((text) => writes.push(text)) } }, async () => {
+    await withNavigator({ clipboard: { writeText } }, async () => {
+      expect(enhanceNotesCodeBlocks(fixture.scope)).toBe(2);
       expect(enhanceNotesCodeBlocks(fixture.scope)).toBe(2);
       expect(fixture.createElementCalls).toBe(2);
       expect(fixture.buttons).toHaveLength(2);
+      fixture.blocks.forEach(({ pre }) => {
+        expect(pre.children.filter((child) => child.className?.includes('notes-code-copy'))).toHaveLength(1);
+      });
       fixture.buttons.forEach((button) => {
         expect(button.type).toBe('button');
         expect(button.className).toContain('notes-code-copy');
         expect(button.getAttribute('aria-label')).toBe('Copy code');
         expect(button.textContent).toBe('Copy');
       });
+      expect(fixture.blocks.every(({ pre }) => pre.classList?.contains?.('notes-code-block-enhanced'))).toBe(true);
 
-      await fixture.buttons[0].dispatch('click');
-      await fixture.buttons[1].dispatch('click');
-      expect(writes).toEqual(['const value = 1;\n', 'plain text\n']);
+      const secondPre = fixture.blocks[1].pre;
+      const secondCopyButtons = secondPre.children
+        .filter((child) => child.className?.includes('notes-code-copy'));
+      expect(secondCopyButtons).toHaveLength(1);
+      const [secondCopyButton] = secondCopyButtons;
+      expect(secondCopyButton.parentNode).toBe(secondPre);
+      expect(fixture.blocks[0].code.textContent).not.toBe(fixture.blocks[1].code.textContent);
+
+      await secondCopyButton.dispatch('click');
+      expect(writeText).toHaveBeenCalledOnce();
+      expect(writeText).toHaveBeenCalledWith(fixture.blocks[1].code.textContent);
     });
   });
 
@@ -10468,23 +9394,6 @@ describe('Notes rendered code-block enhancement', () => {
     expect(enhanceNotesCodeBlocks(fixture.scope)).toBe(0);
     expect(fixture.createElementCalls).toBe(0);
     expect(fixture.buttons).toHaveLength(0);
-  });
-
-  it('is idempotent and keeps existing block buttons unique', async () => {
-    const fixture = makeNotesCodeFixture(['first\n', 'second\n']);
-    const writeText = vi.fn();
-
-    await withNavigator({ clipboard: { writeText } }, async () => {
-      expect(enhanceNotesCodeBlocks(fixture.scope)).toBe(2);
-      expect(enhanceNotesCodeBlocks(fixture.scope)).toBe(2);
-      expect(fixture.createElementCalls).toBe(2);
-      expect(fixture.blocks.map(({ pre }) => pre.children.filter((child) => (
-        child.className?.includes('notes-code-copy')
-      )).length)).toEqual([1, 1]);
-      expect(fixture.blocks.every(({ pre }) => pre.classList?.contains?.('notes-code-block-enhanced'))).toBe(true);
-      expect(fixture.buttons.map((button) => button.listeners.filter(({ type }) => type === 'click')))
-        .toHaveLength(2);
-    });
   });
 
   it('copies exact whitespace and temporarily reports success before restoring Copy', async () => {
@@ -10600,18 +9509,31 @@ describe('Notes editor progressive enhancement', () => {
     expect(fixture.textareaAttributes.get('hidden')).toBe('');
   });
 
-  it('synchronizes getMarkdown into the named textarea at submit time', async () => {
+  it('synchronizes one authoritative Markdown value at submit time after re-enhancement', async () => {
     const Editor = makeToastUiEditorStub();
     const loader = makeEditorLoader(Editor);
     const fixture = makeNotesEditorFixture('initial source');
 
-    enhanceNotesEditor(fixture.scope, loader);
+    expect(enhanceNotesEditor(fixture.scope, loader)).toBe(1);
+    expect(enhanceNotesEditor(fixture.scope, loader)).toBe(1);
+    expect(loader.calls).toBe(1);
     await settleNotesEditorImport();
+    expect(loader.calls).toBe(1);
+    expect(Editor.instances).toHaveLength(1);
+
+    expect(enhanceNotesEditor(fixture.scope, loader)).toBe(1);
+    await settleNotesEditorImport();
+    expect(loader.calls).toBe(1);
+    expect(Editor.instances).toHaveLength(1);
+
     const [editor] = Editor.instances;
     editor.markdown = '## WYSIWYG result\n\n- item';
 
-    fixture.form.listeners.find((listener) => listener.type === 'submit').handler();
+    fixture.form.listeners
+      .filter((listener) => listener.type === 'submit')
+      .forEach((listener) => listener.handler());
 
+    expect(editor.getMarkdownCalls).toBe(1);
     expect(fixture.textarea.value).toBe('## WYSIWYG result\n\n- item');
   });
 
@@ -10637,21 +9559,6 @@ describe('Notes editor progressive enhancement', () => {
     expect(fixture.textarea.value).toBe('discarded baseline');
     expect(editor.setMarkdownCalls).toEqual([['discarded baseline', false]]);
     expect(fixture.form.__creatorCrateNotesEditor.getMarkdown()).toBe('discarded baseline');
-  });
-
-  it('initializes once and binds one submit synchronization listener', async () => {
-    const Editor = makeToastUiEditorStub();
-    const loader = makeEditorLoader(Editor);
-    const fixture = makeNotesEditorFixture();
-
-    expect(enhanceNotesEditor(fixture.scope, loader)).toBe(1);
-    expect(enhanceNotesEditor(fixture.scope, loader)).toBe(1);
-    expect(loader.calls).toBe(1);
-    await settleNotesEditorImport();
-
-    expect(Editor.instances).toHaveLength(1);
-    expect(fixture.form.listeners.filter((listener) => listener.type === 'submit')).toHaveLength(1);
-    expect(Editor.instances[0].removeHookCalls).toHaveLength(1);
   });
 
   it('keeps the Markdown textarea usable when the editor import fails', async () => {

@@ -59,6 +59,8 @@ function makeNode({ tagName = 'div', attrs = {}, textContent = '' } = {}) {
       if (name === 'hidden') this.hidden = true;
       if (name === 'inert') this.inert = true;
       if (name === 'disabled') this.disabled = true;
+      if (name === 'value') this.value = stringValue;
+      if (name === 'type') this.type = stringValue;
       if (name.startsWith('data-')) this.dataset[toDatasetKey(name)] = stringValue;
     },
     getAttribute(name) { return attributes.has(name) ? attributes.get(name) : null; },
@@ -81,6 +83,9 @@ function makeNode({ tagName = 'div', attrs = {}, textContent = '' } = {}) {
         if (requiresChecked && this.checked !== true) return false;
         const tag = candidate.match(/^[a-z][\w-]*/i)?.[0];
         if (tag && this.tagName !== tag.toUpperCase()) return false;
+        const classes = [...candidate.matchAll(/\.([\w-]+)/g)].map((match) => match[1]);
+        const classNames = new Set(String(this.getAttribute('class') || '').split(/\s+/).filter(Boolean));
+        if (classes.some((className) => !classNames.has(className))) return false;
         const attrsInSelector = [...candidate.matchAll(/\[([^\]=]+)(?:="([^"]*)")?\]/g)];
         return attrsInSelector.every(([, attrName, expected]) => {
           const actual = this.getAttribute(attrName);
@@ -116,6 +121,13 @@ function makeNode({ tagName = 'div', attrs = {}, textContent = '' } = {}) {
         }
       }
       return child;
+    },
+    remove() {
+      if (!this.parentElement) return;
+      const index = this.parentElement.children.indexOf(this);
+      if (index >= 0) this.parentElement.children.splice(index, 1);
+      this.parentElement = null;
+      this.parentNode = null;
     },
     addEventListener(type, handler, options = {}) {
       listeners.push({ type, handler, capture: options === true || options?.capture === true });
@@ -363,31 +375,20 @@ function makeProjectPreviewPage(sequence) {
 // ─── Sequence parsing ────────────────────────────────────────────────────────
 
 describe('enhanceSlideshow — sequence parsing', () => {
-  it('parses a valid sequence and returns 1', () => {
+  it('accepts a non-empty array and enables its trigger', () => {
     const seq = [{ id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' }];
-    const { document } = makeSlideshowPage(seq);
+    const { document, trigger } = makeSlideshowPage(seq);
     expect(enhanceSlideshow(document)).toBe(1);
+    expect(trigger.disabled).toBe(false);
   });
 
-  it('malformed JSON fails closed without throwing', () => {
-    const { document, trigger, sequenceScript } = makeSlideshowPage([]);
-    sequenceScript.textContent = '{not json at all}';
-    expect(() => enhanceSlideshow(document)).not.toThrow();
-    expect(trigger.disabled).toBe(true);
-  });
-
-  it('non-array JSON (object) fails closed without throwing', () => {
-    const { document, trigger, sequenceScript } = makeSlideshowPage([]);
-    sequenceScript.textContent = '{"id": 1}';
-    expect(() => enhanceSlideshow(document)).not.toThrow();
-    expect(trigger.disabled).toBe(true);
-  });
-
-  it('null JSON fails closed without throwing', () => {
-    const { document, trigger, sequenceScript } = makeSlideshowPage([]);
-    sequenceScript.textContent = 'null';
-    expect(() => enhanceSlideshow(document)).not.toThrow();
-    expect(trigger.disabled).toBe(true);
+  it('fails closed for malformed and non-array sequence data', () => {
+    for (const serialized of ['{not json at all}', '{"id": 1}', 'null']) {
+      const { document, trigger, sequenceScript } = makeSlideshowPage([]);
+      sequenceScript.textContent = serialized;
+      expect(() => enhanceSlideshow(document)).not.toThrow();
+      expect(trigger.disabled).toBe(true);
+    }
   });
 
   it('empty sequence disables the trigger', () => {
@@ -396,21 +397,9 @@ describe('enhanceSlideshow — sequence parsing', () => {
     expect(trigger.disabled).toBe(true);
   });
 
-  it('non-empty sequence leaves trigger enabled', () => {
-    const { document, trigger } = makeSlideshowPage([
-      { id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' },
-    ]);
-    enhanceSlideshow(document);
-    expect(trigger.disabled).toBe(false);
-  });
-
-  it('returns 0 when no trigger is present', () => {
+  it('returns 0 when either required root is absent', () => {
     const document = makeDocument();
     expect(enhanceSlideshow(document)).toBe(0);
-  });
-
-  it('returns 0 when no scaffold is present', () => {
-    const document = makeDocument();
     document.appendChild(makeNode({ tagName: 'button', attrs: { 'data-slideshow-trigger': '' } }));
     expect(enhanceSlideshow(document)).toBe(0);
   });
@@ -419,81 +408,40 @@ describe('enhanceSlideshow — sequence parsing', () => {
 // ─── Opening ────────────────────────────────────────────────────────────────
 
 describe('enhanceSlideshow — opening', () => {
-  it('removes hidden and inert from scaffold on open', () => {
-    const seq = [{ id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' }];
-    const { document, trigger, scaffold } = makeSlideshowPage(seq);
+  it('opens visibly on the first preview with status, accessible filename, and initial focus', () => {
+    const seq = [
+      { id: 1, filename: 'first.png', previewUrl: '/preview/1?v=abc', viewerUrl: '/v/1' },
+      { id: 2, filename: 'second.png', previewUrl: '/p/2', viewerUrl: '/v/2' },
+    ];
+    const { document, trigger, scaffold, preview, status, closeBtn } = makeSlideshowPage(seq);
     enhanceSlideshow(document);
     trigger.dispatch('click');
     expect(scaffold.hidden).toBe(false);
     expect(scaffold.hasAttribute('hidden')).toBe(false);
     expect(scaffold.inert).toBe(false);
     expect(scaffold.hasAttribute('inert')).toBe(false);
-  });
-
-  it('opens on the first item', () => {
-    const seq = [
-      { id: 1, filename: 'first.png', previewUrl: '/p/1', viewerUrl: '/v/1' },
-      { id: 2, filename: 'second.png', previewUrl: '/p/2', viewerUrl: '/v/2' },
-    ];
-    const { document, trigger, preview } = makeSlideshowPage(seq);
-    enhanceSlideshow(document);
-    trigger.dispatch('click');
-    const img = preview.children[0];
-    expect(img.src).toBe('/p/1');
-  });
-
-  it('renders previewUrl — not original or thumbnail', () => {
-    const seq = [{ id: 1, filename: 'img.png', previewUrl: '/preview/1?v=abc', viewerUrl: '/v/1' }];
-    const { document, trigger, preview } = makeSlideshowPage(seq);
-    enhanceSlideshow(document);
-    trigger.dispatch('click');
-    const img = preview.children[0];
+    const [img, caption] = preview.children;
     expect(img.src).toBe('/preview/1?v=abc');
     expect(img.src).not.toContain('/original');
-  });
-
-  it('status starts at "1 of N" on open', () => {
-    const seq = [
-      { id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' },
-      { id: 2, filename: 'b.png', previewUrl: '/p/2', viewerUrl: '/v/2' },
-      { id: 3, filename: 'c.png', previewUrl: '/p/3', viewerUrl: '/v/3' },
-    ];
-    const { document, trigger, status } = makeSlideshowPage(seq);
-    enhanceSlideshow(document);
-    trigger.dispatch('click');
-    expect(status.textContent).toBe('1 of 3');
-  });
-
-  it('sets aria-expanded="true" on trigger when opened', () => {
-    const seq = [{ id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' }];
-    const { document, trigger } = makeSlideshowPage(seq);
-    enhanceSlideshow(document);
-    trigger.dispatch('click');
+    expect(img.getAttribute('alt')).toBe('first.png');
+    expect(caption.textContent).toBe('first.png');
+    expect(status.textContent).toBe('1 of 2');
     expect(trigger.getAttribute('aria-expanded')).toBe('true');
-  });
-
-  it('moves focus to the close button on open', () => {
-    const seq = [{ id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' }];
-    const { document, trigger, closeBtn } = makeSlideshowPage(seq);
-    enhanceSlideshow(document);
-    trigger.dispatch('click');
     expect(closeBtn.focused).toBe(true);
   });
 
-  it('exposes filename as image alt text', () => {
-    const seq = [{ id: 1, filename: 'my-art.png', previewUrl: '/p/1', viewerUrl: '/v/1' }];
-    const { document, trigger, preview } = makeSlideshowPage(seq);
-    enhanceSlideshow(document);
-    trigger.dispatch('click');
-    expect(preview.children[0].getAttribute('alt')).toBe('my-art.png');
-  });
-
-  it('exposes filename as visible caption', () => {
-    const seq = [{ id: 1, filename: 'my-art.png', previewUrl: '/p/1', viewerUrl: '/v/1' }];
-    const { document, trigger, preview } = makeSlideshowPage(seq);
-    enhanceSlideshow(document);
-    trigger.dispatch('click');
-    expect(preview.children[1].textContent).toBe('my-art.png');
+  it('binds core slideshow behavior exactly once across repeated enhancement', () => {
+    const seq = [
+      { id: 1, filename: 'first.png', previewUrl: '/p/1', viewerUrl: '/v/1' },
+      { id: 2, filename: 'second.png', previewUrl: '/p/2', viewerUrl: '/v/2' },
+      { id: 3, filename: 'third.png', previewUrl: '/p/3', viewerUrl: '/v/3' },
+    ];
+    const page = makeSlideshowPage(seq);
+    enhanceSlideshow(page.document);
+    enhanceSlideshow(page.document);
+    page.trigger.dispatch('click');
+    page.nextBtn.dispatch('click');
+    expect(page.status.textContent).toBe('2 of 3');
   });
 });
 
@@ -557,9 +505,15 @@ describe('project-assets preview slideshow opt-in', () => {
 
   it('does not bind the same preview twice when enhancement repeats', () => {
     const page = makeProjectPreviewPage(sequence);
+    const state = page.scaffold.__creatorCrateSlideshowState;
+    const openSingleById = state.openSingleById;
+    state.openSingleById = vi.fn((...args) => openSingleById(...args));
     expect(enhanceProjectAssetsPreviewSlideshow(page.document)).toBe(2);
-    page.previewLinks[0].dispatch('click');
+    const preventDefault = vi.fn();
+    page.previewLinks[0].dispatch('click', { preventDefault });
 
+    expect(state.openSingleById).toHaveBeenCalledTimes(1);
+    expect(preventDefault).toHaveBeenCalledTimes(1);
     expect(page.status.textContent).toBe('1 of 1');
   });
 });
@@ -894,6 +848,29 @@ describe('enhanceSlideshow — original-size inspection', () => {
     expect(page.preview.hasAttribute('data-slideshow-mode')).toBe(true);
   });
 
+  it('ignores a stale Original Size load after a newer request becomes current', () => {
+    const page = openOriginalPage(imageSequence);
+    page.originalSizeBtn.dispatch('click');
+    const originalImage = page.preview.children[2];
+    const requestA = originalImage.getAttribute('data-slideshow-original-request');
+    const staleLoad = originalImage.listeners.find((listener) => listener.type === 'load').handler;
+
+    page.originalSizeBtn.dispatch('click');
+    page.originalSizeBtn.dispatch('click');
+    const requestB = originalImage.getAttribute('data-slideshow-original-request');
+    originalImage.naturalWidth = 1600;
+    originalImage.naturalHeight = 1200;
+    staleLoad();
+
+    expect(requestB).not.toBe(requestA);
+    expect(originalImage.getAttribute('data-slideshow-original-request')).toBe(requestB);
+    expect(page.preview.getAttribute('data-slideshow-mode')).toBe('original');
+    expect(page.preview.hasAttribute('data-slideshow-original-loaded')).toBe(false);
+    expect(originalImage.style.width).toBe('');
+    expect(originalImage.style.height).toBe('');
+    expect(page.mediaStatus.textContent).toBe('Loading original...');
+  });
+
   it('switches to the loaded original at intrinsic dimensions', () => {
     const page = openOriginalPage(imageSequence);
     const originalImage = loadOriginal(page, { width: 1600, height: 1200 });
@@ -1124,129 +1101,52 @@ describe('enhanceSlideshow — original-size fullscreen behavior', () => {
 });
 
 describe('enhanceSlideshow — next / prev', () => {
-  it('Next advances to the next item', () => {
-    const seq = [
-      { id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' },
-      { id: 2, filename: 'b.png', previewUrl: '/p/2', viewerUrl: '/v/2' },
-    ];
-    const { nextBtn, status } = openPage(seq);
-    nextBtn.dispatch('click');
-    expect(status.textContent).toBe('2 of 2');
-  });
-
-  it('Next updates previewUrl', () => {
-    const seq = [
-      { id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' },
-      { id: 2, filename: 'b.png', previewUrl: '/p/2', viewerUrl: '/v/2' },
-    ];
-    const { nextBtn, preview } = openPage(seq);
-    nextBtn.dispatch('click');
-    expect(preview.children[0].src).toBe('/p/2');
-  });
-
-  it('Previous advances backward', () => {
-    const seq = [
-      { id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' },
-      { id: 2, filename: 'b.png', previewUrl: '/p/2', viewerUrl: '/v/2' },
-      { id: 3, filename: 'c.png', previewUrl: '/p/3', viewerUrl: '/v/3' },
-    ];
-    const { nextBtn, prevBtn, status } = openPage(seq);
-    nextBtn.dispatch('click'); // 2 of 3
-    nextBtn.dispatch('click'); // 3 of 3
-    prevBtn.dispatch('click'); // back to 2 of 3
-    expect(status.textContent).toBe('2 of 3');
-  });
-
-  it('Next on last item wraps to first', () => {
-    const seq = [
-      { id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' },
-      { id: 2, filename: 'b.png', previewUrl: '/p/2', viewerUrl: '/v/2' },
-    ];
-    const { nextBtn, status } = openPage(seq);
-    nextBtn.dispatch('click'); // 2 of 2
-    nextBtn.dispatch('click'); // wrap → 1 of 2
-    expect(status.textContent).toBe('1 of 2');
-  });
-
-  it('Previous on first item wraps to last', () => {
-    const seq = [
-      { id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' },
-      { id: 2, filename: 'b.png', previewUrl: '/p/2', viewerUrl: '/v/2' },
-      { id: 3, filename: 'c.png', previewUrl: '/p/3', viewerUrl: '/v/3' },
-    ];
-    const { prevBtn, status } = openPage(seq);
-    prevBtn.dispatch('click'); // wrap → 3 of 3
-    expect(status.textContent).toBe('3 of 3');
-  });
-
-  it('single-item sequence is stable after Next', () => {
-    const seq = [{ id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' }];
-    const { nextBtn, status } = openPage(seq);
-    nextBtn.dispatch('click');
-    expect(status.textContent).toBe('1 of 1');
-  });
-
-  it('single-item sequence is stable after Previous', () => {
-    const seq = [{ id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' }];
-    const { prevBtn, status } = openPage(seq);
-    prevBtn.dispatch('click');
-    expect(status.textContent).toBe('1 of 1');
-  });
-
-  it('Next updates filename caption', () => {
+  it('updates image, caption, and count while navigating both directions and wrapping', () => {
     const seq = [
       { id: 1, filename: 'first.png', previewUrl: '/p/1', viewerUrl: '/v/1' },
       { id: 2, filename: 'second.png', previewUrl: '/p/2', viewerUrl: '/v/2' },
+      { id: 3, filename: 'third.png', previewUrl: '/p/3', viewerUrl: '/v/3' },
     ];
-    const { nextBtn, preview } = openPage(seq);
+    const { nextBtn, prevBtn, preview, status } = openPage(seq);
     nextBtn.dispatch('click');
+    expect(preview.children[0].src).toBe('/p/2');
     expect(preview.children[1].textContent).toBe('second.png');
+    expect(status.textContent).toBe('2 of 3');
+    prevBtn.dispatch('click');
+    expect(status.textContent).toBe('1 of 3');
+    prevBtn.dispatch('click');
+    expect(status.textContent).toBe('3 of 3');
+    nextBtn.dispatch('click');
+    expect(status.textContent).toBe('1 of 3');
+  });
+
+  it('keeps a single-item sequence stable for either navigation control', () => {
+    const { nextBtn, prevBtn, status } = openPage([
+      { id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' },
+    ]);
+    nextBtn.dispatch('click');
+    prevBtn.dispatch('click');
+    expect(status.textContent).toBe('1 of 1');
   });
 });
 
 // ─── Keyboard navigation ─────────────────────────────────────────────────────
 
 describe('enhanceSlideshow — keyboard navigation', () => {
-  it('ArrowRight advances to next item', () => {
+  it('maps both arrow keys to navigation, wraparound, and preventDefault', () => {
     const seq = [
       { id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' },
       { id: 2, filename: 'b.png', previewUrl: '/p/2', viewerUrl: '/v/2' },
     ];
     const { document, status } = openPage(seq);
-    document.dispatch('keydown', { key: 'ArrowRight' });
+    const right = document.dispatch('keydown', { key: 'ArrowRight' });
+    expect(right.defaultPrevented).toBe(true);
     expect(status.textContent).toBe('2 of 2');
-  });
-
-  it('ArrowLeft goes to previous item', () => {
-    const seq = [
-      { id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' },
-      { id: 2, filename: 'b.png', previewUrl: '/p/2', viewerUrl: '/v/2' },
-      { id: 3, filename: 'c.png', previewUrl: '/p/3', viewerUrl: '/v/3' },
-    ];
-    const { document, nextBtn, status } = openPage(seq);
-    nextBtn.dispatch('click'); // 2 of 3
-    nextBtn.dispatch('click'); // 3 of 3
-    document.dispatch('keydown', { key: 'ArrowLeft' });
-    expect(status.textContent).toBe('2 of 3');
-  });
-
-  it('ArrowLeft on first item wraps to last via keyboard', () => {
-    const seq = [
-      { id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' },
-      { id: 2, filename: 'b.png', previewUrl: '/p/2', viewerUrl: '/v/2' },
-    ];
-    const { document, status } = openPage(seq);
+    const left = document.dispatch('keydown', { key: 'ArrowLeft' });
+    expect(left.defaultPrevented).toBe(true);
+    expect(status.textContent).toBe('1 of 2');
     document.dispatch('keydown', { key: 'ArrowLeft' });
     expect(status.textContent).toBe('2 of 2');
-  });
-
-  it('ArrowRight on last item wraps to first via keyboard', () => {
-    const seq = [
-      { id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' },
-      { id: 2, filename: 'b.png', previewUrl: '/p/2', viewerUrl: '/v/2' },
-    ];
-    const { document, nextBtn, status } = openPage(seq);
-    nextBtn.dispatch('click'); // 2 of 2
     document.dispatch('keydown', { key: 'ArrowRight' });
     expect(status.textContent).toBe('1 of 2');
   });
@@ -1264,80 +1164,31 @@ describe('enhanceSlideshow — keyboard navigation', () => {
     expect(status.textContent).toBe('');
   });
 
-  it('ArrowRight calls preventDefault when slideshow is open', () => {
-    const seq = [{ id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' }];
-    const { document } = openPage(seq);
-    const event = document.dispatch('keydown', { key: 'ArrowRight' });
-    expect(event.defaultPrevented).toBe(true);
-  });
-
-  it('ArrowLeft calls preventDefault when slideshow is open', () => {
-    const seq = [{ id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' }];
-    const { document } = openPage(seq);
-    const event = document.dispatch('keydown', { key: 'ArrowLeft' });
-    expect(event.defaultPrevented).toBe(true);
-  });
 });
 
 // ─── Closing ─────────────────────────────────────────────────────────────────
 
 describe('enhanceSlideshow — closing', () => {
-  it('close button restores hidden and inert', () => {
-    const seq = [{ id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' }];
-    const { closeBtn, scaffold } = openPage(seq);
-    closeBtn.dispatch('click');
-    expect(scaffold.hidden).toBe(true);
-    expect(scaffold.hasAttribute('inert')).toBe(true);
-  });
-
-  it('Escape key closes the slideshow', () => {
-    const seq = [{ id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' }];
-    const { document, scaffold } = openPage(seq);
-    document.dispatch('keydown', { key: 'Escape' });
-    expect(scaffold.hidden).toBe(true);
-  });
-
-  it('focus returns to trigger after close button click', () => {
-    const seq = [{ id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' }];
-    const { closeBtn, trigger } = openPage(seq);
-    closeBtn.dispatch('click');
-    expect(trigger.focused).toBe(true);
-  });
-
-  it('focus returns to trigger after Escape', () => {
-    const seq = [{ id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' }];
-    const { document, trigger } = openPage(seq);
-    document.dispatch('keydown', { key: 'Escape' });
-    expect(trigger.focused).toBe(true);
-  });
-
-  it('Escape calls preventDefault', () => {
-    const seq = [{ id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' }];
-    const { document } = openPage(seq);
-    const event = document.dispatch('keydown', { key: 'Escape' });
-    expect(event.defaultPrevented).toBe(true);
-  });
-
-  it('aria-expanded is "false" after close', () => {
-    const seq = [{ id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' }];
-    const { closeBtn, trigger } = openPage(seq);
-    closeBtn.dispatch('click');
-    expect(trigger.getAttribute('aria-expanded')).toBe('false');
-  });
-
-  it('Escape does not throw when dialog is already closed', () => {
-    const { document } = makeSlideshowPage([{ id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' }]);
-    enhanceSlideshow(document);
-    expect(() => document.dispatch('keydown', { key: 'Escape' })).not.toThrow();
-  });
-
-  it('can reopen after closing', () => {
+  it('close restores hidden state, aria state, and opener focus, then permits a clean reopen', () => {
     const seq = [{ id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' }];
     const { closeBtn, trigger, scaffold } = openPage(seq);
     closeBtn.dispatch('click');
     expect(scaffold.hidden).toBe(true);
+    expect(scaffold.hasAttribute('inert')).toBe(true);
+    expect(trigger.focused).toBe(true);
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
     trigger.dispatch('click');
     expect(scaffold.hidden).toBe(false);
+  });
+
+  it('Escape closes, prevents the key, restores focus, and is inert while already closed', () => {
+    const seq = [{ id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' }];
+    const { document, trigger, scaffold } = openPage(seq);
+    const event = document.dispatch('keydown', { key: 'Escape' });
+    expect(event.defaultPrevented).toBe(true);
+    expect(scaffold.hidden).toBe(true);
+    expect(trigger.focused).toBe(true);
+    expect(() => document.dispatch('keydown', { key: 'Escape' })).not.toThrow();
   });
 });
 
@@ -1356,86 +1207,37 @@ describe('enhanceSlideshow — autoplay', () => {
     { id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' },
     { id: 2, filename: 'b.png', previewUrl: '/p/2', viewerUrl: '/v/2' },
   ];
-  const seq1 = [{ id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' }];
-
-  it('play-pause button is enabled after enhancement (multi-image sequence)', () => {
-    const { document, playPauseBtn } = makeSlideshowPage(seq2);
-    enhanceSlideshow(document);
-    expect(playPauseBtn.disabled).toBe(false);
+  it('enables playback controls only when a playable sequence exists', () => {
+    const multi = makeSlideshowPage(seq2, { fullscreen: true });
+    enhanceSlideshow(multi.document);
+    expect(multi.playPauseBtn.disabled).toBe(false);
+    expect(multi.speedSelect.disabled).toBe(false);
+    const empty = makeSlideshowPage([], { fullscreen: true });
+    enhanceSlideshow(empty.document);
+    expect(empty.playPauseBtn.disabled).toBe(true);
+    expect(empty.speedSelect.disabled).toBe(true);
+    expect(empty.fullscreenBtn.disabled).toBe(true);
   });
 
-  it('speed select is enabled after enhancement (multi-image sequence)', () => {
-    const { document, speedSelect } = makeSlideshowPage(seq2);
-    enhanceSlideshow(document);
-    expect(speedSelect.disabled).toBe(false);
-  });
-
-  it('play-pause is disabled for empty sequence', () => {
-    const { document, playPauseBtn } = makeSlideshowPage([]);
-    enhanceSlideshow(document);
-    expect(playPauseBtn.disabled).toBe(true);
-  });
-
-  it('speed select is disabled for empty sequence', () => {
-    const { document, speedSelect } = makeSlideshowPage([]);
-    enhanceSlideshow(document);
-    expect(speedSelect.disabled).toBe(true);
-  });
-
-  it('fullscreen control is disabled for empty sequence when the API is available', () => {
-    const { document, fullscreenBtn } = makeSlideshowPage([], { fullscreen: true });
-    enhanceSlideshow(document);
-    expect(fullscreenBtn.disabled).toBe(true);
-  });
-
-  it('opening a multi-item slideshow starts autoplay', () => {
-    const { playPauseBtn } = openPage(seq2);
+  it('starts one 4000 ms autoplay chain that advances and wraps', () => {
+    const { playPauseBtn, status } = openPage(seq3);
     expect(playPauseBtn.getAttribute('aria-label')).toBe('Pause');
     expect(playPauseBtn.hasAttribute('data-slideshow-playing')).toBe(true);
-  });
-
-  it('default speed is 4000 ms', () => {
-    const { status } = openPage(seq2);
     vi.advanceTimersByTime(3999);
-    expect(status.textContent).toBe('1 of 2');
+    expect(status.textContent).toBe('1 of 3');
     vi.advanceTimersByTime(1);
-    expect(status.textContent).toBe('2 of 2');
-  });
-
-  it('timer advancement moves to next item', () => {
-    const { status } = openPage(seq3);
-    vi.advanceTimersByTime(4000);
-    expect(status.textContent).toBe('2 of 3');
-  });
-
-  it('autoplay wraps at end', () => {
-    const { status } = openPage(seq2);
-    vi.advanceTimersByTime(4000); // → 2 of 2
-    vi.advanceTimersByTime(4000); // → wrap to 1 of 2
-    expect(status.textContent).toBe('1 of 2');
-  });
-
-  it('only one timer is active at a time', () => {
-    const { status } = openPage(seq3);
-    vi.advanceTimersByTime(4000);
     expect(status.textContent).toBe('2 of 3');
     vi.advanceTimersByTime(4000);
     expect(status.textContent).toBe('3 of 3');
     vi.advanceTimersByTime(4000);
-    expect(status.textContent).toBe('1 of 3'); // wrapped, not double-advanced
+    expect(status.textContent).toBe('1 of 3');
   });
 
-  it('close clears timer — no advancement after close', () => {
-    const { status, closeBtn } = openPage(seq3);
-    expect(status.textContent).toBe('1 of 3');
+  it('close cancels autoplay and reopen starts one fresh chain', () => {
+    const { trigger, closeBtn, status } = openPage(seq3);
     closeBtn.dispatch('click');
     vi.advanceTimersByTime(4000);
     expect(status.textContent).toBe('1 of 3');
-  });
-
-  it('reopen starts a fresh timer without duplicates', () => {
-    const { document, trigger, closeBtn, status } = openPage(seq3);
-    closeBtn.dispatch('click');
     trigger.dispatch('click');
     vi.advanceTimersByTime(4000);
     expect(status.textContent).toBe('2 of 3');
@@ -1785,6 +1587,35 @@ describe('enhanceSlideshow — fullscreen', () => {
     expect(scaffold.requestFullscreen).toHaveBeenCalledTimes(1);
   });
 
+  it('consumes rejected fullscreen entry and exit promises while keeping browser state authoritative', async () => {
+    const page = openPage(seq2, { fullscreen: true });
+    page.scaffold.requestFullscreen.mockImplementationOnce(() => Promise.reject(new Error('entry rejected')));
+
+    page.fullscreenBtn.dispatch('click');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(page.document.fullscreenElement).toBeNull();
+    expect(page.fullscreenBtn.getAttribute('aria-label')).toBe('Enter fullscreen');
+    expect(page.fullscreenBtn.getAttribute('data-tooltip')).toBe('Enter fullscreen');
+    expect(page.fullscreenBtn.getAttribute('aria-pressed')).toBe('false');
+    expect(page.fullscreenBtn.hasAttribute('data-slideshow-fullscreen-active')).toBe(false);
+
+    page.fullscreenBtn.dispatch('click');
+    expect(page.document.fullscreenElement).toBe(page.scaffold);
+    page.document.exitFullscreen.mockImplementationOnce(() => Promise.reject(new Error('exit rejected')));
+
+    page.fullscreenBtn.dispatch('click');
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(page.document.fullscreenElement).toBe(page.scaffold);
+    expect(page.fullscreenBtn.getAttribute('aria-label')).toBe('Exit fullscreen');
+    expect(page.fullscreenBtn.getAttribute('data-tooltip')).toBe('Exit fullscreen');
+    expect(page.fullscreenBtn.getAttribute('aria-pressed')).toBe('true');
+    expect(page.fullscreenBtn.hasAttribute('data-slideshow-fullscreen-active')).toBe(true);
+  });
+
   it('updates label, pressed state, and icon state while fullscreen is active', () => {
     const { document, scaffold, fullscreenBtn } = openPage(seq2, { fullscreen: true });
     fullscreenBtn.dispatch('click');
@@ -1819,17 +1650,22 @@ describe('enhanceSlideshow — fullscreen', () => {
     expect(scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(true);
   });
 
-  it('closing clears the chrome timer and reopening starts visible with one new timer', () => {
+  it('closing clears idle state and focused markers, then reopening starts visible with one new timer', () => {
     const seq1 = [{ id: 1, filename: 'a.png', previewUrl: '/p/1', viewerUrl: '/v/1' }];
-    const { scaffold, trigger, closeBtn } = openPage(seq1);
+    const { document, scaffold, trigger, closeBtn } = openPage(seq1);
 
     expect(vi.getTimerCount()).toBe(1);
+    document.dispatch('keydown', { key: 'Tab' });
+    vi.advanceTimersByTime(chromeHideDelay);
+    expect(closeBtn.hasAttribute('data-slideshow-ui-focused')).toBe(true);
     closeBtn.dispatch('click');
     expect(vi.getTimerCount()).toBe(0);
     expect(scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(false);
+    expect(closeBtn.hasAttribute('data-slideshow-ui-focused')).toBe(false);
 
     trigger.dispatch('click');
     expect(scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(false);
+    expect(closeBtn.hasAttribute('data-slideshow-ui-focused')).toBe(false);
     expect(vi.getTimerCount()).toBe(1);
     vi.advanceTimersByTime(chromeHideDelay);
     expect(scaffold.hasAttribute('data-slideshow-ui-hidden')).toBe(true);

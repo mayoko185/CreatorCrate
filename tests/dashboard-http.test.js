@@ -365,6 +365,10 @@ describe('dashboard HTTP composition', () => {
       const dialog = extractDashboardDefaultsDialog(res.text);
       const renderedIds = Array.from(dialog.matchAll(/data-dashboard-section-id="([^"]+)"/g), ([, id]) => id);
       const sortDialog = res.text.match(/<dialog id="dashboard-defaults-sort-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      const sortSelect = sortDialog.match(/<select id="dashboard-defaults-sort-select"[\s\S]*?<\/select>/)?.[0] || '';
+      const sortOptionValues = new Set(
+        Array.from(sortSelect.matchAll(/<option value="([^"]+)"/g), ([, value]) => value),
+      );
 
       expect(dialog).toContain('class="app-dialog" data-app-dialog open');
       expect(dialog).toContain('method="post" action="/dashboard/defaults"');
@@ -410,6 +414,7 @@ describe('dashboard HTTP composition', () => {
       expect((dialog.match(/aria-label="Sort options for [^"]+"/g) || [])).toHaveLength(7);
       expect((res.text.match(/id="dashboard-defaults-sort-dialog"/g) || [])).toHaveLength(1);
       expect(sortDialog).toContain('Sort by');
+      expect(sortOptionValues).toEqual(new Set(['updated', 'created', 'title']));
       expect(sortDialog).not.toContain('value="published"');
       expect(sortDialog).not.toContain('value="planned"');
       expect(sortDialog).toContain('data-dashboard-defaults-sort-apply');

@@ -103,6 +103,11 @@ describe('release Social Preparation detail display', () => {
     return section.match(new RegExp(`<article aria-labelledby="release-social-preparation-${platform}">[\\s\\S]*?</article>`))?.[0];
   }
 
+  function projectReleaseItem(html, id) {
+    return html.match(/<li>\s*<a href="\/releases\/\d+">[\s\S]*?<\/li>/g)
+      ?.find((item) => item.match(/^<li>\s*<a href="\/releases\/(\d+)">/)?.[1] === String(id));
+  }
+
   describe('compact release list', () => {
     function releaseRow(html, id = releaseId) {
       return html.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/g)
@@ -155,6 +160,69 @@ describe('release Social Preparation detail display', () => {
       expect(summary).toContain('<small>Social posts</small>');
       expect(summary).toContain('aria-label="Social posts"');
       expect(summary).toContain('>X · Prepared</span>');
+    });
+
+    it('keeps each Project detail release summary and action tied to its release', async () => {
+      db.prepare("UPDATE releases SET published_date = '2026-08-01' WHERE id = ?").run(releaseId);
+      target('patreon', 'posted', 1, null, FIRST);
+      const otherId = db.prepare("INSERT INTO releases (project_id, title, published_date) VALUES (?, 'Other release', '2026-08-02') RETURNING id").get(projectId).id;
+      app.locals.socialPrepRepository.ensurePlatforms(otherId, ['x', 'bluesky']);
+      db.prepare("UPDATE release_social_platforms SET status = 'posted', attempts = 1, posted_at = ? WHERE release_id = ? AND platform = 'x'").run(UPDATED, otherId);
+      db.prepare("UPDATE release_social_platforms SET status = 'failed', attempts = 1 WHERE release_id = ? AND platform = 'bluesky'").run(otherId);
+
+      const { text: html } = await agent.get(`/projects/${projectId}`).expect(200);
+      const first = projectReleaseItem(html, releaseId);
+      const second = projectReleaseItem(html, otherId);
+      expect(first).toContain(`href="/releases/${releaseId}">Display release</a>`);
+      expect(second).toContain(`href="/releases/${otherId}">Other release</a>`);
+      const firstSummary = first.match(/<div class="release-social-prep-summary"[\s\S]*?<\/div>/)?.[0];
+      const secondSummary = second.match(/<div class="release-social-prep-summary"[\s\S]*?<\/div>/)?.[0];
+      expect(firstSummary).toContain('>Patreon · Posted — confirmed by you</span>');
+      expect(firstSummary).not.toMatch(/>X ·|>Bluesky ·/);
+      expect(companionActions(firstSummary)).toHaveLength(1);
+      expect(companionActions(firstSummary)[0]).toContain(`data-activation-url="/releases/${releaseId}/social-prep/activate"`);
+      expect(companionActions(firstSummary)[0]).toContain(`data-reissue-url="/releases/${releaseId}/social-prep/reissue"`);
+      expect(companionActions(firstSummary)[0]).toContain('data-target-platform="patreon"');
+      expect(firstSummary).not.toContain(`data-activation-url="/releases/${otherId}/social-prep/activate"`);
+
+      expect(secondSummary).toContain('>X · Posted — confirmed by you</span>');
+      expect(secondSummary).toContain('>Bluesky · Failed</span>');
+      expect(secondSummary).not.toContain('>Patreon ·');
+      expect(companionActions(secondSummary)).toHaveLength(1);
+      expect(companionActions(secondSummary)[0]).toContain(`data-activation-url="/releases/${otherId}/social-prep/activate"`);
+      expect(companionActions(secondSummary)[0]).toContain(`data-reissue-url="/releases/${otherId}/social-prep/reissue"`);
+      expect(companionActions(secondSummary)[0]).toContain('data-target-platform="x"');
+      expect(secondSummary).not.toContain(`data-activation-url="/releases/${releaseId}/social-prep/activate"`);
+    });
+
+    it('does not give an unsaved Project detail release Settings or another release target', async () => {
+      const savedId = db.prepare("INSERT INTO releases (project_id, title) VALUES (?, 'Saved release') RETURNING id").get(projectId).id;
+      app.locals.socialPrepRepository.ensurePlatforms(savedId, ['x']);
+      db.prepare("UPDATE release_social_platforms SET status = 'prepared', attempts = 1 WHERE release_id = ? AND platform = 'x'").run(savedId);
+
+      const { text: html } = await agent.get(`/projects/${projectId}`).expect(200);
+      const unsaved = projectReleaseItem(html, releaseId);
+      const saved = projectReleaseItem(html, savedId);
+      expect(unsaved).toContain(`href="/releases/${releaseId}">Display release</a>`);
+      expect(unsaved).not.toMatch(/release-social-prep-summary|Social posts|data-release-social-prep-companion/);
+      expect(saved).toContain(`href="/releases/${savedId}">Saved release</a>`);
+      expect(saved).toContain('>X · Prepared</span>');
+    });
+
+    it('shows saved Social posts without an action on archived Project detail', async () => {
+      db.prepare("UPDATE releases SET published_date = '2026-08-01' WHERE id = ?").run(releaseId);
+      target('patreon', 'posted', 1, null, FIRST);
+      settings.setPlatforms(['bluesky']);
+      db.prepare("UPDATE projects SET archived_at = '2026-08-02' WHERE id = ?").run(projectId);
+
+      const { text: html } = await agent.get(`/projects/${projectId}`).expect(200);
+      const item = projectReleaseItem(html, releaseId);
+      expect(html).toContain('This project is archived and read-only');
+      expect(item).toContain(`href="/releases/${releaseId}">Display release</a>`);
+      const summary = item.match(/<div class="release-social-prep-summary"[\s\S]*?<\/div>/)?.[0];
+      expect(summary).toContain('>Patreon · Posted — confirmed by you</span>');
+      expect(summary).not.toContain('>Bluesky ·');
+      expect(summary).not.toMatch(/data-release-social-prep-companion|data-activation-url|<button\b/);
     });
 
     it.each([

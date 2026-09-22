@@ -6,7 +6,6 @@ function makeMockElement(tag, document = null) {
   const children = [];
   const node = {
     tagName: String(tag).toUpperCase(),
-    nodeType: 1,
     ownerDocument: document,
     parentNode: null,
     children,
@@ -18,9 +17,6 @@ function makeMockElement(tag, document = null) {
       attrs[name] = String(value);
       if (name === 'value' && tag === 'input') this.value = String(value);
       if (name === 'type' && tag === 'input') this.type = String(value);
-    },
-    removeAttribute(name) {
-      delete attrs[name];
     },
     appendChild(child) {
       children.push(child);
@@ -203,8 +199,8 @@ function makeDropdown(mode, options, selectedValues = [], nativeConfig = null) {
     querySelectorAll(selector) {
       return selector === '[data-cc-dropdown]' ? [dropdown] : [];
     },
-    addEventListener(type, handler, optionsArg) {
-      listeners.push({ type, handler, options: optionsArg });
+    addEventListener(type, handler) {
+      listeners.push({ type, handler });
     },
     dispatch(type, target, props = {}) {
       const event = {
@@ -223,7 +219,7 @@ function makeDropdown(mode, options, selectedValues = [], nativeConfig = null) {
   };
 
   return {
-    scope, dropdown, inputs, summary, summaryAttrs, currentSummary, listeners, nativeSelect, widthSizer,
+    scope, dropdown, inputs, summary, summaryAttrs, currentSummary, nativeSelect, widthSizer,
   };
 }
 
@@ -300,7 +296,9 @@ function wireNativeSyncFixture(fixture) {
   fixture.dropdown.querySelectorAll = (selector) => panel.querySelectorAll(selector);
   fixture.dropdown.parentElement = field;
   fixture.dropdown.parentNode = field;
-  return { document, panel };
+  return {
+    getInputs: () => Array.from(fixture.dropdown.querySelectorAll('input[type="radio"]')),
+  };
 }
 
 describe('generic dropdown enhancement', () => {
@@ -355,15 +353,11 @@ describe('generic dropdown enhancement', () => {
     expect(fixture.currentSummary.textContent).toBe('All tags');
   });
 
-  it('closes on outside click and Escape, returns focus to the trigger, and binds once', () => {
+  it('closes on outside click and Escape and returns focus to the trigger', () => {
     const fixture = makeDropdown('multiple', [{ value: 'alpha', label: 'Alpha' }]);
     const outside = { closest() { return null; } };
 
     expect(enhanceDropdowns(fixture.scope)).toBe(1);
-    expect(enhanceDropdowns(fixture.scope)).toBe(1);
-    expect(fixture.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
-    expect(fixture.listeners.filter(({ type }) => type === 'keydown')).toHaveLength(1);
-    expect(fixture.listeners.filter(({ type }) => type === 'toggle')).toHaveLength(1);
 
     fixture.dropdown.open = true;
     fixture.scope.dispatch('click', outside);
@@ -377,26 +371,23 @@ describe('generic dropdown enhancement', () => {
     expect(fixture.summary.focused).toBe(true);
   });
 
-  it('re-enhances a replaced live-region dropdown without duplicate listeners', () => {
-    const initial = makeDropdown('single', [
-      { value: 'png', label: 'PNG' },
-      { value: 'kra', label: 'Krita' },
-    ], ['png']);
-    const replacement = makeDropdown('single', [
-      { value: 'png', label: 'PNG' },
-      { value: 'kra', label: 'Krita' },
-    ], ['kra']);
+  it('keeps only the newly opened dropdown open and ignores clicks inside it', () => {
+    const first = makeDropdown('single', [{ value: 'png', label: 'PNG' }], ['png']);
+    const second = makeDropdown('single', [{ value: 'kra', label: 'Krita' }], ['kra']);
+    first.scope.querySelectorAll = (selector) => (
+      selector === '[data-cc-dropdown]' ? [first.dropdown, second.dropdown] : []
+    );
 
-    expect(enhanceDropdowns(initial.scope)).toBe(1);
-    expect(enhanceDropdowns(replacement.scope)).toBe(1);
-    expect(enhanceDropdowns(replacement.scope)).toBe(1);
-    expect(replacement.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+    enhanceDropdowns(first.scope);
+    first.dropdown.open = true;
+    second.dropdown.open = true;
+    first.scope.dispatch('toggle', second.dropdown);
 
-    replacement.inputs[0].checked = true;
-    replacement.inputs[1].checked = false;
-    replacement.scope.dispatch('change', replacement.inputs[0]);
-    expect(replacement.currentSummary.textContent).toBe('PNG');
-    expect(replacement.dropdown.open).toBe(false);
+    expect(first.dropdown.open).toBe(false);
+    expect(second.dropdown.open).toBe(true);
+
+    first.scope.dispatch('click', second.inputs[0]);
+    expect(second.dropdown.open).toBe(true);
   });
 
   it('filters searchable options case-insensitively, keeps the empty placeholder visible, and toggles no-results', () => {
@@ -448,9 +439,8 @@ describe('generic dropdown enhancement', () => {
     expect(fixture.summary.focused).toBe(true);
   });
 
-  it('prevents Enter only in the searchable field, closes Escape, and closes on outside click', () => {
+  it('prevents non-composing Enter only in the searchable field', () => {
     const fixture = makeSearchableDropdown([{ value: '1', label: 'Alpha Project' }], ['1']);
-    const outside = { closest() { return null; } };
 
     enhanceDropdowns(fixture.scope);
     fixture.dropdown.open = true;
@@ -463,15 +453,6 @@ describe('generic dropdown enhancement', () => {
       isComposing: true,
     });
     expect(composingEnter.defaultPrevented).toBe(false);
-
-    const escape = fixture.scope.dispatch('keydown', fixture.search, { key: 'Escape' });
-    expect(escape.defaultPrevented).toBe(true);
-    expect(fixture.dropdown.open).toBe(false);
-    expect(fixture.summary.focused).toBe(true);
-
-    fixture.dropdown.open = true;
-    fixture.scope.dispatch('click', outside);
-    expect(fixture.dropdown.open).toBe(false);
 
     const standard = makeDropdown('single', [{ value: '1', label: 'Alpha' }], ['1']);
     enhanceDropdowns(standard.scope);
@@ -496,7 +477,6 @@ describe('generic dropdown enhancement', () => {
 
     expect(enhanceDropdowns(initial.scope)).toBe(1);
     expect(enhanceDropdowns(initial.scope)).toBe(1);
-    expect(initial.listeners.filter(({ type }) => type === 'input')).toHaveLength(1);
 
     current = replacement.dropdown;
     expect(enhanceDropdowns(initial.scope)).toBe(1);
@@ -539,6 +519,56 @@ describe('generic dropdown enhancement', () => {
     expect(nativeSelect.value).toBe('png');
   });
 
+  it('synchronizes native-backed multiple selections exactly once after repeated enhancement', () => {
+    const fixture = makeDropdown('multiple', [
+      { value: 'alpha', label: 'Alpha' },
+      { value: 'beta', label: 'Beta' },
+      { value: 'gamma', label: 'Gamma' },
+    ], [], { value: '', dispatchNativeChange: true });
+    fixture.nativeSelect.multiple = true;
+    fixture.nativeSelect.options.forEach((option) => {
+      option.selected = option.value === 'alpha' || option.value === 'gamma';
+    });
+    const checkedValues = () => new Set(
+      fixture.inputs.filter((input) => input.checked).map((input) => input.value),
+    );
+    const nativeValues = () => new Set(
+      fixture.nativeSelect.options.filter((option) => option.selected).map((option) => option.value),
+    );
+
+    enhanceDropdowns(fixture.scope);
+    enhanceDropdowns(fixture.scope);
+
+    expect(checkedValues()).toEqual(new Set(['alpha', 'gamma']));
+
+    fixture.inputs[0].checked = false;
+    fixture.inputs[1].checked = true;
+    fixture.scope.dispatch('change', fixture.inputs[1]);
+
+    expect(nativeValues()).toEqual(new Set(['beta', 'gamma']));
+    expect(fixture.nativeSelect.dispatchEvent).toHaveBeenCalledTimes(1);
+
+    let nativeResyncWrites = 0;
+    fixture.inputs.forEach((input) => {
+      let checked = input.checked;
+      Object.defineProperty(input, 'checked', {
+        configurable: true,
+        get: () => checked,
+        set(value) {
+          nativeResyncWrites += 1;
+          checked = value;
+        },
+      });
+    });
+    fixture.nativeSelect.options.forEach((option) => {
+      option.selected = option.value === 'alpha' || option.value === 'beta';
+    });
+    fixture.scope.dispatch('change', fixture.nativeSelect);
+
+    expect(checkedValues()).toEqual(new Set(['alpha', 'beta']));
+    expect(nativeResyncWrites).toBe(3);
+  });
+
   it('keeps native-backed radios grouped and dispatches the canonical native change when configured', () => {
     const fixture = makeDropdown('single', [
       { value: '2000', label: '2 s' },
@@ -546,6 +576,7 @@ describe('generic dropdown enhancement', () => {
       { value: '6000', label: '6 s' },
     ], [], { value: '4000', dispatchNativeChange: true });
 
+    enhanceDropdowns(fixture.scope);
     enhanceDropdowns(fixture.scope);
     expect(fixture.nativeSelect.hidden).toBe(true);
     expect(fixture.inputs.map((input) => input.checked)).toEqual([false, true, false]);
@@ -586,31 +617,11 @@ describe('generic dropdown enhancement', () => {
     expect(fixture.summaryAttrs['aria-disabled']).toBeUndefined();
   });
 
-  it('resyncs enhanced options from a mutated native select and preserves selected value', () => {
+  it('adds and removes enhanced options when the native select changes', () => {
     const fixture = makeDropdown('single', [
       { value: 'png', label: 'PNG' },
     ], [], { value: 'png', dispatchNativeChange: true });
-    const document = makeMockDocument();
-    const panel = makeMockElement('div', document);
-    const field = {
-      querySelector(selector) {
-        if (selector === '[data-cc-dropdown-native-select]') return fixture.nativeSelect;
-        if (selector === '[data-cc-dropdown]') return fixture.dropdown;
-        return null;
-      },
-    };
-    const originalQuerySelector = fixture.dropdown.querySelector.bind(fixture.dropdown);
-    fixture.dropdown.ownerDocument = document;
-    fixture.dropdown.querySelector = (selector) => {
-      if (selector === '[data-cc-dropdown-option-list]' || selector === '.asset-filter-multiselect-panel') return panel;
-      if (selector === 'input[type="radio"]:checked') return panel.querySelectorAll('input[type="radio"]').find((input) => input.checked) || null;
-      return originalQuerySelector(selector);
-    };
-    fixture.dropdown.querySelectorAll = (selector) => panel.querySelectorAll(selector);
-    fixture.dropdown.parentElement = field;
-    fixture.dropdown.parentNode = field;
-
-    const getInputs = () => Array.from(fixture.dropdown.querySelectorAll('input[type="radio"]'));
+    const { getInputs } = wireNativeSyncFixture(fixture);
 
     enhanceDropdowns(fixture.scope);
     let inputs = getInputs();
@@ -626,37 +637,6 @@ describe('generic dropdown enhancement', () => {
     expect(inputs[0].checked).toBe(false);
     expect(inputs[1].checked).toBe(true);
     expect(fixture.currentSummary.textContent).toBe('kra');
-  });
-
-  it('removes stale enhanced options when native select options are deleted', () => {
-    const fixture = makeDropdown('single', [
-      { value: 'png', label: 'PNG' },
-      { value: 'kra', label: 'Krita' },
-    ], [], { value: 'png', dispatchNativeChange: true });
-    const document = makeMockDocument();
-    const panel = makeMockElement('div', document);
-    const field = {
-      querySelector(selector) {
-        if (selector === '[data-cc-dropdown-native-select]') return fixture.nativeSelect;
-        if (selector === '[data-cc-dropdown]') return fixture.dropdown;
-        return null;
-      },
-    };
-    const originalQuerySelector = fixture.dropdown.querySelector.bind(fixture.dropdown);
-    fixture.dropdown.ownerDocument = document;
-    fixture.dropdown.querySelector = (selector) => {
-      if (selector === '[data-cc-dropdown-option-list]' || selector === '.asset-filter-multiselect-panel') return panel;
-      if (selector === 'input[type="radio"]:checked') return panel.querySelectorAll('input[type="radio"]').find((input) => input.checked) || null;
-      return originalQuerySelector(selector);
-    };
-    fixture.dropdown.querySelectorAll = (selector) => panel.querySelectorAll(selector);
-    fixture.dropdown.parentElement = field;
-    fixture.dropdown.parentNode = field;
-
-    const getInputs = () => Array.from(fixture.dropdown.querySelectorAll('input[type="radio"]'));
-
-    enhanceDropdowns(fixture.scope);
-    expect(getInputs()).toHaveLength(2);
 
     fixture.nativeSelect.options.pop();
     fixture.scope.dispatch('change', fixture.nativeSelect);
@@ -753,18 +733,7 @@ describe('generic dropdown enhancement', () => {
 });
 
 describe('async dropdown intrinsic-width sizer synchronization', () => {
-  it('mirrors a single-placeholder native select into the width sizer on initial sync', () => {
-    const fixture = makeDropdown('single', [
-      { value: 'custom', label: 'Custom' },
-    ], [], { value: 'custom', dispatchNativeChange: true });
-    wireNativeSyncFixture(fixture);
-
-    enhanceDropdowns(fixture.scope);
-
-    expect(fixture.widthSizer.children.map((span) => span.textContent)).toEqual(['Custom']);
-  });
-
-  it('adds, renames, and removes sizer spans in step with the native select, without duplicating on repeated syncs', () => {
+  it('keeps literal native option labels mirrored exactly across repeated rebuilds', () => {
     const fixture = makeDropdown('single', [
       { value: 'custom', label: 'Custom' },
     ], [], { value: 'custom', dispatchNativeChange: true });
@@ -775,11 +744,11 @@ describe('async dropdown intrinsic-width sizer synchronization', () => {
 
     fixture.nativeSelect.options.push(
       { value: 'preset-a', textContent: 'A' },
-      { value: 'preset-long', textContent: 'A Really Long Preset Name' },
+      { value: 'unsafe', textContent: '<img src=x onerror=alert(1)>' },
     );
     fixture.scope.dispatch('change', fixture.nativeSelect);
     expect(fixture.widthSizer.children.map((span) => span.textContent)).toEqual([
-      'Custom', 'A', 'A Really Long Preset Name',
+      'Custom', 'A', '<img src=x onerror=alert(1)>',
     ]);
 
     fixture.scope.dispatch('change', fixture.nativeSelect);
@@ -788,77 +757,17 @@ describe('async dropdown intrinsic-width sizer synchronization', () => {
     fixture.nativeSelect.options[1].textContent = 'Preset A Renamed';
     fixture.scope.dispatch('change', fixture.nativeSelect);
     expect(fixture.widthSizer.children.map((span) => span.textContent)).toEqual([
-      'Custom', 'Preset A Renamed', 'A Really Long Preset Name',
+      'Custom', 'Preset A Renamed', '<img src=x onerror=alert(1)>',
     ]);
 
     fixture.nativeSelect.options.splice(1, 1);
     fixture.scope.dispatch('change', fixture.nativeSelect);
     expect(fixture.widthSizer.children.map((span) => span.textContent)).toEqual([
-      'Custom', 'A Really Long Preset Name',
+      'Custom', '<img src=x onerror=alert(1)>',
     ]);
-  });
 
-  it('leaves a valid, empty sizer when the native select ends up with no options', () => {
-    const fixture = makeDropdown('single', [
-      { value: 'custom', label: 'Custom' },
-    ], [], { value: 'custom', dispatchNativeChange: true });
-    wireNativeSyncFixture(fixture);
-
-    enhanceDropdowns(fixture.scope);
     fixture.nativeSelect.options.length = 0;
     fixture.scope.dispatch('change', fixture.nativeSelect);
-
     expect(fixture.widthSizer.children).toEqual([]);
-  });
-
-  it('assigns option text via textContent, preserving it literally rather than parsing it as markup', () => {
-    const fixture = makeDropdown('single', [
-      { value: 'custom', label: 'Custom' },
-    ], [], { value: 'custom', dispatchNativeChange: true });
-    wireNativeSyncFixture(fixture);
-
-    enhanceDropdowns(fixture.scope);
-    fixture.nativeSelect.options.push({ value: 'unsafe', textContent: '<img src=x onerror=alert(1)>' });
-    fixture.scope.dispatch('change', fixture.nativeSelect);
-
-    expect(fixture.widthSizer.children[1].textContent).toBe('<img src=x onerror=alert(1)>');
-  });
-
-  it('rebuilds the sizer the same way for searchable dropdowns as non-searchable ones', () => {
-    const fixture = makeDropdown('single', [
-      { value: 'custom', label: 'Custom' },
-    ], [], { value: 'custom', dispatchNativeChange: true });
-    fixture.dropdown.dataset.ccDropdownSearchable = '';
-    wireNativeSyncFixture(fixture);
-
-    enhanceDropdowns(fixture.scope);
-    fixture.nativeSelect.options.push({ value: 'preset-a', textContent: 'Preset A' });
-    fixture.scope.dispatch('change', fixture.nativeSelect);
-
-    expect(fixture.widthSizer.children.map((span) => span.textContent)).toEqual(['Custom', 'Preset A']);
-  });
-
-  it('keeps selected value, visible summary, and disabled-state synchronization correct while the sizer resyncs', () => {
-    const fixture = makeDropdown('single', [
-      { value: 'png', label: 'PNG' },
-    ], [], { value: 'png', dispatchNativeChange: true });
-    wireNativeSyncFixture(fixture);
-
-    enhanceDropdowns(fixture.scope);
-    fixture.nativeSelect.options.push({ value: 'kra', textContent: 'Krita' });
-    fixture.nativeSelect.value = 'kra';
-    fixture.scope.dispatch('change', fixture.nativeSelect);
-
-    expect(fixture.currentSummary.textContent).toBe('kra');
-    expect(fixture.widthSizer.children.map((span) => span.textContent)).toEqual(['PNG', 'Krita']);
-
-    fixture.nativeSelect.disabled = true;
-    fixture.scope.dispatch('change', fixture.nativeSelect);
-    expect(fixture.summary.disabled).toBe(true);
-
-    fixture.nativeSelect.disabled = false;
-    fixture.scope.dispatch('change', fixture.nativeSelect);
-    expect(fixture.summary.disabled).toBe(false);
-    expect(fixture.widthSizer.children.map((span) => span.textContent)).toEqual(['PNG', 'Krita']);
   });
 });

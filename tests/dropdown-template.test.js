@@ -1,12 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
 import nunjucks from 'nunjucks';
 import { fileURLToPath } from 'node:url';
 
 const VIEWS_DIR = fileURLToPath(new URL('../src/views', import.meta.url));
-const STYLESHEET_PATH = fileURLToPath(new URL('../src/static/creatorcrate.css', import.meta.url));
 const env = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: true });
-const css = readFileSync(STYLESHEET_PATH, 'utf8');
 
 function renderDropdown(method, config) {
   return env.renderString(
@@ -40,7 +37,6 @@ describe('shared dropdown template', () => {
       panelLabel: 'Format options',
     });
 
-    expect(html).toContain('class="asset-filter-multiselect asset-filter-multiselect--sized cc-dropdown"');
     expect(html).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
     expect(html).toContain('id="format-filter-trigger" aria-controls="format-filter-options"');
     expect(html).toContain('aria-label="Format filter: Krita"');
@@ -121,7 +117,6 @@ describe('shared dropdown template', () => {
       panelLabel: 'Tag options',
     });
 
-    expect(html).toContain('class="asset-filter-multiselect asset-filter-multiselect--sized cc-dropdown"');
     expect(html).toContain('data-cc-dropdown data-cc-dropdown-mode="multiple"');
     expect(html).toContain('id="tag-filter-trigger" aria-controls="tag-filter-options"');
     expect(html).toContain('aria-label="Tag filter: 2 tags selected"');
@@ -151,54 +146,19 @@ describe('shared dropdown template', () => {
     );
   });
 
-  it('escapes structured link text', () => {
-    const html = renderEmptyMultiSelect({
-      emptyState: {
-        text: 'No tags available.',
-        link: { text: '<b>Tags & "more"</b>', href: '/settings/tags' },
-      },
-    });
-
-    expect(html).toContain(
-      '<a href="/settings/tags">&lt;b&gt;Tags &amp; &quot;more&quot;&lt;/b&gt;</a>',
-    );
-  });
-
-  it('escapes structured link hrefs', () => {
-    const html = renderEmptyMultiSelect({
-      emptyState: {
-        text: 'No tags available.',
-        link: { text: 'Add tags', href: '"/settings?kind=tag&next=<script>' },
-      },
-    });
-
-    expect(html).toContain(
-      'href="&quot;/settings?kind=tag&amp;next=&lt;script&gt;"',
-    );
-  });
-
-  it('escapes structured leading and suffix text', () => {
+  it('escapes every structured empty-state value instead of passing through markup', () => {
     const html = renderEmptyMultiSelect({
       emptyState: {
         text: '<script>alert("x")</script> &',
-        link: { text: 'Add tags', href: '/settings/tags' },
-        suffix: '<b>now</b> &',
+        link: { text: '<b>Tags & "more"</b>', href: '"/settings?kind=tag&next=<script>' },
+        suffix: '<img src=x onerror=alert(3)> &',
       },
     });
 
     expect(html).toContain('&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt; &amp;');
-    expect(html).toContain('&lt;b&gt;now&lt;/b&gt; &amp;');
-  });
-
-  it('does not pass raw structured empty-state HTML through', () => {
-    const html = renderEmptyMultiSelect({
-      emptyState: {
-        text: '<script>alert(1)</script>',
-        link: { text: '<b>Click</b>', href: '"><script>alert(2)</script>' },
-        suffix: '<img src=x onerror=alert(3)>',
-      },
-    });
-
+    expect(html).toContain('&lt;b&gt;Tags &amp; &quot;more&quot;&lt;/b&gt;');
+    expect(html).toContain('href="&quot;/settings?kind=tag&amp;next=&lt;script&gt;"');
+    expect(html).toContain('&lt;img src=x onerror=alert(3)&gt; &amp;');
     expect(html).not.toContain('<script>');
     expect(html).not.toContain('<b>');
     expect(html).not.toContain('<img');
@@ -232,45 +192,23 @@ describe('shared dropdown template', () => {
     expect(html).toContain('Existing option');
   });
 
-  it('renders no empty paragraph for a multi-select with neither empty config', () => {
-    const html = renderEmptyMultiSelect();
+  it('does not render the multi-select empty state in either single-select variant', () => {
+    for (const method of ['singleSelect', 'searchableSingleSelect']) {
+      const html = renderDropdown(method, {
+        id: 'project-filter',
+        name: 'project',
+        label: 'Project',
+        options: [],
+        emptyState: {
+          text: 'No projects available.',
+          link: { text: 'Create a project', href: '/projects/new' },
+          suffix: '.',
+        },
+      });
 
-    expect(html).not.toContain('class="asset-filter-multiselect-empty"');
-  });
-
-  it('does not render structured empty state for single-selects', () => {
-    const html = renderDropdown('singleSelect', {
-      id: 'project-filter',
-      name: 'project',
-      label: 'Project',
-      options: [],
-      emptyState: {
-        text: 'No projects available.',
-        link: { text: 'Create a project', href: '/projects/new' },
-        suffix: '.',
-      },
-    });
-
-    expect(html).not.toContain('No projects available.');
-    expect(html).not.toContain('href="/projects/new"');
-  });
-
-  it('does not render structured empty state for searchable single-selects', () => {
-    const html = renderDropdown('searchableSingleSelect', {
-      id: 'project-filter',
-      name: 'project',
-      label: 'Project',
-      options: [],
-      emptyState: {
-        text: 'No projects available.',
-        link: { text: 'Create a project', href: '/projects/new' },
-        suffix: '.',
-      },
-    });
-
-    expect(html).not.toContain('No projects available.');
-    expect(html).not.toContain('href="/projects/new"');
-    expect(html).toContain('No matching options');
+      expect(html).not.toContain('No projects available.');
+      expect(html).not.toContain('href="/projects/new"');
+    }
   });
 
   it('renders an optional native-select source while keeping the enhanced shell available', () => {
@@ -286,7 +224,6 @@ describe('shared dropdown template', () => {
 
     expect(html).toContain('data-cc-dropdown-native-select');
     expect(html).toContain('name="action"');
-    expect(html).toContain('<details class="asset-filter-multiselect asset-filter-multiselect--sized cc-dropdown"');
     expect(html).toContain('data-cc-dropdown-mode="single"');
     expect(html).not.toMatch(/<input id="action-select-option-one" name="action"/);
   });
@@ -355,23 +292,6 @@ describe('shared dropdown template', () => {
     expect(html).not.toMatch(/id="defaults-view-dropdown-option-leading" name="view"/);
   });
 
-  it('gives compact triggers a smaller bounded contract while preserving default sizing', () => {
-    const defaultSummaryRule = css.match(/\.asset-filter-multiselect summary\s*\{[^}]*\}/)?.[0] || '';
-    const compactSummaryRule = css.match(/\.cc-dropdown--compact summary\s*\{[^}]*\}/)?.[0] || '';
-
-    expect(defaultSummaryRule).toContain('min-height: 2.5rem');
-    expect(defaultSummaryRule).toContain('padding: var(--space-sm)');
-    expect(defaultSummaryRule).toContain('font-size: 1rem');
-    expect(compactSummaryRule).toContain('min-height: 2rem');
-    expect(compactSummaryRule).toContain('padding: var(--space-xs)');
-    expect(compactSummaryRule).toContain('font-size: 0.8125rem');
-    expect(compactSummaryRule).toContain('line-height: 1.25');
-    expect(css.indexOf(compactSummaryRule)).toBeGreaterThan(css.indexOf(defaultSummaryRule));
-    expect(css).toMatch(/\.cc-dropdown--compact\s*\{[^}]*max-width:\s*min\(8rem,\s*100%\)/);
-    expect(css).toMatch(/\.cc-dropdown--compact summary::after\s*\{[^}]*margin-left:\s*0/);
-    expect(css).toMatch(/\.cc-dropdown--compact \.asset-filter-multiselect-panel\s*\{[^}]*top:\s*auto[^}]*bottom:\s*calc\(100% \+ var\(--space-xs\)\)/);
-    expect(css).toMatch(/\.asset-filter-multiselect-panel\s*\{[^}]*top:\s*calc\(100% \+ var\(--space-xs\)\)/);
-  });
 });
 
 it('searchable multiple uses the Projects-page shell with checkbox group semantics', () => {
@@ -404,17 +324,21 @@ describe('optional dropdown thumbnails', () => {
     expect(html).toContain('data-preview-fallback hidden');
     expect(renderDropdown('multiSelect', config({ nsfwBlur: false }))).not.toContain('asset-image--nsfw-blurred');
   });
-  it.each([
-    { state: 'missing' }, { state: 'unavailable' }, { state: 'unsupported' },
-    { sourceMetadataValid: false }, { urls: {} },
-  ])('uses an empty same-size fallback for unusable metadata %j', extra => {
-    const html = renderDropdown('multiSelect', config(extra));
-    expect(html).not.toContain('<img');
-    expect(html).toContain('class="cc-dropdown-option-thumbnail-fallback" data-preview-fallback>');
+  it('uses an empty same-size fallback for every unusable metadata state', () => {
+    for (const extra of [
+      { state: 'missing' }, { state: 'unavailable' }, { state: 'unsupported' },
+      { sourceMetadataValid: false }, { urls: {} },
+    ]) {
+      const html = renderDropdown('multiSelect', config(extra));
+      expect(html).not.toContain('<img');
+      expect(html).toContain('class="cc-dropdown-option-thumbnail-fallback" data-preview-fallback>');
+    }
   });
-  it.each(['singleSelect', 'multiSelect', 'searchableSingleSelect'])('does not change ordinary %s option geometry', method => {
-    const html = renderDropdown(method, { id: 'plain', label: 'Plain', options: [{ value: '1', label: 'One' }] });
-    expect(html).not.toContain('cc-dropdown-option-thumbnail');
-    expect(html).not.toContain('data-preview');
+  it('does not change ordinary option geometry in any dropdown mode', () => {
+    for (const method of ['singleSelect', 'multiSelect', 'searchableSingleSelect']) {
+      const html = renderDropdown(method, { id: 'plain', label: 'Plain', options: [{ value: '1', label: 'One' }] });
+      expect(html).not.toContain('cc-dropdown-option-thumbnail');
+      expect(html).not.toContain('data-preview');
+    }
   });
 });

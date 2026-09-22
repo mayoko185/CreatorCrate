@@ -50,6 +50,7 @@ describe('asset-browser preference service', () => {
       description: '',
       notes: '',
       status: 'tbd',
+      projectType: 'images',
       priority: 'normal',
       plannedDate: null,
       publishedDate: null,

@@ -6,6 +6,7 @@ import {
   createProjectRepository,
   ARCHIVED_PROJECT_STATUS,
 } from '../data/project-repository.js';
+import { createTagRepository } from '../data/tag-repository.js';
 import { createAppMetaRepository } from '../data/app-meta-repository.js';
 import { createReleaseRepository } from '../data/release-repository.js';
 import { createPageDefaultsService } from './page-defaults-service.js';
@@ -46,6 +47,7 @@ const TITLE_MIN = 1;
 const TITLE_MAX = 200;
 const DESCRIPTION_MAX = 4000;
 const NOTES_MAX = 10000;
+const TAGS_UNCHANGED = Symbol('tags-unchanged');
 
 /**
  * @param {import('better-sqlite3').Database} db
@@ -63,6 +65,8 @@ const NOTES_MAX = 10000;
  *   Direct callers fall back to the same service over `db`.
  * @param {object} [deps.projectRepository] - Shared repository for the current
  *   application graph. Defaults to a repository over `db` for direct callers.
+ * @param {object} [deps.tagRepository] - Shared tag repository for atomic
+ *   requested-tag validation and assignment during project creation/update.
  */
 export function createProjectService(
   db,
@@ -74,6 +78,7 @@ export function createProjectService(
     pageDefaultsService,
     projectOptionCatalogueService,
     projectRepository,
+    tagRepository,
   } = {}
 ) {
   if (!assetCategoryService) {
@@ -89,6 +94,7 @@ export function createProjectService(
   }
 
   const repository = projectRepository ?? createProjectRepository(db);
+  const tags = tagRepository ?? createTagRepository(db);
   const releaseRepository = createReleaseRepository(db);
   const creationDefaultsService = pageDefaultsService ?? createPageDefaultsService({
     appMetaRepository: createAppMetaRepository(db),
@@ -201,23 +207,19 @@ export function createProjectService(
   }
 
   /**
-   * Compensate an update failure by restoring the previous filesystem and
-   * database state as closely as possible.
+   * Compensate an update failure by restoring the previous filesystem state.
+   * Database state is restored by the update transaction rollback.
    *
    * Safety: all paths are derived from project.project_dir (which passed
    * resolveProjectDir at creation time) and the project ID.
    *
    * @param {object} project - Original project record (pre-update)
-   * @param {object} originalInput - Original values in repository.update format
-   * @param {string|null} originalProjectDir - Original project_dir value
    * @param {boolean} dirNeedsChange - Whether a dir change was planned
    * @param {string|null} currentAbsPath - Original absolute directory path
    * @param {string|null} newAbsPath - New absolute path (may or may not exist)
    * @param {boolean} dirMoved - Whether the directory was actually moved
-   * @param {object|null} updated - Updated project record (if DB was updated)
    */
-  function compensateUpdate(project, originalInput, originalProjectDir,
-    dirNeedsChange, currentAbsPath, newAbsPath, dirMoved, updated) {
+  function compensateUpdate(project, dirNeedsChange, currentAbsPath, newAbsPath, dirMoved) {
     try {
       // Step A: If directory was moved to newAbsPath, move it back
       if (dirNeedsChange && dirMoved && newAbsPath && currentAbsPath) {
@@ -245,19 +247,6 @@ export function createProjectService(
           );
         }
       }
-
-      // Step C: Restore original database values
-      if (updated) {
-        try {
-          repository.update(project.id, originalInput);
-          repository.setProjectDir(project.id, originalProjectDir);
-        } catch (dbErr) {
-          console.error(
-            `[CreatorCrate] Update rollback — failed to restore database ` +
-            `for project ${project.id}: ${dbErr.message}`
-          );
-        }
-      }
     } catch (compErr) {
       console.error(
         `[CreatorCrate] Update rollback — compensation failed for project ` +
@@ -269,8 +258,16 @@ export function createProjectService(
   return {
     repository,
 
-    create(input) {
+    create(input, { tagIds = [] } = {}) {
       const normalized = validate(resolveCreateInput(input));
+      if (!Array.isArray(tagIds) || tagIds.some((tagId) => (
+        typeof tagId !== 'number' || !Number.isSafeInteger(tagId) || tagId <= 0
+      ))) {
+        throw new ProjectValidationError({
+          tagIds: 'Tag selections must contain safe positive integer IDs.',
+        });
+      }
+      const uniqueTagIds = [...new Set(tagIds)];
 
       let project;
       let relPath;
@@ -292,6 +289,20 @@ export function createProjectService(
             });
           }
           throw err;
+        }
+
+        // Requested tags must still exist at the authoritative creation
+        // boundary. This is intentionally inside the same transaction as the
+        // project row, relationships, and filesystem compensation.
+        for (const tagId of uniqueTagIds) {
+          if (!tags.findById(tagId)) {
+            throw new ProjectValidationError({
+              tagIds: 'One or more selected tags no longer exists. Refresh and try again.',
+            });
+          }
+        }
+        for (const tagId of uniqueTagIds) {
+          tags.assignToProject(project.id, tagId);
         }
 
         // Phase 2: Copy enabled global defaults into independent,
@@ -366,7 +377,7 @@ export function createProjectService(
       }
     },
 
-    update(id, input) {
+    update(id, input, { tagIds = TAGS_UNCHANGED } = {}) {
       const project = repository.findById(id);
       if (!project) {
         throw new ProjectNotFoundError(id);
@@ -381,6 +392,16 @@ export function createProjectService(
         existingId: id,
         existingProjectType: project.project_type,
       });
+      if (tagIds !== TAGS_UNCHANGED && (
+        !Array.isArray(tagIds) || tagIds.some((tagId) => (
+          typeof tagId !== 'number' || !Number.isSafeInteger(tagId) || tagId <= 0
+        ))
+      )) {
+        throw new ProjectValidationError({
+          tagIds: 'Tag selections must contain safe positive integer IDs.',
+        });
+      }
+      const uniqueTagIds = tagIds === TAGS_UNCHANGED ? TAGS_UNCHANGED : [...new Set(tagIds)];
 
       // Phase 2: Compute changes and pre-flight validation.
       //
@@ -464,66 +485,78 @@ export function createProjectService(
         currentAbsPath = resolveProjectDir(projectsRoot, project.project_dir);
       }
 
-      // Save original values for potential compensation
-      const originalInput = {
-        title: project.title,
-        slug: project.slug,
-        description: project.description,
-        notes: project.notes,
-        status: project.status,
-        projectType: project.project_type,
-        patreonUrl: project.patreon_url,
-      };
-      const originalProjectDir = project.project_dir;
-
       // ── Execution ─────────────────────────────────────────────────
       let updated;
       let dirMoved = false;
+      let filesystemMutationStarted = false;
 
       try {
-        // Phase 3: Update database metadata (status included — it is a
-        // DB/UI-only value and must not be written to the manifest).
-        updated = repository.update(id, normalized);
-        if (!updated) {
-          throw new ProjectNotFoundError(id);
-        }
+        const runUpdate = db.transaction(() => {
+          // Phase 3: Update database metadata (status included — it is a
+          // DB/UI-only value and must not be written to the manifest).
+          updated = repository.update(id, normalized);
+          if (!updated) {
+            throw new ProjectNotFoundError(id);
+          }
 
-        // Phase 4: Rename the flat project directory if the slug changed.
-        // A status-only update never touches the filesystem.
-        if (dirNeedsChange) {
-          renameProjectDirSync(currentAbsPath, newAbsPath);
-          dirMoved = true;
-        }
+          // Requested tags are revalidated authoritatively after the Project
+          // update begins but before any filesystem mutation. The surrounding
+          // transaction rolls the Project row back if any tag is now stale.
+          if (uniqueTagIds !== TAGS_UNCHANGED) {
+            for (const tagId of uniqueTagIds) {
+              if (!tags.findById(tagId)) {
+                throw new ProjectValidationError({
+                  tagIds: 'One or more selected tags no longer exists. Refresh and try again.',
+                });
+              }
+            }
+            tags.replaceForProject(id, uniqueTagIds);
+          }
 
-        // Phase 5: Write the updated manifest at the final location,
-        // preserving the project's current categories (never recopied or
-        // propagated from global defaults here). A metadata-only update
-        // (no slug change) rewrites project.json in place; a pure
-        // status-only update skips the manifest entirely.
-        if (manifestNeedsRewrite) {
-          const manifestTarget = dirNeedsChange ? newAbsPath : currentAbsPath;
-          const categories = assetCategoryService.listProjectCategories(id);
-          writeManifestSync(manifestTarget, updated, projectsRoot, categories);
-        }
+          // Phase 4: Rename the flat project directory if the slug changed.
+          // A status-only update never touches the filesystem.
+          if (dirNeedsChange) {
+            renameProjectDirSync(currentAbsPath, newAbsPath);
+            dirMoved = true;
+            filesystemMutationStarted = true;
+          }
 
-        // Phase 6: Update stored path in database (only on rename)
-        if (dirNeedsChange) {
-          updated = repository.setProjectDir(id, newRelPath);
-        }
+          // Phase 5: Write the updated manifest at the final location,
+          // preserving the project's current categories (never recopied or
+          // propagated from global defaults here). A metadata-only update
+          // (no slug change) rewrites project.json in place; a pure
+          // status-only update skips the manifest entirely.
+          if (manifestNeedsRewrite) {
+            filesystemMutationStarted = true;
+            const manifestTarget = dirNeedsChange ? newAbsPath : currentAbsPath;
+            const categories = assetCategoryService.listProjectCategories(id);
+            writeManifestSync(manifestTarget, updated, projectsRoot, categories);
+          }
+
+          // Phase 6: Update stored path in database (only on rename)
+          if (dirNeedsChange) {
+            updated = repository.setProjectDir(id, newRelPath);
+          }
+
+          return updated;
+        });
+
+        const committed = runUpdate();
 
         if (persistedChanged) {
-          logActivity('project.updated', updated, {
+          logActivity('project.updated', committed, {
             previousStatus: project.status,
-            status: updated.status,
+            status: committed.status,
             previousProjectType: project.project_type,
-            projectType: updated.project_type,
+            projectType: committed.project_type,
           });
         }
-        return updated;
+        return committed;
       } catch (err) {
         // ── Compensation ─────────────────────────────────────────
-        compensateUpdate(project, originalInput, originalProjectDir,
-          dirNeedsChange, currentAbsPath, newAbsPath, dirMoved, updated);
+        if (filesystemMutationStarted) {
+          compensateUpdate(project, dirNeedsChange, currentAbsPath, newAbsPath, dirMoved);
+        }
 
         // Log the primary failure (project ID + relative path, no absolute paths)
         console.error(

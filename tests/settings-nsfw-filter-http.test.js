@@ -95,6 +95,7 @@ describe('settings — NSFW Filter HTTP', () => {
       'Logs',
       'Defaults',
       'NSFW Filter',
+      'Social Preparation',
       'Asset Categories',
       'Tags',
       'Open locally',

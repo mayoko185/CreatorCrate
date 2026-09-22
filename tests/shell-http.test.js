@@ -1,11 +1,11 @@
 /**
  * Phase 10.4A — application-shell HTTP tests.
  *
- * Verifies the rendered shell: navigation destinations, route-aware active
- * state, document title, single-<h1> invariant, icon presence, and the
- * no-active rule on controlled not-found pages.
+ * Verifies that authenticated HTTP pages consume the shared navigation model,
+ * render route-aware current state, integrate route-specific titles, and apply
+ * the no-active rule on controlled not-found pages.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import request from 'supertest';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -44,16 +44,6 @@ function navHrefs(html) {
   return hrefs;
 }
 
-/** Count opening <h1> tags. */
-function countH1(html) {
-  return (html.match(/<h1[\s>]/g) || []).length;
-}
-
-/** Count decorative icons rendered in the shell (the brand image has no aria-hidden). */
-function countNavIcons(html) {
-  return (html.match(/aria-hidden="true"/g) || []).length;
-}
-
 describe('application shell — navigation model', () => {
   let db;
   let app;
@@ -63,9 +53,8 @@ describe('application shell — navigation model', () => {
   let projectsRoot;
   let projectId;
   let assetId;
-  let releaseLocation;
 
-  beforeEach(async () => {
+  beforeAll(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-shell-'));
     projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
@@ -96,33 +85,21 @@ describe('application shell — navigation model', () => {
     await agent.post(`/projects/${projectId}/scan`).type('form').send({ _csrf: csrfToken }).expect(302);
     const assetRepo = createAssetRepository(db);
     assetId = String(assetRepo.findByProjectId(Number(projectId))[0].id);
-
-    // A release, for release routes.
-    const relRes = await agent
-      .post('/releases')
-      .type('form')
-      .send({ projectId, title: 'Shell Test Release', status: 'tbd', _csrf: csrfToken })
-      .expect(302);
-    releaseLocation = relRes.headers.location;
   });
 
-  afterEach(() => {
+  afterAll(() => {
     closeDatabase(db);
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
   describe('destinations', () => {
-    it('renders only existing top-level destinations', async () => {
+    it('renders the shared top-level destinations with Dashboard current', async () => {
       const res = await agent.get('/').expect(200);
       expect(navHrefs(res.text)).toEqual([
         '/', '/projects', '/asset-viewer', '/releases', '/calendar', '/notes', '/settings',
       ]);
-    });
-
-    it('renders a decorative icon for every nav item', async () => {
-      const res = await agent.get('/').expect(200);
-      expect(countNavIcons(res.text)).toBe(7);
-      expect(res.text).toContain('aria-hidden="true"');
+      expect(activeNavKeys(res.text)).toEqual(['dashboard']);
+      expect(countActive(res.text)).toBe(1);
     });
 
     it('uses the canonical PNG branding in both navs and the favicon', async () => {
@@ -139,126 +116,53 @@ describe('application shell — navigation model', () => {
     });
   });
 
-  describe('active state — dashboard', () => {
-    it('marks only Dashboard active on /', async () => {
-      const res = await agent.get('/').expect(200);
-      expect(activeNavKeys(res.text)).toEqual(['dashboard']);
-      expect(countActive(res.text)).toBe(1);
-    });
-  });
-
-  describe('active state — projects family', () => {
-    it('marks Projects active on the project list', async () => {
-      const res = await agent.get('/projects').expect(200);
-      expect(activeNavKeys(res.text)).toEqual(['projects']);
-      expect(countActive(res.text)).toBe(1);
-    });
-
-    it('marks Projects active on project detail', async () => {
-      const res = await agent.get(`/projects/${projectId}`).expect(200);
-      expect(activeNavKeys(res.text)).toEqual(['projects']);
-    });
-
-    it('marks Projects active on the project edit dialog', async () => {
-      const res = await agent.get(`/projects/${projectId}?edit=1`).expect(200);
-      expect(activeNavKeys(res.text)).toEqual(['projects']);
-    });
-
-    it('marks Projects active on the asset browser', async () => {
-      const res = await agent.get(`/projects/${projectId}/assets`).expect(200);
-      expect(activeNavKeys(res.text)).toEqual(['projects']);
-    });
-
-    it('marks Projects active on the asset viewer', async () => {
+  describe('rendered active state', () => {
+    it('marks a representative nested project route as Projects current', async () => {
       const res = await agent.get(`/projects/${projectId}/assets/${assetId}`)
         .expect(200);
       expect(activeNavKeys(res.text)).toEqual(['projects']);
-    });
-  });
-
-  describe('active state — cross-project Asset Viewer', () => {
-    it('marks Asset Viewer active on /asset-viewer and query-string requests', async () => {
-      for (const url of ['/asset-viewer', '/asset-viewer?view=list']) {
-        const res = await agent.get(url).expect(200);
-        expect(activeNavKeys(res.text)).toEqual(['assets']);
-        expect(countActive(res.text)).toBe(1);
-      }
-    });
-
-    it('does not capture project-scoped asset or category routes', async () => {
-      const routes = [
-        `/projects/${projectId}/assets`,
-        `/projects/${projectId}/assets/${assetId}`,
-        `/projects/${projectId}/asset-categories`,
-      ];
-
-      for (const url of routes) {
-        const res = await agent.get(url).expect(200);
-        expect(activeNavKeys(res.text)).not.toContain('assets');
-      }
-    });
-  });
-
-  describe('active state — Releases family', () => {
-    it('marks Releases active on the release list', async () => {
-      const res = await agent.get('/releases').expect(200);
-      expect(activeNavKeys(res.text)).toEqual(['releases']);
       expect(countActive(res.text)).toBe(1);
     });
 
-    it('marks Releases active on release detail', async () => {
-      const res = await agent.get(releaseLocation).expect(200);
-      expect(activeNavKeys(res.text)).toEqual(['releases']);
-    });
-  });
-
-  describe('active state — calendar', () => {
-    it('marks Calendar active on the canonical calendar route', async () => {
-      const res = await agent.get('/calendar').expect(200);
-      expect(activeNavKeys(res.text)).toEqual(['calendar']);
+    it('marks the direct Asset Viewer destination current', async () => {
+      const res = await agent.get('/asset-viewer').expect(200);
+      expect(activeNavKeys(res.text)).toEqual(['assets']);
       expect(countActive(res.text)).toBe(1);
     });
 
-    it('leaves Releases inactive on /calendar', async () => {
-      const res = await agent.get('/calendar').expect(200);
-      expect(activeNavKeys(res.text)).not.toContain('releases');
-    });
-  });
+    it('renders the Settings parent active with one current child', async () => {
+      const res = await agent.get('/settings/security').expect(200);
+      const children = res.text.match(/<ul class="app-nav-children">([\s\S]*?)<\/ul>/)?.[1] || '';
 
-  describe('active state — prefix safety', () => {
-    it('does not activate Projects for a sibling prefix like /projects-old', async () => {
-      const res = await agent.get('/projects-old').expect(404);
-      expect(activeNavKeys(res.text)).toEqual([]);
-      expect(countActive(res.text)).toBe(0);
+      expect(res.text).toContain(
+        '<li class="app-nav-item app-nav-item--active app-nav-item--has-children">',
+      );
+      expect(children.match(/aria-current="page"/g) || []).toHaveLength(1);
+      expect(children).toMatch(
+        /<a\b(?=[^>]*\bclass="app-nav-child-link")(?=[^>]*\bdata-nav-key="settings-security")(?=[^>]*\baria-current="page")[^>]*>/,
+      );
     });
   });
 
   describe('active state — controlled not-found', () => {
-    it('marks no item active on a missing project record', async () => {
+    it('renders the error title and marks no item active on a missing record', async () => {
       const res = await agent.get('/projects/999999').expect(404);
       expect(activeNavKeys(res.text)).toEqual([]);
       expect(countActive(res.text)).toBe(0);
-    });
-
-    it('marks no item active on a missing release record', async () => {
-      const res = await agent.get('/releases/999999').expect(404);
-      expect(activeNavKeys(res.text)).toEqual([]);
-      expect(countActive(res.text)).toBe(0);
+      expect(res.text).toContain(`<title>${APP_NAME} — Error 404</title>`);
+      expect(res.text).toContain('<h1 class="app-section-title">Error 404</h1>');
     });
   });
 
   describe('page-title and heading contract', () => {
-    it('the document title is present and correct on the dashboard', async () => {
-      const res = await agent.get('/').expect(200);
-      expect(res.text).toContain(`<title>${APP_NAME} — Dashboard</title>`);
-    });
-
-    it('uses the rendered heading for dynamic, settings, and not-found titles', async () => {
+    it('uses route-specific rendered headings for dynamic page titles', async () => {
       const cases = [
         { path: `/projects/${projectId}`, status: 200, heading: 'Projects — Shell Test Project' },
-        { path: releaseLocation, status: 200, heading: 'Releases — Shell Test Release' },
-        { path: '/settings/security', status: 200, heading: 'Settings — Security' },
-        { path: '/projects/999999', status: 404, heading: 'Error 404' },
+        {
+          path: `/projects/${projectId}/assets/${assetId}`,
+          status: 200,
+          heading: 'Assets — Shell Test Project — cover.png',
+        },
       ];
 
       for (const { path, status, heading } of cases) {
@@ -266,37 +170,6 @@ describe('application shell — navigation model', () => {
         expect(res.text).toContain(`<title>${APP_NAME} — ${heading}</title>`);
         expect(res.text).toContain(`<h1 class="app-section-title">${heading}</h1>`);
       }
-    });
-
-    it('the compact header title is the page\'s sole <h1> (no duplicate page heading)', async () => {
-      const res = await agent.get('/').expect(200);
-      // Exactly one h1, supplied by the shell header via page_title — the
-      // page-heading component below it renders supporting content only.
-      expect(countH1(res.text)).toBe(1);
-    });
-
-    it('project pages still render exactly one <h1>', async () => {
-      const res = await agent.get('/projects').expect(200);
-      expect(countH1(res.text)).toBe(1);
-    });
-
-    it('uses the asset viewer heading for the document title', async () => {
-      const res = await agent.get(`/projects/${projectId}/assets/${assetId}`)
-        .expect(200);
-      expect(res.text).toContain(
-        `<title>${APP_NAME} — Assets — Shell Test Project — cover.png</title>`,
-      );
-      expect(res.text).not.toContain('<title>CreatorCrate</title>');
-      expect(countH1(res.text)).toBe(1);
-    });
-  });
-
-  describe('page-specific body classes', () => {
-    it('no longer emits a page-specific body class for asset pages (Phase 14: shared page width)', async () => {
-      const browse = await agent.get(`/projects/${projectId}/assets`).expect(200);
-      expect(browse.text).toContain('<body class="">');
-      const viewer = await agent.get(`/projects/${projectId}/assets/${assetId}`).expect(200);
-      expect(viewer.text).toContain('<body class="">');
     });
   });
 });

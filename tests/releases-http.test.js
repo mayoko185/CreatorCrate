@@ -10970,8 +10970,10 @@ describe('release HTTP workflow', () => {
       const editDialog = res.text.match(/<dialog id="release-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
       const editForm = editDialog.match(/<form id="release-edit-form"[\s\S]*?<\/form>/)?.[0] || '';
 
-      const archiveForms = editDialog.match(/action="\/releases\/\d+\/archive"/g);
+      const archiveForms = (editDialog.match(/<form\b[^>]*>/g) || [])
+        .filter((form) => form.match(/\saction="([^"]*)"/)?.[1] === `${releaseLocation}/archive`);
       expect(archiveForms).toHaveLength(1);
+      expect(archiveForms[0]).toMatch(/\smethod="post"(?:\s|>)/);
       expect(editDialog).toContain('Release actions');
       expect(editDialog).toContain('notes-workspace-disclosure--archive');
       expect(editDialog).toContain('data-confirm="Archive this release? This cannot be undone."');

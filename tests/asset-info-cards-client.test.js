@@ -45,9 +45,6 @@ function createEnvironment({ width = 320, height = 240 } = {}) {
     dispatchWindow(type, event = {}) {
       (windowListeners.get(type) || []).forEach((handler) => handler(event));
     },
-    listenerCount(target, type) {
-      return (target === 'document' ? documentListeners : windowListeners).get(type)?.length || 0;
-    },
     mutate() { mutationCallback?.([]); },
   };
 }
@@ -59,6 +56,7 @@ function createCard(environment, consumer, rect = { left: 40, top: 40, width: 12
   const previewListeners = new Map();
   const attrs = new Map();
   const styles = new Map();
+  let positionCount = 0;
   let currentRect = { ...rect };
   let popoverOpen = false;
   const info = {
@@ -68,11 +66,17 @@ function createCard(environment, consumer, rect = { left: 40, top: 40, width: 12
     offsetHeight: 60,
     showCount: 0,
     hideCount: 0,
-    style: { setProperty(name, value) { styles.set(name, value); } },
+    style: {
+      setProperty(name, value) {
+        if (name.endsWith('-info-left')) positionCount += 1;
+        styles.set(name, value);
+      },
+    },
     getBoundingClientRect() { return { width: this.offsetWidth, height: this.offsetHeight }; },
     setAttribute(name, value) { attrs.set(name, String(value)); },
     removeAttribute(name) { attrs.delete(name); },
     matches(selector) { return selector === ':popover-open' && popoverOpen; },
+    contains(target) { return target?.insideInfoCard === true; },
     showPopover() { popoverOpen = true; this.showCount += 1; },
     hidePopover() { popoverOpen = false; this.hideCount += 1; },
   };
@@ -98,7 +102,7 @@ function createCard(environment, consumer, rect = { left: 40, top: 40, width: 12
     dispatch(type, event = {}) {
       (previewListeners.get(type) || []).forEach((handler) => handler(event));
     },
-    listenerCount(type) { return previewListeners.get(type)?.length || 0; },
+    positionCount() { return positionCount; },
     setRect(nextRect) { currentRect = { ...nextRect }; },
     isOpen() { return popoverOpen; },
   };
@@ -165,15 +169,24 @@ describe('shared Asset Viewer and Projects grid information cards', () => {
 
   it('switches cards, preserves focus-within, and dismisses after pointer and focus leave', () => {
     const environment = createEnvironment();
-    const first = createCard(environment, 'asset');
-    const second = createCard(environment, 'asset');
+    const first = createCard(environment, 'asset', {
+      left: 20, top: 20, width: 80, height: 40, bottom: 60,
+    });
+    const second = createCard(environment, 'asset', {
+      left: 180, top: 100, width: 120, height: 50, bottom: 150,
+    });
     enhanceAssetViewerInfoCards(scopeFor(environment, [first, second]));
 
-    first.dispatch('pointerenter', { clientX: 50, clientY: 50 });
-    second.dispatch('pointerenter', { clientX: 180, clientY: 100 });
+    first.dispatch('focusin');
+    expect(first.styles.get('--asset-info-left')).toBe('10px');
+    second.dispatch('focusin');
     expect(first.isOpen()).toBe(false);
     expect(second.isOpen()).toBe(true);
+    expect(second.styles.get('--asset-info-left')).toBe('190px');
 
+    second.dispatch('pointerenter', { clientX: 180, clientY: 100 });
+    second.dispatch('focusout', { relatedTarget: null });
+    expect(second.isOpen()).toBe(true);
     second.dispatch('focusin');
     second.dispatch('pointerleave');
     expect(second.isOpen()).toBe(true);
@@ -191,38 +204,59 @@ describe('shared Asset Viewer and Projects grid information cards', () => {
     card.setRect({ left: 80, top: 50, width: 120, height: 80, bottom: 130 });
     environment.dispatchWindow('resize');
     expect(card.styles.get('--asset-info-left')).toBe('90px');
+    card.setRect({ left: 120, top: 60, width: 80, height: 60, bottom: 120 });
+    const positionCountBeforeScroll = card.positionCount();
     environment.dispatchWindow('scroll');
     expect(card.isOpen()).toBe(true);
+    expect(card.styles.get('--asset-info-left')).toBe('110px');
+    expect(card.positionCount()).toBe(positionCountBeforeScroll + 1);
 
     card.dispatch('focusout', { relatedTarget: null });
     card.dispatch('pointerenter', { clientX: 100, clientY: 100 });
+    const hideCountBeforeInternalScroll = card.info.hideCount;
+    environment.dispatchWindow('scroll', { target: { insideInfoCard: true } });
+    expect(card.isOpen()).toBe(true);
+    expect(card.info.hideCount).toBe(hideCountBeforeInternalScroll);
     environment.dispatchWindow('scroll');
     expect(card.isOpen()).toBe(false);
   });
 
-  it('does not duplicate handlers and cleans up removal, modal triggers, and replacement enhancement', () => {
+  it('binds exactly once, dismisses for modal/removal, and enhances replacements', () => {
     const environment = createEnvironment();
+    const missingInfo = {
+      previewSelector: '[data-project-grid-preview]',
+      preview: { querySelector: () => null },
+    };
+    expect(enhanceProjectInfoCards(scopeFor(environment, [missingInfo]))).toBe(0);
+
     const card = createCard(environment, 'project');
     const scope = scopeFor(environment, [card]);
     expect(enhanceProjectInfoCards(scope)).toBe(1);
     expect(enhanceProjectInfoCards(scope)).toBe(0);
-    expect(card.listenerCount('pointermove')).toBe(1);
-    expect(environment.listenerCount('window', 'resize')).toBe(1);
-    expect(environment.listenerCount('document', 'click')).toBe(1);
 
     card.dispatch('pointerenter', { clientX: 100, clientY: 100 });
+    expect(card.info.showCount).toBe(1);
+    expect(card.positionCount()).toBe(1);
+    expect(card.attrs.get('data-info-card-open')).toBe('true');
+    environment.dispatchWindow('resize');
+    expect(card.positionCount()).toBe(2);
     environment.dispatchDocument('click', {
       target: { closest: (selector) => selector === '[data-dialog-open]' ? {} : null },
     });
     expect(card.isOpen()).toBe(false);
+    environment.dispatchWindow('resize');
+    expect(card.positionCount()).toBe(2);
 
     card.dispatch('pointerenter', { clientX: 100, clientY: 100 });
     card.info.isConnected = false;
     environment.mutate();
     expect(card.attrs.has('data-info-card-open')).toBe(false);
+    expect(card.attrs.has('data-positioned')).toBe(false);
 
     const replacement = createCard(environment, 'project');
     expect(enhanceProjectInfoCards(scopeFor(environment, [replacement]))).toBe(1);
-    expect(replacement.listenerCount('pointerenter')).toBe(1);
+    replacement.dispatch('pointerenter', { clientX: 120, clientY: 90 });
+    expect(replacement.info.showCount).toBe(1);
+    expect(replacement.positionCount()).toBe(1);
   });
 });

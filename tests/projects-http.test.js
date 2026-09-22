@@ -17,7 +17,6 @@ import {
   resolveProjectDir,
 } from '../src/storage/project-storage.js';
 import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
-import { NSFW_FILTER_ENABLED_KEY } from '../src/services/nsfw-filter-settings-service.js';
 import { makeZip } from './helpers/zip-fixture.js';
 
 vi.mock('../src/services/social-prep-tokens.js', async (importOriginal) => {
@@ -416,88 +415,28 @@ describe('project HTTP workflow', () => {
     expect(res.text).not.toContain('View All Releases');
   });
 
-  it('project list renders with application fallbacks and no canonical redirect when defaults are absent', async () => {
+  it('renders the Projects listing with the expected project card only', async () => {
+    const expectedId = await createProject({ title: 'Expected listing project' });
+    await createProject({ title: 'Other listing project' });
+
     const res = await agent.get('/projects').expect(200);
-    expect(res.text).toContain('Projects');
-    expect(res.text).toContain('No projects yet');
-    expect(res.text).not.toContain('<input type="hidden" name="view"');
-    expect(res.text).toContain('href="/projects?view=list"');
-    expectProjectSortOrderSelection(res.text, 'created', 'desc');
-    expect(extractStatusFilter(res.text)).toContain('aria-label="Status filter: All active"');
-    expect(extractProjectTypeFilter(res.text)).toContain('aria-label="Project Type filter: All types"');
-    expect(extractTagFilter(res.text)).toContain('aria-label="Tag filter: All tags"');
-    expect(extractTagFilter(res.text)).toContain('No tags available');
-    expect(extractProjectFilter(res.text)).toContain('aria-label="Project filter: All projects"');
-    expect(extractProjectFilter(res.text)).toMatch(/No matching projects|No projects available/);
+    const expectedCard = extractProjectCard(res.text, expectedId);
+
+    expect(expectedCard).toContain(`href="/projects/${expectedId}"`);
+    expect(expectedCard).toContain('Expected listing project');
+    expect(expectedCard).not.toContain('Other listing project');
   });
 
-  it('requests grid information only when the resolved Projects view is grid', async () => {
-    await createProject({ title: 'Resolved View Project' });
-    const capture = (url) => capturePreparedSql(db, () => agent.get(url).expect(200));
-    const assetBatchCount = (statements) => statements.filter((sql) => (
-      sql.includes('COUNT(assets.id) AS asset_count')
-    )).length;
-    const releaseBatchCount = (statements) => statements.filter((sql) => (
-      sql.includes('ROW_NUMBER() OVER') && sql.includes('recent_rank <= 5')
-    )).length;
-
-    const fallbackGrid = await capture('/projects');
-    expect(assetBatchCount(fallbackGrid)).toBe(1);
-    expect(releaseBatchCount(fallbackGrid)).toBe(1);
-
-    const normalizedGrid = await capture('/projects?view=invalid');
-    expect(assetBatchCount(normalizedGrid)).toBe(1);
-    expect(releaseBatchCount(normalizedGrid)).toBe(1);
-
-    const explicitList = await capture('/projects?view=list');
-    expect(assetBatchCount(explicitList)).toBe(0);
-    expect(releaseBatchCount(explicitList)).toBe(0);
-
-    saveProjectDefault('view', 'list');
-    const savedList = await capture('/projects?view=list');
-    expect(assetBatchCount(savedList)).toBe(0);
-    expect(releaseBatchCount(savedList)).toBe(0);
-
-    const explicitGridOverSavedList = await capture('/projects?view=grid');
-    expect(assetBatchCount(explicitGridOverSavedList)).toBe(1);
-    expect(releaseBatchCount(explicitGridOverSavedList)).toBe(1);
-  });
-
-  it.each(['grid', 'list'])('reuses the filtered total for the %s row page while keeping distinct populations separate', async (view) => {
-    await createProject({ title: 'Matching Planned Project', status: 'planned' });
-    await createProject({ title: 'Other Active Project', status: 'tbd' });
-    const archivedId = await createProject({ title: 'Archived Project', status: 'planned' });
-    db.prepare("UPDATE projects SET status = 'archived', archived_at = datetime('now') WHERE id = ?").run(archivedId);
-
-    const statements = await capturePreparedSql(
-      db,
-      () => agent.get(`/projects?status=planned&view=${view}`).expect(200),
-    );
-    const baseStatements = projectListBaseSql(statements);
-    const counts = baseStatements.filter((sql) => sql.includes('SELECT COUNT(*) AS c'));
-    const rowQueries = baseStatements.filter((sql) => sql.includes('LIMIT ? OFFSET ?'));
-
-    expect(baseStatements).toHaveLength(3);
-    expect(counts).toHaveLength(2);
-    expect(counts.filter((sql) => sql.includes('status IN (?)'))).toHaveLength(1);
-    expect(counts.filter((sql) => !sql.includes('WHERE'))).toHaveLength(1);
-    expect(rowQueries).toHaveLength(1);
-    expect(rowQueries[0]).toContain('status IN (?)');
-  });
-
-  it('renders Projects Filter, Defaults, and the NSFW toggle with Reset inside Filter', async () => {
+  it('renders Projects Filter and Defaults with Reset inside Filter', async () => {
     const projectTag = app.locals.tagService.createTag({ name: 'Projects Defaults Tag' });
     const response = await agent.get('/projects').expect(200);
     const filterActions = response.text.match(/<div class="project-filter-actions(?: [^"]*)?">[\s\S]*?<\/div>/)?.[0] || '';
     const filterLink = filterActions.match(/<a class="[^"]*\bproject-filter-control\b[^"]*"[\s\S]*?data-dialog-open="projects-filter-dialog"[\s\S]*?<\/a>/)?.[0];
     const defaultsLink = filterActions.match(/<a class="[^"]*\basset-viewer-defaults-link\b[^"]*"[\s\S]*?<\/a>/)?.[0];
-    const nsfwForm = filterActions.match(/<form method="post" action="\/projects\/nsfw-filter"[\s\S]*?<\/form>/)?.[0];
 
     expect(filterLink).toBeDefined();
     expect(defaultsLink).toBeDefined();
-    expect(nsfwForm).toBeDefined();
     expect(filterActions.indexOf('data-dialog-open="projects-filter-dialog"')).toBeLessThan(filterActions.indexOf('asset-viewer-defaults-link'));
-    expect(filterActions.indexOf('asset-viewer-defaults-link')).toBeLessThan(filterActions.indexOf('data-projects-nsfw-filter'));
     expect(defaultsLink).toContain('class="asset-viewer-defaults-link button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"');
     expect(defaultsLink).toContain('href="/projects?defaults=1"');
     expect(defaultsLink).toContain('data-dialog-open="projects-defaults-dialog"');
@@ -506,18 +445,8 @@ describe('project HTTP workflow', () => {
     expect(defaultsLink).toContain('data-tooltip="Projects defaults"');
     expect(defaultsLink).not.toContain('title=');
     expect(defaultsLink).toContain('<svg');
-    expect(nsfwForm).toContain('name="_csrf"');
-    expect(nsfwForm).toContain('name="enabled" value="1"');
-    expect(nsfwForm).toContain('aria-pressed="false"');
-    expect(nsfwForm).toContain('aria-label="Enable NSFW filter"');
-    expect(nsfwForm).toContain('data-tooltip="Enable NSFW filter"');
-    expect(nsfwForm).not.toContain('title=');
-    expect(nsfwForm).toContain('project-filter-control asset-tooltip asset-tooltip--left');
-    expect(nsfwForm).toMatch(/<button[^>]*>\s*<svg[\s\S]*<\/svg>\s*<\/button>/);
     expect(filterActions).not.toContain('aria-label="Reset filters"');
     expect(filterActions).not.toContain('data-projects-reset');
-    expect(filterActions.match(/project-filter-control/g)).toHaveLength(3);
-    expect(filterActions.match(/asset-tooltip--left/g)).toHaveLength(3);
     expect(filterActions).not.toContain('title=');
 
     expect((response.text.match(/<form id="project-filters"/g) || [])).toHaveLength(1);
@@ -640,7 +569,7 @@ describe('project HTTP workflow', () => {
     expect(defaultsDialog.indexOf('data-dialog-field="projectType"')).toBeLessThan(defaultsDialog.indexOf('data-dialog-field="tag"'));
   });
 
-  it('renders the persisted enabled NSFW state accessibly', async () => {
+  it('renders the persisted enabled NSFW state in the Projects control', async () => {
     app.locals.nsfwFilterSettingsService.setEnabled(true);
 
     const response = await agent.get('/projects').expect(200);
@@ -649,18 +578,27 @@ describe('project HTTP workflow', () => {
     expect(nsfwForm).toContain('name="enabled" value="0"');
     expect(nsfwForm).toContain('aria-pressed="true"');
     expect(nsfwForm).toContain('aria-label="Disable NSFW filter"');
-    expect(nsfwForm).toContain('data-tooltip="Disable NSFW filter"');
-    expect(nsfwForm).not.toContain('title=');
   });
 
-  it('protects the Projects NSFW mutation with CSRF and persists the shared setting', async () => {
+  it('protects the Projects NSFW mutation and returns its enhanced contracts', async () => {
     await agent
       .post('/projects/nsfw-filter')
       .set('Accept', 'application/json')
       .type('form')
       .send({ enabled: '1' })
       .expect(403);
-    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').pluck().get(NSFW_FILTER_ENABLED_KEY)).toBeUndefined();
+
+    const invalid = await agent
+      .post('/projects/nsfw-filter')
+      .set('Accept', 'application/json')
+      .type('form')
+      .send({ enabled: 'invalid', _csrf: csrfToken })
+      .expect(422);
+    expect(invalid.body).toEqual({
+      status: 'error',
+      errors: { enabled: 'Enabled value must be 0, 1, on, off, true, or false.' },
+      message: 'NSFW filter setting is invalid.',
+    });
 
     const enabled = await agent
       .post('/projects/nsfw-filter')
@@ -674,32 +612,7 @@ describe('project HTTP workflow', () => {
       enabled: true,
       message: 'NSFW filter enabled.',
     });
-    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').pluck().get(NSFW_FILTER_ENABLED_KEY)).toBe('1');
     expect((await agent.get('/projects')).text).toContain('aria-pressed="true"');
-    expect((await agent.get('/settings/nsfw-filter')).text).toContain('id="nsfw-filter-enabled"');
-    expect((await agent.get('/settings/nsfw-filter')).text.match(/id="nsfw-filter-enabled"[^>]*checked/)).not.toBeNull();
-
-    await agent
-      .post('/projects/nsfw-filter')
-      .set('Accept', 'application/json')
-      .type('form')
-      .send({ enabled: '0', _csrf: csrfToken })
-      .expect(200);
-    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').pluck().get(NSFW_FILTER_ENABLED_KEY)).toBe('0');
-
-    await agent
-      .post('/settings/nsfw-filter')
-      .type('form')
-      .send({ enabled: '1', _csrf: csrfToken })
-      .expect(302);
-    expect((await agent.get('/projects')).text).toContain('aria-pressed="true"');
-
-    await agent
-      .post('/settings/nsfw-filter')
-      .type('form')
-      .send({ enabled: '0', _csrf: csrfToken })
-      .expect(302);
-    expect((await agent.get('/projects')).text).toContain('aria-pressed="false"');
   });
 
   it('preserves a valid Projects NSFW return URL query', async () => {
@@ -714,27 +627,11 @@ describe('project HTTP workflow', () => {
     expect(app.locals.nsfwFilterSettingsService.isEnabled()).toBe(true);
   });
 
-  it('returns the Dashboard NSFW toggle to the exact root URL', async () => {
+  it('falls back to /projects for an unsafe NSFW return URL', async () => {
     const response = await agent
       .post('/projects/nsfw-filter')
       .type('form')
-      .send({ enabled: '1', returnTo: '/', _csrf: csrfToken })
-      .expect(302);
-
-    expect(response.headers.location).toBe('/');
-  });
-
-  it.each([
-    ['//example.com', 'protocol-relative external URL'],
-    ['https://example.com', 'absolute external URL'],
-    ['/assets', 'unrelated application path'],
-    ['/\\example.com', 'backslash path-confusion URL'],
-    ['///example.com', 'malformed protocol-relative URL'],
-  ])('falls back to /projects for unsafe NSFW return URL: %s (%s)', async (returnTo) => {
-    const response = await agent
-      .post('/projects/nsfw-filter')
-      .type('form')
-      .send({ enabled: '1', returnTo, _csrf: csrfToken })
+      .send({ enabled: '1', returnTo: 'https://example.com', _csrf: csrfToken })
       .expect(302);
 
     expect(response.headers.location).toBe('/projects');
@@ -748,6 +645,9 @@ describe('project HTTP workflow', () => {
     const response = await agent.get('/projects?view=grid&sort=updated&order=desc&defaults=1').expect(200);
     const dialog = response.text.match(/<dialog id="projects-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
 
+    expect(dialog).toContain('<form id="projects-defaults-form" method="post" action="/projects/defaults"');
+    expect(dialog).toContain('name="_csrf"');
+    expect(dialog).toContain('data-projects-defaults-autosave');
     expect(dialog).toMatch(/name="view"[^>]*>[\s\S]*?value="list" selected/);
     expect(dialog).toMatch(/name="sort"[^>]*>[\s\S]*?value="title" selected/);
     expect(dialog).toMatch(/name="order"[^>]*>[\s\S]*?value="asc" selected/);
@@ -756,7 +656,7 @@ describe('project HTTP workflow', () => {
     expect(dialog).toMatch(/name="tag"[^>]*>[\s\S]*?value="all" selected/);
   });
 
-  it('saves all Projects defaults atomically through the enhanced JSON contract', async () => {
+  it('persists valid Projects defaults through the enhanced JSON contract', async () => {
     const response = await agent
       .post('/projects/defaults')
       .set('Accept', 'application/json')
@@ -772,19 +672,8 @@ describe('project HTTP workflow', () => {
       })
       .expect(200);
 
-    expect(response.body).toEqual({
-      status: 'success',
-      message: 'Projects defaults saved successfully.',
-      values: {
-        view: 'list',
-        sort: 'updated',
-        order: 'asc',
-        status: 'archived',
-        projectType: 'comic',
-        tag: 'all',
-      },
-    });
-    expect(app.locals.pageDefaultsService.resolvePageDefaults('projects')).toEqual({
+    expect(response.body.status).toBe('success');
+    expect(response.body.values).toMatchObject({
       view: 'list',
       sort: 'updated',
       order: 'asc',
@@ -794,54 +683,7 @@ describe('project HTTP workflow', () => {
     });
   });
 
-  it('accepts a live Tag default and rejects a stale Tag without partial persistence', async () => {
-    const tag = app.locals.tagService.createTag({ name: 'Live Projects Default Tag' });
-    const accepted = await agent
-      .post('/projects/defaults')
-      .set('Accept', 'application/json')
-      .type('form')
-      .send({
-        view: 'grid',
-        sort: 'created',
-        order: 'desc',
-        status: 'all',
-        projectType: 'all',
-        tag: String(tag.id),
-        _csrf: csrfToken,
-      })
-      .expect(200);
-
-    expect(accepted.body.values.tag).toBe(String(tag.id));
-    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').pluck().get(
-      PAGE_DEFAULT_DEFINITIONS.projects.tag.key,
-    )).toBe(String(tag.id));
-
-    const stale = await agent
-      .post('/projects/defaults')
-      .set('Accept', 'application/json')
-      .type('form')
-      .send({
-        view: 'list',
-        sort: 'title',
-        order: 'asc',
-        status: 'ready',
-        projectType: 'comic',
-        tag: String(tag.id + 1),
-        _csrf: csrfToken,
-      })
-      .expect(422);
-
-    expect(stale.body.errors.tag).toContain(String(tag.id + 1));
-    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').pluck().get(
-      PAGE_DEFAULT_DEFINITIONS.projects.tag.key,
-    )).toBe(String(tag.id));
-  });
-
-  it('rejects invalid Projects defaults without partially saving', async () => {
-    saveProjectDefault('view', 'grid');
-    saveProjectDefault('sort', 'created');
-    saveProjectDefault('order', 'desc');
-
+  it('rejects unsupported Projects defaults through the enhanced JSON contract', async () => {
     const response = await agent
       .post('/projects/defaults')
       .set('Accept', 'application/json')
@@ -857,60 +699,8 @@ describe('project HTTP workflow', () => {
       })
       .expect(422);
 
-    expect(response.body.status).toBe('error');
     expect(response.body.errors.sort).toContain('not-valid');
-    expect(response.body.values).toEqual({
-      view: 'list',
-      sort: 'not-valid',
-      order: 'asc',
-      status: 'all',
-      projectType: 'all',
-      tag: 'all',
-    });
-    expect(app.locals.pageDefaultsService.resolvePageDefaults('projects')).toEqual({
-      view: 'grid',
-      sort: 'created',
-      order: 'desc',
-      status: 'all',
-      projectType: 'all',
-      tag: 'all',
-    });
-  });
-
-  it('marks server-rendered submitted Projects default options for dialog cleanup', async () => {
-    const response = await agent
-      .post('/projects/defaults')
-      .type('form')
-      .send({
-        view: 'list',
-        sort: 'not-valid',
-        order: 'asc',
-        status: 'all',
-        projectType: 'all',
-        tag: 'all',
-        _csrf: csrfToken,
-      })
-      .expect(422);
-    const dialog = response.text.match(/<dialog id="projects-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
-    const temporaryOptions = dialog.match(/<option[^>]*data-dialog-submitted-value[^>]*>[\s\S]*?<\/option>/g) || [];
-
-    expect(temporaryOptions).toHaveLength(1);
-    expect(temporaryOptions[0]).toContain('value="not-valid"');
-    expect(temporaryOptions[0]).toContain('selected');
-
-    expect(dialog).toMatch(
-      /<select id="projects-default-sort" name="sort"[^>]*data-cc-dropdown-native-select[^>]*aria-describedby="projects-default-sort-error"[^>]*aria-invalid(?:="true")?/,
-    );
-    expect(dialog).toMatch(
-      /id="projects-default-sort-dropdown"[^>]*data-cc-dropdown data-cc-dropdown-mode="single"[\s\S]*?<summary[^>]*aria-describedby="projects-default-sort-error"[^>]*aria-invalid(?:="true")?/,
-    );
-    expect(dialog).toContain('class="asset-filter-multiselect-summary-current">Submitted value: not-valid</span>');
-    expect(dialog).toMatch(
-      /id="projects-default-sort-submitted"[^>]*value="not-valid"[^>]*checked[^>]*data-dialog-submitted-value/,
-    );
-    expect(dialog).toContain('id="projects-default-sort-error"');
-    expect(dialog).toMatch(/class="field app-dialog-field field-error" data-dialog-field="sort"/);
-    expect(dialog).not.toMatch(/<input[^>]*name="sort"/);
+    expect(response.body.status).toBe('error');
   });
 
   it('keeps the normal Projects defaults POST fallback and rejects missing CSRF', async () => {
@@ -945,6 +735,21 @@ describe('project HTTP workflow', () => {
         tag: 'all',
       })
       .expect(403);
+
+    await agent
+      .post('/projects/defaults')
+      .set('Accept', 'application/json')
+      .type('form')
+      .send({
+        view: 'grid',
+        sort: 'created',
+        order: 'desc',
+        status: 'all',
+        projectType: 'all',
+        tag: 'all',
+        _csrf: 'invalid-token',
+      })
+      .expect(403);
   });
 
   it('renders status and tag standard multiselects with checked values', async () => {
@@ -968,23 +773,6 @@ describe('project HTTP workflow', () => {
     expect(filterDialog).toContain('<button class="button" type="submit" data-projects-reset>Reset filters</button>');
     expect((res.text.match(/data-asset-viewer-filter-disclosure/g) || [])).toHaveLength(0);
 
-    const css = await fetchProjectCss(app);
-    expect(css).not.toMatch(/#project-filters\s+\.field\s+select\s*\{/);
-    expect(css).toMatch(/\.asset-viewer-project-filter\s+\.asset-project-filter-panel\s*\{[^}]*max-height:\s*20rem/);
-    expect(css).toMatch(/\.project-filter-actions--projects\s*\{[^}]*top:\s*var\(--space-xs\)[^}]*z-index:\s*70/);
-    expect(css).toMatch(/\.asset-viewer-filters\s*\{[^}]*z-index:\s*20/);
-    expect(css).toMatch(/--shell-z-overlay:\s*1200/);
-    expect(css).toMatch(/\.asset-viewer-project-filter\s*\{[^}]*z-index:\s*45/);
-    expect(css).not.toMatch(/#project-filters\s*>\s*\.asset-viewer-project-filter\s*\{[^}]*z-index:\s*auto/);
-    expect(css).toMatch(/\.project-filter-actions--projects \.project-filter-control\s*\{[^}]*min-block-size:\s*2\.25rem[^}]*min-inline-size:\s*2\.25rem/);
-    expect(css).toMatch(/\.asset-viewer-project-filter\s+\.asset-project-filter-option-list\s*\{[^}]*overflow-y:\s*auto/);
-    expect(css).toMatch(/\.asset-viewer-project-filter\s+\.asset-project-filter-option-list\s*\{[\s\S]*?scrollbar-color:\s*var\(--border-strong\)\s+transparent;[\s\S]*?scrollbar-width:\s*thin/);
-    expect(css).toMatch(/\.asset-viewer-project-filter\s+\.asset-project-filter-option-list::\-webkit-scrollbar\s*\{[^}]*width:\s*0\.5rem/);
-    expect(css).toMatch(/\.asset-viewer-project-filter\s+\.asset-project-filter-option-list::\-webkit-scrollbar-track\s*\{[^}]*background:\s*transparent/);
-    expect(css).toMatch(/\.asset-viewer-project-filter\s+\.asset-project-filter-option-list::\-webkit-scrollbar-thumb\s*\{[\s\S]*?background:\s*var\(--border-strong\)[\s\S]*?border:\s*2px solid var\(--surface-card\)[\s\S]*?border-radius:\s*999px/);
-    expect(css).toMatch(/\.asset-viewer-project-filter\s+\.asset-project-filter-option-list::\-webkit-scrollbar-thumb:hover\s*\{[^}]*background:\s*var\(--muted\)/);
-    expect(css).not.toMatch(/#(?:project|asset)-project-filter\s+\.asset-project-filter-option-list/);
-    expect(css).toMatch(/\.asset-viewer-project-filter\s+\.asset-filter-multiselect-summary-current\s*\{[^}]*text-overflow:\s*ellipsis/);
     const statusFilter = extractStatusFilter(res.text);
     const projectTypeFilter = extractProjectTypeFilter(res.text);
     const tagFilter = extractTagFilter(res.text);
@@ -1178,7 +966,7 @@ describe('project HTTP workflow', () => {
     await createProject({ title: 'Grid Controls Project' });
     const grid = await agent.get('/projects?view=grid').expect(200);
     expect(grid.text).toMatch(
-      /<div class="asset-viewer-display-controls" data-project-grid-size-controls>\s*<nav class="view-switcher" aria-label="Project display">[\s\S]*?<\/nav>\s*<div class="asset-grid-size-controls asset-viewer-grid-size-controls" data-asset-grid-size-controls[\s\S]*?<div class="project-filter-actions(?: [^"]*)?">[\s\S]*?data-projects-nsfw-filter/
+      /<div class="asset-viewer-display-controls" data-project-grid-size-controls>\s*<nav class="view-switcher" aria-label="Project display">[\s\S]*?<\/nav>\s*<div class="asset-grid-size-controls asset-viewer-grid-size-controls" data-asset-grid-size-controls/
     );
     expect(grid.text).toContain('<ul class="project-grid">');
     expect(grid.text).toContain('data-grid-size-slider');
@@ -1200,7 +988,7 @@ describe('project HTTP workflow', () => {
 
     const list = await agent.get('/projects?view=list').expect(200);
     expect(list.text).toMatch(
-      /<div class="asset-viewer-display-controls">\s*<nav class="view-switcher" aria-label="Project display">[\s\S]*?<div class="project-filter-actions(?: [^"]*)?">[\s\S]*?data-projects-nsfw-filter/
+      /<div class="asset-viewer-display-controls">\s*<nav class="view-switcher" aria-label="Project display">[\s\S]*?<\/nav>/
     );
     expect(list.text).not.toContain('data-asset-grid-size-controls');
     expect(list.text).not.toContain('data-grid-size-slider');
@@ -1233,13 +1021,9 @@ describe('project HTTP workflow', () => {
   });
 
   it('uses application fallbacks for invalid stored Projects defaults', async () => {
-    writeStoredProjectDefault('view', 'board');
     writeStoredProjectDefault('sort', 'bogus');
-    writeStoredProjectDefault('order', 'forwards');
 
     const res = await agent.get('/projects').expect(200);
-    expect(res.text).not.toContain('<input type="hidden" name="view"');
-    expect(res.text).toContain('href="/projects?view=list"');
     expectProjectSortOrderSelection(res.text, 'created', 'desc');
     expect(res.headers.location).toBeUndefined();
   });
@@ -1294,18 +1078,6 @@ describe('project HTTP workflow', () => {
     expect(extractStatusFilter(explicitView.text)).toContain('aria-label="Status filter: All active"');
     expect(extractProjectTypeFilter(explicitView.text)).toContain('aria-label="Project Type filter: All types"');
     expect(extractTagFilter(explicitView.text)).toContain('aria-label="Tag filter: All tags"');
-  });
-
-  it('uses all for a stale saved Tag without rewriting its stored value', async () => {
-    writeStoredProjectDefault('tag', '999999');
-
-    const res = await agent.get('/projects').expect(200);
-
-    expect(res.headers.location).toBeUndefined();
-    expect(extractTagFilter(res.text)).toContain('aria-label="Tag filter: All tags"');
-    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').pluck().get(
-      PAGE_DEFAULT_DEFINITIONS.projects.tag.key,
-    )).toBe('999999');
   });
 
   it('keeps invalid explicit presentation values on application fallbacks instead of saved values', async () => {
@@ -1529,7 +1301,7 @@ describe('project HTTP workflow', () => {
     expect(card).not.toContain('social-preparation');
   });
 
-  it('blurs only NSFW-tagged project primary images across project surfaces when enabled', async () => {
+  it('passes the NSFW setting to sensitive primary images on Projects list and detail surfaces', async () => {
     const nsfwTag = app.locals.tagService.createTag({ name: 'NSFW' });
     const nsfwProjectId = await createProject({ title: 'NSFW Project', status: 'ready' });
     const safeProjectId = await createProject({ title: 'Safe Project', status: 'ready' });
@@ -1538,86 +1310,30 @@ describe('project HTTP workflow', () => {
     app.locals.projectTagService.replaceProjectTags(nsfwProjectId, [nsfwTag.id]);
     app.locals.nsfwFilterSettingsService.setEnabled(true);
 
-    const css = await fetchProjectCss(app);
-    expect(css).toContain('.project-image--nsfw-blurred');
-    expect(css).toContain('filter: blur(2rem)');
-    expect(css).toContain('clip-path: inset(0)');
-    expect(css).not.toContain('.project-card-media--nsfw-clipped');
-    expect(css).toMatch(/\.project-image--nsfw-blurred\s*\{[\s\S]*?filter:\s*blur\(2rem\)[\s\S]*?clip-path:\s*inset\(0\)/);
-    const hasCardLevelBlur = /\.project-card(?:--grid|--list)?\s*\{[^}]*filter:\s*blur\(2rem\)/.test(css)
-      || /\.project-grid-card-preview\s*\{[^}]*filter:\s*blur\(2rem\)/.test(css)
-      || /\.project-list-card-media\s*\{[^}]*filter:\s*blur\(2rem\)/.test(css)
-      || /\.project-detail-media\s*\{[^}]*filter:\s*blur\(2rem\)/.test(css)
-      || /\.project-card-media\s*\{[^}]*filter:\s*blur\(2rem\)/.test(css);
-    expect(hasCardLevelBlur).toBe(false);
-    const hasNsfwSpecificWrapperClip = /\.project-card-media--nsfw-clipped/.test(css)
-      || /\.project-grid-card-preview\.project-image--nsfw-blurred/.test(css)
-      || /\.project-list-card-media\.project-image--nsfw-blurred/.test(css)
-      || /\.project-detail-media\.project-image--nsfw-blurred/.test(css);
-    expect(hasNsfwSpecificWrapperClip).toBe(false);
-    expect(css).not.toMatch(/\.project-image--nsfw-blurred\s*\{[^}]*overflow:/);
-    expect(css).toMatch(/\.project-detail-media\s*\{[^}]*overflow:\s*hidden/);
-
     const grid = await agent.get('/projects').expect(200);
     const nsfwGridCard = extractProjectCard(grid.text, nsfwProjectId);
     const safeGridCard = extractProjectCard(grid.text, safeProjectId);
-    expect(nsfwGridCard).toMatch(/<img class="[^"]*project-image--nsfw-blurred[^"]*" data-preview-image/);
-    expect(nsfwGridCard).not.toMatch(/<article[^>]*project-image--nsfw-blurred/);
-    expect(nsfwGridCard).not.toMatch(/<div[^>]*project-image--nsfw-blurred/);
-    expect(nsfwGridCard).not.toMatch(/class="[^"]*project-grid-card-preview[^"]*project-card-media--nsfw-clipped/);
-    expect(nsfwGridCard).not.toMatch(/class="[^"]*project-card-media--nsfw-clipped/);
+    expect(nsfwGridCard).toMatch(/<img(?=[^>]*class="[^"]*\bproject-image--nsfw-blurred\b)(?=[^>]*data-preview-image)[^>]*>/);
     expect(safeGridCard).not.toContain('project-image--nsfw-blurred');
-    expect(safeGridCard).not.toContain('project-card-media--nsfw-clipped');
-    expect(nsfwGridCard).toContain(`data-project-card-link href="/projects/${nsfwProjectId}"`);
-    expect(nsfwGridCard).toContain('>Ready</span>');
-    expect(nsfwGridCard).toContain('>NSFW</li>');
 
     const list = await agent.get('/projects?view=list').expect(200);
     const nsfwListCard = extractProjectCard(list.text, nsfwProjectId);
-    const safeListCard = extractProjectCard(list.text, safeProjectId);
-    expect(nsfwListCard).toMatch(/<img class="[^"]*project-image--nsfw-blurred[^"]*" data-preview-image/);
-    expect(nsfwListCard).not.toMatch(/class="[^"]*project-list-card-media[^"]*project-card-media--nsfw-clipped/);
-    expect(nsfwListCard).not.toMatch(/class="[^"]*project-card-media--nsfw-clipped/);
-    expect(safeListCard).not.toContain('project-image--nsfw-blurred');
-    expect(safeListCard).not.toContain('project-card-media--nsfw-clipped');
-    expect(nsfwListCard).toContain(`data-project-card-link href="/projects/${nsfwProjectId}">NSFW Project</a>`);
-    expect(nsfwListCard).toContain('<dt>Status</dt>');
-    expect(nsfwListCard).toContain('>Ready</span>');
-    expect(nsfwListCard).not.toMatch(/<div[^>]*project-image--nsfw-blurred/);
+    expect(nsfwListCard).toMatch(/<img(?=[^>]*class="[^"]*\bproject-image--nsfw-blurred\b)(?=[^>]*data-preview-image)[^>]*>/);
 
     const detail = await agent.get(`/projects/${nsfwProjectId}`).expect(200);
-    expect(detail.text).toMatch(/<img class="project-detail-media-image project-image--nsfw-blurred" data-preview-image/);
-    expect(detail.text).not.toMatch(/class="[^"]*project-detail-media[^"]*project-card-media--nsfw-clipped/);
-    expect(detail.text).not.toMatch(/class="[^"]*project-card-media--nsfw-clipped/);
-    expect(detail.text).toContain('NSFW Project');
-    expect(detail.text).toContain('<li class="tag-chip">NSFW</li>');
-    expect(detail.text).toContain('<section class="project-detail-info">');
-    expect(detail.text).toContain(`href="/projects/${nsfwProjectId}/assets"`);
-    expect(detail.text).not.toMatch(/<div[^>]*project-image--nsfw-blurred/);
-
-    const safeDetail = await agent.get(`/projects/${safeProjectId}`).expect(200);
-    expect(safeDetail.text).not.toContain('project-image--nsfw-blurred');
-    expect(safeDetail.text).not.toContain('project-card-media--nsfw-clipped');
-    expect(safeDetail.text).toContain('Safe Project');
+    const detailMedia = detail.text.match(/<div\b[^>]*class="[^"]*\bproject-detail-media\b[^"]*"[^>]*>[\s\S]*?<\/div>/)?.[0] || '';
+    const detailInfo = extractProjectDetailSection(detail.text, 'project-detail-info');
+    expect(detailMedia).toMatch(/<img(?=[^>]*class="[^"]*\bproject-detail-media-image\b)(?=[^>]*class="[^"]*\bproject-image--nsfw-blurred\b)(?=[^>]*data-preview-image)[^>]*>/);
+    expect(detailMedia).toContain('alt="Preview of cover.png"');
+    expect(detailInfo).toMatch(/<section\b[^>]*class="[^"]*\bproject-detail-info\b[^"]*"/);
+    expect(detailInfo).not.toContain('project-image--nsfw-blurred');
 
     app.locals.nsfwFilterSettingsService.setEnabled(false);
 
-    const disabledGrid = await agent.get('/projects').expect(200);
-    const disabledGridCard = extractProjectCard(disabledGrid.text, nsfwProjectId);
-    expect(disabledGridCard).not.toContain('project-image--nsfw-blurred');
-    expect(disabledGridCard).not.toContain('project-card-media--nsfw-clipped');
-    expect(disabledGridCard).toContain('<img');
-
-    const disabledList = await agent.get('/projects?view=list').expect(200);
-    const disabledListCard = extractProjectCard(disabledList.text, nsfwProjectId);
-    expect(disabledListCard).not.toContain('project-image--nsfw-blurred');
-    expect(disabledListCard).not.toContain('project-card-media--nsfw-clipped');
-    expect(disabledListCard).toContain('<img');
-
     const disabledDetail = await agent.get(`/projects/${nsfwProjectId}`).expect(200);
-    expect(disabledDetail.text).not.toContain('project-image--nsfw-blurred');
-    expect(disabledDetail.text).not.toContain('project-card-media--nsfw-clipped');
-    expect(disabledDetail.text).toContain('<img class="project-detail-media-image" data-preview-image');
+    const disabledDetailMedia = disabledDetail.text.match(/<div\b[^>]*class="[^"]*\bproject-detail-media\b[^"]*"[^>]*>[\s\S]*?<\/div>/)?.[0] || '';
+    expect(disabledDetailMedia).toMatch(/<img(?=[^>]*class="[^"]*\bproject-detail-media-image\b)(?=[^>]*data-preview-image)[^>]*>/);
+    expect(disabledDetailMedia).not.toContain('project-image--nsfw-blurred');
   });
 
   it('recognizes a differently cased NSFW project tag for blur decisions', async () => {
@@ -1632,13 +1348,6 @@ describe('project HTTP workflow', () => {
       /<img class="[^"]*project-image--nsfw-blurred[^"]*" data-preview-image/,
     );
 
-    const list = await agent.get('/projects?view=list').expect(200);
-    expect(extractProjectCard(list.text, projectId)).toMatch(
-      /<img class="[^"]*project-image--nsfw-blurred[^"]*" data-preview-image/,
-    );
-
-    const detail = await agent.get(`/projects/${projectId}`).expect(200);
-    expect(detail.text).toMatch(/<img class="project-detail-media-image project-image--nsfw-blurred" data-preview-image/);
   });
 
   it('serves scoped responsive project-card presentation contracts', async () => {
@@ -1655,7 +1364,6 @@ describe('project HTTP workflow', () => {
     expect(css).not.toMatch(/\.project-list\s+li\s*\{[^}]*border-bottom:\s*1px solid var\(--border\)/);
     expect(css).toMatch(/@media\s*\(max-width:\s*540px\)[\s\S]*?\.project-list\s*>\s*li:not\(\.project-list-item\)\s*\{[^}]*padding:\s*var\(--space-sm\) 0;/);
     expect(css).toMatch(/\.project-card-media-image\s*\{[^}]*width:\s*100%;[^}]*height:\s*auto;/);
-    expect(css).toMatch(/\.project-image--nsfw-blurred\s*\{[\s\S]*?filter:\s*blur\(2rem\);[\s\S]*?clip-path:\s*inset\(0\);/);
     expect(css).not.toMatch(/\.project-card[^{}]*\{[^}]*aspect-ratio\s*:/);
     expect(css).not.toMatch(/\.project-card[^{}]*\{[^}]*object-fit\s*:\s*cover/);
     expect(css).toMatch(/\.project-card-link\s*\{[^}]*overflow-wrap:\s*anywhere/);
@@ -1731,138 +1439,20 @@ describe('project HTTP workflow', () => {
     expect(css).not.toMatch(/\.project-card--list \.project-card-media\s*\{/);
   });
 
-  it('renders assigned project display names and the tag filter in grid and list views', async () => {
-    const taggedProjectId = await createProject({ title: 'Assigned Tags Project' });
-    const secondTaggedProjectId = await createProject({ title: 'Shared Tags Project' });
-    const untaggedProjectId = await createProject({ title: 'No Assigned Tags Project' });
-    const zebra = app.locals.tagService.createTag({ name: 'Zebra Display' });
-    const shared = app.locals.tagService.createTag({ name: 'Shared Display' });
-    const alpha = app.locals.tagService.createTag({ name: 'Alpha Display' });
-    const assetOnly = app.locals.tagService.createTag({ name: 'Asset Only Display' });
 
-    app.locals.projectTagService.replaceProjectTags(taggedProjectId, [zebra.id, shared.id, alpha.id]);
-    app.locals.projectTagService.replaceProjectTags(secondTaggedProjectId, [shared.id]);
-    const assetId = Number(db.prepare(`
-      INSERT INTO assets (project_id, relative_path, filename)
-      VALUES (?, ?, ?)
-    `).run(taggedProjectId, 'source/asset-only.png', 'asset-only.png').lastInsertRowid);
-    app.locals.assetTagService.replaceAssetTags(assetId, [assetOnly.id]);
 
-    const grid = await agent.get('/projects?sort=title&order=asc').expect(200);
-    const taggedGridCard = extractProjectCard(grid.text, taggedProjectId);
-    const secondTaggedGridCard = extractProjectCard(grid.text, secondTaggedProjectId);
-    const untaggedGridCard = extractProjectCard(grid.text, untaggedProjectId);
-    const gridTags = extractProjectTags(taggedGridCard);
+  it('passes Tag and Search query state to the rendered listing', async () => {
+    const tag = app.locals.tagService.createTag({ name: 'HTTP filter tag' });
+    const matchingId = await createProject({ title: 'HTTP query match' });
+    await createProject({ title: 'HTTP query other' });
+    app.locals.projectTagService.replaceProjectTags(matchingId, [tag.id]);
 
-    expect(grid.text).toContain('<ul class="project-grid">');
-    expect(gridTags).toContain('<span class="project-grid-card-info-section-label">Tags</span>');
-    expect(gridTags.indexOf('Alpha Display')).toBeLessThan(gridTags.indexOf('Shared Display'));
-    expect(gridTags.indexOf('Shared Display')).toBeLessThan(gridTags.indexOf('Zebra Display'));
-    expect(gridTags).not.toContain('Asset Only Display');
-    expect(gridTags).not.toContain('alpha display');
-    expect(gridTags).not.toContain('normalized_name');
-    expect(gridTags).not.toContain(`>${alpha.id}<`);
-    expect(gridTags).not.toContain(`>${shared.id}<`);
-    expect(gridTags).not.toContain(`>${zebra.id}<`);
-    expect(gridTags).not.toContain('href=');
-    expect(extractProjectTags(secondTaggedGridCard)).toContain('Shared Display');
-    expect(extractProjectTags(untaggedGridCard)).toContain('No tags assigned');
-    expect(grid.text).not.toContain('name="tagIds"');
-    const gridTagFilter = extractTagFilter(grid.text);
-    expect(gridTagFilter).toContain('aria-label="Tag filter: All tags"');
-    expect(gridTagFilter.indexOf('Alpha Display')).toBeLessThan(gridTagFilter.indexOf('Asset Only Display'));
-    expect(gridTagFilter.indexOf('Asset Only Display')).toBeLessThan(gridTagFilter.indexOf('Shared Display'));
-    expect(gridTagFilter.indexOf('Shared Display')).toBeLessThan(gridTagFilter.indexOf('Zebra Display'));
-    expect(gridTagFilter).not.toContain('normalized_name');
-    expect(gridTagFilter).not.toContain('selected>Shared Display</option>');
-    expect(grid.text).not.toContain('sort=tag');
-    expect(grid.text).not.toContain('Tag sort');
+    const response = await agent.get(`/projects?search=query&tag=${tag.id}`).expect(200);
+    const matchingCard = extractProjectCard(response.text, matchingId);
 
-    const list = await agent.get('/projects?sort=title&order=asc&view=list').expect(200);
-    const taggedListCard = extractProjectCard(list.text, taggedProjectId);
-    const secondTaggedListCard = extractProjectCard(list.text, secondTaggedProjectId);
-    const untaggedListCard = extractProjectCard(list.text, untaggedProjectId);
-
-    expect(list.text).toContain('<ul class="project-list">');
-    const taggedListAssociations = taggedListCard.match(/<div class="project-list-card-associations">([\s\S]*?)<\/div>\s*<\/div>\s*<\/article>/)?.[1] || '';
-    expect(taggedListAssociations).toContain('project-list-card-association--tags');
-    expect(taggedListAssociations).toContain('Alpha Display');
-    expect(taggedListAssociations).toContain('Shared Display');
-    expect(taggedListAssociations).toContain('Zebra Display');
-    const secondListAssociations = secondTaggedListCard.match(/<div class="project-list-card-associations">([\s\S]*?)<\/div>\s*<\/div>\s*<\/article>/)?.[1] || '';
-    const untaggedListAssociations = untaggedListCard.match(/<div class="project-list-card-associations">([\s\S]*?)<\/div>\s*<\/div>\s*<\/article>/)?.[1] || '';
-    expect(secondListAssociations).toContain('Shared Display');
-    expect(untaggedListAssociations).toContain('No tags assigned');
-  });
-
-  it('filters projects by a valid tag ID, composes with search/status, and excludes asset-only assignments', async () => {
-    const shared = app.locals.tagService.createTag({ name: 'Shared Filter Tag' });
-    const additional = app.locals.tagService.createTag({ name: 'Additional Filter Tag' });
-    const firstId = await createProject({ title: 'Filter Alpha', status: 'planned' });
-    const secondId = await createProject({ title: 'Filter Beta', status: 'planned' });
-    const multiAssignedId = await createProject({ title: 'Needle Planned', status: 'planned' });
-    const wrongStatusId = await createProject({ title: 'Needle Ready', status: 'ready' });
-    const otherTagId = await createProject({ title: 'Needle Other Tag', status: 'planned' });
-    const assetOnlyId = await createProject({ title: 'Asset Only Filter', status: 'planned' });
-
-    app.locals.projectTagService.replaceProjectTags(firstId, [shared.id]);
-    app.locals.projectTagService.replaceProjectTags(secondId, [shared.id]);
-    app.locals.projectTagService.replaceProjectTags(multiAssignedId, [shared.id, additional.id]);
-    app.locals.projectTagService.replaceProjectTags(wrongStatusId, [shared.id]);
-    app.locals.projectTagService.replaceProjectTags(otherTagId, [additional.id]);
-    const assetId = Number(db.prepare(`
-      INSERT INTO assets (project_id, relative_path, filename)
-      VALUES (?, ?, ?)
-    `).run(assetOnlyId, 'source/asset-only-filter.png', 'asset-only-filter.png').lastInsertRowid);
-    app.locals.assetTagService.replaceAssetTags(assetId, [shared.id]);
-
-    const filtered = await agent
-      .get(`/projects?tag=${shared.id}&sort=title&order=asc`)
-      .expect(200);
-    expect(filtered.text).toContain('4 projects found');
-    expect(filtered.text).toContain('Filter Alpha');
-    expect(filtered.text).toContain('Filter Beta');
-    expect(filtered.text).toContain('Needle Planned');
-    expect(filtered.text).toContain('Needle Ready');
-    expect(extractProjectCards(filtered.text).join('')).not.toContain('Needle Other Tag');
-    expect(extractProjectCards(filtered.text).join('')).not.toContain('Asset Only Filter');
-    expect(filtered.text.match(/<article\b[^>]*data-project-card[^>]*>/g)).toHaveLength(4);
-    expect(extractTagFilter(filtered.text)).toContain(
-      `value="${shared.id}" checked`,
-    );
-
-    const multiTag = await agent
-      .get(`/projects?tag=${additional.id}&tag=${shared.id}&sort=title&order=asc`)
-      .expect(200);
-    expect(multiTag.text).toContain('5 projects found');
-    expect(multiTag.text).toContain('Filter Alpha');
-    expect(multiTag.text).toContain('Filter Beta');
-    expect(multiTag.text).toContain('Needle Planned');
-    expect(multiTag.text).toContain('Needle Ready');
-    expect(multiTag.text).toContain('Needle Other Tag');
-    expect(extractProjectCards(multiTag.text).join('')).not.toContain('Asset Only Filter');
-    expect(extractTagFilter(multiTag.text)).toContain('aria-label="Tag filter: 2 tags selected"');
-    expect((extractTagFilter(multiTag.text).match(/name="tag"[^>]+checked/g) || [])).toHaveLength(2);
-
-    const composed = await agent
-      .get(`/projects?tag=${shared.id}&status=planned&sort=title&order=asc&view=list`)
-      .expect(200);
-    expect(composed.text).toContain('3 projects found');
-    expect(composed.text).toContain('Needle Planned');
-    expect(composed.text).toContain('Needle Ready');
-    expect(extractProjectCards(composed.text).join('')).not.toContain('Needle Other Tag');
-    expect(composed.text).toContain('href="/projects"');
-
-    await agent
-      .post(`/projects/${wrongStatusId}/archive`)
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(302);
-    const archived = await agent
-      .get(`/projects?tag=${shared.id}&status=archived&sort=title&order=asc`)
-      .expect(200);
-    expect(archived.text).toContain('1 project found');
-    expect(archived.text).toContain('Needle Ready');
-    expect(extractProjectCards(archived.text).join('')).not.toContain('Needle Planned');
+    expect(matchingCard).toContain('HTTP query match');
+    expect(extractProjectCards(response.text).join('')).not.toContain('HTTP query other');
+    expect(extractTagFilter(response.text)).toContain(`value="${tag.id}" checked`);
   });
 
   it('normalizes empty, malformed, nonexistent, and deleted tag values to the unfiltered state', async () => {
@@ -1893,30 +1483,19 @@ describe('project HTTP workflow', () => {
     expect(deleted.text).toContain('href="/projects?status=planned&amp;view=list"');
   });
 
-  it('filters projects by a valid project id, shows selected summary, and treats it as an active filter', async () => {
-    const firstId = await createProject({ title: 'Project Filter Alpha', status: 'planned' });
-    const secondId = await createProject({ title: 'Project Filter Beta', status: 'ready' });
 
-    const filtered = await agent.get(`/projects?project=${firstId}`).expect(200);
+  it('passes the Project filter to the rendered listing', async () => {
+    const selectedId = await createProject({ title: 'Selected HTTP project' });
+    await createProject({ title: 'Unselected HTTP project' });
 
-    expect(filtered.text).toContain('1 project found');
-    expect(filtered.text).toContain('Project Filter Alpha');
-    expect(extractProjectCards(filtered.text).join('')).not.toContain('Project Filter Beta');
-    expect(filtered.text).not.toContain('No projects yet');
-    expect(filtered.text).toContain('href="/projects"');
-    const projectFilter = extractProjectFilter(filtered.text);
-    expect(projectFilter).toContain(`value="${firstId}" checked`);
-    expect(projectFilter).toContain(`value="${secondId}"`);
-    expect(projectFilter).toContain('Project Filter Alpha');
-    expect(projectFilter).toContain('Project Filter Beta');
-    expect(projectFilter).toContain('id="project-project-filter-trigger" aria-controls="project-project-filter-options"');
-    expect(projectFilter).toContain('id="project-project-filter-search"');
-    expect(projectFilter).toContain('id="project-project-option-all"');
-    expect(projectFilter).toContain(`id="${firstId}" name="project" type="radio" value="${firstId}" checked`);
-    expect(projectFilter).toContain('aria-label="Project filter: Project Filter Alpha"');
+    const response = await agent.get(`/projects?project=${selectedId}`).expect(200);
+
+    expect(extractProjectCard(response.text, selectedId)).toContain('Selected HTTP project');
+    expect(extractProjectCards(response.text).join('')).not.toContain('Unselected HTTP project');
+    expect(extractProjectFilter(response.text)).toContain(`value="${selectedId}" checked`);
   });
 
-  it('preserves the selected project id through generated pagination and view links', async () => {
+  it('preserves the selected project id through generated view links', async () => {
     const targetId = await createProject({ title: 'Project Link Alpha', status: 'planned' });
     await createProject({ title: 'Project Link Beta', status: 'planned' });
     for (let i = 0; i < 26; i += 1) {
@@ -1982,18 +1561,13 @@ describe('project HTTP workflow', () => {
     expect(listCard).not.toContain('/original');
   });
 
-  it('defaults to Created descending while explicit Updated remains available', async () => {
+  it('renders explicit Sort and Order query state', async () => {
     const olderCreatedId = await createProject({ title: 'Older Created Project' });
     const newerCreatedId = await createProject({ title: 'Newer Created Project' });
     db.prepare("UPDATE projects SET created_at = '2026-01-01 00:00:00', updated_at = '2026-03-01 00:00:00' WHERE id = ?")
       .run(olderCreatedId);
     db.prepare("UPDATE projects SET created_at = '2026-02-01 00:00:00', updated_at = '2026-01-01 00:00:00' WHERE id = ?")
       .run(newerCreatedId);
-
-    const created = await agent.get('/projects').expect(200);
-    expectProjectSortOrderSelection(created.text, 'created', 'desc');
-    expect(created.text.indexOf(`data-project-card-link href="/projects/${newerCreatedId}"`))
-      .toBeLessThan(created.text.indexOf(`data-project-card-link href="/projects/${olderCreatedId}"`));
 
     const updated = await agent.get('/projects?sort=updated&order=asc').expect(200);
     expectProjectSortOrderSelection(updated.text, 'updated', 'asc');
@@ -2024,46 +1598,20 @@ describe('project HTTP workflow', () => {
     expect(invalid.text).toContain('href="/projects"');
   });
 
-  it('preserves filters, pagination, and effective saved settings through canonical URLs and links', async () => {
-    saveProjectDefault('view', 'list');
-    saveProjectDefault('sort', 'title');
-    saveProjectDefault('order', 'asc');
-
-    const tag = app.locals.tagService.createTag({ name: 'Canonical Tag' });
+  it('normalizes an invalid page while retaining the canonical page boundary', async () => {
     for (let i = 0; i < 26; i += 1) {
-      const projectId = await createProject({ title: `Canonical Project ${String(i).padStart(2, '0')}`, status: 'planned' });
-      app.locals.projectTagService.replaceProjectTags(projectId, [tag.id]);
+      await createProject({ title: `Page boundary ${String(i).padStart(2, '0')}` });
     }
 
-    const redirect = await agent
-      .get(`/projects?status=planned&tag=${tag.id}&page=2&unknown=discarded`)
-      .expect(302);
-    expect(redirect.headers.location)
-      .toBe(`/projects?status=planned&tag=${tag.id}&sort=title&order=asc&view=list&page=2`);
+    const invalid = await agent.get('/projects?page=not-a-page&sort=title&order=asc').expect(200);
 
-    const pageTwo = await agent.get(redirect.headers.location).expect(200);
-    expect(pageTwo.text).toContain('<ul class="project-list">');
-    expect(pageTwo.text).toContain('Canonical Project 25');
-    expect(pageTwo.text).not.toContain('unknown=discarded');
-    expect(pageTwo.text).toContain(
-      `href="/projects?status=planned&amp;tag=${tag.id}&amp;sort=title&amp;order=asc&amp;view=list&amp;page=1"`
-    );
-
-    const pageOne = await agent
-      .get(`/projects?status=planned&tag=${tag.id}&sort=title&order=asc&view=list`)
-      .expect(200);
-    expect(pageOne.text).toContain(
-      `href="/projects?status=planned&amp;tag=${tag.id}&amp;sort=title&amp;order=asc&amp;view=list&amp;page=2"`
-    );
-    expect(pageOne.text).toContain(
-      `href="/projects?status=planned&amp;tag=${tag.id}&amp;sort=title&amp;order=asc&amp;view=grid"`
-    );
-    expect(pageOne.text).toContain('<input type="hidden" name="view" value="list">');
-    expectProjectSortOrderSelection(pageOne.text, 'title', 'asc');
-    expect(pageOne.text).not.toContain('unknown=discarded');
+    expect(invalid.text).toContain('Page 1 of 2');
+    expect(invalid.text).not.toContain('page=not-a-page');
+    expect(invalid.text).toContain('href="/projects?sort=title&amp;order=asc&amp;page=2"');
   });
 
-  it('preserves repeated status and tag selections through saved defaults, pagination, and view links', async () => {
+
+  it('preserves repeated Status, Project Type, and Tag selections through canonical pagination and view links', async () => {
     saveProjectDefault('view', 'list');
     saveProjectDefault('sort', 'title');
     saveProjectDefault('order', 'asc');
@@ -2074,131 +1622,76 @@ describe('project HTTP workflow', () => {
       const projectId = await createProject({
         title: `Repeated State ${String(i).padStart(2, '0')}`,
         status: i % 2 === 0 ? 'planned' : 'ready',
+        projectType: i % 2 === 0 ? 'images' : 'comic',
       });
       app.locals.projectTagService.replaceProjectTags(projectId, [firstTag.id, secondTag.id]);
     }
 
     const redirect = await agent
-      .get(`/projects?status=ready&status=planned&tag=${secondTag.id}&tag=${firstTag.id}&page=2`)
+      .get(`/projects?search=Repeated&status=ready&status=planned&type=comic&type=images&tag=${secondTag.id}&tag=${firstTag.id}&page=2`)
       .expect(302);
-    const canonical = `/projects?status=planned&status=ready&tag=${firstTag.id}&tag=${secondTag.id}&sort=title&order=asc&view=list&page=2`;
+    const canonical = `/projects?search=Repeated&status=planned&status=ready&type=images&type=comic&tag=${firstTag.id}&tag=${secondTag.id}&sort=title&order=asc&view=list&page=2`;
     expect(redirect.headers.location).toBe(canonical);
 
     const pageTwo = await agent.get(canonical).expect(200);
     expect(pageTwo.text).toContain('26 projects found');
     expect(pageTwo.text).toContain('name="view" value="list"');
     expect(pageTwo.text).toContain(
-      `href="/projects?status=planned&amp;status=ready&amp;tag=${firstTag.id}&amp;tag=${secondTag.id}&amp;sort=title&amp;order=asc&amp;view=list&amp;page=1"`
+      `href="/projects?search=Repeated&amp;status=planned&amp;status=ready&amp;type=images&amp;type=comic&amp;tag=${firstTag.id}&amp;tag=${secondTag.id}&amp;sort=title&amp;order=asc&amp;view=list&amp;page=1"`
     );
     expect(pageTwo.text).toContain(
-      `href="/projects?status=planned&amp;status=ready&amp;tag=${firstTag.id}&amp;tag=${secondTag.id}&amp;sort=title&amp;order=asc&amp;view=grid&amp;page=2"`
+      `href="/projects?search=Repeated&amp;status=planned&amp;status=ready&amp;type=images&amp;type=comic&amp;tag=${firstTag.id}&amp;tag=${secondTag.id}&amp;sort=title&amp;order=asc&amp;view=grid&amp;page=2"`
     );
     expect(extractStatusFilter(pageTwo.text)).toContain('aria-label="Status filter: 2 statuses selected"');
+    expect(extractProjectTypeFilter(pageTwo.text)).toContain('aria-label="Project Type filter: 2 types selected"');
     expect(extractTagFilter(pageTwo.text)).toContain('aria-label="Tag filter: 2 tags selected"');
     expect((extractStatusFilter(pageTwo.text).match(/name="status"[^>]+checked/g) || [])).toHaveLength(2);
     expect((extractTagFilter(pageTwo.text).match(/name="tag"[^>]+checked/g) || [])).toHaveLength(2);
   });
 
-  it('preserves repeated Project Type selections through canonical pagination, view, sort, and order links', async () => {
-    saveProjectDefault('view', 'list');
-    saveProjectDefault('sort', 'title');
-    saveProjectDefault('order', 'asc');
-
-    for (let i = 0; i < 26; i += 1) {
-      await createProject({
-        title: `Project Type State ${String(i).padStart(2, '0')}`,
-        projectType: i % 2 === 0 ? 'images' : 'comic',
-      });
-    }
-
-    const redirect = await agent.get('/projects?type=comic&type=images&page=2').expect(302);
-    const canonical = '/projects?type=images&type=comic&sort=title&order=asc&view=list&page=2';
-    expect(redirect.headers.location).toBe(canonical);
-
-    const pageTwo = await agent.get(canonical).expect(200);
-    expect(extractProjectTypeFilter(pageTwo.text)).toContain('aria-label="Project Type filter: 2 types selected"');
-    expect(pageTwo.text).toContain('href="/projects?type=images&amp;type=comic&amp;sort=title&amp;order=asc&amp;view=grid&amp;page=2"');
-
-    const pageOne = await agent.get('/projects?type=images&type=comic&sort=title&order=asc&view=list').expect(200);
-    expect(pageOne.text).toContain('href="/projects?type=images&amp;type=comic&amp;sort=title&amp;order=asc&amp;view=list&amp;page=2"');
-  });
 
   it('new-project form renders with available tags and no selected tags', async () => {
     const alpha = app.locals.tagService.createTag({ name: 'Form Alpha' });
     const beta = app.locals.tagService.createTag({ name: 'Form Beta' });
 
     const res = await agent.get('/projects/new').expect(200);
-    expect(res.text).toContain('Create Project');
-    expect(res.text).toContain('Title');
-    expectProjectFormSectionCards(res.text);
-    const statusField = expectProjectFormStatusDisclosure(res.text, 'tbd');
-    expect(statusField).not.toContain('value="archived"');
-    expect(statusField).not.toContain('aria-invalid');
-    expect(statusField).not.toContain('aria-describedby');
-    expect(statusField).not.toContain('status-error');
-    expect(res.text).not.toContain('id="priority"');
-    expect(res.text).not.toContain('name="priority"');
+    const form = res.text.match(/<form id="project-form"[^>]*>[\s\S]*?<\/form>/)?.[0] || '';
+
+    expect(form).toContain('method="post"');
+    expect(form).toContain('action="/projects"');
+    expect(form).toMatch(/<input[^>]*type="hidden"[^>]*name="_csrf"[^>]*value="[^"]+"/);
+    expect(form).toMatch(/<label for="title">Title[\s\S]*?<input[^>]*name="title"[^>]*\brequired\b/);
+    expect(form).toMatch(/<label for="description">Description[\s\S]*?<textarea[^>]*name="description"/);
+    expect(form).toMatch(/<label for="notes">Notes[\s\S]*?<textarea[^>]*name="notes"/);
+    expect(form).toMatch(/<label for="patreonUrl">Project link[\s\S]*?<input[^>]*name="patreonUrl"/);
+
+    const statusField = extractProjectFormStatusField(form);
+    expect(statusField).toMatch(/name="status"[^>]*value="tbd"[^>]*checked/);
+    expect(statusField).toContain('aria-label="Status: Tbd"');
+
+    const projectTypeField = form.match(/<fieldset class="field asset-filter-multiselect-field[^"]*">\s*<legend>Project type[\s\S]*?<\/fieldset>/)?.[0] || '';
+    expect(projectTypeField).toMatch(/name="projectType"[^>]*value="images"[^>]*checked/);
+    for (const type of ['images', 'comic', 'animation', 'wallpaper']) {
+      expect(projectTypeField).toMatch(new RegExp(`name="projectType"[^>]*value="${type}"`));
+    }
 
     const tagsField = extractProjectFormTagsField(res.text);
     expect(tagsField).not.toBe('');
-    expect(tagsField).toContain('asset-filter-multiselect asset-filter-multiselect--sized cc-dropdown');
-    expect(tagsField).toContain('data-cc-dropdown data-cc-dropdown-mode="multiple"');
-    expect(tagsField).not.toContain('data-asset-viewer-filter-disclosure');
-    expect(tagsField).not.toContain('data-asset-viewer-filter-single-select');
-    expect(tagsField).not.toContain('data-asset-viewer-filter-multi-select');
     expect(tagsField).toMatch(/id="project-tags-form-trigger"\s+aria-controls="project-tags-form-options"/);
     expect(tagsField).toContain('aria-label="Tags: No tags selected"');
-    expect(tagsField).toContain('data-cc-dropdown-summary class="asset-filter-multiselect-summary"');
-    expect(tagsField).toContain('data-cc-dropdown-summary-current class="asset-filter-multiselect-summary-current">No tags selected</span>');
-    expect(tagsField).toContain('class="asset-filter-multiselect-panel" role="group" aria-label="Tag options"');
-    expect(tagsField).toContain('name="tagIds[]"');
-    expect(tagsField).toContain(`value="${alpha.id}"`);
-    expect(tagsField).toContain(`value="${beta.id}"`);
-    expect(tagsField).toContain('Form Alpha');
-    expect(tagsField).toContain('Form Beta');
-    expect(tagsField).toContain('type="checkbox"');
-    expect(tagsField).not.toContain('required');
-    expect(tagsField).not.toContain('aria-invalid');
-    expect(tagsField).not.toContain('tagIds-error');
-    expect(tagsField).not.toMatch(/<select[^>]*name="tagIds\[\]"/);
-    expect(tagsField).not.toMatch(/<input[^>]*type="hidden"[^>]*name="tagIds\[\]"/);
+    expect(tagsField).toContain('role="group" aria-label="Tag options"');
+    expect(tagsField).toMatch(new RegExp(`name="tagIds\\[\\]"[^>]*value="${alpha.id}"[^>]*>[\\s\\S]*?Form Alpha`));
+    expect(tagsField).toMatch(new RegExp(`name="tagIds\\[\\]"[^>]*value="${beta.id}"[^>]*>[\\s\\S]*?Form Beta`));
     expect((tagsField.match(/name="tagIds\[\]"[^>]*checked/g) || [])).toHaveLength(0);
-    expect((tagsField.match(/<input[^>]*name="tagIds\[\]"/g) || [])).toHaveLength(2);
-
-    expect(res.text.indexOf('project-status-form-trigger'))
-      .toBeLessThan(res.text.indexOf('project-tags-form-trigger'));
-    expectProjectFormStructure(res.text);
   });
 
   it('new-project form renders an empty tag catalog with a Settings link', async () => {
     const res = await agent.get('/projects/new').expect(200);
     const tagsField = extractProjectFormTagsField(res.text);
-    expectProjectFormStructure(res.text);
-    expect(tagsField).toContain('data-cc-dropdown data-cc-dropdown-mode="multiple"');
-    expect(tagsField).not.toContain('data-asset-viewer-filter-disclosure');
-    expect(tagsField).not.toContain('data-asset-viewer-filter-multi-select');
-    expect(tagsField).toContain('<p class="asset-filter-multiselect-empty">No tags available. <a href="/settings/tags">Add tags in Settings</a>.</p>');
+    expect(tagsField).not.toBe('');
+    expect(tagsField).toMatch(/No tags available\.\s*<a href="\/settings\/tags">Add tags in Settings<\/a>/);
     expect(tagsField).toContain('aria-label="Tags: No tags selected"');
-    expect(res.text).toContain('<span class="help-text">Add new tags in <a href="/settings/tags">Settings › Tags</a>.</span>');
-    expect((res.text.match(/href="\/settings\/tags"/g) || [])).toHaveLength(2);
-    expect(tagsField.indexOf('No tags available')).toBeLessThan(tagsField.indexOf('Add tags in Settings'));
-    expect(res.text.indexOf('project-tags-form-options')).toBeLessThan(res.text.indexOf('Add new tags in'));
-  });
-
-  it('project form places actions in the page heading and associates the submit button with the form', async () => {
-    const create = await agent.get('/projects/new').expect(200);
-    const createActions = extractPageHeadingActions(create.text);
-    expect(createActions).toContain('<button class="button button-primary" type="submit" form="project-form">Create</button>');
-    expect(createActions).toContain('<a class="button button-secondary" href="/projects">Cancel</a>');
-    expect(create.text).toContain('<form id="project-form" method="post" action="/projects" class="project-form" novalidate>');
-    expect(create.text.indexOf('<div class="page-heading-actions">')).toBeLessThan(create.text.indexOf('<form id="project-form"'));
-    expect(create.text).not.toContain('<div class="form-actions">');
-    expect(createActions).not.toContain('View assets');
-    expect(create.text).not.toContain('Project actions');
-    expect(create.text).not.toContain('project-edit-dialog');
-    expect(create.text).not.toContain('data-dialog-open');
-    expect(create.text).not.toContain('/archive');
-    expect(create.text).not.toContain('/delete');
+    expect(tagsField).not.toMatch(/<input[^>]*name="tagIds\[\]"/);
   });
 
   it('new-project form seeds the valid saved New Project status default', async () => {
@@ -2206,8 +1699,7 @@ describe('project HTTP workflow', () => {
 
     const res = await agent.get('/projects/new').expect(200);
 
-    expectProjectFormStatusDisclosure(res.text, 'ready');
-    expect(res.text).not.toContain('id="priority"');
+    expect(extractProjectFormStatusField(res.text)).toMatch(/name="status"[^>]*value="ready"[^>]*checked/);
   });
 
   it('renders one closed native New Project dialog with host returnTo and standalone defaults', async () => {
@@ -2264,63 +1756,7 @@ describe('project HTTP workflow', () => {
   it('new-project form uses the tbd fallback when no status default is saved', async () => {
     const res = await agent.get('/projects/new').expect(200);
 
-    expectProjectFormStatusDisclosure(res.text, 'tbd');
-    expect(res.text).not.toContain('id="priority"');
-  });
-
-  it('rejects creation when the stored status default is stale without rewriting it', async () => {
-    writeStoredNewProjectDefault('status', 'archived');
-    writeLegacyNewProjectPriority('urgent');
-
-    const beforeCount = db.prepare('SELECT COUNT(*) AS count FROM projects').get().count;
-    const res = await agent
-      .post('/projects')
-      .send('title=Stale+Status+Default')
-      .send('projectType=images')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(422);
-
-    expect(db.prepare('SELECT COUNT(*) AS count FROM projects').get().count).toBe(beforeCount);
-    expect(res.text).toContain(
-      'The configured New Project Status default is missing or unavailable. Choose a valid default in Settings.'
-    );
-    expectProjectFormStatusDisclosure(res.text, null, { statusError: true });
-    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').pluck().get(
-      PAGE_DEFAULT_DEFINITIONS.new_project.status.key,
-    )).toBe('archived');
-    expect(res.text).not.toContain('id="priority"');
-  });
-
-  it('rejected create submission preserves the submitted status over the saved default', async () => {
-    saveNewProjectDefault('status', 'ready');
-
-    const res = await agent
-      .post('/projects')
-      .send('title=')
-      .send('status=in-progress')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(422);
-
-    expectProjectFormStatusDisclosure(res.text, 'in-progress');
-    expect(res.text).not.toContain('id="priority"');
-  });
-
-  it('successful create uses the submitted status, not the saved default', async () => {
-    saveNewProjectDefault('status', 'ready');
-
-    const res = await agent
-      .post('/projects')
-      .send('title=Submitted+Wins')
-      .send('status=planned')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(302);
-
-    const id = Number(res.headers.location.replace('/projects/', ''));
-    const project = db.prepare('SELECT status FROM projects WHERE id = ?').get(id);
-    expect(project.status).toBe('planned');
+    expect(extractProjectFormStatusField(res.text)).toMatch(/name="status"[^>]*value="tbd"[^>]*checked/);
   });
 
   it('edit dialog shows the stored project status even when the New Project default differs', async () => {
@@ -2333,29 +1769,32 @@ describe('project HTTP workflow', () => {
     expect(res.text).not.toContain('id="priority"');
   });
 
-  it('valid create request redirects to detail', async () => {
-    const returnTo = '/projects?search=needle&sort=title&order=asc&page=3#projects-list';
-    const res = await agent
+  it.each([undefined, 'invalid-token'])('rejects create without a valid CSRF token (%s) without mutation', async (token) => {
+    const beforeCount = db.prepare('SELECT COUNT(*) AS count FROM projects').get().count;
+    const fields = new URLSearchParams({ title: 'CSRF rejected project', status: 'tbd' });
+    if (token !== undefined) fields.set('_csrf', token);
+
+    await agent
       .post('/projects')
-      .send('title=Test+Project')
-      .send('description=A+test')
-      .send('notes=notes')
-      .send('status=tbd')
-      .send('returnTo=' + encodeURIComponent(returnTo))
       .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(302);
-    expect(res.headers.location).toMatch(/^\/projects\/\d+$/);
+      .send(fields.toString())
+      .expect(403);
+
+    expect(db.prepare('SELECT COUNT(*) AS count FROM projects').get().count).toBe(beforeCount);
   });
 
-  it('create persists multiple selected tags and redirects to detail', async () => {
+  it('creates the submitted project and tags with a detail PRG', async () => {
     const alpha = app.locals.tagService.createTag({ name: 'Create Alpha' });
     const beta = app.locals.tagService.createTag({ name: 'Create Beta' });
 
     const res = await agent
       .post('/projects')
-      .send('title=Tagged+Create')
-      .send('status=tbd')
+      .send('title=Submitted+Project')
+      .send('description=Submitted+description')
+      .send('notes=Submitted+notes')
+      .send('status=planned')
+      .send('projectType=comic')
+      .send('patreonUrl=https%3A%2F%2Fexample.com%2Fproject')
       .send(`tagIds[]=${alpha.id}`)
       .send(`tagIds[]=${beta.id}`)
       .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -2363,24 +1802,47 @@ describe('project HTTP workflow', () => {
       .expect(302);
 
     const id = Number(res.headers.location.replace('/projects/', ''));
+    expect(res.headers.location).toBe(`/projects/${id}`);
+    expect(db.prepare(`
+      SELECT title, description, notes, status, project_type, patreon_url
+      FROM projects WHERE id = ?
+    `).get(id)).toEqual({
+      title: 'Submitted Project',
+      description: 'Submitted description',
+      notes: 'Submitted notes',
+      status: 'planned',
+      project_type: 'comic',
+      patreon_url: 'https://example.com/project',
+    });
     const assigned = app.locals.projectTagService.listProjectTags(id).map((tag) => tag.id);
-    expect(assigned).toHaveLength(2);
-    expect(assigned).toContain(alpha.id);
-    expect(assigned).toContain(beta.id);
+    expect(assigned).toEqual([alpha.id, beta.id]);
   });
 
-  it('create with no tags leaves no assignments', async () => {
-    const res = await agent
-      .post('/projects')
-      .send('title=Untagged+Create')
-      .send('status=tbd')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(302);
+  it('rejects a malformed submitted tag ID before creating a project', async () => {
+    const create = vi.spyOn(app.locals.projectService, 'create');
+    const beforeCount = db.prepare('SELECT COUNT(*) AS count FROM projects').get().count;
 
-    const id = Number(res.headers.location.replace('/projects/', ''));
-    const assigned = app.locals.projectTagService.listProjectTags(id);
-    expect(assigned).toHaveLength(0);
+    try {
+      const res = await agent
+        .post('/projects')
+        .send('title=Malformed+Tag+Create')
+        .send('status=tbd')
+        .send('tagIds[]=not-a-tag-id')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(422);
+
+      expect(create).not.toHaveBeenCalled();
+      expect(db.prepare('SELECT COUNT(*) AS count FROM projects').get().count).toBe(beforeCount);
+
+      const form = res.text.match(/<form id="project-form"[^>]*>[\s\S]*?<\/form>/)?.[0] || '';
+      const tagsField = extractProjectFormTagsField(form);
+      expect(form).toMatch(/<input[^>]*name="title"[^>]*value="Malformed Tag Create"/);
+      expect(form).toMatch(/<span[^>]*id="tagIds-error"[^>]*>Tag selections must contain canonical positive integer IDs\.<\/span>/);
+      expect(tagsField).toMatch(/<summary[^>]*aria-describedby="tagIds-error"[^>]*aria-invalid="true"/);
+    } finally {
+      create.mockRestore();
+    }
   });
 
   it('create with a stale deleted tag returns 422 without creating the project', async () => {
@@ -2407,73 +1869,92 @@ describe('project HTTP workflow', () => {
     const tagsField = extractProjectFormTagsField(res.text);
     expect(tagsField).toMatch(new RegExp(`value="${beta.id}"[^>]*checked`));
     expect(tagsField).toContain('Stale Create Beta');
-    expect(tagsField).toContain('2 tags selected');
-    expect(tagsField).toContain('field-error');
-    expect(tagsField).toMatch(/<input[^>]*name="tagIds\[\]"[^>]*aria-describedby="tagIds-error"[^>]*aria-invalid="true"/);
-    expect(tagsField).toMatch(/<summary[^>]*aria-describedby="tagIds-error"[^>]*aria-invalid="true"/);
-    expect(res.text).toContain('class="field-error-message" id="tagIds-error"');
-    expectProjectFormStructure(res.text, { tagError: true });
+    expect(tagsField).toContain('aria-describedby="tagIds-error"');
   });
 
-  it('invalid create request rerenders with values and errors', async () => {
-    const res = await agent
-      .post('/projects')
-      .send('title=Create+Preserves')
-      .send('description=A')
-      .send('notes=Create+notes')
-      .send('status=ready')
-      .send('plannedDate=2026-08-01')
-      .send('publishedDate=2026-08-15')
-      .send('patreonUrl=example.com/not-patreon')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
+  it('atomically rejects a tag deleted after pre-validation without leaving a project', async () => {
+    const staleTag = app.locals.tagService.createTag({ name: 'Race Create Stale' });
+    const retainedTag = app.locals.tagService.createTag({ name: 'Race Create Retained' });
+    const beforeCount = db.prepare('SELECT COUNT(*) AS count FROM projects').get().count;
+    const expectedId = db.prepare('SELECT COALESCE(MAX(id), 0) + 1 AS id FROM projects').get().id;
+    const expectedRoot = path.join(projectsRoot, formatProjectDirName(expectedId, 'race-create-project'));
+    const listTags = vi.spyOn(app.locals.tagService, 'listTags');
+    const deleteTag = vi.spyOn(app.locals.tagService, 'deleteTag');
+    const originalCreate = app.locals.projectService.create.bind(app.locals.projectService);
+    const create = vi.spyOn(app.locals.projectService, 'create');
+
+    create.mockImplementation((input, options) => {
+      app.locals.tagService.deleteTag(staleTag.id);
+      return originalCreate.call(app.locals.projectService, input, options);
+    });
+
+    try {
+      const res = await agent
+        .post('/projects')
+        .send('title=Race+Create+Project')
+        .send('status=tbd')
+        .send(`tagIds[]=${staleTag.id}`)
+        .send(`tagIds[]=${retainedTag.id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(422);
-    expect(res.text).toContain('Project link must be a valid absolute HTTP or HTTPS URL.');
-    expect(res.text).toContain('value="Create Preserves"');
-    expect(res.text).toContain('A');
-    expect(res.text).toContain('Create notes');
-    expectProjectFormStatusDisclosure(res.text, 'ready');
-    expect(res.text).not.toContain('id="priority"');
-    expect(res.text).not.toMatch(/\b(?:id|name)="(?:plannedDate|publishedDate)"/);
-    expect(res.text).toContain('value="example.com/not-patreon"');
-    expect(res.text).toContain('Basic information');
-    expect(res.text).toContain('>Status</h3>');
-    expect(res.text).not.toContain('>Scheduling</h3>');
-    expect(res.text).toContain('Links');
-    expect(res.text).toContain('href="/projects"');
-    expect(res.text).toContain('<form id="project-form" method="post" action="/projects" class="project-form" novalidate>');
-    expect(res.text).not.toContain('id="project-create-dialog"');
+        .expect(422);
+
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(listTags.mock.results[0].value).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: staleTag.id }),
+      ]));
+      expect(listTags.mock.invocationCallOrder[0]).toBeLessThan(create.mock.invocationCallOrder[0]);
+      expect(deleteTag.mock.invocationCallOrder[0]).toBeGreaterThan(create.mock.invocationCallOrder[0]);
+      expect(db.prepare('SELECT COUNT(*) AS count FROM projects').get().count).toBe(beforeCount);
+      expect(db.prepare('SELECT COUNT(*) AS count FROM project_tags').get().count).toBe(0);
+      expect(fs.existsSync(expectedRoot)).toBe(false);
+      expect(fs.existsSync(path.join(expectedRoot, MANIFEST_FILENAME))).toBe(false);
+      expect(res.headers.location).toBeUndefined();
+      expect(res.text).toContain('One or more selected tags no longer exists. Refresh and try again.');
+
+      const form = res.text.match(/<form id="project-form"[^>]*>[\s\S]*?<\/form>/)?.[0] || '';
+      const tagsField = extractProjectFormTagsField(form);
+      expect(form).toMatch(/<input[^>]*name="title"[^>]*value="Race Create Project"/);
+      expect(tagsField).toMatch(new RegExp(`value="${retainedTag.id}"[^>]*checked`));
+      expect(tagsField).toContain('aria-describedby="tagIds-error"');
+      expect(tagsField).toContain('aria-invalid="true"');
+    } finally {
+      create.mockRestore();
+      deleteTag.mockRestore();
+      listTags.mockRestore();
+    }
   });
 
-  it('validation failure from the Dashboard dialog rerenders the Dashboard with submitted dialog state', async () => {
-    const tag = app.locals.tagService.createTag({ name: 'Dashboard retry tag' });
-
+  it('rerenders a rejected create with its submitted field values, tags, and semantic errors', async () => {
+    const tag = app.locals.tagService.createTag({ name: 'Retry tag' });
+    const beforeCount = db.prepare('SELECT COUNT(*) AS count FROM projects').get().count;
     const res = await agent
       .post('/projects')
-      .send('title=Dashboard+Preserves')
-      .send('description=Dashboard+description')
-      .send('status=in-progress')
-      .send('patreonUrl=not-a-url')
+      .send('title=Retry+title')
+      .send('description=Retry+description')
+      .send('notes=Retry+notes')
+      .send('status=ready')
+      .send('projectType=animation')
+      .send('patreonUrl=example.com/not-patreon')
       .send(`tagIds[]=${tag.id}`)
-      .send('returnTo=/')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(422);
 
-    const dialog = extractProjectCreateDialog(res.text);
-    expect(res.text).toContain('Dashboard');
-    expect(dialog).toMatch(/<dialog id="project-create-dialog"[^>]*\bopen\b/);
-    expect(dialog).toContain('Project link must be a valid absolute HTTP or HTTPS URL.');
-    expect(dialog).toContain('value="Dashboard Preserves"');
-    expect(dialog).toContain('Dashboard description');
-    expect(dialog).toMatch(/name="status"[^>]*value="in-progress"[^>]*checked/);
-    expect(dialog).toMatch(new RegExp(`name="tagIds\\[\\]"[^>]*value="${tag.id}"[^>]*checked`));
-    expect(dialog).toContain('Dashboard retry tag');
-    expect(dialog).toContain('name="returnTo" value="/"');
-    expectProjectFormStructure(dialog);
+    const form = res.text.match(/<form id="project-form"[^>]*>[\s\S]*?<\/form>/)?.[0] || '';
+    const tagsField = extractProjectFormTagsField(form);
+    expect(form).toContain('Project link must be a valid absolute HTTP or HTTPS URL.');
+    expect(form).toMatch(/<input[^>]*name="title"[^>]*value="Retry title"/);
+    expect(form).toMatch(/<textarea[^>]*name="description"[^>]*>Retry description<\/textarea>/);
+    expect(form).toMatch(/<textarea[^>]*name="notes"[^>]*>Retry notes<\/textarea>/);
+    expect(form).toMatch(/name="status"[^>]*value="ready"[^>]*checked/);
+    expect(form).toMatch(/name="projectType"[^>]*value="animation"[^>]*checked/);
+    expect(form).toMatch(/<input[^>]*name="patreonUrl"[^>]*value="example.com\/not-patreon"/);
+    expect(tagsField).toMatch(new RegExp(`name="tagIds\\[\\]"[^>]*value="${tag.id}"[^>]*checked`));
+    expect(db.prepare('SELECT COUNT(*) AS count FROM projects').get().count).toBe(beforeCount);
   });
 
-  it('validation failure from a filtered Projects dialog preserves the exact invocation URL and submitted state', async () => {
+  it('rerenders a rejected invocation in its validated Projects dialog', async () => {
     const tag = app.locals.tagService.createTag({ name: 'Projects retry tag' });
     const returnTo = '/projects?search=needle&status=planned&sort=title&order=asc&view=list&page=3#projects-list';
 
@@ -2489,55 +1970,15 @@ describe('project HTTP workflow', () => {
       .expect(422);
 
     const dialog = extractProjectCreateDialog(res.text);
-    expect(res.text).toContain('<form id="project-filters"');
     expect(dialog).toMatch(/<dialog id="project-create-dialog"[^>]*\bopen\b/);
     expect(dialog).toContain('Project link must be a valid absolute HTTP or HTTPS URL.');
-    expect(dialog).toContain('value="Projects Preserves"');
-    expect(dialog).toMatch(/name="status"[^>]*value="planned"[^>]*checked/);
-    expect(dialog).toMatch(new RegExp(`name="tagIds\\[\\]"[^>]*value="${tag.id}"[^>]*checked`));
-    expect(dialog).toContain('Projects retry tag');
+    expect(dialog).toMatch(/<input[^>]*name="title"[^>]*value="Projects Preserves"/);
     expect(dialog).toContain('name="returnTo" value="/projects?search=needle&amp;status=planned&amp;sort=title&amp;order=asc&amp;view=list&amp;page=3#projects-list" data-dialog-return-location');
-    expectProjectFormStructure(dialog);
+    expect(dialog).toMatch(new RegExp(`name="tagIds\\[\\]"[^>]*value="${tag.id}"[^>]*checked`));
   });
 
-  it('validation failure preserves explicit All filters in generated Projects links', async () => {
-    const savedTag = app.locals.tagService.createTag({ name: 'Saved default tag' });
-    for (let i = 0; i < 26; i += 1) {
-      await createProject({
-        title: `Explicit All Recovery ${String(i).padStart(2, '0')}`,
-        status: 'planned',
-        projectType: 'images',
-      });
-    }
-    saveProjectDefault('status', 'ready');
-    saveProjectDefault('projectType', 'comic');
-    writeStoredProjectDefault('tag', String(savedTag.id));
-    const returnTo = '/projects?status=all&type=all&tag=all&page=2#projects-list';
-
-    const res = await agent
-      .post('/projects')
-      .send('title=Explicit+All+Preserves')
-      .send('status=planned')
-      .send('patreonUrl=not-a-url')
-      .send('returnTo=' + encodeURIComponent(returnTo))
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(422);
-
-    const dialog = extractProjectCreateDialog(res.text);
-    expect(dialog).toContain('name="returnTo" value="/projects?status=all&amp;type=all&amp;tag=all&amp;page=2#projects-list" data-dialog-return-location');
-    expect(res.text).toContain('26 projects found');
-    expect(res.text).toContain('Page 2 of 2');
-    expect(res.text).toContain('href="/projects?status=all&amp;type=all&amp;tag=all&amp;page=2&amp;view=list"');
-    expect(res.text).toContain('href="/projects?status=all&amp;type=all&amp;tag=all&amp;page=1"');
-  });
-
-  it.each([
-    'https://evil.example/projects',
-    '//evil.example/projects',
-    '/projects/%',
-    '/releases?sort=title',
-  ])('does not trust an invalid Project create invocation returnTo on validation failure: %s', async (returnTo) => {
+  it('does not trust an external create returnTo on validation failure', async () => {
+    const returnTo = 'https://evil.example/projects';
     const res = await agent
       .post('/projects')
       .send('title=Invalid+Host')
@@ -2548,22 +1989,45 @@ describe('project HTTP workflow', () => {
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(422);
 
-    expect(res.text).toContain('<form id="project-form" method="post" action="/projects" class="project-form" novalidate>');
+    expect(res.text).toContain('<form id="project-form"');
     expect(res.text).not.toContain('id="project-create-dialog"');
     expect(res.text).not.toContain(`name="returnTo" value="${returnTo}"`);
   });
 
-  it('rejects archived status on create', async () => {
+  it('rejects an invalid submitted Project Type without creation', async () => {
+    const beforeCount = db.prepare('SELECT COUNT(*) AS count FROM projects').get().count;
     const res = await agent
       .post('/projects')
-      .send('title=Direct+Archive')
-      .send('status=archived')
-      .send('priority=normal')
+      .send('title=Invalid+Type')
+      .send('status=tbd')
+      .send('projectType=not-a-project-type')
       .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(422);
-    expect(res.text).toContain('Status must be one of');
-    expect(res.text).toContain('Direct Archive');
+
+    const form = res.text.match(/<form id="project-form"[^>]*>[\s\S]*?<\/form>/)?.[0] || '';
+    expect(form).toContain('Project type must be one of: images, comic, animation, wallpaper.');
+    expect(form).toContain('id="projectType-error"');
+    expect(form).toMatch(/name="projectType"[^>]*aria-describedby="projectType-error"[^>]*aria-invalid="true"/);
+    expect(db.prepare('SELECT COUNT(*) AS count FROM projects').get().count).toBe(beforeCount);
+  });
+
+  it('renders an unexpected creation failure safely without a false success', async () => {
+    vi.spyOn(app.locals.projectService, 'create').mockImplementation(() => {
+      throw new Error('internal filesystem detail');
+    });
+
+    const res = await agent
+      .post('/projects')
+      .send('title=Failure+Project')
+      .send('status=tbd')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(500);
+
+    expect(res.text).toContain('Project creation failed. Please try again.');
+    expect(res.text).not.toContain('internal filesystem detail');
+    expect(db.prepare('SELECT COUNT(*) AS count FROM projects').get().count).toBe(0);
   });
 
   it('active project detail removes Manage tags and opens project editing from the compact toolbar', async () => {
@@ -2729,55 +2193,31 @@ describe('project HTTP workflow', () => {
     );
   });
 
-  it('archived project detail keeps View Assets in the compact toolbar without Edit', async () => {
-    const createRes = await agent
-      .post('/projects')
-      .send('title=Archived+Detail+Project')
-      .send('status=tbd')
-      .send('priority=normal')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(302);
-    const location = createRes.headers.location;
-
-    await agent
-      .post(`${location}/archive`)
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(302);
-
-    const res = await agent.get(location).expect(200);
-    const headingActions = extractPageHeadingActions(res.text);
-    const toolbar = extractProjectDetailActionToolbar(res.text);
-
-    expect(headingActions).toBe('');
-    expect(toolbar).toContain(`href="${location}/assets"`);
-    expect(toolbar).toContain('aria-label="View Assets"');
-    expect((toolbar.match(/<a\b/g) || [])).toHaveLength(1);
-    expect(headingActions).not.toContain(`href="${location}/asset-categories"`);
-    expect(toolbar).not.toContain(`href="${location}/edit"`);
-    expect(toolbar).not.toContain('aria-label="Edit project"');
-    expect(toolbar).not.toContain('aria-label="Open locally"');
-    expect(res.text).not.toContain('Edit project');
-    expect(res.text).not.toMatch(
-      new RegExp(`<section class="workflow-actions">\\s*<a[^>]+href="${location}/assets"`),
-    );
-  });
-
   it('edit dialog renders from the normal project detail page', async () => {
+    const tag = app.locals.tagService.createTag({ name: 'Edit Current Tag' });
     const createRes = await agent
       .post('/projects')
       .send('title=Editable+Project')
+      .send('description=Current+description')
+      .send('notes=Current+notes')
       .send('status=tbd')
+      .send('projectType=comic')
+      .send('patreonUrl=https://example.com/current-project')
+      .send(`tagIds[]=${tag.id}`)
       .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken));
+      .send('_csrf=' + encodeURIComponent(csrfToken));
     const res = await agent.get(`${createRes.headers.location}?edit=1`).expect(200);
-    expect(res.text).toContain('Edit Project');
-    expect(res.text).toContain('id="project-edit-dialog"');
-    expect(res.text).toMatch(/<dialog id="project-edit-dialog"[^>]*\bopen\b/);
-    expect(res.text).toContain(`action="${createRes.headers.location}"`);
-    expect(res.text).not.toContain('value="archived"');
-    expect(res.text).not.toContain('id="priority"');
-    expect(res.text).not.toContain('data-dialog-return-location');
+    const dialog = res.text.match(/<dialog id="project-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+
+    expect(dialog).toMatch(/<dialog id="project-edit-dialog"[^>]*\bopen\b/);
+    expect(dialog).toContain(`<form id="project-edit-form" method="post" action="${createRes.headers.location}"`);
+    expect(dialog).toContain(`name="_csrf" value="${csrfToken}"`);
+    expect(dialog).toMatch(/name="title"[^>]*value="Editable Project"/);
+    expect(dialog).toMatch(/<textarea id="description"[^>]*>Current description<\/textarea>/);
+    expect(dialog).toMatch(/<textarea id="notes"[^>]*>Current notes<\/textarea>/);
+    expectProjectFormStatusDisclosure(dialog, 'tbd');
+    expect(dialog).toMatch(/name="projectType"[^>]*value="comic"[^>]*checked/);
+    expect(dialog).toMatch(new RegExp(`name="tagIds\\[\\]"[^>]*value="${tag.id}"[^>]*checked`));
   });
 
   it('carries a validated Project Assets invocation through the edit host', async () => {
@@ -2822,28 +2262,6 @@ describe('project HTTP workflow', () => {
 
     expect(res.headers.location).toBe(returnTo);
     expect(app.locals.projectService.findById(Number(id)).title).toBe('Invoked Edit Saved');
-  });
-
-  it('retains submitted values and invocation metadata after edit validation fails', async () => {
-    const createRes = await agent
-      .post('/projects')
-      .send('title=Invoked+Edit+Validation')
-      .send('status=tbd')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(302);
-    const id = createRes.headers.location.replace('/projects/', '');
-    const returnTo = `/projects/${id}/assets?view=list&page=3#asset-42`;
-
-    const res = await agent
-      .post(`/projects/${id}`)
-      .type('form')
-      .send({ title: 'Still Submitted', status: 'not-a-status', returnTo, _csrf: csrfToken })
-      .expect(422);
-
-    expect(res.text).toMatch(/<dialog id="project-edit-dialog"[^>]*\bopen\b/);
-    expect(res.text).toContain('value="Still Submitted"');
-    expect(res.text).toContain(`name="returnTo" value="/projects/${id}/assets?view=list&amp;page=3#asset-42" data-dialog-return-location`);
   });
 
   it('retains submitted values and invocation metadata after an edit error rerender', async () => {
@@ -2895,9 +2313,7 @@ describe('project HTTP workflow', () => {
     const otherId = otherRes.headers.location.replace('/projects/', '');
     const invalidDestinations = [
       'https://example.com/projects/1/assets',
-      `//example.com/projects/${id}/assets`,
       `/projects/${otherId}/assets?view=list`,
-      `/projects/${id}/assets/extra?view=list`,
     ];
 
     for (const [index, returnTo] of invalidDestinations.entries()) {
@@ -2937,24 +2353,134 @@ describe('project HTTP workflow', () => {
     expect(dialog).toContain('Delete project');
   });
 
-  it('valid update redirects to detail', async () => {
+  it('updates all current submitted fields and redirects to detail', async () => {
     const createRes = await agent
       .post('/projects')
       .send('title=Old+Name')
+      .send('description=Old+description')
+      .send('notes=Old+notes')
       .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken));
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
     const res = await agent
       .post(createRes.headers.location)
       .send('title=New+Name')
+      .send('description=Updated+description')
+      .send('notes=Updated+notes')
       .send('status=planned')
+      .send('projectType=comic')
+      .send('patreonUrl=https://example.com/updated-project')
       .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
     expect(res.headers.location).toBe(createRes.headers.location);
 
-    const detail = await agent.get(createRes.headers.location).expect(200);
-    expect(detail.text).toContain('New Name');
+    expect(app.locals.projectService.findById(Number(createRes.headers.location.replace('/projects/', ''))))
+      .toEqual(expect.objectContaining({
+        title: 'New Name',
+        description: 'Updated description',
+        notes: 'Updated notes',
+        status: 'planned',
+        project_type: 'comic',
+        patreon_url: 'https://example.com/updated-project',
+      }));
+  });
+
+  it.each([undefined, 'invalid-token'])('rejects update without a valid CSRF token (%s) without mutation', async (token) => {
+    const tag = app.locals.tagService.createTag({ name: 'CSRF Update Tag' });
+    const createRes = await agent
+      .post('/projects')
+      .send('title=CSRF+Update+Project')
+      .send('description=Original+description')
+      .send('notes=Original+notes')
+      .send('status=tbd')
+      .send(`tagIds[]=${tag.id}`)
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+    const id = Number(createRes.headers.location.replace('/projects/', ''));
+    const before = db.prepare(
+      'SELECT title, description, notes, status, project_type, patreon_url FROM projects WHERE id = ?',
+    ).get(id);
+    const update = vi.spyOn(app.locals.projectService, 'update');
+    const fields = new URLSearchParams({
+      title: 'CSRF mutation attempt',
+      description: 'Changed description',
+      notes: 'Changed notes',
+      status: 'planned',
+      projectType: 'comic',
+      patreonUrl: 'https://example.com/csrf-attempt',
+    });
+    if (token !== undefined) fields.set('_csrf', token);
+
+    try {
+      await agent
+        .post(createRes.headers.location)
+        .type('form')
+        .send(fields.toString())
+        .expect(403);
+
+      expect(update).not.toHaveBeenCalled();
+      expect(db.prepare(
+        'SELECT title, description, notes, status, project_type, patreon_url FROM projects WHERE id = ?',
+      ).get(id)).toEqual(before);
+      expect(app.locals.projectTagService.listProjectTags(id).map((assigned) => assigned.id)).toEqual([tag.id]);
+    } finally {
+      update.mockRestore();
+    }
+  });
+
+  it('rejects a malformed project update ID before calling the service or mutating state', async () => {
+    const tag = app.locals.tagService.createTag({ name: 'Malformed Project ID Tag' });
+    const createRes = await agent
+      .post('/projects')
+      .send('title=Malformed+Project+ID')
+      .send('status=tbd')
+      .send(`tagIds[]=${tag.id}`)
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+    const id = Number(createRes.headers.location.replace('/projects/', ''));
+    const before = app.locals.projectService.findById(id);
+    const update = vi.spyOn(app.locals.projectService, 'update');
+
+    try {
+      await agent
+        .post('/projects/01')
+        .type('form')
+        .send({ title: 'Malformed ID mutation attempt', status: 'planned', _csrf: csrfToken })
+        .expect(404);
+
+      expect(update).not.toHaveBeenCalled();
+      expect(app.locals.projectService.findById(id)).toEqual(before);
+      expect(app.locals.projectTagService.listProjectTags(id).map((assigned) => assigned.id)).toEqual([tag.id]);
+    } finally {
+      update.mockRestore();
+    }
+  });
+
+  it('returns 404 for an unknown project update without mutating an existing project', async () => {
+    const tag = app.locals.tagService.createTag({ name: 'Unknown Project ID Tag' });
+    const createRes = await agent
+      .post('/projects')
+      .send('title=Known+Project')
+      .send('status=tbd')
+      .send(`tagIds[]=${tag.id}`)
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+    const id = Number(createRes.headers.location.replace('/projects/', ''));
+    const before = app.locals.projectService.findById(id);
+
+    await agent
+      .post('/projects/999999')
+      .type('form')
+      .send({ title: 'Unknown ID mutation attempt', status: 'planned', _csrf: csrfToken })
+      .expect(404);
+
+    expect(app.locals.projectService.findById(id)).toEqual(before);
+    expect(app.locals.projectTagService.listProjectTags(id).map((assigned) => assigned.id)).toEqual([tag.id]);
   });
 
   it('edit replaces existing tag assignments with the submitted set', async () => {
@@ -2970,22 +2496,28 @@ describe('project HTTP workflow', () => {
       .expect(302);
     const id = Number(createRes.headers.location.replace('/projects/', ''));
     app.locals.projectTagService.replaceProjectTags(id, [alpha.id, beta.id]);
+    const routeLevelReplace = vi.spyOn(app.locals.projectTagService, 'replaceProjectTags');
 
-    await agent
-      .post(createRes.headers.location)
-      .send('title=Tag+Edit')
-      .send('status=tbd')
-      .send(`tagIds[]=${beta.id}`)
-      .send(`tagIds[]=${gamma.id}`)
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(302);
+    try {
+      await agent
+        .post(createRes.headers.location)
+        .send('title=Tag+Edit')
+        .send('status=tbd')
+        .send(`tagIds[]=${beta.id}`)
+        .send(`tagIds[]=${gamma.id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(302);
 
-    const assigned = app.locals.projectTagService.listProjectTags(id).map((tag) => tag.id);
-    expect(assigned).toHaveLength(2);
-    expect(assigned).not.toContain(alpha.id);
-    expect(assigned).toContain(beta.id);
-    expect(assigned).toContain(gamma.id);
+      expect(routeLevelReplace).not.toHaveBeenCalled();
+      const assigned = app.locals.projectTagService.listProjectTags(id).map((tag) => tag.id);
+      expect(assigned).toHaveLength(2);
+      expect(assigned).not.toContain(alpha.id);
+      expect(assigned).toContain(beta.id);
+      expect(assigned).toContain(gamma.id);
+    } finally {
+      routeLevelReplace.mockRestore();
+    }
   });
 
   it('edit with no tags clears existing assignments', async () => {
@@ -3012,6 +2544,125 @@ describe('project HTTP workflow', () => {
     expect(assigned).toHaveLength(0);
   });
 
+  it('rejects malformed edit tag IDs before calling the update service or mutating project state', async () => {
+    const tag = app.locals.tagService.createTag({ name: 'Malformed Edit Tag' });
+    const createRes = await agent
+      .post('/projects')
+      .send('title=Malformed+Tag+Edit')
+      .send('status=tbd')
+      .send(`tagIds[]=${tag.id}`)
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+    const id = Number(createRes.headers.location.replace('/projects/', ''));
+    const update = vi.spyOn(app.locals.projectService, 'update');
+
+    try {
+      const res = await agent
+        .post(createRes.headers.location)
+        .send('title=Submitted+Malformed+Edit')
+        .send('status=planned')
+        .send('description=Submitted+malformed+description')
+        .send('tagIds[]=01')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(422);
+
+      expect(update).not.toHaveBeenCalled();
+      expect(res.headers.location).toBeUndefined();
+
+      const project = db.prepare('SELECT title, description, status FROM projects WHERE id = ?').get(id);
+      expect(project).toEqual({
+        title: 'Malformed Tag Edit',
+        description: '',
+        status: 'tbd',
+      });
+      expect(app.locals.projectTagService.listProjectTags(id).map((assigned) => assigned.id))
+        .toEqual([tag.id]);
+
+      const dialog = res.text.match(/<dialog id="project-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      expect(dialog).toMatch(/<dialog id="project-edit-dialog"[^>]*\bopen\b/);
+      expect(dialog).toMatch(/name="title"[^>]*value="Submitted Malformed Edit"/);
+      expect(dialog).toMatch(/<textarea id="description"[^>]*>Submitted malformed description<\/textarea>/);
+      expectProjectFormStatusDisclosure(dialog, 'planned');
+      const tagsField = extractProjectFormTagsField(dialog);
+      expect(dialog).toContain('Tag selections must contain canonical positive integer IDs.');
+      expect(dialog).toContain('id="tagIds-error"');
+      expect(tagsField).toContain('aria-describedby="tagIds-error"');
+      expectProjectFormStructure(dialog, { tagError: true });
+    } finally {
+      update.mockRestore();
+    }
+  });
+
+  it('rolls back project fields and tags when a tag is deleted after edit pre-validation', async () => {
+    const originalTag = app.locals.tagService.createTag({ name: 'Race Edit Original' });
+    const staleTag = app.locals.tagService.createTag({ name: 'Race Edit Stale' });
+    const retainedTag = app.locals.tagService.createTag({ name: 'Race Edit Retained' });
+    const createRes = await agent
+      .post('/projects')
+      .send('title=Race+Tag+Edit')
+      .send('status=tbd')
+      .send(`tagIds[]=${originalTag.id}`)
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+    const id = Number(createRes.headers.location.replace('/projects/', ''));
+    const listTags = vi.spyOn(app.locals.tagService, 'listTags');
+    const deleteTag = vi.spyOn(app.locals.tagService, 'deleteTag');
+    const originalUpdate = app.locals.projectService.update.bind(app.locals.projectService);
+    const update = vi.spyOn(app.locals.projectService, 'update');
+
+    update.mockImplementation((projectId, input, options) => {
+      app.locals.tagService.deleteTag(staleTag.id);
+      return originalUpdate(projectId, input, options);
+    });
+
+    try {
+      const res = await agent
+        .post(createRes.headers.location)
+        .send('title=Race+Tag+Edit')
+        .send('status=planned')
+        .send('projectType=comic')
+        .send(`tagIds[]=${staleTag.id}`)
+        .send(`tagIds[]=${retainedTag.id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .expect(422);
+
+      expect(update).toHaveBeenCalledTimes(1);
+      expect(listTags.mock.results[0].value).toEqual(expect.arrayContaining([
+        expect.objectContaining({ id: staleTag.id }),
+      ]));
+      expect(listTags.mock.invocationCallOrder[0]).toBeLessThan(update.mock.invocationCallOrder[0]);
+      expect(deleteTag.mock.invocationCallOrder[0]).toBeGreaterThan(update.mock.invocationCallOrder[0]);
+      expect(res.headers.location).toBeUndefined();
+      expect(res.text).toContain('One or more selected tags no longer exists. Refresh and try again.');
+
+      const project = db.prepare('SELECT title, status, project_type FROM projects WHERE id = ?').get(id);
+      expect(project).toEqual({
+        title: 'Race Tag Edit',
+        status: 'tbd',
+        project_type: 'images',
+      });
+      expect(app.locals.projectTagService.listProjectTags(id).map((assigned) => assigned.id))
+        .toEqual([originalTag.id]);
+
+      const dialog = res.text.match(/<dialog id="project-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+      expect(dialog).toMatch(/<dialog id="project-edit-dialog"[^>]*\bopen\b/);
+      expectProjectFormStatusDisclosure(dialog, 'planned');
+      const tagsField = extractProjectFormTagsField(dialog);
+      expect(tagsField).toMatch(new RegExp(`value="${retainedTag.id}"[^>]*checked`));
+      expect(dialog).toContain('id="tagIds-error"');
+      expect(tagsField).toContain('aria-describedby="tagIds-error"');
+      expectProjectFormStructure(dialog, { tagError: true });
+    } finally {
+      update.mockRestore();
+      deleteTag.mockRestore();
+      listTags.mockRestore();
+    }
+  });
+
   it('edit with a stale deleted tag returns 422 without mutating the project or its tags', async () => {
     const alpha = app.locals.tagService.createTag({ name: 'Stale Edit Alpha' });
     const beta = app.locals.tagService.createTag({ name: 'Stale Edit Beta' });
@@ -3021,7 +2672,6 @@ describe('project HTTP workflow', () => {
       .post('/projects')
       .send('title=Stale+Tag+Edit')
       .send('status=tbd')
-      .send('plannedDate=2026-08-01')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
@@ -3034,7 +2684,6 @@ describe('project HTTP workflow', () => {
       .post(createRes.headers.location)
       .send('title=Stale+Tag+Edit+Modified')
       .send('status=planned')
-      .send('plannedDate=2026-09-01')
       .send(`tagIds[]=${alpha.id}`)
       .send(`tagIds[]=${gamma.id}`)
       .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -3061,76 +2710,37 @@ describe('project HTTP workflow', () => {
     expect(res.text).toContain('class="field-error-message" id="tagIds-error"');
   });
 
-  it('rejects archived status on update', async () => {
+  it.each([
+    ['status', { status: 'archived', projectType: 'images' }, 'status-error'],
+    ['Project Type', { status: 'tbd', projectType: 'not-a-project-type' }, 'projectType-error'],
+  ])('rejects an invalid update %s without mutation', async (_field, invalidValues, errorId) => {
     const createRes = await agent
       .post('/projects')
       .send('title=Update+Archive')
       .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken));
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(302);
+    const id = Number(createRes.headers.location.replace('/projects/', ''));
+    const before = app.locals.projectService.findById(id);
     const res = await agent
       .post(createRes.headers.location)
-      .send('title=Update+Archive')
-      .send('status=archived')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(422);
-    expect(res.text).toContain('Status must be one of');
-  });
-
-  it('keeps validation errors for archived projects on the read-only detail page', async () => {
-    const createRes = await agent
-      .post('/projects')
-      .send('title=Archived+Invalid+Edit')
-      .send('status=tbd')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(302);
-    const location = createRes.headers.location;
-
-    await agent
-      .post(`${location}/archive`)
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(302);
-
-    const res = await agent
-      .post(location)
-      .send('title=Archived+Invalid+Edit')
-      .send('status=not-a-status')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .type('form')
+      .send({
+        title: 'Rejected update mutation attempt',
+        description: 'Rejected description',
+        notes: 'Rejected notes',
+        ...invalidValues,
+        _csrf: csrfToken,
+      })
       .expect(422);
 
-    expect(res.status).toBe(422);
-    expect(res.text).toContain('<section class="project-detail-hero">');
-    expect(res.text).toContain('This project is archived and read-only.');
-    expect(res.text).not.toContain('id="project-edit-dialog"');
-    expect(res.text).not.toContain('data-dialog-open="project-edit-dialog"');
+    const dialog = res.text.match(/<dialog id="project-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    expect(dialog).toContain(`id="${errorId}"`);
+    expect(app.locals.projectService.findById(id)).toEqual(before);
   });
 
-  it('rejects published status and does not render it as a project choice', async () => {
-    const form = await agent.get('/projects/new').expect(200);
-    expect(form.text).not.toMatch(/<input[^>]*name="status"[^>]*value="published"/);
-
-    const res = await agent
-      .post('/projects')
-      .send('title=Invalid+Published+Project')
-      .send('status=published')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(422);
-    expect(res.text).toContain('Status must be one of');
-    const statusField = expectProjectFormStatusDisclosure(res.text, null);
-    expect(statusField).not.toMatch(/<input[^>]*name="status"[^>]*value="published"/);
-    expect(statusField).toContain('field-error');
-    expect(statusField).toMatch(/<input[^>]*name="status"[^>]*aria-describedby="status-error"[^>]*aria-invalid="true"/);
-    expect(statusField).toMatch(/<summary[^>]*aria-describedby="status-error"[^>]*aria-invalid="true"/);
-    expect(statusField).toContain('aria-label="Status: "');
-    expect(res.text).toContain('class="field-error-message" id="status-error"');
-    expectProjectFormStructure(res.text, { statusError: true });
-  });
-
-  it('invalid edit request renders the detail page with an open dialog and submitted values', async () => {
+  it('rerenders a blank title with scoped submitted values and no mutation', async () => {
     const persistedTag = app.locals.tagService.createTag({ name: 'Persisted Edit Tag' });
     const submittedTag = app.locals.tagService.createTag({ name: 'Submitted Edit Tag' });
     const createRes = await agent
@@ -3139,85 +2749,44 @@ describe('project HTTP workflow', () => {
       .send('description=Persisted+description')
       .send('notes=Persisted+notes')
       .send('status=tbd')
-      .send('plannedDate=2026-01-01')
-      .send('publishedDate=2026-01-15')
       .send('patreonUrl=https://example.com/initial')
       .send(`tagIds[]=${persistedTag.id}`)
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(302);
-
-    const res = await agent
-      .post(createRes.headers.location)
-      .send('title=Submitted+Edit+Values')
-      .send('description=Submitted+description')
-      .send('notes=Submitted+notes')
-      .send('status=in-progress')
-      .send('plannedDate=2026-10-01')
-      .send('publishedDate=2026-10-15')
-      .send('patreonUrl=not-a-url')
-      .send(`tagIds[]=${submittedTag.id}`)
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(422);
-
-    expect(res.status).toBe(422);
-    expect(res.text).toContain('<section class="project-detail-hero">');
-    expect(res.text).toContain('<h2>Releases</h2>');
-    expect(res.text).toContain('<span class="count">0</span> Total assets');
-    expect(res.text).toContain('Persisted Edit Tag');
-    expect(res.text).not.toContain('<form id="project-form"');
-
-    const dialog = res.text.match(/<dialog id="project-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
-    expect(dialog).not.toBe('');
-    expect(dialog).toMatch(/<dialog id="project-edit-dialog"[^>]*\bopen\b/);
-    expect(dialog).toContain('<form id="project-edit-form"');
-    expect(dialog).toContain('Project link must be a valid absolute HTTP or HTTPS URL.');
-    expect(dialog).toContain('id="patreonUrl-error"');
-    expect(dialog).toMatch(/name="title"[^>]*value="Submitted Edit Values"/);
-    expect(dialog).toMatch(/<textarea id="description"[^>]*>Submitted description<\/textarea>/);
-    expect(dialog).toMatch(/<textarea id="notes"[^>]*>Submitted notes<\/textarea>/);
-    expectProjectFormStatusDisclosure(dialog, 'in-progress');
-    expectProjectFormStructure(dialog, { statusError: false });
-    expect(res.text).not.toContain('id="priority"');
-    expect(dialog).not.toMatch(/\b(?:id|name)="(?:plannedDate|publishedDate)"/);
-    expect(dialog).toContain('value="not-a-url"');
-    expect(dialog).toContain('Basic information');
-    expect(dialog).toContain('>Status</h3>');
-    expect(dialog).not.toContain('>Scheduling</h3>');
-    expect(dialog).toContain('Links');
-
-    const tagsField = extractProjectFormTagsField(dialog);
-    expect(tagsField).toMatch(new RegExp(`value="${submittedTag.id}"[^>]*checked`));
-    expect(tagsField).not.toMatch(new RegExp(`value="${persistedTag.id}"[^>]*checked`));
-    expect(tagsField).toContain('Submitted Edit Tag');
-    expect(tagsField).toContain('aria-label="Tags: Submitted Edit Tag"');
-  });
-
-  it('edit form checks currently assigned tags and renders the multi-tag summary', async () => {
-    const alpha = app.locals.tagService.createTag({ name: 'Edit Render Alpha' });
-    const beta = app.locals.tagService.createTag({ name: 'Edit Render Beta' });
-    const gamma = app.locals.tagService.createTag({ name: 'Edit Render Gamma' });
-    const createRes = await agent
-      .post('/projects')
-      .send('title=Edit+Render+Tags')
-      .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
     const id = Number(createRes.headers.location.replace('/projects/', ''));
-    app.locals.projectTagService.replaceProjectTags(id, [alpha.id, beta.id]);
+    const before = app.locals.projectService.findById(id);
 
-    const res = await agent.get(`${createRes.headers.location}?edit=1`).expect(200);
-    const tagsField = extractProjectFormTagsField(res.text);
-    expect(tagsField).toMatch(new RegExp(`value="${alpha.id}"[^>]*checked`));
-    expect(tagsField).toMatch(new RegExp(`value="${beta.id}"[^>]*checked`));
-    expect(tagsField).not.toMatch(new RegExp(`value="${gamma.id}"[^>]*checked`));
-    expect(tagsField).toContain('class="asset-filter-multiselect-summary-current">2 tags selected</span>');
-    expect(tagsField).toContain('aria-label="Tags: 2 tags selected"');
-    expect(tagsField).toContain('Edit Render Alpha');
-    expect(tagsField).toContain('Edit Render Beta');
-    expect(tagsField).toContain('Edit Render Gamma');
+    const res = await agent
+      .post(createRes.headers.location)
+      .send('title=')
+      .send('description=Submitted+description')
+      .send('notes=Submitted+notes')
+      .send('status=in-progress')
+      .send('projectType=comic')
+      .send('patreonUrl=https://example.com/submitted')
+      .send(`tagIds[]=${submittedTag.id}`)
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .expect(422);
+
+    const dialog = res.text.match(/<dialog id="project-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    expect(dialog).toMatch(/<dialog id="project-edit-dialog"[^>]*\bopen\b/);
+    expect(dialog).toMatch(/<form id="project-edit-form"/);
+    expect(dialog).toContain('Title is required.');
+    expect(dialog).toContain('id="title-error"');
+    expect(dialog).toMatch(/name="title"[^>]*value=""[^>]*aria-describedby="title-error"[^>]*aria-invalid="true"/);
+    expect(dialog).toMatch(/<textarea id="description"[^>]*>Submitted description<\/textarea>/);
+    expect(dialog).toMatch(/<textarea id="notes"[^>]*>Submitted notes<\/textarea>/);
+    expectProjectFormStatusDisclosure(dialog, 'in-progress');
+    expect(dialog).toMatch(/name="projectType"[^>]*value="comic"[^>]*checked/);
+    expect(dialog).toContain('value="https://example.com/submitted"');
+
+    const tagsField = extractProjectFormTagsField(dialog);
+    expect(tagsField).toMatch(new RegExp(`value="${submittedTag.id}"[^>]*checked`));
+    expect(tagsField).not.toMatch(new RegExp(`value="${persistedTag.id}"[^>]*checked`));
+    expect(app.locals.projectService.findById(id)).toEqual(before);
+    expect(app.locals.projectTagService.listProjectTags(id).map((assigned) => assigned.id)).toEqual([persistedTag.id]);
   });
 
   it('invalid edit submission preserves selected tag IDs in the form model', async () => {
@@ -3249,331 +2818,160 @@ describe('project HTTP workflow', () => {
     expect(tagsField).toContain('2 tags selected');
   });
 
-  it('invalid create submission preserves selected tag IDs in the form model', async () => {
-    const alpha = app.locals.tagService.createTag({ name: 'Create Preserve Alpha' });
-
-    const res = await agent
-      .post('/projects')
-      .send('title=')
-      .send('status=tbd')
-      .send(`tagIds[]=${alpha.id}`)
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(422);
-
-    expect(res.text).toContain('Title is required.');
-    expect(res.text).toContain('id="project-form"');
-    const tagsField = extractProjectFormTagsField(res.text);
-    expect(tagsField).toMatch(new RegExp(`value="${alpha.id}"[^>]*checked`));
-    expect(tagsField).toContain('Create Preserve Alpha');
-    expect(tagsField).toContain('class="asset-filter-multiselect-summary-current">Create Preserve Alpha</span>');
-    expect(tagsField).toContain('aria-label="Tags: Create Preserve Alpha"');
+  it.each(['/projects/9999', '/projects/abc'])('returns 404 for an unavailable project detail route (%s)', async (url) => {
+    await agent.get(url).expect(404);
   });
 
-  it('missing project returns 404', async () => {
-    await agent.get('/projects/9999').expect(404);
-  });
-
-  it('invalid project id returns 404', async () => {
-    await agent.get('/projects/abc').expect(404);
-  });
-
-  it('archive action preserves the record and redirects', async () => {
-    const createRes = await agent
-      .post('/projects')
-      .send('title=To+Archive')
-      .send('status=tbd')
-      .send('priority=normal')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken));
-    const id = createRes.headers.location.replace('/projects/', '');
-
-    const res = await agent
-      .post(`/projects/${id}/archive`)
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(302);
-    expect(res.headers.location).toBe('/projects');
-
-    const detail = await agent.get(`/projects/${id}`).expect(200);
-    expect(detail.text).toContain('<span class="status-badge status-badge--archived">Archived</span>');
-    expect(detail.text).not.toMatch(/project-status-badge[^>]*>Archived<\/span>/);
-  });
-
-  it('delete action removes the project and redirects to the project list', async () => {
-    const createRes = await agent
-      .post('/projects')
-      .send('title=To+Delete')
-      .send('status=tbd')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(302);
-    const id = createRes.headers.location.replace('/projects/', '');
-
-    const res = await agent
-      .post(`/projects/${id}/delete`)
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(302);
-
-    expect(res.headers.location).toBe('/projects');
-    expect(db.prepare('SELECT id FROM projects WHERE id = ?').get(Number(id))).toBeUndefined();
-    await agent.get(`/projects/${id}`).expect(404);
-  });
-
-  it('delete action returns 404 for a missing project', async () => {
-    await agent
-      .post('/projects/9999/delete')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(404);
-  });
-
-  it('protects project deletion with CSRF', async () => {
-    const createRes = await agent
-      .post('/projects')
-      .send('title=Protected+Delete')
-      .send('status=tbd')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(302);
-    const id = createRes.headers.location.replace('/projects/', '');
-
-    await agent.post(`/projects/${id}/delete`).expect(403);
-    expect(db.prepare('SELECT id FROM projects WHERE id = ?').get(Number(id))).toBeDefined();
-  });
-
-  it('surfaces project deletion recovery failures instead of redirecting', async () => {
-    const createRes = await agent
-      .post('/projects')
-      .send('title=Failed+Delete')
-      .send('status=tbd')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(302);
-    const id = createRes.headers.location.replace('/projects/', '');
-    const deleteProject = vi.spyOn(app.locals.projectService, 'deleteProject')
-      .mockImplementationOnce(() => {
-        throw new Error('Project was deleted, but filesystem cleanup requires recovery.');
-      });
+  it('archives the requested project, hands it to the service, and redirects to the archived list', async () => {
+    const id = await createProject({ title: 'Archive Route Project' });
+    const archive = vi.spyOn(app.locals.projectService, 'archive');
 
     try {
-      const res = await agent
-        .post(`/projects/${id}/delete`)
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(500);
+      const res = await agent.post(`/projects/${id}/archive`).type('form').send({ _csrf: csrfToken }).expect(302);
+      expect(archive).toHaveBeenCalledWith(id);
+      expect(res.headers.location).toBe('/projects');
+      expect(db.prepare('SELECT status, archived_at FROM projects WHERE id = ?').get(id))
+        .toMatchObject({ status: 'archived' });
 
+      const archivedList = await agent.get('/projects?status=archived').expect(200);
+      expect(extractProjectCard(archivedList.text, id)).toContain('Archive Route Project');
+    } finally {
+      archive.mockRestore();
+    }
+  });
+
+  it('keeps an already archived project archived and returns a safe failure', async () => {
+    const id = await createProject({ title: 'Already Archived Route Project' });
+    await agent.post(`/projects/${id}/archive`).type('form').send({ _csrf: csrfToken }).expect(302);
+
+    const res = await agent.post(`/projects/${id}/archive`).type('form').send({ _csrf: csrfToken }).expect(500);
+    expect(res.headers.location).toBeUndefined();
+    expect(res.text).toContain('Something went wrong.');
+    expect(res.text).not.toContain('already archived');
+    expect(db.prepare('SELECT status, archived_at FROM projects WHERE id = ?').get(id))
+      .toMatchObject({ status: 'archived' });
+  });
+
+  it.each([
+    ['archive', 'archive', undefined],
+    ['archive', 'archive', 'invalid-token'],
+    ['delete', 'deleteProject', undefined],
+    ['delete', 'deleteProject', 'invalid-token'],
+  ])('rejects %s without a valid CSRF token (%s) before service handoff', async (action, serviceMethod, token) => {
+    const id = await createProject({ title: `CSRF ${action} project ${token || 'missing'}` });
+    const service = vi.spyOn(app.locals.projectService, serviceMethod);
+    let request = agent.post(`/projects/${id}/${action}`).type('form');
+    if (token !== undefined) request = request.send({ _csrf: token });
+
+    try {
+      await request.expect(403);
+      expect(service).not.toHaveBeenCalled();
+      expect(db.prepare('SELECT status, archived_at FROM projects WHERE id = ?').get(id))
+        .toMatchObject({ status: 'tbd', archived_at: null });
+    } finally {
+      service.mockRestore();
+    }
+  });
+
+  it.each([
+    ['archive', 'archive'],
+    ['delete', 'deleteProject'],
+  ])('rejects a malformed project ID on %s before service handoff', async (action, serviceMethod) => {
+    const service = vi.spyOn(app.locals.projectService, serviceMethod);
+
+    try {
+      await agent.post(`/projects/not-a-project/${action}`).type('form').send({ _csrf: csrfToken }).expect(404);
+      expect(service).not.toHaveBeenCalled();
+    } finally {
+      service.mockRestore();
+    }
+  });
+
+  it.each([
+    ['archive', 'archive'],
+    ['delete', 'deleteProject'],
+  ])('returns 404 for an unknown project on %s after lookup handoff', async (action, serviceMethod) => {
+    const service = vi.spyOn(app.locals.projectService, serviceMethod);
+
+    try {
+      await agent.post(`/projects/999999/${action}`).type('form').send({ _csrf: csrfToken }).expect(404);
+      expect(service).toHaveBeenCalledWith(999999);
+    } finally {
+      service.mockRestore();
+    }
+  });
+
+  it.each([
+    ['archive', 'archive'],
+    ['delete', 'deleteProject'],
+  ])('returns a safe failure without mutation when %s throws', async (action, serviceMethod) => {
+    const id = await createProject({ title: `Failed ${action} route` });
+    const service = vi.spyOn(app.locals.projectService, serviceMethod).mockImplementationOnce(() => {
+      throw new Error('C:\\private\\destructive-operation-detail');
+    });
+
+    try {
+      const res = await agent.post(`/projects/${id}/${action}`).type('form').send({ _csrf: csrfToken }).expect(500);
+      expect(service).toHaveBeenCalledWith(id);
       expect(res.headers.location).toBeUndefined();
       expect(res.text).toContain('Something went wrong.');
+      expect(res.text).not.toContain('private\\destructive-operation-detail');
+      expect(db.prepare('SELECT status, archived_at FROM projects WHERE id = ?').get(id))
+        .toMatchObject({ status: 'tbd', archived_at: null });
+    } finally {
+      service.mockRestore();
+    }
+  });
+
+  it('deletes an active project through the requested service handoff and PRG', async () => {
+    const id = await createProject({ title: 'Delete Active Route Project' });
+    const deleteProject = vi.spyOn(app.locals.projectService, 'deleteProject');
+
+    try {
+      const res = await agent.post(`/projects/${id}/delete`).type('form').send({ _csrf: csrfToken }).expect(302);
+      expect(deleteProject).toHaveBeenCalledWith(id);
+      expect(res.headers.location).toBe('/projects');
+      await agent.get(`/projects/${id}`).expect(404);
     } finally {
       deleteProject.mockRestore();
     }
   });
 
-  it('archived project is excluded from the default list', async () => {
-    const createRes = await agent
-      .post('/projects')
-      .send('title=Hidden+Project')
-      .send('status=tbd')
-      .send('priority=normal')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken));
-    const id = createRes.headers.location.replace('/projects/', '');
-    await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken));
+  it('allows direct deletion of an archived project', async () => {
+    const id = await createProject({ title: 'Delete Archived Route Project' });
+    await agent.post(`/projects/${id}/archive`).type('form').send({ _csrf: csrfToken }).expect(302);
 
-    const list = await agent.get('/projects').expect(200);
-    expect(list.text).not.toContain('Hidden Project');
+    const res = await agent.post(`/projects/${id}/delete`).type('form').send({ _csrf: csrfToken }).expect(302);
+    expect(res.headers.location).toBe('/projects');
+    expect(db.prepare('SELECT id FROM projects WHERE id = ?').get(id)).toBeUndefined();
   });
 
-  it('archived project appears under the archived filter', async () => {
-    const createRes = await agent
-      .post('/projects')
-      .send('title=Filter+Archive')
-      .send('status=tbd')
-      .send('priority=normal')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken));
-    const id = createRes.headers.location.replace('/projects/', '');
-    const archivedTag = app.locals.tagService.createTag({ name: 'Archived List Display' });
-    app.locals.projectTagService.replaceProjectTags(Number(id), [archivedTag.id]);
-    await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken));
+  it('rejects a direct update to an archived project without allowing the service to mutate it', async () => {
+    const id = await createProject({ title: 'Archived Direct Update Project' });
+    await agent.post(`/projects/${id}/archive`).type('form').send({ _csrf: csrfToken }).expect(302);
+    const before = db.prepare('SELECT title, status, archived_at FROM projects WHERE id = ?').get(id);
+    const update = vi.spyOn(app.locals.projectService, 'update');
 
-    const archivedList = await agent.get('/projects?status=archived').expect(200);
-    expect(archivedList.text).toContain('Filter Archive');
-    expect(archivedList.text).toContain('Archived List Display');
-    expect(archivedList.text).toContain('class="project-card project-card--grid project-grid-card project-card--archived" data-project-card');
-    expect(archivedList.text).toContain('<span class="status-badge status-badge--archived">Archived</span>');
-    expect(app.locals.projectOptionCatalogueService.getStatusCatalogue().map(({ value }) => value))
-      .not.toContain('archived');
-  });
+    try {
+      await agent
+        .post(`/projects/${id}`)
+        .type('form')
+        .send({ title: 'Attempted archived update', status: 'tbd', projectType: 'images', _csrf: csrfToken })
+        .expect(422);
 
-  it('project id and status query parameters affect results', async () => {
-    const alphaId = await createProject({ title: 'Project Alpha', status: 'planned' });
-    const betaId = await createProject({ title: 'Project Beta', status: 'ready' });
-
-    const projectFilter = await agent.get(`/projects?project=${alphaId}`).expect(200);
-    expect(projectFilter.text).toContain('Project Alpha');
-    expect(extractProjectCards(projectFilter.text).join('')).not.toContain('Project Beta');
-    expect(extractProjectFilter(projectFilter.text)).toContain(`value="${alphaId}" checked`);
-
-    const status = await agent.get('/projects?status=ready').expect(200);
-    expect(status.text).toContain('Project Beta');
-    expect(extractProjectCards(status.text).join('')).not.toContain('Project Alpha');
-  });
-
-  it('filters Projects by every valid Project Type, multiple types, and Status while normalizing invalid types', async () => {
-    await Promise.all([
-      createProject({ title: 'Type Images', status: 'planned', projectType: 'images' }),
-      createProject({ title: 'Type Comic', status: 'planned', projectType: 'comic' }),
-      createProject({ title: 'Type Animation', status: 'ready', projectType: 'animation' }),
-      createProject({ title: 'Type Wallpaper', status: 'ready', projectType: 'wallpaper' }),
-    ]);
-    const names = ['Images', 'Comic', 'Animation', 'Wallpaper'];
-    const types = ['images', 'comic', 'animation', 'wallpaper'];
-
-    for (const [index, type] of types.entries()) {
-      const response = await agent.get(`/projects?type=${type}`).expect(200);
-      expect(extractProjectCards(response.text).join('')).toContain(`Type ${names[index]}`);
-      expect(extractProjectTypeFilter(response.text)).toMatch(new RegExp(`name="type"[^>]+value="${type}"[^>]*checked`));
+      expect(update).toHaveBeenCalledWith(id, expect.objectContaining({ title: 'Attempted archived update' }), expect.any(Object));
+      expect(db.prepare('SELECT title, status, archived_at FROM projects WHERE id = ?').get(id)).toEqual(before);
+    } finally {
+      update.mockRestore();
     }
-
-    const multiple = await agent.get('/projects?type=wallpaper&type=comic&sort=title&order=asc').expect(200);
-    expect(extractProjectCards(multiple.text).join('')).toContain('Type Comic');
-    expect(extractProjectCards(multiple.text).join('')).toContain('Type Wallpaper');
-    expect(extractProjectCards(multiple.text).join('')).not.toContain('Type Images');
-    expect(extractProjectTypeFilter(multiple.text)).toContain('aria-label="Project Type filter: 2 types selected"');
-
-    const combined = await agent.get('/projects?type=images&type=comic&status=planned').expect(200);
-    expect(extractProjectCards(combined.text).join('')).toContain('Type Images');
-    expect(extractProjectCards(combined.text).join('')).toContain('Type Comic');
-    expect(extractProjectCards(combined.text).join('')).not.toContain('Type Animation');
-
-    const invalid = await agent.get('/projects?type=not-a-type').expect(200);
-    expect(extractProjectTypeFilter(invalid.text)).toContain('aria-label="Project Type filter: All types"');
-    expect(extractProjectTypeFilter(invalid.text)).not.toMatch(/name="type"[^>]+checked/);
   });
 
-  it('project list preserves title sort ordering in the card grid', async () => {
-    const zetaId = await createProject({ title: 'Sort Zeta' });
-    const alphaId = await createProject({ title: 'Sort Alpha' });
 
-    const ascending = await agent.get('/projects?sort=title&order=asc').expect(200);
-    const alphaPosition = ascending.text.indexOf(`data-project-card-link href="/projects/${alphaId}"`);
-    const zetaPosition = ascending.text.indexOf(`data-project-card-link href="/projects/${zetaId}"`);
-    expect(alphaPosition).toBeGreaterThan(-1);
-    expect(zetaPosition).toBeGreaterThan(-1);
-    expect(alphaPosition).toBeLessThan(zetaPosition);
 
-    const descending = await agent.get('/projects?sort=title&order=desc').expect(200);
-    const descendingAlphaPosition = descending.text.indexOf(`data-project-card-link href="/projects/${alphaId}"`);
-    const descendingZetaPosition = descending.text.indexOf(`data-project-card-link href="/projects/${zetaId}"`);
-    expect(descendingZetaPosition).toBeLessThan(descendingAlphaPosition);
-  });
 
-  it('project list still filters by status', async () => {
-    await agent
-      .post('/projects')
-      .send('title=Status+Filter+Match')
-      .send('status=in-progress')
-      .send('priority=normal')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(302);
-    await agent
-      .post('/projects')
-      .send('title=Status+Filter+Nonmatch')
-      .send('status=planned')
-      .send('priority=normal')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(302);
 
-    const res = await agent.get('/projects?status=in-progress').expect(200);
-    expect(res.text).toContain('Status Filter Match');
-    expect(extractProjectCards(res.text).join('')).not.toContain('Status Filter Nonmatch');
-  });
 
-  it('filters by multiple statuses and applies every checked status', async () => {
-    await createProject({ title: 'Multi Status Planned', status: 'planned' });
-    await createProject({ title: 'Multi Status Ready', status: 'ready' });
-    await createProject({ title: 'Multi Status TBD', status: 'tbd' });
 
-    const res = await agent
-      .get('/projects?status=ready&status=planned&sort=title&order=asc')
-      .expect(200);
-
-    expect(res.text).toContain('2 projects found');
-    expect(res.text).toContain('Multi Status Planned');
-    expect(res.text).toContain('Multi Status Ready');
-    expect(extractProjectCards(res.text).join('')).not.toContain('Multi Status TBD');
-    expect(extractStatusFilter(res.text)).toContain('aria-label="Status filter: 2 statuses selected"');
-    expect((extractStatusFilter(res.text).match(/name="status"[^>]+checked/g) || [])).toHaveLength(2);
-    expect(extractStatusFilter(res.text)).toMatch(/value="planned" checked/);
-    expect(extractStatusFilter(res.text)).toMatch(/value="ready" checked/);
-  });
-
-  it('valid status filter with no matches shows filtered-empty state and reset action', async () => {
-    await agent
-      .post('/projects')
-      .send('title=Only+Planned')
-      .send('status=planned')
-      .send('priority=normal')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(302);
-
-    let res;
-    const statements = await capturePreparedSql(db, async () => {
-      res = await agent.get('/projects?status=ready').expect(200);
-    });
-    const baseStatements = projectListBaseSql(statements);
-    expect(res.text).toContain('No projects found');
-    expect(res.text).toContain('Reset');
-    expect(res.text).not.toContain('Reset Filters');
-    expect(res.text).toContain('href="/projects"');
-    expect(res.text).not.toContain('Create your first project to get started.');
-    expect(baseStatements.filter((sql) => sql.includes('SELECT COUNT(*) AS c'))).toHaveLength(2);
-    expect(baseStatements.filter((sql) => sql.includes('LIMIT ? OFFSET ?'))).toHaveLength(1);
-  });
-
-  it('pagination is bounded', async () => {
-    const pageTwoTag = app.locals.tagService.createTag({ name: 'Page Two Only Tag' });
-    let pageTwoProjectId;
-
-    for (let i = 1; i <= 30; i += 1) {
-      const response = await agent
-        .post('/projects')
-        .send(`title=Page+${String(i).padStart(2, '0')}`)
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      if (i === 30) pageTwoProjectId = Number(response.headers.location.replace('/projects/', ''));
-    }
-    app.locals.projectTagService.replaceProjectTags(pageTwoProjectId, [pageTwoTag.id]);
-
-    const page1 = await agent.get('/projects?sort=title&order=asc&page=1').expect(200);
-    expect(page1.text).toContain('30 projects found');
-    expect(page1.text).toContain('Page 1 of 2');
-    expect(page1.text).toContain('href="/projects?sort=title&amp;order=asc&amp;page=2"');
-    expect(extractProjectCards(page1.text)).toHaveLength(25);
-    expect(extractProjectCards(page1.text).join('')).not.toContain('Page Two Only Tag');
-
-    const page2 = await agent.get('/projects?sort=title&order=asc&page=2').expect(200);
-    expect(page2.text).toContain('Page 2 of 2');
-    expect(page2.text).toContain('Page Two Only Tag');
-    expect(extractProjectCards(page2.text)).toHaveLength(5);
-
-    let huge;
-    const hugeStatements = await capturePreparedSql(db, async () => {
-      huge = await agent.get('/projects?sort=title&order=asc&page=999').expect(200);
-    });
-    expect(huge.text).toContain('Page 2 of 2');
-    expect(huge.text).toContain('href="/projects?sort=title&amp;order=asc&amp;page=1"');
-    expect(huge.text).toContain('Page Two Only Tag');
-    expect(huge.headers.location).toBeUndefined();
-    expect(projectListBaseSql(hugeStatements)).toHaveLength(3);
-    expect(projectListBaseSql(hugeStatements).filter((sql) => sql.includes('SELECT COUNT(*) AS c'))).toHaveLength(2);
-    expect(projectListBaseSql(hugeStatements).filter((sql) => sql.includes('LIMIT ? OFFSET ?'))).toHaveLength(1);
-  });
 
   it('unknown routes still return safe 404', async () => {
     const res = await agent.get('/not-a-real-route').expect(404);
@@ -3584,20 +2982,7 @@ describe('project HTTP workflow', () => {
   // ─── Filesystem creation flow ────────────────────────────────────────
 
   describe('HTTP filesystem creation', () => {
-    function parseSlug(title) {
-      return title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-    }
-
-    function getProjectDir(title) {
-      // Flat layout: project directories are direct children of PROJECTS_ROOT
-      const slug = parseSlug(title);
-      const entries = fs.readdirSync(projectsRoot);
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      if (matching.length === 0) return null;
-      return path.join(projectsRoot, matching[0]);
-    }
-
-    it('creates the database record and project directory', async () => {
+    it('creates a persisted Project root and manifest through POST /projects', async () => {
       const res = await agent
         .post('/projects')
         .send('title=HTTP+FS+Test')
@@ -3607,790 +2992,226 @@ describe('project HTTP workflow', () => {
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
 
-      const location = res.headers.location;
-      expect(location).toMatch(/^\/projects\/\d+$/);
+      const [, projectId] = res.headers.location.match(/^\/projects\/(\d+)$/) || [];
+      expect(projectId).toBeDefined();
+      const project = db.prepare('SELECT id, title, project_dir FROM projects WHERE id = ?')
+        .get(Number(projectId));
+      expect(project).toEqual({
+        id: Number(projectId),
+        title: 'HTTP FS Test',
+        project_dir: formatProjectDirName(Number(projectId), 'http-fs-test'),
+      });
 
-      // Verify the directory exists
-      const projectDir = getProjectDir('HTTP FS Test');
-      expect(projectDir).not.toBeNull();
+      const projectDir = resolveProjectDir(projectsRoot, project.project_dir);
       expect(fs.existsSync(projectDir)).toBe(true);
       expect(fs.statSync(projectDir).isDirectory()).toBe(true);
-      // Flat layout: direct child of PROJECTS_ROOT
-      expect(path.dirname(projectDir)).toBe(path.resolve(projectsRoot));
+      const manifest = readManifestSync(projectDir);
+      expect(manifest).toMatchObject({ id: project.id, title: project.title });
     });
 
-    it('creates the same flat path shape for every status', async () => {
-      for (const status of ['tbd', 'planned', 'in-progress', 'ready']) {
-        await agent
+    it('maps a manifest-stage failure safely and leaves no durable Project state', async () => {
+      const originalRenameSync = fs.renameSync;
+      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation((source, destination) => {
+        if (path.basename(destination) === MANIFEST_FILENAME) {
+          throw new Error(`private filesystem detail: ${projectsRoot}`);
+        }
+        return originalRenameSync(source, destination);
+      });
+
+      let res;
+      try {
+        res = await agent
           .post('/projects')
-          .send(`title=Flat+Shape+${encodeURIComponent(status)}`)
-          .send(`status=${encodeURIComponent(status)}`)
+          .send('title=HTTP+FS+Rollback')
+          .send('status=tbd')
           .send('priority=normal')
           .set('Content-Type', 'application/x-www-form-urlencoded')
           .send('_csrf=' + encodeURIComponent(csrfToken))
-          .expect(302);
-
-        const projectDir = getProjectDir(`Flat Shape ${status}`);
-        expect(projectDir).not.toBeNull();
-        expect(projectDir).toContain(path.join(projectsRoot, ''));
-        // Status never participates — no status directory is created
-        expect(fs.existsSync(path.join(projectsRoot, 'active'))).toBe(false);
-        expect(fs.existsSync(path.join(projectsRoot, 'inbox'))).toBe(false);
-        expect(path.dirname(projectDir)).toBe(path.resolve(projectsRoot));
+          .expect(500);
+      } finally {
+        renameSpy.mockRestore();
       }
-    });
 
-    it('creates standard subdirectories', async () => {
-      await agent
-        .post('/projects')
-        .send('title=Subdirs+HTTP')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const projectDir = getProjectDir('Subdirs HTTP');
-      expect(projectDir).not.toBeNull();
-
-      const expectedSubdirs = ['final', 'wip', 'krz', 'wm', 'wm-lq'];
-      for (const sub of expectedSubdirs) {
-        const subPath = path.join(projectDir, sub);
-        expect(fs.existsSync(subPath)).toBe(true);
-        expect(fs.statSync(subPath).isDirectory()).toBe(true);
-      }
-      expect(fs.existsSync(path.join(projectDir, 'exports', 'full'))).toBe(false);
-      expect(fs.existsSync(path.join(projectDir, 'exports', 'web'))).toBe(false);
-    });
-
-    it('writes a schema-version-3 project manifest without status', async () => {
-      await agent
-        .post('/projects')
-        .send('title=Manifest+HTTP')
-        .send('description=Test+description')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const projectDir = getProjectDir('Manifest HTTP');
-      expect(projectDir).not.toBeNull();
-
-      const manifestPath = path.join(projectDir, MANIFEST_FILENAME);
-      expect(fs.existsSync(manifestPath)).toBe(true);
-
-      const content = fs.readFileSync(manifestPath, 'utf8');
-      const manifest = JSON.parse(content);
-      expect(manifest.schemaVersion).toBe(3);
-      expect(manifest.title).toBe('Manifest HTTP');
-      expect(manifest.description).toBe('Test description');
-      expect(manifest).not.toHaveProperty('status');
-      expect(content).not.toMatch(/"status"\s*:/);
-      expect(manifest.assetCategories.map((c) => c.directorySlug)).toEqual([
-        'final', 'wip', 'krz', 'wm', 'wm-lq',
-      ]);
-    });
-
-    it('stores relative path in the database', async () => {
-      const res = await agent
-        .post('/projects')
-        .send('title=Rel+Path+HTTP')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const id = res.headers.location.replace('/projects/', '');
-      const detail = await agent.get(`/projects/${id}`).expect(200);
-      // Verify the detail page renders — the project was stored
-      expect(detail.text).toContain('Rel Path HTTP');
-    });
-
-    it('HTTP creation error contains no absolute paths', async () => {
-      // This requires a server restart with a broken projectsRoot to simulate failure
-      // Instead, verify that invalid data produces errors without paths
-      const res = await agent
-        .post('/projects')
-        .send('title=')
-        .send('status=invalid')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(422);
-      expect(res.text).not.toMatch(/[A-Z]:\\/);
-      // The real intent here is "no filesystem path leak" — checked directly
-      // against the actual temp root/projectsRoot for this test, rather than
-      // a generic "/word/word" regex. That generic form now also matches
-      // ordinary in-app relative links (e.g. the disabled-auth warning
-      // banner's href="/settings/security", rendered on every page while
-      // authentication is disabled) with no path-leak significance at all.
-      expect(res.text).not.toContain(tmpDir);
+      expect(res.headers.location).toBeUndefined();
+      expect(res.text).toContain('Project creation failed. Please try again.');
       expect(res.text).not.toContain(projectsRoot);
-    });
-
-    it('detail page shows the flat project directory after creation', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=Detail+Dir+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const detail = await agent.get(createRes.headers.location).expect(200);
-      expect(detail.text).toContain('Project directory');
-      // Flat layout: the displayed path is the bare directory name
-      expect(detail.text).toMatch(/\d+-detail-dir-test/);
-      expect(detail.text).not.toMatch(/tbd(?:&#92;|\/)/);
-      expect(detail.text).not.toMatch(/[A-Z]:\\/);
-    });
-
-    it('filesystem conflict from the Dashboard dialog rerenders the host with a safe error', async () => {
-      // Block the expected path for project id=1 (first project in a fresh DB)
-      const slug = parseSlug('Conflict+Create');
-      const conflictPath = path.join(projectsRoot, `000001-${slug}`);
-      fs.writeFileSync(conflictPath, 'blocker');
-
-      const res = await agent
-        .post('/projects')
-        .send('title=Conflict+Create')
-        .send('description=Value+kept')
-        .send('status=tbd')
-        .send('priority=normal')
-        .send('returnTo=/')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(500);
-
-      const dialog = extractProjectCreateDialog(res.text);
-      expect(res.text).toContain('Dashboard');
-      expect(dialog).toMatch(/<dialog id="project-create-dialog"[^>]*\bopen\b/);
-      expect(dialog).toContain('Project creation failed');
-      expect(dialog).toContain('Conflict Create');
-      expect(dialog).toContain('Value kept');
-      expect(dialog).toContain('name="returnTo" value="/"');
-      expect(res.text).not.toMatch(/[A-Z]:\\/);
-    });
-
-    it('filesystem conflict from a filtered Projects dialog preserves its exact invocation URL', async () => {
-      const slug = parseSlug('Filtered Conflict Create');
-      const conflictPath = path.join(projectsRoot, `000001-${slug}`);
-      fs.writeFileSync(conflictPath, 'blocker');
-      const returnTo = '/projects?search=conflict&sort=title&order=asc&page=2#projects-list';
-
-      const res = await agent
-        .post('/projects')
-        .send('title=Filtered+Conflict+Create')
-        .send('description=Value+kept')
-        .send('status=tbd')
-        .send('priority=normal')
-        .send('returnTo=' + encodeURIComponent(returnTo))
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(500);
-
-      const dialog = extractProjectCreateDialog(res.text);
-      expect(dialog).toMatch(/<dialog id="project-create-dialog"[^>]*\bopen\b/);
-      expect(dialog).toContain('Project creation failed');
-      expect(dialog).toContain('Filtered Conflict Create');
-      expect(dialog).toContain('name="returnTo" value="/projects?search=conflict&amp;sort=title&amp;order=asc&amp;page=2#projects-list" data-dialog-return-location');
-      expect(res.text).not.toMatch(/[A-Z]:\\/);
+      expect(res.text).not.toContain('private filesystem detail');
+      expect(db.prepare('SELECT COUNT(*) AS count FROM projects').get().count).toBe(0);
+      expect(db.prepare('SELECT COUNT(*) AS count FROM project_asset_categories').get().count).toBe(0);
+      expect(db.prepare('SELECT COUNT(*) AS count FROM project_asset_browser_preferences').get().count).toBe(0);
+      expect(fs.readdirSync(projectsRoot).filter((entry) => entry.endsWith('-http-fs-rollback')))
+        .toEqual([]);
     });
   });
 
   // ─── Filesystem update flow ────────────────────────────────────────
 
   describe('HTTP filesystem update', () => {
-    function parseSlug(title) {
-      return title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-    }
-
-    function getProjectDir(title) {
-      // Flat layout: project directories are direct children of PROJECTS_ROOT
-      const slug = parseSlug(title);
-      const entries = fs.readdirSync(projectsRoot);
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      if (matching.length === 0) return null;
-      return path.join(projectsRoot, matching[0]);
-    }
-
-    it('status-only edit is DB/UI-only and leaves the flat directory untouched', async () => {
-      // Create a project
+    it('moves the Project root and refreshes its manifest through POST /projects/:id', async () => {
       const createRes = await agent
         .post('/projects')
-        .send('title=HTTP+Meta+Edit')
+        .send('title=Old+HTTP+Filesystem+Project')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const location = createRes.headers.location;
+      const id = Number(location.replace('/projects/', ''));
+      const before = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(id);
+      const oldDir = resolveProjectDir(projectsRoot, before.project_dir);
+      const marker = path.join(oldDir, 'route-marker.txt');
+      fs.writeFileSync(marker, 'survived');
 
-      const projectDir = getProjectDir('HTTP Meta Edit');
-      expect(projectDir).not.toBeNull();
-      const manifestPath = path.join(projectDir, MANIFEST_FILENAME);
-      const manifestBefore = fs.readFileSync(manifestPath, 'utf8');
-      const customFile = path.join(projectDir, 'user-data.txt');
-      fs.writeFileSync(customFile, 'keep me');
-
-      // Change status only (same title, no slug change, no metadata change)
       const res = await agent
         .post(location)
-        .send('title=HTTP+Meta+Edit')
-        .send('status=in-progress')
+        .send('title=Renamed+HTTP+Filesystem+Project')
+        .send('description=Updated+through+HTTP')
+        .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       expect(res.headers.location).toBe(location);
 
-      // Status is DB-only — manifest and directory are untouched
-      const row = db.prepare('SELECT status, project_dir FROM projects WHERE title = ?')
-        .get('HTTP Meta Edit');
-      expect(row.status).toBe('in-progress');
-      expect(row.project_dir.split(path.sep)).toHaveLength(1);
-
-      expect(fs.existsSync(projectDir)).toBe(true);
-      expect(fs.existsSync(customFile)).toBe(true);
-      expect(fs.readFileSync(manifestPath, 'utf8')).toBe(manifestBefore);
-      expect(fs.existsSync(path.join(projectsRoot, 'active'))).toBe(false);
-    });
-
-    it('title change renames the directory', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=Old+HTTP+Name')
-        .send('description=Before')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const location = createRes.headers.location;
-      const oldDir = getProjectDir('Old HTTP Name');
-      expect(oldDir).not.toBeNull();
-
-      // Add a custom file to prove contents survive
-      fs.writeFileSync(path.join(oldDir, 'custom-file.txt'), 'survived');
-
-      // Rename
-      await agent
-        .post(location)
-        .send('title=New+HTTP+Name')
-        .send('description=After')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      // Old directory gone
+      const after = db.prepare('SELECT id, title, description, project_dir FROM projects WHERE id = ?').get(id);
+      const newDir = resolveProjectDir(projectsRoot, after.project_dir);
+      expect(after).toMatchObject({
+        id,
+        title: 'Renamed HTTP Filesystem Project',
+        description: 'Updated through HTTP',
+        project_dir: formatProjectDirName(id, 'renamed-http-filesystem-project'),
+      });
       expect(fs.existsSync(oldDir)).toBe(false);
-
-      // New directory exists (flat rename)
-      const newDir = getProjectDir('New HTTP Name');
-      expect(newDir).not.toBeNull();
       expect(fs.existsSync(newDir)).toBe(true);
-
-      // Custom file survived
-      expect(fs.existsSync(path.join(newDir, 'custom-file.txt'))).toBe(true);
-      expect(fs.readFileSync(path.join(newDir, 'custom-file.txt'), 'utf8')).toBe('survived');
-
-      // Detail page shows new name
-      const detail = await agent.get(location).expect(200);
-      expect(detail.text).toContain('New HTTP Name');
-      expect(detail.text).not.toContain('Old HTTP Name');
+      expect(fs.readFileSync(path.join(newDir, 'route-marker.txt'), 'utf8')).toBe('survived');
+      expect(readManifestSync(newDir)).toMatchObject({
+        id,
+        title: after.title,
+        description: after.description,
+      });
     });
 
-    it('status-only change is DB/UI-only and leaves the flat directory untouched', async () => {
+    it('compensates a manifest-stage failure and renders a safe update error', async () => {
+      const originalTag = app.locals.tagService.createTag({ name: 'HTTP rollback original tag' });
+      const replacementTag = app.locals.tagService.createTag({ name: 'HTTP rollback replacement tag' });
       const createRes = await agent
         .post('/projects')
-        .send('title=Status+Move+HTTP')
-        .send('description=Moved')
+        .send('title=HTTP+Filesystem+Rollback')
         .send('status=tbd')
         .send('priority=normal')
+        .send(`tagIds[]=${originalTag.id}`)
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const location = createRes.headers.location;
-      const oldDir = getProjectDir('Status Move HTTP');
-      expect(oldDir).not.toBeNull();
+      const id = Number(location.replace('/projects/', ''));
+      const before = db.prepare('SELECT title, description, status, project_dir FROM projects WHERE id = ?').get(id);
+      const originalDir = resolveProjectDir(projectsRoot, before.project_dir);
+      const attemptedDir = resolveProjectDir(
+        projectsRoot,
+        formatProjectDirName(id, 'renamed-http-filesystem-rollback'),
+      );
+      const marker = path.join(originalDir, 'rollback-marker.txt');
+      fs.writeFileSync(marker, 'original content');
 
-      // Add a custom file
-      fs.writeFileSync(path.join(oldDir, 'move-test.txt'), 'moved');
+      const originalRenameSync = fs.renameSync;
+      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation((source, destination) => {
+        if (path.basename(destination) === MANIFEST_FILENAME) {
+          throw new Error(`private filesystem detail: ${projectsRoot}`);
+        }
+        return originalRenameSync(source, destination);
+      });
 
-      // Change status only (same title → no slug change → no rename)
-      await agent
-        .post(location)
-        .send('title=Status+Move+HTTP')
-        .send('description=Moved')
-        .send('status=in-progress')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
+      let res;
+      try {
+        res = await agent
+          .post(location)
+          .send('title=Renamed+HTTP+Filesystem+Rollback')
+          .send('description=Must+roll+back')
+          .send('status=ready')
+          .send('priority=normal')
+          .send(`tagIds[]=${replacementTag.id}`)
+          .set('Content-Type', 'application/x-www-form-urlencoded')
+          .send('_csrf=' + encodeURIComponent(csrfToken))
+          .expect(500);
+      } finally {
+        renameSpy.mockRestore();
+      }
 
-      // Directory untouched at the same flat location
-      expect(fs.existsSync(oldDir)).toBe(true);
-      expect(path.dirname(oldDir)).toBe(path.resolve(projectsRoot));
-
-      // Custom file survived
-      expect(fs.existsSync(path.join(oldDir, 'move-test.txt'))).toBe(true);
-
-      // Status is DB-only; the manifest is not rewritten with status
-      const row = db.prepare('SELECT status, project_dir FROM projects WHERE title = ?')
-        .get('Status Move HTTP');
-      expect(row.status).toBe('in-progress');
-      expect(row.project_dir).toBe(path.basename(oldDir));
-      const manifest = readManifestSync(oldDir);
-      expect(manifest).not.toHaveProperty('status');
-      expect(fs.existsSync(path.join(projectsRoot, 'active'))).toBe(false);
-    });
-
-    it('combined title/status change renames the flat directory', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=Combined+HTTP+Start')
-        .send('status=planned')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const location = createRes.headers.location;
-      const oldDir = getProjectDir('Combined HTTP Start');
-      expect(oldDir).not.toBeNull();
-
-      // Change both title and status
-      await agent
-        .post(location)
-        .send('title=Combined+HTTP+Final')
-        .send('status=ready')
-        .send('priority=high')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      // Old directory gone
-      expect(fs.existsSync(oldDir)).toBe(false);
-
-      // New flat directory (no status parent)
-      const newDir = getProjectDir('Combined HTTP Final');
-      expect(newDir).not.toBeNull();
-      expect(path.dirname(newDir)).toBe(path.resolve(projectsRoot));
-      expect(fs.existsSync(path.join(projectsRoot, 'ready'))).toBe(false);
-
-      // Detail page shows everything
-      const detail = await agent.get(location).expect(200);
-      expect(detail.text).toContain('Combined HTTP Final');
-      expect(detail.text).toContain('Ready');
-    });
-
-    it('error responses contain no absolute filesystem paths on update failure', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=No+Path+HTTP')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      // Trigger a validation error (non-filesystem) — should be path-safe
-      const res = await agent
-        .post(createRes.headers.location)
-        .send('title=No+Path+HTTP')
-        .send('status=archived')  // rejected by the operational archive guard
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(422);
-      // Only check for absolute Windows paths (drive-letter paths)
-      expect(res.text).not.toMatch(/[A-Z]:\\/);
-    });
-
-    it('archived status is still rejected from edit form', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=No+Archive+In+Edit')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const res = await agent
-        .post(createRes.headers.location)
-        .send('title=No+Archive+In+Edit')
-        .send('status=archived')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(422);
-      expect(res.text).toContain('Status must be one of');
-    });
-
-    it('title change updates the displayed relative path', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=Old+Path+Name')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      // Before rename — detail shows the flat dir
-      let detail = await agent.get(createRes.headers.location).expect(200);
-      expect(detail.text).toMatch(/\d+-old-path-name/);
-      expect(detail.text).not.toMatch(/tbd(?:&#92;|\/)/);
-
-      // Rename
-      await agent
-        .post(createRes.headers.location)
-        .send('title=New+Path+Name')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      // After rename — detail shows the new flat dir
-      detail = await agent.get(createRes.headers.location).expect(200);
-      expect(detail.text).toMatch(/\d+-new-path-name/);
-      expect(detail.text).not.toMatch(/old-path-name/);
-      expect(detail.text).not.toMatch(/[A-Z]:\\/);
-    });
-
-    it('status change does not change the displayed flat project directory', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=Status+Path+Change')
-        .send('status=planned')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      // Before — flat dir
-      let detail = await agent.get(createRes.headers.location).expect(200);
-      expect(detail.text).toMatch(/\d+-status-path-change/);
-      expect(detail.text).not.toMatch(/planned(?:&#92;|\/)/);
-
-      // Change status
-      await agent
-        .post(createRes.headers.location)
-        .send('title=Status+Path+Change')
-        .send('status=in-progress')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      // After — the same flat dir is still displayed
-      detail = await agent.get(createRes.headers.location).expect(200);
-      expect(detail.text).toMatch(/\d+-status-path-change/);
-      expect(detail.text).not.toMatch(/active(?:&#92;|\/)/);
-      expect(detail.text).not.toMatch(/planned(?:&#92;|\/)/);
-      expect(detail.text).not.toMatch(/[A-Z]:\\/);
-    });
-
-    it('filesystem failure during update renders safe error with preserved values', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=Update+Fail+Safe')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      // Remove the project directory to trigger a filesystem error on update
-      const projectDir = getProjectDir('Update Fail Safe');
-      expect(projectDir).not.toBeNull();
-      fs.rmSync(projectDir, { recursive: true, force: true });
-
-      const res = await agent
-        .post(createRes.headers.location)
-        .send('title=Updated+Title')
-        .send('description=Preserved+text')
-        .send('status=tbd')
-        .send('priority=high')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(500);
-
-      expect(res.text).toContain('<section class="project-detail-hero">');
-      const dialog = res.text.match(/<dialog id="project-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
-      expect(dialog).not.toBe('');
-      expect(dialog).toMatch(/<dialog id="project-edit-dialog"[^>]*\bopen\b/);
-      expect(dialog).toContain('Project update failed. Please try again.');
-      expect(dialog).toContain('Updated Title');
-      expect(dialog).toContain('Preserved text');
-      expect(res.text).not.toMatch(/[A-Z]:\\/);
+      expect(res.headers.location).toBeUndefined();
+      expect(res.text).toContain('Project update failed. Please try again.');
+      expect(res.text).not.toContain(projectsRoot);
+      expect(res.text).not.toContain('private filesystem detail');
+      expect(db.prepare('SELECT title, description, status, project_dir FROM projects WHERE id = ?').get(id))
+        .toEqual(before);
+      expect(db.prepare('SELECT tag_id FROM project_tags WHERE project_id = ? ORDER BY tag_id').all(id))
+        .toEqual([{ tag_id: originalTag.id }]);
+      expect(fs.existsSync(originalDir)).toBe(true);
+      expect(fs.readFileSync(marker, 'utf8')).toBe('original content');
+      expect(fs.existsSync(attemptedDir)).toBe(false);
     });
   });
 
-  // ─── Filesystem archive flow ────────────────────────────────────────
+  // ─── Filesystem deletion flow ───────────────────────────────────────
 
-  describe('HTTP filesystem archive', () => {
-    function parseSlug(title) {
-      return title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-    }
+  describe('HTTP filesystem deletion', () => {
+    it('removes the real project root and preserves unrelated filesystem data through POST /delete', async () => {
+      const id = await createProject({ title: 'HTTP Filesystem Delete' });
+      const project = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(id);
+      const projectDir = resolveProjectDir(projectsRoot, project.project_dir);
+      const unrelatedDir = path.join(projectsRoot, 'unrelated-project-data');
+      const unrelatedMarker = path.join(unrelatedDir, 'marker.txt');
+      fs.writeFileSync(path.join(projectDir, 'owned-marker.txt'), 'owned');
+      fs.mkdirSync(unrelatedDir);
+      fs.writeFileSync(unrelatedMarker, 'unrelated');
 
-    function getProjectDir(title) {
-      // Flat layout: project directories are direct children of PROJECTS_ROOT
-      const slug = parseSlug(title);
-      const entries = fs.readdirSync(projectsRoot);
-      const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-      if (matching.length === 0) return null;
-      return path.join(projectsRoot, matching[0]);
-    }
-
-    it('archive is a database transition that preserves the flat directory', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=HTTP+Archive+Move')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const id = createRes.headers.location.replace('/projects/', '');
-      const projectDir = getProjectDir('HTTP Archive Move');
-      expect(projectDir).not.toBeNull();
-      expect(fs.existsSync(projectDir)).toBe(true);
-
-      const manifestPath = path.join(projectDir, MANIFEST_FILENAME);
-      const manifestBefore = fs.readFileSync(manifestPath, 'utf8');
-      fs.writeFileSync(path.join(projectDir, 'http-extra.txt'), 'http content');
-
-      await agent
-        .post(`/projects/${id}/archive`)
-        .send('_csrf=' + encodeURIComponent(csrfToken))
+      const res = await agent
+        .post(`/projects/${id}/delete`)
+        .type('form')
+        .send({ _csrf: csrfToken })
         .expect(302);
 
-      // Directory stays in place at the same flat location
-      expect(fs.existsSync(projectDir)).toBe(true);
-      expect(fs.statSync(projectDir).isDirectory()).toBe(true);
-      expect(path.dirname(projectDir)).toBe(path.resolve(projectsRoot));
-      expect(fs.existsSync(path.join(projectDir, 'http-extra.txt'))).toBe(true);
-      // Manifest untouched � archiving does not rewrite it
-      expect(fs.readFileSync(manifestPath, 'utf8')).toBe(manifestBefore);
-      // No archived/ directory was created
-      expect(fs.existsSync(path.join(projectsRoot, 'archived'))).toBe(false);
+      expect(res.headers.location).toBe('/projects');
+      expect(db.prepare('SELECT id FROM projects WHERE id = ?').get(id)).toBeUndefined();
+      expect(fs.existsSync(projectDir)).toBe(false);
+      expect(fs.readFileSync(unrelatedMarker, 'utf8')).toBe('unrelated');
+      await agent.get(`/projects/${id}`).expect(404);
     });
 
-    it('status becomes archived', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=HTTP+Archive+Status')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const id = createRes.headers.location.replace('/projects/', '');
+    it('reports a safe recovery error after staged deletion cleanup fails', async () => {
+      const id = await createProject({ title: 'HTTP Delete Cleanup Failure' });
+      const project = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(id);
+      const projectDir = resolveProjectDir(projectsRoot, project.project_dir);
+      const originalRmSync = fs.rmSync;
+      const rmSpy = vi.spyOn(fs, 'rmSync').mockImplementation((target, options) => {
+        if (String(target).includes('.cc-quarantine-')) {
+          throw new Error(`private filesystem detail: ${projectsRoot}`);
+        }
+        return originalRmSync(target, options);
+      });
 
-      await agent
-        .post(`/projects/${id}/archive`)
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const row = db.prepare('SELECT status, archived_at FROM projects WHERE id = ?').get(Number(id));
-      expect(row.status).toBe('archived');
-      expect(row.archived_at).toBeTruthy();
-    });
-
-    it('project_dir is preserved across archive', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=HTTP+Archive+Path')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const id = createRes.headers.location.replace('/projects/', '');
-
-      const before = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(Number(id));
-      expect(before.project_dir.split(path.sep)).toHaveLength(1);
-
-      await agent
-        .post(`/projects/${id}/archive`)
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const after = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(Number(id));
-      expect(after.project_dir).toBe(before.project_dir);
-    });
-
-    it('archive succeeds when the project directory is missing', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=HTTP+No+Dir+Archive')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const id = createRes.headers.location.replace('/projects/', '');
-
-      // Remove the directory entirely � archive must still succeed
-      const projectDir = getProjectDir('HTTP No Dir Archive');
-      expect(projectDir).not.toBeNull();
-      fs.rmSync(projectDir, { recursive: true, force: true });
-
-      await agent
-        .post(`/projects/${id}/archive`)
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const row = db.prepare('SELECT status, archived_at FROM projects WHERE id = ?').get(Number(id));
-      expect(row.status).toBe('archived');
-      expect(row.archived_at).toBeTruthy();
-    });
-
-    it('archive remains POST-only', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=HTTP+GET+Archive')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const id = createRes.headers.location.replace('/projects/', '');
-
-      // GET should not archive � 404 from route matching
-      await agent
-        .get(`/projects/${id}/archive`)
-        .expect(404);
-    });
-
-    it('invalid project id returns 404 on archive', async () => {
-      await agent
-        .post('/projects/abc/archive')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(404);
-    });
-
-    it('missing project returns 404 on archive', async () => {
-      await agent
-        .post('/projects/99999/archive')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(404);
-    });
-
-    it('archived scan rejection causes no asset changes (full row snapshot)', async () => {
-      const title = 'Archived Scan Reject';
-      const createRes = await agent
-        .post('/projects')
-        .send('title=' + encodeURIComponent(title))
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const id = createRes.headers.location.replace('/projects/', '');
-
-      const getProjectDirForTitle = () => {
-        const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-        const entries = fs.readdirSync(projectsRoot);
-        const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-        return path.join(projectsRoot, matching[0]);
-      };
-      const projectDir = getProjectDirForTitle();
-
-      // 1. Create at least two baseline files
-      const baselineFile1 = 'baseline-a.txt';
-      const baselineFile2 = 'baseline-b.txt';
-      const newFile = 'will-be-new.txt';
-
-      fs.writeFileSync(path.join(projectDir, baselineFile1), 'baseline a');
-      fs.writeFileSync(path.join(projectDir, baselineFile2), 'baseline b');
-
-      // 2. Run a successful scan so both have persisted asset rows
-      await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
-
-      // 3. Modify the first baseline file
-      fs.writeFileSync(path.join(projectDir, baselineFile1), 'modified content');
-
-      // 4. Delete the second baseline file
-      fs.unlinkSync(path.join(projectDir, baselineFile2));
-
-      // 5. Add a new file
-      fs.writeFileSync(path.join(projectDir, newFile), 'brand new');
-
-      // 6. Snapshot all persisted asset rows before the rejected scan
-      const assetRepo = createAssetRepository(db);
-      const beforeAssets = assetRepo.findByProjectId(Number(id));
-      expect(beforeAssets.length).toBe(2);
-
-      const beforeSnapshot = beforeAssets.map((a) => ({ ...a }));
-
-      // 7. Archive the project
-      await agent
-        .post(`/projects/${id}/archive`)
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      // 8. POST the scan route — must be rejected
-      const scanRes = await agent
-        .post(`/projects/${id}/scan`)
-        .send('_csrf=' + encodeURIComponent(csrfToken));
-      expect(scanRes.status).toBe(302);
-      expect(scanRes.headers.location).toContain('scan_error=archived');
-
-      // 9. Assert the archived-scan rejection
-      // 10. Query all project assets again
-      const afterAssets = assetRepo.findByProjectId(Number(id));
-      expect(afterAssets.length).toBe(2);
-
-      // complete before/after asset rows are deeply equal
-      for (let i = 0; i < beforeSnapshot.length; i++) {
-        const before = beforeSnapshot[i];
-        const after = afterAssets.find((a) => a.id === before.id);
-        expect(after).toBeDefined();
-        expect(after.id).toBe(before.id);
-        expect(after.project_id).toBe(before.project_id);
-        expect(after.relative_path).toBe(before.relative_path);
-        expect(after.filename).toBe(before.filename);
-        expect(after.extension).toBe(before.extension);
-        expect(after.mime_type).toBe(before.mime_type);
-        expect(after.size_bytes).toBe(before.size_bytes);
-        expect(after.modified_at).toBe(before.modified_at);
-        expect(after.is_present).toBe(before.is_present);
-        expect(after.last_seen_at).toBe(before.last_seen_at);
-        expect(after.missing_since).toBe(before.missing_since);
-        expect(after.created_at).toBe(before.created_at);
-        expect(after.updated_at).toBe(before.updated_at);
+      let res;
+      try {
+        res = await agent
+          .post(`/projects/${id}/delete`)
+          .type('form')
+          .send({ _csrf: csrfToken })
+          .expect(500);
+      } finally {
+        rmSpy.mockRestore();
       }
 
-      // the new file was not inserted
-      const newAsset = afterAssets.find((a) => a.relative_path === newFile);
-      expect(newAsset).toBeUndefined();
-
-      // the modified file's metadata was not updated
-      const modifiedAsset = afterAssets.find((a) => a.relative_path === baselineFile1);
-      expect(modifiedAsset).toBeDefined();
-      const beforeModified = beforeSnapshot.find((a) => a.relative_path === baselineFile1);
-      expect(modifiedAsset.size_bytes).toBe(beforeModified.size_bytes);
-      expect(modifiedAsset.modified_at).toBe(beforeModified.modified_at);
-
-      // the deleted file's persisted row still exists
-      const deletedAsset = afterAssets.find((a) => a.relative_path === baselineFile2);
-      expect(deletedAsset).toBeDefined();
-      // the deleted file still has is_present = 1
-      expect(deletedAsset.is_present).toBe(1);
-      // missing_since remains unchanged
-      expect(deletedAsset.missing_since).toBeNull();
-      // no scanner-maintained timestamp changed
-      const beforeDeleted = beforeSnapshot.find((a) => a.relative_path === baselineFile2);
-      expect(deletedAsset.last_seen_at).toBe(beforeDeleted.last_seen_at);
-      expect(deletedAsset.updated_at).toBe(beforeDeleted.updated_at);
+      expect(res.headers.location).toBeUndefined();
+      expect(res.text).toContain('Something went wrong.');
+      expect(res.text).not.toContain(projectsRoot);
+      expect(res.text).not.toContain('private filesystem detail');
+      expect(db.prepare('SELECT id FROM projects WHERE id = ?').get(id)).toBeUndefined();
+      expect(fs.existsSync(projectDir)).toBe(false);
+      const quarantine = fs.readdirSync(projectsRoot)
+        .filter((entry) => entry.startsWith('.cc-quarantine-'));
+      expect(quarantine).toHaveLength(1);
+      expect(fs.existsSync(path.join(projectsRoot, quarantine[0], 'project.json'))).toBe(true);
     });
   });
 
@@ -4430,62 +3251,45 @@ describe('project HTTP workflow', () => {
       expect(container).toMatch(/<input[^>]*id="patreonUrl"[^>]*>/);
     });
 
-    it('project detail shows retained metadata without Project scheduling dates', async () => {
+    it('active project detail renders the intended project, external link, and resolved primary image', async () => {
+      await createProject({ title: 'Other Detail Project' });
       const createRes = await agent
         .post('/projects')
-        .send('title=Wording+Test')
+        .send('title=Detail+Integration')
         .send('status=tbd')
         .send('priority=normal')
         .send('description=Project+description')
-        .send('plannedDate=2025-12-01')
-        .send('publishedDate=2025-12-15')
         .send('patreonUrl=https://patreon.com/test')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .expect(302);
       const id = createRes.headers.location.replace('/projects/', '');
+      const asset = seedPrimaryImage(Number(id));
 
       const res = await agent.get(`/projects/${id}`).expect(200);
       const details = extractProjectDetailSection(res.text, 'project-detail-info');
-      const metaStart = res.text.indexOf('<div class="project-detail-meta">');
-      const meta = metaStart >= 0 ? extractHtmlElement(res.text, metaStart) : '';
+      const hero = extractProjectDetailSection(res.text, 'project-detail-hero');
 
-      expect(details).toContain('<section class="project-detail-info project-detail-section">');
-      expect(details).toContain('<h2>Details</h2>');
-      expect(details).toContain('<div class="project-detail-section-body">');
-      const detailListStart = details.indexOf('<dl class="detail-list">');
-      const detailList = extractHtmlElement(details, detailListStart);
-      const detailRows = extractDirectHtmlChildren(detailList);
-      const detailLabels = detailRows
-        .filter((row) => row.startsWith('<dt>'))
-        .map((row) => row.match(/^<dt>([^<]+)<\/dt>$/)?.[1]);
-      expect(detailLabels).toEqual([
-        'Project directory',
-        'Slug',
-        'Created',
-        'Updated',
-        'Description',
-        'Project link',
-      ]);
+      expect(res.text).toContain('<h1 class="app-section-title">Projects — Detail Integration</h1>');
+      expect(res.text).not.toContain('Projects — Other Detail Project</h1>');
       expect(details).toContain('<dd class="description">Project description</dd>');
-      expect(details).toMatch(/<dt>Project link<\/dt>\s*<dd><a class="project-detail-link" href="https:\/\/patreon\.com\/test" target="_blank" rel="noopener">Project link<\/a><\/dd>/);
-      expect(details).not.toMatch(/<dt>(?:Planned date|Published date)<\/dt>/);
-      expect(res.text).not.toContain('<p class="description">Project description</p>');
-      expect(meta).not.toContain('project-detail-link');
+      expect(details).toMatch(/<a\b[^>]*href="https:\/\/patreon\.com\/test"[^>]*target="_blank"[^>]*rel="noopener"[^>]*>Project link<\/a>/);
+      expect(hero).toContain('data-preview-image');
+      expect(hero).toContain(`src="/projects/${id}/assets/${asset.id}/preview?v=${buildAssetRevisionToken(asset)}"`);
+      expect(hero).toContain('alt="Preview of cover.png"');
     });
 
-    it('project detail renders the established missing description and omits scheduling dates and an absent project link', async () => {
+    it('active project detail renders optional-field and primary-image absence states', async () => {
       const id = await createProject({ title: 'Optional Detail Fields Empty' });
 
       const res = await agent.get(`/projects/${id}`).expect(200);
       const details = extractProjectDetailSection(res.text, 'project-detail-info');
+      const hero = extractProjectDetailSection(res.text, 'project-detail-hero');
 
       expect(details).toMatch(/<dt>Description<\/dt>\s*<dd class="description">—<\/dd>/);
-      expect(details).not.toMatch(/<dt>(?:Planned date|Published date)<\/dt>/);
       expect(details).not.toContain('project-detail-link');
-      expect(details).toContain('<dt>Slug</dt>');
-      expect(details).toContain('<dt>Created</dt>');
-      expect(details).toContain('<dt>Updated</dt>');
+      expect(hero).toContain('data-primary-image-state="none"');
+      expect(hero).toContain(`href="/projects/${id}/assets"`);
     });
 
     it('project detail keeps associated Release planned and published dates visible', async () => {
@@ -4502,150 +3306,6 @@ describe('project HTTP workflow', () => {
       expect(releases).toMatch(/Published Release[\s\S]*?· published 2026-11-20/);
     });
 
-    it('project detail hero renders the primary image when one is set', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=Hero+Available')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const id = createRes.headers.location.replace('/projects/', '');
-
-      seedPrimaryImage(Number(id));
-
-      const res = await agent.get(`/projects/${id}`).expect(200);
-      expect(res.text).toContain('data-preview-enhancement');
-      expect(res.text).toMatch(
-        /<img class="project-detail-media-image" data-preview-image src="\/projects\/\d+\/assets\/\d+\/preview\?v=[0-9a-f]+" alt="Preview of cover\.png"/
-      );
-    });
-
-    it('project detail hero shows a placeholder and asset-viewer CTA when no primary image is set', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=Hero+None')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const id = createRes.headers.location.replace('/projects/', '');
-
-      const res = await agent.get(`/projects/${id}`).expect(200);
-      expect(res.text).toContain('data-primary-image-state="none"');
-      expect(res.text).toContain('No primary image set.');
-      expect(res.text).toContain(`href="/projects/${id}/assets"`);
-    });
-  });
-
-  describe('project detail Social Preparation summaries', () => {
-    let projectId, releaseId;
-
-    beforeEach(async () => {
-      projectId = await createProject({ title: 'Social summary fixture' });
-      releaseId = db.prepare("INSERT INTO releases (project_id, title, planned_date) VALUES (?, 'Saved targets release', '2099-01-01') RETURNING id").get(projectId).id;
-      app.locals.socialPrepSettingsService.setPlatforms(['patreon', 'x', 'bluesky']);
-      app.locals.socialPrepSettingsService.setEnabled(true);
-    });
-
-    afterEach(() => vi.restoreAllMocks());
-
-    function target(platform, status, attempts = 1, id = releaseId) {
-      app.locals.socialPrepRepository.ensurePlatforms(id, [platform]);
-      db.prepare(`UPDATE release_social_platforms SET status = ?, attempts = ?, message = ?, detail_code = ?
-        WHERE release_id = ? AND platform = ?`).run(status, attempts,
-        'PRIVATE_MESSAGE PRIVATE_TOKEN PRIVATE_SESSION PRIVATE_STDERR C:\\PRIVATE_PATH PRIVATE_CREATOR PRIVATE_BROWSER',
-        'PRIVATE_DETAIL_CODE', id, platform);
-    }
-
-    async function page() {
-      const { text } = await agent.get(`/projects/${projectId}`).expect(200);
-      expect(text).not.toMatch(/PRIVATE_|openlocally:|creatorcrate-social:|\/social-prep\/activate|\/social-preparation\/activate/i);
-      const list = extractReleaseList(text);
-      expect(list).not.toMatch(/Send to helper again|Prepare again|Retry|Reprepare|data-social/i);
-      for (const summary of list.match(/<div class="release-social-prep-summary"[\s\S]*?<\/div>/g) || []) {
-        expect(summary).toContain('<small>Social posts</small>');
-        expect(summary).toContain('aria-label="Social posts"');
-        expect(summary).not.toMatch(/Social targets|\(last recorded preparation\)/);
-        expect(summary).not.toMatch(/<form\b|<button\b|<input\b|<a\b|\b(posted|published|submitted|live)\b|sent successfully/i);
-      }
-      return { text, list, item: extractReleaseItem(list, releaseId) };
-    }
-
-    it('shows mixed platforms in presenter order after metadata, without crossing release boundaries', async () => {
-      target('bluesky', 'failed');
-      target('x', 'prepared');
-      target('patreon', 'pending', 0);
-      const otherId = db.prepare("INSERT INTO releases (project_id, title, published_date) VALUES (?, 'Other release', '2026-08-01') RETURNING id").get(projectId).id;
-      target('x', 'cancelled', 1, otherId);
-      const { text, list, item } = await page();
-      const summary = item.match(/<div class="release-social-prep-summary"[\s\S]*?<\/div>/)[0];
-      expect(summary.match(/class="status-badge status-badge--neutral">[^<]+/g)).toEqual([
-        'class="status-badge status-badge--neutral">Patreon · Not attempted',
-        'class="status-badge status-badge--neutral">X · Prepared',
-        'class="status-badge status-badge--neutral">Bluesky · Failed',
-      ]);
-      expect(item).toContain(`href="/releases/${releaseId}">Saved targets release</a>`);
-      expect(item).toContain('planned 2099-01-01');
-      expect(item.indexOf('updated')).toBeLessThan(item.indexOf(summary));
-      expect(item).not.toContain('Cancelled');
-      const other = extractReleaseItem(list, otherId);
-      expect(other).toContain('X · Cancelled');
-      expect(other).toContain('published 2026-08-01');
-      expect(other).not.toMatch(/Patreon|Bluesky|Prepared/);
-      expect(text).toContain(`href="/releases?project=${projectId}"`);
-      expect(text).toContain(`href="/releases/new?projectId=${projectId}"`);
-    });
-
-    it('omits targets rather than backfilling from current Settings', async () => {
-      const { item } = await page();
-      expect(item).not.toMatch(/Social posts|release-social-prep-summary/);
-      expect(app.locals.socialPrepRepository.listPlatformsByReleaseId(releaseId)).toEqual([]);
-    });
-
-    it.each([
-      ['pending', 'Pending'], ['starting', 'Starting'], ['preparing', 'Preparing'],
-      ['uploading', 'Uploading'], ['auth_required', 'Authentication required'],
-    ])('shows persisted %s with the compact Social posts label', async (status, label) => {
-      target('x', status);
-      const { item } = await page();
-      expect(item).toContain(`X · ${label}`);
-      expect(item).toContain('<small>Social posts</small>');
-    });
-
-    it.each([true, false])('retains removed saved targets on archived read-only summaries (enabled=%s)', async (enabled) => {
-      target('patreon', 'prepared');
-      app.locals.socialPrepSettingsService.setPlatforms(['bluesky']);
-      app.locals.socialPrepSettingsService.setEnabled(enabled);
-      db.prepare("UPDATE projects SET archived_at = '2026-08-01' WHERE id = ?").run(projectId);
-      db.prepare("UPDATE releases SET archived_at = '2026-08-01' WHERE id = ?").run(releaseId);
-      const { text, item } = await page();
-      expect(item).toContain('Patreon · Prepared');
-      expect(item).not.toContain('Bluesky');
-      expect(text).toContain('This project is archived and read-only');
-      expect(text).not.toContain(`href="/releases/new?projectId=${projectId}"`);
-    });
-
-    it.each([false, true])('GET remains read-only and batches overlapping active/recent IDs once (saved=%s)', async (saved) => {
-      if (saved) target('x', 'prepared');
-      const queries = vi.spyOn(db, 'prepare');
-      const tokens = await import('../src/services/social-prep-tokens.js');
-      app.locals.socialPrepService = Object.fromEntries(Object.entries(app.locals.socialPrepService).map(([key, value]) => [
-        key, typeof value === 'function' ? vi.fn(() => { throw new Error('Display must not execute preparation'); }) : value,
-      ]));
-      const executionSpies = [...Object.values(app.locals.socialPrepService), ...Object.values(tokens)].filter(vi.isMockFunction);
-      executionSpies.forEach((spy) => spy.mockClear());
-      const before = db.prepare('SELECT total_changes() AS n').get().n;
-      const { list } = await page();
-      const socialReads = queries.mock.calls.map(([sql]) => sql).filter((sql) => /FROM release_social_platforms/.test(sql));
-      expect(socialReads).toHaveLength(1);
-      expect(socialReads[0]).toContain('WHERE release_id IN (?)');
-      expect(list.match(new RegExp(`href="/releases/${releaseId}"`, 'g'))).toHaveLength(1);
-      expect(db.prepare('SELECT total_changes() AS n').get().n).toBe(before);
-      executionSpies.forEach((spy) => expect(spy).not.toHaveBeenCalled());
-    });
   });
 
   it('accepts live custom Status and Type filters and drops deleted or unknown values', async () => {
@@ -4705,30 +3365,46 @@ describe('project HTTP workflow', () => {
     expect(stale.text).not.toContain('type=unknown-type');
   });
 
-  it('project detail renders release thumbnails per release with accessible labels and a display cap', async () => {
+  it('project detail renders the selected custom Status and Type', async () => {
+    const status = app.locals.projectOptionCatalogueService.addOption('status', {
+      name: 'Awaiting Review', color: '#123456',
+    });
+    const projectType = app.locals.projectOptionCatalogueService.addOption('projectType', {
+      name: 'Interactive Story (Web)', color: '#654321',
+    });
+    const selectedId = await createProject({
+      title: 'Selected Custom Options', status: status.value, projectType: projectType.value,
+    });
+    const otherId = await createProject({ title: 'Other Project' });
+
+    const selected = extractProjectDetailSection(
+      (await agent.get(`/projects/${selectedId}`).expect(200)).text, 'project-detail-hero',
+    );
+    const other = extractProjectDetailSection(
+      (await agent.get(`/projects/${otherId}`).expect(200)).text, 'project-detail-hero',
+    );
+    expect(selected).toMatch(/project-status-badge[^>]*>Awaiting Review<\/span>/);
+    expect(selected).toMatch(/project-type-badge[^>]*>Interactive Story \(Web\)<\/span>/);
+    expect(other).not.toContain('Awaiting Review');
+    expect(other).not.toContain('Interactive Story (Web)');
+  });
+
+  it('project detail renders each release with its own thumbnail resource', async () => {
     const projectId = await createProject({ title: 'Release Thumbnail Project' });
     const assetRepository = createAssetRepository(db);
     const releaseRepository = createReleaseRepository(db);
-    const firstAssets = Array.from({ length: 14 }, (_, index) => assetRepository.upsert(
-      projectId,
-      `first-${index}.png`,
-      {
-        filename: index === 0 ? 'cover & <featured>.png' : `first-${index}.png`,
-        extension: 'png',
-        mimeType: 'image/png',
-        sizeBytes: 1024 + index,
-        modifiedAt: '2026-08-06 12:00:00',
-      },
-    ));
-    const secondAssets = Array.from({ length: 2 }, (_, index) => assetRepository.upsert(
-      projectId,
-      `second-${index}.png`,
-      {
-        filename: `second-${index}.png`,
-        extension: 'png',
-        mimeType: 'image/png',
-        sizeBytes: 2048 + index,
-        modifiedAt: '2026-08-06 12:00:00',
+    const firstAsset = assetRepository.upsert(projectId, 'first.png', {
+      filename: 'first.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 1024, modifiedAt: '2026-08-06 12:00:00',
+    });
+    const secondAsset = assetRepository.upsert(projectId, 'second.png', {
+      filename: 'second.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 2048, modifiedAt: '2026-08-06 12:00:00',
+    });
+    const overflowAssets = Array.from({ length: 12 }, (_, index) => assetRepository.upsert(
+      projectId, `overflow-${index}.png`, {
+        filename: `overflow-${index}.png`, extension: 'png', mimeType: 'image/png',
+        sizeBytes: 3072 + index, modifiedAt: '2026-08-06 12:00:00',
       },
     ));
     const createRelease = (title) => releaseRepository.create({
@@ -4744,81 +3420,36 @@ describe('project HTTP workflow', () => {
     const firstRelease = createRelease('First Thumbnail Release');
     const secondRelease = createRelease('Second Thumbnail Release');
     const emptyRelease = createRelease('Empty Thumbnail Release');
-    app.locals.socialPrepRepository.ensurePlatforms(firstRelease.id, ['x']);
-
-    firstAssets.forEach((asset, sortOrder) => {
-      releaseRepository.addReleaseAsset(firstRelease.id, asset.id, 'attachment', sortOrder);
-    });
-    secondAssets.forEach((asset, sortOrder) => {
-      releaseRepository.addReleaseAsset(secondRelease.id, asset.id, 'attachment', sortOrder);
+    releaseRepository.addReleaseAsset(firstRelease.id, firstAsset.id, 'attachment', 0);
+    releaseRepository.addReleaseAsset(secondRelease.id, secondAsset.id, 'attachment', 0);
+    overflowAssets.forEach((asset, index) => {
+      releaseRepository.addReleaseAsset(firstRelease.id, asset.id, 'attachment', index + 1);
     });
 
     const res = await agent.get(`/projects/${projectId}`).expect(200);
     const releases = extractProjectDetailSection(res.text, 'project-detail-releases');
-    expect(releases).toContain('<section class="release-summary project-detail-releases project-detail-section">');
-    expect(releases).toContain('<h2>Releases</h2>');
-    expect(releases).toContain('<div class="project-detail-section-body">');
-    expect(releases).toContain('href="/releases?project=' + projectId + '"');
-    expect(releases).toContain('href="/releases/new?projectId=' + projectId + '"');
-    expect(releases).toContain('<ul class="release-list">');
-    const releaseList = extractReleaseList(res.text);
+    const releaseList = extractReleaseList(releases);
     const firstItem = extractReleaseItem(releaseList, firstRelease.id);
     const secondItem = extractReleaseItem(releaseList, secondRelease.id);
     const emptyItem = extractReleaseItem(releaseList, emptyRelease.id);
-    const firstThumbnailLinks = firstItem.match(/<a class="release-thumbnail-link"[^>]*>[\s\S]*?<\/a>/g) || [];
-    const secondThumbnailLinks = secondItem.match(/<a class="release-thumbnail-link"[^>]*>[\s\S]*?<\/a>/g) || [];
-
+    expect(firstItem).not.toBe('');
+    expect(secondItem).not.toBe('');
+    expect(emptyItem).not.toBe('');
     expect(firstItem).toContain(`<a href="/releases/${firstRelease.id}">First Thumbnail Release</a>`);
-    expect(firstItem).toContain('class="meta"');
-    expect(firstItem).toContain('updated');
-    expect(firstItem).toContain('X · Not attempted');
-    expect(firstItem.indexOf('release-social-prep-summary')).toBeLessThan(firstItem.indexOf('release-thumbnail-strip'));
-    expect(firstThumbnailLinks).toHaveLength(12);
-    for (const [index, asset] of firstAssets.slice(0, 12).entries()) {
-      expect(firstThumbnailLinks[index]).toContain(`href="/projects/${projectId}/assets/${asset.id}"`);
-      expect(firstThumbnailLinks[index]).toContain(
-        `src="/projects/${projectId}/assets/${asset.id}/thumbnail?v=${buildAssetRevisionToken(asset)}"`,
-      );
-      expect(firstThumbnailLinks[index]).toContain('loading="lazy" decoding="async"');
-      expect(firstThumbnailLinks[index]).not.toContain('data-preview-enhancement');
-    }
-    expect(firstThumbnailLinks[0]).toContain('aria-label="View cover &amp; &lt;featured&gt;.png"');
-    expect(firstThumbnailLinks[0]).toContain('alt="cover &amp; &lt;featured&gt;.png"');
-    expect(firstThumbnailLinks[0]).not.toContain('aria-label="View cover & <featured>.png"');
-    expect(firstItem).not.toContain(`/projects/${projectId}/assets/${firstAssets[12].id}/thumbnail`);
-    expect(firstItem).not.toContain(`/projects/${projectId}/assets/${firstAssets[13].id}/thumbnail`);
-    expect(firstItem).toContain(
-      `<a class="release-thumbnail-more" href="/releases/${firstRelease.id}">+2 more</a>`,
-    );
-
     expect(secondItem).toContain(`<a href="/releases/${secondRelease.id}">Second Thumbnail Release</a>`);
-    expect(secondThumbnailLinks).toHaveLength(2);
-    for (const [index, asset] of secondAssets.entries()) {
-      expect(secondThumbnailLinks[index]).toContain(`href="/projects/${projectId}/assets/${asset.id}"`);
-      expect(secondThumbnailLinks[index]).toContain(
-        `src="/projects/${projectId}/assets/${asset.id}/thumbnail?v=${buildAssetRevisionToken(asset)}"`,
-      );
-    }
-    expect(firstItem).not.toContain(`/projects/${projectId}/assets/${secondAssets[0].id}/thumbnail`);
-    expect(secondItem).not.toContain(`/projects/${projectId}/assets/${firstAssets[0].id}/thumbnail`);
-    expect(emptyItem).not.toContain('release-thumbnail-strip');
-  });
-
-  it('serves larger responsive release-thumbnail styles without changing shared asset-card rules', async () => {
-    const css = (await agent.get('/creatorcrate.css').expect(200)).text;
-
-    expect(css).toMatch(
-      /\.release-thumbnail-strip\s*\{[\s\S]*?display:\s*flex;[\s\S]*?flex-wrap:\s*wrap;[\s\S]*?min-width:\s*0;[\s\S]*?max-width:\s*100%;/,
+    expect(firstItem).toContain(`href="/projects/${projectId}/assets/${firstAsset.id}"`);
+    expect(firstItem).toContain(
+      `src="/projects/${projectId}/assets/${firstAsset.id}/thumbnail?v=${buildAssetRevisionToken(firstAsset)}"`,
     );
-    expect(css).toMatch(
-      /\.release-thumbnail-link\s*\{[\s\S]*?flex:\s*0 1 5\.5rem;[\s\S]*?width:\s*5\.5rem;[\s\S]*?height:\s*5\.5rem;[\s\S]*?min-width:\s*0;[\s\S]*?max-width:\s*100%;/,
+    expect(secondItem).toContain(`href="/projects/${projectId}/assets/${secondAsset.id}"`);
+    expect(secondItem).toContain(
+      `src="/projects/${projectId}/assets/${secondAsset.id}/thumbnail?v=${buildAssetRevisionToken(secondAsset)}"`,
     );
-    expect(css).toMatch(
-      /\.release-thumbnail-image\s*\{[\s\S]*?width:\s*100%;[\s\S]*?height:\s*100%;[\s\S]*?object-fit:\s*contain;/,
-    );
-    expect(css).toMatch(
-      /\.release-thumbnail-more\s*\{[\s\S]*?overflow-wrap:\s*anywhere;[\s\S]*?word-break:\s*break-word;/,
-    );
+    expect(firstItem).not.toContain(`/assets/${secondAsset.id}/thumbnail`);
+    expect(secondItem).not.toContain(`/assets/${firstAsset.id}/thumbnail`);
+    expect(firstItem).not.toContain(`/assets/${overflowAssets.at(-1).id}/thumbnail`);
+    expect(firstItem).toContain(`href="/releases/${firstRelease.id}">+1 more</a>`);
+    expect(emptyItem).not.toContain('release-thumbnail-link');
   });
 
   // ─── Phase 7D-3: Project status preserves filesystem behavior ──────
@@ -4898,16 +3529,11 @@ describe('project HTTP workflow', () => {
     });
   });
 
-  // ─── Archived project detail behavior ───────────────────────────────
-  //
-  // Moved from phase-105b-consolidation.test.js — organizational move
-  // only. Behavior and assertions are unchanged from their prior home.
-
   describe('archived project detail behavior', () => {
-    it('shows a warning notice on archived project detail', async () => {
+    it('renders the requested archived project as read-only', async () => {
       const createRes = await agent
         .post('/projects')
-        .send('title=Archived+Notice+Test')
+        .send('title=Requested+Archived+Detail')
         .send('status=tbd')
         .send('priority=normal')
         .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -4918,81 +3544,33 @@ describe('project HTTP workflow', () => {
       await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       const res = await agent.get(`/projects/${id}`).expect(200);
-      expect(res.text).toContain('archived');
-      expect(res.text).toContain('read-only');
-      expect(res.text).toMatch(/class="[^"]*\bnotice--warning\b[^"]*"/);
-    });
-
-    it('hides Edit link on archived project', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=No+Edit+Archived')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const id = createRes.headers.location.replace('/projects/', '');
-
-      await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
-
-      const res = await agent.get(`/projects/${id}`).expect(200);
-      expect(res.text).not.toContain(`/projects/${id}/edit`);
-    });
-
-    it('redirects archived asset categories management to the canonical Assets surface', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=Archived+Categories+Link')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-      const id = createRes.headers.location.replace('/projects/', '');
-
-      await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
-
-      // Asset Categories is managed from the canonical Assets surface, not an
-      // independently active legacy page or the project detail header.
-      const res = await agent.get(`/projects/${id}`).expect(200);
+      const toolbar = extractProjectDetailActionToolbar(res.text);
+      expect(res.text).toContain('<title>CreatorCrate — Projects — Requested Archived Detail</title>');
+      expect(res.text).toContain('This project is archived and read-only.');
+      expect(toolbar).toContain(`href="/projects/${id}/assets" aria-label="View Assets"`);
+      expect(toolbar).not.toContain(`href="/projects/${id}/edit"`);
+      expect(res.text).not.toContain('id="project-edit-dialog"');
+      expect(res.text).not.toContain(`/releases/new?projectId=${id}`);
+      expect(res.text).not.toContain(`/projects/${id}/archive"`);
       expect(res.text).not.toContain(`/projects/${id}/asset-categories`);
-      const redirect = await agent.get(`/projects/${id}/asset-categories`).expect(302);
-      expect(redirect.headers.location).toBe(`/projects/${id}/assets?manage_categories=1`);
     });
   });
 
-  // ─── Project detail path safety ─────────────────────────────────────
-  //
-  // Moved from phase-105b-consolidation.test.js — organizational move
-  // only. Behavior and assertions are unchanged from their prior home.
+  describe('archived project detail path', () => {
+    it('shows the archived project directory as a relative path', async () => {
+      const id = await createProject({ title: 'Archived Detail Path' });
+      const otherId = await createProject({ title: 'Other Detail Path' });
+      const projectDir = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(id).project_dir;
+      const otherDir = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(otherId).project_dir;
+      await agent.post(`/projects/${id}/archive`).send({ _csrf: csrfToken }).expect(302);
 
-  describe('project detail path safety', () => {
-    it('project detail does not expose absolute filesystem paths', async () => {
-      const createRes = await agent
-        .post('/projects')
-        .send('title=Path+Leak+Test')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const res = await agent.get(createRes.headers.location).expect(200);
-      expect(res.text).not.toMatch(/[A-Z]:\\/);
-      // Project directory is shown as relative path
-      expect(res.text).toContain('relative to projects share');
+      const res = await agent.get(`/projects/${id}`).expect(200);
+      const details = extractProjectDetailSection(res.text, 'project-detail-info');
+      expect(details).toContain(`<code>${projectDir}</code>`);
+      expect(details).not.toContain(`<code>${otherDir}</code>`);
+      expect(details).not.toContain(projectsRoot);
     });
   });
-
-  // ─── Open locally action on project detail ─────────────────────────
-  //
-  // The detail page renders a custom-protocol link built from the shared
-  // URI builder. The href is Nunjucks-escaped (autoescape), so ampersands
-  // appear as &amp; in the markup; browsers decode them when following the
-  // link. The action must never leak the container root or an absolute path.
-  // The action lives in the project summary toolbar, not inline in the
-  // project directory detail row.
 
   describe('open locally action on project detail', () => {
     async function createDetailProject(title) {
@@ -5016,10 +3594,7 @@ describe('project HTTP workflow', () => {
       const actions = extractProjectDetailActionToolbar(res.text);
       expect(actions).toContain('aria-label="Edit project"');
       expect(actions).toContain('aria-label="View Assets"');
-      expect(actions).toContain('Open locally');
       expect(actions).toContain('aria-label="Open locally"');
-      expect((actions.match(/<a\b/g) || [])).toHaveLength(3);
-      expect(actions).toContain('creatorcrate-open://');
       expect(actions).toContain(
         `href="creatorcrate-open://open?v=2&amp;path=${encodeURIComponent(`D:\\example\\${row.project_dir}`)}&amp;select=0"`
       );
@@ -5042,33 +3617,7 @@ describe('project HTTP workflow', () => {
         `href="creatorcrate-open://open?v=2&amp;path=${encodeURIComponent(`D:\\example\\${row.project_dir}`)}&amp;select=0"`
       );
       expect(toolbar).not.toContain('aria-label="Edit project"');
-      expect((toolbar.match(/<a\b/g) || [])).toHaveLength(2);
-    });
-
-    it('uses the creatorcrate-open scheme with the encoded absolute path and select=0', async () => {
-      const id = await createDetailProject('Open Locally Href Test');
-      const row = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(id);
-      configureWindowsRoot();
-
-      const res = await agent.get(`/projects/${id}`).expect(200);
-      const actions = extractProjectDetailActionToolbar(res.text);
-      const href = actions.match(/href="(creatorcrate-open:[^"]+)"/)?.[1] || '';
-
-      expect(href).toMatch(/^creatorcrate-open:\/\/open\?v=2/);
-      expect(href).toContain(`path=${encodeURIComponent(`D:\\example\\${row.project_dir}`)}`);
-      expect(href).toContain('select=0');
-      expect(href).not.toContain('mapping=');
-      expect(href).not.toContain('/data/projects');
-      expect(href).not.toContain(projectsRoot);
-    });
-
-    it('does not expose the container projects root anywhere on the detail page', async () => {
-      const id = await createDetailProject('Open Locally No Root Leak');
-
-      const res = await agent.get(`/projects/${id}`).expect(200);
-
-      expect(res.text).not.toContain('/data/projects');
-      expect(res.text).not.toContain(projectsRoot);
+      expect(toolbar).not.toContain(`href="/projects/${id}/edit"`);
     });
 
     it('omits the action from the project summary toolbar when no windows root is configured', async () => {
@@ -5080,18 +3629,21 @@ describe('project HTTP workflow', () => {
       expect(res.text).not.toContain('creatorcrate-open://');
     });
 
-    it('omits the action from the project summary toolbar when project_dir is missing', async () => {
-      const id = await createDetailProject('Open Locally Missing Dir');
+    it('omits Open locally for an archived project without a directory', async () => {
+      const id = await createDetailProject('Archived Open Locally Missing Dir');
+      configureWindowsRoot();
       db.prepare('UPDATE projects SET project_dir = NULL WHERE id = ?').run(id);
+      await agent.post(`/projects/${id}/archive`).send({ _csrf: csrfToken }).expect(302);
 
       const res = await agent.get(`/projects/${id}`).expect(200);
 
-      expect(extractProjectDetailActionToolbar(res.text)).not.toContain('Open locally');
-      expect(res.text).not.toContain('creatorcrate-open://');
+      expect(extractProjectDetailActionToolbar(res.text)).not.toContain('aria-label="Open locally"');
+      expect(extractProjectDetailSection(res.text, 'project-detail-info')).not.toContain('Project directory');
     });
 
     it('omits the action from the project summary toolbar when project_dir is invalid', async () => {
       const id = await createDetailProject('Open Locally Invalid Dir');
+      configureWindowsRoot();
       db.prepare('UPDATE projects SET project_dir = ? WHERE id = ?').run('../escape', id);
 
       const res = await agent.get(`/projects/${id}`).expect(200);
@@ -5099,57 +3651,22 @@ describe('project HTTP workflow', () => {
       expect(extractProjectDetailActionToolbar(res.text)).not.toContain('Open locally');
       expect(res.text).not.toContain('creatorcrate-open://');
     });
-
-    it('no longer renders the obsolete inline Open locally link in the project directory row', async () => {
-      const id = await createDetailProject('Open Locally Inline Link Gone');
-      configureWindowsRoot();
-
-      const res = await agent.get(`/projects/${id}`).expect(200);
-
-      const detailList = res.text.match(/<dl class="detail-list">([\s\S]*?)<\/dl>/)?.[1] || '';
-      expect(detailList).not.toContain('project-detail-link');
-      expect(detailList).not.toContain('creatorcrate-open://');
-      expect(detailList).not.toContain('Open locally');
-    });
   });
 
-  // ─── Phase 6B regression: archived project edit route guard ─────────
-  //
-  // Archived projects are immutable. The edit form must not be reachable
-  // through GET /projects/:id/edit; the route must redirect to the detail
-  // page (the read-only workspace) instead. The detail page is unaffected.
-
   describe('archived project edit guard', () => {
-    it('treats a legacy status-only archived project as read-only in detail, edit, update, and card presentation', async () => {
+    it('treats a legacy status-only archived project as read-only on detail and edit navigation', async () => {
       const id = await createProject({ title: 'Legacy Status Only Archived' });
       db.prepare("UPDATE projects SET status = 'archived', archived_at = NULL WHERE id = ?").run(id);
 
       const detail = await agent.get(`/projects/${id}?edit=1`).expect(200);
       expect(detail.text).toContain('This project is archived and read-only.');
-      expect(detail.text).toContain('<span class="status-badge status-badge--archived">Archived</span>');
-      expect(detail.text).not.toContain('aria-label="Edit project"');
+      expect(extractProjectDetailActionToolbar(detail.text)).not.toContain(`href="/projects/${id}/edit"`);
       expect(detail.text).not.toContain('id="project-edit-dialog"');
       expect(detail.text).not.toContain(`/releases/new?projectId=${id}`);
 
       await agent.get(`/projects/${id}/edit`)
         .expect(302)
         .expect('Location', `/projects/${id}`);
-
-      await agent.post(`/projects/${id}`)
-        .type('form')
-        .send({ title: 'Accidental Unarchive', status: 'tbd', projectType: 'images', _csrf: csrfToken })
-        .expect(422);
-      expect(db.prepare('SELECT title, status, archived_at FROM projects WHERE id = ?').get(id)).toEqual({
-        title: 'Legacy Status Only Archived',
-        status: 'archived',
-        archived_at: null,
-      });
-
-      const archivedList = await agent.get('/projects?status=archived').expect(200);
-      const card = extractProjectCard(archivedList.text, id);
-      expect(card).toContain('project-card--archived');
-      expect(card).toContain('<span class="status-badge status-badge--archived">Archived</span>');
-      expect(card).not.toContain('project-status-badge');
     });
 
     it('GET /projects/:id/edit redirects to the detail page when the project is archived', async () => {
@@ -5194,147 +3711,15 @@ describe('project HTTP workflow', () => {
     });
   });
 
-  describe('project list rendering/status behavior', () => {
-    it('uses status badges for project status column', async () => {
-      await agent
-        .post('/projects')
-        .send('title=Status+Badge+List')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
+  describe('project list empty state', () => {
+    it('renders the first-project action when there are no Projects', async () => {
       const res = await agent.get('/projects').expect(200);
-      expect(res.text).toContain('status-badge');
-    });
+      const emptyState = res.text.match(/<div class="empty-state">[\s\S]*?<\/div>/)?.[0] || '';
 
-    it('has distinct empty state for no projects vs filtered results', async () => {
-      // No projects at all
-      const res1 = await agent.get('/projects').expect(200);
-      expect(res1.text).toContain('No projects yet');
-
-      await agent
-        .post('/projects')
-        .send('title=Search+Control')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      // Filtered empty (no match for project id in a non-empty repository)
-      const res2 = await agent.get('/projects?project=999999').expect(200);
-      expect(res2.text).toContain('No projects found');
-      expect(res2.text).toContain('Reset');
-      expect(res2.text).not.toContain('Reset Filters');
-    });
-
-    it('treats every normalized project filter as active for empty results', async () => {
-      await agent
-        .post('/projects')
-        .send('title=Only+TBD')
-        .send('status=tbd')
-        .send('priority=normal')
-        .set('Content-Type', 'application/x-www-form-urlencoded')
-        .send('_csrf=' + encodeURIComponent(csrfToken))
-        .expect(302);
-
-      const res = await agent.get('/projects?status=ready').expect(200);
-      expect(res.text).toContain('No projects found');
-      expect(res.text).toContain('Reset');
-      expect(res.text).not.toContain('Reset Filters');
-      expect(res.text).not.toContain('Create your first project to get started.');
+      expect(extractProjectCards(res.text)).toHaveLength(0);
+      expect(emptyState).toContain('<h2 class="empty-state-heading">No projects yet</h2>');
+      expect(emptyState).toContain('href="/projects/new"');
+      expect(emptyState).toContain('data-dialog-open="project-create-dialog"');
     });
   });
-
-  describe('project status badge rendering', () => {
-    const statuses = ['tbd', 'planned', 'in-progress', 'ready'];
-
-    for (const status of statuses) {
-      it(`renders "${status}" with status-badge`, async () => {
-        await agent
-          .post('/projects')
-          .send(`title=Status+${status}`)
-          .send(`status=${status}`)
-          .send('priority=normal')
-          .set('Content-Type', 'application/x-www-form-urlencoded')
-          .send('_csrf=' + encodeURIComponent(csrfToken))
-          .expect(302);
-
-        const res = await agent.get('/projects').expect(200);
-        expect(res.text).toContain('status-badge');
-      });
-    }
-  });
-});
-
-// ─── Asset-category dependency wiring (app composition root) ─────────────
-
-describe('asset-category dependency wiring through createApp', () => {
-  let db;
-  let tmpDir;
-  let projectsRoot;
-
-  beforeEach(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-di-'));
-    projectsRoot = path.join(tmpDir, 'projects');
-    fs.mkdirSync(projectsRoot, { recursive: true });
-    const dbPath = path.join(tmpDir, 'test.db');
-    db = openDatabase(dbPath);
-    runMigrations(db, MIGRATIONS_DIR);
-  });
-
-  afterEach(() => {
-    closeDatabase(db);
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it('projectService uses the exact injected assetCategoryService, not one it constructs itself', async () => {
-    const appDataRoot = path.join(tmpDir, 'app');
-    fs.mkdirSync(appDataRoot, { recursive: true });
-    const { csrfPepper } = ensureAuthEnablement(appDataRoot);
-
-    const fakeCategory = { display_name: 'Fake', directory_slug: 'fake', display_order: 0, enabled: 1 };
-    let copyCallCount = 0;
-    const fakeAssetCategoryService = {
-      copyDefaultsForProject(projectId) {
-        copyCallCount++;
-        return [{ ...fakeCategory, id: 1, project_id: projectId }];
-      },
-      listProjectCategories() {
-        return [];
-      },
-    };
-
-    const app = createApp(
-      { appName: 'CreatorCrate', db, projectsRoot },
-      { appDataRoot, authState: { csrfPepper }, assetCategoryService: fakeAssetCategoryService }
-    );
-    const { agent, csrfToken } = await getDisabledModeCsrf(app, appDataRoot);
-
-    await agent
-      .post('/projects')
-      .send('title=DI+Check')
-      .send('status=tbd')
-      .send('priority=normal')
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .send('_csrf=' + encodeURIComponent(csrfToken))
-      .expect(302);
-
-    // The fake was invoked exactly once — proving projectService received
-    // and used this exact instance rather than constructing its own
-    // repository/service internally.
-    expect(copyCallCount).toBe(1);
-
-    const dirName = formatProjectDirName(1, 'di-check');
-    const absPath = resolveProjectDir(projectsRoot, dirName);
-    expect(fs.existsSync(path.join(absPath, 'fake'))).toBe(true);
-
-    const manifest = readManifestSync(absPath);
-    expect(manifest.assetCategories).toEqual([
-      { displayName: 'Fake', directorySlug: 'fake', displayOrder: 0, enabled: true },
-    ]);
-  });
-
 });

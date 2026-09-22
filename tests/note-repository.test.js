@@ -387,8 +387,8 @@ describe('note repository', () => {
       return Number(db.prepare(`
         INSERT INTO projects (
           title, slug, description, notes, status,
-          patreon_url
-        ) VALUES (?, ?, '', '', 'tbd', NULL)
+          patreon_url, project_type
+        ) VALUES (?, ?, '', '', 'tbd', NULL, 'images')
       `).run(title, title.toLowerCase().replaceAll(' ', '-')).lastInsertRowid);
     }
 
@@ -474,8 +474,8 @@ describe('note repository', () => {
       return Number(db.prepare(`
         INSERT INTO projects (
           title, slug, description, notes, status,
-          patreon_url
-        ) VALUES (?, ?, '', '', 'tbd', NULL)
+          patreon_url, project_type
+        ) VALUES (?, ?, '', '', 'tbd', NULL, 'images')
       `).run(title, title.toLowerCase().replaceAll(' ', '-')).lastInsertRowid);
     }
 
@@ -655,8 +655,8 @@ describe('note repository', () => {
       return Number(db.prepare(`
         INSERT INTO projects (
           title, slug, description, notes, status,
-          patreon_url
-        ) VALUES (?, ?, '', '', 'tbd', NULL)
+          patreon_url, project_type
+        ) VALUES (?, ?, '', '', 'tbd', NULL, 'images')
       `).run(title, title.toLowerCase().replaceAll(' ', '-')).lastInsertRowid);
     }
 
@@ -855,8 +855,8 @@ describe('note repository', () => {
       return Number(db.prepare(`
         INSERT INTO projects (
           title, slug, description, notes, status,
-          patreon_url
-        ) VALUES (?, ?, '', '', 'tbd', NULL)
+          patreon_url, project_type
+        ) VALUES (?, ?, '', '', 'tbd', NULL, 'images')
       `).run(title, title.toLowerCase().replaceAll(' ', '-')).lastInsertRowid);
     }
 
@@ -1242,7 +1242,7 @@ describe('note repository', () => {
 
     function createProject(title) {
       return Number(db.prepare(`
-        INSERT INTO projects (title, slug, status) VALUES (?, ?, 'tbd')
+        INSERT INTO projects (title, slug, status, project_type) VALUES (?, ?, 'tbd', 'images')
       `).run(title, title.toLowerCase().replaceAll(' ', '-')).lastInsertRowid);
     }
 
@@ -1507,7 +1507,7 @@ describe('note repository', () => {
 
     function createProject(title) {
       return Number(db.prepare(`
-        INSERT INTO projects (title, slug, status) VALUES (?, ?, 'tbd')
+        INSERT INTO projects (title, slug, status, project_type) VALUES (?, ?, 'tbd', 'images')
       `).run(title, title.toLowerCase().replaceAll(' ', '-')).lastInsertRowid);
     }
 

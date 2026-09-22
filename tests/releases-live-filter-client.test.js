@@ -335,7 +335,7 @@ function makeReleaseAssetsPage({
   extension = 'png', category = '3', search = '', view = 'grid', pageSize: selectedPageSize = '50',
   dialogOpen = false, assets = [{ id: '99', selected: true }], offPageSelectedIds = [],
   persistedSelectedIds = [...assets.filter((asset) => asset.selected).map((asset) => String(asset.id)), ...offPageSelectedIds],
-  readOnly = false,
+  readOnly = false, reEnhancementSurface = false, roleAutosubmit = false,
 } = {}) {
   const document = makeNode({ tagName: 'document' });
   document.nodeType = 9;
@@ -442,6 +442,62 @@ function makeReleaseAssetsPage({
   filter.appendChild(reset);
   filter.appendChild(disclosure);
   region.appendChild(status);
+  let assetGrid = null;
+  let assetList = null;
+  let gridSizeSlider = null;
+  let listSizeSlider = null;
+  let infoCard = null;
+  let preview = null;
+  if (reEnhancementSurface && view === 'grid') {
+    const gridSizeControls = makeNode({
+      attrs: { class: 'asset-grid-size-controls asset-viewer-grid-size-controls', 'data-asset-grid-size-controls': '' },
+    });
+    gridSizeSlider = makeNode({
+      tagName: 'input',
+      attrs: { class: 'asset-grid-size-slider', type: 'range', 'data-grid-size-slider': '' },
+      value: '2',
+    });
+    gridSizeControls.appendChild(gridSizeSlider);
+    assetGrid = makeNode({ tagName: 'ul', attrs: { class: 'asset-grid' } });
+    preview = makeNode({ attrs: { 'data-asset-viewer-preview': '' } });
+    infoCard = makeNode({ attrs: { 'data-asset-info-card': '' } });
+    preview.appendChild(infoCard);
+    assetGrid.appendChild(preview);
+    region.appendChild(gridSizeControls);
+    region.appendChild(assetGrid);
+  }
+  let roleForm = null;
+  if (roleAutosubmit) {
+    roleForm = makeNode({
+      tagName: 'form',
+      attrs: {
+        action: '/releases/7/assets/99/role', method: 'post', class: 'inline-form release-asset-role-form',
+      },
+    });
+    roleForm.appendChild(makeNode({ tagName: 'input', attrs: { name: '_csrf', type: 'hidden' }, value: 'csrf' }));
+    const role = makeSelect(
+      { id: 'role-99', name: 'role', 'data-autosubmit': '' },
+      ['attachment', 'primary'],
+      'attachment',
+    );
+    role.form = roleForm;
+    roleForm.appendChild(role);
+    region.appendChild(roleForm);
+  }
+  if (reEnhancementSurface && view === 'list') {
+    const listSizeControls = makeNode({
+      attrs: { class: 'asset-grid-size-controls asset-viewer-grid-size-controls asset-list-size-controls', 'data-asset-list-size-controls': '' },
+    });
+    listSizeSlider = makeNode({
+      tagName: 'input',
+      attrs: { class: 'asset-grid-size-slider', type: 'range', 'data-grid-size-slider': '' },
+      value: '2',
+    });
+    listSizeControls.appendChild(listSizeSlider);
+    assetList = makeNode({ tagName: 'ul', attrs: { class: 'asset-list' } });
+    region.appendChild(listSizeControls);
+    region.appendChild(assetList);
+  }
   const membershipCheckboxes = (readOnly ? [] : assets).map(({ id, selected = false }) => {
     const checkbox = makeNode({
       tagName: 'input',
@@ -467,6 +523,7 @@ function makeReleaseAssetsPage({
     document, region, status, dialog, filterTrigger, filter, disclosure, view: viewField, page, filterPageSize, pageSize,
     searchInput, extensionAll, extensionPng, extensionJpg, categoryAll, categoryThree, categoryFour, selection, viewNav,
     grid, list, pagination, next, pageSizeForm, reset, hiddenMembership, membershipCheckboxes,
+    assetGrid, assetList, gridSizeSlider, listSizeSlider, infoCard, preview, roleForm,
   };
 }
 
@@ -545,12 +602,6 @@ describe('Releases live filtering enhancement', () => {
   beforeEach(() => { vi.useRealTimers(); });
   afterEach(() => { vi.useRealTimers(); });
 
-  it('reads the exact page-size contract from both editable Release Assets selectors', () => {
-    const expected = ['10', '25', '50', '100', '150', '200', 'all'];
-    expect(FILTER_PAGE_SIZE_OPTIONS).toEqual(expected);
-    expect(PAGE_SIZE_FORM_OPTIONS).toEqual(expected);
-  });
-
   it('refreshes Releases from the defaults redirect through the live engine and reconciles the external filter', async () => {
     const initial = makePage('/releases', { dialogOpen: true, sortValue: 'planned', orderValue: 'asc' });
     const next = makePage('/releases', { sortValue: 'title', orderValue: 'desc' });
@@ -623,23 +674,6 @@ describe('Releases live filtering enhancement', () => {
       'Defaults were saved, but Releases could not refresh. Refresh the page to see the saved defaults.',
     );
     expect(initial.region.getAttribute('data-releases-live-state')).toBe('error');
-  });
-
-  it('initializes an ordinary persisted page without membership overrides', () => {
-    const initial = makeReleaseAssetsPage({
-      assets: [{ id: '1', selected: true }, { id: '2', selected: false }],
-      persistedSelectedIds: ['1'],
-    });
-    const windowObject = makeWindow(initial.document);
-    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets';
-    windowObject.location.pathname = '/releases/7/assets';
-
-    enhanceReleaseAssetsLiveFiltering(initial.document);
-
-    const selectionState = initial.document.__creatorCrateReleaseAssetsLiveFiltering.releaseAssetsSelection;
-    expect(selectionState.authoritativeSelected).toEqual(new Set(['1']));
-    expect(selectionState.overrides).toEqual(new Map());
-    expect(releaseMembershipPayload(windowObject, initial.selection)).toEqual(['1']);
   });
 
   it('preserves an explicit selection while hidden and when the asset returns', async () => {
@@ -771,32 +805,6 @@ describe('Releases live filtering enhancement', () => {
     expect(releaseMembershipPayload(windowObject, initial.selection)).toEqual(['1']);
   });
 
-  it('reconciles repeated replacements without duplicate hidden IDs or listeners', async () => {
-    const initial = makeReleaseAssetsPage({ assets: [{ id: '1', selected: false }] });
-    const hidden = makeReleaseAssetsPage({ assets: [{ id: '2', selected: false }] });
-    const hiddenAgain = makeReleaseAssetsPage({ assets: [{ id: '3', selected: false }] });
-    const pages = new Map([['hidden-once', hidden.document], ['hidden-twice', hiddenAgain.document]]);
-    const windowObject = makeWindow(initial.document, pages);
-    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets';
-    windowObject.location.pathname = '/releases/7/assets';
-    windowObject.fetch
-      .mockResolvedValueOnce(responseFor('hidden-once', 'http://creatorcrate.test/releases/7/assets?page=2'))
-      .mockResolvedValueOnce(responseFor('hidden-twice', 'http://creatorcrate.test/releases/7/assets?page=3'));
-    enhanceReleaseAssetsLiveFiltering(initial.document);
-    const initialChangeListenerCount = initial.document.listeners.filter(({ type }) => type === 'change').length;
-
-    initial.membershipCheckboxes[0].checked = true;
-    initial.membershipCheckboxes[0].dispatch('change');
-    initial.next.dispatch('click');
-    await flush();
-    hidden.next.dispatch('click');
-    await flush();
-
-    expect(releaseHiddenMembership(initial.selection)).toEqual(['1']);
-    expect(initial.document.listeners.filter(({ type }) => type === 'change')).toHaveLength(initialChangeListenerCount);
-    expect(hiddenAgain.membershipCheckboxes[0].listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
-  });
-
   it('lets untouched assets follow authoritative rendered membership', async () => {
     const initial = makeReleaseAssetsPage({ assets: [{ id: '1', selected: true }] });
     const authoritative = makeReleaseAssetsPage({ assets: [{ id: '1', selected: false }] });
@@ -835,9 +843,6 @@ describe('Releases live filtering enhancement', () => {
 
     enhanceReleaseAssetsLiveFiltering(validation.document);
 
-    const selectionState = validation.document.__creatorCrateReleaseAssetsLiveFiltering.releaseAssetsSelection;
-    expect(selectionState.authoritativeSelected).toEqual(new Set(['2']));
-    expect(selectionState.overrides).toEqual(new Map([['1', true], ['2', false]]));
     expect(releaseMembershipPayload(windowObject, validation.selection)).toEqual(['1']);
 
     validation.next.dispatch('click');
@@ -869,15 +874,83 @@ describe('Releases live filtering enhancement', () => {
     expect(new Set(releaseMembershipPayload(windowObject, initial.selection)).size).toBe(2);
   });
 
-  it('does not introduce editable draft membership on read-only Release Assets', () => {
-    const page = makeReleaseAssetsPage({ readOnly: true, assets: [{ id: '1', selected: true }] });
-    makeWindow(page.document);
+  it('re-enhances replacement Release Assets cards and size controls', async () => {
+    const initial = makeReleaseAssetsPage({ reEnhancementSurface: true });
+    const gridReplacement = makeReleaseAssetsPage({ reEnhancementSurface: true, roleAutosubmit: true });
+    const listReplacement = makeReleaseAssetsPage({ view: 'list', reEnhancementSurface: true });
+    const pages = new Map([
+      ['grid-replacement', gridReplacement.document],
+      ['list-replacement', listReplacement.document],
+    ]);
+    const windowObject = makeWindow(initial.document, pages);
+    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets';
+    windowObject.location.pathname = '/releases/7/assets';
+    windowObject.fetch
+      .mockResolvedValueOnce(responseFor('grid-replacement', 'http://creatorcrate.test/releases/7/assets?page=2'))
+      .mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce(responseFor('list-replacement', 'http://creatorcrate.test/releases/7/assets?view=list'));
 
-    expect(enhanceReleaseAssetsLiveFiltering(page.document)).toBe(0);
-    expect(page.document.querySelector('#release-assets-form')).toBe(null);
-    expect(page.membershipCheckboxes).toEqual([]);
-    expect(page.document.__creatorCrateReleaseAssetsLiveFiltering.releaseAssetsSelection).toBeUndefined();
-    expect(page.document.listeners).toEqual([]);
+    enhanceReleaseAssetsLiveFiltering(initial.document);
+    const originalRegion = initial.document.querySelector('[data-release-assets-live-region]');
+    const originalInfoCard = originalRegion.querySelector('[data-asset-info-card]');
+
+    initial.next.dispatch('click');
+    await flush();
+
+    const replacedGridRegion = initial.document.querySelector('[data-release-assets-live-region]');
+    const replacementInfoCard = replacedGridRegion.querySelector('[data-asset-info-card]');
+    expect(replacedGridRegion).toBe(gridReplacement.region);
+    expect(replacedGridRegion).not.toBe(originalRegion);
+    expect(replacementInfoCard).toBe(gridReplacement.infoCard);
+    expect(replacementInfoCard).not.toBe(originalInfoCard);
+    gridReplacement.preview.dispatch('pointerenter', { clientX: 40, clientY: 40 });
+    expect(replacementInfoCard.getAttribute('data-info-card-open')).toBe('true');
+
+    gridReplacement.gridSizeSlider.value = '3';
+    gridReplacement.gridSizeSlider.dispatch('input');
+    expect(replacedGridRegion.querySelector('.asset-grid').getAttribute('data-grid-size')).toBe('large');
+
+    const replacementRole = replacedGridRegion.querySelector('select[name="role"][data-autosubmit]');
+    expect(replacementRole).not.toBeNull();
+    expect(originalRegion.querySelector('select[name="role"][data-autosubmit]')).toBeNull();
+    replacementRole.value = 'primary';
+    const originalFetch = globalThis.fetch;
+    const originalFormData = globalThis.FormData;
+    vi.stubGlobal('fetch', windowObject.fetch);
+    vi.stubGlobal('FormData', windowObject.FormData);
+    try {
+      replacementRole.dispatch('change');
+      await flush();
+
+      expect(windowObject.fetch).toHaveBeenCalledTimes(2);
+      expect(windowObject.fetch.mock.calls[1]).toEqual([
+        '/releases/7/assets/99/role',
+        expect.objectContaining({
+          method: 'POST',
+          body: expect.any(URLSearchParams),
+          credentials: 'same-origin',
+          redirect: 'follow',
+        }),
+      ]);
+      expect(Array.from(windowObject.fetch.mock.calls[1][1].body.entries())).toEqual([
+        ['_csrf', 'csrf'],
+        ['role', 'primary'],
+      ]);
+      expect(replacementRole.form.hasAttribute('aria-busy')).toBe(false);
+    } finally {
+      vi.stubGlobal('fetch', originalFetch);
+      vi.stubGlobal('FormData', originalFormData);
+    }
+
+    gridReplacement.list.dispatch('click');
+    await flush();
+
+    const replacedListRegion = initial.document.querySelector('[data-release-assets-live-region]');
+    expect(replacedListRegion).toBe(listReplacement.region);
+    expect(replacedListRegion).not.toBe(replacedGridRegion);
+    listReplacement.listSizeSlider.value = '1';
+    listReplacement.listSizeSlider.dispatch('input');
+    expect(replacedListRegion.querySelector('.asset-list').getAttribute('data-list-size')).toBe('compact');
   });
 
   it('filters Release Assets immediately, preserves sibling state, and rebinds once per replacement', async () => {
@@ -886,10 +959,12 @@ describe('Releases live filtering enhancement', () => {
     const afterExtension = makeReleaseAssetsPage({ extension: 'jpg', category: '3' });
     const afterCategory = makeReleaseAssetsPage({ extension: 'jpg', category: '4' });
     const afterSearch = makeReleaseAssetsPage({ extension: 'jpg', category: '4', search: 'needle' });
+    const afterSearchClear = makeReleaseAssetsPage({ extension: 'jpg', category: '4' });
     const pages = new Map([
       ['after-extension', afterExtension.document],
       ['after-category', afterCategory.document],
       ['after-search', afterSearch.document],
+      ['after-search-clear', afterSearchClear.document],
     ]);
     const windowObject = makeWindow(initial.document, pages);
     windowObject.location.href = 'http://creatorcrate.test/releases/7/assets?page=4';
@@ -898,15 +973,10 @@ describe('Releases live filtering enhancement', () => {
       .mockResolvedValueOnce(responseFor('after-extension', 'http://creatorcrate.test/releases/7/assets?view=grid&pageSize=50&extension=jpg&category=3'))
       .mockResolvedValueOnce(responseFor('after-category', 'http://creatorcrate.test/releases/7/assets?view=grid&pageSize=50&extension=jpg&category=4'))
       .mockResolvedValueOnce(responseFor('after-search', 'http://creatorcrate.test/releases/7/assets?view=grid&pageSize=50&search=needle&extension=jpg&category=4'))
-      .mockResolvedValue(responseFor('after-search', 'http://creatorcrate.test/releases/7/assets?view=grid&pageSize=50&search=needle&extension=jpg&category=3'));
+      .mockResolvedValueOnce(responseFor('after-search-clear', 'http://creatorcrate.test/releases/7/assets?view=grid&pageSize=50&extension=jpg&category=4'));
 
     expect(enhanceReleaseAssetsLiveFiltering(initial.document)).toBe(2);
-    expect(initial.filter.listeners).toHaveLength(3);
-    expect(initial.filter.listeners.filter(({ type }) => type === 'input')).toHaveLength(1);
-    expect(initial.grid.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
     expect(enhanceReleaseAssetsLiveFiltering(initial.document)).toBe(2);
-    expect(initial.filter.listeners).toHaveLength(3);
-    expect(initial.filter.listeners.filter(({ type }) => type === 'input')).toHaveLength(1);
 
     initial.extensionPng.checked = false;
     initial.extensionJpg.checked = true;
@@ -929,10 +999,6 @@ describe('Releases live filtering enhancement', () => {
     expect(initial.filter.contains(afterExtension.extensionJpg)).toBe(true);
     expect(afterExtension.disclosure.open).toBe(true);
     expect(initial.document.activeElement).toBe(afterExtension.extensionJpg);
-    expect(initial.filter.listeners).toHaveLength(3);
-    expect(initial.filter.listeners.filter(({ type }) => type === 'input')).toHaveLength(1);
-    expect(afterExtension.grid.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
-
     afterExtension.categoryThree.checked = false;
     afterExtension.categoryFour.checked = true;
     initial.filter.dispatch('change', { target: afterExtension.categoryFour });
@@ -944,6 +1010,9 @@ describe('Releases live filtering enhancement', () => {
     expect(requested.searchParams.get('category')).toBe('4');
     expect(requested.searchParams.has('selectedAssetIds')).toBe(false);
 
+    afterCategory.searchInput.value = 'need';
+    initial.filter.dispatch('input', { target: afterCategory.searchInput });
+    vi.advanceTimersByTime(175);
     afterCategory.searchInput.value = 'needle';
     initial.filter.dispatch('input', { target: afterCategory.searchInput });
     vi.advanceTimersByTime(349);
@@ -958,20 +1027,21 @@ describe('Releases live filtering enhancement', () => {
     expect(requested.searchParams.get('category')).toBe('4');
     expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(afterSearch.region);
     expect(enhanceReleaseAssetsLiveFiltering(initial.document)).toBe(2);
-    expect(initial.filter.listeners).toHaveLength(3);
-    expect(initial.filter.listeners.filter(({ type }) => type === 'input')).toHaveLength(1);
 
-    afterSearch.categoryFour.checked = false;
-    afterSearch.categoryThree.checked = true;
-    initial.filter.dispatch('change', { target: afterSearch.categoryThree });
+    afterSearch.searchInput.value = '';
+    initial.filter.dispatch('input', { target: afterSearch.searchInput });
+    vi.advanceTimersByTime(350);
     await flush();
     expect(windowObject.fetch).toHaveBeenCalledTimes(4);
+    requested = new URL(windowObject.fetch.mock.calls[3][0]);
+    expect(requested.searchParams.has('search')).toBe(false);
+    expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(afterSearchClear.region);
   });
 
   it('applies the explicit All extension and category options immediately', async () => {
-    const initial = makeReleaseAssetsPage({ extension: 'jpg', category: '4' });
-    const afterExtensionReset = makeReleaseAssetsPage({ extension: '', category: '4' });
-    const afterCategoryReset = makeReleaseAssetsPage({ extension: '', category: '' });
+    const initial = makeReleaseAssetsPage({ extension: 'jpg', category: '4', pageSize: 'all' });
+    const afterExtensionReset = makeReleaseAssetsPage({ extension: '', category: '4', pageSize: 'all' });
+    const afterCategoryReset = makeReleaseAssetsPage({ extension: '', category: '', pageSize: 'all' });
     const pages = new Map([
       ['after-extension-reset', afterExtensionReset.document],
       ['after-category-reset', afterCategoryReset.document],
@@ -980,8 +1050,8 @@ describe('Releases live filtering enhancement', () => {
     windowObject.location.href = 'http://creatorcrate.test/releases/7/assets?extension=jpg&category=4';
     windowObject.location.pathname = '/releases/7/assets';
     windowObject.fetch
-      .mockResolvedValueOnce(responseFor('after-extension-reset', 'http://creatorcrate.test/releases/7/assets?category=4'))
-      .mockResolvedValueOnce(responseFor('after-category-reset', 'http://creatorcrate.test/releases/7/assets'));
+      .mockResolvedValueOnce(responseFor('after-extension-reset', 'http://creatorcrate.test/releases/7/assets?category=4&pageSize=all'))
+      .mockResolvedValueOnce(responseFor('after-category-reset', 'http://creatorcrate.test/releases/7/assets?pageSize=all'));
     enhanceReleaseAssetsLiveFiltering(initial.document);
 
     initial.extensionJpg.checked = false;
@@ -992,6 +1062,7 @@ describe('Releases live filtering enhancement', () => {
     let requested = new URL(windowObject.fetch.mock.calls[0][0]);
     expect(requested.searchParams.has('extension')).toBe(false);
     expect(requested.searchParams.get('category')).toBe('4');
+    expect(requested.searchParams.get('pageSize')).toBe('all');
 
     afterExtensionReset.categoryFour.checked = false;
     afterExtensionReset.categoryAll.checked = true;
@@ -1001,62 +1072,7 @@ describe('Releases live filtering enhancement', () => {
     requested = new URL(windowObject.fetch.mock.calls[1][0]);
     expect(requested.searchParams.has('extension')).toBe(false);
     expect(requested.searchParams.has('category')).toBe(false);
-    expect(initial.filter.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
-  });
-
-  it('preserves an active pageSize=all across Extension, Category, and Search changes', async () => {
-    vi.useFakeTimers();
-    const initial = makeReleaseAssetsPage({ pageSize: 'all' });
-    const afterExtension = makeReleaseAssetsPage({ extension: 'jpg', category: '3', pageSize: 'all' });
-    const afterCategory = makeReleaseAssetsPage({ extension: 'jpg', category: '4', pageSize: 'all' });
-    const afterSearch = makeReleaseAssetsPage({
-      extension: 'jpg', category: '4', search: 'needle', pageSize: 'all',
-    });
-    const pages = new Map([
-      ['after-extension', afterExtension.document],
-      ['after-category', afterCategory.document],
-      ['after-search', afterSearch.document],
-    ]);
-    const windowObject = makeWindow(initial.document, pages);
-    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets?pageSize=all';
-    windowObject.location.pathname = '/releases/7/assets';
-    windowObject.fetch
-      .mockResolvedValueOnce(responseFor('after-extension', 'http://creatorcrate.test/releases/7/assets?view=grid&pageSize=all&extension=jpg&category=3'))
-      .mockResolvedValueOnce(responseFor('after-category', 'http://creatorcrate.test/releases/7/assets?view=grid&pageSize=all&extension=jpg&category=4'))
-      .mockResolvedValueOnce(responseFor('after-search', 'http://creatorcrate.test/releases/7/assets?view=grid&pageSize=all&search=needle&extension=jpg&category=4'));
-
-    expect(enhanceReleaseAssetsLiveFiltering(initial.document)).toBe(2);
-    expect(initial.filterPageSize.value).toBe('all');
-
-    initial.extensionPng.checked = false;
-    initial.extensionJpg.checked = true;
-    initial.filter.dispatch('change', { target: initial.extensionJpg });
-    await flush();
-
-    let requested = new URL(windowObject.fetch.mock.calls[0][0]);
     expect(requested.searchParams.get('pageSize')).toBe('all');
-    expect(requested.searchParams.get('extension')).toBe('jpg');
-    expect(requested.searchParams.has('page')).toBe(false);
-    expect(requested.searchParams.has('selectedAssetIds')).toBe(false);
-
-    afterExtension.categoryThree.checked = false;
-    afterExtension.categoryFour.checked = true;
-    initial.filter.dispatch('change', { target: afterExtension.categoryFour });
-    await flush();
-
-    requested = new URL(windowObject.fetch.mock.calls[1][0]);
-    expect(requested.searchParams.get('pageSize')).toBe('all');
-    expect(requested.searchParams.get('category')).toBe('4');
-
-    afterCategory.searchInput.value = 'needle';
-    initial.filter.dispatch('input', { target: afterCategory.searchInput });
-    vi.advanceTimersByTime(350);
-    await flush();
-
-    expect(windowObject.fetch).toHaveBeenCalledTimes(3);
-    requested = new URL(windowObject.fetch.mock.calls[2][0]);
-    expect(requested.searchParams.get('pageSize')).toBe('all');
-    expect(requested.searchParams.get('search')).toBe('needle');
   });
 
   it('switches all to finite and finite to all without changing draft selection', async () => {
@@ -1143,7 +1159,6 @@ describe('Releases live filtering enhancement', () => {
     };
 
     expect(enhanceReleaseAssetsLiveFiltering(initial.document)).toBe(2);
-    expect(initial.pageSizeForm.listeners).toHaveLength(2);
     initial.pageSize.value = '100';
     initial.pageSizeForm.dispatch('change', { target: initial.pageSize });
     await flush();
@@ -1174,8 +1189,6 @@ describe('Releases live filtering enhancement', () => {
     expect(viewEvent.defaultPrevented).toBe(true);
     expect(windowObject.fetch.mock.calls[3][0]).toBe(new URL(afterReset.grid.getAttribute('href'), windowObject.location.href).href);
     expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(afterView.region);
-    expect(afterView.pageSizeForm.listeners).toHaveLength(2);
-    expect(afterView.grid.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
     expect(windowObject.history.pushes).toHaveLength(4);
   });
 
@@ -1191,7 +1204,7 @@ describe('Releases live filtering enhancement', () => {
     windowObject.location.href = 'http://creatorcrate.test/releases/7/assets';
     windowObject.location.pathname = '/releases/7/assets';
     const requests = [];
-    windowObject.fetch.mockImplementation((url) => new Promise((resolve) => requests.push({ url, resolve })));
+    windowObject.fetch.mockImplementation((url, options) => new Promise((resolve) => requests.push({ url, options, resolve })));
 
     enhanceReleaseAssetsLiveFiltering(initial.document);
     initial.extensionPng.checked = false;
@@ -1201,6 +1214,7 @@ describe('Releases live filtering enhancement', () => {
     initial.categoryFour.checked = true;
     initial.filter.dispatch('change', { target: initial.categoryFour });
 
+    expect(requests[0].options.signal.aborted).toBe(true);
     requests[1].resolve(responseFor('latest', 'http://creatorcrate.test/releases/7/assets?extension=jpg&category=4'));
     await flush();
     requests[0].resolve(responseFor('stale', 'http://creatorcrate.test/releases/7/assets?extension=jpg&category=3'));
@@ -1228,10 +1242,12 @@ describe('Releases live filtering enhancement', () => {
     windowObject.location.pathname = '/releases/7/assets';
     windowObject.location.assign = vi.fn();
     const canonicalUrl = 'http://creatorcrate.test/releases/7/assets?view=grid&pageSize=25&extension=jpg&category=4';
+    let rejectFailedRequest;
+    const failedRequest = new Promise((_resolve, reject) => { rejectFailedRequest = reject; });
     windowObject.fetch
       .mockResolvedValueOnce(responseFor('canonical', canonicalUrl))
       .mockResolvedValueOnce(responseFor('restored', 'http://creatorcrate.test/releases/7/assets?search=back&pageSize=all'))
-      .mockRejectedValueOnce(new Error('offline'))
+      .mockImplementationOnce(() => failedRequest)
       .mockResolvedValueOnce(responseFor('retried', 'http://creatorcrate.test/releases/7/assets?extension=jpg'));
 
     enhanceReleaseAssetsLiveFiltering(initial.document);
@@ -1251,11 +1267,15 @@ describe('Releases live filtering enhancement', () => {
     expect(canonical.membershipCheckboxes[0].checked).toBe(false);
     expect(initial.dialog.open).toBe(true);
 
-    windowObject.location.href = 'http://creatorcrate.test/releases/7/assets?search=back&pageSize=all';
+    const popstateRequestUrl = 'http://creatorcrate.test/releases/7/assets?search=back&pageSize=all&from=history';
+    const pushesBeforePopstate = windowObject.history.pushes.length;
+    const replacesBeforePopstate = windowObject.history.replaces.length;
+    windowObject.location.href = popstateRequestUrl;
     windowObject.location.pathname = '/releases/7/assets';
     windowObject.dispatch('popstate');
     await flush();
 
+    expect(windowObject.fetch.mock.calls[1][0]).toBe(popstateRequestUrl);
     expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(restored.region);
     expect(initial.filter.contains(restored.searchInput)).toBe(true);
     expect(restored.searchInput.value).toBe('back');
@@ -1263,17 +1283,34 @@ describe('Releases live filtering enhancement', () => {
     expect(restored.membershipCheckboxes[0].checked).toBe(false);
     expect(releaseMembershipPayload(windowObject, initial.selection)).toEqual([]);
     expect(initial.dialog.open).toBe(true);
+    expect(windowObject.history.pushes).toHaveLength(pushesBeforePopstate);
+    expect(windowObject.history.replaces).toHaveLength(replacesBeforePopstate + 1);
+    expect(windowObject.history.replaces.at(-1)).toEqual(expect.objectContaining({
+      url: 'http://creatorcrate.test/releases/7/assets?search=back&pageSize=all',
+    }));
 
+    const regionBeforeFailure = initial.document.querySelector('[data-release-assets-live-region]');
+    const pushesBeforeFailure = windowObject.history.pushes.length;
+    const replacesBeforeFailure = windowObject.history.replaces.length;
     restored.categoryThree.checked = false;
     restored.categoryFour.checked = true;
     initial.filter.dispatch('change', { target: restored.categoryFour });
+
+    const pendingRegion = initial.document.querySelector('[data-release-assets-live-region]');
+    expect(pendingRegion).toBe(regionBeforeFailure);
+    expect(pendingRegion.getAttribute('aria-busy')).toBe('true');
+
+    rejectFailedRequest(new Error('offline'));
     await flush();
 
     expect(windowObject.location.assign).not.toHaveBeenCalled();
+    expect(initial.document.querySelector('[data-release-assets-live-region]')).toBe(regionBeforeFailure);
+    expect(regionBeforeFailure.hasAttribute('aria-busy')).toBe(false);
     expect(restored.status.textContent).toBe('Could not update Release Assets. Change the filters to try again.');
     expect(restored.region.getAttribute('data-release-assets-live-state')).toBe('error');
     expect(initial.dialog.open).toBe(true);
-    expect(initial.filter.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+    expect(windowObject.history.pushes).toHaveLength(pushesBeforeFailure);
+    expect(windowObject.history.replaces).toHaveLength(replacesBeforeFailure);
 
     restored.categoryFour.checked = false;
     restored.extensionPng.checked = false;

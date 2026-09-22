@@ -68,6 +68,7 @@ describe('Note service aggregate Book hierarchy persistence', () => {
 
     const project = repositories.projectRepository.create({
       title: 'Associated project', slug: 'associated-project', description: '', notes: '', status: 'tbd',
+      projectType: 'images',
     });
     const asset = repositories.assetRepository.upsert(project.id, 'image.png', {
       filename: 'image.png', extension: '.png', mimeType: 'image/png', sizeBytes: 10,

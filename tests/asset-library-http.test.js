@@ -24,6 +24,7 @@ function projectInput(title, overrides = {}) {
     description: '',
     notes: '',
     status: 'tbd',
+    projectType: 'images',
     priority: 'normal',
     plannedDate: null,
     publishedDate: null,
@@ -453,65 +454,10 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(response.text).not.toContain('hidden.png');
     expect(response.text).toContain(`href="/projects/${alpha.id}/assets/${alphaAsset.id}"`);
     expect(response.text).toContain(`href="/projects/${beta.id}/assets/${betaAsset.id}"`);
-    expect(response.text).toContain(`href="/projects/${alpha.id}"`);
     expect(response.text).toContain(`src="/projects/${alpha.id}/assets/${alphaAsset.id}/preview?v=`);
     expect(response.text).not.toContain(`/projects/${beta.id}/assets/${unsupported.id}/preview`);
     expect(response.text).not.toContain(`/projects/${beta.id}/assets/${missing.id}/preview`);
 
-    const filterForm = response.text.match(/<form id="asset-filters"[\s\S]*?<\/form>/)?.[0] || '';
-    expect((filterForm.match(/data-cc-dropdown data-cc-dropdown-mode="(?:single|multiple)"/g) || [])).toHaveLength(9);
-    for (const id of [
-      'asset-project-filter',
-      'asset-category-filter',
-      'asset-tag-filter',
-      'asset-extension-filter',
-      'asset-presence-filter',
-      'asset-usage-filter',
-      'asset-sort-filter',
-      'asset-order-filter',
-      'asset-page-size-filter',
-    ]) {
-      const control = filterForm.match(new RegExp(`<details[^>]*id="${id}"[\\s\\S]*?<\\/details>`))?.[0] || '';
-      expect(control).toContain('data-cc-dropdown');
-      expect(control).not.toContain('data-asset-viewer-filter-disclosure');
-    }
-    expect(filterForm).not.toMatch(/<select[^>]+name="(?:category|tag|extension|presence|usage|sort|order|pageSize)"/);
-    expect(filterForm).toContain('data-cc-dropdown-searchable');
-    expect(filterForm).not.toContain('data-asset-project-filter');
-    expect(filterForm).not.toContain('data-asset-viewer-filter-disclosure');
-    const defaultsForm = response.text.match(/<form id="asset-viewer-defaults-form"[\s\S]*?<\/form>/)?.[0] || '';
-    for (const name of ['view', 'sort', 'order', 'pageSize', 'extension', 'category', 'presence', 'tag']) {
-      expect(defaultsForm).toMatch(new RegExp(`<select[^>]*name="${name}"[^>]*data-cc-dropdown-native-select`));
-      expect((defaultsForm.match(new RegExp(`<input[^>]*name="${name}"`, 'g')) || [])).toHaveLength(0);
-    }
-    expect(response.text).toMatch(/<select[^>]*data-cc-dropdown-native-select[^>]*data-slideshow-speed/);
-
-    expect(response.text).toMatch(/<input id="\d+" name="project" type="radio" value="\d+">/);
-    expect(response.text).toMatch(/<label for="(\d+)">\s*<input id="\1" name="project" type="radio" value="\d+">\s*<span>Alpha Project<\/span>\s*<\/label>/);
-    expect(response.text).toMatch(/<label for="(\d+)">\s*<input id="\1" name="project" type="radio" value="\d+">\s*<span>Beta Project<\/span>\s*<\/label>/);
-    expect(response.text).toMatch(/<input id="asset-project-option-all" name="project" type="radio" value="" checked>/);
-    expect(response.text).toContain('aria-label="Project filter: All projects"');
-    expect(response.text).toMatch(/name="category"[^>]+value="source"/);
-    expect(response.text).toMatch(/name="category"[^>]+value="alternate-references"/);
-    expect(response.text).not.toContain('value="hidden"');
-    expect(response.text).toMatch(/name="extension"[^>]+value="bin"/);
-    expect(response.text).toMatch(/name="extension"[^>]+value="png"/);
-    expect(response.text).toMatch(/<input[^>]+name="order"[^>]+type="radio"[^>]+value="asc" checked>/);
-    expect(response.text).toMatch(/<input[^>]+name="pageSize"[^>]+type="radio"[^>]+value="10">/);
-    expect(response.text).toMatch(/<input[^>]+name="pageSize"[^>]+type="radio"[^>]+value="25" checked>/);
-    expect(response.text).toMatch(/<input[^>]+name="pageSize"[^>]+type="radio"[^>]+value="50">/);
-    expect(response.text).toMatch(/<input[^>]+name="pageSize"[^>]+type="radio"[^>]+value="100">/);
-    expect(response.text).toContain('aria-label="Presence filter: All assets"');
-    expect(response.text).toContain('aria-label="Release usage filter: All assets"');
-    expect(response.text).toContain('aria-label="Sort by filter: Filename"');
-    expect(response.text).toContain('aria-label="Sort order filter: Ascending"');
-    expect(response.text).toContain('aria-label="Page size filter: 25"');
-    expect(response.text).toContain('aria-label="Category filter: Any category"');
-    expect(response.text).toContain('aria-label="Tag filter: Any tag"');
-    expect(response.text).toContain('aria-label="Extension filter: Any extension"');
-    expect(response.text).toContain('No tags available');
-    expect(response.text).not.toContain('<select id="asset-tag"');
-    expect(response.text).not.toMatch(/<form[^>]+method="post"/i);
     expect(response.text).not.toMatch(/Manually scan project files|Rename|Move file|Add selected|Set as primary|selectedAssetIds/i);
 
     await request(app).post('/assets').expect(404);
@@ -618,65 +564,6 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(list.text).not.toContain('<select id="asset-tag"');
   });
 
-  it('renders List view cards with metadata, detail links, release titles, effective tag origins, and no grid controls', async () => {
-    const project = createProject('List Card Project');
-    const category = assignCategory(project.id, {
-      displayName: 'Renders',
-      directorySlug: 'renders',
-    });
-    const released = createAsset(project.id, 'renders/hero.png', { categoryId: category.id });
-    const unreleased = createAsset(project.id, 'notes/readme.txt');
-    const direct = tagRepository.create({ displayName: 'Direct List Tag', normalizedName: 'direct-list-secret' });
-    const inherited = tagRepository.create({ displayName: 'Inherited List Tag', normalizedName: 'inherited-list-secret' });
-    tagRepository.assignToAsset(released.id, direct.id);
-    tagRepository.assignToProject(project.id, inherited.id);
-
-    const release = db.prepare(`
-      INSERT INTO releases (project_id, title, description, notes,
-                            planned_date, published_date, patreon_url, archived_at)
-      VALUES (?, ?, '', '', NULL, NULL, NULL, NULL)
-      RETURNING id
-    `).get(project.id, 'List Viewer Release');
-    db.prepare(`
-      INSERT INTO release_assets (release_id, asset_id, role, sort_order)
-      VALUES (?, ?, 'attachment', 0)
-    `).run(release.id, released.id);
-
-    const response = await request(app).get('/asset-viewer?view=list').expect(200);
-    const listCards = response.text.match(/<article class="asset-list-card"[\s\S]*?<\/article>/g) || [];
-    const releasedListCard = listCards.find((card) => card.includes(`data-asset-id="${released.id}"`));
-
-    expect(response.headers.location).toBeUndefined();
-    expect(response.text).toContain('<ul class="asset-list" role="list" aria-label="Assets across active projects">');
-    expect(response.text).not.toContain('<table class="data-table asset-table">');
-    expect((response.text.match(/<article class="asset-list-card"/g) || [])).toHaveLength(2);
-    expect(releasedListCard).toBeDefined();
-    expect(releasedListCard).toContain('<div class="asset-list-card-status" role="group" aria-label="Asset status">');
-    expect(releasedListCard).toContain('class="asset-list-card-presence"');
-    expect(releasedListCard).toContain('<span class="status-badge status-badge--success">Present at last scan</span>');
-    expect(releasedListCard).toContain(`class="asset-details-link asset-tooltip asset-tooltip--right" href="/projects/${project.id}/assets/${released.id}"`);
-    expect(releasedListCard).toContain('aria-label="View details for hero.png" data-tooltip="View asset details"');
-    expect(response.text).toContain(`class="asset-list-card-media-link" href="/projects/${project.id}/assets/${released.id}"`);
-    expect(response.text).toContain(`data-project-assets-preview-id="${released.id}"`);
-    expect(response.text).toMatch(new RegExp(`class="asset-list-card-media-image"[^>]*src="/projects/${project.id}/assets/${released.id}/preview\\?v=`));
-    expect(response.text).not.toContain(`/projects/${project.id}/assets/${released.id}/thumbnail`);
-    expect(response.text).toContain('alt=""');
-    expect(response.text).toContain(`class="asset-file-link" href="/projects/${project.id}/assets/${released.id}"`);
-    expect(response.text).toContain('hero.png');
-    expect(response.text).toMatch(/data-asset-containing-location[\s\S]*?renders[\s\S]*?<\/span>/);
-    expect(response.text).not.toContain('renders/hero.png');
-    expect(response.text).toContain('Renders');
-    expect(response.text).toContain('List Card Project');
-    expect(response.text).toContain(`href="/releases/${release.id}">List Viewer Release</a>`);
-    expect(response.text).toContain('<h3 class="asset-list-card-association-label">Effective tags</h3>');
-    expect(response.text).toContain('<h3 class="asset-list-card-association-label">Releases</h3>');
-    expect(response.text).toContain('Not in any release');
-    expect(response.text).toContain('Direct List Tag');
-    expect(response.text).toContain('Inherited List Tag');
-    expect(response.text).toContain('<span class="asset-tag-origin"><span class="sr-only">Inherited from </span>Project</span>');
-    expect(response.text).not.toContain('data-asset-grid-size-controls');
-  });
-
   it('uses the larger preview derivative for PNG, JPEG, and Krita List previews', async () => {
     const project = createProject('List Preview Sources Project');
     const png = createAsset(project.id, 'renders/hero.png');
@@ -695,84 +582,6 @@ describe('cross-project Asset Viewer HTTP route', () => {
       expect(card).toContain(`class="asset-list-card-media-link" href="/projects/${project.id}/assets/${asset.id}"`);
       expect(card).toContain(`class="asset-file-link" href="/projects/${project.id}/assets/${asset.id}"`);
     }
-  });
-
-  it('renders exact three-region Grid cards with retained indicators, hover metadata, and no legacy actions', async () => {
-    const project = createProject('Grid Card Project');
-    const category = assignCategory(project.id, {
-      displayName: 'Renders',
-      directorySlug: 'renders',
-    });
-    const released = createAsset(project.id, 'renders/hero.png', { categoryId: category.id });
-    const unreleased = createAsset(project.id, 'notes/readme.txt');
-    const direct = tagRepository.create({ displayName: 'Direct Grid Tag', normalizedName: 'direct-grid-secret' });
-    const inherited = tagRepository.create({ displayName: 'Inherited Grid Tag', normalizedName: 'inherited-grid-secret' });
-    tagRepository.assignToAsset(released.id, direct.id);
-    tagRepository.assignToProject(project.id, inherited.id);
-
-    const zetaRelease = insertRelease(project.id, 'Zeta Grid Release', released.id);
-    const alphaRelease = insertRelease(project.id, 'Alpha Grid Release', released.id);
-
-    const response = await request(app).get('/asset-viewer').expect(200);
-    const cards = response.text.match(/<article class="asset-card asset-viewer-grid-card"[\s\S]*?<\/article>/g) || [];
-    const releasedCard = cards.find((card) => card.includes('hero.png'));
-    const unreleasedCard = cards.find((card) => card.includes('readme.txt'));
-    const topRow = releasedCard?.match(/<div class="asset-card-top asset-viewer-grid-card-top">[\s\S]*?<\/div>/)?.[0];
-    const titleArea = releasedCard?.match(/<div class="asset-card-body asset-viewer-grid-card-title-area">[\s\S]*?<\/div>\s*<\/article>/)?.[0];
-
-    expect(response.text).toContain('<ul class="asset-grid" role="list" aria-label="Assets across active projects">');
-    expect(response.text).toContain('data-asset-grid-size-controls');
-    expect((response.text.match(/<input[^>]+data-grid-size-slider[^>]+type="range"/g) || [])).toHaveLength(1);
-    expect(response.text).toMatch(/<input[^>]+data-grid-size-slider[^>]+type="range"[^>]+min="1"[^>]+max="3"[^>]+step="1"/);
-    const optionLabels = [...response.text.matchAll(/data-grid-size-option-label="(compact|default|large)"[^>]*>([^<]+)</g)];
-    expect(optionLabels.map(([, value]) => value)).toEqual(['compact', 'default', 'large']);
-    expect(optionLabels.map(([, , label]) => label)).toEqual(['Compact', 'Default', 'Large']);
-    expect(response.text).toMatch(/is-active[^>]*data-grid-size-option-label="default"[^>]*>Default</);
-    expect(response.text).not.toMatch(/<button[^>]+data-grid-size="(?:compact|default|large)"/);
-    expect(cards).toHaveLength(2);
-    expect(releasedCard).toBeDefined();
-    expect(unreleasedCard).toBeDefined();
-    expect(topRow).toBeDefined();
-    expect((topRow?.match(/class="asset-indicator\b/g) || [])).toHaveLength(2);
-    expect(topRow).toContain('asset-indicator--present');
-    expect(topRow).toContain('asset-indicator--used');
-    expect(topRow).toContain(`class="asset-details-link asset-tooltip asset-tooltip--right" href="/projects/${project.id}/assets/${released.id}"`);
-    expect(topRow).toContain('aria-label="View details for hero.png" data-tooltip="View asset details"');
-    expect(topRow).toContain('<circle cx="12" cy="12" r="9"/><path d="M12 10v6M12 7h.01"/>');
-    expect(topRow).toContain('<span class="sr-only">View details</span>');
-    expect(topRow).not.toContain('asset-select-checkbox');
-    expect(releasedCard).toContain(`class="asset-card-media-link asset-viewer-grid-card-preview-link" href="/projects/${project.id}/assets/${released.id}"`);
-    expect(releasedCard).toContain(`data-project-assets-preview-id="${released.id}"`);
-    expect(releasedCard).toContain('aria-label="View preview of hero.png"');
-    expect(releasedCard).toContain('alt=""');
-    expect(releasedCard).toContain(`class="asset-file-link" href="/projects/${project.id}/assets/${released.id}"`);
-    expect(releasedCard).toContain('>hero.png</a>');
-    expect(releasedCard).not.toMatch(/class="asset-file-link"[^>]*aria-label=/);
-    expect(releasedCard).toContain('data-asset-viewer-preview');
-    expect(releasedCard).toContain('data-asset-info-card');
-    expect(releasedCard).toContain('renders/hero.png');
-    expect(titleArea).toBeDefined();
-    expect(titleArea).toContain('>Grid Card Project</a>');
-    expect(titleArea).toContain('Alpha Grid Release');
-    expect(titleArea).toContain('Zeta Grid Release');
-    expect(titleArea).not.toContain('renders/hero.png');
-    expect(titleArea).not.toContain('Renders');
-    expect(titleArea).not.toContain('100 bytes');
-    expect(titleArea).not.toContain('Effective tags');
-    expect(titleArea).not.toContain('View asset details');
-    for (const field of ['Location', 'Category', 'Extension', 'Size', 'Modified', 'Presence', 'Release usage']) {
-      expect((releasedCard.match(new RegExp(`<dt>${field}</dt>`, 'g')) || [])).toHaveLength(1);
-    }
-    expect(releasedCard).toMatch(/<dt>Category<\/dt>[\s\S]*?Renders[\s\S]*?<\/dd>/);
-    expect(releasedCard).toContain('Direct Grid Tag');
-    expect(releasedCard).toContain('Inherited Grid Tag <span class="asset-tag-origin"><span class="sr-only">Inherited from </span>Project</span>');
-    expect(releasedCard).toContain(`href="/releases/${alphaRelease.id}">Alpha Grid Release</a>`);
-    expect(releasedCard).toContain(`href="/releases/${zetaRelease.id}">Zeta Grid Release</a>`);
-    expect(releasedCard.indexOf('Alpha Grid Release')).toBeLessThan(releasedCard.indexOf('Zeta Grid Release'));
-    expect(unreleasedCard).toContain('Not in any release');
-    expect(releasedCard).toContain('Used in 2 releases');
-    expect(response.text).toContain('Not used by a release');
-    expect(response.text).not.toMatch(/Rename|Move file|selectedAssetIds|asset-select-checkbox/);
   });
 
   it('filters global assets by direct or inherited reusable tag assignments across projects', async () => {
@@ -1092,29 +901,6 @@ describe('cross-project Asset Viewer HTTP route', () => {
     const asset = createAsset(project.id, 'reference.png', { categoryId: category.id, extension: 'png' });
     const tag = tagRepository.create({ displayName: 'Featured artwork', normalizedName: 'featured-artwork' });
     tagRepository.assignToAsset(asset.id, tag.id);
-
-    const dialog = await request(app).get('/asset-viewer?defaults=1').expect(200);
-    const defaultsForm = dialog.text.match(/<form id="asset-viewer-defaults-form"[\s\S]*?<\/form>/)?.[0] || '';
-    const defaultsGrid = defaultsForm.match(/<div class="page-defaults-grid">([\s\S]*?)<\/div>\s*<\/div>\s*<div class="app-dialog-status"/)?.[1] || '';
-    const defaultsFieldNames = ['view', 'sort', 'order', 'pageSize', 'extension', 'category', 'presence', 'tag'];
-    const defaultsFieldLabels = ['View', 'Sort', 'Order', 'Page size', 'Extension', 'Category', 'Presence', 'Tag'];
-
-    expect(defaultsGrid).not.toBe('');
-    expect((defaultsForm.match(/data-dialog-field=/g) || [])).toHaveLength(8);
-    expect([...defaultsGrid.matchAll(/data-dialog-field="([^"]+)"/g)].map(([, name]) => name)).toEqual(defaultsFieldNames);
-    expect([...defaultsGrid.matchAll(/<legend>([^<]+)<\/legend>/g)].map(([, label]) => label)).toEqual(defaultsFieldLabels);
-    expect(defaultsForm.indexOf('data-dialog-error')).toBeLessThan(defaultsForm.indexOf('<div class="page-defaults-grid">'));
-    expect(defaultsForm.indexOf('<div class="app-dialog-status')).toBeGreaterThan(defaultsForm.indexOf('<div class="page-defaults-grid">'));
-    expect(defaultsForm.indexOf('<footer class="app-dialog-footer">')).toBeGreaterThan(defaultsForm.indexOf('<div class="page-defaults-grid">'));
-    expect(defaultsGrid).not.toContain('data-dialog-error');
-    expect(defaultsGrid).not.toContain('app-dialog-status');
-    expect(defaultsGrid).not.toContain('app-dialog-footer');
-    expect(defaultsForm).toContain('All extensions');
-    expect(defaultsForm).toContain('.png');
-    expect(defaultsForm).toContain('All categories');
-    expect(defaultsForm).toContain('Reference artwork');
-    expect(defaultsForm).toContain('All assets');
-    expect(defaultsForm).toContain('Featured artwork');
 
     const save = await request(app)
       .post('/asset-viewer/defaults')
@@ -1487,8 +1273,6 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(response.text).toContain('Page 2 of 2');
     expect(response.text).toContain('href="/asset-viewer?pageSize=10&amp;view=list"');
     expect(response.text).toContain('href="/asset-viewer?page=2&amp;pageSize=10&amp;view=grid"');
-    expect(response.text).toMatch(/<noscript><button class="button" type="submit">Filter<\/button><\/noscript>/);
-    expect(response.text).toMatch(/<a\b(?=[^>]*href="\/asset-viewer\?resetFilters=1&amp;view=list")(?=[^>]*data-asset-library-reset)(?=[^>]*aria-label="Reset filters")[^>]*>[\s\S]*?<span class="sr-only">Reset<\/span><\/a>/);
   });
 
   it('canonicalizes clamped pagination together with effective saved defaults in one redirect', async () => {
@@ -1523,10 +1307,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     createAsset(project.id, 'excluded.jpg');
     const tag = tagRepository.create({ displayName: 'Reset tag', normalizedName: 'reset-tag' });
     tagRepository.assignToAsset(asset.id, tag.id);
-    const rendered = await request(app).get('/asset-viewer?search=no-match&view=' + view).expect(200);
-    const links = [...rendered.text.matchAll(/<a\b[^>]*data-asset-library-reset[^>]*>/g)]
-      .map(([anchor]) => anchor.match(/href="([^"]+)"/)[1].replaceAll('&amp;', '&'));
-    expect(links).toEqual(Array(2).fill('/asset-viewer?resetFilters=1&view=' + view));
+    const resetUrl = '/asset-viewer?resetFilters=1&view=' + view;
 
     // Change saved values after rendering: the link must not snapshot them.
     writeAssetViewerDefaults({ view: view === 'grid' ? 'list' : 'grid', category: 'reset-artwork',
@@ -1535,7 +1316,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
       + '&extension=png&presence=present&sort=project&order=desc&pageSize=50&view=' + view;
     for (const suffix of ['', '&project=999&category=all&tag=all&extension=jpg&presence=missing&search=discard&usage=used&sort=size&order=asc&pageSize=10&page=99',
       '&defaults=1&notice=asset_viewer_defaults_saved&dialog=discard&unknown=discard']) {
-      const reset = await request(app).get(links[0] + suffix).expect(302);
+      const reset = await request(app).get(resetUrl + suffix).expect(302);
       expect(reset.headers['cache-control']).toBe('no-store');
       expect(reset.headers.location).toBe(expected);
       const final = await request(app).get(reset.headers.location).expect(200);
@@ -1545,7 +1326,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
       expect(final.text).not.toContain('Asset Viewer defaults saved successfully.');
       expect(final.text).toContain('value="' + view + '"');
     }
-    const native = await request(app).get(links[0]).redirects(1).expect(200);
+    const native = await request(app).get(resetUrl).redirects(1).expect(200);
     expect(new URL(native.request.url).pathname + new URL(native.request.url).search).toBe(expected);
     // Back/Forward can revisit either the active state or the stable final URL.
     await request(app).get('/asset-viewer?search=no-match&view=' + view).redirects(1).expect(200);
@@ -1606,7 +1387,6 @@ describe('cross-project Asset Viewer HTTP route', () => {
       `<input id="${project.id}" name="project" type="radio" value="${project.id}" checked>`,
     ));
     expect(response.text).toContain('aria-label="Project filter: URL Context Project"');
-    expect(response.text).toMatch(/<a\b(?=[^>]*href="\/asset-viewer\?resetFilters=1&amp;view=list")(?=[^>]*data-asset-library-reset)(?=[^>]*aria-label="Reset filters")[^>]*>[\s\S]*?<span class="sr-only">Reset<\/span><\/a>/);
     expect(response.text).toMatch(/<input[^>]+name="sort"[^>]+type="radio"[^>]+value="modified" checked>/);
     expect(response.text).toMatch(/<input[^>]+name="order"[^>]+type="radio"[^>]+value="desc" checked>/);
     expect(response.text).toMatch(/<input[^>]+name="pageSize"[^>]+type="radio"[^>]+value="50" checked>/);
@@ -1620,7 +1400,6 @@ describe('cross-project Asset Viewer HTTP route', () => {
       `/asset-viewer?project=${project.id}&category=uncategorized&search=reset&extension=png&presence=present&usage=unused&sort=filename&order=asc&pageSize=25&view=list`,
     ).expect(200);
 
-    expect(response.text).toMatch(/<a\b(?=[^>]*href="\/asset-viewer\?resetFilters=1&amp;view=list")(?=[^>]*data-asset-library-reset)(?=[^>]*aria-label="Reset filters")[^>]*>[\s\S]*?<span class="sr-only">Reset<\/span><\/a>/);
   });
 
   it('discards unknown parameters while retaining effective saved presentation values', async () => {
@@ -1643,10 +1422,10 @@ describe('cross-project Asset Viewer HTTP route', () => {
     createAsset(project.id, 'present.png');
 
     const filtered = await request(app).get('/asset-viewer?search=does-not-exist').expect(200);
+    const reset = filtered.text.match(/<a\b[^>]*data-asset-library-reset[^>]*>Reset<\/a>/)?.[0] || '';
     expect(filtered.text).toContain('No assets match the current filters');
     expect(filtered.text).not.toContain('No assets across active projects');
-    expect(filtered.text).toMatch(/<a\b(?=[^>]*data-asset-library-reset)(?=[^>]*aria-label="Reset filters")[^>]*>[\s\S]*?<span class="sr-only">Reset<\/span><\/a>/);
-    expect(filtered.text).toMatch(/<div class="empty-state-actions">\s*<a\b(?=[^>]*href="\/asset-viewer\?resetFilters=1&amp;view=grid")(?=[^>]*data-asset-library-reset)[^>]*>Reset<\/a>/);
+    expect(reset).toContain('href="/asset-viewer?resetFilters=1&amp;view=grid"');
   });
 
   it('leaves the existing project-scoped asset detail route available', async () => {

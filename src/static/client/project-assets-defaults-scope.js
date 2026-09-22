@@ -249,10 +249,12 @@ export function reconcileProjectAssetsDefaultsAcknowledgement(
   };
   state.committedScope = authoritative.activeScope;
   writeCommittedValues(state);
-  syncProjectAssetsSizePreferences(
-    state.form.closest?.('[data-app-dialog]'),
-    authoritative[authoritative.activeScope],
-  );
+  if (!superseded) {
+    syncProjectAssetsSizePreferences(
+      state.form.closest?.('[data-app-dialog]'),
+      authoritative[authoritative.activeScope],
+    );
+  }
 
   const unchanged = state.userRevision === state.submissionRevision
     || state.userRevision === state.reopenRevision;

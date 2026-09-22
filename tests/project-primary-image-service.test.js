@@ -57,6 +57,7 @@ describe('project primary-image service', () => {
       description: '',
       notes: '',
       status: 'tbd',
+      projectType: 'images',
       priority: 'normal',
       plannedDate: null,
       publishedDate: null,

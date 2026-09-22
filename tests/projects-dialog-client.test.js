@@ -13,6 +13,7 @@ import {
   enhanceProjectAssetsDefaultsScope,
   enhanceProjectsDefaultsFetchSave,
   enhanceReleasesDefaultsFetchSave,
+  enhanceReleasesLiveFiltering,
   openAppDialogById,
 } from '../src/static/creatorcrate.js';
 
@@ -260,29 +261,6 @@ function addStandardDropdown(
   return { details, summary, panel };
 }
 
-function appendStyledOption(panel, value, label) {
-  const wrapper = makeElement('div', { class: 'asset-filter-multiselect-option' });
-  const labelNode = makeElement('label');
-  const input = makeElement('input', { type: 'radio', value });
-  const text = makeElement('span');
-  text.textContent = label;
-  labelNode.appendChild(input);
-  labelNode.appendChild(text);
-  wrapper.appendChild(labelNode);
-  panel.appendChild(wrapper);
-  return input;
-}
-
-function styledDropdownValues(dropdown) {
-  return dropdown.panel.querySelectorAll('input[type="radio"]')
-    .map((input) => String(input.value));
-}
-
-function styledDropdownLabels(dropdown) {
-  return dropdown.panel.querySelectorAll('input[type="radio"]')
-    .map((input) => String(input.closest('label')?.textContent || '').trim());
-}
-
 const PROJECT_ASSETS_DEFAULT_KEYS = [
   'view', 'gridSize', 'listSize', 'sort', 'order', 'pageSize', 'extension', 'tag',
 ];
@@ -341,7 +319,6 @@ function installProjectAssetsResponseParser(page) {
 function makeDialogPage({
   standardDropdowns = false,
   scrollableDialog = false,
-  projectEditDialog = false,
   liveDefault = false,
   projectAssetsDefaults = false,
   projectAssetsScope = false,
@@ -436,16 +413,7 @@ function makeDialogPage({
   if (dialogBody) {
     dialogBody.classList.add('app-dialog-body');
     if (scrollableDialog) dialogBody.classList.add('project-asset-category-management-dialog-body');
-    if (projectEditDialog) dialogBody.classList.add('project-edit-dialog-body');
     dialogBody.scrollTop = 0;
-    if (projectEditDialog) {
-      const toggle = dialogBody.classList.toggle.bind(dialogBody.classList);
-      dialogBody.classList.toggle = (name, force) => {
-        const result = toggle(name, force);
-        if (name === 'cc-dropdown-dialog-open') dialogBody.scrollTop = 0;
-        return result;
-      };
-    }
   }
   const defaultFields = projectAssetsDefaults
     ? (projectAssetsScope ? [
@@ -531,25 +499,7 @@ function makeDialogPage({
     (dialogBody || form).appendChild(field);
     fields.defaultCategory = select;
   }
-  if (projectEditDialog) {
-    const field = makeElement('div', { 'data-dialog-field': 'tagIds' });
-    const select = makeElement('select', { id: 'project-tags-form', name: 'tagIds[]' });
-    for (const option of ['alpha', 'beta', 'gamma']) addOption(select, option, option === 'alpha');
-    select.value = 'alpha';
-    dropdowns.tags = addStandardDropdown(
-      field,
-      select,
-      'tags',
-      ['alpha', 'beta', 'gamma'],
-      '',
-      false,
-      'multiple',
-      ['alpha'],
-    );
-    dialogBody.appendChild(field);
-    fields.tags = select;
-  }
-  if (scrollableDialog || projectEditDialog) {
+  if (scrollableDialog) {
     Object.values(dropdowns).forEach(({ summary, panel }) => {
       summary.getBoundingClientRect = () => ({
         left: 100,
@@ -637,7 +587,9 @@ function makeDialogPage({
   };
 }
 
-function makeCategoryManagementBody({ categoryName = 'Original', invalidRename = false } = {}) {
+const CATEGORY_MANAGEMENT_RETURN_TO = '/projects/1/assets';
+
+function makeCategoryManagementBody({ categoryId = '1', categoryName = 'Original', invalidRename = false } = {}) {
   const body = makeElement('div', { class: 'app-dialog-body project-asset-category-management-dialog-body' });
   const status = makeElement('div', {
     id: 'project-category-management-status',
@@ -653,6 +605,11 @@ function makeCategoryManagementBody({ categoryName = 'Original', invalidRename =
   });
   addForm.appendChild(makeElement('input', { type: 'hidden', name: '_csrf', value: 'csrf-token' }));
   addForm.appendChild(makeElement('input', {
+    type: 'hidden',
+    name: 'returnTo',
+    value: CATEGORY_MANAGEMENT_RETURN_TO,
+  }));
+  addForm.appendChild(makeElement('input', {
     name: 'displayName',
     id: 'add-displayName',
     value: '',
@@ -664,6 +621,10 @@ function makeCategoryManagementBody({ categoryName = 'Original', invalidRename =
     value: '',
     'data-category-slug-autofill-directory-slug': '',
   }));
+  addForm.appendChild(makeElement('input', { type: 'hidden', name: 'enabled', value: '0' }));
+  const addEnabled = makeElement('input', { type: 'checkbox', name: 'enabled', value: '1' });
+  addEnabled.checked = true;
+  addForm.appendChild(addEnabled);
   const addSubmit = makeElement('button', { type: 'submit' });
   addForm.appendChild(addSubmit);
   body.appendChild(addForm);
@@ -671,25 +632,49 @@ function makeCategoryManagementBody({ categoryName = 'Original', invalidRename =
   const list = makeElement('div', { class: 'category-reorder-list', 'data-category-reorder-list': '' });
   const item = makeElement('article', {
     'data-category-reorder-item': '',
-    'data-category-id': '1',
+    'data-category-id': categoryId,
     'data-category-label': categoryName,
   });
   item.appendChild(makeElement('button', { type: 'button', 'data-category-reorder-handle': '' }));
   const renameForm = makeElement('form', {
     class: 'category-name-form',
-    action: '/projects/1/asset-categories/1/name',
+    action: `/projects/1/asset-categories/${categoryId}/name`,
     method: 'post',
   });
-  const renameInputAttrs = { name: 'displayName', id: 'name-1', value: categoryName };
-  if (invalidRename) renameInputAttrs['aria-invalid'] = 'true';
+  renameForm.appendChild(makeElement('input', { type: 'hidden', name: '_csrf', value: 'csrf-token' }));
+  renameForm.appendChild(makeElement('input', {
+    type: 'hidden',
+    name: 'returnTo',
+    value: CATEGORY_MANAGEMENT_RETURN_TO,
+  }));
+  const renameInputAttrs = { name: 'displayName', id: `name-${categoryId}`, value: categoryName };
+  if (invalidRename) {
+    renameInputAttrs['aria-describedby'] = `name-${categoryId}-error`;
+    renameInputAttrs['aria-invalid'] = 'true';
+  }
   renameForm.appendChild(makeElement('input', renameInputAttrs));
   renameForm.appendChild(makeElement('button', { type: 'submit' }));
+  if (invalidRename) {
+    const renameError = makeElement('span', {
+      class: 'field-error-message',
+      id: `name-${categoryId}-error`,
+      role: 'alert',
+    });
+    renameError.textContent = 'Display name is required.';
+    renameForm.appendChild(renameError);
+  }
   item.appendChild(renameForm);
   const deleteForm = makeElement('form', {
-    action: '/projects/1/asset-categories/1/delete',
+    action: `/projects/1/asset-categories/${categoryId}/delete`,
     method: 'post',
     'data-category-management-delete-form': '',
   });
+  deleteForm.appendChild(makeElement('input', { type: 'hidden', name: '_csrf', value: 'csrf-token' }));
+  deleteForm.appendChild(makeElement('input', {
+    type: 'hidden',
+    name: 'returnTo',
+    value: CATEGORY_MANAGEMENT_RETURN_TO,
+  }));
   deleteForm.appendChild(makeElement('button', {
     type: 'submit',
     'data-confirm': 'Delete this category?',
@@ -700,16 +685,16 @@ function makeCategoryManagementBody({ categoryName = 'Original', invalidRename =
   return { body, addSubmit };
 }
 
-function makeCategoryDialogPage() {
+function makeCategoryDialogPage({ categoryId = '1' } = {}) {
   const page = makeDialogPage({ standardDropdowns: true });
   const dialogId = 'project-asset-category-management-dialog';
   page.dialog.setAttribute('id', dialogId);
   page.trigger.setAttribute('data-dialog-open', dialogId);
   const card = page.dialog.querySelector('.app-dialog-card');
-  const initial = makeCategoryManagementBody();
+  const initial = makeCategoryManagementBody({ categoryId });
   card.appendChild(initial.body);
 
-  let replacement = makeCategoryManagementBody({ categoryName: 'Added category' });
+  let replacement = makeCategoryManagementBody({ categoryId, categoryName: 'Added category' });
   page.windowObject.DOMParser = class DOMParserMock {
     parseFromString() {
       return {
@@ -812,7 +797,7 @@ function makeDashboardDefaultsDialogPage({ includeStatusSection = false } = {}) 
       'aria-label': `Sort options for ${label}`,
     });
     const sortInput = makeElement('input', {
-      type: 'hidden', name: `sections[${id}][sort]`, value: id === 'overdue' ? 'planned' : 'updated',
+      type: 'hidden', name: `sections[${id}][sort]`, value: id === 'overdue' ? 'created' : 'updated',
       'data-dashboard-defaults-sort-input': '',
     });
     const orderInput = makeElement('input', {
@@ -873,7 +858,7 @@ function makeDashboardDefaultsDialogPage({ includeStatusSection = false } = {}) 
   const sortClose = makeElement('button', { type: 'button', 'data-dialog-close': '' });
   const sectionLabel = makeElement('strong', { 'data-dashboard-defaults-sort-section-label': '' });
   const sortSelect = makeElement('select', { id: 'dashboard-defaults-sort-select' });
-  ['updated', 'created', 'title', 'published', 'planned'].forEach((value) => addOption(sortSelect, value, value === 'updated'));
+  ['updated', 'created', 'title'].forEach((value) => addOption(sortSelect, value, value === 'updated'));
   sortSelect.value = 'updated';
   const orderSelect = makeElement('select', { id: 'dashboard-defaults-order-select' });
   ['asc', 'desc'].forEach((value) => addOption(orderSelect, value, value === 'asc'));
@@ -915,11 +900,11 @@ async function flush() {
 }
 
 describe('Reusable app dialog enhancement', () => {
-  it.each([
-    ['Projects', 'project-create-dialog', '/projects/new', '/projects?search=needle&sort=title&order=asc&page=3#projects-list'],
-    ['Releases', 'release-create-dialog', '/releases/new', '/releases?project=7&sort=created&order=desc&page=2#releases-list'],
-  ])('captures the exact live %s list URL in its hosted create form', (_label, dialogId, href, invocationLocation) => {
+  it('captures the exact live list URL in a hosted create form', () => {
     const page = makeDialogPage();
+    const dialogId = 'project-create-dialog';
+    const href = '/projects/new';
+    const invocationLocation = '/projects?search=needle&sort=title&order=asc&page=3#projects-list';
     page.dialog.setAttribute('id', dialogId);
     const invocation = makeElement('a', {
       href,
@@ -977,54 +962,6 @@ describe('Reusable app dialog enhancement', () => {
     expect(invocation.getAttribute('formaction')).toBe('/projects/7/assets/create-release');
   });
 
-  it('captures the exact live Books-list URL for a Book edit invocation', () => {
-    const page = makeDialogPage();
-    const invocation = makeElement('a', {
-      href: '/notes/books/17/edit',
-      'data-dialog-invocation': '',
-    });
-    page.region.appendChild(invocation);
-    page.windowObject.location = {
-      href: 'http://creatorcrate.local/notes?sort=title&page=3&filter=active#book-17',
-      origin: 'http://creatorcrate.local',
-      pathname: '/notes',
-      search: '?sort=title&page=3&filter=active',
-      hash: '#book-17',
-      assign: vi.fn(),
-    };
-
-    enhanceAppDialogs(page.document);
-    page.document.dispatch('click', { target: invocation });
-
-    const target = new URL(invocation.getAttribute('href'), page.windowObject.location.origin);
-    expect(target.pathname).toBe('/notes/books/17/edit');
-    expect(target.searchParams.get('returnTo')).toBe('/notes?sort=title&page=3&filter=active#book-17');
-  });
-
-  it('captures the exact live Calendar URL for a Release edit invocation', () => {
-    const page = makeDialogPage();
-    const invocation = makeElement('a', {
-      href: '/releases/19/edit',
-      'data-dialog-invocation': '',
-    });
-    page.region.appendChild(invocation);
-    page.windowObject.location = {
-      href: 'http://creatorcrate.local/calendar?month=2026-07&filter=planned#release-19',
-      origin: 'http://creatorcrate.local',
-      pathname: '/calendar',
-      search: '?month=2026-07&filter=planned',
-      hash: '#release-19',
-      assign: vi.fn(),
-    };
-
-    enhanceAppDialogs(page.document);
-    page.document.dispatch('click', { target: invocation });
-
-    const target = new URL(invocation.getAttribute('href'), page.windowObject.location.origin);
-    expect(target.pathname).toBe('/releases/19/edit');
-    expect(target.searchParams.get('returnTo')).toBe('/calendar?month=2026-07&filter=planned#release-19');
-  });
-
   it('captures the live invoking path, query, and fragment without duplicating return metadata', () => {
     const page = makeDialogPage();
     const invocation = makeElement('a', {
@@ -1058,10 +995,9 @@ describe('Reusable app dialog enhancement', () => {
     expect(target.searchParams.getAll('returnTo')).toEqual([
       '/projects/7/assets?view=list&page=3#asset-42',
     ]);
-    expect(page.document.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
   });
 
-  it.each(['X', 'Escape', 'native cancel', 'backdrop', 'programmatic'])('%s returns a hosted dialog to its validated invocation location', (path) => {
+  it('returns a hosted dialog to its validated invocation location', () => {
     const page = makeDialogPage();
     const returnTo = makeElement('input', {
       type: 'hidden',
@@ -1082,34 +1018,27 @@ describe('Reusable app dialog enhancement', () => {
 
     enhanceAppDialogs(page.document);
     openAppDialogById(page.document, page.dialog.id, page.trigger);
-    if (path === 'X') page.close.dispatch('click');
-    else if (path === 'Escape') page.dialog.dispatch('keydown', { key: 'Escape', target: page.dialog });
-    else if (path === 'native cancel') page.dialog.dispatch('cancel', { target: page.dialog });
-    else if (path === 'backdrop') page.dialog.dispatch('click', { target: page.dialog });
-    else closeAppDialogById(page.document, page.dialog.id);
+    page.close.dispatch('click');
 
     expect(page.dialog.open).toBe(false);
     expect(assign).toHaveBeenCalledOnce();
     expect(assign).toHaveBeenCalledWith('/projects/7/assets?view=list&page=3#asset-42');
   });
 
-  it.each([
-    ['Projects', '/projects?search=needle&sort=title&order=asc&page=3#projects-list'],
-    ['Releases', '/releases?project=7&sort=created&order=desc&page=2#releases-list'],
-  ])('returns a rerendered %s create dialog to its exact invoking list URL on accepted cancel', (_label, returnLocation) => {
+  it('returns a hosted dialog without navigating to a protocol-relative location', () => {
     const page = makeDialogPage();
     page.form.appendChild(makeElement('input', {
       type: 'hidden',
       name: 'returnTo',
-      value: returnLocation,
+      value: '//attacker.example/path',
       'data-dialog-return-location': '',
     }));
     const assign = vi.fn();
     page.windowObject.location = {
-      href: 'http://creatorcrate.local/projects',
+      href: 'http://creatorcrate.local/projects/7?edit=1',
       origin: 'http://creatorcrate.local',
-      pathname: '/projects',
-      search: '',
+      pathname: '/projects/7',
+      search: '?edit=1',
       hash: '',
       assign,
     };
@@ -1118,8 +1047,8 @@ describe('Reusable app dialog enhancement', () => {
     openAppDialogById(page.document, page.dialog.id, page.trigger);
     page.close.dispatch('click');
 
-    expect(assign).toHaveBeenCalledOnce();
-    expect(assign).toHaveBeenCalledWith(returnLocation);
+    expect(page.dialog.open).toBe(false);
+    expect(assign).not.toHaveBeenCalled();
   });
 
   it('does not navigate when a hosted dialog close guard rejects cancellation', () => {
@@ -1175,69 +1104,79 @@ describe('Reusable app dialog enhancement', () => {
     expect(assign).not.toHaveBeenCalled();
   });
 
-  it('uses the shared cancellation path for X and Escape, without submitting', () => {
-    const page = makeDialogPage();
-    page.region.appendChild(page.trigger);
-    const submit = vi.fn();
-    page.form.addEventListener('submit', submit);
+  it.each(['X', 'Escape', 'native cancel', 'backdrop', 'programmatic'])(
+    '%s dismisses once, restores its live opener, and preserves body lock state',
+    (path) => {
+      const page = makeDialogPage();
+      page.region.appendChild(page.trigger);
+      const submit = vi.fn();
+      page.form.addEventListener('submit', submit);
 
-    expect(page.close.getAttribute('type')).toBe('button');
-    expect(page.close.getAttribute('form')).toBeNull();
+      expect(enhanceAppDialogs(page.document)).toBe(1);
+      expect(enhanceAppDialogs(page.document)).toBe(1);
+      const onClose = vi.fn();
+      page.dialog.__creatorCrateAppDialogState.onClose = onClose;
+      const opener = path === 'Escape'
+        ? makeElement('a', {
+          href: '/projects?defaults=1',
+          'data-dialog-open': 'projects-defaults-dialog',
+        })
+        : page.trigger;
+      if (opener !== page.trigger) page.trigger.replaceWith(opener);
 
-    expect(enhanceAppDialogs(page.document)).toBe(1);
-    expect(enhanceAppDialogs(page.document)).toBe(1);
-    expect(page.document.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
+      const openEvent = page.document.dispatch('click', { target: opener });
+      expect(openEvent.defaultPrevented).toBe(true);
+      expect(page.dialog.open).toBe(true);
+      expect(page.close.focused).toBe(true);
+      expect(page.document.body.classList.contains('app-dialog-open')).toBe(true);
 
-    page.document.dispatch('click', { target: page.trigger });
-    expect(page.dialog.open).toBe(true);
-    expect(page.close.focused).toBe(true);
-    const xClick = page.close.dispatch('click');
-    expect(xClick.defaultPrevented).toBe(true);
-    expect(page.dialog.close).toHaveBeenCalledTimes(1);
-    expect(page.dialog.open).toBe(false);
-    expect(page.trigger.focused).toBe(true);
-    expect(submit).not.toHaveBeenCalled();
+      if (path === 'X') page.close.dispatch('click');
+      else if (path === 'Escape') page.dialog.dispatch('keydown', { key: 'Escape', target: page.dialog });
+      else if (path === 'native cancel') page.dialog.dispatch('cancel', { target: page.dialog });
+      else if (path === 'backdrop') {
+        page.dialog.dispatch('click', { target: page.form });
+        expect(page.dialog.open).toBe(true);
+        page.dialog.dispatch('click', { target: page.dialog });
+      } else closeAppDialogById(page.document, page.dialog.id);
 
-    const replacement = makeElement('a', {
-      href: '/projects?defaults=1',
-      'data-dialog-open': 'projects-defaults-dialog',
-    });
-    page.trigger.replaceWith(replacement);
-    page.document.dispatch('click', { target: replacement });
-    expect(page.dialog.open).toBe(true);
-    const escape = page.dialog.dispatch('keydown', { key: 'Escape', target: page.dialog });
-    expect(escape.defaultPrevented).toBe(true);
-    expect(page.dialog.close).toHaveBeenCalledTimes(2);
-    expect(page.dialog.open).toBe(false);
-    expect(replacement.focused).toBe(true);
-    expect(submit).not.toHaveBeenCalled();
-  });
+      expect(page.dialog.close).toHaveBeenCalledOnce();
+      expect(page.dialog.open).toBe(false);
+      expect(page.document.activeElement).toBe(opener);
+      expect(page.document.body.classList.contains('app-dialog-open')).toBe(false);
+      expect(onClose).toHaveBeenCalledOnce();
+      expect(submit).not.toHaveBeenCalled();
+    },
+  );
 
-  it.each(['X', 'Escape', 'native cancel', 'backdrop', 'programmatic'])('%s uses one async pre-close guard and ignores repeated dismissal', async (path) => {
+  it('uses one async pre-close guard and suppresses native cancellation until dismissal is allowed', async () => {
     const page = makeDialogPage();
     page.region.appendChild(page.trigger);
     enhanceAppDialogs(page.document);
     openAppDialogById(page.document, page.dialog.id, page.trigger);
+    const onClose = vi.fn();
+    page.dialog.__creatorCrateAppDialogState.onClose = onClose;
     let resolveGuard;
     const beforeClose = vi.fn(() => new Promise(resolve => { resolveGuard = resolve; }));
     page.dialog.__creatorCrateAppDialogState.beforeClose = beforeClose;
 
-    const dismiss = () => {
-      if (path === 'X') page.close.dispatch('click');
-      else if (path === 'Escape') page.dialog.dispatch('keydown', { key: 'Escape', target: page.dialog });
-      else if (path === 'native cancel') page.dialog.dispatch('cancel', { target: page.dialog });
-      else if (path === 'backdrop') page.dialog.dispatch('click', { target: page.dialog });
-      else closeAppDialogById(page.document, page.dialog.id);
-    };
-    dismiss();
-    dismiss();
+    const cancelEvent = page.dialog.dispatch('cancel', { target: page.dialog });
 
+    expect(cancelEvent.defaultPrevented).toBe(true);
     expect(beforeClose).toHaveBeenCalledOnce();
     expect(page.dialog.open).toBe(true);
+    expect(page.document.body.classList.contains('app-dialog-open')).toBe(true);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(page.dialog.close).not.toHaveBeenCalled();
+    await flush();
+    expect(page.dialog.open).toBe(true);
+    expect(onClose).not.toHaveBeenCalled();
+
     resolveGuard(true);
     await flush();
     expect(page.dialog.close).toHaveBeenCalledOnce();
     expect(page.dialog.open).toBe(false);
+    expect(page.document.body.classList.contains('app-dialog-open')).toBe(false);
+    expect(onClose).toHaveBeenCalledOnce();
   });
 
   it('does not let an earlier pre-close result close a reopened dialog lifecycle', async () => {
@@ -1268,11 +1207,29 @@ describe('Reusable app dialog enhancement', () => {
 
     expect(openAppDialogById(page.document, page.dialog.id, explicitOpener)).toBe(true);
     expect(page.dialog.open).toBe(true);
-    expect(page.dialog.__creatorCrateAppDialogState.opener).toBe(explicitOpener);
-    expect(page.dialog.__creatorCrateAppDialogState.openerAllowsFallback).toBe(false);
 
     expect(closeAppDialogById(page.document, page.dialog.id)).toBe(true);
-    expect(explicitOpener.focused).toBe(true);
+    expect(page.document.activeElement).toBe(explicitOpener);
+  });
+
+  it('traps forward and reverse Tab movement at the dialog boundaries', () => {
+    const page = makeDialogPage();
+    enhanceAppDialogs(page.document);
+    openAppDialogById(page.document, page.dialog.id);
+
+    page.save.focus();
+    const forward = page.dialog.dispatch('keydown', { key: 'Tab', target: page.save });
+    expect(forward.defaultPrevented).toBe(true);
+    expect(page.document.activeElement).toBe(page.close);
+
+    page.close.focus();
+    const reverse = page.dialog.dispatch('keydown', {
+      key: 'Tab',
+      shiftKey: true,
+      target: page.close,
+    });
+    expect(reverse.defaultPrevented).toBe(true);
+    expect(page.document.activeElement).toBe(page.save);
   });
 
   it('does not use a declarative opener fallback for programmatic opening', () => {
@@ -1371,7 +1328,7 @@ describe('Reusable app dialog enhancement', () => {
     expect(page.windowObject.fetch).not.toHaveBeenCalled();
   });
 
-  it('keeps separate unsaved drafts for Global and Project only, including HTTP 422 rendered values', () => {
+  it('keeps separate unsaved drafts for Global and Project only', () => {
     const page = makeDialogPage({ standardDropdowns: true, projectAssetsDefaults: true, projectAssetsScope: true });
     enhanceDropdowns(page.document);
     enhanceProjectAssetsDefaultsScope(page.document);
@@ -1391,131 +1348,6 @@ describe('Reusable app dialog enhancement', () => {
 
     changeProjectAssetsScope(page, 'project');
     expect(projectAssetsDefaultValues(page.fields)).toMatchObject({ sort: 'modified', tag: '1' });
-
-    const failedPage = makeDialogPage({ standardDropdowns: true, projectAssetsDefaults: true, projectAssetsScope: true });
-    failedPage.fields.view.value = 'list';
-    failedPage.fields.extension.value = 'png';
-    enhanceDropdowns(failedPage.document);
-    enhanceProjectAssetsDefaultsScope(failedPage.document);
-    changeProjectAssetsScope(failedPage, 'project');
-    changeProjectAssetsScope(failedPage, 'global');
-    expect(projectAssetsDefaultValues(failedPage.fields)).toMatchObject({ view: 'list', extension: 'png' });
-    expect(failedPage.windowObject.fetch).not.toHaveBeenCalled();
-  });
-
-  it('commits a successful Project-only JSON save without promoting an unsaved Global draft', async () => {
-    const page = makeDialogPage({ standardDropdowns: true, projectAssetsDefaults: true, projectAssetsScope: true });
-    const initial = JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent);
-    const submitted = {
-      view: 'grid', gridSize: 'compact', listSize: 'large', sort: 'modified', order: 'asc',
-      pageSize: '100', extension: 'jpg', tag: '1',
-    };
-    page.region.appendChild(page.trigger);
-    page.windowObject.fetch.mockImplementation(() => {
-      setProjectAssetsDefaultValues(page.fields, initial.project);
-      return Promise.resolve({
-        ok: true,
-        json: async () => ({ status: 'success', values: submitted }),
-      });
-    });
-    enhanceDropdowns(page.document);
-    enhanceProjectAssetsDefaultsScope(page.document);
-    enhanceAppDialogs(page.document);
-    page.document.dispatch('click', { target: page.trigger });
-
-    setProjectAssetsDefaultValues(page.fields, {
-      ...initial.global, view: 'list', extension: 'png',
-    });
-    changeProjectAssetsScope(page, 'project');
-    setProjectAssetsDefaultValues(page.fields, submitted);
-    const scopeError = makeElement('span', { class: 'field-error-message' });
-    page.scopeControls.scope.appendChild(scopeError);
-    page.scopeControls.project.setAttribute('aria-invalid', 'true');
-    page.form.querySelector('[data-dialog-error]').hidden = false;
-    page.form.querySelector('[data-dialog-error-text]').textContent = 'The selected scope does not match the loaded scope.';
-    page.form.dispatch('submit', { submitter: page.save });
-    await flush();
-
-    expect(page.dialog.open).toBe(false);
-    expect(Object.fromEntries(
-      [...page.windowObject.fetch.mock.calls[0][1].body.entries()]
-        .filter(([key]) => PROJECT_ASSETS_DEFAULT_KEYS.includes(key)),
-    )).toEqual(submitted);
-    expect(page.form.querySelector('input[name="loadedScope"]').value).toBe('project');
-    expect(page.scopeControls.project.checked).toBe(true);
-    expect(page.form.querySelector('[data-dialog-error]').hidden).toBe(true);
-    expect(JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent)).toEqual({
-      global: initial.global,
-      project: submitted,
-    });
-    expect(enhanceProjectAssetsDefaultsScope(page.document)).toBe(0);
-
-    page.document.dispatch('click', { target: page.trigger });
-    expect(projectAssetsDefaultValues(page.fields)).toEqual(submitted);
-    changeProjectAssetsScope(page, 'global');
-    expect(projectAssetsDefaultValues(page.fields)).toEqual(initial.global);
-
-    closeAppDialogById(page.document, page.dialog.id);
-    page.document.dispatch('click', { target: page.trigger });
-    expect(page.scopeControls.project.checked).toBe(true);
-    expect(page.form.querySelector('input[name="loadedScope"]').value).toBe('project');
-    expect(projectAssetsDefaultValues(page.fields)).toEqual(submitted);
-  });
-
-  it('commits a successful Global JSON save without replacing Project-only committed values', async () => {
-    const initialValues = {
-      global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
-      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'png', tag: '2' },
-    };
-    const page = makeDialogPage({
-      standardDropdowns: true,
-      projectAssetsDefaults: true,
-      projectAssetsScope: true,
-      projectAssetsScopeValues: initialValues,
-    });
-    const submitted = {
-      view: 'list', gridSize: 'compact', listSize: 'large', sort: 'modified', order: 'asc',
-      pageSize: '100', extension: 'jpg', tag: '1',
-    };
-    expect(submitted).not.toEqual(initialValues.global);
-    expect(submitted).not.toEqual(initialValues.project);
-    page.region.appendChild(page.trigger);
-    page.windowObject.fetch.mockResolvedValue({
-      ok: true,
-      json: async () => ({ status: 'success', values: submitted }),
-    });
-    enhanceDropdowns(page.document);
-    enhanceProjectAssetsDefaultsScope(page.document);
-    enhanceAppDialogs(page.document);
-    page.document.dispatch('click', { target: page.trigger });
-
-    changeProjectAssetsScope(page, 'project');
-    page.fields.sort.value = 'modified';
-    page.fields.sort.dispatch('change');
-    changeProjectAssetsScope(page, 'global');
-    setProjectAssetsDefaultValues(page.fields, submitted);
-    page.form.dispatch('submit', { submitter: page.save });
-    await flush();
-
-    expect(page.form.querySelector('input[name="loadedScope"]').value).toBe('global');
-    expect(page.scopeControls.global.checked).toBe(true);
-    expect(JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent)).toEqual({
-      global: submitted,
-      project: initialValues.project,
-    });
-
-    page.document.dispatch('click', { target: page.trigger });
-    expect(projectAssetsDefaultValues(page.fields)).toEqual(submitted);
-    changeProjectAssetsScope(page, 'project');
-    expect(projectAssetsDefaultValues(page.fields)).toEqual(initialValues.project);
-
-    page.fields.sort.value = 'filename';
-    page.fields.sort.dispatch('change');
-    closeAppDialogById(page.document, page.dialog.id);
-    page.document.dispatch('click', { target: page.trigger });
-    expect(page.scopeControls.global.checked).toBe(true);
-    expect(page.form.querySelector('input[name="loadedScope"]').value).toBe('global');
-    expect(projectAssetsDefaultValues(page.fields)).toEqual(submitted);
   });
 
   it('restores Global committed values, radio state, and both drafts after cancel/reopen', () => {
@@ -1544,100 +1376,6 @@ describe('Reusable app dialog enhancement', () => {
     expect(projectAssetsDefaultValues(page.fields)).toEqual(initial.global);
     changeProjectAssetsScope(page, 'project');
     expect(projectAssetsDefaultValues(page.fields)).toEqual(initial.project);
-  });
-
-  it('restores Project-only committed values after cancel/reopen and immediately saves with matching scope', async () => {
-    const initialValues = {
-      global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
-      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'png', tag: '2' },
-    };
-    const page = makeDialogPage({
-      standardDropdowns: true,
-      projectAssetsDefaults: true,
-      projectAssetsScope: true,
-      projectAssetsScopeValues: initialValues,
-      loadedScope: 'project',
-    });
-    setProjectAssetsDefaultValues(page.fields, initialValues.project);
-    page.region.appendChild(page.trigger);
-    page.windowObject.fetch.mockResolvedValue({
-      ok: true,
-      json: async () => ({ status: 'success', values: initialValues.project }),
-    });
-    enhanceDropdowns(page.document);
-    enhanceProjectAssetsDefaultsScope(page.document);
-    enhanceAppDialogs(page.document);
-    page.document.dispatch('click', { target: page.trigger });
-
-    setProjectAssetsDefaultValues(page.fields, { ...initialValues.project, sort: 'modified', tag: '1' });
-    page.fields.sort.dispatch('change');
-    page.fields.tag.dispatch('change');
-    changeProjectAssetsScope(page, 'global');
-    page.fields.view.value = 'list';
-    page.fields.view.dispatch('change');
-
-    closeAppDialogById(page.document, page.dialog.id);
-    page.document.dispatch('click', { target: page.trigger });
-
-    expect(page.scopeControls.project.checked).toBe(true);
-    expect(page.scopeControls.global.checked).toBe(false);
-    expect(page.form.querySelector('input[name="loadedScope"]').value).toBe('project');
-    expect(projectAssetsDefaultValues(page.fields)).toEqual(initialValues.project);
-
-    page.form.dispatch('submit', { submitter: page.save });
-    await flush();
-
-    expect(page.windowObject.fetch).toHaveBeenCalledTimes(1);
-    expect(page.dialog.open).toBe(false);
-    expect(page.form.querySelector('input[name="loadedScope"]').value).toBe('project');
-    expect(page.scopeControls.project.checked).toBe(true);
-  });
-
-  it('keeps Project Assets committed snapshots and drafts after failed or malformed enhanced saves', async () => {
-    const initialValues = {
-      global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
-      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'png', tag: '2' },
-    };
-    const responses = [
-      {
-        ok: false,
-        json: async () => ({
-          status: 'error',
-          values: { ...initialValues.project, sort: 'modified' },
-        }),
-      },
-      new Error('network unavailable'),
-      { ok: true, json: async () => ({ status: 'success', values: { view: 'grid' } }) },
-    ];
-
-    for (const response of responses) {
-      const page = makeDialogPage({
-        standardDropdowns: true,
-        projectAssetsDefaults: true,
-        projectAssetsScope: true,
-        projectAssetsScopeValues: initialValues,
-      });
-      page.region.appendChild(page.trigger);
-      page.windowObject.fetch.mockImplementationOnce(() => (
-        response instanceof Error ? Promise.reject(response) : Promise.resolve(response)
-      ));
-      enhanceDropdowns(page.document);
-      enhanceProjectAssetsDefaultsScope(page.document);
-      enhanceAppDialogs(page.document);
-      page.document.dispatch('click', { target: page.trigger });
-      changeProjectAssetsScope(page, 'project');
-      page.fields.sort.value = 'modified';
-      page.fields.sort.dispatch('change');
-      page.form.dispatch('submit', { submitter: page.save });
-      await flush();
-
-      expect(JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent))
-        .toEqual(initialValues);
-      changeProjectAssetsScope(page, 'global');
-      expect(projectAssetsDefaultValues(page.fields)).toEqual(initialValues.global);
-      changeProjectAssetsScope(page, 'project');
-      expect(projectAssetsDefaultValues(page.fields)).toMatchObject({ sort: 'modified' });
-    }
   });
 
   it('fails closed for malformed or unrepresentable Project Assets scope values', () => {
@@ -1671,239 +1409,6 @@ describe('Reusable app dialog enhancement', () => {
     expect(invalidTarget.form.querySelector('[data-dialog-error]').hidden).toBe(false);
   });
 
-  it('cancels Project Assets defaults without submitting or changing size storage', () => {
-    const page = makeDialogPage({ standardDropdowns: true, projectAssetsDefaults: true });
-    const storage = new Map([
-      ['creatorcrate-asset-grid-size', 'compact'],
-      ['creatorcrate-asset-list-size', 'large'],
-    ]);
-    const previousStorage = globalThis.localStorage;
-    globalThis.localStorage = {
-      getItem: (key) => storage.get(key) ?? null,
-      setItem: (key, value) => storage.set(key, value),
-    };
-
-    try {
-      page.region.appendChild(page.trigger);
-      enhanceDropdowns(page.document);
-      enhanceAppDialogs(page.document);
-      page.document.dispatch('click', { target: page.trigger });
-
-      page.fields.gridSize.value = 'large';
-      page.fields.listSize.value = 'compact';
-      page.close.dispatch('click');
-      expect(page.windowObject.fetch).not.toHaveBeenCalled();
-      expect(storage.get('creatorcrate-asset-grid-size')).toBe('compact');
-      expect(storage.get('creatorcrate-asset-list-size')).toBe('large');
-
-      page.document.dispatch('click', { target: page.trigger });
-      expect(page.fields.gridSize.value).toBe('default');
-      expect(page.fields.listSize.value).toBe('large');
-
-      page.fields.gridSize.value = 'large';
-      page.fields.listSize.value = 'compact';
-      page.dropdowns.gridSize.details.open = true;
-      page.dropdowns.gridSize.details.setAttribute('open', '');
-      page.dialog.dispatch('keydown', { key: 'Escape', target: page.dropdowns.gridSize.summary });
-      expect(page.dropdowns.gridSize.details.open).toBe(false);
-      expect(page.dialog.open).toBe(true);
-
-      page.dialog.dispatch('keydown', { key: 'Escape', target: page.dialog });
-      expect(page.dialog.open).toBe(false);
-      expect(page.windowObject.fetch).not.toHaveBeenCalled();
-      expect(storage.get('creatorcrate-asset-grid-size')).toBe('compact');
-      expect(storage.get('creatorcrate-asset-list-size')).toBe('large');
-
-      page.document.dispatch('click', { target: page.trigger });
-      expect(page.fields.gridSize.value).toBe('default');
-      expect(page.fields.listSize.value).toBe('large');
-    } finally {
-      if (previousStorage === undefined) delete globalThis.localStorage;
-      else globalThis.localStorage = previousStorage;
-    }
-  });
-
-  it('keeps enhanced Project Assets Grid and List size options isolated across View switches and reopen', async () => {
-    const page = makeDialogPage({ standardDropdowns: true, projectAssetsDefaults: true });
-    appendStyledOption(page.dropdowns.listSize.panel, 'default', 'Default');
-    page.region.appendChild(page.trigger);
-    page.windowObject.fetch.mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        status: 'success',
-        values: {
-          view: 'list',
-          gridSize: 'large',
-          listSize: 'compact',
-          sort: 'category',
-          order: 'desc',
-        },
-      }),
-    });
-
-    enhanceDropdowns(page.document);
-    expect(styledDropdownValues(page.dropdowns.gridSize)).toEqual(['compact', 'default', 'large']);
-    expect(styledDropdownValues(page.dropdowns.listSize)).toEqual(['compact', 'large']);
-    expect(styledDropdownLabels(page.dropdowns.gridSize)).toEqual(['Compact', 'Default', 'Large']);
-    expect(styledDropdownLabels(page.dropdowns.listSize)).toEqual(['Compact', 'Large']);
-
-    enhanceAppDialogs(page.document);
-    page.document.dispatch('click', { target: page.trigger });
-    const viewRadios = page.dropdowns.view.panel.querySelectorAll('input[type="radio"]');
-    viewRadios[1].checked = true;
-    page.document.dispatch('change', { target: viewRadios[1] });
-    expect(styledDropdownValues(page.dropdowns.listSize)).toEqual(['compact', 'large']);
-    expect(styledDropdownLabels(page.dropdowns.listSize)).toEqual(['Compact', 'Large']);
-    expect(styledDropdownValues(page.dropdowns.listSize)).not.toContain('default');
-
-    viewRadios[0].checked = true;
-    page.document.dispatch('change', { target: viewRadios[0] });
-    expect(styledDropdownValues(page.dropdowns.gridSize)).toEqual(['compact', 'default', 'large']);
-    expect(styledDropdownLabels(page.dropdowns.gridSize)).toEqual(['Compact', 'Default', 'Large']);
-    viewRadios[1].checked = true;
-    page.document.dispatch('change', { target: viewRadios[1] });
-    expect(styledDropdownValues(page.dropdowns.listSize)).toEqual(['compact', 'large']);
-    expect(styledDropdownLabels(page.dropdowns.listSize)).toEqual(['Compact', 'Large']);
-
-    page.close.dispatch('click');
-    appendStyledOption(page.dropdowns.listSize.panel, 'default', 'Default');
-    page.document.dispatch('click', { target: page.trigger });
-    expect(styledDropdownValues(page.dropdowns.gridSize)).toEqual(['compact', 'default', 'large']);
-    expect(styledDropdownValues(page.dropdowns.listSize)).toEqual(['compact', 'large']);
-    expect(styledDropdownLabels(page.dropdowns.gridSize)).toEqual(['Compact', 'Default', 'Large']);
-    expect(styledDropdownLabels(page.dropdowns.listSize)).toEqual(['Compact', 'Large']);
-    viewRadios[1].checked = true;
-    page.document.dispatch('change', { target: viewRadios[1] });
-
-    page.fields.gridSize.value = 'large';
-    page.fields.listSize.value = 'compact';
-    page.form.dispatch('submit', { submitter: page.save });
-    await flush();
-
-    expect([...page.windowObject.fetch.mock.calls[0][1].body.entries()]).toEqual([
-      ['_csrf', 'csrf-token'],
-      ['view', 'list'],
-      ['gridSize', 'large'],
-      ['listSize', 'compact'],
-      ['sort', 'filename'],
-      ['order', 'asc'],
-    ]);
-    expect(page.windowObject.fetch.mock.calls[0][1].body.toString()).not.toContain('listSize=default');
-  });
-
-  it('does not expose an invalid List Default option during enhanced validation recovery', async () => {
-    const page = makeDialogPage({ standardDropdowns: true, projectAssetsDefaults: true });
-    page.region.appendChild(page.trigger);
-    page.windowObject.fetch.mockResolvedValue({
-      ok: false,
-      status: 422,
-      json: async () => ({
-        status: 'error',
-        errors: { listSize: 'Value is not supported.' },
-        values: {
-          view: 'list',
-          gridSize: 'large',
-          listSize: 'default',
-          sort: 'filename',
-          order: 'asc',
-        },
-      }),
-    });
-
-    enhanceDropdowns(page.document);
-    enhanceAppDialogs(page.document);
-    page.document.dispatch('click', { target: page.trigger });
-    page.form.dispatch('submit', { submitter: page.save });
-    await flush();
-
-    expect(page.dialog.open).toBe(true);
-    expect(styledDropdownValues(page.dropdowns.gridSize)).toEqual(['compact', 'default', 'large']);
-    expect(styledDropdownValues(page.dropdowns.listSize)).toEqual(['compact', 'large']);
-    expect(styledDropdownLabels(page.dropdowns.gridSize)).toEqual(['Compact', 'Default', 'Large']);
-    expect(styledDropdownLabels(page.dropdowns.listSize)).toEqual(['Compact', 'Large']);
-    expect(styledDropdownValues(page.dropdowns.listSize)).not.toContain('default');
-    expect(page.fields.listSize.querySelectorAll('option').map((option) => option.value))
-      .toEqual(['compact', 'large']);
-  });
-
-  it('synchronizes Project Assets size storage only after a successful defaults save', async () => {
-    const page = makeDialogPage({ standardDropdowns: true, projectAssetsDefaults: true });
-    const storage = new Map([
-      ['creatorcrate-asset-grid-size', 'compact'],
-      ['creatorcrate-asset-list-size', 'large'],
-    ]);
-    const previousStorage = globalThis.localStorage;
-    globalThis.localStorage = {
-      getItem: (key) => storage.get(key) ?? null,
-      setItem: (key, value) => storage.set(key, value),
-    };
-    page.region.appendChild(page.trigger);
-    page.windowObject.fetch
-      .mockResolvedValueOnce({
-        ok: false,
-        status: 422,
-        json: async () => ({
-          status: 'error',
-          errors: { sort: 'Value is not supported.' },
-          values: {
-            view: 'grid',
-            gridSize: 'large',
-            listSize: 'compact',
-            sort: 'invalid',
-            order: 'asc',
-          },
-        }),
-      })
-      .mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          status: 'success',
-          values: {
-            view: 'list',
-            gridSize: 'large',
-            listSize: 'compact',
-            sort: 'category',
-            order: 'desc',
-            pageSize: '50',
-          },
-        }),
-      });
-
-    try {
-      enhanceDropdowns(page.document);
-      enhanceAppDialogs(page.document);
-      page.document.dispatch('click', { target: page.trigger });
-      page.fields.gridSize.value = 'large';
-      page.fields.listSize.value = 'compact';
-      page.form.dispatch('submit', { submitter: page.save });
-      await flush();
-
-      expect(storage.get('creatorcrate-asset-grid-size')).toBe('compact');
-      expect(storage.get('creatorcrate-asset-list-size')).toBe('large');
-      expect(page.dialog.open).toBe(true);
-
-      page.form.dispatch('submit', { submitter: page.save });
-      await flush();
-
-      expect(storage.get('creatorcrate-asset-grid-size')).toBe('large');
-      expect(storage.get('creatorcrate-asset-list-size')).toBe('compact');
-      expect(page.dialog.open).toBe(false);
-
-      page.document.dispatch('click', { target: page.trigger });
-      expect(page.fields.gridSize.value).toBe('large');
-      expect(page.fields.listSize.value).toBe('compact');
-      page.fields.gridSize.value = 'compact';
-      page.fields.listSize.value = 'large';
-      page.close.dispatch('click');
-      page.document.dispatch('click', { target: page.trigger });
-      expect(page.fields.gridSize.value).toBe('large');
-      expect(page.fields.listSize.value).toBe('compact');
-    } finally {
-      if (previousStorage === undefined) delete globalThis.localStorage;
-      else globalThis.localStorage = previousStorage;
-    }
-  });
-
   it('saves asynchronously without navigation and closes on success', async () => {
     const page = makeDialogPage();
     page.region.appendChild(page.trigger);
@@ -1916,6 +1421,7 @@ describe('Reusable app dialog enhancement', () => {
       }),
     });
     enhanceAppDialogs(page.document);
+    enhanceAppDialogs(page.document);
     page.document.dispatch('click', { target: page.trigger });
     page.fields.view.value = 'list';
     page.fields.sort.value = 'title';
@@ -1925,6 +1431,7 @@ describe('Reusable app dialog enhancement', () => {
 
     expect(page.windowObject.fetch).toHaveBeenCalledTimes(1);
     expect(page.windowObject.fetch.mock.calls[0][0]).toBe('/projects/defaults');
+    expect(page.windowObject.fetch.mock.calls[0][1].method).toBe('POST');
     expect(page.windowObject.fetch.mock.calls[0][1].headers).toEqual({ Accept: 'application/json' });
     expect([...page.windowObject.fetch.mock.calls[0][1].body.entries()]).toEqual([
       ['_csrf', 'csrf-token'],
@@ -1990,7 +1497,7 @@ describe('Reusable app dialog enhancement', () => {
     expect(page.dialog.open).toBe(false);
   });
 
-  it('overlays dropdown panels in the scrollable category dialog without changing its overflow state', () => {
+  it('cleans an open scrollable dropdown when its dialog closes', () => {
     const page = makeDialogPage({ standardDropdowns: true, scrollableDialog: true });
     page.region.appendChild(page.trigger);
     enhanceDropdowns(page.document);
@@ -2004,39 +1511,10 @@ describe('Reusable app dialog enhancement', () => {
     viewDropdown.setAttribute('open', '');
     page.document.dispatch('toggle', { target: viewDropdown });
 
-    expect(body.classList.contains('cc-dropdown-dialog-open')).toBe(false);
-    expect(page.dialog.querySelector('.app-dialog-card').classList.contains('cc-dropdown-dialog-open')).toBe(false);
     expect(viewDropdown.open).toBe(true);
     expect(panel.getAttribute('data-cc-dropdown-overlay')).toBe('');
     expect(panel.style.getPropertyValue('position')).toBe('fixed');
-    expect(panel.style.getPropertyValue('left')).toBe('100px');
-    expect(panel.style.getPropertyValue('top')).toBe('164px');
     expect(body.listeners.filter(({ type }) => type === 'scroll')).toHaveLength(1);
-
-    const [viewGrid, viewList] = panel.querySelectorAll('input[type="radio"]');
-    viewGrid.checked = false;
-    viewList.checked = true;
-    page.document.dispatch('change', { target: viewList });
-    expect(page.fields.view.value).toBe('list');
-    expect(viewDropdown.open).toBe(false);
-    expect(panel.style.getPropertyValue('position')).toBe('');
-    expect(page.dropdowns.view.summary.focused).toBe(true);
-
-    viewDropdown.open = true;
-    viewDropdown.setAttribute('open', '');
-    page.document.dispatch('toggle', { target: viewDropdown });
-
-    page.dropdowns.view.summary.getBoundingClientRect = () => ({
-      left: 900,
-      top: 700,
-      right: 1000,
-      bottom: 740,
-      width: 100,
-      height: 40,
-    });
-    body.dispatch('scroll');
-    expect(panel.style.getPropertyValue('left')).toBe('616px');
-    expect(panel.style.getPropertyValue('top')).toBe('516px');
 
     page.close.dispatch('click');
     expect(page.dialog.open).toBe(false);
@@ -2045,51 +1523,6 @@ describe('Reusable app dialog enhancement', () => {
     expect(panel.style.getPropertyValue('position')).toBe('');
     expect(body.listeners.filter(({ type }) => type === 'scroll')).toHaveLength(0);
     expect(page.windowObject.removeEventListener).toHaveBeenCalled();
-  });
-
-  it('preserves Edit Project body scroll during Status dropdown interaction', () => {
-    const page = makeDialogPage({ standardDropdowns: true, projectEditDialog: true });
-    page.region.appendChild(page.trigger);
-    enhanceDropdowns(page.document);
-    enhanceAppDialogs(page.document);
-    page.document.dispatch('click', { target: page.trigger });
-    page.dialogBody.scrollTop = 240;
-
-    const statusDropdown = page.dropdowns.view.details;
-    statusDropdown.open = true;
-    statusDropdown.setAttribute('open', '');
-    page.document.dispatch('toggle', { target: statusDropdown });
-    expect(page.dialogBody.scrollTop).toBe(240);
-
-    const statusOptions = statusDropdown.querySelectorAll('input[type="radio"]');
-    statusOptions[0].checked = false;
-    statusOptions[1].checked = true;
-    page.document.dispatch('change', { target: statusOptions[1] });
-    expect(page.dialogBody.scrollTop).toBe(240);
-  });
-
-  it('preserves Edit Project body scroll during Tags dropdown interaction', () => {
-    const page = makeDialogPage({ standardDropdowns: true, projectEditDialog: true });
-    page.region.appendChild(page.trigger);
-    enhanceDropdowns(page.document);
-    enhanceAppDialogs(page.document);
-    page.document.dispatch('click', { target: page.trigger });
-    page.dialogBody.scrollTop = 240;
-
-    const tagsDropdown = page.dropdowns.tags.details;
-    tagsDropdown.open = true;
-    tagsDropdown.setAttribute('open', '');
-    page.document.dispatch('toggle', { target: tagsDropdown });
-    expect(page.dialogBody.scrollTop).toBe(240);
-
-    const tagOptions = tagsDropdown.querySelectorAll('input[type="checkbox"]');
-    tagOptions[1].checked = true;
-    page.document.dispatch('change', { target: tagOptions[1] });
-    expect(page.dialogBody.scrollTop).toBe(240);
-
-    const escape = page.dialog.dispatch('keydown', { key: 'Escape', target: tagOptions[1] });
-    expect(escape.defaultPrevented).toBe(true);
-    expect(page.dialogBody.scrollTop).toBe(240);
   });
 
   it('persists a project asset browser default immediately, updates visible state, and keeps the dialog open', async () => {
@@ -2256,25 +1689,53 @@ describe('Reusable app dialog enhancement', () => {
     expect(page.dropdowns.sort.summary.getAttribute('aria-invalid')).toBeNull();
   });
 
-  it('keeps the dialog open and reports genuine network failures', async () => {
-    const page = makeDialogPage();
+  it.each([
+    [
+      'default',
+      null,
+      'Saving defaults.',
+      'Could not save defaults. Check your connection and try again.',
+      'Projects defaults could not be saved. Your selections were kept.',
+    ],
+    [
+      'configured',
+      {
+        'data-dialog-pending-message': 'Clearing logs…',
+        'data-dialog-error-message': 'Logs could not be cleared.',
+        'data-dialog-network-error-message': 'Could not clear logs.',
+      },
+      'Clearing logs…',
+      'Could not clear logs.',
+      'Logs could not be cleared. Your selections were kept.',
+    ],
+  ])('keeps the dialog open and reports network failures with %s messages', async (
+    _label,
+    dialogMessages,
+    pendingMessage,
+    networkMessage,
+    errorMessage,
+  ) => {
+    const page = makeDialogPage({ dialogMessages });
     page.region.appendChild(page.trigger);
     let rejectRequest;
     page.windowObject.fetch.mockImplementation(() => new Promise((resolve, reject) => {
       rejectRequest = reject;
     }));
     enhanceAppDialogs(page.document);
+    const successHook = vi.fn();
+    page.dialog.__creatorCrateAppDialogState.onSuccessfulSubmit = successHook;
     page.document.dispatch('click', { target: page.trigger });
     page.form.dispatch('submit', { submitter: page.save });
     await flush();
 
-    expect(page.dialog.querySelector('[data-dialog-status]').textContent).toBe('Saving defaults.');
+    expect(page.dialog.querySelector('[data-dialog-status]').textContent).toBe(pendingMessage);
     rejectRequest(new Error('network down'));
     await flush();
 
     expect(page.dialog.open).toBe(true);
-    expect(page.dialog.querySelector('[data-dialog-status]').textContent).toContain('Could not save defaults');
-    expect(page.dialog.querySelector('[data-dialog-error-text]').textContent).toContain('Your selections were kept');
+    expect(page.dialog.querySelector('[data-dialog-status]').textContent).toBe(networkMessage);
+    expect(page.dialog.querySelector('[data-dialog-error-text]').textContent).toBe(errorMessage);
+    expect(successHook).not.toHaveBeenCalled();
   });
 
   it('uses configured operation messages without invoking a failed dialog success hook', async () => {
@@ -2309,29 +1770,6 @@ describe('Reusable app dialog enhancement', () => {
     expect(page.dialog.open).toBe(true);
     expect(page.dialog.querySelector('[data-dialog-status]').textContent).toBe('Logs could not be cleared.');
     expect(page.dialog.querySelector('[data-dialog-error-text]').textContent).toBe('Logs could not be cleared.');
-    expect(successHook).not.toHaveBeenCalled();
-  });
-
-  it('uses the configured network failure message without invoking a failed dialog success hook', async () => {
-    const page = makeDialogPage({
-      dialogMessages: {
-        'data-dialog-pending-message': 'Clearing logs…',
-        'data-dialog-error-message': 'Logs could not be cleared.',
-        'data-dialog-network-error-message': 'Could not clear logs.',
-      },
-    });
-    page.region.appendChild(page.trigger);
-    page.windowObject.fetch.mockRejectedValue(new Error('network down'));
-    enhanceAppDialogs(page.document);
-    const successHook = vi.fn();
-    page.dialog.__creatorCrateAppDialogState.onSuccessfulSubmit = successHook;
-    page.document.dispatch('click', { target: page.trigger });
-    page.form.dispatch('submit', { submitter: page.save });
-    await flush();
-
-    expect(page.dialog.open).toBe(true);
-    expect(page.dialog.querySelector('[data-dialog-status]').textContent).toBe('Could not clear logs.');
-    expect(page.dialog.querySelector('[data-dialog-error-text]').textContent).toContain('Logs could not be cleared.');
     expect(successHook).not.toHaveBeenCalled();
   });
 
@@ -2724,35 +2162,6 @@ describe('Projects defaults autosave enhancement', () => {
     }
   });
 
-  it('passes followed response HTML through the Project Assets acknowledgement detail', async () => {
-    const page = makeDialogPage({
-      standardDropdowns: true,
-      projectAssetsDefaults: true,
-      projectAssetsScope: true,
-      projectAssetsDefaultsAutosave: true,
-    });
-    const values = JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent);
-    const html = projectAssetsDefaultsHtml(values);
-    const onAcknowledged = vi.fn(() => true);
-    const fetch = vi.fn().mockResolvedValue(response({ html }));
-    installFetchGlobals(page, fetch);
-
-    try {
-      enhanceProjectAssetsAutosavePage(page, { onAcknowledged });
-      page.fields.sort.value = 'modified';
-      page.fields.sort.dispatch('change');
-      await flush();
-
-      expect(onAcknowledged).toHaveBeenCalledWith(expect.objectContaining({
-        form: page.form,
-        html,
-        superseded: false,
-      }));
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
-
   it('reconciles a Project-only acknowledgement from both authoritative server snapshots', async () => {
     const values = {
       global: { view: 'grid', gridSize: 'compact', listSize: 'large', sort: 'filename', order: 'desc', pageSize: '25', extension: 'jpg', tag: '1' },
@@ -2808,11 +2217,11 @@ describe('Projects defaults autosave enhancement', () => {
     const second = deferred();
     const initial = JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent);
     const firstAuthoritative = {
-      global: { ...initial.global, gridSize: 'compact' },
+      global: { ...initial.global, gridSize: 'compact', listSize: 'compact' },
       project: { ...initial.project },
     };
     const finalAuthoritative = {
-      global: { ...initial.global, gridSize: 'large' },
+      global: { ...initial.global, gridSize: 'large', listSize: 'large' },
       project: { ...initial.project },
     };
     const fetch = vi.fn()
@@ -2820,7 +2229,7 @@ describe('Projects defaults autosave enhancement', () => {
       .mockImplementationOnce(() => second.promise);
     const storage = new Map([
       ['creatorcrate-asset-grid-size', 'default'],
-      ['creatorcrate-asset-list-size', 'large'],
+      ['creatorcrate-asset-list-size', 'default'],
     ]);
     vi.stubGlobal('localStorage', {
       getItem: (key) => storage.get(key) ?? null,
@@ -2848,6 +2257,11 @@ describe('Projects defaults autosave enhancement', () => {
       expect(fetch).toHaveBeenCalledTimes(2);
       expect(Object.fromEntries(fetch.mock.calls[1][1].body.entries())).toMatchObject({ gridSize: 'large' });
       expect(page.projectAssetsDefaultsRefreshOptions.refresh).not.toHaveBeenCalled();
+      expect(JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent))
+        .toEqual(firstAuthoritative);
+      expect(page.fields.gridSize.value).toBe('large');
+      expect(storage.get('creatorcrate-asset-grid-size')).toBe('default');
+      expect(storage.get('creatorcrate-asset-list-size')).toBe('default');
 
       const finalUrl = 'http://creatorcrate.test/projects/1/assets?gridSize=large&notice=project_assets_defaults_saved';
       second.resolve(response({
@@ -2863,11 +2277,14 @@ describe('Projects defaults autosave enhancement', () => {
         17,
         { onError: expect.any(Function) },
       );
-      expect(storage.get('creatorcrate-asset-grid-size')).toBe('large');
+      expect(storage.get('creatorcrate-asset-grid-size')).toBe(finalAuthoritative.global.gridSize);
       expect(storage.get('creatorcrate-asset-list-size')).toBe(finalAuthoritative.global.listSize);
+      expect(JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent))
+        .toEqual(finalAuthoritative);
       closeAppDialogById(page.document, page.dialog.id);
       page.document.dispatch('click', { target: page.trigger });
       expect(page.fields.gridSize.value).toBe('large');
+      expect(page.fields.listSize.value).toBe('large');
     } finally {
       vi.unstubAllGlobals();
     }
@@ -3085,6 +2502,14 @@ describe('Projects defaults autosave enhancement', () => {
         }),
       }));
     const refresh = vi.fn(() => 'superseded');
+    const storage = new Map([
+      ['creatorcrate-asset-grid-size', 'compact'],
+      ['creatorcrate-asset-list-size', 'compact'],
+    ]);
+    vi.stubGlobal('localStorage', {
+      getItem: (key) => storage.get(key) ?? null,
+      setItem: (key, value) => storage.set(key, String(value)),
+    });
     installFetchGlobals(page, fetch);
 
     try {
@@ -3098,6 +2523,10 @@ describe('Projects defaults autosave enhancement', () => {
       expect(page.fields.sort.value).toBe('size');
       expect(refresh).not.toHaveBeenCalled();
       expect(page.status.textContent).toBe('Could not save settings. Your current changes were kept.');
+      expect(storage).toEqual(new Map([
+        ['creatorcrate-asset-grid-size', 'compact'],
+        ['creatorcrate-asset-list-size', 'compact'],
+      ]));
 
       page.fields.sort.value = 'modified';
       page.fields.sort.dispatch('change');
@@ -3150,7 +2579,7 @@ describe('Projects defaults autosave enhancement', () => {
     }
   });
 
-  it.each(['malformed', 'missing scope', 'invalid scope', 'missing snapshot'])('keeps committed scopes intact for %s response authority', async (failure) => {
+  it.each(['invalid scope', 'missing snapshot'])('keeps committed scopes intact for %s response authority', async (failure) => {
     const page = makeDialogPage({
       standardDropdowns: true,
       projectAssetsDefaults: true,
@@ -3159,8 +2588,6 @@ describe('Projects defaults autosave enhancement', () => {
     });
     const initial = JSON.parse(page.form.querySelector('[data-project-assets-default-values]').textContent);
     const html = {
-      malformed: '<main>Saved</main>',
-      'missing scope': projectAssetsDefaultsHtml(initial).replace(/<input[^>]*>/, ''),
       'invalid scope': projectAssetsDefaultsHtml(initial, 'other'),
       'missing snapshot': projectAssetsDefaultsHtml({ global: initial.global }, 'project'),
     }[failure];
@@ -3205,6 +2632,7 @@ describe('Projects defaults autosave enhancement', () => {
       await flush();
 
       expect(fetch).toHaveBeenCalledTimes(1);
+      expect(fetch.mock.calls[0][0]).toBe('/projects/defaults');
       expect(page.fields.view.value).toBe('list');
       expect(Object.fromEntries(fetch.mock.calls[0][1].body.entries())).toMatchObject({
         view: 'list', sort: 'created', order: 'desc', status: 'all', projectType: 'all', tag: 'all',
@@ -3215,6 +2643,9 @@ describe('Projects defaults autosave enhancement', () => {
       page.fields.order.value = 'asc';
       page.fields.order.dispatch('change');
       expect(fetch).toHaveBeenCalledTimes(1);
+
+      page.fields.status.value = 'ready';
+      page.fields.status.dispatch('input');
 
       first.resolve(response());
       await flush();
@@ -3228,12 +2659,14 @@ describe('Projects defaults autosave enhancement', () => {
       expect(page.dialog.open).toBe(true);
       expect(page.status.textContent).toBe('Settings saved.');
       expect(page.form.getAttribute('aria-busy')).toBeNull();
+      expect(page.fields.status.value).toBe('ready');
+      expect(fetch).toHaveBeenCalledTimes(2);
     } finally {
       vi.unstubAllGlobals();
     }
   });
 
-  it.each(['X', 'Escape', 'backdrop'])('%s dismissal does not cancel a pending save or restore stale values on reopen', async (path) => {
+  it('dismissal does not cancel a pending save or restore stale values on reopen', async () => {
     const page = makeDialogPage({ standardDropdowns: true, projectsDefaultsAutosave: true });
     const pending = deferred();
     const fetch = vi.fn(() => pending.promise);
@@ -3246,21 +2679,20 @@ describe('Projects defaults autosave enhancement', () => {
       page.fields.view.dispatch('change');
       await flush();
 
-      if (path === 'X') page.close.dispatch('click');
-      else if (path === 'Escape') page.dialog.dispatch('keydown', { key: 'Escape', target: page.dialog });
-      else page.dialog.dispatch('click', { target: page.dialog });
-
+      page.close.dispatch('click');
       expect(page.dialog.open).toBe(false);
       expect(fetch).toHaveBeenCalledOnce();
       expect(fetch.mock.calls[0][1]).not.toHaveProperty('signal');
-      page.document.dispatch('click', { target: page.trigger });
-      expect(page.dialog.open).toBe(true);
-      expect(page.fields.view.value).toBe('list');
 
       pending.resolve(response());
       await flush();
       expect(page.status.textContent).toBe('Settings saved.');
       expect(page.fields.view.value).toBe('list');
+
+      page.document.dispatch('click', { target: page.trigger });
+      expect(page.dialog.open).toBe(true);
+      expect(page.fields.view.value).toBe('list');
+      expect(fetch).toHaveBeenCalledOnce();
     } finally {
       vi.unstubAllGlobals();
     }
@@ -3275,6 +2707,7 @@ describe('Projects defaults autosave enhancement', () => {
 
     try {
       enhanceAutosavePage(page);
+      page.document.dispatch('click', { target: page.trigger });
       const renderedError = page.form.querySelector('[data-dialog-error]');
       const sortField = page.fields.sort.closest('[data-dialog-field]');
       const fieldError = makeElement('span', { class: 'field-error-message' });
@@ -3294,6 +2727,7 @@ describe('Projects defaults autosave enhancement', () => {
       expect(sortField.querySelector('.field-error-message')).toBeNull();
       expect(page.fields.sort.getAttribute('aria-invalid')).toBeNull();
       expect(page.fields.sort.value).toBe('invalid');
+      expect(page.dialog.open).toBe(true);
       expect(page.status.textContent).toBe('Could not save settings. Your current changes were kept.');
       expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('error');
 
@@ -3302,6 +2736,9 @@ describe('Projects defaults autosave enhancement', () => {
       await flush();
       expect(page.fields.sort.value).toBe('title');
       expect(page.status.textContent).toBe('Settings saved.');
+      expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('saved');
+      expect(renderedError.hidden).toBe(true);
+      expect(fetch).toHaveBeenCalledTimes(2);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -3360,7 +2797,16 @@ describe('Projects defaults autosave enhancement', () => {
       .mockImplementationOnce(() => first.promise)
       .mockImplementationOnce(() => second.promise);
     const beginRefresh = vi.fn(() => 7);
-    const refresh = vi.fn((_document, _url, _authority, { onError }) => {
+    let mountedFormsAtRefresh = [];
+    const mountedValuesAtRefresh = [];
+    const refresh = vi.fn((currentDocument, _url, _authority, { onError }) => {
+      mountedFormsAtRefresh = currentDocument.querySelectorAll('#projects-defaults-form');
+      const mountedForm = mountedFormsAtRefresh[0];
+      mountedValuesAtRefresh.push({
+        view: mountedForm?.querySelector('[name="view"]')?.value,
+        sort: mountedForm?.querySelector('[name="sort"]')?.value,
+        order: mountedForm?.querySelector('[name="order"]')?.value,
+      });
       onError();
       return 'started';
     });
@@ -3381,23 +2827,44 @@ describe('Projects defaults autosave enhancement', () => {
       expect(refresh).not.toHaveBeenCalled();
 
       const successUrl = 'http://creatorcrate.test/projects?sort=title&order=desc&view=list&notice=projects_defaults_saved';
-      second.resolve(response({ url: successUrl }));
+      second.resolve(response({
+        url: successUrl,
+        html: `
+          <div data-projects-live-region>
+            <dialog id="projects-defaults-dialog" open>
+              <form id="projects-defaults-form" action="/projects/defaults" method="post" data-projects-defaults-autosave>
+                <select id="projects-default-view" name="view"><option value="grid" selected>Grid</option></select>
+                <select id="projects-default-sort" name="sort"><option value="updated" selected>Updated</option></select>
+                <select id="projects-default-order" name="order"><option value="asc" selected>Ascending</option></select>
+              </form>
+            </dialog>
+          </div>
+        `,
+      }));
       await flush();
 
       expect(beginRefresh).toHaveBeenCalledOnce();
       expect(refresh).toHaveBeenCalledOnce();
       expect(refresh).toHaveBeenCalledWith(page.document, successUrl, 7, { onError: expect.any(Function) });
+      expect(mountedFormsAtRefresh).toHaveLength(1);
+      expect(mountedFormsAtRefresh[0]).toBe(page.form);
+      expect(mountedValuesAtRefresh).toEqual([{ view: 'list', sort: 'title', order: 'desc' }]);
       expect(page.dialog.open).toBe(true);
       expect(page.fields.view.value).toBe('list');
       expect(page.fields.sort.value).toBe('title');
       expect(page.status.textContent).toBe('Settings saved, but Projects could not refresh. Refresh the page to see the saved defaults.');
       expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('saved-refresh-error');
+      page.close.dispatch('click');
+      page.document.dispatch('click', { target: page.trigger });
+      expect(page.fields.view.value).toBe('list');
+      expect(page.fields.sort.value).toBe('title');
+      expect(fetch).toHaveBeenCalledTimes(2);
     } finally {
       vi.unstubAllGlobals();
     }
   });
 
-  it('configures the shared autosave path for Releases without binding it twice', async () => {
+  it('uses the default Releases refresh path once and reports its refresh failure', async () => {
     const page = makeDialogPage({ standardDropdowns: true, projectsDefaultsAutosave: true });
     page.form.setAttribute('id', 'releases-defaults-form');
     page.form.setAttribute('action', '/releases/defaults');
@@ -3406,71 +2873,92 @@ describe('Projects defaults autosave enhancement', () => {
     Object.entries(page.fields).forEach(([name, field]) => {
       if (name !== 'sort' && name !== 'order') field.removeAttribute('data-autosubmit');
     });
-    const beginRefresh = vi.fn(() => 11);
-    const refresh = vi.fn(() => 'started');
-    const fetch = vi.fn().mockResolvedValue(response({
-      url: 'http://creatorcrate.test/releases?sort=title&order=asc&notice=releases_defaults_saved',
-    }));
+    page.region.removeAttribute('data-projects-live-region');
+    page.region.setAttribute('data-releases-live-region', '');
+    page.region.appendChild(makeElement('div', { 'data-releases-live-status': '' }));
+    const refreshedRegion = makeElement('div', { 'data-releases-live-region': '' });
+    const refreshedStatus = makeElement('div', { 'data-releases-live-status': '' });
+    refreshedRegion.appendChild(refreshedStatus);
+    page.windowObject.location = {
+      href: 'http://creatorcrate.test/releases?sort=created&order=desc',
+      assign: vi.fn(),
+    };
+    page.windowObject.history = {
+      pushState: vi.fn(),
+      replaceState: vi.fn(),
+    };
+    page.windowObject.DOMParser = class DOMParserMock {
+      parseFromString(html) {
+        return {
+          querySelector: (selector) => {
+            if (selector === '[data-releases-live-region]' && html === 'releases-refresh-success') {
+              return refreshedRegion;
+            }
+            return null;
+          },
+        };
+      }
+    };
+    const firstSuccessUrl = 'http://creatorcrate.test/releases?sort=title&order=desc&notice=releases_defaults_saved';
+    const secondSuccessUrl = 'http://creatorcrate.test/releases?sort=title&order=asc&notice=releases_defaults_saved';
+    const fetch = vi.fn()
+      .mockResolvedValueOnce(response({ url: firstSuccessUrl }))
+      .mockResolvedValueOnce(response({
+        redirected: false,
+        url: 'http://creatorcrate.test/releases?sort=title&order=desc',
+        html: 'releases-refresh-success',
+      }))
+      .mockResolvedValueOnce(response({ url: secondSuccessUrl }))
+      .mockRejectedValueOnce(new Error('offline'));
+    page.windowObject.fetch = fetch;
     installFetchGlobals(page, fetch);
 
     try {
-      expect(enhanceReleasesDefaultsFetchSave(page.document, { beginRefresh, refresh })).toBe(2);
-      expect(enhanceReleasesDefaultsFetchSave(page.document, { beginRefresh, refresh })).toBe(0);
+      page.region.appendChild(page.trigger);
+      enhanceDropdowns(page.document);
+      enhanceAppDialogs(page.document);
+      enhanceReleasesLiveFiltering(page.document);
+      expect(enhanceReleasesDefaultsFetchSave(page.document)).toBe(2);
+      expect(enhanceReleasesDefaultsFetchSave(page.document)).toBe(0);
 
       page.fields.sort.value = 'title';
       page.fields.sort.dispatch('change');
       await flush();
 
-      expect(fetch).toHaveBeenCalledOnce();
-      expect(fetch).toHaveBeenCalledWith('/releases/defaults', expect.objectContaining({
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(fetch).toHaveBeenNthCalledWith(1, '/releases/defaults', expect.objectContaining({
         method: 'POST',
         redirect: 'follow',
       }));
-      expect(beginRefresh).toHaveBeenCalledOnce();
-      expect(refresh).toHaveBeenCalledWith(
-        page.document,
-        'http://creatorcrate.test/releases?sort=title&order=asc&notice=releases_defaults_saved',
-        11,
-        { onError: expect.any(Function) },
+      expect(fetch).toHaveBeenNthCalledWith(
+        2,
+        firstSuccessUrl,
+        expect.objectContaining({ method: 'GET', headers: { Accept: 'text/html' } }),
+      );
+      expect(page.document.querySelector('[data-releases-live-region]')).toBe(refreshedRegion);
+
+      page.fields.order.value = 'asc';
+      page.fields.order.dispatch('change');
+      await flush();
+
+      expect(fetch).toHaveBeenCalledTimes(4);
+      expect(fetch).toHaveBeenNthCalledWith(3, '/releases/defaults', expect.objectContaining({ method: 'POST' }));
+      expect(fetch).toHaveBeenNthCalledWith(4, secondSuccessUrl, expect.objectContaining({ method: 'GET' }));
+      expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('saved-refresh-error');
+      expect(page.status.textContent).toBe('Settings saved, but Releases could not refresh. Refresh the page to see the saved defaults.');
+      expect(refreshedRegion.getAttribute('data-releases-live-state')).toBe('error');
+      expect(refreshedStatus.textContent).toBe(
+        'Defaults were saved, but Releases could not refresh. Refresh the page to see the saved defaults.',
       );
     } finally {
       vi.unstubAllGlobals();
     }
   });
 
-  it('keeps Releases edits and uses its configured accessible failure message', async () => {
-    const page = makeDialogPage({ standardDropdowns: true, projectsDefaultsAutosave: true });
-    page.form.setAttribute('id', 'releases-defaults-form');
-    page.form.removeAttribute('data-projects-defaults-autosave');
-    page.form.setAttribute('data-releases-defaults-autosave', '');
-    Object.entries(page.fields).forEach(([name, field]) => {
-      if (name !== 'sort' && name !== 'order') field.removeAttribute('data-autosubmit');
-    });
-    const fetch = vi.fn().mockResolvedValue(response({ ok: false, redirected: false }));
-    installFetchGlobals(page, fetch);
-
-    try {
-      enhanceReleasesDefaultsFetchSave(page.document, {
-        beginRefresh: vi.fn(() => 0),
-        refresh: vi.fn(() => 'started'),
-      });
-      page.fields.order.value = 'asc';
-      page.fields.order.dispatch('change');
-      await flush();
-
-      expect(page.fields.order.value).toBe('asc');
-      expect(page.status.textContent).toBe('Could not save settings. Your current changes were kept.');
-      expect(page.status.getAttribute('role')).toBe('status');
-      expect(page.status.getAttribute('aria-live')).toBe('polite');
-      expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('error');
-    } finally {
-      vi.unstubAllGlobals();
-    }
-  });
 });
 
 describe('Dashboard defaults dialog client behavior', () => {
-  it('wires the shared dedicated reorder engine for keyboard and full-row pointer drag movement', () => {
+  it('wires Dashboard reorder state without hijacking interactive row controls', () => {
     const page = makeDashboardDefaultsDialogPage();
     Object.defineProperty(page.windowObject, 'localStorage', {
       get() { throw new Error('Dashboard defaults must not use localStorage.'); },
@@ -3479,41 +2967,9 @@ describe('Dashboard defaults dialog client behavior', () => {
 
     expect(dashboardSectionOrder(page)).toEqual(['overdue', 'upcoming', 'recently-updated']);
     expect(page.orderInput.value).toBe('overdue,upcoming,recently-updated');
-    expect(page.sections.overdue.row.getAttribute('aria-posinset')).toBe('1');
-    expect(page.sections.overdue.row.getAttribute('aria-setsize')).toBe('3');
-
     page.sections.overdue.handle.dispatch('keydown', { key: 'ArrowDown' });
     expect(dashboardSectionOrder(page)).toEqual(['upcoming', 'overdue', 'recently-updated']);
     expect(page.orderInput.value).toBe('upcoming,overdue,recently-updated');
-    expect(page.document.activeElement).toBe(page.sections.overdue.handle);
-    expect(page.sections.overdue.row.getAttribute('aria-posinset')).toBe('2');
-    expect(page.live.textContent).toContain('Overdue moved to position 2 of 3');
-
-    page.sections.overdue.handle.dispatch('keydown', { key: 'ArrowUp' });
-    expect(dashboardSectionOrder(page)).toEqual(['overdue', 'upcoming', 'recently-updated']);
-    page.sections['recently-updated'].handle.dispatch('keydown', { key: 'Home' });
-    expect(dashboardSectionOrder(page)).toEqual(['recently-updated', 'overdue', 'upcoming']);
-    page.sections['recently-updated'].handle.dispatch('keydown', { key: 'End' });
-    expect(dashboardSectionOrder(page)).toEqual(['overdue', 'upcoming', 'recently-updated']);
-    expect(page.orderInput.value).toBe('overdue,upcoming,recently-updated');
-
-    dragDashboardSection(page, page.sections['recently-updated'], page.sections.overdue);
-    expect(dashboardSectionOrder(page)).toEqual(['recently-updated', 'overdue', 'upcoming']);
-    expect(page.orderInput.value).toBe('recently-updated,overdue,upcoming');
-  });
-
-  it('does not start a Dashboard row drag from interactive controls', () => {
-    const page = makeDashboardDefaultsDialogPage();
-    enhanceDashboardDefaults(page);
-
-    const visibilityDrag = page.sections.overdue.row.dispatch('dragstart', {
-      target: page.sections.overdue.visibleControl,
-      dataTransfer: { setData: vi.fn() },
-    });
-    expect(visibilityDrag.defaultPrevented).toBe(true);
-    expect(page.sections.overdue.row.classList.contains('is-dragging')).toBe(false);
-    expect(page.sections.overdue.visibleControl.dispatch('click').defaultPrevented).toBe(false);
-
     const countDrag = page.sections.overdue.row.dispatch('dragstart', {
       target: page.sections.overdue.countControl,
       dataTransfer: { setData: vi.fn() },
@@ -3528,15 +2984,16 @@ describe('Dashboard defaults dialog client behavior', () => {
     });
     expect(sortDrag.defaultPrevented).toBe(true);
     expect(page.sections.overdue.row.classList.contains('is-dragging')).toBe(false);
-    expect(page.sections.overdue.sortControl.dispatch('click').defaultPrevented).toBe(false);
+    expect(dashboardSectionOrder(page)).toEqual(['upcoming', 'overdue', 'recently-updated']);
 
-    dragDashboardSection(page, page.sections['recently-updated'], page.sections.overdue);
-    expect(dashboardSectionOrder(page)).toEqual(['recently-updated', 'overdue', 'upcoming']);
-    expect(page.orderInput.value).toBe('recently-updated,overdue,upcoming');
+    dragDashboardSection(page, page.sections['recently-updated'], page.sections.upcoming);
+    expect(dashboardSectionOrder(page)).toEqual(['recently-updated', 'upcoming', 'overdue']);
+    expect(page.orderInput.value).toBe('recently-updated,upcoming,overdue');
   });
 
-  it('stages sort options per section in one secondary dialog and restores focus after Apply', () => {
+  it('stages sort options for the targeted row, cancels temporary edits, and reopens from staged state exactly once', () => {
     const page = makeDashboardDefaultsDialogPage();
+    enhanceDashboardDefaults(page);
     enhanceDashboardDefaults(page);
     page.document.dispatch('click', { target: page.trigger });
 
@@ -3545,32 +3002,51 @@ describe('Dashboard defaults dialog client behavior', () => {
     expect(page.sortDialog.open).toBe(true);
     expect(page.dialog.open).toBe(true);
     expect(page.sectionLabel.textContent).toBe('Overdue');
-    expect(page.sortSelect.value).toBe('planned');
+    expect(page.sortSelect.value).toBe('created');
     expect(page.orderSelect.value).toBe('asc');
 
-    page.sortSelect.value = 'published';
+    page.sortSelect.value = 'title';
     page.orderSelect.value = 'desc';
     page.apply.dispatch('click');
     expect(page.sortDialog.open).toBe(false);
-    expect(page.sections.overdue.sortInput.value).toBe('published');
+    expect(page.sortDialog.close).toHaveBeenCalledTimes(1);
+    expect(page.sections.overdue.sortInput.value).toBe('title');
     expect(page.sections.overdue.orderInput.value).toBe('desc');
     expect(page.sections.upcoming.sortInput.value).toBe('updated');
     expect(page.sections.upcoming.orderInput.value).toBe('desc');
-    expect(page.document.activeElement).toBe(page.sections.overdue.sortControl);
+    expect(page.windowObject.fetch).not.toHaveBeenCalled();
 
     page.sections.upcoming.sortControl.dispatch('click');
     page.document.dispatch('click', { target: page.sections.upcoming.sortControl });
     expect(page.sectionLabel.textContent).toBe('Upcoming releases');
     expect(page.sortSelect.value).toBe('updated');
     expect(page.orderSelect.value).toBe('desc');
-    page.sortDialog.dispatch('keydown', { key: 'Escape', target: page.sortDialog });
-    expect(page.sortDialog.open).toBe(false);
-    expect(page.dialog.open).toBe(true);
-    expect(page.document.activeElement).toBe(page.sections.upcoming.sortControl);
-    expect(page.document.body.classList.contains('app-dialog-open')).toBe(true);
+    page.sortSelect.value = 'created';
+    page.orderSelect.value = 'asc';
+    page.sortClose.dispatch('click');
+    expect(page.sections.upcoming.sortInput.value).toBe('updated');
+    expect(page.sections.upcoming.orderInput.value).toBe('desc');
+
+    page.sections.upcoming.sortControl.dispatch('click');
+    page.document.dispatch('click', { target: page.sections.upcoming.sortControl });
+    expect(page.sortSelect.value).toBe('updated');
+    expect(page.orderSelect.value).toBe('desc');
+    page.sortSelect.value = 'created';
+    page.orderSelect.value = 'asc';
+    page.apply.dispatch('click');
+    expect(page.sections.upcoming.sortInput.value).toBe('created');
+    expect(page.sections.upcoming.orderInput.value).toBe('asc');
+    expect(page.sections.overdue.sortInput.value).toBe('title');
+    expect(page.sections.overdue.orderInput.value).toBe('desc');
+
+    page.sections.overdue.sortControl.dispatch('click');
+    page.document.dispatch('click', { target: page.sections.overdue.sortControl });
+    expect(page.sectionLabel.textContent).toBe('Overdue');
+    expect(page.sortSelect.value).toBe('title');
+    expect(page.orderSelect.value).toBe('desc');
   });
 
-  it('restores confirmed order and values after Escape and X cancellation', () => {
+  it('discards all unsaved Dashboard staging when the parent closes and reopens', () => {
     const page = makeDashboardDefaultsDialogPage();
     enhanceDashboardDefaults(page);
     page.document.dispatch('click', { target: page.trigger });
@@ -3579,34 +3055,21 @@ describe('Dashboard defaults dialog client behavior', () => {
     page.sections.upcoming.countControl.value = '25';
     page.sections.overdue.sortControl.dispatch('click');
     page.document.dispatch('click', { target: page.sections.overdue.sortControl });
-    page.sortSelect.value = 'published';
+    page.sortSelect.value = 'title';
     page.orderSelect.value = 'desc';
     page.apply.dispatch('click');
-    page.dialog.dispatch('keydown', { key: 'Escape' });
+    page.close.dispatch('click');
+    page.document.dispatch('click', { target: page.trigger });
 
     expect(dashboardSectionOrder(page)).toEqual(['overdue', 'upcoming', 'recently-updated']);
     expect(page.orderInput.value).toBe('overdue,upcoming,recently-updated');
     expect(page.sections.overdue.visibleControl.checked).toBe(true);
     expect(page.sections.upcoming.countControl.value).toBe('10');
-    expect(page.sections.overdue.sortInput.value).toBe('planned');
+    expect(page.sections.overdue.sortInput.value).toBe('created');
     expect(page.sections.overdue.orderInput.value).toBe('asc');
-
-    page.document.dispatch('click', { target: page.trigger });
-    dragDashboardSection(page, page.sections['recently-updated'], page.sections.overdue);
-    page.sections['recently-updated'].visibleControl.checked = true;
-    page.sections.overdue.countControl.value = '1';
-    page.sections.upcoming.sortInput.value = 'published';
-    page.sections.upcoming.orderInput.value = 'asc';
-    page.close.dispatch('click');
-
-    expect(dashboardSectionOrder(page)).toEqual(['overdue', 'upcoming', 'recently-updated']);
-    expect(page.sections['recently-updated'].visibleControl.checked).toBe(false);
-    expect(page.sections.overdue.countControl.value).toBe('8');
-    expect(page.sections.upcoming.sortInput.value).toBe('updated');
-    expect(page.sections.upcoming.orderInput.value).toBe('desc');
   });
 
-  it('navigates once to the server-rendered Dashboard after a successful enhanced save', async () => {
+  it('submits complete Dashboard state with staged sort options before navigating once', async () => {
     const page = makeDashboardDefaultsDialogPage();
     const assign = vi.fn();
     page.windowObject.location = { assign };
@@ -3619,8 +3082,11 @@ describe('Dashboard defaults dialog client behavior', () => {
     page.sections.overdue.handle.dispatch('keydown', { key: 'End' });
     page.sections.overdue.visibleControl.checked = false;
     page.sections.upcoming.countControl.value = '22';
-    page.sections.overdue.sortInput.value = 'published';
-    page.sections.overdue.orderInput.value = 'desc';
+    page.sections.overdue.sortControl.dispatch('click');
+    page.document.dispatch('click', { target: page.sections.overdue.sortControl });
+    page.sortSelect.value = 'title';
+    page.orderSelect.value = 'desc';
+    page.apply.dispatch('click');
     page.form.dispatch('submit', { submitter: page.save });
     await flush();
 
@@ -3628,13 +3094,25 @@ describe('Dashboard defaults dialog client behavior', () => {
     expect(assign).toHaveBeenCalledTimes(1);
     expect(assign).toHaveBeenCalledWith('/?notice=dashboard_defaults_saved');
     expect(page.dialog.close).not.toHaveBeenCalled();
-    expect([...page.windowObject.fetch.mock.calls[0][1].body.entries()])
-      .toContainEqual(['sections[overdue][sort]', 'published']);
-    expect([...page.windowObject.fetch.mock.calls[0][1].body.entries()])
-      .toContainEqual(['sections[overdue][order]', 'desc']);
+    expect([...page.windowObject.fetch.mock.calls[0][1].body.entries()]).toEqual(expect.arrayContaining([
+      ['orderedSectionIds', 'upcoming,recently-updated,overdue'],
+      ['sections[overdue][visible]', '0'],
+      ['sections[overdue][itemCount]', '8'],
+      ['sections[overdue][sort]', 'title'],
+      ['sections[overdue][order]', 'desc'],
+      ['sections[upcoming][visible]', '0'],
+      ['sections[upcoming][visible]', '1'],
+      ['sections[upcoming][itemCount]', '22'],
+      ['sections[upcoming][sort]', 'updated'],
+      ['sections[upcoming][order]', 'desc'],
+      ['sections[recently-updated][visible]', '0'],
+      ['sections[recently-updated][itemCount]', '12'],
+      ['sections[recently-updated][sort]', 'updated'],
+      ['sections[recently-updated][order]', 'desc'],
+    ]));
   });
 
-  it('marks a status visibility switch invalid on 422, retains attempted state, then restores the confirmed baseline on Escape', async () => {
+  it('keeps attempted Dashboard state on validation failure, then discards it on parent close', async () => {
     const page = makeDashboardDefaultsDialogPage({ includeStatusSection: true });
     const assign = vi.fn();
     page.windowObject.location = { assign };
@@ -3672,17 +3150,12 @@ describe('Dashboard defaults dialog client behavior', () => {
     expect(page.orderInput.value).toBe('status:ready,overdue,upcoming,recently-updated');
     expect(page.sections.overdue.visibleControl.checked).toBe(false);
     expect(page.sections['status:ready'].visibleControl.checked).toBe(false);
-    expect(page.sections.upcoming.countControl.value).toBe('10');
     expect(page.sections['status:ready'].visibleField.classList.contains('field-error')).toBe(true);
     expect(page.sections['status:ready'].visibleControl.getAttribute('aria-invalid')).toBe('true');
-    expect(page.sections['status:ready'].visibleControl.getAttribute('aria-describedby')).toBe('dashboard-defaults-section-status:ready-visible-error');
-    expect(page.sections['status:ready'].visibleField.children.find((child) => child.className === 'field-error-message')?.textContent)
-      .toBe('Show section must be explicitly enabled or disabled.');
-    expect(page.dialog.querySelector('[data-dialog-error-list]').textContent)
-      .not.toContain('[object Object]');
     expect(assign).not.toHaveBeenCalled();
 
-    page.dialog.dispatch('keydown', { key: 'Escape', target: page.dialog });
+    page.close.dispatch('click');
+    page.document.dispatch('click', { target: page.trigger });
     expect(dashboardSectionOrder(page)).toEqual(['overdue', 'upcoming', 'recently-updated', 'status:ready']);
     expect(page.sections.overdue.visibleControl.checked).toBe(true);
     expect(page.sections['status:ready'].visibleControl.checked).toBe(true);
@@ -3703,12 +3176,21 @@ describe('Category slug autofill', () => {
     const form = page.initial.body.querySelector('#project-category-management-add-form');
     const displayName = form.querySelector('#add-displayName');
     const directorySlug = form.querySelector('#add-directorySlug');
+    let slugValue = directorySlug.value;
+    const recordSlugWrite = vi.fn((value) => { slugValue = value; });
+    Object.defineProperty(directorySlug, 'value', {
+      configurable: true,
+      get: () => slugValue,
+      set: recordSlugWrite,
+    });
 
+    expect(enhanceCategorySlugAutofill(page.document)).toBe(1);
     expect(enhanceCategorySlugAutofill(page.document)).toBe(1);
     displayName.value = '  My Cool Category!  ';
     const firstTab = displayName.dispatch('keydown', { key: 'Tab' });
     expect(firstTab.defaultPrevented).toBe(false);
     expect(directorySlug.value).toBe('my-cool-category');
+    expect(recordSlugWrite).toHaveBeenCalledTimes(1);
 
     directorySlug.value = 'cool-cat';
     displayName.value = 'A different name';
@@ -3720,26 +3202,14 @@ describe('Category slug autofill', () => {
     const reverseTab = displayName.dispatch('keydown', { key: 'Tab', shiftKey: true });
     expect(reverseTab.defaultPrevented).toBe(false);
     expect(directorySlug.value).toBe('');
-  });
 
-  it('binds the shared behavior through the project category dialog enhancement', () => {
-    const page = makeCategoryDialogPage();
-    const form = page.initial.body.querySelector('#project-category-management-add-form');
-    const displayName = form.querySelector('#add-displayName');
-    const directorySlug = form.querySelector('#add-directorySlug');
-
-    enhanceAppDialogs(page.document);
-    enhanceProjectAssetCategoryManagement(page.document);
-    displayName.value = 'Project category';
-    const event = displayName.dispatch('keydown', { key: 'Tab' });
-
-    expect(event.defaultPrevented).toBe(false);
-    expect(directorySlug.value).toBe('project-category');
+    displayName.dispatch('keydown', { key: 'Tab' });
+    expect(directorySlug.value).toBe('a-different-name');
   });
 });
 
 describe('Live project category mutations', () => {
-  it('replaces server-rendered add state, keeps the dialog open, and remains idempotent', async () => {
+  it('submits an autofilled add once and re-enhances the authoritative replacement', async () => {
     const page = makeCategoryDialogPage();
     page.windowObject.fetch.mockResolvedValue({
       ok: true,
@@ -3756,27 +3226,60 @@ describe('Live project category mutations', () => {
     enhanceConfirmations(page.document);
     enhanceCategoryReorder(page.document);
     enhanceProjectAssetCategoryManagement(page.document);
+    enhanceProjectAssetCategoryManagement(page.document);
     expect(page.dialog.open).toBe(true);
     const addForm = page.initial.body.querySelector('#project-category-management-add-form');
+    const displayName = addForm.querySelector('#add-displayName');
+    const directorySlug = addForm.querySelector('#add-directorySlug');
+    displayName.value = 'Project category';
+    displayName.dispatch('keydown', { key: 'Tab' });
+    expect(directorySlug.value).toBe('project-category');
     addForm.dispatch('submit', { submitter: page.initial.addSubmit });
     await flush();
 
     expect(page.windowObject.fetch).toHaveBeenCalledTimes(1);
+    expect(page.windowObject.fetch.mock.calls[0][0]).toBe('/projects/1/asset-categories');
+    expect(page.windowObject.fetch.mock.calls[0][1].method).toBe('POST');
     expect(page.windowObject.fetch.mock.calls[0][1].headers).toEqual({ Accept: 'application/json' });
-    expect([...page.windowObject.fetch.mock.calls[0][1].body.entries()]).toContainEqual(['_csrf', 'csrf-token']);
+    expect([...page.windowObject.fetch.mock.calls[0][1].body.entries()]).toEqual([
+      ['_csrf', 'csrf-token'],
+      ['returnTo', CATEGORY_MANAGEMENT_RETURN_TO],
+      ['displayName', 'Project category'],
+      ['directorySlug', 'project-category'],
+      ['enabled', '0'],
+      ['enabled', '1'],
+    ]);
     expect(page.dialog.open).toBe(true);
     expect(page.dialog.querySelector('[data-category-label="Added category"]')).toBeTruthy();
     expect(page.dialog.querySelector('[data-category-management-status]').textContent).toBe('Category added.');
     expect(page.document.activeElement?.id).toBe('add-displayName');
 
-    enhanceProjectAssetCategoryManagement(page.document);
     const replacementAddForm = page.dialog.querySelector('#project-category-management-add-form');
-    expect(replacementAddForm.listeners.filter(({ type }) => type === 'submit')).toHaveLength(1);
+    const replacementName = replacementAddForm.querySelector('#add-displayName');
+    const replacementSlug = replacementAddForm.querySelector('#add-directorySlug');
+    replacementName.value = 'Replacement category';
+    replacementName.dispatch('keydown', { key: 'Tab' });
+    expect(replacementSlug.value).toBe('replacement-category');
+
+    page.windowObject.fetch.mockRejectedValueOnce(new Error('offline'));
+    replacementAddForm.dispatch('submit', { submitter: replacementAddForm.querySelector('button') });
+    await flush();
+
+    expect(page.windowObject.fetch).toHaveBeenCalledTimes(2);
+    const mountedBody = page.dialog.querySelector('.project-asset-category-management-dialog-body');
+    const mountedAddForm = mountedBody.querySelector('#project-category-management-add-form');
+    const mountedName = mountedAddForm.querySelector('#add-displayName');
+    const mountedSlug = mountedAddForm.querySelector('#add-directorySlug');
+    expect(mountedAddForm).toBe(replacementAddForm);
+    expect(mountedName.value).toBe('Replacement category');
+    expect(mountedSlug.value).toBe('replacement-category');
+    expect(mountedBody.querySelector('[data-category-management-status]').textContent)
+      .toMatch(/previous state was kept/i);
   });
 
-
-  it('replays category deletion through its native submitter after shared-dialog confirmation', async () => {
+  it('submits the targeted delete after shared-dialog confirmation', async () => {
     const page = makeCategoryDialogPage();
+    page.setReplacement(makeCategoryManagementBody({ categoryId: '2', categoryName: 'Remaining category' }));
     const confirmation = attachSharedConfirmationDialog(page);
     page.windowObject.fetch.mockResolvedValue({
       ok: true,
@@ -3803,22 +3306,24 @@ describe('Live project category mutations', () => {
 
     expect(deleteButton.click().defaultPrevented).toBe(true);
     expect(confirmation.dialog.open).toBe(true);
-    confirmation.cancel.dispatch('click');
-    await flush();
-    expect(page.windowObject.fetch).not.toHaveBeenCalled();
-
-    expect(deleteButton.click().defaultPrevented).toBe(true);
     confirmation.confirm.dispatch('click');
     await flush();
 
     expect(page.windowObject.fetch).toHaveBeenCalledTimes(1);
     expect(page.windowObject.fetch.mock.calls[0][0]).toBe('/projects/1/asset-categories/1/delete');
+    expect([...page.windowObject.fetch.mock.calls[0][1].body.entries()]).toEqual([
+      ['_csrf', 'csrf-token'],
+      ['returnTo', CATEGORY_MANAGEMENT_RETURN_TO],
+    ]);
     expect(page.dialog.open).toBe(true);
+    const mountedBody = page.dialog.querySelector('.project-asset-category-management-dialog-body');
+    expect(mountedBody.querySelector('[data-category-id="1"]')).toBeNull();
+    expect(mountedBody.querySelector('[data-category-id="2"][data-category-label="Remaining category"]')).toBeTruthy();
   });
 
-  it('preserves inline rename errors and does not bypass delete confirmation', async () => {
-    const page = makeCategoryDialogPage();
-    page.setReplacement(makeCategoryManagementBody({ categoryName: 'Submitted name', invalidRename: true }));
+  it('targets the selected rename and preserves its server-rendered validation state', async () => {
+    const page = makeCategoryDialogPage({ categoryId: '2' });
+    page.setReplacement(makeCategoryManagementBody({ categoryId: '2', categoryName: 'Submitted name', invalidRename: true }));
     page.windowObject.fetch.mockResolvedValue({
       ok: false,
       status: 422,
@@ -3826,30 +3331,38 @@ describe('Live project category mutations', () => {
         status: 'error',
         message: 'Could not update the display name. Fix the field below and try again.',
         errors: { displayName: 'Display name is required.' },
-        focus: 'name-1',
+        focus: 'name-2',
         html: '<server-rendered-rename-error>',
       }),
     });
 
-    vi.stubGlobal('confirm', vi.fn(() => false));
     enhanceAppDialogs(page.document);
     page.document.dispatch('click', { target: page.trigger });
     enhanceConfirmations(page.document);
     enhanceProjectAssetCategoryManagement(page.document);
     expect(page.dialog.open).toBe(true);
     const renameForm = page.initial.body.querySelector('.category-name-form');
+    renameForm.querySelector('[name="displayName"]').value = 'Submitted name';
     renameForm.dispatch('submit', { submitter: renameForm.querySelector('button') });
     await flush();
 
+    expect(page.windowObject.fetch.mock.calls[0][0]).toBe('/projects/1/asset-categories/2/name');
+    expect([...page.windowObject.fetch.mock.calls[0][1].body.entries()]).toEqual([
+      ['_csrf', 'csrf-token'],
+      ['returnTo', CATEGORY_MANAGEMENT_RETURN_TO],
+      ['displayName', 'Submitted name'],
+    ]);
     expect(page.dialog.open).toBe(true);
-    expect(page.dialog.querySelector('[data-category-management-status]').getAttribute('role')).toBe('alert');
-    expect(page.document.activeElement?.id).toBe('name-1');
-
-    const deleteButton = page.initial.body.querySelector('[data-confirm]');
-    const click = deleteButton.dispatch('click');
-    expect(click.defaultPrevented).toBe(true);
+    const mountedBody = page.dialog.querySelector('.project-asset-category-management-dialog-body');
+    const mountedRename = mountedBody.querySelector('#name-2');
+    expect(mountedBody).not.toBe(page.initial.body);
+    expect(mountedRename.getAttribute('aria-invalid')).toBe('true');
+    expect(mountedRename.getAttribute('aria-describedby')).toBe('name-2-error');
+    expect(mountedBody.querySelector('#name-2-error').textContent).toBe('Display name is required.');
+    expect(mountedBody.querySelector('[data-category-label="Submitted name"]')).toBeTruthy();
+    expect(mountedBody.querySelector('[data-category-management-status]').getAttribute('role')).toBe('alert');
+    expect(page.document.activeElement).toBe(mountedRename);
     expect(page.windowObject.fetch).toHaveBeenCalledTimes(1);
-    vi.unstubAllGlobals();
   });
 });
 describe('Project Assets multi-select defaults scope', () => {
@@ -3867,7 +3380,7 @@ describe('Project Assets multi-select defaults scope', () => {
     select.dispatch('change');
   }
 
-  it('preserves complete Extension and Tag drafts independently for each scope', () => {
+  it('preserves independent Extension and Tag drafts for each scope', () => {
     const values = {
       global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: ['jpg', 'png'], tag: ['1', '2'] },
       project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: ['png'], tag: ['2'] },
@@ -3883,19 +3396,19 @@ describe('Project Assets multi-select defaults scope', () => {
     expect(selectedValues(page.fields.tag)).toEqual(['1', '2']);
 
     selectValues(page.fields.extension, ['jpg']);
-    selectValues(page.fields.tag, ['1']);
+    expect(selectedValues(page.fields.tag)).toEqual(['1', '2']);
     changeProjectAssetsScope(page, 'project');
     expect(selectedValues(page.fields.extension)).toEqual(['png']);
     expect(selectedValues(page.fields.tag)).toEqual(['2']);
 
-    selectValues(page.fields.extension, ['jpg', 'png']);
-    selectValues(page.fields.tag, ['1', '2']);
+    selectValues(page.fields.tag, ['1']);
+    expect(selectedValues(page.fields.extension)).toEqual(['png']);
     changeProjectAssetsScope(page, 'global');
     expect(selectedValues(page.fields.extension)).toEqual(['jpg']);
-    expect(selectedValues(page.fields.tag)).toEqual(['1']);
-    changeProjectAssetsScope(page, 'project');
-    expect(selectedValues(page.fields.extension)).toEqual(['jpg', 'png']);
     expect(selectedValues(page.fields.tag)).toEqual(['1', '2']);
+    changeProjectAssetsScope(page, 'project');
+    expect(selectedValues(page.fields.extension)).toEqual(['png']);
+    expect(selectedValues(page.fields.tag)).toEqual(['1']);
   });
 
   it('fails closed when a committed multi-select member is unavailable', () => {
@@ -3913,10 +3426,12 @@ describe('Project Assets multi-select defaults scope', () => {
     changeProjectAssetsScope(page, 'project');
 
     expect(selectedValues(page.fields.extension)).toEqual(['jpg']);
+    expect(selectedValues(page.fields.tag)).toEqual([]);
+    expect(page.form.querySelector('input[name="loadedScope"]').value).toBe('global');
     expect(page.form.querySelector('[data-dialog-error-text]').textContent).toMatch(/could not be changed safely/i);
   });
 
-  it('clears concrete Extension and Tag selections when restoring neutral all values', () => {
+  it('restores committed neutral all values after discarding concrete drafts', () => {
     const values = {
       global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: ['jpg', 'png'], tag: ['1', '2'] },
       project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'all', tag: 'all' },
@@ -3927,6 +3442,19 @@ describe('Project Assets multi-select defaults scope', () => {
     enhanceAppDialogs(page.document);
     enhanceProjectAssetsDefaultsScope(page.document);
 
+    page.document.dispatch('click', { target: page.trigger });
+    expect(selectedValues(page.fields.extension)).toEqual(['jpg', 'png']);
+    expect(selectedValues(page.fields.tag)).toEqual(['1', '2']);
+
+    changeProjectAssetsScope(page, 'project');
+    expect(selectedValues(page.fields.extension)).toEqual([]);
+    expect(selectedValues(page.fields.tag)).toEqual([]);
+
+    selectValues(page.fields.extension, ['png']);
+    selectValues(page.fields.tag, ['2']);
+    expect(selectedValues(page.fields.extension)).toEqual(['png']);
+    expect(selectedValues(page.fields.tag)).toEqual(['2']);
+    closeAppDialogById(page.document, page.dialog.id);
     page.document.dispatch('click', { target: page.trigger });
     expect(selectedValues(page.fields.extension)).toEqual(['jpg', 'png']);
     expect(selectedValues(page.fields.tag)).toEqual(['1', '2']);

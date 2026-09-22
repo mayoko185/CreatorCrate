@@ -55,6 +55,7 @@ describe('book primary-image service', () => {
       plannedDate: null,
       publishedDate: null,
       patreonUrl: null,
+      projectType: 'images',
     });
     if (archived) {
       db.prepare("UPDATE projects SET status = 'archived', archived_at = datetime('now') WHERE id = ?")

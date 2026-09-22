@@ -1,47 +1,22 @@
 /**
- * Phase 10.4B — desktop application-shell tests.
+ * Desktop application-shell integration tests.
  *
- * Verifies the persistent collapsed sidebar and its pure-CSS expansion:
- *  - semantic shell landmarks (app-shell / aside / app-main / header / main);
- *  - skip link present, first focusable, targets #main-content;
- *  - primary navigation label;
- *  - collapsed sidebar structure;
- *  - hover expansion CSS (:hover) and keyboard expansion (:focus-within);
- *  - labels become visible on expansion;
- *  - accessible link names retained when collapsed (no display:none,
- *    visibility:hidden, aria-hidden, or duplicate aria-label);
- *  - exactly one active item, marked with aria-current;
- *  - active item distinguished structurally (accent bar), not color alone;
- *  - no duplicate page <h1>;
- *  - the no-overflow layout guarantee (fixed rail + reserved collapsed column);
- *  - reduced-motion rules cover shell transitions;
- *  - no JavaScript is required for navigation/sidebar behavior.
- *
- * CSS is asserted against the real served <style> block (extracted from the
- * rendered HTML), not the source, so these tests fail if the served output
- * regresses. Viewport pixel measurement is performed separately via Playwright
- * and reported; the invariant here is the CSS structure that guarantees it.
+ * Destination inventories and route matching belong to navigation-model and
+ * shell-http tests. Shared icon accessibility, keyboard focus, headings, and
+ * mobile behavior likewise have focused owners. This suite keeps only the
+ * rendered desktop-shell wiring and desktop-specific layout behavior.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import request from 'supertest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import slugify from '@sindresorhus/slugify';
 import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
-import { createAssetRepository } from '../src/data/asset-repository.js';
-import { authenticate, AUTH_CONFIG, extractCsrfToken } from './helpers/auth.js';
+import { authenticate, AUTH_CONFIG } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
-const APP_NAME = 'CreatorCrate';
 
-/**
- * Fetch the actually-served stylesheet through the HTTP test agent (not the
- * source file on disk), so these assertions fail if /creatorcrate.css stops
- * being served correctly, not just if the source file changes.
- */
 async function extractStyle(agent, html) {
   expect(html).toContain('<link rel="stylesheet" href="/creatorcrate.css">');
   const res = await agent.get('/creatorcrate.css').expect(200);
@@ -49,565 +24,141 @@ async function extractStyle(agent, html) {
   return res.text;
 }
 
-/** Count active desktop nav links only (scoped to class="app-nav-link"). */
-function countActive(html) {
-  return (html.match(/class="app-nav-link" data-nav-key="[^"]+" aria-current="page"/g) || []).length;
-}
-
-/** hrefs of every rendered nav link, in document order. */
-function navHrefs(html) {
-  const re = /<a href="([^"]+)" class="app-nav-link"/g;
-  const hrefs = [];
-  let m;
-  while ((m = re.exec(html)) !== null) hrefs.push(m[1]);
-  return hrefs;
-}
-
-/** Keys of the desktop nav items marked active, in document order. */
-function activeNavKeys(html) {
-  const re = /class="app-nav-link" data-nav-key="([^"]+)" aria-current="page"/g;
-  const keys = [];
-  let m;
-  while ((m = re.exec(html)) !== null) keys.push(m[1]);
-  return keys;
-}
-
-/** Count opening <h1> tags. */
-function countH1(html) {
-  return (html.match(/<h1[\s>]/g) || []).length;
-}
-
-/** Count opening <main> tags. */
-function countMain(html) {
-  return (html.match(/<main[\s>]/g) || []).length;
-}
-
-describe('application shell (Phase 10.4B) — landmarks & structure', () => {
-  let db;
-  let app;
+describe('desktop application shell', () => {
   let agent;
-  let csrfToken;
+  let db;
   let tmpDir;
-  let projectsRoot;
-  let projectId;
-  let assetId;
 
-  beforeEach(async () => {
+  beforeAll(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-shell-desktop-'));
-    projectsRoot = path.join(tmpDir, 'projects');
+    const projectsRoot = path.join(tmpDir, 'projects');
     fs.mkdirSync(projectsRoot, { recursive: true });
-    const dbPath = path.join(tmpDir, 'test.db');
-    db = openDatabase(dbPath);
+    db = openDatabase(path.join(tmpDir, 'test.db'));
     runMigrations(db, MIGRATIONS_DIR);
-    app = createApp({ appName: APP_NAME, db, projectsRoot }, { authConfig: AUTH_CONFIG });
-
-    const auth = await authenticate(app);
-    agent = auth.agent;
-    csrfToken = auth.csrfToken;
-
-    const projRes = await agent
-      .post('/projects')
-      .type('form')
-      .send({ title: 'Desktop Shell Project', status: 'tbd', priority: 'normal', _csrf: csrfToken })
-      .expect(302);
-    projectId = projRes.headers.location.replace('/projects/', '');
-
-    const slug = slugify('Desktop Shell Project', { lowercase: true });
-    const entries = fs.readdirSync(projectsRoot);
-    const dirName = entries.find((e) => e.endsWith(`-${slug}`));
-    fs.writeFileSync(
-      path.join(projectsRoot, dirName, 'cover.png'),
-      Buffer.from('png'),
+    const app = createApp(
+      { appName: 'CreatorCrate', db, projectsRoot },
+      { authConfig: AUTH_CONFIG },
     );
-    await agent.post(`/projects/${projectId}/scan`).type('form').send({ _csrf: csrfToken }).expect(302);
-    const assetRepo = createAssetRepository(db);
-    assetId = String(assetRepo.findByProjectId(Number(projectId))[0].id);
+    ({ agent } = await authenticate(app));
   });
 
-  afterEach(() => {
+  afterAll(() => {
     closeDatabase(db);
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  describe('semantic shell regions', () => {
-    it('renders the app-shell wrapper with sidebar + main columns', async () => {
-      const res = await agent.get('/').expect(200);
-      expect(res.text).toContain('class="app-shell"');
-      expect(res.text).toContain('<aside class="app-sidebar">');
-      expect(res.text).toContain('class="app-main"');
-    });
+  it('renders the semantic desktop frame with representative navigation wiring', async () => {
+    const res = await agent.get('/').expect(200);
 
-    it('renders exactly one <main> with id main-content', async () => {
-      const res = await agent.get('/').expect(200);
-      expect(countMain(res.text)).toBe(1);
-      expect(res.text).toContain('<main id="main-content" tabindex="-1">');
-    });
+    expect(res.text).toContain('<div class="app-shell">');
+    expect(res.text).toContain('<aside class="app-sidebar">');
+    expect(res.text).toContain('<nav class="app-nav" aria-label="Primary">');
+    expect(res.text).toContain('<div class="app-main">');
+    expect(res.text).toContain('<header class="app-header">');
+    expect(res.text.match(/<main[\s>]/g) || []).toHaveLength(1);
+    expect(res.text).toContain('<main id="main-content" tabindex="-1">');
 
-    it('renders a compact shell header inside the main column', async () => {
-      const res = await agent.get('/').expect(200);
-      expect(res.text).toContain('<header class="app-header">');
-      expect(res.text).toContain('class="app-section-title"');
-    });
-
-    it('the header title is the page-specific title, rendered as the sole <h1>', async () => {
-      const dash = await agent.get('/').expect(200);
-      // Dashboard page declares page_title "Dashboard".
-      expect(dash.text).toContain('<h1 class="app-section-title">Dashboard</h1>');
-      const proj = await agent.get('/projects').expect(200);
-      expect(proj.text).toContain('<h1 class="app-section-title">Projects</h1>');
-    });
-
-    it('the header shows a status-specific title for error pages', async () => {
-      // A 404 renders the error page, whose page_title is "Error 404".
-      const res = await agent.get('/projects/999999').expect(404);
-      expect(res.text).toContain('<h1 class="app-section-title">Error 404</h1>');
-    });
-
-    it('does not wrap page content in nested <main> elements on any page', async () => {
-      for (const url of ['/', '/projects', `/projects/${projectId}`, '/releases']) {
-        const res = await agent.get(url);
-        expect(countMain(res.text)).toBe(1);
-      }
-    });
+    const projectsLink = res.text.match(
+      /<a href="\/projects" class="app-nav-link" data-nav-key="projects"[^>]*>([\s\S]*?)<\/a>/,
+    );
+    expect(projectsLink).not.toBeNull();
+    expect(projectsLink[0]).not.toMatch(/aria-label=/);
+    expect(projectsLink[1]).toContain('<svg');
+    expect(projectsLink[1]).toContain('<span class="app-nav-label">Projects</span>');
   });
 
-  describe('skip link', () => {
-    it('renders a skip link targeting #main-content', async () => {
-      const res = await agent.get('/').expect(200);
-      expect(res.text).toContain('class="skip-link" href="#main-content"');
-    });
+  it('renders the Settings hierarchy as links with one current child', async () => {
+    const res = await agent.get('/settings/security').expect(200);
+    const children = res.text.match(/<ul class="app-nav-children">([\s\S]*?)<\/ul>/);
 
-    it('the skip link precedes the sidebar (first focusable element)', async () => {
-      const res = await agent.get('/').expect(200);
-      const skipPos = res.text.indexOf('class="skip-link"');
-      const asidePos = res.text.indexOf('<aside class="app-sidebar">');
-      expect(skipPos).toBeGreaterThan(-1);
-      expect(skipPos).toBeLessThan(asidePos);
-    });
+    expect(children).not.toBeNull();
+    expect(res.text).toMatch(
+      /<li class="app-nav-item app-nav-item--active app-nav-item--has-children">/,
+    );
+    expect(res.text).toContain(
+      '<a href="/settings" class="app-nav-link" data-nav-key="settings">',
+    );
+    expect(children[1].match(/aria-current="page"/g) || []).toHaveLength(1);
+    expect(children[1]).toMatch(
+      /<a\b(?=[^>]*\bclass="app-nav-child-link")(?=[^>]*\bdata-nav-key="settings-security")(?=[^>]*\baria-current="page")[^>]*>/,
+    );
+    expect(children[1]).not.toMatch(/role="menu"|role="menuitem"|aria-expanded|\son\w+=/);
   });
 
-  describe('primary navigation label', () => {
-    it('labels the nav landmark as Primary', async () => {
-      const res = await agent.get('/').expect(200);
-      expect(res.text).toContain('<nav class="app-nav" aria-label="Primary">');
-    });
+  it('expands the desktop rail for pointer and keyboard use while keeping labels accessible', async () => {
+    const page = await agent.get('/').expect(200);
+    const css = await extractStyle(agent, page.text);
+    const labelRule = css.match(/\.app-nav-label\s*\{[^}]*\}/);
+
+    expect(css).toMatch(
+      /\.app-sidebar:hover,\s*\.app-sidebar:focus-within\s*\{[^}]*width:\s*var\(--shell-sidebar-expanded\)/,
+    );
+    expect(css).toMatch(
+      /\.app-sidebar:hover \.app-nav-label,\s*\.app-sidebar:focus-within \.app-nav-label\s*\{[^}]*opacity:\s*1;[^}]*width:\s*auto/,
+    );
+    expect(labelRule).not.toBeNull();
+    expect(labelRule[0]).toMatch(/opacity:\s*0/);
+    expect(labelRule[0]).toMatch(/overflow:\s*hidden/);
+    expect(labelRule[0]).not.toMatch(/display:\s*none|visibility:\s*hidden/);
   });
 
-  describe('collapsed sidebar state', () => {
-    it('renders the sidebar with the persistent rail class', async () => {
-      const res = await agent.get('/').expect(200);
-      expect(res.text).toContain('<aside class="app-sidebar">');
-    });
+  it('reveals the Settings submenu only through desktop expansion states', async () => {
+    const page = await agent.get('/settings').expect(200);
+    const css = await extractStyle(agent, page.text);
+    const collapsedRule = css.match(/\.app-nav-children\s*\{[^}]*\}/);
 
-    it('renders all seven destinations in primary-navigation order', async () => {
-      const res = await agent.get('/').expect(200);
-      expect(navHrefs(res.text)).toEqual([
-        '/', '/projects', '/asset-viewer', '/releases', '/calendar', '/notes', '/settings',
-      ]);
-    });
-
-    it('renders Settings children as a normal nested list with the exact current child', async () => {
-      const expectedHrefs = [
-        '/settings',
-        '/settings/security',
-        '/settings/backups',
-        '/settings/logs',
-        '/settings/defaults',
-        '/settings/nsfw-filter',
-        '/settings/asset-categories',
-        '/settings/tags',
-        '/settings/open-locally',
-      ];
-
-      for (const [url, currentKey] of [['/settings', 'overview'], ['/settings/security', 'security']]) {
-        const res = await agent.get(url).expect(200);
-        const children = res.text.match(/<ul class="app-nav-children">([\s\S]*?)<\/ul>/);
-        expect(children).not.toBeNull();
-        expect(navHrefs(res.text)).toEqual([
-          '/', '/projects', '/asset-viewer', '/releases', '/calendar', '/notes', '/settings',
-        ]);
-        expect(
-          [...children[1].matchAll(/<a href="([^"]+)" class="app-nav-child-link"/g)].map((match) => match[1]),
-        ).toEqual(expectedHrefs);
-        expect(children[1].match(/aria-current="page"/g) || []).toHaveLength(1);
-        expect(children[1]).toMatch(
-          new RegExp(`<a\\b(?=[^>]*\\bdata-nav-key="settings-${currentKey}")(?=[^>]*\\baria-current="page")[^>]*>`),
-        );
-        expect(res.text).toMatch(
-          /<li class="app-nav-item app-nav-item--active app-nav-item--has-children">/,
-        );
-        expect(res.text).toContain(
-          '<a href="/settings" class="app-nav-link" data-nav-key="settings">',
-        );
-        expect(children[1]).not.toMatch(/role="menu"|role="menuitem"|aria-expanded|\son\w+=/);
-      }
-    });
-
-    it('renders a decorative icon + label span for every nav link', async () => {
-      const res = await agent.get('/').expect(200);
-      // Each link carries an aria-hidden svg and a non-hidden label span.
-      expect((res.text.match(/class="app-nav-label"/g) || []).length).toBe(7);
-      expect((res.text.match(/class="app-nav-link" data-nav-key="[^"]+"/g) || []).length).toBe(7);
-    });
+    expect(collapsedRule).not.toBeNull();
+    expect(collapsedRule[0]).toMatch(/max-height:\s*0/);
+    expect(collapsedRule[0]).toMatch(/overflow:\s*hidden/);
+    expect(collapsedRule[0]).not.toMatch(/display:\s*none|visibility:\s*hidden/);
+    expect(css).toMatch(
+      /\.app-sidebar:hover \.app-nav-item--has-children:hover \.app-nav-children,[\s\S]*?\.app-sidebar:focus-within \.app-nav-item--has-children:focus-within \.app-nav-children,[\s\S]*?max-height:\s*20rem/,
+    );
   });
 
-  describe('hover expansion CSS', () => {
-    it('defines :hover expansion to the expanded width', async () => {
-      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
-      expect(css).toMatch(/\.app-sidebar:hover\b/);
-      expect(css).toMatch(/\.app-sidebar:hover[\s\S]*?width:\s*var\(--shell-sidebar-expanded\)/);
-    });
+  it('distinguishes the active desktop destination by structure as well as color', async () => {
+    const page = await agent.get('/projects').expect(200);
+    const css = await extractStyle(agent, page.text);
 
-    it('labels become visible on hover', async () => {
-      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
-      expect(css).toMatch(/\.app-sidebar:hover \.app-nav-label[\s\S]*?opacity:\s*1/);
-      expect(css).toMatch(/\.app-sidebar:hover \.app-nav-label[\s\S]*?width:\s*auto/);
-    });
+    expect(page.text).toContain(
+      '<a href="/projects" class="app-nav-link" data-nav-key="projects" aria-current="page">',
+    );
+    const activeRule = css.match(
+      /\.app-nav-link\[aria-current="page"\],\s*\.app-nav-item--active\s*>\s*\.app-nav-link\s*\{[^}]*\}/,
+    );
+    expect(activeRule).not.toBeNull();
+    expect(activeRule[0]).toMatch(/background:\s*var\(--surface-hover\)/);
+    expect(activeRule[0]).toMatch(/font-weight:\s*600/);
   });
 
-  describe('Settings submenu CSS', () => {
-    it('expands Settings children only when the sidebar is expanded by hover or keyboard focus', async () => {
-      const css = await extractStyle(agent, (await agent.get('/settings').expect(200)).text);
-      expect(css).toMatch(
-        /\.app-sidebar:hover \.app-nav-item--has-children:hover \.app-nav-children,[\s\S]*?max-height:\s*20rem/,
-      );
-      expect(css).toMatch(
-        /\.app-sidebar:focus-within \.app-nav-item--has-children:focus-within \.app-nav-children,[\s\S]*?\.app-sidebar:hover \.app-nav-item--active > \.app-nav-children,[\s\S]*?\.app-sidebar:focus-within \.app-nav-item--active > \.app-nav-children\s*\{[\s\S]*?max-height:\s*20rem/,
-      );
-      expect(css).not.toMatch(/(?<!\.app-sidebar:hover |\.app-sidebar:focus-within )\.app-nav-item--active > \.app-nav-children\s*\{/);
+  it('keeps desktop expansion out of content flow', async () => {
+    const page = await agent.get('/').expect(200);
+    const css = await extractStyle(agent, page.text);
+    const sidebarRule = css.match(/\.app-sidebar\s*\{[^}]*\}/);
+    const mainRule = css.match(/\.app-main\s*\{[^}]*\}/);
+    const collapsed = Number(css.match(/--shell-sidebar-collapsed:\s*(\d+)px/)?.[1]);
+    const expanded = Number(css.match(/--shell-sidebar-expanded:\s*(\d+)px/)?.[1]);
 
-      const childrenRule = css.match(/\.app-nav-children\s*\{[^}]*\}/);
-      expect(childrenRule).not.toBeNull();
-      expect(childrenRule[0]).toMatch(/max-height:\s*0/);
-      expect(childrenRule[0]).toMatch(/overflow:\s*hidden/);
-      expect(childrenRule[0]).not.toMatch(/display:\s*none/);
-      expect(childrenRule[0]).not.toMatch(/visibility:\s*hidden/);
-    });
-
-    it('animates submenu size and visibility with the shared shell timing token', async () => {
-      const css = await extractStyle(agent, (await agent.get('/settings').expect(200)).text);
-      const childrenRule = css.match(/\.app-nav-children\s*\{[^}]*\}/);
-      expect(childrenRule).not.toBeNull();
-      expect(childrenRule[0]).toMatch(/transition:[^;]*max-height\s+var\(--shell-transition\)/);
-      expect(childrenRule[0]).toMatch(/opacity:\s*0/);
-    });
-
-    it('keeps child links compact, modestly indented, and free of a cyan current-page edge treatment', async () => {
-      const css = await extractStyle(agent, (await agent.get('/settings').expect(200)).text);
-      const childRule = css.match(/\.app-nav-child-link\s*\{[^}]*\}/);
-      expect(childRule).not.toBeNull();
-      expect(childRule[0]).toMatch(/gap:\s*var\(--space-sm\)/);
-      expect(childRule[0]).toMatch(/min-height:\s*0/);
-      expect(childRule[0]).toMatch(/padding:\s*0\.3125rem 0\.5rem 0\.3125rem var\(--space-sm\)/);
-      expect(childRule[0]).toMatch(/line-height:\s*1\.25/);
-      expect(css).toMatch(/\.app-nav-child-link svg\s*\{[^}]*width:\s*1rem;[^}]*height:\s*1rem;[^}]*flex:\s*none;/s);
-      expect(childRule[0]).toMatch(/font-size:\s*0\.8125rem/);
-      expect(css).toMatch(/\.app-nav-child-link:hover[\s\S]*?background:\s*var\(--surface-hover\)/);
-      expect(css).toMatch(/\.app-nav-child-link:focus-visible[\s\S]*?outline/);
-      const currentChildRule = css.match(/\.app-nav-child-link\[aria-current="page"\]\s*\{[^}]*\}/);
-      expect(currentChildRule).not.toBeNull();
-      expect(currentChildRule[0]).toMatch(/background:\s*var\(--surface-hover\)/);
-      expect(currentChildRule[0]).not.toMatch(/box-shadow|border(?:-left)?|::before/);
-    });
-
-
-    it('keeps active child highlights narrow and inset while retaining the sidebar scrollbar', async () => {
-      const css = await extractStyle(agent, (await agent.get('/settings').expect(200)).text);
-
-      expect(css).toMatch(/\.app-nav-children\s*\{[^}]*transform:\s*translateX\(-0\.5rem\);[^}]*transition:[^}]*transform\s+var\(--shell-transition\)\s+ease;/s);
-      expect(css).toMatch(/\.app-nav-child-link\s*\{[^}]*gap:\s*var\(--space-sm\);[^}]*width:\s*calc\(100% - var\(--space-xl\) - var\(--space-md\) - var\(--space-md\)\);[^}]*margin:\s*0\.125rem var\(--space-md\) 0\.125rem calc\(var\(--space-xl\) \+ var\(--space-md\)\);[^}]*padding:\s*0\.3125rem 0\.5rem 0\.3125rem var\(--space-sm\);/s);
-      expect(css).toMatch(/\.app-nav\s*\{[^}]*scrollbar-color:\s*var\(--border-strong\) transparent;[^}]*scrollbar-width:\s*thin;/s);
-      expect(css).toMatch(/\.app-nav::-webkit-scrollbar-thumb\s*\{[^}]*border-radius:\s*999px;/s);
-    });
-
-    it('keeps the top-level navigation in the sidebar flow while styling only its scrollbar', async () => {
-      const css = await extractStyle(agent, (await agent.get('/settings').expect(200)).text);
-      const navRules = [...css.matchAll(/\.app-nav\s*\{([^}]*)\}/g)];
-
-      expect(navRules).toHaveLength(1);
-      expect(navRules[0][1]).toMatch(/flex:\s*1 1 auto/);
-      expect(navRules[0][1]).toMatch(/overflow-y:\s*auto/);
-      expect(navRules[0][1]).toMatch(/scrollbar-width:\s*thin/);
-      expect(navRules[0][1]).not.toMatch(/position:\s*absolute|max-height:\s*20rem|(?:^|;)\s*(?:top|left|z-index|width|min-width|max-width)\s*:/);
-    });
+    expect(sidebarRule).not.toBeNull();
+    expect(sidebarRule[0]).toMatch(/position:\s*fixed/);
+    expect(sidebarRule[0]).toMatch(/width:\s*var\(--shell-sidebar-collapsed\)/);
+    expect(mainRule).not.toBeNull();
+    expect(mainRule[0]).toMatch(/margin-left:\s*var\(--shell-sidebar-collapsed\)/);
+    expect(mainRule[0]).toMatch(/min-width:\s*0/);
+    expect(expanded).toBeGreaterThan(collapsed);
   });
 
-  describe(':focus-within keyboard expansion CSS', () => {
-    it('defines :focus-within expansion to the expanded width', async () => {
-      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
-      expect(css).toMatch(/\.app-sidebar:focus-within\b/);
-      expect(css).toMatch(/\.app-sidebar:focus-within[\s\S]*?width:\s*var\(--shell-sidebar-expanded\)/);
-    });
+  it('keeps the desktop navigation root above shell content', async () => {
+    const page = await agent.get('/').expect(200);
+    const css = await extractStyle(agent, page.text);
+    const sidebarLayer = Number(css.match(/--shell-z-sidebar:\s*(\d+)/)?.[1]);
+    const contentLayer = Number(css.match(/--shell-z-content:\s*(\d+)/)?.[1]);
+    const headerLayer = Number(css.match(/--shell-z-header:\s*(\d+)/)?.[1]);
 
-    it('labels become visible on keyboard focus', async () => {
-      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
-      expect(css).toMatch(/\.app-sidebar:focus-within \.app-nav-label[\s\S]*?opacity:\s*1/);
-      expect(css).toMatch(/\.app-sidebar:focus-within \.app-nav-label[\s\S]*?width:\s*auto/);
-    });
-
-    it('collapsed labels are clipped, not removed from the a11y tree', async () => {
-      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
-      const labelBlock = css.match(/\.app-nav-label\s*\{[^}]*\}/);
-      expect(labelBlock).not.toBeNull();
-      const rule = labelBlock[0];
-      // Retained in the a11y tree: never display:none / visibility:hidden.
-      expect(rule).not.toMatch(/display:\s*none/);
-      expect(rule).not.toMatch(/visibility:\s*hidden/);
-      // Clipped visually instead.
-      expect(rule).toMatch(/opacity:\s*0/);
-      expect(rule).toMatch(/overflow:\s*hidden/);
-    });
-
-    it('nav links expose strong focus-visible styling', async () => {
-      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
-      expect(css).toMatch(/\.app-nav-link:focus-visible/);
-      expect(css).toMatch(/\.app-nav-link:focus-visible[\s\S]*?outline/);
-    });
-
-    it('the skip link becomes visible only on focus', async () => {
-      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
-      expect(css).toMatch(/\.skip-link\s*\{[\s\S]*?transform:\s*translateY\(/);
-      expect(css).toMatch(/\.skip-link:focus[\s\S]*?translateY\(0\)/);
-    });
-  });
-
-  describe('accessible link names when collapsed', () => {
-    it('no nav link carries an aria-label (avoids duplicate accessible names)', async () => {
-      const res = await agent.get('/').expect(200);
-      // Extract each nav anchor and assert it has no aria-label.
-      const links = res.text.match(/<a href="[^"]+" class="app-nav-link"[^>]*>/g) || [];
-      expect(links.length).toBe(7);
-      for (const anchor of links) {
-        expect(anchor).not.toMatch(/aria-label=/);
-      }
-    });
-
-    it('label spans are never hidden from assistive tech via attributes', async () => {
-      const res = await agent.get('/').expect(200);
-      expect(res.text).not.toMatch(/<span class="app-nav-label"[^>]*aria-hidden/);
-      expect(res.text).not.toMatch(/<span class="app-nav-label"[^>]*hidden/);
-    });
-
-    it('each label span carries the destination text', async () => {
-      const res = await agent.get('/').expect(200);
-      expect(res.text).toContain('class="app-nav-label">Dashboard</span>');
-      expect(res.text).toContain('class="app-nav-label">Projects</span>');
-      expect(res.text).toContain('class="app-nav-label">Asset Viewer</span>');
-    expect(res.text).toContain('class="app-nav-label">Releases</span>');
-      expect(res.text).toContain('class="app-nav-label">Calendar</span>');
-      expect(res.text).toContain('class="app-nav-label">Notes</span>');
-      expect(res.text).toContain('class="app-nav-label">Settings</span>');
-    });
-
-  it('the primary sidebar uses the Releases label', async () => {
-      const res = await agent.get('/').expect(200);
-      const navBlock = res.text.match(/<nav class="app-nav"[\s\S]*?<\/nav>/);
-      expect(navBlock).not.toBeNull();
-    expect(navBlock[0]).toContain('class="app-nav-label">Releases</span>');
-    });
-
-    it('no duplicate Calendar link exists in the primary sidebar', async () => {
-      const res = await agent.get('/').expect(200);
-      const navBlock = res.text.match(/<nav class="app-nav"[\s\S]*?<\/nav>/);
-      expect(navBlock).not.toBeNull();
-      const calendarLinks = navBlock[0].match(/data-nav-key="calendar"/g) || [];
-      expect(calendarLinks).toHaveLength(1);
-    });
-
-    it('icons inside links are decorative (aria-hidden) so the name is the label', async () => {
-      const res = await agent.get('/').expect(200);
-      // Every svg inside a nav link is aria-hidden="true".
-      const navBlock = res.text.match(
-        /<nav class="app-nav"[\s\S]*?<\/nav>/,
-      );
-      expect(navBlock).not.toBeNull();
-      const svgCount = (navBlock[0].match(/<svg/g) || []).length;
-      const hiddenCount = (navBlock[0].match(/aria-hidden="true"/g) || []).length;
-      expect(svgCount).toBe(16);
-      expect(svgCount).toBe(hiddenCount);
-    });
-  });
-
-  describe('active-state treatment', () => {
-    it('marks exactly one item active on representative pages', async () => {
-      const pages = [
-        '/',
-        '/projects',
-        `/projects/${projectId}`,
-        `/projects/${projectId}/assets`,
-        `/projects/${projectId}/assets/${assetId}`,
-        '/asset-viewer',
-        '/releases',
-        '/calendar',
-        '/release-management',
-      ];
-      for (const url of pages) {
-        const res = await agent.get(url).redirects(1).expect(200);
-        expect(countActive(res.text)).toBe(1);
-      }
-    });
-
-    it('the active item carries aria-current="page"', async () => {
-      const res = await agent.get('/projects').expect(200);
-      expect(activeNavKeys(res.text)).toEqual(['projects']);
-    });
-
-    it('inactive items never carry aria-current', async () => {
-      const res = await agent.get('/').expect(200);
-      expect(countActive(res.text)).toBe(1);
-    });
-
-    it('/calendar gives Calendar the active class and aria-current', async () => {
-      const res = await agent.get('/calendar').expect(200);
-      expect(activeNavKeys(res.text)).toEqual(['calendar']);
-      expect(res.text).toMatch(
-        /<a href="\/calendar" class="app-nav-link" data-nav-key="calendar" aria-current="page">/,
-      );
-    });
-
-  it('/calendar leaves Releases inactive', async () => {
-      const res = await agent.get('/calendar').expect(200);
-      expect(activeNavKeys(res.text)).not.toContain('releases');
-    });
-
-  it('/releases gives Releases the active class and aria-current', async () => {
-      const res = await agent.get('/releases').expect(200);
-      expect(activeNavKeys(res.text)).toEqual(['releases']);
-      expect(res.text).toMatch(
-        /<a href="\/releases" class="app-nav-link" data-nav-key="releases" aria-current="page">/,
-      );
-    });
-
-    it('the active state is structural (filled background + bold text), not color alone', async () => {
-      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
-      // Phase 13.2 (Concept D): the active item is a filled background pill
-      // plus bold text — a shape/weight change, not just a color swap. The
-      // earlier ::before accent-bar treatment was dropped to match the
-      // approved design; icon recoloring is a bonus cue, not load-bearing.
-      const activeBlock = css.match(
-        /\.app-nav-link\[aria-current="page"\],\s*\.app-nav-item--active\s*>\s*\.app-nav-link\s*\{[\s\S]*?\}/,
-      );
-      expect(activeBlock).not.toBeNull();
-      expect(activeBlock[0]).toMatch(/background:\s*var\(--surface-hover\)/);
-      expect(activeBlock[0]).toMatch(/font-weight:\s*600/);
-    });
-  });
-
-  describe('heading invariant', () => {
-    it('no page renders more than one <h1>', async () => {
-      for (const url of [
-        '/',
-        '/projects',
-        `/projects/${projectId}`,
-        `/projects/${projectId}/assets`,
-        `/projects/${projectId}/assets/${assetId}`,
-        '/releases',
-      ]) {
-        const res = await agent.get(url);
-        expect(countH1(res.text)).toBe(1);
-      }
-    });
-  });
-
-  describe('no-overflow layout guarantee', () => {
-    it('the sidebar is position:fixed so its growth never enters the flow', async () => {
-      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
-      const sidebarRule = css.match(/\.app-sidebar\s*\{[\s\S]*?\}/);
-      expect(sidebarRule).not.toBeNull();
-      expect(sidebarRule[0]).toMatch(/position:\s*fixed/);
-      expect(sidebarRule[0]).toMatch(/width:\s*var\(--shell-sidebar-collapsed\)/);
-    });
-
-    it('the main column reserves only the collapsed width', async () => {
-      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
-      const mainRule = css.match(/\.app-main\s*\{[\s\S]*?\}/);
-      expect(mainRule).not.toBeNull();
-      expect(mainRule[0]).toMatch(/margin-left:\s*var\(--shell-sidebar-collapsed\)/);
-      expect(mainRule[0]).toMatch(/min-width:\s*0/);
-    });
-
-    it('the expanded width is larger than the collapsed width', async () => {
-      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
-      expect(css).toMatch(/--shell-sidebar-collapsed:\s*(\d+)px/);
-      expect(css).toMatch(/--shell-sidebar-expanded:\s*(\d+)px/);
-      const collapsed = Number(css.match(/--shell-sidebar-collapsed:\s*(\d+)px/)[1]);
-      const expanded = Number(css.match(/--shell-sidebar-expanded:\s*(\d+)px/)[1]);
-      expect(expanded).toBeGreaterThan(collapsed);
-    });
-
-    it('the expanded sidebar overlays with a higher z-index than the header', async () => {
-      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
-      // Sidebar z-index must be >= header so the overlay sits on top.
-      const sb = css.match(/\.app-sidebar\s*\{[\s\S]*?z-index:\s*var\((--shell-z-sidebar)\)/);
-      const hd = css.match(/\.app-header\s*\{[\s\S]*?z-index:\s*var\((--shell-z-header)\)/);
-      expect(sb).not.toBeNull();
-      expect(hd).not.toBeNull();
-      const sidebarVal = Number(css.match(new RegExp(`${sb[1]}:\\s*(\\d+)`))[1]);
-      const headerVal = Number(css.match(new RegExp(`${hd[1]}:\\s*(\\d+)`))[1]);
-      expect(sidebarVal).toBeGreaterThan(headerVal);
-    });
-
-    it('keeps the navigation root above the page context and Asset Viewer layers', async () => {
-      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
-      const contentRule = css.match(/\.app-main\s*\{[\s\S]*?\}/);
-      const sidebarLayer = Number(css.match(/--shell-z-sidebar:\s*(\d+)/)?.[1]);
-      const contentLayer = Number(css.match(/--shell-z-content:\s*(\d+)/)?.[1]);
-      const readLayer = (pattern) => {
-        const match = css.match(pattern);
-        expect(match).not.toBeNull();
-        return Number(match[1]);
-      };
-
-      expect(contentRule).not.toBeNull();
-      expect(contentRule[0]).toMatch(/position:\s*relative/);
-      expect(contentRule[0]).toMatch(/z-index:\s*var\(--shell-z-content\)/);
-      expect(sidebarLayer).toBeGreaterThan(contentLayer);
-
-      const assetLayers = [
-        readLayer(/\.asset-viewer-filters\s*\{[^}]*z-index:\s*(\d+)/),
-        readLayer(/\.asset-filter-multiselect\[open\]\s*\{[^}]*z-index:\s*(\d+)/),
-        readLayer(/\.asset-filter-multiselect-panel\s*\{[^}]*z-index:\s*(\d+)/),
-        readLayer(/\.asset-viewer-grid-card-info\s*\{[^}]*z-index:\s*(\d+)/),
-        readLayer(/\.asset-viewer-grid-card:hover,[\s\S]*?\.asset-viewer-grid-card:focus-within\s*\{[^}]*z-index:\s*(\d+)/),
-      ];
-
-      for (const layer of assetLayers) {
-        expect(layer).toBeLessThan(sidebarLayer);
-      }
-    });
-  });
-
-  describe('reduced motion', () => {
-    it('reduced-motion rules cover the shell width/label transitions', async () => {
-      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
-      const reduced = css.match(/@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?)\n\s*\}/);
-      expect(reduced).not.toBeNull();
-      const block = reduced[1];
-      // Width + label transitions must be disabled.
-      expect(block).toMatch(/\.app-sidebar\b/);
-      expect(block).toMatch(/\.app-sidebar-brand\b/);
-      expect(block).toMatch(/\.app-nav-label\b/);
-      expect(block).toMatch(/\.app-nav-children\b/);
-      expect(block).toMatch(/\.app-nav-child-link\b/);
-      expect(block).toMatch(/\.skip-link\b/);
-      expect(block).toMatch(/transition:\s*none !important/);
-    });
-  });
-
-  describe('no JavaScript required', () => {
-    it('no inline event handlers are attached to shell nav elements', async () => {
-      const res = await agent.get('/').expect(200);
-      const navBlock = res.text.match(/<aside class="app-sidebar"[\s\S]*?<\/aside>/);
-      expect(navBlock).not.toBeNull();
-      // No mouse/focus/keyboard inline handlers driving expansion.
-      expect(navBlock[0]).not.toMatch(/\son(mouse|focus|blur|key|click|enter|leave)/i);
-    });
-
-    it('expansion is expressed purely through CSS pseudo-classes', async () => {
-      const css = await extractStyle(agent, (await agent.get('/').expect(200)).text);
-      // The expansion triggers are :hover and :focus-within — not scripted.
-      expect(css).toMatch(/\.app-sidebar:hover/);
-      expect(css).toMatch(/\.app-sidebar:focus-within/);
-    });
+    expect(css).toMatch(/\.app-sidebar\s*\{[^}]*z-index:\s*var\(--shell-z-sidebar\)/);
+    expect(css).toMatch(/\.app-main\s*\{[^}]*z-index:\s*var\(--shell-z-content\)/);
+    expect(css).toMatch(/\.app-header\s*\{[^}]*z-index:\s*var\(--shell-z-header\)/);
+    expect(sidebarLayer).toBeGreaterThan(contentLayer);
+    expect(sidebarLayer).toBeGreaterThan(headerLayer);
   });
 });

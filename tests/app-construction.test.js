@@ -435,6 +435,8 @@ import { createProjectOperationCoordinator, ProjectOperationError } from '../src
 import { AssetActionError } from '../src/services/asset-action-service.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { NOTE_REVISION_RETENTION_KEY } from '../src/services/note-revision-settings-service.js';
+import { readManifestSync } from '../src/storage/manifest.js';
+import { resolveProjectDir } from '../src/storage/project-storage.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -480,6 +482,37 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     const app = buildApp();
     expect(app.locals.assetScanner).toBeTruthy();
     expect(typeof app.locals.assetScanner.scanProjectAssets).toBe('function');
+  });
+
+  it('passes the exact injected asset-category service to projectService', () => {
+    const fakeCategory = { display_name: 'Fake', directory_slug: 'fake', display_order: 0, enabled: 1 };
+    let copyCallCount = 0;
+    const fakeAssetCategoryService = {
+      listDefaults() {
+        return [fakeCategory];
+      },
+      copyDefaultsForProject(projectId) {
+        copyCallCount++;
+        return [{ ...fakeCategory, id: 1, project_id: projectId }];
+      },
+      listProjectCategories() {
+        return [];
+      },
+    };
+    const app = buildApp({ assetCategoryService: fakeAssetCategoryService });
+
+    const project = app.locals.projectService.create({
+      title: 'DI Check', description: '', notes: '', status: 'tbd', projectType: 'images',
+      priority: 'normal', plannedDate: null, publishedDate: null, patreonUrl: null,
+    });
+
+    expect(copyCallCount).toBe(1);
+
+    const projectDir = resolveProjectDir(projectsRoot, project.project_dir);
+    expect(fs.existsSync(path.join(projectDir, 'fake'))).toBe(true);
+    expect(readManifestSync(projectDir).assetCategories).toEqual([
+      { displayName: 'Fake', directorySlug: 'fake', displayOrder: 0, enabled: true },
+    ]);
   });
 
   it('constructs and wires the Notes repository, service, and router explicitly', () => {
@@ -1013,6 +1046,7 @@ describe('app construction — asset actions chunk 3 wiring', () => {
       description: '',
       notes: '',
       status: 'tbd',
+      projectType: 'images',
       priority: 'normal',
       plannedDate: null,
       publishedDate: null,

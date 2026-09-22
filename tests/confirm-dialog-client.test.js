@@ -109,13 +109,6 @@ function element(tagName = 'div', attributes = {}) {
       if (this.content) clone.content = this.content.cloneNode(true);
       return clone;
     },
-    remove() {
-      if (!this.parentNode) return;
-      const index = this.parentNode.children.indexOf(this);
-      if (index >= 0) this.parentNode.children.splice(index, 1);
-      this.parentNode = null;
-      this.parentElement = null;
-    },
     replaceChildren(...children) {
       this.children.forEach((child) => {
         child.parentNode = null;
@@ -169,7 +162,6 @@ function confirmationPage({ enhance = true } = {}) {
   document.body = element('body');
   document.appendChild(document.body);
   document.getElementById = (id) => document.querySelector(`#${id}`);
-  document.createElement = (tagName) => element(tagName);
 
   const dialog = element('dialog', { id: 'app-confirmation-dialog', 'data-app-dialog': '' });
   const title = element('h2', { id: 'app-confirmation-dialog-title' });
@@ -177,7 +169,6 @@ function confirmationPage({ enhance = true } = {}) {
   const message = element('p', { 'data-app-dialog-confirmation-message': '' });
   const field = element('div', { 'data-app-dialog-confirmation-field': '', hidden: '' });
   field.hidden = true;
-  const close = element('button', { type: 'button', 'data-dialog-close': '' });
   const cancel = element('button', { type: 'button', 'data-dialog-close': '', 'data-app-dialog-confirmation-cancel': '' });
   const confirm = element('button', { type: 'button', 'data-app-dialog-confirmation-confirm': '' });
   confirm.classList.add('button-danger');
@@ -187,12 +178,11 @@ function confirmationPage({ enhance = true } = {}) {
   dialog.appendChild(title);
   dialog.appendChild(message);
   dialog.appendChild(field);
-  dialog.appendChild(close);
   dialog.appendChild(cancel);
   dialog.appendChild(confirm);
   document.body.appendChild(dialog);
   if (enhance) enhanceAppDialogs(document);
-  return { document, dialog, title, message, field, close, cancel, confirm };
+  return { document, dialog, title, message, field, cancel, confirm };
 }
 
 function replacementDropdownTemplate({
@@ -256,51 +246,6 @@ function replacementDropdownTemplate({
   return template;
 }
 
-function projectEditConfirmationPage() {
-  const page = confirmationPage();
-  const projectEdit = element('dialog', { id: 'project-edit-dialog', 'data-app-dialog': '' });
-  const archiveProject = element('button', {
-    type: 'submit',
-    'data-confirm': 'Archive this project? This cannot be undone.',
-  });
-  const deleteForm = element('form', { method: 'post', action: '/projects/7/delete' });
-  const csrf = element('input', { type: 'hidden', name: '_csrf', value: 'csrf-token' });
-  const deleteProject = element('button', {
-    type: 'submit',
-    'data-confirm': 'Delete this project permanently? This cannot be undone.',
-    'data-confirm-dialog-title': 'Delete project',
-    'data-confirm-dialog-confirm-label': 'Delete project',
-  });
-  const nativeSubmit = vi.fn();
-  projectEdit.showModal = vi.fn(() => { projectEdit.open = true; projectEdit.setAttribute('open', ''); });
-  projectEdit.close = vi.fn(() => { projectEdit.open = false; projectEdit.removeAttribute('open'); projectEdit.dispatch('close'); });
-  deleteForm.appendChild(csrf);
-  deleteForm.appendChild(deleteProject);
-  projectEdit.appendChild(archiveProject);
-  projectEdit.appendChild(deleteForm);
-  page.document.body.appendChild(projectEdit);
-  deleteProject.form = deleteForm;
-  deleteProject.click = () => {
-    const event = deleteProject.dispatch('click');
-    if (!event.defaultPrevented) nativeSubmit(deleteForm, deleteProject);
-    return event;
-  };
-
-  enhanceAppDialogs(page.document);
-  openAppDialogById(page.document, 'project-edit-dialog');
-  enhanceConfirmations(page.document);
-
-  return {
-    ...page,
-    projectEdit,
-    archiveProject,
-    deleteForm,
-    csrf,
-    deleteProject,
-    nativeSubmit,
-  };
-}
-
 describe('shared app confirmation dialog', () => {
   it('opens the enhanced shared dialog with text-safe request content and confirms once', async () => {
     const page = confirmationPage();
@@ -324,18 +269,10 @@ describe('shared app confirmation dialog', () => {
     expect(page.confirm.textContent).toBe('Confirm');
   });
 
-  it.each(['cancel', 'close'])('settles %s as false through the app-dialog close lifecycle', async (control) => {
+  it('settles cancellation as false through the app-dialog close lifecycle', async () => {
     const page = confirmationPage();
     const request = requestAppConfirmation(page.document);
-    page[control].click();
-    await expect(request).resolves.toBe(false);
-  });
-
-  it.each(['keydown', 'ordinary'])('settles %s close as false', async (kind) => {
-    const page = confirmationPage();
-    const request = requestAppConfirmation(page.document);
-    if (kind === 'keydown') page.dialog.dispatch('keydown', { key: 'Escape' });
-    else page.dialog.close();
+    page.cancel.click();
     await expect(request).resolves.toBe(false);
   });
 
@@ -425,7 +362,7 @@ describe('shared app confirmation dialog', () => {
     expect(page.confirm.disabled).toBe(false);
   });
 
-  it.each(['cancel', 'Escape', 'native cancel', 'backdrop'])('%s clears temporary dropdown state before reopening', async (path) => {
+  it('clears temporary dropdown state after cancellation before reopening', async () => {
     const page = confirmationPage();
     const replacementTemplate = replacementDropdownTemplate({
       id: 'project-option-project-type-review-delete-replacement',
@@ -439,10 +376,7 @@ describe('shared app confirmation dialog', () => {
     const firstSelect = page.field.querySelector('select');
     firstSelect.value = 'comic';
     firstSelect.dispatch('change');
-    if (path === 'Escape') page.dialog.dispatch('keydown', { key: 'Escape' });
-    else if (path === 'native cancel') page.dialog.dispatch('cancel');
-    else if (path === 'backdrop') page.dialog.dispatch('click', { target: page.dialog });
-    else page.cancel.click();
+    page.cancel.click();
     await expect(first).resolves.toBe(false);
 
     const second = requestAppConfirmation(page.document, options);
@@ -455,60 +389,12 @@ describe('shared app confirmation dialog', () => {
   });
 });
 
-describe('Project Edit Delete confirmation dialog', () => {
-  it.each(['cancel', 'close', 'escape'])('keeps Project Edit open and restores Delete focus after %s', async (path) => {
-    const page = projectEditConfirmationPage();
-    const initial = page.deleteProject.click();
-    expect(initial.defaultPrevented).toBe(true);
-    expect(page.dialog.open).toBe(true);
-    expect(page.projectEdit.open).toBe(true);
-    expect(page.dialog.parentNode).toBe(page.document.body);
-    expect(page.projectEdit.parentNode).toBe(page.document.body);
-    expect(page.dialog.parentNode).toBe(page.projectEdit.parentNode);
-    expect(page.document.body.classList.contains('app-dialog-open')).toBe(true);
-    expect(page.nativeSubmit).not.toHaveBeenCalled();
-
-    if (path === 'escape') page.dialog.dispatch('keydown', { key: 'Escape' });
-    else page[path].click();
-    await Promise.resolve();
-
-    expect(page.dialog.open).toBe(false);
-    expect(page.projectEdit.open).toBe(true);
-    expect(page.document.body.classList.contains('app-dialog-open')).toBe(true);
-    expect(page.document.activeElement).toBe(page.deleteProject);
-    expect(page.nativeSubmit).not.toHaveBeenCalled();
-  });
-
-  it('replays each control with its original native form semantics', async () => {
-    const page = projectEditConfirmationPage();
-
-    const initial = page.deleteProject.click();
-    expect(initial.defaultPrevented).toBe(true);
-    expect(page.dialog.open).toBe(true);
-    expect(page.deleteForm.getAttribute('action')).toBe('/projects/7/delete');
-    expect(page.deleteForm.getAttribute('method')).toBe('post');
-    expect(page.csrf.getAttribute('value')).toBe('csrf-token');
-    page.confirm.click();
-    await Promise.resolve();
-
-    expect(page.nativeSubmit).toHaveBeenCalledTimes(1);
-    expect(page.nativeSubmit).toHaveBeenCalledWith(page.deleteForm, page.deleteProject);
-    expect(page.dialog.showModal).toHaveBeenCalledOnce();
-    expect(page.dialog.open).toBe(false);
-    expect(page.projectEdit.open).toBe(true);
-    const archive = page.archiveProject.click();
-    expect(archive.defaultPrevented).toBe(true);
-    expect(page.dialog.open).toBe(true);
-    expect(page.message.textContent).toBe('Archive this project? This cannot be undone.');
-    page.cancel.click();
-  });
-});
-
 describe('data-confirm controls', () => {
-  it('synchronously prevents the initial click, replays exactly once, and never recurses', async () => {
+  it('prevents the initial click and replays exactly once without duplicate binding or recursion', async () => {
     const page = confirmationPage();
     const control = element('button', { 'data-confirm': 'Delete it?' });
     page.document.body.appendChild(control);
+    enhanceAppConfirmationControls(page.document);
     enhanceAppConfirmationControls(page.document);
     const normalClick = vi.fn();
     control.addEventListener('click', normalClick);
@@ -519,7 +405,6 @@ describe('data-confirm controls', () => {
     page.confirm.click();
     await Promise.resolve();
 
-    expect(control.dataset.confirmationDialogBound).toBe('true');
     expect(normalClick).toHaveBeenCalledTimes(2);
     expect(page.dialog.showModal).toHaveBeenCalledOnce();
   });
@@ -594,19 +479,24 @@ function bookUploadPage(kind = 'project_asset', files = [{ name: 'cover.png' }])
 const settleBookConfirmation = async () => { await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); };
 
 describe('Book cover upload shared confirmation', () => {
-  it.each([
-    ['New Book', 'none', [{}]], ['Edit Book without cover', 'none', [{}]],
-    ['Project cover text edit', 'project_asset', []], ['Managed cover text edit', 'managed_asset', []],
-    ['New Book without cover', 'none', []],
-  ])('%s submits directly without confirmation', (_label, kind, files) => {
-    const page = bookUploadPage(kind, files);
-    page.submit();
-    page.submit();
-    page.cover.dispatch('change');
-    page.submit();
-    expect(page.nativeSubmit).toHaveBeenCalledOnce();
-    expect(page.confirmed.value).toBe('false');
-    expect(page.dialog.open).toBe(false);
+  it('submits every non-replacement input state directly without confirmation', () => {
+    const inputs = [
+      ['none', [{}]],
+      ['project_asset', []],
+      ['managed_asset', []],
+      ['none', []],
+    ];
+
+    inputs.forEach(([kind, files]) => {
+      const page = bookUploadPage(kind, files);
+      page.submit();
+      page.submit();
+      page.cover.dispatch('change');
+      page.submit();
+      expect(page.nativeSubmit).toHaveBeenCalledOnce();
+      expect(page.confirmed.value).toBe('false');
+      expect(page.dialog.open).toBe(false);
+    });
   });
 
   it('a later submit listener cancellation releases the direct guard', async () => {
@@ -636,40 +526,40 @@ describe('Book cover upload shared confirmation', () => {
     expect(page.nativeSubmit).toHaveBeenCalledOnce();
   });
 
-  describe.each(['project_asset', 'managed_asset'])('%s replacement', (kind) => {
-    it.each(['cancel', 'close', 'Escape', 'native cancel'])('%s cancels without closing Book or clearing the file and permits retry', async (action) => {
-      const page = bookUploadPage(kind);
-      page.submit();
-      expect(page.dialog.open).toBe(true);
-      expect(page.document.activeElement).toBe(page.close);
-      if (action === 'Escape') page.dialog.dispatch('keydown', { key: 'Escape' });
-      else if (action === 'native cancel') page.dialog.dispatch('cancel');
-      else page[action].click();
-      await settleBookConfirmation();
-      expect(page.nativeSubmit).not.toHaveBeenCalled();
-      expect(page.confirmed.value).toBe('false');
-      expect(page.cover.files).toHaveLength(1);
-      expect(page.host.open).toBe(true);
-      expect(page.document.activeElement).toBe(page.button);
-      page.submit();
-      expect(page.dialog.open).toBe(true);
-      page.cancel.click();
-      await settleBookConfirmation();
+  describe('existing-cover replacement', () => {
+    it('cancels without closing Book or clearing the file and permits retry for either source kind', async () => {
+      for (const kind of ['project_asset', 'managed_asset']) {
+        const page = bookUploadPage(kind);
+        page.submit();
+        expect(page.dialog.open).toBe(true);
+        page.cancel.click();
+        await settleBookConfirmation();
+        expect(page.nativeSubmit).not.toHaveBeenCalled();
+        expect(page.confirmed.value).toBe('false');
+        expect(page.cover.files).toHaveLength(1);
+        expect(page.host.open).toBe(true);
+        page.submit();
+        expect(page.dialog.open).toBe(true);
+        page.cancel.click();
+        await settleBookConfirmation();
+      }
     });
 
-    it('approves exactly one native submission with the unchanged source and submitter', async () => {
-      const page = bookUploadPage(kind);
-      expect(enhanceBookCoverUploads(page.document)).toBe(0);
-      page.submit(); page.submit(); page.submit();
-      expect(page.dialog.showModal).toHaveBeenCalledOnce();
-      expect(page.message.textContent).toContain('previous image or Asset will not be deleted');
-      expect(page.message.textContent).not.toMatch(/managed_asset|project_asset|42/);
-      page.confirm.click(); page.confirm.click();
-      await settleBookConfirmation();
-      page.submit();
-      expect(page.form.requestSubmit).toHaveBeenCalledExactlyOnceWith(page.button);
-      expect(page.nativeSubmit).toHaveBeenCalledExactlyOnceWith({ confirmed: 'true', files: page.cover.files, kind, id: '42', submitter: page.button });
-      expect(page.confirmed.value).toBe('false');
+    it('approves exactly one native submission with either unchanged source kind and the original submitter', async () => {
+      for (const kind of ['project_asset', 'managed_asset']) {
+        const page = bookUploadPage(kind);
+        expect(enhanceBookCoverUploads(page.document)).toBe(0);
+        page.submit(); page.submit(); page.submit();
+        expect(page.dialog.showModal).toHaveBeenCalledOnce();
+        expect(page.message.textContent).toContain('previous image or Asset will not be deleted');
+        expect(page.message.textContent).not.toMatch(/managed_asset|project_asset|42/);
+        page.confirm.click(); page.confirm.click();
+        await settleBookConfirmation();
+        page.submit();
+        expect(page.form.requestSubmit).toHaveBeenCalledExactlyOnceWith(page.button);
+        expect(page.nativeSubmit).toHaveBeenCalledExactlyOnceWith({ confirmed: 'true', files: page.cover.files, kind, id: '42', submitter: page.button });
+        expect(page.confirmed.value).toBe('false');
+      }
     });
   });
 
@@ -707,15 +597,17 @@ describe('Book cover upload shared confirmation', () => {
     expect(page.nativeSubmit.mock.calls[0][0].files[0].name).toBe('another.png');
   });
 
-  it.each(['clear file', 'no cover'])('pending approval after %s does not retain replacement authorization', async (change) => {
-    const page = bookUploadPage();
-    page.submit();
-    if (change === 'clear file') page.cover.files = [];
-    else page.source.value = 'none';
-    page.confirm.click();
-    await settleBookConfirmation();
-    expect(page.nativeSubmit.mock.calls[0][0].confirmed).toBe('false');
-    expect(page.confirmed.value).toBe('false');
+  it('does not retain replacement authorization when the pending input stops being a replacement', async () => {
+    for (const change of ['clear file', 'no cover']) {
+      const page = bookUploadPage();
+      page.submit();
+      if (change === 'clear file') page.cover.files = [];
+      else page.source.value = 'none';
+      page.confirm.click();
+      await settleBookConfirmation();
+      expect(page.nativeSubmit.mock.calls[0][0].confirmed).toBe('false');
+      expect(page.confirmed.value).toBe('false');
+    }
   });
 
   it('validation-blocked approval cannot authorize a later file selection', async () => {

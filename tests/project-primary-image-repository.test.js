@@ -45,6 +45,7 @@ describe('project primary-image repository', () => {
       description: '',
       notes: '',
       status: 'tbd',
+      projectType: 'images',
       priority: 'normal',
       plannedDate: null,
       publishedDate: null,

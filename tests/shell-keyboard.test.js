@@ -41,6 +41,20 @@ function extractStyle(html) {
   return SERVED_CSS;
 }
 
+/** Require an exact selector-list member and declaration in the same CSS rule. */
+function hasReducedMotionTransition(css, selector) {
+  for (const [, selectorList, body] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const selectors = selectorList.split(',').map((entry) => entry.trim());
+    if (
+      selectors.includes(selector)
+      && /transition:\s*none\s*!important/.test(body)
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /** Match a positive tabindex value (1, 2, 3, ...). Excludes 0 and -1. */
 function positiveTabindexMatches(html) {
   return html.match(/tabindex="([1-9]\d*)"/g) || [];
@@ -288,9 +302,10 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
     let reduced;
 
     beforeEach(async () => {
-      const css = extractStyle((await agent.get('/').expect(200)).text);
+      const css = extractStyle((await agent.get('/').expect(200)).text)
+        .replace(/\/\*[\s\S]*?\*\//g, '');
       const m = css.match(
-        /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?)\n\s*\}/,
+        /@media\s*\(prefers-reduced-motion:\s*reduce\)\s*\{([\s\S]*?\n\s*\})\s*\n\s*\}/,
       );
       reduced = m ? m[1] : '';
     });
@@ -306,17 +321,18 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
     it('covers all previously-listed elements (no regression)', () => {
       for (const sel of [
         '.app-sidebar',
+        '.app-sidebar-brand',
         '.app-nav-label',
+        '.app-nav-children',
+        '.app-nav-child-link',
         '.skip-link',
         '.button',
         '.view-switcher-option',
+        '.mobile-nav-summary',
         '.mobile-nav-link',
       ]) {
-        expect(reduced).toMatch(
-          new RegExp(sel.replace(/\./g, '\\.')),
-        );
+        expect(hasReducedMotionTransition(reduced, sel)).toBe(true);
       }
-      expect(reduced).toMatch(/transition:\s*none !important/);
     });
   });
 

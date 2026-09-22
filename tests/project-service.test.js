@@ -8,6 +8,7 @@ import { createAssetCategoryRepository } from '../src/data/asset-category-reposi
 import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browser-preference-repository.js';
 import { createAppMetaRepository } from '../src/data/app-meta-repository.js';
 import { createApplicationLogRepository } from '../src/data/application-log-repository.js';
+import { createTagRepository } from '../src/data/tag-repository.js';
 import { createAssetCategoryService } from '../src/services/asset-category-service.js';
 import { createApplicationLogger } from '../src/services/application-logger.js';
 import { createPageDefaultsService } from '../src/services/page-defaults-service.js';
@@ -120,6 +121,94 @@ describe('project service', () => {
     } catch (err) {
       expect(err.errors.title).toBe('Title is required.');
     }
+  });
+
+  it('atomically rejects a missing requested tag before creating project state', () => {
+    const tagRepository = createTagRepository(db);
+    const staleTag = tagRepository.create({
+      displayName: 'Stale creation tag',
+      normalizedName: 'stale creation tag',
+    });
+    tagRepository.deleteById(staleTag.id);
+    const expectedRoot = path.join(projectsRoot, formatProjectDirName(1, 'missing-requested-tag'));
+
+    expect(() => service.create(validInput({ title: 'Missing Requested Tag' }), {
+      tagIds: [staleTag.id],
+    })).toThrow(ProjectValidationError);
+
+    expect(service.repository.findBySlug('missing-requested-tag')).toBeUndefined();
+    expect(db.prepare('SELECT COUNT(*) AS count FROM project_tags').get().count).toBe(0);
+    expect(fs.existsSync(expectedRoot)).toBe(false);
+  });
+
+  it('atomically rejects update fields and tag replacement when a requested tag is missing', () => {
+    const tagRepository = createTagRepository(db);
+    const originalTag = tagRepository.create({
+      displayName: 'Original update tag',
+      normalizedName: 'original update tag',
+    });
+    const staleTag = tagRepository.create({
+      displayName: 'Stale update tag',
+      normalizedName: 'stale update tag',
+    });
+    const retainedTag = tagRepository.create({
+      displayName: 'Retained update tag',
+      normalizedName: 'retained update tag',
+    });
+    const project = service.create(validInput({ title: 'Atomic Tagged Update' }), {
+      tagIds: [originalTag.id],
+    });
+    tagRepository.deleteById(staleTag.id);
+
+    expect(() => service.update(project.id, validInput({
+      title: 'Atomic Tagged Update',
+      status: 'planned',
+      projectType: 'comic',
+    }), {
+      tagIds: [staleTag.id, retainedTag.id],
+    })).toThrow(ProjectValidationError);
+
+    expect(service.repository.findById(project.id)).toEqual(expect.objectContaining({
+      title: 'Atomic Tagged Update',
+      status: 'tbd',
+      project_type: 'images',
+    }));
+    expect(tagRepository.listForProject(project.id).map((tag) => tag.id)).toEqual([originalTag.id]);
+  });
+
+  it('preserves omitted update tags and replaces or clears explicitly supplied tags', () => {
+    const tagRepository = createTagRepository(db);
+    const originalTag = tagRepository.create({
+      displayName: 'Original compatible tag',
+      normalizedName: 'original compatible tag',
+    });
+    const replacementTag = tagRepository.create({
+      displayName: 'Replacement compatible tag',
+      normalizedName: 'replacement compatible tag',
+    });
+    const project = service.create(validInput({ title: 'Compatible Tagged Update' }), {
+      tagIds: [originalTag.id],
+    });
+
+    service.update(project.id, validInput({
+      title: 'Compatible Tagged Update',
+      status: 'planned',
+    }));
+    expect(tagRepository.listForProject(project.id).map((tag) => tag.id)).toEqual([originalTag.id]);
+
+    service.update(project.id, validInput({
+      title: 'Compatible Tagged Update',
+      status: 'in-progress',
+    }), {
+      tagIds: [replacementTag.id, replacementTag.id],
+    });
+    expect(tagRepository.listForProject(project.id).map((tag) => tag.id)).toEqual([replacementTag.id]);
+
+    service.update(project.id, validInput({
+      title: 'Compatible Tagged Update',
+      status: 'ready',
+    }), { tagIds: [] });
+    expect(tagRepository.listForProject(project.id)).toEqual([]);
   });
 
   describe('project type', () => {
@@ -1576,6 +1665,70 @@ describe('project service', () => {
       expect(db.prepare('SELECT COUNT(*) AS c FROM releases WHERE id = ?').get(releaseId).c).toBe(1);
       expect(fs.existsSync(projectDir)).toBe(true);
       expect(fs.readdirSync(projectsRoot).some((entry) => entry.startsWith('.cc-quarantine-'))).toBe(false);
+    });
+
+    it('requires filesystem recovery when database deletion and quarantine restoration both fail', () => {
+      const project = service.create(validInput({ title: 'Failed Delete Recovery' }));
+      const projectDir = getProjectDir(project);
+      fs.writeFileSync(path.join(projectDir, 'owned-file.txt'), 'content');
+      const originalIdentity = fs.lstatSync(projectDir);
+      const applicationLogger = { info: vi.fn() };
+      const loggedService = createProjectService(db, projectsRoot, {
+        assetCategoryService: createAssetCategoryService(createAssetCategoryRepository(db)),
+        assetBrowserPreferenceRepository,
+        applicationLogger,
+        pageDefaultsService,
+        projectOptionCatalogueService,
+        projectRepository: service.repository,
+      });
+      const actualRename = fs.renameSync;
+      let quarantinePath;
+      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation((source, destination) => {
+        if (source === projectDir && path.basename(destination).startsWith('.cc-quarantine-')) {
+          actualRename(source, destination);
+          quarantinePath = destination;
+          return;
+        }
+        if (source === quarantinePath && destination === projectDir) {
+          throw new Error('restore failed');
+        }
+        return actualRename(source, destination);
+      });
+      const deleteSpy = vi.spyOn(service.repository, 'deleteById').mockImplementation(() => {
+        throw new Error('database failed');
+      });
+      const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      let failure;
+
+      try {
+        try {
+          loggedService.deleteProject(project.id);
+        } catch (err) {
+          failure = err;
+        }
+
+        expect(failure).toBeInstanceOf(Error);
+        expect(failure.message).toBe('Project deletion failed and filesystem recovery is required.');
+        expect(deleteSpy).toHaveBeenCalledWith(project.id);
+        expect(renameSpy).toHaveBeenCalledWith(quarantinePath, projectDir);
+        expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining(
+          'project directory could not be restored after deletion failure'
+        ));
+      } finally {
+        errorSpy.mockRestore();
+        deleteSpy.mockRestore();
+        renameSpy.mockRestore();
+      }
+
+      expect(quarantinePath).toBeTypeOf('string');
+      expect(loggedService.findById(project.id)).toBeTruthy();
+      expect(fs.existsSync(projectDir)).toBe(false);
+      expect(fs.readFileSync(path.join(quarantinePath, 'owned-file.txt'), 'utf8')).toBe('content');
+      const quarantinedIdentity = fs.lstatSync(quarantinePath);
+      expect([quarantinedIdentity.dev, quarantinedIdentity.ino]).toEqual([
+        originalIdentity.dev, originalIdentity.ino,
+      ]);
+      expect(applicationLogger.info).not.toHaveBeenCalled();
     });
 
     it('throws ProjectNotFoundError without changing anything for a missing project', () => {

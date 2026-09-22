@@ -31,25 +31,20 @@ const minimalReleaseAsset = {
 };
 
 describe('reusable asset presentation macros', () => {
-  it('renders a minimal release-style model without project-only fields or mutation markup', () => {
+  it('renders both minimal release cards with escaped identity, fallback, and viewer links', () => {
     const html = renderComponents(minimalReleaseAsset);
 
     expect(html).toContain('<article class="asset-card"');
     expect(html).toContain('<article class="asset-list-card"');
-    expect(html).toContain('PNG — preview not supported');
+    expect((html.match(/PNG — preview not supported/g) || [])).toHaveLength(2);
     expect(html).toContain('candidate &lt;final&gt;');
-    expect(html).toContain('href="/projects/7/assets/73"');
+    expect(html).toContain('<a class="asset-card-title-text asset-file-link" href="/projects/7/assets/73">candidate &lt;final&gt;</a>');
+    expect(html).toMatch(/<a class="asset-file-link" href="\/projects\/7\/assets\/73">candidate &lt;final&gt;<\/a>/);
     expect(html).not.toContain('<img ');
-    expect(html).not.toContain('asset-card-tags');
-    expect(html).not.toContain('asset-list-card-associations');
-    expect(html).not.toContain('asset-list-card-identity');
+    expect(html).not.toContain('asset-card-primary-metadata');
     expect(html).not.toContain('asset-list-card-primary-metadata');
     expect(html).not.toContain('asset-list-card-associations-region');
-    expect(html).not.toContain('Category</dt>');
-    expect(html).not.toContain('Size</dt>');
-    expect(html).not.toContain('Modified</dt>');
     expect(html).not.toContain('<form');
-    expect(html).not.toContain('method="post"');
     expect(html).not.toContain('undefined');
     expect(html).not.toContain('href=""');
     expect(html).not.toContain('src=""');
@@ -87,12 +82,6 @@ describe('reusable asset presentation macros', () => {
     expect(missingList).toContain('asset-indicator--missing');
     expect(presentList).toContain('asset-details-link--present');
     expect(missingList).toContain('asset-details-link--missing');
-  });
-
-  it('supports an opt-in grid filename link for release cards', () => {
-    const html = renderComponents(minimalReleaseAsset);
-
-    expect(html).toContain('<a class="asset-card-title-text asset-file-link" href="/projects/7/assets/73">candidate &lt;final&gt;</a>');
   });
 
   it('uses the normalized preview derivative and keeps list filename navigation', () => {

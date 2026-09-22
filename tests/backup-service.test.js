@@ -14,8 +14,8 @@ const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 function insertProject(db, title) {
   return db
     .prepare(
-      `INSERT INTO projects (title, slug, description, notes, status, patreon_url)
-       VALUES (?, ?, '', '', 'tbd', NULL)`
+      `INSERT INTO projects (title, slug, description, notes, status, project_type, patreon_url)
+       VALUES (?, ?, '', '', 'tbd', 'images', NULL)`
     )
     .run(title, title.toLowerCase().replace(/\s+/g, '-')).lastInsertRowid;
 }

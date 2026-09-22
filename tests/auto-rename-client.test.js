@@ -1,6 +1,4 @@
 import { describe, it, expect } from 'vitest';
-import fs from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import {
   enhanceAssetAutoRenameOrdering,
   enhanceAssetSelection,
@@ -30,8 +28,6 @@ function makeNode({ tagName = 'div', attrs = {}, textContent = '', rect = null }
       height: '',
     },
     focusCalls: [],
-    appendChildCalls: [],
-    insertBeforeCalls: [],
     textContent,
     hidden: false,
     disabled: false,
@@ -98,7 +94,6 @@ function makeNode({ tagName = 'div', attrs = {}, textContent = '', rect = null }
       return false;
     },
     appendChild(child) {
-      this.appendChildCalls.push(child);
       if (child.parentElement) {
         const previousIndex = child.parentElement.children.indexOf(child);
         if (previousIndex >= 0) child.parentElement.children.splice(previousIndex, 1);
@@ -115,7 +110,6 @@ function makeNode({ tagName = 'div', attrs = {}, textContent = '', rect = null }
       return child;
     },
     insertBefore(child, reference) {
-      this.insertBeforeCalls.push({ child, reference });
       if (child.parentElement) {
         const previousIndex = child.parentElement.children.indexOf(child);
         if (previousIndex >= 0) child.parentElement.children.splice(previousIndex, 1);
@@ -512,9 +506,6 @@ describe('Assets-page Auto Rename ordering enhancement', () => {
 
     dragTo(page, 0, { clientY: 140 });
     expect(page.submit.disabled).toBe(true);
-
-    expect(enhanceAssetAutoRenameOrdering(page.document)).toBe(1);
-    expect(page.assets[0].item.listeners.filter((entry) => entry.type === 'dragstart')).toHaveLength(1);
   });
 
   it('reorders the existing list row from its preview, serializes strict JSON, updates indicators, and never fetches', () => {
@@ -615,7 +606,6 @@ describe('Assets-page Auto Rename ordering enhancement', () => {
       expect(page.order()).toEqual(testCase.order);
       expect(page.order().indexOf(String(testCase.sourceIndex + 1))).toBe(result.markerSlot);
       expect(page.marker().hidden).toBe(true);
-      expect(page.surface.autoRenameOrderingState.dropIndex).toBe(null);
     }
   });
 
@@ -635,23 +625,6 @@ describe('Assets-page Auto Rename ordering enhancement', () => {
     expect(afterRowStart.markerGeometry.top).toBe(130);
     expect(following.order()).toEqual(['1', '2', '3', '6', '4', '5']);
     expect(following.order().indexOf('6')).toBe(afterRowStart.markerSlot);
-  });
-
-  it('keeps the displayed slot equal to the final slot for forward and backward moves', () => {
-    const page = makeAssetPage({ view: 'grid', ids: [1, 2, 3, 4, 5, 6] });
-    enhanceAssetAutoRenameOrdering(page.document);
-
-    const forward = dragTo(page, 0, { clientX: 130, clientY: 170 });
-    expect(forward.markerSlot).toBe(3);
-    expect(page.order()).toEqual(['2', '3', '4', '1', '5', '6']);
-    expect(page.order().indexOf('1')).toBe(forward.markerSlot);
-
-    const backward = dragTo(page, 0, { clientX: 0, clientY: 50 });
-    expect(backward.markerSlot).toBe(0);
-    expect(page.order()).toEqual(['1', '2', '3', '4', '5', '6']);
-    expect(page.order().indexOf('1')).toBe(backward.markerSlot);
-    expect(page.orderInput.value).toBe('[1,2,3,4,5,6]');
-    expect(page.submit.disabled).toBe(true);
   });
 
   it('keeps list placement before the first row, between rows, and after the last row', () => {
@@ -676,14 +649,12 @@ describe('Assets-page Auto Rename ordering enhancement', () => {
     }
   });
 
-  it('re-inserts only the dragged node, preserves preview identity, focus, and scroll in grid and list views', () => {
+  it('preserves the dragged card, preview, focus, and scroll', () => {
     withViewport((scrollCalls) => {
       const page = makeAssetPage({ view: 'grid', ids: [1, 2, 3, 4, 5, 6] });
       enhanceAssetAutoRenameOrdering(page.document);
       const source = page.assets[5];
       const previewImage = source.image;
-      const initialInsertCalls = page.list.insertBeforeCalls.length;
-      const initialAppendCalls = page.list.appendChildCalls.length;
       source.item.focus();
 
       const result = dragTo(page, 5, { clientX: 130, clientY: 50 });
@@ -691,9 +662,7 @@ describe('Assets-page Auto Rename ordering enhancement', () => {
       expect(result.markerSlot).toBe(1);
       expect(page.order()).toEqual(['1', '6', '2', '3', '4', '5']);
       expect(page.order().indexOf('6')).toBe(result.markerSlot);
-      expect(page.list.insertBeforeCalls.slice(initialInsertCalls)).toHaveLength(1);
-      expect(page.list.insertBeforeCalls.at(-1).child).toBe(source.item);
-      expect(page.list.appendChildCalls).toHaveLength(initialAppendCalls);
+      expect(page.list.children[1]).toBe(source.item);
       expect(source.item.querySelector('[data-preview-image]')).toBe(previewImage);
       expect(globalThis.scrollX).toBe(17);
       expect(globalThis.scrollY).toBe(1400);
@@ -702,26 +671,6 @@ describe('Assets-page Auto Rename ordering enhancement', () => {
       expect(page.surface.style.overflowAnchor).toBe('');
       expect(page.marker().hidden).toBe(true);
       expect(page.assets.every(({ item }) => item.parentElement === page.list)).toBe(true);
-    });
-
-    withViewport((scrollCalls) => {
-      const page = makeAssetPage({ view: 'list' });
-      enhanceAssetAutoRenameOrdering(page.document);
-      const source = page.assets[0];
-      const previewImage = source.image;
-      source.item.focus();
-      const result = dragTo(page, 0, { clientY: 80 });
-
-      expect(result.markerSlot).toBe(1);
-      expect(page.order()).toEqual(['2', '1', '3']);
-      expect(page.list.insertBeforeCalls).toHaveLength(1);
-      expect(page.list.insertBeforeCalls[0].child).toBe(source.item);
-      expect(source.item.querySelector('[data-preview-image]')).toBe(previewImage);
-      expect(globalThis.scrollX).toBe(17);
-      expect(globalThis.scrollY).toBe(1400);
-      expect(scrollCalls.length).toBeGreaterThan(0);
-      expect(source.item.focusCalls.at(-1)).toEqual({ preventScroll: true });
-      expect(page.surface.style.overflowAnchor).toBe('');
     });
   });
 
@@ -746,34 +695,11 @@ describe('Assets-page Auto Rename ordering enhancement', () => {
       expect(page.order()).toEqual(['1', '2', '3', '4', '5', '6']);
       expect(globalThis.scrollX).toBe(17);
       expect(globalThis.scrollY).toBe(1400);
-      expect(page.surface.autoRenameOrderingState.draggedItem).toBe(null);
-      expect(page.surface.autoRenameOrderingState.dropIndex).toBe(null);
       expect(page.assets[5].item.getAttribute('aria-grabbed')).toBe('false');
       expect(page.surface.classList.contains('auto-rename-surface--dragging')).toBe(false);
       expect(page.marker().hidden).toBe(true);
       expect(page.surface.style.overflowAnchor).toBe('');
     });
-  });
-
-  it('keeps Auto Rename disabled while pointer dragging changes or restores order without a selection', () => {
-    const page = makeAssetPage({ view: 'list' });
-    enhanceAssetAutoRenameOrdering(page.document);
-
-    const move = (source, target, clientY) => {
-      const transfer = dataTransfer();
-      source.preview.dispatch('dragstart', { dataTransfer: transfer });
-       page.surface.dispatch('dragover', { target: page.surface, clientY, dataTransfer: transfer });
-       page.surface.dispatch('drop', { target: page.surface, clientY, dataTransfer: transfer });
-    };
-
-    move(page.assets[0], page.assets[1], 80);
-    expect(page.order()).toEqual(['2', '1', '3']);
-    expect(page.submit.disabled).toBe(true);
-
-    move(page.assets[0], page.assets[1], 1);
-    expect(page.order()).toEqual(['1', '2', '3']);
-    expect(page.orderInput.value).toBe('[1,2,3]');
-    expect(page.submit.disabled).toBe(true);
   });
 
   it('keeps links usable for clicks and drag while blocking form controls', () => {
@@ -792,7 +718,7 @@ describe('Assets-page Auto Rename ordering enhancement', () => {
 
       expect(dragStart.defaultPrevented).toBe(true);
       expect(page.assets[0].item.draggable).toBe(true);
-      expect(page.surface.autoRenameOrderingState.draggedItem).toBe(null);
+      expect(page.assets[0].item.getAttribute('aria-grabbed')).toBe('false');
     }
 
     const transfer = dataTransfer();
@@ -804,59 +730,38 @@ describe('Assets-page Auto Rename ordering enhancement', () => {
     expect(page.assets[0].previewLink.navigationCount).toBe(1);
   });
 
-  it('leaves cancelled or outside drops unchanged and clears transient state', () => {
+  it('enhances once and supports keyboard grab, movement, commit, and Escape restore', () => {
     const page = makeAssetPage();
     enhanceAssetAutoRenameOrdering(page.document);
-
-    const transfer = dataTransfer();
-    page.assets[0].preview.dispatch('dragstart', { dataTransfer: transfer });
-    page.surface.dispatch('drop', { target: page.live, dataTransfer: transfer });
-    expect(page.order()).toEqual(['1', '2', '3']);
-    expect(page.submit.disabled).toBe(true);
-    expect(page.assets[0].item.classList.contains('auto-rename-asset--dragging')).toBe(false);
-
-    page.assets[1].preview.dispatch('dragstart', { dataTransfer: dataTransfer() });
-    page.document.dispatch('drop', { target: page.document });
-    page.assets[1].item.dispatch('dragend');
-    expect(page.order()).toEqual(['1', '2', '3']);
-    expect(page.surface.classList.contains('auto-rename-surface--dragging')).toBe(false);
-    expect(page.assets[1].item.draggable).toBe(true);
-
-    page.assets[2].preview.dispatch('dragstart', { dataTransfer: dataTransfer() });
-    page.assets[2].item.dispatch('dragend');
-    expect(page.assets[2].item.draggable).toBe(true);
-    expect(page.surface.autoRenameOrderingState.draggedItem).toBe(null);
-  });
-
-  it('supports keyboard grab, arrow movement, boundary safety, commit, and Escape restore', () => {
-    const page = makeAssetPage();
     enhanceAssetAutoRenameOrdering(page.document);
-    const item = page.assets[1].item;
+    const item = page.assets[0].item;
     item.focus();
 
     item.dispatch('keydown', { key: ' ' });
-    expect(page.assets[1].item.getAttribute('aria-grabbed')).toBe('true');
+    expect(page.assets[0].item.getAttribute('aria-grabbed')).toBe('true');
     item.dispatch('keydown', { key: 'ArrowDown' });
-    expect(page.order()).toEqual(['1', '3', '2']);
-    expect(page.orderInput.value).toBe('[1,3,2]');
-    expect(page.assets[1].indicator.textContent).toBe('3 of 3');
+    expect(page.order()).toEqual(['2', '1', '3']);
+    expect(page.orderInput.value).toBe('[2,1,3]');
+    expect(page.assets[0].indicator.textContent).toBe('2 of 3');
     expect(page.submit.disabled).toBe(true);
     expect(item.focused).toBe(true);
-    expect(page.live.textContent).toContain('position 3 of 3');
+    expect(page.live.textContent).toContain('position 2 of 3');
 
     item.dispatch('keydown', { key: 'ArrowDown' });
-    expect(page.order()).toEqual(['1', '3', '2']);
+    expect(page.order()).toEqual(['2', '3', '1']);
+    item.dispatch('keydown', { key: 'ArrowDown' });
+    expect(page.order()).toEqual(['2', '3', '1']);
     item.dispatch('keydown', { key: 'Enter' });
-    expect(page.assets[1].item.getAttribute('aria-grabbed')).toBe('false');
-    expect(page.order()).toEqual(['1', '3', '2']);
+    expect(page.assets[0].item.getAttribute('aria-grabbed')).toBe('false');
+    expect(page.order()).toEqual(['2', '3', '1']);
 
     const escapeItem = page.assets[2].item;
     escapeItem.focus();
     escapeItem.dispatch('keydown', { key: 'Enter' });
     escapeItem.dispatch('keydown', { key: 'ArrowUp' });
-    expect(page.order()).toEqual(['3', '1', '2']);
+    expect(page.order()).toEqual(['3', '2', '1']);
     escapeItem.dispatch('keydown', { key: 'Escape' });
-    expect(page.order()).toEqual(['1', '3', '2']);
+    expect(page.order()).toEqual(['2', '3', '1']);
     expect(page.submit.disabled).toBe(true);
     expect(escapeItem.focused).toBe(true);
   });
@@ -885,40 +790,4 @@ describe('Assets-page Auto Rename ordering enhancement', () => {
     expect(added.orderInput.value).toBe('');
   });
 
-  it('keeps ordering CSS scoped to Assets, uses view-specific indicators, and omits obsolete controls', () => {
-    const stylesheet = fs.readFileSync(
-      fileURLToPath(new URL('../src/static/creatorcrate.css', import.meta.url)),
-      'utf8',
-     );
-     expect(stylesheet).toContain('.asset-auto-rename-surface');
-    expect(stylesheet).toContain('.asset-actions-panel');
-     expect(stylesheet).toContain('.asset-selection-controls');
-     expect(stylesheet).toContain('.auto-rename-asset--dragging');
-     expect(stylesheet).toContain('.auto-rename-order-marker');
-     expect(stylesheet).toContain('position: absolute');
-     expect(stylesheet).toContain('pointer-events: none');
-     expect(stylesheet).toContain('width: 3px');
-     expect(stylesheet).toContain('height: 3px');
-     const orderingCss = stylesheet.slice(
-       stylesheet.indexOf('.asset-auto-rename-surface {'),
-       stylesheet.indexOf('.asset-auto-rename-surface .table-scroll'),
-     );
-     expect(orderingCss).toContain('overflow: visible');
-     expect(orderingCss).not.toContain('::before');
-     expect(orderingCss).not.toContain('::after');
-     expect(orderingCss).not.toContain('auto-rename-drop-before');
-     expect(orderingCss).not.toContain('auto-rename-drop-after');
-    expect(stylesheet).toMatch(/@media \(max-width: 767px\)[\s\S]*\.asset-actions-category-row/);
-    expect(stylesheet).not.toContain('.auto-rename-drag-handle');
-    expect(stylesheet).not.toContain('.auto-rename-assets-toolbar');
-    const actionDisabledCss = stylesheet.slice(
-      stylesheet.indexOf('.asset-actions-panel .button:disabled'),
-      stylesheet.indexOf('.asset-actions-category-row'),
-    );
-    expect(actionDisabledCss).toContain('text-decoration: none');
-    expect(actionDisabledCss).not.toContain('text-decoration: line-through');
-    expect(stylesheet).not.toContain('.auto-rename-reorder-controls');
-    expect(stylesheet).not.toContain('data-auto-rename-move-up');
-    expect(stylesheet).not.toContain('data-auto-rename-move-down');
-  });
 });

@@ -346,6 +346,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     || createNoteRevisionSettingsService({ appMetaRepository });
   app.locals.noteRevisionSettingsService = noteRevisionSettingsService;
 
+  const tagRepository = opts.tagRepository || createTagRepository(db);
   const projectService = createProjectService(db, projectsRoot, {
     assetCategoryService,
     assetBrowserPreferenceRepository,
@@ -353,6 +354,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     pageDefaultsService,
     projectOptionCatalogueService,
     projectRepository,
+    tagRepository,
   });
   app.locals.projectService = projectService;
 
@@ -425,7 +427,6 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.locals.chapterService = chapterService;
   app.locals.markdownRenderer = markdownRenderer;
 
-  const tagRepository = opts.tagRepository || createTagRepository(db);
   const tagService = opts.tagService || createTagService({ tagRepository, applicationLogger });
   const projectTagService = opts.projectTagService || createProjectTagService({
     tagRepository,

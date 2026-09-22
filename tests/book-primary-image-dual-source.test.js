@@ -34,7 +34,7 @@ describe('Book dual-source domain', () => {
     book = books.create({ title: 'Original' });
     const project = createProjectRepository(db).create({ title: 'Images', slug: 'images',
       description: '', notes: '', status: 'tbd', priority: 'normal', plannedDate: null,
-      publishedDate: null, patreonUrl: null });
+      publishedDate: null, patreonUrl: null, projectType: 'images' });
     projectAssets = ['a.png', 'b.png'].map((filename) => assets.upsert(project.id, filename, {
       filename, extension: 'png', mimeType: 'image/png', sizeBytes: 20, modifiedAt: '2026-09-06',
     }));

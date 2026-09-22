@@ -274,7 +274,7 @@ function makePage(projectId = null, { dialogOpen = false } = {}) {
     value: '1',
     checked: projectId === '1',
   });
-  addProjectOption(optionList, {
+  const beta = addProjectOption(optionList, {
     id: '2',
     label: 'Beta Project',
     value: '2',
@@ -310,9 +310,79 @@ function makePage(projectId = null, { dialogOpen = false } = {}) {
     summary,
     all,
     alpha,
+    beta,
     search,
     currentSummary,
     preview,
+  };
+}
+
+function addCurrentFilterControls(page, values = {}) {
+  const defaults = {
+    category: ['category-illustration', 'category-reference'],
+    tag: ['tag-character', 'tag-environment'],
+    extension: ['extension-png', 'extension-webp'],
+    presence: 'present',
+    usage: 'unused',
+    sort: 'project',
+    order: 'desc',
+    page: '3',
+    pageSize: '50',
+    view: 'list',
+  };
+  return Object.fromEntries(Object.entries({ ...defaults, ...values }).map(([name, value]) => {
+    const controlValue = Array.isArray(value) ? value.at(-1) : value;
+    const control = makeNode({ tagName: 'input', attrs: { name, value: controlValue }, value: controlValue });
+    if (Array.isArray(value)) control.values = value;
+    control.form = page.form;
+    page.form.appendChild(control);
+    return [name, control];
+  }));
+}
+
+function addReplacementEnhancerFixtures(page) {
+  const preview = makeNode({
+    attrs: {
+      'data-asset-viewer-preview': '',
+      'data-preview-enhancement': '',
+      'data-preview-state': 'loading',
+    },
+  });
+  const previewImage = makeNode({ tagName: 'img', attrs: { 'data-preview-image': '' } });
+  const previewFallback = makeNode({ attrs: { 'data-preview-fallback': '', hidden: '' } });
+  const infoCard = makeNode({ attrs: { 'data-asset-info-card': '', popover: 'manual' } });
+  preview.appendChild(previewImage);
+  preview.appendChild(previewFallback);
+  preview.appendChild(infoCard);
+
+  const gridControls = makeNode({ attrs: { 'data-asset-grid-size-controls': '' } });
+  const gridSlider = makeNode({
+    tagName: 'input',
+    attrs: { type: 'range', value: '2', 'data-grid-size-slider': '' },
+    value: '2',
+  });
+  const grid = makeNode({ attrs: { class: 'asset-grid' } });
+  gridControls.appendChild(gridSlider);
+
+  const dropdown = makeNode({
+    tagName: 'details',
+    attrs: { 'data-cc-dropdown': '', 'data-cc-dropdown-mode': 'single' },
+  });
+  const dropdownSummary = makeNode({ tagName: 'summary', attrs: { 'aria-expanded': 'false' } });
+  dropdown.appendChild(dropdownSummary);
+
+  page.region.appendChild(preview);
+  page.region.appendChild(gridControls);
+  page.region.appendChild(grid);
+  page.region.appendChild(dropdown);
+  return {
+    preview,
+    previewImage,
+    infoCard,
+    grid,
+    gridSlider,
+    dropdown,
+    dropdownSummary,
   };
 }
 
@@ -328,8 +398,22 @@ function addDialogReset(page, href) {
   return reset;
 }
 
+function addFilteredEmptyReset(page, href) {
+  const reset = makeNode({ tagName: 'a', attrs: { href, 'data-asset-library-reset': '' } });
+  page.region.appendChild(reset);
+  return reset;
+}
+
 function addViewLink(page, href) {
   const nav = makeNode({ tagName: 'nav', attrs: { class: 'view-switcher' } });
+  const link = makeNode({ tagName: 'a', attrs: { href } });
+  nav.appendChild(link);
+  page.region.appendChild(nav);
+  return link;
+}
+
+function addPaginationLink(page, href) {
+  const nav = makeNode({ tagName: 'nav', attrs: { class: 'pagination' } });
   const link = makeNode({ tagName: 'a', attrs: { href } });
   nav.appendChild(link);
   page.region.appendChild(nav);
@@ -427,11 +511,15 @@ function makeWindow(document, pages) {
     },
     history: {
       pushes: [],
+      replaces: [],
       pushState(state, title, url) {
         this.pushes.push({ state, title, url });
         setLocation(url);
       },
-      replaceState() {},
+      replaceState(state, title, url) {
+        this.replaces.push({ state, title, url });
+        setLocation(url);
+      },
     },
     listeners: {},
     addEventListener(type, listener) { this.listeners[type] = listener; },
@@ -449,15 +537,22 @@ describe('Asset Viewer Project live filtering enhancement', () => {
     const initial = makePage();
     const filtered = makePage();
     const listed = makePage();
+    const paged = makePage();
     const restored = makePage();
     const pageSize = addPageSizeSelect(initial);
+    const stalePage = makeNode({ tagName: 'input', attrs: { name: 'page', value: '3' }, value: '3' });
+    stalePage.form = initial.form;
+    initial.form.appendChild(stalePage);
     addPageSizeSelect(filtered, 'all');
     addPageSizeSelect(listed, 'all');
+    addPageSizeSelect(paged, 'all');
     addPageSizeSelect(restored, 'all');
     const viewLink = addViewLink(filtered, '/asset-viewer?pageSize=all&view=list');
+    const paginationLink = addPaginationLink(listed, '/asset-viewer?page=2&pageSize=all&view=list');
     const pages = new Map([
       ['filtered-all', filtered.document],
       ['listed-all', listed.document],
+      ['paged-all', paged.document],
       ['restored-all', restored.document],
     ]);
     const windowObject = makeWindow(initial.document, pages);
@@ -474,7 +569,12 @@ describe('Asset Viewer Project live filtering enhancement', () => {
       })
       .mockResolvedValueOnce({
         ok: true,
-        url: 'http://creatorcrate.test/asset-viewer?pageSize=all',
+        url: 'http://creatorcrate.test/asset-viewer?page=2&pageSize=all&view=list',
+        text: async () => 'paged-all',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        url: 'http://creatorcrate.test/asset-viewer?pageSize=all&view=grid',
         text: async () => 'restored-all',
       });
 
@@ -484,6 +584,7 @@ describe('Asset Viewer Project live filtering enhancement', () => {
     await flush();
 
     expect(new URL(windowObject.fetch.mock.calls[0][0]).searchParams.get('pageSize')).toBe('all');
+    expect(new URL(windowObject.fetch.mock.calls[0][0]).searchParams.has('page')).toBe(false);
     expect(windowObject.history.pushes[0].url)
       .toBe('http://creatorcrate.test/asset-viewer?pageSize=all');
 
@@ -492,17 +593,30 @@ describe('Asset Viewer Project live filtering enhancement', () => {
     expect(windowObject.fetch.mock.calls[1][0])
       .toBe('http://creatorcrate.test/asset-viewer?pageSize=all&view=list');
 
+    paginationLink.dispatch('click', { button: 0 });
+    await flush();
+    expect(windowObject.fetch.mock.calls[2][0])
+      .toBe('http://creatorcrate.test/asset-viewer?page=2&pageSize=all&view=list');
+
     windowObject.location.href = 'http://creatorcrate.test/asset-viewer?pageSize=all';
     windowObject.listeners.popstate();
     await flush();
-    expect(windowObject.fetch.mock.calls[2][0])
+    expect(windowObject.fetch.mock.calls[3][0])
       .toBe('http://creatorcrate.test/asset-viewer?pageSize=all');
+    expect(windowObject.history.pushes).toHaveLength(3);
+    expect(windowObject.history.replaces).toEqual([
+      expect.objectContaining({ url: 'http://creatorcrate.test/asset-viewer?pageSize=all&view=grid' }),
+    ]);
+    expect(windowObject.location.href)
+      .toBe('http://creatorcrate.test/asset-viewer?pageSize=all&view=grid');
     expect(initial.form.querySelector('select[name="pageSize"]').value).toBe('all');
   });
 
-  it('submits one request, replaces and re-enhances the selector, resets search, and restores focus', async () => {
+  it('serializes every current filter, resets page, replaces the mounted region, and restores focus', async () => {
     const initial = makePage(null, { dialogOpen: true });
     const next = makePage('1');
+    addCurrentFilterControls(initial);
+    addCurrentFilterControls(next, { page: '', usage: 'used' });
     const reset = addDialogReset(initial, '/asset-viewer?resetFilters=1&view=grid');
     addDialogReset(next, '/asset-viewer?resetFilters=1&view=grid');
     const pages = new Map([['filtered', next.document]]);
@@ -519,7 +633,6 @@ describe('Asset Viewer Project live filtering enhancement', () => {
 
     initial.all.checked = false;
     initial.alpha.checked = true;
-    initial.search.value = 'stale search';
     initial.document.activeElement = initial.summary;
     initial.alpha.dispatch('change');
     await flush();
@@ -528,6 +641,21 @@ describe('Asset Viewer Project live filtering enhancement', () => {
     const requested = new URL(windowObject.fetch.mock.calls[0][0]);
     expect(requested.pathname).toBe('/asset-viewer');
     expect(requested.searchParams.get('project')).toBe('1');
+    expect(requested.searchParams.getAll('category')).toEqual(['category-illustration', 'category-reference']);
+    expect(requested.searchParams.getAll('tag')).toEqual(['tag-character', 'tag-environment']);
+    expect(requested.searchParams.getAll('extension')).toEqual(['extension-png', 'extension-webp']);
+    expect(Object.fromEntries(requested.searchParams)).toEqual({
+      project: '1',
+      category: 'category-reference',
+      tag: 'tag-environment',
+      extension: 'extension-webp',
+      presence: 'present',
+      usage: 'unused',
+      sort: 'project',
+      order: 'desc',
+      pageSize: '50',
+      view: 'list',
+    });
     expect(requested.searchParams.has('page')).toBe(false);
     expect(windowObject.history.pushes).toHaveLength(1);
     expect(windowObject.history.pushes[0].url).toBe(responseUrl);
@@ -536,164 +664,212 @@ describe('Asset Viewer Project live filtering enhancement', () => {
     expect(initial.document.querySelector('#asset-viewer-filter-dialog')).toBe(initial.dialog);
     expect(initial.dialog.open).toBe(true);
     expect(next.currentSummary.textContent).toBe('Alpha Project');
-    expect(next.search.value).toBe('');
     expect(next.summary.focused).toBe(true);
     expect(reset.form.getAttribute('action')).toBe('/asset-viewer?resetFilters=1&view=grid');
 
     enhanceAssetLibraryLiveFiltering(next.region);
     enhanceAssetLibraryLiveFiltering(next.region);
-    expect(initial.form.listeners.filter(({ type }) => type === 'change')).toHaveLength(1);
+    next.alpha.checked = false;
+    next.all.checked = true;
+    next.all.dispatch('change');
+    await flush();
+    expect(windowObject.fetch).toHaveBeenCalledTimes(2);
+    const allProjectsRequested = new URL(windowObject.fetch.mock.calls[1][0]);
+    expect(allProjectsRequested.searchParams.has('project')).toBe(false);
+    expect(allProjectsRequested.searchParams.getAll('category'))
+      .toEqual(['category-illustration', 'category-reference']);
+    expect(allProjectsRequested.searchParams.getAll('tag'))
+      .toEqual(['tag-character', 'tag-environment']);
+    expect(allProjectsRequested.searchParams.getAll('extension'))
+      .toEqual(['extension-png', 'extension-webp']);
+    expect(allProjectsRequested.searchParams.get('presence')).toBe('present');
+    expect(allProjectsRequested.searchParams.get('usage')).toBe('used');
+    expect(allProjectsRequested.searchParams.get('sort')).toBe('project');
+    expect(allProjectsRequested.searchParams.get('order')).toBe('desc');
+    expect(allProjectsRequested.searchParams.get('pageSize')).toBe('50');
+    expect(allProjectsRequested.searchParams.get('view')).toBe('list');
+    expect(allProjectsRequested.searchParams.has('page')).toBe(false);
   });
 
-  it.each([
-    ['Grid', 'List', 'grid', 'list'],
-    ['List', 'Grid', 'list', 'grid'],
-  ])('reconciles the dialog Reset action after live %s to %s navigation', async (
-    _initialLabel,
-    _nextLabel,
-    initialView,
-    nextView,
-  ) => {
+  it('keeps Reset server-authoritative through View navigation, canonical history, and Back/Forward', async () => {
     const initial = makePage('1', { dialogOpen: true });
-    const next = makePage('1');
+    const listed = makePage('1');
     const resetResult = makePage();
-    const reset = addDialogReset(initial, `/asset-viewer?resetFilters=1&view=${initialView}`);
-    addDialogReset(next, `/asset-viewer?resetFilters=1&view=${nextView}`);
-    addDialogReset(resetResult, `/asset-viewer?resetFilters=1&view=${nextView}`);
-    const viewLink = addViewLink(initial, `/asset-viewer?view=${nextView}`);
+    const filteredEmptyResult = makePage();
+    const revisited = makePage();
     const pages = new Map([
-      ['view-result', next.document],
-      ['reset-result', resetResult.document],
+      ['listed', listed.document],
+      ['reset', resetResult.document],
+      ['filtered-empty-reset', filteredEmptyResult.document],
+      ['revisited', revisited.document],
     ]);
     const windowObject = makeWindow(initial.document, pages);
+    const reset = addDialogReset(initial, '/asset-viewer?resetFilters=1&view=grid');
+    addDialogReset(listed, '/asset-viewer?resetFilters=1&view=list');
+    addDialogReset(resetResult, '/asset-viewer?resetFilters=1&view=list');
+    const filteredEmptyReset = addFilteredEmptyReset(resetResult, '/asset-viewer?resetFilters=1&view=list');
+    const viewLink = addViewLink(initial, '/asset-viewer?view=list');
     windowObject.fetch
       .mockResolvedValueOnce({
         ok: true,
-        url: `http://creatorcrate.test/asset-viewer?view=${nextView}`,
-        text: vi.fn(async () => 'view-result'),
+        url: 'http://creatorcrate.test/asset-viewer?view=list',
+        text: async () => 'listed',
       })
       .mockResolvedValueOnce({
         ok: true,
-        url: `http://creatorcrate.test/asset-viewer?view=${nextView}`,
-        text: vi.fn(async () => 'reset-result'),
+        url: 'http://creatorcrate.test/asset-viewer?category=art&sort=project&order=desc&pageSize=50&view=list',
+        text: async () => 'reset',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        url: 'http://creatorcrate.test/asset-viewer?view=list',
+        text: async () => 'filtered-empty-reset',
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        url: 'http://creatorcrate.test/asset-viewer?view=grid',
+        text: async () => 'revisited',
       });
 
     enhanceAssetLibraryLiveFiltering(initial.document);
     viewLink.dispatch('click', { button: 0 });
     await flush();
-
-    expect(reset.form.getAttribute('action')).toBe(`/asset-viewer?resetFilters=1&view=${nextView}`);
-    expect(initial.document.querySelector('#asset-viewer-filter-dialog')).toBe(initial.dialog);
-    expect(initial.dialog.open).toBe(true);
-
-    reset.dispatch('click', { button: 0 });
-    await flush();
-
-    expect(windowObject.fetch.mock.calls[1][0])
-      .toBe(`http://creatorcrate.test/asset-viewer?resetFilters=1&view=${nextView}`);
-    expect(initial.document.querySelector('#asset-viewer-filter-dialog')).toBe(initial.dialog);
-    expect(reset.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
-  });
-
-  it('keeps Reset server-authoritative across repeated live replacements and Back/Forward', async () => {
-    const initial = makePage('1', { dialogOpen: true });
-    const listPage = makePage('1');
-    const filteredListPage = makePage('1');
-    const restoredGridPage = makePage('1');
-    const resetResult = makePage();
-    const reset = addDialogReset(initial, '/asset-viewer?resetFilters=1&view=grid');
-    addDialogReset(listPage, '/asset-viewer?resetFilters=1&view=list');
-    addDialogReset(filteredListPage, '/asset-viewer?resetFilters=1&view=list');
-    addDialogReset(restoredGridPage, '/asset-viewer?resetFilters=1&view=grid');
-    addDialogReset(resetResult, '/asset-viewer?resetFilters=1&view=grid');
-    const viewLink = addViewLink(initial, '/asset-viewer?view=list');
-    const pages = new Map([
-      ['list', listPage.document],
-      ['filtered-list', filteredListPage.document],
-      ['restored-grid', restoredGridPage.document],
-      ['reset-grid', resetResult.document],
-    ]);
-    const windowObject = makeWindow(initial.document, pages);
-    windowObject.fetch
-      .mockResolvedValueOnce({ ok: true, url: 'http://creatorcrate.test/asset-viewer?view=list', text: async () => 'list' })
-      .mockResolvedValueOnce({ ok: true, url: 'http://creatorcrate.test/asset-viewer?project=1&view=list', text: async () => 'filtered-list' })
-      .mockResolvedValueOnce({ ok: true, url: 'http://creatorcrate.test/asset-viewer?view=grid', text: async () => 'restored-grid' })
-      .mockResolvedValueOnce({ ok: true, url: 'http://creatorcrate.test/asset-viewer?view=grid', text: async () => 'reset-grid' });
-
-    enhanceAssetLibraryLiveFiltering(initial.document);
-    viewLink.dispatch('click', { button: 0 });
-    await flush();
     expect(reset.form.getAttribute('action')).toBe('/asset-viewer?resetFilters=1&view=list');
 
-    initial.form.querySelector('input[name="project"][value="1"]').dispatch('change');
-    await flush();
-    expect(reset.form.getAttribute('action')).toBe('/asset-viewer?resetFilters=1&view=list');
-    expect(initial.document.querySelector('#asset-filters')).toBe(initial.form);
-
-    windowObject.location.href = 'http://creatorcrate.test/asset-viewer?view=grid';
-    windowObject.listeners.popstate();
-    await flush();
-    expect(reset.form.getAttribute('action')).toBe('/asset-viewer?resetFilters=1&view=grid');
-
-    reset.dispatch('click', { button: 0 });
-    await flush();
-    expect(windowObject.fetch.mock.calls[3][0])
-      .toBe('http://creatorcrate.test/asset-viewer?resetFilters=1&view=grid');
-    expect(initial.document.querySelector('#asset-viewer-filter-dialog')).toBe(initial.dialog);
-    expect(initial.dialog.open).toBe(true);
-    expect(reset.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
-  });
-
-  it.each(['grid', 'list'])('WP3 live Reset records final canonical URL for %s', async (view) => {
-    const initial = makePage('1', { dialogOpen: true });
-    const next = makePage();
-    const pages = new Map([['reset', next.document]]);
-    const windowObject = makeWindow(initial.document, pages);
-    windowObject.fetch.mockResolvedValue({
-      ok: true,
-      url: 'http://creatorcrate.test/asset-viewer?category=art&sort=project&order=desc&pageSize=50&view=' + view,
-      text: vi.fn(async () => 'reset'),
-    });
-    const reset = addDialogReset(initial, '/asset-viewer?resetFilters=1&view=' + view);
-
-    enhanceAssetLibraryLiveFiltering(initial.document);
     const event = reset.dispatch('click', { button: 0 });
     await flush();
 
     expect(event.defaultPrevented).toBe(true);
     expect(windowObject.fetch).toHaveBeenCalledWith(
-      'http://creatorcrate.test/asset-viewer?resetFilters=1&view=' + view,
+      'http://creatorcrate.test/asset-viewer?resetFilters=1&view=list',
       expect.objectContaining({ method: 'GET', headers: { Accept: 'text/html' } }),
     );
-    expect(initial.document.querySelector('[data-asset-library-live-region]')).toBe(next.region);
+    expect(initial.document.querySelector('[data-asset-library-live-region]')).toBe(resetResult.region);
     expect(initial.document.querySelector('#asset-filters')).toBe(initial.form);
     expect(initial.document.querySelector('#asset-viewer-filter-dialog')).toBe(initial.dialog);
     expect(initial.dialog.open).toBe(true);
     expect(initial.form.querySelector('input[name="project"]:checked')?.value).toBe('');
-    expect(reset.listeners.filter(({ type }) => type === 'click')).toHaveLength(1);
     expect(windowObject.history.pushes).toEqual([
-      expect.objectContaining({ url: 'http://creatorcrate.test/asset-viewer?category=art&sort=project&order=desc&pageSize=50&view=' + view }),
+      expect.objectContaining({ url: 'http://creatorcrate.test/asset-viewer?view=list' }),
+      expect.objectContaining({ url: 'http://creatorcrate.test/asset-viewer?category=art&sort=project&order=desc&pageSize=50&view=list' }),
     ]);
     expect(initial.form.submit).not.toHaveBeenCalled();
-    const finalUrl = windowObject.location.href;
-    for (const url of ['http://creatorcrate.test/asset-viewer?project=1', finalUrl]) {
-      const revisited = makePage(url.includes('project=1') ? '1' : '');
-      pages.set('revisited', revisited.document);
-      windowObject.location.href = url;
-      windowObject.fetch.mockResolvedValue({ ok: true, url, text: vi.fn(async () => 'revisited') });
-      windowObject.listeners.popstate();
-      await flush();
-      expect(windowObject.fetch).toHaveBeenLastCalledWith(url, expect.objectContaining({ method: 'GET' }));
-      expect(initial.document.querySelector('[data-asset-library-live-region]')).toBe(revisited.region);
-      expect(initial.document.querySelector('#asset-filters')).toBe(initial.form);
-      expect(initial.dialog.open).toBe(true);
-      expect(windowObject.history.pushes).toHaveLength(1);
-    }
+
+    const filteredEmptyEvent = filteredEmptyReset.dispatch('click', { button: 0 });
+    await flush();
+    expect(filteredEmptyEvent.defaultPrevented).toBe(true);
+    expect(windowObject.fetch).toHaveBeenLastCalledWith(
+      'http://creatorcrate.test/asset-viewer?resetFilters=1&view=list',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(initial.document.querySelector('[data-asset-library-live-region]')).toBe(filteredEmptyResult.region);
+
+    windowObject.location.href = 'http://creatorcrate.test/asset-viewer?view=grid';
+    windowObject.listeners.popstate();
+    await flush();
+    expect(windowObject.fetch).toHaveBeenLastCalledWith(
+      'http://creatorcrate.test/asset-viewer?view=grid',
+      expect.objectContaining({ method: 'GET' }),
+    );
+    expect(initial.document.querySelector('[data-asset-library-live-region]')).toBe(revisited.region);
+    expect(windowObject.history.pushes).toHaveLength(3);
   });
 
-  it('re-binds replaced preview links to the existing slideshow', async () => {
+  it('keeps the latest valid response when an aborted request resolves late', async () => {
+    const initial = makePage();
+    const older = makePage('1');
+    const latest = makePage('2');
+    const pages = new Map([
+      ['older', older.document],
+      ['latest', latest.document],
+    ]);
+    const windowObject = makeWindow(initial.document, pages);
+    let resolveOlder;
+    let resolveLatest;
+    const olderRequest = new Promise((resolve) => { resolveOlder = resolve; });
+    const latestRequest = new Promise((resolve) => { resolveLatest = resolve; });
+    windowObject.fetch
+      .mockReturnValueOnce(olderRequest)
+      .mockReturnValueOnce(latestRequest);
+
+    enhanceAssetLibraryLiveFiltering(initial.document);
+    initial.all.checked = false;
+    initial.alpha.checked = true;
+    initial.alpha.dispatch('change');
+    initial.alpha.checked = false;
+    initial.beta.checked = true;
+    initial.beta.dispatch('change');
+
+    expect(windowObject.fetch).toHaveBeenCalledTimes(2);
+    expect(windowObject.fetch.mock.calls[0][1].signal.aborted).toBe(true);
+
+    resolveLatest({
+      ok: true,
+      url: 'http://creatorcrate.test/asset-viewer?project=2',
+      text: async () => 'latest',
+    });
+    await flush();
+    expect(initial.document.querySelector('[data-asset-library-live-region]')).toBe(latest.region);
+
+    resolveOlder({
+      ok: true,
+      url: 'http://creatorcrate.test/asset-viewer?project=1',
+      text: async () => 'older',
+    });
+    await flush();
+    expect(initial.document.querySelector('[data-asset-library-live-region]')).toBe(latest.region);
+  });
+
+  it('keeps the mounted region during a failed request, clears busy state, and later recovers', async () => {
+    const initial = makePage();
+    const recovered = makePage();
+    const pages = new Map([['recovered', recovered.document]]);
+    const windowObject = makeWindow(initial.document, pages);
+    windowObject.fetch
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce({
+        ok: true,
+        url: 'http://creatorcrate.test/asset-viewer',
+        text: async () => 'recovered',
+      });
+
+    enhanceAssetLibraryLiveFiltering(initial.document);
+    const beforeFailure = {
+      pushes: windowObject.history.pushes.length,
+      replaces: windowObject.history.replaces.length,
+      href: windowObject.location.href,
+    };
+    initial.all.checked = false;
+    initial.alpha.checked = true;
+    initial.alpha.dispatch('change');
+
+    expect(initial.region.getAttribute('aria-busy')).toBe('true');
+    expect(initial.region.querySelector('[data-asset-library-live-status]').textContent)
+      .toBe('Loading Asset Viewer.');
+    await flush();
+    expect(initial.document.querySelector('[data-asset-library-live-region]')).toBe(initial.region);
+    expect(initial.region.hasAttribute('aria-busy')).toBe(false);
+    expect(initial.region.getAttribute('data-asset-library-live-state')).toBe('error');
+    expect(initial.region.querySelector('[data-asset-library-live-status]').textContent)
+      .toBe('Asset Viewer is loading as a full page.');
+    expect(initial.form.submit).toHaveBeenCalledTimes(1);
+    expect(windowObject.history.pushes).toHaveLength(beforeFailure.pushes);
+    expect(windowObject.history.replaces).toHaveLength(beforeFailure.replaces);
+    expect(windowObject.location.href).toBe(beforeFailure.href);
+
+    initial.alpha.checked = false;
+    initial.all.checked = true;
+    initial.all.dispatch('change');
+    await flush();
+    expect(initial.document.querySelector('[data-asset-library-live-region]')).toBe(recovered.region);
+    expect(recovered.region.hasAttribute('aria-busy')).toBe(false);
+    expect(recovered.region.getAttribute('data-asset-library-live-state')).toBe(null);
+  });
+
+  it('re-enhances replaced Asset Viewer controls and preview links', async () => {
     const initial = makePage();
     const next = makePage('1');
+    const fixtures = addReplacementEnhancerFixtures(next);
     const openSingleById = vi.fn(() => true);
     const scaffold = makeNode({ attrs: { 'data-slideshow-scaffold': '' } });
     scaffold.__creatorCrateSlideshowState = { openSingleById };
@@ -713,6 +889,19 @@ describe('Asset Viewer Project live filtering enhancement', () => {
     initial.alpha.dispatch('change');
     await flush();
 
+    expect(next.region.contains(fixtures.preview)).toBe(true);
+    expect(next.region.contains(fixtures.grid)).toBe(true);
+    expect(next.region.contains(fixtures.dropdown)).toBe(true);
+    fixtures.previewImage.dispatch('load');
+    expect(fixtures.preview.getAttribute('data-preview-state')).toBe('loaded');
+    fixtures.gridSlider.value = '3';
+    fixtures.gridSlider.dispatch('input');
+    expect(fixtures.grid.getAttribute('data-grid-size')).toBe('large');
+    fixtures.dropdown.open = true;
+    fixtures.dropdown.dispatch('toggle');
+    expect(fixtures.dropdownSummary.getAttribute('aria-expanded')).toBe('true');
+    fixtures.preview.dispatch('pointerenter', { clientX: 10, clientY: 10 });
+    expect(fixtures.infoCard.getAttribute('data-info-card-open')).toBe('true');
     const event = next.preview.dispatch('click', { button: 0 });
     expect(openSingleById).toHaveBeenCalledWith('7', next.preview);
     expect(event.defaultPrevented).toBe(true);

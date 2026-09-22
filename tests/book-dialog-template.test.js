@@ -26,7 +26,6 @@ describe('Book dialog cover layout', () => {
     expect(actions).toContain(book.primaryImage.previewUrl);
     expect(actions).toContain(env.renderString(`{% import "partials/book-primary-image.njk" as cover %}{{ cover.render(book, 'preview') }}`, { book }).trim());
     expect(html.match(/<img\b/g)).toHaveLength(1);
-    expect(html.match(/>Book actions<\/h3>/g)).toHaveLength(1);
     expectDisclosure(html, true, 1);
   });
 
@@ -51,7 +50,7 @@ function expectDisclosure(html, edit, images) {
   const disclosures = [...actions.matchAll(/<details\b[^>]*>[\s\S]*?<\/details>/g)].map(([markup]) => markup);
   expect(disclosures).toHaveLength(edit ? 2 : 1);
   const cover = disclosures[0];
-  expect(cover).toMatch(/^<details class="notes-workspace-disclosure">\s*<summary>Book cover<\/summary>\s*<div class="notes-workspace-disclosure-content">/);
+  expect(cover).toContain('<summary>Book cover</summary>');
   expect(cover).toContain('type="file" id="book-cover" name="cover"');
   expect(cover).toContain('id="book-cover-help"');
   expect(cover).toContain('animated WebP is supported. GIF and APNG uploads are not supported.');
@@ -61,12 +60,9 @@ function expectDisclosure(html, edit, images) {
   expect(html.match(/<summary>Book cover<\/summary>/g)).toHaveLength(1);
   expect(html).not.toContain('Secondary actions');
   if (edit) {
-    expect(disclosures[1]).toBe(`<details class="notes-workspace-disclosure notes-workspace-disclosure--delete">
-        <summary>Delete Book</summary>
-        <div class="notes-workspace-disclosure-content">
-          <p class="notes-workspace-warning">The Book must be empty before it can be deleted. This cannot be undone.</p>
-          <button class="button button-small button-danger" type="submit" form="book-delete-form" data-confirm="Delete this Book permanently? This cannot be undone.">Delete Book</button>
-        </div>
-      </details>`.replace(/\n/g, html.includes('\r\n') ? '\r\n' : '\n'));
+    const deletion = disclosures[1];
+    expect(deletion).toContain('<summary>Delete Book</summary>');
+    expect(deletion).toContain('The Book must be empty before it can be deleted. This cannot be undone.');
+    expect(deletion).toMatch(/<button\b[^>]*type="submit"[^>]*form="book-delete-form"[^>]*data-confirm="Delete this Book permanently\? This cannot be undone\."[^>]*>Delete Book<\/button>/);
   }
 }

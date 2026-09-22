@@ -1,55 +1,99 @@
 /**
- * Structural parity tests: /releases/:id/assets vs /projects/:id/assets.
+ * Intentional rendered parity: /releases/:id/assets vs /projects/:id/assets.
  *
- * Both pages use the same asset-browser-layout shell, the same grid/list
- * card macros from asset-presentation.njk, and the same view-switcher and
- * page-size-form contracts.  These tests verify the structural contract at
- * the rendered-DOM level so that a drift in either template is caught.
+ * Single-surface HTTP/template suites own their complete markup and behavior.
+ * This suite keeps only the smaller contract that would catch one asset browser
+ * drifting from the other while both remain independently valid.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import request from 'supertest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
-import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
-import { createAssetRepository } from '../src/data/asset-repository.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
+import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
+import { createAssetRepository } from '../src/data/asset-repository.js';
+import { closeDatabase, openDatabase, runMigrations } from '../src/db.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
-const PROJECT_ASSETS_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/projects/assets.njk', import.meta.url));
-const ASSET_PRESENTATION_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/partials/asset-presentation.njk', import.meta.url));
-const LIVE_REGIONS_CLIENT_PATH = fileURLToPath(new URL('../src/static/client/live-regions.js', import.meta.url));
 
-describe('asset-browser structural parity: releases vs projects', () => {
+function extractElement(html, tag, className) {
+  return html.match(new RegExp(`<${tag} class="[^"]*${className}[^"]*"[\\s\\S]*?<\\/${tag}>`))?.[0] || '';
+}
+
+function extractElements(html, tag, className) {
+  return [...html.matchAll(new RegExp(`<${tag} class="[^"]*${className}[^"]*"[^>]*>[\\s\\S]*?<\\/${tag}>`, 'g'))]
+    .map((match) => match[0]);
+}
+
+function extractDialog(html, id) {
+  return html.match(new RegExp(`<dialog id="${id}"[^>]*>[\\s\\S]*?<\\/dialog>`))?.[0] || '';
+}
+
+function extractInputTag(html, id) {
+  return html.match(new RegExp(`<input\\b[^>]*\\bid="${id}"[^>]*>`))?.[0] || '';
+}
+
+function optionValues(html, selectId) {
+  const select = html.match(new RegExp(`<select id="${selectId}"[^>]*>[\\s\\S]*?<\\/select>`))?.[0] || '';
+  return [...select.matchAll(/<option value="([^"]*)"/g)].map((match) => match[1]);
+}
+
+function extractRegionBefore(html, startMarker, endMarker) {
+  const start = html.indexOf(startMarker);
+  const end = html.indexOf(endMarker, start);
+  return start === -1 || end === -1 ? '' : html.slice(start, end);
+}
+
+function sizeOptionLabels(control) {
+  return [...control.matchAll(/data-grid-size-option-label="([^"]+)"/g)].map((match) => match[1]);
+}
+
+function renderedSelectionFilenames(html, cardClass) {
+  return extractElements(html, 'article', cardClass).map((card) => {
+    const selectionInput = card.match(/<input\b[^>]*class="asset-select-checkbox"[^>]*>/)?.[0] || '';
+    return selectionInput.match(/data-asset-filename="([^"]+)"/)?.[1]
+      || selectionInput.match(/aria-label="(?:Select|Deselect) ([^"]+)"/)?.[1]
+      || '';
+  });
+}
+
+function markerOrder(html, markers) {
+  return markers.map((marker) => html.indexOf(marker));
+}
+
+describe('intentional asset-browser parity: releases vs projects', () => {
   let db;
-  let app;
   let tmpDir;
-  let projectsRoot;
-  let agent;
-  let csrfToken;
-
-  // Shared fixture state
   let projectId;
   let releaseLocation;
+  let category;
+  let disabledCategory;
+  let pages;
+  const fixtureFilenames = Object.freeze({
+    insertionOrder: ['asset2.png', 'asset10.png', 'Asset1.png'],
+    canonicalOrder: ['Asset1.png', 'asset10.png', 'asset2.png'],
+  });
 
-  beforeEach(async () => {
+  beforeAll(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-parity-'));
-    projectsRoot = path.join(tmpDir, 'projects');
-    fs.mkdirSync(projectsRoot, { recursive: true });
-    const dbPath = path.join(tmpDir, 'test.db');
-    db = openDatabase(dbPath);
-    runMigrations(db, MIGRATIONS_DIR);
+    const projectsRoot = path.join(tmpDir, 'projects');
     const appDataRoot = path.join(tmpDir, 'app');
+    fs.mkdirSync(projectsRoot, { recursive: true });
     fs.mkdirSync(appDataRoot, { recursive: true });
-    const { csrfPepper } = ensureAuthEnablement(appDataRoot);
-    app = createApp({ appName: 'CreatorCrate', db, projectsRoot }, { appDataRoot, authState: { csrfPepper } });
-    ({ agent, csrfToken } = await getDisabledModeCsrf(app, appDataRoot));
 
-    // Create project with scanned assets
-    const projRes = await agent
+    db = openDatabase(path.join(tmpDir, 'test.db'));
+    runMigrations(db, MIGRATIONS_DIR);
+    const { csrfPepper } = ensureAuthEnablement(appDataRoot);
+    const app = createApp(
+      { appName: 'CreatorCrate', db, projectsRoot },
+      { appDataRoot, authState: { csrfPepper } },
+    );
+    const { agent, csrfToken } = await getDisabledModeCsrf(app, appDataRoot);
+
+    const projectResponse = await agent
       .post('/projects')
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Parity+Test+Project')
@@ -57,22 +101,30 @@ describe('asset-browser structural parity: releases vs projects', () => {
       .send('priority=normal')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
-    projectId = projRes.headers.location.replace('/projects/', '');
+    projectId = Number(projectResponse.headers.location.replace('/projects/', ''));
 
-    // Project directories are direct children of PROJECTS_ROOT.
-    const entries = fs.readdirSync(projectsRoot);
-    const slug = 'parity-test-project';
-    const matching = entries.filter((e) => e.endsWith(`-${slug}`));
-    const projectDir = path.join(projectsRoot, matching[0]);
-    fs.writeFileSync(path.join(projectDir, 'alpha.png'), 'png');
-    fs.writeFileSync(path.join(projectDir, 'beta.txt'), 'txt');
+    const projectDirName = fs.readdirSync(projectsRoot).find((entry) => entry.endsWith('-parity-test-project'));
+    const projectDir = path.join(projectsRoot, projectDirName);
+    const categoryRepository = createAssetCategoryRepository(db);
+    [category] = categoryRepository.listProjectCategories(projectId);
+    fs.writeFileSync(path.join(projectDir, fixtureFilenames.insertionOrder[0]), 'png');
+    fs.writeFileSync(path.join(projectDir, fixtureFilenames.insertionOrder[1]), 'png');
+    fs.mkdirSync(path.join(projectDir, category.directory_slug), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, category.directory_slug, fixtureFilenames.insertionOrder[2]), 'png');
     await agent
       .post(`/projects/${projectId}/scan`)
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .expect(302);
 
-    // Create release for this project
-    const relRes = await agent
+    disabledCategory = categoryRepository.addProjectCategory({
+      projectId,
+      displayName: 'Disabled parity category',
+      directorySlug: 'disabled-parity-category',
+      displayOrder: categoryRepository.listProjectCategories(projectId).length,
+      enabled: false,
+    });
+
+    const releaseResponse = await agent
       .post('/releases')
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
@@ -80,488 +132,182 @@ describe('asset-browser structural parity: releases vs projects', () => {
       .send('status=tbd')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
-    releaseLocation = relRes.headers.location;
+    releaseLocation = releaseResponse.headers.location;
+
+    const [firstAsset] = createAssetRepository(db).findByProjectId(projectId);
+    await agent
+      .post(`${releaseLocation}/assets`)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send(`selectedAssetIds[]=${firstAsset.id}`)
+      .send('roles[]=primary')
+      .send('sortOrder[]=0')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    const [projectGrid, releaseGrid, projectList, releaseList, projectCategory, projectPaged, releasePaged] = await Promise.all([
+      agent.get(`/projects/${projectId}/assets`).expect(200),
+      agent.get(`${releaseLocation}/assets`).expect(200),
+      agent.get(`/projects/${projectId}/assets?view=list`).expect(200),
+      agent.get(`${releaseLocation}/assets?view=list`).expect(200),
+      agent.get(`/projects/${projectId}/assets?category=${category.id}`).expect(200),
+      agent.get(`/projects/${projectId}/assets?pageSize=1`).expect(200),
+      agent.get(`${releaseLocation}/assets?pageSize=1`).expect(200),
+    ]);
+    pages = {
+      projectGrid: projectGrid.text,
+      releaseGrid: releaseGrid.text,
+      projectList: projectList.text,
+      releaseList: releaseList.text,
+      projectCategory: projectCategory.text,
+      projectPaged: projectPaged.text,
+      releasePaged: releasePaged.text,
+    };
   });
 
-  afterEach(() => {
-    closeDatabase(db);
-    fs.rmSync(tmpDir, { recursive: true, force: true });
+  afterAll(() => {
+    if (db) closeDatabase(db);
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  // ── Browser shell ──────────────────────────────────────────────────────
-
-  describe('browser shell contract', () => {
-    it('both pages render asset-browser-layout wrapping asset-browser-content', async () => {
-      const [proj, rel] = await Promise.all([
-        agent.get(`/projects/${projectId}/assets`).expect(200),
-        agent.get(`${releaseLocation}/assets`).expect(200),
+  it('keeps the shared browser shell and display controls on both surfaces', () => {
+    for (const [html, dialogId] of [
+      [pages.projectGrid, 'project-assets-filter-dialog'],
+      [pages.releaseGrid, 'release-assets-filter-dialog'],
+    ]) {
+      const positions = markerOrder(html, [
+        'class="asset-browser-layout"',
+        'class="asset-browser-content"',
+        'class="asset-viewer-display-controls"',
+        'class="view-switcher"',
+        'data-asset-grid-size-controls',
       ]);
-      for (const html of [proj.text, rel.text]) {
-        expect(html).toContain('class="asset-browser-layout"');
-        expect(html).toContain('class="asset-browser-content"');
-        expect(html.indexOf('asset-browser-layout')).toBeLessThan(html.indexOf('asset-browser-content'));
-      }
-    });
-
-    it('both pages render a view-switcher nav inside the browser shell', async () => {
-      const [proj, rel] = await Promise.all([
-        agent.get(`/projects/${projectId}/assets`).expect(200),
-        agent.get(`${releaseLocation}/assets`).expect(200),
-      ]);
-      for (const html of [proj.text, rel.text]) {
-        expect(html).toMatch(/<nav class="view-switcher"/);
-        expect(html.indexOf('asset-browser-content')).toBeLessThan(html.indexOf('view-switcher'));
-      }
-    });
-
-    it('both pages expose Filter openers with external overlay dialogs', async () => {
-      const [proj, rel] = await Promise.all([
-        agent.get(`/projects/${projectId}/assets`).expect(200),
-        agent.get(`${releaseLocation}/assets`).expect(200),
-      ]);
-      for (const [html, prefix] of [[proj.text, 'project'], [rel.text, 'release']]) {
-        const dialogId = `${prefix}-assets-filter-dialog`;
-        expect(html).toContain(`href="#${dialogId}" aria-label="Filter assets"`);
-        expect(html).toContain(`data-dialog-open="${dialogId}"`);
-        const dialog = html.match(new RegExp(`<dialog id="${dialogId}"[^>]*>[\\s\\S]*?<\\/dialog>`));
-        expect(dialog).not.toBeNull();
-        expect(dialog[0]).toContain('class="app-dialog" data-app-dialog');
-        expect(dialog[0]).toContain(`aria-labelledby="${dialogId}-title"`);
-        expect(dialog[0]).toContain('class="app-dialog-card" role="document"');
-        expect(dialog[0]).toContain(`<h2 id="${dialogId}-title">Filter</h2>`);
-        expect(html.indexOf('</main>')).toBeGreaterThan(-1);
-        expect(html.indexOf(dialog[0])).toBeGreaterThan(html.indexOf('</main>'));
-        expect(html).not.toContain('class="filters');
-      }
-      const releaseDialog = rel.text.match(/<dialog id="release-assets-filter-dialog"[^>]*>[\s\S]*?<\/dialog>/)[0];
-      expect(releaseDialog).toMatch(/<form id="release-assets-filter"[^>]*method="get"[^>]*>/);
-      expect(releaseDialog).toContain(`action="${releaseLocation}/assets"`);
-      expect(releaseDialog).toContain('data-release-assets-live-filter');
-    });
+      expect(positions.every((position) => position >= 0)).toBe(true);
+      expect(positions).toEqual([...positions].sort((a, b) => a - b));
+      expect(html).toContain(`href="#${dialogId}" aria-label="Filter assets"`);
+      expect(extractDialog(html, dialogId)).toContain('class="app-dialog" data-app-dialog');
+    }
   });
 
-  // ── Grid view contract ─────────────────────────────────────────────────
+  it('keeps the intentional shared Grid card contract and surface-specific extensions', () => {
+    const projectCard = extractElement(pages.projectGrid, 'article', 'asset-card');
+    const releaseCard = extractElement(pages.releaseGrid, 'article', 'asset-card');
+    const sharedMarkers = [
+      'asset-card--project',
+      'role="option"',
+      'aria-selected=',
+      'data-asset-selectable-card',
+      'class="asset-select-checkbox"',
+      'class="asset-card-top"',
+      'class="asset-card-media',
+      'data-asset-viewer-preview',
+      'data-asset-info-card',
+      'class="asset-details-link',
+      fixtureFilenames.canonicalOrder[0],
+      category.display_name,
+    ];
 
-  describe('grid view card structure', () => {
-    it('both pages use <ul class="asset-grid" role="listbox"> as the grid wrapper', async () => {
-      const [proj, rel] = await Promise.all([
-        agent.get(`/projects/${projectId}/assets`).expect(200),
-        agent.get(`${releaseLocation}/assets`).expect(200),
-      ]);
-      for (const html of [proj.text, rel.text]) {
-        expect(html).toMatch(/<ul class="asset-grid" role="listbox"/);
-      }
-    });
-
-    it('both pages wrap each grid card in <li class="asset-grid-item">', async () => {
-      const [proj, rel] = await Promise.all([
-        agent.get(`/projects/${projectId}/assets`).expect(200),
-        agent.get(`${releaseLocation}/assets`).expect(200),
-      ]);
-      for (const html of [proj.text, rel.text]) {
-        expect(html).toContain('class="asset-grid-item"');
-      }
-    });
-
-    it('both pages render <article class="asset-card" ...> inside each grid item', async () => {
-      const [proj, rel] = await Promise.all([
-        agent.get(`/projects/${projectId}/assets`).expect(200),
-        agent.get(`${releaseLocation}/assets`).expect(200),
-      ]);
-      for (const html of [proj.text, rel.text]) {
-        expect(html).toMatch(/<article class="asset-card[^"]*"\s+data-asset-id="\d+"/);
-      }
-    });
-
-    it('both pages use the preview-only grid card and shared information popover', async () => {
-      const [proj, rel] = await Promise.all([
-        agent.get(`/projects/${projectId}/assets`).expect(200),
-        agent.get(`${releaseLocation}/assets`).expect(200),
-      ]);
-      for (const html of [proj.text, rel.text]) {
-        expect(html).toContain('class="asset-card-top"');
-        expect(html).toContain('class="asset-card-media');
-        expect(html).toContain('data-asset-viewer-preview');
-        expect(html).toContain('data-asset-info-card');
-        expect(html).not.toContain('class="asset-card-body"');
-      }
-    });
-
-    it('keeps one canonical project Grid structure across Compact, Default, and Large', () => {
-      const projectTemplate = fs.readFileSync(PROJECT_ASSETS_TEMPLATE_PATH, 'utf8');
-      const sharedTemplate = fs.readFileSync(ASSET_PRESENTATION_TEMPLATE_PATH, 'utf8');
-
-      expect((projectTemplate.match(/assetPresentation\.gridCard\(/g) || [])).toHaveLength(1);
-      expect((projectTemplate.match(/class="asset-grid"/g) || [])).toHaveLength(1);
-      expect(projectTemplate).toContain('projectLayout: true');
-      expect(projectTemplate).toContain('data-asset-rename-trigger');
-      expect(projectTemplate).not.toContain('cardNavigation');
-      expect((sharedTemplate.match(/\{% macro gridCard\(/g) || [])).toHaveLength(1);
-      expect(sharedTemplate).toContain('asset-card-primary-metadata');
-      expect(sharedTemplate).toContain('asset-card-associations-region');
-      expect(sharedTemplate).toContain('data-asset-title-row');
-      expect(sharedTemplate).not.toContain('data-asset-card-navigation');
-    });
-
-    it('grid cards on both pages carry role="option" and aria-selected', async () => {
-      const [proj, rel] = await Promise.all([
-        agent.get(`/projects/${projectId}/assets`).expect(200),
-        agent.get(`${releaseLocation}/assets`).expect(200),
-      ]);
-      for (const html of [proj.text, rel.text]) {
-        expect(html).toMatch(/role="option" aria-selected="(true|false)"/);
-      }
-    });
+    for (const card of [projectCard, releaseCard]) {
+      for (const marker of sharedMarkers) expect(card).toContain(marker);
+      expect(card).not.toContain('class="asset-card-body"');
+      expect(extractRegionBefore(card, 'class="asset-card-top"', 'class="asset-card-media')).toContain('class="asset-select-checkbox"');
+    }
+    expect(projectCard).toContain('data-project-assets-preview-id');
+    expect(projectCard).not.toContain('release-asset-grid-role');
+    expect(releaseCard).not.toContain('data-project-assets-preview-id');
+    expect(releaseCard).toContain('release-asset-grid-role');
+    expect(projectCard).toContain('Effective tags');
+    expect(projectCard).toContain('Release usage');
+    expect(releaseCard).not.toContain('Effective tags');
+    expect(releaseCard).not.toContain('Release usage');
   });
 
-  // ── List view contract ─────────────────────────────────────────────────
+  it('keeps the intentional shared List card contract and different actions', () => {
+    const projectCard = extractElement(pages.projectList, 'article', 'asset-list-card');
+    const releaseCard = extractElement(pages.releaseList, 'article', 'asset-list-card');
+    const sharedMarkers = [
+      'asset-list-card--project',
+      'data-asset-selectable-card',
+      'class="asset-select-checkbox"',
+      'class="asset-list-card-top"',
+      'class="asset-list-card-media',
+      'class="asset-list-card-body"',
+      'asset-list-card-identity',
+      'asset-list-card-primary-metadata',
+      'asset-list-card-associations-region',
+      'data-asset-title-row',
+      'class="asset-details-link',
+      fixtureFilenames.canonicalOrder[0],
+      category.display_name,
+    ];
 
-  describe('list view card structure', () => {
-    it('both pages use <ul class="asset-list ..."> with role="list" as the list wrapper', async () => {
-      const [proj, rel] = await Promise.all([
-        agent.get(`/projects/${projectId}/assets?view=list`).expect(200),
-        agent.get(`${releaseLocation}/assets?view=list`).expect(200),
+    for (const card of [projectCard, releaseCard]) {
+      for (const marker of sharedMarkers) expect(card).toContain(marker);
+      const positions = markerOrder(card, [
+        'class="asset-list-card-top"',
+        'class="asset-list-card-media',
+        'class="asset-list-card-body"',
       ]);
-      for (const html of [proj.text, rel.text]) {
-        expect(html).toMatch(/<ul class="asset-list[^"]*" role="list"/);
-      }
-    });
-
-    it('both pages wrap each list card in <li class="asset-list-item">', async () => {
-      const [proj, rel] = await Promise.all([
-        agent.get(`/projects/${projectId}/assets?view=list`).expect(200),
-        agent.get(`${releaseLocation}/assets?view=list`).expect(200),
-      ]);
-      for (const html of [proj.text, rel.text]) {
-        expect(html).toContain('class="asset-list-item"');
-      }
-    });
-
-    it('both pages render <article class="asset-list-card ..."> inside each list item', async () => {
-      const [proj, rel] = await Promise.all([
-        agent.get(`/projects/${projectId}/assets?view=list`).expect(200),
-        agent.get(`${releaseLocation}/assets?view=list`).expect(200),
-      ]);
-      for (const html of [proj.text, rel.text]) {
-        expect(html).toMatch(/<article class="asset-list-card[^"]*" data-asset-id="\d+"/);
-      }
-    });
-
-    it('list card structural regions appear on both pages', async () => {
-      const [proj, rel] = await Promise.all([
-        agent.get(`/projects/${projectId}/assets?view=list`).expect(200),
-        agent.get(`${releaseLocation}/assets?view=list`).expect(200),
-      ]);
-      for (const html of [proj.text, rel.text]) {
-        expect(html).toContain('class="asset-list-card-media');
-        expect(html).toContain('class="asset-list-card-body"');
-      }
-    });
-
-    it('keeps Compact and Large on one canonical list-card renderer', () => {
-      const projectTemplate = fs.readFileSync(PROJECT_ASSETS_TEMPLATE_PATH, 'utf8');
-      const sharedTemplate = fs.readFileSync(ASSET_PRESENTATION_TEMPLATE_PATH, 'utf8');
-
-      expect((projectTemplate.match(/assetPresentation\.listCard\(/g) || [])).toHaveLength(1);
-      expect((projectTemplate.match(/data-list-size/g) || [])).toHaveLength(1);
-      expect(projectTemplate).toContain('data-list-size="large"');
-      expect(projectTemplate).toContain('projectLayout: true');
-      expect(projectTemplate).toContain('headerStatusDetails: true');
-      expect(projectTemplate).toContain('titleControls: true');
-      expect(projectTemplate).toContain('filenameLink: false');
-      expect(projectTemplate).toContain('hideActions: true');
-      expect(projectTemplate).toContain('data-asset-rename-trigger');
-      expect(projectTemplate).toContain('data-auto-rename-asset');
-      expect(projectTemplate).not.toContain('cardNavigation');
-      expect((sharedTemplate.match(/\{% macro listCard\(/g) || [])).toHaveLength(1);
-      expect(sharedTemplate).toContain('asset-list-card-primary-metadata');
-      expect(sharedTemplate).toContain('asset-list-card-associations-region');
-      expect(sharedTemplate).toContain('asset-card-title-controls');
-      expect(sharedTemplate).toContain('asset-list-card-title-actions');
-      expect(sharedTemplate).toContain('asset-list-card-title-control-row');
-      expect(sharedTemplate).toContain('data-asset-title-row');
-      expect(sharedTemplate).toContain('asset-list-card-status');
-      expect(sharedTemplate).not.toContain('data-asset-card-navigation');
-      expect(sharedTemplate).not.toContain('data-asset-card-link');
-      expect(sharedTemplate).not.toContain('data-list-size');
-    });
-
-    it('keeps the project List header shared between Large and Compact without a second title row', () => {
-      const projectTemplate = fs.readFileSync(PROJECT_ASSETS_TEMPLATE_PATH, 'utf8');
-      const sharedTemplate = fs.readFileSync(ASSET_PRESENTATION_TEMPLATE_PATH, 'utf8');
-      const listTemplate = sharedTemplate.slice(sharedTemplate.indexOf('{% macro listCard'));
-
-      expect((projectTemplate.match(/assetPresentation\.listCard\(/g) || [])).toHaveLength(1);
-      expect((listTemplate.match(/data-asset-title-row/g) || [])).toHaveLength(1);
-      expect(listTemplate).toMatch(/asset-list-card-title-control-row[\s\S]*asset-list-card-title-actions[\s\S]*caller\('title-row'\)[\s\S]*asset-list-card-status[\s\S]*caller\('status'\)/);
-      expect(listTemplate).not.toContain('data-list-size="compact"');
-      expect(listTemplate).not.toContain('topStatus');
-    });
-
-    it('uses the project list hierarchy and sizing classes on both pages', async () => {
-      const [proj, rel] = await Promise.all([
-        agent.get(`/projects/${projectId}/assets?view=list`).expect(200),
-        agent.get(`${releaseLocation}/assets?view=list`).expect(200),
-      ]);
-
-      expect(proj.text).toContain('asset-list-card-identity');
-      expect(proj.text).toContain('asset-list-card-primary-metadata');
-      expect(proj.text).toContain('asset-list-card-associations-region');
-      expect(rel.text).toContain('class="asset-list asset-list--project asset-list--release"');
-      expect(rel.text).toContain('data-list-size="large"');
-      expect(rel.text).toContain('asset-list-card--project asset-list-card--release');
-      expect(rel.text).toContain('asset-list-card-identity');
-      expect(rel.text).toContain('asset-list-card-primary-metadata');
-      expect(rel.text).toContain('asset-list-card-associations-region');
-    });
+      expect(positions).toEqual([...positions].sort((a, b) => a - b));
+      expect(extractRegionBefore(card, 'class="asset-list-card-top"', 'class="asset-list-card-media')).toContain('class="asset-select-checkbox"');
+    }
+    expect(projectCard).toContain('data-asset-rename-trigger');
+    expect(projectCard).toContain('data-project-assets-preview-id');
+    expect(projectCard).not.toContain('release-asset-role-form');
+    expect(releaseCard).not.toContain('data-asset-rename-trigger');
+    expect(releaseCard).not.toContain('data-project-assets-preview-id');
+    expect(releaseCard).toContain('release-asset-role-form');
   });
 
-  describe('shared asset size control contract', () => {
-    it('keeps the grid control at Compact, Default, and Large on both pages', async () => {
-      const responses = await Promise.all([
-        agent.get(`/projects/${projectId}/assets?view=grid`).expect(200),
-        agent.get(`${releaseLocation}/assets?view=grid`).expect(200),
-      ]);
+  it('keeps category presentation aligned and the Project category dropdown correct', () => {
+    for (const html of [pages.projectGrid, pages.releaseGrid, pages.projectList, pages.releaseList]) {
+      expect(html).toMatch(new RegExp(`<dt>Category<\\/dt>[\\s\\S]*?${category.display_name}`));
+    }
 
-      for (const response of responses) {
-        const controlStart = response.text.indexOf('data-asset-grid-size-controls');
-        const gridStart = response.text.indexOf('<ul class="asset-grid', controlStart);
-        const control = response.text.slice(controlStart, gridStart);
-
-        expect(control).toContain('max="3"');
-        expect(control.match(/data-grid-size-option-label=/g)).toHaveLength(3);
-        expect(control).toContain('data-grid-size-option-label="default"');
-        expect(control).toContain('data-grid-size-labels-interactive');
-      }
-    });
-
-    it('renders Compact and Large list sizing with Large as the default on both pages', async () => {
-      const responses = await Promise.all([
-        agent.get(`/projects/${projectId}/assets?view=list`).expect(200),
-        agent.get(`${releaseLocation}/assets?view=list`).expect(200),
-      ]);
-
-      for (const response of responses) {
-        const controlStart = response.text.indexOf('data-asset-list-size-controls');
-        const listStart = response.text.indexOf('<ul class="asset-list', controlStart);
-        const control = response.text.slice(controlStart, listStart);
-
-        expect(control).toContain('max="2"');
-        expect(control.match(/data-grid-size-option-label=/g)).toHaveLength(2);
-        expect(control).not.toContain('data-grid-size-option-label="default"');
-        expect(control).toContain('aria-valuetext="Large"');
-        expect(control).toContain('data-grid-size-labels-interactive');
-        expect(response.text).toMatch(/class="asset-list asset-list--project(?: asset-list--release)?" role="list" aria-label="(?:Project|Release) assets" data-list-size="large"/);
-      }
-    });
+    const dialog = extractDialog(pages.projectCategory, 'project-assets-filter-dialog');
+    expect(pages.projectCategory).toContain(`Category: ${category.display_name}`);
+    expect(dialog).toContain(`aria-label="Category filter: ${category.display_name} (1)"`);
+    const activeCategoryInput = extractInputTag(dialog, `asset-category-option-${category.id}`);
+    expect(activeCategoryInput).toContain(`value="${category.id}"`);
+    expect(activeCategoryInput).toMatch(/\schecked(?:\s|=|>)/);
+    expect(dialog).toContain('id="asset-category-option-all"');
+    expect(dialog).toContain('id="asset-category-option-uncategorized"');
+    expect(dialog).toContain('id="asset-category-option-missing"');
+    expect(dialog).toMatch(new RegExp(`id="asset-category-option-${disabledCategory.id}"[\\s\\S]*?Disabled parity category \\(0\\)[\\s\\S]*?\\(disabled\\)`));
   });
 
-  it('uses shared icon-mode view links while preserving Release Assets query state', async () => {
-    const response = await agent
-      .get(`${releaseLocation}/assets?view=list&search=alpha&pageSize=10`)
-      .expect(200);
-    const switcher = response.text.match(/<nav class="view-switcher"[\s\S]*?<\/nav>/)?.[0] || '';
+  it('keeps shared view-size modes and page-size choices without testing live requests', () => {
+    for (const html of [pages.projectGrid, pages.releaseGrid]) {
+      const controlStart = html.indexOf('data-asset-grid-size-controls');
+      const gridStart = html.indexOf('<ul class="asset-grid', controlStart);
+      const control = html.slice(controlStart, gridStart);
+      expect(sizeOptionLabels(control).sort()).toEqual(['compact', 'default', 'large']);
+      expect(control).toContain('data-grid-size-slider');
+    }
+    for (const html of [pages.projectList, pages.releaseList]) {
+      const controlStart = html.indexOf('data-asset-list-size-controls');
+      const listStart = html.indexOf('<ul class="asset-list', controlStart);
+      const control = html.slice(controlStart, listStart);
+      expect(sizeOptionLabels(control).sort()).toEqual(['compact', 'large']);
+      expect(control).toContain('data-grid-size-slider');
+    }
 
-    expect(switcher.match(/view-switcher-option--icon/g)).toHaveLength(2);
-    expect(switcher).toContain('aria-label="Grid view"');
-    expect(switcher).toMatch(/aria-current="page"[\s\S]*aria-label="List view"/);
-    expect(switcher).toContain('search=alpha');
-    expect(switcher).toContain('pageSize=10');
+    const supportedPageSizes = ['10', '25', '50', '100', '150', '200', 'all'];
+    expect(optionValues(pages.projectPaged, 'pageSize')).toEqual(supportedPageSizes);
+    expect(optionValues(pages.releasePaged, 'pageSize')).toEqual(supportedPageSizes);
   });
 
-  it('re-enhances shared sizing and information cards after Release Assets replacement', () => {
-    const source = fs.readFileSync(LIVE_REGIONS_CLIENT_PATH, 'utf8');
-    const start = source.indexOf('function enhanceReleaseAssetsLiveRegion(region)');
-    const end = source.indexOf('\n}', start);
-    const enhancer = source.slice(start, end);
-
-    expect(enhancer).toContain('enhanceAssetViewerInfoCards(region)');
-    expect(enhancer).toContain('enhanceAssetGridSize(region)');
-    expect(enhancer).toContain('enhanceAssetListSize(region)');
-  });
-
-  // ── Page-size form contract ────────────────────────────────────────────
-
-  describe('page-size-form contract', () => {
-    // Use pageSize=1 so both pages have pageCount > 1 and render the form
-    it('both pages render <form class="page-size-form"> when there are multiple pages', async () => {
-      const [proj, rel] = await Promise.all([
-        agent.get(`/projects/${projectId}/assets?pageSize=1`).expect(200),
-        agent.get(`${releaseLocation}/assets?pageSize=1`).expect(200),
-      ]);
-      for (const html of [proj.text, rel.text]) {
-        expect(html).toContain('class="page-size-form"');
-      }
-    });
-
-    it('both pages render a <select id="pageSize"> inside the page-size-form', async () => {
-      const [proj, rel] = await Promise.all([
-        agent.get(`/projects/${projectId}/assets?pageSize=1`).expect(200),
-        agent.get(`${releaseLocation}/assets?pageSize=1`).expect(200),
-      ]);
-      for (const html of [proj.text, rel.text]) {
-        const pageSizeFormStart = html.indexOf('page-size-form');
-        expect(pageSizeFormStart).toBeGreaterThan(-1);
-        const pageSizeFormEnd = html.indexOf('</form>', pageSizeFormStart);
-        const formSection = html.slice(pageSizeFormStart, pageSizeFormEnd);
-        expect(formSection).toContain('id="pageSize"');
-      }
-    });
-
-    it('page-size select includes value="10" on both pages', async () => {
-      const [proj, rel] = await Promise.all([
-        agent.get(`/projects/${projectId}/assets?pageSize=1`).expect(200),
-        agent.get(`${releaseLocation}/assets?pageSize=1`).expect(200),
-      ]);
-      for (const html of [proj.text, rel.text]) {
-        const pageSizeFormStart = html.indexOf('page-size-form');
-        expect(pageSizeFormStart).toBeGreaterThan(-1);
-        const formSection = html.slice(pageSizeFormStart, pageSizeFormStart + 600);
-        expect(formSection).toContain('value="10"');
-      }
-    });
-
-    it('keeps the Project Assets Apply fallback inside noscript', async () => {
-      const response = await agent.get(`/projects/${projectId}/assets?pageSize=1`).expect(200);
-      const pageSizeFormStart = response.text.indexOf('page-size-form');
-      const pageSizeFormEnd = response.text.indexOf('</form>', pageSizeFormStart);
-      const pageSizeForm = response.text.slice(pageSizeFormStart, pageSizeFormEnd);
-
-      expect(pageSizeForm).toContain('<noscript><button class="button button-small" type="submit">Apply</button></noscript>');
-      expect(pageSizeForm.replace(/<noscript>[\s\S]*?<\/noscript>/g, '')).not.toContain('>Apply</button>');
-    });
-  });
-
-  // ── Pagination link contract ───────────────────────────────────────────
-
-  describe('pagination link contract', () => {
-    it('pagination uses <a class="pagination-prev/next"> links, not buttons, on both pages', async () => {
-      // Need enough assets to produce a second page — use pageSize=1
-      const [proj, rel] = await Promise.all([
-        agent.get(`/projects/${projectId}/assets?pageSize=1`).expect(200),
-        agent.get(`${releaseLocation}/assets?pageSize=1`).expect(200),
-      ]);
-      for (const html of [proj.text, rel.text]) {
-        if (html.includes('pagination-next')) {
-          expect(html).toMatch(/<a [^>]*class="pagination-next"/);
-          expect(html).not.toMatch(/<button [^>]*class="pagination-next"/);
-        }
-        if (html.includes('pagination-prev')) {
-          expect(html).toMatch(/<a [^>]*class="pagination-prev"/);
-          expect(html).not.toMatch(/<button [^>]*class="pagination-prev"/);
-        }
-      }
-    });
-  });
-
-  // ── Selection control location contract ───────────────────────────────
-
-  describe('selection control contract', () => {
-    it('grid card checkbox is inside asset-card-top on both pages', async () => {
-      const [proj, rel] = await Promise.all([
-        agent.get(`/projects/${projectId}/assets`).expect(200),
-        agent.get(`${releaseLocation}/assets`).expect(200),
-      ]);
-      for (const html of [proj.text, rel.text]) {
-        const topStart = html.indexOf('class="asset-card-top"');
-        const checkboxPos = html.indexOf('class="asset-select-checkbox"');
-        const topEnd = html.indexOf('class="asset-card-media', topStart);
-        if (checkboxPos > -1 && topStart > -1 && topEnd > -1) {
-          expect(checkboxPos).toBeGreaterThan(topStart);
-          expect(checkboxPos).toBeLessThan(topEnd);
-        }
-      }
-    });
-
-    it('list card checkbox is inside asset-list-card-top on both pages', async () => {
-      const [proj, rel] = await Promise.all([
-        agent.get(`/projects/${projectId}/assets?view=list`).expect(200),
-        agent.get(`${releaseLocation}/assets?view=list`).expect(200),
-      ]);
-      for (const html of [proj.text, rel.text]) {
-        const topStart = html.indexOf('class="asset-list-card-top"');
-        const checkboxPos = html.indexOf('class="asset-select-checkbox"');
-        const topEnd = html.indexOf('class="asset-list-card-media', topStart);
-        if (checkboxPos > -1 && topStart > -1 && topEnd > -1) {
-          expect(checkboxPos).toBeGreaterThan(topStart);
-          expect(checkboxPos).toBeLessThan(topEnd);
-        }
-      }
-    });
-  });
-
-  // ── Release-specific extensions stay contained ─────────────────────────
-
-  describe('release-specific extensions do not break base geometry', () => {
-    it('release grid card has same top-level article class prefix as project grid card', async () => {
-      const [proj, rel] = await Promise.all([
-        agent.get(`/projects/${projectId}/assets`).expect(200),
-        agent.get(`${releaseLocation}/assets`).expect(200),
-      ]);
-      // Both must open with class="asset-card"
-      expect(proj.text).toMatch(/<article class="asset-card[^"]*"/);
-      expect(rel.text).toMatch(/<article class="asset-card[^"]*"/);
-    });
-
-    it('keeps unloaded Release metadata out of the shared information card', async () => {
-      const [proj, rel] = await Promise.all([
-        agent.get(`/projects/${projectId}/assets`).expect(200),
-        agent.get(`${releaseLocation}/assets`).expect(200),
-      ]);
-
-      expect(proj.text).toContain('Effective tags');
-      expect(proj.text).toContain('Release usage');
-      expect(rel.text).not.toContain('Effective tags');
-      expect(rel.text).not.toContain('Release usage');
-      expect(rel.text).not.toContain('No effective tags');
-    });
-
-    it('opts project preview links into the slideshow without changing release links', async () => {
-      const [proj, rel] = await Promise.all([
-        agent.get(`/projects/${projectId}/assets`).expect(200),
-        agent.get(`${releaseLocation}/assets`).expect(200),
-      ]);
-
-      expect(proj.text).toContain('data-project-assets-preview-id');
-      expect(rel.text).not.toContain('data-project-assets-preview-id');
-    });
-
-    it('release list card has same top-level article class prefix as project list card', async () => {
-      const [proj, rel] = await Promise.all([
-        agent.get(`/projects/${projectId}/assets?view=list`).expect(200),
-        agent.get(`${releaseLocation}/assets?view=list`).expect(200),
-      ]);
-      expect(proj.text).toMatch(/<article class="asset-list-card[^"]*"/);
-      expect(rel.text).toMatch(/<article class="asset-list-card[^"]*"/);
-    });
-
-    it('release grid view does not introduce nested forms', async () => {
-      const assetRepo = createAssetRepository(db);
-      const assets = assetRepo.findByProjectId(Number(projectId));
-      if (assets.length > 0) {
-        // Select an asset so controls appear
-        await agent
-          .post(`${releaseLocation}/assets`)
-          .send('_csrf=' + encodeURIComponent(csrfToken))
-          .send(`selectedAssetIds[]=${assets[0].id}`)
-          .send('roles[]=primary')
-          .send('sortOrder[]=0')
-          .set('Content-Type', 'application/x-www-form-urlencoded')
-          .expect(302);
-      }
-      const res = await agent.get(`${releaseLocation}/assets`).expect(200);
-      // No <form> should appear inside another <form>
-      let depth = 0;
-      let maxNested = 0;
-      for (const token of res.text.matchAll(/<\/?form[\s>]/g)) {
-        if (token[0].startsWith('</')) {
-          depth = Math.max(0, depth - 1);
-        } else {
-          depth++;
-          maxNested = Math.max(maxNested, depth);
-        }
-      }
-      expect(maxNested).toBeLessThanOrEqual(1);
-    });
+  it('keeps canonical filename order and link-based pagination aligned', () => {
+    for (const [html, cardClass] of [
+      [pages.projectGrid, 'asset-card'],
+      [pages.releaseGrid, 'asset-card'],
+      [pages.projectList, 'asset-list-card'],
+      [pages.releaseList, 'asset-list-card'],
+    ]) {
+      expect(renderedSelectionFilenames(html, cardClass)).toEqual(fixtureFilenames.canonicalOrder);
+    }
+    for (const html of [pages.projectPaged, pages.releasePaged]) {
+      expect(html).toMatch(/<a [^>]*class="pagination-next"/);
+      expect(html).not.toMatch(/<button [^>]*class="pagination-next"/);
+    }
   });
 });

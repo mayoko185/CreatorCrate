@@ -87,8 +87,8 @@ describe('note service', () => {
     return Number(db.prepare(`
       INSERT INTO projects (
         title, slug, description, notes, status,
-        patreon_url
-      ) VALUES (?, ?, '', '', 'tbd', NULL)
+        patreon_url, project_type
+      ) VALUES (?, ?, '', '', 'tbd', NULL, 'images')
     `).run(title, slug).lastInsertRowid);
   }
 

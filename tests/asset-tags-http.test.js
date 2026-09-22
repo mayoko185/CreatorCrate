@@ -256,6 +256,28 @@ describe('asset tags — HTTP', () => {
     expect(tags).not.toContain('Removed Tag');
   });
 
+  it('rejects an invalid non-empty CSRF token before replacing asset tags', async () => {
+    const projectId = await createProject('Asset Tags CSRF');
+    const asset = createAsset(projectId, 'csrf.png');
+    const existing = createTag('Existing CSRF Tag');
+    const replacement = createTag('Replacement CSRF Tag');
+    assignAssetTags(asset.id, [existing.id]);
+    const before = assetTagRows(asset.id);
+    const replaceAssetTags = vi.spyOn(app.locals.assetTagService, 'replaceAssetTags');
+
+    try {
+      await agent
+        .post(`/projects/${projectId}/assets/${asset.id}/tags`)
+        .type('form')
+        .send({ tagIds: [String(replacement.id)], _csrf: 'deliberately-invalid-csrf-token' })
+        .expect(403);
+      expect(replaceAssetTags).not.toHaveBeenCalled();
+    } finally {
+      replaceAssetTags.mockRestore();
+    }
+    expect(assetTagRows(asset.id)).toEqual(before);
+  });
+
   it('treats a missing checkbox field as an empty set and removes every assignment', async () => {
     const projectId = await createProject('Clear Asset Tags');
     const asset = createAsset(projectId, 'clear.png');

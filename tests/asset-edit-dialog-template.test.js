@@ -32,8 +32,9 @@ function formsFor(html, action) {
 }
 
 describe('asset edit dialog Book primary image controls', () => {
-  it('renders the set form and Book dropdown for an eligible asset', () => {
+  it('renders the Book set form for an eligible archived-project asset', () => {
     const html = renderAssetEditDialog({
+      project: { id: 7, status: 'archived' },
       bookPrimaryImageOptions: [
         { id: 11, value: '11', label: 'Alpha Book' },
         { id: 12, value: '12', label: 'Beta Book' },
@@ -47,6 +48,17 @@ describe('asset edit dialog Book primary image controls', () => {
     expect(html).toContain('name="_csrf" value="csrf-token"');
     expect(html).toContain('action="/projects/7/assets/42/book-primary-image"');
     expect(html).toContain('Set as book primary image');
+  });
+
+  it('keeps the Book and project primary-image controls distinct', () => {
+    const html = renderAssetEditDialog({
+      canSetAsPrimaryImage: true,
+      bookPrimaryImageOptions: [{ id: 11, value: '11', label: 'Book' }],
+    });
+
+    expect(html).toContain('action="/projects/7/assets/42/primary-image"');
+    expect(html).toContain('Set as primary image');
+    expect(html).toContain('action="/projects/7/assets/42/book-primary-image"');
   });
 
   it('renders one removal form for each Book using the asset', () => {
@@ -73,49 +85,21 @@ describe('asset edit dialog Book primary image controls', () => {
     }
   });
 
-  it('keeps removal controls available when an ineligible asset has Book usages', () => {
-    const html = renderAssetEditDialog({
+  it('renders the correct Book section boundary for each eligibility and usage state', () => {
+    const removalOnly = renderAssetEditDialog({
       canSetAsBookPrimaryImage: false,
       bookPrimaryImageUsages: [{ id: 21, title: 'Existing Book' }],
     });
+    expect(removalOnly).toContain('Existing Book');
+    expect(removalOnly).toContain('asset-book-primary-image-remove-form');
+    expect(removalOnly).not.toContain('asset-book-primary-image-set-form');
 
-    expect(html).toContain('Existing Book');
-    expect(html).toContain('asset-book-primary-image-remove-form');
-    expect(html).not.toContain('asset-book-primary-image-set-form');
-  });
+    const hidden = renderAssetEditDialog({ canSetAsBookPrimaryImage: false });
+    expect(hidden).not.toContain('asset-book-primary-image-section');
 
-  it('hides the Book section when an ineligible asset has no usages', () => {
-    const html = renderAssetEditDialog({ canSetAsBookPrimaryImage: false });
-
-    expect(html).not.toContain('asset-book-primary-image-section');
-  });
-
-  it('renders the normal empty state when an eligible asset has no Books', () => {
-    const html = renderAssetEditDialog();
-
-    expect(html).toContain('No Books available.');
-    expect(html).toContain('href="/notes/books/new"');
-    expect(html).not.toContain('asset-book-primary-image-set-form');
-  });
-
-  it('uses the supplied eligibility flag without deriving it from project archive state', () => {
-    const html = renderAssetEditDialog({
-      project: { id: 7, status: 'archived' },
-      bookPrimaryImageOptions: [{ id: 11, value: '11', label: 'Archived Project Book' }],
-    });
-
-    expect(html).toContain('asset-book-primary-image-set-form');
-    expect(html).toContain('Archived Project Book');
-  });
-
-  it('keeps the distinct project primary-image controls intact', () => {
-    const html = renderAssetEditDialog({
-      canSetAsPrimaryImage: true,
-      bookPrimaryImageOptions: [{ id: 11, value: '11', label: 'Book' }],
-    });
-
-    expect(html).toContain('action="/projects/7/assets/42/primary-image"');
-    expect(html).toContain('Set as primary image');
-    expect(html).toContain('action="/projects/7/assets/42/book-primary-image"');
+    const eligibleWithoutBooks = renderAssetEditDialog();
+    expect(eligibleWithoutBooks).toContain('No Books available.');
+    expect(eligibleWithoutBooks).toContain('href="/notes/books/new"');
+    expect(eligibleWithoutBooks).not.toContain('asset-book-primary-image-set-form');
   });
 });
