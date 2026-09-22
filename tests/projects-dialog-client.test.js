@@ -1136,6 +1136,8 @@ describe('Reusable app dialog enhancement', () => {
       else if (path === 'backdrop') {
         page.dialog.dispatch('click', { target: page.form });
         expect(page.dialog.open).toBe(true);
+        page.dialog.dispatch('pointerdown', { target: page.dialog, pointerId: 1 });
+        page.document.dispatch('pointerup', { target: page.dialog, pointerId: 1 });
         page.dialog.dispatch('click', { target: page.dialog });
       } else closeAppDialogById(page.document, page.dialog.id);
 
@@ -1147,6 +1149,61 @@ describe('Reusable app dialog enhancement', () => {
       expect(submit).not.toHaveBeenCalled();
     },
   );
+
+  it('keeps text-selection drags open and accepts the next genuine backdrop gesture', () => {
+    const page = makeDialogPage();
+    const input = makeElement('input', { name: 'title', value: 'Existing project title' });
+    page.form.appendChild(input);
+    enhanceAppDialogs(page.document);
+    openAppDialogById(page.document, page.dialog.id, page.trigger);
+    const beforeClose = vi.fn(() => true);
+    page.dialog.__creatorCrateAppDialogState.beforeClose = beforeClose;
+
+    page.dialog.dispatch('pointerdown', { target: input, pointerId: 1 });
+    page.document.dispatch('pointerup', { target: page.dialog, pointerId: 1 });
+    page.dialog.dispatch('click', { target: page.dialog });
+
+    expect(page.dialog.open).toBe(true);
+    expect(beforeClose).not.toHaveBeenCalled();
+
+    page.dialog.dispatch('pointerdown', { target: page.dialog, pointerId: 2 });
+    page.document.dispatch('pointerup', { target: page.dialog, pointerId: 2 });
+    page.dialog.dispatch('click', { target: page.dialog });
+
+    expect(beforeClose).toHaveBeenCalledOnce();
+    expect(page.dialog.close).toHaveBeenCalledOnce();
+    expect(page.dialog.open).toBe(false);
+  });
+
+  it('keeps the dialog open when a backdrop press ends inside its content', () => {
+    const page = makeDialogPage();
+    enhanceAppDialogs(page.document);
+    openAppDialogById(page.document, page.dialog.id, page.trigger);
+    const beforeClose = vi.fn(() => true);
+    page.dialog.__creatorCrateAppDialogState.beforeClose = beforeClose;
+
+    page.dialog.dispatch('pointerdown', { target: page.dialog, pointerId: 1 });
+    page.document.dispatch('pointerup', { target: page.form, pointerId: 1 });
+    page.dialog.dispatch('click', { target: page.dialog });
+
+    expect(page.dialog.open).toBe(true);
+    expect(beforeClose).not.toHaveBeenCalled();
+  });
+
+  it('does not use a canceled backdrop press for a later click', () => {
+    const page = makeDialogPage();
+    enhanceAppDialogs(page.document);
+    openAppDialogById(page.document, page.dialog.id, page.trigger);
+    const beforeClose = vi.fn(() => true);
+    page.dialog.__creatorCrateAppDialogState.beforeClose = beforeClose;
+
+    page.dialog.dispatch('pointerdown', { target: page.dialog, pointerId: 1 });
+    page.document.dispatch('pointercancel', { target: page.dialog, pointerId: 1 });
+    page.dialog.dispatch('click', { target: page.dialog });
+
+    expect(page.dialog.open).toBe(true);
+    expect(beforeClose).not.toHaveBeenCalled();
+  });
 
   it('uses one async pre-close guard and suppresses native cancellation until dismissal is allowed', async () => {
     const page = makeDialogPage();
@@ -1264,6 +1321,8 @@ describe('Reusable app dialog enhancement', () => {
 
     enhanceAppDialogs(page.document);
     page.document.dispatch('click', { target: page.trigger });
+    page.dialog.dispatch('pointerdown', { target: page.dialog, pointerId: 1 });
+    page.document.dispatch('pointerup', { target: page.dialog, pointerId: 1 });
     const backdropClick = page.dialog.dispatch('click', { target: page.dialog });
 
     expect(backdropClick.defaultPrevented).toBe(true);

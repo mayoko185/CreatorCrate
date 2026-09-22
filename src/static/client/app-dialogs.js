@@ -198,6 +198,7 @@ function appDialogNavigateToReturnLocation(state, returnLocation) {
 function appDialogFinishClose(state) {
   const returnLocation = state.pendingReturnLocation;
   state.pendingReturnLocation = null;
+  state.backdropPointer = null;
   cleanupScrollableCategoryDialogDropdowns(state.dialog);
   state.onClose?.();
   state.open = false;
@@ -895,6 +896,7 @@ function appDialogBindForm(state) {
 function appDialogOpen(state, opener = null, openerAllowsFallback = true) {
   state.lifecycle += 1;
   state.closeRequest = null;
+  state.backdropPointer = null;
   state.pendingReturnLocation = null;
   state.opener = opener || (openerAllowsFallback
     ? state.document.querySelector?.(`${APP_DIALOG_TRIGGER_SELECTOR}[data-dialog-open="${state.dialog.id}"]`)
@@ -939,12 +941,29 @@ function appDialogBind(state) {
     if (appDialogCloseOpenDropdown(state)) return;
     appDialogRequestClose(state, state.document.activeElement);
   });
+  state.dialog.addEventListener?.('pointerdown', (event) => {
+    state.backdropPointer = {
+      id: event.pointerId,
+      startedOnBackdrop: event.target === state.dialog,
+      endedOnBackdrop: false,
+    };
+  });
+  state.document.addEventListener?.('pointerup', (event) => {
+    if (state.backdropPointer?.id !== event.pointerId) return;
+    state.backdropPointer.endedOnBackdrop = event.target === state.dialog;
+  });
+  state.document.addEventListener?.('pointercancel', (event) => {
+    if (state.backdropPointer?.id === event.pointerId) state.backdropPointer = null;
+  });
   state.dialog.addEventListener?.('click', (event) => {
-    if (event.target === state.dialog) {
-      event.preventDefault?.();
-      if (state.dialog.hasAttribute?.('data-dialog-backdrop-static')) return;
-      appDialogRequestClose(state, state.document.activeElement);
-    }
+    const dismissFromBackdrop = event.target === state.dialog
+      && state.backdropPointer?.startedOnBackdrop
+      && state.backdropPointer?.endedOnBackdrop;
+    state.backdropPointer = null;
+    if (!dismissFromBackdrop) return;
+    event.preventDefault?.();
+    if (state.dialog.hasAttribute?.('data-dialog-backdrop-static')) return;
+    appDialogRequestClose(state, state.document.activeElement);
   });
   state.dialog.querySelectorAll?.(APP_DIALOG_CLOSE_SELECTOR).forEach((control) => {
     if (isEnhancementBound(control, 'appDialogCloseBound')) return;
@@ -1003,6 +1022,7 @@ export function enhanceAppDialogs(scope = globalThis.document) {
       submitting: false,
       lifecycle: 0,
       closeRequest: null,
+      backdropPointer: null,
       pendingReturnLocation: null,
       beforeClose: null,
       preserveValuesOnError: false,
