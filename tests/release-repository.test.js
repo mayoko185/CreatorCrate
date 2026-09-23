@@ -288,7 +288,7 @@ describe('release repository', () => {
   });
 
   describe('findCalendarRange', () => {
-    it('returns scheduled non-archived releases in date/time order without release-status filtering', () => {
+    it('selects effective Calendar dates and excludes archived releases', () => {
       const untimed = releaseRepo.create({
         projectId,
         ...sampleRelease({ title: 'Untimed', plannedDate: '2025-06-15' }),
@@ -317,11 +317,11 @@ describe('release repository', () => {
 
       const rows = releaseRepo.findCalendarRange('2025-06-01', '2025-07-01');
 
-      expect(rows.map((row) => row.id)).toEqual([early.id, sameTimeLaterTitle.id, late.id, untimed.id]);
-      expect(rows.map((row) => row.planned_time)).toEqual(['08:00', '08:00', '10:00', null]);
+      expect(rows.map((row) => row.id)).toEqual([early.id, sameTimeLaterTitle.id, untimed.id]);
+      expect(rows.map((row) => row.planned_time)).toEqual(['08:00', '08:00', null]);
       expect(rows.every((row) => row.archived_at === null)).toBe(true);
-      expect(rows.every((row) => row.project_status === 'tbd')).toBe(true);
-      expect(rows.find((row) => row.title === 'Late').published_date).toBe('2025-01-01');
+      expect(rows.map((row) => row.project_title)).toEqual(['Parent Project', 'Parent Project', 'Parent Project']);
+      expect(releaseRepo.findCalendarRange('2025-01-01', '2025-02-01').map((row) => row.id)).toEqual([late.id]);
     });
 
   });

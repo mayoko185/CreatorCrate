@@ -11,6 +11,7 @@ import { APPLICATION_LOG_LEVELS } from './application-logger.js';
 
 const PROJECTS = 'projects';
 const RELEASES = 'releases';
+const CALENDAR = 'calendar';
 const PROJECT_ASSETS = 'projectAssets';
 const ASSET_VIEWER = 'assetViewer';
 const NEW_PROJECT = 'new_project';
@@ -54,6 +55,10 @@ export const PAGE_DEFAULT_DEFINITIONS = Object.freeze({
   [RELEASES]: Object.freeze({
     sort: definition('page_defaults.releases.sort', ['planned', 'updated', 'created', 'title'], 'planned'),
     order: definition('page_defaults.releases.order', ['asc', 'desc'], 'asc'),
+  }),
+  [CALENDAR]: Object.freeze({
+    status: definition('page_defaults.calendar.status', ['all', 'planned', 'published'], 'all'),
+    weekStart: definition('page_defaults.calendar.week_start', ['monday', 'sunday'], 'monday'),
   }),
   [PROJECT_ASSETS]: Object.freeze({
     view: definition('page_defaults.project_assets.view', ['grid', 'list'], 'grid'),

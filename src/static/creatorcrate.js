@@ -56,6 +56,7 @@ import { enhanceBookDefaultsFetchSave } from './client/book-defaults-fetch-save.
 import { enhanceBookTransfer } from './client/book-transfer.js';
 import {
   enhanceAssetViewerInfoCards,
+  enhanceCalendarInfoCards,
   enhanceProjectInfoCards,
 } from './client/info-cards.js';
 import {
@@ -102,15 +103,18 @@ import {
   beginAssetViewerDefaultsLiveRefresh,
   beginBookDetailDefaultsLiveRefresh,
   beginProjectAssetsDefaultsLiveRefresh,
+  beginCalendarDefaultsLiveRefresh,
   beginProjectsDefaultsLiveRefresh,
   beginReleasesDefaultsLiveRefresh,
   createLiveRegionEngine,
+  enhanceCalendarLiveFiltering,
   enhanceAssetLibraryLiveFiltering,
   enhanceProjectAssetsLiveFiltering,
   enhanceReleaseAssetsLiveFiltering,
   enhanceProjectsLiveFiltering,
   enhanceReleasesLiveFiltering,
   refreshAssetViewerLiveRegion,
+  refreshCalendarLiveRegion,
   refreshBookDetailLiveRegion,
   refreshNotesBooksLiveRegion,
   refreshProjectAssetsDefaultsLiveRegion,
@@ -128,6 +132,7 @@ export {
   enhanceNoteDialogUnsavedChanges,
   noteDialogIsDirty,
   enhanceAssetViewerInfoCards,
+  enhanceCalendarInfoCards,
   enhanceProjectInfoCards,
   enhanceDatePickers,
   enhanceTimePickers,
@@ -192,15 +197,18 @@ export {
   beginAssetViewerDefaultsLiveRefresh,
   beginBookDetailDefaultsLiveRefresh,
   beginProjectAssetsDefaultsLiveRefresh,
+  beginCalendarDefaultsLiveRefresh,
   beginProjectsDefaultsLiveRefresh,
   beginReleasesDefaultsLiveRefresh,
   createLiveRegionEngine,
+  enhanceCalendarLiveFiltering,
   enhanceAssetLibraryLiveFiltering,
   enhanceProjectAssetsLiveFiltering,
   enhanceReleaseAssetsLiveFiltering,
   enhanceProjectsLiveFiltering,
   enhanceReleasesLiveFiltering,
   refreshAssetViewerLiveRegion,
+  refreshCalendarLiveRegion,
   refreshBookDetailLiveRegion,
   refreshNotesBooksLiveRegion,
   refreshProjectAssetsDefaultsLiveRegion,
@@ -249,6 +257,13 @@ if (typeof document !== 'undefined') {
     enhanceProjectsDefaultsFetchSave(document);
     enhanceReleasesDefaultsFetchSave(document);
     enhancePageDefaultsFetchSave(document, {
+      formSelector: '#calendar-defaults-form',
+      markerAttribute: 'data-calendar-defaults-fetch-save',
+      beginRefresh: beginCalendarDefaultsLiveRefresh,
+      refresh: refreshCalendarLiveRegion,
+      refreshFailureMessage: 'Settings saved, but Calendar could not refresh. Refresh the page to see the saved defaults.',
+    });
+    enhancePageDefaultsFetchSave(document, {
       formSelector: '#asset-viewer-defaults-form',
       markerAttribute: 'data-asset-viewer-defaults-autosave',
       beginRefresh: beginAssetViewerDefaultsLiveRefresh,
@@ -269,10 +284,12 @@ if (typeof document !== 'undefined') {
     enhanceProjectAssetCategoryManagement(document);
     enhanceProjectsLiveFiltering(document);
     enhanceReleasesLiveFiltering(document);
+    enhanceCalendarLiveFiltering(document);
     enhanceReleaseAssetsLiveFiltering(document);
     enhanceProjectAssetsLiveFiltering(document);
     enhanceAssetLibraryLiveFiltering(document);
     enhanceAssetViewerInfoCards(document);
+    enhanceCalendarInfoCards(document);
     enhanceProjectInfoCards(document);
     enhanceDatePickers(document);
     enhanceTimePickers(document);

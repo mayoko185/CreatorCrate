@@ -11360,41 +11360,6 @@ describe('release HTTP workflow', () => {
     });
   });
 
-  describe('calendar switcher self-link', () => {
-    it('calendar switcher anchor has a valid href with normalized month', async () => {
-      const res = await agent.get('/calendar').expect(200);
-      // The calendar route normalizes to the current month, so the canonical
-      // self-link always carries the month parameter.
-      expect(res.text).toMatch(/<a class="view-switcher-option" href="\/calendar\?month=\d{4}-\d{2}"[^>]*aria-current="page"[^>]*>Calendar<\/a>/);
-    });
-
-    it('calendar switcher preserves explicit month in href', async () => {
-      const res = await agent.get('/calendar?month=2026-07').expect(200);
-      expect(res.text).toMatch(/<a class="view-switcher-option" href="\/calendar\?month=2026-07"[^>]*aria-current="page"[^>]*>Calendar<\/a>/);
-    });
-
-    it('the remaining calendar switcher items are real anchors with valid hrefs', async () => {
-      const res = await agent.get('/calendar?month=2026-07').expect(200);
-      // Releases
-      expect(res.text).toMatch(/<a class="view-switcher-option" href="\/releases"[^>]*>Releases<\/a>/);
-      // Calendar — must have a real href, not just be a bare anchor
-      const calMatch = res.text.match(/<a class="view-switcher-option" href="([^"]+)"[^>]*aria-current="page"[^>]*>Calendar<\/a>/);
-      expect(calMatch).not.toBeNull();
-      expect(calMatch[1]).toMatch(/^\/calendar/);
-      expect(res.text).not.toMatch(/href="\/releases\?view=board"/);
-    });
-
-    it('exactly one switcher item is current within the view-switcher nav', async () => {
-      const res = await agent.get('/calendar?month=2026-07').expect(200);
-      // Extract the view-switcher nav to scope the count (the sidebar nav also
-      // carries aria-current="page" for the Calendar section).
-      const switcherMatch = res.text.match(/<nav class="view-switcher"[^>]*>([\s\S]*?)<\/nav>/);
-      expect(switcherMatch).not.toBeNull();
-      const currentCount = (switcherMatch[1].match(/aria-current="page"/g) || []).length;
-      expect(currentCount).toBe(1);
-    });
-  });
-
   // ─── Release-backed calendar ───────────────────────────────────────────
 
   describe('release-backed calendar', () => {
@@ -11412,7 +11377,7 @@ describe('release HTTP workflow', () => {
       });
     }
 
-    it('renders a release entry linking to its canonical edit page with its status badge', async () => {
+    it('renders a release entry with compact status and a canonical detail link', async () => {
       const projectId = insertProjectDirect(db, { title: 'Calendar Project', status: 'planned' });
       const release = createCalendarRelease(projectId, {
         title: 'Calendar Release',
@@ -11422,17 +11387,19 @@ describe('release HTTP workflow', () => {
 
       const res = await agent.get('/calendar?month=2026-07').expect(200);
 
-      expect(res.text).toMatch(new RegExp(`href="/releases/${release.id}/edit" data-dialog-invocation>Calendar Release</a>`));
+      expect(res.text).toContain('class="calendar-release-title">Calendar Release</span>');
+      expect(res.text).toContain(`href="/releases/${release.id}">Open release</a>`);
       expect(res.text).toContain('13:45');
       expect(res.text).toContain('Planned');
     });
 
-    it('does not render a project without a release record', async () => {
+    it('does not render an event for a project without a release record', async () => {
       insertProjectDirect(db, { title: 'Project Without Release' });
 
       const res = await agent.get('/calendar?month=2026-07').expect(200);
 
-      expect(res.text).not.toContain('Project Without Release');
+      expect(res.text).toContain('0 matching releases');
+      expect(res.text).not.toContain('data-calendar-event');
     });
 
     it('places a release on its release-owned planned date', async () => {
@@ -11447,7 +11414,8 @@ describe('release HTTP workflow', () => {
       const releaseDay = res.text.match(
         /<li class="agenda-day[^>]*>\s*<div class="agenda-day-date">\s*2026-07-18[\s\S]*?<\/li>/,
       )?.[0] || '';
-      expect(releaseDay).toContain(`href="/releases/${release.id}/edit" data-dialog-invocation>Release Date Entry</a>`);
+      expect(releaseDay).toContain('class="calendar-release-title">Release Date Entry</span>');
+      expect(releaseDay).toContain(`href="/releases/${release.id}">Open release</a>`);
     });
 
     it('omits archived releases', async () => {

@@ -1,0 +1,47 @@
+{% macro render(entry, surface) %}
+  {% set detailId = 'calendar-info-' ~ surface ~ '-' ~ entry.id %}
+  {% set hasPrimaryImage = entry.primaryImage and entry.primaryImage.state == 'available' and entry.primaryImage.previewUrl %}
+  <div class="calendar-release calendar-release--{{ entry.status }}" data-calendar-event>
+    <button class="calendar-release-trigger" type="button" data-calendar-info-trigger
+            aria-controls="{{ detailId }}" aria-expanded="false">
+      <span class="calendar-release-title">{{ entry.title }}</span>
+      <span class="calendar-release-meta">
+        <span class="calendar-release-status">{{ 'Published' if entry.status == 'published' else 'Planned' }}</span>
+        {% if entry.status == 'planned' and entry.planned_time %}
+          <time class="calendar-release-time" datetime="{{ entry.planned_date }}T{{ entry.planned_time }}">{{ entry.planned_time }}</time>
+        {% endif %}
+      </span>
+    </button>
+    <div id="{{ detailId }}" class="asset-viewer-grid-card-info calendar-release-info calendar-release-info--glass{% if hasPrimaryImage %} calendar-release-info--with-media{% endif %}" data-calendar-info-card popover="manual"
+         role="group" aria-label="Details for {{ entry.title }}">
+      <div class="calendar-release-info-layout">
+        {% if hasPrimaryImage %}
+          <div class="calendar-release-info-media" data-preview-enhancement data-preview-state="loading">
+            <img class="calendar-release-info-image{% if entry.nsfwBlur %} project-image--nsfw-blurred{% endif %}{% if entry.primaryImage.mediaModifier %} project-card-media-image--{{ entry.primaryImage.mediaModifier }}{% endif %}"
+                 data-preview-image src="{{ entry.primaryImage.previewUrl }}" alt="{{ entry.primaryImage.alt }}" loading="lazy" decoding="async">
+            <span class="project-card-media-fallback" data-preview-fallback hidden>Image unavailable</span>
+          </div>
+        {% endif %}
+        <div class="calendar-release-info-content">
+          <div class="calendar-release-info-actions">
+            <a class="button button-small button-secondary" href="/releases/{{ entry.id }}">Open release</a>
+            <a class="button button-small button-secondary" href="/projects/{{ entry.project_id }}">Open project</a>
+          </div>
+          <h3 class="asset-viewer-grid-card-info-heading">{{ entry.title }}</h3>
+          <p class="calendar-release-info-project"><a href="/projects/{{ entry.project_id }}">{{ entry.project_title }}</a></p>
+          <dl class="asset-viewer-grid-card-info-list">
+            <div class="asset-viewer-grid-card-info-row"><dt>Status</dt><dd>{{ 'Published' if entry.status == 'published' else 'Planned' }}</dd></div>
+            {% if entry.planned_date %}<div class="asset-viewer-grid-card-info-row"><dt>Planned</dt><dd><time datetime="{{ entry.planned_date }}{% if entry.planned_time %}T{{ entry.planned_time }}{% endif %}">{{ entry.planned_date }}{% if entry.planned_time %} {{ entry.planned_time }}{% endif %}</time></dd></div>{% endif %}
+            {% if entry.published_date %}<div class="asset-viewer-grid-card-info-row"><dt>Published</dt><dd><time datetime="{{ entry.published_date }}">{{ entry.published_date }}</time></dd></div>{% endif %}
+          </dl>
+          {% if entry.notes %}
+            <div class="asset-viewer-grid-card-info-section">
+              <span class="asset-viewer-grid-card-info-section-label">Notes</span>
+              <p class="calendar-release-info-notes">{{ entry.notes }}</p>
+            </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+{% endmacro %}

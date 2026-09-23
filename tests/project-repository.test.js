@@ -459,6 +459,17 @@ describe('project repository', () => {
     expect(counts.archived).toBe(2);
   });
 
+  it('offers archived parent projects to the Calendar without changing active asset options', () => {
+    const active = repository.create(sampleProject({ title: 'Active' }));
+    const archived = repository.create(sampleProject({ title: 'Archived' }));
+    repository.archive(archived.id);
+
+    expect(repository.listCalendarFilterOptions().map(({ id }) => id)).toEqual([
+      active.id, archived.id,
+    ]);
+    expect(repository.listActiveAssetFilterOptions().map(({ id }) => id)).toEqual([active.id]);
+  });
+
   it('bulk reassigns Status and Type values across all matching Projects', () => {
     const active = repository.create(sampleProject({
       title: 'Active Custom', status: 'custom-status', projectType: 'custom-type',

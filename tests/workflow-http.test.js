@@ -7,7 +7,6 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import request from 'supertest';
-import nunjucks from 'nunjucks';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -21,12 +20,6 @@ import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
-const VIEWS_DIR = fileURLToPath(new URL('../src/views', import.meta.url));
-
-function renderTemplate(templateName, context = {}) {
-  const env = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: true });
-  return env.render(templateName, context);
-}
 
 function getProjectDir(projectsRoot, projectId, title) {
   const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-');
@@ -1494,10 +1487,9 @@ describe('Phase 6B HTTP workflow', () => {
       expect(res.text).toMatch(/<h1 class="app-section-title">Calendar<\/h1>/);
       // Calendar nav structure: a <div class="calendar-nav"> with the
       // month <h2> and prev/next buttons.
-      expect(res.text).toMatch(/<div class="calendar-nav"[^>]*>[\s\S]*?<h2>\d{4}-\d{2}<\/h2>/);
-      // Calendar grid structure: weekday header row (a real CSS Grid div
-      // layout, not a <table> — see Phase 13.3 rewrite).
-      expect(res.text).toMatch(/<div class="calendar-th"[^>]*>Mon<\/div>[\s\S]*?<div class="calendar-th"[^>]*>Sun<\/div>/);
+      expect(res.text).toMatch(/<div class="calendar-nav"[^>]*>[\s\S]*?<h2 tabindex="-1" data-calendar-month-heading>[^<]+<\/h2>/);
+      // Calendar grid structure: weekday headers in the calendar table.
+      expect(res.text).toMatch(/<div class="calendar-th" role="columnheader">Mon<\/div>[\s\S]*?<div class="calendar-th" role="columnheader">Sun<\/div>/);
     });
 
     it('renders navigation anchors (not just text)', async () => {
@@ -1527,10 +1519,10 @@ describe('Phase 6B HTTP workflow', () => {
       });
 
       const res = await app.testAgent.get('/calendar?month=2025-06').expect(200);
-      expect(res.text).toMatch(/<div class="calendar-release"[^>]*>[\s\S]*?ZZZ-June-15-Calendar-Release[\s\S]*?<\/div>/);
-      expect(res.text).toContain(`href="/releases/${releaseId}/edit"`);
+      expect(res.text).toContain(`class="calendar-release-title">ZZZ-June-15-Calendar-Release</span>`);
+      expect(res.text).toContain(`href="/releases/${releaseId}">Open release</a>`);
       expect(res.text).toContain('09:15');
-      expect(res.text).toMatch(/<span class="status-badge status-badge--neutral">Planned<\/span>/);
+      expect(res.text).toContain(`class="calendar-release-status">Planned</span>`);
     });
 
     it('shows empty days without releases (calendar grid has 30 day cells for June)', async () => {
@@ -1552,36 +1544,6 @@ describe('Phase 6B HTTP workflow', () => {
       expect(res.text).not.toMatch(/<div class="calendar-release"/);
     });
 
-    it('empty-state branch shows release-focused wording linking to /releases/new', () => {
-      // getReleaseCalendar always returns one entry per calendar day (even
-      // when every day is entry-less), so `days.length > 0` never goes
-      // false through the live HTTP route — the empty-state branch only
-      // renders when `days` itself is empty. Render the template directly
-      // with that condition to verify the copy without inventing new
-      // reachability behavior (out of scope for this correction).
-      const html = renderTemplate('releases/calendar.njk', {
-        appName: 'CreatorCrate',
-        month: '2099-01',
-        days: [],
-        firstDayWeekday: 0,
-        prevMonthDaysCount: 31,
-        prevMonth: '2098-12',
-        nextMonth: '2099-02',
-        today: '2025-06-15',
-        isCurrentMonth: false,
-        query: {},
-        pageUrl: () => '/calendar',
-      });
-
-      expect(html).toContain('No releases scheduled for 2099-01');
-      expect(html).toContain('There are no releases scheduled for this month.');
-      expect(html).toMatch(/href="\/releases\/new"[^>]*>New Release<\/a>/);
-
-      expect(html).not.toContain('No projects scheduled');
-      expect(html).not.toContain('There are no projects scheduled for this month.');
-      expect(html).not.toMatch(/href="\/projects\/new"[^>]*>New Project<\/a>/);
-    });
-
     it('does not show asset fields on calendar entries', async () => {
       const projectId = await createProject(app, { title: 'Calendar Asset Fields Project' });
       await createRelease(app, {
@@ -1593,18 +1555,6 @@ describe('Phase 6B HTTP workflow', () => {
       const res = await app.testAgent.get('/calendar?month=2025-06').expect(200);
       expect(res.text).toContain('Calendar Asset Fields Release');
       expect(res.text).not.toContain('missing-indicator');
-    });
-
-    it('links release entries to the canonical release edit page', async () => {
-      const projectId = await createProject(app, { title: 'Calendar Link Project' });
-      const releaseId = await createRelease(app, {
-        projectId,
-        title: 'Calendar Link Release',
-        plannedDate: '2025-06-15',
-      });
-
-      const res = await app.testAgent.get('/calendar?month=2025-06').expect(200);
-      expect(res.text).toMatch(new RegExp(`href="/releases/${releaseId}/edit">Calendar Link Release</a>`));
     });
 
     // ─── Exact-fallback assertions for invalid months ──────────────────
@@ -1639,15 +1589,13 @@ describe('Phase 6B HTTP workflow', () => {
       return `${y}-${String(mo + 1).padStart(2, '0')}`;
     }
 
-    /**
-     * Extract the calendar nav <h2> month value. The template emits
-     * <h2>{{ month }}</h2> inside .calendar-nav. We use a narrow
-     * regex to avoid catching the same YYYY-MM string in a link
-     * href or in another heading.
-     */
+    /** Extract the displayed month from the Calendar heading. */
     function extractCalendarHeaderMonth(html) {
-      const m = html.match(/<h2>(\d{4}-\d{2})<\/h2>/);
-      return m ? m[1] : null;
+      const match = html.match(/<h2 tabindex="-1" data-calendar-month-heading>([A-Za-z]+) (\d{4})<\/h2>/);
+      if (!match) return null;
+      const month = ['January', 'February', 'March', 'April', 'May', 'June',
+        'July', 'August', 'September', 'October', 'November', 'December'].indexOf(match[1]) + 1;
+      return month ? `${match[2]}-${String(month).padStart(2, '0')}` : null;
     }
 
     /**
@@ -1706,7 +1654,7 @@ describe('Phase 6B HTTP workflow', () => {
       expect(nextUrl.searchParams.get('month')).toBe(expectedNext);
     });
 
-    it('calendar nav strips all list/board filters, page state, and unknown params', async () => {
+    it('calendar nav drops invalid project state while advancing the month', async () => {
       const noisyQuery = 'month=2025-06&unsupported=publishable&status=ready&project=1&schedule=overdue&page=3&pageSize=10&sort=title&order=asc&includeArchived=1&junk=x';
       const res = await app.testAgent.get(`/calendar?${noisyQuery}`).expect(200);
 
@@ -1718,14 +1666,14 @@ describe('Phase 6B HTTP workflow', () => {
       const prevUrl = new URL(prevHref, 'http://localhost');
       const nextUrl = new URL(nextHref, 'http://localhost');
 
-      // Previous link: pathname, exactly one key (month), exact value
+      // Previous link: pathname, preserved month, and no invalid project filter.
       expect(prevUrl.pathname).toBe('/calendar');
-      expect([...prevUrl.searchParams.keys()]).toEqual(['month']);
+      expect(prevUrl.searchParams.get('project')).toBeNull();
       expect(prevUrl.searchParams.get('month')).toBe('2025-05');
 
-      // Next link: pathname, exactly one key (month), exact value
+      // Next link: pathname, preserved month, and no invalid project filter.
       expect(nextUrl.pathname).toBe('/calendar');
-      expect([...nextUrl.searchParams.keys()]).toEqual(['month']);
+      expect(nextUrl.searchParams.get('project')).toBeNull();
       expect(nextUrl.searchParams.get('month')).toBe('2025-07');
     });
 
@@ -1744,12 +1692,6 @@ describe('Phase 6B HTTP workflow', () => {
 
       const res = await app.testAgent.get('/calendar?month=2025-06').expect(200);
       expect(res.text).not.toContain('Hidden From Calendar');
-    });
-
-    it('has navigation links to list and board', async () => {
-      const res = await app.testAgent.get('/calendar').expect(200);
-      expect(res.text).toContain('href="/release-management"');
-      expect(res.text).toContain('href="/release-management?view=board"');
     });
 
     // ─── Calendar navigation year boundaries ───────────────────────────

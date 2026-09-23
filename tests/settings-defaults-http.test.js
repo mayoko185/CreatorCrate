@@ -141,6 +141,27 @@ describe('settings — page defaults HTTP', () => {
     expect(form).toContain('<button type="submit" class="button button-primary">Save Defaults</button>');
   });
 
+  it('saves Calendar defaults through the existing Settings path and rejects invalid values atomically', async () => {
+    const statusKey = defaultKey('calendar', 'status');
+    const weekStartKey = defaultKey('calendar', 'weekStart');
+    expect(statusKey).toBe('page_defaults.calendar.status');
+    expect(weekStartKey).toBe('page_defaults.calendar.week_start');
+
+    await agent.post('/settings/defaults').type('form').send({
+      calendarStatus: 'published', calendarWeekStart: 'sunday', _csrf: csrfToken,
+    }).expect(302);
+    expect(readMeta(db, statusKey)).toBe('published');
+    expect(readMeta(db, weekStartKey)).toBe('sunday');
+
+    await agent.post('/settings/defaults').type('form').send({
+      calendarStatus: 'planned', calendarWeekStart: 'invalid', _csrf: csrfToken,
+    }).expect(422);
+    expect(readMeta(db, statusKey)).toBe('published');
+    expect(readMeta(db, weekStartKey)).toBe('sunday');
+    expect(readMeta(db, 'page_defaults.calendar.project')).toBeUndefined();
+    expect(readMeta(db, 'page_defaults.calendar.month')).toBeUndefined();
+  });
+
   it('renders Note revision retention with fallback 10 without persisting it on GET', async () => {
     const res = await agent.get('/settings/defaults').expect(200);
     const notes = settingsSection(res.text, 'defaults-notes');

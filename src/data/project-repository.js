@@ -121,6 +121,11 @@ export function createProjectRepository(db) {
     WHERE archived_at IS NULL AND status <> 'archived'
     ORDER BY title COLLATE NOCASE ASC, id ASC
   `);
+  const listCalendarFilterOptionsStmt = db.prepare(`
+    SELECT id, title, status, archived_at
+    FROM projects
+    ORDER BY title COLLATE NOCASE ASC, id ASC
+  `);
   return {
     /**
      * @param {number} id
@@ -276,6 +281,10 @@ export function createProjectRepository(db) {
      */
     listActiveAssetFilterOptions() {
       return listActiveAssetFilterOptionsStmt.all();
+    },
+
+    listCalendarFilterOptions() {
+      return listCalendarFilterOptionsStmt.all();
     },
 
     /**

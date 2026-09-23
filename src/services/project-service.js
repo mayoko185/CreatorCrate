@@ -703,6 +703,10 @@ export function createProjectService(
       return repository.listActiveAssetFilterOptions();
     },
 
+    listCalendarFilterOptions() {
+      return repository.listCalendarFilterOptions();
+    },
+
     countByStatus() {
       return repository.countByStatus();
     },

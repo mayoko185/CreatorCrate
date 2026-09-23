@@ -6,6 +6,9 @@ const GRID_INFO_GUTTER = 8;
 const GRID_INFO_POINTER_OFFSET = 12;
 const PROJECT_INFO_SELECTOR = '[data-project-info-card]';
 const PROJECT_PREVIEW_SELECTOR = '[data-project-grid-preview]';
+const CALENDAR_INFO_SELECTOR = '[data-calendar-info-card]';
+const CALENDAR_EVENT_SELECTOR = '[data-calendar-event]';
+const CALENDAR_TRIGGER_SELECTOR = '[data-calendar-info-trigger]';
 const DIALOG_TRIGGER_SELECTOR = '[data-dialog-open]';
 
 const ASSET_VIEWER_INFO_CONFIG = Object.freeze({
@@ -26,6 +29,17 @@ const PROJECT_INFO_CONFIG = Object.freeze({
   topProperty: '--project-info-top',
   boundKey: 'projectInfoBound',
 });
+const CALENDAR_INFO_CONFIG = Object.freeze({
+  infoSelector: CALENDAR_INFO_SELECTOR,
+  previewSelector: CALENDAR_EVENT_SELECTOR,
+  triggerSelector: CALENDAR_TRIGGER_SELECTOR,
+  interaction: 'hybrid',
+  gutter: GRID_INFO_GUTTER,
+  pointerOffset: GRID_INFO_POINTER_OFFSET,
+  leftProperty: '--asset-info-left',
+  topProperty: '--asset-info-top',
+  boundKey: 'calendarInfoBound',
+});
 
 let activeGridInfoPlacement = null;
 let pendingGridInfoFrame = null;
@@ -42,6 +56,15 @@ function gridInfoWindow(document) {
 
 function gridInfoIsConnected(info) {
   return info?.isConnected !== false;
+}
+
+function activeGridInfoIsConnected() {
+  return gridInfoIsConnected(activeGridInfoPlacement?.info)
+    && gridInfoIsConnected(activeGridInfoPlacement?.preview);
+}
+
+function calendarTriggerIsVisible(trigger) {
+  return trigger?.getClientRects?.().length !== 0;
 }
 
 function gridInfoViewport(document) {
@@ -83,6 +106,9 @@ function cancelPendingGridInfoFrame() {
 
 export function dismissActiveGridInfoCard() {
   cancelPendingGridInfoFrame();
+  if (activeGridInfoPlacement?.config.interaction === 'hybrid') {
+    activeGridInfoPlacement.trigger?.setAttribute?.('aria-expanded', 'false');
+  }
   hideGridInfo(activeGridInfoPlacement?.info);
   activeGridInfoPlacement = null;
 }
@@ -148,7 +174,9 @@ export function positionGridInfo(preview, info, config, anchor = { type: 'focus'
 function repositionActiveGridInfo() {
   pendingGridInfoFrame = null;
   if (!activeGridInfoPlacement) return;
-  if (!gridInfoIsConnected(activeGridInfoPlacement.info)) {
+  if (!activeGridInfoIsConnected()
+    || (activeGridInfoPlacement.config.interaction === 'hybrid'
+      && !calendarTriggerIsVisible(activeGridInfoPlacement.trigger))) {
     dismissActiveGridInfoCard();
     return;
   }
@@ -172,15 +200,18 @@ function scheduleActiveGridInfoPosition() {
   frame.id = windowObject.requestAnimationFrame(repositionActiveGridInfo);
 }
 
-function activateGridInfo(preview, info, config, state, anchor) {
+function activateGridInfo(preview, info, config, state, anchor, trigger = null, pinned = false) {
   if (activeGridInfoPlacement?.info !== info) dismissActiveGridInfoCard();
   showGridInfo(info);
+  if (config.interaction === 'hybrid') trigger?.setAttribute?.('aria-expanded', 'true');
   activeGridInfoPlacement = {
     preview,
     info,
     config,
     state,
     anchor,
+    trigger,
+    pinned,
     document: gridInfoDocument(preview, info),
   };
   scheduleActiveGridInfoPosition();
@@ -192,12 +223,23 @@ function bindGridInfoLifecycle(document) {
     gridInfoBoundDocuments.add(document);
     document.addEventListener?.('click', (event) => {
       if (event.target?.closest?.(DIALOG_TRIGGER_SELECTOR)) dismissActiveGridInfoCard();
+      if (activeGridInfoPlacement?.config.interaction !== 'hybrid') return;
+      if (activeGridInfoPlacement.info.contains?.(event.target)
+        || activeGridInfoPlacement.trigger?.contains?.(event.target)) return;
+      dismissActiveGridInfoCard();
     }, true);
+    document.addEventListener?.('keydown', (event) => {
+      if (event.key !== 'Escape' || activeGridInfoPlacement?.config.interaction !== 'hybrid') return;
+      const trigger = activeGridInfoPlacement.trigger;
+      const pinned = activeGridInfoPlacement.pinned;
+      dismissActiveGridInfoCard();
+      if (pinned && gridInfoIsConnected(trigger)) trigger?.focus?.();
+    });
 
     const MutationObserverClass = gridInfoWindow(document)?.MutationObserver;
     if (typeof MutationObserverClass === 'function') {
       const observer = new MutationObserverClass(() => {
-        if (activeGridInfoPlacement && !gridInfoIsConnected(activeGridInfoPlacement.info)) {
+        if (activeGridInfoPlacement && !activeGridInfoIsConnected()) {
           dismissActiveGridInfoCard();
         }
       });
@@ -213,14 +255,14 @@ function bindGridInfoLifecycle(document) {
   windowObject.addEventListener?.('scroll', (event) => {
     if (activeGridInfoPlacement?.info === event?.target
       || activeGridInfoPlacement?.info?.contains?.(event?.target)) return;
-    if (activeGridInfoPlacement?.anchor?.type === 'pointer') dismissActiveGridInfoCard();
+    if (activeGridInfoPlacement?.anchor?.type === 'pointer' && !activeGridInfoPlacement.pinned) dismissActiveGridInfoCard();
     else scheduleActiveGridInfoPosition();
   }, true);
 }
 
 function enhanceGridInfoCards(scope, config) {
   if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
-  if (activeGridInfoPlacement && !gridInfoIsConnected(activeGridInfoPlacement.info)) {
+  if (activeGridInfoPlacement && !activeGridInfoIsConnected()) {
     dismissActiveGridInfoCard();
   }
 
@@ -230,12 +272,21 @@ function enhanceGridInfoCards(scope, config) {
     const info = preview.querySelector?.(config.infoSelector);
     if (!info || isEnhancementBound(preview, config.boundKey)) return;
 
+    const hybrid = config.interaction === 'hybrid';
+    const trigger = hybrid ? preview.querySelector?.(config.triggerSelector) : null;
+    if (hybrid && !trigger) return;
+
     markEnhancementBound(preview, config.boundKey);
     boundCount += 1;
+    if (hybrid) {
+      info.addEventListener?.('load', scheduleActiveGridInfoPosition, true);
+      info.addEventListener?.('error', scheduleActiveGridInfoPosition, true);
+    }
     const state = {
       focusInside: false,
       pointerInside: false,
       pointer: null,
+      suppressHover: false,
     };
     const pointerAnchor = (event) => ({
       type: 'pointer',
@@ -243,28 +294,50 @@ function enhanceGridInfoCards(scope, config) {
       clientY: Number(event?.clientY),
     });
 
-    preview.addEventListener?.('pointerenter', (event) => {
+    const pointerTarget = trigger || preview;
+    pointerTarget.addEventListener?.('pointerenter', (event) => {
+      if (hybrid && (event.pointerType === 'touch' || state.suppressHover || activeGridInfoPlacement?.pinned)) return;
       state.pointerInside = true;
       state.pointer = pointerAnchor(event);
-      activateGridInfo(preview, info, config, state, state.pointer);
+      activateGridInfo(pointerTarget, info, config, state, state.pointer, trigger);
     });
-    preview.addEventListener?.('pointermove', (event) => {
+    pointerTarget.addEventListener?.('pointermove', (event) => {
+      if (hybrid && (event.pointerType === 'touch' || state.suppressHover || activeGridInfoPlacement?.pinned)) return;
       if (!state.pointerInside) return;
       state.pointer = pointerAnchor(event);
       if (activeGridInfoPlacement?.info !== info) {
-        activateGridInfo(preview, info, config, state, state.pointer);
+        activateGridInfo(pointerTarget, info, config, state, state.pointer, trigger);
         return;
       }
       activeGridInfoPlacement.anchor = state.pointer;
       scheduleActiveGridInfoPosition();
     });
-    preview.addEventListener?.('pointerleave', () => {
+    pointerTarget.addEventListener?.('pointerleave', () => {
+      state.suppressHover = false;
       state.pointerInside = false;
       state.pointer = null;
       if (activeGridInfoPlacement?.info !== info) return;
+      if (activeGridInfoPlacement.pinned) return;
       if (state.focusInside) activateGridInfo(preview, info, config, state, { type: 'focus' });
       else dismissActiveGridInfoCard();
     });
+    if (hybrid) {
+      trigger.addEventListener?.('click', () => {
+        if (activeGridInfoPlacement?.info === info) {
+          if (activeGridInfoPlacement.pinned) {
+            state.suppressHover = true;
+            dismissActiveGridInfoCard();
+          } else {
+            activeGridInfoPlacement.pinned = true;
+            activeGridInfoPlacement.anchor = { type: 'focus' };
+            scheduleActiveGridInfoPosition();
+          }
+          return;
+        }
+        activateGridInfo(trigger, info, config, state, { type: 'focus' }, trigger, true);
+      });
+      return;
+    }
     preview.addEventListener?.('focusin', () => {
       state.focusInside = true;
       if (!state.pointerInside) activateGridInfo(preview, info, config, state, { type: 'focus' });
@@ -291,4 +364,8 @@ export function enhanceAssetViewerInfoCards(scope = globalThis.document) {
 
 export function enhanceProjectInfoCards(scope = globalThis.document) {
   return enhanceGridInfoCards(scope, PROJECT_INFO_CONFIG);
+}
+
+export function enhanceCalendarInfoCards(scope = globalThis.document) {
+  return enhanceGridInfoCards(scope, CALENDAR_INFO_CONFIG);
 }

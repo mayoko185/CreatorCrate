@@ -4999,17 +4999,22 @@
         min-width: 0;
       }
       .page-defaults-grid > .app-dialog-field { min-width: 0; }
+      #calendar-filter-dialog .page-defaults-grid > .asset-viewer-filter-field,
       #projects-filter-dialog .page-defaults-grid > .asset-viewer-filter-field {
         width: 100%;
         max-width: none;
       }
+      #calendar-filter-dialog .page-defaults-grid > .projects-filter-field--project,
       #projects-filter-dialog .page-defaults-grid > .projects-filter-field--project {
         grid-column: 1 / -1;
       }
+      #calendar-filter-dialog .asset-filter-multiselect--sized,
+      #calendar-filter-dialog .asset-filter-multiselect--sized summary,
       #projects-filter-dialog .asset-filter-multiselect--sized,
       #projects-filter-dialog .asset-filter-multiselect--sized summary {
         width: 100%;
       }
+      #calendar-filter-dialog .projects-filter-reset,
       #projects-filter-dialog .projects-filter-reset,
       #project-assets-filter-dialog .projects-filter-reset {
         display: flex;
@@ -5123,20 +5128,25 @@
         font-size: 0.875rem;
       }
       .app-dialog[data-dialog-state="error"] .app-dialog-status { color: var(--danger); }
+      #calendar-defaults-form,
       #projects-defaults-form {
         gap: 0;
       }
+      #calendar-defaults-form > .app-dialog-body,
       #projects-defaults-form > .app-dialog-body {
         margin-bottom: var(--space-lg);
       }
+      #calendar-defaults-form > .app-dialog-status,
       #projects-defaults-form > .projects-defaults-save-status {
         min-height: 0;
         margin-top: calc(-1 * var(--space-md));
         margin-bottom: var(--space-lg);
       }
+      #calendar-defaults-form > .app-dialog-status:empty,
       #projects-defaults-form > .projects-defaults-save-status:empty {
         display: none;
       }
+      #calendar-defaults-form[data-settings-fetch-save-state="error"] > .app-dialog-status,
       #projects-defaults-form[data-settings-fetch-save-state="error"] > .projects-defaults-save-status {
         color: var(--danger);
       }
@@ -5169,6 +5179,7 @@
           margin-left: var(--space-md);
           margin-right: var(--space-md);
         }
+        #calendar-filter-dialog .projects-filter-reset,
         #projects-filter-dialog .projects-filter-reset,
         #project-assets-filter-dialog .projects-filter-reset {
           margin-right: var(--space-md);
@@ -6006,7 +6017,7 @@
       .field--checkbox label {
         min-width: auto;
       }
-      /* ═══ Phase 13.3: Release calendar — dense console grid (Concept D) ═══ */
+      /* Release calendar */
       .calendar-nav {
         display: flex;
         justify-content: space-between;
@@ -6025,10 +6036,6 @@
         display: flex;
         gap: var(--space-sm);
       }
-      /* A real CSS Grid, not a <table> styled to look like one (Phase 13.3
-         rewrite) — matches Concept D's actual structure. .calendar-row uses
-         display:contents so each week's wrapper (kept for ARIA row
-         grouping) doesn't break out of the 7-column track. */
       .calendar-table {
         display: grid;
         grid-template-columns: repeat(7, 1fr);
@@ -6069,17 +6076,10 @@
         color: var(--muted);
         font-weight: 400;
       }
-      /* Weekend shading: each week is its own .calendar-row, so the 6th
-         and 7th day cell within a row are always Saturday/Sunday — no
-         per-cell date data needed. (display:contents on .calendar-row
-         doesn't change DOM parentage, so :nth-child still counts correctly
-         scoped to each week.) */
-      .calendar-row .calendar-day:nth-child(6),
-      .calendar-row .calendar-day:nth-child(7) {
+      .calendar-day.weekend {
         background: var(--bg);
       }
-      .calendar-row .calendar-day:nth-child(6).today,
-      .calendar-row .calendar-day:nth-child(7).today {
+      .calendar-day.weekend.today {
         background: radial-gradient(circle at top left, rgba(34, 211, 238, 0.12), transparent 70%);
       }
       .calendar-day.today {
@@ -6105,96 +6105,82 @@
       }
       .calendar-release {
         font-size: 0.75rem;
-        padding: var(--space-xs) var(--space-sm);
         background: var(--surface-card);
         border-left: 2px solid var(--muted);
         border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+      }
+      .calendar-release--published { border-left-color: var(--accent); }
+      .calendar-release-trigger {
         display: flex;
         flex-direction: column;
+        align-items: flex-start;
         gap: 0.125rem;
-      }
-      .calendar-release a {
+        width: 100%;
+        padding: var(--space-xs) var(--space-sm);
+        border: 0;
+        background: transparent;
+        text-align: left;
+        cursor: pointer;
         font-weight: 600;
         color: var(--text);
-        text-decoration: none;
         overflow-wrap: anywhere;
         word-break: break-word;
       }
-      .calendar-release a:visited {
-        color: var(--text);
-      }
-      .calendar-release a:hover {
+      .calendar-release-trigger:hover {
         color: var(--accent);
       }
-      .calendar-release-trigger {
-        display: block;
-        min-width: 0;
-      }
-      .calendar-release-trigger > a {
-        display: block;
-      }
-      .calendar-release-project {
-        display: block;
+      .calendar-release-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.25rem 0.5rem;
         color: var(--muted);
         font-size: 0.6875rem;
-        font-weight: 500;
-        overflow-wrap: anywhere;
-        word-break: break-word;
       }
-      .calendar-release-preview {
-        display: block;
-        box-sizing: border-box;
-        width: min(16rem, 100%);
-        max-width: 100%;
-        max-height: 0;
-        height: auto;
-        margin-top: 0;
-        overflow: hidden;
-        object-fit: contain;
-        border: 1px solid var(--border);
-        border-radius: var(--radius-sm);
-        background: var(--surface);
-        opacity: 0;
-        visibility: hidden;
-        pointer-events: none;
+      .calendar-release-status { font-weight: 700; }
+      .calendar-release-info--glass {
+        background:
+          radial-gradient(circle at 12% 8%, rgb(139 178 208 / 0.25), transparent 38%),
+          radial-gradient(circle at 92% 88%, rgb(131 77 111 / 0.20), transparent 44%),
+          color-mix(in srgb, var(--surface-card) 60%, transparent);
       }
-      .calendar-release-preview-details {
+      .calendar-release-info--with-media {
+        width: min(42rem, calc(100vw - 1rem));
+      }
+      .calendar-release-info-layout { display: grid; min-width: 0; }
+      .calendar-release-info--with-media .calendar-release-info-layout {
+        grid-template-columns: minmax(0, 12rem) minmax(0, 1fr);
+        gap: var(--space-md);
+      }
+      .calendar-release-info-media {
         display: flex;
-        flex-direction: column;
-        gap: 0.125rem;
-        max-height: 0;
-        margin-top: 0;
-        overflow: hidden;
-        opacity: 0;
-        visibility: hidden;
-        pointer-events: none;
+        align-items: center;
+        justify-content: center;
+        min-width: 0;
+        max-height: min(16rem, 40vh);
       }
-      .calendar-release-preview-notes {
+      .calendar-release-info-image {
         display: block;
-        color: var(--muted);
-        overflow-wrap: anywhere;
-        word-break: break-word;
-        white-space: pre-wrap;
+        width: auto;
+        height: auto;
+        max-width: 100%;
+        max-height: min(16rem, 40vh);
+        object-fit: contain;
       }
-      .calendar-release-trigger:hover > .calendar-release-preview,
-      .calendar-release-trigger > a:focus-visible ~ .calendar-release-preview {
-        max-height: none;
-        margin-top: var(--space-xs);
-        overflow: visible;
-        opacity: 1;
-        visibility: visible;
+      .calendar-release-info-content { min-width: 0; }
+      .calendar-release-info-project { margin: 0 0 var(--space-sm); overflow-wrap: anywhere; }
+      .calendar-release-info-notes { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+      .calendar-release-info-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--space-xs);
+        margin-bottom: var(--space-md);
       }
-      .calendar-release-trigger:hover > .calendar-release-preview-details,
-      .calendar-release-trigger > a:focus-visible ~ .calendar-release-preview-details {
-        max-height: none;
-        margin-top: var(--space-xs);
-        overflow: visible;
-        opacity: 1;
-        visibility: visible;
+      @media (max-width: 540px) {
+        .calendar-release-info--with-media .calendar-release-info-layout { grid-template-columns: minmax(0, 1fr); }
+        .calendar-release-info-media { max-height: min(12rem, 30vh); }
+        .calendar-release-info-image { max-height: min(12rem, 30vh); }
       }
-      /* ── Mobile agenda: replaces reliance on horizontal scroll below the
-         calendar-agenda breakpoint. Same day data as the grid above, just a
-         different presentation — server-rendered, no JavaScript. ── */
+      .calendar-filter-empty { color: var(--muted); }
       .calendar-agenda {
         display: none;
         list-style: none;
@@ -6237,25 +6223,9 @@
       .agenda-release {
         padding: var(--space-sm) var(--space-md);
         border-top: 1px solid var(--border);
-        border-left: 3px solid var(--muted);
-        font-size: 0.875rem;
-        display: flex;
-        flex-direction: column;
-        gap: 0.125rem;
       }
       .agenda-day-releases .agenda-release:first-child {
         border-top: none;
-      }
-      .agenda-release a {
-        font-weight: 600;
-        color: var(--text);
-        text-decoration: none;
-      }
-      .agenda-release a:visited {
-        color: var(--text);
-      }
-      .agenda-release a:hover {
-        color: var(--accent);
       }
 
       /* ═══ Phase 10.5C: Release asset curation ═══ */
@@ -6347,8 +6317,6 @@
         border-top: 1px solid var(--border);
       }
 
-      /* Agenda breakpoint: below this, the grid is replaced by the agenda
-         list entirely rather than relying on horizontal scroll. */
       @media (max-width: 767px) {
         .calendar-scroll {
           display: none;

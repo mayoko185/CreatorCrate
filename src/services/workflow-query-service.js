@@ -1333,14 +1333,14 @@ export function createWorkflowQueryService({
   /**
    * Release-backed calendar view data for a given month.
    *
-   * Calendar entries are release records. Every non-archived release with a
-   * planned_date in the requested month is included, including multiple
-   * releases belonging to one project. The
-   * repository supplies one row per release in deterministic schedule order.
+   * Calendar entries are release records, dated by publication when published
+   * and by plan otherwise. The repository supplies one row per release.
    *
    * @param {string} month - YYYY-MM month string
    * @param {Object} [options]
    * @param {string} [options.today] - ISO date YYYY-MM-DD override
+   * @param {number|string} [options.projectId] - optional project filter
+   * @param {'monday'|'sunday'} [options.weekStart='monday']
    * @returns {{ month: string, days: Array<{ date: string, entries: Array }>, firstDayWeekday: number, prevMonthDaysCount: number, prevMonth: string|null, nextMonth: string|null, today: string }}
    */
   function getReleaseCalendar(month, options = {}) {
@@ -1363,22 +1363,34 @@ export function createWorkflowQueryService({
     }
     const endDate = `${endYear}-${String(endMonth).padStart(2, '0')}-01`;
 
-    const rows = releaseRepository.findCalendarRange(startDate, endDate);
-    const entries = attachReleasePreviewUrls(rows.map((row) => ({
+    const projectId = typeof options.projectId === 'number'
+      ? options.projectId
+      : (typeof options.projectId === 'string' && /^[1-9]\d*$/.test(options.projectId)
+        ? Number(options.projectId) : null);
+    const rows = releaseRepository.findCalendarRange(
+      startDate, endDate, Number.isSafeInteger(projectId) && projectId > 0 ? projectId : null
+    );
+    const projectsById = new Map(attachPrimaryImages(
+      [...new Map(rows.map((row) => [row.project_id, { id: row.project_id }])).values()]
+    ).map((project) => [project.id, project]));
+    const entries = rows.map((row) => ({
       id: row.id,
       project_id: row.project_id,
       project_title: row.project_title,
       title: row.title,
       notes: row.notes,
-      project_status: row.project_status,
+      status: row.published_date ? 'published' : 'planned',
+      calendar_date: row.published_date || row.planned_date,
       planned_date: row.planned_date,
       planned_time: row.planned_time,
-    })));
+      published_date: row.published_date,
+      primaryImage: projectsById.get(row.project_id).primaryImage,
+    }));
     const byDate = new Map();
 
     for (const entry of entries) {
-      if (!byDate.has(entry.planned_date)) byDate.set(entry.planned_date, []);
-      byDate.get(entry.planned_date).push(entry);
+      if (!byDate.has(entry.calendar_date)) byDate.set(entry.calendar_date, []);
+      byDate.get(entry.calendar_date).push(entry);
     }
 
     const daysInMonth = [31, isLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][monthNum - 1];
@@ -1389,7 +1401,9 @@ export function createWorkflowQueryService({
     }
 
     const firstDay = new Date(year, monthNum - 1, 1);
-    const firstDayWeekday = (firstDay.getDay() + 6) % 7;
+    const firstDayWeekday = options.weekStart === 'sunday'
+      ? firstDay.getDay()
+      : (firstDay.getDay() + 6) % 7;
     const prevMonthNum = monthNum === 1 ? 12 : monthNum - 1;
     const prevMonthYear = monthNum === 1 ? year - 1 : year;
     const prevMonthDaysCount = [31, isLeapYear(prevMonthYear) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][prevMonthNum - 1];
@@ -1621,39 +1635,6 @@ function normalizeAssetBrowserQuery(
     return additional.length > 0
       ? [...projectExtensions, ...additional].sort()
       : projectExtensions;
-  }
-
-  function attachReleasePreviewUrls(entries) {
-    if (!Array.isArray(entries) || entries.length === 0) return [];
-
-    const releaseIds = entries.map((entry) => entry.id);
-    const selectedAssetRows = releaseRepository.findReleaseAssetsByReleaseIds(releaseIds);
-    const previewUrlByReleaseId = new Map();
-
-    for (const row of selectedAssetRows) {
-      if (previewUrlByReleaseId.has(row.release_id) || row.asset_id == null) continue;
-      if (row.asset_project_id !== row.release_project_id) continue;
-
-      const previewModel = buildAssetPreviewModel({
-        id: row.asset_id,
-        project_id: row.asset_project_id,
-        relative_path: row.relative_path,
-        extension: row.extension,
-        mime_type: row.mime_type,
-        size_bytes: row.size_bytes,
-        modified_at: row.modified_at,
-        is_present: row.is_present,
-      });
-
-      if (previewModel.previewable && previewModel.sourceMetadataValid && previewModel.urls.thumbnail) {
-        previewUrlByReleaseId.set(row.release_id, previewModel.urls.thumbnail);
-      }
-    }
-
-    return entries.map((entry) => ({
-      ...entry,
-      preview_url: previewUrlByReleaseId.get(entry.id) ?? null,
-    }));
   }
 
   /**

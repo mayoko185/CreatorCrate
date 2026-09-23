@@ -1,4 +1,4 @@
-import { enhanceSettingsFetchSave } from './settings-fetch-save.js';
+import { enhanceSettingsFetchSave, queueSettingsFetchSave } from './settings-fetch-save.js';
 import {
   beginProjectAssetsDefaultsLiveRefresh,
   beginProjectsDefaultsLiveRefresh,
@@ -68,50 +68,61 @@ export function enhancePageDefaultsFetchSave(scope = globalThis.document, option
     refreshFailureMessage,
     onAcknowledged,
     onStart,
+    submitControlSelector,
   } = options;
   if (!formSelector || !markerAttribute || typeof beginRefresh !== 'function'
     || typeof refresh !== 'function' || !refreshFailureMessage) return 0;
 
   return defaultsForms(scope, formSelector, markerAttribute).reduce(
-    (bound, form) => bound + enhanceSettingsFetchSave(form, {
-      onStart: ({ form: currentForm, payload }) => {
-        onStart?.(currentForm, payload);
-        clearDefaultsValidation(currentForm);
-        if (!refreshSessions.has(currentForm)) {
-          refreshSessions.set(currentForm, {
-            authorityGeneration: beginRefresh(currentForm.ownerDocument),
-          });
-        }
-      },
-      onError: ({ form: currentForm, superseded }) => {
-        if (!superseded) {
+    (bound, form) => {
+      const enhanced = enhanceSettingsFetchSave(form, {
+        onStart: ({ form: currentForm, payload }) => {
+          onStart?.(currentForm, payload);
+          clearDefaultsValidation(currentForm);
+          if (!refreshSessions.has(currentForm)) {
+            refreshSessions.set(currentForm, {
+              authorityGeneration: beginRefresh(currentForm.ownerDocument),
+            });
+          }
+        },
+        onError: ({ form: currentForm, superseded }) => {
+          if (!superseded) {
+            refreshSessions.delete(currentForm);
+            acknowledgementFailures.delete(currentForm);
+          }
+        },
+        onAcknowledged: (detail) => {
+          if (typeof onAcknowledged !== 'function') return;
+          if (onAcknowledged(detail) === false) acknowledgementFailures.add(detail.form);
+          else acknowledgementFailures.delete(detail.form);
+        },
+        onSuccess: ({ form: currentForm, response }) => {
+          const session = refreshSessions.get(currentForm);
           refreshSessions.delete(currentForm);
-          acknowledgementFailures.delete(currentForm);
-        }
-      },
-      onAcknowledged: (detail) => {
-        if (typeof onAcknowledged !== 'function') return;
-        if (onAcknowledged(detail) === false) acknowledgementFailures.add(detail.form);
-        else acknowledgementFailures.delete(detail.form);
-      },
-      onSuccess: ({ form: currentForm, response }) => {
-        const session = refreshSessions.get(currentForm);
-        refreshSessions.delete(currentForm);
-        const outcome = refresh(
-          currentForm.ownerDocument,
-          response?.url,
-          session?.authorityGeneration,
-          { onError: () => markDefaultsRefreshFailed(currentForm, refreshFailureMessage) },
-        );
-        if (outcome === 'unavailable') markDefaultsRefreshFailed(currentForm, refreshFailureMessage);
-        if (acknowledgementFailures.delete(currentForm)) {
-          markDefaultsRefreshFailed(
-            currentForm,
-            'Settings saved, but the returned Project Assets defaults could not be read. Refresh the page before editing them again.',
+          const outcome = refresh(
+            currentForm.ownerDocument,
+            response?.url,
+            session?.authorityGeneration,
+            { onError: () => markDefaultsRefreshFailed(currentForm, refreshFailureMessage) },
           );
-        }
-      },
-    }),
+          if (outcome === 'unavailable') markDefaultsRefreshFailed(currentForm, refreshFailureMessage);
+          if (acknowledgementFailures.delete(currentForm)) {
+            markDefaultsRefreshFailed(
+              currentForm,
+              'Settings saved, but the returned Project Assets defaults could not be read. Refresh the page before editing them again.',
+            );
+          }
+        },
+      });
+      if (submitControlSelector && !form.dataset?.defaultsSubmitBound) {
+        form.dataset.defaultsSubmitBound = 'true';
+        form.addEventListener('submit', (event) => {
+          event.preventDefault();
+          queueSettingsFetchSave(form.querySelector(submitControlSelector));
+        });
+      }
+      return bound + enhanced;
+    },
     0,
   );
 }

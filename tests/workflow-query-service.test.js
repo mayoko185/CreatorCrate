@@ -2138,14 +2138,14 @@ describe('workflow query service', () => {
         project_title: 'Calendar Notes Project',
         title: 'Calendar Notes Release',
         notes: 'Calendar release notes',
-        project_status: 'tbd',
+        status: 'planned',
+        calendar_date: '2025-06-15',
         planned_date: '2025-06-15',
       });
-      expect(entry).not.toHaveProperty('status');
       expect(entry).not.toHaveProperty('release_status');
     });
 
-    it('exposes project status without release status', () => {
+    it('keeps project workflow status separate from derived Calendar status', () => {
       const workflowStatuses = ['tbd', 'planned', 'in-progress', 'ready'];
       const releases = workflowStatuses.map((projectStatus, index) => {
         const project = insertProject(db, {
@@ -2156,7 +2156,7 @@ describe('workflow query service', () => {
           projectId: project.id,
           title: `${projectStatus} Release`,
           plannedDate: `2025-06-${String(index + 1).padStart(2, '0')}`,
-          publishedDate: projectStatus === 'ready' ? '2025-01-01' : null,
+          publishedDate: projectStatus === 'ready' ? '2025-06-04' : null,
         });
       });
       const archivedProject = insertProject(db, { title: 'Archived Calendar Project', status: 'tbd' });
@@ -2171,8 +2171,8 @@ describe('workflow query service', () => {
       const entries = result.days.flatMap((day) => day.entries);
 
       expect(entries.map((entry) => entry.id)).toEqual(releases.map((release) => release.id));
-      expect(entries.map((entry) => entry.project_status)).toEqual(workflowStatuses);
-      expect(entries.every((entry) => !Object.hasOwn(entry, 'status'))).toBe(true);
+      expect(entries.every((entry) => !Object.hasOwn(entry, 'project_status'))).toBe(true);
+      expect(entries.map((entry) => entry.status)).toEqual(['planned', 'planned', 'planned', 'published']);
       expect(entries.every((entry) => !Object.hasOwn(entry, 'release_status'))).toBe(true);
       expect(entries.map((entry) => entry.id)).not.toContain(archived.id);
     });
@@ -2234,108 +2234,76 @@ describe('workflow query service', () => {
       expect(entries.map((entry) => entry.planned_time)).toEqual(['08:00', '08:00', '08:00', '10:00', null]);
     });
 
-    it('selects the first present previewable asset in manual release order', () => {
-      const project = insertProject(db, { title: 'Preview Order Project' });
-      const release = insertRelease(db, {
-        projectId: project.id,
-        title: 'Preview Order Release',
-        plannedDate: '2025-06-15',
+    it('places each release once on its effective date across month and year boundaries', () => {
+      const project = insertProject(db, { title: 'Publication Calendar' });
+      const planned = insertRelease(db, { projectId: project.id, title: 'Planned', plannedDate: '2025-12-10' });
+      const published = insertRelease(db, { projectId: project.id, title: 'Published', publishedDate: '2025-12-11' });
+      const movedIn = insertRelease(db, {
+        projectId: project.id, title: 'Moved in', plannedDate: '2026-01-02', publishedDate: '2025-12-31',
       });
-      const missing = insertAsset(db, {
-        projectId: project.id,
-        relativePath: 'missing.png',
-        filename: 'missing.png',
-        extension: 'png',
-        mimeType: 'image/png',
-        isPresent: 0,
+      const movedOut = insertRelease(db, {
+        projectId: project.id, title: 'Moved out', plannedDate: '2025-12-20', publishedDate: '2026-01-01',
       });
-      const unsupported = insertAsset(db, {
-        projectId: project.id,
-        relativePath: 'source.txt',
-        filename: 'source.txt',
-        extension: 'txt',
-        mimeType: 'text/plain',
-        sizeBytes: 512,
-        modifiedAt: '2026-08-02T12:00:00.000Z',
-      });
-      const eligible = insertAsset(db, {
-        projectId: project.id,
-        relativePath: 'eligible.png',
-        filename: 'eligible.png',
-        extension: 'png',
-        mimeType: 'image/png',
-        sizeBytes: 2048,
-        modifiedAt: '2026-08-02T12:00:00.000Z',
-      });
-      const laterEligible = insertAsset(db, {
-        projectId: project.id,
-        relativePath: 'later.png',
-        filename: 'later.png',
-        extension: 'png',
-        mimeType: 'image/png',
-        sizeBytes: 4096,
-        modifiedAt: '2026-08-02T12:00:00.000Z',
-      });
-      linkAssetToRelease(db, { releaseId: release.id, assetId: missing.id, sortOrder: 0 });
-      linkAssetToRelease(db, { releaseId: release.id, assetId: unsupported.id, sortOrder: 1 });
-      linkAssetToRelease(db, { releaseId: release.id, assetId: eligible.id, sortOrder: 2 });
-      linkAssetToRelease(db, { releaseId: release.id, assetId: laterEligible.id, sortOrder: 3 });
+      insertRelease(db, { projectId: project.id, title: 'Undated' });
 
-      const entry = service.getReleaseCalendar('2025-06', { today: '2025-06-15' })
+      const december = service.getReleaseCalendar('2025-12', { today: '2025-12-01' });
+      const decemberEntries = december.days.flatMap((day) => day.entries);
+      expect(decemberEntries.map((entry) => entry.id)).toEqual([planned.id, published.id, movedIn.id]);
+      expect(decemberEntries.map((entry) => [entry.status, entry.calendar_date])).toEqual([
+        ['planned', '2025-12-10'], ['published', '2025-12-11'], ['published', '2025-12-31'],
+      ]);
+      expect(decemberEntries.find((entry) => entry.id === movedIn.id)).toMatchObject({
+        project_id: project.id, project_title: project.title,
+        planned_date: '2026-01-02', published_date: '2025-12-31',
+      });
+      const january = service.getReleaseCalendar('2026-01', { today: '2026-01-01' });
+      expect(january.days.flatMap((day) => day.entries).map((entry) => entry.id)).toEqual([movedOut.id]);
+      expect(january.prevMonthDaysCount).toBe(31);
+      expect(january.prevMonth).toBe('2025-12');
+    });
+
+    it('filters Calendar entries by project and calculates both week starts', () => {
+      const first = insertProject(db, { title: 'First Calendar Project' });
+      const second = insertProject(db, { title: 'Second Calendar Project' });
+      const included = insertRelease(db, { projectId: first.id, title: 'First Release', plannedDate: '2025-06-01' });
+      insertRelease(db, { projectId: second.id, title: 'Second Release', plannedDate: '2025-06-01' });
+
+      const monday = service.getReleaseCalendar('2025-06', { today: '2025-06-15', projectId: first.id });
+      const sunday = service.getReleaseCalendar('2025-06', {
+        today: '2025-06-15', projectId: String(first.id), weekStart: 'sunday',
+      });
+      expect(monday.days.flatMap((day) => day.entries).map((entry) => entry.id)).toEqual([included.id]);
+      expect(sunday.days.flatMap((day) => day.entries).map((entry) => entry.id)).toEqual([included.id]);
+      expect(monday.firstDayWeekday).toBe(6);
+      expect(sunday.firstDayWeekday).toBe(0);
+      expect(service.getReleaseCalendar('2025-09', { today: '2025-09-01' }).firstDayWeekday).toBe(0);
+      expect(service.getReleaseCalendar('2025-09', { today: '2025-09-01', weekStart: 'sunday' }).firstDayWeekday).toBe(1);
+    });
+
+    it('reuses project primary-image presentation without using a release asset as fallback', () => {
+      const project = insertProject(db, { title: 'Calendar Image Project' });
+      const release = insertRelease(db, { projectId: project.id, title: 'Image Release', plannedDate: '2025-06-15' });
+      const asset = insertAsset(db, {
+        projectId: project.id, relativePath: 'release-only.png', filename: 'release-only.png',
+        extension: 'png', mimeType: 'image/png', sizeBytes: 1024,
+        modifiedAt: '2026-08-02T12:00:00.000Z',
+      });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: asset.id });
+
+      const withoutSelection = service.getReleaseCalendar('2025-06', { today: '2025-06-15' })
         .days.find((day) => day.date === '2025-06-15').entries[0];
-      const revision = buildRevisionToken({
-        projectId: project.id,
-        assetId: eligible.id,
-        relativePath: 'eligible.png',
-        size: 2048,
-        mtime: '2026-08-02T12:00:00.000Z',
-      });
+      expect(withoutSelection).not.toHaveProperty('preview_url');
+      expect(withoutSelection.primaryImage).toMatchObject({ state: 'none', previewUrl: null });
 
-      expect(entry.preview_url).toBe(
-        `/projects/${project.id}/assets/${eligible.id}/thumbnail?v=${revision}`
+      primaryImageRepository.setPrimaryImage(project.id, asset.id);
+      const withSelection = service.getReleaseCalendar('2025-06', { today: '2025-06-15' })
+        .days.find((day) => day.date === '2025-06-15').entries[0];
+      expect(withSelection.primaryImage).toEqual(
+        service.getProjectWorkspace(project.id).project.primaryImage
       );
-      expect(entry.preview_url).not.toContain('missing');
-      expect(entry.preview_url).not.toContain('source.txt');
     });
 
-    it('returns no preview URL for absent or entirely ineligible selections', () => {
-      const project = insertProject(db, { title: 'No Preview Project' });
-      const absent = insertRelease(db, {
-        projectId: project.id,
-        title: 'No Selected Asset Release',
-        plannedDate: '2025-06-15',
-      });
-      const ineligible = insertRelease(db, {
-        projectId: project.id,
-        title: 'No Eligible Asset Release',
-        plannedDate: '2025-06-16',
-      });
-      const missing = insertAsset(db, {
-        projectId: project.id,
-        relativePath: 'missing.jpg',
-        filename: 'missing.jpg',
-        extension: 'jpg',
-        mimeType: 'image/jpeg',
-        isPresent: 0,
-      });
-      const unsupported = insertAsset(db, {
-        projectId: project.id,
-        relativePath: 'document.pdf',
-        filename: 'document.pdf',
-        extension: 'pdf',
-        mimeType: 'application/pdf',
-      });
-      linkAssetToRelease(db, { releaseId: ineligible.id, assetId: missing.id, sortOrder: 0 });
-      linkAssetToRelease(db, { releaseId: ineligible.id, assetId: unsupported.id, sortOrder: 1 });
-
-      const entries = service.getReleaseCalendar('2025-06', { today: '2025-06-15' })
-        .days.flatMap((day) => day.entries);
-
-      expect(entries.find((entry) => entry.id === absent.id).preview_url).toBeNull();
-      expect(entries.find((entry) => entry.id === ineligible.id).preview_url).toBeNull();
-    });
-
-    it('loads selected assets through one batch call for all calendar releases', () => {
+    it('does not load release assets for calendar entries', () => {
       const project = insertProject(db, { title: 'Batched Preview Project' });
       const first = insertRelease(db, {
         projectId: project.id,
@@ -2377,8 +2345,7 @@ describe('workflow query service', () => {
 
       calendarService.getReleaseCalendar('2025-06', { today: '2025-06-15' });
 
-      expect(findReleaseAssets).toHaveBeenCalledTimes(1);
-      expect(findReleaseAssets).toHaveBeenCalledWith([first.id, second.id]);
+      expect(findReleaseAssets).not.toHaveBeenCalled();
     });
 
   });

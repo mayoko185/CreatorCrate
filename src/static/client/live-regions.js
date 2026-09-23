@@ -17,7 +17,9 @@ import { enhanceAutoSubmit } from './app-dialogs.js';
 import { enhanceAppConfirmationControls } from './confirm-dialog.js';
 import {
   enhanceAssetViewerInfoCards,
+  enhanceCalendarInfoCards,
   enhanceProjectInfoCards,
+  dismissActiveGridInfoCard,
 } from './info-cards.js';
 import { enhanceNumberInputs } from './number-input.js';
 import {
@@ -47,6 +49,9 @@ const RELEASES_LIVE_REGION_SELECTOR = '[data-releases-live-region]';
 const RELEASES_FILTER_SELECTOR = '[data-releases-filter]';
 const RELEASES_LIVE_STATUS_SELECTOR = '[data-releases-live-status]';
 const RELEASES_LIVE_STATE_ATTRIBUTE = 'data-releases-live-state';
+const CALENDAR_LIVE_REGION_SELECTOR = '[data-calendar-live-region]';
+const CALENDAR_FILTER_SELECTOR = '#calendar-filters';
+const CALENDAR_RESET_SELECTOR = '[data-calendar-reset]';
 const RELEASE_ASSETS_LIVE_REGION_SELECTOR = '[data-release-assets-live-region]';
 const RELEASE_ASSETS_LIVE_FILTER_SELECTOR = '[data-release-assets-live-filter]';
 const RELEASE_ASSETS_LIVE_FILTER_CONTROL_SELECTOR = [
@@ -125,7 +130,7 @@ function liveRegionCaptureState(region, document) {
 
 function liveRegionFindFocus(region, focus) {
   if (!region || !focus) return null;
-  const controls = Array.from(region.querySelectorAll?.('input, select, textarea, button, summary') || []);
+  const controls = Array.from(region.querySelectorAll?.('input, select, textarea, button, summary, a[id]') || []);
   return controls.find((control) => {
     if (focus.id && (control.id || control.getAttribute?.('id')) === focus.id) return true;
     return Boolean(focus.name)
@@ -578,6 +583,112 @@ function reconcileExternalFilterForm(state, parsed, formSelector) {
   currentForm.replaceChildren?.(...children);
   enhanceDropdowns(state.document);
   liveRegionRestoreState(currentForm, state.document, captured);
+}
+
+function enhanceCalendarLiveRegion(region) {
+  enhancePreviewMedia(region);
+  enhanceCalendarInfoCards(region);
+  enhanceDropdowns(liveRegionDocument(region));
+}
+
+const calendarLiveEngine = createLiveRegionEngine({
+  regionSelector: CALENDAR_LIVE_REGION_SELECTOR,
+  formSelector: CALENDAR_FILTER_SELECTOR,
+  formScope: 'document',
+  linkSelector: '[data-calendar-navigation], [data-calendar-reset]',
+  linkScope: 'document',
+  defaultAction: '/calendar',
+  stateKey: '__creatorCrateCalendarLiveFiltering',
+  historyState: { calendar: true },
+  statusSelector: '[data-calendar-live-status]',
+  statusStateAttribute: 'data-calendar-live-state',
+  loadingMessage: 'Loading calendar.',
+  fallbackMessage: 'Calendar is loading as a full page.',
+  responseErrorMessage: 'Calendar response failed.',
+  missingRegionMessage: 'Calendar response did not contain the live region.',
+  enhanceRegion: enhanceCalendarLiveRegion,
+  onCreate(state) {
+    state.calendarDefaultsRefreshGeneration = null;
+    state.calendarDefaultsRefreshError = null;
+  },
+  onInvalidate(state) {
+    state.calendarDefaultsRefreshGeneration = null;
+    state.calendarDefaultsRefreshError = null;
+  },
+  onResponseParsed(state, parsed) {
+    reconcileExternalFilterForm(state, parsed, CALENDAR_FILTER_SELECTOR);
+    const resetForm = state.document.querySelector?.(CALENDAR_RESET_SELECTOR)?.closest?.('form');
+    const nextResetForm = parsed.querySelector?.(CALENDAR_RESET_SELECTOR)?.closest?.('form');
+    if (resetForm && nextResetForm) resetForm.setAttribute('action', nextResetForm.getAttribute('action'));
+    state.calendarFocusWasInRegion = calendarLiveEngine.getRegion(state.document)
+      ?.contains?.(state.document.activeElement) || false;
+    dismissActiveGridInfoCard();
+  },
+  onRegionReplaced(state, nextRegion) {
+    if (state.calendarFocusWasInRegion) nextRegion.querySelector?.('[data-calendar-month-heading]')?.focus?.({ preventScroll: true });
+    state.calendarFocusWasInRegion = false;
+  },
+  onLoadComplete(state, generation) {
+    if (state.calendarDefaultsRefreshGeneration !== generation) return;
+    state.calendarDefaultsRefreshGeneration = null;
+    state.calendarDefaultsRefreshError = null;
+  },
+  onLoadError(state, generation) {
+    if (state.calendarDefaultsRefreshGeneration !== generation) return false;
+    const notifyRefreshError = state.calendarDefaultsRefreshError;
+    state.calendarDefaultsRefreshGeneration = null;
+    state.calendarDefaultsRefreshError = null;
+    const region = calendarLiveEngine.getRegion(state.document);
+    region?.removeAttribute?.('aria-busy');
+    calendarLiveEngine.status(region, 'Defaults were saved, but Calendar could not refresh. Refresh the page to see the saved defaults.', 'error');
+    notifyRefreshError?.();
+    return true;
+  },
+  isCurrentUrl(url) {
+    return url.pathname === '/calendar';
+  },
+});
+
+export function enhanceCalendarLiveFiltering(scope = globalThis.document) {
+  return calendarLiveEngine.enhance(scope);
+}
+
+export function beginCalendarDefaultsLiveRefresh(scope = globalThis.document) {
+  const document = liveRegionDocument(scope);
+  const region = calendarLiveEngine.getRegion(document);
+  if (!document || !region) return null;
+  calendarLiveEngine.enhance(document);
+  const state = document.__creatorCrateCalendarLiveFiltering;
+  if (!state || !calendarLiveEngine.capabilities(state.window)) return null;
+  if (state.calendarDefaultsRefreshGeneration !== null) calendarLiveEngine.invalidate(state);
+  return state.generation;
+}
+
+export function refreshCalendarLiveRegion(
+  scope = globalThis.document,
+  _destination,
+  authorityGeneration,
+  { onError = null } = {},
+) {
+  const document = liveRegionDocument(scope);
+  const region = calendarLiveEngine.getRegion(document);
+  const state = document?.__creatorCrateCalendarLiveFiltering;
+  if (!region || !state || !calendarLiveEngine.capabilities(state.window)) return 'unavailable';
+  if (state.generation !== authorityGeneration) return 'superseded';
+
+  const url = state.controller && state.requestedUrl
+    ? new URL(state.requestedUrl.href)
+    : new URL(state.window.location.href);
+  if (url.pathname !== '/calendar') return 'unavailable';
+  url.searchParams.delete('status');
+  url.searchParams.delete('weekStart');
+  if (state.timer) state.window.clearTimeout?.(state.timer);
+  state.timer = null;
+  calendarLiveEngine.invalidate(state);
+  state.calendarDefaultsRefreshGeneration = state.generation;
+  state.calendarDefaultsRefreshError = typeof onError === 'function' ? onError : null;
+  calendarLiveEngine.load(state, url, 'replace', calendarLiveEngine.getForm(region));
+  return 'started';
 }
 
 function submitProjectsNsfwToggle(state, form, event) {
@@ -2195,4 +2306,3 @@ export function refreshAssetViewerLiveRegion(
   );
   return 'started';
 }
-

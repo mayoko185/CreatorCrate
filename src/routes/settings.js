@@ -120,6 +120,7 @@ const DEFAULTS_PAGE_SECTIONS = Object.freeze([
 const DEFAULTS_POST_SECTIONS = Object.freeze([
   ...DEFAULTS_PAGE_SECTIONS,
   Object.freeze({ page: 'releases' }),
+  Object.freeze({ page: 'calendar' }),
 ]);
 
 const NOTE_REVISION_RETENTION_FIELD = 'noteRevisionRetention';

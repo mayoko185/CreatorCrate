@@ -1,62 +1,65 @@
 {% extends "layout.njk" %}
-{% import "partials/page-heading.njk" as pageHeading %}
+{% import "partials/calendar-event.njk" as calendarEvent %}
+{% import "partials/dialog.njk" as dialog %}
+{% import "partials/dropdown.njk" as dropdown %}
+{% import "partials/icons.njk" as icons %}
 
 {% set page_title = "Calendar" %}
 
 {% block content %}
-  {% call pageHeading.render("Release scheduling across CreatorCrate.") %}
-    <nav class="view-switcher" aria-label="Workflow view">
-      <a class="view-switcher-option" href="/releases">Releases</a>
-      <a class="view-switcher-option" href="/calendar{% if query.month %}?month={{ query.month }}{% endif %}" aria-current="page">Calendar</a>
-    </nav>
-  {% endcall %}
+  <div class="asset-viewer-display-controls">
+    <div class="project-filter-actions project-filter-actions--projects">
+      <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
+         href="#calendar-filter-dialog" aria-label="Filters"
+         data-dialog-open="calendar-filter-dialog" data-tooltip="Filters">
+        {{ icons.icon('content-filter') }}
+      </a>
+      <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
+         href="/calendar?defaults=1" aria-label="Page Defaults"
+         data-dialog-open="calendar-defaults-dialog" data-tooltip="Page Defaults">
+        {{ icons.icon('settings') }}
+      </a>
+    </div>
+  </div>
 
+  <div data-calendar-live-region>
+  <span class="sr-only" data-calendar-live-status aria-live="polite" aria-atomic="true"></span>
   <div class="calendar-nav" aria-label="Calendar navigation">
     {% if prevMonth %}
-      <a class="button" href="{{ pageUrl({ month: prevMonth }) }}">← Previous</a>
+      <a id="calendar-previous" class="button" href="{{ pageUrl({ month: prevMonth }) }}" data-calendar-navigation>← Previous</a>
     {% else %}
       <span class="button" aria-disabled="true">← Previous</span>
     {% endif %}
-    <h2>{{ month }}</h2>
+    <h2 tabindex="-1" data-calendar-month-heading>{{ monthHeading }}</h2>
     <div class="calendar-nav-right">
       {% if isCurrentMonth %}
         <span class="button button-primary" aria-disabled="true" aria-current="page">Today</span>
       {% else %}
-        <a class="button button-primary" href="{{ pageUrl({ month: null }) }}">Today</a>
+        <a id="calendar-today" class="button button-primary" href="{{ pageUrl({ month: null }) }}" data-calendar-navigation>Today</a>
       {% endif %}
       {% if nextMonth %}
-        <a class="button" href="{{ pageUrl({ month: nextMonth }) }}">Next →</a>
+        <a id="calendar-next" class="button" href="{{ pageUrl({ month: nextMonth }) }}" data-calendar-navigation>Next →</a>
       {% else %}
         <span class="button" aria-disabled="true">Next →</span>
       {% endif %}
     </div>
   </div>
+  <p class="results-meta">{{ releaseCount }} matching release{% if releaseCount != 1 %}s{% endif %}</p>
+  {% if releaseCount == 0 %}<p class="calendar-filter-empty" role="status">No releases match these filters.</p>{% endif %}
 
-  {% if days.length > 0 %}
-    {# Desktop: dense grid workspace. Hidden below the agenda breakpoint
-       (see .calendar-scroll media query) — the agenda list below takes
-       over there instead of relying on horizontal scroll. #}
     <div class="calendar-scroll" tabindex="0" aria-label="Release calendar grid">
-      {# Phase 13.3 (rewrite): a real CSS Grid layout, not a <table> styled
-         to look like one — matches the approved Concept D structure.
-         Static ARIA table roles (table/row/columnheader/cell, not the
-         interactive grid/gridcell roles) preserve equivalent semantics
-         to the <table> this replaced, since there's no keyboard grid
-         navigation here — .calendar-row uses display:contents so its
-         children still participate in the grid's column tracks while
-         keeping each week grouped as its own accessible row. #}
       <div class="calendar-table" role="table">
         <div class="calendar-row calendar-row-header" role="row">
+          {% if weekStart == 'sunday' %}<div class="calendar-th" role="columnheader">Sun</div>{% endif %}
           <div class="calendar-th" role="columnheader">Mon</div>
           <div class="calendar-th" role="columnheader">Tue</div>
           <div class="calendar-th" role="columnheader">Wed</div>
           <div class="calendar-th" role="columnheader">Thu</div>
           <div class="calendar-th" role="columnheader">Fri</div>
           <div class="calendar-th" role="columnheader">Sat</div>
-          <div class="calendar-th" role="columnheader">Sun</div>
+          {% if weekStart == 'monday' %}<div class="calendar-th" role="columnheader">Sun</div>{% endif %}
         </div>
         <div class="calendar-row" role="row">
-          {# Leading padding cells: tail end of the previous month, dimmed #}
           {% if firstDayWeekday > 0 %}
             {% for i in range(0, firstDayWeekday) %}
               <div class="calendar-day empty-day out-of-month" role="cell">
@@ -65,30 +68,13 @@
             {% endfor %}
           {% endif %}
 
-          {# Day cells #}
           {% for day in days %}
-            <div class="calendar-day{% if day.entries.length === 0 %} empty{% endif %}{% if day.date == today %} today{% endif %}" role="cell">
+            {% set weekday = (loop.index0 + firstDayWeekday) % 7 %}
+            <div class="calendar-day{% if day.entries.length === 0 %} empty{% endif %}{% if day.date == today %} today{% endif %}{% if (weekStart == 'sunday' and (weekday == 0 or weekday == 6)) or (weekStart == 'monday' and (weekday == 5 or weekday == 6)) %} weekend{% endif %}" role="cell">
               <div class="day-header">{{ day.date.split('-')[2] }}</div>
               <div class="day-releases">
                 {% for entry in day.entries %}
-                  <div class="calendar-release">
-                    <span class="calendar-release-trigger">
-                      <span class="calendar-release-project">{{ entry.project_title }}</span>
-                      <a href="/releases/{{ entry.id }}/edit" data-dialog-invocation>{{ entry.title }}</a>
-                      {% if entry.preview_url %}
-                        <img class="calendar-release-preview" src="{{ entry.preview_url }}" alt="Preview of {{ entry.title }}" loading="lazy" decoding="async">
-                      {% endif %}
-                      {% if entry.notes %}
-                        <span class="calendar-release-preview-details">
-                          <span class="calendar-release-preview-notes">{{ entry.notes }}</span>
-                        </span>
-                      {% endif %}
-                    </span>
-                    {% if entry.planned_time %}
-                      <time class="calendar-release-time" datetime="{{ entry.planned_date }}T{{ entry.planned_time }}">{{ entry.planned_time }}</time>
-                    {% endif %}
-                    {% set status = entry.project_status %}{% include "partials/status-badge.njk" %}
-                  </div>
+                  {{ calendarEvent.render(entry, 'grid') }}
                 {% endfor %}
               </div>
             </div>
@@ -99,7 +85,6 @@
             {% endif %}
           {% endfor %}
 
-          {# Trailing padding cells: start of next month, dimmed #}
           {% set lastDow = (days.length + firstDayWeekday) % 7 %}
           {% if lastDow !== 0 %}
             {% for i in range(0, 7 - lastDow) %}
@@ -112,9 +97,6 @@
       </div>
     </div>
 
-    {# Mobile: agenda-first list — same day data, no horizontal scrolling.
-       Shown only below the agenda breakpoint; the grid above takes over
-       at wider widths. Server-rendered, no JavaScript. #}
     <ul class="calendar-agenda" aria-label="Release calendar agenda">
       {% for day in days %}
         <li class="agenda-day{% if day.entries.length === 0 %} agenda-day-empty{% endif %}{% if day.date == today %} today{% endif %}">
@@ -124,36 +106,68 @@
           {% if day.entries.length > 0 %}
             <div class="agenda-day-releases">
               {% for entry in day.entries %}
-                <div class="agenda-release">
-                  <span class="calendar-release-trigger">
-                    <span class="calendar-release-project">{{ entry.project_title }}</span>
-                    <a href="/releases/{{ entry.id }}/edit" data-dialog-invocation>{{ entry.title }}</a>
-                    {% if entry.preview_url %}
-                      <img class="calendar-release-preview" src="{{ entry.preview_url }}" alt="Preview of {{ entry.title }}" loading="lazy" decoding="async">
-                    {% endif %}
-                    {% if entry.notes %}
-                      <span class="calendar-release-preview-details">
-                        <span class="calendar-release-preview-notes">{{ entry.notes }}</span>
-                      </span>
-                    {% endif %}
-                  </span>
-                  {% if entry.planned_time %}
-                    <time class="calendar-release-time" datetime="{{ entry.planned_date }}T{{ entry.planned_time }}">{{ entry.planned_time }}</time>
-                  {% endif %}
-                  {% set status = entry.project_status %}{% include "partials/status-badge.njk" %}
-                </div>
+                <div class="agenda-release">{{ calendarEvent.render(entry, 'agenda') }}</div>
               {% endfor %}
             </div>
           {% endif %}
         </li>
       {% endfor %}
     </ul>
-  {% else %}
-    {% set emptyHeading = "No releases scheduled for " + month %}
-    {% set emptyDescription = "There are no releases scheduled for this month." %}
-    {% set emptyActionUrl = "/releases/new" %}
-    {% set emptyActionLabel = "New Release" %}
-    {% set emptyHeadingLevel = "h2" %}
-    {% include "partials/empty-state.njk" %}
-  {% endif %}
+  </div>
+{% endblock %}
+
+{% block overlay %}
+  {% call dialog.render('calendar-filter-dialog', 'Filters') %}
+    <form id="calendar-filters" class="app-dialog-form project-form" method="get" action="/calendar" data-calendar-filters>
+      <div class="app-dialog-body">
+        <div class="page-defaults-grid">
+          <input type="hidden" name="month" value="{{ month }}">
+          {{ dropdown.searchableSingleSelect({ id: 'calendar-project-filter', name: 'project', label: 'Project',
+          options: projectOptions, valueKey: 'id', labelKey: 'title', selected: projectId,
+          placeholder: 'All projects', panelLabel: 'Project options', searchLabel: 'Search projects',
+          searchInputId: 'calendar-project-search', noResultsText: 'No matching projects',
+          optionListLabel: 'Project choices', optionIdPrefix: 'calendar-project',
+          fieldClasses: 'app-dialog-field asset-viewer-filter-field asset-viewer-project-filter projects-filter-field--project',
+          classes: 'asset-project-filter-disclosure' }) }}
+          {{ dropdown.singleSelect({ id: 'calendar-status-filter', name: 'status', label: 'Release status',
+          options: [{ value: 'all', label: 'All releases' }, { value: 'planned', label: 'Planned' }, { value: 'published', label: 'Published' }],
+          selected: status, panelLabel: 'Release status options',
+          fieldClasses: 'app-dialog-field asset-viewer-filter-field' }) }}
+          {{ dropdown.singleSelect({ id: 'calendar-week-start-filter', name: 'weekStart', label: 'Week starts',
+          options: [{ value: 'monday', label: 'Monday' }, { value: 'sunday', label: 'Sunday' }],
+          selected: weekStart, panelLabel: 'Week start options',
+          fieldClasses: 'app-dialog-field asset-viewer-filter-field' }) }}
+        </div>
+      </div>
+    </form>
+    <form class="projects-filter-reset" method="get" action="{{ resetFiltersUrl }}">
+      <button class="button" type="submit" data-calendar-reset>Reset filters</button>
+    </form>
+  {% endcall %}
+
+  {% call dialog.render('calendar-defaults-dialog', 'Page Defaults', false, 'calendar-defaults-description', 'calendar-defaults-form') %}
+    <form id="calendar-defaults-form" class="app-dialog-form project-form" method="post" action="/settings/defaults"
+          data-dialog-form data-dialog-async="false" data-calendar-defaults-fetch-save novalidate>
+      <p id="calendar-defaults-description" class="app-dialog-description">Choose the default release status and week start for Calendar.</p>
+      <div class="app-dialog-error" data-dialog-error role="alert" hidden>
+        <p data-dialog-error-text></p>
+        <ul data-dialog-error-list></ul>
+      </div>
+      <input type="hidden" name="_csrf" value="{{ _csrf }}">
+      <div class="app-dialog-body">
+        <div class="page-defaults-grid">
+          {% for field in calendarDefaults.fields %}
+            <div class="field app-dialog-field" data-dialog-field="{{ field.name }}">
+              {{ dropdown.singleSelect({ id: field.id ~ '-dropdown', name: 'calendarStatus' if field.name == 'status' else 'calendarWeekStart',
+                label: 'Default release status' if field.name == 'status' else 'Week starts',
+                options: field.options, selected: field.selectedValue, optionIdPrefix: field.id,
+                nativeSelect: { id: field.id, attributes: [['required', true], ['data-autosubmit', 'fetch']] },
+                dispatchNativeChange: true }) }}
+            </div>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="app-dialog-status" data-settings-fetch-save-status role="status" aria-live="polite" aria-atomic="true"></div>
+    </form>
+  {% endcall %}
 {% endblock %}

@@ -960,10 +960,11 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // release-management URL. It redirects to canonical /releases.
   app.use('/release-management', createReleaseManagementRouter());
 
-  // Phase 2D: canonical release-backed calendar route. Mounted after
-  // /releases so /releases/calendar's compatibility redirect and this route
-  // never overlap.
-  app.use('/calendar', createCalendarRouter({ appName, workflowQueryService }));
+  // Mount after /releases to retain its /releases/calendar compatibility redirect.
+  app.use('/calendar', createCalendarRouter({
+    appName, workflowQueryService, pageDefaultsService, projectService,
+    projectTagService, nsfwFilterSettingsService,
+  }));
 
   app.use('/notes', createNotesRouter({
     db,

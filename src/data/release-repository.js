@@ -133,7 +133,6 @@ export function createReleaseRepository(db) {
       r.id,
       r.project_id,
       p.title AS project_title,
-      p.status AS project_status,
       r.title,
       r.notes,
       r.planned_date,
@@ -143,11 +142,11 @@ export function createReleaseRepository(db) {
     FROM releases r
     JOIN projects p ON p.id = r.project_id
     WHERE r.archived_at IS NULL
-      AND r.planned_date IS NOT NULL
-      AND r.planned_date >= ?
-      AND r.planned_date < ?
+      AND (CASE WHEN r.published_date IS NOT NULL THEN r.published_date ELSE r.planned_date END) >= ?
+      AND (CASE WHEN r.published_date IS NOT NULL THEN r.published_date ELSE r.planned_date END) < ?
+      AND (? IS NULL OR r.project_id = ?)
     ORDER BY
-      r.planned_date ASC,
+      CASE WHEN r.published_date IS NOT NULL THEN r.published_date ELSE r.planned_date END ASC,
       (NULLIF(r.planned_time, '') IS NULL) ASC,
       NULLIF(r.planned_time, '') ASC,
       r.id ASC
@@ -582,17 +581,17 @@ export function createReleaseRepository(db) {
     },
 
     /**
-     * Scheduled, non-archived releases whose planned date falls within a
-     * bounded range. Publication state is deliberately not filtered here: the
-     * calendar is a historical and future schedule view, not an active
-     * workflow view.
+     * Non-archived releases whose effective Calendar date falls within a
+     * bounded range. Published releases use publication date; others use
+     * planned date. Archived parent projects remain included.
      *
      * @param {string} startDate - ISO date YYYY-MM-DD (inclusive)
      * @param {string} endDate - ISO date YYYY-MM-DD (exclusive)
-     * @returns {Array<ReleaseRecord & {project_title: string, project_status: string, notes: string, published_date: string|null}>}
+     * @param {number|null} projectId - optional Calendar-only project filter
+     * @returns {Array<ReleaseRecord & {project_title: string, notes: string, published_date: string|null}>}
      */
-    findCalendarRange(startDate, endDate) {
-      return findCalendarRangeStmt.all(startDate, endDate);
+    findCalendarRange(startDate, endDate, projectId = null) {
+      return findCalendarRangeStmt.all(startDate, endDate, projectId, projectId);
     },
 
     /**
