@@ -11,10 +11,19 @@ import { openDatabase, runMigrations } from '../src/db.js';
 import { createBackupService, BackupError } from '../src/services/backup-service.js';
 import { managedUploadTracker as tracker } from '../src/services/managed-upload-tracker.js';
 import { parseBookCoverMultipart } from '../src/services/book-cover-multipart.js';
+import { parseBookImportUpload } from '../src/middleware/book-import-multipart.js';
+import { createBookImportOrchestrationService } from '../src/services/book-import-orchestration-service.js';
+import { createManagedImageService } from '../src/services/managed-image-service.js';
+import { createManagedAssetRepository } from '../src/data/managed-asset-repository.js';
+import { AUTH_CONFIG, authenticate } from './helpers/auth.js';
 
 vi.mock('../src/services/book-cover-multipart.js', async (original) => {
   const actual = await original();
   return { ...actual, parseBookCoverMultipart: vi.fn(actual.parseBookCoverMultipart) };
+});
+vi.mock('../src/middleware/book-import-multipart.js', async (original) => {
+  const actual = await original();
+  return { ...actual, parseBookImportUpload: vi.fn(actual.parseBookImportUpload) };
 });
 const deferred = () => {
   let resolve;
@@ -75,6 +84,157 @@ describe('WP7D3B2 replacement and restore ownership', () => {
     expect(upload).not.toBeNull();
     upload.complete();
   };
+
+  async function coverArchive(count) {
+    const sourceRoot = path.join(tmp, 'source');
+    fs.mkdirSync(sourceRoot);
+    fs.mkdirSync(path.join(sourceRoot, 'exports'));
+    const sourceDb = openDatabase(path.join(sourceRoot, 'source.db'));
+    connections.add(sourceDb);
+    runMigrations(sourceDb, migrationsDir);
+    const sourceApp = createApp({ appName: 'CreatorCrate', db: sourceDb }, {
+      appDataRoot: sourceRoot, bookExportTempRoot: path.join(sourceRoot, 'exports'),
+    });
+    const ids = [];
+    for (let index = 0; index < count; index++) {
+      const book = sourceApp.locals.bookService.createBook({ title: `Cover import ${index}` });
+      const bytes = await sharp({
+        create: { width: 12, height: 12, channels: 3, background: index ? 'blue' : 'red' },
+      }).png().toBuffer();
+      const { record } = await sourceApp.locals.managedImageService.createCommittedImage({
+        bytes, namespace: 'book-covers',
+      });
+      sourceApp.locals.bookPrimaryImageService.setManagedPrimaryImage(book.id, record.id);
+      ids.push(book.id);
+    }
+    const exported = await sourceApp.locals.bookExportService.createExport(ids);
+    try { return fs.readFileSync(exported.filePath); }
+    finally { exported.cleanup(); }
+  }
+
+  function authenticatedImportContext(wrapImages) {
+    context = createApplicationContext({ appName: 'CreatorCrate', appOpts: {
+      appDataRoot: tmp, databasePath: db.name, migrationsDir, backupService: backup,
+      authConfig: AUTH_CONFIG,
+    } }, db, (deps, opts) => {
+      const images = createManagedImageService({
+        managedAssetRoot: path.join(tmp, 'assets'),
+        managedAssetRepository: createManagedAssetRepository(deps.db),
+      });
+      return createApp(deps, {
+        ...opts,
+        bookImportOrchestrationService: createBookImportOrchestrationService({
+          db: deps.db,
+          managedImageService: wrapImages(images),
+          applicationLogger: opts.applicationLogger,
+        }),
+      });
+    });
+  }
+
+  async function importArchive(agent, csrfToken, archive) {
+    return agent.post('/notes/books/import').field('_csrf', csrfToken)
+      .attach('archive', archive, 'books.zip').set('Accept', 'application/json');
+  }
+
+  it('keeps the real import graph alive through cover preparation and a disconnected request', async () => {
+    const archive = await coverArchive(1);
+    const saved = await backup.createBackup(db);
+    const entered = deferred(), gate = deferred();
+    authenticatedImportContext((images) => ({
+      ...images,
+      async createCommittedImage(input) {
+        entered.resolve();
+        await gate.promise;
+        return images.createCommittedImage(input);
+      },
+    }));
+    const { agent, csrfToken } = await authenticate(context.handleRequest);
+    const originalParser = parseBookImportUpload.getMockImplementation();
+    let importRequest;
+    parseBookImportUpload.mockImplementationOnce((req, res, next) => {
+      importRequest = req;
+      return originalParser(req, res, next);
+    });
+    const pending = importArchive(agent, csrfToken, archive).then((response) => response);
+    await entered.promise;
+    try {
+      importRequest.emit('aborted');
+      expect(importRequest.bookUploadLifetime.operation.signal.aborted).toBe(true);
+      const refused = await agent.post(`/settings/backups/${saved.filename}/restore`)
+        .type('form').send({ _csrf: csrfToken }).expect(302);
+      expect(refused.headers.location).toBe('/settings/backups?notice=restore_conflict');
+      expect(() => context.replaceDatabase(newDb())).toThrow();
+      expect(context.db).toBe(db);
+      expect(db.open).toBe(true);
+      expect(db.prepare('SELECT count(*) AS n FROM books').get().n).toBe(0);
+    } finally { gate.resolve(); }
+    const imported = await pending;
+    expect(imported.status).toBe(200);
+    expect(imported.body.books[0].coverOutcome.kind).toBe('managed');
+    expect(db.prepare('SELECT title FROM books').pluck().all()).toEqual(['Cover import 0']);
+    expect(db.prepare('SELECT count(*) AS n FROM managed_assets').get().n).toBe(1);
+    const admitted = await agent.post(`/settings/backups/${saved.filename}/restore`)
+      .type('form').send({ _csrf: csrfToken }).expect(302);
+    expect(admitted.headers.location).toBe('/settings/backups?notice=restore_success');
+    expect(db.open).toBe(false);
+    expect(context.db.open).toBe(true);
+    expect(context.db.prepare('SELECT count(*) AS n FROM books').get().n).toBe(0);
+  });
+
+  it('retains import ownership through synchronous graph-dependent cover compensation', async () => {
+    const archive = await coverArchive(2);
+    const saved = await backup.createBackup(db);
+    const entered = deferred(), gate = deferred();
+    let preparations = 0;
+    let rollbackObserved = false;
+    let compensationObserved = false;
+    authenticatedImportContext((images) => ({
+      ...images,
+      async createCommittedImage(input) {
+        preparations++;
+        if (preparations === 2) {
+          entered.resolve();
+          await gate.promise;
+          throw new Error('Injected second cover preparation failure');
+        }
+        return images.createCommittedImage(input);
+      },
+      rollbackCommitted(token) {
+        expect(db.open).toBe(true);
+        expect(db.prepare('SELECT count(*) AS n FROM managed_assets').get().n).toBe(1);
+        expect(() => context.beginReplacement()).toThrow();
+        rollbackObserved = true;
+        return images.rollbackCommitted(token);
+      },
+      compensate(token) {
+        expect(db.open).toBe(true);
+        expect(() => context.beginReplacement()).toThrow();
+        compensationObserved = true;
+        return images.compensate(token);
+      },
+    }));
+    const { agent, csrfToken } = await authenticate(context.handleRequest);
+    const pending = importArchive(agent, csrfToken, archive).then((response) => response);
+    await entered.promise;
+    try {
+      const refused = await agent.post(`/settings/backups/${saved.filename}/restore`)
+        .type('form').send({ _csrf: csrfToken }).expect(302);
+      expect(refused.headers.location).toBe('/settings/backups?notice=restore_conflict');
+      expect(context.db).toBe(db);
+      expect(db.open).toBe(true);
+    } finally { gate.resolve(); }
+    expect((await pending).status).toBe(500);
+    expect(rollbackObserved).toBe(true);
+    expect(compensationObserved).toBe(true);
+    expect(db.prepare('SELECT count(*) AS n FROM managed_assets').get().n).toBe(0);
+    expect(db.prepare('SELECT count(*) AS n FROM books').get().n).toBe(0);
+    const coverRoot = path.join(tmp, 'assets', 'book-covers');
+    expect(fs.existsSync(coverRoot) ? fs.readdirSync(coverRoot) : []).toEqual([]);
+    context.replaceDatabase(newDb());
+    expect(context.db).toBe(candidate);
+    expect(candidate.open).toBe(true);
+  });
 
   it.each([[false, false], [true, false], [false, true], [true, true]])(
     'combines processing=%s and upload=%s without disturbing either', async (processing, upload) => {

@@ -84,7 +84,7 @@ function errorForLog(error) {
  * of same-project serialization.
  *
  * @param {{ projectOperationCoordinator: { runAsync(projectId: number, callback: () => Promise<any> | any): Promise<any> }, applicationLogger?: object }} deps
- * @returns {{ reserveSubmission(projectId: number): { projectId: number, release(): boolean }, enqueue(input: { projectId: number, operation?: string, assetCount?: number, execute(context: { jobId: string, updateProgress(progress: { completed: number, total: number }): boolean }): Promise<any> | any, reservation?: object }): string, getJob(jobId: string): object | null, updateProgress(jobId: string, progress: { completed: number, total: number }): boolean, cancel(jobId: string): boolean, hasActiveJobs(): boolean }}
+ * @returns {{ reserveSubmission(projectId: number): { projectId: number, release(): boolean }, enqueue(input: { projectId: number, operation?: string, assetCount?: number, execute(context: { jobId: string, updateProgress(progress: { completed: number, total: number }): boolean }): Promise<any> | any, reservation?: object }): string, getJob(jobId: string): object | null, updateProgress(jobId: string, progress: { completed: number, total: number }): boolean, cancel(jobId: string): boolean, hasActiveJobs(): boolean, waitForIdle(): Promise<void> }}
  */
 export function createProcessingJobService({
   projectOperationCoordinator,
@@ -111,6 +111,17 @@ export function createProcessingJobService({
   const jobs = new Map();
   const activeJobIds = new Set();
   const terminalJobIds = new Map();
+  const idleWaiters = new Set();
+
+  function hasActiveJobs() {
+    return pendingSubmissionReservations.size > 0 || activeJobIds.size > 0;
+  }
+
+  function notifyIdle() {
+    if (hasActiveJobs()) return;
+    for (const resolve of idleWaiters) resolve();
+    idleWaiters.clear();
+  }
 
   function logLifecycle(level, event, job, { error, resultSummary } = {}) {
     if (!applicationLogger || typeof applicationLogger[level] !== 'function') return;
@@ -153,6 +164,7 @@ export function createProcessingJobService({
     activeJobIds.delete(job.id);
     terminalJobIds.set(job.id, now());
     cleanupTerminalJobs();
+    notifyIdle();
   }
 
   function updateProgress(jobId, progress) {
@@ -183,7 +195,9 @@ export function createProcessingJobService({
     const reservation = Object.freeze({
       projectId,
       release() {
-        return pendingSubmissionReservations.delete(reservation);
+        const released = pendingSubmissionReservations.delete(reservation);
+        if (released) notifyIdle();
+        return released;
       },
     });
     pendingSubmissionReservations.add(reservation);
@@ -261,9 +275,10 @@ export function createProcessingJobService({
     },
     updateProgress,
     cancel,
-    hasActiveJobs() {
-      if (pendingSubmissionReservations.size > 0) return true;
-      return activeJobIds.size > 0;
+    hasActiveJobs,
+    waitForIdle() {
+      if (!hasActiveJobs()) return Promise.resolve();
+      return new Promise((resolve) => { idleWaiters.add(resolve); });
     },
   };
 }

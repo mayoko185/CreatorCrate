@@ -946,13 +946,15 @@ rebuild and rollback. Every graph retains the same tracker and active counts.
 closed permanently, including after maintenance-owner release, legacy flag writes,
 and graph replacement. The existing maintenance middleware refuses New/Edit
 multipart requests before parsing. Shutdown stops the scan scheduler, closes Vite,
-and awaits HTTP server close, then awaits `waitForIdle()` before logging completion,
-closing the current database and exiting. Tracker-owned promise waiters resolve on
+and awaits HTTP server close, then drains managed uploads and accepted processing
+work before logging completion, closing the current database and exiting. The
+processing drain includes planning reservations and queued or running jobs, whether
+they succeed or fail. Tracker-owned promise waiters resolve on
 the final lease completion (or immediately when idle), without polling or timeout.
 Disconnect cancellation does not release a lease: graph-dependent cleanup must
 settle first. Shutdown does not cancel uploads, undo durable commits, or delete
-retained recovery artifacts. Restore remains fail-fast; processing-job shutdown
-semantics are unchanged and no processing admission gate is added. Cross-restart
+retained recovery artifacts. Restore remains fail-fast; no processing admission
+gate is added. Cross-restart
 tracking and staging recovery remain deferred.
 
 **Managed media foundation (WP7C1).** `managed-media-service.js`, composed as

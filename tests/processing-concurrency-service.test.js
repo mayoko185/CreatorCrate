@@ -90,6 +90,62 @@ describe('processing concurrency service', () => {
     expect(maximumActive).toBe(2);
   });
 
+  it('keeps a staggered overlapping batch pending until every queued item completes', async () => {
+    const service = createProcessingConcurrencyService({ concurrency: 2 });
+    const releaseA = [deferred(), deferred()];
+    const releaseB = deferred();
+    const secondBStarted = deferred();
+    const startedB = [];
+    let active = 0;
+    let maximumActive = 0;
+
+    const batchA = service.mapBounded([0, 1], async (item) => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await releaseA[item].promise;
+      active -= 1;
+      return item;
+    });
+    await settle();
+    expect(active).toBe(2);
+
+    const batchB = service.mapBounded(['a', 'b'], async (item) => {
+      startedB.push(item);
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      if (item === 'b') {
+        secondBStarted.resolve();
+        await releaseB.promise;
+      }
+      active -= 1;
+      return `result-${item}`;
+    });
+    let bSettled = false;
+    const bSettlement = batchB.then(
+      () => { bSettled = true; return 'settled'; },
+      () => { bSettled = true; return 'settled'; }
+    );
+
+    releaseA[0].resolve();
+    expect(await Promise.race([
+      secondBStarted.promise.then(() => 'second started'),
+      bSettlement,
+    ])).toBe('second started');
+    await settle();
+    expect(bSettled).toBe(false);
+
+    releaseB.resolve();
+    releaseA[1].resolve();
+    await expect(Promise.all([batchA, batchB])).resolves.toEqual([
+      [0, 1],
+      ['result-a', 'result-b'],
+    ]);
+    expect(startedB).toEqual(['a', 'b']);
+    expect(new Set(startedB).size).toBe(2);
+    expect(maximumActive).toBe(2);
+    expect(active).toBe(0);
+  });
+
   it('drains already-started workers, preserves the first failure, and stops new work', async () => {
     const service = createProcessingConcurrencyService({ concurrency: 2 });
     const firstFailure = new Error('first failure');

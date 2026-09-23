@@ -7,6 +7,7 @@ import request from 'supertest';
 import sharp from 'sharp';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseBookImportUpload } from '../src/middleware/book-import-multipart.js';
+import { isBookMultipartRequest } from '../src/middleware/book-upload-lifetime.js';
 import { createApp } from '../src/app.js';
 import { closeDatabase, openDatabase, runMigrations } from '../src/db.js';
 import { BOOK_TRANSFER_LIMITS } from '../src/services/book-transfer-limits.js';
@@ -20,6 +21,12 @@ vi.mock('../src/middleware/book-import-multipart.js', async (importOriginal) => 
 });
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
 
 function insertProject(db, title, slug) {
   return Number(db.prepare(`
@@ -95,6 +102,92 @@ describe('Book import HTTP contract', () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  it.each(['/notes/books/import', '/NOTES/BOOKS/IMPORT/'])(
+    'recognizes multipart import path %s using the Book upload matcher', (route) => {
+      const req = { method: 'POST', path: route, headers: { 'content-type': 'multipart/form-data; boundary=test' } };
+      expect(isBookMultipartRequest(req)).toBe(true);
+      expect(isBookMultipartRequest({ ...req, method: 'GET' })).toBe(false);
+      expect(isBookMultipartRequest({ ...req, headers: { 'content-type': 'application/json' } })).toBe(false);
+    },
+  );
+
+  it('runs import parsing and routing for the case-insensitive trailing-slash path', async () => {
+    const { agent, csrfToken } = await authenticate(destination.app);
+    const response = await agent.post('/NOTES/BOOKS/IMPORT/').field('_csrf', csrfToken)
+      .attach('archive', Buffer.from('archive'), 'books.zip')
+      .set('Accept', 'application/json').expect(422);
+    expect(response.body).toMatchObject({ success: false, code: 'INVALID_ARCHIVE' });
+    expect(parseBookImportUpload).toHaveBeenCalledTimes(1);
+    expect(destination.app.locals.managedUploadTracker.activeCount).toBe(0);
+  });
+
+  it('holds ownership while the authenticated import parser is pending', async () => {
+    const { agent, csrfToken } = await authenticate(destination.app);
+    const entered = deferred();
+    const gate = deferred();
+    const originalParser = vi.mocked(parseBookImportUpload).getMockImplementation();
+    vi.mocked(parseBookImportUpload).mockImplementationOnce(async (req, res, next) => {
+      entered.resolve(req);
+      await gate.promise;
+      return originalParser(req, res, next);
+    });
+    const result = agent.post('/notes/books/import').field('_csrf', csrfToken)
+      .attach('archive', Buffer.from('archive'), 'books.zip')
+      .set('Accept', 'application/json').then((res) => res);
+    try {
+      const req = await entered.promise;
+      expect(req.bookUploadLifetime).toBeDefined();
+      expect(destination.app.locals.managedUploadTracker.activeCount).toBe(1);
+      expect(destination.app.locals.managedUploadTracker.tryBeginMaintenance()).toBeNull();
+    } finally {
+      gate.resolve();
+      expect((await result).status).toBe(422);
+    }
+    expect(destination.app.locals.managedUploadTracker.activeCount).toBe(0);
+  });
+
+  it('holds ownership through asynchronous import work after disconnect and releases on success', async () => {
+    const archive = await exportArchive(({ app }) => [app.locals.bookService.createBook({ title: 'Owned import' }).id]);
+    const entered = deferred();
+    const gate = deferred();
+    closeDatabase(destination.db);
+    contexts.splice(contexts.indexOf(destination), 1);
+    destination = createContext('owned-destination', {
+      bookImportOrchestrationService: {
+        async importValidatedPlan() {
+          entered.resolve();
+          await gate.promise;
+          return {
+            importedBookCount: 0, destinationBookIds: [], books: [], associations: {},
+            activity: { recorded: true },
+          };
+        },
+      },
+    });
+    const originalParser = vi.mocked(parseBookImportUpload).getMockImplementation();
+    let requestInParser;
+    vi.mocked(parseBookImportUpload).mockImplementationOnce((req, res, next) => {
+      requestInParser = req;
+      return originalParser(req, res, next);
+    });
+    const { agent, csrfToken } = await authenticate(destination.app);
+    const result = agent.post('/notes/books/import').field('_csrf', csrfToken)
+      .attach('archive', archive, 'books.zip').set('Accept', 'application/json').then((res) => res);
+    try {
+      await entered.promise;
+      const tracker = destination.app.locals.managedUploadTracker;
+      expect(tracker.activeCount).toBe(1);
+      expect(tracker.tryBeginMaintenance()).toBeNull();
+      requestInParser.emit('aborted');
+      expect(requestInParser.bookUploadLifetime.operation.signal.aborted).toBe(true);
+      expect(tracker.activeCount).toBe(1);
+    } finally {
+      gate.resolve();
+      expect((await result).status).toBe(200);
+    }
+    expect(destination.app.locals.managedUploadTracker.activeCount).toBe(0);
+  });
+
   it('rejects unauthenticated imports before entering multipart parsing', async () => {
     const archive = await exportArchive(({ app }) => {
       const book = app.locals.bookService.createBook({ title: 'Authentication boundary' });
@@ -115,6 +208,7 @@ describe('Book import HTTP contract', () => {
       expect(response.body).toEqual({ status: 'error', message: 'Authentication required.' });
     }
     expect(parseBookImportUpload).not.toHaveBeenCalled();
+    expect(destination.app.locals.managedUploadTracker.activeCount).toBe(0);
   });
 
   it('requires authentication and CSRF, then imports a real WP6 archive through WP7 and WP8', async () => {
@@ -141,6 +235,7 @@ describe('Book import HTTP contract', () => {
       .attach('archive', archive, 'books.zip')
       .set('Accept', 'application/json')
       .expect(403);
+    expect(destination.app.locals.managedUploadTracker.activeCount).toBe(0);
 
     const response = await postArchive(archive);
     expect(response.body).toMatchObject({
@@ -316,6 +411,7 @@ describe('Book import HTTP contract', () => {
     }) }]);
     const unsupported = await postArchive(unsupportedArchive, 422);
     expect(unsupported.body).toMatchObject({ success: false, code: 'UNSUPPORTED_VERSION' });
+    expect(destination.app.locals.managedUploadTracker.activeCount).toBe(0);
 
     const oversized = await postArchive(Buffer.alloc(BOOK_TRANSFER_LIMITS.compressedArchiveBytes + 1), 413);
     expect(oversized.body).toMatchObject({ success: false, code: 'ARCHIVE_LIMIT_EXCEEDED' });

@@ -528,4 +528,117 @@ describe('processing job service', () => {
     expect(reservation.release()).toBe(true);
     expect(service.hasActiveJobs()).toBe(false);
   });
+
+  it('resolves immediately when idle and waits for the final planning reservation', async () => {
+    const service = createService();
+    await expect(service.waitForIdle()).resolves.toBeUndefined();
+
+    const first = service.reserveSubmission(1);
+    const second = service.reserveSubmission(2);
+    const resolved = vi.fn();
+    const waiters = [service.waitForIdle().then(resolved), service.waitForIdle().then(resolved)];
+
+    await settle();
+    expect(resolved).not.toHaveBeenCalled();
+    expect(first.release()).toBe(true);
+    await settle();
+    expect(resolved).not.toHaveBeenCalled();
+
+    expect(second.release()).toBe(true);
+    await Promise.all(waiters);
+    expect(resolved).toHaveBeenCalledTimes(2);
+  });
+
+  it('waits for running and same-project queued work through terminal completion', async () => {
+    const service = createService();
+    let releaseFirst;
+    let releaseSecond;
+    const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+    const secondGate = new Promise((resolve) => { releaseSecond = resolve; });
+    const firstJobId = service.enqueue({ projectId: 1, execute: () => firstGate });
+    const secondJobId = service.enqueue({ projectId: 1, execute: () => secondGate });
+    const resolved = vi.fn();
+    const drain = service.waitForIdle().then(resolved);
+
+    await settle();
+    expect(service.getJob(firstJobId)?.state).toBe('running');
+    expect(service.getJob(secondJobId)?.state).toBe('queued');
+    expect(resolved).not.toHaveBeenCalled();
+
+    releaseFirst();
+    await settle();
+    expect(service.getJob(firstJobId)?.state).toBe('succeeded');
+    expect(resolved).not.toHaveBeenCalled();
+
+    releaseSecond();
+    await drain;
+    expect(service.getJob(secondJobId)?.state).toBe('succeeded');
+    expect(resolved).toHaveBeenCalledTimes(1);
+  });
+
+  it('resolves the drain after failed execution', async () => {
+    const service = createService();
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const jobId = service.enqueue({
+      projectId: 1,
+      execute: async () => {
+        await gate;
+        throw new Error('execution failed');
+      },
+    });
+    const drain = service.waitForIdle();
+
+    await settle();
+    expect(service.getJob(jobId)?.state).toBe('running');
+    release();
+    await expect(drain).resolves.toBeUndefined();
+    expect(service.getJob(jobId)?.state).toBe('failed');
+  });
+
+  it('resolves the drain when the final queued job is cancelled', async () => {
+    const service = createProcessingJobService({
+      projectOperationCoordinator: { runAsync: () => Promise.resolve() },
+    });
+    const jobId = service.enqueue({ projectId: 1, execute: () => undefined });
+    const drain = service.waitForIdle();
+
+    expect(service.getJob(jobId)?.state).toBe('queued');
+    expect(service.cancel(jobId)).toBe(true);
+    await expect(drain).resolves.toBeUndefined();
+    expect(service.getJob(jobId)?.state).toBe('cancelled');
+  });
+
+  it.each([
+    ['throws', () => { throw new Error('coordinator unavailable'); }],
+    ['rejects', () => Promise.reject(new Error('coordinator unavailable'))],
+  ])('resolves the drain when coordinator submission %s', async (_outcome, runAsync) => {
+    const service = createProcessingJobService({ projectOperationCoordinator: { runAsync } });
+    const reservation = service.reserveSubmission(1);
+    const drain = service.waitForIdle();
+    const jobId = service.enqueue({ projectId: 1, reservation, execute: () => undefined });
+
+    await expect(drain).resolves.toBeUndefined();
+    expect(reservation.release()).toBe(false);
+    expect(service.getJob(jobId)?.state).toBe('failed');
+  });
+
+  it('keeps idle waiters pending across reservation-to-job transfer', async () => {
+    const service = createService();
+    const reservation = service.reserveSubmission(1);
+    const resolved = vi.fn();
+    const drain = service.waitForIdle().then(resolved);
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const jobId = service.enqueue({ projectId: 1, reservation, execute: () => gate });
+
+    await settle();
+    expect(reservation.release()).toBe(false);
+    expect(service.getJob(jobId)?.state).toBe('running');
+    expect(resolved).not.toHaveBeenCalled();
+
+    release();
+    await drain;
+    expect(resolved).toHaveBeenCalledTimes(1);
+  });
 });

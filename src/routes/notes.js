@@ -685,7 +685,7 @@ export function createNotesRouter({
   });
 
   // Literal transfer routes must precede POST /books/:bookId.
-  router.post('/books/import', async (req, res, next) => {
+  router.post('/books/import', withBookUploadLifetime(async (req, res, next) => {
     const archiveBytes = res.locals.bookImportArchiveBytes;
     delete res.locals.bookImportArchiveBytes;
     res.set('Cache-Control', 'no-store');
@@ -724,7 +724,7 @@ export function createNotesRouter({
       }
       return next(error);
     }
-  });
+  }));
 
   router.post('/books/reorder', async (req, res, next) => {
     const wantsJson = req.accepts(['html', 'json']) === 'json';

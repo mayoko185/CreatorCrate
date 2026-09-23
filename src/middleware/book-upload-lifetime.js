@@ -1,10 +1,14 @@
+import { BOOK_IMPORT_MULTIPART_PATH } from './book-import-multipart.js';
+
 // Keep route matching identical to the multipart adapters (Express defaults).
 export const BOOK_CREATE_MULTIPART_PATH = /^\/notes\/books\/?$/i;
 export const BOOK_EDIT_MULTIPART_PATH = /^\/notes\/books\/[0-9]+\/?$/i;
 
 export function isBookMultipartRequest(req) {
   return req.method === 'POST' && /^multipart\//i.test(req.headers['content-type'] || '')
-    && (BOOK_CREATE_MULTIPART_PATH.test(req.path) || BOOK_EDIT_MULTIPART_PATH.test(req.path));
+    && (BOOK_CREATE_MULTIPART_PATH.test(req.path)
+      || BOOK_EDIT_MULTIPART_PATH.test(req.path)
+      || BOOK_IMPORT_MULTIPART_PATH.test(req.path));
 }
 
 // Terminal handling is not a transport event: parser, handler, compensation
@@ -74,7 +78,7 @@ export function admitBookUpload(req, res, tracker) {
   return lifetime;
 }
 
-// Apply only to the parser and New/Edit handlers, not unrelated processing jobs.
+// Apply only to Book multipart parsers and handlers, not unrelated processing jobs.
 export function withBookUploadLifetime(handler) {
   return function (req, res, next) {
     if (!req.bookUploadLifetime) return handler(req, res, next);

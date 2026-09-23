@@ -141,6 +141,7 @@ export function createShutdownHandler({
     } finally {
       await new Promise((resolve) => server.close(resolve));
       await managedUploadTracker.waitForIdle();
+      await appContext.processingJobService.waitForIdle();
       applicationLogger.info({
         kind: 'diagnostic',
         subsystem: 'runtime',

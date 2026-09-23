@@ -819,7 +819,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.post(BOOK_CREATE_MULTIPART_PATH, withBookUploadLifetime(parseBookCreateMultipart));
   // Numeric Edit Book endpoint only; do not parse reorder or other Book actions.
   app.post(BOOK_EDIT_MULTIPART_PATH, withBookUploadLifetime(parseBookCreateMultipart));
-  app.post(BOOK_IMPORT_MULTIPART_PATH, requireAuth, parseBookImportUpload);
+  app.post(BOOK_IMPORT_MULTIPART_PATH, requireAuth, withBookUploadLifetime(parseBookImportUpload));
   app.use(requireCsrf);
 
   if (authService) {

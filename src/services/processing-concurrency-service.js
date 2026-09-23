@@ -44,7 +44,10 @@ export function createProcessingConcurrencyService({
       Promise.resolve()
         .then(() => batch.worker(task.item, task.index))
         .then(
-          (result) => { batch.results[task.index] = result; },
+          (result) => {
+            batch.results[task.index] = result;
+            batch.completed += 1;
+          },
           (err) => {
             if (!batch.failed) {
               batch.failed = true;
@@ -62,7 +65,7 @@ export function createProcessingConcurrencyService({
             const index = batch.nextIndex;
             batch.nextIndex += 1;
             pending.push({ batch, item: batch.items[index], index });
-          } else if (batch.running === 0 && !batch.settled) {
+          } else if (batch.completed === batch.items.length && batch.running === 0 && !batch.settled) {
             batch.settled = true;
             batch.resolve(batch.results);
           }
@@ -87,6 +90,7 @@ export function createProcessingConcurrencyService({
         worker,
         results: new Array(items.length),
         nextIndex: 0,
+        completed: 0,
         running: 0,
         failed: false,
         failure: undefined,

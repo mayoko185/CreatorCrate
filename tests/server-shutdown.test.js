@@ -20,7 +20,7 @@ const deferred = () => {
   const promise = new Promise((r) => { resolve = r; });
   return { promise, resolve };
 };
-let tmp, db, app, tracker, createShutdownHandler, closeDatabase, lifetime, bytes;
+let tmp, db, app, tracker, jobs, createShutdownHandler, closeDatabase, lifetime, bytes;
 beforeEach(async () => {
   // Permanent closure is reset only by loading a fresh process module graph.
   vi.resetModules();
@@ -31,7 +31,12 @@ beforeEach(async () => {
   database.runMigrations(db, fileURLToPath(new URL('../migrations', import.meta.url)));
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-shutdown-'));
   const { createApp } = await import('../src/app.js');
-  app = createApp({ appName: 'CreatorCrate', db, previewRoot: path.join(tmp, 'previews') }, { appDataRoot: tmp });
+  const { createProcessingJobService } = await import('../src/services/processing-job-service.js');
+  const { createProjectOperationCoordinator } = await import('../src/services/project-operation-coordinator.js');
+  const projectOperationCoordinator = createProjectOperationCoordinator();
+  jobs = createProcessingJobService({ projectOperationCoordinator });
+  app = createApp({ appName: 'CreatorCrate', db, previewRoot: path.join(tmp, 'previews') },
+    { appDataRoot: tmp, projectOperationCoordinator, processingJobService: jobs });
   tracker = app.locals.managedUploadTracker;
   lifetime = await import('../src/middleware/book-upload-lifetime.js');
   bytes = await sharp({ create: { width: 20, height: 10, channels: 3, background: 'red' } }).png().toBuffer();
@@ -42,7 +47,7 @@ afterEach(() => {
   if (db.open) closeDatabase(db);
   fs.rmSync(tmp, { recursive: true, force: true });
 });
-function shutdownHarness() {
+function shutdownHarness(processingJobService = jobs) {
   const events = [];
   const vite = deferred();
   const httpClosing = deferred();
@@ -50,7 +55,7 @@ function shutdownHarness() {
   const retireDatabase = vi.fn((connection) => { events.push('database'); closeDatabase(connection); });
   const exit = vi.fn(() => events.push('exit'));
   const shutdown = createShutdownHandler({
-    appContext: { get db() { return db; } },
+    appContext: { get db() { return db; }, processingJobService },
     applicationLogger: { info: ({ event }) => events.push(event) },
     automaticProjectScanScheduler: { stop: () => events.push('scheduler') },
     viteServer: { close: () => { events.push('vite'); return vite.promise; } },
@@ -63,6 +68,11 @@ function shutdownHarness() {
     finishHttp();
     await Promise.resolve();
   } };
+}
+function expectProcessingKeepsDatabaseOpen(h) {
+  expect(h.retireDatabase).not.toHaveBeenCalled();
+  expect(h.exit).not.toHaveBeenCalled();
+  expect(db.open).toBe(true);
 }
 function admitted(handler) {
   const req = Object.assign(new EventEmitter(), { body: { title: 'Saved', expectedCoverKind: 'none' } });
@@ -91,6 +101,121 @@ it('closes admission synchronously, preserves network ordering, and drains befor
   await stopping;
   expect(h.events.slice(-4)).toEqual(['http', 'runtime.shutdown.completed', 'database', 'exit']);
   expect(h.exit).toHaveBeenCalledWith(0);
+});
+it('holds database retirement and exit for a running processing job', async () => {
+  const gate = deferred();
+  const jobId = jobs.enqueue({ projectId: 1, execute: () => gate.promise });
+  expect(jobs.getJob(jobId).state).toBe('running');
+
+  const h = shutdownHarness();
+  const stopping = h.shutdown();
+  await h.finishNetwork();
+  expectProcessingKeepsDatabaseOpen(h);
+
+  gate.resolve();
+  await stopping;
+  expect(jobs.getJob(jobId).state).toBe('succeeded');
+  expect(h.retireDatabase).toHaveBeenCalledTimes(1);
+  expect(h.exit).toHaveBeenCalledWith(0);
+});
+it('holds retirement while accepted processing remains queued after an earlier job finishes', async () => {
+  const firstGate = deferred();
+  const secondGate = deferred();
+  const secondStarted = deferred();
+  const firstId = jobs.enqueue({ projectId: 1, execute: () => firstGate.promise });
+  const secondId = jobs.enqueue({ projectId: 1, execute: () => {
+    secondStarted.resolve();
+    return secondGate.promise;
+  } });
+  expect(jobs.getJob(firstId).state).toBe('running');
+  expect(jobs.getJob(secondId).state).toBe('queued');
+
+  const h = shutdownHarness();
+  const stopping = h.shutdown();
+  await h.finishNetwork();
+  expectProcessingKeepsDatabaseOpen(h);
+
+  firstGate.resolve();
+  await secondStarted.promise;
+  expect(jobs.getJob(firstId).state).toBe('succeeded');
+  expect(jobs.getJob(secondId).state).toBe('running');
+  expectProcessingKeepsDatabaseOpen(h);
+
+  secondGate.resolve();
+  await stopping;
+  expect(h.retireDatabase).toHaveBeenCalledTimes(1);
+  expect(h.exit).toHaveBeenCalledWith(0);
+});
+it('holds retirement through a planning reservation and its queued-job transfer', async () => {
+  const { createProcessingJobService } = await import('../src/services/processing-job-service.js');
+  const queueGate = deferred();
+  const submissionJobs = createProcessingJobService({
+    projectOperationCoordinator: { runAsync: (_projectId, execute) => queueGate.promise.then(execute) },
+  });
+  const reservation = submissionJobs.reserveSubmission(1);
+  const executionGate = deferred();
+  const h = shutdownHarness(submissionJobs);
+  const stopping = h.shutdown();
+  await h.finishNetwork();
+  expectProcessingKeepsDatabaseOpen(h);
+
+  const jobId = submissionJobs.enqueue({ projectId: 1, reservation, execute: () => executionGate.promise });
+  expect(reservation.release()).toBe(false);
+  expect(submissionJobs.getJob(jobId).state).toBe('queued');
+  await Promise.resolve();
+  expectProcessingKeepsDatabaseOpen(h);
+
+  queueGate.resolve();
+  await Promise.resolve();
+  expect(submissionJobs.getJob(jobId).state).toBe('running');
+  expectProcessingKeepsDatabaseOpen(h);
+
+  executionGate.resolve();
+  await stopping;
+  expect(h.retireDatabase).toHaveBeenCalledTimes(1);
+  expect(h.exit).toHaveBeenCalledWith(0);
+});
+it('finishes shutdown when failed planning releases its reservation', async () => {
+  const reservation = jobs.reserveSubmission(1);
+  const planningGate = deferred();
+  const planning = (async () => {
+    try {
+      await planningGate.promise;
+      throw new Error('planning failed');
+    } finally {
+      reservation.release();
+    }
+  })();
+  const h = shutdownHarness();
+  const stopping = h.shutdown();
+  await h.finishNetwork();
+  expectProcessingKeepsDatabaseOpen(h);
+
+  planningGate.resolve();
+  await expect(planning).rejects.toThrow('planning failed');
+  await stopping;
+  expect(h.retireDatabase).toHaveBeenCalledTimes(1);
+  expect(h.exit).toHaveBeenCalledWith(0);
+});
+it('finishes shutdown after processing execution fails and ignores repeated signals', async () => {
+  const gate = deferred();
+  const jobId = jobs.enqueue({ projectId: 1, execute: async () => {
+    await gate.promise;
+    throw new Error('execution failed');
+  } });
+  const h = shutdownHarness();
+  const stopping = h.shutdown();
+  await h.shutdown();
+  await h.finishNetwork();
+  expectProcessingKeepsDatabaseOpen(h);
+
+  gate.resolve();
+  await stopping;
+  expect(jobs.getJob(jobId).state).toBe('failed');
+  expect(h.events.filter((event) => event === 'scheduler')).toHaveLength(1);
+  expect(h.events.filter((event) => event === 'http')).toHaveLength(1);
+  expect(h.retireDatabase).toHaveBeenCalledTimes(1);
+  expect(h.exit).toHaveBeenCalledTimes(1);
 });
 it.each(['/notes/books', '/notes/books/1'])('refuses shutdown-first %s before multipart and graph work', async (route) => {
   const { parseBookCoverMultipart } = await import('../src/services/book-cover-multipart.js');
