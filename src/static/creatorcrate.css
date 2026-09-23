@@ -498,6 +498,18 @@
       .filters > .form-help { margin-block: 0; }
       .field { display: flex; flex-direction: column; gap: 0.25rem; min-width: 10rem; }
       .field-row { display: flex; gap: 1rem; flex-wrap: wrap; }
+      .release-signature-row { align-items: flex-end; flex-wrap: nowrap; gap: var(--space-sm); }
+      .release-signature-row [data-release-signature-field] { flex: 1 1 auto; min-width: 0; }
+      .release-signature-row .release-signature-manage {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        flex: 0 0 2.25rem;
+        width: 2.25rem;
+        min-height: 2.25rem;
+        padding: var(--space-sm);
+      }
+      .release-signature-manage svg { display: block; width: 1.25rem; height: 1.25rem; }
       .field label { font-size: 0.875rem; color: var(--muted); }
       .field input, .field textarea, .field select {
         padding: 0.5rem;
@@ -4532,6 +4544,10 @@
         width: min(51rem, calc(100vw - 2rem));
         max-width: calc(100vw - 2rem);
       }
+      #release-signatures-dialog {
+        width: min(51rem, calc(100vw - 2rem));
+        max-width: calc(100vw - 2rem);
+      }
       #asset-edit-dialog {
         width: min(51rem, calc(100vw - 2rem));
         max-width: calc(100vw - 2rem);
@@ -7375,6 +7391,51 @@
         overflow-wrap: anywhere;
       }
 
+      #release-signatures-dialog .category-reorder-list {
+        list-style: none;
+        padding: 0;
+      }
+      #release-signatures-dialog .project-edit-dialog-section-body > .help-text {
+        padding: 0;
+      }
+      #release-signatures-dialog .category-management-card {
+        display: grid;
+        grid-template-columns: 2rem minmax(0, 1fr);
+      }
+      #release-signatures-dialog .category-management-card-body,
+      #release-signatures-dialog .category-details-form { min-width: 0; width: 100%; }
+      #release-signatures-dialog .category-details-form {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 2.25rem;
+        align-items: end;
+        gap: var(--space-sm);
+        cursor: grab;
+      }
+      #release-signatures-dialog .category-management-card-fields {
+        width: 100%;
+        grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.6fr);
+        gap: var(--space-sm);
+      }
+      #release-signatures-dialog .category-management-card-field textarea {
+        box-sizing: border-box;
+        width: 100%;
+        min-width: 0;
+      }
+      #release-signatures-dialog .release-signature-delete {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 2.25rem;
+        min-width: 2.25rem;
+        height: 2.25rem;
+        padding: var(--space-sm);
+      }
+      #release-signatures-dialog .release-signature-delete svg { width: 1.25rem; height: 1.25rem; }
+      #release-signatures-dialog .release-signature-add-actions {
+        justify-content: flex-end;
+        margin: var(--space-sm) 0 0;
+      }
+
       @media (max-width: 767px) {
         :is(.project-category-management-section, .settings-category-management-section) .category-management-card-body {
           align-items: stretch;
@@ -7394,6 +7455,12 @@
         }
         .settings-category-management-section .category-management-details-actions {
           justify-content: flex-start;
+        }
+      }
+
+      @media (min-width: 521px) and (max-width: 767px) {
+        #release-signatures-dialog .category-management-card-fields {
+          grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.6fr);
         }
       }
 
@@ -7743,6 +7810,9 @@
       @media (max-width: 540px) {
         .field-row {
           flex-direction: column;
+        }
+        .field-row.release-signature-row {
+          flex-direction: row;
         }
         /* flex-basis (20rem) on .page-heading-copy targets the cross axis
            once .page-heading flips to flex-direction: column at this

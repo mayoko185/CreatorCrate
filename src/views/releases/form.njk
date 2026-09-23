@@ -1,6 +1,7 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
 {% import "partials/dropdown.njk" as dropdown %}
+{% import "partials/release-signatures-dialog.njk" as releaseSignaturesDialog %}
 
 {% set title = 'Create Release' %}
 {% set page_title = "Releases — " ~ title %}
@@ -18,7 +19,7 @@
     </div>
   {% endif %}
 
-  <form id="release-form" method="post" action="{{ submitUrl }}" class="project-form" novalidate>
+  <form id="release-form" method="post" action="{{ submitUrl }}" class="project-form" data-release-create-fresh="{{ 'true' if isFreshCreate else 'false' }}" novalidate>
     <input type="hidden" name="_csrf" value="{{ _csrf }}">
     {% for assetId in values.selectedAssetIds %}
       <input type="hidden" name="selectedAssetIds" value="{{ assetId }}">
@@ -26,5 +27,7 @@
     {% include "partials/release-form-fields.njk" %}
 
   </form>
+
+  {{ releaseSignaturesDialog.render(releaseSignatureConfiguration, _csrf) }}
 
 {% endblock %}

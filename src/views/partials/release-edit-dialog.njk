@@ -1,8 +1,9 @@
 {% import "partials/dialog.njk" as dialog %}
 
-{% macro render(release, releaseEditForm, csrfToken, open=false, returnTo='') %}
+{% macro render(release, releaseEditForm, csrfToken, configuration, open=false, returnTo='') %}
   {% set values = releaseEditForm.values %}
   {% set errors = releaseEditForm.errors %}
+  {% set releaseSignatureConfiguration = configuration %}
   {% call dialog.render('release-edit-dialog', 'Edit Release', open, 'release-edit-description', 'release-edit-form', 'project-form-dialog') %}
     <p id="release-edit-description" class="app-dialog-description">
       Update release metadata and scheduling fields.

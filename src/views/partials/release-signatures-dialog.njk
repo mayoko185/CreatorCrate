@@ -1,0 +1,96 @@
+{% import "partials/dialog.njk" as dialog %}
+{% import "partials/dropdown.njk" as dropdown %}
+{% import "partials/icons.njk" as icons %}
+
+{% macro render(configuration, csrfToken) %}
+  {% call dialog.render('release-signatures-dialog', 'Manage signatures', false, 'release-signatures-description', '', 'project-form-dialog') %}
+    <p id="release-signatures-description" class="app-dialog-description">
+      Manage the signatures available for release descriptions.
+    </p>
+    <div class="app-dialog-body project-edit-dialog-body" data-release-signatures-manager>
+      <section class="settings-section project-form-section project-edit-dialog-section settings-category-management-section" aria-labelledby="release-signatures-current-heading">
+        <h3 id="release-signatures-current-heading">Signatures</h3>
+        <div class="project-edit-dialog-section-body">
+          {% if configuration.entries.length %}
+            <ol class="category-reorder-list" data-release-signatures-list aria-label="Signatures in saved order">
+              {% for signature in configuration.entries %}
+                {% set fieldPrefix = 'release-signature-' ~ signature.id %}
+                <li class="category-management-card" data-release-signature-item data-signature-id="{{ signature.id }}" draggable="true">
+                  <button type="button" class="category-reorder-handle" data-release-signature-handle draggable="true"
+                          aria-label="Reorder {{ signature.name }}"><span aria-hidden="true">⠿</span></button>
+                  <div class="category-management-card-body">
+                    <form method="dialog" class="project-form category-details-form" data-release-signature-edit-form data-signature-id="{{ signature.id }}">
+                      <input type="hidden" name="_csrf" value="{{ csrfToken }}">
+                      <input type="hidden" name="id" value="{{ signature.id }}">
+                      <div class="category-management-card-fields">
+                        <div class="field category-management-card-field">
+                          <label for="{{ fieldPrefix }}-name">Name</label>
+                          <input id="{{ fieldPrefix }}-name" name="name" type="text" value="{{ signature.name }}" maxlength="100" required>
+                        </div>
+                        <div class="field category-management-card-field">
+                          <label for="{{ fieldPrefix }}-body">Signature body</label>
+                          <textarea id="{{ fieldPrefix }}-body" name="body" rows="2" maxlength="4000">{{ signature.body }}</textarea>
+                        </div>
+                      </div>
+                      <button type="button" class="button button-small button-danger project-filter-control asset-tooltip asset-tooltip--top release-signature-delete"
+                              data-release-signature-delete aria-label="Delete signature" data-tooltip="Delete signature">{{ icons.icon('trash') }}</button>
+                    </form>
+                  </div>
+                </li>
+              {% endfor %}
+            </ol>
+          {% else %}
+            {% set emptyHeading = 'No signatures yet' %}
+            {% set emptyHeadingLevel = 'h4' %}
+            {% set emptyDescription = 'Add a signature below to make it available for releases.' %}
+            {% include "partials/empty-state.njk" %}
+          {% endif %}
+        </div>
+      </section>
+
+      <section class="settings-section project-form-section project-edit-dialog-section" aria-labelledby="release-signatures-default-heading">
+        <h3 id="release-signatures-default-heading">Default signature</h3>
+        <div class="project-edit-dialog-section-body">
+          <form method="dialog" class="project-form" data-release-signature-default-form>
+            <input type="hidden" name="_csrf" value="{{ csrfToken }}">
+            {{ dropdown.singleSelect({
+              id: 'release-signatures-default',
+              name: 'defaultSignatureId',
+              label: 'Default signature',
+              visuallyHiddenLabel: true,
+              selected: configuration.defaultId,
+              placeholder: 'No default',
+              options: configuration.entries,
+              valueKey: 'id',
+              labelKey: 'name',
+              panelLabel: 'Default signature options',
+              optionIdPrefix: 'release-signatures-default',
+              nativeSelect: {}
+            }) }}
+          </form>
+        </div>
+      </section>
+
+      <section class="settings-section project-form-section project-edit-dialog-section" aria-labelledby="release-signatures-add-heading">
+        <h3 id="release-signatures-add-heading">Add signature</h3>
+        <div class="project-edit-dialog-section-body">
+          <form method="dialog" class="project-form" data-release-signature-add-form>
+            <input type="hidden" name="_csrf" value="{{ csrfToken }}">
+            <div class="field">
+              <label for="release-signatures-add-name">Name</label>
+              <input id="release-signatures-add-name" name="name" type="text" maxlength="100" required>
+            </div>
+            <div class="field">
+              <label for="release-signatures-add-body">Signature body</label>
+              <textarea id="release-signatures-add-body" name="body" rows="4" maxlength="4000"></textarea>
+            </div>
+            <div class="form-actions release-signature-add-actions">
+              <button type="button" class="button button-primary" data-release-signature-add>Add</button>
+            </div>
+          </form>
+        </div>
+      </section>
+    </div>
+    <div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>
+  {% endcall %}
+{% endmacro %}

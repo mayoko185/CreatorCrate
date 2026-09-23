@@ -26,6 +26,7 @@ import {
   ProjectOptionCatalogueValidationError,
 } from '../services/project-option-catalogue-service.js';
 import { presentProjectOptionCatalogue } from '../services/project-option-presenter.js';
+import { ReleaseSignatureValidationError } from '../services/release-signature-settings-service.js';
 import {
   PreviewCategoryValidationError,
   PREVIEW_CATEGORY_DISABLED_VALUE,
@@ -1168,6 +1169,7 @@ export function createSettingsRouter({
   backupRetentionCount,
   autoScanIntervalMinutes,
   appMetaRepository,
+  releaseSignatureSettingsService,
   authSettings,
   assetBrowserPreferenceService,
   previewCategorySettingsService,
@@ -1184,6 +1186,9 @@ export function createSettingsRouter({
   if (!appMetaRepository || typeof appMetaRepository.getValue !== 'function') {
     throw new Error('createSettingsRouter requires an appMetaRepository dependency.');
   }
+  if (!releaseSignatureSettingsService || typeof releaseSignatureSettingsService.getConfiguration !== 'function') {
+    throw new Error('createSettingsRouter requires a releaseSignatureSettingsService dependency.');
+  }
   if (!applicationLogRepository || typeof applicationLogRepository.findPage !== 'function') {
     throw new Error('createSettingsRouter requires an applicationLogRepository dependency.');
   }
@@ -1192,6 +1197,44 @@ export function createSettingsRouter({
   }
 
   const router = express.Router();
+  function signatureMutation(action) {
+    return (req, res, next) => {
+      try {
+        res.json(action(req));
+      } catch (error) {
+        if (error instanceof ReleaseSignatureValidationError) {
+          return res.status(422).json({ status: 'error', errors: error.errors });
+        }
+        return next(error);
+      }
+    };
+  }
+
+  router.get('/release-signatures', (_req, res, next) => {
+    try {
+      res.json(releaseSignatureSettingsService.getConfiguration());
+    } catch (error) {
+      next(error);
+    }
+  });
+  router.post('/release-signatures', signatureMutation((req) =>
+    releaseSignatureSettingsService.add(req.body)));
+  router.patch('/release-signatures/:id', signatureMutation((req) =>
+    releaseSignatureSettingsService.edit(req.params.id, req.body)));
+  router.delete('/release-signatures/:id', signatureMutation((req) =>
+    releaseSignatureSettingsService.delete(req.params.id)));
+  router.put('/release-signatures/order', signatureMutation((req) => {
+    if (!req.body || Object.keys(req.body).length !== 1 || !Object.hasOwn(req.body, 'orderedIds')) {
+      throw new ReleaseSignatureValidationError({ orderedIds: 'Order must be provided.' });
+    }
+    return releaseSignatureSettingsService.reorder(req.body.orderedIds);
+  }));
+  router.put('/release-signatures/default', signatureMutation((req) => {
+    if (!req.body || Object.keys(req.body).length !== 1 || !Object.hasOwn(req.body, 'id')) {
+      throw new ReleaseSignatureValidationError({ id: 'Default signature ID is required; use null to clear.' });
+    }
+    return releaseSignatureSettingsService.setDefault(req.body.id);
+  }));
   const replaceDatabase = typeof onDatabaseReplaced === 'function' ? onDatabaseReplaced : () => {
     throw new Error('Database adoption is unavailable.');
   };

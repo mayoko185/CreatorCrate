@@ -4,6 +4,7 @@
 {% import "partials/dialog.njk" as dialog %}
 {% import "partials/dropdown.njk" as dropdown %}
 {% import "partials/release-create-dialog.njk" as releaseCreateDialog %}
+{% import "partials/release-signatures-dialog.njk" as releaseSignaturesDialog %}
 {% import "partials/release-social-prep-summary.njk" as socialPrepSummary %}
 
 {% set page_title = "Releases" %}
@@ -141,7 +142,8 @@
 {% endblock %}
 
 {% block overlay %}
-  {{ releaseCreateDialog.render(releaseCreateForm, _csrf, releaseCreateDialogOpen) }}
+  {{ releaseCreateDialog.render(releaseCreateForm, _csrf, releaseSignatureConfiguration, releaseCreateDialogOpen) }}
+  {{ releaseSignaturesDialog.render(releaseSignatureConfiguration, _csrf) }}
 
   {% call dialog.render('releases-filter-dialog', 'Filter') %}
     <form id="list-releases-filter" class="app-dialog-form project-form" method="get" action="{{ basePath }}" data-releases-filter>

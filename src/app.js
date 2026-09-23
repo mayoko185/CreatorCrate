@@ -55,6 +55,7 @@ import { createChapterService } from './services/chapter-service.js';
 import { createMarkdownRenderer } from './services/markdown-renderer.js';
 import { createPageDefaultsService } from './services/page-defaults-service.js';
 import { createProjectOptionCatalogueService } from './services/project-option-catalogue-service.js';
+import { createReleaseSignatureSettingsService } from './services/release-signature-settings-service.js';
 import { createDashboardDefaultsService } from './services/dashboard-defaults-service.js';
 import { createOpenLocallySettingsService } from './services/open-locally-settings-service.js';
 import { createSocialPrepSettingsService } from './services/social-prep-settings-service.js';
@@ -316,6 +317,9 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       projectPageDefaultRepository,
     });
   app.locals.projectOptionCatalogueService = projectOptionCatalogueService;
+  const releaseSignatureSettingsService = opts.releaseSignatureSettingsService
+    || createReleaseSignatureSettingsService({ db, appMetaRepository });
+  app.locals.releaseSignatureSettingsService = releaseSignatureSettingsService;
 
   const pageDefaultsService = opts.pageDefaultsService || createPageDefaultsService({
     appMetaRepository,
@@ -1000,6 +1004,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     backupRetentionCount: opts.backupRetentionCount,
     autoScanIntervalMinutes: opts.autoScanIntervalMinutes,
     appMetaRepository,
+    releaseSignatureSettingsService,
     authSettings: opts.authSettings,
     assetBrowserPreferenceService,
     previewCategorySettingsService,

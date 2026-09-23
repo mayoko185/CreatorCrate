@@ -330,6 +330,92 @@ describe('release HTTP workflow', () => {
     return Number(res.headers.location.replace('/projects/', ''));
   }
 
+  describe('release signature manager rendering', () => {
+    function manager(html) {
+      return html.match(/<dialog id="release-signatures-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    }
+
+    function expectSiblingManager(html, releaseFormId) {
+      const releaseFormStart = html.indexOf(`<form id="${releaseFormId}"`);
+      const releaseFormEnd = html.indexOf('</form>', releaseFormStart);
+      const managerStart = html.indexOf('<dialog id="release-signatures-dialog"');
+      expect(releaseFormStart).toBeGreaterThanOrEqual(0);
+      expect(releaseFormEnd).toBeGreaterThan(releaseFormStart);
+      expect(managerStart).toBeGreaterThan(releaseFormEnd);
+      expect(html.slice(releaseFormStart, releaseFormEnd)).toContain('data-dialog-open="release-signatures-dialog"');
+      expect(html.match(/id="release-signatures-dialog"/g)).toHaveLength(1);
+      expectUniqueValidIdReferences(html);
+    }
+
+    it('renders empty New Release hosts with a sibling manager, Add form, and No default', async () => {
+      const projectId = await createTestProject('Signature Manager New');
+      for (const [url, formId] of [['/releases', 'release-create-form'], [`/releases/new?projectId=${projectId}`, 'release-form']]) {
+        const response = await agent.get(url).expect(200);
+        const dialog = manager(response.text);
+        expectSiblingManager(response.text, formId);
+        expect(dialog).toContain('No signatures yet');
+        expect(dialog).toContain('data-release-signature-add-form');
+        expect(dialog).toContain('data-release-signature-add>Add</button>');
+        expect(dialog).toContain('id="release-signatures-default-option-all"');
+        expect(dialog).toMatch(/<option value="" selected>No default<\/option>/);
+        expect(dialog).not.toContain('data-release-signature-item');
+      }
+    });
+
+    it('renders ordered escaped entries and the saved default on New and Edit, including validation rerenders', async () => {
+      const projectId = await createTestProject('Signature Manager Edit');
+      const service = app.locals.releaseSignatureSettingsService;
+      const first = service.add({ name: 'First "<&>', body: 'line one\n</textarea><script>&' }).entries[0];
+      const second = service.add({ name: 'Second', body: 'line two' }).entries[1];
+      service.reorder([second.id, first.id]);
+      const withoutDefault = manager((await agent.get('/releases').expect(200)).text);
+      expect(withoutDefault).toMatch(/<option value="" selected>No default<\/option>/);
+      expect(withoutDefault).not.toMatch(new RegExp(`<option value="${second.id}" selected>`));
+      service.setDefault(first.id);
+
+      const created = await agent.post('/releases')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send(`projectId=${projectId}`)
+        .send('title=Signature+Manager+Edit')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const detailUrl = created.headers.location;
+      const cases = [
+        [await agent.get('/releases').expect(200), 'release-create-form'],
+        [await agent.get(detailUrl).expect(200), 'release-edit-form'],
+        [await agent.post('/releases').send('_csrf=' + encodeURIComponent(csrfToken))
+          .send(`projectId=${projectId}`).send('title=')
+          .set('Content-Type', 'application/x-www-form-urlencoded').expect(422), 'release-form'],
+        [await agent.post(detailUrl).send('_csrf=' + encodeURIComponent(csrfToken))
+          .send('title=').set('Content-Type', 'application/x-www-form-urlencoded').expect(422), 'release-edit-form'],
+      ];
+      for (const [response, formId] of cases) {
+        const dialog = manager(response.text);
+        expectSiblingManager(response.text, formId);
+        const releaseForm = response.text.slice(
+          response.text.indexOf(`<form id="${formId}"`),
+          response.text.indexOf('</form>', response.text.indexOf(`<form id="${formId}"`)) + 7,
+        );
+        const signatureField = releaseForm.slice(releaseForm.indexOf('data-release-signature-field'));
+        const signatureSelect = signatureField.match(/<select[^>]*data-cc-dropdown-native-select[^>]*>[\s\S]*?<\/select>/)?.[0] || '';
+        expect(releaseForm).toContain('data-release-signature-field');
+        expect(signatureSelect).toContain('<option value="" selected>No signature</option>');
+        expect(signatureSelect.indexOf(`value="${second.id}"`)).toBeLessThan(signatureSelect.indexOf(`value="${first.id}"`));
+        expect(signatureSelect).toContain('First &quot;&lt;&amp;&gt;');
+        expect(signatureSelect).not.toContain('line one');
+        expect(dialog.indexOf(`data-signature-id="${second.id}"`)).toBeLessThan(dialog.indexOf(`data-signature-id="${first.id}"`));
+        expect(dialog).toContain(`name="id" value="${first.id}"`);
+        expect(dialog).toContain('value="First &quot;&lt;&amp;&gt;"');
+        expect(dialog).toContain('line one\n&lt;/textarea&gt;&lt;script&gt;&amp;');
+        expect(dialog).not.toContain('</textarea><script>');
+        expect(dialog).toMatch(new RegExp(`<option value="${first.id}" selected>`));
+        expect(dialog).toContain('data-release-signature-delete');
+        expect(dialog).toContain('data-release-signature-handle');
+        expect(dialog).toContain('data-release-signature-add-form');
+      }
+    });
+  });
+
   describe('release form layout', () => {
     it('matches the Projects form section cards and places create actions in the page heading', async () => {
       const projectId = await createTestProject('Release Form Layout Project');
@@ -339,7 +425,8 @@ describe('release HTTP workflow', () => {
       expect(heading).toContain('<button class="button button-primary" type="submit" form="release-form">Create</button>');
       expect(heading).toContain(`<a class="button button-secondary" href="/projects/${projectId}">Cancel</a>`);
       expect(res.text).toContain('<form id="release-form"');
-      expect(res.text).not.toContain('class="form-actions"');
+      const releaseForm = res.text.match(/<form id="release-form"[\s\S]*?<\/form>/)?.[0] || '';
+      expect(releaseForm).not.toContain('class="form-actions"');
       expectReleaseFormSectionCards(res.text);
     });
   });
@@ -392,7 +479,7 @@ describe('release HTTP workflow', () => {
       expect(container).toMatch(/<input[^>]*id="plannedDate"[^>]*>/);
     });
 
-    it('release form shows help text for published date in the correct field container', async () => {
+    it('omits published date from the standalone New Release form', async () => {
       const projRes = await agent
         .post('/projects')
       .send('_csrf=' + encodeURIComponent(csrfToken))
@@ -405,12 +492,11 @@ describe('release HTTP workflow', () => {
 
       const res = await agent.get(`/releases/new?projectId=${projectId}`).expect(200);
       const container = getFieldContainer(res.text, 'publishedDate');
-      expect(container).not.toBeNull();
-      expect(container).toContain('When this release was published');
-      expect(container).toMatch(/<input[^>]*id="publishedDate"[^>]*>/);
+      expect(container).toBeNull();
+      expect(res.text).toContain('data-release-create-fresh="true"');
     });
 
-    it('release form keeps scheduling fields in a single row in planned date, time, published date order', async () => {
+    it('release form keeps scheduled date and time in a single row', async () => {
       const projectId = await createTestProject('Scheduling Order Project');
 
       const res = await agent.get(`/releases/new?projectId=${projectId}`).expect(200);
@@ -420,23 +506,19 @@ describe('release HTTP workflow', () => {
 
       const dateMatch = schedulingRow.match(/<div class="field scheduling-field[^"]*"[^\u003e]*>\s*<label for="plannedDate">/);
       const timeMatch = schedulingRow.match(/<div class="field scheduling-field[^"]*"[^\u003e]*>\s*<label for="plannedTime">/);
-      const publishedMatch = schedulingRow.match(/<div class="field scheduling-field[^"]*"[^\u003e]*>\s*<label for="publishedDate">/);
       expect(dateMatch).not.toBeNull();
       expect(timeMatch).not.toBeNull();
-      expect(publishedMatch).not.toBeNull();
 
       const datePos = schedulingRow.indexOf(dateMatch[0]);
       const timePos = schedulingRow.indexOf(timeMatch[0]);
-      const publishedPos = schedulingRow.indexOf(publishedMatch[0]);
       expect(datePos).toBeLessThan(timePos);
-      expect(timePos).toBeLessThan(publishedPos);
 
       expect(schedulingRow).toContain('id="plannedDate"');
       expect(schedulingRow).toContain('id="plannedTime"');
-      expect(schedulingRow).toContain('id="publishedDate"');
+      expect(schedulingRow).not.toContain('id="publishedDate"');
       expect(schedulingRow).toContain('Target publication date for this release');
       expect(schedulingRow).toContain('Local time this release is scheduled to go live');
-      expect(schedulingRow).toContain('When this release was published');
+      expect(schedulingRow).not.toContain('When this release was published');
     });
 
     it('renders scheduling picker triggers and non-modal panels without changing native inputs', async () => {
@@ -450,31 +532,31 @@ describe('release HTTP workflow', () => {
       // Native inputs remain the form source of truth.
       expect(schedulingRow).toMatch(/<input[^>]*type="date"[^>]*id="plannedDate"[^>]*name="plannedDate"[^>]*>/);
       expect(schedulingRow).toMatch(/<input[^>]*type="time"[^>]*id="plannedTime"[^>]*name="plannedTime"[^>]*>/);
-      expect(schedulingRow).toMatch(/<input[^>]*type="date"[^>]*id="publishedDate"[^>]*name="publishedDate"[^>]*>/);
+      expect(schedulingRow).not.toContain('name="publishedDate"');
 
       // Each scheduling input gets an external, non-submitting trigger.
       expect(schedulingRow).toMatch(/<button[^>]*aria-controls="plannedDate-calendar"[^>]*>/);
       expect(schedulingRow).toMatch(/<button(?=[^>]*data-time-picker-trigger)(?=[^>]*aria-controls="plannedTime-picker")(?=[^>]*aria-haspopup="dialog")(?=[^>]*aria-label="Open time picker for scheduled time")[^>]*>/);
-      expect(schedulingRow).toMatch(/<button[^>]*aria-controls="publishedDate-calendar"[^>]*>/);
-      expect(schedulingRow.match(/<div class="picker-control">/g) || []).toHaveLength(3);
-      expect(schedulingRow.match(/<div class="picker-input-row">/g) || []).toHaveLength(3);
-      expect(schedulingRow.match(/<input class="picker-input"[^>]*>/g) || []).toHaveLength(3);
+      expect(schedulingRow).not.toContain('aria-controls="publishedDate-calendar"');
+      expect(schedulingRow.match(/<div class="picker-control">/g) || []).toHaveLength(2);
+      expect(schedulingRow.match(/<div class="picker-input-row">/g) || []).toHaveLength(2);
+      expect(schedulingRow.match(/<input class="picker-input"[^>]*>/g) || []).toHaveLength(2);
       const pickerRows = schedulingRow.match(/<div class="picker-input-row">[\s\S]*?<\/div>/g) || [];
-      expect(pickerRows).toHaveLength(3);
+      expect(pickerRows).toHaveLength(2);
       expect(pickerRows.every((row) => /<input class="picker-input"[^>]*>/.test(row)
         && /<button[^>]*class="picker-trigger[^\"]*"[^>]*>/.test(row))).toBe(true);
       const pickerTriggers = schedulingRow.match(/<button[^>]*class="picker-trigger[^"]*"[^>]*>/g) || [];
-      expect(pickerTriggers).toHaveLength(3);
+      expect(pickerTriggers).toHaveLength(2);
       expect(pickerTriggers.every((button) => /\btype="button"/.test(button))).toBe(true);
       expect(schedulingRow).toMatch(/<button[^>]*class="picker-trigger date-picker-trigger"[^>]*aria-controls="plannedDate-calendar"[^>]*>/);
       expect(schedulingRow).toMatch(/<button[^>]*class="picker-trigger time-picker-trigger"[^>]*data-time-picker-trigger[^>]*>/);
-      expect(schedulingRow).toMatch(/<button[^>]*class="picker-trigger date-picker-trigger"[^>]*aria-controls="publishedDate-calendar"[^>]*>/);
+      expect(schedulingRow).not.toContain('aria-controls="publishedDate-calendar"');
       expect(schedulingRow).not.toContain('class="date-picker"');
       expect(schedulingRow).not.toContain('class="time-picker"');
 
       // Each date field gets a distinct panel bound to its input.
       expect(schedulingRow).toMatch(/<div[^>]*id="plannedDate-calendar"[^>]*data-date-picker-panel[^>]*data-date-picker-for="plannedDate"[^>]*>/);
-      expect(schedulingRow).toMatch(/<div[^>]*id="publishedDate-calendar"[^>]*data-date-picker-panel[^>]*data-date-picker-for="publishedDate"[^>]*>/);
+      expect(schedulingRow).not.toContain('data-date-picker-for="publishedDate"');
       expect(schedulingRow).toMatch(/<div[^>]*id="plannedTime-picker"[^>]*class="date-picker-panel time-picker-panel"[^>]*role="dialog"[^>]*aria-label="Scheduled time picker"[^>]*hidden[^>]*data-time-picker-panel[^>]*data-time-picker-for="plannedTime"[^>]*>/);
 
       // Triggers are associated with a real dialog and initially collapsed.
@@ -482,7 +564,7 @@ describe('release HTTP workflow', () => {
 
       // Panels are non-modal dialogs that start hidden.
       expect(schedulingRow).toMatch(/<div[^>]*role="dialog"[^>]*aria-label="Scheduled date calendar"[^>]*hidden[^>]*>/);
-      expect(schedulingRow).toMatch(/<div[^>]*role="dialog"[^>]*aria-label="Published date calendar"[^>]*hidden[^>]*>/);
+      expect(schedulingRow).not.toContain('aria-label="Published date calendar"');
       expect(schedulingRow).not.toContain('aria-modal="true"');
     });
 
@@ -500,7 +582,7 @@ describe('release HTTP workflow', () => {
       const res = await agent.get(`/releases/new?projectId=${projectId}`).expect(200);
       const container = getFieldContainer(res.text, 'patreonUrl');
       expect(container).not.toBeNull();
-      expect(container).toContain('<label for="patreonUrl">Release link</label>');
+      expect(container).toContain('<label class="sr-only" for="patreonUrl">Release link</label>');
       expect(container).toContain('Optional absolute HTTP or HTTPS URL for this release.');
       expect(container).toMatch(/<input[^>]*id="patreonUrl"[^>]*>/);
     });
@@ -548,11 +630,18 @@ describe('release HTTP workflow', () => {
         .send('title=Detail+Wording+Release')
         .send('status=tbd')
         .send('plannedDate=2025-12-01')
-        .send('publishedDate=2025-12-15')
         .send('patreonUrl=https://patreon.com/release')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(302);
       const releaseLocation = createRes.headers.location;
+      await agent.post(releaseLocation)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send('title=Detail+Wording+Release')
+        .send('plannedDate=2025-12-01')
+        .send('publishedDate=2025-12-15')
+        .send('patreonUrl=https://patreon.com/release')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
 
       const res = await agent.get(releaseLocation).expect(200);
 
@@ -600,13 +689,20 @@ describe('release HTTP workflow', () => {
     const projectId = projRes.headers.location.replace('/projects/', '');
 
     // Create releases
-    await agent
+    const releaseOne = await agent
       .post('/releases')
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send(`projectId=${projectId}`)
       .send('title=Release+One')
       .send('status=tbd')
       .send('plannedDate=2026-12-01')
+      .set('Content-Type', 'application/x-www-form-urlencoded')
+      .expect(302);
+
+    await agent
+      .post(releaseOne.headers.location)
+      .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send('title=Release+One')
       .send('publishedDate=2026-12-02')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
@@ -919,7 +1015,7 @@ describe('release HTTP workflow', () => {
     const projectField = extractReleaseProjectField(res.text);
     expect(projectField).not.toBe('');
     expect(projectField).toContain('asset-filter-multiselect');
-    expect(projectField).toContain('<legend>Project <span class="required" aria-label="required">*</span></legend>');
+    expect(projectField).toContain('<legend class="sr-only">Project <span class="required" aria-label="required">*</span></legend>');
     expect(projectField).toContain('data-cc-dropdown data-cc-dropdown-mode="single"');
     expect(projectField).toContain('data-cc-dropdown-searchable');
     expect(projectField).toContain('data-cc-dropdown-type="searchable-single"');
@@ -952,6 +1048,46 @@ describe('release HTTP workflow', () => {
   });
 
   describe('New Release dialog', () => {
+    it('keeps creation unpublished even when ordinary requests submit a published date', async () => {
+      const projectId = await createTestProject('Unpublished Ordinary Release');
+      const response = await agent.post('/releases')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send(`projectId=${projectId}`)
+        .send('title=Unpublished+Ordinary')
+        .send('publishedDate=2031-04-06')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      const releaseId = Number(response.headers.location.split('/')[2]);
+      expect(releaseRepository.findById(releaseId).published_date).toBeNull();
+    });
+
+    it('marks a standalone validation rerender as preserved', async () => {
+      const response = await agent.post('/releases')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send('title=')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(422);
+
+      expect(response.text).toContain('data-release-create-fresh="false"');
+      expect(response.text).not.toContain('name="publishedDate"');
+    });
+
+    it('keeps published date on Edit Release without exposing a fresh-create flag', async () => {
+      const projectId = await createTestProject('Edit Publication Field');
+      const created = await agent.post('/releases')
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send(`projectId=${projectId}`)
+        .send('title=Edit+Publication+Field')
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      const detail = await agent.get(created.headers.location).expect(200);
+      const editDialog = detail.text.match(/<dialog id="release-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+
+      expect(editDialog).toContain('name="publishedDate"');
+      expect(editDialog).not.toContain('data-release-create-fresh');
+    });
+
     it('renders a progressive-enhancement trigger and native create form on /releases', async () => {
       const res = await agent.get('/releases').expect(200);
       const dialog = res.text.match(/<dialog id="release-create-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
@@ -966,6 +1102,8 @@ describe('release HTTP workflow', () => {
       expect(dialog.match(/data-dialog-close/g)).toHaveLength(1);
       expect(dialog).toContain('<form id="release-create-form" method="post" action="/releases"');
       expect(dialog).toContain('data-dialog-form data-dialog-async="false"');
+      expect(dialog).toContain('data-release-create-fresh="true"');
+      expect(dialog).not.toContain('name="publishedDate"');
       expect(dialog).toContain('<input type="hidden" name="returnTo" value="/releases">');
       expect(dialog).not.toContain('data-dialog-return-location');
       expect(dialog).not.toContain('name="releaseCreateFlow"');
@@ -995,6 +1133,8 @@ describe('release HTTP workflow', () => {
       expect(dialog).toMatch(new RegExp(`name="projectId"[^>]*value="${projectId}"[^>]*checked`));
       expect(dialog).toContain('value="Assets Handoff Project"');
       expect(dialog).toContain('name="releaseCreateFlow" value="selected-assets"');
+      expect(dialog).toContain('data-release-create-fresh="true"');
+      expect(dialog).not.toContain('name="publishedDate"');
       expect(selectedIds).toEqual([second.id, first.id]);
       expect(dialog).toContain('action="/releases"');
       expect(releaseRepository.findByProjectId(projectId, { includeArchived: true })).toEqual([]);
@@ -1047,6 +1187,7 @@ describe('release HTTP workflow', () => {
         const dialog = res.text.match(/<dialog id="release-create-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
 
         expect(dialog).toMatch(/<dialog id="release-create-dialog"[^>]*open/);
+        expect(dialog).toContain('data-release-create-fresh="false"');
         expect(dialog).toContain(message);
         expect(dialog).toContain('name="releaseCreateFlow" value="selected-assets"');
         expect(dialog).not.toMatch(/name="selectedAssetIds"/);
@@ -1153,22 +1294,31 @@ describe('release HTTP workflow', () => {
         agent.get('/releases/new').expect(200),
       ]);
       const dialog = dialogRes.text.match(/<dialog id="release-create-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
-      const requiredNames = ['projectId', 'title', 'description', 'notes', 'plannedDate', 'plannedTime', 'publishedDate', 'patreonUrl'];
+      const requiredNames = ['projectId', 'title', 'description', 'notes', 'plannedDate', 'plannedTime', 'patreonUrl'];
 
       for (const name of requiredNames) {
         expect(dialog).toMatch(new RegExp(`name="${name}"`));
         expect(fallbackRes.text).toMatch(new RegExp(`name="${name}"`));
       }
+      expect(dialog).not.toContain('name="publishedDate"');
+      expect(fallbackRes.text).not.toContain('name="publishedDate"');
+      expect(dialog).toContain('data-release-create-fresh="true"');
+      expect(fallbackRes.text).toContain('data-release-create-fresh="true"');
+      expect(dialog).toMatch(/<h3>Project<\/h3>[\s\S]*?<legend class="sr-only">Project /);
+      expect(dialog).not.toContain('<legend>Project ');
+      expect(dialog).toMatch(/<textarea id="description"[^>]*rows="6"/);
+      expect(dialog).toMatch(/<textarea id="notes"[^>]*rows="6"/);
+      expect(dialog).toContain('<label class="sr-only" for="patreonUrl">Release link</label>');
 
       expect(dialog).toContain('class="app-dialog project-form-dialog"');
       expect(dialog).toContain('class="app-dialog-body project-edit-dialog-body"');
       expect(dialog).toContain('class="app-dialog-form project-form project-edit-dialog-form"');
       expect(dialog).toContain('id="release-create-project-trigger" aria-controls="release-create-project-options"');
-      expect(dialog.match(/data-release-dialog-compact-section/g)).toHaveLength(3);
+      expect(dialog.match(/data-release-dialog-compact-section/g)).toHaveLength(4);
       expect(dialog).toMatch(/<div class="settings-section project-form-section project-edit-dialog-section" data-release-dialog-compact-section>\s*<h3>Basic information<\/h3>/);
       expect(dialog).toMatch(/<div class="settings-section scheduling-section project-form-section project-edit-dialog-section" data-release-dialog-compact-section>\s*<h3>Scheduling<\/h3>/);
       expect(dialog).toMatch(/<div class="settings-section project-form-section project-edit-dialog-section" data-release-dialog-compact-section>\s*<h3>Links<\/h3>/);
-      expect(dialog).toContain('<div class="settings-section release-project-section project-form-section project-edit-dialog-section">');
+      expect(dialog).toContain('<div class="settings-section release-project-section project-form-section project-edit-dialog-section" data-release-dialog-compact-section>');
       expect(fallbackRes.text).not.toContain('data-release-dialog-compact-section');
       expectUniqueValidIdReferences(dialogRes.text);
 
@@ -1205,7 +1355,8 @@ describe('release HTTP workflow', () => {
       expect(dialog).toContain('Keep dialog notes');
       expect(dialog).toMatch(/id="plannedDate"[^>]*value="2031-04-05"/);
       expect(dialog).toMatch(/id="plannedTime"[^>]*value="09:30"/);
-      expect(dialog).toMatch(/id="publishedDate"[^>]*value="2031-04-06"/);
+      expect(dialog).not.toContain('id="publishedDate"');
+      expect(dialog).toContain('data-release-create-fresh="false"');
       expect(dialog).toMatch(/id="patreonUrl"[^>]*value="https:\/\/example\.test\/releases\/keep"/);
       expect(dialog).toMatch(/id="title"[^>]*aria-describedby="title-error"[^>]*aria-invalid="true"/);
       expect(dialog).toContain(`name="returnTo" value="/releases?project=${projectId}&amp;search=needle&amp;sort=created&amp;order=desc&amp;page=2#releases-list" data-dialog-return-location`);
@@ -1243,6 +1394,7 @@ describe('release HTTP workflow', () => {
       expect(dialog).toMatch(/<dialog id="release-create-dialog"[^>]*open/);
       expect(dialog).toContain('name="releaseCreateFlow" value="selected-assets"');
       expect(dialog).toContain(`name="selectedAssetIds" value="${asset.id}"`);
+      expect(dialog).toContain('data-release-create-fresh="false"');
     });
 
     it('preserves normalized selected-assets state and edited fields through a later validation rerender', async () => {
@@ -1635,7 +1787,7 @@ describe('release HTTP workflow', () => {
         notes,
         planned_date: '2026-12-01',
         planned_time: '09:45',
-         published_date: '2026-12-15',
+         published_date: null,
          patreon_url: 'https://example.com/selected-release',
        });
       expect(getReleaseAssets(db, releaseId).map(({ asset_id, role, sort_order }) => ({

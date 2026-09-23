@@ -1,4 +1,5 @@
 {% import "partials/dropdown.njk" as dropdown %}
+{% import "partials/icons.njk" as icons %}
 {% set releaseFormDialog = releaseFormDialog or false %}
 {% set releaseProjectDropdownId = releaseProjectDropdownId or 'release-project-filter' %}
 
@@ -12,13 +13,14 @@
     {% endif %}
   {% endfor %}
 
-  <div class="settings-section release-project-section{% if releaseFormDialog %} project-form-section project-edit-dialog-section{% endif %}">
+  <div class="settings-section release-project-section{% if releaseFormDialog %} project-form-section project-edit-dialog-section{% endif %}"{% if releaseFormDialog %} data-release-dialog-compact-section{% endif %}>
     <h3>Project</h3>
     <div class="release-form-section-body{% if releaseFormDialog %} project-form-section-body project-edit-dialog-section-body{% endif %}">
     {{ dropdown.searchableSingleSelect({
       id: releaseProjectDropdownId,
       name: "projectId",
       label: "Project",
+      visuallyHiddenLabel: true,
       required: true,
       options: releaseProjectOptions,
       valueKey: "value",
@@ -59,9 +61,28 @@
   </div>
   <div class="field {% if errors.description %}field-error{% endif %}">
     <label for="description">Description</label>
-    <textarea id="description" name="description" rows="4" maxlength="4000"{% if errors.description %} aria-describedby="description-error" aria-invalid="true"{% endif %}>{{ values.description or '' }}</textarea>
+    <textarea id="description" name="description" rows="6" maxlength="4000"{% if errors.description %} aria-describedby="description-error" aria-invalid="true"{% endif %}>{{ values.description or '' }}</textarea>
     {% if errors.description %}<span class="field-error-message" id="description-error">{{ errors.description }}</span>{% endif %}
   </div>
+  <div class="field-row release-signature-row">
+    {% set releaseSignatureOptions = [] %}
+    {% for signature in releaseSignatureConfiguration.entries %}
+      {% set _ = releaseSignatureOptions.push({ value: signature.id, label: signature.name }) %}
+    {% endfor %}
+    {{ dropdown.singleSelect({
+      id: 'release-description-signature',
+      label: 'Signature',
+      placeholder: 'No signature',
+      options: releaseSignatureOptions,
+      panelLabel: 'Signature options',
+      nativeSelect: {},
+      fieldAttributes: [['data-release-signature-field', true]]
+    }) }}
+    <button type="button" class="button button-small button-secondary release-signature-manage asset-tooltip asset-tooltip--top"
+            data-dialog-open="release-signatures-dialog" aria-label="Manage signatures" data-tooltip="Manage signatures"
+            aria-haspopup="dialog" aria-controls="release-signatures-dialog">{{ icons.icon('settings') }}</button>
+  </div>
+  <p class="help-text" data-release-signature-status role="status" aria-live="polite"></p>
   <div class="field {% if errors.notes %}field-error{% endif %}">
     <label for="notes">Notes</label>
     <textarea id="notes" name="notes" rows="6" maxlength="10000"{% if errors.notes %} aria-describedby="notes-error" aria-invalid="true"{% endif %}>{{ values.notes or '' }}</textarea>
@@ -92,6 +113,7 @@
       <span class="help-text" id="plannedTime-help">Local time this release is scheduled to go live</span>
       {% if errors.plannedTime %}<span class="field-error-message" id="plannedTime-error">{{ errors.plannedTime }}</span>{% endif %}
     </div>
+    {% if release %}
     <div class="field scheduling-field {% if errors.publishedDate %}field-error{% endif %}" data-date-picker-field>
       <label for="publishedDate">Published date</label>
       <div class="picker-control"><div class="picker-input-row">
@@ -101,6 +123,7 @@
       <span class="help-text" id="publishedDate-help">When this release was published</span>
       {% if errors.publishedDate %}<span class="field-error-message" id="publishedDate-error">{{ errors.publishedDate }}</span>{% endif %}
     </div>
+    {% endif %}
   </div>
   </div>
 </div>
@@ -109,7 +132,7 @@
   <h3>Links</h3>
   <div class="release-form-section-body{% if releaseFormDialog %} project-form-section-body project-edit-dialog-section-body{% endif %}">
   <div class="field {% if errors.patreonUrl %}field-error{% endif %}">
-    <label for="patreonUrl">Release link</label>
+    <label class="sr-only" for="patreonUrl">Release link</label>
     <input type="url" id="patreonUrl" name="patreonUrl" value="{{ values.patreonUrl or '' }}" aria-describedby="patreonUrl-help{% if errors.patreonUrl %} patreonUrl-error{% endif %}"{% if errors.patreonUrl %} aria-invalid="true"{% endif %}>
     <span class="help-text" id="patreonUrl-help">Optional absolute HTTP or HTTPS URL for this release.</span>
     {% if errors.patreonUrl %}<span class="field-error-message" id="patreonUrl-error">{{ errors.patreonUrl }}</span>{% endif %}

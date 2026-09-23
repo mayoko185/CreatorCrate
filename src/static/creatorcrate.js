@@ -1,6 +1,8 @@
 import { enhanceProjectOptionColorPickers } from './client/project-option-color-picker.js';
 import { enhanceProjectOptionMutations } from './client/settings-project-option-mutations.js';
 import { enhanceProjectOptionReorder } from './client/settings-project-option-reorder.js';
+import { enhanceReleaseSignatureManagers } from './client/release-signature-manager.js';
+import { enhanceReleaseSignatures } from './client/release-signatures.js';
 import {
   enhancePreview,
   enhancePreviewMedia,
@@ -143,6 +145,8 @@ export {
   enhanceCategoryDetails,
   enhanceProjectOptionMutations,
   enhanceProjectOptionReorder,
+  enhanceReleaseSignatureManagers,
+  enhanceReleaseSignatures,
   enhanceProjectOptionColorPickers,
   enhanceDefaultsFetchSave,
   enhanceAssetCategoryPreferencesFetchSave,
@@ -215,6 +219,7 @@ if (typeof document !== 'undefined') {
     enhanceAutoSubmit(document);
     enhanceProjectOptionMutations(document);
     enhanceProjectOptionReorder(document);
+    enhanceReleaseSignatureManagers(document);
     enhanceProjectOptionColorPickers(document);
     enhanceDefaultsFetchSave(document);
     enhanceAssetCategoryPreferencesFetchSave(document);
@@ -240,6 +245,7 @@ if (typeof document !== 'undefined') {
     enhanceProjectGridSize(document);
     enhanceProjectAssetCategoryFilter(document);
     enhanceDropdowns(document);
+    enhanceReleaseSignatures(document);
     enhanceProjectsDefaultsFetchSave(document);
     enhanceReleasesDefaultsFetchSave(document);
     enhancePageDefaultsFetchSave(document, {

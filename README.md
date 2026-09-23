@@ -159,6 +159,25 @@ The filesystem is authoritative for media contents. SQLite stores project, asset
 
 Create releases from project work, select and order the included assets, and assign their release roles. When a release is ready, use the publishing workflow to record published work. The calendar provides a date-based view of planned and published release activity.
 
+Release Description signatures can be managed through authenticated JSON settings
+endpoints at `/settings/release-signatures`. `GET` reads the ordered catalogue;
+`POST` adds `{ "name", "body" }`; `PATCH /:id` edits those fields; and
+`DELETE /:id` removes an entry. `PUT /order` accepts `{ "orderedIds": [...] }`
+with every current ID exactly once. `PUT /default` accepts `{ "id": "..." }`
+or `{ "id": null }` to clear the default. Mutations require the normal
+`X-CSRF-Token` header and return the saved `{ "version": 1, "entries": [...],
+"defaultId": null | "..." }` document. New and Edit Release surfaces render a
+Manage signatures dialog with the saved catalogue and default. Its management
+controls add, edit, delete, reorder, and set or clear the default immediately.
+Successful manager mutations emit `release-signatures-configuration-updated` from
+the manager with the saved document in `event.detail.configuration`.
+New and Edit Release forms offer a Signature selector beside Manage signatures.
+Choosing one appends its body to Description, and choosing another replaces the
+untouched insertion. Clearing the selector removes only text inserted by this
+control. A configured default is inserted once into an empty, fresh New Release
+draft; existing and validation-returned descriptions remain user-owned. Changes
+to the catalogue update selector options without rewriting an open draft.
+
 ### Application logs
 
 **Settings > Logs** shows CreatorCrate's operational and activity records.

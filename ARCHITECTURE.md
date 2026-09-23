@@ -1550,6 +1550,14 @@ paths and keep their established post-create detail destinations. The edit flows
 destination after a successful mutation; selected-assets Release creation
 deliberately retains its canonical `/releases/:id/assets` success destination.
 
+New Release forms omit Published date. The `POST /releases` route passes
+`publishedDate: null` to both creation service paths, so submitted form data
+cannot publish a release during creation. Publication remains available through
+the existing edit and explicit publish routes. The server sets `isFreshCreate`
+on creation form models: initial list, standalone, and selected-assets handoff
+forms are fresh; validation rerenders are preserved drafts. Create forms expose
+this state as `data-release-create-fresh` for later client behavior.
+
 The processing enhancement turns an Apply `202` response into a centralized
 HTTP polling loop for that dialog. It renders queued/running progress and
 terminal success, failure, or cancellation from job snapshots. Closing a

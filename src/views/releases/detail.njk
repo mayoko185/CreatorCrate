@@ -4,6 +4,7 @@
 {% import "partials/asset-presentation.njk" as assetCards %}
 {% import "partials/view-switcher.njk" as viewSwitcher %}
 {% import "partials/release-edit-dialog.njk" as releaseEditDialog %}
+{% import "partials/release-signatures-dialog.njk" as releaseSignaturesDialog %}
 {% import "partials/release-publish-dialog.njk" as releasePublishDialog %}
 
 {% set page_title = "Releases — " ~ release.title %}
@@ -238,7 +239,8 @@
   {% set overlayIsPublished = release.published_date %}
 
   {% if not overlayIsArchived %}
-    {{ releaseEditDialog.render(release, editDialogForm, _csrf, editDialogOpen, editDialogReturnTo) }}
+    {{ releaseEditDialog.render(release, editDialogForm, _csrf, releaseSignatureConfiguration, editDialogOpen, editDialogReturnTo) }}
+    {{ releaseSignaturesDialog.render(releaseSignatureConfiguration, _csrf) }}
   {% endif %}
 
   {% if not overlayIsArchived and not overlayIsPublished %}

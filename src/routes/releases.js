@@ -138,6 +138,7 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
         values: req.query,
         errors: {},
       });
+      formModel.releaseSignatureConfiguration = getReleaseSignatureConfiguration(req);
       if (formModel.projects.length === 0) {
         return res.status(422).render('releases/form.njk', {
           ...formModel,
@@ -224,6 +225,7 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
             selectedAssetsFlow: true,
             selectedAssetsReturnTo,
             selectedAssetsInvalid: true,
+            isFreshCreate: false,
             selectedAssetsRecoveryUrl: project ? (selectedAssetsReturnTo || `/projects/${project.id}/assets`) : null,
             values: {
               projectId: projectId === null ? '' : String(projectId),
@@ -261,7 +263,7 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
         throw new ReleaseValidationError({ projectId: 'Project is required.' });
       }
 
-      const input = parseReleaseInput(body);
+      const input = { ...parseReleaseInput(body), publishedDate: null };
       if (selectedAssetsFlow) {
         const normalizedSelection = normalizeSelectedAssetIds(body.selectedAssetIds);
         if (!normalizedSelection.valid) {
@@ -1094,6 +1096,7 @@ function renderReleaseCreateError(req, res, next, {
     selectedAssetsReturnTo,
     selectedAssetsInvalid,
     selectedAssetsRecoveryUrl,
+    isFreshCreate: false,
     invocationReturnTo: createDialogContext?.invocationReturnTo || '',
   });
 
@@ -1113,7 +1116,14 @@ function renderReleaseCreateError(req, res, next, {
     return;
   }
 
-  res.status(422).render('releases/form.njk', releaseCreateForm);
+  res.status(422).render('releases/form.njk', {
+    ...releaseCreateForm,
+    releaseSignatureConfiguration: getReleaseSignatureConfiguration(req),
+  });
+}
+
+function getReleaseSignatureConfiguration(req) {
+  return req.app.locals.releaseSignatureSettingsService.getConfiguration();
 }
 
 /**
@@ -1198,6 +1208,7 @@ function handleReleaseList(
       basePath,
       releasesLiveFiltering: true,
       releaseCreateDialogOpen: Boolean(releaseCreateDialogOpen),
+      releaseSignatureConfiguration: getReleaseSignatureConfiguration(req),
       releaseCreateForm: releaseCreateForm || buildCreateReleaseFormModel({
         appName,
         projectService,
@@ -1372,6 +1383,7 @@ function buildCreateReleaseFormModel({
   selectedAssetsInvalid = false,
   selectedAssetsRecoveryUrl = null,
   invocationReturnTo = '',
+  isFreshCreate = true,
 }) {
   const formValues = buildNewReleaseFormValues(values);
   const context = buildReleaseFormProjectContext(formValues.projectId, projectService);
@@ -1390,6 +1402,7 @@ function buildCreateReleaseFormModel({
     selectedAssetsInvalid,
     selectedAssetsRecoveryUrl,
     invocationReturnTo,
+    isFreshCreate,
   };
 }
 
@@ -1497,6 +1510,7 @@ function buildReleaseDetailRenderModel({
     editDialogOpen: resolvedEditDialogOpen,
     editDialogReturnTo: editDialogReturnTo || readReleaseEditReturnLocation(req?.query?.returnTo),
     editDialogForm: resolvedEditDialogForm,
+    releaseSignatureConfiguration: getReleaseSignatureConfiguration(req),
     publishDialogOpen: publishAvailable && !resolvedEditDialogOpen && (publishDialogOpen || req?.query?.publish === '1'),
     publishDialogForm: resolvedPublishDialogForm,
     socialPrepPublish: publishAvailable ? buildSocialPrepPublishModel(req, release, selectedAssets) : null,
