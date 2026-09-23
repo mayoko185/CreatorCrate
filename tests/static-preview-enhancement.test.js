@@ -723,8 +723,14 @@ function makeFetchSaveFixture({ action = '/settings/defaults', values = { value:
   return { form, controls, status, attributes };
 }
 
-function makeDefaultsFetchFixture({ value = 'tbd' } = {}) {
-  const fixture = makeFetchSaveFixture({ values: { new_projectStatus: value } });
+function makeDefaultsFetchFixture({ value = 'tbd', name = 'new_projectStatus' } = {}) {
+  const fixture = makeFetchSaveFixture({ values: { [name]: value } });
+  const cards = Object.fromEntries(['new_projectStatus', 'clockFormat', 'noteRevisionRetention']
+    .map((controlName) => [controlName, {
+      appendChild(status) { status.parentNode = this; },
+    }]));
+  fixture.status.parentNode = cards.new_projectStatus;
+  fixture.controls[0].closest = (selector) => selector === '.settings-defaults-section' ? cards[name] : null;
   const numberInputQueries = { count: 0 };
   const effective = {
     parentNode: {},
@@ -757,7 +763,7 @@ function makeDefaultsFetchFixture({ value = 'tbd' } = {}) {
     if (selector === '[data-autosubmit="fetch"]') return fixture.controls;
     return querySelectorAll(selector);
   };
-  return { ...fixture, effective, numberInputQueries, region, scope: { querySelectorAll: () => [fixture.form] } };
+  return { ...fixture, cards, effective, numberInputQueries, region, scope: { querySelectorAll: () => [fixture.form] } };
 }
 
 async function withDefaultsDomParser(parser, callback) {
@@ -2929,6 +2935,38 @@ describe('Open Locally fetch-save adoption', () => {
 });
 
 describe('Defaults fetch autosave adoption', () => {
+  it.each([
+    ['clockFormat', '24h', '12h', 'clockFormat'],
+    ['noteRevisionRetention', '10', '27', 'noteRevisionRetention'],
+  ])('keeps %s autosave feedback inside its card', async (name, initial, saved, payloadName) => {
+    const fixture = makeDefaultsFetchFixture({ name, value: initial });
+    const replacement = makeDefaultsFetchFixture({ name, value: saved });
+    const requests = [];
+
+    await withDefaultsDomParser(() => ({
+      querySelector: (selector) => selector === '[data-settings-defaults-region]' ? replacement.region : null,
+    }), async () => withBrowserGlobals(async (action, options) => {
+      requests.push({ action, options });
+      return { ok: true, redirected: true, text: async () => '<html>saved</html>' };
+    }, async () => {
+      enhanceDefaultsFetchSave(fixture.scope);
+      fixture.controls[0].value = saved;
+      fixture.controls[0].dispatch('change');
+      expect(fixture.status.parentNode).toBe(fixture.cards[name]);
+      expect(fixture.status.textContent).toBe('Saving settings.');
+      await flushAsync();
+
+      expect(requests).toHaveLength(1);
+      expect(requests[0].action).toBe('/settings/defaults');
+      expect(requests[0].options.body.get(payloadName)).toBe(saved);
+      expect(replacement.status.parentNode).toBe(replacement.cards[name]);
+      expect(replacement.status.textContent).toBe('Settings saved.');
+      expect(replacement.status.attributes.get('role')).toBe('status');
+      expect(replacement.status.attributes.get('aria-live')).toBe('polite');
+      expect(replacement.status.attributes.get('aria-atomic')).toBe('true');
+    }));
+  });
+
   it('saves the native New Project Status control in place and replaces its authoritative region', async () => {
     const fixture = makeDefaultsFetchFixture();
     const replacement = makeDefaultsFetchFixture({ value: 'ready' });
@@ -2960,10 +2998,13 @@ describe('Defaults fetch autosave adoption', () => {
   });
 
   it('renders authoritative validation markup in place and re-enhances its replacement control', async () => {
-    const fixture = makeDefaultsFetchFixture();
-    const replacement = makeDefaultsFetchFixture({ value: 'cancelled' });
+    const fixture = makeDefaultsFetchFixture({ name: 'clockFormat', value: '24h' });
+    const replacement = makeDefaultsFetchFixture({ name: 'clockFormat', value: 'invalid' });
     const nextRegion = {
       parentNode: {},
+      querySelector(selector) {
+        return selector === '#settings-defaults-form' ? replacement.form : null;
+      },
       querySelectorAll(selector) {
         if (selector === '#settings-defaults-form') return [replacement.form];
         if (selector === '[data-cc-dropdown]') return [];
@@ -2980,14 +3021,32 @@ describe('Defaults fetch autosave adoption', () => {
       text: async () => '<html>validation</html>',
     }), async () => {
       enhanceDefaultsFetchSave(fixture.scope);
-      fixture.controls[0].value = 'cancelled';
+      fixture.controls[0].value = 'invalid';
       fixture.controls[0].dispatch('change');
       await flushAsync();
 
       expect(fixture.region.replacement).toBe(nextRegion);
       expect(replacement.controls[0].listeners).toHaveLength(1);
       expect(fixture.form.requestSubmitCount).toBe(0);
+      expect(replacement.status.textContent).toBe('');
     }));
+  });
+
+  it('keeps a network save error in the changed card', async () => {
+    const fixture = makeDefaultsFetchFixture({ name: 'noteRevisionRetention', value: '10' });
+
+    await withBrowserGlobals(async () => { throw new Error('offline'); }, async () => {
+      enhanceDefaultsFetchSave(fixture.scope);
+      fixture.controls[0].value = '27';
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+
+      expect(fixture.status.parentNode).toBe(fixture.cards.noteRevisionRetention);
+      expect(fixture.status.textContent).toBe('Could not save settings. Your current changes were kept.');
+      expect(fixture.status.attributes.get('role')).toBe('status');
+      expect(fixture.status.attributes.get('aria-live')).toBe('polite');
+      expect(fixture.status.attributes.get('aria-atomic')).toBe('true');
+    });
   });
 
   it('does not replace Defaults markup for a superseded validation response', async () => {
@@ -8676,7 +8735,7 @@ describe('asset grid size enhancement', () => {
 });
 
 describe('Release form date picker enhancement', () => {
-  function makeDatePickerScope({ plannedValue = '', publishedValue = '' } = {}) {
+  function makeDatePickerScope({ plannedValue = '', publishedValue = '', timeValue = '', clockFormat = '24h' } = {}) {
     const listeners = [];
     const fields = [];
     const timeFields = [];
@@ -8937,9 +8996,10 @@ describe('Release form date picker enhancement', () => {
       return field;
     }
 
-    function makeTimeField({ inputValue = '' } = {}) {
+    function makeTimeField({ inputValue = '', format = '24h' } = {}) {
       const field = createElement('div');
       field.dataset.timePickerField = '';
+      field.dataset.clockFormat = format;
 
       const picker = createElement('div');
       picker.className = 'picker-control';
@@ -9008,7 +9068,7 @@ describe('Release form date picker enhancement', () => {
 
     const plannedField = makeField({ id: 'plannedDate', inputValue: plannedValue });
     const publishedField = makeField({ id: 'publishedDate', inputValue: publishedValue });
-    makeTimeField();
+    makeTimeField({ inputValue: timeValue, format: clockFormat });
 
     return {
       scope,
@@ -9048,6 +9108,9 @@ describe('Release form date picker enhancement', () => {
       expect(fixture.time.panel.hidden).toBe(false);
       expect(fixture.time.trigger.attrs['aria-expanded']).toBe('true');
       expect(fixture.time.panel.querySelectorAll('.time-picker-option')).toHaveLength(84);
+      expect(fixture.time.panel.querySelectorAll('.time-picker-option').filter((option) => option.hasAttribute('data-time-hour'))
+        .map((option) => option.textContent)).toEqual(Array.from({ length: 24 }, (_, hour) => String(hour).padStart(2, '0')));
+      expect(fixture.time.panel.querySelectorAll('.time-picker-option').some((option) => option.hasAttribute('data-time-period'))).toBe(false);
       const roles = fixture.time.panel.querySelectorAll('[role]').map((node) => node.getAttribute('role'));
       expect(roles).not.toContain('listbox');
       expect(roles).not.toContain('option');
@@ -9270,6 +9333,51 @@ describe('Release form date picker enhancement', () => {
       } finally {
         fixture.restoreDocument();
       }
+    }
+  });
+
+  it('shows 12-hour choices and initializes an existing afternoon value', () => {
+    const fixture = makeDatePickerScope({ timeValue: '13:05', clockFormat: '12h' });
+    try {
+      enhanceTimePickers(fixture.scope);
+      fixture.time.trigger.dispatch('click');
+      const options = fixture.time.panel.querySelectorAll('.time-picker-option');
+      expect(options.filter((option) => option.hasAttribute('data-time-hour')).map((option) => option.textContent))
+        .toEqual(Array.from({ length: 12 }, (_, hour) => String(hour + 1)));
+      expect(options.filter((option) => option.hasAttribute('data-time-period')).map((option) => option.textContent))
+        .toEqual(['AM', 'PM']);
+      expect(fixture.time.panel.querySelector('.date-picker-month-title').textContent).toBe('1:05 PM');
+      expect(options.find((option) => option.getAttribute('data-time-hour') === '1').getAttribute('aria-pressed')).toBe('true');
+      expect(options.find((option) => option.getAttribute('data-time-period') === 'PM').getAttribute('aria-pressed')).toBe('true');
+      expect(fixture.time.input.value).toBe('13:05');
+      expect(fixture.time.input.dispatched).toHaveLength(0);
+    } finally {
+      fixture.restoreDocument();
+    }
+  });
+
+  it.each([
+    [12, 'AM', '00:05', '12:05 AM'],
+    [9, 'AM', '09:05', '9:05 AM'],
+    [12, 'PM', '12:05', '12:05 PM'],
+    [1, 'PM', '13:05', '1:05 PM'],
+    [11, 'PM', '23:05', '11:05 PM'],
+  ])('writes %i:05 %s as canonical %s', (hour, period, canonical, visible) => {
+    const fixture = makeDatePickerScope({ timeValue: '00:05', clockFormat: '12h' });
+    try {
+      enhanceTimePickers(fixture.scope);
+      fixture.time.trigger.dispatch('click');
+      fixture.time.panel.querySelectorAll('.time-picker-option')
+        .find((option) => option.getAttribute('data-time-hour') === String(hour)).dispatch('click');
+      fixture.time.panel.querySelectorAll('.time-picker-option')
+        .find((option) => option.getAttribute('data-time-period') === period).dispatch('click');
+      expect(fixture.time.input.type).toBe('time');
+      expect(fixture.time.input.value).toBe(canonical);
+      expect(fixture.time.panel.querySelector('.date-picker-month-title').textContent).toBe(visible);
+      expect(fixture.time.input.dispatched.map((event) => event.type))
+        .toEqual(['input', 'change', 'input', 'change']);
+    } finally {
+      fixture.restoreDocument();
     }
   });
 

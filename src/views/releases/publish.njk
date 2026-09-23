@@ -76,7 +76,7 @@
                 </td>
                 <td class="asset-date">
                   {% if ra.last_seen_at %}
-                    {{ ra.last_seen_at }}
+                    {{ ra.last_seen_at | formatSqliteTimestamp(clockFormat) }}
                   {% else %}
                     &mdash;
                   {% endif %}

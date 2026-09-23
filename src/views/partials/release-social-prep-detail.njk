@@ -29,14 +29,14 @@
             <dt>Preparation requests</dt>
             <dd>{{ target.preparationRequestCount }}</dd>
             <dt>Last updated</dt>
-            <dd>{{ target.lastUpdatedAt or 'Not recorded' }}</dd>
+            <dd>{{ target.lastUpdatedAt | formatSqliteTimestamp(clockFormat) or 'Not recorded' }}</dd>
             {% if target.firstPreparedAt %}
               <dt>First prepared</dt>
-              <dd>{{ target.firstPreparedAt }}</dd>
+              <dd>{{ target.firstPreparedAt | formatSqliteTimestamp(clockFormat) }}</dd>
             {% endif %}
             {% if target.postedAt %}
               <dt>Posted confirmation</dt>
-              <dd>{{ target.postedAt }}</dd>
+              <dd>{{ target.postedAt | formatSqliteTimestamp(clockFormat) }}</dd>
             {% endif %}
           </dl>
           {% if target.prepareAnotherPostAction %}

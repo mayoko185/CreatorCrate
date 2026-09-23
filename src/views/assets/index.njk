@@ -254,7 +254,7 @@
                   </div>
                   <div class="asset-list-card-meta asset-list-card-meta--modified">
                     <dt>Modified</dt>
-                    <dd>{{ asset.modified_at or '—' }}</dd>
+                    <dd>{{ asset.modified_at | formatSqliteTimestamp(clockFormat) | formatIsoTimestamp(clockFormat) or '—' }}</dd>
                   </div>
                 </dl>
 

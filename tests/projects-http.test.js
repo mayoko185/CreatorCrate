@@ -346,6 +346,63 @@ describe('project HTTP workflow', () => {
     return Number(res.headers.location.replace('/projects/', ''));
   }
 
+  it('formats project detail and recent release metadata without changing stored dates or clocks', async () => {
+    const projectId = await createProject({ title: 'Timestamp Detail Project' });
+    db.prepare(`UPDATE projects SET created_at = ?, updated_at = ?, archived_at = ? WHERE id = ?`)
+      .run('2025-06-15 13:05:09', '2025-06-16 14:06:10', '2025-06-17 15:07:11', projectId);
+    const releaseId = db.prepare(`
+      INSERT INTO releases (project_id, title, planned_date, updated_at)
+      VALUES (?, 'Recent Timestamp Release', '2025-06-20', '2025-06-18 16:08:12')
+      RETURNING id
+    `).get(projectId).id;
+
+    for (const [preference, created, updated, archived, recent] of [
+      ['12h', '1:05:09 PM', '2:06:10 PM', '3:07:11 PM', '4:08:12 PM'],
+      ['24h', '13:05:09', '14:06:10', '15:07:11', '16:08:12'],
+    ]) {
+      app.locals.clockFormatSettingsService.setClockFormat(preference);
+      const html = (await agent.get(`/projects/${projectId}`).expect(200)).text;
+      const details = html.match(/<section class="project-detail-info project-detail-section">[\s\S]*?<\/section>/)?.[0] || '';
+      const releaseItem = extractReleaseItem(extractReleaseList(html), releaseId);
+      expect(details).toContain(`<dd>2025-06-15 ${created}</dd>`);
+      expect(details).toContain(`<dd>2025-06-16 ${updated}</dd>`);
+      expect(details).toContain(`<dd>2025-06-17 ${archived}</dd>`);
+      expect(releaseItem).toContain(`updated 2025-06-18 ${recent}`);
+      expect(releaseItem).toContain('planned 2025-06-20');
+    }
+
+    expect(db.prepare('SELECT created_at, updated_at, archived_at FROM projects WHERE id = ?').get(projectId))
+      .toEqual({ created_at: '2025-06-15 13:05:09', updated_at: '2025-06-16 14:06:10', archived_at: '2025-06-17 15:07:11' });
+    expect(db.prepare('SELECT updated_at FROM releases WHERE id = ?').get(releaseId).updated_at)
+      .toBe('2025-06-18 16:08:12');
+  });
+
+  it('formats visible SQLite timestamps in shared Project list and grid cards', async () => {
+    const projectId = await createProject({ title: 'Timestamp Card Project' });
+    db.prepare('UPDATE projects SET created_at = ?, updated_at = ? WHERE id = ?')
+      .run('2025-06-15 13:05:09', '2025-06-16 14:06:10', projectId);
+    const releaseId = db.prepare(`
+      INSERT INTO releases (project_id, title, updated_at)
+      VALUES (?, 'Timestamp Card Release', '2025-06-18 16:08:12')
+      RETURNING id
+    `).get(projectId).id;
+
+    for (const [preference, created, updated, recent] of [
+      ['12h', '1:05:09 PM', '2:06:10 PM', '4:08:12 PM'],
+      ['24h', '13:05:09', '14:06:10', '16:08:12'],
+    ]) {
+      app.locals.clockFormatSettingsService.setClockFormat(preference);
+      const gridCard = extractProjectCard((await agent.get('/projects').expect(200)).text, projectId);
+      const listCard = extractProjectCard((await agent.get('/projects?view=list').expect(200)).text, projectId);
+      const releaseItem = extractProjectReleaseItem(gridCard, releaseId);
+
+      expect(listCard).toMatch(new RegExp(`<dt>Updated</dt>\\s*<dd>2025-06-16 ${updated}</dd>`));
+      expect(gridCard).toMatch(new RegExp(`<dt>Created</dt>\\s*<dd>2025-06-15 ${created}</dd>`));
+      expect(gridCard).toMatch(new RegExp(`<dt>Updated</dt>\\s*<dd>2025-06-16 ${updated}</dd>`));
+      expect(releaseItem).toContain(`updated 2025-06-18 ${recent}`);
+    }
+  });
+
   function saveProjectDefault(option, value) {
     return app.locals.pageDefaultsService.saveDefault('projects', option, value);
   }
@@ -1132,7 +1189,7 @@ describe('project HTTP workflow', () => {
     expect(extractProjectCards(res.text)).toHaveLength(3);
     expect(res.text.match(/<li class="project-grid-item">/g)).toHaveLength(3);
     expect(res.text.match(/<article class="project-card[^"]*" data-project-card>/g)).toHaveLength(3);
-    expect(projectsTemplate).toContain('{{ projectCard.render(project, view) }}');
+    expect(projectsTemplate).toContain("{{ projectCard.render(project, view, 'h2', clockFormat) }}");
     expect(projectsTemplate).not.toContain('{% call projectCard.render(project, view) %}');
     expect(projectsTemplate).not.toContain('<dl class="project-card-metadata">');
     expect(projectsTemplate).not.toContain('project-card-meta--tags');
@@ -1299,6 +1356,18 @@ describe('project HTTP workflow', () => {
     expect(archived).toContain('<span class="status-badge status-badge--archived">Archived</span>');
     expect(card).not.toContain('release-thumbnail');
     expect(card).not.toContain('social-preparation');
+  });
+
+  it('formats planned release times in the shared Projects grid card', async () => {
+    const projectId = await createProject({ title: 'Clock Card Project' });
+    db.prepare(`INSERT INTO releases (project_id, title, planned_date, planned_time)
+      VALUES (?, 'Clock Card Release', '2025-06-15', '13:05')`).run(projectId);
+
+    for (const [preference, visible] of [['12h', '1:05 PM'], ['24h', '13:05']]) {
+      app.locals.clockFormatSettingsService.setClockFormat(preference);
+      const html = (await agent.get('/projects').expect(200)).text;
+      expect(extractProjectCard(html, projectId)).toContain(`planned 2025-06-15 ${visible}`);
+    }
   });
 
   it('passes the NSFW setting to sensitive primary images on Projects list and detail surfaces', async () => {

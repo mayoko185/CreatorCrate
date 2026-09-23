@@ -86,7 +86,7 @@
     {% if projects.length > 0 %}
         <ul class="{% if view == 'list' %}project-list{% else %}project-grid{% endif %}">
           {% for project in projects %}
-          {{ projectCard.render(project, view) }}
+          {{ projectCard.render(project, view, 'h2', clockFormat) }}
           {% endfor %}
         </ul>
 

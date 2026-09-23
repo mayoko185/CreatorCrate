@@ -104,7 +104,7 @@
       <span class="help-text" id="plannedDate-help">Target publication date for this release</span>
       {% if errors.plannedDate %}<span class="field-error-message" id="plannedDate-error">{{ errors.plannedDate }}</span>{% endif %}
     </div>
-    <div class="field scheduling-field {% if errors.plannedTime %}field-error{% endif %}" data-time-picker-field>
+    <div class="field scheduling-field {% if errors.plannedTime %}field-error{% endif %}" data-time-picker-field data-clock-format="{{ clockFormat }}">
       <label for="plannedTime">Scheduled time</label>
       <div class="picker-control"><div class="picker-input-row">
         <input class="picker-input" type="time" id="plannedTime" name="plannedTime" value="{{ values.plannedTime or '' }}" aria-describedby="plannedTime-help{% if errors.plannedTime %} plannedTime-error{% endif %}"{% if errors.plannedTime %} aria-invalid="true"{% endif %} data-time-picker-input>

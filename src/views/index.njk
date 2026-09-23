@@ -75,7 +75,7 @@
       {% if section.projects.length > 0 %}
         <ul class="project-grid">
           {% for project in section.projects %}
-            {{ projectCard.render(project, 'grid', 'h3') }}
+            {{ projectCard.render(project, 'grid', 'h3', clockFormat) }}
           {% endfor %}
         </ul>
       {% else %}

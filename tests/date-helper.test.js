@@ -9,7 +9,7 @@
  * parts of a Date.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { formatLocalDate, getLocalTodayIso } from '../src/util/date.js';
+import { formatIsoTimestamp, formatLocalDate, formatLocalTime, formatStoredTime, getLocalTodayIso } from '../src/util/date.js';
 
 describe('application-local date helper', () => {
   describe('formatLocalDate', () => {
@@ -92,6 +92,62 @@ describe('application-local date helper', () => {
       // local date pins the contract.
       vi.setSystemTime(new Date(2025, 5, 15, 23, 30, 0));
       expect(getLocalTodayIso()).toBe('2025-06-15');
+    });
+  });
+
+  describe('formatLocalTime', () => {
+    it.each([
+      [0, 0, '00:00', '12:00 AM'],
+      [9, 5, '09:05', '9:05 AM'],
+      [12, 0, '12:00', '12:00 PM'],
+      [13, 5, '13:05', '1:05 PM'],
+      [23, 59, '23:59', '11:59 PM'],
+    ])('formats local %i:%i in both clock formats', (hour, minute, twentyFourHour, twelveHour) => {
+      const date = new Date(2025, 5, 15, hour, minute);
+      expect(formatLocalTime(date)).toBe(twentyFourHour);
+      expect(formatLocalTime(date, '24h')).toBe(twentyFourHour);
+      expect(formatLocalTime(date, '12h')).toBe(twelveHour);
+    });
+
+    it('rejects an invalid clock format', () => {
+      expect(() => formatLocalTime(new Date(2025, 5, 15), 'invalid')).toThrow(RangeError);
+    });
+  });
+
+  describe('formatIsoTimestamp', () => {
+    it('retains the UTC date, seconds, and raw 24-hour value', () => {
+      const value = '2026-08-01T13:05:42.123Z';
+      expect(formatIsoTimestamp(value, '12h')).toBe('2026-08-01T1:05:42.123 PM Z');
+      expect(formatIsoTimestamp(value, '24h')).toBe(value);
+      expect(formatIsoTimestamp('not-a-date', '12h')).toBe('not-a-date');
+    });
+
+    it.each([
+      ['2026-08-01T00:00:00Z', '2026-08-01T12:00:00 AM Z'],
+      ['2026-08-01T12:00:00Z', '2026-08-01T12:00:00 PM Z'],
+    ])('preserves the ISO suffix at midnight and noon', (value, expected) => {
+      expect(formatIsoTimestamp(value, '12h')).toBe(expected);
+      expect(formatIsoTimestamp(value, '24h')).toBe(value);
+    });
+  });
+
+  describe('formatStoredTime', () => {
+    it('changes only the presentation of a valid HH:mm value', () => {
+      const stored = '09:05';
+      expect(formatStoredTime(stored)).toBe(stored);
+      expect(formatStoredTime(stored, '12h')).toBe('9:05 AM');
+      expect(stored).toBe('09:05');
+      expect(formatStoredTime('00:00', '12h')).toBe('12:00 AM');
+      expect(formatStoredTime('12:00', '12h')).toBe('12:00 PM');
+      expect(formatStoredTime('23:59', '12h')).toBe('11:59 PM');
+    });
+
+    it.each(['9:05', '24:00', '12:60', 'not a time', ''])('leaves malformed input unchanged', (value) => {
+      expect(formatStoredTime(value, '12h')).toBe(value);
+    });
+
+    it('rejects an invalid clock format even when the value is malformed', () => {
+      expect(() => formatStoredTime('invalid', 'invalid')).toThrow(RangeError);
     });
   });
 });

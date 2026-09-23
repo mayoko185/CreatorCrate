@@ -67,6 +67,7 @@ function makePage({
   timestampMs = [],
   filters = {},
   timezone = 'local',
+  clockFormat = '24h',
   autoRefreshEnabled = false,
   autoRefreshPreference = autoRefreshEnabled,
   logsDefaultsDialogState = null,
@@ -109,6 +110,7 @@ function makePage({
       'data-logs-viewer': '',
       'data-logs-page': String(page),
       'data-logs-timezone': timezone,
+      'data-logs-clock-format': clockFormat,
       'data-logs-auto-refresh-enabled': String(autoRefreshEnabled),
       'data-logs-auto-refresh-preference': String(autoRefreshPreference),
     },
@@ -116,6 +118,7 @@ function makePage({
   viewer.dataset = {
     logsPage: String(page),
     logsTimezone: timezone,
+    logsClockFormat: clockFormat,
     logsAutoRefreshEnabled: String(autoRefreshEnabled),
     logsAutoRefreshPreference: String(autoRefreshPreference),
   }; 
@@ -228,6 +231,56 @@ describe('logs auto-refresh client enhancement', () => {
       .toBe('2024-01-01 07:00 EST');
     expect(formatLogTimestamp(timestampMs, 'local', { localTimeZone: 'America/New_York' }))
       .toBe('2024-06-01 08:00 EDT');
+  });
+
+  it('uses the selected clock cycle without changing the instant or timezone', () => {
+    const timestampMs = Date.UTC(2024, 5, 1, 17, 5, 42);
+    expect(formatLogTimestamp(timestampMs, 'America/New_York', { clockFormat: '12h' }))
+      .toBe('2024-06-01 1:05 PM EDT');
+    expect(formatLogTimestamp(timestampMs, 'America/New_York', { clockFormat: '24h' }))
+      .toBe('2024-06-01 13:05 EDT');
+    expect(formatLogTimestamp(timestampMs, 'UTC', { clockFormat: '12h' }))
+      .toBe('2024-06-01 5:05 PM UTC');
+    expect(formatLogTimestamp(timestampMs, 'local', {
+      localTimeZone: 'America/New_York', clockFormat: '12h',
+    })).toBe('2024-06-01 1:05 PM EDT');
+  });
+
+  it('keeps 12-hour notation through enhancement, refresh, and a timezone change', async () => {
+    const timestampMs = Date.UTC(2024, 5, 1, 17, 5, 42);
+    const dialog = { close: vi.fn() };
+    const logsDefaultsDialogState = {
+      dialog,
+      savedValues: {
+        level: '', kind: '', subsystem: '', time: '', pageSize: '25',
+        timezone: 'America/New_York', autoRefresh: 'disabled',
+      },
+    };
+    const page = makePage({
+      timestampMs: [timestampMs], timezone: 'America/New_York',
+      clockFormat: '12h', logsDefaultsDialogState,
+    });
+    const initial = page.viewer.results.querySelectorAll('[data-log-timestamp-ms]')[0];
+    initial.textContent = '2024-06-01 1:05:42 PM EDT';
+    expect(enhanceLogViewerAutoRefresh(page.document)).toBe(1);
+    expect(initial.textContent).toBe('2024-06-01 1:05 PM EDT');
+    expect(initial.getAttribute('data-log-timestamp-ms')).toBe(String(timestampMs));
+
+    const next = results(['2'], [timestampMs]);
+    page.parsed.set('next', next);
+    page.windowObject.fetch.mockResolvedValue(response('next'));
+    page.refreshControl.fire('click', { preventDefault() {} });
+    await flush();
+    expect(next.querySelectorAll('[data-log-timestamp-ms]')[0].textContent)
+      .toBe('2024-06-01 1:05 PM EDT');
+
+    expect(logsDefaultsDialogState.onSuccessfulSubmit({
+      values: { ...logsDefaultsDialogState.savedValues, timezone: 'UTC' },
+    })).toBe(true);
+    expect(next.querySelectorAll('[data-log-timestamp-ms]')[0].textContent)
+      .toBe('2024-06-01 5:05 PM UTC');
+    expect(page.viewer.dataset.logsClockFormat).toBe('12h');
+    expect(page.viewer.dataset.logsTimezone).toBe('UTC');
   });
 
   it('starts enabled from the rendered default, preserves filters on page-one refresh, and keeps manual navigation native', async () => {

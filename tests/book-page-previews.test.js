@@ -185,6 +185,29 @@ describe('Book Page preview HTTP rendering', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  it('formats Book details and Page preview clocks without changing stored timestamps', async () => {
+    const book = app.locals.bookService.createBook({ title: 'Clock Book' });
+    const page = app.locals.noteService.createNote({ bookId: book.id, title: 'Clock Page' });
+    db.prepare("UPDATE books SET created_at = '2026-09-07 13:05:42', updated_at = '2026-09-08 00:06:07' WHERE id = ?").run(book.id);
+    db.prepare("UPDATE notes SET updated_at = '2026-09-09 13:05:42' WHERE id = ?").run(page.id);
+
+    app.locals.clockFormatSettingsService.setClockFormat('12h');
+    const response12h = (await agent.get(`/notes/books/${book.id}`).expect(200)).text;
+    expect(response12h).toContain('<dd>2026-09-07 1:05:42 PM</dd>');
+    expect(response12h).toContain('<dd>2026-09-08 12:06:07 AM</dd>');
+    expect(previewSection(response12h)).toContain('Updated 2026-09-09 1:05:42 PM');
+
+    app.locals.clockFormatSettingsService.setClockFormat('24h');
+    const response24h = (await agent.get(`/notes/books/${book.id}`).expect(200)).text;
+    expect(response24h).toContain('<dd>2026-09-07 13:05:42</dd>');
+    expect(response24h).toContain('<dd>2026-09-08 00:06:07</dd>');
+    expect(previewSection(response24h)).toContain('Updated 2026-09-09 13:05:42');
+    expect(db.prepare('SELECT created_at, updated_at FROM books WHERE id = ?').get(book.id))
+      .toEqual({ created_at: '2026-09-07 13:05:42', updated_at: '2026-09-08 00:06:07' });
+    expect(db.prepare('SELECT updated_at FROM notes WHERE id = ?').get(page.id).updated_at)
+      .toBe('2026-09-09 13:05:42');
+  });
+
   it('persists the complete Book defaults payload through the existing atomic route with global and per-Book scope', async () => {
     const firstBook = app.locals.bookService.createBook({ title: 'First Defaults Book' });
     const secondBook = app.locals.bookService.createBook({ title: 'Second Defaults Book' });

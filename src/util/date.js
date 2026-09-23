@@ -67,15 +67,78 @@ export function formatRelativeTime(isoString, now = new Date()) {
   return formatLocalDate(then);
 }
 
+function formatHoursMinutes(hours, minutes, clockFormat) {
+  if (clockFormat !== '12h' && clockFormat !== '24h') {
+    throw new RangeError('Clock format must be 12h or 24h.');
+  }
+
+  const minute = String(minutes).padStart(2, '0');
+  if (clockFormat === '24h') {
+    return `${String(hours).padStart(2, '0')}:${minute}`;
+  }
+
+  const hour = hours % 12 || 12;
+  return `${hour}:${minute} ${hours < 12 ? 'AM' : 'PM'}`;
+}
+
 /**
- * Format a Date as a local 24-hour time string (HH:MM) using the date's local
- * hours and minutes. Pure function of its input.
+ * Format a Date using its local hours and minutes. Callers pass the resolved
+ * request clock format; omitting it retains the existing 24-hour output.
  *
  * @param {Date} date
- * @returns {string} local time in HH:MM
+ * @param {'12h'|'24h'} [clockFormat]
+ * @returns {string}
  */
-export function formatLocalTime(date) {
-  const h = String(date.getHours()).padStart(2, '0');
-  const m = String(date.getMinutes()).padStart(2, '0');
-  return `${h}:${m}`;
+export function formatLocalTime(date, clockFormat = '24h') {
+  return formatHoursMinutes(date.getHours(), date.getMinutes(), clockFormat);
+}
+
+/**
+ * Format a stored HH:mm clock value without assigning it a timezone. Invalid
+ * values are returned unchanged, as with formatRelativeTime's input fallback.
+ *
+ * @param {string} value
+ * @param {'12h'|'24h'} [clockFormat]
+ * @returns {string}
+ */
+export function formatStoredTime(value, clockFormat = '24h') {
+  if (clockFormat !== '12h' && clockFormat !== '24h') {
+    throw new RangeError('Clock format must be 12h or 24h.');
+  }
+
+  if (typeof value !== 'string' || !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value)) {
+    return value;
+  }
+
+  return formatHoursMinutes(Number(value.slice(0, 2)), Number(value.slice(3, 5)), clockFormat);
+}
+
+/** Format SQLite datetime('now') text without converting its UTC clock to local time. */
+export function formatSqliteTimestamp(value, clockFormat = '24h') {
+  if (clockFormat !== '12h' && clockFormat !== '24h') {
+    throw new RangeError('Clock format must be 12h or 24h.');
+  }
+
+  const match = typeof value === 'string'
+    ? value.match(/^(\d{4}-\d{2}-\d{2}) ((?:[01]\d|2[0-3]):[0-5]\d):([0-5]\d)$/)
+    : null;
+  if (!match || clockFormat === '24h') return value;
+
+  const clock = formatStoredTime(match[2], clockFormat)
+    .replace(/ (AM|PM)$/, `:${match[3]} $1`);
+  return `${match[1]} ${clock}`;
+}
+
+/** Preserve an ISO UTC timestamp's date, seconds, and UTC meaning in display text. */
+export function formatIsoTimestamp(value, clockFormat = '24h') {
+  if (clockFormat !== '12h' && clockFormat !== '24h') {
+    throw new RangeError('Clock format must be 12h or 24h.');
+  }
+  const match = typeof value === 'string'
+    ? value.match(/^(\d{4}-\d{2}-\d{2})T((?:[01]\d|2[0-3]):[0-5]\d):([0-5]\d)(\.\d+)?Z$/)
+    : null;
+  if (!match || clockFormat === '24h') return value;
+  const clock = formatStoredTime(match[2], clockFormat)
+    .replace(/ (AM|PM)$/, `:${match[3]}${match[4] || ''} $1`);
+  return `${match[1]}T${clock} Z`;
 }

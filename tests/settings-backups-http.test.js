@@ -249,8 +249,8 @@ describe('settings — backup management HTTP', () => {
           autoScanIntervalMinutes: 15,
         },
       );
-      const lastScan = new Date(2026, 0, 1, 10, 15);
-      const nextScan = new Date(2026, 0, 1, 10, 30);
+      const lastScan = new Date(2026, 0, 1, 13, 5);
+      const nextScan = new Date(2026, 0, 1, 14, 30);
       configuredApp.locals.appMetaRepository.setValue(
         AUTO_SCAN_LAST_COMPLETED_AT_KEY,
         lastScan.toISOString(),
@@ -267,6 +267,13 @@ describe('settings — backup management HTTP', () => {
       expect(res.text).toContain(`${formatLocalDate(lastScan)} ${formatLocalTime(lastScan)}`);
       expect(res.text).toContain('Next scan');
       expect(res.text).toContain(`${formatLocalDate(nextScan)} ${formatLocalTime(nextScan)}`);
+
+      configuredApp.locals.clockFormatSettingsService.setClockFormat('12h');
+      const twelveHour = await configuredAuth.agent.get('/settings').expect(200);
+      expect(twelveHour.text).toContain(`${formatLocalDate(lastScan)} 1:05 PM`);
+      expect(twelveHour.text).toContain(`${formatLocalDate(nextScan)} 2:30 PM`);
+      expect(configuredApp.locals.appMetaRepository.getValue(AUTO_SCAN_LAST_COMPLETED_AT_KEY)).toBe(lastScan.toISOString());
+      expect(configuredApp.locals.appMetaRepository.getValue(AUTO_SCAN_NEXT_SCHEDULED_AT_KEY)).toBe(nextScan.toISOString());
     });
   });
 
@@ -342,6 +349,36 @@ describe('settings — backup management HTTP', () => {
       const result = await backupService.createBackup(db);
       const res = await agent.get('/settings/backups').expect(200);
       expect(res.text).toContain(result.filename);
+    });
+
+    it('formats backup creation clocks on list and confirmation pages without changing backup metadata', async () => {
+      const result = await backupService.createBackup(db);
+      const recorded = new Date('2026-08-02T13:05:42.123Z');
+      fs.utimesSync(path.join(resolveBackupDir(appDataRoot), result.filename), recorded, recorded);
+      const backup = backupService.listBackups().find((entry) => entry.filename === result.filename);
+      expect(backup.createdAt).toBe(recorded.toISOString());
+      const pages = [
+        '/settings/backups',
+        `/settings/backups/${result.filename}/restore`,
+        `/settings/backups/${result.filename}/delete`,
+      ];
+      for (const page of pages) {
+        expect((await agent.get(page).expect(200)).text).toContain(recorded.toISOString());
+      }
+      const relativeBefore = (await agent.get('/settings').expect(200)).text
+        .match(/<span class="settings-stat-label">Latest backup<\/span>\s*<span class="settings-stat-value">([^<]+)<\/span>/)?.[1];
+      expect(relativeBefore).toBeTruthy();
+      app.locals.clockFormatSettingsService.setClockFormat('12h');
+      for (const page of pages) {
+        const html = (await agent.get(page).expect(200)).text;
+        expect(html).toContain('2026-08-02T1:05:42.123 PM Z');
+        expect(html).toContain(result.filename);
+      }
+      expect(backupService.listBackups().find((entry) => entry.filename === result.filename).createdAt)
+        .toBe(recorded.toISOString());
+      expect((await agent.get('/settings').expect(200)).text).toContain(
+        `<span class="settings-stat-value">${relativeBefore}</span>`,
+      );
     });
 
     it('renders the backup list in the Settings table surface', async () => {

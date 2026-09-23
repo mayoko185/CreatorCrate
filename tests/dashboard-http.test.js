@@ -850,6 +850,24 @@ describe('dashboard HTTP composition', () => {
   // ─── Recently updated projects ──────────────────────────────────────
 
   describe('dashboard recently updated projects section', () => {
+    it('formats shared grid-card Project timestamps with the clock preference', async () => {
+      const projectId = await createProject(app, { title: 'Dashboard Timestamp Project', status: 'ready' });
+      db.prepare('UPDATE projects SET created_at = ?, updated_at = ? WHERE id = ?')
+        .run('2025-06-15 13:05:09', '2025-06-16 14:06:10', Number(projectId));
+
+      for (const [preference, created, updated] of [
+        ['12h', '1:05:09 PM', '2:06:10 PM'],
+        ['24h', '13:05:09', '14:06:10'],
+      ]) {
+        app.locals.clockFormatSettingsService.setClockFormat(preference);
+        const dashboard = (await app.testAgent.get('/').expect(200)).text;
+        const card = extractProjectCard(extractSection(dashboard, 'recent-projects'), projectId);
+
+        expect(card).toMatch(new RegExp(`<dt>Created</dt>\\s*<dd>2025-06-15 ${created}</dd>`));
+        expect(card).toMatch(new RegExp(`<dt>Updated</dt>\\s*<dd>2025-06-16 ${updated}</dd>`));
+      }
+    });
+
     it('renders recently updated projects through shared cards with Status and Project Type badges, no Priority', async () => {
       const projectId = await createProject(app, { title: 'Recent Card Project', status: 'ready', projectType: 'comic' });
 

@@ -227,8 +227,26 @@ describe('settings — logs HTTP', () => {
     const res = await agent.get('/settings/logs').expect(200);
 
     expect(res.text).toContain('data-logs-timezone="local"');
+    expect(res.text).toContain('data-logs-clock-format="24h"');
     expect(res.text).toContain('datetime="2024-06-01T12:00:00.123Z" data-log-timestamp-ms="1717243200123"');
     expect(res.text).toContain('>2024-06-01 12:00:00 UTC</time>');
+  });
+
+  it('renders the selected clock format in a named Logs timezone without changing the raw instant', async () => {
+    const occurredAtMs = Date.UTC(2024, 5, 1, 17, 5, 42) + 123;
+    insertLog({ occurredAtMs, event: 'timestamp.clock' });
+    app.locals.appMetaRepository.setValue('page_defaults.logs.timezone', 'America/New_York');
+
+    for (const [clockFormat, visibleTime] of [
+      ['12h', '2024-06-01 1:05:42 PM EDT'],
+      ['24h', '2024-06-01 13:05:42 EDT'],
+    ]) {
+      app.locals.clockFormatSettingsService.setClockFormat(clockFormat);
+      const res = await agent.get('/settings/logs').expect(200);
+      expect(res.text).toContain('data-logs-timezone="America/New_York"');
+      expect(res.text).toContain(`data-logs-clock-format="${clockFormat}"`);
+      expect(res.text).toContain(`datetime="2024-06-01T17:05:42.123Z" data-log-timestamp-ms="${occurredAtMs}">${visibleTime}</time>`);
+    }
   });
 
   it('renders a persisted positive numeric watermarkId without relaxing other sensitive context redaction', async () => {

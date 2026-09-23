@@ -186,7 +186,7 @@ function startSave(state, request) {
   state.pending = true;
   state.activePayload = request.payload;
   state.activeControlNames = new Set(request.controlNames);
-  notify(state.options.onStart, { form, payload: request.payload });
+  notify(state.options.onStart, { form, payload: request.payload, controlName: request.controlName });
   form.setAttribute?.('aria-busy', 'true');
   setFetchSaveStatus(form, 'Saving settings.', 'pending');
 
@@ -248,7 +248,7 @@ function startSave(state, request) {
 
     form.removeAttribute?.('aria-busy');
     setFetchSaveStatus(form, 'Settings saved.', 'saved');
-    notify(state.options.onSuccess, { form, response, html, payload: request.payload });
+    notify(state.options.onSuccess, { form, response, html, payload: request.payload, controlName: request.controlName });
   }).catch((error) => {
     if (handOffUncertain(state, request, { error, type: 'network' })) return;
     finishOrContinue(state, { error, type: 'network' });

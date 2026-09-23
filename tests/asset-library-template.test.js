@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import nunjucks from 'nunjucks';
 import { buildAssetLibraryUrl } from '../src/routes/asset-library-query.js';
+import { formatIsoTimestamp, formatSqliteTimestamp } from '../src/util/date.js';
 
 const VIEWS_DIR = fileURLToPath(new URL('../src/views', import.meta.url));
 const TEMPLATE_PATH = path.join(VIEWS_DIR, 'assets', 'index.njk');
@@ -214,6 +215,8 @@ function renderPage(overrides = {}) {
   };
   const pageUrl = overrides.pageUrl ?? ((urlOverrides = {}) => buildAssetLibraryUrl(state, urlOverrides));
   const env = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: true });
+  env.addFilter('formatIsoTimestamp', formatIsoTimestamp);
+  env.addFilter('formatSqliteTimestamp', formatSqliteTimestamp);
   return env.render('assets/index.njk', {
     ...model,
     pageUrl,
@@ -1246,6 +1249,8 @@ function renderProjectAssetsPage(overrides = {}) {
     ...overrides.filters,
   };
   const env = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: true });
+  env.addFilter('formatIsoTimestamp', formatIsoTimestamp);
+  env.addFilter('formatSqliteTimestamp', formatSqliteTimestamp);
   return env.render('projects/assets.njk', {
     project,
     assets: [],

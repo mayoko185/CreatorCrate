@@ -25,16 +25,16 @@
   </div>
 {% endmacro %}
 
-{% macro releaseGridCard(asset) %}
-  {% call(slot) assetCards.gridCard(asset, { filenameLink: true }) %}
+{% macro releaseGridCard(asset, clockFormat) %}
+  {% call(slot) assetCards.gridCard(asset, { filenameLink: true, clockFormat: clockFormat }) %}
     {% if slot == 'body' %}
       {{ releaseAssetMetadata(asset) }}
     {% endif %}
   {% endcall %}
 {% endmacro %}
 
-{% macro releaseListCard(asset) %}
-  {% call(slot) assetCards.listCard(asset, { cardClass: 'asset-list-card--release', headerStatusDetails: true, hideActions: true }) %}
+{% macro releaseListCard(asset, clockFormat) %}
+  {% call(slot) assetCards.listCard(asset, { cardClass: 'asset-list-card--release', headerStatusDetails: true, hideActions: true, clockFormat: clockFormat }) %}
     {% if slot == 'associations' %}
       {{ releaseAssetMetadata(asset, false) }}
     {% endif %}
@@ -136,14 +136,14 @@
         {% endif %}
 
         <dt>Created</dt>
-        <dd>{{ release.created_at }}</dd>
+        <dd>{{ release.created_at | formatSqliteTimestamp(clockFormat) }}</dd>
 
         <dt>Updated</dt>
-        <dd>{{ release.updated_at }}</dd>
+        <dd>{{ release.updated_at | formatSqliteTimestamp(clockFormat) }}</dd>
 
         {% if release.archived_at %}
           <dt>Archived</dt>
-          <dd>{{ release.archived_at }}</dd>
+          <dd>{{ release.archived_at | formatSqliteTimestamp(clockFormat) }}</dd>
         {% endif %}
 
         <dt>Selected assets</dt>
@@ -184,7 +184,7 @@
           <ul class="asset-grid" role="listbox" aria-label="Selected release assets">
             {% for asset in selectedAssets %}
               <li class="asset-grid-item{% if not asset.is_present %} is-missing{% endif %}">
-                {{ releaseGridCard(asset) }}
+                {{ releaseGridCard(asset, clockFormat) }}
               </li>
             {% endfor %}
           </ul>
@@ -192,7 +192,7 @@
           <ul class="asset-list asset-list--release" role="list" aria-label="Selected release assets">
             {% for asset in selectedAssets %}
               <li class="asset-list-item{% if not asset.is_present %} is-missing{% endif %}">
-                {{ releaseListCard(asset) }}
+                {{ releaseListCard(asset, clockFormat) }}
               </li>
             {% endfor %}
           </ul>
@@ -239,11 +239,11 @@
   {% set overlayIsPublished = release.published_date %}
 
   {% if not overlayIsArchived %}
-    {{ releaseEditDialog.render(release, editDialogForm, _csrf, releaseSignatureConfiguration, editDialogOpen, editDialogReturnTo) }}
+    {{ releaseEditDialog.render(release, editDialogForm, _csrf, releaseSignatureConfiguration, editDialogOpen, editDialogReturnTo, clockFormat) }}
     {{ releaseSignaturesDialog.render(releaseSignatureConfiguration, _csrf) }}
   {% endif %}
 
   {% if not overlayIsArchived and not overlayIsPublished %}
-    {{ releasePublishDialog.render(release, project, releaseAssets, publishDialogForm, socialPrepPublish, _csrf, publishDialogOpen) }}
+    {{ releasePublishDialog.render(release, project, releaseAssets, publishDialogForm, socialPrepPublish, _csrf, publishDialogOpen, clockFormat) }}
   {% endif %}
 {% endblock %}

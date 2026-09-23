@@ -15,7 +15,7 @@
           {% elif not preview.contentHtml %}
             <p class="notes-page-preview-empty-content">No content yet</p>
           {% endif %}
-          {% if preview.updatedAt %}<p class="notes-page-preview-updated">Updated {{ preview.updatedAt }}</p>{% endif %}
+          {% if preview.updatedAt %}<p class="notes-page-preview-updated">Updated {{ preview.updatedAt | formatSqliteTimestamp(clockFormat) }}</p>{% endif %}
         </li>
       {% endfor %}
     </ul>

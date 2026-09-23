@@ -7,6 +7,7 @@ import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
 import { NOTE_REVISION_RETENTION_KEY } from '../src/services/note-revision-settings-service.js';
+import { CLOCK_FORMAT_KEY } from '../src/services/clock-format-settings-service.js';
 import { authenticate, AUTH_CONFIG } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -136,9 +137,58 @@ describe('settings — page defaults HTTP', () => {
     expect(form).toContain('id="defaults-notes" class="settings-section settings-defaults-section"');
     expect(form).not.toContain('id="defaults-releases"');
     expect(form).toContain('data-settings-fetch-save-status role="status" aria-live="polite" aria-atomic="true"');
+    expect(form.match(/data-settings-fetch-save-status/g)).toHaveLength(1);
+    expect(settingsSection(form, 'defaults-new-projects')).toContain('data-settings-fetch-save-status');
     expect(res.text.indexOf('data-settings-defaults-region')).toBeLessThan(res.text.indexOf('<form id="settings-defaults-form"'));
     expect(form).toContain('<noscript>');
     expect(form).toContain('<button type="submit" class="button button-primary">Save Defaults</button>');
+  });
+
+  it('renders the 24-hour fallback and exposes the current clock format per request', async () => {
+    const observedFormats = [];
+    const originalRender = app.response.render;
+    app.response.render = function (...args) {
+      if (args[0] === 'settings/defaults.njk') observedFormats.push(this.locals.clockFormat);
+      return originalRender.apply(this, args);
+    };
+
+    const initial = await agent.get('/settings/defaults').expect(200);
+    const display = settingsSection(initial.text, 'defaults-display');
+    expect(display).toContain('<label for="clockFormat">Clock format</label>');
+    expect(display).toContain('name="clockFormat" required data-autosubmit="fetch"');
+    expect(selectedValue(display, 'clockFormat')).toBe('24h');
+    expect(display).toContain('Application fallback: <strong>24-hour</strong>');
+    expect(readMeta(db, CLOCK_FORMAT_KEY)).toBeUndefined();
+    expect(observedFormats).toEqual(['24h']);
+
+    await agent.post('/settings/defaults').type('form')
+      .send({ clockFormat: '12h', _csrf: csrfToken }).expect(302);
+    const twelveHour = await agent.get('/settings/defaults').expect(200);
+    expect(readMeta(db, CLOCK_FORMAT_KEY)).toBe('12h');
+    expect(selectedValue(settingsSection(twelveHour.text, 'defaults-display'), 'clockFormat')).toBe('12h');
+    expect(observedFormats).toEqual(['24h', '12h']);
+
+    await agent.post('/settings/defaults').type('form')
+      .send({ clockFormat: '24h', _csrf: csrfToken }).expect(302);
+    const twentyFourHour = await agent.get('/settings/defaults').expect(200);
+    expect(readMeta(db, CLOCK_FORMAT_KEY)).toBe('24h');
+    expect(selectedValue(settingsSection(twentyFourHour.text, 'defaults-display'), 'clockFormat')).toBe('24h');
+    expect(observedFormats).toEqual(['24h', '12h', '24h']);
+  });
+
+  it('rejects invalid clock format without changing persisted settings', async () => {
+    writeMeta(db, CLOCK_FORMAT_KEY, '12h');
+    writeMeta(db, defaultKey('new_project', 'status'), 'planned');
+
+    const res = await agent.post('/settings/defaults').type('form')
+      .send({ clockFormat: 'invalid', new_projectStatus: 'ready', _csrf: csrfToken })
+      .expect(422);
+
+    const display = settingsSection(res.text, 'defaults-display');
+    expect(display).toContain('aria-describedby="clockFormat-error" aria-invalid="true"');
+    expect(display).toContain('id="clockFormat-error">Clock format must be 12h or 24h.</span>');
+    expect(readMeta(db, CLOCK_FORMAT_KEY)).toBe('12h');
+    expect(readMeta(db, defaultKey('new_project', 'status'))).toBe('planned');
   });
 
   it('saves Calendar defaults through the existing Settings path and rejects invalid values atomically', async () => {
@@ -260,7 +310,7 @@ describe('settings — page defaults HTTP', () => {
 
     expect(selectedValue(res.text, 'new_projectStatus')).toBe('tbd');
     expect(selectedValue(res.text, 'new_projectProjectType')).toBe('images');
-    expect((res.text.match(/Application fallback:/g) || [])).toHaveLength(1);
+    expect((settingsSection(res.text, 'defaults-notes').match(/Application fallback:/g) || [])).toHaveLength(1);
     expect(res.text).toContain('Saved default: <strong>Tbd</strong>');
     expect(res.text).toContain('Saved default: <strong>Images</strong>');
     expect(res.text).toContain('These defaults apply only to new projects. Changing them does not modify existing projects.');

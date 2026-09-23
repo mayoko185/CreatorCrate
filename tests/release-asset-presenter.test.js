@@ -3,6 +3,7 @@ import {
   buildReleaseAssetPagePresentation,
   buildReleaseAssetPresentation,
 } from '../src/services/release-asset-presenter.js';
+import { formatLocalDate, formatLocalTime } from '../src/util/date.js';
 
 function assetRow(overrides = {}) {
   return {
@@ -25,6 +26,24 @@ function assetRow(overrides = {}) {
 }
 
 describe('release asset presenter', () => {
+  it('uses the selected local clock format without changing the raw modification time', () => {
+    const modifiedDate = new Date(2026, 7, 1, 13, 5);
+    const row = assetRow({ modified_at: modifiedDate.toISOString() });
+    const twelveHour = buildReleaseAssetPagePresentation({
+      selectedAssets: [row],
+      clockFormat: '12h',
+    }).selected[0];
+    const twentyFourHour = buildReleaseAssetPagePresentation({
+      selectedAssets: [row],
+      clockFormat: '24h',
+    }).selected[0];
+
+    expect(twelveHour.formattedModified).toBe(`${formatLocalDate(modifiedDate)} ${formatLocalTime(modifiedDate, '12h')}`);
+    expect(twentyFourHour.formattedModified).toBe(`${formatLocalDate(modifiedDate)} ${formatLocalTime(modifiedDate, '24h')}`);
+    expect(twelveHour.modified_at).toBe(row.modified_at);
+    expect(twentyFourHour.modified_at).toBe(row.modified_at);
+  });
+
   it('normalizes a selected asset with a preview without mutating its source row', () => {
     const row = assetRow({
       asset_id: 31,

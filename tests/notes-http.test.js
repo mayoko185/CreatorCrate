@@ -1520,6 +1520,32 @@ describe('top-level Notes HTTP slice', () => {
     expect(bookDetail.text).not.toContain('notes-revision-history');
   });
 
+  it('formats Page details and revision text using the clock preference without changing datetime values', async () => {
+    const { note } = createPage(app, { title: 'Clock Page', content: 'Original' });
+    app.locals.noteService.updateNote(note.id, { title: 'Clock Page', content: 'Updated' });
+    const [revision] = app.locals.noteService.listNoteRevisions(note.id);
+    db.prepare("UPDATE notes SET created_at = '2026-09-07 13:05:42', updated_at = '2026-09-08 00:06:07' WHERE id = ?").run(note.id);
+    db.prepare("UPDATE note_revisions SET created_at = '2026-09-09 13:05:42' WHERE id = ?").run(revision.id);
+
+    app.locals.clockFormatSettingsService.setClockFormat('12h');
+    const page12h = (await agent.get(`/notes/${note.id}`).expect(200)).text;
+    expect(page12h).toContain('<dt>Created</dt>\n    <dd>2026-09-07 1:05:42 PM</dd>');
+    expect(page12h).toContain('<dd>2026-09-08 12:06:07 AM</dd>');
+    expect(page12h).toContain('<time datetime="2026-09-09 13:05:42">2026-09-09 1:05:42 PM</time>');
+    const revision12h = (await agent.get(`/notes/${note.id}/revisions/${revision.id}`).expect(200)).text;
+    expect(revision12h).toContain('<time datetime="2026-09-09 13:05:42">2026-09-09 1:05:42 PM</time>');
+
+    app.locals.clockFormatSettingsService.setClockFormat('24h');
+    const page24h = (await agent.get(`/notes/${note.id}`).expect(200)).text;
+    expect(page24h).toContain('<dd>2026-09-07 13:05:42</dd>');
+    expect(page24h).toContain('<dd>2026-09-08 00:06:07</dd>');
+    expect(page24h).toContain('<time datetime="2026-09-09 13:05:42">2026-09-09 13:05:42</time>');
+    const revision24h = (await agent.get(`/notes/${note.id}/revisions/${revision.id}`).expect(200)).text;
+    expect(revision24h).toContain('<time datetime="2026-09-09 13:05:42">2026-09-09 13:05:42</time>');
+    expect(db.prepare('SELECT created_at, updated_at FROM notes WHERE id = ?').get(note.id))
+      .toEqual({ created_at: '2026-09-07 13:05:42', updated_at: '2026-09-08 00:06:07' });
+  });
+
   it('renders a scoped historical revision through the current sanitized Markdown path', async () => {
     const availableProjectId = insertProject(db, 'Available historical project');
     const deletedProjectId = insertProject(db, 'Deleted historical project');

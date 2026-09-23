@@ -14,7 +14,7 @@
       <dt>Filename</dt>
       <dd><code>{{ backup.filename }}</code></dd>
       <dt>Created</dt>
-      <dd>{{ backup.createdAt }}</dd>
+      <dd>{{ backup.createdAt | formatIsoTimestamp(clockFormat) }}</dd>
       <dt>Size</dt>
       <dd>{{ (backup.sizeBytes / 1024) | round(1) }} KB</dd>
       <dt>Validation</dt>

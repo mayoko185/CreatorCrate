@@ -41,7 +41,7 @@
         <div class="project-detail-section-body">
           <dl class="detail-list">
             <dt>Saved</dt>
-            <dd><time datetime="{{ revision.created_at }}">{{ revision.created_at }}</time></dd>
+            <dd><time datetime="{{ revision.created_at }}">{{ revision.created_at | formatSqliteTimestamp(clockFormat) }}</time></dd>
           </dl>
         </div>
       </section>

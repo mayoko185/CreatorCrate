@@ -568,6 +568,24 @@ describe('release HTTP workflow', () => {
       expect(schedulingRow).not.toContain('aria-modal="true"');
     });
 
+    it('passes the saved clock format to create and edit time pickers', async () => {
+      const projectId = await createTestProject('Clock Picker Markup Project');
+      const release = releaseRepository.create({
+        projectId, title: 'Clock Picker Release', description: '', notes: '',
+        plannedDate: '2025-06-15', plannedTime: '13:05', patreonUrl: null, publishedDate: null,
+      });
+
+      for (const preference of ['12h', '24h']) {
+        app.locals.clockFormatSettingsService.setClockFormat(preference);
+        for (const path of [`/releases/new?projectId=${projectId}`, '/releases', `/releases/${release.id}`]) {
+          const html = (await agent.get(path).expect(200)).text;
+          expect(html).toMatch(new RegExp(`<div class="field scheduling-field [^"]*" data-time-picker-field data-clock-format="${preference}">`));
+          expect(html).toMatch(/<input class="picker-input" type="time" id="plannedTime" name="plannedTime"/);
+          if (path === `/releases/${release.id}`) expect(html).toContain('value="13:05"');
+        }
+      }
+    });
+
     it('release form shows generic release-link help text in the correct field container', async () => {
       const projRes = await agent
         .post('/projects')
@@ -825,6 +843,54 @@ describe('release HTTP workflow', () => {
     expect(archivedCells[7]).toContain(
       '<span class="status-badge status-badge--archived">Archived</span>',
     );
+  });
+
+  it('uses the saved clock format for scheduled list times and leaves missing times absent', async () => {
+    const projectId = insertProjectDirect(db, { title: 'Clock List Project' });
+    const input = (title, plannedTime) => ({
+      projectId, title, description: '', notes: '', plannedDate: '2025-06-15',
+      plannedTime, patreonUrl: null, publishedDate: null,
+    });
+    const timed = releaseRepository.create(input('Timed List Release', '13:05'));
+    releaseRepository.create(input('Untimed List Release', null));
+
+    for (const [preference, visible] of [['12h', '1:05 PM'], ['24h', '13:05']]) {
+      app.locals.clockFormatSettingsService.setClockFormat(preference);
+      const html = (await agent.get('/releases').expect(200)).text;
+      expect(visibleText(extractTableCells(extractReleaseListRow(html, 'Timed List Release'))[4]))
+        .toBe(`2025-06-15 ${visible}`);
+      expect(visibleText(extractTableCells(extractReleaseListRow(html, 'Untimed List Release'))[4]))
+        .toBe('2025-06-15');
+      expect(releaseRepository.findById(timed.id).planned_time).toBe('13:05');
+    }
+  });
+
+  it('formats release detail metadata while leaving date-only fields and stored values intact', async () => {
+    const projectId = insertProjectDirect(db, { title: 'Timestamp Detail Project' });
+    const release = releaseRepository.create({
+      projectId, title: 'Timestamp Detail Release', description: '', notes: '',
+      plannedDate: '2025-06-20', plannedTime: null, patreonUrl: null,
+      publishedDate: '2025-06-21',
+    });
+    db.prepare('UPDATE releases SET created_at = ?, updated_at = ?, archived_at = ? WHERE id = ?')
+      .run('2025-06-15 13:05:09', '2025-06-16 14:06:10', '2025-06-17 15:07:11', release.id);
+
+    for (const [preference, created, updated, archived] of [
+      ['12h', '1:05:09 PM', '2:06:10 PM', '3:07:11 PM'],
+      ['24h', '13:05:09', '14:06:10', '15:07:11'],
+    ]) {
+      app.locals.clockFormatSettingsService.setClockFormat(preference);
+      const html = (await agent.get(`/releases/${release.id}`).expect(200)).text;
+      const details = html.match(/<dl class="detail-list release-detail-list">[\s\S]*?<\/dl>/)?.[0] || '';
+      expect(details).toContain(`<dd>2025-06-15 ${created}</dd>`);
+      expect(details).toContain(`<dd>2025-06-16 ${updated}</dd>`);
+      expect(details).toContain(`<dd>2025-06-17 ${archived}</dd>`);
+      expect(details).toContain('2025-06-20 <small>(release target)</small>');
+      expect(details).toContain('2025-06-21 <small>(release published)</small>');
+    }
+
+    expect(db.prepare('SELECT created_at, updated_at, archived_at, planned_date, published_date FROM releases WHERE id = ?').get(release.id))
+      .toEqual({ created_at: '2025-06-15 13:05:09', updated_at: '2025-06-16 14:06:10', archived_at: '2025-06-17 15:07:11', planned_date: '2025-06-20', published_date: '2025-06-21' });
   });
 
   it('release list ignores obsolete status filters without mapping them to project status', async () => {
@@ -2114,6 +2180,23 @@ describe('release HTTP workflow', () => {
   });
 
   describe('publish dialog rendering contract', () => {
+    it('formats release asset and publish scan timestamps from the saved clock preference', async () => {
+      const { releaseLocation, assetId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
+      db.prepare('UPDATE assets SET modified_at = ?, last_seen_at = ? WHERE id = ?')
+        .run('2026-08-01T13:05:42.000Z', '2026-08-01 13:05:42', assetId);
+      app.locals.clockFormatSettingsService.setClockFormat('12h');
+
+      const detail = await agent.get(`${releaseLocation}?view=list&publish=1`).expect(200);
+      const assets = await agent.get(`${releaseLocation}/assets?view=list`).expect(200);
+      const publish = await agent.get(`${releaseLocation}/publish`).expect(302);
+      expect(detail.text).toContain('2026-08-01T1:05:42.000 PM Z');
+      expect(detail.text).toContain('2026-08-01 1:05:42 PM');
+      expect(assets.text).toContain('2026-08-01T1:05:42.000 PM Z');
+      expect(publish.headers.location).toBe(`${releaseLocation}?publish=1`);
+      expect(db.prepare('SELECT modified_at, last_seen_at FROM assets WHERE id = ?').get(assetId))
+        .toEqual({ modified_at: '2026-08-01T13:05:42.000Z', last_seen_at: '2026-08-01 13:05:42' });
+    });
+
     it('keeps the Review & Publish trigger as a primary icon action with a fallback href and dialog contract', async () => {
       const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 

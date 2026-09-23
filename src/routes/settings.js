@@ -20,6 +20,7 @@ import { TAG_NAME_MAX, TagNotFoundError, TagValidationError } from '../services/
 import { OpenLocallySettingsValidationError } from '../services/open-locally-settings-service.js';
 import { SocialPrepSettingsValidationError } from '../services/social-prep-settings-service.js';
 import { NoteRevisionSettingsValidationError } from '../services/note-revision-settings-service.js';
+import { ClockFormatSettingsValidationError, validateClockFormat } from '../services/clock-format-settings-service.js';
 import {
   ProjectOptionCatalogueConflictError,
   ProjectOptionCatalogueIntegrityError,
@@ -97,7 +98,7 @@ const NOTICES = {
   },
   global_default_saved: { variant: 'success', text: 'Global asset-browser default saved.' },
   preview_category_saved: { variant: 'success', text: 'Preview category saved.' },
-  defaults_saved: { variant: 'success', text: 'Page defaults saved successfully.' },
+  defaults_saved: { variant: 'success', text: 'Defaults saved successfully.' },
   tag_created: { variant: 'success', text: 'Tag created successfully.' },
   tag_renamed: { variant: 'success', text: 'Tag renamed successfully.' },
   tag_deleted: { variant: 'success', text: 'Tag deleted successfully.' },
@@ -124,6 +125,7 @@ const DEFAULTS_POST_SECTIONS = Object.freeze([
 ]);
 
 const NOTE_REVISION_RETENTION_FIELD = 'noteRevisionRetention';
+const CLOCK_FORMAT_FIELD = 'clockFormat';
 
 const PROJECT_OPTION_CATALOGUES = Object.freeze({
   status: Object.freeze({
@@ -265,6 +267,14 @@ function getPageDefaultsService(req) {
   return service;
 }
 
+function getClockFormatSettingsService(req) {
+  const service = req.app?.locals?.clockFormatSettingsService;
+  if (!service) {
+    throw new Error('Settings Defaults requires app.locals.clockFormatSettingsService.');
+  }
+  return service;
+}
+
 function getTagService(req) {
   const service = req.app?.locals?.tagService;
   if (!service) {
@@ -297,19 +307,19 @@ function getSocialPrepSettingsService(req) {
   return service;
 }
 
-function formatScanTimestamp(value) {
+function formatScanTimestamp(value, clockFormat) {
   if (typeof value !== 'string' || value.length === 0) return null;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
-  return `${formatLocalDate(date)} ${formatLocalTime(date)}`;
+  return `${formatLocalDate(date)} ${formatLocalTime(date, clockFormat)}`;
 }
 
-function buildAutomaticScanTiming(appMetaRepository, intervalMinutes) {
+function buildAutomaticScanTiming(appMetaRepository, intervalMinutes, clockFormat) {
   if (!Number.isSafeInteger(intervalMinutes) || intervalMinutes <= 0) return null;
 
   return {
-    lastScan: formatScanTimestamp(appMetaRepository.getValue(AUTO_SCAN_LAST_COMPLETED_AT_KEY)),
-    nextScan: formatScanTimestamp(appMetaRepository.getValue(AUTO_SCAN_NEXT_SCHEDULED_AT_KEY)),
+    lastScan: formatScanTimestamp(appMetaRepository.getValue(AUTO_SCAN_LAST_COMPLETED_AT_KEY), clockFormat),
+    nextScan: formatScanTimestamp(appMetaRepository.getValue(AUTO_SCAN_NEXT_SCHEDULED_AT_KEY), clockFormat),
   };
 }
 
@@ -487,14 +497,33 @@ function buildLogsUrl(filters, page = 1) {
   return query ? '/settings/logs?' + query : '/settings/logs';
 }
 
-function formatLogRecord(record) {
+function formatLogTimestamp(timestamp, timezone, clockFormat) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: clockFormat === '12h' ? 'numeric' : '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hourCycle: clockFormat === '12h' ? 'h12' : 'h23',
+    timeZone: timezone === 'local' ? 'UTC' : timezone,
+    timeZoneName: 'short',
+  }).formatToParts(timestamp);
+  const values = Object.fromEntries(parts
+    .filter(({ type }) => type !== 'literal')
+    .map(({ type, value }) => [type, value]));
+  const meridiem = clockFormat === '12h' ? ` ${/^a/i.test(values.dayPeriod) ? 'AM' : 'PM'}` : '';
+  return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}:${values.second}${meridiem} ${values.timeZoneName}`;
+}
+
+function formatLogRecord(record, timezone, clockFormat) {
   const timestamp = new Date(record.occurred_at_ms);
   const timestampValid = !Number.isNaN(timestamp.getTime());
   return {
     id: record.id,
     timestampMs: timestampValid ? record.occurred_at_ms : null,
     timestampIso: timestampValid ? timestamp.toISOString() : null,
-    timestamp: timestampValid ? timestamp.toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, ' UTC') : 'Unknown time',
+    timestamp: timestampValid ? formatLogTimestamp(timestamp, timezone, clockFormat) : 'Unknown time',
     level: safeLogViewerText(record.level),
     kind: safeLogViewerText(record.kind),
     subsystem: safeLogViewerText(record.subsystem),
@@ -568,7 +597,7 @@ function renderLogsPage(req, res, {
     ...repositoryFilters,
     page,
     pageSize,
-  }).map(formatLogRecord);
+  }).map((record) => formatLogRecord(record, resolvedDefaults.timezone, res.locals.clockFormat));
   const logsDefaults = buildPageDefaultsDialogModel({
     pageDefaultsService,
     page: LOGS_PAGE_DEFAULTS,
@@ -588,6 +617,7 @@ function renderLogsPage(req, res, {
     logsDefaults,
     logsDefaultsDialogOpen,
     timezone: resolvedDefaults.timezone,
+    clockFormat: res.locals.clockFormat,
     autoRefreshEnabled: resolvedDefaults.autoRefresh === 'enabled' && page === 1,
     autoRefreshPreferenceEnabled: resolvedDefaults.autoRefresh === 'enabled',
     page,
@@ -1039,10 +1069,13 @@ function renderDefaultsPage(req, res, {
   submittedValues = null,
   submittedNoteRevisionRetention,
   noteRevisionRetentionSubmitted = false,
+  submittedClockFormat,
+  clockFormatSubmitted = false,
   errors = {},
 } = {}) {
   const service = getPageDefaultsService(req);
   const noteRevisionSettingsService = getNoteRevisionSettingsService(req);
+  const clockFormatSetting = getClockFormatSettingsService(req).getClockFormatSetting();
   res.status(status).render('settings/defaults.njk', {
     appName,
     notice,
@@ -1056,6 +1089,14 @@ function renderDefaultsPage(req, res, {
       submitted: noteRevisionRetentionSubmitted,
       error: errors[NOTE_REVISION_RETENTION_FIELD] || null,
     }),
+    clockFormat: {
+      value: clockFormatSubmitted && !errors[CLOCK_FORMAT_FIELD]
+        ? submittedClockFormat
+        : clockFormatSetting.value,
+      savedValue: clockFormatSetting.value,
+      usesFallback: clockFormatSetting.isDefault,
+      error: errors[CLOCK_FORMAT_FIELD] || null,
+    },
   });
 }
 
@@ -1256,7 +1297,7 @@ export function createSettingsRouter({
       invalidBackupCount: backups.filter((b) => !b.valid).length,
       retentionCount: backupRetentionCount,
       autoScanIntervalMinutes,
-      automaticScanTiming: buildAutomaticScanTiming(appMetaRepository, autoScanIntervalMinutes),
+      automaticScanTiming: buildAutomaticScanTiming(appMetaRepository, autoScanIntervalMinutes, res.locals.clockFormat),
       paths: { projectsRoot, databasePath, appDataRoot },
       session: authSettings
         ? {
@@ -1429,6 +1470,12 @@ export function createSettingsRouter({
   router.post('/defaults', (req, res, next) => {
     const service = getPageDefaultsService(req);
     const noteRevisionSettingsService = getNoteRevisionSettingsService(req);
+    const clockFormatSettingsService = getClockFormatSettingsService(req);
+    const clockFormatSubmitted = Object.hasOwn(
+      req.body && typeof req.body === 'object' ? req.body : {},
+      CLOCK_FORMAT_FIELD,
+    );
+    const submittedClockFormat = clockFormatSubmitted ? req.body[CLOCK_FORMAT_FIELD] : undefined;
     const noteRevisionRetentionSubmitted = Object.hasOwn(
       req.body && typeof req.body === 'object' ? req.body : {},
       NOTE_REVISION_RETENTION_FIELD,
@@ -1440,6 +1487,14 @@ export function createSettingsRouter({
     let validation;
     try {
       validation = validateSubmittedPageDefaults(service, submittedValues, req.body);
+      if (clockFormatSubmitted) {
+        try {
+          validateClockFormat(submittedClockFormat);
+        } catch (err) {
+          if (!(err instanceof ClockFormatSettingsValidationError)) throw err;
+          validation.errors[CLOCK_FORMAT_FIELD] = err.message;
+        }
+      }
     } catch (err) {
       return next(err);
     }
@@ -1449,6 +1504,8 @@ export function createSettingsRouter({
         appName,
         status: 422,
         submittedValues,
+        submittedClockFormat,
+        clockFormatSubmitted,
         errors: validation.errors,
       });
       return;
@@ -1463,6 +1520,12 @@ export function createSettingsRouter({
             submittedNoteRevisionRetention,
           );
           if (savedRetention !== previousRetention) changedOptionsByPage.set('notes', 1);
+        }
+
+        if (clockFormatSubmitted) {
+          const previousClockFormat = clockFormatSettingsService.getClockFormat();
+          clockFormatSettingsService.setClockFormat(submittedClockFormat);
+          if (submittedClockFormat !== previousClockFormat) changedOptionsByPage.set('display', 1);
         }
 
         for (const { page } of DEFAULTS_POST_SECTIONS) {
@@ -1488,6 +1551,8 @@ export function createSettingsRouter({
           submittedValues,
           submittedNoteRevisionRetention,
           noteRevisionRetentionSubmitted: true,
+          submittedClockFormat,
+          clockFormatSubmitted,
           errors: {
             [NOTE_REVISION_RETENTION_FIELD]: err.errors?.revisionRetention || err.message,
           },
@@ -1497,7 +1562,7 @@ export function createSettingsRouter({
       return next(err);
     }
 
-    const changedPages = [...DEFAULTS_POST_SECTIONS.map(({ page }) => page), 'notes']
+    const changedPages = [...DEFAULTS_POST_SECTIONS.map(({ page }) => page), 'notes', 'display']
       .filter((page) => changedOptionsByPage.has(page));
     if (changedPages.length > 0) {
       logSettingsActivity(applicationLogger, 'settings.defaults.updated', {

@@ -139,7 +139,7 @@
   {% endif %}
 {% endmacro %}
 
-{% macro assetCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, autoRenameSurface, autoRenameInitialIndex, autoRenameTotal) %}
+{% macro assetCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, autoRenameSurface, autoRenameInitialIndex, autoRenameTotal, clockFormat) %}
   {% set renameAttempt = renameFailure and renameFailure.assetId == asset.id %}
   {% set selected = (asset.id ~ '') in submittedSelectedAssetIds %}
   <li class="asset-grid-item{% if not asset.is_present %} is-missing{% endif %}"{% if autoRenameSurface %}
@@ -154,6 +154,7 @@
       aria-label="Reorder {{ asset.filename }}"
       aria-describedby="auto-rename-instructions"{% endif %}>
     {% call(slot) assetPresentation.gridCard(asset, {
+      clockFormat: clockFormat,
       projectLayout: true,
       selected: selected,
       selectable: not isArchived and asset.is_present,
@@ -229,7 +230,7 @@
   </li>
 {% endmacro %}
 
-{% macro assetListCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, autoRenameSurface, autoRenameInitialIndex, autoRenameTotal) %}
+{% macro assetListCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, autoRenameSurface, autoRenameInitialIndex, autoRenameTotal, clockFormat) %}
   {% set renameAttempt = renameFailure and renameFailure.assetId == asset.id %}
   {% set selectionLabel = asset.relative_path or asset.filename %}
   {% set selected = not isArchived and asset.is_present and (asset.id ~ '') in submittedSelectedAssetIds %}
@@ -245,6 +246,7 @@
       aria-label="Reorder {{ asset.filename }}"
       aria-describedby="auto-rename-instructions"{% endif %}>
     {% call(slot) assetPresentation.listCard(asset, {
+      clockFormat: clockFormat,
       cardClass: 'asset-list-card--project',
       projectLayout: true,
       headerStatusDetails: true,
@@ -757,13 +759,13 @@
         {% if filters.view == 'grid' %}
           <ul class="asset-grid" role="listbox" aria-label="Assets">
             {% for asset in assets %}
-             {{ assetCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, autoRenameSurface, loop.index0, assets.length) }}
+             {{ assetCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, autoRenameSurface, loop.index0, assets.length, clockFormat) }}
             {% endfor %}
           </ul>
         {% elif filters.view == 'list' %}
           <ul class="asset-list asset-list--project" role="list" aria-label="Project assets" data-list-size="large">
             {% for asset in assets %}
-              {{ assetListCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, autoRenameSurface, loop.index0, assets.length) }}
+              {{ assetListCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, autoRenameSurface, loop.index0, assets.length, clockFormat) }}
             {% endfor %}
           </ul>
         {% endif %}

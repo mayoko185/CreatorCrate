@@ -41,15 +41,24 @@ function replaceDefaultsRegion(form, html) {
   return next;
 }
 
-function setReplacementStatus(region) {
-  const form = region?.querySelector?.(DEFAULTS_FORM_SELECTOR);
+function placeStatus(form, controlName) {
   const status = form?.querySelector?.('[data-settings-fetch-save-status]');
+  const control = [...(form?.querySelectorAll?.('[data-autosubmit="fetch"]') || [])]
+    .find((candidate) => candidate.name === controlName);
+  const section = control?.closest?.('.settings-defaults-section');
+  if (status && section) section.appendChild(status);
+  return status;
+}
+
+function setReplacementStatus(region, controlName, message, state) {
+  const form = region?.querySelector?.(DEFAULTS_FORM_SELECTOR);
+  const status = placeStatus(form, controlName);
   if (!form || !status) return;
-  form.setAttribute?.('data-settings-fetch-save-state', 'saved');
+  form.setAttribute?.('data-settings-fetch-save-state', state);
   status.setAttribute?.('role', 'status');
   status.setAttribute?.('aria-live', 'polite');
   status.setAttribute?.('aria-atomic', 'true');
-  status.textContent = 'Settings saved.';
+  status.textContent = message;
 }
 
 function enhanceReplacement(region) {
@@ -61,11 +70,12 @@ function enhanceReplacement(region) {
 
 function fetchSaveOptions() {
   return {
-    onSuccess: ({ form, html, superseded = false }) => {
+    onStart: ({ form, controlName }) => placeStatus(form, controlName),
+    onSuccess: ({ form, html, controlName, superseded = false }) => {
       if (superseded) return;
       const focus = captureRegionFocus(currentDefaultsRegion(form));
       const region = replaceDefaultsRegion(form, html);
-      setReplacementStatus(region);
+      setReplacementStatus(region, controlName, 'Settings saved.', 'saved');
       enhanceReplacement(region);
       restoreRegionFocus(region, focus);
     },

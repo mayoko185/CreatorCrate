@@ -132,7 +132,7 @@
           </dd>
 
           <dt>Modified time</dt>
-          <dd>{{ asset.modified_at or '—' }}</dd>
+          <dd>{{ asset.modified_at | formatSqliteTimestamp(clockFormat) | formatIsoTimestamp(clockFormat) or '—' }}</dd>
         </dl>
       </section>
 
@@ -149,10 +149,10 @@
           </dd>
 
           <dt>Last seen</dt>
-          <dd>{{ asset.last_seen_at or '—' }}</dd>
+          <dd>{{ asset.last_seen_at | formatSqliteTimestamp(clockFormat) or '—' }}</dd>
 
           <dt>Missing since</dt>
-          <dd>{{ asset.missing_since or '—' }}</dd>
+          <dd>{{ asset.missing_since | formatSqliteTimestamp(clockFormat) or '—' }}</dd>
         </dl>
       </section>
 

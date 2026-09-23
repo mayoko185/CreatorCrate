@@ -353,6 +353,22 @@ describe('release Social Preparation detail display', () => {
     expect(failed).toContain('href="/settings/logs?subsystem=social_preparation">Social Preparation Logs</a>');
   });
 
+  it('formats recorded Social Posts clocks without changing stored UTC timestamps', async () => {
+    const recorded = '2026-08-02 13:05:42';
+    target('patreon', 'posted', 1, recorded, recorded);
+    db.prepare("UPDATE release_social_platforms SET updated_at = ? WHERE release_id = ? AND platform = 'patreon'")
+      .run(recorded, releaseId);
+
+    const original = platformSection((await detail({ allowPostedState: true })).section, 'patreon');
+    expect(original).toContain(`<dd>${recorded}</dd>`);
+
+    app.locals.clockFormatSettingsService.setClockFormat('12h');
+    const formatted = platformSection((await detail({ allowPostedState: true })).section, 'patreon');
+    expect(formatted.match(/<dd>2026-08-02 1:05:42 PM<\/dd>/g)).toHaveLength(3);
+    expect(db.prepare("SELECT updated_at, prepared_at, posted_at FROM release_social_platforms WHERE release_id = ? AND platform = 'patreon'")
+      .get(releaseId)).toEqual({ updated_at: recorded, prepared_at: recorded, posted_at: recorded });
+  });
+
   it.each([
     ['pending', 'Preparation request pending'], ['starting', 'Starting'],
     ['preparing', 'Preparing'], ['uploading', 'Uploading'],

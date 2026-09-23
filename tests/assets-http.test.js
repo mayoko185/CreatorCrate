@@ -2655,6 +2655,38 @@ describe('asset browser HTTP workflow', () => {
 
   // ─── Last seen and missing-since dates (viewer page) ───────────
 
+  it('renders asset clocks from the request preference while retaining stored timestamps', async () => {
+    const created = await createProject('Clock Display Assets');
+    const id = Number(created.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Clock Display Assets');
+    const modifiedAt = '2026-08-01T13:05:42.000Z';
+    const asset = writeIndexedAsset(id, projectDir, 'clock.png', 'png', { modifiedAt });
+    const legacyAsset = writeIndexedAsset(id, projectDir, 'legacy.png', 'png', {
+      modifiedAt: '2026-08-02 13:05:42',
+    });
+    db.prepare('UPDATE assets SET last_seen_at = ?, missing_since = ? WHERE id = ?')
+      .run('2026-08-01 13:05:42', '2026-08-01 13:05:42', asset.id);
+    app.locals.clockFormatSettingsService.setClockFormat('12h');
+
+    const library = await agent.get('/asset-viewer?view=list').redirects(2).expect(200);
+    const projectAssets = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
+    const viewer = await agent.get(`/projects/${id}/assets/${asset.id}`).expect(200);
+    expect(library.text).toContain('2026-08-01T1:05:42.000 PM Z');
+    expect(library.text).toContain('2026-08-02 1:05:42 PM');
+    expect(projectAssets.text).toContain('2026-08-01T1:05:42.000 PM Z');
+    expect(projectAssets.text).toContain('2026-08-02 1:05:42 PM');
+    expect(viewer.text).toContain('<dt>Last seen</dt>');
+    expect(viewer.text).toMatch(/<dt>Last seen<\/dt>\s*<dd>2026-08-01 1:05:42 PM<\/dd>/);
+    expect(viewer.text).toMatch(/<dt>Missing since<\/dt>\s*<dd>2026-08-01 1:05:42 PM<\/dd>/);
+    expect(viewer.text).toContain('2026-08-01T1:05:42.000 PM Z');
+    expect(assetRepo.findById(asset.id)).toMatchObject({
+      modified_at: modifiedAt,
+      last_seen_at: '2026-08-01 13:05:42',
+      missing_since: '2026-08-01 13:05:42',
+    });
+    expect(assetRepo.findById(legacyAsset.id).modified_at).toBe('2026-08-02 13:05:42');
+  });
+
   it('shows last_seen_at for present assets on the viewer page', async () => {
     const res = await createProject('Last Seen');
     const id = res.headers.location.replace('/projects/', '');

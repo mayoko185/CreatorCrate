@@ -418,11 +418,11 @@ export function createWorkflowQueryService({
   const imageDimensionConcurrencyService = injectedImageDimensionConcurrencyService
     ?? createProcessingConcurrencyService({ concurrency: IMAGE_DIMENSION_IO_CONCURRENCY });
 
-  function formatAssetModified(value) {
+  function formatAssetModified(value, clockFormat = '24h') {
     if (typeof value !== 'string' || value.length === 0) return '\u2014';
     const date = new Date(value);
     if (Number.isNaN(date.getTime())) return '\u2014';
-    return `${formatLocalDate(date)} ${formatLocalTime(date)}`;
+    return `${formatLocalDate(date)} ${formatLocalTime(date, clockFormat)}`;
   }
 
   async function enrichAssetLibraryImageDimensions(assets, options = {}) {
@@ -466,7 +466,7 @@ export function createWorkflowQueryService({
     });
   }
 
-  function attachAssetInformationPresentation(assets, projectOptionPresentation) {
+  function attachAssetInformationPresentation(assets, projectOptionPresentation, clockFormat = '24h') {
     if (!Array.isArray(assets) || assets.length === 0) return [];
 
     return assets.map((asset) => {
@@ -480,7 +480,7 @@ export function createWorkflowQueryService({
         projectStatusOption: projectOptions.projectStatusOption,
         projectTypeOption: projectOptions.projectTypeOption,
         formattedSize: formatFileSize(asset.size_bytes),
-        formattedModified: formatAssetModified(asset.modified_at),
+        formattedModified: formatAssetModified(asset.modified_at, clockFormat),
       };
     });
   }
@@ -506,6 +506,7 @@ export function createWorkflowQueryService({
     const presentedAssets = attachAssetInformationPresentation(
       attachAssetLibraryReleaseTitles(attachAssetLibraryTags(normalizedAssets, tagRepository.list())),
       projectOptionPresentation,
+      options.clockFormat,
     );
     const dimensionedAssets = options.includeImageDimensions === false
       ? presentedAssets
@@ -1113,6 +1114,7 @@ export function createWorkflowQueryService({
         };
       }), tagCatalog)),
       projectOptionPresentation,
+      options.clockFormat,
     );
 
     // This is intentionally an unpaged project-option query: it is the

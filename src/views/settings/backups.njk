@@ -45,7 +45,7 @@
                   {% for backup in backups %}
                     <tr>
                       <td><code>{{ backup.filename }}</code></td>
-                      <td>{{ backup.createdAt }}</td>
+                      <td>{{ backup.createdAt | formatIsoTimestamp(clockFormat) }}</td>
                       <td class="num">{{ (backup.sizeBytes / 1024) | round(1) }} KB</td>
                       <td>
                         {% if backup.valid %}

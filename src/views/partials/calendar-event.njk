@@ -1,4 +1,4 @@
-{% macro render(entry, surface) %}
+{% macro render(entry, surface, clockFormat) %}
   {% set detailId = 'calendar-info-' ~ surface ~ '-' ~ entry.id %}
   {% set hasPrimaryImage = entry.primaryImage and entry.primaryImage.state == 'available' and entry.primaryImage.previewUrl %}
   <div class="calendar-release calendar-release--{{ entry.status }}" data-calendar-event>
@@ -8,7 +8,7 @@
       <span class="calendar-release-meta">
         <span class="calendar-release-status">{{ 'Published' if entry.status == 'published' else 'Planned' }}</span>
         {% if entry.status == 'planned' and entry.planned_time %}
-          <time class="calendar-release-time" datetime="{{ entry.planned_date }}T{{ entry.planned_time }}">{{ entry.planned_time }}</time>
+          <time class="calendar-release-time" datetime="{{ entry.planned_date }}T{{ entry.planned_time }}">{{ entry.planned_time | formatStoredTime(clockFormat) }}</time>
         {% endif %}
       </span>
     </button>
@@ -31,7 +31,7 @@
           <p class="calendar-release-info-project"><a href="/projects/{{ entry.project_id }}">{{ entry.project_title }}</a></p>
           <dl class="asset-viewer-grid-card-info-list">
             <div class="asset-viewer-grid-card-info-row"><dt>Status</dt><dd>{{ 'Published' if entry.status == 'published' else 'Planned' }}</dd></div>
-            {% if entry.planned_date %}<div class="asset-viewer-grid-card-info-row"><dt>Planned</dt><dd><time datetime="{{ entry.planned_date }}{% if entry.planned_time %}T{{ entry.planned_time }}{% endif %}">{{ entry.planned_date }}{% if entry.planned_time %} {{ entry.planned_time }}{% endif %}</time></dd></div>{% endif %}
+            {% if entry.planned_date %}<div class="asset-viewer-grid-card-info-row"><dt>Planned</dt><dd><time datetime="{{ entry.planned_date }}{% if entry.planned_time %}T{{ entry.planned_time }}{% endif %}">{{ entry.planned_date }}{% if entry.planned_time %} {{ entry.planned_time | formatStoredTime(clockFormat) }}{% endif %}</time></dd></div>{% endif %}
             {% if entry.published_date %}<div class="asset-viewer-grid-card-info-row"><dt>Published</dt><dd><time datetime="{{ entry.published_date }}">{{ entry.published_date }}</time></dd></div>{% endif %}
           </dl>
           {% if entry.notes %}

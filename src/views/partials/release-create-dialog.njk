@@ -1,6 +1,6 @@
 {% import "partials/dialog.njk" as dialog %}
 
-{% macro render(releaseCreateForm, csrfToken, configuration, open=false) %}
+{% macro render(releaseCreateForm, csrfToken, configuration, open=false, clockFormat='24h') %}
   {% set values = releaseCreateForm.values %}
   {% set errors = releaseCreateForm.errors %}
   {% set projects = releaseCreateForm.projects %}

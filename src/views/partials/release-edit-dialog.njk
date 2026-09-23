@@ -1,6 +1,6 @@
 {% import "partials/dialog.njk" as dialog %}
 
-{% macro render(release, releaseEditForm, csrfToken, configuration, open=false, returnTo='') %}
+{% macro render(release, releaseEditForm, csrfToken, configuration, open=false, returnTo='', clockFormat='24h') %}
   {% set values = releaseEditForm.values %}
   {% set errors = releaseEditForm.errors %}
   {% set releaseSignatureConfiguration = configuration %}

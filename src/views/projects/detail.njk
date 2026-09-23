@@ -113,10 +113,10 @@
             <dd><code>{{ project.slug }}</code></dd>
 
             <dt>Created</dt>
-            <dd>{{ project.created_at }}</dd>
+            <dd>{{ project.created_at | formatSqliteTimestamp(clockFormat) }}</dd>
 
             <dt>Updated</dt>
-            <dd>{{ project.updated_at }}</dd>
+            <dd>{{ project.updated_at | formatSqliteTimestamp(clockFormat) }}</dd>
 
             <dt>Description</dt>
             <dd class="description">{{ project.description or '—' }}</dd>
@@ -128,7 +128,7 @@
 
             {% if project.archived_at %}
               <dt>Archived</dt>
-              <dd>{{ project.archived_at }}</dd>
+              <dd>{{ project.archived_at | formatSqliteTimestamp(clockFormat) }}</dd>
             {% endif %}
           </dl>
         </div>
@@ -155,7 +155,7 @@
               <a href="/releases/{{ r.id }}">{{ r.title }}</a>
               <span class="meta">
                 {% set status = r.project_status %}{% include "partials/status-badge.njk" %}{% if r.published_date %} · published {{ r.published_date }}{% elif r.planned_date %} · planned {{ r.planned_date }}{% endif %}
-                · updated {{ r.updated_at }}
+                · updated {{ r.updated_at | formatSqliteTimestamp(clockFormat) }}
               </span>
               {{ socialPrepSummary.render(r.socialPreparation, r.id, _csrf) }}
               {% if r.thumbnails and r.thumbnails.length > 0 %}

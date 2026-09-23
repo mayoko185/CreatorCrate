@@ -183,12 +183,13 @@ export function buildProjectAssetCategoryManagementModel({
   };
 }
 
-export function enrichProjectAssetsForRender(workflowQueryService, project, data) {
+export function enrichProjectAssetsForRender(workflowQueryService, project, data, clockFormat = '24h') {
   return workflowQueryService.enrichProjectAssetInformationAssets(
     project,
     data.assets,
     {
       includeImageDimensions: data.filters.view !== 'list' || data.completeCategorySurface,
+      clockFormat,
     },
   );
 }
@@ -302,7 +303,7 @@ export async function renderProjectAssetsPage(req, res, {
   );
   if (!data) return next ? next(createNotFound()) : null;
 
-  const enrichedAssets = await enrichProjectAssetsForRender(workflowQueryService, project, data);
+  const enrichedAssets = await enrichProjectAssetsForRender(workflowQueryService, project, data, res.locals.clockFormat);
 
   const nsfwFilterEnabled = getNsfwFilterSettingsService(req).isEnabled();
   const renderModel = buildBrowserRenderModel(

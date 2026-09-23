@@ -711,7 +711,7 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
     try {
       // The page service is the single authority for loading and validating
       // both the release and its parent project.
-      viewModel = releaseService.getReleaseAssetManagementPage(id, req.query);
+      viewModel = releaseService.getReleaseAssetManagementPage(id, req.query, res.locals.clockFormat);
     } catch (err) {
       if (err instanceof ReleaseNotFoundError) {
         return next(createNotFound());
@@ -799,7 +799,7 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
         return next(createNotFound());
       }
       if (err instanceof ReleaseValidationError) {
-        const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query);
+        const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query, res.locals.clockFormat);
         // Render the SUBMITTED selections so the user does not lose input.
         // Do NOT load persisted releaseAssets here — that would clobber the
         // user's changes after a validation failure.
@@ -808,7 +808,7 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
           appName,
           ...buildAssetPageRenderModel(id, req, viewModel, {
             releaseAssets: submittedAssets,
-            assetPresentation: buildSubmittedReleaseAssetPresentation(viewModel, submittedAssets),
+            assetPresentation: buildSubmittedReleaseAssetPresentation(viewModel, submittedAssets, res.locals.clockFormat),
             errors: err.errors || { general: err.message },
           }),
           roles: RELEASE_ASSET_ROLES,
@@ -816,7 +816,7 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
         return;
       }
       if (err instanceof ReleasePublishedError) {
-        const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query);
+        const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query, res.locals.clockFormat);
         res.status(422).render('releases/assets.njk', {
           appName,
           ...buildAssetPageRenderModel(id, req, viewModel, {
@@ -827,7 +827,7 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
         return;
       }
       if (err instanceof ReleaseArchivedError || err instanceof ReleaseParentArchivedError) {
-        const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query);
+        const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query, res.locals.clockFormat);
         res.status(422).render('releases/assets.njk', {
           appName,
           ...buildAssetPageRenderModel(id, req, viewModel, {
@@ -920,7 +920,7 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
 
     try {
       releaseService.addCandidateAsset(id, assetId);
-      const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query);
+      const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query, res.locals.clockFormat);
       res.redirect(buildAssetRedirectUrl(id, viewModel, req.query));
     } catch (err) {
       if (err instanceof ReleaseNotFoundError || err instanceof AssetNotFoundError) {
@@ -946,7 +946,7 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
 
     try {
       releaseService.removeSelectedAsset(id, assetId);
-      const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query);
+      const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query, res.locals.clockFormat);
       res.redirect(buildAssetRedirectUrl(id, viewModel, req.query));
     } catch (err) {
       if (err instanceof ReleaseNotFoundError || err instanceof AssetNotFoundError) {
@@ -974,7 +974,7 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
 
     try {
       releaseService.updateAssetRole(id, assetId, role);
-      const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query);
+      const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query, res.locals.clockFormat);
       res.redirect(buildAssetRedirectUrl(id, viewModel, req.query));
     } catch (err) {
       if (err instanceof ReleaseNotFoundError || err instanceof AssetNotFoundError) {
@@ -1000,7 +1000,7 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
 
     try {
       releaseService.moveAssetUp(id, assetId);
-      const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query);
+      const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query, res.locals.clockFormat);
       res.redirect(buildAssetRedirectUrl(id, viewModel, req.query));
     } catch (err) {
       if (err instanceof ReleaseNotFoundError || err instanceof AssetNotFoundError) {
@@ -1026,7 +1026,7 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
 
     try {
       releaseService.moveAssetDown(id, assetId);
-      const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query);
+      const viewModel = releaseService.getReleaseAssetManagementPage(id, req.query, res.locals.clockFormat);
       res.redirect(buildAssetRedirectUrl(id, viewModel, req.query));
     } catch (err) {
       if (err instanceof ReleaseNotFoundError || err instanceof AssetNotFoundError) {
@@ -1503,7 +1503,7 @@ function buildReleaseDetailRenderModel({
     projectArchived,
     releaseAssets: selectedAssets,
     assetCount: selectedAssets.length,
-    assetPresentation: releaseService.getReleaseAssetPresentation(release.id, selectedAssets),
+    assetPresentation: releaseService.getReleaseAssetPresentation(release.id, selectedAssets, req.res.locals.clockFormat),
     view: resolveReleaseAssetView(req?.query),
     pageUrl: buildReleaseDetailPageUrl(release.id, req?.query),
     errors,
@@ -1597,7 +1597,7 @@ function buildAssetPageRenderModel(
   };
 }
 
-function buildSubmittedReleaseAssetPresentation(viewModel, submittedAssets) {
+function buildSubmittedReleaseAssetPresentation(viewModel, submittedAssets, clockFormat = '24h') {
   const sourceById = new Map();
   for (const row of [
     ...(Array.isArray(viewModel.assets) ? viewModel.assets : []),
@@ -1623,6 +1623,7 @@ function buildSubmittedReleaseAssetPresentation(viewModel, submittedAssets) {
     assets: assetPage,
     candidateAssets: assetPage.filter((asset) => !selectedIds.has(String(asset.id))),
     categories: viewModel.categories,
+    clockFormat,
   });
 }
 
@@ -1639,7 +1640,7 @@ function buildSubmittedReleaseAssetPresentation(viewModel, submittedAssets) {
  */
 function renderAssetPageWithError(req, res, releaseId, errors, deps = {}) {
   const { releaseService, appName } = deps;
-  const viewModel = releaseService.getReleaseAssetManagementPage(releaseId, req.query);
+  const viewModel = releaseService.getReleaseAssetManagementPage(releaseId, req.query, res.locals.clockFormat);
   res.status(422).render('releases/assets.njk', {
     appName,
     ...buildAssetPageRenderModel(releaseId, req, viewModel, { errors }),

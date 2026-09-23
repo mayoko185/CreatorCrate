@@ -82,7 +82,7 @@
               <div class="day-header">{{ day.date.split('-')[2] }}</div>
               <div class="day-releases">
                 {% for entry in day.entries %}
-                  {{ calendarEvent.render(entry, 'grid') }}
+                  {{ calendarEvent.render(entry, 'grid', clockFormat) }}
                 {% endfor %}
               </div>
             </div>
@@ -114,7 +114,7 @@
           {% if day.entries.length > 0 %}
             <div class="agenda-day-releases">
               {% for entry in day.entries %}
-                <div class="agenda-release">{{ calendarEvent.render(entry, 'agenda') }}</div>
+                <div class="agenda-release">{{ calendarEvent.render(entry, 'agenda', clockFormat) }}</div>
               {% endfor %}
             </div>
           {% endif %}

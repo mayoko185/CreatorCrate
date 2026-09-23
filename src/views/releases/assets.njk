@@ -84,8 +84,9 @@
 
 {# Grid card — Project Assets preview-only geometry with Release selection and
    role state in the compact top action row. #}
-{% macro releaseGridCard(asset, readOnly, roles, _csrf, assetActionUrl) %}
+{% macro releaseGridCard(asset, readOnly, roles, _csrf, assetActionUrl, clockFormat) %}
   {% call(slot) assetCards.gridCard(asset, {
+    clockFormat: clockFormat,
     projectLayout: true,
     cardClass: 'asset-card--release',
     selected: asset.releaseContext.selected,
@@ -112,8 +113,9 @@
 {% endmacro %}
 
 {# List card — Project Assets hierarchy/sizing with Release associations. #}
-{% macro releaseListCard(asset, readOnly, roles, _csrf, assetActionUrl) %}
+{% macro releaseListCard(asset, readOnly, roles, _csrf, assetActionUrl, clockFormat) %}
   {% call(slot) assetCards.listCard(asset, {
+    clockFormat: clockFormat,
     cardClass: 'asset-list-card--project asset-list-card--release',
     projectLayout: true,
     headerStatusDetails: true,
@@ -253,7 +255,7 @@
             <ul class="asset-grid" role="listbox" aria-label="Release assets">
               {% for asset in displayAssets %}
                 <li class="asset-grid-item{% if not asset.is_present %} is-missing{% endif %}">
-                  {{ releaseGridCard(asset, readOnly, roles, _csrf, releaseAssetActionUrl) }}
+                  {{ releaseGridCard(asset, readOnly, roles, _csrf, releaseAssetActionUrl, clockFormat) }}
                 </li>
               {% endfor %}
             </ul>
@@ -261,7 +263,7 @@
             <ul class="asset-list asset-list--project asset-list--release" role="list" aria-label="Release assets" data-list-size="large">
               {% for asset in displayAssets %}
                 <li class="asset-list-item{% if not asset.is_present %} is-missing{% endif %}">
-                  {{ releaseListCard(asset, readOnly, roles, _csrf, releaseAssetActionUrl) }}
+                  {{ releaseListCard(asset, readOnly, roles, _csrf, releaseAssetActionUrl, clockFormat) }}
                 </li>
               {% endfor %}
             </ul>

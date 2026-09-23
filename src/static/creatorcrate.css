@@ -711,6 +711,9 @@
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: var(--space-sm);
       }
+      .time-picker-grid--12h {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
       .time-picker-column {
         display: flex;
         flex-direction: column;

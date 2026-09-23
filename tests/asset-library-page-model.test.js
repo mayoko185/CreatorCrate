@@ -279,6 +279,20 @@ describe('workflow query service — asset library page model', () => {
     expect(pageAsset.projectTypeOption.foregroundColor).toMatch(/^#[0-9A-F]{6}$/);
   });
 
+  it('presents the same library modification instant in either clock format', () => {
+    const project = insertProject(db, { title: 'Clock Format Assets' });
+    const modifiedDate = new Date(2026, 7, 1, 13, 5);
+    const modifiedAt = modifiedDate.toISOString();
+    insertAsset(db, { projectId: project.id, relativePath: 'clock.png', modifiedAt });
+
+    const twelveHour = service.getAssetLibraryPage({ pageSize: 10 }, { clockFormat: '12h' }).assets[0];
+    const twentyFourHour = service.getAssetLibraryPage({ pageSize: 10 }, { clockFormat: '24h' }).assets[0];
+    expect(twelveHour.formattedModified).toBe(`${formatLocalDate(modifiedDate)} ${formatLocalTime(modifiedDate, '12h')}`);
+    expect(twentyFourHour.formattedModified).toBe(`${formatLocalDate(modifiedDate)} ${formatLocalTime(modifiedDate, '24h')}`);
+    expect(twelveHour.modified_at).toBe(modifiedAt);
+    expect(twentyFourHour.modified_at).toBe(modifiedAt);
+  });
+
   it('accepts prepared Project presentation while keeping direct callers compatible', () => {
     const statusCatalogue = vi.spyOn(projectOptionCatalogueService, 'getStatusCatalogue');
     const projectTypeCatalogue = vi.spyOn(projectOptionCatalogueService, 'getProjectTypeCatalogue');

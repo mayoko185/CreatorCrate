@@ -1,4 +1,4 @@
-{% macro render(project, variant = 'grid', headingLevel = 'h2') %}
+{% macro render(project, variant, headingLevel, clockFormat) %}
   {% set projectStatusOption = project.projectStatusOption %}
   {% set projectTypeOption = project.projectTypeOption %}
   {% set imageUrl = project.primaryImage.previewUrl %}
@@ -58,7 +58,7 @@
             </div>
             <div class="project-list-card-meta project-list-card-meta--date">
               <dt>Updated</dt>
-              <dd>{{ project.updated_at }}</dd>
+              <dd>{{ project.updated_at | formatSqliteTimestamp(clockFormat) }}</dd>
             </div>
           </dl>
 
@@ -120,11 +120,11 @@
               </div>
               <div class="project-grid-card-info-row">
                 <dt>Created</dt>
-                <dd>{{ project.created_at }}</dd>
+                <dd>{{ project.created_at | formatSqliteTimestamp(clockFormat) }}</dd>
               </div>
               <div class="project-grid-card-info-row">
                 <dt>Updated</dt>
-                <dd>{{ project.updated_at }}</dd>
+                <dd>{{ project.updated_at | formatSqliteTimestamp(clockFormat) }}</dd>
               </div>
             </dl>
 
@@ -154,8 +154,8 @@
                         {% endif %}
                       </div>
                       <span class="meta">
-                        {% if release.published_date %}published {{ release.published_date }}{% elif release.planned_date %}planned {{ release.planned_date }}{% if release.planned_time %} {{ release.planned_time }}{% endif %}{% else %}—{% endif %}
-                        · updated {{ release.updated_at }}
+                        {% if release.published_date %}published {{ release.published_date }}{% elif release.planned_date %}planned {{ release.planned_date }}{% if release.planned_time %} {{ release.planned_time | formatStoredTime(clockFormat) }}{% endif %}{% else %}—{% endif %}
+                        · updated {{ release.updated_at | formatSqliteTimestamp(clockFormat) }}
                       </span>
                     </li>
                   {% endfor %}

@@ -347,6 +347,7 @@ async function renderAssetLibraryPage(req, res, {
     || workflowQueryService.buildAssetLibraryProjectOptionPresentation();
   const getAssetLibraryPage = () => workflowQueryService.getAssetLibraryPage(input, {
     projectOptionPresentation: resolvedProjectOptionPresentation,
+    clockFormat: res.locals.clockFormat,
   });
   let page = getAssetLibraryPage();
   const optionCatalogues = buildAssetViewerOptionCatalogues(

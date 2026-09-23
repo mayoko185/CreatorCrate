@@ -1,6 +1,6 @@
 {% import "partials/dialog.njk" as dialog %}
 
-{% macro render(release, project, releaseAssets, publishDialogForm, socialPrepPublish, csrfToken, open=false) %}
+{% macro render(release, project, releaseAssets, publishDialogForm, socialPrepPublish, csrfToken, open=false, clockFormat='24h') %}
   {% set errors = publishDialogForm.errors %}
   {% call dialog.render('release-publish-dialog', 'Review & Publish', open, 'release-publish-description', 'release-publish-form', 'project-form-dialog') %}
     <p id="release-publish-description" class="app-dialog-description">
@@ -56,7 +56,7 @@
                           {% set status = 'missing' %}{% include "partials/status-badge.njk" %}
                         {% endif %}
                       </td>
-                      <td class="asset-date">{% if ra.last_seen_at %}{{ ra.last_seen_at }}{% else %}&mdash;{% endif %}</td>
+                      <td class="asset-date">{% if ra.last_seen_at %}{{ ra.last_seen_at | formatSqliteTimestamp(clockFormat) }}{% else %}&mdash;{% endif %}</td>
                     </tr>
                   {% endfor %}
                 </tbody>

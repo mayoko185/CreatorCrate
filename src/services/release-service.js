@@ -744,7 +744,7 @@ export function createReleaseService({ db, applicationLogger = null }) {
      * @param {Array} [selectedAssets]
      * @returns {{ selected: Array, candidates: Array, assets: Array }}
      */
-    getReleaseAssetPresentation(releaseId, selectedAssets = null) {
+    getReleaseAssetPresentation(releaseId, selectedAssets = null, clockFormat = '24h') {
       const release = repository.findById(releaseId);
       if (!release) {
         throw new ReleaseNotFoundError(releaseId);
@@ -760,6 +760,7 @@ export function createReleaseService({ db, applicationLogger = null }) {
         assets: [],
         candidateAssets: [],
         categories,
+        clockFormat,
       });
     },
 
@@ -1413,7 +1414,7 @@ export function createReleaseService({ db, applicationLogger = null }) {
      *   assetPresentation: { selected: Array, candidates: Array, assets: Array },
      * }}
      */
-    getReleaseAssetManagementPage(releaseId, rawQuery = {}) {
+    getReleaseAssetManagementPage(releaseId, rawQuery = {}, clockFormat = '24h') {
       const release = repository.findById(releaseId);
       if (!release) {
         throw new ReleaseNotFoundError(releaseId);
@@ -1492,6 +1493,7 @@ export function createReleaseService({ db, applicationLogger = null }) {
         assets: assetPage,
         candidateAssets: pageCandidates,
         categories,
+        clockFormat,
       });
 
       return {

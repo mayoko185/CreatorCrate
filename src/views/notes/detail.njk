@@ -39,7 +39,7 @@
               <ol class="notes-revision-list">
                 {% for revision in revisions %}
                   <li class="notes-revision-list-item">
-                    <time datetime="{{ revision.createdAt }}">{{ revision.createdAt }}</time>
+                    <time datetime="{{ revision.createdAt }}">{{ revision.createdAt | formatSqliteTimestamp(clockFormat) }}</time>
                     <a href="/notes/{{ note.id }}/revisions/{{ revision.id }}">View</a>
                   </li>
                 {% endfor %}

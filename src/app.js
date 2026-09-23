@@ -60,6 +60,8 @@ import { createDashboardDefaultsService } from './services/dashboard-defaults-se
 import { createOpenLocallySettingsService } from './services/open-locally-settings-service.js';
 import { createSocialPrepSettingsService } from './services/social-prep-settings-service.js';
 import { createNoteRevisionSettingsService } from './services/note-revision-settings-service.js';
+import { createClockFormatSettingsService } from './services/clock-format-settings-service.js';
+import { formatIsoTimestamp, formatSqliteTimestamp, formatStoredTime } from './util/date.js';
 import { createSocialPrepService } from './services/social-prep-service.js';
 import { createPreviewCategorySettingsService } from './services/preview-category-settings-service.js';
 import { createNsfwFilterSettingsService } from './services/nsfw-filter-settings-service.js';
@@ -187,6 +189,9 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   env.addGlobal('viteDevAssets', VITE_DEV_ASSETS);
   env.addGlobal('assetMode', assetMode);
   env.addGlobal('useViteAssets', useViteAssets);
+  env.addFilter('formatStoredTime', formatStoredTime);
+  env.addFilter('formatSqliteTimestamp', formatSqliteTimestamp);
+  env.addFilter('formatIsoTimestamp', formatIsoTimestamp);
   app.locals.assetManifest = assetManifest;
   app.locals.viteAssets = assetManifest;
   app.locals.viteDevAssets = VITE_DEV_ASSETS;
@@ -349,6 +354,9 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   const noteRevisionSettingsService = opts.noteRevisionSettingsService
     || createNoteRevisionSettingsService({ appMetaRepository });
   app.locals.noteRevisionSettingsService = noteRevisionSettingsService;
+  const clockFormatSettingsService = opts.clockFormatSettingsService
+    || createClockFormatSettingsService({ appMetaRepository });
+  app.locals.clockFormatSettingsService = clockFormatSettingsService;
 
   const tagRepository = opts.tagRepository || createTagRepository(db);
   const projectService = createProjectService(db, projectsRoot, {
@@ -852,6 +860,11 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // /health and /login|/logout regardless of mount order; static assets are
   // already fully handled above and never reach this middleware.
   app.use(requireAuth);
+
+  app.use((_req, res, next) => {
+    res.locals.clockFormat = clockFormatSettingsService.getClockFormat();
+    next();
+  });
 
   app.use('/', createIndexRouter({
     appName,

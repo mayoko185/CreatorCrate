@@ -284,6 +284,7 @@ function timePickerState(field) {
   return {
     field,
     ...findTimePickerParts(field),
+    clockFormat: field.dataset.clockFormat === '12h' ? '12h' : '24h',
     open: false,
   };
 }
@@ -298,11 +299,12 @@ function setTimePickerValue(state, hour, minute) {
 function renderTimePickerColumn(state, type, values, selectedValue) {
   const column = document.createElement('div');
   column.className = 'time-picker-column';
-  column.setAttribute('aria-label', type === 'hour' ? 'Hours' : 'Minutes');
+  const labelText = { hour: 'Hour', minute: 'Minute', period: 'Period' }[type];
+  column.setAttribute('aria-label', type === 'period' ? 'AM or PM' : `${labelText}s`);
 
   const label = document.createElement('span');
   label.className = 'time-picker-column-label';
-  label.textContent = type === 'hour' ? 'Hour' : 'Minute';
+  label.textContent = labelText;
   column.appendChild(label);
 
   const options = document.createElement('div');
@@ -312,16 +314,20 @@ function renderTimePickerColumn(state, type, values, selectedValue) {
     const option = document.createElement('button');
     option.type = 'button';
     option.className = 'time-picker-option picker-option';
-    option.textContent = padTwo(value);
+    option.textContent = type === 'period' || (type === 'hour' && state.clockFormat === '12h')
+      ? String(value) : padTwo(value);
     option.setAttribute(`data-time-${type}`, String(value));
-    option.setAttribute('aria-label', `${type === 'hour' ? 'Hour' : 'Minute'} ${padTwo(value)}`);
+    option.setAttribute('aria-label', type === 'period' ? value : `${labelText} ${option.textContent}`);
     option.setAttribute('aria-pressed', String(value === selectedValue));
     option.classList.toggle('is-selected', value === selectedValue);
     option.addEventListener('click', () => {
       const current = parseTimeValue(state.input?.value || '') || { hour: 0, minute: 0 };
-      const next = type === 'hour'
-        ? { hour: value, minute: current.minute }
-        : { hour: current.hour, minute: value };
+      const next = type === 'period'
+        ? { hour: current.hour % 12 + (value === 'PM' ? 12 : 0), minute: current.minute }
+        : type === 'hour'
+          ? { hour: state.clockFormat === '12h'
+            ? value % 12 + (current.hour >= 12 ? 12 : 0) : value, minute: current.minute }
+          : { hour: current.hour, minute: value };
       setTimePickerValue(state, next.hour, next.minute);
       renderTimePicker(state);
       const selected = Array.from(state.panel?.querySelectorAll('.time-picker-option') || [])
@@ -373,19 +379,28 @@ function renderTimePicker(state) {
     state.panel.removeChild(state.panel.firstChild);
   }
 
-  const current = parseTimeValue(state.input?.value || '') || { hour: 0, minute: 0 };
+  const parsed = parseTimeValue(state.input?.value || '');
+  const current = parsed || { hour: 0, minute: 0 };
   const header = document.createElement('div');
   header.className = 'date-picker-header';
   const title = document.createElement('span');
   title.className = 'date-picker-month-title';
   title.setAttribute('aria-live', 'polite');
-  title.textContent = 'Select time';
+  title.textContent = parsed && state.clockFormat === '12h'
+    ? `${current.hour % 12 || 12}:${padTwo(current.minute)} ${current.hour < 12 ? 'AM' : 'PM'}`
+    : 'Select time';
   header.appendChild(title);
 
   const grid = document.createElement('div');
   grid.className = 'time-picker-grid';
-  grid.appendChild(renderTimePickerColumn(state, 'hour', Array.from({ length: 24 }, (_, hour) => hour), current.hour));
+  if (state.clockFormat === '12h') grid.classList.add('time-picker-grid--12h');
+  grid.appendChild(renderTimePickerColumn(state, 'hour',
+    state.clockFormat === '12h' ? Array.from({ length: 12 }, (_, hour) => hour + 1) : Array.from({ length: 24 }, (_, hour) => hour),
+    state.clockFormat === '12h' ? current.hour % 12 || 12 : current.hour));
   grid.appendChild(renderTimePickerColumn(state, 'minute', Array.from({ length: 60 }, (_, minute) => minute), current.minute));
+  if (state.clockFormat === '12h') {
+    grid.appendChild(renderTimePickerColumn(state, 'period', ['AM', 'PM'], current.hour < 12 ? 'AM' : 'PM'));
+  }
 
   state.panel.appendChild(header);
   state.panel.appendChild(grid);

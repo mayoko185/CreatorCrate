@@ -205,6 +205,21 @@ describe('Calendar presentation', () => {
     expect(html).not.toContain('calendar-release-preview');
   });
 
+  it('formats scheduled time in both Calendar views and details while retaining canonical datetime values', async () => {
+    const parent = project(db, 'Clock project');
+    release(db, parent.id, 'Timed event', { plannedTime: '13:05' });
+    release(db, parent.id, 'Untimed event');
+
+    for (const [preference, visible] of [['12h', '1:05 PM'], ['24h', '13:05']]) {
+      app.locals.clockFormatSettingsService.setClockFormat(preference);
+      const html = (await agent.get('/calendar?month=2025-06').expect(200)).text;
+      expect((html.match(new RegExp(`class="calendar-release-time" datetime="2025-06-15T13:05">${visible}</time>`, 'g')) || [])).toHaveLength(2);
+      expect((html.match(new RegExp(`datetime="2025-06-15T13:05">2025-06-15 ${visible}</time>`, 'g')) || [])).toHaveLength(2);
+      expect((html.match(/class="calendar-release-time"/g) || [])).toHaveLength(2);
+      expect((html.match(/datetime="2025-06-15">2025-06-15<\/time>/g) || [])).toHaveLength(2);
+    }
+  });
+
   it('uses only the selected project primary image in details', async () => {
     const parent = project(db, 'Image Project');
     const item = release(db, parent.id, 'Image Release');

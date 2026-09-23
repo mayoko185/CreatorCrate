@@ -91,8 +91,27 @@
               </div>
             {% endfor %}
 
+            {% if loop.first %}<span class="help-text" data-settings-fetch-save-status role="status" aria-live="polite" aria-atomic="true"></span>{% endif %}
+
           </section>
         {% endfor %}
+
+        <section id="defaults-display" class="settings-section settings-defaults-section" aria-labelledby="defaults-display-heading">
+          <h3 id="defaults-display-heading">Display</h3>
+          <div class="field{% if clockFormat.error %} field-error{% endif %}">
+            <label for="clockFormat">Clock format</label>
+            <select id="clockFormat" name="clockFormat" required data-autosubmit="fetch"{% if clockFormat.error %} aria-describedby="clockFormat-error" aria-invalid="true"{% endif %}>
+              <option value="12h"{% if clockFormat.value == '12h' %} selected{% endif %}>12-hour</option>
+              <option value="24h"{% if clockFormat.value == '24h' %} selected{% endif %}>24-hour</option>
+            </select>
+            {% if clockFormat.usesFallback %}
+              <span class="help-text" data-settings-defaults-effective>Application fallback: <strong>24-hour</strong></span>
+            {% else %}
+              <span class="help-text" data-settings-defaults-effective>Saved default: <strong>{{ '12-hour' if clockFormat.savedValue == '12h' else '24-hour' }}</strong></span>
+            {% endif %}
+            {% if clockFormat.error %}<span class="field-error-message" id="clockFormat-error">{{ clockFormat.error }}</span>{% endif %}
+          </div>
+        </section>
 
         <section id="defaults-notes" class="settings-section settings-defaults-section" aria-labelledby="defaults-notes-heading">
           <h3 id="defaults-notes-heading">Notes</h3>
@@ -112,8 +131,6 @@
             {% if noteRevisionRetention.error %}<span class="field-error-message" id="{{ noteRevisionRetention.id }}-error">{{ noteRevisionRetention.error }}</span>{% endif %}
           </div>
         </section>
-
-        <span class="help-text" data-settings-fetch-save-status role="status" aria-live="polite" aria-atomic="true"></span>
 
         <noscript>
           <div class="form-actions">

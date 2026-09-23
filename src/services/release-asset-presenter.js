@@ -9,11 +9,11 @@ import {
 } from './asset-presentation.js';
 import { formatLocalDate, formatLocalTime } from '../util/date.js';
 
-function formatAssetModified(value) {
+function formatAssetModified(value, clockFormat = '24h') {
   if (typeof value !== 'string' || value.length === 0) return '\u2014';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '\u2014';
-  return `${formatLocalDate(date)} ${formatLocalTime(date)}`;
+  return `${formatLocalDate(date)} ${formatLocalTime(date, clockFormat)}`;
 }
 
 function assetIdFromRow(row, selected) {
@@ -71,10 +71,10 @@ function buildCategoryPresentation(asset, categoriesById) {
  * are deliberately absent; release-specific state lives under releaseContext.
  *
  * @param {object} row
- * @param {{ selected?: boolean, categoriesById?: Map }} [options]
+ * @param {{ selected?: boolean, categoriesById?: Map, clockFormat?: '12h'|'24h' }} [options]
  * @returns {object}
  */
-export function buildReleaseAssetPresentation(row, { selected = false, categoriesById = new Map() } = {}) {
+export function buildReleaseAssetPresentation(row, { selected = false, categoriesById = new Map(), clockFormat = '24h' } = {}) {
   const assetId = assetIdFromRow(row, selected);
   const asset = {
     id: assetId,
@@ -110,7 +110,7 @@ export function buildReleaseAssetPresentation(row, { selected = false, categorie
     size_bytes: asset.size_bytes,
     formattedSize: hasSize ? formatFileSize(asset.size_bytes) : null,
     modified_at: asset.modified_at,
-    formattedModified: formatAssetModified(asset.modified_at),
+    formattedModified: formatAssetModified(asset.modified_at, clockFormat),
     is_present: asset.is_present,
     presence_state: asset.is_present ? 'present' : 'missing',
     presenceLabel: asset.is_present ? 'Present' : 'Missing at last scan',
@@ -136,7 +136,7 @@ export function buildReleaseAssetPresentation(row, { selected = false, categorie
  * project asset collection. The selected collection remains available for the
  * read-only presentation; `assets` is the editable grid/list collection.
  *
- * @param {{ selectedAssets?: object[], candidateAssets?: object[], assets?: object[], categories?: object[] }} [input]
+ * @param {{ selectedAssets?: object[], candidateAssets?: object[], assets?: object[], categories?: object[], clockFormat?: '12h'|'24h' }} [input]
  * @returns {{ selected: object[], candidates: object[], assets: object[] }}
  */
 export function buildReleaseAssetPagePresentation({
@@ -144,6 +144,7 @@ export function buildReleaseAssetPagePresentation({
   candidateAssets = null,
   assets = null,
   categories = [],
+  clockFormat = '24h',
 } = {}) {
   const categoriesById = new Map(
     (Array.isArray(categories) ? categories : []).map((category) => [category.id, category]),
@@ -169,16 +170,18 @@ export function buildReleaseAssetPagePresentation({
   const selected = selectedRows.map((row) => buildReleaseAssetPresentation(row, {
     selected: true,
     categoriesById,
+    clockFormat,
   }));
   const candidates = candidateRows.map((row) => buildReleaseAssetPresentation(row, {
     selected: false,
     categoriesById,
+    clockFormat,
   }));
   const presentedAssets = assetRows.map((row) => {
     const assetId = row?.asset_id ?? row?.id;
     const selectedRow = selectedById.get(String(assetId));
     if (!selectedRow) {
-      return buildReleaseAssetPresentation(row, { selected: false, categoriesById });
+      return buildReleaseAssetPresentation(row, { selected: false, categoriesById, clockFormat });
     }
 
     return buildReleaseAssetPresentation({
@@ -186,7 +189,7 @@ export function buildReleaseAssetPagePresentation({
       asset_id: assetId,
       role: selectedRow.role,
       sort_order: selectedRow.sort_order,
-    }, { selected: true, categoriesById });
+    }, { selected: true, categoriesById, clockFormat });
   });
 
   return {

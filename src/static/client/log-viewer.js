@@ -5,7 +5,7 @@ const LOG_FORM_STATE_NAMES = new Set([...LOG_FILTER_NAMES, ...LOG_QUERY_CONTROL_
 const LOCAL_TIMEZONE = 'local';
 const viewerStates = new WeakMap();
 
-export function formatLogTimestamp(timestampMs, timezone = LOCAL_TIMEZONE, { localTimeZone } = {}) {
+export function formatLogTimestamp(timestampMs, timezone = LOCAL_TIMEZONE, { localTimeZone, clockFormat = '24h' } = {}) {
   if (!Number.isSafeInteger(timestampMs) || timestampMs < 0) return 'Unknown time';
 
   try {
@@ -13,24 +13,25 @@ export function formatLogTimestamp(timestampMs, timezone = LOCAL_TIMEZONE, { loc
       year: 'numeric',
       month: '2-digit',
       day: '2-digit',
-      hour: '2-digit',
+      hour: clockFormat === '12h' ? 'numeric' : '2-digit',
       minute: '2-digit',
-      hourCycle: 'h23',
+      hourCycle: clockFormat === '12h' ? 'h12' : 'h23',
       timeZone: timezone === LOCAL_TIMEZONE ? localTimeZone : timezone,
       timeZoneName: 'short',
     }).formatToParts(new Date(timestampMs));
     const values = Object.fromEntries(parts
       .filter(({ type }) => type !== 'literal')
       .map(({ type, value }) => [type, value]));
-    return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute} ${values.timeZoneName}`;
+    const meridiem = clockFormat === '12h' ? ` ${/^a/i.test(values.dayPeriod) ? 'AM' : 'PM'}` : '';
+    return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}${meridiem} ${values.timeZoneName}`;
   } catch {
     return 'Unknown time';
   }
 }
 
-function formatLogTimestamps(region, timezone) {
+function formatLogTimestamps(region, timezone, clockFormat) {
   for (const element of region?.querySelectorAll?.('[data-log-timestamp-ms]') || []) {
-    element.textContent = formatLogTimestamp(Number(element.getAttribute('data-log-timestamp-ms')), timezone);
+    element.textContent = formatLogTimestamp(Number(element.getAttribute('data-log-timestamp-ms')), timezone, { clockFormat });
   }
 }
 
@@ -185,7 +186,7 @@ function applySavedDefaults(state, values = {}) {
   if (typeof values.timezone === 'string') {
     state.timezone = values.timezone;
     state.viewer.dataset.logsTimezone = values.timezone;
-    formatLogTimestamps(state.viewer, state.timezone);
+    formatLogTimestamps(state.viewer, state.timezone, state.clockFormat);
   }
   state.autoRefreshPreference = values.autoRefresh === 'enabled';
   synchronizePageState(state, Number(state.viewer.dataset.logsPage));
@@ -236,7 +237,7 @@ function updateResults(state, responseText, { announceNew = false } = {}) {
 
   const currentIds = logIds(currentRegion);
   const openDisclosures = captureOpenDisclosures(currentRegion);
-  formatLogTimestamps(nextRegion, state.timezone);
+  formatLogTimestamps(nextRegion, state.timezone, state.clockFormat);
   currentRegion.replaceWith(nextRegion);
   restoreOpenDisclosures(nextRegion, openDisclosures);
   if (!announceNew) return true;
@@ -383,6 +384,7 @@ export function enhanceLogViewerAutoRefresh(scope = globalThis.document) {
     enabled: viewer.dataset?.logsAutoRefreshEnabled === 'true' && isPageOne(viewer),
     autoRefreshPreference: viewer.dataset?.logsAutoRefreshPreference === 'true',
     timezone: viewer.dataset?.logsTimezone || LOCAL_TIMEZONE,
+    clockFormat: viewer.dataset?.logsClockFormat === '12h' ? '12h' : '24h',
     timer: null,
     controller: null,
     generation: 0,
@@ -397,7 +399,7 @@ export function enhanceLogViewerAutoRefresh(scope = globalThis.document) {
 
   control.hidden = false;
   synchronizePageState(state, Number(viewer.dataset?.logsPage));
-  formatLogTimestamps(viewer, state.timezone);
+  formatLogTimestamps(viewer, state.timezone, state.clockFormat);
   setControl(state);
   bindDefaultsDialog(state);
   bindClearDialog(state);
