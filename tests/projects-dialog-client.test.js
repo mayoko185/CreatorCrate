@@ -1957,7 +1957,7 @@ describe('Projects defaults autosave enhancement', () => {
         page.document,
         destination,
         17,
-        { onError: expect.any(Function) },
+        { onError: expect.any(Function), acknowledgedControls: new Set(['view']) },
       );
       expect(page.dialog.open).toBe(true);
       expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('saved');
@@ -2020,7 +2020,7 @@ describe('Projects defaults autosave enhancement', () => {
         page.document,
         destination,
         17,
-        { onError: expect.any(Function) },
+        { onError: expect.any(Function), acknowledgedControls: new Set(['view', 'sort']) },
       );
       closeAppDialogById(page.document, page.dialog.id);
       page.document.dispatch('click', { target: page.trigger });
@@ -2078,7 +2078,8 @@ describe('Projects defaults autosave enhancement', () => {
       expect(projectAssetsDefaultValues(page.fields)).toEqual(newerInput
         ? { ...values.project, sort: 'size' } : values.global);
       expect(page.projectAssetsDefaultsRefreshOptions.refresh).toHaveBeenCalledWith(
-        page.document, destination, 17, { onError: expect.any(Function) },
+        page.document, destination, 17,
+        { onError: expect.any(Function), acknowledgedControls: new Set(['view']) },
       );
       expect(page.status.textContent).toBe('Settings saved.');
       expect(fetch).toHaveBeenCalledOnce();
@@ -2334,7 +2335,7 @@ describe('Projects defaults autosave enhancement', () => {
         page.document,
         finalUrl,
         17,
-        { onError: expect.any(Function) },
+        { onError: expect.any(Function), acknowledgedControls: new Set(['gridSize']) },
       );
       expect(storage.get('creatorcrate-asset-grid-size')).toBe(finalAuthoritative.global.gridSize);
       expect(storage.get('creatorcrate-asset-list-size')).toBe(finalAuthoritative.global.listSize);
@@ -2904,7 +2905,10 @@ describe('Projects defaults autosave enhancement', () => {
 
       expect(beginRefresh).toHaveBeenCalledOnce();
       expect(refresh).toHaveBeenCalledOnce();
-      expect(refresh).toHaveBeenCalledWith(page.document, successUrl, 7, { onError: expect.any(Function) });
+      expect(refresh).toHaveBeenCalledWith(page.document, successUrl, 7, {
+        onError: expect.any(Function),
+        acknowledgedControls: new Set(['view', 'sort']),
+      });
       expect(mountedFormsAtRefresh).toHaveLength(1);
       expect(mountedFormsAtRefresh[0]).toBe(page.form);
       expect(mountedValuesAtRefresh).toEqual([{ view: 'list', sort: 'title', order: 'desc' }]);

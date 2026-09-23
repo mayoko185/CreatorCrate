@@ -1,18 +1,18 @@
 {% import "partials/icons.njk" as icons %}
-{% macro render(currentView, pageUrl, ariaLabel, iconMode=false) %}
+{% macro render(currentView, pageUrl, ariaLabel, iconMode=false, gridLabel='Grid', listLabel='List') %}
   <nav class="view-switcher" aria-label="{{ ariaLabel }}">
     {% if iconMode %}
       <a class="view-switcher-option view-switcher-option--icon asset-tooltip asset-tooltip--right" href="{{ pageUrl({ view: 'grid' }) }}"
          {% if currentView == 'grid' %}aria-current="page"{% endif %}
-         aria-label="Grid view" data-tooltip="Grid view">{{ icons.icon('grid') }}</a>
+         aria-label="{{ gridLabel }} view" data-tooltip="{{ gridLabel }} view">{{ icons.icon('grid') }}</a>
       <a class="view-switcher-option view-switcher-option--icon asset-tooltip asset-tooltip--right" href="{{ pageUrl({ view: 'list' }) }}"
          {% if currentView == 'list' %}aria-current="page"{% endif %}
-         aria-label="List view" data-tooltip="List view">{{ icons.icon('list') }}</a>
+         aria-label="{{ listLabel }} view" data-tooltip="{{ listLabel }} view">{{ icons.icon('list') }}</a>
     {% else %}
       <a class="view-switcher-option" href="{{ pageUrl({ view: 'grid' }) }}"
-         {% if currentView == 'grid' %}aria-current="page"{% endif %}>Grid</a>
+         {% if currentView == 'grid' %}aria-current="page"{% endif %}>{{ gridLabel }}</a>
       <a class="view-switcher-option" href="{{ pageUrl({ view: 'list' }) }}"
-         {% if currentView == 'list' %}aria-current="page"{% endif %}>List</a>
+         {% if currentView == 'list' %}aria-current="page"{% endif %}>{{ listLabel }}</a>
     {% endif %}
   </nav>
 {% endmacro %}

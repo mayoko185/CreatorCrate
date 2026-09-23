@@ -57,6 +57,7 @@ export const PAGE_DEFAULT_DEFINITIONS = Object.freeze({
     order: definition('page_defaults.releases.order', ['asc', 'desc'], 'asc'),
   }),
   [CALENDAR]: Object.freeze({
+    view: definition('page_defaults.calendar.view', ['grid', 'list'], 'grid'),
     status: definition('page_defaults.calendar.status', ['all', 'planned', 'published'], 'all'),
     weekStart: definition('page_defaults.calendar.week_start', ['monday', 'sunday'], 'monday'),
   }),

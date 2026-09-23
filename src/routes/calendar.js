@@ -4,8 +4,9 @@ import { buildPageDefaultsDialogModel } from './page-defaults.js';
 import { NSFW_TAG_NAME } from '../services/nsfw-filter-settings-service.js';
 
 const CALENDAR_DEFAULT_LABELS = Object.freeze({
-  fields: { status: 'Release status', weekStart: 'Week starts on' },
+  fields: { view: 'Desktop view', status: 'Release status', weekStart: 'Week starts on' },
   options: {
+    view: { grid: 'Calendar', list: 'List' },
     status: { all: 'All releases', planned: 'Planned', published: 'Published' },
     weekStart: { monday: 'Monday', sunday: 'Sunday' },
   },
@@ -27,7 +28,9 @@ export function createCalendarRouter({ appName, workflowQueryService, pageDefaul
       const month = req.query.month || null;
       const status = ['all', 'planned', 'published'].includes(req.query.status) ? req.query.status : undefined;
       const weekStart = ['monday', 'sunday'].includes(req.query.weekStart) ? req.query.weekStart : undefined;
+      const view = ['grid', 'list'].includes(req.query.view) ? req.query.view : undefined;
       const defaults = pageDefaultsService.resolvePageDefaults('calendar', {
+        view,
         status,
         weekStart,
       });
@@ -66,6 +69,7 @@ export function createCalendarRouter({ appName, workflowQueryService, pageDefaul
       if (validatedMonth) query.month = validatedMonth;
       if (status !== undefined) query.status = status;
       if (weekStart !== undefined) query.weekStart = weekStart;
+      if (view !== undefined) query.view = view;
       if (projectId !== null) query.project = String(projectId);
       const pageUrl = buildPageUrl(req, query);
       const isCurrentMonth = validatedMonth === today.slice(0, 7);
@@ -85,6 +89,7 @@ export function createCalendarRouter({ appName, workflowQueryService, pageDefaul
         query,
         pageUrl,
         status: defaults.status,
+        view: defaults.view,
         weekStart: defaults.weekStart,
         projectId,
         selectedProject,

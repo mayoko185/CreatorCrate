@@ -40,6 +40,7 @@ function createHarness(saved = {}) {
   app.engine('njk', (_file, locals, callback) => callback(null, JSON.stringify({
     month: locals.month,
     status: locals.status,
+    view: locals.view,
     weekStart: locals.weekStart,
     projectId: locals.projectId,
     selectedProject: locals.selectedProject,
@@ -64,12 +65,28 @@ describe('Calendar route state', () => {
     const response = await request(app).get('/calendar?month=2026-09').expect(200);
     const model = JSON.parse(response.text);
     expect(model).toMatchObject({
-      month: '2026-09', status: 'all', weekStart: 'monday',
+      month: '2026-09', status: 'all', weekStart: 'monday', view: 'grid',
       query: { month: '2026-09' }, entries: [1, 2],
       resetFiltersUrl: '/calendar?month=2026-09',
     });
     expect(calls[0]).toEqual({ month: '2026-09', options: { projectId: null, weekStart: 'monday' } });
-    expect(model.calendarDefaults.fields.map(({ name }) => name)).toEqual(['status', 'weekStart']);
+    expect(model.calendarDefaults.fields.map(({ name }) => name)).toEqual(['view', 'status', 'weekStart']);
+  });
+
+  it.each([
+    [undefined, undefined, 'grid', undefined],
+    ['list', undefined, 'list', 'list'],
+    ['grid', 'list', 'grid', 'grid'],
+    ['invalid', 'list', 'list', undefined],
+    ['invalid', undefined, 'grid', undefined],
+  ])('resolves explicit view %s over saved view %s', async (explicit, saved, expected, queryView) => {
+    const { app } = createHarness(saved ? { 'page_defaults.calendar.view': saved } : {});
+    const suffix = explicit === undefined ? '' : `&view=${explicit}`;
+    const model = JSON.parse((await request(app).get(`/calendar?month=2026-09${suffix}`).expect(200)).text);
+    expect(model.view).toBe(expected);
+    expect(model.query.view).toBe(queryView);
+    expect(model.resetFiltersUrl).toBe(queryView
+      ? `/calendar?month=2026-09&view=${queryView}` : '/calendar?month=2026-09');
   });
 
   it.each(['planned', 'published'])('applies saved %s when status is absent', async (status) => {

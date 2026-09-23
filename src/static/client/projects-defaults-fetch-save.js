@@ -82,16 +82,19 @@ export function enhancePageDefaultsFetchSave(scope = globalThis.document, option
           if (!refreshSessions.has(currentForm)) {
             refreshSessions.set(currentForm, {
               authorityGeneration: beginRefresh(currentForm.ownerDocument),
+              acknowledgedControls: new Set(),
             });
           }
         },
-        onError: ({ form: currentForm, superseded }) => {
-          if (!superseded) {
+        onError: ({ form: currentForm, willContinue }) => {
+          if (!willContinue) {
             refreshSessions.delete(currentForm);
             acknowledgementFailures.delete(currentForm);
           }
         },
         onAcknowledged: (detail) => {
+          const acknowledgedControls = refreshSessions.get(detail.form)?.acknowledgedControls;
+          detail.controlNames?.forEach((name) => acknowledgedControls?.add(name));
           if (typeof onAcknowledged !== 'function') return;
           if (onAcknowledged(detail) === false) acknowledgementFailures.add(detail.form);
           else acknowledgementFailures.delete(detail.form);
@@ -103,7 +106,8 @@ export function enhancePageDefaultsFetchSave(scope = globalThis.document, option
             currentForm.ownerDocument,
             response?.url,
             session?.authorityGeneration,
-            { onError: () => markDefaultsRefreshFailed(currentForm, refreshFailureMessage) },
+            { onError: () => markDefaultsRefreshFailed(currentForm, refreshFailureMessage),
+              acknowledgedControls: session?.acknowledgedControls },
           );
           if (outcome === 'unavailable') markDefaultsRefreshFailed(currentForm, refreshFailureMessage);
           if (acknowledgementFailures.delete(currentForm)) {

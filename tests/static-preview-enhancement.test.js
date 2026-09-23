@@ -2562,6 +2562,143 @@ describe('Settings fetch autosave enhancement', () => {
     });
   });
 
+  it('attributes coalesced control changes only to their acknowledged request', async () => {
+    const fixture = makeFetchSaveFixture({ values: { status: 'planned', view: 'list', weekStart: 'monday' } });
+    const [status, view, weekStart] = fixture.controls;
+    const requests = [];
+    const acknowledged = [];
+
+    await withBrowserGlobals((action, options) => new Promise((resolve) => {
+      requests.push({ options, resolve });
+    }), async () => {
+      enhanceSettingsFetchSave(
+        { querySelectorAll: () => fixture.controls },
+        { onAcknowledged: (detail) => acknowledged.push(detail) },
+      );
+
+      status.value = 'published';
+      status.dispatch('change');
+      await flushAsync();
+      view.value = 'grid';
+      view.dispatch('change');
+      weekStart.value = 'sunday';
+      weekStart.dispatch('change');
+      expect(requests).toHaveLength(1);
+
+      requests[0].resolve({ ok: true, redirected: true, text: async () => '' });
+      await flushAsync();
+      expect(requests).toHaveLength(2);
+      expect(acknowledged[0].controlName).toBe('status');
+      expect([...acknowledged[0].controlNames]).toEqual(['status']);
+      expect(requests[1].options.body.get('view')).toBe('grid');
+      expect(requests[1].options.body.get('weekStart')).toBe('sunday');
+
+      requests[1].resolve({ ok: true, redirected: true, text: async () => '' });
+      await flushAsync();
+      expect(acknowledged[1].controlName).toBe('weekStart');
+      expect([...acknowledged[1].controlNames]).toEqual(['view', 'weekStart']);
+
+      status.value = 'planned';
+      status.dispatch('change');
+      await flushAsync();
+      requests[2].resolve({ ok: true, redirected: true, text: async () => '' });
+      await flushAsync();
+      expect([...acknowledged[2].controlNames]).toEqual(['status']);
+
+      status.value = 'published';
+      status.dispatch('change');
+      await flushAsync();
+      view.value = 'list';
+      view.dispatch('change');
+      weekStart.value = 'monday';
+      weekStart.dispatch('change');
+      view.value = 'grid';
+      view.dispatch('change');
+      requests[3].resolve({ ok: true, redirected: true, text: async () => '' });
+      await flushAsync();
+      expect(requests).toHaveLength(5);
+      requests[4].resolve({ ok: true, redirected: true, text: async () => '' });
+      await flushAsync();
+      expect([...acknowledged[4].controlNames]).toEqual(['weekStart']);
+    });
+  });
+
+  it.each([false, true])('attributes a queued full-form save after an active failure (view reverted: %s)', async (reverted) => {
+    const fixture = makeFetchSaveFixture({ values: { view: 'list', weekStart: 'monday' } });
+    const [view, weekStart] = fixture.controls;
+    const requests = [];
+    const acknowledged = [];
+
+    await withBrowserGlobals((action, options) => new Promise((resolve) => {
+      requests.push({ options, resolve });
+    }), async () => {
+      enhanceSettingsFetchSave(
+        { querySelectorAll: () => fixture.controls },
+        { onAcknowledged: (detail) => acknowledged.push(detail) },
+      );
+
+      view.value = 'grid';
+      view.dispatch('change');
+      await flushAsync();
+      weekStart.value = 'sunday';
+      weekStart.dispatch('change');
+      if (reverted) {
+        view.value = 'list';
+        view.dispatch('change');
+      }
+
+      requests[0].resolve({ ok: false, status: 422, redirected: false, text: async () => '' });
+      await flushAsync();
+      expect(requests).toHaveLength(2);
+      expect(requests[1].options.body.get('view')).toBe(reverted ? 'list' : 'grid');
+      expect(requests[1].options.body.get('weekStart')).toBe('sunday');
+
+      requests[1].resolve({ ok: true, redirected: true, text: async () => '' });
+      await flushAsync();
+      expect(acknowledged).toHaveLength(1);
+      expect([...acknowledged[0].controlNames]).toEqual(reverted ? ['weekStart'] : ['view', 'weekStart']);
+    });
+  });
+
+  it('does not dispatch a queued reversion after the active request fails', async () => {
+    const fixture = makeFetchSaveFixture({ values: { view: 'list', weekStart: 'monday' } });
+    const [view, weekStart] = fixture.controls;
+    const requests = [];
+    const errors = [];
+    const validations = [];
+
+    await withBrowserGlobals((action, options) => new Promise((resolve) => {
+      requests.push({ options, resolve });
+    }), async () => {
+      enhanceSettingsFetchSave(
+        { querySelectorAll: () => fixture.controls },
+        {
+          onError: (detail) => errors.push(detail),
+          onValidationError: (detail) => validations.push(detail),
+        },
+      );
+      view.value = 'grid';
+      view.dispatch('change');
+      await flushAsync();
+      weekStart.value = 'sunday';
+      weekStart.dispatch('change');
+      view.value = 'list';
+      view.dispatch('change');
+      weekStart.value = 'monday';
+      weekStart.dispatch('change');
+
+      requests[0].resolve({ ok: false, status: 422, redirected: false, text: async () => '' });
+      await flushAsync();
+      expect(requests).toHaveLength(1);
+      expect(view.value).toBe('list');
+      expect(weekStart.value).toBe('monday');
+      expect(errors[0].superseded).toBe(true);
+      expect(validations[0].superseded).toBe(true);
+      expect(fixture.form.hasAttribute('aria-busy')).toBe(false);
+      expect(fixture.status.textContent).toContain('Could not save settings');
+    });
+  });
+
   it('keeps the page loaded for server validation and network failures, and retries a queued newer state', async () => {
     const fixture = makeFetchSaveFixture();
     const requests = [];
@@ -2637,6 +2774,7 @@ describe('Settings fetch autosave enhancement', () => {
   it('leaves authoritative validation content rendered by the validation hook untouched', async () => {
     const fixture = makeFetchSaveFixture();
     const requests = [];
+    const validations = [];
 
     await withBrowserGlobals((action, options) => new Promise((resolve) => {
       requests.push({ action, options, resolve });
@@ -2644,7 +2782,8 @@ describe('Settings fetch autosave enhancement', () => {
       enhanceSettingsFetchSave(
         { querySelectorAll: () => fixture.controls },
         {
-          onValidationError: () => {
+          onValidationError: (detail) => {
+            validations.push(detail);
             fixture.status.textContent = 'Server validation: choose a valid setting.';
           },
         },
@@ -2657,6 +2796,7 @@ describe('Settings fetch autosave enhancement', () => {
       await flushAsync();
 
       expect(fixture.status.textContent).toBe('Server validation: choose a valid setting.');
+      expect(validations[0].superseded).toBe(false);
       expect(fixture.form.hasAttribute('aria-busy')).toBe(false);
     });
   });
@@ -2946,7 +3086,7 @@ describe('NSFW Filter fetch autosave adoption', () => {
     }));
   });
 
-  it('queues the latest toggle state and never replaces the DOM for a superseded validation response', async () => {
+  it('skips a redundant queued toggle after a failed active request', async () => {
     const fixture = makeNsfwFetchFixture();
     const requests = [];
 
@@ -2965,13 +3105,40 @@ describe('NSFW Filter fetch autosave adoption', () => {
       await flushAsync();
 
       expect(fixture.region.replacement).toBeNull();
-      expect(requests).toHaveLength(2);
-      expect(requests[1].options.body.getAll('enabled')).toEqual(['0']);
-
-      requests[1].resolve({ ok: true, redirected: true, text: async () => '<html>saved</html>' });
-      await flushAsync();
-      expect(fixture.status.textContent).toBe('Settings saved.');
+      expect(requests).toHaveLength(1);
+      expect(fixture.control.checked).toBe(false);
+      expect(fixture.status.textContent).toContain('Could not save settings');
     });
+  });
+
+  it('keeps a reverted switch when the in-flight validation markup is stale', async () => {
+    const fixture = makeNsfwFetchFixture();
+    const stale = makeNsfwFetchFixture({ checked: true });
+    const requests = [];
+
+    await withDefaultsDomParser(() => ({
+      querySelector(selector) {
+        return selector === '[data-settings-nsfw-filter-region]' ? stale.region : null;
+      },
+    }), async () => withBrowserGlobals((action, options) => new Promise((resolve) => {
+      requests.push({ options, resolve });
+    }), async () => {
+      enhanceNsfwFilterFetchSave(fixture.scope);
+      fixture.control.checked = true;
+      fixture.control.dispatch('change');
+      await flushAsync();
+      expect(requests[0].options.body.getAll('enabled')).toEqual(['0', '1']);
+
+      fixture.control.checked = false;
+      fixture.control.dispatch('change');
+      requests[0].resolve({ ok: false, status: 422, redirected: false, text: async () => '<html>stale</html>' });
+      await flushAsync();
+
+      expect(requests).toHaveLength(1);
+      expect(fixture.control.checked).toBe(false);
+      expect(fixture.region.replacement).toBeNull();
+      expect(stale.control.listeners).toHaveLength(0);
+    }));
   });
 
   it('replaces and re-enhances only the authoritative NSFW region after validation', async () => {
@@ -3420,6 +3587,7 @@ describe('Settings no-reload reviewer regressions', () => {
         expect(newInput.selectionEnd).toBe(5);
         expect(replacement.status.textContent).toBe(outcome.status);
         expect(replacement.attributes.get('data-settings-fetch-save-state')).toBe(outcome.state);
+        expect(requests).toHaveLength(1);
 
         newInput.dispatch('change');
         await flushAsync();

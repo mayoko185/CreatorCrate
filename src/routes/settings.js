@@ -160,6 +160,7 @@ const DEFAULT_OPTION_LABELS = Object.freeze({
     order: 'Default order',
     pageSize: 'Default page size',
   }),
+  calendar: Object.freeze({ view: 'Desktop view' }),
   new_project: Object.freeze({
     status: 'Status',
     projectType: 'Project Type',
@@ -167,6 +168,7 @@ const DEFAULT_OPTION_LABELS = Object.freeze({
 });
 
 const DEFAULT_VALUE_LABELS = Object.freeze({
+  calendar: Object.freeze({ view: Object.freeze({ grid: 'Calendar', list: 'List' }) }),
   new_project: Object.freeze({
     status: Object.freeze({
       tbd: 'TBD',

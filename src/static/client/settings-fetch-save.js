@@ -79,13 +79,24 @@ function createState(form, options) {
     options,
     pending: false,
     activePayload: '',
+    activeControlNames: new Set(),
+    acknowledgedBody: new globalThis.URLSearchParams(new globalThis.FormData(form)),
     queuedPayload: null,
   };
   formStates.set(form, state);
   return state;
 }
 
-function queueSave(state) {
+function changedControlNames(request, acknowledgedBody) {
+  return new Set([...request.controlNames].filter((name) => {
+    const current = request.body.getAll(name);
+    const acknowledged = acknowledgedBody.getAll(name);
+    return current.length !== acknowledged.length
+      || current.some((value, index) => value !== acknowledged[index]);
+  }));
+}
+
+function queueSave(state, control) {
   const { form } = state;
   if (typeof state.options.shouldQueue === 'function'
     && state.options.shouldQueue({ form }) === false) return;
@@ -93,11 +104,23 @@ function queueSave(state) {
   const payload = body.toString();
 
   if (state.pending) {
-    state.queuedPayload = payload === state.activePayload ? null : { body, payload };
+    if (payload === state.activePayload) {
+      state.queuedPayload = null;
+      return;
+    }
+    const controlNames = new Set([
+      ...state.activeControlNames,
+      ...(state.queuedPayload?.controlNames || []),
+    ]);
+    if (control?.name) controlNames.add(control.name);
+    state.queuedPayload = { body, payload, controlName: control?.name, controlNames };
     return;
   }
 
-  startSave(state, { body, payload });
+  startSave(state, {
+    body, payload, controlName: control?.name,
+    controlNames: new Set(control?.name ? [control.name] : []),
+  });
 }
 
 function handOffUncertain(state, request, outcome) {
@@ -106,6 +129,7 @@ function handOffUncertain(state, request, outcome) {
   const queuedRequest = state.queuedPayload;
   state.pending = false;
   state.activePayload = '';
+  state.activeControlNames = new Set();
   state.queuedPayload = null;
   notify(state.options.onUncertain, {
     form,
@@ -123,31 +147,45 @@ function handOffUncertain(state, request, outcome) {
 
 function finishOrContinue(state, outcome) {
   const { form } = state;
+  const superseded = new globalThis.URLSearchParams(new globalThis.FormData(form)).toString()
+    !== state.activePayload;
   const next = state.queuedPayload;
   state.pending = false;
   state.activePayload = '';
+  state.activeControlNames = new Set();
   state.queuedPayload = null;
 
   if (next) {
-    if (outcome) notify(state.options.onError, { form, ...outcome, superseded: true });
+    next.controlNames = changedControlNames(next, state.acknowledgedBody);
+    if (next.payload === state.acknowledgedBody.toString()) {
+      form.removeAttribute?.('aria-busy');
+      if (outcome) {
+        setFetchSaveStatus(form, 'Could not save settings. Your current changes were kept.', 'error');
+        notify(state.options.onError, { form, ...outcome, superseded, willContinue: false });
+      }
+      return superseded;
+    }
+    if (outcome) notify(state.options.onError, { form, ...outcome, superseded, willContinue: true });
     startSave(state, next);
-    return;
+    return superseded;
   }
 
   form.removeAttribute?.('aria-busy');
   if (outcome) {
     setFetchSaveStatus(form, 'Could not save settings. Your current changes were kept.', 'error');
-    notify(state.options.onError, { form, ...outcome, superseded: false });
-    return;
+    notify(state.options.onError, { form, ...outcome, superseded, willContinue: false });
+    return superseded;
   }
 
   setFetchSaveStatus(form, 'Settings saved.', 'saved');
+  return false;
 }
 
 function startSave(state, request) {
   const { form } = state;
   state.pending = true;
   state.activePayload = request.payload;
+  state.activeControlNames = new Set(request.controlNames);
   notify(state.options.onStart, { form, payload: request.payload });
   form.setAttribute?.('aria-busy', 'true');
   setFetchSaveStatus(form, 'Saving settings.', 'pending');
@@ -175,8 +213,7 @@ function startSave(state, request) {
     if (!acknowledged) {
       if (response?.ok === true
         && handOffUncertain(state, request, { response, html, type: 'response' })) return;
-      const superseded = state.queuedPayload !== null;
-      finishOrContinue(state, { response, html, type: 'response' });
+      const superseded = finishOrContinue(state, { response, html, type: 'response' });
       notify(state.options.onValidationError, {
         form,
         response,
@@ -194,12 +231,17 @@ function startSave(state, request) {
       html,
       acknowledgement,
       payload: request.payload,
+      controlName: request.controlName,
+      controlNames: new Set(request.controlNames),
       superseded: next !== null,
     });
+    state.acknowledgedBody = request.body;
     state.pending = false;
     state.activePayload = '';
+    state.activeControlNames = new Set();
     state.queuedPayload = null;
     if (next) {
+      next.controlNames = changedControlNames(next, state.acknowledgedBody);
       startSave(state, next);
       return;
     }
@@ -235,7 +277,7 @@ function bindFetchSaveControl(control, form, options) {
   control.addEventListener('change', (event) => {
     event.preventDefault?.();
     if (suppressedForms.has(form)) return;
-    queueSave(state);
+    queueSave(state, control);
   });
   return true;
 }
@@ -243,7 +285,7 @@ function bindFetchSaveControl(control, form, options) {
 export function queueSettingsFetchSave(control) {
   const state = formStates.get(control?.form);
   if (!state || !isEnhancementBound(control, 'settingsFetchSaveBound')) return false;
-  queueSave(state);
+  queueSave(state, control);
   return true;
 }
 

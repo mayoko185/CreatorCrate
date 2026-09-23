@@ -3,6 +3,7 @@
 {% import "partials/dialog.njk" as dialog %}
 {% import "partials/dropdown.njk" as dropdown %}
 {% import "partials/icons.njk" as icons %}
+{% import "partials/view-switcher.njk" as viewSwitcher %}
 
 {% set page_title = "Calendar" %}
 
@@ -22,25 +23,32 @@
     </div>
   </div>
 
-  <div data-calendar-live-region>
+  <div class="calendar-view-{{ view }}" data-calendar-live-region data-calendar-month="{{ month }}">
   <span class="sr-only" data-calendar-live-status aria-live="polite" aria-atomic="true"></span>
   <div class="calendar-nav" aria-label="Calendar navigation">
-    {% if prevMonth %}
-      <a id="calendar-previous" class="button" href="{{ pageUrl({ month: prevMonth }) }}" data-calendar-navigation>← Previous</a>
-    {% else %}
-      <span class="button" aria-disabled="true">← Previous</span>
-    {% endif %}
-    <h2 tabindex="-1" data-calendar-month-heading>{{ monthHeading }}</h2>
+    <div class="calendar-view-switcher">{{ viewSwitcher.render(view, pageUrl, 'Calendar display', true, 'Calendar', 'List') }}</div>
+    <h2 tabindex="-1" data-calendar-month-heading>
+      <button type="button" class="calendar-month-trigger" data-dialog-open="calendar-month-dialog"
+              aria-haspopup="dialog" aria-controls="calendar-month-dialog" aria-label="Choose month: {{ monthHeading }}">{{ monthHeading }}</button>
+    </h2>
     <div class="calendar-nav-right">
-      {% if isCurrentMonth %}
-        <span class="button button-primary" aria-disabled="true" aria-current="page">Today</span>
+      {% if prevMonth %}
+        <a id="calendar-previous" class="button button-secondary project-filter-control calendar-nav-control asset-tooltip" href="{{ pageUrl({ month: prevMonth }) }}"
+           data-calendar-navigation aria-label="Previous month" data-tooltip="Previous month">{{ icons.icon('chevron-left') }}</a>
       {% else %}
-        <a id="calendar-today" class="button button-primary" href="{{ pageUrl({ month: null }) }}" data-calendar-navigation>Today</a>
+        <span class="button button-secondary project-filter-control calendar-nav-control" role="button" aria-label="Previous month" aria-disabled="true">{{ icons.icon('chevron-left') }}</span>
+      {% endif %}
+      {% if isCurrentMonth %}
+        <span class="button button-primary project-filter-control calendar-nav-control" role="button" aria-label="Today" aria-disabled="true" aria-current="page">{{ icons.icon('calendar') }}</span>
+      {% else %}
+        <a id="calendar-today" class="button button-primary project-filter-control calendar-nav-control asset-tooltip" href="{{ pageUrl({ month: null }) }}"
+           data-calendar-navigation aria-label="Today" data-tooltip="Today">{{ icons.icon('calendar') }}</a>
       {% endif %}
       {% if nextMonth %}
-        <a id="calendar-next" class="button" href="{{ pageUrl({ month: nextMonth }) }}" data-calendar-navigation>Next →</a>
+        <a id="calendar-next" class="button button-secondary project-filter-control calendar-nav-control asset-tooltip" href="{{ pageUrl({ month: nextMonth }) }}"
+           data-calendar-navigation aria-label="Next month" data-tooltip="Next month">{{ icons.icon('chevron-right') }}</a>
       {% else %}
-        <span class="button" aria-disabled="true">Next →</span>
+        <span class="button button-secondary project-filter-control calendar-nav-control" role="button" aria-label="Next month" aria-disabled="true">{{ icons.icon('chevron-right') }}</span>
       {% endif %}
     </div>
   </div>
@@ -62,7 +70,7 @@
         <div class="calendar-row" role="row">
           {% if firstDayWeekday > 0 %}
             {% for i in range(0, firstDayWeekday) %}
-              <div class="calendar-day empty-day out-of-month" role="cell">
+              <div class="calendar-day empty-day out-of-month{% if (weekStart == 'sunday' and (i == 0 or i == 6)) or (weekStart == 'monday' and (i == 5 or i == 6)) %} weekend{% endif %}" role="cell">
                 <div class="day-header">{{ prevMonthDaysCount - firstDayWeekday + 1 + i }}</div>
               </div>
             {% endfor %}
@@ -88,7 +96,7 @@
           {% set lastDow = (days.length + firstDayWeekday) % 7 %}
           {% if lastDow !== 0 %}
             {% for i in range(0, 7 - lastDow) %}
-              <div class="calendar-day empty-day out-of-month" role="cell">
+              <div class="calendar-day empty-day out-of-month{% if (weekStart == 'sunday' and (lastDow + i == 0 or lastDow + i == 6)) or (weekStart == 'monday' and (lastDow + i == 5 or lastDow + i == 6)) %} weekend{% endif %}" role="cell">
                 <div class="day-header">{{ i + 1 }}</div>
               </div>
             {% endfor %}
@@ -117,11 +125,31 @@
 {% endblock %}
 
 {% block overlay %}
+  {% call dialog.render('calendar-month-dialog', 'Choose month') %}
+    <form id="calendar-month-form" class="app-dialog-form project-form" data-dialog-async="false">
+      <div class="app-dialog-body">
+        <div class="page-defaults-grid">
+          {{ dropdown.singleSelect({ id: 'calendar-month-select', name: 'pickerMonth', label: 'Month',
+            options: [{ value: '01', label: 'January' }, { value: '02', label: 'February' }, { value: '03', label: 'March' },
+              { value: '04', label: 'April' }, { value: '05', label: 'May' }, { value: '06', label: 'June' },
+              { value: '07', label: 'July' }, { value: '08', label: 'August' }, { value: '09', label: 'September' },
+              { value: '10', label: 'October' }, { value: '11', label: 'November' }, { value: '12', label: 'December' }],
+            selected: month.split('-')[1], panelLabel: 'Month options', fieldClasses: 'app-dialog-field' }) }}
+          <div class="field app-dialog-field calendar-month-year">
+            <label for="calendar-month-year">Year</label>
+            <input id="calendar-month-year" name="pickerYear" type="number" min="1000" max="9999" step="1" required inputmode="numeric" value="{{ month.split('-')[0] }}">
+          </div>
+        </div>
+      </div>
+    </form>
+  {% endcall %}
+
   {% call dialog.render('calendar-filter-dialog', 'Filters') %}
     <form id="calendar-filters" class="app-dialog-form project-form" method="get" action="/calendar" data-calendar-filters>
       <div class="app-dialog-body">
         <div class="page-defaults-grid">
           <input type="hidden" name="month" value="{{ month }}">
+          {% if query.view %}<input type="hidden" name="view" value="{{ query.view }}">{% endif %}
           {{ dropdown.searchableSingleSelect({ id: 'calendar-project-filter', name: 'project', label: 'Project',
           options: projectOptions, valueKey: 'id', labelKey: 'title', selected: projectId,
           placeholder: 'All projects', panelLabel: 'Project options', searchLabel: 'Search projects',
@@ -148,7 +176,7 @@
   {% call dialog.render('calendar-defaults-dialog', 'Page Defaults', false, 'calendar-defaults-description', 'calendar-defaults-form') %}
     <form id="calendar-defaults-form" class="app-dialog-form project-form" method="post" action="/settings/defaults"
           data-dialog-form data-dialog-async="false" data-calendar-defaults-fetch-save novalidate>
-      <p id="calendar-defaults-description" class="app-dialog-description">Choose the default release status and week start for Calendar.</p>
+      <p id="calendar-defaults-description" class="app-dialog-description">Choose the default desktop view, release status, and week start for Calendar.</p>
       <div class="app-dialog-error" data-dialog-error role="alert" hidden>
         <p data-dialog-error-text></p>
         <ul data-dialog-error-list></ul>
@@ -157,9 +185,11 @@
       <div class="app-dialog-body">
         <div class="page-defaults-grid">
           {% for field in calendarDefaults.fields %}
+            {% set fieldName = 'calendarView' if field.name == 'view' else ('calendarStatus' if field.name == 'status' else 'calendarWeekStart') %}
+            {% set fieldLabel = 'Desktop view' if field.name == 'view' else ('Default release status' if field.name == 'status' else 'Week starts') %}
             <div class="field app-dialog-field" data-dialog-field="{{ field.name }}">
-              {{ dropdown.singleSelect({ id: field.id ~ '-dropdown', name: 'calendarStatus' if field.name == 'status' else 'calendarWeekStart',
-                label: 'Default release status' if field.name == 'status' else 'Week starts',
+              {{ dropdown.singleSelect({ id: field.id ~ '-dropdown', name: fieldName,
+                label: fieldLabel,
                 options: field.options, selected: field.selectedValue, optionIdPrefix: field.id,
                 nativeSelect: { id: field.id, attributes: [['required', true], ['data-autosubmit', 'fetch']] },
                 dispatchNativeChange: true }) }}

@@ -26,6 +26,7 @@ import {
   enhanceAssetViewerFilterDisclosures,
   enhanceDropdowns,
   enhanceProjectAssetCategoryFilter,
+  initializeCreatorCrateDropdown,
 } from './dropdowns.js';
 import {
   enhanceAssetGridSize,
@@ -52,6 +53,7 @@ const RELEASES_LIVE_STATE_ATTRIBUTE = 'data-releases-live-state';
 const CALENDAR_LIVE_REGION_SELECTOR = '[data-calendar-live-region]';
 const CALENDAR_FILTER_SELECTOR = '#calendar-filters';
 const CALENDAR_RESET_SELECTOR = '[data-calendar-reset]';
+const CALENDAR_MONTH_DIALOG_ID = 'calendar-month-dialog';
 const RELEASE_ASSETS_LIVE_REGION_SELECTOR = '[data-release-assets-live-region]';
 const RELEASE_ASSETS_LIVE_FILTER_SELECTOR = '[data-release-assets-live-filter]';
 const RELEASE_ASSETS_LIVE_FILTER_CONTROL_SELECTOR = [
@@ -595,7 +597,7 @@ const calendarLiveEngine = createLiveRegionEngine({
   regionSelector: CALENDAR_LIVE_REGION_SELECTOR,
   formSelector: CALENDAR_FILTER_SELECTOR,
   formScope: 'document',
-  linkSelector: '[data-calendar-navigation], [data-calendar-reset]',
+  linkSelector: '[data-calendar-navigation], [data-calendar-reset], .calendar-view-switcher a',
   linkScope: 'document',
   defaultAction: '/calendar',
   stateKey: '__creatorCrateCalendarLiveFiltering',
@@ -650,7 +652,71 @@ const calendarLiveEngine = createLiveRegionEngine({
 });
 
 export function enhanceCalendarLiveFiltering(scope = globalThis.document) {
-  return calendarLiveEngine.enhance(scope);
+  const count = calendarLiveEngine.enhance(scope);
+  const document = liveRegionDocument(scope);
+  const dialog = document?.getElementById?.(CALENDAR_MONTH_DIALOG_ID);
+  const dialogState = dialog?.__creatorCrateAppDialogState;
+  const pickerForm = dialog?.querySelector?.('#calendar-month-form');
+  if (!dialogState || !pickerForm || isEnhancementBound(pickerForm, 'calendarMonthPickerBound')) return count;
+  markEnhancementBound(pickerForm, 'calendarMonthPickerBound');
+
+  const yearInput = pickerForm.querySelector('#calendar-month-year');
+  const dropdown = pickerForm.querySelector('#calendar-month-select');
+  // Enter can also emit change and submit before the live region is replaced.
+  let enterCommittedYear = false;
+  dialogState.onOpen = () => {
+    enterCommittedYear = false;
+    const displayedMonth = calendarLiveEngine.getRegion(document)?.getAttribute?.('data-calendar-month');
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(displayedMonth || '')) return;
+    const [year, month] = displayedMonth.split('-');
+    dropdown?.querySelectorAll?.('input[type="radio"]').forEach((option) => {
+      option.checked = option.value === month;
+    });
+    initializeCreatorCrateDropdown(dropdown);
+    if (yearInput) {
+      yearInput.value = year;
+      yearInput.setCustomValidity?.('');
+    }
+  };
+  yearInput?.addEventListener?.('input', () => {
+    enterCommittedYear = false;
+    yearInput.setCustomValidity?.('');
+  });
+  const applySelection = () => {
+    const month = dropdown?.querySelector?.('input[type="radio"]:checked')?.value;
+    const year = yearInput?.value?.trim();
+    if (!/^\d{4}$/.test(year || '') || Number(year) < 1000 || Number(year) > 9999 || !yearInput.checkValidity()) {
+      yearInput.setCustomValidity?.('Enter a year from 1000 to 9999.');
+      yearInput.reportValidity?.();
+      return;
+    }
+    if (!/^(0[1-9]|1[0-2])$/.test(month || '')) return;
+    const selectedMonth = `${year}-${month}`;
+    const region = calendarLiveEngine.getRegion(document);
+    if (selectedMonth === region?.getAttribute?.('data-calendar-month')) return;
+    const filterForm = calendarLiveEngine.getForm(region);
+    const monthField = filterForm?.querySelector?.('input[name="month"]');
+    if (!monthField || !filterForm?.requestSubmit) return;
+    monthField.value = selectedMonth;
+    filterForm.requestSubmit();
+  };
+  yearInput?.addEventListener?.('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    enterCommittedYear = true;
+    applySelection();
+  });
+  pickerForm.addEventListener('change', (event) => {
+    if ((event.target === yearInput && !enterCommittedYear)
+      || (event.target?.type === 'radio' && dropdown?.contains?.(event.target))) {
+      applySelection();
+    }
+  });
+  pickerForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    if (!enterCommittedYear) applySelection();
+  });
+  return count;
 }
 
 export function beginCalendarDefaultsLiveRefresh(scope = globalThis.document) {
@@ -668,7 +734,7 @@ export function refreshCalendarLiveRegion(
   scope = globalThis.document,
   _destination,
   authorityGeneration,
-  { onError = null } = {},
+  { onError = null, acknowledgedControls = null } = {},
 ) {
   const document = liveRegionDocument(scope);
   const region = calendarLiveEngine.getRegion(document);
@@ -682,6 +748,7 @@ export function refreshCalendarLiveRegion(
   if (url.pathname !== '/calendar') return 'unavailable';
   url.searchParams.delete('status');
   url.searchParams.delete('weekStart');
+  if (acknowledgedControls?.has('calendarView')) url.searchParams.delete('view');
   if (state.timer) state.window.clearTimeout?.(state.timer);
   state.timer = null;
   calendarLiveEngine.invalidate(state);

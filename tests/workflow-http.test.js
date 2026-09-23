@@ -1485,26 +1485,25 @@ describe('Phase 6B HTTP workflow', () => {
       // layout.
       const res = await app.testAgent.get('/calendar').expect(200);
       expect(res.text).toMatch(/<h1 class="app-section-title">Calendar<\/h1>/);
-      // Calendar nav structure: a <div class="calendar-nav"> with the
-      // month <h2> and prev/next buttons.
-      expect(res.text).toMatch(/<div class="calendar-nav"[^>]*>[\s\S]*?<h2 tabindex="-1" data-calendar-month-heading>[^<]+<\/h2>/);
+      expect(res.text).toMatch(/<div class="calendar-nav"[^>]*>[\s\S]*?<h2 tabindex="-1" data-calendar-month-heading>\s*<button[^>]*aria-label="Choose month: [A-Za-z]+ \d{4}"[^>]*>[A-Za-z]+ \d{4}<\/button>/);
+      const nav = res.text.match(/<div class="calendar-nav"[^>]*>([\s\S]*?)<\/div>\s*<p class="results-meta">/)?.[1];
+      expect(nav).toContain('aria-label="Calendar display"');
+      expect(nav.indexOf('aria-label="Calendar display"')).toBeLessThan(nav.indexOf('aria-label="Choose month:'));
+      expect(nav.indexOf('aria-label="Choose month:')).toBeLessThan(nav.indexOf('aria-label="Previous month"'));
+      expect(nav.indexOf('aria-label="Previous month"')).toBeLessThan(nav.indexOf('aria-label="Today"'));
+      expect(nav.indexOf('aria-label="Today"')).toBeLessThan(nav.indexOf('aria-label="Next month"'));
       // Calendar grid structure: weekday headers in the calendar table.
       expect(res.text).toMatch(/<div class="calendar-th" role="columnheader">Mon<\/div>[\s\S]*?<div class="calendar-th" role="columnheader">Sun<\/div>/);
     });
 
     it('renders navigation anchors (not just text)', async () => {
-      // The previous test only checked `toContain('Previous')` and
-      // `toContain('Next')`, which any unrelated link or label would
-      // satisfy. The new test extracts the actual nav anchors.
       const res = await app.testAgent.get('/calendar').expect(200);
-      // Prev/next anchors must exist as <a> elements, not as plain text.
-      expect(extractCalendarNavHref(res.text, '← Previous')).not.toBeNull();
-      expect(extractCalendarNavHref(res.text, 'Next →')).not.toBeNull();
+      expect(extractCalendarNavHref(res.text, 'Previous month')).not.toBeNull();
+      expect(extractCalendarNavHref(res.text, 'Next month')).not.toBeNull();
+      expect(extractCalendarNavControl(res.text, 'Today')).toMatch(/<span\b[^>]*aria-disabled="true"[^>]*aria-current="page"/);
     });
 
-    it('uses explicit month from query (calendar header h2)', async () => {
-      // Pin the rendered month to the exact query value via the <h2>
-      // element, not the loose `toContain` that the previous test used.
+    it('uses explicit month from query (calendar month trigger)', async () => {
       const res = await app.testAgent.get('/calendar?month=2025-06').expect(200);
       expect(extractCalendarHeaderMonth(res.text)).toBe('2025-06');
     });
@@ -1536,7 +1535,7 @@ describe('Phase 6B HTTP workflow', () => {
       // Padding cells carry the previous/next month's dimmed day number
       // (Phase 13.3) rather than being blank, so they now also carry the
       // "out-of-month" modifier.
-      const emptyDayPadding = res.text.match(/<div class="calendar-day empty-day out-of-month" role="cell">/g) || [];
+      const emptyDayPadding = allCellMatches.filter((cell) => cell.split('"')[1].split(' ').includes('out-of-month'));
       const actualDayCells = allCellMatches.length - emptyDayPadding.length;
       // June has 30 days. The padding cells fill the week grid.
       expect(actualDayCells).toBe(30);
@@ -1589,30 +1588,27 @@ describe('Phase 6B HTTP workflow', () => {
       return `${y}-${String(mo + 1).padStart(2, '0')}`;
     }
 
-    /** Extract the displayed month from the Calendar heading. */
+    /** Extract the displayed month from the labelled month picker trigger. */
     function extractCalendarHeaderMonth(html) {
-      const match = html.match(/<h2 tabindex="-1" data-calendar-month-heading>([A-Za-z]+) (\d{4})<\/h2>/);
+      const match = html.match(/<h2 tabindex="-1" data-calendar-month-heading>\s*<button[^>]*aria-label="Choose month: ([A-Za-z]+) (\d{4})"[^>]*>\1 \2<\/button>/);
       if (!match) return null;
       const month = ['January', 'February', 'March', 'April', 'May', 'June',
         'July', 'August', 'September', 'October', 'November', 'December'].indexOf(match[1]) + 1;
       return month ? `${match[2]}-${String(month).padStart(2, '0')}` : null;
     }
 
-    /**
-     * Extract the prev/next month navigation hrefs. The template
-     * wraps them in <div class="calendar-nav"> … <a …>← Previous</a>
-     * … <a …>Next →</a> … </div>. We extract the href of each anchor
-     * to assert the exact month= value on the same URL.
-     */
+    function extractCalendarNavControl(html, label) {
+      const nav = html.match(/<div class="calendar-nav-right">([\s\S]*?)<\/div>/)?.[1] || '';
+      return [...nav.matchAll(/<(?:a|span)\b[^>]*>/g)]
+        .map((match) => match[0])
+        .find((tag) => tag.includes(`aria-label="${label}"`)) || null;
+    }
+
     function extractCalendarNavHref(html, label) {
-      const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const re = new RegExp(
-        `<div class="calendar-nav"[^>]*>[\\s\\S]*?<a\\b[^>]*\\bhref="([^"]+)"[^>]*>${escaped}<\\/a>`,
-        'i',
-      );
-      const m = html.match(re);
-      if (!m) return null;
-      return decodeHtmlEntities(m[1]);
+      const control = extractCalendarNavControl(html, label);
+      if (!control?.startsWith('<a ')) return null;
+      const href = control.match(/\bhref="([^"]+)"/)?.[1];
+      return href ? decodeHtmlEntities(href) : null;
     }
 
     it.each([
@@ -1635,19 +1631,19 @@ describe('Phase 6B HTTP workflow', () => {
         .get(`/calendar?month=${encodeURIComponent(bad)}`)
         .expect(200);
 
-      // The header <h2> must show the EXACT fallback month — not just
+      // The month picker trigger must show the EXACT fallback month — not just
       // any YYYY-MM that happens to satisfy the format regex.
       expect(extractCalendarHeaderMonth(res.text)).toBe(expectedMonth);
 
       // The Previous nav link's href must point at exactly expectedPrev.
-      const prevHref = extractCalendarNavHref(res.text, '← Previous');
+      const prevHref = extractCalendarNavHref(res.text, 'Previous month');
       expect(prevHref).not.toBeNull();
       const prevUrl = new URL(prevHref, 'http://localhost');
       expect(prevUrl.pathname).toBe('/calendar');
       expect(prevUrl.searchParams.get('month')).toBe(expectedPrev);
 
       // The Next nav link's href must point at exactly expectedNext.
-      const nextHref = extractCalendarNavHref(res.text, 'Next →');
+      const nextHref = extractCalendarNavHref(res.text, 'Next month');
       expect(nextHref).not.toBeNull();
       const nextUrl = new URL(nextHref, 'http://localhost');
       expect(nextUrl.pathname).toBe('/calendar');
@@ -1658,8 +1654,8 @@ describe('Phase 6B HTTP workflow', () => {
       const noisyQuery = 'month=2025-06&unsupported=publishable&status=ready&project=1&schedule=overdue&page=3&pageSize=10&sort=title&order=asc&includeArchived=1&junk=x';
       const res = await app.testAgent.get(`/calendar?${noisyQuery}`).expect(200);
 
-      const prevHref = extractCalendarNavHref(res.text, '← Previous');
-      const nextHref = extractCalendarNavHref(res.text, 'Next →');
+      const prevHref = extractCalendarNavHref(res.text, 'Previous month');
+      const nextHref = extractCalendarNavHref(res.text, 'Next month');
       expect(prevHref).not.toBeNull();
       expect(nextHref).not.toBeNull();
 
@@ -1702,32 +1698,29 @@ describe('Phase 6B HTTP workflow', () => {
     // to the unsupported "10000-01" — also forbidden. For in-range months,
     // both links remain.
 
-    it('lower boundary (1000-01) has no Previous anchor (only a disabled span)', async () => {
+    it('lower boundary (1000-01) disables Previous while Next navigates', async () => {
       const res = await app.testAgent.get('/calendar?month=1000-01').expect(200);
       // The rendered header must show exactly 1000-01.
       expect(extractCalendarHeaderMonth(res.text)).toBe('1000-01');
-      // No anchor for the previous month (which would be 0999-12). Use
-      // the strict anchor extractor — must return null.
-      expect(extractCalendarNavHref(res.text, '← Previous')).toBeNull();
-      // The disabled span is still present to keep the layout stable.
-      expect(res.text).toMatch(/<span class="button" aria-disabled="true">← Previous<\/span>/);
+      // No anchor may navigate to the unsupported 0999-12.
+      expect(extractCalendarNavHref(res.text, 'Previous month')).toBeNull();
+      expect(extractCalendarNavControl(res.text, 'Previous month')).toMatch(/<span\b[^>]*role="button"[^>]*aria-disabled="true"/);
       // The Next anchor IS present (1000-02) and points to the right URL.
-      const nextHref = extractCalendarNavHref(res.text, 'Next →');
+      const nextHref = extractCalendarNavHref(res.text, 'Next month');
       expect(nextHref).not.toBeNull();
       const nextUrl = new URL(nextHref, 'http://localhost');
       expect(nextUrl.pathname).toBe('/calendar');
       expect(nextUrl.searchParams.get('month')).toBe('1000-02');
     });
 
-    it('upper boundary (9999-12) has no Next anchor (only a disabled span)', async () => {
+    it('upper boundary (9999-12) disables Next while Previous navigates', async () => {
       const res = await app.testAgent.get('/calendar?month=9999-12').expect(200);
       expect(extractCalendarHeaderMonth(res.text)).toBe('9999-12');
       // No anchor for the next month (which would be 10000-01).
-      expect(extractCalendarNavHref(res.text, 'Next →')).toBeNull();
-      // The disabled span is still present.
-      expect(res.text).toMatch(/<span class="button" aria-disabled="true">Next →<\/span>/);
+      expect(extractCalendarNavHref(res.text, 'Next month')).toBeNull();
+      expect(extractCalendarNavControl(res.text, 'Next month')).toMatch(/<span\b[^>]*role="button"[^>]*aria-disabled="true"/);
       // The Previous anchor IS present (9999-11).
-      const prevHref = extractCalendarNavHref(res.text, '← Previous');
+      const prevHref = extractCalendarNavHref(res.text, 'Previous month');
       expect(prevHref).not.toBeNull();
       const prevUrl = new URL(prevHref, 'http://localhost');
       expect(prevUrl.pathname).toBe('/calendar');
@@ -1737,8 +1730,8 @@ describe('Phase 6B HTTP workflow', () => {
     it('in-range months retain both Previous and Next links with exact month= values', async () => {
       const res = await app.testAgent.get('/calendar?month=2025-06').expect(200);
       expect(extractCalendarHeaderMonth(res.text)).toBe('2025-06');
-      const prevHref = extractCalendarNavHref(res.text, '← Previous');
-      const nextHref = extractCalendarNavHref(res.text, 'Next →');
+      const prevHref = extractCalendarNavHref(res.text, 'Previous month');
+      const nextHref = extractCalendarNavHref(res.text, 'Next month');
       expect(prevHref).not.toBeNull();
       expect(nextHref).not.toBeNull();
       const prevUrl = new URL(prevHref, 'http://localhost');
@@ -1752,16 +1745,16 @@ describe('Phase 6B HTTP workflow', () => {
       // 1000-01 (still in range), Next must point to 1000-03.
       const lowRes = await app.testAgent.get('/calendar?month=1000-02').expect(200);
       expect(extractCalendarHeaderMonth(lowRes.text)).toBe('1000-02');
-      const lowPrev = new URL(extractCalendarNavHref(lowRes.text, '← Previous'), 'http://localhost');
-      const lowNext = new URL(extractCalendarNavHref(lowRes.text, 'Next →'), 'http://localhost');
+      const lowPrev = new URL(extractCalendarNavHref(lowRes.text, 'Previous month'), 'http://localhost');
+      const lowNext = new URL(extractCalendarNavHref(lowRes.text, 'Next month'), 'http://localhost');
       expect(lowPrev.searchParams.get('month')).toBe('1000-01');
       expect(lowNext.searchParams.get('month')).toBe('1000-03');
 
       // 9999-11 — just below the upper boundary.
       const highRes = await app.testAgent.get('/calendar?month=9999-11').expect(200);
       expect(extractCalendarHeaderMonth(highRes.text)).toBe('9999-11');
-      const highPrev = new URL(extractCalendarNavHref(highRes.text, '← Previous'), 'http://localhost');
-      const highNext = new URL(extractCalendarNavHref(highRes.text, 'Next →'), 'http://localhost');
+      const highPrev = new URL(extractCalendarNavHref(highRes.text, 'Previous month'), 'http://localhost');
+      const highNext = new URL(extractCalendarNavHref(highRes.text, 'Next month'), 'http://localhost');
       expect(highPrev.searchParams.get('month')).toBe('9999-10');
       expect(highNext.searchParams.get('month')).toBe('9999-12');
     });

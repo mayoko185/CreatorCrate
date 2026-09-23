@@ -46,9 +46,27 @@ describe('Calendar presentation', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('renders the readable month, controls, grid and agenda without the old toggle', async () => {
+  it('renders the readable month, controls, grid, agenda and shared Calendar/List toggle', async () => {
     const html = (await agent.get('/calendar?month=2025-06').expect(200)).text;
-    expect(html).toContain('<h2 tabindex="-1" data-calendar-month-heading>June 2025</h2>');
+    expect(html).toMatch(/<h2 tabindex="-1" data-calendar-month-heading>\s*<button[^>]*data-dialog-open="calendar-month-dialog"[^>]*aria-haspopup="dialog"[^>]*aria-controls="calendar-month-dialog"[^>]*>June 2025<\/button>/);
+    expect(html).toContain('data-calendar-month="2025-06"');
+    const navigation = html.match(/<div class="calendar-nav-right">([\s\S]*?)<\/div>/)?.[1] || '';
+    expect([...navigation.matchAll(/aria-label="(Previous month|Today|Next month)"/g)].map((match) => match[1]))
+      .toEqual(['Previous month', 'Today', 'Next month']);
+    expect(navigation).toContain('data-tooltip="Previous month"');
+    expect(navigation).toContain('data-tooltip="Today"');
+    expect(navigation).toContain('data-tooltip="Next month"');
+    expect(navigation).toContain('<path d="M15 18l-6-6 6-6"/>');
+    expect(navigation).toContain('<rect x="3" y="5" width="18" height="16" rx="2"/>');
+    expect(navigation).toContain('<path d="M9 18l6-6-6-6"/>');
+    const picker = html.match(/<dialog id="calendar-month-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    expect(picker).toContain('>Choose month</h2>');
+    expect(picker).toContain('name="pickerMonth"');
+    expect(picker).toContain('name="pickerYear" type="number" min="1000" max="9999"');
+    expect(picker).not.toContain('class="app-dialog-footer"');
+    expect(picker).toContain('data-dialog-close aria-label="Close Choose month"');
+    expect(picker).toContain('class="field app-dialog-field calendar-month-year"');
+    expect(css).toMatch(/\.calendar-month-year \.cc-number-stepper\s*\{\s*min-height:\s*2\.5rem/);
     expect(html).toContain('data-calendar-live-region');
     expect(html).toContain('data-calendar-live-status');
     expect(html).toContain('data-calendar-navigation');
@@ -57,9 +75,44 @@ describe('Calendar presentation', () => {
     expect(html).toContain('aria-label="Calendar navigation"');
     expect(html).toContain('data-dialog-open="calendar-filter-dialog"');
     expect(html).toContain('data-dialog-open="calendar-defaults-dialog"');
-    expect(html).not.toContain('class="view-switcher"');
+    expect(html).toContain('class="calendar-view-grid" data-calendar-live-region');
+    expect(html).toContain('<nav class="view-switcher" aria-label="Calendar display">');
+    expect(html).toMatch(/class="view-switcher-option view-switcher-option--icon asset-tooltip asset-tooltip--right"[^>]*aria-current="page"[^>]*aria-label="Calendar view" data-tooltip="Calendar view"/);
+    expect(html).toMatch(/href="\/calendar\?month=2025-06&amp;view=list"[^>]*aria-label="List view" data-tooltip="List view"/);
+    expect(html).toContain('data-tooltip="Calendar view"><svg');
     expect(html).toContain('class="calendar-table" role="table"');
     expect(html).toContain('class="calendar-agenda"');
+  });
+
+  it('uses the existing agenda for desktop List and retains the mobile empty-day behavior', async () => {
+    const parent = project(db, 'Agenda project');
+    release(db, parent.id, 'Agenda release');
+    const html = (await agent.get('/calendar?month=2025-06&view=list&status=planned').expect(200)).text;
+    expect(html).toContain('class="calendar-view-list" data-calendar-live-region');
+    expect(html).toMatch(/aria-current="page"[^>]*aria-label="List view"/);
+    expect(html).toContain('class="calendar-table" role="table"');
+    expect(html).toContain('class="calendar-agenda"');
+    expect(html).toContain('agenda-day-empty');
+    expect(html).toContain('name="view" value="list"');
+    expect(html).toContain('action="/calendar?month=2025-06&amp;view=list"');
+    expect(html).toContain('href="/calendar?month=2025-05&amp;status=planned&amp;view=list"');
+    expect(css).toMatch(/\.calendar-view-list \.calendar-scroll\s*\{\s*display:\s*none/);
+    expect(css).toMatch(/\.calendar-view-list \.calendar-agenda\s*\{\s*display:\s*flex/);
+    expect(css).toMatch(/\.calendar-view-list \.agenda-day-empty\s*\{\s*display:\s*none/);
+    expect(css).toMatch(/@media \(max-width: 767px\)[\s\S]*?\.calendar-view-switcher\s*\{\s*display:\s*none/);
+    expect(css).toMatch(/@media \(max-width: 767px\)[\s\S]*?\.calendar-view-list \.agenda-day-empty\s*\{\s*display:\s*block/);
+  });
+
+  it('keeps boundary navigation disabled while retaining the current Today state', async () => {
+    const first = (await agent.get('/calendar?month=1000-01').expect(200)).text;
+    const last = (await agent.get('/calendar?month=9999-12').expect(200)).text;
+    expect(first).toMatch(/<span[^>]*aria-label="Previous month" aria-disabled="true"[^>]*>/);
+    expect(first).not.toContain('id="calendar-previous"');
+    expect(last).toMatch(/<span[^>]*aria-label="Next month" aria-disabled="true"[^>]*>/);
+    expect(last).not.toContain('id="calendar-next"');
+    const current = (await agent.get('/calendar').expect(200)).text;
+    expect(current).toMatch(/<span[^>]*aria-label="Today" aria-disabled="true" aria-current="page"[^>]*>/);
+    expect(current).not.toContain('id="calendar-today"');
   });
 
   it('uses the shared toolbar controls and styled tooltips for both dialogs', async () => {
@@ -106,7 +159,10 @@ describe('Calendar presentation', () => {
     expect(defaults).toMatch(/<div class="app-dialog-body">\s*<div class="page-defaults-grid">/);
     expect(defaults).toContain('data-dialog-field="status"');
     expect(defaults).toContain('data-dialog-field="weekStart"');
-    expect(defaults.match(/data-autosubmit="fetch"/g)).toHaveLength(2);
+    expect(defaults.match(/data-autosubmit="fetch"/g)).toHaveLength(3);
+    expect(defaults).toContain('data-dialog-field="view"');
+    expect(defaults).toContain('name="calendarView"');
+    expect(defaults).toContain('Desktop view');
     expect(defaults).toMatch(/<select[^>]*name="calendarStatus"[^>]*data-autosubmit="fetch"/);
     const statusOptions = defaults.match(/<select[^>]*name="calendarStatus"[^>]*>[\s\S]*?<\/select>/)?.[0] || '';
     expect(statusOptions).toMatch(/<option value="all"(?: selected)?>All releases<\/option>/);

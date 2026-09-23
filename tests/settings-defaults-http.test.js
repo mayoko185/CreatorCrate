@@ -144,20 +144,31 @@ describe('settings — page defaults HTTP', () => {
   it('saves Calendar defaults through the existing Settings path and rejects invalid values atomically', async () => {
     const statusKey = defaultKey('calendar', 'status');
     const weekStartKey = defaultKey('calendar', 'weekStart');
+    const viewKey = defaultKey('calendar', 'view');
+    expect(viewKey).toBe('page_defaults.calendar.view');
     expect(statusKey).toBe('page_defaults.calendar.status');
     expect(weekStartKey).toBe('page_defaults.calendar.week_start');
 
     await agent.post('/settings/defaults').type('form').send({
-      calendarStatus: 'published', calendarWeekStart: 'sunday', _csrf: csrfToken,
+      calendarView: 'list', calendarStatus: 'published', calendarWeekStart: 'sunday', _csrf: csrfToken,
     }).expect(302);
     expect(readMeta(db, statusKey)).toBe('published');
     expect(readMeta(db, weekStartKey)).toBe('sunday');
+    expect(readMeta(db, viewKey)).toBe('list');
+    const calendar = await agent.get('/calendar?month=2025-06').expect(200);
+    expect(calendar.text).toContain('class="calendar-view-list" data-calendar-live-region');
 
     await agent.post('/settings/defaults').type('form').send({
-      calendarStatus: 'planned', calendarWeekStart: 'invalid', _csrf: csrfToken,
+      calendarView: 'grid', calendarStatus: 'planned', calendarWeekStart: 'invalid', _csrf: csrfToken,
     }).expect(422);
     expect(readMeta(db, statusKey)).toBe('published');
     expect(readMeta(db, weekStartKey)).toBe('sunday');
+    expect(readMeta(db, viewKey)).toBe('list');
+    await agent.post('/settings/defaults').type('form').send({
+      calendarView: 'invalid', calendarStatus: 'planned', calendarWeekStart: 'monday', _csrf: csrfToken,
+    }).expect(422);
+    expect(readMeta(db, viewKey)).toBe('list');
+    expect(readMeta(db, statusKey)).toBe('published');
     expect(readMeta(db, 'page_defaults.calendar.project')).toBeUndefined();
     expect(readMeta(db, 'page_defaults.calendar.month')).toBeUndefined();
   });

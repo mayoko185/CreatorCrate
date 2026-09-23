@@ -87,7 +87,9 @@ function fetchSaveOptions() {
       restoreRegionFocus(region, focus);
     },
     onValidationError: ({ form, html, payload, superseded = false }) => {
-      if (superseded) return;
+      // A queued save owns the next response; an unsent edit can keep its live value
+      // while this bounded replacement displays validation for the submitted value.
+      if (superseded && form.hasAttribute?.('aria-busy')) return;
       const current = currentMappingRegion(form);
       const focus = captureRegionFocus(current);
       const liveValue = livePathValue(form);

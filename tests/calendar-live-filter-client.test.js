@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { enhanceCalendarLiveFiltering, beginCalendarDefaultsLiveRefresh, refreshCalendarLiveRegion } from '../src/static/client/live-regions.js';
+import { closeAppDialogById } from '../src/static/client/app-dialogs.js';
 import { enhancePageDefaultsFetchSave } from '../src/static/client/projects-defaults-fetch-save.js';
 
 function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } = {}) {
@@ -186,12 +187,19 @@ function makePage(values = {}) {
   document.nodeType = 9;
   document.ownerDocument = document;
   document.activeElement = null;
-  const region = makeNode({ attrs: { 'data-calendar-live-region': '' } });
+  document.getElementById = (id) => document.querySelector(`#${id}`);
+  const region = makeNode({ attrs: { 'data-calendar-live-region': '', 'data-calendar-month': values.month || '2026-09' } });
   const status = makeNode({ attrs: { 'data-calendar-live-status': '' } });
   const heading = makeNode({ tagName: 'h2', attrs: { 'data-calendar-month-heading': '' } });
   heading.textContent = values.month || '2026-09';
   region.appendChild(status);
   region.appendChild(heading);
+  const viewSwitcher = makeNode({ attrs: { class: 'calendar-view-switcher' } });
+  const listView = makeNode({ tagName: 'a', attrs: {
+    href: `/calendar?month=${values.month || '2026-09'}&view=list`,
+  } });
+  viewSwitcher.appendChild(listView);
+  region.appendChild(viewSwitcher);
   const calendarEvent = makeNode({ attrs: { 'data-calendar-event': '' } });
   const trigger = makeNode({ tagName: 'button', attrs: { 'data-calendar-info-trigger': '' } });
   const info = makeNode({ attrs: { 'data-calendar-info-card': '' } });
@@ -217,7 +225,7 @@ function makePage(values = {}) {
   for (const [name, month] of Object.entries({ previous: '2026-08', today: null, next: '2026-10' })) {
     const url = new URL('/calendar', 'http://creatorcrate.test');
     if (month) url.searchParams.set('month', month);
-    for (const key of ['status', 'project', 'weekStart']) {
+    for (const key of ['status', 'project', 'weekStart', 'view']) {
       if (values.explicit?.[key]) url.searchParams.set(key, values.explicit[key]);
     }
     links[name] = makeNode({ tagName: 'a', attrs: {
@@ -226,8 +234,12 @@ function makePage(values = {}) {
     region.appendChild(links[name]);
   }
   const form = makeNode({ tagName: 'form', attrs: { id: 'calendar-filters', action: '/calendar' } });
+  form.requestSubmit = () => form.dispatch('submit');
   const monthField = makeNode({ tagName: 'input', attrs: { name: 'month', type: 'hidden' }, value: values.month || '2026-09' });
   form.appendChild(monthField);
+  if (values.explicit?.view) form.appendChild(makeNode({
+    tagName: 'input', attrs: { name: 'view', type: 'hidden' }, value: values.explicit.view,
+  }));
   const options = {};
   for (const [name, choices, selected] of [
     ['status', ['all', 'planned', 'published'], values.status || 'all'],
@@ -251,7 +263,7 @@ function makePage(values = {}) {
   projectDropdown.appendChild(search);
   form.appendChild(projectDropdown);
   const resetForm = makeNode({ tagName: 'form', attrs: {
-    action: `/calendar?month=${values.month || '2026-09'}`,
+    action: `/calendar?month=${values.month || '2026-09'}${values.explicit?.view ? `&view=${values.explicit.view}` : ''}`,
   } });
   const reset = makeNode({ tagName: 'button', attrs: { 'data-calendar-reset': '', type: 'submit' } });
   resetForm.appendChild(reset);
@@ -260,7 +272,7 @@ function makePage(values = {}) {
   dialog.appendChild(resetForm);
   document.appendChild(region);
   document.appendChild(dialog);
-  return { document, region, status, heading, links, form, options, monthField, reset, resetForm,
+  return { document, region, status, heading, links, listView, form, options, monthField, reset, resetForm,
     projectDropdown, search, trigger, isPopupOpen: () => popupOpen };
 }
 
@@ -296,6 +308,36 @@ function makeWindow(document, pages) {
   };
   document.defaultView = windowObject;
   return windowObject;
+}
+
+function attachMonthPicker(document) {
+  const dialog = makeNode({ tagName: 'dialog', attrs: { id: 'calendar-month-dialog' } });
+  const form = makeNode({ tagName: 'form', attrs: { id: 'calendar-month-form' } });
+  const dropdown = makeNode({ tagName: 'details', attrs: {
+    id: 'calendar-month-select', 'data-cc-dropdown': '', 'data-cc-dropdown-mode': 'single',
+  } });
+  const months = {};
+  for (const value of ['08', '09', '10', '11']) {
+    months[value] = makeNode({ tagName: 'input', attrs: { type: 'radio', value } });
+    dropdown.appendChild(months[value]);
+  }
+  const year = makeNode({ tagName: 'input', attrs: { id: 'calendar-month-year', type: 'number' } });
+  year.validityMessage = '';
+  year.setCustomValidity = (message) => { year.validityMessage = message; };
+  year.checkValidity = () => !year.validityMessage && Number(year.value) >= 1000 && Number(year.value) <= 9999;
+  year.reportValidity = vi.fn();
+  form.requestSubmit = () => form.dispatch('submit');
+  form.appendChild(dropdown);
+  form.appendChild(year);
+  dialog.appendChild(form);
+  document.appendChild(dialog);
+  dialog.__creatorCrateAppDialogState = {
+    document, dialog, open: true, opener: null, openerAllowsFallback: true,
+  };
+  return { dialog, form, dropdown, months, year, open() {
+    dialog.__creatorCrateAppDialogState.open = true;
+    dialog.__creatorCrateAppDialogState.onOpen();
+  } };
 }
 
 async function flush() {
@@ -340,6 +382,111 @@ describe('Calendar shared live region', () => {
     enhanceCalendarLiveFiltering(initial.document);
     return { initial, pages, windowObject, requests };
   }
+
+  it('opens from the displayed month and submits a changed month through the existing filter and history path', async () => {
+    const { initial, requests, windowObject } = environment({
+      month: '2026-09', status: 'planned', project: '7', weekStart: 'sunday',
+      explicit: { view: 'list', status: 'planned', project: '7', weekStart: 'sunday' },
+    });
+    const picker = attachMonthPicker(initial.document);
+    enhanceCalendarLiveFiltering(initial.document);
+    picker.open();
+    expect(picker.year.value).toBe('2026');
+    expect(picker.months['09'].checked).toBe(true);
+    picker.months['11'].checked = true;
+    picker.months['09'].checked = false;
+    picker.months['11'].dispatch('change');
+    await flush();
+    expect(requests).toHaveLength(1);
+    expect(Object.fromEntries(requests[0].searchParams)).toEqual({
+      month: '2026-11', view: 'list', status: 'planned', project: '7', weekStart: 'sunday',
+    });
+    expect(windowObject.history.pushes).toHaveLength(1);
+    expect(picker.dialog.__creatorCrateAppDialogState.open).toBe(true);
+    picker.open();
+    expect(picker.months['11'].checked).toBe(true);
+    expect(picker.year.value).toBe('2026');
+    picker.year.value = '1000';
+    picker.year.dispatch('input');
+    picker.year.dispatch('change');
+    await flush();
+    expect(requests).toHaveLength(2);
+    expect(requests[1].searchParams.get('month')).toBe('1000-11');
+    picker.open();
+    expect(picker.year.value).toBe('1000');
+  });
+
+  it('commits Enter once even when year change and implicit submit follow before replacement', async () => {
+    const { initial, requests, windowObject } = environment({ month: '2026-09' });
+    const picker = attachMonthPicker(initial.document);
+    enhanceCalendarLiveFiltering(initial.document);
+    picker.open();
+    let resolveRequest;
+    const fetchPage = windowObject.fetch.getMockImplementation();
+    windowObject.fetch.mockImplementationOnce((url) => new Promise((resolve) => {
+      resolveRequest = () => resolve(fetchPage(url));
+    }));
+
+    picker.year.value = '2027';
+    picker.year.dispatch('input');
+    const enter = picker.year.dispatch('keydown', { key: 'Enter' });
+    picker.year.dispatch('change');
+    picker.form.dispatch('submit');
+
+    expect(enter.defaultPrevented).toBe(true);
+    expect(requests).toHaveLength(0);
+    expect(windowObject.fetch).toHaveBeenCalledTimes(1);
+    expect(new URL(windowObject.fetch.mock.calls[0][0]).searchParams.get('month')).toBe('2027-09');
+    expect(picker.dialog.__creatorCrateAppDialogState.open).toBe(true);
+
+    resolveRequest();
+    await flush();
+    expect(requests).toHaveLength(1);
+    expect(windowObject.history.pushes).toHaveLength(1);
+  });
+
+  it('allows the same Enter selection to retry after a failed request', async () => {
+    const { initial, windowObject } = environment({ month: '2026-09' });
+    const picker = attachMonthPicker(initial.document);
+    enhanceCalendarLiveFiltering(initial.document);
+    picker.open();
+    windowObject.fetch.mockImplementationOnce(() => Promise.reject(new Error('offline')));
+
+    picker.year.value = '2027';
+    picker.year.dispatch('input');
+    picker.year.dispatch('keydown', { key: 'Enter' });
+    await flush();
+    picker.year.dispatch('keydown', { key: 'Enter' });
+
+    expect(windowObject.fetch).toHaveBeenCalledTimes(2);
+    expect(new URL(windowObject.fetch.mock.calls[1][0]).searchParams.get('month')).toBe('2027-09');
+  });
+
+  it('does not navigate for the displayed month or an invalid year, and dismissal keeps Calendar state', async () => {
+    const { initial, requests } = environment({ month: '2026-09' });
+    const picker = attachMonthPicker(initial.document);
+    enhanceCalendarLiveFiltering(initial.document);
+    picker.open();
+    picker.months['09'].dispatch('change');
+    expect(requests).toHaveLength(0);
+    picker.open();
+    picker.year.value = '999';
+    picker.year.dispatch('change');
+    expect(picker.year.reportValidity).toHaveBeenCalled();
+    expect(picker.dialog.__creatorCrateAppDialogState.open).toBe(true);
+    expect(requests).toHaveLength(0);
+    picker.year.value = '2026';
+    picker.year.dispatch('input');
+    expect(picker.year.validityMessage).toBe('');
+    picker.months['10'].checked = true;
+    picker.months['09'].checked = false;
+    closeAppDialogById(initial.document, 'calendar-month-dialog');
+    expect(picker.dialog.__creatorCrateAppDialogState.open).toBe(false);
+    expect(initial.document.querySelector('#calendar-filters input[name="month"]').value).toBe('2026-09');
+    picker.open();
+    expect(picker.months['09'].checked).toBe(true);
+    expect(picker.year.value).toBe('2026');
+  });
 
   it('serializes status, project, and week start immediately while retaining month and explicit All', async () => {
     const { initial, windowObject, requests } = environment();
@@ -388,6 +535,29 @@ describe('Calendar shared live region', () => {
     latestForm.querySelector('#calendar-status-all').dispatch('change');
     await flush();
     expect(requests[3].searchParams.get('status')).toBe('all');
+  });
+
+  it('keeps the selected desktop view through filter changes, navigation, and Reset', async () => {
+    const { initial, requests } = environment({ month: '2026-09', explicit: { view: 'list' } });
+    initial.options.status.planned.checked = true;
+    initial.options.status.all.checked = false;
+    initial.options.status.planned.dispatch('change');
+    await flush();
+    expect(requests[0].searchParams.get('view')).toBe('list');
+    initial.links.next.dispatch('click', { button: 0 });
+    await flush();
+    expect(requests[1].searchParams.get('view')).toBe('list');
+    initial.reset.dispatch('click', { button: 0 });
+    await flush();
+    expect(requests[2].searchParams.toString()).toBe('month=2026-10&view=list');
+  });
+
+  it('switches views through the Calendar live region', async () => {
+    const { initial, requests, windowObject } = environment();
+    initial.listView.dispatch('click', { button: 0 });
+    await flush();
+    expect(requests[0].searchParams.get('view')).toBe('list');
+    expect(windowObject.location.href).toBe(requests[0].href);
   });
 
   it('retains filters on navigation, restores Back, and Reset clears overrides but keeps month', async () => {
@@ -500,12 +670,12 @@ describe('Calendar shared live region', () => {
     expect(refreshCalendarLiveRegion(initial.document, '/settings/defaults', authority)).toBe('superseded');
   });
 
-  it('autosaves each changed default and refreshes the displayed month and selected project', async () => {
+  it.each(['list', 'grid'])('preserves explicit view=%s for unrelated defaults and clears it for Desktop view', async (view) => {
     const { initial, windowObject, requests } = environment({
       month: '2026-09', status: 'planned', project: '7', weekStart: 'monday',
-      explicit: { status: 'planned', project: '7', weekStart: 'monday' },
+      explicit: { status: 'planned', project: '7', weekStart: 'monday', view },
     });
-    windowObject.setLocation('http://creatorcrate.test/calendar?month=2026-09&status=planned&project=7&weekStart=monday');
+    windowObject.setLocation(`http://creatorcrate.test/calendar?month=2026-09&status=planned&project=7&weekStart=monday&view=${view}`);
     const form = makeNode({ tagName: 'form', attrs: {
       id: 'calendar-defaults-form', action: '/settings/defaults', method: 'post',
       'data-calendar-defaults-fetch-save': '',
@@ -516,11 +686,16 @@ describe('Calendar shared live region', () => {
     const weekStart = makeNode({ tagName: 'select', attrs: {
       name: 'calendarWeekStart', 'data-autosubmit': 'fetch',
     }, value: 'monday' });
+    const desktopView = makeNode({ tagName: 'select', attrs: {
+      name: 'calendarView', 'data-autosubmit': 'fetch',
+    }, value: view === 'list' ? 'grid' : 'list' });
     const acknowledgement = makeNode({ attrs: { 'data-settings-fetch-save-status': '' } });
     status.form = form;
     weekStart.form = form;
+    desktopView.form = form;
     form.appendChild(status);
     form.appendChild(weekStart);
+    form.appendChild(desktopView);
     form.appendChild(acknowledgement);
     initial.document.appendChild(form);
     globalThis.fetch = vi.fn(async () => ({
@@ -532,7 +707,7 @@ describe('Calendar shared live region', () => {
       beginRefresh: beginCalendarDefaultsLiveRefresh, refresh: refreshCalendarLiveRegion,
       refreshFailureMessage: 'Refresh failed.',
     };
-    expect(enhancePageDefaultsFetchSave(initial.document, config)).toBe(2);
+    expect(enhancePageDefaultsFetchSave(initial.document, config)).toBe(3);
     expect(enhancePageDefaultsFetchSave(initial.document, config)).toBe(0);
     expect(form.listeners.filter(({ type }) => type === 'submit')).toHaveLength(0);
     status.dispatch('change');
@@ -540,7 +715,7 @@ describe('Calendar shared live region', () => {
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
     expect(globalThis.fetch.mock.calls[0][1].body.get('calendarStatus')).toBe('published');
     expect(requests).toHaveLength(1);
-    expect(requests[0].searchParams.toString()).toBe('month=2026-09&project=7');
+    expect(requests[0].searchParams.toString()).toBe(`month=2026-09&project=7&view=${view}`);
     expect(windowObject.history.replaces).toEqual([requests[0].href]);
     expect(acknowledgement.textContent).toBe('Settings saved.');
     expect(form.getAttribute('data-settings-fetch-save-state')).toBe('saved');
@@ -551,12 +726,23 @@ describe('Calendar shared live region', () => {
     expect(globalThis.fetch).toHaveBeenCalledTimes(2);
     expect(globalThis.fetch.mock.calls[1][1].body.get('calendarWeekStart')).toBe('sunday');
     expect(requests).toHaveLength(2);
-    expect(requests[1].searchParams.toString()).toBe('month=2026-09&project=7');
+    expect(requests[1].searchParams.toString()).toBe(`month=2026-09&project=7&view=${view}`);
+
+    desktopView.value = view;
+    desktopView.dispatch('change');
+    await flush();
+    expect(globalThis.fetch).toHaveBeenCalledTimes(3);
+    expect(globalThis.fetch.mock.calls[2][1].body.get('calendarView')).toBe(view);
+    expect(requests).toHaveLength(3);
+    expect(requests[2].searchParams.toString()).toBe('month=2026-09&project=7');
+    expect(windowObject.location.href).toBe(requests[2].href);
   });
 
-  it('queues rapid default changes behind the active shared save and reports errors', async () => {
-    const { initial, windowObject, requests } = environment({ month: '2026-09', project: '7', explicit: { project: '7' } });
-    windowObject.setLocation('http://creatorcrate.test/calendar?month=2026-09&project=7');
+  it.each([true, false])('queues rapid default changes (Desktop view changed: %s) behind the active save', async (desktopChanged) => {
+    const { initial, windowObject, requests } = environment({
+      month: '2026-09', project: '7', explicit: { project: '7', view: 'list' },
+    });
+    windowObject.setLocation('http://creatorcrate.test/calendar?month=2026-09&project=7&view=list');
     const form = makeNode({ tagName: 'form', attrs: {
       id: 'calendar-defaults-form', action: '/settings/defaults', method: 'post',
       'data-calendar-defaults-fetch-save': '',
@@ -567,11 +753,16 @@ describe('Calendar shared live region', () => {
     const weekStart = makeNode({ tagName: 'select', attrs: {
       name: 'calendarWeekStart', 'data-autosubmit': 'fetch',
     }, value: 'monday' });
+    const desktopView = makeNode({ tagName: 'select', attrs: {
+      name: 'calendarView', 'data-autosubmit': 'fetch',
+    }, value: 'list' });
     const acknowledgement = makeNode({ attrs: { 'data-settings-fetch-save-status': '' } });
     status.form = form;
     weekStart.form = form;
+    desktopView.form = form;
     form.appendChild(status);
     form.appendChild(weekStart);
+    form.appendChild(desktopView);
     form.appendChild(acknowledgement);
     initial.document.appendChild(form);
     let resolveFirst;
@@ -581,15 +772,21 @@ describe('Calendar shared live region', () => {
         ok: true, redirected: true, url: 'http://creatorcrate.test/settings/defaults?notice=defaults_saved',
         text: async () => '<html></html>',
       }));
+    const acknowledged = [];
     enhancePageDefaultsFetchSave(initial.document, {
       formSelector: '#calendar-defaults-form', markerAttribute: 'data-calendar-defaults-fetch-save',
       beginRefresh: beginCalendarDefaultsLiveRefresh, refresh: refreshCalendarLiveRegion,
       refreshFailureMessage: 'Refresh failed.',
+      onAcknowledged: (detail) => { acknowledged.push(detail); },
     });
     status.dispatch('change');
     await flush();
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);
     expect(acknowledgement.textContent).toBe('Saving settings.');
+    if (desktopChanged) {
+      desktopView.value = 'grid';
+      desktopView.dispatch('change');
+    }
     weekStart.value = 'sunday';
     weekStart.dispatch('change');
     await flush();
@@ -600,9 +797,14 @@ describe('Calendar shared live region', () => {
     });
     await flush();
     expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    expect(globalThis.fetch.mock.calls[1][1].body.get('calendarView')).toBe(desktopChanged ? 'grid' : 'list');
     expect(globalThis.fetch.mock.calls[1][1].body.get('calendarWeekStart')).toBe('sunday');
+    expect(acknowledged.map((detail) => [...detail.controlNames])).toEqual([
+      ['calendarStatus'], desktopChanged ? ['calendarView', 'calendarWeekStart'] : ['calendarWeekStart'],
+    ]);
     expect(requests).toHaveLength(1);
     expect(requests[0].searchParams.get('project')).toBe('7');
+    expect(requests[0].searchParams.get('view')).toBe(desktopChanged ? null : 'list');
     expect(acknowledgement.textContent).toBe('Settings saved.');
 
     globalThis.fetch.mockImplementationOnce(async () => ({ ok: false, redirected: false, text: async () => '' }));
@@ -612,6 +814,147 @@ describe('Calendar shared live region', () => {
     expect(acknowledgement.textContent).toBe('Could not save settings. Your current changes were kept.');
     expect(form.getAttribute('data-settings-fetch-save-state')).toBe('error');
     expect(requests).toHaveLength(1);
+  });
+
+  it('clears explicit view when a queued full-form save succeeds after the Desktop-view save fails', async () => {
+    const { initial, windowObject, requests } = environment({
+      month: '2026-09', project: '7', explicit: { project: '7', view: 'list' },
+    });
+    windowObject.setLocation('http://creatorcrate.test/calendar?month=2026-09&project=7&view=list');
+    const form = makeNode({ tagName: 'form', attrs: {
+      id: 'calendar-defaults-form', action: '/settings/defaults', method: 'post',
+      'data-calendar-defaults-fetch-save': '',
+    } });
+    const desktopView = makeNode({ tagName: 'select', attrs: {
+      name: 'calendarView', 'data-autosubmit': 'fetch',
+    }, value: 'list' });
+    const weekStart = makeNode({ tagName: 'select', attrs: {
+      name: 'calendarWeekStart', 'data-autosubmit': 'fetch',
+    }, value: 'monday' });
+    desktopView.form = form;
+    weekStart.form = form;
+    form.appendChild(desktopView);
+    form.appendChild(weekStart);
+    initial.document.appendChild(form);
+    let resolveFirst;
+    globalThis.fetch = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve; }))
+      .mockImplementation(async () => ({
+        ok: true, redirected: true, url: 'http://creatorcrate.test/settings/defaults?notice=defaults_saved',
+        text: async () => '<html></html>',
+      }));
+    const acknowledged = [];
+    enhancePageDefaultsFetchSave(initial.document, {
+      formSelector: '#calendar-defaults-form', markerAttribute: 'data-calendar-defaults-fetch-save',
+      beginRefresh: beginCalendarDefaultsLiveRefresh, refresh: refreshCalendarLiveRegion,
+      refreshFailureMessage: 'Refresh failed.',
+      onAcknowledged: (detail) => { acknowledged.push(detail); },
+    });
+
+    desktopView.value = 'grid';
+    desktopView.dispatch('change');
+    await flush();
+    weekStart.value = 'sunday';
+    weekStart.dispatch('change');
+    resolveFirst({ ok: false, redirected: false, text: async () => '' });
+    await flush();
+    await flush();
+
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+    expect(globalThis.fetch.mock.calls[1][1].body.get('calendarView')).toBe('grid');
+    expect(globalThis.fetch.mock.calls[1][1].body.get('calendarWeekStart')).toBe('sunday');
+    expect(acknowledged.map((detail) => [...detail.controlNames])).toEqual([
+      ['calendarView', 'calendarWeekStart'],
+    ]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].searchParams.toString()).toBe('month=2026-09&project=7');
+    expect(windowObject.location.href).toBe(requests[0].href);
+  });
+
+  it.each([false, true])('ends a failed save chain only when queued work is exhausted (continues: %s)', async (continues) => {
+    const { initial, windowObject, requests } = environment({
+      month: '2026-09', explicit: { view: 'list' },
+    });
+    windowObject.setLocation('http://creatorcrate.test/calendar?month=2026-09&view=list');
+    const form = makeNode({ tagName: 'form', attrs: {
+      id: 'calendar-defaults-form', action: '/settings/defaults', method: 'post',
+      'data-calendar-defaults-fetch-save': '',
+    } });
+    const desktopView = makeNode({ tagName: 'select', attrs: {
+      name: 'calendarView', 'data-autosubmit': 'fetch',
+    }, value: 'list' });
+    const weekStart = makeNode({ tagName: 'select', attrs: {
+      name: 'calendarWeekStart', 'data-autosubmit': 'fetch',
+    }, value: 'monday' });
+    const status = makeNode({ tagName: 'select', attrs: {
+      name: 'calendarStatus', 'data-autosubmit': 'fetch',
+    }, value: 'planned' });
+    for (const control of [desktopView, weekStart, status]) {
+      control.form = form;
+      form.appendChild(control);
+    }
+    initial.document.appendChild(form);
+    const saves = [];
+    globalThis.fetch = vi.fn((_url, options) => new Promise((resolve) => {
+      saves.push({ body: options.body, resolve });
+    }));
+    const beginRefresh = vi.fn(beginCalendarDefaultsLiveRefresh);
+    const refreshMetadata = [];
+    const refresh = (document, url, generation, options) => {
+      refreshMetadata.push(new Set(options.acknowledgedControls));
+      return refreshCalendarLiveRegion(document, url, generation, options);
+    };
+    enhancePageDefaultsFetchSave(initial.document, {
+      formSelector: '#calendar-defaults-form', markerAttribute: 'data-calendar-defaults-fetch-save',
+      beginRefresh, refresh, refreshFailureMessage: 'Refresh failed.',
+    });
+    const success = { ok: true, redirected: true,
+      url: 'http://creatorcrate.test/settings/defaults?notice=defaults_saved',
+      text: async () => '<html></html>' };
+    const failure = { ok: false, redirected: false, text: async () => '' };
+
+    desktopView.value = 'grid';
+    desktopView.dispatch('change');
+    await flush();
+    weekStart.value = 'sunday';
+    weekStart.dispatch('change');
+    saves[0].resolve(success);
+    await flush();
+    expect(saves).toHaveLength(2);
+    expect(saves[1].body.get('calendarWeekStart')).toBe('sunday');
+    expect(refreshMetadata).toHaveLength(0);
+
+    if (continues) {
+      status.value = 'published';
+      status.dispatch('change');
+    } else {
+      weekStart.value = 'monday';
+      weekStart.dispatch('change');
+    }
+    saves[1].resolve(failure);
+    await flush();
+
+    if (!continues) {
+      expect(saves).toHaveLength(2);
+      expect(beginRefresh).toHaveBeenCalledTimes(1);
+      status.value = 'published';
+      status.dispatch('change');
+      await flush();
+      expect(beginRefresh).toHaveBeenCalledTimes(2);
+    } else {
+      expect(beginRefresh).toHaveBeenCalledTimes(1);
+    }
+    expect(saves).toHaveLength(3);
+    expect(saves[2].body.get('calendarStatus')).toBe('published');
+    saves[2].resolve(success);
+    await flush();
+
+    expect(refreshMetadata).toEqual([continues
+      ? new Set(['calendarView', 'calendarWeekStart', 'calendarStatus'])
+      : new Set(['calendarStatus'])]);
+    expect(requests).toHaveLength(1);
+    expect(requests[0].searchParams.get('view')).toBe(continues ? null : 'list');
+    expect(windowObject.location.href).toBe(requests[0].href);
   });
 
   it('ignores a save-triggered response after a newer month navigation', async () => {
