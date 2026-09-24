@@ -114,6 +114,72 @@ describe('social preparation repository', () => {
     });
   });
 
+  it('replaces the selected set while retaining platform history and reselecting existing rows', () => {
+    const first = new Date('2030-01-01T00:00:00Z');
+    repository.replaceSelectedPlatforms(releaseId, ['x', 'bluesky', 'x'], { now: first });
+    db.prepare(`UPDATE release_social_platforms
+      SET status = 'posted', posted_at = '2030-01-02 00:00:00', attempts = 2,
+          prepared_at = '2030-01-01 01:00:00', detail_code = 'done', message = 'History'
+      WHERE release_id = ? AND platform = 'x'`).run(releaseId);
+    const original = repository.listPlatformsByReleaseId(releaseId).find((row) => row.platform === 'x');
+
+    expect(repository.replaceSelectedPlatforms(releaseId, ['bluesky', 'patreon']).map((row) => row.platform))
+      .toEqual(['bluesky', 'patreon']);
+    const deselected = repository.listPlatformsByReleaseId(releaseId).find((row) => row.platform === 'x');
+    expect(deselected).toMatchObject({ ...original, is_selected: 0, updated_at: expect.any(String) });
+    expect(repository.replaceSelectedPlatforms(releaseId, [])).toEqual([]);
+    expect(repository.listPlatformsByReleaseId(releaseId).every((row) => row.is_selected === 0)).toBe(true);
+
+    repository.ensurePlatforms(releaseId, ['x']);
+    expect(repository.listPlatformsByReleaseId(releaseId).find((row) => row.platform === 'x').is_selected).toBe(0);
+    expect(repository.replaceSelectedPlatforms(releaseId, ['x'])).toMatchObject([{
+      platform: 'x', is_selected: 1, status: 'posted', attempts: 2,
+      posted_at: '2030-01-02 00:00:00', prepared_at: '2030-01-01 01:00:00',
+      detail_code: 'done', message: 'History',
+    }]);
+    expect(repository.listPlatformsByReleaseId(releaseId).filter((row) => row.is_selected).map((row) => row.platform)).toEqual(['x']);
+  });
+
+  it('guards the final posting write against deselection after eligibility was read', () => {
+    insertSession();
+    repository.replaceSelectedPlatforms(releaseId, ['x']);
+    repository.reassignPlatformsToSession('session-1', ['x']);
+    db.prepare("UPDATE release_social_platforms SET status = 'ready' WHERE release_id = ? AND platform = 'x'").run(releaseId);
+    repository.redeemSession('session-1');
+    repository.finishSession('session-1');
+    const args = { releaseId, platform: 'x', sessionId: 'session-1', now: new Date('2030-01-01T00:01:00Z') };
+    expect(repository.listPlatformsByReleaseId(releaseId).find((row) => row.platform === 'x'))
+      .toMatchObject({ is_selected: 1, status: 'ready' });
+
+    repository.replaceSelectedPlatforms(releaseId, []);
+    const historical = repository.listPlatformsByReleaseId(releaseId).find((row) => row.platform === 'x');
+    expect(repository.markPlatformPostedIfReady(args)).toBeUndefined();
+    expect(repository.listPlatformsByReleaseId(releaseId).find((row) => row.platform === 'x'))
+      .toEqual(historical);
+
+    repository.replaceSelectedPlatforms(releaseId, ['x']);
+    expect(repository.markPlatformPostedIfReady(args)).toMatchObject({ is_selected: 1, status: 'posted' });
+  });
+
+  it('rejects deselection of a live-session target atomically until the session is terminal', () => {
+    repository.ensurePlatforms(releaseId, ['x', 'bluesky']);
+    insertSession();
+    repository.reassignPlatformsToSession('session-1', ['x']);
+    const before = repository.listPlatformsByReleaseId(releaseId);
+    expect(() => repository.replaceSelectedPlatforms(releaseId, ['bluesky', 'patreon']))
+      .toThrow(expect.objectContaining({ code: 'PLATFORM_SELECTION_IN_PROGRESS' }));
+    expect(repository.listPlatformsByReleaseId(releaseId)).toEqual(before);
+    repository.redeemSession('session-1');
+    expect(() => repository.replaceSelectedPlatforms(releaseId, ['bluesky', 'patreon']))
+      .toThrow(expect.objectContaining({ code: 'PLATFORM_SELECTION_IN_PROGRESS' }));
+    expect(repository.listPlatformsByReleaseId(releaseId)).toEqual(before);
+    repository.finishSession('session-1');
+    expect(repository.replaceSelectedPlatforms(releaseId, ['bluesky', 'patreon']).map((row) => row.platform))
+      .toEqual(['bluesky', 'patreon']);
+    expect(repository.listPlatformsByReleaseId(releaseId).find((row) => row.platform === 'x'))
+      .toMatchObject({ is_selected: 0, session_id: 'session-1', attempts: 1 });
+  });
+
   it('updates a platform only when the named session owns its release row and counts non-terminal session work', () => {
     insertSession();
     repository.ensurePlatforms(releaseId, ['bluesky', 'mastodon', 'x']);

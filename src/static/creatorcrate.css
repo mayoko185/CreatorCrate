@@ -4611,6 +4611,12 @@
         gap: var(--space-md);
         padding: var(--space-sm) var(--space-md) var(--space-md);
       }
+      #release-publish-dialog .table-scroll .data-table {
+        margin: 0;
+      }
+      #release-publish-dialog .scheduling-field {
+        flex: 0 1 auto;
+      }
 
 
       /* Notes Book/Page dialog sections intentionally override later generic project-form spacing. */

@@ -124,7 +124,7 @@ describe('release Social Preparation detail display', () => {
         expect(summary).not.toContain('<small>Social posts</small>');
         expect(summary).toContain('aria-label="Social posts"');
         expect(summary).not.toMatch(/Social targets|\(last recorded preparation\)/);
-        expect(summary).not.toMatch(/<form\b|<button\b|<input\b|<a\b|data-dialog|data-social|\b(posted|published|submitted|live)\b|sent successfully|retry|reprepare|activate/i);
+        expect(summary).not.toMatch(/<form\b|<button\b|<input\b|<a\b|data-dialog|data-social|sent successfully|retry|reprepare|activate/i);
       }
       expect(html).toContain('href="/releases/new" data-dialog-open="release-create-dialog"');
       expect(html).toContain('aria-label="Releases defaults"');
@@ -132,12 +132,13 @@ describe('release Social Preparation detail display', () => {
       expect(html).toContain('aria-label="Release list pages"');
       expect(html).toContain('class="table-scroll releases-table-scroll" tabindex="0" aria-label="Release list"');
       expect(html.match(/<thead>[\s\S]*?<\/thead>/)[0]).toContain('<th>Social Posts</th>');
-      expect(html.match(/<thead>[\s\S]*?<\/thead>/)[0].match(/<th\b/g)).toHaveLength(7);
-      expect(row.match(/<td\b/g)).toHaveLength(7);
+      expect(html.match(/<thead>[\s\S]*?<\/thead>/)[0].match(/<th\b/g)).toHaveLength(8);
+      expect(row.match(/<td\b/g)).toHaveLength(8);
       expect(row).toContain(`href="/releases/${releaseId}">Display release</a>`);
       const cells = row.match(/<td\b[^>]*>[\s\S]*?<\/td>/g) || [];
       expect(cells[0]).not.toMatch(/release-social-prep-summary|Social posts/);
-      if (summary) expect(cells[4]).toContain(summary);
+      expect(cells[5]).not.toMatch(/<(?:button|form|input|a|select|textarea)\b/i);
+      if (summary) expect(cells[5]).toContain(summary);
       return { html, row, summary };
     }
 
@@ -151,6 +152,23 @@ describe('release Social Preparation detail display', () => {
         'class="status-badge status-badge--neutral">X · Prepared',
         'class="status-badge status-badge--neutral">Bluesky · Failed',
       ]);
+    });
+
+    it('shows selected platforms while retaining deselected history on richer surfaces', async () => {
+      target('patreon', 'posted', 1, null, FIRST);
+      target('x', 'failed');
+      app.locals.socialPrepRepository.replaceSelectedPlatforms(releaseId, ['x']);
+
+      const { summary } = await list();
+      expect(summary).toContain('>X · Failed</span>');
+      expect(summary).not.toContain('Patreon');
+      expect((await agent.get(`/projects/${projectId}`).expect(200)).text).toContain('>Patreon · Posted — confirmed by you</span>');
+
+      app.locals.socialPrepRepository.replaceSelectedPlatforms(releaseId, []);
+      const { row, summary: emptySummary } = await list();
+      expect(emptySummary).toBeUndefined();
+      expect(row.match(/<td\b[^>]*>[\s\S]*?<\/td>/g)[5].replace(/<[^>]+>/g, '').trim()).toBe('—');
+      expect(app.locals.socialPrepRepository.listPlatformsByReleaseId(releaseId)).toHaveLength(2);
     });
 
     it('keeps the default visible label in the standalone Project detail summary', async () => {
@@ -227,7 +245,7 @@ describe('release Social Preparation detail display', () => {
 
     it.each([
       ['pending', 'Pending'], ['starting', 'Starting'], ['preparing', 'Preparing'],
-      ['uploading', 'Uploading'], ['auth_required', 'Authentication required'],
+      ['uploading', 'Uploading'], ['auth_required', 'Sign-in needed'],
       ['prepared', 'Prepared'], ['failed', 'Failed'], ['cancelled', 'Cancelled'],
     ])('shows one target with compact %s terminology', async (state, label) => {
       target('x', state);
@@ -239,7 +257,7 @@ describe('release Social Preparation detail display', () => {
     it.each([false, true])('omits unsaved targets despite configured Settings (projectFiltered=%s)', async (filtered) => {
       const { row, summary } = await list(filtered);
       expect(summary).toBeUndefined();
-      expect(row).not.toContain('Social posts');
+      expect(row.match(/<td\b[^>]*>[\s\S]*?<\/td>/g)[5].replace(/<[^>]+>/g, '').trim()).toBe('—');
       expect(app.locals.socialPrepRepository.listPlatformsByReleaseId(releaseId)).toEqual([]);
     });
 
@@ -261,7 +279,8 @@ describe('release Social Preparation detail display', () => {
         const { html } = await list(filtered);
         const otherRow = releaseRow(html, other.id);
         expect(otherRow).toBeTruthy();
-        expect(otherRow).not.toMatch(/Social posts|release-social-prep-summary/);
+        expect(otherRow).not.toMatch(/release-social-prep-summary/);
+        expect(otherRow.match(/<td\b[^>]*>[\s\S]*?<\/td>/g)[5].replace(/<[^>]+>/g, '').trim()).toBe('—');
       }
       const { text } = await agent.get('/releases?project=999999').expect(200);
       expect(text).not.toContain(`href="/releases/${releaseId}"`);
@@ -288,8 +307,8 @@ describe('release Social Preparation detail display', () => {
   });
 
   it.each([
-    ['staging', 'Preparing for manual publishing'],
-    ['ready', 'Ready for manual publishing — not marked as posted'],
+    ['staging', 'Preparing'],
+    ['ready', 'Ready'],
   ])('renders compact %s wording without claiming social publication', async (state, label) => {
     target('x', state);
     const { text } = await agent.get('/releases').expect(200);
@@ -297,7 +316,7 @@ describe('release Social Preparation detail display', () => {
       ?.find((candidate) => candidate.includes(`href="/releases/${releaseId}"`));
     const summary = row?.match(/<div class="release-social-prep-summary"[\s\S]*?<\/div>/)?.[0];
     expect(summary).toContain(`>X · ${label}</span>`);
-    expect(summary.replace(/not marked as posted/gi, '')).not.toMatch(/\b(posted|published|submitted|sent successfully)\b/i);
+    expect(summary).not.toMatch(/\b(posted|published|submitted|sent successfully)\b/i);
   });
 
   it('renders compact posted confirmation wording', async () => {
@@ -307,29 +326,31 @@ describe('release Social Preparation detail display', () => {
     const row = text.match(/<tr\b[^>]*>[\s\S]*?<\/tr>/g)
       ?.find((candidate) => candidate.includes(`href="/releases/${releaseId}"`));
     const summary = row?.match(/<div class="release-social-prep-summary"[\s\S]*?<\/div>/)?.[0];
-    expect(summary).toContain('>X · Posted — confirmed by you</span>');
-    const [action] = companionActions(summary);
-    expect(action).toContain('data-target-platform="x"');
-    expect(action).toContain('aria-label="Prepare another X post"');
-    expect(action).toContain('>Prepare another post</button>');
+    expect(summary).toContain('>X · Posted</span>');
+    expect(summary).not.toMatch(/<button\b|<form\b|data-release-social-prep-companion/);
   });
 
-  it('renders independent posted-target actions in the shared summary on both release surfaces', async () => {
+  it('keeps posted-target actions on Project detail while the release list stays read-only', async () => {
     db.prepare("UPDATE releases SET published_date = '2026-08-01' WHERE id = ?").run(releaseId);
     target('patreon', 'posted', 1, null, FIRST);
     target('x', 'posted', 1, null, UPDATED);
     target('bluesky', 'ready', 1);
 
-    for (const url of ['/releases', `/projects/${projectId}`]) {
-      const { text } = await agent.get(url).expect(200);
-      const summary = text.match(/<div class="release-social-prep-summary"[\s\S]*?<\/div>/)?.[0];
-      const actions = companionActions(summary);
-      expect(actions).toHaveLength(2);
-      expect(actions[0]).toMatch(/data-target-platform="patreon"[\s\S]*aria-label="Prepare another Patreon post"/);
-      expect(actions[1]).toMatch(/data-target-platform="x"[\s\S]*aria-label="Prepare another X post"/);
-      expect(summary).toContain('>Bluesky · Ready for manual publishing — not marked as posted</span>');
-      expect(summary).not.toContain('data-target-platform="bluesky"');
-    }
+    const listSummary = (await agent.get('/releases').expect(200)).text
+      .match(/<div class="release-social-prep-summary"[\s\S]*?<\/div>/)?.[0];
+    expect(listSummary).toContain('>Patreon · Posted</span>');
+    expect(listSummary).toContain('>X · Posted</span>');
+    expect(listSummary).toContain('>Bluesky · Ready</span>');
+    expect(companionActions(listSummary)).toHaveLength(0);
+
+    const projectSummary = (await agent.get(`/projects/${projectId}`).expect(200)).text
+      .match(/<div class="release-social-prep-summary"[\s\S]*?<\/div>/)?.[0];
+    const actions = companionActions(projectSummary);
+    expect(actions).toHaveLength(2);
+    expect(actions[0]).toMatch(/data-target-platform="patreon"[\s\S]*aria-label="Prepare another Patreon post"/);
+    expect(actions[1]).toMatch(/data-target-platform="x"[\s\S]*aria-label="Prepare another X post"/);
+    expect(projectSummary).toContain('>Bluesky · Ready for manual publishing — not marked as posted</span>');
+    expect(projectSummary).not.toContain('data-target-platform="bluesky"');
   });
 
   it('renders separate mixed platforms in presenter order with distinct timestamps and safe failure context', async () => {
@@ -391,7 +412,7 @@ describe('release Social Preparation detail display', () => {
     } else expect(section).not.toContain('/settings/logs');
   });
 
-  it('renders explicit posted confirmation, timestamp, and configured-platform aggregate without claiming release publication', async () => {
+  it('renders explicit posted confirmation, timestamp, and selected-platform aggregate without claiming release publication', async () => {
     target('patreon', 'posted', 1, null, FIRST);
     target('x', 'posted', 1, null, UPDATED);
     settings.setPlatforms(['patreon', 'x']);
@@ -401,6 +422,18 @@ describe('release Social Preparation detail display', () => {
     expect(platformSection(section, 'patreon')).toContain('Posted — confirmed by you');
     expect(platformSection(section, 'patreon')).toMatch(new RegExp(`<dt>Posted confirmation</dt>\\s*<dd>${FIRST}</dd>`));
     expect(section).not.toMatch(/Release published|release is published/i);
+  });
+
+  it('renders current completion without counting a deselected posted platform', async () => {
+    target('patreon', 'posted', 1, null, FIRST);
+    target('x', 'posted', 1, null, UPDATED);
+    settings.setPlatforms(['patreon', 'x']);
+    app.locals.socialPrepRepository.replaceSelectedPlatforms(releaseId, ['x']);
+
+    const { section } = await detail({ allowPostedState: true });
+    expect(section).toContain('1 of 1 platforms marked as posted.');
+    expect(section).toContain('All social posts marked as posted.');
+    expect(platformSection(section, 'patreon')).toContain('Posted — confirmed by you');
   });
 
   it('keeps all-posted completion visible while rendering one targeted action beside each platform', async () => {

@@ -129,6 +129,33 @@
 </div>
 
 <div class="settings-section{% if releaseFormDialog %} project-form-section project-edit-dialog-section{% endif %}"{% if releaseFormDialog %} data-release-dialog-compact-section{% endif %}>
+  <h3>Platforms</h3>
+  <div class="release-form-section-body{% if releaseFormDialog %} project-form-section-body project-edit-dialog-section-body{% endif %}">
+    <input type="hidden" name="selectedPlatformsPresent" value="1">
+    {{ dropdown.multiSelect({
+      id: 'release-platforms',
+      name: 'selectedPlatforms',
+      label: 'Platforms',
+      options: platformChoices,
+      selectedValues: values.selectedPlatforms or [],
+      emptySummary: 'No platforms selected',
+      countLabel: 'platforms',
+      panelLabel: 'Platform options',
+      fieldClasses: 'asset-viewer-filter-field' ~ (' field-error' if errors.selectedPlatforms else ''),
+      summaryAttributes: [
+        ['aria-describedby', 'selectedPlatforms-error' if errors.selectedPlatforms else none],
+        ['aria-invalid', 'true' if errors.selectedPlatforms else none]
+      ],
+      inputAttributes: [
+        ['aria-describedby', 'selectedPlatforms-error' if errors.selectedPlatforms else none],
+        ['aria-invalid', 'true' if errors.selectedPlatforms else none]
+      ]
+    }) }}
+    {% if errors.selectedPlatforms %}<span class="field-error-message" id="selectedPlatforms-error">{{ errors.selectedPlatforms }}</span>{% endif %}
+  </div>
+</div>
+
+<div class="settings-section{% if releaseFormDialog %} project-form-section project-edit-dialog-section{% endif %}"{% if releaseFormDialog %} data-release-dialog-compact-section{% endif %}>
   <h3>Links</h3>
   <div class="release-form-section-body{% if releaseFormDialog %} project-form-section-body project-edit-dialog-section-body{% endif %}">
   <div class="field {% if errors.patreonUrl %}field-error{% endif %}">

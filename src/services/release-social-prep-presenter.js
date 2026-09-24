@@ -50,7 +50,7 @@ export function buildReleaseSocialPrepPresentation(
       throw new TypeError('Invalid recorded Social Preparation platform state.');
     }
     const platformName = PLATFORM_NAMES[row.platform];
-    const prepareAnotherPostAction = allowActions && enabled
+    const prepareAnotherPostAction = allowActions && enabled && row.is_selected === 1
       && configuredPlatforms.includes(row.platform) && row.status === 'posted'
       ? {
           mode: 'reprepare',
@@ -77,9 +77,9 @@ export function buildReleaseSocialPrepPresentation(
   }).sort((left, right) => SOCIAL_PREP_SUPPORTED_PLATFORMS.indexOf(left.platform)
     - SOCIAL_PREP_SUPPORTED_PLATFORMS.indexOf(right.platform));
 
-  const targetsByPlatform = new Map(targets.map((target) => [target.platform, target]));
-  const postedCount = configuredPlatforms.filter((platform) => targetsByPlatform.get(platform)?.status === 'posted').length;
-  const totalCount = configuredPlatforms.length;
+  const selectedRows = rows.filter((row) => row.is_selected === 1);
+  const postedCount = selectedRows.filter((row) => row.status === 'posted').length;
+  const totalCount = selectedRows.length;
   return {
     globallyEnabled: enabled,
     configuredPlatforms,

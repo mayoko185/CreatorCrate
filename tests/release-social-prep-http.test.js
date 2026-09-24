@@ -119,6 +119,10 @@ describe('release Social Preparation publishing', () => {
     return db.prepare('SELECT platform, status FROM release_social_platforms WHERE release_id = ? ORDER BY platform').all(releaseId);
   }
 
+  function selectPlatforms(releaseId, platforms) {
+    app.locals.socialPrepRepository.replaceSelectedPlatforms(releaseId, platforms);
+  }
+
   it('supplies saved mixed target facts to the detail model while globally disabled without GET mutations', async () => {
     const { releaseId, releaseLocation } = await createRelease();
     socialPrepSettingsService.setPlatforms(['x']);
@@ -196,10 +200,11 @@ describe('release Social Preparation publishing', () => {
     expect(initializedPlatforms).toEqual([]);
   });
 
-  it('renders configured platform previews from release content, preserves asset order, and distinguishes issues', async () => {
+  it('renders shared preparation once for saved platforms and keeps issues visible', async () => {
     socialPrepSettingsService.setEnabled(true);
     socialPrepSettingsService.setPlatforms(['patreon', 'x', 'bluesky']);
     const { projectId, releaseId, releaseLocation } = await createRelease();
+    selectPlatforms(releaseId, ['patreon', 'x']);
     addReleaseAsset(releaseId, projectId, 'first-primary.png', 'primary', 0);
     addReleaseAsset(releaseId, projectId, 'second-attachment.png', 'attachment', 1);
     addReleaseAsset(releaseId, projectId, 'third-preview.png', 'preview', 2);
@@ -209,29 +214,44 @@ describe('release Social Preparation publishing', () => {
     const socialStart = detail.text.indexOf('id="release-publish-social-preparation-heading"');
     const socialEnd = detail.text.indexOf('id="release-publish-publication-heading"', socialStart);
     const social = detail.text.slice(socialStart, socialEnd);
+    const assetsStart = detail.text.indexOf('id="release-publish-assets-heading"');
+    const assets = detail.text.slice(assetsStart, socialStart);
 
-    expect(social).toContain('name="socialPlatforms" type="checkbox" value="patreon" checked');
-    expect(social).toContain('name="socialPlatforms" type="checkbox" value="x" checked');
-    expect(social).toContain('Release social title');
-    expect(social).toContain('Release description body');
-    expect(social).toContain('<dt>Effective post text</dt>');
+    expect(social).not.toContain('name="socialPlatforms"');
+    expect(social).not.toContain('Platforms to prepare');
+    expect(social).toContain('Selected platforms: Patreon, X.');
+    expect(social).not.toContain('preview</h4>');
+    expect(social).not.toContain('Selected platforms: Patreon, X, Bluesky.');
+    expect(social.match(/Release social title/g)).toHaveLength(1);
+    expect(social.match(/Release description body/g)).toHaveLength(1);
+    expect(social).toContain('For X or Bluesky, post text combines the title and Description.');
     expect(social).toContain('<dd>Release social title</dd>');
     expect(social).toContain('<dd class="description">Release description body</dd>');
-    expect(social.match(/<dd class="description">Release social title\n\nRelease description body<\/dd>/g)).toHaveLength(2);
+    expect(social).not.toContain('<dt>Effective post text</dt>');
     expect(social).not.toContain('Release notes must not become a post');
-    expect(social.indexOf('first-primary.png')).toBeLessThan(social.indexOf('second-attachment.png'));
-    expect(social.match(/second-attachment\.png \(Attachment\)/g)).toHaveLength(3);
-    expect(social.match(/third-preview\.png \(Preview\)/g)).toHaveLength(3);
+    expect(assets).toContain('Selected Assets');
+    expect(assets).toMatch(/<th class="num">#<\/th>\s*<th>Filename<\/th>\s*<th>Role<\/th>\s*<th class="num">Order<\/th>/);
+    expect(assets).not.toContain('<th>Status</th>');
+    expect(assets).not.toContain('<th>Last seen</th>');
+    expect(assets.indexOf('first-primary.png')).toBeLessThan(assets.indexOf('second-attachment.png'));
+    expect(assets.indexOf('second-attachment.png')).toBeLessThan(assets.indexOf('third-preview.png'));
+    expect(assets.match(/second-attachment\.png/g)).toHaveLength(1);
+    expect(assets.match(/third-preview\.png/g)).toHaveLength(1);
+    expect(social).not.toContain('Included assets');
+    expect(social).not.toContain('first-primary.png');
+    expect(social).not.toContain('second-attachment.png');
+    expect(social).not.toContain('third-preview.png');
     expect(social).not.toContain('role not supported');
     expect(social).not.toContain('Excluded assets');
     expect(social).not.toContain('No release assets are excluded for this platform.');
     expect(social).toContain(`Blocking:</strong> Included asset ${missingAssetId} is missing`);
+    expect(social.match(/Blocking:<\/strong>/g)).toHaveLength(1);
 
     db.prepare('UPDATE releases SET description = ? WHERE id = ?').run('', releaseId);
     const emptyDescription = await agent.get(releaseLocation).expect(200);
     expect(emptyDescription.text).toContain('Warning:</strong> The release Description is empty. This is advisory only and does not prevent CreatorCrate publication.');
-    expect(emptyDescription.text).toContain('X preview');
-    expect(emptyDescription.text).toContain('Bluesky preview');
+    expect(emptyDescription.text.match(/Warning:<\/strong> The release Description is empty/g)).toHaveLength(1);
+    expect(emptyDescription.text).toContain('Selected platforms: Patreon, X.');
     expect(emptyDescription.text).toContain('>Release social title</dd>');
   });
 
@@ -239,20 +259,28 @@ describe('release Social Preparation publishing', () => {
     socialPrepSettingsService.setEnabled(true);
     socialPrepSettingsService.setPlatforms(['patreon', 'x']);
     const { releaseId, releaseLocation } = await createRelease();
+    selectPlatforms(releaseId, ['patreon', 'x']);
+    selectPlatforms(releaseId, ['x']);
 
-    expect(platformRows(releaseId)).toEqual([]);
+    const before = app.locals.socialPrepRepository.listPlatformsByReleaseId(releaseId);
+    expect(before.find((row) => row.platform === 'patreon')).toMatchObject({ is_selected: 0, status: 'pending' });
+    const review = await agent.get(`${releaseLocation}?publish=1`).expect(200);
+    const reviewDialog = review.text.slice(review.text.indexOf('id="release-publish-dialog"'));
+    expect(reviewDialog).toContain('Selected platforms: X.');
+    expect(reviewDialog).not.toContain('Patreon preview');
+    expect(reviewDialog).not.toContain('name="socialPlatforms"');
     const published = await agent
       .post(`${releaseLocation}/publish`)
       .send(`_csrf=${encodeURIComponent(csrfToken)}`)
       .send('publishedDate=2026-08-02')
-      .send('socialPlatforms=x')
+      .send('socialPlatforms=patreon')
       .send('socialPlatforms=malicious')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(302);
 
     expect(observedPublishedDate).toBe('2026-08-02');
-    expect(initializedPlatforms).toEqual(['x', 'malicious']);
-    expect(platformRows(releaseId)).toEqual([{ platform: 'x', status: 'pending' }]);
+    expect(initializedPlatforms).toEqual(['x']);
+    expect(app.locals.socialPrepRepository.listPlatformsByReleaseId(releaseId)).toEqual(before);
     expect(published.headers.location).toBe(`${releaseLocation}?prep=1`);
     expect(db.prepare('SELECT published_date FROM releases WHERE id = ?').get(releaseId).published_date).toBe('2026-08-02');
 
@@ -287,6 +315,7 @@ describe('release Social Preparation publishing', () => {
     socialPrepSettingsService.setPlatforms(['bluesky']);
     failSocialInitialization = true;
     const { releaseId, releaseLocation } = await createRelease();
+    selectPlatforms(releaseId, ['bluesky']);
 
     const published = await agent
       .post(`${releaseLocation}/publish`)
@@ -298,7 +327,26 @@ describe('release Social Preparation publishing', () => {
 
     expect(observedPublishedDate).toBe('2026-08-03');
     expect(db.prepare('SELECT published_date FROM releases WHERE id = ?').get(releaseId).published_date).toBe('2026-08-03');
-    expect(platformRows(releaseId)).toEqual([]);
+    expect(platformRows(releaseId)).toEqual([{ platform: 'bluesky', status: 'pending' }]);
     expect(published.headers.location).toBe(releaseLocation);
+  });
+
+  it('publishes zero selected platforms without creating configured targets', async () => {
+    socialPrepSettingsService.setEnabled(true);
+    socialPrepSettingsService.setPlatforms(['patreon', 'x']);
+    const { releaseId, releaseLocation } = await createRelease();
+    const detail = await agent.get(`${releaseLocation}?publish=1`).expect(200);
+    const dialog = detail.text.slice(detail.text.indexOf('id="release-publish-dialog"'));
+    expect(dialog).toContain('No Social Preparation platforms are selected for this release.');
+    expect(dialog).not.toContain('Selected platforms:');
+    expect(dialog).not.toContain('name="socialPlatforms"');
+
+    const published = await agent.post(`${releaseLocation}/publish`)
+      .send({ _csrf: csrfToken, socialPlatforms: ['patreon', 'x'] })
+      .set('Content-Type', 'application/x-www-form-urlencoded').expect(302);
+    expect(published.headers.location).toBe(releaseLocation);
+    expect(initializedPlatforms).toEqual([]);
+    expect(platformRows(releaseId)).toEqual([]);
+    expect(db.prepare('SELECT published_date FROM releases WHERE id = ?').get(releaseId).published_date).not.toBeNull();
   });
 });

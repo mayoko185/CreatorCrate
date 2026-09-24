@@ -4,7 +4,7 @@ const SESSION_COLUMNS = [
 ];
 
 const PLATFORM_COLUMNS = [
-  'release_id', 'platform', 'session_id', 'status', 'detail_code', 'message',
+  'release_id', 'platform', 'is_selected', 'session_id', 'status', 'detail_code', 'message',
   'attempts', 'prepared_at', 'posted_at', 'created_at', 'updated_at',
 ];
 
@@ -139,6 +139,11 @@ export function createSocialPrepRepository(db) {
     WHERE release_id = ?
     ORDER BY platform ASC
   `);
+  const updatePlatformSelection = db.prepare(`
+    UPDATE release_social_platforms
+    SET is_selected = ?, updated_at = ?
+    WHERE release_id = ? AND platform = ?
+  `);
   const insertPlatform = db.prepare(`
     INSERT INTO release_social_platforms (release_id, platform, created_at, updated_at)
     VALUES (?, ?, ?, ?)
@@ -165,7 +170,7 @@ export function createSocialPrepRepository(db) {
   const markOwnedPlatformPosted = db.prepare(`
     UPDATE release_social_platforms
     SET status = 'posted', posted_at = ?, updated_at = ?
-    WHERE release_id = ? AND platform = ? AND session_id = ? AND status = 'ready'
+    WHERE release_id = ? AND platform = ? AND session_id = ? AND status = 'ready' AND is_selected = 1
     RETURNING ${PLATFORM_SELECT}
   `);
   const insertSnapshot = db.prepare(`
@@ -281,6 +286,28 @@ export function createSocialPrepRepository(db) {
         return listPlatformsByReleaseId.all(releaseId);
       });
       return insertAll();
+    },
+
+    replaceSelectedPlatforms(releaseId, platforms, { now = new Date() } = {}) {
+      const id = requirePositiveInteger(releaseId, 'release ID');
+      const selected = uniquePlatforms(platforms);
+      const selectedSet = new Set(selected);
+      const timestamp = formatSocialPrepTimestamp(now);
+      return db.transaction(() => {
+        const rows = listPlatformsByReleaseId.all(id);
+        const live = findLiveSessionByReleaseId.get(id);
+        if (live && rows.some((row) => row.is_selected && !selectedSet.has(row.platform) && row.session_id === live.id)) {
+          throw new SocialPrepRepositoryError('Cannot deselect a platform owned by an active preparation session.', {
+            code: 'PLATFORM_SELECTION_IN_PROGRESS',
+          });
+        }
+        for (const row of rows) {
+          const isSelected = selectedSet.has(row.platform) ? 1 : 0;
+          if (row.is_selected !== isSelected) updatePlatformSelection.run(isSelected, timestamp, id, row.platform);
+        }
+        for (const platform of selected) insertPlatform.run(id, platform, timestamp, timestamp);
+        return listPlatformsByReleaseId.all(id).filter((row) => row.is_selected === 1);
+      }).immediate();
     },
 
     listPlatformsByReleaseId(releaseId) {

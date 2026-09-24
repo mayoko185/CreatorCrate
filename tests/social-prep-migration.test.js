@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const MANUAL_STATES_MIGRATION = '036_add_manual_social_preparation_states.sql';
 const POSTED_MIGRATION = '037_add_manual_social_post_confirmation.sql';
+const SELECTION_MIGRATION = '038_add_release_social_platform_selection.sql';
 
 describe('social preparation migration', () => {
   let db;
@@ -261,5 +262,30 @@ describe('social preparation migration', () => {
     expect(db.prepare('SELECT name, seq FROM sqlite_sequence ORDER BY name').all()).toEqual(sequencesBefore);
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_release_social_platforms_session_status'").pluck().get())
       .toBe('idx_release_social_platforms_session_status');
+  });
+
+  it('backfills existing platform rows as selected without changing their history', () => {
+    closeDatabase(db);
+    const priorDir = path.join(tmpDir, 'migrations-through-037');
+    fs.mkdirSync(priorDir);
+    for (const filename of fs.readdirSync(MIGRATIONS_DIR).filter((name) => name < SELECTION_MIGRATION)) {
+      fs.copyFileSync(path.join(MIGRATIONS_DIR, filename), path.join(priorDir, filename));
+    }
+    db = openDatabase(path.join(tmpDir, 'selection-upgrade.db'));
+    runMigrations(db, priorDir);
+    const { releaseId } = createProjectAndRelease();
+    insertSession(releaseId, 'historical-session', 'finished');
+    db.prepare(`INSERT INTO release_social_platforms
+      (release_id, platform, session_id, status, attempts, posted_at, created_at, updated_at)
+      VALUES (?, 'x', 'historical-session', 'posted', 3, '2029-02-01 00:00:00',
+        '2029-01-01 00:00:00', '2029-02-01 00:00:00')`).run(releaseId);
+    const before = db.prepare('SELECT * FROM release_social_platforms WHERE release_id = ?').get(releaseId);
+    fs.copyFileSync(path.join(MIGRATIONS_DIR, SELECTION_MIGRATION), path.join(priorDir, SELECTION_MIGRATION));
+    runMigrations(db, priorDir);
+    const { is_selected: selected, ...after } = db.prepare('SELECT * FROM release_social_platforms WHERE release_id = ?').get(releaseId);
+    expect(selected).toBe(1);
+    expect(after).toEqual(before);
+    expect(() => db.prepare('UPDATE release_social_platforms SET is_selected = 2 WHERE release_id = ?').run(releaseId))
+      .toThrow(/CHECK constraint failed/);
   });
 });

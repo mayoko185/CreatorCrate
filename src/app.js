@@ -667,7 +667,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.locals.bookRepository = bookRepository;
   app.locals.bookService = bookService;
 
-  const releaseService = opts.releaseService || createReleaseService({ db, applicationLogger });
+  const releaseService = opts.releaseService || createReleaseService({ db, applicationLogger, socialPrepSettingsService });
   const socialPrepRepository = opts.socialPrepRepository || createSocialPrepRepository(db);
   app.locals.socialPrepRepository = socialPrepRepository;
   const socialPrepService = opts.socialPrepService || createSocialPrepService({

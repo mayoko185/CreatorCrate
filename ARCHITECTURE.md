@@ -1964,6 +1964,20 @@ operator confirmation, with its first server UTC time stored in `posted_at`.
 Legacy `prepared` rows and `prepared_at` timestamps keep their original
 browser-composer meaning and are never interpreted as posting evidence.
 
+`release_social_platforms.is_selected` records the release's current platform
+selection independently of preparation and posting history. Existing rows
+migrate as selected. Exact-set replacement retains deselected rows and their
+lifecycle fields, and reselecting a row restores selection without resetting
+that history. It rejects deselection of a target owned by a live `issued` or
+`redeemed` preparation session. New and Edit Release own and save platform
+selections through the release service in the same SQLite transaction as release
+metadata and any selected assets. Edit also offers its saved selected platforms
+when they are no longer globally configured. A submitted presence marker
+distinguishes an intentional empty selection from a request that does not own
+the control. Review & Publish renders shared preparation details once and
+summarizes saved selected platforms; publication uses that same saved
+selected-platform set.
+
 The manual lifecycle is `pending -> staging -> ready`, with `failed` and
 `cancelled` allowed while work is pending or staging. `staging` participates in
 the existing 15-minute inactivity and 30-minute hard-deadline recovery policy;
@@ -1985,14 +1999,14 @@ posted`. The POST accepts no request entity: positive `Content-Length` or any
 matching confirmation-specific GET provides canonical readback when a committed
 POST response is lost.
 
-Manual Social Posts completion is a configured-platform aggregate, not Release
-publication: at least one currently configured platform must exist and every
-configured platform must have a current `posted` row. Missing configured rows
-remain incomplete, while retained rows for platforms no longer configured are
-excluded from the denominator. Explicit reprepare honors the requested platform
-subset. Selecting a posted target creates fresh session ownership, resets only
-that target to preparation state, and clears only its `posted_at`; other posted
-targets retain their evidence. Each currently configured Posted target exposes
+Manual Social Posts completion is a selected-platform aggregate, not Release
+publication: at least one currently selected platform must exist and every
+selected platform must have a current `posted` row. Unselected configured
+platforms and deselected historical rows do not contribute. Explicit reprepare
+honors the requested platform subset. Selecting a posted target creates fresh
+session ownership, resets only that target to preparation state, and clears
+only its `posted_at`; other posted targets retain their evidence. Each selected,
+currently configured Posted target exposes
 an explicit per-platform `Prepare another post` action. This targeted action is
 the only normal UI path that intentionally starts a new attempt and clears that
 target's posting confirmation; unrelated Posted targets remain untouched. An
@@ -2246,7 +2260,7 @@ uses the confirmation endpoint directly, while an ambiguous POST is reconciled
 through the matching authenticated GET before Posted can be shown. A lost or
 unreachable response never implies Posted, retries from unknown reconcile first,
 and only canonical server responses supply `posted_at` and replace the retained
-configured-platform completion aggregate. The helper accepts that aggregate
+selected-platform completion aggregate. The helper accepts that aggregate
 only when its non-negative integer counts are ordered and `isComplete` exactly
 matches `totalCount > 0 && postedCount == totalCount`. The controller serializes
 complete cross-platform confirmation workflows—including an ambiguous POST and

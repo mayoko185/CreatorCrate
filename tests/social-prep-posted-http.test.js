@@ -101,7 +101,7 @@ describe('manual social posting confirmation HTTP', () => {
     expect(first.body).toEqual({
       ok: true, sessionId: attempt.id, platform: 'x', status: 'posted',
       postedAt: '2030-01-01 00:10:00',
-      completion: { postedCount: 1, totalCount: 3, isComplete: false },
+      completion: { postedCount: 1, totalCount: 2, isComplete: false },
     });
 
     clock = new Date('2030-01-01T00:20:00Z');
@@ -114,11 +114,47 @@ describe('manual social posting confirmation HTTP', () => {
       .set('Authorization', attempt.authorization).expect(200);
     expect(readback.body).toEqual(first.body);
 
+    const second = await request(app).post(`/social-prep/${attempt.id}/platforms/bluesky/posted`)
+      .set('Authorization', attempt.authorization).expect(200);
+    expect(second.body.completion).toEqual({ postedCount: 2, totalCount: 2, isComplete: true });
+
     await request(app).get(`/social-prep/${attempt.id}/status`).set('Authorization', attempt.authorization).expect(409)
       .expect(({ body }) => expect(body.error.code).toBe('attempt_finished'));
     await request(app).patch(`/social-prep/${attempt.id}/platforms/bluesky`).set('Authorization', attempt.authorization)
       .send({ status: 'failed' }).expect(409);
     await request(app).get(`/social-prep/${attempt.id}/assets/1`).set('Authorization', attempt.authorization).expect(409);
+  });
+
+  it('reports completion for one selected target while retaining deselected posted history', async () => {
+    const attempt = createReadyAttempt(['x']);
+    repository.ensurePlatforms(releaseId, ['patreon'], { now: clock });
+    db.prepare("UPDATE release_social_platforms SET status = 'posted', posted_at = '2030-01-01 00:05:00' WHERE release_id = ? AND platform = 'patreon'").run(releaseId);
+    repository.replaceSelectedPlatforms(releaseId, ['x']);
+
+    const response = await request(app).post(`/social-prep/${attempt.id}/platforms/x/posted`)
+      .set('Authorization', attempt.authorization).expect(200);
+    expect(response.body.completion).toEqual({ postedCount: 1, totalCount: 1, isComplete: true });
+    expect(repository.listPlatformsByReleaseId(releaseId).find((row) => row.platform === 'patreon'))
+      .toMatchObject({ is_selected: 0, status: 'posted' });
+  });
+
+  it('rejects a ready platform deselected after confirmation eligibility was read', async () => {
+    const attempt = createReadyAttempt();
+    const url = `/social-prep/${attempt.id}/platforms/x/posted`;
+    await request(app).get(url).set('Authorization', attempt.authorization).expect(200);
+
+    repository.replaceSelectedPlatforms(releaseId, ['bluesky']);
+    const historical = repository.listPlatformsByReleaseId(releaseId).find((row) => row.platform === 'x');
+    expect(historical).toMatchObject({ is_selected: 0, status: 'ready', session_id: attempt.id });
+
+    for (const method of ['get', 'post']) {
+      await request(app)[method](url).set('Authorization', attempt.authorization).expect(409)
+        .expect(({ body }) => expect(body.error.code).toBe('confirmation_conflict'));
+    }
+
+    expect(repository.markPlatformPostedIfReady).not.toHaveBeenCalled();
+    expect(repository.listPlatformsByReleaseId(releaseId).find((row) => row.platform === 'x'))
+      .toEqual(historical);
   });
 
   it('accepts only a request with no entity body', async () => {

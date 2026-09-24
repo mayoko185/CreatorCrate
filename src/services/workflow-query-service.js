@@ -1253,17 +1253,17 @@ export function createWorkflowQueryService({
       offset,
     });
 
-    return { releases: attachReleaseSocialPreparation(releases), total, page, pageSize: filters.pageSize, pageCount, today, hasAnyReleases };
+    return { releases: attachReleaseSocialPreparation(releases, { selectedOnly: true, allowActions: false }), total, page, pageSize: filters.pageSize, pageCount, today, hasAnyReleases };
   }
 
   // One saved-target batch and one current Settings snapshot per displayed union.
   // Keep each occurrence's existing fields (including recent-only thumbnails).
-  function attachReleaseSocialPreparation(releases, { allowActions: allowReleaseActions = true } = {}) {
+  function attachReleaseSocialPreparation(releases, { allowActions: allowReleaseActions = true, selectedOnly = false } = {}) {
     if (releases.length === 0) return [];
     const ids = [...new Set(releases.map((release) => release.id))];
     const rowsByReleaseId = new Map(ids.map((id) => [id, []]));
     for (const row of socialPrepRepository.listPlatformsByReleaseIds(ids)) {
-      rowsByReleaseId.get(row.release_id)?.push(row);
+      if (!selectedOnly || row.is_selected === 1) rowsByReleaseId.get(row.release_id)?.push(row);
     }
     const settings = socialPrepSettingsService.getSettings();
     const releasesById = new Map(releases.map((release) => [release.id, release]));

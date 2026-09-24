@@ -1,6 +1,6 @@
 {% import "partials/dialog.njk" as dialog %}
 
-{% macro render(release, project, releaseAssets, publishDialogForm, socialPrepPublish, csrfToken, open=false, clockFormat='24h') %}
+{% macro render(release, project, releaseAssets, publishDialogForm, socialPrepPublish, csrfToken, open=false) %}
   {% set errors = publishDialogForm.errors %}
   {% call dialog.render('release-publish-dialog', 'Review & Publish', open, 'release-publish-description', 'release-publish-form', 'project-form-dialog') %}
     <p id="release-publish-description" class="app-dialog-description">
@@ -26,7 +26,7 @@
         </div>
       </section>
 
-      <section class="settings-section project-edit-dialog-section" aria-labelledby="release-publish-assets-heading">
+      <section class="settings-section project-edit-dialog-section" data-release-dialog-compact-section aria-labelledby="release-publish-assets-heading">
         <h3 id="release-publish-assets-heading">Selected Assets</h3>
         <div class="project-edit-dialog-section-body">
           {% if releaseAssets.length > 0 %}
@@ -38,8 +38,6 @@
                     <th>Filename</th>
                     <th>Role</th>
                     <th class="num">Order</th>
-                    <th>Status</th>
-                    <th>Last seen</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -49,14 +47,6 @@
                       <td class="asset-filename">{{ ra.filename }}</td>
                       <td>{{ ra.role | title }}</td>
                       <td class="num">{{ ra.sort_order }}</td>
-                      <td>
-                        {% if ra.is_present == 1 %}
-                          {% set status = 'present' %}{% include "partials/status-badge.njk" %}
-                        {% else %}
-                          {% set status = 'missing' %}{% include "partials/status-badge.njk" %}
-                        {% endif %}
-                      </td>
-                      <td class="asset-date">{% if ra.last_seen_at %}{{ ra.last_seen_at | formatSqliteTimestamp(clockFormat) }}{% else %}&mdash;{% endif %}</td>
                     </tr>
                   {% endfor %}
                 </tbody>
@@ -82,73 +72,40 @@
             <div class="project-edit-dialog-section-body">
               <p>Use the release title, Description, and selected assets to prepare posts after CreatorCrate publication.</p>
               {% if socialPrepPublish.platforms.length > 0 %}
-                <fieldset>
-                  <legend>Platforms to prepare</legend>
-                  {% for platform in socialPrepPublish.platforms %}
-                    <div class="field-checkbox">
-                      <input id="release-publish-social-{{ platform }}" name="socialPlatforms" type="checkbox" value="{{ platform }}" checked>
-                      <label for="release-publish-social-{{ platform }}">{{ platform | title }}</label>
-                    </div>
-                  {% endfor %}
-                </fieldset>
-
-                {% for platform in socialPrepPublish.platforms %}
-                  {% set platformContent = socialPrepPublish.content[platform] %}
-                  <section aria-labelledby="release-publish-social-{{ platform }}-heading">
-                    <h4 id="release-publish-social-{{ platform }}-heading">{{ platform | title }} preview</h4>
-                    {% if platform == 'patreon' %}
-                      <dl class="detail-list">
-                        <dt>Title</dt>
-                        <dd>{{ platformContent.title }}</dd>
-                      </dl>
-                      <dl class="detail-list">
-                        <dt>Body</dt>
-                        <dd class="description">{% if platformContent.body %}{{ platformContent.body }}{% else %}<em>No Description provided.</em>{% endif %}</dd>
-                      </dl>
-                    {% else %}
-                      <dl class="detail-list">
-                        <dt>Effective post text</dt>
-                        <dd class="description">{% if platformContent.body %}{{ platformContent.body }}{% else %}<em>No post text provided.</em>{% endif %}</dd>
-                      </dl>
-                    {% endif %}
-
-                    <h5>Included assets</h5>
-                    {% if platformContent.includedAssets.length > 0 %}
-                      <ol>
-                        {% for asset in platformContent.includedAssets %}
-                          <li>{{ asset.filename }} ({{ asset.role | title }})</li>
-                        {% endfor %}
-                      </ol>
-                    {% else %}
-                      <p>No release assets are included for this platform.</p>
-                    {% endif %}
-
-                    {% if platformContent.excludedAssets.length > 0 %}
-                      <h5>Excluded assets</h5>
-                      <ul>
-                        {% for asset in platformContent.excludedAssets %}
-                          <li>{{ asset.filename }} ({{ asset.role | title }}; {{ asset.exclusionReason | replace('_', ' ') }})</li>
-                        {% endfor %}
-                      </ul>
-                    {% endif %}
-
-                    {% for issue in platformContent.issues %}
-                      {% if issue.severity == 'blocking' %}
-                        <div class="error-summary" role="alert"><p><strong>Blocking:</strong> Included asset {{ issue.assetId }} is missing. Resolve this before preparing {{ platform | title }}.</p></div>
-                      {% else %}
-                        <div class="notice notice--warning" role="status"><p><strong>Warning:</strong> The release Description is empty. This is advisory only and does not prevent CreatorCrate publication.</p></div>
-                      {% endif %}
+                <p>Selected platforms: {{ socialPrepPublish.platforms | join(', ') | title }}.</p>
+                <dl class="detail-list">
+                  <dt>Title</dt>
+                  <dd>{{ release.title }}</dd>
+                  <dt>Description</dt>
+                  <dd class="description">{% if release.description %}{{ release.description }}{% else %}<em>No Description provided.</em>{% endif %}</dd>
+                </dl>
+                {% if 'x' in socialPrepPublish.platforms or 'bluesky' in socialPrepPublish.platforms %}
+                  <p>For X or Bluesky, post text combines the title and Description.</p>
+                {% endif %}
+                {% set platformContent = socialPrepPublish.content[socialPrepPublish.platforms[0]] %}
+                {% if platformContent.excludedAssets.length > 0 %}
+                  <h4>Excluded assets</h4>
+                  <ul>
+                    {% for asset in platformContent.excludedAssets %}
+                      <li>{{ asset.filename }} ({{ asset.role | title }}; {{ asset.exclusionReason | replace('_', ' ') }})</li>
                     {% endfor %}
-                  </section>
+                  </ul>
+                {% endif %}
+                {% for issue in platformContent.issues %}
+                  {% if issue.severity == 'blocking' %}
+                    <div class="error-summary" role="alert"><p><strong>Blocking:</strong> Included asset {{ issue.assetId }} is missing. Resolve this before preparing posts.</p></div>
+                  {% else %}
+                    <div class="notice notice--warning" role="status"><p><strong>Warning:</strong> The release Description is empty. This is advisory only and does not prevent CreatorCrate publication.</p></div>
+                  {% endif %}
                 {% endfor %}
               {% else %}
-                <p>No Social Preparation platforms are configured.</p>
+                <p>No Social Preparation platforms are selected for this release.</p>
               {% endif %}
             </div>
           </section>
         {% endif %}
 
-        <section class="settings-section project-edit-dialog-section" aria-labelledby="release-publish-publication-heading">
+        <section class="settings-section project-edit-dialog-section" data-release-dialog-compact-section aria-labelledby="release-publish-publication-heading">
           <h3 id="release-publish-publication-heading">Publication</h3>
           <div class="project-edit-dialog-section-body">
             <div class="field scheduling-field {% if errors.publishedDate %}field-error{% endif %}" data-date-picker-field>

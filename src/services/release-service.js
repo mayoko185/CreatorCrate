@@ -2,6 +2,7 @@ import { createReleaseRepository, RELEASE_ASSET_ROLES } from '../data/release-re
 import { createProjectRepository } from '../data/project-repository.js';
 import { createAssetRepository } from '../data/asset-repository.js';
 import { createAssetCategoryRepository } from '../data/asset-category-repository.js';
+import { createSocialPrepRepository, SocialPrepRepositoryError } from '../data/social-prep-repository.js';
 import { AssetCategoryNotFoundError } from './asset-category-service.js';
 import { AssetCategoryValidationError } from './asset-category-validation.js';
 import { buildReleaseAssetPagePresentation } from './release-asset-presenter.js';
@@ -168,11 +169,41 @@ function matchesReleaseAssetFilters(asset, filters, categoryId) {
   return true;
 }
 
-export function createReleaseService({ db, applicationLogger = null }) {
+export function createReleaseService({ db, applicationLogger = null, socialPrepSettingsService = null }) {
   const repository = createReleaseRepository(db);
+  const socialPrepRepository = createSocialPrepRepository(db);
   const projectRepository = createProjectRepository(db);
   const assetRepository = createAssetRepository(db);
   const assetCategoryRepository = createAssetCategoryRepository(db);
+
+  function validateSelectedPlatforms(input, releaseId = null) {
+    if (!Object.hasOwn(input, 'selectedPlatforms')) return null;
+    const platforms = input.selectedPlatforms;
+    const allowed = new Set(socialPrepSettingsService?.getPlatforms?.() || []);
+    if (releaseId !== null) {
+      for (const row of socialPrepRepository.listPlatformsByReleaseId(releaseId)) {
+        if (row.is_selected === 1) allowed.add(row.platform);
+      }
+    }
+    if (!Array.isArray(platforms) || platforms.some((platform) => typeof platform !== 'string' || !allowed.has(platform))
+      || new Set(platforms).size !== platforms.length) {
+      throw new ReleaseValidationError({ selectedPlatforms: 'Select valid configured platforms.' });
+    }
+    return platforms;
+  }
+
+  function replacePlatformSelection(releaseId, platforms) {
+    try {
+      socialPrepRepository.replaceSelectedPlatforms(releaseId, platforms);
+    } catch (err) {
+      if (err instanceof SocialPrepRepositoryError && err.code === 'PLATFORM_SELECTION_IN_PROGRESS') {
+        throw new ReleaseValidationError({
+          selectedPlatforms: 'Cannot deselect a platform while its preparation session is active.',
+        });
+      }
+      throw err;
+    }
+  }
 
   function logActivity(event, release, context = {}) {
     try {
@@ -400,7 +431,14 @@ export function createReleaseService({ db, applicationLogger = null }) {
     createRelease(projectId, input) {
       validateProjectExists(projectId);
       const normalized = validate(input);
-      const created = repository.create({ projectId, ...normalized });
+      const selectedPlatforms = validateSelectedPlatforms(input);
+      const created = selectedPlatforms === null
+        ? repository.create({ projectId, ...normalized })
+        : db.transaction(() => {
+          const release = repository.create({ projectId, ...normalized });
+          replacePlatformSelection(release.id, selectedPlatforms);
+          return release;
+        }).immediate();
       logActivity('release.created', created, { assetCount: 0 });
       return created;
     },
@@ -419,6 +457,7 @@ export function createReleaseService({ db, applicationLogger = null }) {
     createReleaseWithSelectedAssets(projectId, input, assetIds) {
       const { project, assetIds: normalizedAssetIds } = validateAndNormalizeSelectedAssetIds(projectId, assetIds);
       const normalized = validate(input);
+      const selectedPlatforms = validateSelectedPlatforms(input);
 
       const selections = normalizedAssetIds.map((assetId, sortOrder) => ({
         assetId,
@@ -426,10 +465,14 @@ export function createReleaseService({ db, applicationLogger = null }) {
         sortOrder,
       }));
 
-      const created = repository.createWithAssetSelections(
-        { projectId: project.id, ...normalized },
-        selections,
+      const create = () => repository.createWithAssetSelections(
+        { projectId: project.id, ...normalized }, selections,
       );
+      const created = selectedPlatforms === null ? create() : db.transaction(() => {
+        const release = create();
+        replacePlatformSelection(release.id, selectedPlatforms);
+        return release;
+      }).immediate();
       logActivity('release.created', created, { assetCount: selections.length });
       return created;
     },
@@ -566,6 +609,7 @@ export function createReleaseService({ db, applicationLogger = null }) {
         ...input,
       };
       const normalized = validate(inputWithDefaults);
+      const selectedPlatforms = validateSelectedPlatforms(input, id);
       const changed = release.title !== normalized.title
         || release.description !== normalized.description
         || release.notes !== normalized.notes
@@ -573,7 +617,12 @@ export function createReleaseService({ db, applicationLogger = null }) {
         || release.planned_time !== normalized.plannedTime
         || release.published_date !== normalized.publishedDate
         || release.patreon_url !== normalized.patreonUrl;
-      const updated = repository.update(id, normalized);
+      const save = () => repository.update(id, normalized);
+      const updated = selectedPlatforms === null ? save() : db.transaction(() => {
+        const result = save();
+        if (result) replacePlatformSelection(id, selectedPlatforms);
+        return result;
+      }).immediate();
       if (!updated) {
         throw new ReleaseNotFoundError(id);
       }

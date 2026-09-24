@@ -159,6 +159,13 @@ The filesystem is authoritative for media contents. SQLite stores project, asset
 
 Create releases from project work, select and order the included assets, and assign their release roles. When a release is ready, use the publishing workflow to record published work. The calendar shows compact planned and published events in a month grid or narrow-screen agenda. Hover over an event to preview its details, or activate it to pin the information card. The card shows the project primary image when available, with release and project actions above the details. Activate the same event again, press Escape, or click outside to dismiss a pinned card. Filters cover release status, project, and week start; Calendar Page Defaults cover status and week start. Filter changes, month navigation, and Reset update Calendar without leaving the page, and browser Back and Forward restore the selected state. Reset keeps the displayed month and reapplies saved defaults while clearing the project. Changing either Page Default saves it automatically and applies it to the displayed month and selected project. Calendar URLs accept `month=YYYY-MM`, `status=all|planned|published`, `project=<id>`, and `weekStart=monday|sunday`. Status and week start use saved Page Defaults when omitted; month and project remain URL state.
 
+New and Edit Release offer a Platforms dropdown between Scheduling and Links.
+Choose any configured Social Preparation platforms, or leave the selection empty.
+Edit also shows saved selected platforms that are no longer configured, so they
+can be retained or removed. The selection is saved with the release. Review &
+Publish shows the shared preparation details once with a compact summary of the
+saved selected platforms, and publication uses that saved selection.
+
 Release Description signatures can be managed through authenticated JSON settings
 endpoints at `/settings/release-signatures`. `GET` reads the ordered catalogue;
 `POST` adds `{ "name", "body" }`; `PATCH /:id` edits those fields; and

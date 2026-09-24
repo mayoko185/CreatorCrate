@@ -74,11 +74,11 @@ export function createSocialPrepService({ db, socialPrepRepository, socialPrepSe
 
   function currentNow() { return asDate(now()); }
   function computeRetryablePlatforms(rows, at = currentNow(), authoritativeSessionId = undefined) {
-    return rows.filter((row) => row.status === 'pending'
+    return rows.filter((row) => row.is_selected === 1 && (row.status === 'pending'
       || ['failed', 'auth_required', 'cancelled'].includes(row.status)
       || (STALE_PROGRESS_STATUSES.has(row.status)
         && (row.session_id !== authoritativeSessionId
-          || timestampAtOrAfter(at, formatSocialPrepTimestamp(addMinutes(`${row.updated_at.replace(' ', 'T')}Z`, staleMinutes))))))
+          || timestampAtOrAfter(at, formatSocialPrepTimestamp(addMinutes(`${row.updated_at.replace(' ', 'T')}Z`, staleMinutes)))))))
       .map((row) => row.platform);
   }
   function isRedeemedSessionStale(session, at = currentNow()) {
@@ -101,6 +101,7 @@ export function createSocialPrepService({ db, socialPrepRepository, socialPrepSe
     if (live?.state === 'issued') {
       const owned = rows.filter((row) => row.session_id === live.id);
       return owned.length > 0 && owned.every((row) => row.status === 'pending' && configured.has(row.platform))
+        && owned.every((row) => row.is_selected === 1)
         ? { mode: 'reissue', sessionId: live.id }
         : null;
     }
@@ -111,7 +112,7 @@ export function createSocialPrepService({ db, socialPrepRepository, socialPrepSe
       .filter((platform) => configured.has(platform));
     if (retryable.length > 0) return { mode: 'activate' };
 
-    const completed = rows.filter((row) => configured.has(row.platform)
+    const completed = rows.filter((row) => row.is_selected === 1 && configured.has(row.platform)
       && COMPLETED_PREPARATION_STATUSES.has(row.status));
     return completed.length > 0 ? { mode: 'reprepare' } : null;
   }
@@ -181,7 +182,7 @@ export function createSocialPrepService({ db, socialPrepRepository, socialPrepSe
       if (reprepare) {
         if (requested?.some((platform) => !configured.has(platform))) throw new SocialPrepServiceError('unknown_platform');
         const allowedStatuses = requested === undefined ? COMPLETED_PREPARATION_STATUSES : EXPLICIT_REPREPARE_STATUSES;
-        targetedPlatforms = rows.filter((row) => configured.has(row.platform)
+        targetedPlatforms = rows.filter((row) => row.is_selected === 1 && configured.has(row.platform)
           && allowedStatuses.has(row.status)
           && (requested === undefined || requested.includes(row.platform)))
           .map((row) => row.platform);
@@ -222,7 +223,7 @@ export function createSocialPrepService({ db, socialPrepRepository, socialPrepSe
       if (!live || live.id !== sessionId || live.state !== 'issued') throw new SocialPrepServiceError('attempt_not_reissuable');
       const ownedPlatforms = socialPrepRepository.listPlatformsByReleaseId(releaseId)
         .filter((row) => row.session_id === sessionId);
-      if (ownedPlatforms.length === 0 || ownedPlatforms.some((row) => row.status !== 'pending' || !configured.has(row.platform))) {
+      if (ownedPlatforms.length === 0 || ownedPlatforms.some((row) => row.is_selected !== 1 || row.status !== 'pending' || !configured.has(row.platform))) {
         throw new SocialPrepServiceError('attempt_not_reissuable');
       }
       const targetedPlatforms = ownedPlatforms.map((row) => row.platform);
@@ -276,11 +277,10 @@ export function createSocialPrepService({ db, socialPrepRepository, socialPrepSe
   }
 
   function getPostingCompletion(releaseId) {
-    const configuredPlatforms = socialPrepSettingsService.getPlatforms();
-    const rowsByPlatform = new Map(socialPrepRepository.listPlatformsByReleaseId(releaseId)
-      .map((row) => [row.platform, row]));
-    const postedCount = configuredPlatforms.filter((platform) => rowsByPlatform.get(platform)?.status === 'posted').length;
-    const totalCount = configuredPlatforms.length;
+    const selectedRows = socialPrepRepository.listPlatformsByReleaseId(releaseId)
+      .filter((row) => row.is_selected === 1);
+    const postedCount = selectedRows.filter((row) => row.status === 'posted').length;
+    const totalCount = selectedRows.length;
     return { postedCount, totalCount, isComplete: totalCount > 0 && postedCount === totalCount };
   }
 
@@ -289,6 +289,7 @@ export function createSocialPrepService({ db, socialPrepRepository, socialPrepSe
     const target = socialPrepRepository.listPlatformsByReleaseId(session.release_id)
       .find((row) => row.platform === platform && row.session_id === sessionId);
     if (!target) throw new SocialPrepServiceError('confirmation_target_not_owned', { status: 409 });
+    if (target.is_selected !== 1) throw new SocialPrepServiceError('confirmation_conflict', { status: 409 });
     return { target, completion: getPostingCompletion(session.release_id) };
   }
 
@@ -299,6 +300,7 @@ export function createSocialPrepService({ db, socialPrepRepository, socialPrepSe
       const current = socialPrepRepository.listPlatformsByReleaseId(session.release_id)
         .find((row) => row.platform === platform && row.session_id === sessionId);
       if (!current) throw new SocialPrepServiceError('confirmation_target_not_owned', { status: 409 });
+      if (current.is_selected !== 1) throw new SocialPrepServiceError('confirmation_conflict', { status: 409 });
       if (current.status === 'posted') {
         return { target: current, completion: getPostingCompletion(session.release_id) };
       }

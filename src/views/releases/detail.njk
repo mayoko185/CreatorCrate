@@ -239,11 +239,11 @@
   {% set overlayIsPublished = release.published_date %}
 
   {% if not overlayIsArchived %}
-    {{ releaseEditDialog.render(release, editDialogForm, _csrf, releaseSignatureConfiguration, editDialogOpen, editDialogReturnTo, clockFormat) }}
+    {{ releaseEditDialog.render(release, editDialogForm, _csrf, releaseSignatureConfiguration, platformChoices, editDialogOpen, editDialogReturnTo, clockFormat) }}
     {{ releaseSignaturesDialog.render(releaseSignatureConfiguration, _csrf) }}
   {% endif %}
 
   {% if not overlayIsArchived and not overlayIsPublished %}
-    {{ releasePublishDialog.render(release, project, releaseAssets, publishDialogForm, socialPrepPublish, _csrf, publishDialogOpen, clockFormat) }}
+    {{ releasePublishDialog.render(release, project, releaseAssets, publishDialogForm, socialPrepPublish, _csrf, publishDialogOpen) }}
   {% endif %}
 {% endblock %}

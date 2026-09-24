@@ -13,6 +13,7 @@ import { buildReleaseAssetPagePresentation } from '../services/release-asset-pre
 import { RELEASE_ASSET_ROLES } from '../data/release-repository.js';
 import { buildSocialContent } from '../services/social-content-builder.js';
 import { buildReleaseSocialPrepPresentation } from '../services/release-social-prep-presenter.js';
+import { SOCIAL_PREP_SUPPORTED_PLATFORMS } from '../services/social-prep-settings-service.js';
 import { isProjectArchived } from '../services/project-state.js';
 import { isSafeRedirectTarget } from '../middleware/auth.js';
 import {
@@ -139,6 +140,7 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
         errors: {},
       });
       formModel.releaseSignatureConfiguration = getReleaseSignatureConfiguration(req);
+      formModel.platformChoices = getReleasePlatformChoices(req);
       if (formModel.projects.length === 0) {
         return res.status(422).render('releases/form.njk', {
           ...formModel,
@@ -519,7 +521,8 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
       releaseService.publishRelease(id, publishedDate);
 
       let socialPreparationAvailable = false;
-      const selectedPlatforms = readSubmittedSocialPlatforms(req.body?.socialPlatforms);
+      const selectedPlatforms = req.app.locals.socialPrepRepository.listPlatformsByReleaseId(id)
+        .filter((row) => row.is_selected === 1).map((row) => row.platform);
       try {
         const socialPrepSettingsService = req.app?.locals?.socialPrepSettingsService;
         const socialPrepService = req.app?.locals?.socialPrepService;
@@ -1119,11 +1122,18 @@ function renderReleaseCreateError(req, res, next, {
   res.status(422).render('releases/form.njk', {
     ...releaseCreateForm,
     releaseSignatureConfiguration: getReleaseSignatureConfiguration(req),
+    platformChoices: getReleasePlatformChoices(req),
   });
 }
 
 function getReleaseSignatureConfiguration(req) {
   return req.app.locals.releaseSignatureSettingsService.getConfiguration();
+}
+
+function getReleasePlatformChoices(req, savedPlatforms = []) {
+  const configured = req.app.locals.socialPrepSettingsService.getPlatforms();
+  return SOCIAL_PREP_SUPPORTED_PLATFORMS.filter((platform) => configured.includes(platform) || savedPlatforms.includes(platform))
+    .map((platform) => ({ value: platform, label: platform === 'x' ? 'X' : platform === 'bluesky' ? 'Bluesky' : 'Patreon' }));
 }
 
 /**
@@ -1209,6 +1219,7 @@ function handleReleaseList(
       releasesLiveFiltering: true,
       releaseCreateDialogOpen: Boolean(releaseCreateDialogOpen),
       releaseSignatureConfiguration: getReleaseSignatureConfiguration(req),
+      platformChoices: getReleasePlatformChoices(req),
       releaseCreateForm: releaseCreateForm || buildCreateReleaseFormModel({
         appName,
         projectService,
@@ -1356,6 +1367,7 @@ function buildNewReleaseFormValues(rawQuery) {
 
   const values = {
     ...query,
+    selectedPlatforms: readSubmittedSocialPlatforms(query.selectedPlatforms),
     plannedDate: query.plannedDate || formatLocalDate(now),
     plannedTime: query.plannedTime || formatLocalTime(now),
   };
@@ -1438,11 +1450,11 @@ function readSubmittedSocialPlatforms(value) {
   return value === undefined ? [] : [value];
 }
 
-function buildSocialPrepPublishModel(req, release, releaseAssets) {
+function buildSocialPrepPublishModel(req, release, releaseAssets, selectedPlatforms) {
   const socialPrepSettingsService = req?.app?.locals?.socialPrepSettingsService;
   if (!socialPrepSettingsService?.isEnabled?.()) return null;
 
-  const platforms = socialPrepSettingsService.getPlatforms();
+  const platforms = selectedPlatforms;
   return {
     platforms,
     content: buildSocialContent({ release, releaseAssets, platforms }),
@@ -1467,9 +1479,19 @@ function buildReleaseDetailRenderModel({
   const projectArchived = isProjectArchived(project);
   const editAvailable = !release.archived_at && !projectArchived;
   const publishAvailable = editAvailable && release.published_date == null;
+  const savedPlatforms = req.app.locals.socialPrepRepository.listPlatformsByReleaseId(release.id)
+    .filter((row) => row.is_selected === 1).map((row) => row.platform);
   const resolvedEditDialogForm = editDialogForm || {
-    values: releaseToFormValues(release),
+    values: {
+      ...releaseToFormValues(release),
+      selectedPlatforms: savedPlatforms,
+    },
     errors: {},
+  };
+  resolvedEditDialogForm.values = {
+    ...resolvedEditDialogForm.values,
+    selectedPlatforms: editDialogForm && !Object.hasOwn(editDialogForm.values, 'selectedPlatformsPresent')
+      ? savedPlatforms : readSubmittedSocialPlatforms(resolvedEditDialogForm.values.selectedPlatforms),
   };
   const resolvedEditDialogOpen = editAvailable && (editDialogOpen || req?.query?.edit === '1');
   const resolvedPublishDialogForm = publishDialogForm || {
@@ -1511,9 +1533,10 @@ function buildReleaseDetailRenderModel({
     editDialogReturnTo: editDialogReturnTo || readReleaseEditReturnLocation(req?.query?.returnTo),
     editDialogForm: resolvedEditDialogForm,
     releaseSignatureConfiguration: getReleaseSignatureConfiguration(req),
+    platformChoices: getReleasePlatformChoices(req, savedPlatforms),
     publishDialogOpen: publishAvailable && !resolvedEditDialogOpen && (publishDialogOpen || req?.query?.publish === '1'),
     publishDialogForm: resolvedPublishDialogForm,
-    socialPrepPublish: publishAvailable ? buildSocialPrepPublishModel(req, release, selectedAssets) : null,
+    socialPrepPublish: publishAvailable ? buildSocialPrepPublishModel(req, release, selectedAssets, savedPlatforms) : null,
     socialPreparation,
   };
 }
@@ -1672,7 +1695,7 @@ function parseListQuery(raw) {
 }
 
 function parseReleaseInput(body) {
-  return {
+  const input = {
     title: body.title,
     description: body.description,
     notes: body.notes,
@@ -1681,6 +1704,13 @@ function parseReleaseInput(body) {
     publishedDate: body.publishedDate || null,
     patreonUrl: body.patreonUrl || null,
   };
+  if (Object.hasOwn(body, 'selectedPlatformsPresent')) {
+    if (body.selectedPlatformsPresent !== '1') {
+      throw new ReleaseValidationError({ selectedPlatforms: 'Invalid platform selection.' });
+    }
+    input.selectedPlatforms = readSubmittedSocialPlatforms(body.selectedPlatforms);
+  }
+  return input;
 }
 
 function plannedDateTimeToFormValues(release) {

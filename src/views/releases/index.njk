@@ -85,7 +85,7 @@
               </td>
               <td>{% set status = release.project_status %}{% include "partials/status-badge.njk" %}</td>
               <td>{{ release.planned_date or '—' }}{% if release.planned_time %} {{ release.planned_time | formatStoredTime(clockFormat) }}{% endif %}</td>
-              <td>{{ socialPrepSummary.render(release.socialPreparation, release.id, _csrf, false) }}</td>
+              <td>{{ socialPrepSummary.render(release.socialPreparation, release.id, _csrf, false, true) }}</td>
               <td>
                 {{ release.selected_asset_count }}
                 {% if release.missing_asset_count > 0 %}
@@ -142,7 +142,7 @@
 {% endblock %}
 
 {% block overlay %}
-  {{ releaseCreateDialog.render(releaseCreateForm, _csrf, releaseSignatureConfiguration, releaseCreateDialogOpen, clockFormat) }}
+  {{ releaseCreateDialog.render(releaseCreateForm, _csrf, releaseSignatureConfiguration, platformChoices, releaseCreateDialogOpen, clockFormat) }}
   {{ releaseSignaturesDialog.render(releaseSignatureConfiguration, _csrf) }}
 
   {% call dialog.render('releases-filter-dialog', 'Filter') %}

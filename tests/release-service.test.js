@@ -8,6 +8,7 @@ import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createReleaseService, ReleaseValidationError, ReleaseNotFoundError, ReleaseArchivedError, ReleaseParentArchivedError, ReleasePublishedError, AssetNotFoundError } from '../src/services/release-service.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
+import { createSocialPrepRepository } from '../src/data/social-prep-repository.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
 import { AssetCategoryNotFoundError } from '../src/services/asset-category-service.js';
@@ -425,6 +426,17 @@ describe('release service', () => {
   });
 
   describe('createReleaseWithSelectedAssets', () => {
+    it('saves the selected-assets release and platform selection together', () => {
+      const asset = assetRepo.upsert(projectId, 'platform-asset.txt', sampleAsset(projectId, { relativePath: 'platform-asset.txt' }));
+      const releases = createReleaseService({ db, socialPrepSettingsService: { getPlatforms: () => ['x'] } });
+      const release = releases.createReleaseWithSelectedAssets(
+        projectId, validInput({ selectedPlatforms: ['x'] }), [asset.id],
+      );
+      expect(releases.listReleaseAssets(release.id).map((row) => row.asset_id)).toEqual([asset.id]);
+      expect(createSocialPrepRepository(db).listPlatformsByReleaseId(release.id).filter((row) => row.is_selected)
+        .map((row) => row.platform)).toEqual(['x']);
+    });
+
     it('creates an ordered selected-assets release atomically without a status field', () => {
       const first = assetRepo.upsert(projectId, 'first.txt', sampleAsset(projectId, { relativePath: 'first.txt' }));
       const second = assetRepo.upsert(projectId, 'second.txt', sampleAsset(projectId, { relativePath: 'second.txt' }));
@@ -443,6 +455,70 @@ describe('release service', () => {
   });
 
   describe('updateRelease', () => {
+    it('retains or removes a saved unconfigured platform without allowing new unconfigured selections', () => {
+      let configured = ['x', 'bluesky'];
+      const releases = createReleaseService({ db, socialPrepSettingsService: { getPlatforms: () => configured } });
+      const platforms = createSocialPrepRepository(db);
+      const first = releases.createRelease(projectId, validInput({ title: 'First', selectedPlatforms: ['x'] }));
+      const second = releases.createRelease(projectId, validInput({ title: 'Second' }));
+      configured = ['bluesky'];
+
+      releases.updateRelease(first.id, validInput({ title: 'Edited', selectedPlatforms: ['x'] }));
+      expect(releases.findRelease(first.id).title).toBe('Edited');
+      expect(platforms.listPlatformsByReleaseId(first.id).find((row) => row.platform === 'x').is_selected).toBe(1);
+      for (const [releaseId, selection] of [[first.id, ['x', 'bogus']], [second.id, ['x']]]) {
+        expect(() => releases.updateRelease(releaseId, validInput({ title: 'Rejected', selectedPlatforms: selection })))
+          .toThrow(expect.objectContaining({ errors: { selectedPlatforms: 'Select valid configured platforms.' } }));
+      }
+      expect(() => releases.createRelease(projectId, validInput({ selectedPlatforms: ['x'] })))
+        .toThrow(expect.objectContaining({ errors: { selectedPlatforms: 'Select valid configured platforms.' } }));
+      expect(releases.findRelease(first.id).title).toBe('Edited');
+      expect(releases.findRelease(second.id).title).toBe('Second');
+
+      releases.updateRelease(first.id, validInput({ selectedPlatforms: [] }));
+      expect(platforms.listPlatformsByReleaseId(first.id).find((row) => row.platform === 'x').is_selected).toBe(0);
+      expect(() => releases.updateRelease(first.id, validInput({ selectedPlatforms: ['x'] })))
+        .toThrow(expect.objectContaining({ errors: { selectedPlatforms: 'Select valid configured platforms.' } }));
+    });
+
+    it('saves exact configured platform selections with release metadata and preserves them when omitted', () => {
+      const releases = createReleaseService({
+        db, socialPrepSettingsService: { getPlatforms: () => ['patreon', 'x', 'bluesky'] },
+      });
+      const platforms = createSocialPrepRepository(db);
+      const release = releases.createRelease(projectId, validInput({ selectedPlatforms: ['patreon', 'x'] }));
+      expect(platforms.listPlatformsByReleaseId(release.id).filter((row) => row.is_selected).map((row) => row.platform))
+        .toEqual(['patreon', 'x']);
+
+      releases.updateRelease(release.id, validInput({ title: 'Edited', selectedPlatforms: ['x', 'bluesky'] }));
+      expect(platforms.listPlatformsByReleaseId(release.id).filter((row) => row.is_selected).map((row) => row.platform))
+        .toEqual(['bluesky', 'x']);
+      releases.updateRelease(release.id, validInput({ title: 'Omitted' }));
+      expect(platforms.listPlatformsByReleaseId(release.id).filter((row) => row.is_selected).map((row) => row.platform))
+        .toEqual(['bluesky', 'x']);
+      releases.updateRelease(release.id, validInput({ selectedPlatforms: [] }));
+      expect(platforms.listPlatformsByReleaseId(release.id).filter((row) => row.is_selected)).toEqual([]);
+      expect(platforms.listPlatformsByReleaseId(release.id).find((row) => row.platform === 'patreon').is_selected).toBe(0);
+      expect(() => releases.createRelease(projectId, validInput({ selectedPlatforms: ['unknown'] })))
+        .toThrow(expect.objectContaining({ errors: { selectedPlatforms: 'Select valid configured platforms.' } }));
+    });
+
+    it('rolls metadata back when an active session blocks platform deselection', () => {
+      const releases = createReleaseService({
+        db, socialPrepSettingsService: { getPlatforms: () => ['x', 'bluesky'] },
+      });
+      const platforms = createSocialPrepRepository(db);
+      const release = releases.createRelease(projectId, validInput({ title: 'Before', selectedPlatforms: ['x'] }));
+      platforms.insertSession({ id: 'active', releaseId: release.id, kind: 'initial', expiresAt: new Date('2030-01-01') });
+      platforms.reassignPlatformsToSession('active', ['x']);
+      expect(() => releases.updateRelease(release.id, validInput({ title: 'After', selectedPlatforms: ['bluesky'] })))
+        .toThrow(expect.objectContaining({ errors: {
+          selectedPlatforms: 'Cannot deselect a platform while its preparation session is active.',
+        } }));
+      expect(releases.findRelease(release.id).title).toBe('Before');
+      expect(platforms.listPlatformsByReleaseId(release.id).map((row) => row.platform)).toEqual(['x']);
+    });
+
     it('updates a release', () => {
       const created = service.createRelease(projectId, validInput({ title: 'Original' }));
       const updated = service.updateRelease(created.id, validInput({ title: 'Updated' }));

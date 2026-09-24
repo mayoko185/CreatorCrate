@@ -136,10 +136,11 @@ function installRecordLookupCounter(db) {
 
 function expectReleaseFormSectionCards(html) {
   const cards = html.match(/<div class="settings-section(?: release-project-section| scheduling-section)?">\s*<h3>[^<]+<\/h3>/g) || [];
-  expect(cards).toHaveLength(4);
+  expect(cards).toHaveLength(5);
   expect(html).toMatch(/<div class="settings-section release-project-section">\s*<h3>Project<\/h3>/);
   expect(html).toMatch(/<div class="settings-section">\s*<h3>Basic information<\/h3>/);
   expect(html).toMatch(/<div class="settings-section scheduling-section">\s*<h3>Scheduling<\/h3>/);
+  expect(html).toMatch(/<h3>Scheduling<\/h3>[\s\S]*?<h3>Platforms<\/h3>[\s\S]*?<h3>Links<\/h3>/);
   expect(html).toMatch(/<div class="settings-section">\s*<h3>Links<\/h3>/);
   expect(html).not.toContain('class="form-section"');
 }
@@ -1114,6 +1115,128 @@ describe('release HTTP workflow', () => {
   });
 
   describe('New Release dialog', () => {
+    it('keeps a saved unconfigured platform available only in its Edit dialog', async () => {
+      app.locals.socialPrepSettingsService.setPlatforms(['x', 'bluesky']);
+      const projectId = await createTestProject('Legacy Platform Project');
+      const created = await agent.post('/releases')
+        .send({ _csrf: csrfToken, projectId, title: 'Legacy Release', selectedPlatformsPresent: '1', selectedPlatforms: 'x' })
+        .set('Content-Type', 'application/x-www-form-urlencoded').expect(302);
+      const releaseId = Number(created.headers.location.split('/').at(-1));
+      app.locals.socialPrepSettingsService.setPlatforms(['bluesky']);
+
+      const edit = await agent.get(`/releases/${releaseId}?edit=1`).expect(200);
+      const editForm = edit.text.match(/<form id="release-edit-form"[\s\S]*?<\/form>/)?.[0] || '';
+      expect(editForm).toMatch(/name="selectedPlatforms"[^>]*value="x"[^>]*checked/);
+      const newPage = await agent.get('/releases').expect(200);
+      const newForm = newPage.text.match(/<form id="release-create-form"[\s\S]*?<\/form>/)?.[0] || '';
+      expect(newForm).not.toMatch(/name="selectedPlatforms"[^>]*value="x"/);
+
+      const invalid = await agent.post(`/releases/${releaseId}`)
+        .send({ _csrf: csrfToken, title: '', selectedPlatformsPresent: '1', selectedPlatforms: 'x' })
+        .set('Content-Type', 'application/x-www-form-urlencoded').expect(422);
+      const invalidForm = invalid.text.match(/<form id="release-edit-form"[\s\S]*?<\/form>/)?.[0] || '';
+      expect(invalidForm).toMatch(/name="selectedPlatforms"[^>]*value="x"[^>]*checked/);
+
+      await agent.post(`/releases/${releaseId}`)
+        .send({ _csrf: csrfToken, title: 'Edited Legacy Release', selectedPlatformsPresent: '1', selectedPlatforms: 'x' })
+        .set('Content-Type', 'application/x-www-form-urlencoded').expect(302);
+      const platformRepository = app.locals.socialPrepRepository;
+      expect(platformRepository.listPlatformsByReleaseId(releaseId).find((row) => row.platform === 'x').is_selected).toBe(1);
+
+      platformRepository.insertSession({
+        id: 'active-legacy-platform-edit', releaseId, kind: 'initial', expiresAt: new Date('2030-01-01'),
+      });
+      platformRepository.reassignPlatformsToSession('active-legacy-platform-edit', ['x']);
+      const blocked = await agent.post(`/releases/${releaseId}`)
+        .send({ _csrf: csrfToken, title: 'Blocked Legacy Edit', selectedPlatformsPresent: '1' })
+        .set('Content-Type', 'application/x-www-form-urlencoded').expect(422);
+      const blockedForm = blocked.text.match(/<form id="release-edit-form"[\s\S]*?<\/form>/)?.[0] || '';
+      expect(blockedForm).toMatch(/name="selectedPlatforms"[^>]*value="x"/);
+      expect(releaseRepository.findById(releaseId).title).toBe('Edited Legacy Release');
+      platformRepository.expireSession('active-legacy-platform-edit');
+
+      await agent.post(`/releases/${releaseId}`)
+        .send({ _csrf: csrfToken, title: 'Removed Legacy Platform', selectedPlatformsPresent: '1' })
+        .set('Content-Type', 'application/x-www-form-urlencoded').expect(302);
+      expect(platformRepository.listPlatformsByReleaseId(releaseId).find((row) => row.platform === 'x').is_selected).toBe(0);
+      const afterRemoval = await agent.get(`/releases/${releaseId}?edit=1`).expect(200);
+      const afterRemovalForm = afterRemoval.text.match(/<form id="release-edit-form"[\s\S]*?<\/form>/)?.[0] || '';
+      expect(afterRemovalForm).not.toMatch(/name="selectedPlatforms"[^>]*value="x"/);
+    });
+
+    it('renders configured Platforms and preserves submitted choices across create and edit errors', async () => {
+      app.locals.socialPrepSettingsService.setPlatforms(['patreon', 'x', 'bluesky']);
+      const projectId = await createTestProject('Platform Form Project');
+      const newPage = await agent.get('/releases').expect(200);
+      const newForm = newPage.text.match(/<form id="release-create-form"[\s\S]*?<\/form>/)?.[0] || '';
+      expect(newForm).toMatch(/<h3>Scheduling<\/h3>[\s\S]*?<h3>Platforms<\/h3>[\s\S]*?<h3>Links<\/h3>/);
+      expect(newForm).toContain('name="selectedPlatformsPresent" value="1"');
+      expect(newForm).toContain('data-cc-dropdown-mode="multiple"');
+      expect(newForm.match(/name="selectedPlatforms"/g)).toHaveLength(3);
+      expect(newForm).not.toMatch(/name="selectedPlatforms"[^>]*checked/);
+
+      const rejected = await agent.post('/releases')
+        .send({ _csrf: csrfToken, projectId, title: '', selectedPlatformsPresent: '1', selectedPlatforms: ['patreon', 'x'] })
+        .set('Content-Type', 'application/x-www-form-urlencoded').expect(422);
+      const retryForm = rejected.text.match(/<form id="release-form"[\s\S]*?<\/form>/)?.[0] || '';
+      expect(retryForm.match(/name="selectedPlatforms"[^>]*checked/g)).toHaveLength(2);
+
+      const created = await agent.post('/releases')
+        .send({ _csrf: csrfToken, projectId, title: 'Selected Release', selectedPlatformsPresent: '1', selectedPlatforms: ['patreon', 'x'] })
+        .set('Content-Type', 'application/x-www-form-urlencoded').expect(302);
+      const releaseId = Number(created.headers.location.split('/').at(-1));
+      const edit = await agent.get(`/releases/${releaseId}?edit=1`).expect(200);
+      const editForm = edit.text.match(/<form id="release-edit-form"[\s\S]*?<\/form>/)?.[0] || '';
+      expect(editForm.match(/name="selectedPlatforms"[^>]*checked/g)).toHaveLength(2);
+
+      const invalid = await agent.post(`/releases/${releaseId}`)
+        .send({ _csrf: csrfToken, title: 'Attempted', selectedPlatformsPresent: '1', selectedPlatforms: ['bluesky', 'invalid'] })
+        .set('Content-Type', 'application/x-www-form-urlencoded').expect(422);
+      const invalidForm = invalid.text.match(/<form id="release-edit-form"[\s\S]*?<\/form>/)?.[0] || '';
+      expect(invalidForm).toContain('value="Attempted"');
+      expect(invalidForm).toMatch(/name="selectedPlatforms"[^>]*value="bluesky"[^>]*checked/);
+      expect(releaseRepository.findById(releaseId).title).toBe('Selected Release');
+
+      await agent.post(`/releases/${releaseId}`)
+        .send({ _csrf: csrfToken, title: 'Changed', selectedPlatformsPresent: '1', selectedPlatforms: 'bluesky' })
+        .set('Content-Type', 'application/x-www-form-urlencoded').expect(302);
+      let rows = app.locals.socialPrepRepository.listPlatformsByReleaseId(releaseId);
+      expect(rows.filter((row) => row.is_selected).map((row) => row.platform)).toEqual(['bluesky']);
+      const historical = await agent.get(`/releases/${releaseId}?edit=1`).expect(200);
+      const historicalForm = historical.text.match(/<form id="release-edit-form"[\s\S]*?<\/form>/)?.[0] || '';
+      expect(historicalForm).toMatch(/name="selectedPlatforms"[^>]*value="bluesky"[^>]*checked/);
+      expect(historicalForm).not.toMatch(/name="selectedPlatforms"[^>]*value="patreon"[^>]*checked/);
+
+      const platformRepository = app.locals.socialPrepRepository;
+      platformRepository.insertSession({
+        id: 'active-platform-edit', releaseId, kind: 'initial', expiresAt: new Date('2030-01-01'),
+      });
+      platformRepository.reassignPlatformsToSession('active-platform-edit', ['bluesky']);
+      const blocked = await agent.post(`/releases/${releaseId}`)
+        .send({ _csrf: csrfToken, title: 'Blocked metadata', selectedPlatformsPresent: '1' })
+        .set('Content-Type', 'application/x-www-form-urlencoded').expect(422);
+      const blockedForm = blocked.text.match(/<form id="release-edit-form"[\s\S]*?<\/form>/)?.[0] || '';
+      expect(blockedForm).toContain('Cannot deselect a platform while its preparation session is active.');
+      expect(blockedForm).toContain('value="Blocked metadata"');
+      expect(releaseRepository.findById(releaseId).title).toBe('Changed');
+      platformRepository.expireSession('active-platform-edit');
+
+      await agent.post(`/releases/${releaseId}`)
+        .send({ _csrf: csrfToken, title: 'Cleared', selectedPlatformsPresent: '1' })
+        .set('Content-Type', 'application/x-www-form-urlencoded').expect(302);
+      rows = app.locals.socialPrepRepository.listPlatformsByReleaseId(releaseId);
+      expect(rows.filter((row) => row.is_selected)).toEqual([]);
+      await agent.post(`/releases/${releaseId}`)
+        .send({ _csrf: csrfToken, title: 'Omitted platform fields' })
+        .set('Content-Type', 'application/x-www-form-urlencoded').expect(302);
+      expect(app.locals.socialPrepRepository.listPlatformsByReleaseId(releaseId)).toEqual(rows);
+
+      const noSelection = await agent.post('/releases')
+        .send({ _csrf: csrfToken, projectId, title: 'No platforms', selectedPlatformsPresent: '1' })
+        .set('Content-Type', 'application/x-www-form-urlencoded').expect(302);
+      const noSelectionId = Number(noSelection.headers.location.split('/').at(-1));
+      expect(app.locals.socialPrepRepository.listPlatformsByReleaseId(noSelectionId)).toEqual([]);
+    });
     it('keeps creation unpublished even when ordinary requests submit a published date', async () => {
       const projectId = await createTestProject('Unpublished Ordinary Release');
       const response = await agent.post('/releases')
@@ -1380,7 +1503,7 @@ describe('release HTTP workflow', () => {
       expect(dialog).toContain('class="app-dialog-body project-edit-dialog-body"');
       expect(dialog).toContain('class="app-dialog-form project-form project-edit-dialog-form"');
       expect(dialog).toContain('id="release-create-project-trigger" aria-controls="release-create-project-options"');
-      expect(dialog.match(/data-release-dialog-compact-section/g)).toHaveLength(4);
+      expect(dialog.match(/data-release-dialog-compact-section/g)).toHaveLength(5);
       expect(dialog).toMatch(/<div class="settings-section project-form-section project-edit-dialog-section" data-release-dialog-compact-section>\s*<h3>Basic information<\/h3>/);
       expect(dialog).toMatch(/<div class="settings-section scheduling-section project-form-section project-edit-dialog-section" data-release-dialog-compact-section>\s*<h3>Scheduling<\/h3>/);
       expect(dialog).toMatch(/<div class="settings-section project-form-section project-edit-dialog-section" data-release-dialog-compact-section>\s*<h3>Links<\/h3>/);
@@ -2180,7 +2303,7 @@ describe('release HTTP workflow', () => {
   });
 
   describe('publish dialog rendering contract', () => {
-    it('formats release asset and publish scan timestamps from the saved clock preference', async () => {
+    it('formats release asset timestamps from the saved clock preference', async () => {
       const { releaseLocation, assetId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
       db.prepare('UPDATE assets SET modified_at = ?, last_seen_at = ? WHERE id = ?')
         .run('2026-08-01T13:05:42.000Z', '2026-08-01 13:05:42', assetId);
@@ -2190,7 +2313,6 @@ describe('release HTTP workflow', () => {
       const assets = await agent.get(`${releaseLocation}/assets?view=list`).expect(200);
       const publish = await agent.get(`${releaseLocation}/publish`).expect(302);
       expect(detail.text).toContain('2026-08-01T1:05:42.000 PM Z');
-      expect(detail.text).toContain('2026-08-01 1:05:42 PM');
       expect(assets.text).toContain('2026-08-01T1:05:42.000 PM Z');
       expect(publish.headers.location).toBe(`${releaseLocation}?publish=1`);
       expect(db.prepare('SELECT modified_at, last_seen_at FROM assets WHERE id = ?').get(assetId))
@@ -2211,8 +2333,8 @@ describe('release HTTP workflow', () => {
       expect(res.text).toContain('<div class="app-dialog-body project-edit-dialog-body">');
       expect(res.text).toContain('<form id="release-publish-form" method="post" action="' + releaseLocation + '/publish" class="app-dialog-form project-form project-edit-dialog-form"');
       expect(res.text).toContain('<section class="settings-section project-edit-dialog-section" aria-labelledby="release-publish-summary-heading">');
-      expect(res.text).toContain('<section class="settings-section project-edit-dialog-section" aria-labelledby="release-publish-assets-heading">');
-      expect(res.text).toContain('<section class="settings-section project-edit-dialog-section" aria-labelledby="release-publish-publication-heading">');
+      expect(res.text).toContain('<section class="settings-section project-edit-dialog-section" data-release-dialog-compact-section aria-labelledby="release-publish-assets-heading">');
+      expect(res.text).toContain('<section class="settings-section project-edit-dialog-section" data-release-dialog-compact-section aria-labelledby="release-publish-publication-heading">');
       expect(res.text).toContain('Selected release assets for publication');
       expect(res.text).toContain('<div class="table-scroll" tabindex="0" aria-label="Selected release assets for publication">');
       expect(res.text).toContain('<table class="data-table">');
@@ -2259,8 +2381,8 @@ describe('release HTTP workflow', () => {
 
       expect(res.text).toMatch(/<dialog id="release-publish-dialog" class="app-dialog project-form-dialog"[^>]*open/);
       expect(res.text).toContain('<div class="app-dialog-body project-edit-dialog-body">');
-      expect(res.text).toContain('<section class="settings-section project-edit-dialog-section" aria-labelledby="release-publish-assets-heading">');
-      expect(res.text).toContain('<section class="settings-section project-edit-dialog-section" aria-labelledby="release-publish-publication-heading">');
+      expect(res.text).toContain('<section class="settings-section project-edit-dialog-section" data-release-dialog-compact-section aria-labelledby="release-publish-assets-heading">');
+      expect(res.text).toContain('<section class="settings-section project-edit-dialog-section" data-release-dialog-compact-section aria-labelledby="release-publish-publication-heading">');
       expect(res.text).toMatch(/<div class="field scheduling-field field-error" data-date-picker-field>/);
       expect(res.text).toMatch(/<input[^>]*id="release-publish-date"[^>]*name="publishedDate"[^>]*value="not-a-date"[^>]*aria-describedby="release-publish-date-help release-publish-date-error"[^>]*aria-invalid="true"[^>]*data-date-picker-input/);
       expect(res.text).toContain('id="release-publish-date-error"');
@@ -6433,7 +6555,7 @@ describe('release HTTP workflow', () => {
       expect(afterJunction).toEqual(beforeJunction);
     });
 
-    it('ordered assets, roles, order, and presence render', async () => {
+    it('ordered assets, roles, and order render', async () => {
       const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
       const res = await agent
         .get(`${releaseLocation}?publish=1`)
@@ -6443,8 +6565,6 @@ describe('release HTTP workflow', () => {
       expect(res.text).toContain('Primary');
       // Numeric order renders
       expect(res.text).toContain('0');
-      // Presence renders
-      expect(res.text).toContain('Present');
     });
 
     describe('lifecycle eligibility', () => {
@@ -7044,9 +7164,6 @@ describe('release HTTP workflow', () => {
 
         // Assert sort order is visible
         expect(rowHtml).toContain(String(dbRow.sort_order));
-
-        // Assert presence state
-        expect(rowHtml).toContain('Present');
       }
     });
   });

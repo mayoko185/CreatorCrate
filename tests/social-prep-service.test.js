@@ -65,6 +65,41 @@ describe('social preparation lifecycle service', () => {
     expect(service.getCompanionAction(releaseId)).toEqual({ mode: 'activate' });
   });
 
+  it('excludes deselected retained rows from actions and direct activation', () => {
+    db.prepare("UPDATE release_social_platforms SET status = 'failed', attempts = 2 WHERE release_id = ? AND platform = 'x'").run(releaseId);
+    const historical = repository.listPlatformsByReleaseId(releaseId).find((row) => row.platform === 'x');
+    repository.replaceSelectedPlatforms(releaseId, ['bluesky']);
+    expect(service.computeRetryablePlatforms(repository.listPlatformsByReleaseId(releaseId)))
+      .toEqual(['bluesky']);
+    expect(service.getCompanionAction(releaseId)).toEqual({ mode: 'activate' });
+    expect(() => activate({ platforms: ['x'] }))
+      .toThrowError(expect.objectContaining({ code: 'nothing_retryable' }));
+    expect(activate().platforms).toEqual(['bluesky']);
+    expect(repository.listPlatformsByReleaseId(releaseId).find((row) => row.platform === 'x'))
+      .toMatchObject({ is_selected: 0, status: historical.status, attempts: historical.attempts });
+  });
+
+  it('does not reopen a deselected completed platform', () => {
+    db.prepare("UPDATE release_social_platforms SET status = 'ready', attempts = 1 WHERE release_id = ? AND platform = 'x'").run(releaseId);
+    repository.replaceSelectedPlatforms(releaseId, []);
+    expect(service.getCompanionAction(releaseId)).toBeNull();
+    expect(() => activate({ platforms: ['x'], reprepare: true }))
+      .toThrowError(expect.objectContaining({ code: 'platform_not_prepared' }));
+    expect(repository.listPlatformsByReleaseId(releaseId).find((row) => row.platform === 'x'))
+      .toMatchObject({ is_selected: 0, status: 'ready', attempts: 1 });
+  });
+
+  it('rejects reissue if an issued target is no longer selected', () => {
+    const issued = activate({ platforms: ['x'] });
+    db.prepare("UPDATE release_social_platforms SET is_selected = 0 WHERE release_id = ? AND platform = 'x'").run(releaseId);
+    expect(service.getCompanionAction(releaseId)).toBeNull();
+    expect(() => service.reissue({ releaseId, sessionId: issued.session.id, intentHash: 'new-intent',
+      expiresAt: new Date('2030-01-01T00:30:00Z') }))
+      .toThrowError(expect.objectContaining({ code: 'attempt_not_reissuable' }));
+    expect(repository.listPlatformsByReleaseId(releaseId).find((row) => row.platform === 'x'))
+      .toMatchObject({ is_selected: 0, session_id: issued.session.id, status: 'pending' });
+  });
+
   it('sets distinct preparation and 24-hour confirmation deadlines at redemption', () => {
     const issued = activate({ platforms: ['x'] });
     const redeemed = service.redeem({
@@ -408,19 +443,27 @@ describe('social preparation lifecycle service', () => {
       .toMatchObject({ status: 'pending', attempts: 2, session_id: retry.session.id });
   });
 
-  it('computes configured-platform posting completion with missing and historical rows handled explicitly', () => {
+  it('computes posting completion from selected rows, including after selection changes', () => {
     db.prepare("UPDATE release_social_platforms SET status = 'posted', posted_at = '2030-01-01 01:00:00' WHERE release_id = ? AND platform = 'x'").run(releaseId);
-    expect(service.getPostingCompletion(releaseId)).toEqual({ postedCount: 1, totalCount: 3, isComplete: false });
+    expect(service.getPostingCompletion(releaseId)).toEqual({ postedCount: 1, totalCount: 2, isComplete: false });
 
-    service.initializePlatformState(releaseId, ['patreon']);
+    repository.replaceSelectedPlatforms(releaseId, ['x']);
+    expect(service.getPostingCompletion(releaseId)).toEqual({ postedCount: 1, totalCount: 1, isComplete: true });
+
     db.prepare("UPDATE release_social_platforms SET status = 'posted', posted_at = '2030-01-01 01:00:00' WHERE release_id = ? AND platform = 'bluesky'").run(releaseId);
-    expect(service.getPostingCompletion(releaseId)).toEqual({ postedCount: 2, totalCount: 3, isComplete: false });
-    db.prepare("UPDATE release_social_platforms SET status = 'posted', posted_at = '2030-01-01 01:00:00' WHERE release_id = ? AND platform = 'patreon'").run(releaseId);
-    expect(service.getPostingCompletion(releaseId)).toEqual({ postedCount: 3, totalCount: 3, isComplete: true });
+    expect(service.getPostingCompletion(releaseId)).toEqual({ postedCount: 1, totalCount: 1, isComplete: true });
 
-    configuredPlatforms = ['x', 'bluesky'];
+    db.prepare("UPDATE release_social_platforms SET status = 'pending', posted_at = NULL WHERE release_id = ? AND platform = 'x'").run(releaseId);
+    expect(service.getPostingCompletion(releaseId)).toEqual({ postedCount: 0, totalCount: 1, isComplete: false });
+    db.prepare("UPDATE release_social_platforms SET status = 'posted', posted_at = '2030-01-01 01:00:00' WHERE release_id = ? AND platform = 'x'").run(releaseId);
+
+    repository.replaceSelectedPlatforms(releaseId, ['x', 'bluesky']);
     expect(service.getPostingCompletion(releaseId)).toEqual({ postedCount: 2, totalCount: 2, isComplete: true });
-    configuredPlatforms = [];
+
+    configuredPlatforms = ['patreon'];
+    expect(service.getPostingCompletion(releaseId)).toEqual({ postedCount: 2, totalCount: 2, isComplete: true });
+
+    repository.replaceSelectedPlatforms(releaseId, []);
     expect(service.getPostingCompletion(releaseId)).toEqual({ postedCount: 0, totalCount: 0, isComplete: false });
   });
 

@@ -1,6 +1,6 @@
 {% import "partials/dialog.njk" as dialog %}
 
-{% macro render(releaseCreateForm, csrfToken, configuration, open=false, clockFormat='24h') %}
+{% macro render(releaseCreateForm, csrfToken, configuration, platformOptions, open=false, clockFormat='24h') %}
   {% set values = releaseCreateForm.values %}
   {% set errors = releaseCreateForm.errors %}
   {% set projects = releaseCreateForm.projects %}
@@ -9,6 +9,7 @@
   {% set releaseFormDialog = true %}
   {% set releaseProjectDropdownId = 'release-create-project' %}
   {% set releaseSignatureConfiguration = configuration %}
+  {% set platformChoices = platformOptions %}
   {% call dialog.render('release-create-dialog', 'New Release', open, 'release-create-description', 'release-create-form', 'project-form-dialog') %}
     <p id="release-create-description" class="app-dialog-description">
       Create a tracked release record.
