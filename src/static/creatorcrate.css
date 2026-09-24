@@ -7700,6 +7700,13 @@
       .project-detail-releases .workflow-actions {
         margin: 0 0 var(--space-md);
       }
+      .project-detail-releases .release-social-prep-summary {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--space-xs);
+        margin-top: var(--space-xs);
+        padding-block: var(--space-xs);
+      }
       .release-thumbnail-strip {
         display: flex;
         flex-wrap: wrap;

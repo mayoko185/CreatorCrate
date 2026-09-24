@@ -11,10 +11,10 @@ describe('release Social Preparation presentation', () => {
   it.each([
     ['pending', 'Pending'], ['starting', 'Starting'], ['preparing', 'Preparing'],
     ['uploading', 'Uploading'], ['auth_required', 'Authentication required'],
-    ['prepared', 'Composer prepared for human submission'],
-    ['staging', 'Preparing content and files for manual publishing'],
-    ['ready', 'Ready for manual publishing — not marked as posted'],
-    ['posted', 'Posted — confirmed by you'],
+    ['prepared', 'Composer ready'],
+    ['staging', 'Preparing content and files'],
+    ['ready', 'Not Posted - Ready'],
+    ['posted', 'Posted — confirmed'],
     ['failed', 'Preparation failed'], ['cancelled', 'Preparation cancelled'],
   ])('presents recorded %s without claiming publication', (status, statusLabel) => {
     const model = present([row({
@@ -31,10 +31,10 @@ describe('release Social Preparation presentation', () => {
       row({ platform: 'bluesky', status: 'prepared', attempts: 1, prepared_at: '2029-12-01 01:02:03' }),
     ]);
     expect(model.targets.find((target) => target.status === 'ready')).toMatchObject({
-      statusLabel: 'Ready for manual publishing — not marked as posted', firstPreparedAt: null,
+      statusLabel: 'Not Posted - Ready', firstPreparedAt: null,
     });
     expect(model.targets.find((target) => target.status === 'prepared')).toMatchObject({
-      statusLabel: 'Composer prepared for human submission', firstPreparedAt: '2029-12-01 01:02:03',
+      statusLabel: 'Composer ready', firstPreparedAt: '2029-12-01 01:02:03',
     });
   });
 
@@ -63,7 +63,7 @@ describe('release Social Preparation presentation', () => {
         { platform: 'patreon', platformName: 'Patreon', status: 'pending', statusLabel: 'Pending',
           preparationRequestCount: 0, noPreparationRequested: true, lastUpdatedAt: '2030-01-01 00:00:00',
           firstPreparedAt: null, postedAt: null, absentFromCurrentConfiguration: true },
-        { platform: 'x', platformName: 'X', status: 'prepared', statusLabel: 'Composer prepared for human submission',
+        { platform: 'x', platformName: 'X', status: 'prepared', statusLabel: 'Composer ready',
           preparationRequestCount: 1, noPreparationRequested: false, lastUpdatedAt: '2030-01-01 00:00:00',
           firstPreparedAt: '2030-01-01 00:00:00', postedAt: null, absentFromCurrentConfiguration: false },
         { platform: 'bluesky', platformName: 'Bluesky', status: 'failed', statusLabel: 'Preparation failed',
@@ -108,7 +108,7 @@ describe('release Social Preparation presentation', () => {
       row({ platform: 'bluesky', is_selected: 0, status: 'ready', attempts: 1 }),
     ], { enabled: true, platforms: ['patreon', 'x'] });
     expect(model.targets.find((target) => target.platform === 'patreon')).toMatchObject({
-      status: 'posted', statusLabel: 'Posted — confirmed by you', postedAt: '2030-01-01 01:00:00',
+      status: 'posted', statusLabel: 'Posted — confirmed', postedAt: '2030-01-01 01:00:00',
       prepareAnotherPostAction: {
         mode: 'reprepare', label: 'Prepare another post', accessibleLabel: 'Prepare another Patreon post',
         description: 'Starts a new manual post attempt for Patreon.', platform: 'patreon', reprepare: true,

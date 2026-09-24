@@ -1,14 +1,14 @@
 {% import "partials/release-social-prep-companion-action.njk" as companionControl %}
-{% macro render(socialPreparation, releaseId, csrfToken, showVisibleLabel = true, compact = false) %}
+{% macro render(socialPreparation, releaseId, csrfToken, showVisibleLabel = true, compact = false, showCompanionActions = true) %}
   {% if socialPreparation.targets.length %}
     <div class="release-social-prep-summary" role="group" aria-label="Social posts">
       {% if showVisibleLabel %}<small>Social posts</small>{% endif %}
       {% for target in socialPreparation.targets %}
         {% set compactLabels = { auth_required: 'Sign-in needed', prepared: 'Prepared', staging: 'Preparing', ready: 'Ready', posted: 'Posted', failed: 'Failed', cancelled: 'Cancelled' } %}
-        {% set richLabels = { prepared: 'Prepared', staging: 'Preparing for manual publishing', ready: 'Ready for manual publishing — not marked as posted', posted: 'Posted — confirmed by you', failed: 'Failed', cancelled: 'Cancelled' } %}
+        {% set richLabels = { prepared: 'Prepared', staging: 'Preparing for publishing', ready: 'Not Posted - Ready', posted: 'Posted — confirmed', failed: 'Failed', cancelled: 'Cancelled' } %}
         {% set label = 'Not attempted' if target.noPreparationRequested else ((compactLabels[target.status] or target.statusLabel) if compact else (richLabels[target.status] or target.statusLabel)) %}
         <span class="status-badge status-badge--neutral">{{ target.platformName }} · {{ label }}</span>
-        {% if not compact and target.prepareAnotherPostAction %}
+        {% if not compact and showCompanionActions and target.prepareAnotherPostAction %}
           {{ companionControl.render(target.prepareAnotherPostAction, releaseId, csrfToken) }}
         {% endif %}
       {% endfor %}

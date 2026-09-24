@@ -22,6 +22,12 @@ function release(db, projectId, title, { notes = '', plannedTime = null, publish
     VALUES (?, ?, '', ?, '2025-06-15', ?, ?) RETURNING id`).get(projectId, title, notes, plannedTime, publishedDate);
 }
 
+function infoCard(html, surface, releaseId) {
+  const start = html.indexOf(`id="calendar-info-${surface}-${releaseId}"`);
+  if (start < 0) return '';
+  return html.slice(start, html.indexOf('</dl>', start));
+}
+
 describe('Calendar presentation', () => {
   let db;
   let app;
@@ -203,6 +209,57 @@ describe('Calendar presentation', () => {
     expect(html).not.toContain('class="calendar-release-info-media"');
     expect(html).not.toContain('calendar-release-project');
     expect(html).not.toContain('calendar-release-preview');
+  });
+
+  it('offers editing only for unpublished releases in active projects and preserves Calendar state', async () => {
+    const active = project(db, 'Editable project');
+    const archived = project(db, 'Archived project');
+    db.prepare("UPDATE projects SET status = 'archived' WHERE id = ?").run(archived.id);
+    const editable = release(db, active.id, 'Editable release');
+    const published = release(db, active.id, 'Published release', { publishedDate: '2025-06-15' });
+    const readOnly = release(db, archived.id, 'Archived parent release');
+    const archivedByDate = project(db, 'Archived by date');
+    db.prepare("UPDATE projects SET archived_at = '2025-06-01 00:00:00' WHERE id = ?").run(archivedByDate.id);
+    const datedReadOnly = release(db, archivedByDate.id, 'Dated archived parent release');
+    const returnTo = `/calendar?month=2025-06&status=all&weekStart=sunday&view=list&project=${active.id}`;
+    const filtered = (await agent.get(returnTo).expect(200)).text;
+    const expectedUrl = `/releases/${editable.id}/edit?returnTo=${encodeURIComponent(returnTo)}`;
+
+    for (const surface of ['grid', 'agenda']) {
+      const card = infoCard(filtered, surface, editable.id);
+      expect(card).toContain(`href="${expectedUrl.replaceAll('&', '&amp;')}">Edit release</a>`);
+      expect([...card.matchAll(/>(Open release|Edit release|Open project)<\/a>/g)].map((match) => match[1]))
+        .toEqual(['Open release', 'Edit release', 'Open project']);
+      expect(infoCard(filtered, surface, published.id)).not.toContain('Edit release');
+    }
+
+    const all = (await agent.get('/calendar?month=2025-06').expect(200)).text;
+    for (const surface of ['grid', 'agenda']) {
+      expect(infoCard(all, surface, readOnly.id)).not.toContain('Edit release');
+      expect(infoCard(all, surface, datedReadOnly.id)).not.toContain('Edit release');
+    }
+  });
+
+  it('shows only saved selected platforms in supported order on grid and agenda', async () => {
+    const parent = project(db, 'Platforms project');
+    const none = release(db, parent.id, 'No platforms');
+    const one = release(db, parent.id, 'One platform');
+    const several = release(db, parent.id, 'Several platforms');
+    const repository = app.locals.socialPrepRepository;
+    app.locals.socialPrepSettingsService.setPlatforms(['x']);
+    repository.replaceSelectedPlatforms(one.id, ['x']);
+    repository.replaceSelectedPlatforms(several.id, ['bluesky', 'patreon', 'x']);
+    repository.replaceSelectedPlatforms(several.id, ['bluesky', 'patreon']);
+
+    const html = (await agent.get('/calendar?month=2025-06').expect(200)).text;
+    for (const surface of ['grid', 'agenda']) {
+      expect(infoCard(html, surface, none.id)).toContain('<dt>Platforms</dt><dd>None</dd>');
+      expect(infoCard(html, surface, one.id)).toContain('<dt>Platforms</dt><dd>X</dd>');
+      const card = infoCard(html, surface, several.id);
+      expect(card).toContain('<dt>Platforms</dt><dd>Patreon, Bluesky</dd>');
+      expect(card).not.toContain('<dt>Platforms</dt><dd>Patreon, X, Bluesky</dd>');
+      expect(card).toMatch(/<dt>Planned<\/dt>[\s\S]*?<\/div>\s*<div class="asset-viewer-grid-card-info-row"><dt>Platforms<\/dt>/);
+    }
   });
 
   it('formats scheduled time in both Calendar views and details while retaining canonical datetime values', async () => {

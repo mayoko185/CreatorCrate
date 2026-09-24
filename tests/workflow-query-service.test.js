@@ -244,7 +244,7 @@ describe('workflow query service', () => {
       expect(two.id).not.toBe(one.id);
     });
 
-    it('skips enrichment for empty collections and unrelated dashboard/calendar/asset references', () => {
+    it('skips enrichment for empty collections and unrelated dashboard/asset references', () => {
       const project = insertProject(db, { title: 'No saved releases' });
       const repository = createSocialPrepRepository(db);
       const batch = vi.spyOn(repository, 'listPlatformsByReleaseIds');
@@ -259,10 +259,12 @@ describe('workflow query service', () => {
       query.getProjectWorkspace(project.id);
       insertRelease(db, { projectId: project.id, title: 'Calendar release', plannedDate: '2030-01-01' });
       query.getDashboardData();
-      query.getReleaseCalendar('2030-01');
       query.getProjectAssetBrowser(project.id, {});
       expect(batch).not.toHaveBeenCalled();
       expect(settings.getSettings).not.toHaveBeenCalled();
+      query.getReleaseCalendar('2030-01');
+      expect(batch).toHaveBeenCalledTimes(1);
+      expect(settings.getSettings).toHaveBeenCalledTimes(1);
     });
   });
 

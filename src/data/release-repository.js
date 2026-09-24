@@ -133,6 +133,8 @@ export function createReleaseRepository(db) {
       r.id,
       r.project_id,
       p.title AS project_title,
+      p.status AS project_status,
+      p.archived_at AS project_archived_at,
       r.title,
       r.notes,
       r.planned_date,

@@ -25,6 +25,7 @@
         <div class="calendar-release-info-content">
           <div class="calendar-release-info-actions">
             <a class="button button-small button-secondary" href="/releases/{{ entry.id }}">Open release</a>
+            {% if entry.editUrl %}<a class="button button-small button-secondary" href="{{ entry.editUrl }}">Edit release</a>{% endif %}
             <a class="button button-small button-secondary" href="/projects/{{ entry.project_id }}">Open project</a>
           </div>
           <h3 class="asset-viewer-grid-card-info-heading">{{ entry.title }}</h3>
@@ -32,6 +33,7 @@
           <dl class="asset-viewer-grid-card-info-list">
             <div class="asset-viewer-grid-card-info-row"><dt>Status</dt><dd>{{ 'Published' if entry.status == 'published' else 'Planned' }}</dd></div>
             {% if entry.planned_date %}<div class="asset-viewer-grid-card-info-row"><dt>Planned</dt><dd><time datetime="{{ entry.planned_date }}{% if entry.planned_time %}T{{ entry.planned_time }}{% endif %}">{{ entry.planned_date }}{% if entry.planned_time %} {{ entry.planned_time | formatStoredTime(clockFormat) }}{% endif %}</time></dd></div>{% endif %}
+            <div class="asset-viewer-grid-card-info-row"><dt>Platforms</dt><dd>{{ entry.platforms | join(', ') if entry.platforms.length else 'None' }}</dd></div>
             {% if entry.published_date %}<div class="asset-viewer-grid-card-info-row"><dt>Published</dt><dd><time datetime="{{ entry.published_date }}">{{ entry.published_date }}</time></dd></div>{% endif %}
           </dl>
           {% if entry.notes %}

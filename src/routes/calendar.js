@@ -58,13 +58,9 @@ export function createCalendarRouter({ appName, workflowQueryService, pageDefaul
           }
         }
       }
-      const days = filteredDays.map((day) => ({
-        ...day,
-        entries: day.entries.map((entry) => ({ ...entry, nsfwBlur: nsfwProjectIds.has(entry.project_id) })),
-      }));
       const monthHeading = new Intl.DateTimeFormat('en', { month: 'long', year: 'numeric', timeZone: 'UTC' })
         .format(new Date(`${validatedMonth}-01T00:00:00Z`));
-      const releaseCount = days.reduce((count, day) => count + day.entries.length, 0);
+      const releaseCount = filteredDays.reduce((count, day) => count + day.entries.length, 0);
       const query = {};
       if (validatedMonth) query.month = validatedMonth;
       if (status !== undefined) query.status = status;
@@ -72,6 +68,17 @@ export function createCalendarRouter({ appName, workflowQueryService, pageDefaul
       if (view !== undefined) query.view = view;
       if (projectId !== null) query.project = String(projectId);
       const pageUrl = buildPageUrl(req, query);
+      const returnTo = pageUrl({});
+      const days = filteredDays.map((day) => ({
+        ...day,
+        entries: day.entries.map((entry) => ({
+          ...entry,
+          nsfwBlur: nsfwProjectIds.has(entry.project_id),
+          editUrl: entry.canEdit
+            ? `/releases/${entry.id}/edit?${new URLSearchParams({ returnTo })}`
+            : null,
+        })),
+      }));
       const isCurrentMonth = validatedMonth === today.slice(0, 7);
 
       res.render('releases/calendar.njk', {

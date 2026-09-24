@@ -81,11 +81,12 @@ describe('release Social Preparation detail display', () => {
     let publicationNeutral = section
       .replace(/\d+ of \d+ platforms marked as posted\./gi, '')
       .replace(/All social posts marked as posted\./gi, '')
-      .replace(/not marked as posted/gi, '');
+      .replace(/Not Posted - Ready/gi, '');
     if (allowPostedState) publicationNeutral = publicationNeutral
-      .replace(/Posted — confirmed by you/gi, '')
+      .replace(/Posted — confirmed/gi, '')
       .replace(/Posted confirmation/gi, '');
     expect(publicationNeutral).not.toMatch(/\b(posted|published|submitted|sent successfully)\b/i);
+    expect(section).not.toMatch(/Posted — confirmed by you|Ready for manual publishing — not marked as posted|Preparing content and files for manual publishing|Composer prepared for human submission/);
     expect(section).not.toMatch(/Full report|Complete diagnostic|Native report|Prepare again|Send to helper again/i);
     return { html: response.text, section };
   }
@@ -162,7 +163,7 @@ describe('release Social Preparation detail display', () => {
       const { summary } = await list();
       expect(summary).toContain('>X · Failed</span>');
       expect(summary).not.toContain('Patreon');
-      expect((await agent.get(`/projects/${projectId}`).expect(200)).text).toContain('>Patreon · Posted — confirmed by you</span>');
+      expect((await agent.get(`/projects/${projectId}`).expect(200)).text).toContain('>Patreon · Posted — confirmed</span>');
 
       app.locals.socialPrepRepository.replaceSelectedPlatforms(releaseId, []);
       const { row, summary: emptySummary } = await list();
@@ -171,16 +172,24 @@ describe('release Social Preparation detail display', () => {
       expect(app.locals.socialPrepRepository.listPlatformsByReleaseId(releaseId)).toHaveLength(2);
     });
 
-    it('keeps the default visible label in the standalone Project detail summary', async () => {
+    it('hides the visible label in the Project detail summary', async () => {
       target('x', 'prepared');
       const { text: html } = await agent.get(`/projects/${projectId}`).expect(200);
       const summary = html.match(/<div class="release-social-prep-summary"[\s\S]*?<\/div>/)?.[0];
-      expect(summary).toContain('<small>Social posts</small>');
+      expect(summary).not.toContain('<small>Social posts</small>');
       expect(summary).toContain('aria-label="Social posts"');
       expect(summary).toContain('>X · Prepared</span>');
     });
 
-    it('keeps each Project detail release summary and action tied to its release', async () => {
+    it('uses the approved Project summary wording for staging', async () => {
+      target('x', 'staging');
+      const { text: html } = await agent.get(`/projects/${projectId}`).expect(200);
+      const summary = html.match(/<div class="release-social-prep-summary"[\s\S]*?<\/div>/)?.[0];
+      expect(summary).toContain('>X · Preparing for publishing</span>');
+      expect(summary).not.toContain('Preparing for manual publishing');
+    });
+
+    it('keeps each Project detail release summary tied to its release without actions', async () => {
       db.prepare("UPDATE releases SET published_date = '2026-08-01' WHERE id = ?").run(releaseId);
       target('patreon', 'posted', 1, null, FIRST);
       const otherId = db.prepare("INSERT INTO releases (project_id, title, published_date) VALUES (?, 'Other release', '2026-08-02') RETURNING id").get(projectId).id;
@@ -195,22 +204,17 @@ describe('release Social Preparation detail display', () => {
       expect(second).toContain(`href="/releases/${otherId}">Other release</a>`);
       const firstSummary = first.match(/<div class="release-social-prep-summary"[\s\S]*?<\/div>/)?.[0];
       const secondSummary = second.match(/<div class="release-social-prep-summary"[\s\S]*?<\/div>/)?.[0];
-      expect(firstSummary).toContain('>Patreon · Posted — confirmed by you</span>');
+      expect(firstSummary).toContain('>Patreon · Posted — confirmed</span>');
       expect(firstSummary).not.toMatch(/>X ·|>Bluesky ·/);
-      expect(companionActions(firstSummary)).toHaveLength(1);
-      expect(companionActions(firstSummary)[0]).toContain(`data-activation-url="/releases/${releaseId}/social-prep/activate"`);
-      expect(companionActions(firstSummary)[0]).toContain(`data-reissue-url="/releases/${releaseId}/social-prep/reissue"`);
-      expect(companionActions(firstSummary)[0]).toContain('data-target-platform="patreon"');
-      expect(firstSummary).not.toContain(`data-activation-url="/releases/${otherId}/social-prep/activate"`);
+      expect(firstSummary).not.toContain('<small>Social posts</small>');
+      expect(companionActions(firstSummary)).toHaveLength(0);
 
-      expect(secondSummary).toContain('>X · Posted — confirmed by you</span>');
+      expect(secondSummary).toContain('>X · Posted — confirmed</span>');
       expect(secondSummary).toContain('>Bluesky · Failed</span>');
       expect(secondSummary).not.toContain('>Patreon ·');
-      expect(companionActions(secondSummary)).toHaveLength(1);
-      expect(companionActions(secondSummary)[0]).toContain(`data-activation-url="/releases/${otherId}/social-prep/activate"`);
-      expect(companionActions(secondSummary)[0]).toContain(`data-reissue-url="/releases/${otherId}/social-prep/reissue"`);
-      expect(companionActions(secondSummary)[0]).toContain('data-target-platform="x"');
-      expect(secondSummary).not.toContain(`data-activation-url="/releases/${releaseId}/social-prep/activate"`);
+      expect(firstSummary + secondSummary).not.toContain('Posted — confirmed by you');
+      expect(secondSummary).not.toContain('<small>Social posts</small>');
+      expect(companionActions(secondSummary)).toHaveLength(0);
     });
 
     it('does not give an unsaved Project detail release Settings or another release target', async () => {
@@ -238,8 +242,9 @@ describe('release Social Preparation detail display', () => {
       expect(html).toContain('This project is archived and read-only');
       expect(item).toContain(`href="/releases/${releaseId}">Display release</a>`);
       const summary = item.match(/<div class="release-social-prep-summary"[\s\S]*?<\/div>/)?.[0];
-      expect(summary).toContain('>Patreon · Posted — confirmed by you</span>');
+      expect(summary).toContain('>Patreon · Posted — confirmed</span>');
       expect(summary).not.toContain('>Bluesky ·');
+      expect(summary).not.toContain('<small>Social posts</small>');
       expect(summary).not.toMatch(/data-release-social-prep-companion|data-activation-url|<button\b/);
     });
 
@@ -330,7 +335,7 @@ describe('release Social Preparation detail display', () => {
     expect(summary).not.toMatch(/<button\b|<form\b|data-release-social-prep-companion/);
   });
 
-  it('keeps posted-target actions on Project detail while the release list stays read-only', async () => {
+  it('keeps posted-target actions on Release detail while Project detail and the release list stay read-only', async () => {
     db.prepare("UPDATE releases SET published_date = '2026-08-01' WHERE id = ?").run(releaseId);
     target('patreon', 'posted', 1, null, FIRST);
     target('x', 'posted', 1, null, UPDATED);
@@ -345,12 +350,15 @@ describe('release Social Preparation detail display', () => {
 
     const projectSummary = (await agent.get(`/projects/${projectId}`).expect(200)).text
       .match(/<div class="release-social-prep-summary"[\s\S]*?<\/div>/)?.[0];
-    const actions = companionActions(projectSummary);
-    expect(actions).toHaveLength(2);
-    expect(actions[0]).toMatch(/data-target-platform="patreon"[\s\S]*aria-label="Prepare another Patreon post"/);
-    expect(actions[1]).toMatch(/data-target-platform="x"[\s\S]*aria-label="Prepare another X post"/);
-    expect(projectSummary).toContain('>Bluesky · Ready for manual publishing — not marked as posted</span>');
+    expect(companionActions(projectSummary)).toHaveLength(0);
+    expect(projectSummary).not.toContain('<small>Social posts</small>');
+    expect(projectSummary).toContain('>Bluesky · Not Posted - Ready</span>');
+    expect(projectSummary).not.toContain('Ready for manual publishing — not marked as posted');
     expect(projectSummary).not.toContain('data-target-platform="bluesky"');
+
+    const { section } = await detail({ allowPostedState: true });
+    expect(companionAction(platformSection(section, 'patreon'))).toMatch(/data-target-platform="patreon"[\s\S]*aria-label="Prepare another Patreon post"/);
+    expect(companionAction(platformSection(section, 'x'))).toMatch(/data-target-platform="x"[\s\S]*aria-label="Prepare another X post"/);
   });
 
   it('renders separate mixed platforms in presenter order with distinct timestamps and safe failure context', async () => {
@@ -363,7 +371,7 @@ describe('release Social Preparation detail display', () => {
     expect(section.indexOf('>X</h3>')).toBeLessThan(section.indexOf('>Bluesky</h3>'));
     expect(platformSection(section, 'patreon')).toContain('Not attempted');
     expect(platformSection(section, 'patreon')).toContain('No helper preparation request has been issued.');
-    expect(platformSection(section, 'x')).toContain('Composer prepared for human submission');
+    expect(platformSection(section, 'x')).toContain('Composer ready');
     const failed = platformSection(section, 'bluesky');
     expect(failed).toContain('Preparation failed');
     expect(failed).toMatch(/<dt>Preparation requests<\/dt>\s*<dd>3<\/dd>/);
@@ -393,9 +401,9 @@ describe('release Social Preparation detail display', () => {
   it.each([
     ['pending', 'Preparation request pending'], ['starting', 'Starting'],
     ['preparing', 'Preparing'], ['uploading', 'Uploading'],
-    ['auth_required', 'Authentication required'], ['prepared', 'Composer prepared for human submission'],
-    ['staging', 'Preparing content and files for manual publishing'],
-    ['ready', 'Ready for manual publishing — not marked as posted'],
+    ['auth_required', 'Authentication required'], ['prepared', 'Composer ready'],
+    ['staging', 'Preparing content and files'],
+    ['ready', 'Not Posted - Ready'],
     ['failed', 'Preparation failed'], ['cancelled', 'Preparation cancelled'],
   ])('renders %s as a last recorded state, not a running process or publication outcome', async (state, label) => {
     target('x', state);
@@ -419,7 +427,7 @@ describe('release Social Preparation detail display', () => {
     const { section } = await detail({ allowPostedState: true });
     expect(section).toContain('2 of 2 platforms marked as posted.');
     expect(section).toContain('All social posts marked as posted.');
-    expect(platformSection(section, 'patreon')).toContain('Posted — confirmed by you');
+    expect(platformSection(section, 'patreon')).toContain('Posted — confirmed');
     expect(platformSection(section, 'patreon')).toMatch(new RegExp(`<dt>Posted confirmation</dt>\\s*<dd>${FIRST}</dd>`));
     expect(section).not.toMatch(/Release published|release is published/i);
   });
@@ -433,7 +441,7 @@ describe('release Social Preparation detail display', () => {
     const { section } = await detail({ allowPostedState: true });
     expect(section).toContain('1 of 1 platforms marked as posted.');
     expect(section).toContain('All social posts marked as posted.');
-    expect(platformSection(section, 'patreon')).toContain('Posted — confirmed by you');
+    expect(platformSection(section, 'patreon')).toContain('Posted — confirmed');
   });
 
   it('keeps all-posted completion visible while rendering one targeted action beside each platform', async () => {
@@ -480,7 +488,7 @@ describe('release Social Preparation detail display', () => {
     expect(section).toContain('>Patreon</h3>');
     expect(section).not.toContain('>Bluesky</h3>');
     expect(section).toContain('Currently disabled or not configured in Settings.');
-    expect(section).toContain('Composer prepared for human submission');
+    expect(section).toContain('Composer ready');
     expect(section).toContain(FIRST);
     expect(section.includes('Social Preparation is currently disabled.')).toBe(!enabled);
   });
@@ -494,7 +502,7 @@ describe('release Social Preparation detail display', () => {
     expect(section.match(/<article /g)).toHaveLength(3);
     expect(section).toContain('Social Preparation is currently disabled.');
     expect(section).not.toContain('Currently disabled or not configured in Settings.');
-    expect(section).toContain('Composer prepared for human submission');
+    expect(section).toContain('Composer ready');
     expect(section).toContain('Preparation failed');
     expect(section).toContain('Preparation cancelled');
   });

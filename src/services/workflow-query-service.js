@@ -1369,9 +1369,9 @@ export function createWorkflowQueryService({
       ? options.projectId
       : (typeof options.projectId === 'string' && /^[1-9]\d*$/.test(options.projectId)
         ? Number(options.projectId) : null);
-    const rows = releaseRepository.findCalendarRange(
+    const rows = attachReleaseSocialPreparation(releaseRepository.findCalendarRange(
       startDate, endDate, Number.isSafeInteger(projectId) && projectId > 0 ? projectId : null
-    );
+    ), { selectedOnly: true, allowActions: false });
     const projectsById = new Map(attachPrimaryImages(
       [...new Map(rows.map((row) => [row.project_id, { id: row.project_id }])).values()]
     ).map((project) => [project.id, project]));
@@ -1386,6 +1386,9 @@ export function createWorkflowQueryService({
       planned_date: row.planned_date,
       planned_time: row.planned_time,
       published_date: row.published_date,
+      canEdit: row.published_date == null && row.archived_at == null
+        && !isProjectArchived({ status: row.project_status, archived_at: row.project_archived_at }),
+      platforms: row.socialPreparation.targets.map((target) => target.platformName),
       primaryImage: projectsById.get(row.project_id).primaryImage,
     }));
     const byDate = new Map();
