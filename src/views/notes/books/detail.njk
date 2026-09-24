@@ -234,7 +234,7 @@
   {% set chapterTitleId = 'chapter-create-title' %}
   {% call dialog.render('chapter-create-dialog', 'New Chapter', chapterCreateDialogOpen, '', '', 'project-form-dialog') %}
     <form id="chapter-form" method="post" action="{{ chapterCreateForm.submitUrl }}" class="app-dialog-form project-form project-edit-dialog-form"
-          data-dialog-form data-dialog-async="false" novalidate>
+          data-dialog-form data-dialog-async="false" data-dialog-reset-on-close{% if errors.title or errors.general %} data-dialog-reset-values="{{ { title: '' } | dump }}"{% endif %} novalidate>
       <input type="hidden" name="_csrf" value="{{ _csrf }}">
       <div class="app-dialog-body">
         {% if errors.general %}

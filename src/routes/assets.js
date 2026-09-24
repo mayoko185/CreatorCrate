@@ -1616,6 +1616,7 @@ function getAssetTagEditorData(req, assetId) {
       label: tag.display_name,
     })),
     selectedAssetTagIds: assetTags.map((tag) => String(tag.id)),
+    confirmedAssetTagIds: assetTags.map((tag) => String(tag.id)),
   };
 }
 

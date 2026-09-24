@@ -1,7 +1,7 @@
 {% import "partials/dialog.njk" as dialog %}
 {% import "partials/dropdown.njk" as dropdown %}
 
-{% call dialog.render('asset-edit-dialog', 'Edit Asset', assetEditDialogOpen, 'asset-edit-description', '', 'asset-edit-dialog asset-form-dialog', [], false) %}
+{% call dialog.render('asset-edit-dialog', 'Edit Asset', assetEditDialogOpen, 'asset-edit-description', '', 'asset-edit-dialog asset-form-dialog') %}
   <p id="asset-edit-description" class="app-dialog-description">
     Update this asset's primary-image selection or file details.
   </p>
@@ -17,7 +17,7 @@
       <section class="settings-section asset-edit-dialog-section asset-tags-edit-section" aria-labelledby="asset-tags-edit-heading">
         <h3 id="asset-tags-edit-heading">Tags</h3>
         <div class="asset-edit-dialog-section-body asset-tags-edit-section-body">
-          <form id="asset-edit-form" method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/tags"
+          <form id="asset-edit-form" method="post" action="/projects/{{ project.id }}/assets/{{ asset.id }}/tags" data-confirmed-tag-ids="{{ confirmedAssetTagIds | join(',') }}"
                 class="app-dialog-form asset-edit-tags-form" data-dialog-form data-dialog-async="false">
             <input type="hidden" name="_csrf" value="{{ _csrf }}">
             <input type="hidden" name="origin" value="asset-edit">
@@ -165,7 +165,7 @@
                 {% endfor %}
                 <div class="field">
                   <label for="rename-filename">New filename</label>
-                  <input type="text" id="rename-filename" name="filename" value="{{ submittedFilename }}" required maxlength="255" autocomplete="off">
+                  <input type="text" id="rename-filename" name="filename" value="{{ submittedFilename }}" data-confirmed-value="{{ asset.filename }}" required maxlength="255" autocomplete="off">
                 </div>
                 <div>
                   <button class="button button-primary" type="submit">Rename file</button>
@@ -187,7 +187,7 @@
                 {% endfor %}
                 <div class="field">
                   <label for="move-destination">Destination</label>
-                  <select id="move-destination" name="destinationCategory">
+                  <select id="move-destination" name="destinationCategory" data-confirmed-value="{{ asset.category_id if asset.category_id is not none else 'uncategorized' }}">
                     <option value="uncategorized" {% if submittedDestinationCategory == 'uncategorized' %}selected{% endif %}>Uncategorized</option>
                     {% for category in enabledCategories %}
                       <option value="{{ category.id }}" {% if submittedDestinationCategory == (category.id ~ '') %}selected{% endif %}>{{ category.displayName }}</option>

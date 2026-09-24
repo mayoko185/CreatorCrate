@@ -349,6 +349,17 @@ function bindContent(state, content) {
   bindRetry(state);
 }
 
+function discardTransferDraft(state) {
+  const content = state.dialog.querySelector?.(CONTENT_SELECTOR);
+  content?.querySelector?.('[data-book-export-form]')?.reset?.();
+  content?.querySelector?.('[data-book-import-form]')?.reset?.();
+  syncSelectAll(content);
+  setStatus(content?.querySelector?.('[data-book-export-status]'), '');
+  if (!state.importResult && !state.importing && !state.refreshing) {
+    setStatus(content?.querySelector?.('[data-book-import-status]'), '');
+  }
+}
+
 export function enhanceBookTransfer(scope = globalThis.document) {
   const document = scope?.nodeType === 9 ? scope : scope?.ownerDocument || globalThis.document;
   const dialog = document?.querySelector?.(DIALOG_SELECTOR);
@@ -366,6 +377,7 @@ export function enhanceBookTransfer(scope = globalThis.document) {
       importResult: null,
     };
     dialog.__creatorCrateBookTransferState = state;
+    dialog.addEventListener?.('close', () => discardTransferDraft(state));
     if (typeof state.window.MutationObserver === 'function' && state.document.body) {
       state.shelfObserver = new state.window.MutationObserver(() => syncExportOrderFromShelf(state));
       state.shelfObserver.observe(state.document.body, { childList: true, subtree: true });

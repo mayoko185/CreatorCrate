@@ -1546,6 +1546,10 @@ describe('release HTTP workflow', () => {
       expect(dialog).toMatch(/id="plannedTime"[^>]*value="09:30"/);
       expect(dialog).not.toContain('id="publishedDate"');
       expect(dialog).toContain('data-release-create-fresh="false"');
+      const createForm = dialog.match(/<form id="release-create-form"[^>]*>/)?.[0] || '';
+      const resetValues = JSON.parse(createForm.match(/data-dialog-reset-values="([^"]+)"/)?.[1].replaceAll('&quot;', '"'));
+      expect(resetValues.description).toBeUndefined();
+      expect(resetValues.projectId).toBeUndefined();
       expect(dialog).toMatch(/id="patreonUrl"[^>]*value="https:\/\/example\.test\/releases\/keep"/);
       expect(dialog).toMatch(/id="title"[^>]*aria-describedby="title-error"[^>]*aria-invalid="true"/);
       expect(dialog).toContain(`name="returnTo" value="/releases?project=${projectId}&amp;search=needle&amp;sort=created&amp;order=desc&amp;page=2#releases-list" data-dialog-return-location`);
@@ -2332,6 +2336,7 @@ describe('release HTTP workflow', () => {
       expect(res.text).toContain('<dialog id="release-publish-dialog" class="app-dialog project-form-dialog"');
       expect(res.text).toContain('<div class="app-dialog-body project-edit-dialog-body">');
       expect(res.text).toContain('<form id="release-publish-form" method="post" action="' + releaseLocation + '/publish" class="app-dialog-form project-form project-edit-dialog-form"');
+      expect(res.text).toMatch(/<form id="release-publish-form"[^>]*data-dialog-reset-on-close/);
       expect(res.text).toContain('<section class="settings-section project-edit-dialog-section" aria-labelledby="release-publish-summary-heading">');
       expect(res.text).toContain('<section class="settings-section project-edit-dialog-section" data-release-dialog-compact-section aria-labelledby="release-publish-assets-heading">');
       expect(res.text).toContain('<section class="settings-section project-edit-dialog-section" data-release-dialog-compact-section aria-labelledby="release-publish-publication-heading">');
@@ -2385,6 +2390,9 @@ describe('release HTTP workflow', () => {
       expect(res.text).toContain('<section class="settings-section project-edit-dialog-section" data-release-dialog-compact-section aria-labelledby="release-publish-publication-heading">');
       expect(res.text).toMatch(/<div class="field scheduling-field field-error" data-date-picker-field>/);
       expect(res.text).toMatch(/<input[^>]*id="release-publish-date"[^>]*name="publishedDate"[^>]*value="not-a-date"[^>]*aria-describedby="release-publish-date-help release-publish-date-error"[^>]*aria-invalid="true"[^>]*data-date-picker-input/);
+      const publishForm = res.text.match(/<form id="release-publish-form"[^>]*>/)?.[0] || '';
+      const resetValues = JSON.parse(publishForm.match(/data-dialog-reset-values="([^"]+)"/)?.[1].replaceAll('&quot;', '"'));
+      expect(resetValues.publishedDate).toBe(getLocalTodayIso());
       expect(res.text).toContain('id="release-publish-date-error"');
       expect(res.text).toContain('Published date must be a valid date');
       expect(res.text).toContain('Selected release assets for publication');

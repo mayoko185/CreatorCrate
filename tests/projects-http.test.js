@@ -2042,6 +2042,10 @@ describe('project HTTP workflow', () => {
     expect(dialog).toMatch(/<dialog id="project-create-dialog"[^>]*\bopen\b/);
     expect(dialog).toContain('Project link must be a valid absolute HTTP or HTTPS URL.');
     expect(dialog).toMatch(/<input[^>]*name="title"[^>]*value="Projects Preserves"/);
+    const resetValues = JSON.parse(dialog.match(/data-dialog-reset-values="([^"]+)"/)?.[1].replaceAll('&quot;', '"'));
+    expect(resetValues.title).toBeUndefined();
+    expect(resetValues.patreonUrl).toBeUndefined();
+    expect(resetValues['tagIds[]']).toEqual([]);
     expect(dialog).toContain('name="returnTo" value="/projects?search=needle&amp;status=planned&amp;sort=title&amp;order=asc&amp;view=list&amp;page=3#projects-list" data-dialog-return-location');
     expect(dialog).toMatch(new RegExp(`name="tagIds\\[\\]"[^>]*value="${tag.id}"[^>]*checked`));
   });

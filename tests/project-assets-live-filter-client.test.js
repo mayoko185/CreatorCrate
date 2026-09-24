@@ -157,6 +157,10 @@ function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } =
       }
       return event;
     },
+    dispatchEvent(event) {
+      this.dispatch(event.type);
+      return true;
+    },
     querySelectorAll(selector) {
       const result = [];
       const visit = (current) => {
@@ -621,6 +625,71 @@ function deferred() {
 
 describe('Project Assets live filtering enhancement', () => {
   afterEach(() => vi.useRealTimers());
+
+  it('reconciles the external category Filter and results after a confirmed category change', async () => {
+    const initial = makePage();
+    const refreshed = makePage();
+    initial.categoryAll.checked = false;
+    initial.categoryRenders.checked = true;
+    refreshed.categoryAll.checked = false;
+    refreshed.categoryRenders.checked = true;
+    const renamed = refreshed.categoryRenders.closest('.asset-filter-multiselect-option');
+    renamed.querySelector('label').textContent = 'Renamed (3) (disabled)';
+    const options = refreshed.categoryFilter.querySelector('#asset-category-filter').children[1];
+    options.children.splice(options.children.indexOf(renamed), 1);
+    options.children.unshift(renamed);
+    const added = makeNode({ attrs: { class: 'asset-filter-multiselect-option' } });
+    addInput(added, { name: 'category', type: 'radio', value: '9', 'data-asset-category-presence': 'all' }, '9');
+    const addedLabel = makeNode({ tagName: 'label' });
+    addedLabel.textContent = 'New category (0)';
+    added.appendChild(addedLabel);
+    options.appendChild(added);
+    const { windowObject } = makeWindow(initial.document, new Map([['categories', refreshed.document]]));
+    windowObject.fetch.mockResolvedValue(htmlResponse(
+      'categories',
+      'http://creatorcrate.test/projects/1/assets?page=2',
+    ));
+    const manager = makeNode({ tagName: 'dialog', attrs: { id: 'project-asset-category-management-dialog' } });
+    manager.open = true;
+    initial.document.appendChild(manager);
+
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    enhanceProjectAssetsLiveFiltering(initial.document);
+    initial.document.dispatchEvent(new Event('project-asset-categories-changed'));
+    await flush();
+
+    expect(windowObject.fetch).toHaveBeenCalledTimes(1);
+    expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(refreshed.region);
+    expect(initial.document.querySelector('#asset-filters')).toBe(initial.form);
+    expect(initial.form.querySelector('#asset-category-filter').children[1].children[0]).toBe(renamed);
+    expect(renamed.querySelector('label').textContent).toBe('Renamed (3) (disabled)');
+    expect(initial.form.querySelector('input[name="category"][value="9"]')).toBeTruthy();
+    expect(refreshed.categoryRenders.checked).toBe(true);
+    expect(manager.open).toBe(true);
+    expect(initial.document.querySelector('#project-asset-category-management-dialog')).toBe(manager);
+  });
+
+  it('drops a deleted category selection from the server-rendered Filter', async () => {
+    const initial = makePage();
+    const refreshed = makePage();
+    initial.categoryAll.checked = false;
+    initial.categoryRenders.checked = true;
+    const options = refreshed.categoryFilter.querySelector('#asset-category-filter').children[1];
+    options.children.splice(options.children.indexOf(refreshed.categoryRenders.parentNode), 1);
+    const { windowObject } = makeWindow(initial.document, new Map([['deleted-category', refreshed.document]]));
+    windowObject.fetch.mockResolvedValue(htmlResponse(
+      'deleted-category',
+      'http://creatorcrate.test/projects/1/assets?category=all',
+    ));
+    enhanceProjectAssetsLiveFiltering(initial.document);
+
+    initial.document.dispatchEvent(new Event('project-asset-categories-changed'));
+    await flush();
+
+    expect(initial.form.querySelector('input[name="category"][value="7"]')).toBeNull();
+    expect(refreshed.categoryAll.checked).toBe(true);
+    expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(refreshed.region);
+  });
 
   it('enhances Asset Information on initial load and replacement without duplicate listeners', async () => {
     vi.useFakeTimers();

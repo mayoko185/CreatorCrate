@@ -401,6 +401,12 @@ function renderProjectDetailPage(req, res, {
       tags: loadAvailableTags(req),
       selectedTagIds: assignedProjectTags.map((tag) => String(tag.id)),
     };
+  if (submittedProjectEditForm && projectEditForm) {
+    projectEditForm.resetValues = {
+      ...projectToFormValues(workspace.project),
+      'tagIds[]': assignedProjectTags.map((tag) => String(tag.id)),
+    };
+  }
 
   res.status(status).render('projects/detail.njk', {
     appName,

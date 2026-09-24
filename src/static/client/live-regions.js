@@ -14,6 +14,10 @@ import {
   enhanceAssetSelection,
 } from './asset-ordering.js';
 import { enhanceAutoSubmit } from './app-dialogs.js';
+import {
+  PROJECT_ASSET_CATEGORIES_CHANGED,
+  syncProjectAssetCategoryConsumers,
+} from './project-asset-category-sync.js';
 import { enhanceAppConfirmationControls } from './confirm-dialog.js';
 import {
   enhanceAssetViewerInfoCards,
@@ -1703,6 +1707,7 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
   },
   transformParams: omitInheritedProjectAssetsFiltersForCategory,
   onResponseParsed(state, parsed) {
+    if (state.projectAssetCategoriesNeedSync) state.projectAssetCategoriesPage = parsed;
     reconcileExternalFilterForm(state, parsed, '#asset-filters');
 
     const currentResetForm = state.document?.querySelector?.(PROJECT_ASSETS_RESET_FORM_SELECTOR);
@@ -1778,6 +1783,11 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
     updateProjectAssetsNsfwControls(nextRegion, renderedEnabled, true);
   },
   onLoadComplete(state, generation, region) {
+    if (state.projectAssetCategoriesNeedSync && state.projectAssetCategoriesPage) {
+      syncProjectAssetCategoryConsumers(state.document, state.projectAssetCategoriesPage);
+      state.projectAssetCategoriesPage = null;
+      state.projectAssetCategoriesNeedSync = false;
+    }
     if (state.projectAssetsDefaultsRefreshGeneration === generation) {
       state.projectAssetsDefaultsRefreshGeneration = null;
       state.projectAssetsDefaultsRefreshError = null;
@@ -1821,7 +1831,17 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
 });
 
 export function enhanceProjectAssetsLiveFiltering(scope = globalThis.document) {
-  return projectAssetsLiveEngine.enhance(scope);
+  const enhanced = projectAssetsLiveEngine.enhance(scope);
+  const document = liveRegionDocument(scope);
+  if (enhanced && document && !isEnhancementBound(document, 'projectAssetCategoryRefreshBound')) {
+    markEnhancementBound(document, 'projectAssetCategoryRefreshBound');
+    document.addEventListener?.(PROJECT_ASSET_CATEGORIES_CHANGED, () => {
+      const state = document.__creatorCrateProjectAssetsLiveFiltering;
+      if (state) state.projectAssetCategoriesNeedSync = true;
+      refreshProjectAssetsLiveRegion(document);
+    });
+  }
+  return enhanced;
 }
 
 /**

@@ -71,7 +71,7 @@
   {% set bookCoverSource = none %}
   {% call dialog.render('book-create-dialog', 'New Book', bookCreateDialogOpen, '', '', 'project-form-dialog') %}
     <form id="book-form" method="post" action="{{ bookCreateForm.submitUrl }}" enctype="multipart/form-data" class="app-dialog-form project-form project-edit-dialog-form"
-          data-dialog-form data-dialog-async="false" novalidate>
+          data-dialog-form data-dialog-async="false" data-dialog-reset-on-close{% if errors.title or errors.general %} data-dialog-reset-values="{{ { title: '' } | dump }}"{% endif %} novalidate>
       <input type="hidden" name="_csrf" value="{{ _csrf }}">
       <div class="app-dialog-body">
         {% if errors.general %}

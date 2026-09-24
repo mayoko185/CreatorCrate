@@ -104,6 +104,7 @@ function syncDefault(manager, configuration) {
     const option = document.createElement('option');
     option.value = entry.id;
     option.textContent = entry.name;
+    option.defaultSelected = entry.id === (configuration.defaultId ?? '');
     return option;
   });
   select.replaceChildren(...options);
@@ -113,7 +114,7 @@ function syncDefault(manager, configuration) {
   syncCreatorCrateDropdownFromNative(select);
 }
 
-function reconcile(manager, configuration, savedId = null, deletedId = null, submitted = null) {
+function reconcile(manager, configuration, savedId = null, deletedId = null, submitted = null, editState = null) {
   const document = manager.ownerDocument;
   const focus = captureRegionFocus(manager);
   const section = manager.querySelector('[data-release-signatures-list]')?.parentElement
@@ -135,7 +136,9 @@ function reconcile(manager, configuration, savedId = null, deletedId = null, sub
       if (signature.id === savedId) {
         for (const name of ['name', 'body']) {
           const control = card.querySelector(`[name="${name}"]`);
-          if (!submitted || control.value === submitted[name]) control.value = signature[name];
+          if (!submitted || control.value === submitted[name] || editState?.resetByClose.has(name)) {
+            control.value = signature[name];
+          }
           control.defaultValue = signature[name];
         }
       }
@@ -216,7 +219,7 @@ async function loadConfiguration() {
   return configuration;
 }
 
-async function mutate(manager, method, url, payload, successMessage, savedId = null, deletedId = null, refreshOnFailure = false) {
+async function mutate(manager, method, url, payload, successMessage, savedId = null, deletedId = null, refreshOnFailure = false, editState = null) {
   if (manager.hasAttribute('aria-busy')) return false;
   manager.setAttribute('aria-busy', 'true');
   manager.querySelector('[data-release-signatures-list]')?.setAttribute('aria-busy', 'true');
@@ -233,7 +236,7 @@ async function mutate(manager, method, url, payload, successMessage, savedId = n
       const detail = Object.values(result?.errors || {}).join(' ');
       throw new Error(detail || 'Could not save signatures.');
     }
-    reconcile(manager, result, savedId, deletedId, savedId ? payload : null);
+    reconcile(manager, result, savedId, deletedId, savedId ? payload : null, editState);
     setStatus(manager, successMessage);
     return true;
   } catch (error) {
@@ -262,6 +265,29 @@ export function enhanceReleaseSignatureManagers(scope = globalThis.document) {
     bindReorder(manager);
     const pendingEdits = new Set();
     let pendingDefault;
+    let activeEdit;
+    let discardOnSettle = false;
+    const dialog = manager.closest('dialog');
+    const discardDraft = () => {
+      manager.querySelector('[data-release-signature-add-form]')?.reset();
+      manager.querySelectorAll('[data-release-signature-edit-form]').forEach((form) => form.reset());
+      const defaultForm = manager.querySelector('[data-release-signature-default-form]');
+      defaultForm?.reset();
+      const select = defaultForm?.querySelector('select');
+      if (select) syncCreatorCrateDropdownFromNative(select);
+      setStatus(manager, '');
+    };
+    dialog?.addEventListener('close', () => {
+      pendingEdits.clear();
+      pendingDefault = undefined;
+      discardOnSettle = manager.hasAttribute('aria-busy');
+      if (activeEdit) activeEdit.resetByClose = new Set(['name', 'body']);
+      discardDraft();
+    });
+    manager.addEventListener('input', (event) => {
+      const edit = event.target.closest?.('[data-release-signature-edit-form]');
+      if (edit?.dataset.signatureId === activeEdit?.id) activeEdit.resetByClose.delete(event.target.name);
+    });
     const saveEdit = async (id) => {
       const card = [...manager.querySelectorAll(ITEM)].find((item) => item.dataset.signatureId === id);
       if (!card) return;
@@ -271,10 +297,20 @@ export function enhanceReleaseSignatureManagers(scope = globalThis.document) {
       const name = form.elements.namedItem('name');
       const body = form.elements.namedItem('body');
       if (name.value === name.defaultValue && body.value === body.defaultValue) return;
-      await mutate(manager, 'PATCH', `${URL}/${encodeURIComponent(id)}`,
-        { name: name.value, body: body.value }, 'Signature saved.', id);
+      const editState = { id, resetByClose: new Set() };
+      activeEdit = editState;
+      try {
+        await mutate(manager, 'PATCH', `${URL}/${encodeURIComponent(id)}`,
+          { name: name.value, body: body.value }, 'Signature saved.', id, null, false, editState);
+      } finally {
+        if (activeEdit === editState) activeEdit = undefined;
+      }
     };
     manager.addEventListener('release-signatures-mutation-settled', () => {
+      if (discardOnSettle) {
+        discardOnSettle = false;
+        if (!dialog?.open) discardDraft();
+      }
       if (pendingEdits.size) {
         const next = pendingEdits.values().next().value;
         pendingEdits.delete(next);

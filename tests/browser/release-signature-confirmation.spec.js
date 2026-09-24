@@ -255,6 +255,87 @@ test('signature manager mutations preserve drafts and stacked confirmation focus
     await expect.poll(() => app.locals.releaseSignatureSettingsService.getConfiguration().entries[0].name)
       .toBe('Saved with Enter');
     await expect(manager).toBeVisible();
+    await add.locator('[name="name"]').fill('abandoned add');
+    await add.locator('[name="body"]').fill('abandoned body');
+    await manager.getByRole('button', { name: 'Close Manage signatures' }).click();
+    await page.locator('[data-dialog-open="release-signatures-dialog"]').first().click();
+    await expect(add.locator('[name="name"]')).toHaveValue('');
+    await expect(add.locator('[name="body"]')).toHaveValue('');
+    await expect(manager.locator('[data-release-signature-item] [name="name"]')).toHaveValue('Saved with Enter');
+    const confirmedBody = app.locals.releaseSignatureSettingsService.getConfiguration().entries[0].body;
+    const savedBody = manager.locator('[data-release-signature-item] [name="body"]');
+    await page.route('**/settings/release-signatures/*', route => route.fulfill({
+      status: 422, contentType: 'application/json', body: JSON.stringify({ status: 'error', errors: { body: 'Rejected body.' } }),
+    }), { times: 1 });
+    await savedBody.fill('failed local body');
+    await add.locator('[name="name"]').focus();
+    await expect(manager.locator('[data-dialog-status]')).toHaveText('Rejected body.');
+    await manager.getByRole('button', { name: 'Close Manage signatures' }).click();
+    await page.locator('[data-dialog-open="release-signatures-dialog"]').first().click();
+    await expect(savedBody).toHaveValue(confirmedBody);
+  } finally {
+    if (server) await new Promise(resolve => server.close(resolve));
+    closeDatabase(db);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('signature edit reconciliation distinguishes close cleanup from newer input', async ({ page }) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-signature-reopen-'));
+  const projectsRoot = path.join(root, 'projects');
+  const appDataRoot = path.join(root, 'app');
+  fs.mkdirSync(projectsRoot); fs.mkdirSync(appDataRoot);
+  const db = openDatabase(path.join(root, 'test.db'));
+  let server;
+  try {
+    runMigrations(db, fileURLToPath(new URL('../../migrations', import.meta.url)));
+    const { csrfPepper } = ensureAuthEnablement(appDataRoot);
+    const app = createApp({ appName: 'CreatorCrate', db, projectsRoot }, { appDataRoot, authState: { csrfPepper } });
+    const entry = app.locals.releaseSignatureSettingsService.add({ name: 'Signature', body: 'Old' }).entries[0];
+    server = app.listen(0, '127.0.0.1');
+    await new Promise(resolve => server.once('listening', resolve));
+    await page.goto(`http://127.0.0.1:${server.address().port}/releases`);
+    await page.locator('[data-dialog-open="release-create-dialog"]').first().click();
+    const openManager = page.locator('[data-dialog-open="release-signatures-dialog"]').first();
+    await openManager.click();
+    const manager = page.locator('#release-signatures-dialog');
+    const body = manager.locator(`[data-signature-id="${entry.id}"] [name="body"]`);
+    const addName = manager.locator('[data-release-signature-add-form] [name="name"]');
+    const holdEdit = async () => {
+      let received;
+      let release;
+      const requestReceived = new Promise(resolve => { received = resolve; });
+      const responseAllowed = new Promise(resolve => { release = resolve; });
+      await page.route(`**/settings/release-signatures/${entry.id}`, async (route) => {
+        received();
+        await responseAllowed;
+        await route.continue();
+      }, { times: 1 });
+      return { requestReceived, release };
+    };
+
+    const firstSave = await holdEdit();
+    await body.fill('New');
+    await addName.focus();
+    await firstSave.requestReceived;
+    await manager.getByRole('button', { name: 'Close Manage signatures' }).click();
+    await openManager.click();
+    await expect(body).toHaveValue('Old');
+    firstSave.release();
+    await expect(body).toHaveValue('New');
+    await expect.poll(() => app.locals.releaseSignatureSettingsService.getConfiguration().entries[0].body).toBe('New');
+
+    const secondSave = await holdEdit();
+    await body.fill('Saved again');
+    await addName.focus();
+    await secondSave.requestReceived;
+    await body.fill('Newest');
+    const newerSave = await holdEdit();
+    secondSave.release();
+    await expect.poll(() => app.locals.releaseSignatureSettingsService.getConfiguration().entries[0].body).toBe('Saved again');
+    await expect(body).toHaveValue('Newest');
+    await expect(body).toHaveJSProperty('defaultValue', 'Saved again');
+    newerSave.release();
   } finally {
     if (server) await new Promise(resolve => server.close(resolve));
     closeDatabase(db);

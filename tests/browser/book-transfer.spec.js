@@ -31,6 +31,15 @@ test('Book transfer stays explicit, reports outcomes, and refreshes from canonic
     const dialog = page.getByRole('dialog', { name: 'Import/Export Books', exact: true });
     await opener.click();
     await expect(dialog).toBeVisible();
+    await dialog.getByRole('button', { name: 'Select all' }).click();
+    await dialog.locator('[data-book-import-archive]').setInputFiles({
+      name: 'abandoned.zip', mimeType: 'application/zip', buffer: Buffer.from('draft'),
+    });
+    await dialog.getByRole('button', { name: 'Close Import/Export Books' }).click();
+    await opener.click();
+    await expect(dialog.locator('[data-book-export-choice]:checked')).toHaveCount(0);
+    await expect(dialog.getByRole('button', { name: 'Select all' })).toHaveAttribute('aria-pressed', 'false');
+    expect(await dialog.locator('[data-book-import-archive]').evaluate((input) => input.files.length)).toBe(0);
     await dialog.locator('.app-dialog-body').click({ position: { x: 4, y: 4 } });
     await expect(dialog).toBeVisible();
     await page.keyboard.press('Escape');

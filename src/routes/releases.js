@@ -1404,6 +1404,13 @@ function buildCreateReleaseFormModel({
     appName,
     release: null,
     values: formValues,
+    resetValues: isFreshCreate ? null : buildNewReleaseFormValues(selectedAssetsFlow
+      ? {
+        projectId: formValues.projectId,
+        title: context.projects.find((project) => project.id === context.selectedProjectId)?.title || '',
+        selectedAssetIds: formValues.selectedAssetIds,
+      }
+      : {}),
     errors,
     projects: context.projects,
     selectedProjectId: context.selectedProjectId,
@@ -1493,11 +1500,22 @@ function buildReleaseDetailRenderModel({
     selectedPlatforms: editDialogForm && !Object.hasOwn(editDialogForm.values, 'selectedPlatformsPresent')
       ? savedPlatforms : readSubmittedSocialPlatforms(resolvedEditDialogForm.values.selectedPlatforms),
   };
+  if (editDialogForm) {
+    resolvedEditDialogForm.resetValues = {
+      ...releaseToFormValues(release),
+      selectedPlatforms: savedPlatforms,
+    };
+  }
   const resolvedEditDialogOpen = editAvailable && (editDialogOpen || req?.query?.edit === '1');
   const resolvedPublishDialogForm = publishDialogForm || {
     prefillDate: release.published_date || getLocalTodayIso(),
     errors: {},
   };
+  if (publishDialogForm) {
+    resolvedPublishDialogForm.resetValues = {
+      publishedDate: release.published_date || getLocalTodayIso(),
+    };
+  }
   const socialPreparation = buildReleaseSocialPrepPresentation(
     req.app.locals.socialPrepRepository.listPlatformsByReleaseId(release.id),
     req.app.locals.socialPrepSettingsService.getSettings(),

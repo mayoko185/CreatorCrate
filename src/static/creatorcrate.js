@@ -54,6 +54,7 @@ import { enhanceBookCoverUploads } from './client/book-cover-upload.js';
 import { enhanceBookEditFetchSave } from './client/book-edit-fetch-save.js';
 import { enhanceBookDefaultsFetchSave } from './client/book-defaults-fetch-save.js';
 import { enhanceBookTransfer } from './client/book-transfer.js';
+import { enhanceAssetEditDialog } from './client/asset-edit-dialog.js';
 import {
   enhanceAssetViewerInfoCards,
   enhanceCalendarInfoCards,
@@ -124,6 +125,7 @@ import {
 } from './client/live-regions.js';
 export {
   enhanceAssetAutoRenameOrdering,
+  enhanceAssetEditDialog,
   enhanceAssetRenames,
   enhanceAssetSelection,
   enhanceNotesCodeBlocks,
@@ -274,6 +276,7 @@ if (typeof document !== 'undefined') {
     enhanceReleaseSocialPrepAutoLaunch(document);
     enhanceProjectAssetsDefaultsFetchSave(document);
     enhanceAppDialogs(document);
+    enhanceAssetEditDialog(document);
     enhanceNoteDialogUnsavedChanges(document);
     enhanceBookHierarchyReorder(document);
     enhanceLogViewerAutoRefresh(document);

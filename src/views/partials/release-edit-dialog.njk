@@ -11,7 +11,7 @@
     </p>
     <div class="app-dialog-body project-edit-dialog-body">
       <form id="release-edit-form" method="post" action="/releases/{{ release.id }}" class="app-dialog-form project-form project-edit-dialog-form"
-            data-dialog-form data-dialog-async="false" novalidate>
+            data-dialog-form data-dialog-async="false" data-dialog-reset-on-close{% if releaseEditForm.resetValues %} data-dialog-reset-values="{{ releaseEditForm.resetValues | dump }}"{% endif %} novalidate>
         <input type="hidden" name="_csrf" value="{{ csrfToken }}">
         {% if returnTo %}
           <input type="hidden" name="returnTo" value="{{ returnTo }}" data-dialog-return-location>

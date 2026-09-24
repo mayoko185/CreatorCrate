@@ -48,5 +48,9 @@ export function buildNewProjectFormModel({
     projectTypes,
     tags: loadAvailableTags(tagService),
     selectedTagIds,
+    resetValues: values === undefined ? null : {
+      ...createNewProjectFormValues({}, pageDefaultsService),
+      'tagIds[]': [],
+    },
   };
 }

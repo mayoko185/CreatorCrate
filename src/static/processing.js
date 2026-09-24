@@ -768,7 +768,7 @@ function resetFields(root) {
   root.querySelectorAll('[data-processing-field]').forEach((el) => {
     const type = el.dataset.processingType;
     if (type === 'bool') {
-      el.checked = el.hasAttribute('data-processing-default-checked') || el.defaultChecked;
+      el.checked = el.hasAttribute('data-processing-default-checked') || Boolean(el.defaultChecked);
       return;
     }
     if (type === 'list') {
@@ -2322,6 +2322,20 @@ function bindWatermarkPreviewLifecycle(root) {
 function onDialogOpen(root) {
   const submission = root.__ccProcessingSubmission;
   if (submission && submission.generation === root.__ccProcessingSubmissionGeneration) submission.closed = false;
+  if (!root.__ccProcessingJob && !submission && !root.__ccProcessingBusy) {
+    resetFields(root);
+    if (root.dataset.processingOperation === 'workflow-prompt') {
+      applyWorkflowRulesToForm(root, 'positive', null);
+      applyWorkflowRulesToForm(root, 'negative', null);
+    }
+    selectPresetOption(root, '');
+    syncCreatorCrateDropdownFromNative(root.querySelector('[data-processing-preset-select]'));
+    clearModifiedState(root);
+    updatePresetActionState(root);
+    root.__ccWatermarkExplicitSelection = false;
+    root.__ccMissingPresetOutputCategory = false;
+    root.__ccPreservedWatermarkArchiveConfig = {};
+  }
   applyDefaultScope(root);
   updateScopeDisplay(root);
   resetDialogState(root);

@@ -381,6 +381,18 @@ describe('Processing dialog scope defaults', () => {
     vi.stubGlobal('fetch', fetchMock);
   });
 
+  it('discards idle processing options on reopen', async () => {
+    const { root, trigger } = buildDialogRoot(doc, { operation: 'convert' });
+    const quality = makeNode('input', { type: 'number', 'data-processing-field': 'quality', 'data-processing-type': 'int' });
+    root.appendChild(quality);
+    enhanceProcessingDialogs(doc);
+    trigger.dispatch('click', { target: trigger });
+    quality.value = '42';
+    trigger.dispatch('click', { target: trigger });
+    await flush();
+    expect(quality.value).toBe('');
+  });
+
   it('A. selects "Selected assets" when assets are checked even on a concrete category page', async () => {
     const checkbox = makeCheckbox(42, true);
     doc.appendChild(checkbox);
@@ -1333,30 +1345,30 @@ describe('Processing dialog scope serialization', () => {
   it('serializes standalone Archive options and uses the explicit archive route', async () => {
     const { root, trigger, scope, previewBtn } = buildDialogRoot(doc, { operation: 'archive' });
     const makeArchives = makeNode('input', { type: 'checkbox', 'data-processing-field': 'makeArchives', 'data-processing-type': 'bool' });
-    makeArchives.checked = true;
     const archiveFormat = makeNode('select', { 'data-processing-field': 'archiveFormat', 'data-processing-type': 'string' });
     archiveFormat.appendChild(makeOption('zip', 'ZIP'));
     archiveFormat.appendChild(makeOption('7z', '7z'));
-    archiveFormat.value = '7z';
     const setName = makeNode('input', { type: 'text', 'data-processing-field': 'setName', 'data-processing-type': 'string', 'data-processing-omit-if-empty': 'true' });
-    setName.value = 'release-set';
     const jpegQuality = makeNode('input', { type: 'number', 'data-processing-field': 'zipJpgQuality', 'data-processing-type': 'int' });
-    jpegQuality.value = '80';
     const webpQuality = makeNode('input', { type: 'number', 'data-processing-field': 'zipWebpQuality', 'data-processing-type': 'int' });
-    webpQuality.value = '90';
     const replaceExisting = makeNode('input', { type: 'checkbox', 'data-processing-field': 'replaceExistingArchives', 'data-processing-type': 'bool' });
     const makeCbz = makeNode('input', { type: 'checkbox', 'data-processing-field': 'makeCbz', 'data-processing-type': 'bool' });
-    makeCbz.checked = true;
     const cbzQuality = makeNode('input', { type: 'number', 'data-processing-field': 'cbzJpgQuality', 'data-processing-type': 'int' });
-    cbzQuality.value = '85';
     const cbzPrefix = makeNode('input', { type: 'text', 'data-processing-field': 'cbzPrefix', 'data-processing-type': 'string', 'data-processing-omit-if-empty': 'true' });
-    cbzPrefix.value = 'comic_';
     root.append(makeArchives, archiveFormat, setName, jpegQuality, webpQuality, replaceExisting, makeCbz, cbzQuality, cbzPrefix);
     scope.projectRadio.checked = true;
 
     enhanceProcessingDialogs(doc);
     trigger.dispatch('click', { target: trigger });
     await flush();
+    makeArchives.checked = true;
+    archiveFormat.value = '7z';
+    setName.value = 'release-set';
+    jpegQuality.value = '80';
+    webpQuality.value = '90';
+    makeCbz.checked = true;
+    cbzQuality.value = '85';
+    cbzPrefix.value = 'comic_';
     previewBtn.dispatch('click', { target: previewBtn });
     await flush();
 

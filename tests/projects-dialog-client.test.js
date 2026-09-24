@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   closeAppDialogById,
+  enhanceAssetEditDialog,
   enhanceAppDialogs,
   directorySlugFromDisplayName,
   enhanceCategoryReorder,
@@ -899,7 +900,224 @@ async function flush() {
   for (let index = 0; index < 10; index += 1) await Promise.resolve();
 }
 
+function markOrdinaryDialogForm(page) {
+  page.form.setAttribute('data-dialog-async', 'false');
+  page.form.setAttribute('data-dialog-reset-on-close', '');
+  const controls = page.form.querySelectorAll('select, input, textarea');
+  const initial = controls.map((control) => ({
+    control,
+    value: control.value,
+    checked: control.checked,
+    selected: control.options?.map((option) => option.selected),
+  }));
+  page.form.reset = vi.fn(() => {
+    initial.forEach(({ control, value, checked, selected }) => {
+      control.value = value;
+      if (checked !== undefined) control.checked = checked;
+      selected?.forEach((isSelected, index) => { control.options[index].selected = isSelected; });
+    });
+  });
+}
+
 describe('Reusable app dialog enhancement', () => {
+  it('restores Edit Asset forms and disclosures from confirmed server values', () => {
+    const page = makeDialogPage();
+    page.dialog.setAttribute('id', 'asset-edit-dialog');
+    page.trigger.setAttribute('data-dialog-open', 'asset-edit-dialog');
+    page.form.setAttribute('id', 'asset-edit-form');
+    page.form.setAttribute('data-dialog-async', 'false');
+    page.form.setAttribute('data-confirmed-tag-ids', '2');
+    page.form.reset = vi.fn();
+
+    const tagsField = makeElement('div');
+    const tagDropdown = addStandardDropdown(
+      tagsField, null, 'assetTags', ['1', '2'], '1', false, 'multiple', ['1'],
+    ).details;
+    tagDropdown.setAttribute('id', 'asset-tags-form');
+    const tags = tagDropdown.querySelectorAll('input[type="checkbox"]');
+    page.form.appendChild(tagsField);
+
+    const renameForm = makeElement('form');
+    const filename = makeElement('input', {
+      id: 'rename-filename', value: 'failed-draft.png', 'data-confirmed-value': 'confirmed.png',
+    });
+    filename.defaultValue = 'failed-draft.png';
+    renameForm.appendChild(filename);
+    renameForm.reset = vi.fn(() => { filename.value = filename.defaultValue; });
+    page.dialog.appendChild(renameForm);
+
+    const moveForm = makeElement('form');
+    const destination = makeElement('select', {
+      id: 'move-destination', 'data-confirmed-value': '3',
+    });
+    addOption(destination, '3', false);
+    addOption(destination, '4', true);
+    destination.value = '4';
+    moveForm.appendChild(destination);
+    moveForm.reset = vi.fn(() => { destination.value = '4'; });
+    page.dialog.appendChild(moveForm);
+
+    const bookForm = makeElement('form');
+    const book = makeElement('select', { name: 'bookId' });
+    addOption(book, '', true);
+    addOption(book, '11');
+    book.value = '';
+    bookForm.appendChild(book);
+    bookForm.reset = vi.fn(() => { book.value = ''; });
+    page.dialog.appendChild(bookForm);
+
+    const disclosure = makeElement('details');
+    disclosure.open = true;
+    page.dialog.appendChild(disclosure);
+    enhanceAppDialogs(page.document);
+    enhanceAssetEditDialog(page.document);
+
+    openAppDialogById(page.document, page.dialog.id, page.trigger);
+    filename.value = 'abandoned.png';
+    destination.value = '4';
+    book.value = '11';
+    tags[0].checked = true;
+    tags[1].checked = false;
+    page.close.dispatch('click');
+    openAppDialogById(page.document, page.dialog.id, page.trigger);
+
+    expect(filename.value).toBe('confirmed.png');
+    expect(destination.value).toBe('3');
+    expect(book.value).toBe('');
+    expect(tags.map((option) => option.checked)).toEqual([false, true]);
+    expect(tagDropdown.querySelector('[data-cc-dropdown-summary-current]').textContent).toBe('2');
+    expect(disclosure.open).toBe(false);
+    expect(renameForm.reset).toHaveBeenCalledOnce();
+    expect(moveForm.reset).toHaveBeenCalledOnce();
+    expect(bookForm.reset).toHaveBeenCalledOnce();
+  });
+
+  it('uses a newly confirmed Edit Asset value after a successful operation', () => {
+    const page = makeDialogPage();
+    page.dialog.setAttribute('id', 'asset-edit-dialog');
+    page.trigger.setAttribute('data-dialog-open', 'asset-edit-dialog');
+    page.form.setAttribute('data-dialog-async', 'false');
+    page.form.reset = vi.fn();
+    const filename = makeElement('input', {
+      id: 'rename-filename', value: 'renamed.png', 'data-confirmed-value': 'renamed.png',
+    });
+    page.form.appendChild(filename);
+    enhanceAppDialogs(page.document);
+    enhanceAssetEditDialog(page.document);
+
+    openAppDialogById(page.document, page.dialog.id, page.trigger);
+    filename.value = 'another-draft.png';
+    closeAppDialogById(page.document, page.dialog.id);
+    openAppDialogById(page.document, page.dialog.id, page.trigger);
+
+    expect(filename.value).toBe('renamed.png');
+  });
+  it('restores a New dialog draft after accepted close and reopen', () => {
+    const page = makeDialogPage();
+    const title = makeElement('input', { name: 'title', value: '' });
+    page.form.appendChild(title);
+    markOrdinaryDialogForm(page);
+    enhanceAppDialogs(page.document);
+
+    openAppDialogById(page.document, page.dialog.id, page.trigger);
+    title.value = 'Abandoned';
+    page.close.dispatch('click');
+    openAppDialogById(page.document, page.dialog.id, page.trigger);
+
+    expect(title.value).toBe('');
+    expect(page.form.reset).toHaveBeenCalledOnce();
+  });
+
+  it('discards a rejected New Project rerender only after accepted dismissal', () => {
+    const page = makeDialogPage();
+    const title = makeElement('input', { name: 'title', value: 'Rejected project' });
+    const link = makeElement('input', { name: 'patreonUrl', value: 'invalid-link' });
+    page.form.appendChild(title);
+    page.form.appendChild(link);
+    markOrdinaryDialogForm(page);
+    page.form.setAttribute('data-dialog-reset-values', JSON.stringify({ title: '', patreonUrl: '' }));
+    enhanceAppDialogs(page.document);
+
+    expect(title.value).toBe('Rejected project');
+    expect(link.value).toBe('invalid-link');
+    page.close.dispatch('click');
+    openAppDialogById(page.document, page.dialog.id, page.trigger);
+
+    expect(title.value).toBe('');
+    expect(link.value).toBe('');
+  });
+
+  it('discards a rejected publication date after accepted dismissal', () => {
+    const page = makeDialogPage();
+    const date = makeElement('input', { type: 'date', name: 'publishedDate', value: '2026-10-03' });
+    page.form.appendChild(date);
+    markOrdinaryDialogForm(page);
+    page.form.setAttribute('data-dialog-reset-values', JSON.stringify({ publishedDate: '2026-09-24' }));
+    enhanceAppDialogs(page.document);
+
+    expect(date.value).toBe('2026-10-03');
+    page.close.dispatch('click');
+    openAppDialogById(page.document, page.dialog.id, page.trigger);
+
+    expect(date.value).toBe('2026-09-24');
+  });
+
+  it('restores persisted Edit values after a rejected rerender', () => {
+    const page = makeDialogPage();
+    const title = makeElement('input', { name: 'title', value: 'Rejected edit' });
+    page.form.appendChild(title);
+    markOrdinaryDialogForm(page);
+    page.form.setAttribute('data-dialog-reset-values', JSON.stringify({ title: 'Persisted title' }));
+    enhanceAppDialogs(page.document);
+
+    expect(title.value).toBe('Rejected edit');
+    page.close.dispatch('click');
+    openAppDialogById(page.document, page.dialog.id, page.trigger);
+
+    expect(title.value).toBe('Persisted title');
+  });
+
+  it('restores an Edit dialog and its custom dropdown to confirmed values', () => {
+    const page = makeDialogPage({ standardDropdowns: true });
+    const title = makeElement('input', { name: 'title', value: 'Confirmed' });
+    page.form.appendChild(title);
+    markOrdinaryDialogForm(page);
+    enhanceDropdowns(page.document);
+    enhanceAppDialogs(page.document);
+
+    openAppDialogById(page.document, page.dialog.id, page.trigger);
+    title.value = 'Abandoned';
+    const radios = page.dropdowns.view.panel.querySelectorAll('input[type="radio"]');
+    radios[1].checked = true;
+    page.document.dispatch('change', { target: radios[1] });
+    expect(page.fields.view.value).toBe('list');
+    page.dialog.dispatch('cancel', { target: page.dialog });
+    openAppDialogById(page.document, page.dialog.id, page.trigger);
+
+    expect(title.value).toBe('Confirmed');
+    expect(page.fields.view.value).toBe('grid');
+    expect(radios.map((radio) => radio.checked)).toEqual([true, false]);
+    expect(page.dropdowns.view.summary.querySelector('[data-cc-dropdown-summary-current]').textContent).toBe('grid');
+  });
+
+  it('keeps an ordinary draft intact when an async close guard rejects dismissal', async () => {
+    const page = makeDialogPage();
+    const title = makeElement('input', { name: 'title', value: 'Confirmed' });
+    page.form.appendChild(title);
+    markOrdinaryDialogForm(page);
+    enhanceAppDialogs(page.document);
+    openAppDialogById(page.document, page.dialog.id, page.trigger);
+    title.value = 'Draft';
+    page.dialog.__creatorCrateAppDialogState.beforeClose = () => Promise.resolve(false);
+
+    page.close.dispatch('click');
+    await flush();
+
+    expect(page.dialog.open).toBe(true);
+    expect(title.value).toBe('Draft');
+    expect(page.form.reset).not.toHaveBeenCalled();
+  });
+
   it('captures the exact live list URL in a hosted create form', () => {
     const page = makeDialogPage();
     const dialogId = 'project-create-dialog';
@@ -1108,6 +1326,7 @@ describe('Reusable app dialog enhancement', () => {
     '%s dismisses once, restores its live opener, and preserves body lock state',
     (path) => {
       const page = makeDialogPage();
+      markOrdinaryDialogForm(page);
       page.region.appendChild(page.trigger);
       const submit = vi.fn();
       page.form.addEventListener('submit', submit);
@@ -1129,6 +1348,7 @@ describe('Reusable app dialog enhancement', () => {
       expect(page.dialog.open).toBe(true);
       expect(page.close.focused).toBe(true);
       expect(page.document.body.classList.contains('app-dialog-open')).toBe(true);
+      page.fields.view.value = 'list';
 
       if (path === 'X') page.close.dispatch('click');
       else if (path === 'Escape') page.dialog.dispatch('keydown', { key: 'Escape', target: page.dialog });
@@ -1146,6 +1366,8 @@ describe('Reusable app dialog enhancement', () => {
       expect(page.document.activeElement).toBe(opener);
       expect(page.document.body.classList.contains('app-dialog-open')).toBe(false);
       expect(onClose).toHaveBeenCalledOnce();
+      expect(page.form.reset).toHaveBeenCalledOnce();
+      expect(page.fields.view.value).toBe('grid');
       expect(submit).not.toHaveBeenCalled();
     },
   );
@@ -1503,6 +1725,33 @@ describe('Reusable app dialog enhancement', () => {
     expect(page.feedback.hidden).toBe(false);
   });
 
+  it('reopens from the latest confirmed async save after a later abandoned edit', async () => {
+    const page = makeDialogPage();
+    page.windowObject.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        status: 'success',
+        values: { view: 'list', sort: 'title', order: 'asc' },
+      }),
+    });
+    enhanceAppDialogs(page.document);
+    openAppDialogById(page.document, page.dialog.id, page.trigger);
+    page.fields.view.value = 'list';
+    page.fields.sort.value = 'title';
+    page.fields.order.value = 'asc';
+    page.form.dispatch('submit', { submitter: page.save });
+    await flush();
+
+    openAppDialogById(page.document, page.dialog.id, page.trigger);
+    expect(page.fields.view.value).toBe('list');
+    page.fields.view.value = 'grid';
+    page.close.dispatch('click');
+    openAppDialogById(page.document, page.dialog.id, page.trigger);
+
+    expect(page.fields.view.value).toBe('list');
+    expect(page.fields.sort.value).toBe('title');
+  });
+
   it('submits native-backed standard dropdown values and handles Escape inside the dialog', async () => {
     const page = makeDialogPage({ standardDropdowns: true });
     page.region.appendChild(page.trigger);
@@ -1795,6 +2044,29 @@ describe('Reusable app dialog enhancement', () => {
     expect(page.dialog.querySelector('[data-dialog-status]').textContent).toBe(networkMessage);
     expect(page.dialog.querySelector('[data-dialog-error-text]').textContent).toBe(errorMessage);
     expect(successHook).not.toHaveBeenCalled();
+  });
+
+  it('announces a confirmed Manage Categories default change without closing the dialog', async () => {
+    const page = makeDialogPage({ standardDropdowns: true, liveDefault: true });
+    page.dialog.setAttribute('id', 'project-asset-category-management-dialog');
+    page.trigger.setAttribute('data-dialog-open', 'project-asset-category-management-dialog');
+    page.region.appendChild(page.trigger);
+    const changed = vi.fn();
+    page.document.addEventListener('project-asset-categories-changed', changed);
+    page.windowObject.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ status: 'success', values: { defaultCategory: 'category:1' } }),
+    });
+    enhanceDropdowns(page.document);
+    enhanceAppDialogs(page.document);
+    page.document.dispatch('click', { target: page.trigger });
+
+    page.dropdowns.defaultCategory.panel.querySelectorAll('input[type="radio"]')[2].checked = true;
+    page.document.dispatch('change', { target: page.dropdowns.defaultCategory.panel.querySelectorAll('input[type="radio"]')[2] });
+    await flush();
+
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect(page.dialog.open).toBe(true);
   });
 
   it('uses configured operation messages without invoking a failed dialog success hook', async () => {
@@ -3274,6 +3546,8 @@ describe('Category slug autofill', () => {
 describe('Live project category mutations', () => {
   it('submits an autofilled add once and re-enhances the authoritative replacement', async () => {
     const page = makeCategoryDialogPage();
+    const changed = vi.fn();
+    page.document.addEventListener('project-asset-categories-changed', changed);
     page.windowObject.fetch.mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -3315,6 +3589,7 @@ describe('Live project category mutations', () => {
     expect(page.dialog.open).toBe(true);
     expect(page.dialog.querySelector('[data-category-label="Added category"]')).toBeTruthy();
     expect(page.dialog.querySelector('[data-category-management-status]').textContent).toBe('Category added.');
+    expect(changed).toHaveBeenCalledTimes(1);
     expect(page.document.activeElement?.id).toBe('add-displayName');
 
     const replacementAddForm = page.dialog.querySelector('#project-category-management-add-form');
@@ -3338,10 +3613,13 @@ describe('Live project category mutations', () => {
     expect(mountedSlug.value).toBe('replacement-category');
     expect(mountedBody.querySelector('[data-category-management-status]').textContent)
       .toMatch(/previous state was kept/i);
+    expect(changed).toHaveBeenCalledTimes(1);
   });
 
   it('submits the targeted delete after shared-dialog confirmation', async () => {
     const page = makeCategoryDialogPage();
+    const changed = vi.fn();
+    page.document.addEventListener('project-asset-categories-changed', changed);
     page.setReplacement(makeCategoryManagementBody({ categoryId: '2', categoryName: 'Remaining category' }));
     const confirmation = attachSharedConfirmationDialog(page);
     page.windowObject.fetch.mockResolvedValue({
@@ -3382,10 +3660,13 @@ describe('Live project category mutations', () => {
     const mountedBody = page.dialog.querySelector('.project-asset-category-management-dialog-body');
     expect(mountedBody.querySelector('[data-category-id="1"]')).toBeNull();
     expect(mountedBody.querySelector('[data-category-id="2"][data-category-label="Remaining category"]')).toBeTruthy();
+    expect(changed).toHaveBeenCalledTimes(1);
   });
 
   it('targets the selected rename and preserves its server-rendered validation state', async () => {
     const page = makeCategoryDialogPage({ categoryId: '2' });
+    const changed = vi.fn();
+    page.document.addEventListener('project-asset-categories-changed', changed);
     page.setReplacement(makeCategoryManagementBody({ categoryId: '2', categoryName: 'Submitted name', invalidRename: true }));
     page.windowObject.fetch.mockResolvedValue({
       ok: false,
@@ -3426,6 +3707,28 @@ describe('Live project category mutations', () => {
     expect(mountedBody.querySelector('[data-category-management-status]').getAttribute('role')).toBe('alert');
     expect(page.document.activeElement).toBe(mountedRename);
     expect(page.windowObject.fetch).toHaveBeenCalledTimes(1);
+    expect(changed).not.toHaveBeenCalled();
+  });
+
+  it('announces a confirmed rename after replacing the manager body', async () => {
+    const page = makeCategoryDialogPage();
+    page.setReplacement(makeCategoryManagementBody({ categoryName: 'Renamed' }));
+    const changed = vi.fn();
+    page.document.addEventListener('project-asset-categories-changed', changed);
+    page.windowObject.fetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ status: 'success', message: 'Category renamed.', html: '<manager-body>' }),
+    });
+    enhanceAppDialogs(page.document);
+    enhanceProjectAssetCategoryManagement(page.document);
+
+    const form = page.initial.body.querySelector('.category-name-form');
+    form.dispatch('submit', { submitter: form.querySelector('button') });
+    await flush();
+
+    expect(page.dialog.querySelector('[data-category-label="Renamed"]')).toBeTruthy();
+    expect(changed).toHaveBeenCalledTimes(1);
+    expect(page.dialog.close).not.toHaveBeenCalled();
   });
 });
 describe('Project Assets multi-select defaults scope', () => {

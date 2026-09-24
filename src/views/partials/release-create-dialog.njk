@@ -16,7 +16,7 @@
     </p>
     <div class="app-dialog-body project-edit-dialog-body">
       <form id="release-create-form" method="post" action="/releases" class="app-dialog-form project-form project-edit-dialog-form"
-            data-dialog-form data-dialog-async="false" data-release-create-fresh="{{ 'true' if releaseCreateForm.isFreshCreate else 'false' }}" novalidate>
+            data-dialog-form data-dialog-async="false" data-dialog-reset-on-close{% if releaseCreateForm.resetValues %} data-dialog-reset-values="{{ releaseCreateForm.resetValues | dump }}"{% endif %} data-release-create-fresh="{{ 'true' if releaseCreateForm.isFreshCreate else 'false' }}" novalidate>
         <input type="hidden" name="_csrf" value="{{ csrfToken }}">
         <input type="hidden" name="returnTo" value="{{ releaseCreateForm.selectedAssetsReturnTo or releaseCreateForm.invocationReturnTo or '/releases' }}"{% if releaseCreateForm.selectedAssetsReturnTo or releaseCreateForm.invocationReturnTo %} data-dialog-return-location{% endif %}>
         {% if releaseCreateForm.selectedAssetsFlow %}

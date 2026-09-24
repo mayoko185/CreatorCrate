@@ -64,7 +64,7 @@ function expectNewBookDialog(html, open) {
   expect(dialog).toContain('class="app-dialog-footer"');
   expect(/<dialog\b[^>]*\sopen(?:\s|>)/.test(dialog)).toBe(open);
   expect(dialog).not.toContain('data-dialog-backdrop-static');
-  expect(dialog).toContain('data-dialog-form data-dialog-async="false" novalidate');
+  expect(dialog).toMatch(/data-dialog-form data-dialog-async="false" data-dialog-reset-on-close(?: data-dialog-reset-values="[^"]+")? novalidate/);
   expect(dialog.match(/<form\b/g)).toHaveLength(1);
   expect(html.match(/<form\b[^>]*id="book-form"/g)).toHaveLength(1);
   expect(dialog).toContain('<form id="book-form" method="post" action="/notes/books"');

@@ -5,12 +5,17 @@ import {
 } from './dom.js';
 import { enhanceCategoryReorder } from './category-reorder.js';
 import { enhanceCategorySlugAutofill } from './category-slug-autofill.js';
+import {
+  confirmedProjectAssetCategoryRedirect,
+  notifyProjectAssetCategoriesChanged,
+} from './project-asset-category-sync.js';
 import { enhanceAppConfirmationControls } from './confirm-dialog.js';
 import {
   cleanupScrollableCategoryDialogDropdowns,
   CC_DROPDOWN_SELECTOR,
   creatorCrateDropdownForNativeSelect,
   enhanceDropdowns,
+  initializeCreatorCrateDropdown,
   syncCreatorCrateDropdownDisabledState,
   syncCreatorCrateDropdownFromNative,
   updateAssetViewerFilterDisclosureState,
@@ -88,12 +93,17 @@ export function enhanceAutoSubmit(scope = globalThis.document) {
           redirect: 'follow',
         });
       }).then((response) => {
-        if (!response?.ok) throw new Error('Category status update failed.');
+        if (form.closest?.(`#${PROJECT_ASSET_CATEGORY_MANAGEMENT_DIALOG_ID}`)
+          ? !confirmedProjectAssetCategoryRedirect(response, requestedChecked ? 'category_enabled' : 'category_disabled')
+          : !response?.ok) throw new Error('Category status update failed.');
         state.confirmedChecked = requestedChecked;
         state.pending = false;
         form.removeAttribute?.('aria-busy');
         form.removeAttribute?.('data-category-enabled-state');
         if (status) status.textContent = `${requestedChecked ? 'Enabled' : 'Disabled'} status saved.`;
+        if (form.closest?.(`#${PROJECT_ASSET_CATEGORY_MANAGEMENT_DIALOG_ID}`)) {
+          notifyProjectAssetCategoriesChanged(form);
+        }
       }).catch(() => {
         control.checked = previousChecked;
         state.confirmedChecked = previousChecked;
@@ -200,6 +210,28 @@ function appDialogFinishClose(state) {
   state.pendingReturnLocation = null;
   state.backdropPointer = null;
   cleanupScrollableCategoryDialogDropdowns(state.dialog);
+  if (state.form?.hasAttribute?.('data-dialog-reset-on-close')) {
+    state.form.reset?.();
+    const resetValues = state.form.getAttribute?.('data-dialog-reset-values');
+    if (resetValues) {
+      const values = JSON.parse(resetValues);
+      state.form.querySelectorAll?.('[name]').forEach((control) => {
+        if (control.type === 'file' || control.type === 'hidden') return;
+        const value = values[control.name];
+        if (control.type === 'checkbox' || control.type === 'radio') {
+          control.checked = (Array.isArray(value) ? value : [value]).some((item) => String(item) === control.value);
+        } else if (control.tagName === 'SELECT' && control.multiple) {
+          const selected = new Set((Array.isArray(value) ? value : [value]).map(String));
+          Array.from(control.options).forEach((option) => { option.selected = selected.has(option.value); });
+        } else {
+          control.value = value == null ? '' : String(value);
+        }
+      });
+      state.form.querySelectorAll?.(`${CC_DROPDOWN_SELECTOR}:not([hidden])`)
+        .forEach(initializeCreatorCrateDropdown);
+    }
+    state.form.querySelectorAll?.('select').forEach(syncCreatorCrateDropdownFromNative);
+  }
   state.onClose?.();
   state.open = false;
   appDialogBodyLock(state, false);
@@ -604,6 +636,9 @@ function appDialogBindLiveAssetBrowserDefault(state) {
         assetBrowserDefaultClearError(liveState);
         form.setAttribute?.('data-asset-browser-default-state', 'saved');
         if (status) status.textContent = payload.message || 'Asset browser default saved.';
+        if (state.dialog.id === PROJECT_ASSET_CATEGORY_MANAGEMENT_DIALOG_ID) {
+          notifyProjectAssetCategoriesChanged(state.dialog);
+        }
       })
       .catch(() => {
         liveState.pending = false;
@@ -769,6 +804,7 @@ function submitCategoryManagementMutation(state, form, kind, event) {
         return;
       }
 
+      notifyProjectAssetCategoriesChanged(state.dialog);
       try {
         categoryManagementReplaceBody(state, payload.html);
       } catch {

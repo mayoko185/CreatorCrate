@@ -166,7 +166,7 @@ describe('asset tags — HTTP', () => {
     expect(editDialog).toContain('<input type="hidden" name="origin" value="asset-edit">');
     expect(editDialog).toContain('name="tagIds[]"');
     expect(editDialog).toContain('data-autosubmit="submit"');
-    expect(editDialog).toContain('data-dialog-backdrop-static');
+    expect(editDialog).not.toContain('data-dialog-backdrop-static');
     expect(editDialog).not.toContain('Save tags');
     expect(editDialog).not.toContain('app-dialog-footer');
     expect(tags).not.toContain('name="tagIds[]"');
@@ -340,6 +340,7 @@ describe('asset tags — HTTP', () => {
       expect(viewerModel).toEqual(expect.objectContaining({
         assetEditDialogOpen: true,
         selectedAssetTagIds: [String(added.id), 'not-a-tag'],
+        confirmedAssetTagIds: [String(existing.id)],
       }));
     } finally {
       renderSpy.mockRestore();

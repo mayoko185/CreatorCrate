@@ -2,6 +2,10 @@ import {
   isEnhancementBound,
   markEnhancementBound,
 } from './dom.js';
+import {
+  confirmedProjectAssetCategoryRedirect,
+  notifyProjectAssetCategoriesChanged,
+} from './project-asset-category-sync.js';
 
 const CATEGORY_REORDER_LIST_SELECTOR = '[data-category-reorder-list]';
 const CATEGORY_REORDER_ITEM_SELECTOR = '[data-category-reorder-item]';
@@ -208,7 +212,10 @@ function persistCategoryOrder(state, { item = null, keyboard = false } = {}) {
       redirect: 'follow',
     });
   }).then((response) => {
-    if (!response?.ok) throw new Error('Category reorder failed.');
+    const projectManagement = state.list.closest?.('#project-asset-category-management-dialog');
+    if (projectManagement
+      ? !confirmedProjectAssetCategoryRedirect(response, 'category_reordered')
+      : !response?.ok) throw new Error('Category reorder failed.');
     state.confirmedIds = categoryOrder(state.list);
     state.submitting = false;
     state.form.removeAttribute?.('aria-busy');
@@ -216,6 +223,7 @@ function persistCategoryOrder(state, { item = null, keyboard = false } = {}) {
     state.pendingItem = null;
     state.pendingKeyboard = false;
     state.pendingFocus = null;
+    if (projectManagement) notifyProjectAssetCategoriesChanged(state.list);
   }).catch(() => {
     const focusTarget = state.pendingKeyboard ? state.pendingFocus : null;
     state.submitting = false;

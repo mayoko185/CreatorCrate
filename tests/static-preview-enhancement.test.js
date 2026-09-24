@@ -526,6 +526,37 @@ function makeEnabledFixture({ action, checked = true } = {}) {
 }
 
 describe('category enabled autosubmit enhancement', () => {
+  it('refreshes Project Assets only after a confirmed enable or disable redirect', async () => {
+    const fixture = makeEnabledFixture({ action: '/projects/7/asset-categories/11/enabled' });
+    const changed = vi.fn();
+    fixture.form.closest = () => ({});
+    fixture.form.ownerDocument = { dispatchEvent: changed };
+    const responses = [
+      { ok: true, redirected: true, url: 'http://creatorcrate.test/projects/7/assets?notice=category_disabled' },
+      { ok: true, redirected: true, url: 'http://creatorcrate.test/projects/7/assets?notice=category_enable_failed' },
+      { ok: true, redirected: true, url: 'http://creatorcrate.test/projects/7/assets?notice=category_enabled' },
+    ];
+    await withBrowserGlobals(async () => responses.shift(), async () => {
+      enhanceAutoSubmit({ querySelectorAll: () => [fixture.control] });
+      fixture.control.checked = false;
+      fixture.control.dispatch('change');
+      await flushAsync();
+      expect(changed).toHaveBeenCalledTimes(1);
+
+      fixture.control.checked = true;
+      fixture.control.dispatch('change');
+      await flushAsync();
+      expect(changed).toHaveBeenCalledTimes(1);
+      expect(fixture.control.checked).toBe(false);
+
+      fixture.control.checked = true;
+      fixture.control.dispatch('change');
+      await flushAsync();
+      expect(changed).toHaveBeenCalledTimes(2);
+      expect(fixture.control.checked).toBe(true);
+    });
+  });
+
   it('uses each form action and complete FormData for checked and unchecked changes', async () => {
     const project = makeEnabledFixture({ action: '/projects/7/asset-categories/11/enabled', checked: true });
     const settings = makeEnabledFixture({ action: '/settings/asset-categories/12/enabled', checked: false });
@@ -4722,6 +4753,33 @@ function bookHierarchyAuthority(fixture, hierarchy) {
 }
 
 describe('project category reorder enhancement', () => {
+  it('refreshes Project Assets only after the reordered state is confirmed', async () => {
+    const fixture = makeCategoryReorderFixture();
+    const manager = makeCategoryNode({ attrs: { id: 'project-asset-category-management-dialog' } });
+    manager.matches = (selector) => selector === '#project-asset-category-management-dialog';
+    manager.ownerDocument = fixture.document;
+    manager.appendChild(fixture.section);
+    fixture.document.appendChild(manager);
+    const changed = vi.fn();
+    fixture.document.dispatchEvent = changed;
+    const responses = [
+      { ok: true, redirected: true, url: 'http://creatorcrate.test/projects/7/assets?notice=category_reordered' },
+      { ok: true, redirected: true, url: 'http://creatorcrate.test/projects/7/assets?notice=category_reorder_failed' },
+    ];
+    await withBrowserGlobals(async () => responses.shift(), async () => {
+      enhanceCategoryReorder(fixture.document);
+      fixture.items[1].handle.dispatch('keydown', { key: 'ArrowUp' });
+      await flushAsync();
+      expect(fixture.order()).toEqual(['2', '1', '3']);
+      expect(changed).toHaveBeenCalledTimes(1);
+
+      fixture.items[0].handle.dispatch('keydown', { key: 'ArrowUp' });
+      await flushAsync();
+      expect(fixture.order()).toEqual(['2', '1', '3']);
+      expect(changed).toHaveBeenCalledTimes(1);
+    });
+  });
+
   it('is scoped and no-ops when the project reorder list is absent', () => {
     const scope = { querySelectorAll: (selector) => {
       expect(selector).toBe('[data-category-reorder-list]');

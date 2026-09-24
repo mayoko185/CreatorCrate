@@ -201,7 +201,7 @@
 
       <div class="app-dialog-body project-edit-dialog-body">
         <form id="project-edit-form" method="post" action="/projects/{{ project.id }}" class="app-dialog-form project-form project-edit-dialog-form"
-              data-dialog-form data-dialog-async="false" novalidate>
+              data-dialog-form data-dialog-async="false" data-dialog-reset-on-close{% if projectEditForm.resetValues %} data-dialog-reset-values="{{ projectEditForm.resetValues | dump }}"{% endif %} novalidate>
           <input type="hidden" name="_csrf" value="{{ _csrf }}">
           {% if projectEditReturnTo %}
             <input type="hidden" name="returnTo" value="{{ projectEditReturnTo }}" data-dialog-return-location>

@@ -31,6 +31,36 @@ function formsFor(html, action) {
   return html.match(new RegExp(`<form[^>]*action="${action}"[^>]*>[\\s\\S]*?</form>`, 'g')) || [];
 }
 
+describe('asset edit dialog dismissal', () => {
+  it('renders Edit Asset with normal backdrop dismissal and a close button', () => {
+    const html = renderAssetEditDialog();
+    const dialog = html.match(/<dialog id="asset-edit-dialog"[^>]*>/)?.[0] || '';
+
+    expect(dialog).toContain('data-app-dialog');
+    expect(dialog).not.toContain('data-dialog-backdrop-static');
+    expect(html).toContain('data-dialog-close aria-label="Close Edit Asset"');
+  });
+
+  it('renders the current asset as the reset source beside submitted failure values', () => {
+    const html = renderAssetEditDialog({
+      asset: { id: 42, filename: 'confirmed.png', category_id: 3 },
+      canMutate: true,
+      canManageTags: true,
+      assetTagOptions: [{ value: '2', label: 'Confirmed tag' }],
+      selectedAssetTagIds: ['2'],
+      confirmedAssetTagIds: ['2'],
+      submittedFilename: 'failed-draft.png',
+      submittedDestinationCategory: 'uncategorized',
+      enabledCategories: [{ id: 3, displayName: 'Current' }],
+    });
+
+    expect(html).toContain('value="failed-draft.png" data-confirmed-value="confirmed.png"');
+    expect(html).toContain('name="destinationCategory" data-confirmed-value="3"');
+    expect(html).toContain('data-confirmed-tag-ids="2"');
+    expect(html).not.toContain('data-dialog-reset-on-close');
+  });
+});
+
 describe('asset edit dialog Book primary image controls', () => {
   it('renders the Book set form for an eligible archived-project asset', () => {
     const html = renderAssetEditDialog({
