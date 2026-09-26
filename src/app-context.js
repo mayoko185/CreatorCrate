@@ -100,10 +100,12 @@ export function createApplicationContext(
         projectOperationCoordinator,
         processingJobService,
         processingConcurrencyService,
+        startGeneratedImageRebuild: false,
         applicationLogger,
         ...(applicationLogRepository ? { applicationLogRepository } : {}),
         assertNoActiveProcessingJobs,
         beginReplacement: () => beginReplacement(db, app),
+        beginReplacementAfterRebuild: () => beginReplacementAfterRebuild(db, app),
         onDatabaseReplaced: replaceDatabase,
         onAuthConfigReplaced: replaceAuthConfig,
       }
@@ -116,13 +118,38 @@ export function createApplicationContext(
     || applicationLogger.getRepository?.()
     || null;
   let current = { db: initialDb, app: initialApp };
+  initialApp.locals?.generatedImageRebuildService?.recover();
+  initialApp.locals?.generatedImageRebuildService?.signal();
 
   function beginReplacement(db = current.db, app = current.app) {
     const graph = current;
-    return beginReplacementMaintenance(
-      db, () => current === graph && current.db === db && current.app === app,
-      assertNoActiveProcessingJobs, graph,
-    );
+    const pause = app.locals?.generatedImageRebuildService?.pauseForMaintenance();
+    try {
+      return beginReplacementMaintenance(
+        db, () => current === graph && current.db === db && current.app === app,
+        assertNoActiveProcessingJobs, graph,
+        () => { pause?.release(); current.app.locals?.generatedImageRebuildService?.signal(true); },
+      );
+    } catch (error) {
+      pause?.release();
+      throw error;
+    }
+  }
+
+  async function beginReplacementAfterRebuild(db = current.db, app = current.app) {
+    const graph = current;
+    const pause = app.locals?.generatedImageRebuildService?.pauseForMaintenance();
+    try {
+      await pause?.waitForIdle();
+      return beginReplacementMaintenance(
+        db, () => current === graph && current.db === db && current.app === app,
+        assertNoActiveProcessingJobs, graph,
+        () => { pause?.release(); current.app.locals?.generatedImageRebuildService?.signal(true); },
+      );
+    } catch (error) {
+      pause?.release();
+      throw error;
+    }
   }
 
   /**
@@ -149,6 +176,7 @@ export function createApplicationContext(
       managedUploadTracker.assertMaintenanceOwner(owner, current.db, current);
       assertNoActiveProcessingJobs();
       newApp = buildApp(newDb, replacementAppOpts);
+      newApp.locals?.generatedImageRebuildService?.recover();
       replacementApplicationLogRepository = newApp.locals?.applicationLogRepository
         || applicationLogger.getRepository?.()
         || null;
@@ -163,6 +191,7 @@ export function createApplicationContext(
       throw err;
     }
     applicationLogRepository = replacementApplicationLogRepository;
+    current.app.locals?.generatedImageRebuildService?.stop();
     current = { db: newDb, app: newApp };
     if (!maintenanceOwner) owner.release();
   }
@@ -187,6 +216,7 @@ export function createApplicationContext(
       let newApp;
       try {
         newApp = buildApp(current.db, candidateOpts, applicationLogRepository);
+        newApp.locals?.generatedImageRebuildService?.recover({ restartAutomatic: false });
       } catch (err) {
         if (previousLoggerRepository) {
           applicationLogger.rebindRepository(previousLoggerRepository);
@@ -194,6 +224,7 @@ export function createApplicationContext(
         throw err;
       }
       activeAppOpts = candidateOpts;
+      current.app.locals?.generatedImageRebuildService?.stop();
       current = { db: current.db, app: newApp };
     } finally {
       if (!maintenanceOwner) owner.release();
@@ -213,8 +244,12 @@ export function createApplicationContext(
     get processingConcurrencyService() {
       return processingConcurrencyService;
     },
+    get generatedImageRebuildService() {
+      return current.app.locals?.generatedImageRebuildService;
+    },
     replaceDatabase,
     beginReplacement,
+    beginReplacementAfterRebuild,
     replaceAuthConfig,
     handleRequest(req, res) {
       current.app(req, res);

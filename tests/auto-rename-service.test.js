@@ -17,6 +17,7 @@ import {
   createAutoRenameService,
 } from '../src/services/auto-rename-service.js';
 import { createProjectOperationCoordinator } from '../src/services/project-operation-coordinator.js';
+import { createSourceAnimationService } from '../src/services/source-animation-service.js';
 import { resolveProjectDir } from '../src/storage/project-storage.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -194,6 +195,42 @@ describe('category-scoped Auto Rename service', () => {
     expect(plan.counts).toEqual({ selected: assets.length, rename: assets.length, unchanged: 0, blocked: 0 });
     expect(plan.membershipAssetIds).toEqual(orderFor().sort((left, right) => left - right));
     expect(plan.canApply).toBe(true);
+  });
+
+  it('learns legacy animation before signing a PNG-preview Auto Rename plan', async () => {
+    const sh = (await import('sharp')).default;
+    const bytes = await sh({
+      create: { width: 40, height: 30, channels: 3, background: '#ffffff' },
+    }).webp().toBuffer();
+    const asset = writeAsset('legacy.webp', bytes, { mimeType: 'image/webp' });
+    const service = createAutoRenameService({
+      projectRepository: createProjectRepository(ctx.db),
+      assetRepository: ctx.assetRepository,
+      assetCategoryRepository: ctx.assetCategoryRepository,
+      projectsRoot: ctx.projectsRoot,
+      projectOperationCoordinator: createProjectOperationCoordinator(),
+      signingKey: Buffer.from('creatorcrate-auto-rename-test-key'),
+      projectImageSettingsService: { getPolicy: () => ({ preview: { format: 'png' } }) },
+      sourceAnimationService: createSourceAnimationService({
+        assetRepository: ctx.assetRepository,
+        projectRepository: createProjectRepository(ctx.db),
+        projectsRoot: ctx.projectsRoot,
+      }),
+    });
+
+    const plan = service.buildPlan({
+      projectId: ctx.project.id,
+      categoryId: ctx.categories[0].id,
+      orderedAssetIds: [asset.id],
+    });
+    expect(plan.items[0].sourceAnimated).toBe(0);
+    expect(ctx.assetRepository.findById(asset.id).source_animated).toBe(0);
+    expect(service.buildPlan({
+      projectId: ctx.project.id,
+      categoryId: ctx.categories[0].id,
+      orderedAssetIds: [asset.id],
+    }).snapshot).toEqual(plan.snapshot);
+    expect(service.applyPlan(ctx.project.id, plan.token)).toBeTruthy();
   });
 
   it('uses the exact submitted complete-category permutation and restarts numbering only within that category', () => {

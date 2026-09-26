@@ -1,4 +1,5 @@
 import { classifyPreviewable, buildAssetRevisionToken } from './preview-service.js';
+import { inlineMimeFor } from './media-service.js';
 
 function buildPreviewUrls(asset, revision) {
   if (!revision) {
@@ -18,9 +19,9 @@ function buildPreviewUrls(asset, revision) {
 }
 
 /**
- * Build the revision-aware preview model shared by project and release asset
- * presentation. A preview URL is never invented when presence, format, or
- * source metadata is incomplete.
+ * Build the preview model shared by project and release asset presentation.
+ * Generated URLs require source metadata; Original uses the media route's
+ * inline MIME eligibility and its own cache behavior.
  *
  * @param {object} asset
  * @returns {{
@@ -32,8 +33,9 @@ function buildPreviewUrls(asset, revision) {
  *   urls: { thumbnail: string|null, preview: string|null },
  * }}
  */
-export function buildAssetPreviewModel(asset) {
-  if (!asset?.is_present) {
+export function buildAssetPreviewModel(asset, presentationPolicy) {
+  const resolvedAsset = presentationPolicy?.resolveAsset?.(asset) ?? asset;
+  if (!resolvedAsset?.is_present) {
     return {
       state: 'missing',
       previewable: false,
@@ -44,7 +46,7 @@ export function buildAssetPreviewModel(asset) {
     };
   }
 
-  const classification = classifyPreviewable(asset);
+  const classification = classifyPreviewable(resolvedAsset);
   if (!classification.supported) {
     return {
       state: 'unsupported',
@@ -56,8 +58,14 @@ export function buildAssetPreviewModel(asset) {
     };
   }
 
-  const revision = buildAssetRevisionToken(asset);
-  const urls = buildPreviewUrls(asset, revision);
+  const fingerprint = presentationPolicy?.fingerprintForResolved?.(resolvedAsset)
+    ?? presentationPolicy?.fingerprintFor?.(resolvedAsset)
+    ?? presentationPolicy?.fingerprint ?? presentationPolicy;
+  const revision = buildAssetRevisionToken(resolvedAsset, fingerprint);
+  const urls = buildPreviewUrls(resolvedAsset, revision);
+  if (presentationPolicy?.previewFormat === 'original') {
+    urls.preview = buildAssetOriginalUrl(resolvedAsset) ?? urls.preview;
+  }
   return {
     state: 'previewable',
     previewable: true,
@@ -119,8 +127,7 @@ export function buildAssetViewerUrl(projectId, assetId) {
 
 export function buildAssetOriginalUrl(asset) {
   if (!asset?.is_present) return null;
-  const classification = classifyPreviewable(asset);
-  if (!classification.supported || classification.kind !== 'image') return null;
+  if (!inlineMimeFor(asset.extension, asset.mime_type)) return null;
 
   const viewerUrl = buildAssetViewerUrl(asset.project_id, asset.id);
   return viewerUrl ? `${viewerUrl}/original` : null;

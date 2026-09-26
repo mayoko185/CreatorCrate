@@ -170,7 +170,7 @@ function autoRenameSync(state) {
   const hasSelectedAssets = Array.from(
     state.surface.querySelectorAll?.(ASSET_SELECTION_CHECKBOX_SELECTOR) || [],
   ).some((checkbox) => checkbox.checked);
-  autoRenameSetDisabled(button, !valid || !hasSelectedAssets);
+  autoRenameSetDisabled(button, !state.autoRenameEnabled || !valid || !hasSelectedAssets);
 
   const items = autoRenameSurfaceItems(state.surface);
   items.forEach((item, index) => {
@@ -751,6 +751,9 @@ export function enhanceAssetAutoRenameOrdering(scope = globalThis.document) {
       return;
     }
 
+    // Capability comes only from the server's explicit contract; the client
+    // still validates that the rendered markup matches the server order.
+    const reorderEnabled = surface.getAttribute?.('data-category-reorder-enabled') === 'true';
     const form = surface.querySelector?.(AUTO_RENAME_FORM_SELECTOR);
     const orderInput = form?.querySelector?.(AUTO_RENAME_ORDER_INPUT_SELECTOR);
     const submit = autoRenameSubmitControl(surface, form);
@@ -759,7 +762,8 @@ export function enhanceAssetAutoRenameOrdering(scope = globalThis.document) {
     const initialIndexes = items.map(autoRenameInitialIndex);
     const initialInputOrder = autoRenameParseOrderJson(orderInput?.value);
     const validInitialMarkup = Boolean(
-      form && orderInput && submit && items.length > 0
+      reorderEnabled
+      && form && orderInput && submit && items.length > 0
       && initialOrder.every((id) => id !== null)
       && new Set(initialOrder).size === items.length
       && initialIndexes.every((index, position) => index === position)
@@ -780,6 +784,7 @@ export function enhanceAssetAutoRenameOrdering(scope = globalThis.document) {
       submit,
       items,
       initialOrder,
+      autoRenameEnabled: surface.getAttribute?.('data-auto-rename-enabled') === 'true',
       view: surface.dataset?.autoRenameView || surface.getAttribute?.('data-auto-rename-view') || 'grid',
       live: surface.querySelector?.(AUTO_RENAME_LIVE_SELECTOR),
       marker: autoRenameCreateOrderMarker(surface),

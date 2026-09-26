@@ -1155,11 +1155,12 @@ describe('asset repository', () => {
       expect(results[0].release_usage_count).toBe(0);
     });
 
-    it('keeps project-scoped tag filtering direct-only without duplicates or cross-project matches', () => {
+    it('matches project-scoped tags directly or by project inheritance without duplicates or cross-project matches', () => {
       const otherProject = createProject('Other Tagged Project');
       const shared = tagRepo.create({ displayName: 'Shared', normalizedName: 'shared' });
       const additional = tagRepo.create({ displayName: 'Additional', normalizedName: 'additional' });
       const projectOnly = tagRepo.create({ displayName: 'Project Only', normalizedName: 'project-only' });
+      const unused = tagRepo.create({ displayName: 'Unused', normalizedName: 'unused' });
       const first = assetRepo.upsert(projectId, 'first.png', {
         filename: 'first.png', extension: 'png', mimeType: 'image/png', sizeBytes: 1, modifiedAt: null,
       });
@@ -1178,25 +1179,85 @@ describe('asset repository', () => {
       tagRepo.assignToAsset(second.id, shared.id);
       tagRepo.assignToAsset(other.id, additional.id);
       tagRepo.assignToProject(projectId, projectOnly.id);
+      // The same tag both directly on an asset and inherited from its project.
+      tagRepo.assignToAsset(first.id, projectOnly.id);
       tagRepo.assignToAsset(foreign.id, shared.id);
+      tagRepo.assignToAsset(foreign.id, projectOnly.id);
 
-      const filtered = assetRepo.findProjectAssetPage(projectId, { tag: shared.id, pageSize: 100 });
+      const filenames = (rows) => rows.map((asset) => asset.filename);
+      const expectUniqueCounted = (filters, rows) => {
+        expect(new Set(rows.map((asset) => asset.id)).size).toBe(rows.length);
+        expect(assetRepo.countProjectAssets(projectId, filters)).toBe(rows.length);
+      };
 
-      expect(filtered.map((asset) => asset.filename)).toEqual(['first.png', 'second.png']);
-      expect(new Set(filtered.map((asset) => asset.id)).size).toBe(filtered.length);
-      expect(assetRepo.countProjectAssets(projectId, { tag: shared.id })).toBe(filtered.length);
-      expect(assetRepo.findProjectAssetPage(projectId, { tag: projectOnly.id, pageSize: 100 })).toEqual([]);
+      // Direct asset tags keep matching exactly the directly tagged assets.
+      const direct = assetRepo.findProjectAssetPage(projectId, { tag: shared.id, pageSize: 100 });
+      expect(filenames(direct)).toEqual(['first.png', 'second.png']);
+      expectUniqueCounted({ tag: shared.id }, direct);
 
+      // An inherited project tag matches every project asset exactly once.
+      const inherited = assetRepo.findProjectAssetPage(projectId, { tag: projectOnly.id, pageSize: 100 });
+      expect(filenames(inherited)).toEqual(['first.png', 'other.png', 'second.png']);
+      expectUniqueCounted({ tag: projectOnly.id }, inherited);
+      expect(filenames(assetRepo.findProjectAssetPage(projectId, { tag: projectOnly.id, page: 2, pageSize: 2 })))
+        .toEqual(['second.png']);
+
+      // Multiple tags keep OR semantics across direct and inherited matches.
       const multiple = assetRepo.findProjectAssetPage(projectId, {
         tag: [shared.id, additional.id, shared.id],
         pageSize: 100,
       });
-      expect(multiple.map((asset) => asset.filename)).toEqual(['first.png', 'other.png', 'second.png']);
-      expect(new Set(multiple.map((asset) => asset.id)).size).toBe(multiple.length);
-      expect(assetRepo.countProjectAssets(projectId, { tag: [shared.id, additional.id] })).toBe(multiple.length);
+      expect(filenames(multiple)).toEqual(['first.png', 'other.png', 'second.png']);
+      expectUniqueCounted({ tag: [shared.id, additional.id] }, multiple);
+      const mixed = assetRepo.findProjectAssetPage(projectId, { tag: [shared.id, projectOnly.id], pageSize: 100 });
+      expect(filenames(mixed)).toEqual(['first.png', 'other.png', 'second.png']);
+      expectUniqueCounted({ tag: [shared.id, projectOnly.id] }, mixed);
+      expect(assetRepo.findProjectAssetPage(projectId, { tag: unused.id, pageSize: 100 })).toEqual([]);
+
+      // Project tag changes are reflected by the next query without caching.
+      tagRepo.removeFromProject(projectId, projectOnly.id);
+      expect(filenames(assetRepo.findProjectAssetPage(projectId, { tag: projectOnly.id, pageSize: 100 })))
+        .toEqual(['first.png']);
 
       tagRepo.deleteById(shared.id);
       expect(assetRepo.countProjectAssets(projectId, { tag: shared.id })).toBe(0);
+    });
+
+    it('matches an inherited project tag across every category and composes with other filters', () => {
+      const insertCategory = (displayName, directorySlug, displayOrder) => db.prepare(`
+        INSERT INTO project_asset_categories (project_id, display_name, directory_slug, display_order, enabled)
+        VALUES (?, ?, ?, ?, 1)
+        RETURNING id
+      `).get(projectId, displayName, directorySlug, displayOrder);
+      const renders = insertCategory('Renders', 'renders', 0);
+      const source = insertCategory('Source', 'source', 1);
+      const max = tagRepo.create({ displayName: 'Max', normalizedName: 'max' });
+      const benji = tagRepo.create({ displayName: 'Benji', normalizedName: 'benji' });
+      const add = (relativePath, extension, categoryId) => assetRepo.upsert(projectId, relativePath, {
+        filename: path.posix.basename(relativePath), extension, mimeType: 'image/png',
+        sizeBytes: 1, modifiedAt: null, categoryId,
+      });
+      const heroRender = add('renders/hero.png', 'png', renders.id);
+      const heroSource = add('source/hero.psd', 'psd', source.id);
+      const plainSource = add('source/plain.png', 'png', source.id);
+      const loose = add('loose.png', 'png', null);
+      tagRepo.assignToProject(projectId, max.id);
+      tagRepo.assignToAsset(heroRender.id, benji.id);
+
+      const ids = (filters) => assetRepo.findProjectAssetPage(projectId, { ...filters, pageSize: 100 })
+        .map((asset) => asset.id);
+      const all = [heroRender.id, heroSource.id, loose.id, plainSource.id];
+
+      expect(ids({ tag: max.id, category: 'all' }).sort()).toEqual([...all].sort());
+      expect(assetRepo.countProjectAssets(projectId, { tag: max.id, category: 'all' })).toBe(all.length);
+      expect(ids({ tag: max.id, category: source.id }).sort()).toEqual([heroSource.id, plainSource.id].sort());
+      expect(ids({ tag: max.id, category: 'uncategorized' })).toEqual([loose.id]);
+      expect(ids({ tag: benji.id, category: 'all' })).toEqual([heroRender.id]);
+
+      // Inherited matches still honor search and extension filters.
+      expect(ids({ tag: max.id, search: 'hero' }).sort()).toEqual([heroRender.id, heroSource.id].sort());
+      expect(assetRepo.countProjectAssets(projectId, { tag: max.id, search: 'hero' })).toBe(2);
+      expect(ids({ tag: max.id, extension: 'png', search: 'hero' })).toEqual([heroRender.id]);
     });
 
     it('applies tag filtering before pagination and composes with search, extension, presence, and usage', () => {
@@ -2481,6 +2542,280 @@ describe('asset repository', () => {
 
   // ─── Phase 2 chunk 1: atomic scan reconciliation ────────────────────
 
+  describe('reconcileSource', () => {
+    function stored() {
+      return assetRepo.upsert(projectId, 'r.png', {
+        filename: 'r.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 100, modifiedAt: '2026-01-01T00:00:00.000Z',
+      });
+    }
+
+    it('advances the generation in the same write for a proven same-tuple replacement', () => {
+      const asset = stored();
+      const sameTuple = { size: 100, mtime: '2026-01-01T00:00:00.000Z' };
+      expect(assetRepo.reconcileSource(asset, sameTuple).source_generation).toBe(0);
+      const replaced = assetRepo.reconcileSource(asset, sameTuple, { replaced: true });
+      expect(replaced).toMatchObject({ size_bytes: 100, source_generation: 1 });
+    });
+
+    it('advances once for a changed tuple and never twice for one transition', () => {
+      const asset = stored();
+      const changed = { size: 101, mtime: '2026-01-02T00:00:00.000Z' };
+      expect(assetRepo.reconcileSource(asset, changed)).toMatchObject({ size_bytes: 101, source_generation: 1 });
+      // A loser still holding the old row matches nothing and writes nothing.
+      expect(assetRepo.reconcileSource(asset, changed, { replaced: true })).toBeUndefined();
+      expect(assetRepo.findById(asset.id).source_generation).toBe(1);
+    });
+
+    it('rejects a row whose source generation moved on even with an equal tuple', () => {
+      const asset = stored();
+      db.prepare('UPDATE assets SET source_generation = 1 WHERE id = ?').run(asset.id);
+      expect(assetRepo.reconcileSource(asset, { size: 100, mtime: '2026-01-01T00:00:00.000Z' },
+        { replaced: true })).toBeUndefined();
+      expect(assetRepo.findById(asset.id).source_generation).toBe(1);
+    });
+
+    it('keeps the generation when an unknown animation state is learned', () => {
+      const asset = stored();
+      const learned = assetRepo.reconcileSource(asset,
+        { size: 100, mtime: '2026-01-01T00:00:00.000Z', animated: false });
+      expect(learned).toMatchObject({ source_animated: 0, source_generation: 0 });
+      expect(assetRepo.reconcileSource(learned,
+        { size: 100, mtime: '2026-01-01T00:00:00.000Z', animated: true }).source_generation).toBe(1);
+    });
+
+    it('keeps the generation for an idempotent upsert and advances it for a changed or restored one', () => {
+      stored();
+      expect(stored().source_generation).toBe(0);
+      const changed = assetRepo.upsert(projectId, 'r.png', {
+        filename: 'r.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 200, modifiedAt: '2026-01-01T00:00:00.000Z',
+      });
+      expect(changed.source_generation).toBe(1);
+      assetRepo.markAllMissing(projectId);
+      expect(assetRepo.restorePresent(projectId, ['r.png'])).toBe(1);
+      expect(assetRepo.findById(changed.id).source_generation).toBe(2);
+    });
+  });
+
+  describe('applyAssetConversions re-encode', () => {
+    function storedWebp(sourceAnimated) {
+      return assetRepo.upsert(projectId, 'c.webp', {
+        filename: 'c.webp', extension: 'webp', mimeType: 'image/webp',
+        sizeBytes: 100, modifiedAt: '2026-01-01T00:00:00.000Z', sourceAnimated,
+      });
+    }
+
+    function reencode(asset, sourceAnimated) {
+      return {
+        assetId: asset.id,
+        expectedRelativePath: asset.relative_path,
+        expectedSizeBytes: asset.size_bytes,
+        expectedModifiedAt: asset.modified_at,
+        sizeBytes: 60,
+        modifiedAt: '2026-01-02T00:00:00.000Z',
+        sourceAnimated,
+      };
+    }
+
+    it('writes the new animation state in the same update that advances the generation', () => {
+      const asset = storedWebp(true);
+      expect(asset).toMatchObject({ source_animated: 1, source_generation: 0 });
+      const { reencoded } = assetRepo.applyAssetConversions(projectId, {
+        reencodes: [reencode(asset, false)],
+      });
+      expect(reencoded[0]).toMatchObject({
+        size_bytes: 60,
+        modified_at: '2026-01-02T00:00:00.000Z',
+        source_animated: 0,
+        source_generation: 1,
+      });
+      expect(assetRepo.findById(asset.id)).toMatchObject({ source_animated: 0, source_generation: 1 });
+    });
+
+    it('records an unclassified output as unknown instead of inheriting the old state', () => {
+      const asset = storedWebp(true);
+      const { reencoded } = assetRepo.applyAssetConversions(projectId, {
+        reencodes: [reencode(asset, null)],
+      });
+      expect(reencoded[0]).toMatchObject({ source_animated: null, source_generation: 1 });
+    });
+
+    it('leaves generation and animation untouched when the expected row is stale', () => {
+      const asset = storedWebp(true);
+      expect(() => assetRepo.applyAssetConversions(projectId, {
+        reencodes: [{ ...reencode(asset, false), expectedSizeBytes: 99 }],
+      })).toThrow(expect.objectContaining({ code: 'STALE_STATE' }));
+      expect(assetRepo.findById(asset.id)).toMatchObject({
+        size_bytes: 100, source_animated: 1, source_generation: 0,
+      });
+    });
+  });
+
+  describe('applyAssetWatermarks replacement', () => {
+    const SHA = 'a'.repeat(64);
+
+    function storedGeneratedWebp(sourceAnimated) {
+      const source = assetRepo.upsert(projectId, 'w.png', {
+        filename: 'w.png', extension: 'png', mimeType: 'image/png',
+        sizeBytes: 50, modifiedAt: '2026-01-01T00:00:00.000Z',
+      });
+      const { outputs: [output] } = assetRepo.applyAssetWatermarks(projectId, {
+        outputs: [{
+          relativePath: 'wm/w_wm.webp', filename: 'w_wm.webp', extension: 'webp', mimeType: 'image/webp',
+          sizeBytes: 100, modifiedAt: '2026-01-01T00:00:00.000Z',
+          generatedSourceAssetId: source.id, generatedSourceRelativePath: 'w.png',
+          generatedMode: 'patreon', generatedOutputSha256: SHA,
+        }],
+      });
+      db.prepare('UPDATE assets SET source_animated = ? WHERE id = ?').run(sourceAnimated, output.id);
+      return { source, output: assetRepo.findById(output.id) };
+    }
+
+    function replacement({ source, output }, sourceAnimated) {
+      return {
+        assetId: output.id,
+        expectedOldRelativePath: output.relative_path,
+        generatedSourceAssetId: source.id,
+        generatedSourceRelativePath: 'w.png',
+        generatedMode: 'patreon',
+        generatedOutputSha256: 'b'.repeat(64),
+        expectedGeneratedSourceAssetId: source.id,
+        expectedGeneratedSourceRelativePath: 'w.png',
+        expectedGeneratedMode: 'patreon',
+        expectedGeneratedOutputSha256: SHA,
+        expectedExtension: output.extension,
+        expectedSizeBytes: output.size_bytes,
+        expectedModifiedAt: output.modified_at,
+        expectedIsPresent: output.is_present,
+        expectedSourceAnimated: output.source_animated,
+        expectedSourceGeneration: output.source_generation,
+        data: {
+          relativePath: output.relative_path, filename: output.filename, extension: 'webp',
+          mimeType: 'image/webp', categoryId: null, nestedPath: '',
+          sizeBytes: 60, modifiedAt: '2026-01-02T00:00:00.000Z', sourceAnimated,
+        },
+      };
+    }
+
+    it('writes the new animation state in the same update that advances the generation', () => {
+      const stored = storedGeneratedWebp(1);
+      expect(stored.output).toMatchObject({ source_animated: 1, source_generation: 0 });
+      const { replaced } = assetRepo.applyAssetWatermarks(projectId, {
+        replacements: [replacement(stored, false)],
+      });
+      expect(replaced[0]).toMatchObject({
+        size_bytes: 60,
+        modified_at: '2026-01-02T00:00:00.000Z',
+        source_animated: 0,
+        source_generation: 1,
+      });
+      expect(assetRepo.findById(stored.output.id)).toMatchObject({ source_animated: 0, source_generation: 1 });
+    });
+
+    it('records an unclassified output as unknown instead of inheriting the old state', () => {
+      const stored = storedGeneratedWebp(1);
+      const { replaced } = assetRepo.applyAssetWatermarks(projectId, {
+        replacements: [replacement(stored, undefined)],
+      });
+      expect(replaced[0]).toMatchObject({ source_animated: null, source_generation: 1 });
+    });
+
+    it('leaves generation and animation untouched when the expected ownership is stale', () => {
+      const stored = storedGeneratedWebp(1);
+      expect(() => assetRepo.applyAssetWatermarks(projectId, {
+        replacements: [{ ...replacement(stored, false), expectedGeneratedOutputSha256: 'c'.repeat(64) }],
+      })).toThrow(expect.objectContaining({ code: 'STALE_STATE' }));
+      expect(assetRepo.findById(stored.output.id)).toMatchObject({
+        size_bytes: 100, source_animated: 1, source_generation: 0,
+      });
+    });
+
+    it('rejects a stale replacement after reconciliation advanced the source generation', () => {
+      const stored = storedGeneratedWebp(1);
+      // Captured at generation N before rendering.
+      const captured = replacement(stored, false);
+      // Request-time Preview reconciliation establishes a new source instance
+      // (N -> N+1) without touching generated ownership.
+      const newer = assetRepo.reconcileSource(stored.output,
+        { size: 100, mtime: '2026-01-01T00:00:00.000Z' }, { replaced: true });
+      expect(newer).toMatchObject({ source_generation: 1, generated_output_sha256: SHA });
+      expect(() => assetRepo.applyAssetWatermarks(projectId, {
+        replacements: [captured],
+      })).toThrow(expect.objectContaining({ code: 'STALE_STATE' }));
+      expect(assetRepo.findById(stored.output.id)).toMatchObject({
+        size_bytes: 100, modified_at: '2026-01-01T00:00:00.000Z',
+        source_animated: 1, source_generation: 1, generated_output_sha256: SHA,
+      });
+    });
+
+    it('rejects a stale replacement after a scan-style tuple change', () => {
+      const stored = storedGeneratedWebp(1);
+      const captured = replacement(stored, false);
+      const newer = assetRepo.reconcileSource(stored.output,
+        { size: 101, mtime: '2026-01-03T00:00:00.000Z', animated: true });
+      expect(newer).toMatchObject({ size_bytes: 101, source_generation: 1 });
+      expect(() => assetRepo.applyAssetWatermarks(projectId, {
+        replacements: [captured],
+      })).toThrow(expect.objectContaining({ code: 'STALE_STATE' }));
+      expect(assetRepo.findById(stored.output.id)).toMatchObject({
+        size_bytes: 101, modified_at: '2026-01-03T00:00:00.000Z',
+        source_animated: 1, source_generation: 1,
+      });
+    });
+
+    it.each([
+      ['size', { expectedSizeBytes: 99 }],
+      ['mtime', { expectedModifiedAt: '2025-12-31T00:00:00.000Z' }],
+      ['animation', { expectedSourceAnimated: 0 }],
+      ['extension', { expectedExtension: 'png' }],
+      ['presence', { expectedIsPresent: 0 }],
+      ['generation', { expectedSourceGeneration: 1 }],
+    ])('pins the captured source %s in the replacement condition', (_field, override) => {
+      const stored = storedGeneratedWebp(1);
+      expect(() => assetRepo.applyAssetWatermarks(projectId, {
+        replacements: [{ ...replacement(stored, false), ...override }],
+      })).toThrow(expect.objectContaining({ code: 'STALE_STATE' }));
+      expect(assetRepo.findById(stored.output.id)).toMatchObject({
+        size_bytes: 100, source_animated: 1, source_generation: 0,
+      });
+    });
+
+    it('requires the captured source generation', () => {
+      const stored = storedGeneratedWebp(1);
+      const { expectedSourceGeneration: _omitted, ...withoutGeneration } = replacement(stored, false);
+      expect(() => assetRepo.applyAssetWatermarks(projectId, {
+        replacements: [withoutGeneration],
+      })).toThrow(TypeError);
+      expect(assetRepo.findById(stored.output.id)).toMatchObject({ source_generation: 0 });
+    });
+
+    it('matches unchanged unknown animation authority', () => {
+      const stored = storedGeneratedWebp(null);
+      expect(stored.output.source_animated).toBeNull();
+      const { replaced } = assetRepo.applyAssetWatermarks(projectId, {
+        replacements: [replacement(stored, false)],
+      });
+      expect(replaced[0]).toMatchObject({ size_bytes: 60, source_animated: 0, source_generation: 1 });
+    });
+
+    it('rejects a stale replacement after unknown animation authority was classified', () => {
+      const stored = storedGeneratedWebp(null);
+      const captured = replacement(stored, false);
+      // Learning the classification keeps the generation; only the captured
+      // NULL animation authority detects it.
+      const learned = assetRepo.reconcileSource(stored.output,
+        { size: 100, mtime: '2026-01-01T00:00:00.000Z', animated: true });
+      expect(learned).toMatchObject({ source_animated: 1, source_generation: 0 });
+      expect(() => assetRepo.applyAssetWatermarks(projectId, {
+        replacements: [captured],
+      })).toThrow(expect.objectContaining({ code: 'STALE_STATE' }));
+      expect(assetRepo.findById(stored.output.id)).toMatchObject({
+        size_bytes: 100, source_animated: 1, source_generation: 0,
+      });
+    });
+  });
+
   describe('reconcileScannedAssets', () => {
     function discoveredFile(overrides = {}) {
       return {
@@ -2551,6 +2886,51 @@ describe('asset repository', () => {
       assetRepo.reconcileScannedAssets(projectId, [discoveredFile()]);
       const result = assetRepo.reconcileScannedAssets(projectId, []);
       expect(result).toEqual({ added: 0, updated: 0, removed: 1, total: 1 });
+    });
+
+    describe('source generation', () => {
+      const generation = () => assetRepo.findByProjectIdAndPath(projectId, 'a.png').source_generation;
+
+      it('starts new rows at generation 0 and keeps it across unchanged and path-only scans', () => {
+        const category = createCategory(projectId, 'Source', 'source');
+        assetRepo.reconcileScannedAssets(projectId, [discoveredFile()]);
+        expect(generation()).toBe(0);
+        assetRepo.reconcileScannedAssets(projectId, [discoveredFile()]);
+        assetRepo.reconcileScannedAssets(projectId, [discoveredFile({ categoryId: category.id, nestedPath: 'x' })]);
+        expect(generation()).toBe(0);
+      });
+
+      it('increments once per changed observed source tuple', () => {
+        assetRepo.reconcileScannedAssets(projectId, [discoveredFile()]);
+        assetRepo.reconcileScannedAssets(projectId, [discoveredFile({ sizeBytes: 101 })]);
+        expect(generation()).toBe(1);
+        assetRepo.reconcileScannedAssets(projectId, [discoveredFile({ sizeBytes: 101 })]);
+        expect(generation()).toBe(1);
+        assetRepo.reconcileScannedAssets(projectId, [
+          discoveredFile({ sizeBytes: 101, modifiedAt: '2026-01-02T00:00:00.000Z' }),
+        ]);
+        expect(generation()).toBe(2);
+      });
+
+      it('keeps the generation when animation is first classified but advances on a known flip', () => {
+        assetRepo.reconcileScannedAssets(projectId, [discoveredFile({ sourceAnimated: null })]);
+        assetRepo.reconcileScannedAssets(projectId, [discoveredFile({ sourceAnimated: false })]);
+        expect(generation()).toBe(0);
+        assetRepo.reconcileScannedAssets(projectId, [discoveredFile({ sourceAnimated: true })]);
+        expect(generation()).toBe(1);
+      });
+
+      it('does not advance on removal but gives a restored row a new generation', () => {
+        assetRepo.reconcileScannedAssets(projectId, [discoveredFile()]);
+        assetRepo.reconcileScannedAssets(projectId, []);
+        expect(generation()).toBe(0);
+        // The same path/size/mtime reappearing is still a newly observed
+        // instance: its old immutable revision must not become current again.
+        assetRepo.reconcileScannedAssets(projectId, [discoveredFile()]);
+        expect(generation()).toBe(1);
+        assetRepo.reconcileScannedAssets(projectId, [discoveredFile()]);
+        expect(generation()).toBe(1);
+      });
     });
 
     it('rolls back the entire reconciliation, including missing-state changes, on failure', () => {

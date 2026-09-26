@@ -4,6 +4,7 @@ import {
   buildReleaseAssetPresentation,
 } from '../src/services/release-asset-presenter.js';
 import { formatLocalDate, formatLocalTime } from '../src/util/date.js';
+import { projectImagePresentationPolicy } from '../src/services/project-image-policy.js';
 
 function assetRow(overrides = {}) {
   return {
@@ -26,6 +27,34 @@ function assetRow(overrides = {}) {
 }
 
 describe('release asset presenter', () => {
+  it('uses source animation for Preview-PNG revision identity', () => {
+    const base = { thumbnail: { format: 'webp', webpQuality: 80, maxDimension: 256 },
+      preview: { format: 'png', webpQuality: 52, maxDimension: 1600 } };
+    const changed = { ...base, preview: { ...base.preview, webpQuality: 71 } };
+    for (const [sourceAnimated, same] of [[0, true], [1, false]]) {
+      const row = assetRow({ extension: 'webp', mime_type: 'image/webp', source_animated: sourceAnimated });
+      const before = buildReleaseAssetPresentation(row,
+        { policyFingerprint: projectImagePresentationPolicy(base) });
+      const after = buildReleaseAssetPresentation(row,
+        { policyFingerprint: projectImagePresentationPolicy(changed) });
+      expect(before.preview_revision === after.preview_revision).toBe(same);
+    }
+  });
+  it('uses the shared Original selection for selected and candidate assets', () => {
+    const policyFingerprint = projectImagePresentationPolicy({
+      thumbnail: { format: 'webp', webpQuality: 80, maxDimension: 256 },
+      preview: { format: 'original', webpQuality: 90, maxDimension: 1600 },
+    });
+    const selected = assetRow();
+    const candidate = assetRow({ id: 18, asset_id: undefined });
+    const page = buildReleaseAssetPagePresentation({
+      selectedAssets: [selected], candidateAssets: [candidate], policyFingerprint,
+    });
+    expect(page.selected[0].preview_url).toBe('/projects/7/assets/17/original');
+    expect(page.candidates[0].preview_url).toBe('/projects/7/assets/18/original');
+    expect(page.selected[0].thumbnail_url).toContain('/thumbnail?v=');
+  });
+
   it('uses the selected local clock format without changing the raw modification time', () => {
     const modifiedDate = new Date(2026, 7, 1, 13, 5);
     const row = assetRow({ modified_at: modifiedDate.toISOString() });

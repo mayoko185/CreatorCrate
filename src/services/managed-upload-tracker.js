@@ -32,6 +32,7 @@ export function createManagedUploadTracker() {
       const boundDb = binding?.db;
       const isCurrent = binding?.isCurrent;
       const boundGraph = binding?.graph;
+      const onRelease = binding?.onRelease;
       const identity = {};
       owner = identity;
       const capability = Object.freeze({
@@ -43,6 +44,7 @@ export function createManagedUploadTracker() {
         release() {
           if (owner !== identity) return false;
           owner = null;
+          onRelease?.();
           return true;
         },
       });
@@ -88,8 +90,8 @@ export const managedUploadTracker = createManagedUploadTracker();
 // Acquisition and the existing processing guard run synchronously, with upload
 // admission closed before processing is inspected. This is not a processing
 // submission admission gate.
-export function beginReplacementMaintenance(db, isCurrent, assertNoActiveProcessingJobs, graph) {
-  const owner = managedUploadTracker.tryBeginMaintenance({ db, isCurrent, graph });
+export function beginReplacementMaintenance(db, isCurrent, assertNoActiveProcessingJobs, graph, onRelease) {
+  const owner = managedUploadTracker.tryBeginMaintenance({ db, isCurrent, graph, onRelease });
   if (!owner) throw new Error('Cannot replace the application context while managed uploads or maintenance are active.');
   try {
     owner.assertCanRetire(db);

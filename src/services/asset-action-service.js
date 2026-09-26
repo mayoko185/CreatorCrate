@@ -992,6 +992,7 @@ export function createAssetActionService({
           nestedPath: '',
           sizeBytes: destStats.size,
           modifiedAt: destStats.mtime.toISOString(),
+          sourceAnimated: item.asset.source_animated,
         };
       }
 

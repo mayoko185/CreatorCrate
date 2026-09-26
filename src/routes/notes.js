@@ -23,6 +23,7 @@ import {
 } from '../services/book-service.js';
 import { ChapterNotFoundError, ChapterValidationError } from '../services/chapter-service.js';
 import { buildAssetPreviewModel, buildAssetViewerUrl } from '../services/asset-presentation.js';
+import { projectImagePresentationPolicy } from '../services/project-image-policy.js';
 import { resolveBookPrimaryImageMedia } from '../services/primary-image-presenter.js';
 import { NSFW_TAG_NAME } from '../services/nsfw-filter-settings-service.js';
 import { PageDefaultValidationError } from '../services/page-defaults-service.js';
@@ -363,6 +364,7 @@ export function createNotesRouter({
   appName, db, bookService, bookPrimaryImageService, bookPagePreviewSettingsService,
   bookExportService, bookImportOrchestrationService, chapterService, noteService, markdownRenderer,
   projectService, assetRepository, tagRepository, nsfwFilterSettingsService, managedMediaService, managedImageService,
+  projectImageSettingsService,
 } = {}) {
   if (!bookService || typeof bookService.listBooks !== 'function') {
     throw new Error('createNotesRouter requires a bookService dependency.');
@@ -450,7 +452,7 @@ export function createNotesRouter({
 
   function buildNoteCreateForm(book, chapter, bookContents) {
     return buildNoteFormModel({
-      assetRepository, tagRepository, nsfwFilterSettingsService,
+      assetRepository, tagRepository, nsfwFilterSettingsService, projectImageSettingsService,
       appName, book, chapter, note: null,
       values: emptyFormValues(chapter ? { chapterId: chapter.id } : { bookId: book.id }),
       projects: listProjectOptions(projectService), selectedAssets: [], errors: {},
@@ -1305,7 +1307,7 @@ export function createNotesRouter({
 
       const result = assetRepository.searchAssetsForPicker({ projectId, query, limit, cursor });
       const thumbnails = buildNoteAssetThumbnails(result.rows.map(asset => asset.id), {
-        assetRepository, tagRepository, nsfwFilterSettingsService,
+        assetRepository, tagRepository, nsfwFilterSettingsService, projectImageSettingsService,
       });
       return res.json({
         project: toPickerProject(project),
@@ -1337,7 +1339,7 @@ export function createNotesRouter({
       const book = bookService.getBook(hasChapterId ? chapter.book_id : bookId);
       const bookContents = bookService.listBookContents(book.id);
       return await renderNoteCreate(req, res, buildNoteFormModel({
-        assetRepository, tagRepository, nsfwFilterSettingsService,
+        assetRepository, tagRepository, nsfwFilterSettingsService, projectImageSettingsService,
         appName,
         book,
         chapter,
@@ -1397,7 +1399,7 @@ export function createNotesRouter({
             bookId: hasBookId ? bookId : undefined,
           });
           return await renderNoteCreate(req, res, buildNoteFormModel({
-            assetRepository, tagRepository, nsfwFilterSettingsService,
+            assetRepository, tagRepository, nsfwFilterSettingsService, projectImageSettingsService,
             appName,
             book,
             chapter,
@@ -1468,7 +1470,7 @@ export function createNotesRouter({
     const bookContents = bookService.listBookContents(book.id);
     const chapterOptions = listChapterOptions(bookService, chapterService);
     const noteEditForm = buildNoteFormModel({
-      assetRepository, tagRepository, nsfwFilterSettingsService,
+      assetRepository, tagRepository, nsfwFilterSettingsService, projectImageSettingsService,
       appName, book: decoratedBook, chapter, note, values, errors,
       baselineValues: noteToFormValues(note),
       projects: listProjectOptions(projectService),
@@ -1681,7 +1683,7 @@ export function createNotesRouter({
 }
 
 function buildNoteFormModel({
-  assetRepository, tagRepository, nsfwFilterSettingsService,
+  assetRepository, tagRepository, nsfwFilterSettingsService, projectImageSettingsService,
   appName, book = null, chapter = null, note, values, baselineValues = values, projects, selectedAssets, errors, action, submitUrl,
   moveTargets = [], bookContents = [], navCurrentChapterId = null, navCurrentPageId = null,
 }) {
@@ -1693,7 +1695,8 @@ function buildNoteFormModel({
     values,
     projects,
     selectedAssets,
-    connections: buildNoteConnections(assetRepository, projects, values, note, tagRepository, nsfwFilterSettingsService),
+    connections: buildNoteConnections(assetRepository, projects, values, note, tagRepository,
+      nsfwFilterSettingsService, projectImageSettingsService),
     selectedProjectIds: values.projectIds.map(String),
     selectedAssetIds: values.assetIds.map(String),
     dialogBaselineJson: buildNoteDialogBaselineJson(
@@ -1713,14 +1716,18 @@ function buildNoteFormModel({
 /** Presentation-only projection, identical for form options and picker JSON.
  * Keep presenter states: previewable with invalid source metadata has no URL.
  */
-function buildNoteAssetThumbnails(ids, { assetRepository, tagRepository, nsfwFilterSettingsService }) {
+function buildNoteAssetThumbnails(ids, { assetRepository, tagRepository, nsfwFilterSettingsService,
+  projectImageSettingsService }) {
   const uniqueIds = [...new Set(ids)];
   if (uniqueIds.length === 0) return new Map();
   const assets = assetRepository.findByIds(uniqueIds);
   const assetsById = new Map(assets.map(asset => [asset.id, asset]));
   const nsfwAssetIds = resolveNsfwAssetIds(assets, tagRepository, nsfwFilterSettingsService.isEnabled());
+  const fingerprint = projectImageSettingsService
+    ? (projectImageSettingsService.getPresentationPolicy?.()
+      ?? projectImagePresentationPolicy(projectImageSettingsService.getPolicy())) : undefined;
   return new Map(uniqueIds.map(id => {
-    const preview = buildAssetPreviewModel(assetsById.get(id));
+    const preview = buildAssetPreviewModel(assetsById.get(id), fingerprint);
     return [id, {
       state: preview.state,
       sourceMetadataValid: preview.sourceMetadataValid,
@@ -1750,7 +1757,8 @@ function buildNoteDialogBaselineJson(values, assetRepository) {
   }).replace(/</g, '\\u003c');
 }
 
-function buildNoteConnections(assetRepository, projects, values, note, tagRepository, nsfwFilterSettingsService) {
+function buildNoteConnections(assetRepository, projects, values, note, tagRepository,
+  nsfwFilterSettingsService, projectImageSettingsService) {
   const selected = new Set(values.assetIds.map(String));
   const persisted = new Set((note?.assetIds || []).map(String));
   const context = new Set(values.projectIds.map(String));
@@ -1769,7 +1777,7 @@ function buildNoteConnections(assetRepository, projects, values, note, tagReposi
   const retained = listSelectedAssetOptions(assetRepository, values.assetIds)
     .filter(asset => !assets.has(String(asset.id)));
   const thumbnails = buildNoteAssetThumbnails([...assets.values(), ...retained].map(asset => asset.id), {
-    assetRepository, tagRepository, nsfwFilterSettingsService,
+    assetRepository, tagRepository, nsfwFilterSettingsService, projectImageSettingsService,
   });
 
   const option = asset => ({

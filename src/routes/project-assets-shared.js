@@ -2,6 +2,10 @@ import { NSFW_TAG_NAME } from '../services/nsfw-filter-settings-service.js';
 
 import { buildProjectAssetBrowserPreferenceModel } from '../services/asset-browser-preference-presenter.js';
 import { isProjectArchived } from '../services/project-state.js';
+import {
+  noProjectAssetCategoryCapabilities,
+  resolveProjectAssetCategoryCapabilities,
+} from '../services/project-asset-category-capabilities.js';
 
 import { buildPageDefaultsDialogModel } from './page-defaults.js';
 
@@ -188,7 +192,8 @@ export function enrichProjectAssetsForRender(workflowQueryService, project, data
     project,
     data.assets,
     {
-      includeImageDimensions: data.filters.view !== 'list' || data.completeCategorySurface,
+      includeImageDimensions: data.filters.view !== 'list'
+        || Boolean(data.categoryCapabilities?.hasCompleteCategoryMembership),
       clockFormat,
     },
   );
@@ -801,9 +806,7 @@ export function buildBrowserRenderModel(
     assetActionNotice: null,
     autoRenameNotice: null,
     autoRenameError: null,
-    completeCategorySurface: Boolean(data.completeCategorySurface),
-    autoRenameSurface: Boolean(data.autoRenameSurface),
-    autoRenameCategory: data.autoRenameCategory || null,
+    categoryCapabilities: data.categoryCapabilities || noProjectAssetCategoryCapabilities(),
     autoRenameConfirmationDialogOpen: false,
     autoRenameConfirmationPlan: null,
     autoRenameConfirmationContext: null,
@@ -968,9 +971,11 @@ function buildAssetsPageData(
   const hasExplicitCategory = Object.prototype.hasOwnProperty.call(categoryQuery || {}, 'category');
   const hasTagQuery = hasConcreteTagQuery(categoryQuery);
   const hasConcreteCategory = parseCanonicalPositiveId(categoryQuery.category) !== null;
+  if (hasConcreteCategory && hasNonDefaultCategoryBrowserControls(categoryQuery)) {
+    return buildCategoryBrowserPageData(workflowQueryService, projectId, project, categoryQuery);
+  }
   if (
     hasTagQuery
-    || (hasConcreteCategory && hasNonDefaultCategoryBrowserControls(categoryQuery))
     || (hasExplicitCategory && (
       categoryQuery.category === 'all'
       || categoryQuery.category === 'uncategorized'
@@ -979,7 +984,7 @@ function buildAssetsPageData(
   ) {
     const ordinary = workflowQueryService.getProjectAssetBrowser(projectId, categoryQuery);
     return ordinary
-      ? { ...ordinary, completeCategorySurface: false, autoRenameSurface: false, autoRenameCategory: null }
+      ? { ...ordinary, categoryCapabilities: noProjectAssetCategoryCapabilities() }
       : ordinary;
   }
 
@@ -990,7 +995,7 @@ function buildAssetsPageData(
   if (!canRenderCompleteCategory) {
     const ordinary = workflowQueryService.getProjectAssetBrowser(projectId, categoryQuery);
     return ordinary
-      ? { ...ordinary, completeCategorySurface: false, autoRenameSurface: false, autoRenameCategory: null }
+      ? { ...ordinary, categoryCapabilities: noProjectAssetCategoryCapabilities() }
       : ordinary;
   }
 
@@ -1005,7 +1010,6 @@ function buildAssetsPageData(
     category: String(category.id),
     view: categorySurface.view,
   };
-  const autoRenameAvailable = categorySurface.total > 0;
 
   return {
     ...shell,
@@ -1028,17 +1032,47 @@ function buildAssetsPageData(
     context: completeContext,
     contextFields: ['category', 'view'],
     emptyState: categorySurface.total > 0 ? null : shell.emptyState,
-    completeCategorySurface: true,
-    autoRenameSurface: autoRenameAvailable,
-    autoRenameCategory: autoRenameAvailable
-      ? {
-        ...categorySurface,
-        categoryId: category.id,
-        displayName: category.displayName,
-        directorySlug: category.directorySlug,
-        orderedAssetIdsJson: JSON.stringify(categorySurface.orderedAssetIds),
-      }
-      : null,
+    categoryCapabilities: resolveProjectAssetCategoryCapabilities({
+      projectArchived: isProjectArchived(project),
+      categoryMembership: categorySurface,
+      renderedAssetIds: categorySurface.orderedAssetIds,
+    }),
+  };
+}
+
+// A concrete category rendered through the ordinary browser because it has a
+// non-default sort/order or filter. When the filters omit no category asset,
+// the complete membership is rendered on one page in the selected sort order
+// (matching the default filename surface, which also ignores pageSize), so
+// every sort exposes the same category capabilities. Real subsets paginate.
+function buildCategoryBrowserPageData(workflowQueryService, projectId, project, categoryQuery) {
+  let rendered = workflowQueryService.getProjectAssetBrowser(projectId, categoryQuery);
+  if (!rendered) return rendered;
+
+  const categoryMembership = isProjectArchived(project)
+    ? null
+    : workflowQueryService.getProjectAutoRenameCategory(projectId, {
+      category: String(rendered.filters?.category ?? ''),
+      view: rendered.filters?.view,
+    });
+  if (
+    categoryMembership?.autoRenameAvailable === true
+    && rendered.total === categoryMembership.total
+    && rendered.assets.length < rendered.total
+  ) {
+    const complete = workflowQueryService.getProjectAssetBrowser(projectId, categoryQuery, {
+      renderAllMatches: true,
+    });
+    if (complete) rendered = complete;
+  }
+
+  return {
+    ...rendered,
+    categoryCapabilities: resolveProjectAssetCategoryCapabilities({
+      projectArchived: isProjectArchived(project),
+      categoryMembership,
+      renderedAssetIds: (rendered.assets || []).map((asset) => asset.id),
+    }),
   };
 }
 
@@ -1158,6 +1192,8 @@ function omitInheritedFilterDefaultsForCategory(rawQuery = {}) {
   return query;
 }
 
+// Presentation controls choose display/query behavior only. Processing
+// capabilities are resolved from complete category membership.
 function hasNonDefaultCategoryBrowserControls(rawQuery = {}) {
   const extensions = (Array.isArray(rawQuery.extension) ? rawQuery.extension : [rawQuery.extension])
     .filter((value) => typeof value === 'string')
@@ -1175,6 +1211,7 @@ function hasNonDefaultCategoryBrowserControls(rawQuery = {}) {
     || rawQuery.sort === 'size'
     || rawQuery.sort === 'category'
     || rawQuery.order === 'desc'
+    || hasConcreteTagQuery(rawQuery)
   );
 }
 

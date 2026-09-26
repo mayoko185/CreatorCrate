@@ -62,6 +62,8 @@ import { formatLocalDate, formatLocalTime, getLocalTodayIso } from '../util/date
 import { isProjectArchived } from './project-state.js';
 import { supportsImageDimensionInspection } from './asset-workflow-metadata-service.js';
 import { createProcessingConcurrencyService } from './processing-concurrency-service.js';
+import { createProjectImageSettingsService } from './project-image-settings-service.js';
+import { projectImagePresentationPolicy } from './project-image-policy.js';
 
 const DEFAULT_LIMITS = Object.freeze({
   // Project workspace sections
@@ -154,6 +156,8 @@ function appendCanonicalAssetBrowserParam(query, key, value) {
   if (key === 'view' && normalized === 'grid') return;
   query[key] = normalized;
 }
+
+export const ASSET_BROWSER_SORT_VALUES = Object.freeze(['filename', 'modified', 'size', 'category']);
 
 export function buildAssetBrowserQueryString(query = {}) {
   const params = new URLSearchParams();
@@ -399,7 +403,15 @@ export function createWorkflowQueryService({
   tagRepository: injectedTagRepository,
   dashboardSectionRegistryProvider,
   imageDimensionConcurrencyService: injectedImageDimensionConcurrencyService,
+  projectImageSettingsService: injectedProjectImageSettingsService,
 }) {
+  const imageSettings = injectedProjectImageSettingsService ?? createProjectImageSettingsService({
+    appMetaRepository: createAppMetaRepository(db),
+  });
+  const imageFingerprint = () => imageSettings.getPresentationPolicy?.()
+    ?? projectImagePresentationPolicy(imageSettings.getPolicy());
+  const presentAssetPreview = (asset, fingerprint = imageFingerprint()) =>
+    buildAssetPreviewModel(asset, fingerprint);
   const projectRepository = createProjectRepository(db);
   const releaseRepository = injectedReleaseRepository ?? createReleaseRepository(db);
   const socialPrepRepository = injectedSocialPrepRepository ?? createSocialPrepRepository(db);
@@ -688,12 +700,12 @@ export function createWorkflowQueryService({
     };
   }
 
-  function buildPrimaryImageModel(projectId, selection, asset) {
+  function buildPrimaryImageModel(projectId, selection, asset, policyFingerprint = imageFingerprint()) {
     const ownedAsset = asset && asset.project_id === projectId ? asset : null;
     const projectSelection = selection
       ? { ...selection, provenance: selection.provenance ?? PRIMARY_IMAGE_PROVENANCE.MANUAL }
       : selection;
-    return buildPrimaryImageModelForAsset(projectSelection, ownedAsset);
+    return buildPrimaryImageModelForAsset(projectSelection, ownedAsset, policyFingerprint);
   }
 
   function attachPrimaryImages(projects) {
@@ -711,6 +723,7 @@ export function createWorkflowQueryService({
       ? assetRepository.findByIds(selectedAssetIds)
       : [];
     const assetById = new Map(selectedAssets.map((asset) => [asset.id, asset]));
+    const policyFingerprint = imageFingerprint();
 
     return projects.map((project) => {
       const selection = selectionByProjectId.get(project.id);
@@ -720,6 +733,7 @@ export function createWorkflowQueryService({
           project.id,
           selection,
           selection ? assetById.get(selection.asset_id) : null,
+          policyFingerprint,
         ),
       };
     });
@@ -1087,8 +1101,10 @@ export function createWorkflowQueryService({
 
     const hasAnyAssets = assetRepository.countAllAssets() > 0;
     const total = assetRepository.countAllAssets(repositoryFilters);
+    const policyFingerprint = imageFingerprint();
     const slideshowSequence = buildSlideshowSequence(
       assetRepository.findAllAssetsSlideshowSequence(repositoryFilters),
+      policyFingerprint,
     );
     const showAll = pageSize === 'all';
     const pageCount = showAll ? 1 : Math.max(1, Math.ceil(total / pageSize));
@@ -1100,7 +1116,7 @@ export function createWorkflowQueryService({
         limit: showAll ? null : pageSize,
         ...(showAll ? {} : { offset }),
       }).map((asset) => {
-        const preview = buildAssetPreviewModel(asset);
+        const preview = presentAssetPreview(asset, policyFingerprint);
         return {
           ...asset,
           preview,
@@ -1442,7 +1458,6 @@ export function createWorkflowQueryService({
     return num;
   }
 
-  const ASSET_BROWSER_SORT_VALUES = ['filename', 'modified', 'size', 'category'];
   const ASSET_BROWSER_ORDER_VALUES = ['asc', 'desc'];
 
   const ASSET_BROWSER_VIEW_VALUES = ['list', 'grid'];
@@ -1658,12 +1673,13 @@ function normalizeAssetBrowserQuery(
       releases.map((release) => [release.id, []])
     );
     const selectedAssetRows = releaseRepository.findReleaseAssetsByReleaseIds(releaseIds);
+    const policyFingerprint = imageFingerprint();
 
     for (const row of selectedAssetRows) {
       if (!thumbnailsByReleaseId.has(row.release_id)) continue;
       if (row.asset_id == null || row.asset_project_id !== row.release_project_id) continue;
 
-      const previewModel = buildAssetPreviewModel({
+      const previewModel = presentAssetPreview({
         id: row.asset_id,
         project_id: row.asset_project_id,
         relative_path: row.relative_path,
@@ -1671,8 +1687,10 @@ function normalizeAssetBrowserQuery(
         mime_type: row.mime_type,
         size_bytes: row.size_bytes,
         modified_at: row.modified_at,
+        source_animated: row.source_animated,
+        source_generation: row.source_generation,
         is_present: row.is_present,
-      });
+      }, policyFingerprint);
 
       if (!previewModel.previewable || !previewModel.sourceMetadataValid || !previewModel.urls.thumbnail) {
         continue;
@@ -1898,7 +1916,7 @@ function normalizeAssetBrowserQuery(
   }
 
   function buildViewerAssetModel(asset, releaseUsage) {
-    const preview = buildAssetPreviewModel(asset);
+    const preview = presentAssetPreview(asset);
     return {
       id: asset.id,
       project_id: asset.project_id,
@@ -1967,10 +1985,10 @@ function normalizeAssetBrowserQuery(
    *   slideshowSequence: Array<{id: number, filename: string, previewUrl: string, viewerUrl: string, originalUrl?: string}>,
    * }}
    */
-  function buildSlideshowSequence(rows) {
+  function buildSlideshowSequence(rows, policyFingerprint = imageFingerprint()) {
     const result = [];
     for (const asset of rows) {
-      const preview = buildAssetPreviewModel(asset);
+      const preview = presentAssetPreview(asset, policyFingerprint);
       if (!preview.urls.preview) continue;
       const originalUrl = buildAssetOriginalUrl(asset);
       result.push({
@@ -1984,7 +2002,7 @@ function normalizeAssetBrowserQuery(
     return result;
   }
 
-  function getProjectAssetBrowser(projectId, rawQuery = {}) {
+  function getProjectAssetBrowser(projectId, rawQuery = {}, { renderAllMatches = false } = {}) {
     const project = projectRepository.findById(projectId);
     if (!project) return null;
 
@@ -2027,18 +2045,22 @@ function normalizeAssetBrowserQuery(
 
     const total = assetRepository.countProjectAssets(projectId, filters);
 
+    const policyFingerprint = imageFingerprint();
     const slideshowSequence = buildSlideshowSequence(
       assetRepository.findProjectAssetSlideshowSequence(projectId, filters),
+      policyFingerprint,
     );
 
-    const showAll = filters.pageSize === 'all';
+    // renderAllMatches renders every match on one page while keeping the
+    // requested pageSize in the context, so links keep the user's page size.
+    const showAll = renderAllMatches || filters.pageSize === 'all';
     const pageCount = showAll ? 1 : Math.max(1, Math.ceil(total / filters.pageSize));
     const page = showAll ? 1 : Math.min(filters.page, pageCount);
 
     const pageResult = assetRepository.findProjectAssetPage(projectId, {
       ...filters,
       page,
-      pageSize: filters.pageSize,
+      pageSize: showAll ? 'all' : filters.pageSize,
     });
     const pageAssets = attachAssetTags(pageResult);
 
@@ -2074,14 +2096,14 @@ function normalizeAssetBrowserQuery(
       release_usage_count: asset.release_usage_count,
       release_usage: usageByAssetId.get(asset.id) || [],
       tags: asset.tags,
-      preview: buildAssetPreviewModel(asset),
+      preview: presentAssetPreview(asset, policyFingerprint),
     })).map((asset) => ({
       ...asset,
       preview_state: asset.preview.state,
       preview_revision: asset.preview.revision,
       thumbnail_url: asset.preview.urls.thumbnail,
       preview_url: asset.preview.urls.preview,
-    })).map((asset) => ({
+    })).map((asset, index) => ({
       ...asset,
       formattedSize: formatFileSize(asset.size_bytes),
       previewAltText: buildPreviewAltText(asset),
@@ -2094,7 +2116,12 @@ function normalizeAssetBrowserQuery(
       // page a user actually clicked from, not an out-of-range raw page —
       // so Back/Previous/Next in the viewer resume the same filtered,
       // sorted, paginated context instead of silently reverting to defaults.
-      viewerUrl: buildProjectAssetViewerUrl(projectId, asset.id, filters, page),
+      viewerUrl: buildProjectAssetViewerUrl(
+        projectId,
+        asset.id,
+        filters,
+        renderAllMatches ? pageForPosition(index + 1, filters.pageSize) : page,
+      ),
     }));
 
     return {
@@ -2142,9 +2169,9 @@ function normalizeAssetBrowserQuery(
     };
   }
 
-  function buildAutoRenameCategoryAssetModel(projectId, categoryId, view, asset, releaseUsage) {
+  function buildAutoRenameCategoryAssetModel(projectId, categoryId, view, asset, releaseUsage, policyFingerprint) {
     const category = buildAutoRenameAssetCategoryModel(asset);
-    const preview = buildAssetPreviewModel(asset);
+    const preview = presentAssetPreview(asset, policyFingerprint);
     const base = {
       id: asset.id,
       project_id: asset.project_id,
@@ -2272,12 +2299,14 @@ function normalizeAssetBrowserQuery(
       usageByAssetId.get(detail.asset_id).push(detail);
     }
 
+    const policyFingerprint = imageFingerprint();
     const assets = taggedRows.map((asset) => buildAutoRenameCategoryAssetModel(
       projectId,
       category.id,
       view,
       asset,
       usageByAssetId.get(asset.id) || [],
+      policyFingerprint,
     ));
 
     return {

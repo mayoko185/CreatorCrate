@@ -8,6 +8,7 @@ import { mimeFromExtension } from './asset-metadata.js';
 import { classifyPreviewable } from './preview-service.js';
 import { PREVIEW_CATEGORY_DISABLED_VALUE } from './preview-category-settings-service.js';
 import { classifyAssetPath } from './asset-path-classification.js';
+import { inspectSourceAnimation } from './source-animation.js';
 
 /**
  * Files to skip during scanning.
@@ -181,6 +182,7 @@ function walkDirectory(dirPath, projectRelPrefix = '') {
         mimeType: mimeFromExtension(ext),
         sizeBytes,
         modifiedAt,
+        sourceAnimated: inspectSourceAnimation(fullPath, ext),
       });
     }
   }

@@ -16,6 +16,7 @@ import {
   isPrimaryImageAssetUsable,
 } from '../services/workflow-query-service.js';
 import { buildAssetRevisionToken, classifyPreviewable } from '../services/preview-service.js';
+import { projectImagePresentationPolicy } from '../services/project-image-policy.js';
 import { presentWorkflowJson } from '../services/workflow-json-presenter.js';
 import { isProjectArchived } from '../services/project-state.js';
 import { buildOpenLocallyUri } from '../util/open-locally.js';
@@ -268,6 +269,7 @@ export function createAssetsRouter({
   bookPrimaryImageService,
   applicationLogger = null,
   previewProbe,
+  projectImageSettingsService,
 } = {}) {
   if (!assetBrowserPreferenceService || typeof assetBrowserPreferenceService.resolveEffectiveCategory !== 'function') {
     throw new Error('createAssetsRouter requires an assetBrowserPreferenceService dependency.');
@@ -571,7 +573,9 @@ export function createAssetsRouter({
           ...body,
           categoryId: String(categoryId),
         });
-        const planModel = buildAutoRenamePlanRenderModel(plan);
+        const planModel = buildAutoRenamePlanRenderModel(plan,
+          projectImageSettingsService && (projectImageSettingsService.getPresentationPolicy?.()
+            ?? projectImagePresentationPolicy(projectImageSettingsService.getPolicy())));
         const cancelUrl = buildAssetsRedirectUrl(
           workflowQueryService,
           projectId,
@@ -1838,7 +1842,7 @@ function extensionFromFilename(filename) {
   return dot > 0 && dot < filename.length - 1 ? filename.slice(dot + 1).toLowerCase() : '';
 }
 
-function buildAutoRenameItemPreviewModel(projectId, item) {
+function buildAutoRenameItemPreviewModel(projectId, item, policyFingerprint) {
   const extension = typeof item.extension === 'string' && item.extension.length > 0
     ? item.extension.toLowerCase()
     : extensionFromFilename(item.currentFilename);
@@ -1872,13 +1876,19 @@ function buildAutoRenameItemPreviewModel(projectId, item) {
     };
   }
 
-  const revision = buildAssetRevisionToken({
+  const source = {
     project_id: projectId,
     id: item.assetId,
     relative_path: item.currentRelativePath,
     size_bytes: item.sizeBytes ?? item.size_bytes,
     modified_at: item.modifiedAt ?? item.modified_at,
-  });
+    extension,
+    source_animated: item.sourceAnimated ?? item.source_animated,
+    source_generation: item.sourceGeneration ?? item.source_generation,
+    is_present: 1,
+  };
+  const revision = buildAssetRevisionToken(source,
+    policyFingerprint?.fingerprintFor?.(source) ?? policyFingerprint);
   const query = revision ? new URLSearchParams({ v: revision }).toString() : null;
 
   return {
@@ -1907,7 +1917,7 @@ function categoryGroupLabel(item) {
   return 'Unavailable category';
 }
 
-export function buildAutoRenamePlanRenderModel(plan) {
+export function buildAutoRenamePlanRenderModel(plan, policyFingerprint) {
   const sourceItems = Array.isArray(plan?.items) ? plan.items : [];
   const selectionMode = Array.isArray(plan?.selectedAssetIds)
     && plan.selectedAssetIds.length > 0
@@ -1924,7 +1934,7 @@ export function buildAutoRenamePlanRenderModel(plan) {
     const blockedReason = item.status === 'blocked'
       ? (AUTO_RENAME_BLOCK_REASON_MESSAGES[item.reason] || 'This asset cannot be renamed safely.')
       : null;
-    const preview = buildAutoRenameItemPreviewModel(plan.projectId, item);
+    const preview = buildAutoRenameItemPreviewModel(plan.projectId, item, policyFingerprint);
     return {
       assetId: item.assetId,
       categoryId: item.categoryId ?? null,

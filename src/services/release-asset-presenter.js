@@ -74,7 +74,7 @@ function buildCategoryPresentation(asset, categoriesById) {
  * @param {{ selected?: boolean, categoriesById?: Map, clockFormat?: '12h'|'24h' }} [options]
  * @returns {object}
  */
-export function buildReleaseAssetPresentation(row, { selected = false, categoriesById = new Map(), clockFormat = '24h' } = {}) {
+export function buildReleaseAssetPresentation(row, { selected = false, categoriesById = new Map(), clockFormat = '24h', policyFingerprint } = {}) {
   const assetId = assetIdFromRow(row, selected);
   const asset = {
     id: assetId,
@@ -87,9 +87,11 @@ export function buildReleaseAssetPresentation(row, { selected = false, categorie
     mime_type: row?.mime_type ?? null,
     size_bytes: row?.size_bytes ?? null,
     modified_at: row?.modified_at ?? null,
+    source_animated: row?.source_animated ?? null,
+    source_generation: row?.source_generation ?? 0,
     is_present: row?.is_present,
   };
-  const preview = buildAssetPreviewModel(asset);
+  const preview = buildAssetPreviewModel(asset, policyFingerprint);
   const viewerUrl = buildAssetViewerUrl(asset.project_id, asset.id);
   const originalUrl = buildAssetOriginalUrl(asset);
   const hasSize = Number.isFinite(asset.size_bytes) && asset.size_bytes >= 0;
@@ -145,6 +147,7 @@ export function buildReleaseAssetPagePresentation({
   assets = null,
   categories = [],
   clockFormat = '24h',
+  policyFingerprint,
 } = {}) {
   const categoriesById = new Map(
     (Array.isArray(categories) ? categories : []).map((category) => [category.id, category]),
@@ -171,17 +174,19 @@ export function buildReleaseAssetPagePresentation({
     selected: true,
     categoriesById,
     clockFormat,
+    policyFingerprint,
   }));
   const candidates = candidateRows.map((row) => buildReleaseAssetPresentation(row, {
     selected: false,
     categoriesById,
     clockFormat,
+    policyFingerprint,
   }));
   const presentedAssets = assetRows.map((row) => {
     const assetId = row?.asset_id ?? row?.id;
     const selectedRow = selectedById.get(String(assetId));
     if (!selectedRow) {
-      return buildReleaseAssetPresentation(row, { selected: false, categoriesById, clockFormat });
+      return buildReleaseAssetPresentation(row, { selected: false, categoriesById, clockFormat, policyFingerprint });
     }
 
     return buildReleaseAssetPresentation({
@@ -189,7 +194,7 @@ export function buildReleaseAssetPagePresentation({
       asset_id: assetId,
       role: selectedRow.role,
       sort_order: selectedRow.sort_order,
-    }, { selected: true, categoriesById, clockFormat });
+    }, { selected: true, categoriesById, clockFormat, policyFingerprint });
   });
 
   return {

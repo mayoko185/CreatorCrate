@@ -159,7 +159,7 @@ export function createReleaseRepository(db) {
   const raFindByRelease = db.prepare(`
     SELECT ra.release_id, ra.asset_id, ra.role, ra.sort_order, ra.created_at,
            a.project_id, a.category_id, a.relative_path, a.nested_path, a.filename, a.extension,
-           a.mime_type, a.size_bytes, a.modified_at, a.is_present,
+           a.mime_type, a.size_bytes, a.modified_at, a.source_animated, a.source_generation, a.is_present,
            a.last_seen_at, a.missing_since, a.created_at as asset_created_at,
            a.updated_at as asset_updated_at
     FROM release_assets ra
@@ -917,6 +917,8 @@ export function createReleaseRepository(db) {
             a.mime_type,
             a.size_bytes,
             a.modified_at,
+            a.source_animated,
+            a.source_generation,
             a.is_present
           FROM release_assets ra
           JOIN releases r ON r.id = ra.release_id

@@ -75,16 +75,18 @@ const USERNAME_HELP =
  *   null/undefined while auth is disabled
  */
 export function createAuthTransitionService({
-  appDataRoot, db, replaceAuthConfig, assertNoActiveProcessingJobs, beginReplacement, authSettings, csrfPepper, authService,
+  appDataRoot, db, replaceAuthConfig, assertNoActiveProcessingJobs, beginReplacement,
+  beginReplacementAfterRebuild, authSettings, csrfPepper, authService,
 }) {
   let busy = false;
 
-  function withLock(fn) {
+  async function withLock(fn) {
     if (busy) return { ok: false, conflict: true };
     let owner;
-    const acquire = () => {
+    const acquire = async () => {
       try {
-        owner = beginReplacement ? beginReplacement()
+        owner = beginReplacementAfterRebuild ? await beginReplacementAfterRebuild()
+          : beginReplacement ? beginReplacement()
           : beginReplacementMaintenance(db, () => db.open, assertNoActiveProcessingJobs);
         return { ok: true, owner };
       } catch (error) {
@@ -93,7 +95,7 @@ export function createAuthTransitionService({
     };
     busy = true;
     try {
-      return fn(acquire);
+      return await fn(acquire);
     } finally {
       busy = false;
       owner?.release();
@@ -101,7 +103,7 @@ export function createAuthTransitionService({
   }
 
   function enable({ username, password, confirmation }) {
-    return withLock((acquire) => {
+    return withLock(async (acquire) => {
       const errors = [];
       if (!validateUsername(username)) {
         errors.push(USERNAME_HELP);
@@ -121,7 +123,7 @@ export function createAuthTransitionService({
         return { ok: false, alreadyEnabled: true };
       }
 
-      const transition = acquire();
+      const transition = await acquire();
       if (!transition.ok) return transition;
       const { owner } = transition;
 
@@ -176,7 +178,7 @@ export function createAuthTransitionService({
   }
 
   function disable({ username, currentPassword }) {
-    return withLock((acquire) => {
+    return withLock(async (acquire) => {
       if (!authService) {
         return { ok: false, alreadyDisabled: true };
       }
@@ -195,7 +197,7 @@ export function createAuthTransitionService({
         return { ok: false, currentPasswordError: 'Current password is incorrect.' };
       }
 
-      const transition = acquire();
+      const transition = await acquire();
       if (!transition.ok) return transition;
       const { owner } = transition;
 

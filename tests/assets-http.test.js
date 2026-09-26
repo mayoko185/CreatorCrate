@@ -10,7 +10,11 @@ import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createAssetCategoryRepository } from '../src/data/asset-category-repository.js';
 import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browser-preference-repository.js';
 import { buildAssetRevisionToken } from '../src/services/preview-service.js';
+import { createAppMetaRepository } from '../src/data/app-meta-repository.js';
+import { createProjectImageSettingsService } from '../src/services/project-image-settings-service.js';
+import { projectImagePolicyFingerprint } from '../src/services/project-image-policy.js';
 import { createReleaseService } from '../src/services/release-service.js';
+import { ASSET_BROWSER_SORT_VALUES } from '../src/services/workflow-query-service.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { AssetActionError, UNCATEGORIZED } from '../src/services/asset-action-service.js';
 import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
@@ -1814,7 +1818,9 @@ describe('asset browser HTTP workflow', () => {
       );
     }
     await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
-    for (const asset of assetRepo.findByProjectId(id)) {
+    // Leave one category asset untagged so the filters form a real subset
+    // (11 matches) that paginates; complete-category matches render in full.
+    for (const asset of assetRepo.findByProjectId(id).slice(1)) {
       app.locals.assetTagService.replaceAssetTags(asset.id, [firstTag.id, secondTag.id]);
     }
 
@@ -1976,6 +1982,16 @@ describe('asset browser HTTP workflow', () => {
     expect(kritaEntry).toBeDefined();
     expect(kritaEntry.originalUrl).toBeUndefined();
     expect(kritaEntry.previewUrl).toContain('/preview?');
+
+    createAppMetaRepository(db).setValue('images.preview.format', 'original');
+    const originalPage = await agent.get(`/projects/${id}/assets`).expect(200);
+    const originalSequence = extractSlideshowSequence(originalPage.text);
+    const originalImage = originalSequence.find((entry) => entry.id === image.id);
+    const originalKrita = originalSequence.find((entry) => entry.id === krita.id);
+    expect(originalImage.previewUrl).toBe(originalImage.originalUrl);
+    expect(originalImage.previewUrl).toBe(`/projects/${id}/assets/${image.id}/original`);
+    expect(originalKrita.previewUrl).toContain('/preview?v=');
+    expect(originalKrita.originalUrl).toBeUndefined();
   });
 
   it('project assets: slideshow sequence excludes missing and unsupported assets', async () => {
@@ -2731,7 +2747,9 @@ describe('asset browser HTTP workflow', () => {
       modifiedAt: '2026-07-15 10:20:30',
     });
     const releaseId = await createReleaseUsingAsset(id, asset.id, 'Hero Release', 'planned');
-    const revision = buildAssetRevisionToken(asset);
+    const revision = buildAssetRevisionToken(asset, projectImagePolicyFingerprint(
+      createProjectImageSettingsService({ appMetaRepository: createAppMetaRepository(db) }).getPolicy(),
+    ));
 
     const res2 = await agent
       .get(`/projects/${id}/assets/${asset.id}`)
@@ -4387,6 +4405,362 @@ describe('asset browser HTTP workflow', () => {
     expect(ordinaryActionPanel).toContain('aria-label="Auto Rename"');
     expect(ordinaryActionPanel).not.toContain('data-auto-rename-submit');
   });
+
+  it('keeps Auto Rename and category reorder available for complete category membership regardless of sort', async () => {
+    const res = await createProject('Complete Membership Sort');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const category = assetCategoryRepo.addProjectCategory({
+      projectId: id, displayName: 'Renders', directorySlug: 'renders', displayOrder: 0, enabled: true,
+    });
+    // Filename order is alpha, bravo, charlie; modified order is charlie, alpha, bravo.
+    const alpha = assetRepo.upsert(id, 'renders/alpha.png', {
+      filename: 'alpha.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 10, modifiedAt: '2026-01-02T00:00:00.000Z', categoryId: category.id, nestedPath: '',
+    });
+    const bravo = assetRepo.upsert(id, 'renders/bravo.png', {
+      filename: 'bravo.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 10, modifiedAt: '2026-01-03T00:00:00.000Z', categoryId: category.id, nestedPath: '',
+    });
+    const charlie = assetRepo.upsert(id, 'renders/charlie.txt', {
+      filename: 'charlie.txt', extension: 'txt', mimeType: 'text/plain',
+      sizeBytes: 10, modifiedAt: '2026-01-01T00:00:00.000Z', categoryId: category.id, nestedPath: '',
+    });
+    assetRepo.upsert(id, 'outside.png', {
+      filename: 'outside.png', extension: 'png', mimeType: 'image/png',
+      sizeBytes: 10, modifiedAt: null,
+    });
+    const autoRenameButton = (html) => html.match(/<button\b(?=[^>]*aria-label="Auto Rename")[^>]*>/)?.[0] || '';
+    const expectAvailable = (html, orderedIds) => {
+      const actionPanel = assetActionsPanelHtml(html);
+      expect(actionPanel).toContain('data-auto-rename-form');
+      expect(actionPanel).toContain(`action="/projects/${id}/assets/auto-rename/preview"`);
+      expect(actionPanel).toContain(`name="categoryId" value="${category.id}"`);
+      expect(actionPanel).toContain(`name="orderedAssetIds" value="${JSON.stringify(orderedIds)}"`);
+      expect(actionPanel).toContain('name="selectedAssetIds" value="[]"');
+      const button = autoRenameButton(actionPanel);
+      expect(button).toContain('data-auto-rename-submit');
+      expect(button).toContain('form="auto-rename-assets-form"');
+      expect(button).toContain('disabled');
+    };
+    const expectReorderSurface = (html, orderedIds) => {
+      expect(html).toContain('<section class="asset-auto-rename-surface" data-auto-rename-surface data-auto-rename-view="grid"');
+      expect(html).not.toContain('asset-actions-panel--selection-only');
+      expect(html).not.toContain('data-auto-rename-mode');
+      orderedIds.forEach((assetId, index) => {
+        const item = html.match(new RegExp(`<li\\b(?=[^>]*data-auto-rename-asset)(?=[^>]*data-auto-rename-asset-id="${assetId}")[^>]*>`))?.[0] || '';
+        expect(item).toContain(`data-auto-rename-initial-index="${index}"`);
+        expect(item).toContain('draggable="true"');
+        expect(item).toContain('aria-describedby="auto-rename-instructions"');
+      });
+    };
+    const expectUnavailable = (html) => {
+      expect(html).not.toContain('data-auto-rename-surface');
+      expect(html).not.toContain('data-auto-rename-asset');
+      expect(html).not.toContain('data-auto-rename-form');
+      const button = autoRenameButton(assetActionsPanelHtml(html));
+      expect(button).toContain('aria-label="Auto Rename"');
+      expect(button).not.toContain('data-auto-rename-submit');
+    };
+    const base = `/projects/${id}/assets?category=${category.id}&pageSize=50&presence=all&usage=all`;
+
+    // Complete membership under modified sort, with inherited extension provenance only.
+    const modified = await agent
+      .get(`${base}&inheritedFilterDefaults=extension&sort=modified&order=asc`)
+      .expect(200);
+    // Sort stays Modified (no redirect to filename) and the selected sort is
+    // carried in the action form context.
+    expectCheckedAssetFilter(modified.text, 'sort', 'modified');
+    expect(assetActionsPanelHtml(modified.text)).toContain('name="sort" value="modified"');
+    expectReorderSurface(modified.text, [charlie.id, alpha.id, bravo.id]);
+    expectAvailable(modified.text, [charlie.id, alpha.id, bravo.id]);
+
+    // Complete membership under filename sort renders the same surface and hooks.
+    const filename = await agent.get(`${base}&sort=filename&order=asc`).expect(200);
+    expectReorderSurface(filename.text, [alpha.id, bravo.id, charlie.id]);
+    expectAvailable(filename.text, [alpha.id, bravo.id, charlie.id]);
+
+    // A filter that happens to match every category asset keeps membership complete.
+    const matchingAll = await agent
+      .get(`${base}&extension=png&extension=txt&sort=modified&order=asc`)
+      .expect(200);
+    expectReorderSurface(matchingAll.text, [charlie.id, alpha.id, bravo.id]);
+    expectAvailable(matchingAll.text, [charlie.id, alpha.id, bravo.id]);
+
+    // Explicit extension and search subsets remain unavailable.
+    const extensionSubset = await agent.get(`${base}&extension=png&sort=modified&order=asc`).expect(200);
+    expect(extensionSubset.text).toContain('alpha.png');
+    expect(extensionSubset.text).not.toContain('charlie.txt');
+    expectUnavailable(extensionSubset.text);
+    const searchSubset = await agent.get(`${base}&search=alpha&sort=modified&order=asc`).expect(200);
+    expect(searchSubset.text).toContain('alpha.png');
+    expect(searchSubset.text).not.toContain('bravo.png');
+    expectUnavailable(searchSubset.text);
+
+    // A pageSize below the category count still renders the full membership
+    // for a complete category, exactly as the filename sort does.
+    const paged = await agent
+      .get(`/projects/${id}/assets?category=${category.id}&pageSize=2&sort=modified&order=asc`)
+      .expect(200);
+    expect(paged.text).not.toContain('class="pagination-next"');
+    expectReorderSurface(paged.text, [charlie.id, alpha.id, bravo.id]);
+    expectAvailable(paged.text, [charlie.id, alpha.id, bravo.id]);
+
+    // Clearing the subset filter while keeping modified sort restores Auto Rename.
+    const reset = await agent.get(`${base}&sort=modified&order=desc`).expect(200);
+    expectCheckedAssetFilter(reset.text, 'sort', 'modified');
+    expectReorderSurface(reset.text, [bravo.id, alpha.id, charlie.id]);
+    expectAvailable(reset.text, [bravo.id, alpha.id, charlie.id]);
+  });
+  describe('category capability contract matrix', () => {
+    // Sorting is presentation-only: every supported sort/order must expose the
+    // same category capabilities, and only filters that actually omit category
+    // assets may remove them.
+    const renderedCapabilities = (html) => {
+      const surface = html.match(/<section class="asset-auto-rename-surface"[^>]*>/)?.[0] || '';
+      const renderedIds = [...html.matchAll(/<li\b(?=[^>]*data-auto-rename-asset\b)[^>]*?data-auto-rename-asset-id="(\d+)"/g)]
+        .map((match) => Number(match[1]));
+      const orderJson = html.match(/name="orderedAssetIds" value="([^"]*)"/)?.[1] || null;
+      return {
+        membershipComplete: surface.includes('data-category-membership-complete="true"'),
+        reorder: surface.includes('data-category-reorder-enabled="true"') && renderedIds.length > 0,
+        autoRename: surface.includes('data-auto-rename-enabled="true"')
+          && html.includes('data-auto-rename-form')
+          && /<button\b(?=[^>]*aria-label="Auto Rename")(?=[^>]*data-auto-rename-submit)[^>]*>/.test(html),
+        renderedIds,
+        orderedIds: orderJson ? JSON.parse(orderJson.replace(/&quot;/g, '"')) : null,
+        paginated: html.includes('class="pagination-next"'),
+      };
+    };
+
+    async function seedCategory(title) {
+      const res = await createProject(title);
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const category = assetCategoryRepo.addProjectCategory({
+        projectId: id, displayName: 'Renders', directorySlug: 'renders', displayOrder: 0, enabled: true,
+      });
+      const seed = (filename, extension, sizeBytes, modifiedAt) => assetRepo.upsert(id, `renders/${filename}`, {
+        filename, extension, mimeType: extension === 'png' ? 'image/png' : 'text/plain',
+        sizeBytes, modifiedAt, categoryId: category.id, nestedPath: '',
+      });
+      const members = [
+        seed('alpha.png', 'png', 30, '2026-01-03T00:00:00.000Z'),
+        seed('bravo.png', 'png', 10, '2026-01-01T00:00:00.000Z'),
+        seed('charlie.txt', 'txt', 40, '2026-01-04T00:00:00.000Z'),
+        seed('delta.png', 'png', 20, '2026-01-02T00:00:00.000Z'),
+      ];
+      assetRepo.upsert(id, 'outside.png', {
+        filename: 'outside.png', extension: 'png', mimeType: 'image/png', sizeBytes: 1, modifiedAt: null,
+      });
+      return { id, category, members, memberIds: members.map((asset) => asset.id) };
+    }
+
+    const sortCases = ASSET_BROWSER_SORT_VALUES.flatMap((sort) => ['asc', 'desc'].map((order) => [sort, order]));
+
+    it.each(sortCases)('complete category sorted by %s %s exposes reorder and Auto Rename over the full membership', async (sort, order) => {
+      const { id, category, memberIds } = await seedCategory(`Capability ${sort} ${order}`);
+      // pageSize=2 is below the category count; complete categories still render in full.
+      const response = await agent
+        .get(`/projects/${id}/assets?category=${category.id}&sort=${sort}&order=${order}&pageSize=2`)
+        .expect(200);
+      const capabilities = renderedCapabilities(response.text);
+
+      expect(capabilities).toMatchObject({ membershipComplete: true, reorder: true, autoRename: true, paginated: false });
+      expect([...capabilities.renderedIds].sort((a, b) => a - b)).toEqual([...memberIds].sort((a, b) => a - b));
+      expect(capabilities.orderedIds).toEqual(capabilities.renderedIds);
+      // The selected sort is preserved, never switched to filename.
+      expectCheckedAssetFilter(response.text, 'sort', sort);
+    });
+
+    it.each([
+      ['search excludes a category asset', 'search=alpha', false],
+      ['extension excludes a category asset', 'extension=png', false],
+      ['presence excludes a missing category asset', 'presence=present', false],
+      ['usage=used excludes unused category assets', 'usage=used', false],
+      ['usage=unused excludes a used category asset', 'usage=unused', false],
+      ['an extension filter matching every category asset', 'extension=png&extension=txt', true],
+      ['a search matching every category asset', 'search=.', true],
+      ['presence=all and usage=all omit nothing', 'presence=all&usage=all', true],
+    ])('%s', async (_label, filterQuery, available) => {
+      const { id, category, members } = await seedCategory(`Capability filter ${filterQuery}`);
+      db.prepare('UPDATE assets SET is_present = 0 WHERE id = ?').run(members[3].id);
+      await createReleaseUsingAsset(id, members[0].id, 'Capability Usage Release');
+
+      for (const sort of ['filename', 'modified']) {
+        const response = await agent
+          .get(`/projects/${id}/assets?category=${category.id}&${filterQuery}&sort=${sort}&order=asc&pageSize=2`)
+          .expect(200);
+        const capabilities = renderedCapabilities(response.text);
+        expect({ sort, ...capabilities, renderedIds: undefined, orderedIds: undefined }).toMatchObject({
+          sort,
+          membershipComplete: available,
+          reorder: available,
+          autoRename: available,
+        });
+        if (available) {
+          expect(capabilities.renderedIds).toHaveLength(members.length);
+          expect(capabilities.paginated).toBe(false);
+        }
+      }
+    });
+
+    it.each([
+      // Project Assets tag filters match any selected direct or inherited project tag.
+      ['a tag matching every category asset', ['every'], true],
+      ['a tag omitting one category asset', ['subset'], false],
+      ['several tags whose union covers every category asset', ['subset', 'remainder'], true],
+      ['several tags whose union omits a category asset', ['subset', 'other'], false],
+    ])('%s', async (_label, tagKeys, available) => {
+      const { id, category, members, memberIds } = await seedCategory(`Capability tag ${tagKeys.join(' ')}`);
+      const tags = Object.fromEntries(['every', 'subset', 'remainder', 'other'].map((key) => [
+        key, app.locals.tagService.createTag({ name: `Capability ${key} ${id}` }),
+      ]));
+      members.forEach((asset, index) => {
+        const assigned = [tags.every.id];
+        if (index < 3) assigned.push(tags.subset.id);
+        else assigned.push(tags.remainder.id);
+        app.locals.assetTagService.replaceAssetTags(asset.id, assigned);
+      });
+      const tagQuery = tagKeys.map((key) => `tag=${tags[key].id}`).join('&');
+
+      for (const sort of ASSET_BROWSER_SORT_VALUES) {
+        const response = await agent
+          .get(`/projects/${id}/assets?category=${category.id}&${tagQuery}&sort=${sort}&order=asc&pageSize=2`)
+          .expect(200);
+        const capabilities = renderedCapabilities(response.text);
+        expect({ sort, ...capabilities, renderedIds: undefined, orderedIds: undefined }).toMatchObject({
+          sort,
+          membershipComplete: available,
+          reorder: available,
+          autoRename: available,
+        });
+        expectCheckedAssetFilter(response.text, 'sort', sort);
+        if (available) {
+          // pageSize=2 is below the category count; the complete membership renders in full.
+          expect([...capabilities.renderedIds].sort((a, b) => a - b)).toEqual([...memberIds].sort((a, b) => a - b));
+          expect(capabilities.orderedIds).toEqual(capabilities.renderedIds);
+          expect(capabilities.paginated).toBe(false);
+        }
+      }
+    });
+
+    it('matches inherited project tags alongside direct asset tags for membership and capabilities', async () => {
+      const { id, category, members, memberIds } = await seedCategory('Capability inherited tag');
+      const [alpha] = members;
+      const max = app.locals.tagService.createTag({ name: `Inherited Max ${id}` });
+      const benji = app.locals.tagService.createTag({ name: `Direct Benji ${id}` });
+      app.locals.projectTagService.replaceProjectTags(id, [max.id]);
+      // Alpha carries Max directly as well as by inheritance; it must render once.
+      app.locals.assetTagService.replaceAssetTags(alpha.id, [benji.id, max.id]);
+      const sorted = (ids) => [...ids].sort((a, b) => a - b);
+      const view = async (query) => {
+        const html = (await agent.get(`/projects/${id}/assets?${query}`).expect(200)).text;
+        return {
+          html,
+          ids: [...html.matchAll(/data-asset-id="(\d+)" role="option"/g)].map((match) => Number(match[1])),
+          capabilities: renderedCapabilities(html),
+        };
+      };
+
+      // Every category asset inherits Max: complete membership under a non-filename sort and small page size.
+      for (const tagQuery of [`tag=${max.id}`, `tag=${benji.id}&tag=${max.id}`]) {
+        const complete = await view(`category=${category.id}&${tagQuery}&sort=modified&order=asc&pageSize=2`);
+        expect(complete.html).not.toContain('No assets match');
+        expect(complete.capabilities).toMatchObject({ membershipComplete: true, reorder: true, autoRename: true, paginated: false });
+        expect(sorted(complete.capabilities.renderedIds)).toEqual(sorted(memberIds));
+        expect(complete.capabilities.orderedIds).toEqual(complete.capabilities.renderedIds);
+        expect(new Set(complete.ids).size).toBe(complete.ids.length);
+        expectCheckedAssetFilter(complete.html, 'sort', 'modified');
+      }
+
+      // A direct tag on a subset keeps subset rows and removes capabilities.
+      const subset = await view(`category=${category.id}&tag=${benji.id}&sort=modified&order=asc&pageSize=2`);
+      expect(subset.ids).toEqual([alpha.id]);
+      expect(subset.capabilities).toMatchObject({ membershipComplete: false, reorder: false, autoRename: false });
+
+      // The inherited tag still composes with search.
+      const searched = await view(`category=${category.id}&tag=${max.id}&search=alpha&sort=modified&order=asc`);
+      expect(searched.ids).toEqual([alpha.id]);
+      expect(searched.capabilities).toMatchObject({ membershipComplete: false, reorder: false, autoRename: false });
+
+      // All categories: the project tag matches every project asset, including uncategorized ones.
+      const everything = await view(`category=all&tag=${max.id}&sort=filename&order=asc`);
+      const outside = assetRepo.findByProjectIdAndPath(id, 'outside.png');
+      expect(sorted(everything.ids)).toEqual(sorted([...memberIds, outside.id]));
+
+      // Removing the project tag is reflected on the next request.
+      app.locals.projectTagService.replaceProjectTags(id, []);
+      expect((await view(`category=all&tag=${max.id}`)).ids).toEqual([alpha.id]);
+    });
+
+    it('renders the same tag-filtered category membership for every sort, independent of capabilities', async () => {
+      const { id, category, members } = await seedCategory('Capability tag membership');
+      const [alpha, bravo, charlie, delta] = members;
+      const first = app.locals.tagService.createTag({ name: `Membership first ${id}` });
+      const second = app.locals.tagService.createTag({ name: `Membership second ${id}` });
+      app.locals.assetTagService.replaceAssetTags(alpha.id, [first.id]);
+      app.locals.assetTagService.replaceAssetTags(bravo.id, [second.id]);
+      app.locals.assetTagService.replaceAssetTags(delta.id, [first.id, second.id]);
+      const rendered = async (query) => {
+        const html = (await agent.get(`/projects/${id}/assets?category=${category.id}&${query}`).expect(200)).text;
+        return { html, ids: [...html.matchAll(/data-asset-id="(\d+)" role="option"/g)].map((match) => Number(match[1])) };
+      };
+      const sorted = (ids) => [...ids].sort((a, b) => a - b);
+
+      for (const [query, expected] of [
+        [`tag=${first.id}`, [alpha.id, delta.id]],
+        // Multiple Project Assets tags match any selected direct or inherited project tag.
+        [`tag=${first.id}&tag=${second.id}`, [alpha.id, bravo.id, delta.id]],
+        [`tag=${first.id}&search=delta`, [delta.id]],
+      ]) {
+        const byFilename = await rendered(`${query}&sort=filename&order=asc`);
+        const byModified = await rendered(`${query}&sort=modified&order=asc`);
+        expect(byFilename.html).not.toContain('No assets');
+        expect(sorted(byFilename.ids)).toEqual(sorted(expected));
+        expect(sorted(byModified.ids)).toEqual(sorted(expected));
+        expect(byFilename.ids).not.toContain(charlie.id);
+        expect(renderedCapabilities(byModified.html)).toMatchObject({ reorder: false, autoRename: false });
+      }
+      expect((await rendered(`tag=${first.id}&sort=modified&order=asc`)).ids).toEqual([delta.id, alpha.id]);
+    });
+
+    it('keeps existing archived, empty, and disabled-category rules identical across sorts', async () => {
+      const outcome = async (url) => {
+        const capabilities = renderedCapabilities((await agent.get(url).expect(200)).text);
+        return { reorder: capabilities.reorder, autoRename: capabilities.autoRename };
+      };
+      const none = { reorder: false, autoRename: false };
+
+      const emptyRes = await createProject('Capability Empty');
+      const emptyId = Number(emptyRes.headers.location.replace('/projects/', ''));
+      const empty = assetCategoryRepo.addProjectCategory({
+        projectId: emptyId, displayName: 'Empty', directorySlug: 'empty', displayOrder: 0, enabled: true,
+      });
+      for (const sort of ASSET_BROWSER_SORT_VALUES) {
+        expect(await outcome(`/projects/${emptyId}/assets?category=${empty.id}&sort=${sort}`)).toEqual(none);
+      }
+
+      const { id } = await seedCategory('Capability Disabled');
+      const disabled = assetCategoryRepo.addProjectCategory({
+        projectId: id, displayName: 'Old', directorySlug: 'old', displayOrder: 1, enabled: false,
+      });
+      assetRepo.upsert(id, 'old/one.png', {
+        filename: 'one.png', extension: 'png', mimeType: 'image/png', sizeBytes: 1, modifiedAt: null,
+        categoryId: disabled.id, nestedPath: '',
+      });
+      const disabledOutcomes = [];
+      for (const sort of ASSET_BROWSER_SORT_VALUES) {
+        disabledOutcomes.push(await outcome(`/projects/${id}/assets?category=${disabled.id}&sort=${sort}`));
+      }
+      disabledOutcomes.forEach((result) => expect(result).toEqual(disabledOutcomes[0]));
+
+      const { id: archivedId, category } = await seedCategory('Capability Archived');
+      await agent.post(`/projects/${archivedId}/archive`).type('form').send({ _csrf: csrfToken }).expect(302);
+      for (const sort of ASSET_BROWSER_SORT_VALUES) {
+        expect(await outcome(`/projects/${archivedId}/assets?category=${category.id}&sort=${sort}`)).toEqual(none);
+      }
+    });
+  });
+
   it('serves the Auto Rename drag, marker, surface, and disabled-action CSS contracts', async () => {
     const created = await createProject('Auto Rename CSS Contract');
     const id = Number(created.headers.location.replace('/projects/', ''));
@@ -4524,8 +4898,12 @@ describe('asset browser HTTP workflow', () => {
     const modifiedResponse = await agent
       .get(`/projects/${id}/assets?category=${category.id}&sort=modified`)
       .expect(200);
+    // Sort is presentation-only: complete membership keeps the category surface.
+    expectCheckedAssetFilter(modifiedResponse.text, 'sort', 'modified');
+    expect(modifiedResponse.text).toContain('data-auto-rename-surface data-auto-rename-view="grid"');
     const modifiedActionPanel = assetActionsPanelHtml(modifiedResponse.text);
-    expectProjectActionsSection(modifiedActionPanel, { selectionOnly: true });
+    expectProjectActionsSection(modifiedActionPanel, { selectionOnly: false });
+    expect(modifiedActionPanel).toContain('data-auto-rename-form');
     expect((modifiedActionPanel.match(/<h2 id="project-actions-heading">Project actions<\/h2>/g) || [])).toHaveLength(1);
     expect(modifiedActionPanel).not.toContain('Drag assets to change their filename order');
     expect(modifiedActionPanel).toContain('<h3 class="asset-action-group-heading">Release</h3>');

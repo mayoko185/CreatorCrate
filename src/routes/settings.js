@@ -21,6 +21,8 @@ import { OpenLocallySettingsValidationError } from '../services/open-locally-set
 import { SocialPrepSettingsValidationError } from '../services/social-prep-settings-service.js';
 import { NoteRevisionSettingsValidationError } from '../services/note-revision-settings-service.js';
 import { ClockFormatSettingsValidationError, validateClockFormat } from '../services/clock-format-settings-service.js';
+import { PROJECT_IMAGE_FIELDS, PROJECT_IMAGE_SETTINGS } from '../services/project-image-settings-service.js';
+import { presentGeneratedImageRebuild } from '../static/client/generated-image-rebuild-presenter.js';
 import {
   ProjectOptionCatalogueConflictError,
   ProjectOptionCatalogueIntegrityError,
@@ -99,6 +101,7 @@ const NOTICES = {
   global_default_saved: { variant: 'success', text: 'Global asset-browser default saved.' },
   preview_category_saved: { variant: 'success', text: 'Preview category saved.' },
   defaults_saved: { variant: 'success', text: 'Defaults saved successfully.' },
+  generated_images_rebuild_queued: { variant: 'success', text: 'Generated-image rebuild queued.' },
   tag_created: { variant: 'success', text: 'Tag created successfully.' },
   tag_renamed: { variant: 'success', text: 'Tag renamed successfully.' },
   tag_deleted: { variant: 'success', text: 'Tag deleted successfully.' },
@@ -272,6 +275,12 @@ function getClockFormatSettingsService(req) {
   if (!service) {
     throw new Error('Settings Defaults requires app.locals.clockFormatSettingsService.');
   }
+  return service;
+}
+
+function getProjectImageSettingsService(req) {
+  const service = req.app?.locals?.projectImageSettingsService;
+  if (!service) throw new Error('Settings Defaults requires app.locals.projectImageSettingsService.');
   return service;
 }
 
@@ -1071,11 +1080,27 @@ function renderDefaultsPage(req, res, {
   noteRevisionRetentionSubmitted = false,
   submittedClockFormat,
   clockFormatSubmitted = false,
+  submittedImageValues = null,
   errors = {},
 } = {}) {
   const service = getPageDefaultsService(req);
   const noteRevisionSettingsService = getNoteRevisionSettingsService(req);
   const clockFormatSetting = getClockFormatSettingsService(req).getClockFormatSetting();
+  const imageSettingsService = getProjectImageSettingsService(req);
+  const imageSettings = Object.fromEntries(Object.keys(PROJECT_IMAGE_SETTINGS).map((name) => {
+    const field = PROJECT_IMAGE_FIELDS[name];
+    const setting = imageSettingsService.getSetting(name);
+    const value = submittedImageValues && Object.hasOwn(submittedImageValues, field)
+      ? submittedImageValues[field]
+      : setting.value;
+    return [name, {
+      id: field,
+      value: typeof value === 'string' || typeof value === 'number' ? String(value) : '',
+      effectiveValue: setting.value,
+      isDefault: setting.isDefault,
+      error: errors[field] || null,
+    }];
+  }));
   res.status(status).render('settings/defaults.njk', {
     appName,
     notice,
@@ -1097,6 +1122,8 @@ function renderDefaultsPage(req, res, {
       usesFallback: clockFormatSetting.isDefault,
       error: errors[CLOCK_FORMAT_FIELD] || null,
     },
+    imageSettings,
+    imageRebuild: presentGeneratedImageRebuild(req.app.locals.generatedImageRebuildService?.readStatus()),
   });
 }
 
@@ -1202,7 +1229,9 @@ export function createSettingsRouter({
   backupService,
   maintenanceState,
   processingJobService,
+  generatedImageRebuildService,
   beginReplacement,
+  beginReplacementAfterRebuild,
   authService,
   cookieOptions,
   onDatabaseReplaced,
@@ -1399,6 +1428,19 @@ export function createSettingsRouter({
     });
   });
 
+  router.get('/defaults/generated-images/rebuild-status', (_req, res) => {
+    res.json(generatedImageRebuildService?.readStatus() ?? { version: 1, phase: 'idle' });
+  });
+
+  router.post('/defaults/generated-images/rebuild', (_req, res, next) => {
+    if (!generatedImageRebuildService) return res.sendStatus(503);
+    try {
+      db.transaction(() => generatedImageRebuildService.queueManual())();
+      generatedImageRebuildService.signal();
+      res.redirect('/settings/defaults?notice=generated_images_rebuild_queued');
+    } catch (error) { next(error); }
+  });
+
   router.post('/defaults/project-options/:catalogue/add', (req, res) => {
     const definition = requireProjectOptionCatalogue(req.params.catalogue);
     try {
@@ -1471,6 +1513,11 @@ export function createSettingsRouter({
     const service = getPageDefaultsService(req);
     const noteRevisionSettingsService = getNoteRevisionSettingsService(req);
     const clockFormatSettingsService = getClockFormatSettingsService(req);
+    const imageSettingsService = getProjectImageSettingsService(req);
+    const rawBody = req.body && typeof req.body === 'object' ? req.body : {};
+    const imageSettingsSubmitted = Object.values(PROJECT_IMAGE_FIELDS)
+      .some((field) => Object.hasOwn(rawBody, field));
+    const submittedImageValues = imageSettingsSubmitted ? rawBody : null;
     const clockFormatSubmitted = Object.hasOwn(
       req.body && typeof req.body === 'object' ? req.body : {},
       CLOCK_FORMAT_FIELD,
@@ -1487,6 +1534,11 @@ export function createSettingsRouter({
     let validation;
     try {
       validation = validateSubmittedPageDefaults(service, submittedValues, req.body);
+      if (imageSettingsSubmitted) {
+        const imageValidation = imageSettingsService.validateSubmitted(rawBody);
+        validation.imageValues = imageValidation.values;
+        Object.assign(validation.errors, imageValidation.errors);
+      }
       if (clockFormatSubmitted) {
         try {
           validateClockFormat(submittedClockFormat);
@@ -1506,12 +1558,14 @@ export function createSettingsRouter({
         submittedValues,
         submittedClockFormat,
         clockFormatSubmitted,
+        submittedImageValues,
         errors: validation.errors,
       });
       return;
     }
 
     const changedOptionsByPage = new Map();
+    let imageRebuildQueued = false;
     try {
       db.transaction(() => {
         if (noteRevisionRetentionSubmitted) {
@@ -1526,6 +1580,17 @@ export function createSettingsRouter({
           const previousClockFormat = clockFormatSettingsService.getClockFormat();
           clockFormatSettingsService.setClockFormat(submittedClockFormat);
           if (submittedClockFormat !== previousClockFormat) changedOptionsByPage.set('display', 1);
+        }
+
+        if (imageSettingsSubmitted) {
+          const previousImagePolicy = imageSettingsService.getPolicy();
+          const changed = imageSettingsService.saveValidated(validation.imageValues);
+          if (changed) changedOptionsByPage.set('images', changed);
+          if (changed && generatedImageRebuildService) {
+            imageRebuildQueued = generatedImageRebuildService.queueAutomatic(
+              previousImagePolicy, imageSettingsService.getPolicy(),
+            );
+          }
         }
 
         for (const { page } of DEFAULTS_POST_SECTIONS) {
@@ -1553,6 +1618,7 @@ export function createSettingsRouter({
           noteRevisionRetentionSubmitted: true,
           submittedClockFormat,
           clockFormatSubmitted,
+          submittedImageValues,
           errors: {
             [NOTE_REVISION_RETENTION_FIELD]: err.errors?.revisionRetention || err.message,
           },
@@ -1562,7 +1628,9 @@ export function createSettingsRouter({
       return next(err);
     }
 
-    const changedPages = [...DEFAULTS_POST_SECTIONS.map(({ page }) => page), 'notes', 'display']
+    if (imageRebuildQueued) generatedImageRebuildService.signal();
+
+    const changedPages = [...DEFAULTS_POST_SECTIONS.map(({ page }) => page), 'notes', 'display', 'images']
       .filter((page) => changedOptionsByPage.has(page));
     if (changedPages.length > 0) {
       logSettingsActivity(applicationLogger, 'settings.defaults.updated', {
@@ -1839,26 +1907,28 @@ export function createSettingsRouter({
       });
     });
 
-    router.post('/security/disable', (req, res) => {
-      const result = authTransitionService.disable({
+    router.post('/security/disable', async (req, res, next) => {
+      try {
+        const result = await authTransitionService.disable({
         username: res.locals.auth?.username,
         currentPassword: req.body?.currentPassword,
-      });
-      if (!result.ok) {
-        if (result.currentPasswordError) {
-          res.status(400);
-          res.render('settings/disable-confirm.njk', {
-            appName,
-            currentPasswordError: result.currentPasswordError,
-          });
+        });
+        if (!result.ok) {
+          if (result.currentPasswordError) {
+            res.status(400);
+            res.render('settings/disable-confirm.njk', {
+              appName,
+              currentPasswordError: result.currentPasswordError,
+            });
+            return;
+          }
+          res.redirect(`/settings/security?notice=${transitionFailureNotice(result)}`);
           return;
         }
-        res.redirect(`/settings/security?notice=${transitionFailureNotice(result)}`);
-        return;
-      }
-      logSettingsActivity(applicationLogger, 'security.disabled');
-      clearSessionCookie(res, cookieOptions);
-      res.redirect('/settings/security?notice=authentication_disabled');
+        logSettingsActivity(applicationLogger, 'security.disabled');
+        clearSessionCookie(res, cookieOptions);
+        res.redirect('/settings/security?notice=authentication_disabled');
+      } catch (error) { next(error); }
     });
   } else {
     // Phase 13 — browser-based enable-authentication workflow. Available
@@ -1874,29 +1944,31 @@ export function createSettingsRouter({
       });
     });
 
-    router.post('/security/enable', (req, res) => {
-      const username = typeof req.body?.username === 'string' ? req.body.username.trim().toLowerCase() : '';
-      const result = authTransitionService.enable({
-        username,
-        password: req.body?.password,
-        confirmation: req.body?.confirmPassword,
-      });
-      if (!result.ok) {
-        if (result.errors) {
-          res.status(400);
-          res.render('settings/security-disabled.njk', {
-            appName,
-            notice: null,
-            errors: result.errors,
-            retainedUsername: username,
-          });
+    router.post('/security/enable', async (req, res, next) => {
+      try {
+        const username = typeof req.body?.username === 'string' ? req.body.username.trim().toLowerCase() : '';
+        const result = await authTransitionService.enable({
+          username,
+          password: req.body?.password,
+          confirmation: req.body?.confirmPassword,
+        });
+        if (!result.ok) {
+          if (result.errors) {
+            res.status(400);
+            res.render('settings/security-disabled.njk', {
+              appName,
+              notice: null,
+              errors: result.errors,
+              retainedUsername: username,
+            });
+            return;
+          }
+          res.redirect(`/settings/security?notice=${transitionFailureNotice(result)}`);
           return;
         }
-        res.redirect(`/settings/security?notice=${transitionFailureNotice(result)}`);
-        return;
-      }
-      logSettingsActivity(applicationLogger, 'security.enabled');
-      res.redirect('/login?notice=authentication_enabled');
+        logSettingsActivity(applicationLogger, 'security.enabled');
+        res.redirect('/login?notice=authentication_enabled');
+      } catch (error) { next(error); }
     });
   }
 
@@ -1930,7 +2002,7 @@ export function createSettingsRouter({
     }
     let owner;
     try {
-      owner = beginReplacement();
+      owner = await (beginReplacementAfterRebuild || beginReplacement)();
       if (
         backupService.isRestoreInProgress()
         || backupService.hasActiveBackups?.()

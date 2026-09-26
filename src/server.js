@@ -129,6 +129,7 @@ export function createShutdownHandler({
     if (shuttingDown) return;
     shuttingDown = true;
     managedUploadTracker.beginShutdown();
+    appContext.generatedImageRebuildService?.stop();
     applicationLogger.info({
       kind: 'diagnostic',
       subsystem: 'runtime',
@@ -142,6 +143,7 @@ export function createShutdownHandler({
       await new Promise((resolve) => server.close(resolve));
       await managedUploadTracker.waitForIdle();
       await appContext.processingJobService.waitForIdle();
+      await appContext.generatedImageRebuildService?.waitForIdle();
       applicationLogger.info({
         kind: 'diagnostic',
         subsystem: 'runtime',

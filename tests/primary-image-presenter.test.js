@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildEmptyPrimaryImageModel,
+  buildBookPrimaryImageModel,
   buildPrimaryImageModelForAsset,
 } from '../src/services/primary-image-presenter.js';
+import { projectImagePresentationPolicy } from '../src/services/project-image-policy.js';
 
 function primaryImageAsset(overrides = {}) {
   return {
@@ -92,5 +94,18 @@ describe('primary-image-presenter', () => {
       alt: 'Preview of cover.png',
     });
     expect(model.previewUrl).toBe(`/projects/99/assets/73/preview?v=${model.revision}`);
+  });
+
+  it('shares Original preview selection across project and project-backed Book images', () => {
+    const policy = projectImagePresentationPolicy({
+      thumbnail: { format: 'webp', webpQuality: 80, maxDimension: 256 },
+      preview: { format: 'original', webpQuality: 90, maxDimension: 1600 },
+    });
+    const selection = { asset_id: 73, provenance: 'manual' };
+    const asset = primaryImageAsset();
+    const originalUrl = '/projects/45/assets/73/original';
+    expect(buildPrimaryImageModelForAsset(selection, asset, policy).previewUrl).toBe(originalUrl);
+    expect(buildBookPrimaryImageModel({ ...selection, source: { kind: 'project_asset', id: 73 } }, asset, policy).previewUrl)
+      .toBe(originalUrl);
   });
 });

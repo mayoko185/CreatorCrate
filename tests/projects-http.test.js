@@ -10,6 +10,9 @@ import { MANIFEST_FILENAME, readManifestSync } from '../src/storage/manifest.js'
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
 import { buildAssetRevisionToken } from '../src/services/preview-service.js';
+import { createAppMetaRepository } from '../src/data/app-meta-repository.js';
+import { createProjectImageSettingsService } from '../src/services/project-image-settings-service.js';
+import { projectImagePolicyFingerprint } from '../src/services/project-image-policy.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 import {
@@ -27,6 +30,9 @@ vi.mock('../src/services/social-prep-tokens.js', async (importOriginal) => {
 });
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
+const imageFingerprint = (db) => projectImagePolicyFingerprint(
+  createProjectImageSettingsService({ appMetaRepository: createAppMetaRepository(db) }).getPolicy(),
+);
 const PROJECTS_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/projects/index.njk', import.meta.url));
 const LEGACY_NEW_PROJECT_PRIORITY_KEY = 'page_defaults.new_project.priority';
 
@@ -446,6 +452,36 @@ describe('project HTTP workflow', () => {
     app.locals.projectPrimaryImageService.setPrimaryImage(projectId, asset.id);
     return asset;
   }
+
+  it('renders a legacy still WebP revision without requiring a project scan', async () => {
+    const projectId = await createProject({ title: 'Legacy Still Cover' });
+    const project = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(projectId);
+    const filePath = path.join(resolveProjectDir(projectsRoot, project.project_dir), 'cover.webp');
+    const sh = (await import('sharp')).default;
+    fs.writeFileSync(filePath, await sh({
+      create: { width: 40, height: 30, channels: 3, background: '#ffffff' },
+    }).webp().toBuffer());
+    const stat = fs.statSync(filePath);
+    const asset = createAssetRepository(db).upsert(projectId, 'cover.webp', {
+      filename: 'cover.webp', extension: 'webp', mimeType: 'image/webp',
+      sizeBytes: stat.size, modifiedAt: stat.mtime.toISOString(),
+    });
+    app.locals.projectPrimaryImageService.setPrimaryImage(projectId, asset.id);
+    const meta = createAppMetaRepository(db);
+    meta.setValue('images.preview.format', 'png');
+    meta.setValue('images.preview.webp_quality', '52');
+
+    const first = (await agent.get(`/projects/${projectId}`).expect(200)).text;
+    const learned = createAssetRepository(db).findById(asset.id);
+    expect(learned.source_animated).toBe(0);
+    const revision = buildAssetRevisionToken(learned,
+      projectImagePolicyFingerprint(app.locals.projectImageSettingsService.getPolicy(), learned));
+    expect(first).toContain(`/projects/${projectId}/assets/${asset.id}/preview?v=${revision}`);
+
+    meta.setValue('images.preview.webp_quality', '71');
+    const second = (await agent.get(`/projects/${projectId}`).expect(200)).text;
+    expect(second).toContain(`/projects/${projectId}/assets/${asset.id}/preview?v=${revision}`);
+  });
 
   async function seedMergedKra(projectId) {
     const project = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(projectId);
@@ -3348,7 +3384,7 @@ describe('project HTTP workflow', () => {
       expect(details).toContain('<dd class="description">Project description</dd>');
       expect(details).toMatch(/<a\b[^>]*href="https:\/\/patreon\.com\/test"[^>]*target="_blank"[^>]*rel="noopener"[^>]*>Project link<\/a>/);
       expect(hero).toContain('data-preview-image');
-      expect(hero).toContain(`src="/projects/${id}/assets/${asset.id}/preview?v=${buildAssetRevisionToken(asset)}"`);
+      expect(hero).toContain(`src="/projects/${id}/assets/${asset.id}/preview?v=${buildAssetRevisionToken(asset, imageFingerprint(db))}"`);
       expect(hero).toContain('alt="Preview of cover.png"');
     });
 
@@ -3512,11 +3548,11 @@ describe('project HTTP workflow', () => {
     expect(secondItem).toContain(`<a href="/releases/${secondRelease.id}">Second Thumbnail Release</a>`);
     expect(firstItem).toContain(`href="/projects/${projectId}/assets/${firstAsset.id}"`);
     expect(firstItem).toContain(
-      `src="/projects/${projectId}/assets/${firstAsset.id}/thumbnail?v=${buildAssetRevisionToken(firstAsset)}"`,
+      `src="/projects/${projectId}/assets/${firstAsset.id}/thumbnail?v=${buildAssetRevisionToken(firstAsset, imageFingerprint(db))}"`,
     );
     expect(secondItem).toContain(`href="/projects/${projectId}/assets/${secondAsset.id}"`);
     expect(secondItem).toContain(
-      `src="/projects/${projectId}/assets/${secondAsset.id}/thumbnail?v=${buildAssetRevisionToken(secondAsset)}"`,
+      `src="/projects/${projectId}/assets/${secondAsset.id}/thumbnail?v=${buildAssetRevisionToken(secondAsset, imageFingerprint(db))}"`,
     );
     expect(firstItem).not.toContain(`/assets/${secondAsset.id}/thumbnail`);
     expect(secondItem).not.toContain(`/assets/${firstAsset.id}/thumbnail`);

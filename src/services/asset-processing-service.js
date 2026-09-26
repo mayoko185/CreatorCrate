@@ -9,6 +9,7 @@ import { deriveExtensionFromFilename, mimeFromExtension } from './asset-metadata
 import { ProjectOperationError } from './project-operation-coordinator.js';
 import { classifyAssetPath } from './asset-path-classification.js';
 import { isProjectArchived } from './project-state.js';
+import { inspectSourceAnimation } from './source-animation.js';
 import {
   isOwnedWatermarkDestination as isOwnedWatermarkDestinationShared,
   resolveTrustedWatermarkFile,
@@ -1111,6 +1112,10 @@ export function createAssetProcessingService({
         || metadata.height !== rendered.height) {
         throw new Error('Sharp produced unexpected watermark output metadata.');
       }
+      // Classify the staged bytes with the scanner's own inspector so a
+      // recreated generated asset records its complete new source state in
+      // the one generation-advancing update.
+      item.outputAnimated = inspectSourceAnimation(stageOutputPath, item.outputExtension);
     } catch (err) {
       if (!item.stageOutputIdentity) {
         try {
@@ -1498,6 +1503,10 @@ export function createAssetProcessingService({
         || (options.format === 'gif' && (metadata.pages ?? 1) !== 1)) {
         throw new Error('Sharp produced an unexpected output format.');
       }
+      // Classify the staged bytes with the scanner's own inspector: the
+      // published file is this inode, so an in-place re-encode can record its
+      // complete new source state in the one generation-advancing update.
+      item.outputAnimated = inspectSourceAnimation(stageOutputPath, options.format);
     } catch (err) {
       if (err instanceof AssetProcessingError) throw err;
       throw new AssetProcessingError('Sharp could not convert a selected image.', {
@@ -1851,6 +1860,7 @@ export function createAssetProcessingService({
       expectedModifiedAt: item.asset.modified_at,
       sizeBytes: item.outputStats.size,
       modifiedAt: item.outputStats.mtime.toISOString(),
+      sourceAnimated: item.outputAnimated,
     }));
 
     const moves = options.originalHandling === 'move'
@@ -2243,6 +2253,7 @@ export function createAssetProcessingService({
       nestedPath: item.outputNestedPath,
       sizeBytes: item.outputStats.size,
       modifiedAt: item.outputStats.mtime.toISOString(),
+      sourceAnimated: item.outputAnimated,
     });
 
     const replacements = items
@@ -2262,6 +2273,15 @@ export function createAssetProcessingService({
         expectedGeneratedVariant: item.destinationAsset.generated_variant,
         expectedGeneratedOutputSha256: item.destinationAsset.generated_output_sha256,
         expectedGeneratedWatermarkId: item.destinationAsset.generated_watermark_id,
+        // Source authority of the destination row captured at planning time,
+        // before rendering; never re-read here, or a concurrent reconciliation
+        // would be mistaken for the expected state.
+        expectedExtension: item.destinationAsset.extension,
+        expectedSizeBytes: item.destinationAsset.size_bytes,
+        expectedModifiedAt: item.destinationAsset.modified_at,
+        expectedIsPresent: item.destinationAsset.is_present,
+        expectedSourceAnimated: item.destinationAsset.source_animated,
+        expectedSourceGeneration: item.destinationAsset.source_generation,
         data: dataFor(item),
       }));
     const outputs = items

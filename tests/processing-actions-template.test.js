@@ -173,6 +173,7 @@ describe('Processing actions placement', () => {
       projectId: id, displayName: 'Renders', directorySlug: 'renders', displayOrder: 0, enabled: true,
     });
     addAsset(id, 'renders/keep.png', { categoryId: category.id });
+    addAsset(id, 'renders/other.png', { categoryId: category.id });
     const res = await agent.get(`/projects/${id}/assets?category=${category.id}&search=keep`).expect(200);
     expect(res.text).not.toContain('data-auto-rename-surface');
     const card = processingActionsCard(res.text);

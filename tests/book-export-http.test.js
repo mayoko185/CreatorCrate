@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../src/app.js';
 import { closeDatabase, openDatabase, runMigrations } from '../src/db.js';
 import { createBookExportService } from '../src/services/book-export-service.js';
+import { createProcessingConcurrencyService } from '../src/services/processing-concurrency-service.js';
 import { parseBookImportArchive } from '../src/services/book-import-service.js';
 import { BOOK_TRANSFER_LIMITS } from '../src/services/book-transfer-limits.js';
 import {
@@ -263,7 +264,8 @@ describe('Book export HTTP contract', () => {
     expect(serialized).not.toContain('sourceAuthority');
     expect(serialized).not.toContain('modifiedAt');
     expect(serialized).not.toContain('isPresent');
-    expect(mediaService.prepareDerivativeResponse).toHaveBeenCalledWith('preview', projectId, assetId);
+    expect(mediaService.prepareDerivativeResponse).toHaveBeenCalledWith('preview', projectId, assetId,
+      undefined, { ensureCurrent: true });
     expect(fs.readdirSync(exportTempRoot)).toEqual([]);
   });
 
@@ -618,6 +620,47 @@ describe('Book export HTTP contract', () => {
     expect(fs.readdirSync(exportTempRoot)).toEqual([]);
   });
 
+  it('bounds a generated PNG cover before conversion', async () => {
+    const book = app.locals.bookService.createBook({ title: 'Oversized PNG preview' });
+    const projectId = insertProject(db, 'PNG Preview Project', 'png-preview-project');
+    const assetId = insertAsset(db, projectId, 'preview.png', 'preview.png');
+    app.locals.bookPrimaryImageService.setPrimaryImage(book.id, assetId);
+    const counted = createCountedStream([Buffer.alloc(1)]);
+    const cleanup = vi.fn(() => counted.stream.destroy());
+    mediaService.prepareDerivativeResponse.mockResolvedValueOnce({
+      headers: {
+        'Content-Type': 'image/png',
+        'Content-Length': String(BOOK_TRANSFER_LIMITS.totalUncompressedBytes + 1),
+      },
+      stream: counted.stream, cleanup,
+    });
+
+    await expect(app.locals.bookExportService.createExport([book.id])).rejects.toMatchObject({
+      code: 'EXPORT_LIMIT_EXCEEDED', status: 422,
+    });
+    expect(counted.consumedChunks()).toBe(0);
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(fs.readdirSync(exportTempRoot)).toEqual([]);
+  });
+
+  it('rejects invalid generated PNG bytes through export error handling', async () => {
+    const book = app.locals.bookService.createBook({ title: 'Invalid PNG preview' });
+    const projectId = insertProject(db, 'Invalid PNG Project', 'invalid-png-project');
+    const assetId = insertAsset(db, projectId, 'preview.png', 'preview.png');
+    app.locals.bookPrimaryImageService.setPrimaryImage(book.id, assetId);
+    const cleanup = vi.fn();
+    mediaService.prepareDerivativeResponse.mockResolvedValueOnce({
+      headers: { 'Content-Type': 'image/png' },
+      stream: Readable.from(Buffer.from('not a PNG')), cleanup,
+    });
+
+    await expect(app.locals.bookExportService.createExport([book.id])).rejects.toMatchObject({
+      code: 'EXPORT_ASSEMBLY_FAILED', status: 500,
+    });
+    expect(cleanup).toHaveBeenCalledOnce();
+    expect(fs.readdirSync(exportTempRoot)).toEqual([]);
+  });
+
   it('cleans up a Project-cover response when its source stream fails', async () => {
     const source = app.locals.bookService.createBook({ title: 'Failing stream cover Book' });
     const projectId = insertProject(db, 'Failing Stream Project', 'failing-stream-project');
@@ -736,5 +779,68 @@ describe('Book export HTTP contract', () => {
       code: 'EXPORT_LIMIT_EXCEEDED', status: 422,
     });
     expect(fs.readdirSync(exportTempRoot)).toEqual([]);
+  });
+});
+
+describe('Book export Project-cover processing admission', () => {
+  let db;
+  let tmpDir;
+
+  afterEach(() => {
+    closeDatabase(db);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('admits generated Project-cover preview work once through the shared pool, then reads it cached', async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-book-export-pool-'));
+    const projectsRoot = path.join(tmpDir, 'projects');
+    const appDataRoot = path.join(tmpDir, 'app');
+    const previewRoot = path.join(tmpDir, 'previews');
+    for (const dir of [projectsRoot, appDataRoot, previewRoot]) fs.mkdirSync(dir, { recursive: true });
+    db = openDatabase(path.join(tmpDir, 'test.db'));
+    runMigrations(db, MIGRATIONS_DIR);
+    const { csrfPepper } = ensureAuthEnablement(appDataRoot);
+
+    // Capacity one: a nested acquisition anywhere on this path would deadlock.
+    const pool = createProcessingConcurrencyService({ concurrency: 1 });
+    let admitted = 0;
+    const processingConcurrencyService = Object.freeze({
+      concurrency: 1,
+      mapBounded: pool.mapBounded,
+      run: (task) => pool.run(() => { admitted += 1; return task(); }),
+    });
+    const app = createApp(
+      { appName: 'CreatorCrate', db, projectsRoot, previewRoot },
+      { appDataRoot, authState: { csrfPepper }, processingConcurrencyService,
+        bookExportTempRoot: path.join(tmpDir, 'exports') },
+    );
+    fs.mkdirSync(path.join(tmpDir, 'exports'));
+
+    const projectId = insertProject(db, 'Pool Cover Project', 'pool-cover-project');
+    db.prepare("UPDATE projects SET project_dir = 'pool-cover' WHERE id = ?").run(projectId);
+    const coverPath = path.join(projectsRoot, 'pool-cover', 'art', 'cover.png');
+    fs.mkdirSync(path.dirname(coverPath), { recursive: true });
+    fs.writeFileSync(coverPath, await sharp({
+      create: { width: 40, height: 30, channels: 3, background: '#224466' },
+    }).png().toBuffer());
+    const stat = fs.statSync(coverPath);
+    const assetId = insertAsset(db, projectId, 'art/cover.png', 'cover.png');
+    db.prepare('UPDATE assets SET size_bytes = ?, modified_at = ? WHERE id = ?')
+      .run(stat.size, stat.mtime.toISOString(), assetId);
+    const book = app.locals.bookService.createBook({ title: 'Pool cover Book' });
+    app.locals.bookPrimaryImageService.setPrimaryImage(book.id, assetId);
+
+    const first = await app.locals.bookExportService.createExport([book.id]);
+    try {
+      const entries = await readZipEntries(fs.readFileSync(first.filePath));
+      expect((await sharp(entries.get('covers/book-1/cover.webp')).metadata()).format).toBe('webp');
+    } finally {
+      first.cleanup();
+    }
+    expect(admitted).toBe(1);
+
+    const second = await app.locals.bookExportService.createExport([book.id]);
+    second.cleanup();
+    expect(admitted).toBe(1);
   });
 });

@@ -1139,6 +1139,22 @@ Assets are soft-deleted: a vanished file is marked *missing*, not removed,
 so that a temporarily unmounted share or a moved file does not destroy tags,
 release membership, or notes.
 
+Each asset row also carries an application-controlled `source_generation`
+(migration 040; existing and new rows start at 0). It is the durable
+disambiguator for logically different source-file instances when the persisted
+path/size/mtime tuple alone cannot tell them apart. It only increments, and
+only when CreatorCrate establishes a new source instance: a scan observing a
+changed size/mtime (or a known animation state flipping), a missing row being
+restored (so a returning file never regains an old immutable revision merely
+because its tuple matches), an in-app rewrite of the file (prompt edits,
+conversion re-encode, watermark replacement, a copy/upsert over a changed or
+missing row), and a request-time reconciliation after a descriptor/path
+identity check proved the file was replaced — including the same-size,
+same-mtime case. Unchanged scans, path-derived repairs, removal alone, and
+first-time animation classification leave it unchanged. Platform
+inode/file-index identities are used only transiently by those checks and are
+never persisted.
+
 ---
 
 ## 11. Processing invariants
@@ -1203,6 +1219,18 @@ limiter for all processing operations, including concurrent batches from
 different projects. Its default capacity is `availableParallelism()`, clamped
 to a minimum of 1 and a maximum of 4; every batch draws from that same
 application-wide capacity rather than creating an independent pool.
+
+Project thumbnail/preview generation shares this admission boundary. The
+preview service acquires one permit (`run`) only after it holds the per-asset
+generation lock and has confirmed generation is still needed, and holds it
+for the whole staged attempt, including selective reuse copies and the bounded
+second attempt. Target authority is rechecked after the permit is granted and
+before any source read. Fresh cache reads and prior-policy fallbacks never
+take a permit, so cold browser previews, Book export's current-preview request,
+and rebuild generation queue fairly with conversion work while cached browsing
+stays outside the queue. The pool is not reentrant: no caller may hold a
+permit while calling into preview generation. Lock order is always per-asset
+lock, then processing permit.
 
 Only selected staging and preparation work is bounded concurrently. Convert
 stages outputs per asset. Watermark stages per source, keeping all outputs for
@@ -1319,8 +1347,163 @@ Directory names are always **server-generated**; a client-supplied revision
 string never influences directory or pointer identity, and no absolute host
 path is written into `meta.json` or `current.json`. Freshness is decided by
 comparing recorded source size/mtime plus schema and derivative-config
-version markers, so bumping the derivative configuration invalidates every
-existing entry without a migration.
+version markers, the asset's source generation, and the fingerprint of the
+validated effective project-image policy. That same fingerprint contributes to
+rendered project derivative URL revisions. The source generation is part of
+the authoritative pair revision (`meta.json`, `current.json`, and the public
+`v=` token, hence the immutable-response ETag): generation 0 adds nothing to
+the token, so pre-existing revisions stay stable, while any later generation
+yields a distinct revision even for an identical tuple. Metadata written
+without a generation reads as generation 0 and therefore qualifies only while
+the row is still at 0. A generation mismatch is a source difference: it is
+never fresh, never a policy-only prior-policy fallback, and never proof for
+derivative reuse. Present legacy GIF/WebP assets with unknown animation state are
+inspected through the contained source descriptor when animation-sensitive
+identity is needed. The result is stored on the existing asset row without
+changing its source revision or asset modification timestamp. Known rows need
+no source probe, and unavailable sources retain an unknown state until they can
+be read. If generation finds that a known animation value disagrees with the
+source, it re-inspects the contained source, conditionally updates its size,
+mtime, and animation value, and retries within the existing two-attempt bound.
+Incomplete GIF/WebP containers remain unknown. Metadata records each
+derivative's actual format and filename;
+`thumbnail.png` and `preview.png` are used only for actual PNG output. An
+animated source with PNG preview selected produces `preview.webp` to preserve
+animation. The generated fallback for Original selection remains WebP at
+quality 90 and 1600px. Policy and source revisions are rechecked under the
+asset lock before publication; a changed snapshot discards staging and retries
+once. When an ordinary raster's descriptor/path identity shows the file was
+replaced — after reading it, at either publication recheck, or (for a request
+that queued for processing admission) against the identity pinned before
+queueing while the tuple is unchanged — the row's tuple and source generation
+are reconciled in one conditional update that pins the old row including its
+generation, so a scan or request that won first is reloaded rather than
+counted twice. The bounded retry then generates under the new revision with
+reuse disabled; a replacement that cannot be reconciled, or one seen again
+during the final attempt, fails safely without publishing. A same-tuple
+replacement that no request observes against a pinned identity (for example
+while the published pair is already fresh) is still not detected; content
+hashing remains deferred. Managed Book covers retain their fixed WebP policy and revision identity.
+The project media route forwards the derivative service's path and MIME.
+Ordinary presentation requests (not `ensureCurrent` callers such as Book
+export) read the published pair before taking the generation lock. A pair that
+is fresh for the current source and policy authority is served as-is, exactly
+as the locked path would serve it, so browsing never waits behind an in-flight
+generation of that asset, including a manual force rebuild that is only
+replacing it; published revision directories are immutable and `current.json`
+swaps atomically. Absent, stale, source-mismatched, or corrupt pairs still
+queue on the lock. For a policy-only mismatch, presentation may likewise read
+the prior published pair before taking the generation lock. Both files, metadata, cache schema, source
+tuple, source descriptor/path identity, and animation authority must remain
+valid. The service reports the pair's actual revision and `prior-policy`
+state; media always sends a revalidating response without an immutable ETag
+for that state, even when the request names the old revision. A cold or
+source-invalid asset still uses the normal one-asset generation path. Internal
+target generation uses the same staging and pointer publication path with an
+explicit validated policy and an authority check immediately before
+publication. Book export explicitly ensures a current generated preview.
+Effective-output comparison scopes automatic rebuild work per asset, while the
+thumbnail and preview remain one atomic published pair.
+
+New generations also record versioned per-kind generation identities in
+`meta.json`. They come from the shared image-policy module and cover the
+effective encoder output rather than the selected presentation. Hidden WebP
+quality is ignored for PNG output, an animated source with PNG selected is
+identified as animated WebP, and Original keeps its fixed WebP 90/1600px
+generated-fallback identity. Inside the asset lock, after each attempt's
+source checks, generation re-inspects the published pair for ordinary raster
+sources. Reuse requires a valid pointer and revision, a matching cache version,
+source tuple, and animation state, plus a current-version identity for the
+kind. When those match, generation copies that derivative's bytes into the new
+staging directory as an independent file and validates the copy like a freshly
+encoded one. Only the other kind is encoded. The staged pair gets entirely new
+metadata and passes the same authority and source rechecks before
+`current.json` is swapped. Legacy entries without identities, Krita sources,
+manual force rebuilds, and any failed copy fall back to encoding.
+
+Image Settings saves persist an `images.project_rebuild.v1` JSON record in
+`app_meta` in the same transaction as the policy change, then signal one
+application-owned rebuild runner after commit. The record contains a version,
+run ID, mode, target policy, phase, eligible asset count and upper ID bound,
+progress counts, a bounded failure sample, and a monotonic asset-ID cursor.
+The runner reads present, previewable indexed project assets in keyset pages;
+archived projects remain eligible, while managed media is outside this query.
+It keeps a bounded window of up to `B = C > 1 ? min(C - 1, 2) : 1` logical
+assets in flight, where `C` is the shared processing pool's capacity (the runner only
+reads `concurrency`). `B` counts every submitted asset not yet durably
+checkpointed: waiting on the per-asset lock or a pool permit, generating, or
+finished out of order behind an earlier unfinished asset. It never enumerates
+or submits more than that, so the pool's FIFO queue never holds a project's
+worth of rebuild calls. Each asset holds its own maintenance lifetime until it
+settles. The runner does not acquire processing capacity itself: each asset
+calls the preview service, which admits its generation through the shared
+pool, so the runner never holds a permit while waiting on one. Leaving at least
+one of `C` slots unsubmitted lets a cold foreground preview proceed while the
+pool is otherwise idle. `B` is capped at 2 because each rebuilt asset also does
+substantial synchronous cache and source-safety filesystem work on the Node
+main thread; beyond two in flight that work, not Sharp, bounds throughput while
+interactive requests queue behind it. Force rebuilds skip the pre-generation
+cache probe whose result they would discard, and generation reads the source
+asynchronously from its validated descriptor so a large or network-mounted
+source does not block the event loop. The window is a submission reservation,
+not priority scheduling, and
+conversion, watermark, and archive work still share the same FIFO pool. At
+`C = 1` the rebuild is sequential. It never holds the project-operation
+coordinator across the library. The preview service remains the only
+generation and atomic-publication authority.
+
+New Settings saves replace the run ID and reset traversal, so an in-flight
+obsolete target fails the preview service's publication authority check. The
+superseded runner stops filling its window immediately and drains its
+outstanding assets before the successor starts, so old and new windows never
+overlap. A failed automatic run with unresolved traversal, or any started
+(`running`/`started`) run, makes its successor reconcile all eligible assets
+directly against the latest saved policy, because a started run may have
+published assets beyond its durable cursor; a completed run does not widen
+later changes. Failed manual force runs do not carry automatic
+policy-transition scope. A manual **Rebuild generated images** POST creates a
+force-mode run for the saved policy; it regenerates fresh pairs without
+clearing prior generations.
+Assets finish out of order, so the window is an ordered completion frontier in
+traversal (keyset) order. Each entry keeps its terminal outcome in memory; the
+cursor, counts, and failure sample advance only through the longest contiguous
+completed prefix, applied in traversal order and possibly committed as one
+batch. A slot is refilled only after that checkpoint is persisted; a failed
+checkpoint stops dispatch, drains the window without further checkpoints, and
+leaves the prior durable record. After a crash, later assets may already be
+published ahead of the cursor; they are revisited (bounded by the window) and
+become cheap no-ops for a non-force target, while the durable counts count
+each asset once. Startup re-enumerates an unfinished automatic run and skips
+pairs already fresh for its target. A manual force run resumes from its
+cursor, repeating at most the window active during interruption.
+Invalid JSON or an unsupported rebuild record is replaced during recovery by
+a new automatic run for the saved validated policy, starting at cursor zero
+with full reconciliation. Runner-level faults retry the authoritative run up
+to three times with 250, 500, and 1000 ms delays. Exhaustion records a failed
+phase and retains progress; only a durable asset checkpoint or completed run
+resets the retry budget. Startup can resume a failed run from its durable cursor.
+Shutdown stops new dispatch, drains the window without further checkpoints,
+and leaves the marker unfinished. A restore or auth-transition request pauses
+dispatch, waits for every outstanding asset to finish and checkpoint, then
+acquires maintenance ownership. The pause remains
+held until ownership is released; the authoritative app graph then resumes
+the durable target. An auth
+replacement preserves the automatic cursor, while a restored database uses
+startup recovery semantics. Both stop the old graph's runner before publishing
+the new graph. Per-asset failures are counted and traversal continues, ending in
+`completed_with_failures`.
+Settings renders the durable rebuild state on the Defaults page and polls its
+authenticated status endpoint only while a run is queued or running. Successful
+image-setting saves and manual rebuild requests refresh that state immediately;
+the client ignores responses started before newer save or status requests.
+While rebuild runs, normal media requests may use the validated prior-policy
+pair described above; a cold asset still generates individually on demand.
+The shared asset presentation model selects the existing authenticated
+`/original` URL for present PNG, JPEG, WebP, and GIF assets when Preview is
+Original; Krita keeps the generated `/preview` fallback. Generated URLs retain
+the policy-aware revision, while `/original` uses its existing no-store response.
+Fitted slideshows use the selected normal preview URL, and Original Size keeps
+its separate source URL and natural-size display behavior.
 
 [`preview-service.js`](src/services/preview-service.js) owns generation and
 holds a per-asset in-process lock so concurrent requests for the same asset

@@ -264,6 +264,34 @@ describe('processing concurrency service', () => {
     await expect(service.mapBounded([4], async (item) => item * 2)).resolves.toEqual([8]);
   });
 
+  it('runs single tasks in the same FIFO cap as batches and frees the slot on failure', async () => {
+    const service = createProcessingConcurrencyService({ concurrency: 1 });
+    const gate = deferred();
+    const started = [];
+    const batch = service.mapBounded(['batch'], async (item) => {
+      started.push(item);
+      await gate.promise;
+      return item;
+    });
+    const failing = service.run(async () => {
+      started.push('failing');
+      throw new Error('task failed');
+    });
+    const single = service.run(async () => {
+      started.push('single');
+      return 'value';
+    });
+    await settle();
+    expect(started).toEqual(['batch']);
+
+    gate.resolve();
+    await expect(batch).resolves.toEqual(['batch']);
+    await expect(failing).rejects.toThrow('task failed');
+    await expect(single).resolves.toBe('value');
+    expect(started).toEqual(['batch', 'failing', 'single']);
+    expect(() => service.run('not a task')).toThrow(TypeError);
+  });
+
   it('returns an empty result for empty input', async () => {
     const service = createProcessingConcurrencyService({ concurrency: 1 });
     await expect(service.mapBounded([], () => { throw new Error('not called'); })).resolves.toEqual([]);

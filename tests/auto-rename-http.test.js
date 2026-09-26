@@ -7,8 +7,10 @@ import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
+import { createAppMetaRepository } from '../src/data/app-meta-repository.js';
 import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browser-preference-repository.js';
 import { buildAutoRenamePlanRenderModel } from '../src/routes/assets.js';
+import { projectImagePolicyFingerprint, projectImagePresentationPolicy } from '../src/services/project-image-policy.js';
 import { AUTO_RENAME_ERROR_CODES } from '../src/services/auto-rename-service.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
@@ -96,6 +98,22 @@ describe('category-scoped Auto Rename HTTP integration', () => {
         ...extra,
       });
   }
+
+  it('changes the rendered Auto Rename thumbnail revision when image policy changes', async () => {
+    const { id, projectDir } = await createProject('Policy Rename');
+    const category = categories(id)[0];
+    const asset = writeAsset(id, projectDir, 'source.png', 'image', { categoryId: category.id });
+    const thumbnailRevision = (html) => html.match(new RegExp(
+      `/projects/${id}/assets/${asset.id}/thumbnail\\?v=([a-f0-9]{16})`,
+    ))?.[1];
+    const before = await previewRequest(id, category.id, [asset.id]).expect(200);
+    const previous = thumbnailRevision(before.text);
+    expect(previous).toMatch(/^[a-f0-9]{16}$/);
+    createAppMetaRepository(db).setValue('images.thumbnail.max_dimension', '128');
+    const after = await previewRequest(id, category.id, [asset.id]).expect(200);
+    expect(thumbnailRevision(after.text)).toMatch(/^[a-f0-9]{16}$/);
+    expect(thumbnailRevision(after.text)).not.toBe(previous);
+  });
 
   function applyRequest(projectId, fields, currentAgent = agent) {
     return currentAgent
@@ -591,6 +609,23 @@ describe('category-scoped Auto Rename HTTP integration', () => {
     expect(model.categoryGroups).toHaveLength(1);
     expect(model.categoryGroups[0].items.map((item) => item.assetId)).toEqual([10, 11]);
     expect(model.items[0].thumbnailUrl).toMatch(/thumbnail\?v=[a-f0-9]{16}$/);
+    const basePolicy = {
+      thumbnail: { format: 'webp', webpQuality: 80, maxDimension: 256 },
+      preview: { format: 'webp', webpQuality: 90, maxDimension: 1600 },
+    };
+    const firstPolicy = buildAutoRenamePlanRenderModel(plan, projectImagePolicyFingerprint(basePolicy));
+    const secondPolicy = buildAutoRenamePlanRenderModel(plan, projectImagePolicyFingerprint({
+      ...basePolicy, thumbnail: { ...basePolicy.thumbnail, webpQuality: 70 },
+    }));
+    expect(firstPolicy.items[0].thumbnailUrl).not.toBe(secondPolicy.items[0].thumbnailUrl);
+    const pngPolicy = { ...basePolicy, preview: { ...basePolicy.preview, format: 'png' } };
+    const withQuality = { ...pngPolicy, preview: { ...pngPolicy.preview, webpQuality: 71 } };
+    for (const [sourceAnimated, changes] of [[0, false], [1, true]]) {
+      const sourcePlan = { ...plan, items: [{ ...plan.items[0], sourceAnimated }] };
+      const before = buildAutoRenamePlanRenderModel(sourcePlan, projectImagePresentationPolicy(pngPolicy));
+      const after = buildAutoRenamePlanRenderModel(sourcePlan, projectImagePresentationPolicy(withQuality));
+      expect(before.items[0].previewRevision === after.items[0].previewRevision).toBe(!changes);
+    }
     expect(model.items[1].blockedReason).toContain('regular file');
     expect(openSpy).not.toHaveBeenCalled();
     openSpy.mockRestore();

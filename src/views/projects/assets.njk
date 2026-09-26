@@ -139,10 +139,10 @@
   {% endif %}
 {% endmacro %}
 
-{% macro assetCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, autoRenameSurface, autoRenameInitialIndex, autoRenameTotal, clockFormat) %}
+{% macro assetCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, canReorderCategory, autoRenameInitialIndex, autoRenameTotal, clockFormat) %}
   {% set renameAttempt = renameFailure and renameFailure.assetId == asset.id %}
   {% set selected = (asset.id ~ '') in submittedSelectedAssetIds %}
-  <li class="asset-grid-item{% if not asset.is_present %} is-missing{% endif %}"{% if autoRenameSurface %}
+  <li class="asset-grid-item{% if not asset.is_present %} is-missing{% endif %}"{% if canReorderCategory %}
       data-auto-rename-asset
       data-auto-rename-asset-id="{{ asset.id }}"
       data-auto-rename-initial-index="{{ autoRenameInitialIndex }}"
@@ -158,7 +158,7 @@
       projectLayout: true,
       selected: selected,
       selectable: not isArchived and asset.is_present,
-      selectableTabIndex: not autoRenameSurface,
+      selectableTabIndex: not canReorderCategory,
       titleRowHidden: renameAttempt,
       filenameLink: false,
       nsfwBlur: asset.nsfwBlur,
@@ -186,7 +186,7 @@
             </label>
           {% endif %}
         {% endif %}
-        {% if autoRenameSurface %}
+        {% if canReorderCategory %}
           <span class="auto-rename-order-indicator" data-auto-rename-order-indicator>{{ autoRenameInitialIndex + 1 }} of {{ autoRenameTotal }}</span>
         {% endif %}
       {% elif slot == 'asset-information' %}
@@ -230,11 +230,11 @@
   </li>
 {% endmacro %}
 
-{% macro assetListCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, autoRenameSurface, autoRenameInitialIndex, autoRenameTotal, clockFormat) %}
+{% macro assetListCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, canReorderCategory, autoRenameInitialIndex, autoRenameTotal, clockFormat) %}
   {% set renameAttempt = renameFailure and renameFailure.assetId == asset.id %}
   {% set selectionLabel = asset.relative_path or asset.filename %}
   {% set selected = not isArchived and asset.is_present and (asset.id ~ '') in submittedSelectedAssetIds %}
-  <li class="asset-list-item{% if not asset.is_present %} is-missing{% endif %}"{% if autoRenameSurface %}
+  <li class="asset-list-item{% if not asset.is_present %} is-missing{% endif %}"{% if canReorderCategory %}
       data-auto-rename-asset
       data-auto-rename-asset-id="{{ asset.id }}"
       data-auto-rename-initial-index="{{ autoRenameInitialIndex }}"
@@ -279,7 +279,7 @@
             </label>
           {% endif %}
         {% endif %}
-        {% if autoRenameSurface %}
+        {% if canReorderCategory %}
           <span class="auto-rename-order-indicator" data-auto-rename-order-indicator>{{ autoRenameInitialIndex + 1 }} of {{ autoRenameTotal }}</span>
         {% endif %}
       {% elif slot == 'status' %}
@@ -561,13 +561,17 @@
       </div>
 
       {% if assets.length > 0 %}
-        {% if completeCategorySurface %}
+        {% set capabilityCategory = categoryCapabilities.category %}
+        {% if categoryCapabilities.canReorderCategory %}
           <section class="asset-auto-rename-surface" data-auto-rename-surface data-auto-rename-view="{{ filters.view }}"
-                   aria-label="{{ autoRenameCategory.displayName }} assets">
+                   data-category-membership-complete="{{ 'true' if categoryCapabilities.hasCompleteCategoryMembership else 'false' }}"
+                   data-category-reorder-enabled="true"
+                   data-auto-rename-enabled="{{ 'true' if categoryCapabilities.canAutoRename else 'false' }}"
+                   aria-label="{{ capabilityCategory.displayName }} assets">
             <p id="auto-rename-instructions" class="sr-only">
               Focus an asset card or row and press Space or Enter to grab it. Use the arrow keys to reorder it, Space or Enter to commit, or Escape to cancel.
             </p>
-            {% if autoRenameSurface and autoRenameCategory %}
+            {% if capabilityCategory %}
               <section class="project-detail-section asset-actions-panel" data-asset-actions-panel aria-labelledby="project-actions-heading">
                 <h2 id="project-actions-heading">Project actions</h2>
                 <div class="project-detail-section-body">
@@ -641,25 +645,27 @@
                                     aria-label="Delete selected" data-tooltip="Delete selected">{{ icons.icon('trash') }}</button>
                           </div>
                         </section>
-                        {{ processingActions.render(isArchived, "auto-rename-assets-form") }}
+                        {{ processingActions.render(isArchived, "auto-rename-assets-form" if categoryCapabilities.canAutoRename else none) }}
                       </div>
                     </div>
                     </form>
-                    {{ renderAutoRenameForm(project.id, _csrf, filters.view, autoRenameCategory) }}
+                    {% if categoryCapabilities.canAutoRename %}
+                      {{ renderAutoRenameForm(project.id, _csrf, filters.view, capabilityCategory) }}
+                    {% endif %}
                   {% endif %}
                 </div>
               </section>
               {% if not isArchived %}
                 <div class="asset-actions-category-row">
                   <div class="asset-actions-controls">
-                    {{ renderAssetSelectionControls(project.id, _csrf, filters.view, autoRenameCategory, true, categoryManagementDialogUrl) }}
+                    {{ renderAssetSelectionControls(project.id, _csrf, filters.view, capabilityCategory, true, categoryManagementDialogUrl) }}
                   </div>
                 </div>
               {% endif %}
             {% endif %}
         {% endif %}
 
-        {% if not completeCategorySurface and not isArchived %}
+        {% if not categoryCapabilities.canReorderCategory and not isArchived %}
           <section class="project-detail-section asset-actions-panel asset-actions-panel--selection-only" data-asset-actions-panel aria-labelledby="project-actions-heading">
             <h2 id="project-actions-heading">Project actions</h2>
             <div class="project-detail-section-body">
@@ -759,23 +765,23 @@
         {% if filters.view == 'grid' %}
           <ul class="asset-grid" role="listbox" aria-label="Assets">
             {% for asset in assets %}
-             {{ assetCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, autoRenameSurface, loop.index0, assets.length, clockFormat) }}
+             {{ assetCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, categoryCapabilities.canReorderCategory, loop.index0, assets.length, clockFormat) }}
             {% endfor %}
           </ul>
         {% elif filters.view == 'list' %}
           <ul class="asset-list asset-list--project" role="list" aria-label="Project assets" data-list-size="large">
             {% for asset in assets %}
-              {{ assetListCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, autoRenameSurface, loop.index0, assets.length, clockFormat) }}
+              {{ assetListCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, categoryCapabilities.canReorderCategory, loop.index0, assets.length, clockFormat) }}
             {% endfor %}
           </ul>
         {% endif %}
 
-        {% if completeCategorySurface %}
+        {% if categoryCapabilities.canReorderCategory %}
           </section>
         {% endif %}
 
          {# Pagination #}
-         {% if not completeCategorySurface %}
+         {% if not categoryCapabilities.hasCompleteCategoryMembership %}
           {% if pageCount > 1 %}
             <nav class="pagination" aria-label="Asset list pages">
               {% if page > 1 %}

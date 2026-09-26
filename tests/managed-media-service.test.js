@@ -13,6 +13,7 @@ import { createManagedMediaService, MANAGED_DERIVATIVE_CACHE_AUTHORITY_VERSION,
 import { DERIVATIVE_CONFIG_VERSION } from '../src/storage/preview-cache.js';
 import { buildDerivativePipeline, IMAGE_DERIVATIVE_CONFIG } from '../src/services/preview-service.js';
 import { createApp } from '../src/app.js';
+import { createAppMetaRepository } from '../src/data/app-meta-repository.js';
 import { makeAnimatedWebp, makeSolidAnimatedWebp, webpChunks } from './helpers/animated-webp.js';
 
 describe('managed media foundation', () => {
@@ -77,6 +78,25 @@ describe('managed media foundation', () => {
     expect(fs.readFileSync(file)).toEqual(bytes);
     expect(fs.statSync(file).mtimeMs).toBe(originalStat.mtimeMs);
     expect(repository.findById(record.id)).toEqual(record);
+  });
+
+  it('keeps managed cache identity and WebP output when project image policy changes', async () => {
+    const { record } = await fixture('png');
+    const thumbnail = await media.getDerivative(record.id, 'thumbnail');
+    const preview = await media.getDerivative(record.id, 'preview');
+    const appMeta = createAppMetaRepository(db);
+    appMeta.setValue('images.thumbnail.format', 'png');
+    appMeta.setValue('images.thumbnail.max_dimension', '128');
+    appMeta.setValue('images.preview.format', 'png');
+    appMeta.setValue('images.preview.max_dimension', '320');
+    const nextThumbnail = await media.getDerivative(record.id, 'thumbnail');
+    const nextPreview = await media.getDerivative(record.id, 'preview');
+    expect(nextThumbnail).toMatchObject({ revision: thumbnail.revision, cacheHit: true,
+      width: 256, mimeType: 'image/webp' });
+    expect(nextPreview).toMatchObject({ revision: preview.revision, cacheHit: true,
+      width: 1600, mimeType: 'image/webp' });
+    expect(nextThumbnail.bytes).toEqual(thumbnail.bytes);
+    expect(nextPreview.bytes).toEqual(preview.bytes);
   });
 
   it('publishes bounded authoritative metadata and uses only lightweight derivative inspection on a valid hit', async () => {

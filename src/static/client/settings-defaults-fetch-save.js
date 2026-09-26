@@ -1,5 +1,7 @@
 import { enhanceDropdowns } from './dropdowns.js';
 import { enhanceNumberInputs } from './number-input.js';
+import { enhanceProjectImageSettings } from './project-image-settings.js';
+import { enhanceGeneratedImageRebuildStatus } from './generated-image-rebuild-status.js';
 import {
   captureRegionFocus,
   enhanceSettingsFetchSave,
@@ -65,18 +67,27 @@ function enhanceReplacement(region) {
   if (!region) return;
   enhanceDropdowns(region);
   enhanceNumberInputs(region);
+  enhanceProjectImageSettings(region);
   enhanceDefaultsFetchSave(region);
 }
 
 function fetchSaveOptions() {
   return {
-    onStart: ({ form, controlName }) => placeStatus(form, controlName),
+    onStart: ({ form, controlName }) => {
+      placeStatus(form, controlName);
+      if (controlName?.startsWith('images')) {
+        enhanceGeneratedImageRebuildStatus(form.ownerDocument)?.imageSaveStarted();
+      }
+    },
     onSuccess: ({ form, html, controlName, superseded = false }) => {
       if (superseded) return;
       const focus = captureRegionFocus(currentDefaultsRegion(form));
       const region = replaceDefaultsRegion(form, html);
       setReplacementStatus(region, controlName, 'Settings saved.', 'saved');
       enhanceReplacement(region);
+      if (controlName?.startsWith('images')) {
+        enhanceGeneratedImageRebuildStatus(region)?.imageSaveSucceeded();
+      }
       restoreRegionFocus(region, focus);
     },
     onValidationError: ({ form, html, superseded = false }) => {
@@ -84,7 +95,11 @@ function fetchSaveOptions() {
       const focus = captureRegionFocus(currentDefaultsRegion(form));
       const region = replaceDefaultsRegion(form, html);
       enhanceReplacement(region);
+      enhanceGeneratedImageRebuildStatus(form.ownerDocument)?.resume();
       restoreRegionFocus(region, focus);
+    },
+    onError: ({ form, willContinue = false }) => {
+      if (!willContinue) enhanceGeneratedImageRebuildStatus(form.ownerDocument)?.resume();
     },
   };
 }
@@ -92,6 +107,8 @@ function fetchSaveOptions() {
 // The Defaults page intentionally delegates request serialization and queueing
 // to C7C. It only consumes server-rendered HTML for the page-specific DOM work.
 export function enhanceDefaultsFetchSave(scope = globalThis.document) {
+  enhanceProjectImageSettings(scope);
+  enhanceGeneratedImageRebuildStatus(scope);
   let bound = 0;
   for (const form of defaultsForms(scope)) {
     bound += enhanceSettingsFetchSave(form, fetchSaveOptions());

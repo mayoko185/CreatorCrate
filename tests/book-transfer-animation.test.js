@@ -10,7 +10,9 @@ import { createApp } from '../src/app.js';
 import { closeDatabase, openDatabase, runMigrations } from '../src/db.js';
 import { parseBookImportArchive } from '../src/services/book-import-service.js';
 import { BOOK_TRANSFER_LIMITS } from '../src/services/book-transfer-limits.js';
+import { buildDerivativePipeline, IMAGE_DERIVATIVE_CONFIG } from '../src/services/preview-service.js';
 import { makeAnimatedWebp } from './helpers/animated-webp.js';
+import { makeZip } from './helpers/zip-fixture.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const ANIMATION_KEYS = ['animated', 'frameCount', 'delays', 'delay', 'loop', 'duration'];
@@ -91,7 +93,7 @@ function corruptCentralDirectoryCrc(bytes, entryName) {
   throw new Error(`ZIP entry not found: ${entryName}`);
 }
 
-describe('animated Book cover transfer integration', () => {
+describe('Book cover transfer integration', () => {
   let app;
   let db;
   let tmpDir;
@@ -129,7 +131,82 @@ describe('animated Book cover transfer integration', () => {
     }
   }
 
-  it('round-trips the real animated Project preview through WP6 and WP7 unchanged', async () => {
+  async function createProjectCover(filename, bytes) {
+    const project = app.locals.projectService.create({
+      title: `Transfer ${filename}`,
+      description: '', notes: '', status: 'tbd', priority: 'normal',
+      plannedDate: null, publishedDate: null, patreonUrl: null,
+    });
+    fs.writeFileSync(path.join(projectsRoot, project.project_dir, filename), bytes);
+    app.locals.assetScanner.scanProjectAssets(project.id);
+    const asset = app.locals.assetScanner.listProjectAssets(project.id)
+      .find((candidate) => candidate.relative_path === filename);
+    const book = app.locals.bookService.createBook({ title: `Book ${filename}` });
+    await app.locals.bookPrimaryImageService.setPrimaryImage(book.id, asset.id);
+    return { project, asset, book };
+  }
+
+  it.each(['webp', 'png', 'original'])('exports and imports a still Project cover with %s Preview', async (format) => {
+    app.locals.appMetaRepository.setValue('images.preview.format', format);
+    if (format === 'png') {
+      app.locals.appMetaRepository.setValue('images.preview.webp_quality', '11');
+      app.locals.appMetaRepository.setValue('images.preview.max_dimension', '2560');
+    }
+    const source = await sharp({
+      create: { width: 2100, height: 1200, channels: 4, background: '#336699' },
+    }).png().toBuffer();
+    const { project, asset, book } = await createProjectCover('still.png', source);
+    const preview = await app.locals.previewService.getPreview(project.id, asset.id);
+    const previewBytes = fs.readFileSync(preview.path);
+    expect((await sharp(previewBytes).metadata()).format).toBe(format === 'png' ? 'png' : 'webp');
+
+    const archiveBytes = await exportArchive(book.id);
+    const entries = await readZipEntries(archiveBytes);
+    const coverBytes = entries.get('covers/book-1/cover.webp');
+    const manifestBytes = entries.get('creatorcrate-books.json');
+    const manifest = JSON.parse(manifestBytes.toString('utf8'));
+    expect(manifest.books[0].cover.media).toMatchObject({
+      path: 'covers/book-1/cover.webp', mimeType: 'image/webp',
+      sizeBytes: coverBytes.length, sha256: sha256(coverBytes),
+    });
+    expect((await sharp(coverBytes).metadata()).format).toBe('webp');
+    if (format === 'png') {
+      expect(coverBytes).not.toEqual(previewBytes);
+      expect((await sharp(coverBytes).metadata()).width).toBe(1600);
+      const expected = await (await buildDerivativePipeline(previewBytes,
+        { ...IMAGE_DERIVATIVE_CONFIG.preview, animated: false })).toBuffer();
+      expect(coverBytes).toEqual(expected);
+    } else {
+      expect(coverBytes).toEqual(previewBytes);
+    }
+    expect(fs.readFileSync(preview.path)).toEqual(previewBytes);
+    expectArchiveWithinLimits(archiveBytes, entries, manifestBytes, manifest, coverBytes);
+    const imported = await parseBookImportArchive(archiveBytes);
+    expect(imported.books[0].cover.media.bytes).toEqual(coverBytes);
+    expect(fs.readdirSync(exportTempRoot)).toEqual([]);
+  });
+
+  it('reuses the Krita WebP fallback with Original Preview', async () => {
+    app.locals.appMetaRepository.setValue('images.preview.format', 'original');
+    const merged = await sharp({
+      create: { width: 9, height: 6, channels: 4, background: '#885522' },
+    }).png().toBuffer();
+    const { project, asset, book } = await createProjectCover('drawing.kra',
+      makeZip([{ name: 'mergedimage.png', data: merged }]));
+    const preview = await app.locals.previewService.getPreview(project.id, asset.id);
+    const previewBytes = fs.readFileSync(preview.path);
+    expect(preview.mimeType).toBe('image/webp');
+    const archiveBytes = await exportArchive(book.id);
+    const entries = await readZipEntries(archiveBytes);
+    const coverBytes = entries.get('covers/book-1/cover.webp');
+    expect(coverBytes).toEqual(previewBytes);
+    expect((await sharp(coverBytes).metadata()).format).toBe('webp');
+    expect((await parseBookImportArchive(archiveBytes)).books[0].cover.media.bytes)
+      .toEqual(coverBytes);
+  });
+
+  it.each(['webp', 'png'])('round-trips an animated Project WebP with %s Preview unchanged', async (format) => {
+    app.locals.appMetaRepository.setValue('images.preview.format', format);
     const sourceBytes = await makeAnimatedWebp(3, {
       width: 7,
       height: 5,

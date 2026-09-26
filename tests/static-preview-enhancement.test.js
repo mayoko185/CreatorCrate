@@ -2967,6 +2967,56 @@ describe('Open Locally fetch-save adoption', () => {
 
 describe('Defaults fetch autosave adoption', () => {
   it.each([
+    ['imagesPreviewWebpQuality', true],
+    ['clockFormat', false],
+  ])('refreshes rebuild status immediately only after a successful %s save', async (name, expectRefresh) => {
+    const fixture = makeDefaultsFetchFixture({ name, value: '70' });
+    const replacement = makeDefaultsFetchFixture({ name, value: '85' });
+    for (const item of [fixture, replacement]) {
+      item.cards[name] = { appendChild(status) { status.parentNode = this; } };
+    }
+    const nodes = {
+      '[data-rebuild-message]': { textContent: '' },
+      '[data-rebuild-details]': { textContent: '', hidden: true },
+      '[data-generated-images-rebuild-button]': { disabled: false },
+    };
+    const card = {
+      dataset: { rebuildPhase: 'idle', rebuildRunId: '' },
+      querySelector: (selector) => nodes[selector] || null,
+    };
+    const windowEvents = new Map();
+    const document = {
+      location: { href: 'http://localhost/settings/defaults' },
+      defaultView: { setTimeout, clearTimeout, addEventListener(name, handler) { windowEvents.set(name, handler); } },
+      querySelector: (selector) => selector === '[data-generated-images-rebuild]' ? card : null,
+      addEventListener() {},
+    };
+    fixture.scope.ownerDocument = document;
+    fixture.form.ownerDocument = document;
+    replacement.region.ownerDocument = document;
+    replacement.form.ownerDocument = document;
+    const requests = [];
+    await withDefaultsDomParser(() => ({
+      querySelector: (selector) => selector === '[data-settings-defaults-region]' ? replacement.region : null,
+    }), async () => withBrowserGlobals(async (url) => {
+      requests.push(url);
+      if (url === '/settings/defaults/generated-images/rebuild-status') {
+        return { ok: true, json: async () => ({ phase: 'completed', runId: 'saved-run', total: 0 }) };
+      }
+      return { ok: true, redirected: true, text: async () => '<html>saved</html>' };
+    }, async () => {
+      enhanceDefaultsFetchSave(fixture.scope);
+      fixture.controls[0].value = '85';
+      fixture.controls[0].dispatch('change');
+      await flushAsync();
+      expect(requests.filter((url) => url === '/settings/defaults/generated-images/rebuild-status'))
+        .toHaveLength(expectRefresh ? 1 : 0);
+      if (expectRefresh) expect(card.dataset.rebuildRunId).toBe('saved-run');
+    }));
+    windowEvents.get('pagehide')();
+  });
+
+  it.each([
     ['clockFormat', '24h', '12h', 'clockFormat'],
     ['noteRevisionRetention', '10', '27', 'noteRevisionRetention'],
   ])('keeps %s autosave feedback inside its card', async (name, initial, saved, payloadName) => {

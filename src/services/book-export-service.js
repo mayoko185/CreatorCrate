@@ -8,6 +8,7 @@ import {
   isBookTransferUncompressedSizeAllowed,
 } from './book-transfer-limits.js';
 import { ManagedMediaError } from './managed-media-service.js';
+import { buildDerivativePipeline, IMAGE_DERIVATIVE_CONFIG } from './preview-service.js';
 import {
   MediaNotFoundError,
   MediaUnavailableError,
@@ -380,8 +381,20 @@ export function createBookExportService({ db, managedMediaService, mediaService,
         };
       }
       if (!mediaService || typeof mediaService.prepareDerivativeResponse !== 'function') throw new Error('Project media unavailable.');
-      const prepared = await mediaService.prepareDerivativeResponse('preview', source.internalProjectId, source.internalAssetId);
-      const bytes = await readPreparedResponse(prepared, maximumProjectCoverBytes);
+      const prepared = await mediaService.prepareDerivativeResponse('preview', source.internalProjectId,
+        source.internalAssetId, undefined, { ensureCurrent: true });
+      const mimeType = prepared.headers?.['Content-Type'] ?? 'image/webp';
+      if (mimeType !== 'image/webp' && mimeType !== 'image/png') {
+        prepared.cleanup?.();
+        throw coverUnavailableError();
+      }
+      const previewBytes = await readPreparedResponse(prepared, mimeType === 'image/png'
+        ? BOOK_TRANSFER_LIMITS.totalUncompressedBytes : maximumProjectCoverBytes);
+      const bytes = mimeType === 'image/png'
+        ? await (await buildDerivativePipeline(previewBytes,
+          { ...IMAGE_DERIVATIVE_CONFIG.preview, animated: false })).toBuffer()
+        : previewBytes;
+      if (bytes.length > maximumProjectCoverBytes) throw transferLimitError();
       const archivePath = `covers/${exportedBook.manifest.key}/cover.webp`;
       return {
         entry: { name: archivePath, buffer: bytes },

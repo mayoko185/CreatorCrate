@@ -23,6 +23,7 @@ import {
   atomicWriteBuffer,
   atomicWriteMeta,
   validateWebpFile,
+  readDerivativeBuffer,
   getDerivativeBytes,
   resolvePublishedDir,
   removeDerivative,
@@ -417,6 +418,24 @@ describe('buildRevisionToken', () => {
     );
   });
 
+  it('keeps generation 0 identical to the legacy token and separates later generations', () => {
+    const base = {
+      projectId: 1,
+      assetId: 10,
+      relativePath: 'source/art.png',
+      size: 4096,
+      mtime: '2026-07-28T12:00:00.000Z',
+      policyFingerprint: '0123456789abcdef',
+    };
+    const legacy = buildRevisionToken(base);
+    expect(buildRevisionToken({ ...base, sourceGeneration: 0 })).toBe(legacy);
+    const first = buildRevisionToken({ ...base, sourceGeneration: 1 });
+    const second = buildRevisionToken({ ...base, sourceGeneration: 2 });
+    expect(first).not.toBe(legacy);
+    expect(second).not.toBe(first);
+    expect(second).not.toBe(legacy);
+  });
+
   it('does NOT embed absolute paths — token is safe to expose', () => {
     const tok = buildRevisionToken({
       projectId: 1,
@@ -473,6 +492,94 @@ describe('serializeMeta / parseMeta', () => {
     });
     const parsed = parseMeta(JSON.stringify(meta));
     expect(parsed).toEqual(meta);
+  });
+
+  it('records actual PNG filenames and rejects mismatched extension metadata', () => {
+    const meta = serializeMeta({
+      projectId: 1, assetId: 10, relativePath: 'source/art.png', size: 4096,
+      mtime: '2026-07-28T12:00:00.000Z', generatedAt: '2026-07-28T12:01:00.000Z',
+      policyFingerprint: '0123456789abcdef',
+      thumbnail: { width: 128, height: 96, bytes: 1024, format: 'png', filename: 'thumbnail.png' },
+      preview: { width: 800, height: 600, bytes: 8192, format: 'webp', filename: 'preview.webp' },
+    });
+    expect(parseMeta(JSON.stringify(meta))).toEqual(meta);
+    expect(() => parseMeta(JSON.stringify({ ...meta,
+      thumbnail: { ...meta.thumbnail, filename: 'thumbnail.webp' },
+    }))).toThrow(/filename or format/);
+  });
+
+  it('round-trips optional per-kind generation identities', () => {
+    const base = {
+      projectId: 1, assetId: 10, relativePath: 'source/art.png', size: 4096,
+      mtime: '2026-07-28T12:00:00.000Z', generatedAt: '2026-07-28T12:01:00.000Z',
+      policyFingerprint: '0123456789abcdef',
+      thumbnail: { width: 128, height: 96, bytes: 1024, format: 'png', filename: 'thumbnail.png' },
+      preview: { width: 800, height: 600, bytes: 8192, format: 'webp', filename: 'preview.webp' },
+    };
+    const identities = { version: 1, thumbnail: 'aaaaaaaaaaaaaaaa', preview: 'bbbbbbbbbbbbbbbb' };
+    const meta = serializeMeta({ ...base, generationIdentities: identities });
+    expect(meta.generationIdentities).toEqual(identities);
+    expect(parseMeta(JSON.stringify(meta))).toEqual(meta);
+
+    // Legacy entries without identities remain valid metadata.
+    const legacy = serializeMeta(base);
+    expect(legacy.generationIdentities).toBeUndefined();
+    expect(parseMeta(JSON.stringify(legacy)).generationIdentities).toBeUndefined();
+  });
+
+  it.each([
+    ['null', null],
+    ['an array', []],
+    ['a missing version', { thumbnail: 'aaaaaaaaaaaaaaaa', preview: 'bbbbbbbbbbbbbbbb' }],
+    ['a zero version', { version: 0, thumbnail: 'aaaaaaaaaaaaaaaa', preview: 'bbbbbbbbbbbbbbbb' }],
+    ['a fractional version', { version: 1.5, thumbnail: 'aaaaaaaaaaaaaaaa', preview: 'bbbbbbbbbbbbbbbb' }],
+    ['a missing thumbnail identity', { version: 1, preview: 'bbbbbbbbbbbbbbbb' }],
+    ['a short preview identity', { version: 1, thumbnail: 'aaaaaaaaaaaaaaaa', preview: 'bbbb' }],
+    ['a non-hex thumbnail identity', { version: 1, thumbnail: 'zzzzzzzzzzzzzzzz', preview: 'bbbbbbbbbbbbbbbb' }],
+    ['a numeric preview identity', { version: 1, thumbnail: 'aaaaaaaaaaaaaaaa', preview: 12 }],
+    // Values RegExp#test would coerce into an apparently valid 16-hex string.
+    ['a single-element array thumbnail identity',
+      { version: 1, thumbnail: ['aaaaaaaaaaaaaaaa'], preview: 'bbbbbbbbbbbbbbbb' }],
+    ['a 16-digit numeric thumbnail identity',
+      { version: 1, thumbnail: 1234567890123456, preview: 'bbbbbbbbbbbbbbbb' }],
+    ['an object thumbnail identity', { version: 1, thumbnail: {}, preview: 'bbbbbbbbbbbbbbbb' }],
+    ['a null thumbnail identity', { version: 1, thumbnail: null, preview: 'bbbbbbbbbbbbbbbb' }],
+    ['a boolean thumbnail identity', { version: 1, thumbnail: true, preview: 'bbbbbbbbbbbbbbbb' }],
+    ['a single-element array preview identity',
+      { version: 1, thumbnail: 'aaaaaaaaaaaaaaaa', preview: ['bbbbbbbbbbbbbbbb'] }],
+    ['a 16-digit numeric preview identity',
+      { version: 1, thumbnail: 'aaaaaaaaaaaaaaaa', preview: 1234567890123456 }],
+    ['a null preview identity', { version: 1, thumbnail: 'aaaaaaaaaaaaaaaa', preview: null }],
+    ['a boolean preview identity', { version: 1, thumbnail: 'aaaaaaaaaaaaaaaa', preview: false }],
+    ['both identities as arrays',
+      { version: 1, thumbnail: ['aaaaaaaaaaaaaaaa'], preview: ['bbbbbbbbbbbbbbbb'] }],
+    ['an uppercase thumbnail identity', { version: 1, thumbnail: 'AAAAAAAAAAAAAAAA', preview: 'bbbbbbbbbbbbbbbb' }],
+    ['a string version', { version: '1', thumbnail: 'aaaaaaaaaaaaaaaa', preview: 'bbbbbbbbbbbbbbbb' }],
+  ])('parseMeta rejects generation identities with %s', (_label, identities) => {
+    const meta = serializeMeta({
+      projectId: 1, assetId: 10, relativePath: 'source/art.png', size: 4096,
+      mtime: '2026-07-28T12:00:00.000Z', generatedAt: '2026-07-28T12:01:00.000Z',
+      thumbnail: { width: 128, height: 96, bytes: 1024, format: 'webp' },
+      preview: { width: 800, height: 600, bytes: 8192, format: 'webp' },
+    });
+    meta.generationIdentities = identities;
+    expect(() => parseMeta(JSON.stringify(meta))).toThrow(/generation identities/);
+  });
+
+  it('round-trips a recorded source generation and rejects malformed ones', () => {
+    const base = {
+      projectId: 1, assetId: 10, relativePath: 'source/art.png', size: 4096,
+      mtime: '2026-07-28T12:00:00.000Z', generatedAt: '2026-07-28T12:01:00.000Z',
+      thumbnail: { width: 128, height: 96, bytes: 1024, format: 'webp' },
+      preview: { width: 800, height: 600, bytes: 8192, format: 'webp' },
+    };
+    expect(parseMeta(JSON.stringify(serializeMeta({ ...base, sourceGeneration: 3 }))).source.generation)
+      .toBe(3);
+    for (const generation of [-1, 1.5, '1', null]) {
+      const meta = serializeMeta(base);
+      meta.source.generation = generation;
+      expect(() => parseMeta(JSON.stringify(meta))).toThrow(/source generation/);
+    }
   });
 
   it('parseMeta rejects non-JSON', () => {
@@ -655,6 +762,13 @@ describe('compareFreshness', () => {
     expect(r.reasons).toEqual([]);
   });
 
+  it('invalidates unchanged source metadata when policy identity changes', () => {
+    const meta = freshMeta({ policyFingerprint: '0123456789abcdef' });
+    expect(compareFreshness(meta, ctx({ policyFingerprint: '0123456789abcdef' })).fresh).toBe(true);
+    expect(compareFreshness(meta, ctx({ policyFingerprint: 'fedcba9876543210' })).reasons)
+      .toContain('policy changed');
+  });
+
   it('reports stale when size changes', () => {
     const r = compareFreshness(freshMeta(), ctx({ size: 4097 }));
     expect(r.fresh).toBe(false);
@@ -706,6 +820,22 @@ describe('compareFreshness', () => {
     // if the bytes changed. Exact content hashing is deferred.
     const r = compareFreshness(freshMeta(), ctx());
     expect(r.fresh).toBe(true);
+  });
+
+  it('treats legacy metadata without a source generation as generation 0 only', () => {
+    expect(freshMeta().source.generation).toBeUndefined();
+    expect(compareFreshness(freshMeta(), ctx()).fresh).toBe(true);
+    expect(compareFreshness(freshMeta(), ctx({ sourceGeneration: 0 })).fresh).toBe(true);
+    expect(compareFreshness(freshMeta(), ctx({ sourceGeneration: 1 })).reasons)
+      .toEqual(['source generation changed']);
+  });
+
+  it('reports a source generation mismatch as a source difference, not policy-only', () => {
+    const meta = freshMeta({ sourceGeneration: 1, policyFingerprint: '0123456789abcdef' });
+    expect(compareFreshness(meta, ctx({ sourceGeneration: 1, policyFingerprint: '0123456789abcdef' })).fresh)
+      .toBe(true);
+    expect(compareFreshness(meta, ctx({ sourceGeneration: 2, policyFingerprint: 'fedcba9876543210' })).reasons)
+      .toEqual(['policy changed', 'source generation changed']);
   });
 });
 
@@ -800,6 +930,14 @@ describe('validateWebpFile', () => {
     expect(info.animated).toBe(false);
     expect(info.frameCount).toBe(1);
     expect(info.sha).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('readDerivativeBuffer reads regular derivative bytes and rejects missing files', () => {
+    const p = path.join(dir, 'thumbnail.png');
+    fs.writeFileSync(p, Buffer.from('derivative-bytes'));
+    expect(readDerivativeBuffer(p)).toEqual(Buffer.from('derivative-bytes'));
+    expect(() => readDerivativeBuffer(path.join(dir, 'missing.png'))).toThrow(/unavailable/);
+    expect(() => readDerivativeBuffer(dir)).toThrow(/unavailable/);
   });
 
   it('rejects a non-WebP file', async () => {

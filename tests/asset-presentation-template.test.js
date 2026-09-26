@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import nunjucks from 'nunjucks';
 import { fileURLToPath } from 'node:url';
+import { buildAssetPreviewModel } from '../src/services/asset-presentation.js';
+import { projectImagePolicyFingerprint, projectImagePresentationPolicy } from '../src/services/project-image-policy.js';
 
 const VIEWS_DIR = fileURLToPath(new URL('../src/views', import.meta.url));
 const env = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: true });
@@ -31,6 +33,81 @@ const minimalReleaseAsset = {
 };
 
 describe('reusable asset presentation macros', () => {
+  it('changes both project derivative URL revisions with effective policy', () => {
+    const asset = { id: 73, project_id: 7, is_present: true, extension: 'png',
+      mime_type: 'image/png', relative_path: 'candidate.png', size_bytes: 1024,
+      modified_at: '2026-09-24T10:00:00.000Z' };
+    const policy = { thumbnail: { format: 'webp', webpQuality: 80, maxDimension: 256 },
+      preview: { format: 'webp', webpQuality: 90, maxDimension: 1600 } };
+    const before = buildAssetPreviewModel(asset, projectImagePolicyFingerprint(policy));
+    const after = buildAssetPreviewModel(asset, projectImagePolicyFingerprint({
+      ...policy, preview: { ...policy.preview, maxDimension: 800 },
+    }));
+    expect(after.revision).not.toBe(before.revision);
+    expect(after.urls.thumbnail).not.toBe(before.urls.thumbnail);
+    expect(after.urls.preview).not.toBe(before.urls.preview);
+    expect(after.urls.thumbnail).toContain('/thumbnail?v=');
+    expect(after.urls.preview).toContain('/preview?v=');
+  });
+
+  it('selects the normal preview resource by policy and original eligibility', () => {
+    const asset = { id: 73, project_id: 7, is_present: true, extension: 'png',
+      mime_type: 'image/png', relative_path: 'candidate.png', size_bytes: 1024,
+      modified_at: '2026-09-24T10:00:00.000Z' };
+    const base = { thumbnail: { format: 'webp', webpQuality: 80, maxDimension: 256 },
+      preview: { format: 'webp', webpQuality: 90, maxDimension: 1600 } };
+    const present = (source, format) => buildAssetPreviewModel(source,
+      projectImagePresentationPolicy({ ...base, preview: { ...base.preview, format } }));
+    const webp = present(asset, 'webp');
+    const png = present(asset, 'png');
+    const original = present(asset, 'original');
+
+    expect(webp.urls.preview).toBe(`/projects/7/assets/73/preview?v=${webp.revision}`);
+    expect(png.urls.preview).toBe(`/projects/7/assets/73/preview?v=${png.revision}`);
+    expect(original.urls.preview).toBe('/projects/7/assets/73/original');
+    expect(original.urls.preview).not.toContain('?v=');
+    expect(original.urls.thumbnail).toBe(`/projects/7/assets/73/thumbnail?v=${original.revision}`);
+    expect(webp.revision).not.toBe(png.revision);
+    expect(original.revision).not.toBe(png.revision);
+    expect(present(asset, 'png').urls.preview).toBe(png.urls.preview);
+
+    for (const [extension, mime_type] of [
+      ['jpg', 'image/jpeg'], ['jpeg', 'image/jpeg'], ['webp', 'image/webp'], ['gif', 'image/gif'],
+    ]) {
+      expect(present({ ...asset, extension, mime_type }, 'original').urls.preview)
+        .toBe('/projects/7/assets/73/original');
+    }
+    for (const extension of ['kra', 'krz']) {
+      const krita = present({ ...asset, extension, mime_type: 'application/x-krita' }, 'original');
+      expect(krita.urls.preview).toBe(`/projects/7/assets/73/preview?v=${krita.revision}`);
+    }
+    expect(present({ ...asset, mime_type: 'image/jpeg' }, 'original').urls.preview).toBeNull();
+    expect(present({ ...asset, is_present: false }, 'original').urls.preview).toBeNull();
+  });
+
+  it('uses the same policy fingerprint regardless of property insertion order', () => {
+    const first = { thumbnail: { format: 'png', webpQuality: 80, maxDimension: 256 },
+      preview: { format: 'original', webpQuality: 15, maxDimension: 320 } };
+    const reordered = { preview: { maxDimension: 2560, webpQuality: 95, format: 'original' },
+      thumbnail: { maxDimension: 256, webpQuality: 21, format: 'png' } };
+    expect(projectImagePolicyFingerprint(first)).toBe(projectImagePolicyFingerprint(reordered));
+  });
+  it('keeps WebP and Original quality applicability for Krita sources', () => {
+    const base = { thumbnail: { format: 'webp', webpQuality: 80, maxDimension: 256 },
+      preview: { format: 'png', webpQuality: 40, maxDimension: 1600 } };
+    for (const extension of ['kra', 'krz']) {
+      const asset = { extension, source_animated: 0 };
+      const changed = { ...base, preview: { ...base.preview, webpQuality: 70 } };
+      expect(projectImagePolicyFingerprint(base, asset))
+        .toBe(projectImagePolicyFingerprint(changed, asset));
+      for (const format of ['webp', 'original']) {
+        const first = { ...base, preview: { ...base.preview, format } };
+        const second = { ...changed, preview: { ...changed.preview, format } };
+        expect(projectImagePolicyFingerprint(first, asset) === projectImagePolicyFingerprint(second, asset))
+          .toBe(format === 'original');
+      }
+    }
+  });
   it('renders both minimal release cards with escaped identity, fallback, and viewer links', () => {
     const html = renderComponents(minimalReleaseAsset);
 

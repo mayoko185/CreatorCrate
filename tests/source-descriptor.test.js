@@ -685,20 +685,23 @@ describe('readSourceBytes through the preview service', () => {
     writeProjectFile(absPath, 'rf.png', buf);
     const asset = h.indexAsset(project, 'rf.png');
 
-    const realReadFileSync = fs.readFileSync;
+    // Generation reads the opened descriptor asynchronously (fs.readFile).
+    const realReadFile = fs.readFile;
     const tracker = trackSourceDescriptors({ sourceRoot: h.projectsRoot });
-    fs.readFileSync = function (arg, ...rest) {
+    fs.readFile = function (arg, ...rest) {
       if (typeof arg === 'number') {
-        throw new Error('simulated descriptor read failure');
+        const callback = rest.at(-1);
+        process.nextTick(() => callback(new Error('simulated descriptor read failure')));
+        return undefined;
       }
-      return realReadFileSync.call(fs, arg, ...rest);
+      return realReadFile.call(fs, arg, ...rest);
     };
     try {
       await expect(
         h.service.getThumbnail(project.id, asset.id)
       ).rejects.toThrow('simulated descriptor read failure');
     } finally {
-      fs.readFileSync = realReadFileSync;
+      fs.readFile = realReadFile;
       tracker.restore();
     }
 

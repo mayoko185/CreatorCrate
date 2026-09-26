@@ -6,6 +6,9 @@ import { createSocialPrepRepository, SocialPrepRepositoryError } from '../data/s
 import { AssetCategoryNotFoundError } from './asset-category-service.js';
 import { AssetCategoryValidationError } from './asset-category-validation.js';
 import { buildReleaseAssetPagePresentation } from './release-asset-presenter.js';
+import { createAppMetaRepository } from '../data/app-meta-repository.js';
+import { createProjectImageSettingsService } from './project-image-settings-service.js';
+import { projectImagePresentationPolicy } from './project-image-policy.js';
 import { formatLocalDate, formatLocalTime, getLocalTodayIso } from '../util/date.js';
 import { isValidWebUrl } from '../util/url.js';
 import { isProjectArchived } from './project-state.js';
@@ -169,7 +172,12 @@ function matchesReleaseAssetFilters(asset, filters, categoryId) {
   return true;
 }
 
-export function createReleaseService({ db, applicationLogger = null, socialPrepSettingsService = null }) {
+export function createReleaseService({ db, applicationLogger = null, socialPrepSettingsService = null, projectImageSettingsService = null }) {
+  const imageSettings = projectImageSettingsService ?? createProjectImageSettingsService({
+    appMetaRepository: createAppMetaRepository(db),
+  });
+  const imageFingerprint = () => imageSettings.getPresentationPolicy?.()
+    ?? projectImagePresentationPolicy(imageSettings.getPolicy());
   const repository = createReleaseRepository(db);
   const socialPrepRepository = createSocialPrepRepository(db);
   const projectRepository = createProjectRepository(db);
@@ -805,6 +813,7 @@ export function createReleaseService({ db, applicationLogger = null, socialPrepS
       const categories = assetCategoryRepository.listProjectCategories(release.project_id);
 
       return buildReleaseAssetPagePresentation({
+        policyFingerprint: imageFingerprint(),
         selectedAssets: rows,
         assets: [],
         candidateAssets: [],
@@ -1538,6 +1547,7 @@ export function createReleaseService({ db, applicationLogger = null, socialPrepS
       const candidateTotal = filteredAssets.filter((asset) => !selectedAssetIds.has(asset.id)).length;
       const assetExtensions = assetRepository.getExtensions(release.project_id);
       const assetPresentation = buildReleaseAssetPagePresentation({
+        policyFingerprint: imageFingerprint(),
         selectedAssets: releaseAssets,
         assets: assetPage,
         candidateAssets: pageCandidates,

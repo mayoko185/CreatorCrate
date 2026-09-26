@@ -11070,6 +11070,30 @@
   border-radius: var(--radius-lg) var(--radius-lg) 0 0;
 }
 
+/* Generated-image cards: each .field supplies the body padding, so drop the
+   section gap/bottom padding and the divider that would repeat the header rule. */
+.settings-defaults-content .project-form > .settings-defaults-section--compact {
+  gap: 0;
+  padding-bottom: 0;
+}
+
+.settings-defaults-content .project-form > .settings-defaults-section--compact > h3 + .field {
+  border-top: 0;
+}
+
+.settings-defaults-section--compact [data-rebuild-message] {
+  margin: 0;
+}
+
+.settings-defaults-section--compact .form-actions.settings-defaults-action-row {
+  margin: var(--space-sm) 0 0;
+}
+
+/* WebP keeps Format on its own row; PNG pairs Format with Maximum dimension. */
+.page-defaults-grid[data-project-image-layout="webp"] > .project-image-format-field {
+  grid-column: 1 / -1;
+}
+
 /* WP13: Project Assets-derived treatment for Settings Tags and Open locally. */
 .settings-tags-content,
 .settings-open-locally-content {

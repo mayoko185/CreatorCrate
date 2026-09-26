@@ -218,7 +218,15 @@ export function ensureCacheDirectory(previewRoot, dir) {
  *   - mtime (recorded source modification time, ISO 8601)
  *   - derivative config version
  *
+ *   - sourceGeneration (application source generation; only when > 0)
+ *
  * Output: 16-char hex string (first 8 bytes of sha256).
+ *
+ * Source generation 0 (every asset before its first proven replacement, and
+ * legacy callers that omit it) contributes nothing, so pre-existing revision
+ * tokens stay stable. Any later generation is an extra payload component and
+ * therefore always yields a different token from generation 0 and from every
+ * other generation, even when path/size/mtime are identical.
  *
  * @param {Object} input
  * @param {number} input.projectId
@@ -226,9 +234,12 @@ export function ensureCacheDirectory(previewRoot, dir) {
  * @param {string} input.relativePath
  * @param {number} input.size
  * @param {string} input.mtime     - ISO 8601 source mtime.
+ * @param {number} [input.sourceGeneration]
  * @returns {string}
  */
-export function buildRevisionToken({ projectId, assetId, relativePath, size, mtime }) {
+export function buildRevisionToken({
+  projectId, assetId, relativePath, size, mtime, policyFingerprint, sourceGeneration,
+}) {
   const payload = {
     projectId,
     assetId,
@@ -237,6 +248,8 @@ export function buildRevisionToken({ projectId, assetId, relativePath, size, mti
     mtime,
     derivativeConfigVersion: DERIVATIVE_CONFIG_VERSION,
   };
+  if (policyFingerprint) payload.policyFingerprint = policyFingerprint;
+  if (sourceGeneration) payload.sourceGeneration = sourceGeneration;
   const json = JSON.stringify(payload, Object.keys(payload).sort());
   return crypto.createHash('sha256').update(json).digest('hex').slice(0, 16);
 }
@@ -259,6 +272,11 @@ export function buildRevisionToken({ projectId, assetId, relativePath, size, mti
  * @param {boolean} [input.animated]        - Whether derivatives preserved animation.
  * @param {number} [input.frameCount]       - Frame count when animated.
  * @param {'merged'|'thumbnail'} [input.sourceQuality] - Embedded Krita preview quality.
+ * @param {{ version: number, thumbnail: string, preview: string }} [input.generationIdentities]
+ *   Per-kind effective-generation identities. Optional: entries written before
+ *   they existed stay readable but cannot prove selective derivative reuse.
+ * @param {number} [input.sourceGeneration] - Application source generation the
+ *   pair was generated from. Entries written without it read as generation 0.
  * @returns {object} Plain object to JSON.stringify.
  */
 export function serializeMeta({
@@ -267,12 +285,15 @@ export function serializeMeta({
   relativePath,
   size,
   mtime,
+  sourceGeneration,
   generatedAt,
   thumbnail,
   preview,
+  policyFingerprint,
   animated,
   frameCount,
   sourceQuality,
+  generationIdentities,
 }) {
   const meta = {
     schemaVersion: CACHE_SCHEMA_VERSION,
@@ -298,9 +319,20 @@ export function serializeMeta({
       format: preview.format,
     },
   };
+  if (policyFingerprint) meta.policyFingerprint = policyFingerprint;
+  if (thumbnail.filename) meta.thumbnail.filename = thumbnail.filename;
+  if (preview.filename) meta.preview.filename = preview.filename;
   if (animated != null) meta.animated = animated;
   if (frameCount != null) meta.frameCount = frameCount;
   if (sourceQuality != null) meta.source.previewQuality = sourceQuality;
+  if (sourceGeneration != null) meta.source.generation = sourceGeneration;
+  if (generationIdentities != null) {
+    meta.generationIdentities = {
+      version: generationIdentities.version,
+      thumbnail: generationIdentities.thumbnail,
+      preview: generationIdentities.preview,
+    };
+  }
   return meta;
 }
 
@@ -343,6 +375,10 @@ export function parseMeta(content) {
   ) {
     throw new Error('meta.json source preview quality is invalid.');
   }
+  if (source.generation !== undefined
+    && (!Number.isSafeInteger(source.generation) || source.generation < 0)) {
+    throw new Error('meta.json source generation is invalid.');
+  }
 
   requireString(parsed, 'generatedAt');
 
@@ -355,9 +391,39 @@ export function parseMeta(content) {
     requireNumber(d, 'height');
     requireNumber(d, 'bytes');
     requireString(d, 'format');
+    if (!['png', 'webp'].includes(d.format) || (d.filename === undefined && d.format !== 'webp')) {
+      throw new Error(`meta.json ${key} format is invalid.`);
+    }
+    if (d.filename !== undefined) {
+      requireString(d, 'filename');
+      if (d.filename !== `${key}.${d.format}`) {
+        throw new Error(`meta.json ${key} filename or format is invalid.`);
+      }
+    }
+  }
+  if (parsed.policyFingerprint !== undefined && !/^[0-9a-f]{16}$/.test(parsed.policyFingerprint)) {
+    throw new Error('meta.json policy fingerprint is invalid.');
+  }
+  if (parsed.generationIdentities !== undefined) {
+    const identities = parsed.generationIdentities;
+    if (
+      typeof identities !== 'object' || identities === null || Array.isArray(identities)
+      || !Number.isInteger(identities.version) || identities.version < 1
+      || !isGenerationIdentityHash(identities.thumbnail)
+      || !isGenerationIdentityHash(identities.preview)
+    ) {
+      throw new Error('meta.json generation identities are invalid.');
+    }
   }
 
   return parsed;
+}
+
+// A malformed identity block is never partial proof, so the type is checked
+// before the regex: RegExp#test would otherwise coerce ['<hash>'] or a 16-digit
+// number into an apparently valid string.
+function isGenerationIdentityHash(value) {
+  return typeof value === 'string' && /^[0-9a-f]{16}$/.test(value);
 }
 
 function requireNumber(obj, key) {
@@ -376,8 +442,17 @@ function requireString(obj, key) {
 //
 // Best-effort, last-completed-scan freshness contract. Compares the scanned
 // source metadata recorded in an existing meta.json against the current
-// scanned source metadata. This does NOT detect same-size content changes
-// with preserved modification time — exact content hashing is deferred.
+// scanned source metadata. The tuple alone does NOT detect same-size content
+// changes with preserved modification time — exact content hashing is
+// deferred. When CreatorCrate proves such a replacement (descriptor/path
+// identity), it advances the asset's source generation, which is compared
+// here: an entry from another source generation is never fresh and never a
+// policy-only (prior-policy) mismatch. A missing generation reads as 0.
+
+/** Source generation recorded in parsed meta.json (legacy entries: 0). */
+export function metaSourceGeneration(meta) {
+  return meta.source.generation ?? 0;
+}
 
 /**
  * Compare a parsed meta.json against current scanned source metadata and the
@@ -390,6 +465,7 @@ function requireString(obj, key) {
  * @param {string} current.relativePath
  * @param {number} current.size
  * @param {string} current.mtime
+ * @param {number} [current.sourceGeneration] - missing reads as 0.
  * @returns {{ fresh: boolean, reasons: string[] }}
  */
 export function compareFreshness(meta, current) {
@@ -401,6 +477,7 @@ export function compareFreshness(meta, current) {
   if (meta.derivativeConfigVersion !== DERIVATIVE_CONFIG_VERSION) {
     reasons.push('derivativeConfigVersion changed');
   }
+  if (meta.policyFingerprint !== current.policyFingerprint) reasons.push('policy changed');
   if (meta.projectId !== current.projectId) {
     reasons.push('projectId changed');
   }
@@ -416,6 +493,9 @@ export function compareFreshness(meta, current) {
   if (meta.source.mtime !== current.mtime) {
     reasons.push('mtime changed');
   }
+  if (metaSourceGeneration(meta) !== (current.sourceGeneration ?? 0)) {
+    reasons.push('source generation changed');
+  }
 
   return { fresh: reasons.length === 0, reasons };
 }
@@ -430,14 +510,14 @@ export function compareFreshness(meta, current) {
 
 /**
  * Generate a unique temporary filename in the destination directory.
- * Format: .{12-hex}.{kind}.webp.tmp
+ * Format: .{12-hex}.{kind}.{format}.tmp
  *
  * @param {string} baseName  - Final filename stem (e.g. "thumbnail").
  * @returns {string}
  */
-function tempFilename(baseName) {
+function tempFilename(baseName, format = 'webp') {
   const hex = crypto.randomBytes(6).toString('hex');
-  return `.${hex}.${baseName}.webp.tmp`;
+  return `.${hex}.${baseName}.${format}.tmp`;
 }
 
 /**
@@ -459,8 +539,9 @@ export function atomicWriteBuffer(dir, finalName, buffer) {
     throw new PreviewCacheError('Cannot write cache file.');
   }
   const finalPath = path.join(dir, finalName);
-  const stem = finalName.replace(/\.webp$/, '');
-  const tempPath = path.join(dir, tempFilename(stem));
+  const format = finalName.endsWith('.png') ? 'png' : 'webp';
+  const stem = finalName.replace(/\.(?:webp|png)$/, '');
+  const tempPath = path.join(dir, tempFilename(stem, format));
 
   let fd;
   try {
@@ -725,7 +806,14 @@ export function resolvePublishedDir(previewRoot, projectId, assetId) {
   const revisionInspection = inspectCachePath(parentDir, dir, 'directory');
   if (!revisionInspection.ok) return null;
 
-  for (const filename of [THUMBNAIL_FILENAME, PREVIEW_FILENAME, META_FILENAME]) {
+  const metaPath = path.join(dir, META_FILENAME);
+  if (!inspectCachePath(dir, metaPath, 'file').ok) return null;
+  const parsedMeta = readMetaFile(metaPath);
+  if (!parsedMeta.ok) return null;
+  for (const filename of [
+    parsedMeta.meta.thumbnail.filename || THUMBNAIL_FILENAME,
+    parsedMeta.meta.preview.filename || PREVIEW_FILENAME,
+  ]) {
     if (!inspectCachePath(dir, path.join(dir, filename), 'file').ok) {
       return null;
     }
@@ -749,7 +837,7 @@ export function removeDirTree(dir) {
 // ─── WebP validation ─────────────────────────────────────────────────────
 
 /**
- * Read a derivative file, validate that it can be decoded as WebP, and
+ * Read a derivative file, validate its actual format, and
  * return its size and a sha256 of its bytes. Used to gate the atomic rename
  * (pre-rename) and to validate existing cache entries (post-rename).
  *
@@ -759,7 +847,7 @@ export function removeDirTree(dir) {
  * @param {string} filePath
  * @returns {Promise<{bytes: number, sha: string, width: number, height: number, animated: boolean, frameCount: number}>}
  */
-export async function validateWebpFile(filePath) {
+export async function validateDerivativeFile(filePath, expectedFormat = 'webp') {
   if (!inspectRegularFile(filePath).ok) {
     throw new Error('Derivative file is unavailable.');
   }
@@ -767,8 +855,8 @@ export async function validateWebpFile(filePath) {
   const buffer = fs.readFileSync(filePath);
   const meta = await sharp(buffer).metadata();
 
-  if (meta.format !== 'webp') {
-    throw new Error(`Derivative is not WebP (got "${meta.format}").`);
+  if (meta.format !== expectedFormat) {
+    throw new Error(`Derivative is not ${expectedFormat} (got "${meta.format}").`);
   }
 
   const animated = (meta.pages ?? 1) > 1;
@@ -786,6 +874,24 @@ export async function validateWebpFile(filePath) {
     animated,
     frameCount,
   };
+}
+
+export const validateWebpFile = validateDerivativeFile;
+
+/**
+ * Read a published derivative's bytes without following symbolic links, so a
+ * reused derivative can be written into a new staging directory as an
+ * independent copy (never a link or cross-generation reference).
+ *
+ * @param {string} filePath
+ * @returns {Buffer}
+ * @throws {Error} if the file is unavailable or unsafe.
+ */
+export function readDerivativeBuffer(filePath) {
+  if (!inspectRegularFile(filePath).ok) {
+    throw new Error('Derivative file is unavailable.');
+  }
+  return fs.readFileSync(filePath);
 }
 
 /**

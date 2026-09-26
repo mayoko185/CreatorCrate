@@ -20,9 +20,15 @@ import { createTagRepository } from '../src/data/tag-repository.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
 import { createSocialPrepRepository } from '../src/data/social-prep-repository.js';
 import { buildRevisionToken } from '../src/storage/preview-cache.js';
+import { createAppMetaRepository } from '../src/data/app-meta-repository.js';
+import { createProjectImageSettingsService } from '../src/services/project-image-settings-service.js';
+import { projectImagePolicyFingerprint } from '../src/services/project-image-policy.js';
 import { buildDashboardSectionRegistry } from '../src/services/dashboard-defaults-service.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
+const imageFingerprint = (db) => projectImagePolicyFingerprint(
+  createProjectImageSettingsService({ appMetaRepository: createAppMetaRepository(db) }).getPolicy(),
+);
 // Phase 3 chunk 1: browser composition now also loads the project's
 // category rows and whole-project navigation counts (2 additional bounded
 // statements); viewer composition loads the category rows for canonical
@@ -1041,6 +1047,7 @@ describe('workflow query service', () => {
       const result = service.getProjectWorkspace(project.id);
       const thumbnails = result.releaseSummary.recent[0].thumbnails;
       const firstRevision = buildRevisionToken({
+        policyFingerprint: imageFingerprint(db),
         projectId: project.id,
         assetId: firstById.id,
         relativePath: 'first-by-id.png',
@@ -1048,6 +1055,7 @@ describe('workflow query service', () => {
         mtime: '2026-08-02T12:00:00.000Z',
       });
       const secondRevision = buildRevisionToken({
+        policyFingerprint: imageFingerprint(db),
         projectId: project.id,
         assetId: secondById.id,
         relativePath: 'second-by-id.png',
@@ -3130,6 +3138,7 @@ describe('workflow query service', () => {
       const row = result.assets.find((a) => a.id === asset.id);
       const noMtime = result.assets.find((a) => a.filename === 'no-mtime.png');
       const expectedRevision = buildRevisionToken({
+        policyFingerprint: imageFingerprint(db),
         projectId: project.id,
         assetId: asset.id,
         relativePath: 'renders/final.png',
@@ -3146,11 +3155,41 @@ describe('workflow query service', () => {
         preview: row.preview_url,
       });
 
+      createAppMetaRepository(db).setValue('images.preview.max_dimension', '800');
+      const updated = service.getProjectAssetBrowser(project.id, { pageSize: 100 }).assets
+        .find((candidate) => candidate.id === asset.id);
+      expect(updated.preview_revision).not.toBe(row.preview_revision);
+      expect(updated.thumbnail_url).not.toBe(row.thumbnail_url);
+      expect(updated.preview_url).not.toBe(row.preview_url);
+      expect(updated.preview_url).toContain('/preview?v=');
+
       expect(noMtime.preview_state).toBe('previewable');
       expect(noMtime.preview.sourceMetadataValid).toBe(false);
       expect(noMtime.preview_revision).toBeNull();
       expect(noMtime.thumbnail_url).toBeNull();
       expect(noMtime.preview_url).toBeNull();
+
+      createAppMetaRepository(db).setValue('images.preview.format', 'original');
+      const originalBrowser = service.getProjectAssetBrowser(project.id, { pageSize: 100 });
+      const originalRow = originalBrowser.assets.find((candidate) => candidate.id === asset.id);
+      const originalUrl = `/projects/${project.id}/assets/${asset.id}/original`;
+      expect(originalRow.preview_url).toBe(originalUrl);
+      expect(originalRow.thumbnail_url).toContain('/thumbnail?v=');
+      expect(originalBrowser.slideshowSequence.find((entry) => entry.id === asset.id))
+        .toMatchObject({ previewUrl: originalUrl, originalUrl });
+      expect(originalBrowser.assets.find((candidate) => candidate.filename === 'no-mtime.png').preview_url)
+        .toContain('/original');
+      expect(service.getAssetLibraryPage({ projectId: project.id }, {
+        projectOptionPresentation: { statusByValue: new Map(), projectTypeByValue: new Map() },
+      }).assets
+        .find((candidate) => candidate.id === asset.id).preview_url).toBe(originalUrl);
+      expect(service.getProjectAssetViewer(project.id, asset.id).asset.preview_url).toBe(originalUrl);
+
+      createAppMetaRepository(db).setValue('images.preview.format', 'webp');
+      const generatedAgain = service.getProjectAssetBrowser(project.id, { pageSize: 100 })
+        .assets.find((candidate) => candidate.id === asset.id);
+      expect(generatedAgain.preview_url).toContain('/preview?v=');
+      expect(generatedAgain.preview_url).not.toBe(originalUrl);
     });
 
     it('projects display filenames without changing the stored filename', () => {

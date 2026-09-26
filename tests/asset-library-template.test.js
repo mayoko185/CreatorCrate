@@ -1172,8 +1172,12 @@ describe('cross-project Asset Viewer template', () => {
       }],
       total: 1,
       filters: { view: 'list' },
-      completeCategorySurface: true,
-      autoRenameSurface: false,
+      categoryCapabilities: {
+        hasCompleteCategoryMembership: true,
+        canReorderCategory: false,
+        canAutoRename: false,
+        category: null,
+      },
       submittedSelectedAssetIds: [],
     });
 
@@ -1316,8 +1320,14 @@ describe('Project Assets Asset Information popup', () => {
     const html = renderProjectAssetsPage({
       assets: [projectAsset],
       total: 1,
-      completeCategorySurface,
-      autoRenameSurface: completeCategorySurface,
+      categoryCapabilities: {
+        hasCompleteCategoryMembership: completeCategorySurface,
+        canReorderCategory: completeCategorySurface,
+        canAutoRename: completeCategorySurface,
+        category: completeCategorySurface
+          ? { categoryId: 5, displayName: 'Renders', orderedAssetIds: [101], orderedAssetIdsJson: '[101]' }
+          : null,
+      },
       submittedSelectedAssetIds: [],
     });
     const card = html.match(/<article class="asset-card asset-card--project[\s\S]*?<\/article>/)?.[0] ?? '';

@@ -408,10 +408,10 @@ export function createMediaService({ previewService, projectsRoot, previewRoot }
    * @param {number} assetId
    * @param {string} [requestedRevision]
    */
-  async function getDerivative(kind, projectId, assetId, requestedRevision) {
-    const fn = kind === 'thumbnail'
-      ? previewService.getThumbnail
-      : previewService.getPreview;
+  async function getDerivative(kind, projectId, assetId, requestedRevision, { ensureCurrent = false } = {}) {
+    const fn = ensureCurrent && kind === 'preview'
+      ? previewService.ensureCurrentPreview
+      : kind === 'thumbnail' ? previewService.getThumbnail : previewService.getPreview;
     try {
       return await fn(projectId, assetId, requestedRevision);
     } catch (err) {
@@ -511,8 +511,8 @@ export function createMediaService({ previewService, projectsRoot, previewRoot }
     };
   }
 
-  async function prepareDerivativeResponse(kind, projectId, assetId, requestedRevision) {
-    const result = await getDerivative(kind, projectId, assetId, requestedRevision);
+  async function prepareDerivativeResponse(kind, projectId, assetId, requestedRevision, options) {
+    const result = await getDerivative(kind, projectId, assetId, requestedRevision, options);
 
     if (result.status === 'unsupported') {
       throw new MediaUnsupportedError('Unsupported media type');
@@ -522,7 +522,8 @@ export function createMediaService({ previewService, projectsRoot, previewRoot }
     }
 
     const stream = openDerivativeStream(previewRoot, result.path);
-    const cacheControl = derivativeCacheControl(requestedRevision, result.revision);
+    const cacheControl = result.cacheState === 'prior-policy'
+      ? CACHE_REVALIDATE : derivativeCacheControl(requestedRevision, result.revision);
     const headers = {
       'Content-Type': result.mimeType || 'image/webp',
       'Content-Length': String(result.bytes),

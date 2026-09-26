@@ -24,6 +24,8 @@ import {
 } from '../src/services/preview-category-settings-service.js';
 import { createWorkflowQueryService } from '../src/services/workflow-query-service.js';
 import { createProjectOperationCoordinator, ProjectOperationError } from '../src/services/project-operation-coordinator.js';
+import { makeSolidAnimatedWebp } from './helpers/animated-webp.js';
+import { buildAssetRevisionToken } from '../src/services/preview-service.js';
 import {
   formatProjectDirName,
 } from '../src/storage/project-storage.js';
@@ -158,6 +160,40 @@ describe('asset scanner', () => {
     const assets = assetScanner.repository.findByProjectId(project.id);
     const filenames = assets.map((a) => a.filename).sort();
     expect(filenames).toEqual(['preview.webp', 'render.png']);
+  });
+
+  it('records source animation during scan and repairs legacy unknown rows', async () => {
+    const { project, absPath } = createProjectWithDir('Animation Source Project');
+    const still = await (await import('sharp')).default({
+      create: { width: 40, height: 30, channels: 3, background: '#ffffff' },
+    }).webp().toBuffer();
+    fs.writeFileSync(path.join(absPath, 'still.webp'), still);
+    fs.writeFileSync(path.join(absPath, 'motion.webp'),
+      await makeSolidAnimatedWebp(3, { width: 40, height: 30 }));
+    assetScanner.repository.upsert(project.id, 'still.webp', {
+      filename: 'still.webp', extension: 'webp', mimeType: 'image/webp',
+      sizeBytes: still.length, modifiedAt: fs.statSync(path.join(absPath, 'still.webp')).mtime.toISOString(),
+    });
+    expect(assetScanner.repository.findByProjectIdAndPath(project.id, 'still.webp').source_animated).toBeNull();
+    assetScanner.scanProjectAssets(project.id);
+    expect(assetScanner.repository.findByProjectIdAndPath(project.id, 'still.webp').source_animated).toBe(0);
+    expect(assetScanner.repository.findByProjectIdAndPath(project.id, 'motion.webp').source_animated).toBe(1);
+    fs.writeFileSync(path.join(absPath, 'still.webp'),
+      await makeSolidAnimatedWebp(3, { width: 40, height: 30 }));
+    assetScanner.scanProjectAssets(project.id);
+    expect(assetScanner.repository.findByProjectIdAndPath(project.id, 'still.webp').source_animated).toBe(1);
+  });
+
+  it('leaves malformed WebP and no-frame GIF animation unknown during scan', () => {
+    const { project, absPath } = createProjectWithDir('Malformed Animation Source Project');
+    fs.writeFileSync(path.join(absPath, 'broken.webp'), Buffer.from('RIFF\x04\x00\x00\x00WEBP'));
+    fs.writeFileSync(path.join(absPath, 'broken.gif'),
+      Buffer.from('GIF89a\x01\x00\x01\x00\x00\x00\x00;'));
+    assetScanner.scanProjectAssets(project.id);
+    expect(assetScanner.repository.findByProjectIdAndPath(project.id, 'broken.webp').source_animated)
+      .toBeNull();
+    expect(assetScanner.repository.findByProjectIdAndPath(project.id, 'broken.gif').source_animated)
+      .toBeNull();
   });
 
   it('indexes BMP files as selectable images', () => {
@@ -571,6 +607,35 @@ describe('asset scanner', () => {
     const restored = assetScanner.repository.findByProjectIdAndPath(project.id, 'file.png');
     expect(restored.id).toBe(originalId);
     expect(restored.is_present).toBe(1);
+  });
+
+  it('gives a restored same-tuple source a new generation and revision, and keeps it on rescans', () => {
+    const { project, absPath } = createProjectWithDir('Generation Restore');
+    const filePath = path.join(absPath, 'file.png');
+    const pinned = new Date('2026-08-01T10:00:00Z');
+    fs.writeFileSync(filePath, 'content-a');
+    fs.utimesSync(filePath, pinned, pinned);
+    assetScanner.scanProjectAssets(project.id);
+    assetScanner.scanProjectAssets(project.id);
+    const original = assetScanner.repository.findByProjectIdAndPath(project.id, 'file.png');
+    expect(original.source_generation).toBe(0);
+
+    fs.unlinkSync(filePath);
+    assetScanner.scanProjectAssets(project.id);
+    expect(assetScanner.repository.findById(original.id).source_generation).toBe(0);
+
+    // Different bytes with the same size and mtime at the same path.
+    fs.writeFileSync(filePath, 'content-b');
+    fs.utimesSync(filePath, pinned, pinned);
+    assetScanner.scanProjectAssets(project.id);
+    const restored = assetScanner.repository.findById(original.id);
+    expect(restored).toMatchObject({ is_present: 1, size_bytes: original.size_bytes,
+      modified_at: original.modified_at, source_generation: 1 });
+    expect(buildAssetRevisionToken({ ...restored, mime_type: 'image/png' }))
+      .not.toBe(buildAssetRevisionToken({ ...original, mime_type: 'image/png' }));
+
+    assetScanner.scanProjectAssets(project.id);
+    expect(assetScanner.repository.findById(original.id).source_generation).toBe(1);
   });
 
   // ─── Traversal error handling ───────────────────────────────────────────

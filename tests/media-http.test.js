@@ -29,9 +29,12 @@ import { getDisabledModeCsrf } from './helpers/auth.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
+import { createAppMetaRepository } from '../src/data/app-meta-repository.js';
+import { createProjectImageSettingsService } from '../src/services/project-image-settings-service.js';
+import { projectImagePolicyFingerprint } from '../src/services/project-image-policy.js';
 import { formatProjectDirName } from '../src/storage/project-storage.js';
 import { writeManifestSync } from '../src/storage/manifest.js';
-import { resolvePublishedDir, THUMBNAIL_FILENAME, PREVIEW_FILENAME, buildRevisionToken } from '../src/storage/preview-cache.js';
+import { resolvePublishedDir, THUMBNAIL_FILENAME, PREVIEW_FILENAME } from '../src/storage/preview-cache.js';
 import {
   createMediaService,
   sanitizeDispositionFilename,
@@ -115,6 +118,7 @@ function makeHarness({ withMediaService = true } = {}) {
   function createProject(title, status = 'tbd') {
     let project = projectRepo.create({
       title,
+      projectType: 'images',
       slug: slugify(title, { lowercase: true }),
       description: '',
       notes: '',
@@ -152,12 +156,8 @@ function makeHarness({ withMediaService = true } = {}) {
       extension: ext,
       mimeType: mimeType ?? defaultMime(ext),
       sizeBytes: sizeBytes ?? stat.size,
-      modifiedAt: modifiedAt ?? dbNow(),
+      modifiedAt: modifiedAt ?? stat.mtime.toISOString(),
     });
-  }
-
-  function dbNow() {
-    return new Date().toISOString().replace('T', ' ').replace(/\.\d+Z$/, '');
   }
 
   function defaultMime(ext) {
@@ -263,6 +263,36 @@ describe('media routes — successful behavior', () => {
     expect(meta.format).toBe('webp');
   });
 
+  it('serves actual PNG derivatives and the animated WebP exception with their MIME', async () => {
+    const settings = createAppMetaRepository(h.db);
+    settings.setValue('images.thumbnail.format', 'png');
+    settings.setValue('images.preview.format', 'png');
+    const { project, absPath } = h.createProject('PNG media responses');
+    writeProjectFile(absPath, 'still.png', await makePng(400, 300));
+    const still = h.indexAsset(project, 'still.png');
+
+    const sh = await sharp();
+    const frames = await Promise.all([makePng(80, 60), makePng(80, 60, { r: 200, g: 20, b: 40 })]);
+    writeProjectFile(absPath, 'motion.gif', await sh(frames, { join: { animated: true } }).gif().toBuffer());
+    const motion = h.indexAsset(project, 'motion.gif');
+
+    for (const kind of ['thumbnail', 'preview']) {
+      const response = await request(h.app)
+        .get(`/projects/${project.id}/assets/${still.id}/${kind}`)
+        .expect(200);
+      expect(response.headers['content-type']).toBe('image/png');
+      expect(response.headers['x-content-type-options']).toBe('nosniff');
+      expect((await sh(response.body).metadata()).format).toBe('png');
+    }
+    const animated = await request(h.app)
+      .get(`/projects/${project.id}/assets/${motion.id}/preview`)
+      .expect(200);
+    expect(animated.headers['content-type']).toBe('image/webp');
+    expect(animated.headers['x-content-type-options']).toBe('nosniff');
+    expect(await sh(animated.body, { animated: true }).metadata())
+      .toMatchObject({ format: 'webp', pages: 2 });
+  });
+
   it('serves merged KRA preview and thumbnail derivatives from the application cache', async () => {
     const { project, absPath } = h.createProject('KRA HTTP Merged');
     const merged = await makePng(2000, 1000);
@@ -297,7 +327,7 @@ describe('media routes — successful behavior', () => {
     expect(cacheDir).not.toBeNull();
     expect(cacheDir.startsWith(path.resolve(h.previewRoot))).toBe(true);
 
-    const revision = h.previewService.getOriginalDescriptor(project.id, asset.id).revision;
+    const revision = (await h.previewService.getPreview(project.id, asset.id)).revision;
     const versioned = await request(h.app)
       .get(`/projects/${project.id}/assets/${asset.id}/preview?v=${revision}`)
       .expect(200);
@@ -540,6 +570,8 @@ describe('media routes — cache behavior', () => {
     // Replace source to invalidate cache and regenerate.
     const bigger = await makePng(1200, 1000);
     writeProjectFile(absPath, 'c.png', bigger);
+    const pinned = new Date('2026-08-15T10:00:00Z');
+    fs.utimesSync(path.join(absPath, 'c.png'), pinned, pinned);
     h.assetRepo.upsert(project.id, 'c.png', {
       filename: 'c.png',
       extension: 'png',
@@ -555,6 +587,49 @@ describe('media routes — cache behavior', () => {
     // Stale revision → must-revalidate (the service regenerated; the route
     // compares the stale requested revision to the new computed one).
     expect(res.headers['cache-control']).toBe('private, max-age=0, must-revalidate');
+  });
+
+  it('retires the old immutable revision when the source generation advances with an unchanged tuple', async () => {
+    const { project, absPath, asset } = await setupAsset();
+    const oldRevision = (await h.previewService.getPreview(project.id, asset.id)).revision;
+    const oldResponses = {};
+    for (const kind of ['thumbnail', 'preview']) {
+      oldResponses[kind] = await request(h.app)
+        .get(`/projects/${project.id}/assets/${asset.id}/${kind}?v=${oldRevision}`).expect(200);
+      expect(oldResponses[kind].headers['cache-control']).toBe('private, max-age=31536000, immutable');
+    }
+
+    // A new file instance with identical bytes, size and mtime: derivative
+    // byte lengths match, so only the revision can distinguish the ETags.
+    const filePath = path.join(absPath, 'c.png');
+    const before = fs.statSync(filePath);
+    fs.writeFileSync(`${filePath}.replacement`, fs.readFileSync(filePath));
+    fs.renameSync(`${filePath}.replacement`, filePath);
+    fs.utimesSync(filePath, before.atime, before.mtime);
+    const row = h.assetRepo.findById(asset.id);
+    const advanced = h.assetRepo.reconcileSource(row,
+      { size: row.size_bytes, mtime: row.modified_at }, { replaced: true });
+    expect(advanced).toMatchObject({ size_bytes: row.size_bytes, modified_at: row.modified_at,
+      source_generation: row.source_generation + 1 });
+
+    for (const kind of ['thumbnail', 'preview']) {
+      // The old URL is no longer the current immutable identity.
+      const stale = await request(h.app)
+        .get(`/projects/${project.id}/assets/${asset.id}/${kind}?v=${oldRevision}`).expect(200);
+      expect(stale.headers['cache-control']).toBe('private, max-age=0, must-revalidate');
+      expect(stale.headers.etag).toBeUndefined();
+
+      const { revision: newRevision } = await (kind === 'thumbnail'
+        ? h.previewService.getThumbnail(project.id, asset.id)
+        : h.previewService.getPreview(project.id, asset.id));
+      expect(newRevision).not.toBe(oldRevision);
+      const current = await request(h.app)
+        .get(`/projects/${project.id}/assets/${asset.id}/${kind}?v=${newRevision}`).expect(200);
+      expect(current.headers['cache-control']).toBe('private, max-age=31536000, immutable');
+      expect(current.headers['content-length']).toBe(oldResponses[kind].headers['content-length']);
+      expect(current.headers.etag).toContain(newRevision);
+      expect(current.headers.etag).not.toBe(oldResponses[kind].headers.etag);
+    }
   });
 
   it('unsupported preview returns 415 with no-store', async () => {
@@ -579,6 +654,47 @@ describe('media routes — cache behavior', () => {
       .expect(415);
 
     expect(res.headers['cache-control']).toBe('no-store');
+  });
+
+  it('serves a safe prior policy with revalidation even under the old revision URL', async () => {
+    const { project, asset, absPath } = await setupAsset();
+    const pinned = new Date('2026-08-15T10:00:00Z');
+    fs.utimesSync(path.join(absPath, 'c.png'), pinned, pinned);
+    h.assetRepo.upsert(project.id, 'c.png', { filename: 'c.png', extension: 'png',
+      mimeType: 'image/png', sizeBytes: asset.size_bytes, modifiedAt: '2026-08-15 10:00:00' });
+    const first = await h.previewService.getThumbnail(project.id, asset.id);
+    const oldBytes = fs.readFileSync(first.path);
+    createAppMetaRepository(h.db).setValue('images.thumbnail.format', 'png');
+    createAppMetaRepository(h.db).setValue('images.preview.format', 'png');
+    const current = await h.previewService.getThumbnail(project.id, asset.id);
+    expect(current.cacheState).toBe('prior-policy');
+    expect(current.revision).toBe(first.revision);
+    const res = await request(h.app)
+      .get(`/projects/${project.id}/assets/${asset.id}/thumbnail?v=${first.revision}`)
+      .expect(200);
+    expect(res.body).toEqual(oldBytes);
+    expect(res.headers['cache-control']).toBe('private, max-age=0, must-revalidate');
+    expect(res.headers.etag).toBeUndefined();
+    const policy = createProjectImageSettingsService({
+      appMetaRepository: createAppMetaRepository(h.db),
+    }).getPolicy();
+    const desired = buildAssetRevisionToken(h.assetRepo.findById(asset.id),
+      projectImagePolicyFingerprint(policy, asset));
+    const desiredResponse = await request(h.app)
+      .get(`/projects/${project.id}/assets/${asset.id}/thumbnail?v=${desired}`)
+      .expect(200);
+    expect(desiredResponse.body).toEqual(oldBytes);
+    expect(desiredResponse.headers['cache-control']).toBe('private, max-age=0, must-revalidate');
+    expect(desiredResponse.headers.etag).toBeUndefined();
+    const exportPreview = await h.mediaService.prepareDerivativeResponse('preview', project.id,
+      asset.id, undefined, { ensureCurrent: true });
+    expect(exportPreview.headers['Content-Type']).toBe('image/png');
+    exportPreview.cleanup();
+    const next = await request(h.app)
+      .get(`/projects/${project.id}/assets/${asset.id}/thumbnail?v=${first.revision}`)
+      .expect(200);
+    expect(next.headers['content-type']).toBe('image/png');
+    expect(next.headers['cache-control']).toBe('private, max-age=0, must-revalidate');
   });
 });
 
@@ -714,7 +830,7 @@ describe('media routes — revision-token normalization', () => {
 
   it('valid matching v gets immutable cache-control', async () => {
     const { project, asset } = await setupAsset();
-    const desc = h.previewService.getOriginalDescriptor(project.id, asset.id);
+    const desc = await h.previewService.getThumbnail(project.id, asset.id);
     const res = await request(h.app)
       .get(`/projects/${project.id}/assets/${asset.id}/thumbnail?v=${desc.revision}`)
       .expect(200);
@@ -775,6 +891,8 @@ describe('media routes — revision eligibility parity', () => {
     const { project, absPath } = h.createProject(`Revision ${label}`);
     const buf = await makePng(96, 64);
     writeProjectFile(absPath, 'eligible.png', buf);
+    const pinned = new Date('2026-07-28T12:00:00Z');
+    fs.utimesSync(path.join(absPath, 'eligible.png'), pinned, pinned);
     const asset = h.indexAsset(project, 'eligible.png', {
       modifiedAt: '2026-07-28 12:00:00',
     });
@@ -904,18 +1022,16 @@ describe('media routes — revision eligibility parity', () => {
       ];
 
       if (testCase.valid) {
-        const expectedRevision = buildRevisionToken({
-          projectId: fixture.project.id,
-          assetId: fixture.asset.id,
-          relativePath: 'eligible.png',
-          size: fixture.size,
-          mtime: '2026-07-28T12:00:00.000Z',
-        });
+        const policy = createProjectImageSettingsService({
+          appMetaRepository: createAppMetaRepository(h.db),
+        }).getPolicy();
+        const expectedRevision = buildAssetRevisionToken(fixture.asset,
+          projectImagePolicyFingerprint(policy, fixture.asset));
 
         expect(revisions).toEqual([
           expectedRevision,
           expectedRevision,
-          expectedRevision,
+          buildAssetRevisionToken(fixture.asset),
           expectedRevision,
         ]);
         expect(state.browserThumbnailUrl).toBe(`/projects/${fixture.project.id}/assets/${fixture.asset.id}/thumbnail?v=${expectedRevision}`);
@@ -1238,7 +1354,7 @@ describe('media routes — security', () => {
       extension: 'png',
       mimeType: 'image/png',
       sizeBytes: fs.statSync(path.join(archivedAbs, 'archive.png')).size,
-      modifiedAt: '2026-09-01 10:00:00',
+      modifiedAt: fs.statSync(path.join(archivedAbs, 'archive.png')).mtime.toISOString(),
     });
 
     // The original route must still serve the file from the same directory.

@@ -29,6 +29,9 @@ import { createApplicationLogRepository } from '../src/data/application-log-repo
 import { createProcessingPresetService } from '../src/services/processing-preset-service.js';
 import { createWatermarkScaleMapService } from '../src/services/watermark-scale-map-service.js';
 import { createAssetScanner } from '../src/services/asset-scanner.js';
+import { createSourceAnimationService } from '../src/services/source-animation-service.js';
+import { inspectSourceAnimation } from '../src/services/source-animation.js';
+import { buildAssetRevisionToken } from '../src/services/preview-service.js';
 import { resolveProjectDir } from '../src/storage/project-storage.js';
 import {
   createPngChunk,
@@ -699,6 +702,150 @@ describe('asset processing service', () => {
       .toMatchObject({ format: 'gif', pages: 1 });
     expect(decodeBmp(new Uint8Array(fs.readFileSync(path.join(projectDir, 'Final', 'in-place.bmp')))))
       .toMatchObject({ width: 2, height: 2 });
+  });
+
+  async function makeAnimatedWebp() {
+    const frameData = Buffer.from([
+      255, 0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0,
+      0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0, 255,
+    ]);
+    return sharp(frameData, {
+      raw: { width: 2, height: 4, channels: 3, pageHeight: 2 },
+    }).webp({ loop: 0, delay: [100, 100] }).toBuffer();
+  }
+
+  function createTestScanner() {
+    return createAssetScanner(db, projectsRoot, {
+      projectService,
+      assetCategoryService,
+      projectOperationCoordinator,
+      previewCategorySettingsService: { getPreviewCategory: () => '__disabled__' },
+      projectPrimaryImageRepository: {
+        findByProjectId: () => undefined,
+        setPrimaryImage: () => undefined,
+      },
+    });
+  }
+
+  // Index sources exactly as the scanner does (on-disk category directory,
+  // scanner animation classification) so a later scan has nothing to repair.
+  function writeScannedSources(files) {
+    for (const [relativePath, buffer] of files) {
+      const target = path.join(projectDir, ...relativePath.split('/'));
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, buffer);
+    }
+    createTestScanner().scanProjectAssets(project.id);
+    return files.map(([relativePath]) => assetRepository.findByProjectIdAndPath(project.id, relativePath));
+  }
+
+  // Scanner and Preview source reconciliation over the unchanged converted
+  // bytes: neither may write the row again.
+  function expectConvertedSourceSettled(assetId, expected) {
+    const converted = assetRepository.findById(assetId);
+    expect(converted).toMatchObject({ ...expected, is_present: 1 });
+    const target = path.join(projectDir, ...converted.relative_path.split('/'));
+    const bytesBefore = fs.readFileSync(target);
+    const revision = buildAssetRevisionToken(converted);
+
+    createTestScanner().scanProjectAssets(project.id);
+    expect(assetRepository.findById(assetId)).toEqual(converted);
+
+    const sourceAnimation = createSourceAnimationService({ assetRepository, projectRepository, projectsRoot });
+    expect(sourceAnimation.reconcileSource(converted)).toBeNull();
+    const reconciled = assetRepository.findById(assetId);
+    expect(reconciled).toEqual(converted);
+    expect(buildAssetRevisionToken(reconciled)).toBe(revision);
+    expect(fs.readFileSync(target)).toEqual(bytesBefore);
+  }
+
+  it('records a flattened animated WebP re-encode as still in its one generation advance', async () => {
+    const animated = await makeAnimatedWebp();
+    expect((await sharp(animated).metadata()).pages).toBe(2);
+    const [source] = writeScannedSources([['final/animated-in-place.webp', animated]]);
+    const target = path.join(projectDir, 'final', 'animated-in-place.webp');
+    expect(source).toMatchObject({ source_animated: 1, source_generation: 0 });
+    const revisionBefore = buildAssetRevisionToken(source);
+
+    await processingService.convertAssets(project.id, [source.id], {
+      format: 'webp', quality: 85, originalHandling: 'keep',
+    });
+
+    const output = fs.readFileSync(target);
+    expect((await sharp(output).metadata()).pages ?? 1).toBe(1);
+    expect(inspectSourceAnimation(target, 'webp')).toBe(false);
+    const converted = assetRepository.findById(source.id);
+    expect(converted).toMatchObject({
+      size_bytes: output.length,
+      modified_at: fs.statSync(target).mtime.toISOString(),
+      source_animated: 0,
+      source_generation: 1,
+    });
+    expect(buildAssetRevisionToken(converted)).not.toBe(revisionBefore);
+
+    expectConvertedSourceSettled(source.id, { source_animated: 0, source_generation: 1 });
+  });
+
+  it('keeps a still WebP re-encode classified still with a single generation advance', async () => {
+    const still = await sharp(imageBuffer).webp({ quality: 95 }).toBuffer();
+    const [known, legacy] = writeScannedSources([
+      ['final/still-in-place.webp', still],
+      ['final/legacy-in-place.webp', still],
+    ]);
+    // A row indexed before animation classification existed.
+    db.prepare('UPDATE assets SET source_animated = NULL WHERE id = ?').run(legacy.id);
+    expect(known).toMatchObject({ source_animated: 0, source_generation: 0 });
+    expect(assetRepository.findById(legacy.id)).toMatchObject({ source_animated: null, source_generation: 0 });
+
+    await processingService.convertAssets(project.id, [known.id, legacy.id], {
+      format: 'webp', quality: 40, originalHandling: 'keep',
+    });
+
+    expectConvertedSourceSettled(known.id, { source_animated: 0, source_generation: 1 });
+    expectConvertedSourceSettled(legacy.id, { source_animated: 0, source_generation: 1 });
+  });
+
+  it('records the scanner classification for every same-extension re-encode format', async () => {
+    const jpegBytes = await sharp(imageBuffer).jpeg({ quality: 90 }).toBuffer();
+    const bmpBytes = Buffer.from(encodeBmp({
+      width: 1, height: 1, channels: 3, data: new Uint8Array([255, 0, 0]),
+    }, { bitsPerPixel: 24 }));
+    const files = [
+      ['final/classify.png', imageBuffer, 'png', null],
+      ['final/classify.gif', await makeAnimatedGif(), 'gif', 0],
+      ['final/classify.jpg', jpegBytes, 'jpg', null],
+      ['final/classify.jpeg', jpegBytes, 'jpeg', null],
+      ['final/classify.bmp', bmpBytes, 'bmp', null],
+    ];
+    const assets = writeScannedSources(files.map(([relativePath, buffer]) => [relativePath, buffer]));
+    expect(assets[1]).toMatchObject({ source_animated: 1, source_generation: 0 });
+
+    for (const [index, [, , format, sourceAnimated]] of files.entries()) {
+      await processingService.convertAssets(project.id, [assets[index].id], {
+        format, quality: 85, originalHandling: 'keep',
+      });
+      expectConvertedSourceSettled(assets[index].id, { source_animated: sourceAnimated, source_generation: 1 });
+    }
+  });
+
+  it('keeps generation and animation authority when an animated WebP re-encode fails to index', async () => {
+    const [source] = writeScannedSources([['final/animated-failure.webp', await makeAnimatedWebp()]]);
+    const target = path.join(projectDir, 'final', 'animated-failure.webp');
+    const before = fs.readFileSync(target);
+    const applySpy = vi.spyOn(assetRepository, 'applyAssetConversions')
+      .mockImplementation(() => { throw new Error('injected database failure'); });
+
+    try {
+      await expect(processingService.convertAssets(project.id, [source.id], {
+        format: 'webp', quality: 85, originalHandling: 'keep',
+      })).rejects.toMatchObject({ code: 'DATABASE_OPERATION_FAILED' });
+    } finally {
+      applySpy.mockRestore();
+    }
+
+    expect(fs.readFileSync(target)).toEqual(before);
+    expect(assetRepository.findById(source.id)).toEqual(source);
+    expect(source).toMatchObject({ source_animated: 1, source_generation: 0 });
   });
 
   it('rejects destructive handling for same-extension conversion before mutation', async () => {

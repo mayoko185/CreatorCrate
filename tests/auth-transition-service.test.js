@@ -74,15 +74,15 @@ describe('auth-transition-service', () => {
     };
   }
 
-  it.each(['enable', 'disable'])('%s refuses admitted uploads before files or sessions change', (mode) => {
+  it.each(['enable', 'disable'])('%s refuses admitted uploads before files or sessions change', async (mode) => {
     if (mode === 'disable') enableAuthState(appDataRoot, { sessionSecret: 'a'.repeat(64), csrfPepper: 'b'.repeat(64) });
     const before = readAuthEnablement(appDataRoot);
     const { service, replaceAuthConfig } = buildService({ authService: { verifyCredentials: () => true } });
     const lease = managedUploadTracker.begin();
     try {
       const result = mode === 'enable'
-        ? service.enable({ username: USERNAME, password: PASSWORD, confirmation: PASSWORD })
-        : service.disable({ username: USERNAME, currentPassword: PASSWORD });
+        ? await service.enable({ username: USERNAME, password: PASSWORD, confirmation: PASSWORD })
+        : await service.disable({ username: USERNAME, currentPassword: PASSWORD });
       expect(result.conflict).toBe(true);
       expect(readAuthEnablement(appDataRoot)).toEqual(before);
       expect(invalidateSpy).not.toHaveBeenCalled();
@@ -96,10 +96,10 @@ describe('auth-transition-service', () => {
   });
   // ─── enable() ───────────────────────────────────────────────────────
 
-  it('enable() writes both managed files, invalidates sessions, and adopts the new context', () => {
+  it('enable() writes both managed files, invalidates sessions, and adopts the new context', async () => {
     const { service, replaceAuthConfig } = buildService();
 
-    const result = service.enable({ username: USERNAME, password: PASSWORD, confirmation: PASSWORD });
+    const result = await service.enable({ username: USERNAME, password: PASSWORD, confirmation: PASSWORD });
 
     expect(result).toEqual({ ok: true });
     expect(invalidateSpy).toHaveBeenCalledTimes(1);
@@ -115,10 +115,10 @@ describe('auth-transition-service', () => {
     expect(credentialFileExists(appDataRoot)).toBe(true);
   });
 
-  it('enable() rejects invalid input before touching disk', () => {
+  it('enable() rejects invalid input before touching disk', async () => {
     const { service, replaceAuthConfig } = buildService();
 
-    const result = service.enable({ username: 'a b!', password: 'short', confirmation: 'nope' });
+    const result = await service.enable({ username: 'a b!', password: 'short', confirmation: 'nope' });
 
     expect(result.ok).toBe(false);
     expect(result.errors.length).toBeGreaterThan(0);
@@ -127,25 +127,25 @@ describe('auth-transition-service', () => {
     expect(readAuthEnablement(appDataRoot)).toEqual({ enabled: false, csrfPepper: expect.any(String) });
   });
 
-  it('enable() refuses to run when already enabled, without touching state', () => {
+  it('enable() refuses to run when already enabled, without touching state', async () => {
     const pepper = ensureAuthEnablement(appDataRoot).csrfPepper;
     enableAuthState(appDataRoot, { sessionSecret: 'a'.repeat(64).slice(0, 64), csrfPepper: pepper });
     const { service, replaceAuthConfig } = buildService();
 
-    const result = service.enable({ username: USERNAME, password: PASSWORD, confirmation: PASSWORD });
+    const result = await service.enable({ username: USERNAME, password: PASSWORD, confirmation: PASSWORD });
 
     expect(result).toEqual({ ok: false, alreadyEnabled: true });
     expect(replaceAuthConfig).not.toHaveBeenCalled();
     expect(credentialFileExists(appDataRoot)).toBe(false);
   });
 
-  it('enable() rolls back both files when session invalidation fails, before adoption is ever attempted', () => {
+  it('enable() rolls back both files when session invalidation fails, before adoption is ever attempted', async () => {
     invalidateSpy.mockImplementationOnce(() => {
       throw new Error('simulated session-invalidation failure');
     });
     const { service, replaceAuthConfig } = buildService();
 
-    const result = service.enable({ username: USERNAME, password: PASSWORD, confirmation: PASSWORD });
+    const result = await service.enable({ username: USERNAME, password: PASSWORD, confirmation: PASSWORD });
 
     expect(result).toEqual({ ok: false, sessionInvalidationFailed: true, error: expect.any(Error) });
     expect(replaceAuthConfig).not.toHaveBeenCalled();
@@ -153,13 +153,13 @@ describe('auth-transition-service', () => {
     expect(readAuthEnablement(appDataRoot)).toEqual({ enabled: false, csrfPepper: expect.any(String) });
   });
 
-  it('enable() rolls back both files when context adoption fails (sessions already invalidated is acceptable)', () => {
+  it('enable() rolls back both files when context adoption fails (sessions already invalidated is acceptable)', async () => {
     const replaceAuthConfig = vi.fn(() => {
       throw new Error('simulated rebuild failure');
     });
     const { service } = buildService({ replaceAuthConfig });
 
-    const result = service.enable({ username: USERNAME, password: PASSWORD, confirmation: PASSWORD });
+    const result = await service.enable({ username: USERNAME, password: PASSWORD, confirmation: PASSWORD });
 
     expect(result).toEqual({ ok: false, rebuildFailed: true, error: expect.any(Error) });
     expect(invalidateSpy).toHaveBeenCalledTimes(1);
@@ -167,7 +167,7 @@ describe('auth-transition-service', () => {
     expect(readAuthEnablement(appDataRoot)).toEqual({ enabled: false, csrfPepper: expect.any(String) });
   });
 
-  it('refuses enable and disable before auth files, sessions, or context can change when maintenance is blocked', () => {
+  it('refuses enable and disable before auth files, sessions, or context can change when maintenance is blocked', async () => {
     const activeProcessingError = new Error('Cannot replace the application context while processing jobs are active.');
     const assertNoActiveProcessingJobs = vi.fn(() => { throw activeProcessingError; });
     const replaceAuthConfig = vi.fn();
@@ -178,7 +178,7 @@ describe('auth-transition-service', () => {
     });
     const disabledBefore = readAuthEnablement(appDataRoot);
 
-    expect(service.enable({ username: USERNAME, password: PASSWORD, confirmation: PASSWORD }))
+    expect(await service.enable({ username: USERNAME, password: PASSWORD, confirmation: PASSWORD }))
       .toEqual({ ok: false, conflict: true, error: activeProcessingError });
     expect(readAuthEnablement(appDataRoot)).toEqual(disabledBefore);
     expect(credentialFileExists(appDataRoot)).toBe(false);
@@ -186,25 +186,25 @@ describe('auth-transition-service', () => {
     expect(replaceAuthConfig).not.toHaveBeenCalled();
 
     assertNoActiveProcessingJobs.mockImplementation(() => {});
-    expect(service.enable({ username: USERNAME, password: PASSWORD, confirmation: PASSWORD })).toEqual({ ok: true });
+    expect(await service.enable({ username: USERNAME, password: PASSWORD, confirmation: PASSWORD })).toEqual({ ok: true });
     invalidateSpy.mockClear();
     replaceAuthConfig.mockClear();
     const enabledBefore = readAuthEnablement(appDataRoot);
     assertNoActiveProcessingJobs.mockImplementation(() => { throw activeProcessingError; });
 
-    expect(service.disable({ username: USERNAME, currentPassword: PASSWORD }))
+    expect(await service.disable({ username: USERNAME, currentPassword: PASSWORD }))
       .toEqual({ ok: false, conflict: true, error: activeProcessingError });
     expect(readAuthEnablement(appDataRoot)).toEqual(enabledBefore);
     expect(invalidateSpy).not.toHaveBeenCalled();
     expect(replaceAuthConfig).not.toHaveBeenCalled();
 
     assertNoActiveProcessingJobs.mockImplementation(() => {});
-    expect(service.disable({ username: USERNAME, currentPassword: PASSWORD })).toEqual({ ok: true });
+    expect(await service.disable({ username: USERNAME, currentPassword: PASSWORD })).toEqual({ ok: true });
   });
 
-  it('enable() always overwrites a stale leftover credential file from a previous enabled period', () => {
+  it('enable() always overwrites a stale leftover credential file from a previous enabled period', async () => {
     const { service: first } = buildService();
-    first.enable({ username: USERNAME, password: PASSWORD, confirmation: PASSWORD });
+    await first.enable({ username: USERNAME, password: PASSWORD, confirmation: PASSWORD });
     expect(credentialFileExists(appDataRoot)).toBe(true);
 
     // Simulate "disabled, file left inert" without deleting it (matches the
@@ -218,7 +218,7 @@ describe('auth-transition-service', () => {
     );
 
     const { service: second } = buildService();
-    const result = second.enable({ username: 'newadmin', password: OTHER_PASSWORD, confirmation: OTHER_PASSWORD });
+    const result = await second.enable({ username: 'newadmin', password: OTHER_PASSWORD, confirmation: OTHER_PASSWORD });
 
     expect(result.ok).toBe(true);
     const provider = createManagedCredentialProvider({ appDataRoot });
@@ -227,16 +227,16 @@ describe('auth-transition-service', () => {
     expect(provider.verifyPassword(PASSWORD)).toBe(false);
   });
 
-  it('a reentrant enable() call while one is already in flight is rejected as a conflict, never interleaved', () => {
+  it('a reentrant enable() call while one is already in flight is rejected as a conflict, never interleaved', async () => {
     let reentrantResult;
     const replaceAuthConfig = vi.fn(() => {
       reentrantResult = service.enable({ username: 'someone-else', password: OTHER_PASSWORD, confirmation: OTHER_PASSWORD });
     });
     const { service } = buildService({ replaceAuthConfig });
 
-    const result = service.enable({ username: USERNAME, password: PASSWORD, confirmation: PASSWORD });
+    const result = await service.enable({ username: USERNAME, password: PASSWORD, confirmation: PASSWORD });
 
-    expect(reentrantResult).toEqual({ ok: false, conflict: true });
+    expect(await reentrantResult).toEqual({ ok: false, conflict: true });
     expect(result.ok).toBe(true);
     // The reentrant call never wrote its own credentials.
     const provider = createManagedCredentialProvider({ appDataRoot });
@@ -245,8 +245,8 @@ describe('auth-transition-service', () => {
 
   // ─── disable() ──────────────────────────────────────────────────────
 
-  function enableFor(service) {
-    return service.enable({ username: USERNAME, password: PASSWORD, confirmation: PASSWORD });
+  async function enableFor(service) {
+    return await service.enable({ username: USERNAME, password: PASSWORD, confirmation: PASSWORD });
   }
 
   function fakeAuthService(passwordThatMatches) {
@@ -256,14 +256,14 @@ describe('auth-transition-service', () => {
     };
   }
 
-  it('disable() invalidates sessions, adopts the disabled context, and leaves the credential file inert (not deleted)', () => {
+  it('disable() invalidates sessions, adopts the disabled context, and leaves the credential file inert (not deleted)', async () => {
     const replaceAuthConfig = vi.fn();
     const { service } = buildService({ replaceAuthConfig, authService: fakeAuthService(PASSWORD) });
-    enableFor(service);
+    await enableFor(service);
     invalidateSpy.mockClear();
     replaceAuthConfig.mockClear();
 
-    const result = service.disable({ username: USERNAME, currentPassword: PASSWORD });
+    const result = await service.disable({ username: USERNAME, currentPassword: PASSWORD });
 
     expect(result).toEqual({ ok: true });
     expect(invalidateSpy).toHaveBeenCalledTimes(1);
@@ -272,55 +272,55 @@ describe('auth-transition-service', () => {
     expect(credentialFileExists(appDataRoot)).toBe(true);
   });
 
-  it('disable() rejects the wrong current password without writing anything', () => {
+  it('disable() rejects the wrong current password without writing anything', async () => {
     const replaceAuthConfig = vi.fn();
     const { service } = buildService({ replaceAuthConfig, authService: fakeAuthService(PASSWORD) });
-    enableFor(service);
+    await enableFor(service);
     replaceAuthConfig.mockClear();
 
-    const result = service.disable({ username: USERNAME, currentPassword: 'wrong-password' });
+    const result = await service.disable({ username: USERNAME, currentPassword: 'wrong-password' });
 
     expect(result).toEqual({ ok: false, currentPasswordError: 'Current password is incorrect.' });
     expect(replaceAuthConfig).not.toHaveBeenCalled();
     expect(readAuthEnablement(appDataRoot).enabled).toBe(true);
   });
 
-  it('disable() refuses when there is no live authService (already disabled)', () => {
+  it('disable() refuses when there is no live authService (already disabled)', async () => {
     const { service } = buildService({ authService: null });
 
-    const result = service.disable({ username: USERNAME, currentPassword: PASSWORD });
+    const result = await service.disable({ username: USERNAME, currentPassword: PASSWORD });
 
     expect(result).toEqual({ ok: false, alreadyDisabled: true });
   });
 
-  it('disable() rolls back the enablement state when session invalidation fails; auth stays enabled', () => {
+  it('disable() rolls back the enablement state when session invalidation fails; auth stays enabled', async () => {
     const replaceAuthConfig = vi.fn();
     const { service } = buildService({ replaceAuthConfig, authService: fakeAuthService(PASSWORD) });
-    enableFor(service);
+    await enableFor(service);
     const stateBefore = readAuthEnablement(appDataRoot);
     replaceAuthConfig.mockClear();
     invalidateSpy.mockImplementationOnce(() => {
       throw new Error('simulated session-invalidation failure');
     });
 
-    const result = service.disable({ username: USERNAME, currentPassword: PASSWORD });
+    const result = await service.disable({ username: USERNAME, currentPassword: PASSWORD });
 
     expect(result).toEqual({ ok: false, sessionInvalidationFailed: true, error: expect.any(Error) });
     expect(replaceAuthConfig).not.toHaveBeenCalled();
     expect(readAuthEnablement(appDataRoot)).toEqual(stateBefore);
   });
 
-  it('disable() rolls back the enablement state when context adoption fails; credential file untouched throughout', () => {
+  it('disable() rolls back the enablement state when context adoption fails; credential file untouched throughout', async () => {
     const replaceAuthConfig = vi.fn();
     const { service } = buildService({ replaceAuthConfig, authService: fakeAuthService(PASSWORD) });
-    enableFor(service);
+    await enableFor(service);
     const stateBefore = readAuthEnablement(appDataRoot);
     replaceAuthConfig.mockClear();
     replaceAuthConfig.mockImplementationOnce(() => {
       throw new Error('simulated rebuild failure');
     });
 
-    const result = service.disable({ username: USERNAME, currentPassword: PASSWORD });
+    const result = await service.disable({ username: USERNAME, currentPassword: PASSWORD });
 
     expect(result).toEqual({ ok: false, rebuildFailed: true, error: expect.any(Error) });
     expect(readAuthEnablement(appDataRoot)).toEqual(stateBefore);
@@ -329,9 +329,9 @@ describe('auth-transition-service', () => {
 
   // ─── restart-observability ──────────────────────────────────────────
 
-  it('a committed enable/disable transition leaves no half-transition observable across a fresh state read (simulated restart)', () => {
+  it('a committed enable/disable transition leaves no half-transition observable across a fresh state read (simulated restart)', async () => {
     const { service } = buildService();
-    service.enable({ username: USERNAME, password: PASSWORD, confirmation: PASSWORD });
+    await service.enable({ username: USERNAME, password: PASSWORD, confirmation: PASSWORD });
 
     // Simulate a restart: a brand-new, independent read of the same files.
     const restartState = readAuthEnablement(appDataRoot);

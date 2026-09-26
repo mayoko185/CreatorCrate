@@ -52,6 +52,7 @@ describe('WP7D3B2 replacement and restore ownership', () => {
       if (failBuild) throw new Error('injected reconstruction failure');
       return createApp(deps, { ...opts,
         beginReplacement: () => (owner = opts.beginReplacement()),
+        beginReplacementAfterRebuild: async () => (owner = await opts.beginReplacementAfterRebuild()),
         onDatabaseReplaced: async (...args) => {
           if (adoptOverride) await adoptOverride(...args);
           return opts.onDatabaseReplaced(...args);

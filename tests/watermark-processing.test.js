@@ -30,6 +30,9 @@ import { createAssetProcessingScopeService } from '../src/services/asset-process
 import { createAssetScanner } from '../src/services/asset-scanner.js';
 import { resolveProjectDir } from '../src/storage/project-storage.js';
 import { read7zArchiveEntries } from '../src/services/watermark-7z.js';
+import { createSourceAnimationService } from '../src/services/source-animation-service.js';
+import { inspectSourceAnimation } from '../src/services/source-animation.js';
+import { buildAssetRevisionToken } from '../src/services/preview-service.js';
 
 function createAssetProcessingService(dependencies) {
   const service = createAssetProcessingServiceRaw({
@@ -816,6 +819,133 @@ describe('watermark asset processing', () => {
     });
     expect(fs.existsSync(outputPath)).toBe(true);
     expect(assetRepository.findById(source.id)).toMatchObject({ is_present: 1 });
+  });
+
+  async function makeAnimatedWebp() {
+    const frameData = Buffer.from([
+      255, 0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0,
+      0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 0, 255,
+    ]);
+    return sharp(frameData, {
+      raw: { width: 2, height: 4, channels: 3, pageHeight: 2 },
+    }).webp({ loop: 0, delay: [100, 100] }).toBuffer();
+  }
+
+  // Generate, optionally prepare the settled row, delete the output, scan it
+  // missing, then recreate it through the real Watermark pipeline. The one
+  // recreation must leave nothing for scanner or Preview reconciliation.
+  async function recreateMissingOutput(name, outputFormat, prepare = () => {}) {
+    const source = await writeIndexedImage(`final/${name}.png`);
+    const options = { mode: 'patreon', outputFormat, deleteSource: false };
+    const first = await processingService.watermarkAssets(project.id, [source.id], options);
+    const outputId = first.generatedAssetIds[0];
+    const outputPath = path.join(projectDir, 'wm', `${name}_wm.${outputFormat}`);
+    await prepare(outputPath);
+    fs.unlinkSync(outputPath);
+    assetScanner.scanProjectAssets(project.id);
+    const before = assetRepository.findById(outputId);
+    expect(before).toMatchObject({ is_present: 0 });
+
+    const rerun = await processingService.watermarkAssets(project.id, [source.id], { ...options, overwrite: true });
+    expect(rerun.generatedAssetIds).toEqual([outputId]);
+    const recreated = assetRepository.findById(outputId);
+    expect(recreated).toMatchObject({
+      is_present: 1,
+      size_bytes: fs.statSync(outputPath).size,
+      modified_at: fs.statSync(outputPath).mtime.toISOString(),
+      generated_output_sha256: sha256For(outputPath),
+      source_generation: before.source_generation + 1,
+    });
+
+    const revision = buildAssetRevisionToken(recreated);
+    expect(revision).not.toBe(buildAssetRevisionToken(before));
+    assetScanner.scanProjectAssets(project.id);
+    expect(assetRepository.findById(outputId)).toEqual(recreated);
+    const sourceAnimation = createSourceAnimationService({ assetRepository, projectRepository, projectsRoot });
+    expect(sourceAnimation.reconcileSource(recreated)).toBeNull();
+    expect(assetRepository.findById(outputId)).toEqual(recreated);
+    expect(buildAssetRevisionToken(assetRepository.findById(outputId))).toBe(revision);
+    return { before, recreated, outputPath };
+  }
+
+  it('records a recreated still WebP over an animated replacement in its one generation advance', async () => {
+    const animated = await makeAnimatedWebp();
+    const { before, recreated, outputPath } = await recreateMissingOutput('animated-replaced', 'webp', (outputPath) => {
+      fs.writeFileSync(outputPath, animated);
+      assetScanner.scanProjectAssets(project.id);
+    });
+    expect(before).toMatchObject({ source_animated: 1 });
+    expect((await metadataFor(outputPath)).pages ?? 1).toBe(1);
+    expect(inspectSourceAnimation(outputPath, 'webp')).toBe(false);
+    expect(recreated).toMatchObject({ source_animated: 0, source_generation: before.source_generation + 1 });
+  });
+
+  it('records a recreated still WebP over a still classification in one generation advance', async () => {
+    const { before, recreated } = await recreateMissingOutput('still-recreated', 'webp', () => {
+      assetScanner.scanProjectAssets(project.id);
+    });
+    expect(before).toMatchObject({ source_animated: 0 });
+    expect(recreated).toMatchObject({ source_animated: 0 });
+  });
+
+  it('classifies a recreated WebP over an unknown legacy classification in one generation advance', async () => {
+    const { before, recreated } = await recreateMissingOutput('legacy-recreated', 'webp');
+    expect(before).toMatchObject({ source_animated: null });
+    expect(recreated).toMatchObject({ source_animated: 0 });
+  });
+
+  it.each(['png', 'jpg'])('keeps a recreated %s output unclassified like the scanner', async (outputFormat) => {
+    const { recreated } = await recreateMissingOutput(`format-${outputFormat}`, outputFormat, () => {
+      assetScanner.scanProjectAssets(project.id);
+    });
+    expect(recreated).toMatchObject({ source_animated: null });
+  });
+
+  it('rejects and recovers a replacement whose destination authority advanced during rendering', async () => {
+    const source = await writeIndexedImage('final/raced.png');
+    const options = { mode: 'patreon', deleteSource: false };
+    const first = await processingService.watermarkAssets(project.id, [source.id], options);
+    const outputId = first.generatedAssetIds[0];
+    const outputPath = path.join(projectDir, 'wm', 'raced_wm.png');
+    const priorHash = sha256For(outputPath);
+    // Same bytes (generated ownership still matches), new mtime not yet indexed.
+    fs.utimesSync(outputPath, new Date('2026-03-01T00:00:00.000Z'), new Date('2026-03-01T00:00:00.000Z'));
+    const captured = assetRepository.findById(outputId);
+
+    // Request-time Preview reconciliation runs while watermark rendering is
+    // underway; it is not serialized by the project operation lock.
+    const sourceAnimation = createSourceAnimationService({ assetRepository, projectRepository, projectsRoot });
+    let reconciled;
+    const pool = createProcessingConcurrencyService({ concurrency: 1 });
+    const racingService = createConfiguredService(watermarkPath, tmpDir, coordinator, {
+      processingConcurrencyService: {
+        ...pool,
+        mapBounded(items, worker) {
+          reconciled = sourceAnimation.reconcileSource(assetRepository.findById(outputId));
+          return pool.mapBounded(items, worker);
+        },
+      },
+    });
+
+    const failure = await racingService.watermarkAssets(project.id, [source.id], { ...options, overwrite: true })
+      .catch((err) => err);
+    expect(failure).toMatchObject({ code: 'DATABASE_OPERATION_FAILED' });
+    expect(failure.cause).toMatchObject({ code: 'STALE_STATE' });
+
+    expect(reconciled).toMatchObject({
+      modified_at: '2026-03-01T00:00:00.000Z',
+      source_generation: captured.source_generation + 1,
+      generated_output_sha256: priorHash,
+    });
+    // The newer authority is untouched: no N+2, no stale tuple.
+    const after = assetRepository.findById(outputId);
+    expect(after).toEqual(reconciled);
+    // Recovery restored the file that authority describes.
+    expect(sha256For(outputPath)).toBe(priorHash);
+    expect(fs.statSync(outputPath).mtime.toISOString()).toBe(after.modified_at);
+    expect(fs.statSync(outputPath).size).toBe(after.size_bytes);
+    expect(sourceAnimation.reconcileSource(after)).toBeNull();
+    expect(assetRepository.findById(outputId)).toEqual(after);
   });
 
   it('accepts an uppercase valid historical hash when recreating a missing Patreon output', async () => {

@@ -24,6 +24,8 @@ const ASSET_COLUMNS = [
   'mime_type',
   'size_bytes',
   'modified_at',
+  'source_animated',
+  'source_generation',
   'is_present',
   'last_seen_at',
   'missing_since',
@@ -37,6 +39,13 @@ const ASSET_COLUMNS = [
   'created_at',
   'updated_at',
 ];
+
+// ON CONFLICT(project_id, relative_path) for a newly written file: a restored
+// row or a changed size/mtime is a new source instance. Re-upserting the same
+// observed tuple keeps the generation.
+const SOURCE_REPLACED_ON_CONFLICT = `CASE WHEN assets.is_present = 0
+  OR assets.size_bytes IS NOT excluded.size_bytes
+  OR assets.modified_at IS NOT excluded.modified_at THEN 1 ELSE 0 END`;
 
 const NOTE_ASSOCIATION_ASSET_SELECT = `
   SELECT
@@ -122,6 +131,8 @@ function buildAssetBrowserSelectColumns({ includeCategorySlug = false } = {}) {
     'a.mime_type',
     'a.size_bytes',
     'a.modified_at',
+    'a.source_animated',
+    'a.source_generation',
     'a.is_present',
     'a.last_seen_at',
     'a.missing_since',
@@ -196,24 +207,6 @@ function appendProjectAssetCategoryCondition(conditions, params, category) {
     params.push(category);
   }
   // 'all' / undefined = no category restriction
-}
-
-function appendProjectAssetTagCondition(conditions, params, tag) {
-  if (tag === undefined || tag === null || tag === '') return;
-
-  const values = Array.isArray(tag) ? tag : [tag];
-  const selected = [...new Set(values.filter((value) => Number.isSafeInteger(value) && value > 0))]
-    .sort((left, right) => left - right);
-  if (selected.length === 0) return;
-
-  const placeholders = selected.map(() => '?').join(',');
-  conditions.push(`EXISTS (
-    SELECT 1
-    FROM asset_tags asset_tag_filter
-    WHERE asset_tag_filter.asset_id = a.id
-      AND asset_tag_filter.tag_id IN (${placeholders})
-  )`);
-  params.push(...selected);
 }
 
 function appendGlobalAssetTagCondition(conditions, params, tag) {
@@ -298,13 +291,13 @@ function buildProjectAssetBrowserConditions(projectId, filters = {}) {
   conditions.unshift('a.project_id = ?');
   params.unshift(projectId);
   appendProjectAssetCategoryCondition(conditions, params, filters.category);
-  appendProjectAssetTagCondition(conditions, params, filters.tags ?? filters.tag);
+  // Same direct-or-inherited project-tag predicate as the Asset Library, so
+  // filtering agrees with the "Inherited from Project" tag presentation.
+  appendGlobalAssetTagCondition(conditions, params, filters.tags ?? filters.tag);
   return { conditions, params };
 }
 
 function buildAllAssetBrowserConditions(filters = {}) {
-  // Project-scoped browser predicates remain direct asset-tag predicates; the
-  // global browser additionally includes inherited project-tag assignments.
   const { conditions, params } = buildSharedAssetBrowserConditions({
     ...filters,
     extension: undefined,
@@ -364,6 +357,28 @@ export function createAssetRepository(db) {
     SELECT ${ASSET_COLUMNS.join(', ')}
     FROM assets
     WHERE id = ?
+  `);
+
+  const setSourceAnimationIfUnknownStmt = db.prepare(`
+    UPDATE assets SET source_animated = ?
+    WHERE id = ? AND project_id = ? AND relative_path = ?
+      AND extension = ? AND size_bytes = ? AND modified_at IS ?
+      AND is_present = 1 AND source_animated IS NULL
+    RETURNING ${ASSET_COLUMNS.join(', ')}
+  `);
+  // Request-time source reconciliation: the WHERE clause pins the old
+  // authoritative row (path/extension/size/mtime/animation/source generation),
+  // SET writes the newly observed tuple and, in the same statement, advances
+  // the source generation when a new source instance was established. A row a
+  // scan or another request already moved on no longer matches and is left
+  // untouched, so one observed transition never increments twice.
+  const reconcileSourceStmt = db.prepare(`
+    UPDATE assets SET size_bytes = ?, modified_at = ?, source_animated = ?,
+      source_generation = source_generation + ?
+    WHERE id = ? AND project_id = ? AND relative_path = ?
+      AND extension = ? AND size_bytes = ? AND modified_at IS ?
+      AND is_present = 1 AND source_animated IS ? AND source_generation = ?
+    RETURNING ${ASSET_COLUMNS.join(', ')}
   `);
 
   const findAllForNoteAssociationStmt = db.prepare(
@@ -450,9 +465,10 @@ export function createAssetRepository(db) {
   `);
 
   const upsertStmt = db.prepare(`
-    INSERT INTO assets (project_id, relative_path, category_id, nested_path, filename, extension, mime_type, size_bytes, modified_at, is_present, last_seen_at, missing_since)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), NULL)
+    INSERT INTO assets (project_id, relative_path, category_id, nested_path, filename, extension, mime_type, size_bytes, modified_at, source_animated, is_present, last_seen_at, missing_since)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), NULL)
     ON CONFLICT(project_id, relative_path) DO UPDATE SET
+      source_generation = assets.source_generation + (${SOURCE_REPLACED_ON_CONFLICT}),
       category_id = excluded.category_id,
       nested_path = excluded.nested_path,
       filename = excluded.filename,
@@ -460,6 +476,7 @@ export function createAssetRepository(db) {
       mime_type = excluded.mime_type,
       size_bytes = excluded.size_bytes,
       modified_at = excluded.modified_at,
+      source_animated = excluded.source_animated,
       is_present = 1,
       last_seen_at = datetime('now'),
       missing_since = NULL,
@@ -479,6 +496,12 @@ export function createAssetRepository(db) {
     RETURNING ${ASSET_COLUMNS.join(', ')}
   `);
 
+  // Recreating a generated output is one new source instance: its tuple,
+  // animation classification and generation advance land together. The WHERE
+  // clause pins both the generated ownership and the source authority
+  // (extension/size/mtime/presence/animation/source generation) captured
+  // before rendering, so a scan or request-time reconciliation that
+  // established newer authority meanwhile leaves this stale write unmatched.
   const updateWatermarkOutputStmt = db.prepare(`
     UPDATE assets
     SET relative_path = ?,
@@ -489,6 +512,7 @@ export function createAssetRepository(db) {
         nested_path = ?,
         size_bytes = ?,
         modified_at = ?,
+        source_animated = ?,
         is_present = 1,
         last_seen_at = datetime('now'),
         missing_since = NULL,
@@ -499,6 +523,7 @@ export function createAssetRepository(db) {
         generated_variant = ?,
         generated_output_sha256 = ?,
         generated_watermark_id = ?,
+        source_generation = source_generation + 1,
         updated_at = datetime('now')
     WHERE project_id = ?
       AND id = ?
@@ -510,13 +535,24 @@ export function createAssetRepository(db) {
       AND generated_variant IS ?
       AND generated_output_sha256 IS ?
       AND generated_watermark_id IS ?
+      AND extension IS ?
+      AND size_bytes IS ?
+      AND modified_at IS ?
+      AND is_present = ?
+      AND source_animated IS ?
+      AND source_generation = ?
       RETURNING ${ASSET_COLUMNS.join(', ')}
   `);
 
+  // An in-place re-encode is one new source instance: the new tuple, the new
+  // bytes' animation classification and the generation advance land together
+  // so a later scan or Preview reconciliation finds nothing left to correct.
   const updateConversionReencodeStmt = db.prepare(`
     UPDATE assets
     SET size_bytes = ?,
         modified_at = ?,
+        source_animated = ?,
+        source_generation = source_generation + 1,
         is_present = 1,
         last_seen_at = datetime('now'),
         missing_since = NULL,
@@ -545,6 +581,7 @@ export function createAssetRepository(db) {
       data.mimeType,
       data.sizeBytes,
       data.modifiedAt || null,
+      data.sourceAnimated == null ? null : Number(data.sourceAnimated),
     ));
   });
 
@@ -597,14 +634,14 @@ export function createAssetRepository(db) {
   });
 
   const selectExistingForReconcileStmt = db.prepare(`
-    SELECT id, category_id, nested_path, relative_path, filename, extension, mime_type, size_bytes, modified_at, is_present
+    SELECT id, category_id, nested_path, relative_path, filename, extension, mime_type, size_bytes, modified_at, source_animated, is_present
     FROM assets
     WHERE project_id = ?
   `);
 
   const insertReconcileStmt = db.prepare(`
-    INSERT INTO assets (project_id, relative_path, category_id, nested_path, filename, extension, mime_type, size_bytes, modified_at, is_present, last_seen_at, missing_since)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), NULL)
+    INSERT INTO assets (project_id, relative_path, category_id, nested_path, filename, extension, mime_type, size_bytes, modified_at, source_animated, is_present, last_seen_at, missing_since)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), NULL)
   `);
 
   const updateReconcileStmt = db.prepare(`
@@ -616,6 +653,8 @@ export function createAssetRepository(db) {
         mime_type = ?,
         size_bytes = ?,
         modified_at = ?,
+        source_animated = ?,
+        source_generation = source_generation + ?,
         is_present = 1,
         last_seen_at = datetime('now'),
         missing_since = NULL,
@@ -680,20 +719,29 @@ export function createAssetRepository(db) {
           file.mimeType,
           file.sizeBytes,
           modifiedAt,
+          file.sourceAnimated == null ? null : Number(file.sourceAnimated),
         );
         added++;
         continue;
       }
 
-      const changed =
+      const sourceAnimated = file.sourceAnimated == null ? null : Number(file.sourceAnimated);
+      // A restored row or a changed observed source is a new source instance;
+      // path-derived repairs and first-time animation classification are not.
+      const newSourceInstance =
         existing.is_present === 0 ||
+        existing.size_bytes !== file.sizeBytes ||
+        existing.modified_at !== modifiedAt ||
+        (existing.source_animated != null && sourceAnimated != null
+          && existing.source_animated !== sourceAnimated);
+      const changed =
+        newSourceInstance ||
         existing.category_id !== categoryId ||
         existing.nested_path !== nestedPath ||
         existing.filename !== file.filename ||
         existing.extension !== file.extension ||
         existing.mime_type !== file.mimeType ||
-        existing.size_bytes !== file.sizeBytes ||
-        existing.modified_at !== modifiedAt;
+        existing.source_animated !== sourceAnimated;
 
       if (changed) {
         updateReconcileStmt.run(
@@ -704,6 +752,8 @@ export function createAssetRepository(db) {
           file.mimeType,
           file.sizeBytes,
           modifiedAt,
+          sourceAnimated,
+          newSourceInstance ? 1 : 0,
           existing.id,
         );
         updated++;
@@ -870,6 +920,7 @@ export function createAssetRepository(db) {
       const asset = updateConversionReencodeStmt.get(
         update.sizeBytes,
         update.modifiedAt || null,
+        update.sourceAnimated == null ? null : Number(update.sourceAnimated),
         projectId,
         update.assetId,
         update.expectedRelativePath,
@@ -924,6 +975,9 @@ export function createAssetRepository(db) {
 
     const replaced = [];
     for (const replacement of replacements) {
+      if (!Number.isSafeInteger(replacement.expectedSourceGeneration)) {
+        throw new TypeError('Asset watermark replacement requires the expected source generation.');
+      }
       const data = replacement.data;
       const asset = updateWatermarkOutputStmt.get(
         data.relativePath,
@@ -934,6 +988,7 @@ export function createAssetRepository(db) {
         data.nestedPath ?? '',
         data.sizeBytes,
         data.modifiedAt || null,
+        data.sourceAnimated == null ? null : Number(data.sourceAnimated),
         replacement.generatedSourceAssetId,
         replacement.generatedSourceRelativePath ?? null,
         replacement.generatedMode,
@@ -949,6 +1004,12 @@ export function createAssetRepository(db) {
         replacement.expectedGeneratedVariant ?? null,
         replacement.expectedGeneratedOutputSha256 ?? null,
         replacement.expectedGeneratedWatermarkId ?? null,
+        replacement.expectedExtension ?? null,
+        replacement.expectedSizeBytes ?? null,
+        replacement.expectedModifiedAt ?? null,
+        replacement.expectedIsPresent ? 1 : 0,
+        replacement.expectedSourceAnimated == null ? null : Number(replacement.expectedSourceAnimated),
+        replacement.expectedSourceGeneration,
       );
       if (!asset) {
         const error = new Error('Asset watermark replacement did not match the expected database state.');
@@ -1057,6 +1118,7 @@ export function createAssetRepository(db) {
     UPDATE assets
     SET size_bytes = ?,
         modified_at = ?,
+        source_generation = source_generation + 1,
         is_present = 1,
         last_seen_at = datetime('now'),
         missing_since = NULL,
@@ -1120,6 +1182,42 @@ export function createAssetRepository(db) {
      */
     findById(id) {
       return findByIdStmt.get(id);
+    },
+
+    setSourceAnimationIfUnknown(asset, animated) {
+      return setSourceAnimationIfUnknownStmt.get(
+        animated, asset.id, asset.project_id, asset.relative_path,
+        asset.extension, asset.size_bytes, asset.modified_at,
+      );
+    },
+
+    /**
+     * Conditionally replace an asset's source tuple (size/mtime and, for
+     * GIF/WebP, `source_animated`) with a newly observed one. `source.animated`
+     * undefined keeps the stored animation value (PNG/JPEG). Returns the
+     * updated row, or undefined when `asset` is no longer the stored row.
+     */
+    reconcileSource(asset, source, { replaced = false } = {}) {
+      const animated = source.animated === undefined
+        ? asset.source_animated
+        : Number(source.animated);
+      // `replaced` is the caller's descriptor/path proof of a new file instance
+      // even when the tuple compares equal; a known animation state flipping is
+      // equally a different file. Learning an unknown animation state is not.
+      const newSourceInstance = replaced
+        || source.size !== asset.size_bytes
+        || source.mtime !== asset.modified_at
+        || (asset.source_animated != null && animated != null && animated !== asset.source_animated);
+      return reconcileSourceStmt.get(
+        source.size, source.mtime, animated, newSourceInstance ? 1 : 0,
+        asset.id, asset.project_id, asset.relative_path,
+        asset.extension, asset.size_bytes, asset.modified_at, asset.source_animated,
+        asset.source_generation ?? 0,
+      );
+    },
+
+    reconcileSourceAnimation(asset, source, animated) {
+      return this.reconcileSource(asset, { size: source.size, mtime: source.mtime, animated });
     },
 
     /**
@@ -1514,6 +1612,7 @@ export function createAssetRepository(db) {
         data.mimeType,
         data.sizeBytes,
         data.modifiedAt || null,
+        data.sourceAnimated == null ? null : Number(data.sourceAnimated),
       );
     },
 
@@ -1660,6 +1759,7 @@ export function createAssetRepository(db) {
     const sql = `
       UPDATE assets
       SET is_present = 1,
+          source_generation = source_generation + 1,
           last_seen_at = datetime('now'),
           missing_since = NULL,
           updated_at = datetime('now')
@@ -2164,7 +2264,7 @@ export function createAssetRepository(db) {
 
       const orderClause = buildAssetBrowserOrderClause(sort, order);
       const sql = `
-        SELECT a.id, a.project_id, a.relative_path, a.filename, a.extension, a.mime_type, a.is_present, a.size_bytes, a.modified_at
+        SELECT a.id, a.project_id, a.relative_path, a.filename, a.extension, a.mime_type, a.is_present, a.size_bytes, a.modified_at, a.source_animated, a.source_generation
         FROM assets a
         ${CATEGORY_JOIN}
         WHERE ${conditions.join(' AND ')}
@@ -2188,7 +2288,7 @@ export function createAssetRepository(db) {
       const { conditions, params } = buildAllAssetBrowserConditions(filters);
 
       const sql = `
-        SELECT a.id, a.project_id, a.relative_path, a.filename, a.extension, a.mime_type, a.is_present, a.size_bytes, a.modified_at
+        SELECT a.id, a.project_id, a.relative_path, a.filename, a.extension, a.mime_type, a.is_present, a.size_bytes, a.modified_at, a.source_animated, a.source_generation
         FROM assets a
         JOIN projects p ON p.id = a.project_id
         ${CATEGORY_JOIN}

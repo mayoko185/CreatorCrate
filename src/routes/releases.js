@@ -10,6 +10,7 @@ import {
   ReleaseNotFoundError,
 } from '../services/release-service.js';
 import { buildReleaseAssetPagePresentation } from '../services/release-asset-presenter.js';
+import { projectImagePresentationPolicy } from '../services/project-image-policy.js';
 import { RELEASE_ASSET_ROLES } from '../data/release-repository.js';
 import { buildSocialContent } from '../services/social-content-builder.js';
 import { buildReleaseSocialPrepPresentation } from '../services/release-social-prep-presenter.js';
@@ -811,7 +812,8 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
           appName,
           ...buildAssetPageRenderModel(id, req, viewModel, {
             releaseAssets: submittedAssets,
-            assetPresentation: buildSubmittedReleaseAssetPresentation(viewModel, submittedAssets, res.locals.clockFormat),
+            assetPresentation: buildSubmittedReleaseAssetPresentation(viewModel, submittedAssets,
+              res.locals.clockFormat, req.app.locals.projectImageSettingsService),
             errors: err.errors || { general: err.message },
           }),
           roles: RELEASE_ASSET_ROLES,
@@ -1638,7 +1640,7 @@ function buildAssetPageRenderModel(
   };
 }
 
-function buildSubmittedReleaseAssetPresentation(viewModel, submittedAssets, clockFormat = '24h') {
+function buildSubmittedReleaseAssetPresentation(viewModel, submittedAssets, clockFormat = '24h', imageSettings) {
   const sourceById = new Map();
   for (const row of [
     ...(Array.isArray(viewModel.assets) ? viewModel.assets : []),
@@ -1660,6 +1662,8 @@ function buildSubmittedReleaseAssetPresentation(viewModel, submittedAssets, cloc
     ? viewModel.assetPage
     : (Array.isArray(viewModel.assets) ? viewModel.assets : []);
   return buildReleaseAssetPagePresentation({
+    ...(imageSettings ? { policyFingerprint: imageSettings.getPresentationPolicy?.()
+      ?? projectImagePresentationPolicy(imageSettings.getPolicy()) } : {}),
     selectedAssets,
     assets: assetPage,
     candidateAssets: assetPage.filter((asset) => !selectedIds.has(String(asset.id))),

@@ -61,6 +61,11 @@ import { createOpenLocallySettingsService } from './services/open-locally-settin
 import { createSocialPrepSettingsService } from './services/social-prep-settings-service.js';
 import { createNoteRevisionSettingsService } from './services/note-revision-settings-service.js';
 import { createClockFormatSettingsService } from './services/clock-format-settings-service.js';
+import { createProjectImageSettingsService } from './services/project-image-settings-service.js';
+import { createGeneratedImageRebuildRepository } from './data/generated-image-rebuild-repository.js';
+import { createGeneratedImageRebuildService } from './services/generated-image-rebuild-service.js';
+import { createSourceAnimationService } from './services/source-animation-service.js';
+import { createAssetRepository } from './data/asset-repository.js';
 import { formatIsoTimestamp, formatSqliteTimestamp, formatStoredTime } from './util/date.js';
 import { createSocialPrepService } from './services/social-prep-service.js';
 import { createPreviewCategorySettingsService } from './services/preview-category-settings-service.js';
@@ -357,6 +362,11 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   const clockFormatSettingsService = opts.clockFormatSettingsService
     || createClockFormatSettingsService({ appMetaRepository });
   app.locals.clockFormatSettingsService = clockFormatSettingsService;
+  const sourceAnimationService = createSourceAnimationService({
+    assetRepository: createAssetRepository(db), projectRepository, projectsRoot,
+  });
+  app.locals.projectImageSettingsService = opts.projectImageSettingsService
+    || createProjectImageSettingsService({ appMetaRepository, sourceAnimationService });
 
   const tagRepository = opts.tagRepository || createTagRepository(db);
   const projectService = createProjectService(db, projectsRoot, {
@@ -617,6 +627,8 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       projectOperationCoordinator,
       signingKey: opts.autoRenameSigningKey,
       applicationLogger,
+      projectImageSettingsService: app.locals.projectImageSettingsService,
+      sourceAnimationService,
     }))
     : null;
   app.locals.autoRenameService = autoRenameService;
@@ -627,11 +639,27 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   const previewService =
     opts.previewService ||
     (previewRoot
-      ? createPreviewService({ db, projectsRoot, previewRoot })
+      ? createPreviewService({ db, projectsRoot, previewRoot,
+        projectImageSettingsService: app.locals.projectImageSettingsService,
+        processingConcurrencyService })
       : null);
 
   app.locals.previewRoot = previewRoot;
   app.locals.previewService = previewService;
+  const generatedImageRebuildService = opts.generatedImageRebuildService || (previewService && projectsRoot
+    ? createGeneratedImageRebuildService({
+      repository: createGeneratedImageRebuildRepository(db, appMetaRepository),
+      imageSettings: app.locals.projectImageSettingsService,
+      previewService, maintenanceState, managedUploadTracker,
+      applicationLogger,
+      // Capacity only: Preview Service alone acquires the pool's permits.
+      processingConcurrency: processingConcurrencyService.concurrency,
+    }) : null);
+  app.locals.generatedImageRebuildService = generatedImageRebuildService;
+  if (opts.startGeneratedImageRebuild !== false) {
+    generatedImageRebuildService?.recover();
+    generatedImageRebuildService?.signal();
+  }
 
   const projectPrimaryImageService = createProjectPrimaryImageService({
     db,
@@ -651,6 +679,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     bookPrimaryImageRepository,
     managedAssetRepository,
     previewProbe: previewService?.inspectKritaPreviewSource,
+    projectImageSettingsService: app.locals.projectImageSettingsService,
     applicationLogger,
   });
   app.locals.bookPrimaryImageRepository = bookPrimaryImageRepository;
@@ -667,7 +696,8 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.locals.bookRepository = bookRepository;
   app.locals.bookService = bookService;
 
-  const releaseService = opts.releaseService || createReleaseService({ db, applicationLogger, socialPrepSettingsService });
+  const releaseService = opts.releaseService || createReleaseService({ db, applicationLogger, socialPrepSettingsService,
+    projectImageSettingsService: app.locals.projectImageSettingsService });
   const socialPrepRepository = opts.socialPrepRepository || createSocialPrepRepository(db);
   app.locals.socialPrepRepository = socialPrepRepository;
   const socialPrepService = opts.socialPrepService || createSocialPrepService({
@@ -684,6 +714,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.locals.assetWorkflowMetadataService = assetWorkflowMetadataService;
   const workflowQueryService = opts.workflowQueryService || createWorkflowQueryService({
     db,
+    projectImageSettingsService: app.locals.projectImageSettingsService,
     projectOptionCatalogueService,
     assetWorkflowMetadataService,
     projectPrimaryImageRepository,
@@ -792,6 +823,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     replaceAuthConfig: opts.onAuthConfigReplaced || (() => {}),
     assertNoActiveProcessingJobs: opts.assertNoActiveProcessingJobs,
     beginReplacement,
+    beginReplacementAfterRebuild: opts.beginReplacementAfterRebuild,
     authSettings: opts.authSettings || {},
     csrfPepper: opts.authState?.csrfPepper,
     authService,
@@ -932,6 +964,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       bookPrimaryImageService,
       applicationLogger,
       previewProbe: previewService?.inspectKritaPreviewSource,
+      projectImageSettingsService: app.locals.projectImageSettingsService,
     }));
     app.use('/projects', createProjectAssetCategoryManagementRouter({
       appName,
@@ -996,6 +1029,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     assetRepository: assetScanner.repository,
     tagRepository,
     nsfwFilterSettingsService,
+    projectImageSettingsService: app.locals.projectImageSettingsService,
   }));
 
   app.use('/settings', createSettingsRouter({
@@ -1005,7 +1039,9 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     backupService,
     maintenanceState,
     processingJobService,
+    generatedImageRebuildService,
     beginReplacement,
+    beginReplacementAfterRebuild: opts.beginReplacementAfterRebuild,
     authService,
     cookieOptions,
     onDatabaseReplaced: opts.onDatabaseReplaced,

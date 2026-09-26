@@ -5,8 +5,8 @@ import {
   buildPreviewAltText,
 } from './asset-presentation.js';
 
-/** Book-only source model; Project primary-image presentation stays unchanged. */
-export function buildBookPrimaryImageModel(selection, asset) {
+/** Book source model; managed covers keep their own media revision. */
+export function buildBookPrimaryImageModel(selection, asset, policyFingerprint) {
   const selectedSource = selection?.source ?? null;
   if (selectedSource?.kind === 'managed_asset') {
     return {
@@ -17,7 +17,7 @@ export function buildBookPrimaryImageModel(selection, asset) {
       unavailableReason: 'source_unavailable',
     };
   }
-  return { ...buildPrimaryImageModelForAsset(selection, asset), selectedSource };
+  return { ...buildPrimaryImageModelForAsset(selection, asset, policyFingerprint), selectedSource };
 }
 
 /** Resolve managed availability at the asynchronous presentation boundary.
@@ -80,7 +80,7 @@ export function buildEmptyPrimaryImageModel() {
  * @param {object|null|undefined} asset
  * @returns {object}
  */
-export function buildPrimaryImageModelForAsset(selection, asset) {
+export function buildPrimaryImageModelForAsset(selection, asset, policyFingerprint) {
   const selectedAssetId = selection?.asset_id ?? null;
   if (selectedAssetId === null) return buildEmptyPrimaryImageModel();
 
@@ -106,7 +106,7 @@ export function buildPrimaryImageModelForAsset(selection, asset) {
     };
   }
 
-  const preview = buildAssetPreviewModel(asset);
+  const preview = buildAssetPreviewModel(asset, policyFingerprint);
   return {
     selectedAssetId,
     provenance,

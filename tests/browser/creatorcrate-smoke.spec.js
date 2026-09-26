@@ -252,6 +252,141 @@ test.describe('CreatorCrate development browser smoke', () => {
     assertNoBrowserDiagnostics(diagnostics);
   });
 
+  test('keeps drag reorder and Auto Rename for a complete category sorted by modified date', async ({ page, devServer }) => {
+    const diagnostics = observeBrowser(page, devServer.baseURL);
+    const projectTitle = `Browser Auto Rename Modified ${Date.now()}`;
+
+    await page.goto(`${devServer.baseURL}/projects/new`, { waitUntil: 'domcontentloaded' });
+    await page.locator('#title').fill(projectTitle);
+    await Promise.all([
+      page.waitForURL(/\/projects\/\d+$/),
+      page.locator('button[type="submit"][form="project-form"]').click(),
+    ]);
+
+    const projectId = new URL(page.url()).pathname.split('/').at(-1);
+    await page.goto(`${devServer.baseURL}/projects/${projectId}/asset-categories`, { waitUntil: 'domcontentloaded' });
+    const categoryCard = page.locator('[data-category-id]').first();
+    const categoryId = await categoryCard.getAttribute('data-category-id');
+    const categorySlug = (await categoryCard.locator('.category-management-slug code').textContent()).trim();
+    const projectDirectory = (await fs.readdir(devServer.projectsRoot, { withFileTypes: true }))
+      .find((entry) => entry.isDirectory());
+    const projectPath = path.join(devServer.projectsRoot, projectDirectory.name);
+    const filenames = ['alpha.txt', 'bravo.txt', 'charlie.txt'];
+    for (const [index, filename] of filenames.entries()) {
+      const filePath = path.join(projectPath, categorySlug, filename);
+      await fs.writeFile(filePath, `modified-sort fixture: ${filename}`, 'utf8');
+      const modifiedAt = new Date(Date.UTC(2026, 0, 3 - index));
+      await fs.utimes(filePath, modifiedAt, modifiedAt);
+    }
+
+    await page.goto(`${devServer.baseURL}/projects/${projectId}/assets?category=${categoryId}`, {
+      waitUntil: 'domcontentloaded',
+    });
+    await Promise.all([
+      page.waitForURL((url) => new URL(url).pathname === `/projects/${projectId}/assets`),
+      page.getByRole('button', { name: 'Manually scan project files', exact: true }).click(),
+    ]);
+
+    // pageSize is below the category count: a complete category still renders in full.
+    await page.goto(`${devServer.baseURL}/projects/${projectId}/assets?pageSize=2&inheritedFilterDefaults=extension`
+      + `&category=${categoryId}&presence=all&usage=all&sort=modified&order=asc`, { waitUntil: 'domcontentloaded' });
+    const liveRegion = page.locator('[data-project-assets-live-region]');
+    const surface = liveRegion.locator('[data-auto-rename-surface]');
+    const assets = surface.locator('[data-auto-rename-asset]');
+    const submit = page.locator('[data-auto-rename-submit]');
+    const checkboxes = liveRegion.locator('input[type="checkbox"][name="selectedAssetIds"]');
+    const renderedOrder = () => assets.evaluateAll((items) => (
+      items.map((item) => Number(item.getAttribute('data-auto-rename-asset-id')))
+    ));
+    const orderInputValue = async () => JSON.parse(await page.locator('[data-auto-rename-order-input]').inputValue());
+    const expectCapabilities = async () => {
+      await expect(surface).toHaveAttribute('data-category-membership-complete', 'true');
+      await expect(surface).toHaveAttribute('data-category-reorder-enabled', 'true');
+      await expect(surface).toHaveAttribute('data-auto-rename-enabled', 'true');
+    };
+    const expectSortModified = async () => {
+      expect(new URL(page.url()).searchParams.get('sort')).toBe('modified');
+      await expect(page.locator('input[type="radio"][name="sort"][value="modified"]')).toBeChecked();
+    };
+    const dragFirstToEnd = async () => {
+      const before = await renderedOrder();
+      const lastBox = await assets.last().boundingBox();
+      await assets.first().dragTo(assets.last(), {
+        targetPosition: { x: lastBox.width - 2, y: lastBox.height / 2 },
+      });
+      const expected = [...before.slice(1), before[0]];
+      await expect.poll(renderedOrder).toEqual(expected);
+      expect(await orderInputValue()).toEqual(expected);
+      return expected;
+    };
+
+    // Complete membership under Modified sort: the normal reorder surface.
+    await expect(surface).toHaveCount(1);
+    await expect(surface).not.toHaveAttribute('data-auto-rename-mode', /.*/);
+    await expect(assets).toHaveCount(filenames.length);
+    await expect(liveRegion.locator('.pagination-next')).toHaveCount(0);
+    await expectCapabilities();
+    await expect(assets.first()).toHaveAttribute('draggable', 'true');
+    await expect(submit).toBeDisabled();
+    await expectSortModified();
+
+    // Drag reorders the complete category locally; sort selection stays Modified.
+    const draggedOrder = await dragFirstToEnd();
+    expect(new Set(draggedOrder).size).toBe(filenames.length);
+    await expectSortModified();
+    await expect(submit).toBeDisabled();
+
+    // Live subset filter removes the complete-category hooks.
+    const liveSearch = async (value) => {
+      await page.locator('#search').evaluate((input, nextValue) => {
+        input.value = nextValue;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      }, value);
+      await expect.poll(() => new URL(page.url()).searchParams.get('search') || '').toBe(value);
+      await expect(liveRegion).not.toHaveAttribute('aria-busy', 'true');
+    };
+    await liveSearch('alpha');
+    await expect(checkboxes).toHaveCount(1);
+    await expect(liveRegion.locator('[data-auto-rename-surface]')).toHaveCount(0);
+    await expect(liveRegion.locator('[data-category-reorder-enabled="true"]')).toHaveCount(0);
+    await expect(liveRegion.locator('[data-auto-rename-asset]')).toHaveCount(0);
+    await expect(page.locator('[data-auto-rename-submit]')).toHaveCount(0);
+
+    // Clearing it while keeping Modified sort restores re-enhanced hooks without a reload.
+    await liveSearch('');
+    await expectSortModified();
+    await expect(assets).toHaveCount(filenames.length);
+    await expectCapabilities();
+    await expect(submit).toBeDisabled();
+    const redraggedOrder = await dragFirstToEnd();
+    await expectSortModified();
+
+    // Selection enables Auto Rename; the preview accepts the dragged complete order.
+    await assets.first().locator('.asset-selection-control').click();
+    await expect(page.locator('[data-selected-count]')).toHaveText('1 of 3 selected');
+    await expect(submit).toBeEnabled();
+    const selectedAssetId = redraggedOrder[0];
+    expect(JSON.parse(await page.locator('[data-auto-rename-selection-input]').inputValue()))
+      .toEqual([selectedAssetId]);
+
+    const [previewRequest] = await Promise.all([
+      page.waitForRequest((request) => (
+        request.method() === 'POST'
+        && new URL(request.url()).pathname === `/projects/${projectId}/assets/auto-rename/preview`
+      )),
+      page.waitForURL((url) => new URL(url).pathname === `/projects/${projectId}/assets`),
+      submit.click(),
+    ]);
+    const previewBody = new URLSearchParams(previewRequest.postData() || '');
+    expect(JSON.parse(previewBody.get('orderedAssetIds'))).toEqual(redraggedOrder);
+    expect(JSON.parse(previewBody.get('selectedAssetIds'))).toEqual([selectedAssetId]);
+    const dialog = page.locator('#auto-rename-confirmation-dialog');
+    await expect(dialog).toBeVisible();
+    await expect(dialog.locator('.auto-rename-confirmation-summary')).toContainText('1 asset:');
+    await expect(page.locator('[role="alert"]', { hasText: /order/i })).toHaveCount(0);
+    assertNoBrowserDiagnostics(diagnostics);
+  });
+
   test('keeps adjacent project filters clickable after selecting a maximum-length Project', async ({ page, devServer }) => {
     const diagnostics = observeBrowser(page, devServer.baseURL);
     await page.setViewportSize({ width: 1600, height: 800 });

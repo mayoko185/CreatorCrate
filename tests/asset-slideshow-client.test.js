@@ -848,6 +848,18 @@ describe('enhanceSlideshow — original-size inspection', () => {
     expect(page.preview.hasAttribute('data-slideshow-mode')).toBe(true);
   });
 
+  it('fits the supplied original preview URL while Original Size keeps its source action', () => {
+    const page = openOriginalPage([{
+      ...imageSequence[0], previewUrl: '/original/1',
+    }]);
+    expect(page.preview.children[0].src).toBe('/original/1');
+    expect(page.preview.hasAttribute('data-slideshow-mode')).toBe(false);
+
+    page.originalSizeBtn.dispatch('click');
+    expect(page.preview.getAttribute('data-slideshow-mode')).toBe('original');
+    expect(page.preview.children[2].src).toBe('/original/1');
+  });
+
   it('ignores a stale Original Size load after a newer request becomes current', () => {
     const page = openOriginalPage(imageSequence);
     page.originalSizeBtn.dispatch('click');

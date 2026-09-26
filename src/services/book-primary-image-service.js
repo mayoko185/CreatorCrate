@@ -4,6 +4,9 @@ import { createBookRepository } from '../data/book-repository.js';
 import { createManagedAssetRepository } from '../data/managed-asset-repository.js';
 import { buildBookPrimaryImageModel } from './primary-image-presenter.js';
 import { classifyPreviewable } from './preview-service.js';
+import { createAppMetaRepository } from '../data/app-meta-repository.js';
+import { createProjectImageSettingsService } from './project-image-settings-service.js';
+import { projectImagePresentationPolicy } from './project-image-policy.js';
 
 export const BOOK_PRIMARY_IMAGE_ERROR_CODES = Object.freeze({
   INVALID_ID: 'INVALID_ID',
@@ -99,6 +102,7 @@ export function createBookPrimaryImageService({
   bookPrimaryImageRepository,
   previewProbe,
   applicationLogger = null,
+  projectImageSettingsService,
 } = {}) {
   if (!db || typeof db.transaction !== 'function') {
     throw new Error('createBookPrimaryImageService requires a db dependency.');
@@ -108,6 +112,9 @@ export function createBookPrimaryImageService({
   const assets = assetRepository ?? createAssetRepository(db);
   const managedAssets = managedAssetRepository ?? createManagedAssetRepository(db);
   const primaryImages = bookPrimaryImageRepository ?? createBookPrimaryImageRepository(db);
+  const imageSettings = projectImageSettingsService ?? createProjectImageSettingsService({
+    appMetaRepository: createAppMetaRepository(db),
+  });
 
   function requireBook(bookId) {
     const book = books.findById(bookId);
@@ -327,6 +334,8 @@ export function createBookPrimaryImageService({
         managedById.set(id, eligibleManagedAsset(asset) ? asset : null);
       }
 
+      const fingerprint = imageSettings.getPresentationPolicy?.()
+        ?? projectImagePresentationPolicy(imageSettings.getPolicy());
       return bookRows.map((book) => {
         const selection = selectionByBookId.get(book.id);
         return {
@@ -336,6 +345,7 @@ export function createBookPrimaryImageService({
             selection?.source.kind === 'managed_asset'
               ? managedById.get(selection.source.id)
               : selection ? assetById.get(selection.asset_id) : null,
+            fingerprint,
           ),
         };
       });

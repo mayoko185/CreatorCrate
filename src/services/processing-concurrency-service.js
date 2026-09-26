@@ -13,7 +13,8 @@ function assertConcurrency(concurrency) {
 
 /**
  * Creates the application-wide bounded pool used by processing operations.
- * Each mapBounded call is a batch; all batches share this instance's cap.
+ * Each mapBounded call (or single run task) is a batch; all batches share
+ * this instance's cap.
  */
 export function createProcessingConcurrencyService({
   concurrency = getDefaultProcessingConcurrency(),
@@ -107,8 +108,18 @@ export function createProcessingConcurrencyService({
     });
   }
 
+  // One operation holding one slot, queued FIFO with every mapBounded batch.
+  // The pool is not reentrant: a task must never await run/mapBounded itself.
+  function run(task) {
+    if (typeof task !== 'function') {
+      throw new TypeError('run requires a task function.');
+    }
+    return mapBounded([task], (fn) => fn()).then(([result]) => result);
+  }
+
   return Object.freeze({
     concurrency,
     mapBounded,
+    run,
   });
 }

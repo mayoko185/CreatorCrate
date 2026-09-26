@@ -8,6 +8,7 @@ import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
 import { NOTE_REVISION_RETENTION_KEY } from '../src/services/note-revision-settings-service.js';
 import { CLOCK_FORMAT_KEY } from '../src/services/clock-format-settings-service.js';
+import { PROJECT_IMAGE_SETTINGS } from '../src/services/project-image-settings-service.js';
 import { authenticate, AUTH_CONFIG } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -221,6 +222,104 @@ describe('settings — page defaults HTTP', () => {
     expect(readMeta(db, statusKey)).toBe('published');
     expect(readMeta(db, 'page_defaults.calendar.project')).toBeUndefined();
     expect(readMeta(db, 'page_defaults.calendar.month')).toBeUndefined();
+  });
+
+  it('renders the project image defaults without persisting missing keys', async () => {
+    const res = await agent.get('/settings/defaults').expect(200);
+    const thumbnail = settingsSection(res.text, 'defaults-thumbnail-generation');
+    const preview = settingsSection(res.text, 'defaults-preview-generation');
+    expect(settingsSection(res.text, 'defaults-images')).toBe('');
+    expect(thumbnail).toContain('<h3 id="defaults-thumbnail-generation-heading">Change thumbnail generation</h3>');
+    expect(preview).toContain('<h3 id="defaults-preview-generation-heading">Change preview &amp; slideshow generation</h3>');
+    for (const [section, name, values] of [
+      [thumbnail, 'imagesThumbnailFormat', ['webp', 'png']],
+      [preview, 'imagesPreviewFormat', ['webp', 'png', 'original']],
+    ]) {
+      expect(section).toContain('class="settings-section settings-defaults-section settings-defaults-section--compact"');
+      // The compact card relies on its header rule alone: the first body field directly follows the h3.
+      expect(section).toMatch(/<\/h3>\s*<div class="field[ "]/);
+      expect(section).toContain('data-project-image-settings-group');
+      expect(section).toContain(`name="${name}" class="cc-dropdown-native-select" data-cc-dropdown-native-select`);
+      expect(section).toContain('data-cc-dropdown-mode="single"');
+      expect(section).toContain('data-cc-dropdown-dispatch-native-change');
+      expect(section).toContain(`data-autosubmit="fetch" data-project-image-format`);
+      expect(selectedValue(section, name)).toBe('webp');
+      expect(values.map((value) => section.includes(`<option value="${value}"`))).toEqual(values.map(() => true));
+      expect(section).toMatch(/<div class="field page-defaults-grid"[^>]*>[\s\S]*?WebP quality \(%\)[\s\S]*?Maximum dimension \(px\)[\s\S]*?<\/div>\s*<\/section>/);
+    }
+    expect(inputMarkup(thumbnail, 'imagesThumbnailWebpQuality')).toContain('value="80" min="1" max="95" step="1"');
+    expect(inputMarkup(thumbnail, 'imagesThumbnailMaxDimension')).toContain('value="256" min="64" max="512" step="1"');
+    expect(inputMarkup(preview, 'imagesPreviewWebpQuality')).toContain('value="90" min="1" max="95" step="1"');
+    expect(inputMarkup(preview, 'imagesPreviewMaxDimension')).toContain('value="1600" min="320" max="2560" step="1"');
+    expect(thumbnail).toContain('The longest edge is limited to this value; smaller images are not enlarged.');
+    expect(preview).toContain('The longest edge is limited to this value; smaller images are not enlarged.');
+    // Thumbnail Format shares the quality/dimension grid; the WebP layout keeps Format on its own row.
+    expect(thumbnail).toMatch(/<div class="field page-defaults-grid" data-project-image-layout="webp">\s*<div class="field project-image-format-field">[\s\S]*?name="imagesThumbnailFormat"[\s\S]*?name="imagesThumbnailWebpQuality"[\s\S]*?name="imagesThumbnailMaxDimension"/);
+    // Preview explanation is one concise help block beside the Format control.
+    const formatHelp = preview.slice(preview.indexOf('name="imagesPreviewFormat"'), preview.indexOf('data-project-image-fields-row'))
+      .match(/<p class="help-text">[\s\S]*?<\/p>/g);
+    expect(formatHelp).toEqual([
+      '<p class="help-text">Controls project previews and the fitted slideshow image. Original uses the source image when available; animated sources may keep a generated WebP and Krita assets use a generated fallback.</p>',
+    ]);
+    expect(preview).not.toContain('substantially more bandwidth');
+    for (const definition of Object.values(PROJECT_IMAGE_SETTINGS)) {
+      expect(readMeta(db, definition.key)).toBeUndefined();
+    }
+  });
+
+  it('saves and reloads project image settings through Defaults while retaining hidden values', async () => {
+    await agent.post('/settings/defaults').type('form').send({
+      imagesThumbnailFormat: 'webp', imagesThumbnailWebpQuality: '72', imagesThumbnailMaxDimension: '300',
+      imagesPreviewFormat: 'webp', imagesPreviewWebpQuality: '88', imagesPreviewMaxDimension: '1920',
+      _csrf: csrfToken,
+    }).expect(302);
+    await agent.post('/settings/defaults').type('form').send({
+      imagesThumbnailFormat: 'png', imagesThumbnailMaxDimension: '320',
+      imagesPreviewFormat: 'original', _csrf: csrfToken,
+    }).expect(302);
+
+    expect(app.locals.projectImageSettingsService.getPolicy()).toEqual({
+      thumbnail: { format: 'png', webpQuality: 72, maxDimension: 320 },
+      preview: { format: 'original', webpQuality: 88, maxDimension: 1920 },
+    });
+    expect(readMeta(db, 'images.thumbnail.webp_quality')).toBe('72');
+    expect(readMeta(db, 'images.preview.webp_quality')).toBe('88');
+    expect(readMeta(db, 'images.preview.max_dimension')).toBe('1920');
+    const html = (await agent.get('/settings/defaults').expect(200)).text;
+    const thumbnail = settingsSection(html, 'defaults-thumbnail-generation');
+    const preview = settingsSection(html, 'defaults-preview-generation');
+    expect(selectedValue(thumbnail, 'imagesThumbnailFormat')).toBe('png');
+    // PNG pairs Format with Maximum dimension in the same grid row.
+    expect(thumbnail).toContain('<div class="field page-defaults-grid" data-project-image-layout="png">');
+    expect(selectedValue(preview, 'imagesPreviewFormat')).toBe('original');
+    expect(inputMarkup(thumbnail, 'imagesThumbnailWebpQuality')).toContain('value="72"');
+    expect(inputMarkup(preview, 'imagesPreviewWebpQuality')).toContain('value="88"');
+    expect(inputMarkup(preview, 'imagesPreviewMaxDimension')).toContain('value="1920"');
+    expect(thumbnail).toMatch(/data-project-image-dependent="webp" hidden>[\s\S]*?name="imagesThumbnailWebpQuality"[^>]*disabled/);
+    expect(inputMarkup(thumbnail, 'imagesThumbnailMaxDimension')).not.toContain('disabled');
+    expect(preview).toMatch(/data-project-image-dependent="webp" hidden>[\s\S]*?name="imagesPreviewWebpQuality"[^>]*disabled/);
+    expect(preview).toMatch(/data-project-image-dependent="generated" hidden>[\s\S]*?name="imagesPreviewMaxDimension"[^>]*disabled/);
+    expect(preview).toContain('data-project-image-fields-row hidden');
+  });
+
+  it.each([
+    ['imagesThumbnailFormat', 'original'], ['imagesPreviewFormat', 'gif'],
+    ['imagesThumbnailWebpQuality', '0'], ['imagesThumbnailWebpQuality', '96'], ['imagesThumbnailWebpQuality', '2.5'],
+    ['imagesPreviewWebpQuality', '0'], ['imagesPreviewWebpQuality', '96'], ['imagesPreviewWebpQuality', '2.5'],
+    ['imagesThumbnailMaxDimension', '63'], ['imagesThumbnailMaxDimension', '513'], ['imagesThumbnailMaxDimension', '64.5'],
+    ['imagesPreviewMaxDimension', '319'], ['imagesPreviewMaxDimension', '2561'], ['imagesPreviewMaxDimension', '320.5'],
+  ])('rejects invalid project image %s atomically', async (field, value) => {
+    writeMeta(db, 'images.thumbnail.format', 'png');
+    const res = await agent.post('/settings/defaults').type('form').send({
+      imagesThumbnailFormat: 'webp', [field]: value, new_projectStatus: 'ready', _csrf: csrfToken,
+    }).expect(422);
+    expect(res.text).toContain(`${field}-error`);
+    if (field.endsWith('Format')) {
+      const section = field.startsWith('imagesThumbnail') ? 'defaults-thumbnail-generation' : 'defaults-preview-generation';
+      expect(selectedValue(settingsSection(res.text, section), field)).toBe(value);
+    }
+    expect(readMeta(db, 'images.thumbnail.format')).toBe('png');
+    expect(readMeta(db, defaultKey('new_project', 'status'))).toBe('tbd');
   });
 
   it('renders Note revision retention with fallback 10 without persisting it on GET', async () => {

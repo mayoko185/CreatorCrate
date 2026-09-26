@@ -96,6 +96,92 @@
           </section>
         {% endfor %}
 
+        <section id="defaults-thumbnail-generation" class="settings-section settings-defaults-section settings-defaults-section--compact" aria-labelledby="defaults-thumbnail-generation-heading" data-project-image-settings-group>
+          <h3 id="defaults-thumbnail-generation-heading">Change thumbnail generation</h3>
+          <div class="field page-defaults-grid" data-project-image-layout="{{ imageSettings.thumbnailFormat.value }}">
+            <div class="field project-image-format-field{% if imageSettings.thumbnailFormat.error %} field-error{% endif %}">
+              {{ dropdown.singleSelect({
+                id: 'imagesThumbnailFormat-dropdown',
+                name: 'imagesThumbnailFormat',
+                label: 'Format',
+                options: [{ value: 'webp', label: 'WebP' }, { value: 'png', label: 'PNG' }],
+                selected: imageSettings.thumbnailFormat.value,
+                optionIdPrefix: 'imagesThumbnailFormat',
+                leadingOption: { value: imageSettings.thumbnailFormat.value, label: 'Submitted value: ' ~ imageSettings.thumbnailFormat.value } if imageSettings.thumbnailFormat.error else none,
+                summaryAttributes: [['aria-describedby', 'imagesThumbnailFormat-error'], ['aria-invalid', 'true']] if imageSettings.thumbnailFormat.error else [],
+                dispatchNativeChange: true,
+                nativeSelect: {
+                  id: 'imagesThumbnailFormat',
+                  attributes: [['required', true], ['data-autosubmit', 'fetch'], ['data-project-image-format', true], ['aria-describedby', 'imagesThumbnailFormat-error'], ['aria-invalid', 'true']] if imageSettings.thumbnailFormat.error else [['required', true], ['data-autosubmit', 'fetch'], ['data-project-image-format', true]]
+                }
+              }) }}
+              {% if imageSettings.thumbnailFormat.error %}<span class="field-error-message" id="imagesThumbnailFormat-error">{{ imageSettings.thumbnailFormat.error }}</span>{% endif %}
+            </div>
+              <div class="field{% if imageSettings.thumbnailWebpQuality.error %} field-error{% endif %}" data-project-image-dependent="webp"{% if imageSettings.thumbnailFormat.value != 'webp' %} hidden{% endif %}>
+                <label for="imagesThumbnailWebpQuality">WebP quality (%)</label>
+                <input id="imagesThumbnailWebpQuality" name="imagesThumbnailWebpQuality" type="number" value="{{ imageSettings.thumbnailWebpQuality.value }}" min="1" max="95" step="1" required inputmode="numeric" data-autosubmit="fetch"{% if imageSettings.thumbnailFormat.value != 'webp' %} disabled{% endif %}{% if imageSettings.thumbnailWebpQuality.error %} aria-describedby="imagesThumbnailWebpQuality-error" aria-invalid="true"{% endif %}>
+                {% if imageSettings.thumbnailWebpQuality.error %}<span class="field-error-message" id="imagesThumbnailWebpQuality-error">{{ imageSettings.thumbnailWebpQuality.error }}</span>{% endif %}
+              </div>
+              <div class="field{% if imageSettings.thumbnailMaxDimension.error %} field-error{% endif %}">
+                <label for="imagesThumbnailMaxDimension">Maximum dimension (px)</label>
+                <input id="imagesThumbnailMaxDimension" name="imagesThumbnailMaxDimension" type="number" value="{{ imageSettings.thumbnailMaxDimension.value }}" min="64" max="512" step="1" required inputmode="numeric" data-autosubmit="fetch"{% if imageSettings.thumbnailMaxDimension.error %} aria-describedby="imagesThumbnailMaxDimension-error" aria-invalid="true"{% endif %}>
+                <p class="help-text">The longest edge is limited to this value; smaller images are not enlarged.</p>
+                {% if imageSettings.thumbnailMaxDimension.error %}<span class="field-error-message" id="imagesThumbnailMaxDimension-error">{{ imageSettings.thumbnailMaxDimension.error }}</span>{% endif %}
+              </div>
+          </div>
+        </section>
+
+        <section id="defaults-preview-generation" class="settings-section settings-defaults-section settings-defaults-section--compact" aria-labelledby="defaults-preview-generation-heading" data-project-image-settings-group>
+          <h3 id="defaults-preview-generation-heading">Change preview &amp; slideshow generation</h3>
+          <div class="field{% if imageSettings.previewFormat.error %} field-error{% endif %}">
+              {{ dropdown.singleSelect({
+                id: 'imagesPreviewFormat-dropdown',
+                name: 'imagesPreviewFormat',
+                label: 'Format',
+                options: [{ value: 'webp', label: 'WebP' }, { value: 'png', label: 'PNG' }, { value: 'original', label: 'Original' }],
+                selected: imageSettings.previewFormat.value,
+                optionIdPrefix: 'imagesPreviewFormat',
+                leadingOption: { value: imageSettings.previewFormat.value, label: 'Submitted value: ' ~ imageSettings.previewFormat.value } if imageSettings.previewFormat.error else none,
+                summaryAttributes: [['aria-describedby', 'imagesPreviewFormat-error'], ['aria-invalid', 'true']] if imageSettings.previewFormat.error else [],
+                dispatchNativeChange: true,
+                nativeSelect: {
+                  id: 'imagesPreviewFormat',
+                  attributes: [['required', true], ['data-autosubmit', 'fetch'], ['data-project-image-format', true], ['aria-describedby', 'imagesPreviewFormat-error'], ['aria-invalid', 'true']] if imageSettings.previewFormat.error else [['required', true], ['data-autosubmit', 'fetch'], ['data-project-image-format', true]]
+                }
+              }) }}
+              <p class="help-text">Controls project previews and the fitted slideshow image. Original uses the source image when available; animated sources may keep a generated WebP and Krita assets use a generated fallback.</p>
+              {% if imageSettings.previewFormat.error %}<span class="field-error-message" id="imagesPreviewFormat-error">{{ imageSettings.previewFormat.error }}</span>{% endif %}
+          </div>
+          <div class="field page-defaults-grid" data-project-image-fields-row{% if imageSettings.previewFormat.value == 'original' %} hidden{% endif %}>
+              <div class="field{% if imageSettings.previewWebpQuality.error %} field-error{% endif %}" data-project-image-dependent="webp"{% if imageSettings.previewFormat.value != 'webp' %} hidden{% endif %}>
+                <label for="imagesPreviewWebpQuality">WebP quality (%)</label>
+                <input id="imagesPreviewWebpQuality" name="imagesPreviewWebpQuality" type="number" value="{{ imageSettings.previewWebpQuality.value }}" min="1" max="95" step="1" required inputmode="numeric" data-autosubmit="fetch"{% if imageSettings.previewFormat.value != 'webp' %} disabled{% endif %}{% if imageSettings.previewWebpQuality.error %} aria-describedby="imagesPreviewWebpQuality-error" aria-invalid="true"{% endif %}>
+                {% if imageSettings.previewWebpQuality.error %}<span class="field-error-message" id="imagesPreviewWebpQuality-error">{{ imageSettings.previewWebpQuality.error }}</span>{% endif %}
+              </div>
+              <div class="field{% if imageSettings.previewMaxDimension.error %} field-error{% endif %}" data-project-image-dependent="generated"{% if imageSettings.previewFormat.value == 'original' %} hidden{% endif %}>
+                <label for="imagesPreviewMaxDimension">Maximum dimension (px)</label>
+                <input id="imagesPreviewMaxDimension" name="imagesPreviewMaxDimension" type="number" value="{{ imageSettings.previewMaxDimension.value }}" min="320" max="2560" step="1" required inputmode="numeric" data-autosubmit="fetch"{% if imageSettings.previewFormat.value == 'original' %} disabled{% endif %}{% if imageSettings.previewMaxDimension.error %} aria-describedby="imagesPreviewMaxDimension-error" aria-invalid="true"{% endif %}>
+                <p class="help-text">The longest edge is limited to this value; smaller images are not enlarged.</p>
+                {% if imageSettings.previewMaxDimension.error %}<span class="field-error-message" id="imagesPreviewMaxDimension-error">{{ imageSettings.previewMaxDimension.error }}</span>{% endif %}
+              </div>
+          </div>
+        </section>
+
+        <section id="defaults-generated-images-rebuild" class="settings-section settings-defaults-section settings-defaults-section--compact" aria-labelledby="defaults-generated-images-rebuild-heading" data-generated-images-rebuild data-rebuild-phase="{{ imageRebuild.phase }}" data-rebuild-run-id="{{ imageRebuild.runId }}">
+          <h3 id="defaults-generated-images-rebuild-heading">Rebuild generated images</h3>
+          <div class="field">
+            <div role="status" aria-live="polite" aria-atomic="true" data-rebuild-status>
+              <p data-rebuild-message>{{ imageRebuild.message }}</p>
+            </div>
+            <p class="help-text" data-rebuild-details{% if not imageRebuild.details %} hidden{% endif %}>{{ imageRebuild.details }}</p>
+            <p class="help-text">Image-setting changes rebuild project thumbnails and previews in the background. Use this action to force a fresh rebuild with the current settings.</p>
+            <div class="form-actions settings-defaults-action-row">
+              <button type="submit" form="generated-images-rebuild-form" class="button button-secondary" data-generated-images-rebuild-button>Rebuild generated images</button>
+            </div>
+            <p class="field-error-message" role="alert" data-rebuild-action-error hidden></p>
+          </div>
+        </section>
+
         <section id="defaults-display" class="settings-section settings-defaults-section" aria-labelledby="defaults-display-heading">
           <h3 id="defaults-display-heading">Display</h3>
           <div class="field{% if clockFormat.error %} field-error{% endif %}">
@@ -137,6 +223,10 @@
             <button type="submit" class="button button-primary">Save Defaults</button>
           </div>
         </noscript>
+      </form>
+
+      <form id="generated-images-rebuild-form" method="post" action="/settings/defaults/generated-images/rebuild">
+        <input type="hidden" name="_csrf" value="{{ _csrf }}">
       </form>
 
       {% for editor in projectOptionEditors %}

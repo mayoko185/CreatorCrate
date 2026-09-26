@@ -317,6 +317,8 @@ function createItem(assetId, asset) {
   const mimeType = asset?.mime_type ?? null;
   const sizeBytes = asset?.size_bytes ?? null;
   const modifiedAt = asset?.modified_at ?? null;
+  const sourceAnimated = asset?.source_animated ?? null;
+  const sourceGeneration = asset?.source_generation ?? 0;
   const databaseFilename = asset?.filename ?? null;
   const categoryId = asset?.category_id ?? null;
   const categoryEnabled = asset?.category_enabled === null || asset?.category_enabled === undefined
@@ -337,6 +339,8 @@ function createItem(assetId, asset) {
     presenceState: isPresent(asset) ? 'present' : 'missing',
     sizeBytes,
     modifiedAt,
+    sourceAnimated,
+    sourceGeneration,
     modifiedTime: modifiedAt,
     databaseFilename,
     categoryId,
@@ -721,6 +725,8 @@ function signedAssetFromItem(item, { includeGeneratedState = false } = {}) {
     sizeBytes: item.sizeBytes,
     size_bytes: item.size_bytes,
     modifiedAt: item.modifiedAt,
+    sourceAnimated: item.sourceAnimated,
+    sourceGeneration: item.sourceGeneration,
     modifiedTime: item.modifiedTime,
     modified_at: item.modified_at,
     databaseSizeBytes: item.databaseSizeBytes,
@@ -1028,6 +1034,8 @@ export function createAutoRenameService({
   projectOperationCoordinator,
   signingKey,
   applicationLogger = null,
+  projectImageSettingsService,
+  sourceAnimationService,
   _hooks,
 } = {}) {
   if (!projectRepository || typeof projectRepository.findById !== 'function') {
@@ -1163,7 +1171,13 @@ export function createAutoRenameService({
       throw categoryOrderInvalidError();
     }
     const selectedAssetIdSet = normalizedSelectedAssetIds ? new Set(normalizedSelectedAssetIds) : null;
-    const orderedRows = normalizedOrder.map((assetId) => browserRowsById.get(assetId));
+    const previewPng = projectImageSettingsService?.getPolicy().preview.format === 'png';
+    const orderedRows = normalizedOrder.map((assetId) => {
+      const row = browserRowsById.get(assetId);
+      if (!previewPng) return row;
+      const resolved = sourceAnimationService?.ensureKnown(row);
+      return resolved ? { ...row, source_animated: resolved.source_animated } : row;
+    });
     const namingRows = selectedAssetIdSet
       ? orderedRows.filter((row) => selectedAssetIdSet.has(row.id))
       : orderedRows;
