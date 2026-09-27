@@ -65,6 +65,7 @@ describe('Calendar presentation', () => {
     expect(navigation).toContain('<path d="M15 18l-6-6 6-6"/>');
     expect(navigation).toContain('<rect x="3" y="5" width="18" height="16" rx="2"/>');
     expect(navigation).toContain('<path d="M9 18l6-6-6-6"/>');
+    expect(navigation).toMatch(/<a id="calendar-today"[^>]*aria-label="Today"[^>]*><svg[\s\S]*?<rect x="3" y="5" width="18" height="16" rx="2"\/>[\s\S]*?<\/svg><span class="calendar-nav-label">Today<\/span><\/a>/);
     const picker = html.match(/<dialog id="calendar-month-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
     expect(picker).toContain('>Choose month</h2>');
     expect(picker).toContain('name="pickerMonth"');
@@ -117,15 +118,27 @@ describe('Calendar presentation', () => {
     expect(last).toMatch(/<span[^>]*aria-label="Next month" aria-disabled="true"[^>]*>/);
     expect(last).not.toContain('id="calendar-next"');
     const current = (await agent.get('/calendar').expect(200)).text;
-    expect(current).toMatch(/<span[^>]*aria-label="Today" aria-disabled="true" aria-current="page"[^>]*>/);
+    expect(current).toMatch(/<span[^>]*aria-label="Today" aria-disabled="true" aria-current="page"[^>]*><svg[\s\S]*?<rect x="3" y="5" width="18" height="16" rx="2"\/>[\s\S]*?<\/svg><span class="calendar-nav-label">Today<\/span><\/span>/);
     expect(current).not.toContain('id="calendar-today"');
   });
 
-  it('uses the shared toolbar controls and styled tooltips for both dialogs', async () => {
+  it('places the view toggle, navigation and Filters/Calendar defaults in one Calendar header controls row', async () => {
     const html = (await agent.get('/calendar?month=2025-06').expect(200)).text;
-    const toolbar = html.match(/<div class="asset-viewer-display-controls">\s*<div class="project-filter-actions project-filter-actions--projects">([\s\S]*?)<\/div>\s*<\/div>/)?.[1] || '';
+    const nav = html.match(/<div class="calendar-nav" aria-label="Calendar navigation">([\s\S]*?)<\/div>\s*<p class="results-meta">/)?.[1] || '';
+    const toolbar = nav.match(/<div class="calendar-nav-actions project-filter-actions project-filter-actions--projects">([\s\S]*?)<\/div>/)?.[1] || '';
     const controls = [...toolbar.matchAll(/<a class="([^"]+)"\s+href="([^"]+)" aria-label="([^"]+)"\s+data-dialog-open="([^"]+)" data-tooltip="([^"]+)">([\s\S]*?)<\/a>/g)];
 
+    const viewIndex = nav.indexOf('class="calendar-view-switcher"');
+    const headingIndex = nav.indexOf('data-calendar-month-heading');
+    const navIndex = nav.indexOf('class="calendar-nav-right"');
+    const actionsIndex = nav.indexOf('class="calendar-nav-actions');
+    expect(viewIndex).toBeGreaterThanOrEqual(0);
+    expect(headingIndex).toBeGreaterThan(viewIndex);
+    expect(navIndex).toBeGreaterThan(headingIndex);
+    expect(actionsIndex).toBeGreaterThan(navIndex);
+    expect(nav).toMatch(/<a id="calendar-today"[^>]*aria-label="Today"[^>]*><svg[\s\S]*?<rect x="3" y="5" width="18" height="16" rx="2"\/>[\s\S]*?<\/svg><span class="calendar-nav-label">Today<\/span><\/a>/);
+    expect(html.match(/data-dialog-open="calendar-filter-dialog"/g)).toHaveLength(1);
+    expect(html.match(/data-dialog-open="calendar-defaults-dialog"/g)).toHaveLength(1);
     expect(controls).toHaveLength(2);
     expect(controls.map(([, classes]) => classes)).toEqual([
       'button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left',
@@ -133,14 +146,18 @@ describe('Calendar presentation', () => {
     ]);
     expect(controls.map(([, , href, label, dialog, tooltip]) => ({ href, label, dialog, tooltip }))).toEqual([
       { href: '#calendar-filter-dialog', label: 'Filters', dialog: 'calendar-filter-dialog', tooltip: 'Filters' },
-      { href: '/calendar?defaults=1', label: 'Page Defaults', dialog: 'calendar-defaults-dialog', tooltip: 'Page Defaults' },
+      { href: '/calendar?defaults=1', label: 'Calendar defaults', dialog: 'calendar-defaults-dialog', tooltip: 'Calendar defaults' },
     ]);
     expect(controls[0][6]).toContain('<path d="M3 5h18l-7 8v5l-4 2v-7z"/>');
     expect(controls[1][6]).toContain('<circle cx="12" cy="12" r="3"/>');
-    expect(html.indexOf('asset-viewer-display-controls')).toBeLessThan(html.indexOf('data-calendar-live-region'));
+    expect(html).not.toContain('asset-viewer-display-controls');
+    expect(html.indexOf('<dialog id="calendar-filter-dialog"')).toBeGreaterThan(html.indexOf('<p class="results-meta">'));
+    expect(html).not.toContain('Page Defaults');
     expect(html).not.toContain('class="page-heading-actions"');
     expect(html).toContain('<dialog id="calendar-filter-dialog"');
-    expect(html).toContain('<dialog id="calendar-defaults-dialog"');
+    const defaults = html.match(/<dialog id="calendar-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    expect(defaults).toContain('<h2 id="calendar-defaults-dialog-title">Calendar defaults</h2>');
+    expect(defaults).toContain('data-dialog-close aria-label="Close Calendar defaults" title="Close Calendar defaults"');
   });
 
   it('uses the shared filter and autosaving defaults dialog structures', async () => {

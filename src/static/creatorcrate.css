@@ -6030,14 +6030,33 @@
         min-width: auto;
       }
       /* Release calendar */
+      /* Row 1 centers the heading; row 2 shares one line for view, navigation and dialog controls.
+         Equal outer tracks keep the navigation group centered beneath the heading while the
+         view switcher stays at the far left and the dialog controls at the far right. */
       .calendar-nav {
-        display: flex;
-        justify-content: space-between;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+        grid-template-areas:
+          "heading heading heading"
+          "view nav actions";
         align-items: center;
         margin: var(--space-lg) 0;
-        gap: var(--space-lg);
+        column-gap: var(--space-sm);
+        row-gap: var(--space-sm);
+      }
+      .calendar-view-switcher {
+        grid-area: view;
+        justify-self: start;
+      }
+      /* Match the 2.25rem control surfaces of the navigation and dialog buttons so the
+         segmented control shares their top and bottom edges. */
+      .calendar-view-switcher .view-switcher-option {
+        min-block-size: 2.25rem;
+        min-inline-size: 2.25rem;
       }
       .calendar-nav h2 {
+        grid-area: heading;
+        justify-self: center;
         margin: 0;
         text-align: center;
         font-size: 1.75rem;
@@ -6055,6 +6074,8 @@
       }
       .calendar-month-trigger:hover { color: var(--accent); }
       .calendar-nav-right {
+        grid-area: nav;
+        justify-self: center;
         display: flex;
         gap: var(--space-sm);
       }
@@ -6062,6 +6083,7 @@
         display: inline-flex;
         align-items: center;
         justify-content: center;
+        gap: var(--space-xs);
         min-block-size: 2.25rem;
         min-inline-size: 2.25rem;
         padding: var(--space-sm);
@@ -6069,6 +6091,33 @@
       .calendar-nav-right .calendar-nav-control svg {
         width: 1.25rem;
         height: 1.25rem;
+      }
+      .calendar-nav-label {
+        padding-inline-end: var(--space-xs);
+      }
+      .calendar-nav-actions {
+        grid-area: actions;
+        justify-self: end;
+        display: flex;
+        align-items: center;
+        gap: var(--space-sm);
+      }
+      .calendar-nav-actions .project-filter-control {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-block-size: 2.25rem;
+        min-inline-size: 2.25rem;
+        padding: var(--space-sm);
+      }
+      .calendar-nav-actions .project-filter-control svg {
+        display: block;
+        width: 1.25rem;
+        height: 1.25rem;
+      }
+      .calendar-nav-actions .asset-tooltip--left[data-tooltip]::after {
+        left: auto;
+        right: 0;
       }
       .calendar-table {
         display: grid;
@@ -6376,13 +6425,29 @@
           display: flex;
         }
         .calendar-view-list .agenda-day-empty { display: block; }
-        .calendar-nav {
-          flex-wrap: wrap;
-        }
       }
       @media (max-width: 540px) {
         .release-asset-actions .button-small {
           min-height: 2rem;
+        }
+        /* Phone widths cannot fit three clusters on one line: dialog controls keep the
+           full-width toolbar row above the heading, navigation stays centered below it. */
+        .calendar-nav {
+          grid-template-columns: minmax(0, 1fr);
+          grid-template-areas:
+            "actions"
+            "heading"
+            "nav";
+        }
+        .calendar-nav-actions {
+          justify-self: stretch;
+        }
+        .calendar-nav-actions .project-filter-control {
+          flex: 1 1 auto;
+        }
+        .calendar-nav-actions .asset-tooltip--left[data-tooltip]::after {
+          left: 0;
+          right: auto;
         }
       }
 

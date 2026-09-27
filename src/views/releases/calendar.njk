@@ -8,21 +8,6 @@
 {% set page_title = "Calendar" %}
 
 {% block content %}
-  <div class="asset-viewer-display-controls">
-    <div class="project-filter-actions project-filter-actions--projects">
-      <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
-         href="#calendar-filter-dialog" aria-label="Filters"
-         data-dialog-open="calendar-filter-dialog" data-tooltip="Filters">
-        {{ icons.icon('content-filter') }}
-      </a>
-      <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
-         href="/calendar?defaults=1" aria-label="Page Defaults"
-         data-dialog-open="calendar-defaults-dialog" data-tooltip="Page Defaults">
-        {{ icons.icon('settings') }}
-      </a>
-    </div>
-  </div>
-
   <div class="calendar-view-{{ view }}" data-calendar-live-region data-calendar-month="{{ month }}">
   <span class="sr-only" data-calendar-live-status aria-live="polite" aria-atomic="true"></span>
   <div class="calendar-nav" aria-label="Calendar navigation">
@@ -39,10 +24,10 @@
         <span class="button button-secondary project-filter-control calendar-nav-control" role="button" aria-label="Previous month" aria-disabled="true">{{ icons.icon('chevron-left') }}</span>
       {% endif %}
       {% if isCurrentMonth %}
-        <span class="button button-primary project-filter-control calendar-nav-control" role="button" aria-label="Today" aria-disabled="true" aria-current="page">{{ icons.icon('calendar') }}</span>
+        <span class="button button-primary project-filter-control calendar-nav-control" role="button" aria-label="Today" aria-disabled="true" aria-current="page">{{ icons.icon('calendar') }}<span class="calendar-nav-label">Today</span></span>
       {% else %}
         <a id="calendar-today" class="button button-primary project-filter-control calendar-nav-control asset-tooltip" href="{{ pageUrl({ month: null }) }}"
-           data-calendar-navigation aria-label="Today" data-tooltip="Today">{{ icons.icon('calendar') }}</a>
+           data-calendar-navigation aria-label="Today" data-tooltip="Today">{{ icons.icon('calendar') }}<span class="calendar-nav-label">Today</span></a>
       {% endif %}
       {% if nextMonth %}
         <a id="calendar-next" class="button button-secondary project-filter-control calendar-nav-control asset-tooltip" href="{{ pageUrl({ month: nextMonth }) }}"
@@ -50,6 +35,18 @@
       {% else %}
         <span class="button button-secondary project-filter-control calendar-nav-control" role="button" aria-label="Next month" aria-disabled="true">{{ icons.icon('chevron-right') }}</span>
       {% endif %}
+    </div>
+    <div class="calendar-nav-actions project-filter-actions project-filter-actions--projects">
+      <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
+         href="#calendar-filter-dialog" aria-label="Filters"
+         data-dialog-open="calendar-filter-dialog" data-tooltip="Filters">
+        {{ icons.icon('content-filter') }}
+      </a>
+      <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
+         href="/calendar?defaults=1" aria-label="Calendar defaults"
+         data-dialog-open="calendar-defaults-dialog" data-tooltip="Calendar defaults">
+        {{ icons.icon('settings') }}
+      </a>
     </div>
   </div>
   <p class="results-meta">{{ releaseCount }} matching release{% if releaseCount != 1 %}s{% endif %}</p>
@@ -173,7 +170,7 @@
     </form>
   {% endcall %}
 
-  {% call dialog.render('calendar-defaults-dialog', 'Page Defaults', false, 'calendar-defaults-description', 'calendar-defaults-form') %}
+  {% call dialog.render('calendar-defaults-dialog', 'Calendar defaults', false, 'calendar-defaults-description', 'calendar-defaults-form') %}
     <form id="calendar-defaults-form" class="app-dialog-form project-form" method="post" action="/settings/defaults"
           data-dialog-form data-dialog-async="false" data-calendar-defaults-fetch-save novalidate>
       <p id="calendar-defaults-description" class="app-dialog-description">Choose the default desktop view, release status, and week start for Calendar.</p>
