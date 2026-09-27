@@ -49,7 +49,8 @@ function getProjectPrimaryImageService(req) {
 }
 
 function getPreviewProbe(req) {
-  return req.app?.locals?.previewService?.inspectKritaPreviewSource;
+  // Viewer eligibility hint only: a pure read, never selection authority.
+  return req.app?.locals?.previewService?.inspectKritaPreviewPresentation;
 }
 
 function isAssetEditSubmission(req) {

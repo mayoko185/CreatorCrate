@@ -4,7 +4,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { decode as decodeBmp, encode as encodeBmp } from '@nktkas/bmp';
 import { resolveContainedAssetPath } from '../storage/asset-file.js';
-import { resolveProjectDir } from '../storage/project-storage.js';
+import { createProjectDirectoryOwnershipVerifier } from './project-directory-ownership.js';
 import { deriveExtensionFromFilename, mimeFromExtension } from './asset-metadata.js';
 import { ProjectOperationError } from './project-operation-coordinator.js';
 import { classifyAssetPath } from './asset-path-classification.js';
@@ -202,10 +202,14 @@ export function createAssetProcessingService({
   watermarkScaleMap = WATERMARK_WINDOW_SCALE_MAP,
   alreadyCoordinatedCapability,
   processingConcurrencyService,
+  projectDirectoryOwnershipRepository,
   applicationLogger = null,
 } = {}) {
   if (!projectRepository || typeof projectRepository.findById !== 'function') {
     throw new Error('createAssetProcessingService requires a projectRepository dependency.');
+  }
+  if (!projectDirectoryOwnershipRepository) {
+    throw new Error('createAssetProcessingService requires a projectDirectoryOwnershipRepository dependency.');
   }
   if (!assetRepository
     || typeof assetRepository.findById !== 'function'
@@ -237,6 +241,10 @@ export function createAssetProcessingService({
   if (watermarkRoot !== undefined && typeof watermarkRoot !== 'string') {
     throw new Error('createAssetProcessingService watermarkRoot must be a trusted directory path.');
   }
+  const ownershipVerifier = createProjectDirectoryOwnershipVerifier({
+    ownershipRepository: projectDirectoryOwnershipRepository,
+    projectsRoot,
+  });
 
   function assertAlreadyCoordinatedCapability(capability) {
     if (capability === undefined
@@ -310,38 +318,24 @@ export function createAssetProcessingService({
     return project;
   }
 
+  /**
+   * Shared project preflight for every processing execution (conversion and
+   * reencoding, watermarking, archive generation, workflow/prompt edits).
+   * Each execution calls this exactly once, under its project lock, before
+   * inspecting, staging, publishing, replacing, moving to Originals, or
+   * deleting anything; the one verification covers that whole execution.
+   * A plan made earlier is never a witness: every execution verifies anew.
+   *
+   * @returns {string} the verified project root
+   * @throws {import('./project-directory-ownership.js').ProjectOwnershipError}
+   */
   function resolveProjectAbsPath(project) {
     if (!project.project_dir) {
       throw new AssetProcessingError('Project has no stored directory path.', {
         code: 'PROJECT_DIRECTORY_UNSAFE',
       });
     }
-
-    let projectDir;
-    try {
-      projectDir = resolveProjectDir(projectsRoot, project.project_dir);
-    } catch (err) {
-      throw new AssetProcessingError('Project directory cannot be accessed.', {
-        code: 'PROJECT_DIRECTORY_UNSAFE',
-        cause: err,
-      });
-    }
-
-    let stats;
-    try {
-      stats = fs.lstatSync(projectDir);
-    } catch (err) {
-      throw new AssetProcessingError('Project directory cannot be accessed.', {
-        code: 'PROJECT_DIRECTORY_UNSAFE',
-        cause: err,
-      });
-    }
-    if (stats.isSymbolicLink() || !stats.isDirectory()) {
-      throw new AssetProcessingError('Project directory is unsafe.', {
-        code: 'PROJECT_DIRECTORY_UNSAFE',
-      });
-    }
-    return projectDir;
+    return ownershipVerifier.verifyProject(project).absPath;
   }
 
   function resolveContained(projectDir, relativePath, code, label) {

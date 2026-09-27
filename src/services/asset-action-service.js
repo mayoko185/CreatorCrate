@@ -26,9 +26,11 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { resolveProjectDir, resolveCategoryDir, requireRealCategoryDir } from '../storage/project-storage.js';
+import { resolveCategoryDir, requireRealCategoryDir } from '../storage/project-storage.js';
+import { createProjectDirectoryOwnershipVerifier } from './project-directory-ownership.js';
 import { resolveContainedAssetPath } from '../storage/asset-file.js';
 import { assertValidAssetFilename, AssetFilenameValidationError } from './asset-filename-validation.js';
+import { isProjectOwnershipMarkerName } from '../storage/project-ownership-marker.js';
 import { mimeFromExtension, deriveExtensionFromFilename } from './asset-metadata.js';
 import { ProjectOperationError } from './project-operation-coordinator.js';
 import { isProjectArchived } from './project-state.js';
@@ -75,6 +77,9 @@ function isCategoryEnabled(category) {
  *   a rename/move/copy/delete/cleanup for one project can never interleave.
  * @param {object} [deps.alreadyCoordinatedCapability]
  *   Private application-composition token for queued Rename execution.
+ * @param {ReturnType<import('../data/project-directory-ownership-repository.js').createProjectDirectoryOwnershipRepository>} deps.projectDirectoryOwnershipRepository
+ *   PM-1B: every filesystem mutation first proves the project root is this
+ *   project's bound, marked directory (once per logical operation).
  */
 export function createAssetActionService({
   projectRepository,
@@ -83,6 +88,7 @@ export function createAssetActionService({
   projectsRoot,
   projectOperationCoordinator,
   alreadyCoordinatedCapability,
+  projectDirectoryOwnershipRepository,
   applicationLogger = null,
 } = {}) {
   if (!projectRepository) throw new Error('createAssetActionService requires a projectRepository dependency.');
@@ -90,6 +96,11 @@ export function createAssetActionService({
   if (!assetCategoryRepository) throw new Error('createAssetActionService requires an assetCategoryRepository dependency.');
   if (!projectsRoot) throw new Error('createAssetActionService requires a projectsRoot dependency.');
   if (!projectOperationCoordinator) throw new Error('createAssetActionService requires a projectOperationCoordinator dependency.');
+  if (!projectDirectoryOwnershipRepository) throw new Error('createAssetActionService requires a projectDirectoryOwnershipRepository dependency.');
+  const ownershipVerifier = createProjectDirectoryOwnershipVerifier({
+    ownershipRepository: projectDirectoryOwnershipRepository,
+    projectsRoot,
+  });
 
   /**
    * Run `callback` (the full body of a rename/move/copy/delete, from validation through
@@ -179,10 +190,13 @@ export function createAssetActionService({
   function createProcessingPlanner(capability) {
     assertAlreadyCoordinatedCapability(capability);
     return Object.freeze({
-      inspectRenameAssetBasename: (projectId, assetId, basename) => {
+      // `ownership` is the planning operation's handle, so one plan verifies
+      // its project once however many items it inspects. It authorizes this
+      // inspection only; queued execution verifies independently.
+      inspectRenameAssetBasename: (projectId, assetId, basename, ownership) => {
         assertPositiveInteger(projectId, 'INVALID_PROJECT_ID', 'projectId');
         assertPositiveInteger(assetId, 'INVALID_ASSET_ID', 'assetId');
-        const prepared = prepareRenameAssetBasename(projectId, assetId, basename);
+        const prepared = prepareRenameAssetBasename(projectId, assetId, basename, ownership);
         return Object.freeze({
           assetId,
           basename,
@@ -204,10 +218,13 @@ export function createAssetActionService({
           throw new TypeError('Queued Rename progress reporter must be a function.');
         }
         const byAssetId = createRenameMapping(assetIds, rawOptions);
+        // One ownership verification for this queued execution, reused by
+        // every rename in it. The plan that queued it is not a witness.
+        const ownership = ownershipVerifier.beginOperation();
         let completed = 0;
         onProgress?.({ completed, total: assetIds.length });
         for (const assetId of assetIds) {
-          renameAssetBasenameLocked(projectId, assetId, byAssetId.get(assetId));
+          renameAssetBasenameLocked(projectId, assetId, byAssetId.get(assetId), ownership);
           logActivity('asset.renamed', projectId);
           completed += 1;
           onProgress?.({ completed, total: assetIds.length });
@@ -257,15 +274,23 @@ export function createAssetActionService({
     return asset;
   }
 
-  function resolveProjectAbsPath(project) {
+  /**
+   * Shared project-filesystem preflight for every mutation in this service
+   * (rename, basename rename, move, batch move, copy, delete). Resolves the
+   * project root only through the canonical ownership verifier: unbound,
+   * missing, unreadable, mismatched, or unsafe roots fail closed with a
+   * ProjectOwnershipError before any file is touched. `ownership` lets one
+   * logical operation (a queued batch, a plan) verify its project once;
+   * without it, this call is its own operation and verifies afresh.
+   *
+   * @returns {string} the verified project root
+   * @throws {import('./project-directory-ownership.js').ProjectOwnershipError}
+   */
+  function resolveProjectAbsPath(project, ownership) {
     if (!project.project_dir) {
       throw new AssetActionError('Project has no stored directory path.', { code: 'PROJECT_DIRECTORY_UNSAFE' });
     }
-    try {
-      return resolveProjectDir(projectsRoot, project.project_dir);
-    } catch {
-      throw new AssetActionError('Project directory cannot be accessed.', { code: 'PROJECT_DIRECTORY_UNSAFE' });
-    }
+    return ownershipVerifier.operationFor(ownership).verifyProject(project).absPath;
   }
 
   /**
@@ -284,6 +309,18 @@ export function createAssetActionService({
       return resolveContainedAssetPath(dirAbsPath, relativePath, { checkFinalSymlink: false });
     } catch {
       throw new AssetActionError(`${label} path is unsafe.`, { code });
+    }
+  }
+
+  /**
+   * The project root's ownership marker name is CreatorCrate-internal; no
+   * asset may be renamed, moved, or copied onto it. Decided from the resolved
+   * destination relative path, so only a root-level destination is reserved:
+   * `final/.creatorcrate-owner` is ordinary content.
+   */
+  function assertNotReservedRootPath(newRelativePath, code) {
+    if (!newRelativePath.includes('/') && isProjectOwnershipMarkerName(newRelativePath)) {
+      throw new AssetActionError('This filename is reserved by CreatorCrate in the project folder.', { code });
     }
   }
 
@@ -647,7 +684,7 @@ export function createAssetActionService({
   // Prepares the authoritative single-file rename. Public mutations call it
   // under runLocked; the capability-gated queued executor calls it only while
   // ProcessingJobService already owns this project's runAsync coordination.
-  function prepareRenameAsset(projectId, assetId, filename, resolvedAsset = null) {
+  function prepareRenameAsset(projectId, assetId, filename, resolvedAsset = null, ownership = undefined) {
       let newFilename;
       try {
         newFilename = assertValidAssetFilename(filename);
@@ -673,8 +710,9 @@ export function createAssetActionService({
       }
 
       const newRelativePath = [...segments.slice(0, -1), newFilename].join('/');
+      assertNotReservedRootPath(newRelativePath, 'INVALID_FILENAME');
 
-      const projectDir = resolveProjectAbsPath(project);
+      const projectDir = resolveProjectAbsPath(project, ownership);
       const sourceAbsPath = resolveContained(projectDir, oldRelativePath, 'SOURCE_PATH_UNSAFE', 'Source');
       const sourceStats = inspectSource(sourceAbsPath);
       const sourceIdentity = { dev: sourceStats.dev, ino: sourceStats.ino };
@@ -700,7 +738,7 @@ export function createAssetActionService({
       return performMoveAndUpdate(prepareRenameAsset(projectId, assetId, filename));
   }
 
-  function prepareRenameAssetBasename(projectId, assetId, basename) {
+  function prepareRenameAssetBasename(projectId, assetId, basename, ownership) {
     const asset = requirePresentAsset(projectId, assetId);
     try {
       assertValidAssetFilename(basename);
@@ -716,11 +754,11 @@ export function createAssetActionService({
     const extensionStart = currentFilename.lastIndexOf('.');
     const extension = extensionStart > 0 ? currentFilename.slice(extensionStart + 1) : '';
     const filename = extension ? `${basename}.${extension}` : basename;
-    return prepareRenameAsset(projectId, assetId, filename, asset);
+    return prepareRenameAsset(projectId, assetId, filename, asset, ownership);
   }
 
-  function renameAssetBasenameLocked(projectId, assetId, basename) {
-    return performMoveAndUpdate(prepareRenameAssetBasename(projectId, assetId, basename));
+  function renameAssetBasenameLocked(projectId, assetId, basename, ownership) {
+    return performMoveAndUpdate(prepareRenameAssetBasename(projectId, assetId, basename, ownership));
   }
 
   // Holds the project lock for its entire body — validation through
@@ -774,6 +812,7 @@ export function createAssetActionService({
           { code: 'BATCH_PRECHECK_FAILED' }
         );
       }
+      assertNotReservedRootPath(newRelativePath, 'BATCH_PRECHECK_FAILED');
 
       if (destinationPaths.has(newRelativePath)) {
         throw new AssetActionError(
@@ -926,6 +965,7 @@ export function createAssetActionService({
       const newRelativePath = destCategoryId === null
         ? filename
         : `${destCategorySlug}/${filename}`;
+      assertNotReservedRootPath(newRelativePath, 'COPY_PRECHECK_FAILED');
 
       if (destinationPaths.has(newRelativePath)) {
         throw new AssetActionError(
@@ -1213,6 +1253,7 @@ export function createAssetActionService({
       if (newRelativePath === oldRelativePath) {
         throw new AssetActionError('Destination is unchanged.', { code: 'UNCHANGED_LOCATION' });
       }
+      assertNotReservedRootPath(newRelativePath, 'INVALID_FILENAME');
 
       const sourceAbsPath = resolveContained(projectDir, oldRelativePath, 'SOURCE_PATH_UNSAFE', 'Source');
       const sourceStats = inspectSource(sourceAbsPath);

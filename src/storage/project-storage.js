@@ -137,14 +137,17 @@ function checkSymlinks(root, target) {
       const stats = fs.lstatSync(current);
       if (stats.isSymbolicLink()) {
         throw new StorageError(
-          `Project directory path contains a symbolic link at "${path.basename(current)}".`
+          `Project directory path contains a symbolic link at "${path.basename(current)}".`,
+          { code: 'PROJECT_PATH_SYMLINK' },
         );
       }
     } catch (err) {
       if (err instanceof StorageError) throw err;
       if (err.code === 'ENOENT') return; // Non-existent segment → further can't be vectors
+      // Could not look: an access/I/O failure proves nothing about the path.
       throw new StorageError(
-        `Cannot access path component "${path.basename(current)}".`
+        `Cannot access path component "${path.basename(current)}".`,
+        { code: 'PROJECT_PATH_UNAVAILABLE', cause: err },
       );
     }
   }
@@ -163,14 +166,17 @@ async function checkSymlinksAsync(root, target) {
       const stats = await fs.promises.lstat(current);
       if (stats.isSymbolicLink()) {
         throw new StorageError(
-          `Project directory path contains a symbolic link at "${path.basename(current)}".`
+          `Project directory path contains a symbolic link at "${path.basename(current)}".`,
+          { code: 'PROJECT_PATH_SYMLINK' },
         );
       }
     } catch (err) {
       if (err instanceof StorageError) throw err;
       if (err.code === 'ENOENT') return;
+      // Could not look: an access/I/O failure proves nothing about the path.
       throw new StorageError(
-        `Cannot access path component "${path.basename(current)}".`
+        `Cannot access path component "${path.basename(current)}".`,
+        { code: 'PROJECT_PATH_UNAVAILABLE', cause: err },
       );
     }
   }

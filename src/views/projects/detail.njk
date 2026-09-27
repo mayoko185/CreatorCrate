@@ -23,6 +23,22 @@
     {% include "partials/notice.njk" %}
   {% endif %}
 
+  {% if ownershipNotice %}
+    <div class="notice {{ 'notice--info' if ownershipNotice == 'unavailable' else 'notice--warning' }} project-ownership-notice" role="status"
+         data-project-ownership-notice="{{ ownershipNotice }}">
+      {% if ownershipNotice == 'unavailable' %}
+        <p>Project storage is temporarily unavailable. CreatorCrate will retry automatically.</p>
+      {% else %}
+        <p>Project folder ownership needs attention. CreatorCrate can't confirm that this project's stored folder belongs to it, so changes to its files are paused.</p>
+      {% endif %}
+      <p>
+        <button class="button button-small button-secondary" type="button" data-project-ownership-open>
+          {{ 'Check project storage' if ownershipNotice == 'unavailable' else 'Review project ownership' }}
+        </button>
+      </p>
+    </div>
+  {% endif %}
+
   {# ─── Hero: primary image + at-a-glance summary ─────────────────── #}
   <section class="project-detail-hero">
     <div class="project-detail-media{% if project.primaryImage.state == 'available' and project.primaryImage.mediaModifier %} project-card-media--{{ project.primaryImage.mediaModifier }}{% endif %}"{% if project.primaryImage.state == 'available' %} data-preview-enhancement data-preview-state="loading"{% else %} data-primary-image-state="{{ project.primaryImage.state }}"{% endif %}>
@@ -187,6 +203,25 @@
 {% endblock %}
 
 {% block overlay %}
+  {% if ownershipNotice %}
+    {% call dialog.render('project-ownership-dialog', 'Project folder ownership', false, 'project-ownership-dialog-description') %}
+      <div class="app-dialog-body" data-project-ownership-dialog data-project-id="{{ project.id }}" data-project-title="{{ project.title }}">
+        <input type="hidden" name="_csrf" value="{{ _csrf }}" data-project-ownership-csrf>
+        <p id="project-ownership-dialog-description" class="app-dialog-description">
+          CreatorCrate confirms that this project's stored folder belongs to it before changing files there.
+        </p>
+        <div class="notice notice--info" data-project-ownership-summary>
+          <p>Checking project storage…</p>
+        </div>
+        <div class="app-dialog-status" data-project-ownership-status role="status" aria-live="polite"></div>
+      </div>
+      <footer class="app-dialog-footer">
+        <button class="button button-secondary" type="button" data-dialog-close>Close</button>
+        <button class="button button-secondary" type="button" data-project-ownership-check hidden>Check again</button>
+        <button class="button button-primary" type="button" data-project-ownership-recover hidden>Recover project ownership</button>
+      </footer>
+    {% endcall %}
+  {% endif %}
   {% if not project.isArchived %}
     {% set values = projectEditForm.values %}
     {% set errors = projectEditForm.errors %}

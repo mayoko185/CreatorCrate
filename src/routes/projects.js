@@ -3,6 +3,7 @@ import {
   ProjectNotFoundError,
   ProjectValidationError,
 } from '../services/project-service.js';
+import { ProjectOwnershipError } from '../services/project-directory-ownership.js';
 import { NSFW_TAG_NAME } from '../services/nsfw-filter-settings-service.js';
 import {
   AssetCategoryValidationError,
@@ -309,19 +310,22 @@ export function createProjectsRouter({ appName, db, projectService, workflowQuer
         }
         return;
       }
-      // Filesystem or other error: render the detail dialog with a safe message
-      // and preserved values.
+      // A known ownership refusal (e.g. renaming an unrecovered project's
+      // folder) is a state conflict reported with its path-free message via
+      // the error's own status; anything else is an internal failure. Either
+      // way, render the detail dialog with a safe message and preserved values.
+      const ownershipRefused = err instanceof ProjectOwnershipError;
       const existing = projectService.findById(id);
       if (!existing || !renderProjectDetailPage(req, res, {
         appName,
         workflowQueryService,
         id,
-        status: 500,
+        status: ownershipRefused ? err.status : 500,
         projectEditDialogOpen: true,
         projectEditReturnTo,
         projectEditForm: {
           values: createFormValues(req.body),
-          errors: { general: 'Project update failed. Please try again.' },
+          errors: { general: ownershipRefused ? err.message : 'Project update failed. Please try again.' },
           statuses: getProjectFormStatusOptions(req),
           projectTypes: getProjectFormTypeOptions(req),
           tags: loadAvailableTags(req),
@@ -425,8 +429,14 @@ function renderProjectDetailPage(req, res, {
       projectDir: workspace.project.project_dir,
     }),
     notice: resolveNotice(req.query.notice),
+    ownershipNotice: getProjectOwnershipAttention(req, id),
   });
   return true;
+}
+
+// PM-1C2B: SQLite-only ownership hint; never reads the project folder.
+function getProjectOwnershipAttention(req, projectId) {
+  return req.app?.locals?.projectOwnershipRecoveryService?.getAttentionHint?.(projectId) ?? null;
 }
 
 function getPageDefaultsService(req) {

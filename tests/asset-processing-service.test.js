@@ -38,6 +38,7 @@ import {
   editWorkflowPromptsInPng,
   PNG_SIGNATURE,
 } from '../src/services/workflow-prompt-editor.js';
+import { createProjectDirectoryOwnershipRepository } from '../src/data/project-directory-ownership-repository.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -110,6 +111,7 @@ describe('asset processing service', () => {
     processingExecutionCapability = Object.freeze({});
     const scopeService = createAssetProcessingScopeService({ projectRepository, assetRepository });
     planner = createAssetProcessingPlanner({
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
       scopeService,
       projectRepository,
       assetRepository,
@@ -218,6 +220,7 @@ describe('asset processing service', () => {
 
   function createProcessingService(overrides = {}) {
     return createAssetProcessingService({
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
       projectRepository,
       assetRepository,
       assetCategoryService,
@@ -716,6 +719,7 @@ describe('asset processing service', () => {
 
   function createTestScanner() {
     return createAssetScanner(db, projectsRoot, {
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
       projectService,
       assetCategoryService,
       projectOperationCoordinator,
@@ -751,7 +755,7 @@ describe('asset processing service', () => {
     createTestScanner().scanProjectAssets(project.id);
     expect(assetRepository.findById(assetId)).toEqual(converted);
 
-    const sourceAnimation = createSourceAnimationService({ assetRepository, projectRepository, projectsRoot });
+    const sourceAnimation = createSourceAnimationService({ assetRepository, projectRepository, projectsRoot, projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db) });
     expect(sourceAnimation.reconcileSource(converted)).toBeNull();
     const reconciled = assetRepository.findById(assetId);
     expect(reconciled).toEqual(converted);
@@ -976,6 +980,7 @@ describe('asset processing service', () => {
     `).get(project.id);
     const source = writeIndexedImage('root-original.png');
     const scanner = createAssetScanner(db, projectsRoot, {
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
       projectService,
       assetCategoryService,
       projectOperationCoordinator,

@@ -9,7 +9,6 @@
  */
 
 import fs from 'node:fs';
-import path from 'node:path';
 import { ProjectNotFoundError } from './project-service.js';
 import { AssetCategoryNotFoundError } from './asset-category-service.js';
 import { isProjectArchived } from './project-state.js';
@@ -22,7 +21,7 @@ import {
   assertPositiveIntegerId,
   assertStrictBoolean,
 } from './asset-category-validation.js';
-import { resolveProjectDir } from '../storage/project-storage.js';
+import { createProjectDirectoryOwnershipVerifier } from './project-directory-ownership.js';
 import {
   resolveCategoryDir,
   preflightCategoryDestination,
@@ -32,7 +31,6 @@ import {
   restoreQuarantinedCategoryDir,
   removeEmptyDirIfIdentityMatches,
 } from '../storage/project-storage.js';
-import { writeManifestSync, readManifestSync, MANIFEST_FILENAME } from '../storage/manifest.js';
 
 export { AssetCategoryValidationError, AssetCategoryNotFoundError, ProjectNotFoundError };
 
@@ -54,20 +52,6 @@ export class ProjectAssetCategoryError extends Error {
 
 function logProblem(logger, projectId, reason) {
   logger.error(`[CreatorCrate] Project category operation for project ${projectId} — ${reason}.`);
-}
-
-/**
- * Whether a manifest currently exists at `absPath`, for capturing state
- * before a mutation begins. An unreadable/corrupt manifest still counts as
- * "something was there" — it is never treated as safely absent, since that
- * would risk deleting or overwriting content this operation didn't create.
- */
-function manifestExists(absPath) {
-  try {
-    return readManifestSync(absPath) !== null;
-  } catch {
-    return true;
-  }
 }
 
 const REORDER_VALIDATION_CODES = new Set([
@@ -103,6 +87,7 @@ function isReorderValidationError(err) {
  * @param {ReturnType<import('../data/asset-category-repository.js').createAssetCategoryRepository>} deps.assetCategoryRepository
  * @param {ReturnType<import('../data/asset-repository.js').createAssetRepository>} deps.assetRepository
  * @param {ReturnType<import('../data/asset-browser-preference-repository.js').createAssetBrowserPreferenceRepository>} deps.assetBrowserPreferenceRepository
+ * @param {ReturnType<import('../data/project-directory-ownership-repository.js').createProjectDirectoryOwnershipRepository>} deps.projectDirectoryOwnershipRepository
  * @param {string} deps.projectsRoot
  * @param {Console} [deps.logger]
  */
@@ -112,6 +97,7 @@ export function createProjectAssetCategoryService({
   assetCategoryRepository,
   assetRepository,
   assetBrowserPreferenceRepository,
+  projectDirectoryOwnershipRepository,
   projectsRoot,
   logger = console,
   applicationLogger = null,
@@ -122,6 +108,12 @@ export function createProjectAssetCategoryService({
   if (!assetRepository) throw new Error('createProjectAssetCategoryService requires an assetRepository dependency.');
   if (!projectsRoot) throw new Error('createProjectAssetCategoryService requires a projectsRoot dependency.');
   if (!assetBrowserPreferenceRepository) throw new Error('createProjectAssetCategoryService requires an assetBrowserPreferenceRepository dependency.');
+  if (!projectDirectoryOwnershipRepository) throw new Error('createProjectAssetCategoryService requires a projectDirectoryOwnershipRepository dependency.');
+
+  const ownershipVerifier = createProjectDirectoryOwnershipVerifier({
+    ownershipRepository: projectDirectoryOwnershipRepository,
+    projectsRoot,
+  });
 
   function requireProject(projectId) {
     assertPositiveIntegerId(projectId, 'projectId');
@@ -164,11 +156,17 @@ export function createProjectAssetCategoryService({
     }
   }
 
-  function resolveProjectAbsPath(project) {
-    if (!project.project_dir) {
-      throw new ProjectAssetCategoryError('Project has no stored directory path.', { code: 'NO_PROJECT_DIR' });
-    }
-    return resolveProjectDir(projectsRoot, project.project_dir);
+  /**
+   * Resolve the project root for a category FILESYSTEM operation. Requires
+   * the persistent ownership witness (bound SQLite token + matching marker)
+   * on top of the existing path protections, so a directory substituted at
+   * the stored pathname is never modified as this project's. Database-only
+   * category operations must not call this.
+   *
+   * @throws {import('./project-directory-ownership.js').ProjectOwnershipError}
+   */
+  function resolveOwnedProjectAbsPath(project) {
+    return ownershipVerifier.verifyProject(project).absPath;
   }
 
   function assertNoLocalSlugConflict(projectId, directorySlug) {
@@ -203,89 +201,6 @@ export function createProjectAssetCategoryService({
     }
   }
 
-  /**
-   * Restore the manifest to its exact pre-mutation state after a mutation's
-   * database transaction fails — including a commit-time failure that
-   * happens *after* a new manifest was already published from the
-   * (about-to-be-rolled-back) in-progress DB state.
-   *
-   * `priorManifestExisted` and `categoriesBefore` must be captured BEFORE
-   * the mutation begins. `publishedIdentity` is the manifest file's
-   * dev/ino captured immediately after this operation's own
-   * `writeManifestSync` call succeeded, but only when no manifest existed
-   * beforehand — it is the proof needed to remove a manifest this
-   * operation itself created without ever touching one written by another
-   * actor in the interim.
-   *
-   * - If a manifest existed before: re-publish it from the captured
-   *   pre-mutation `project` record and `categoriesBefore` — deterministic
-   *   serialization reproduces the exact prior content, since neither input
-   *   changed between the original write and this restoration.
-   * - If no manifest existed before: remove only the manifest this
-   *   operation published, and only when its identity still matches what
-   *   was captured right after that write. A mismatch (or the identity
-   *   never having been captured) means either nothing was ever published,
-   *   or something else now occupies the path — either way it is left
-   *   untouched rather than risk deleting or overwriting unproven content.
-   *
-   * Never throws — every failure is logged path-free via `logProblem` so it
-   * can never replace the primary mutation error the caller is about to
-   * re-throw.
-   */
-  function restorePriorManifest({
-    absPath, project, categoriesBefore, priorManifestExisted, publishedIdentity, projectId, mutationLabel,
-  }) {
-    if (priorManifestExisted) {
-      try {
-        writeManifestSync(absPath, project, projectsRoot, categoriesBefore);
-      } catch (restoreErr) {
-        logProblem(
-          logger, projectId,
-          `failed to restore the prior manifest after a failed ${mutationLabel} (${restoreErr.message})`
-        );
-      }
-      return;
-    }
-
-    if (!publishedIdentity) return; // Nothing was ever published — nothing to undo.
-
-    try {
-      const manifestPath = path.join(absPath, MANIFEST_FILENAME);
-      const stats = fs.lstatSync(manifestPath);
-      if (stats.dev === publishedIdentity.dev && stats.ino === publishedIdentity.ino) {
-        fs.rmSync(manifestPath);
-      } else {
-        logProblem(
-          logger, projectId,
-          `left a replacement manifest untouched after a failed ${mutationLabel} (identity mismatch)`
-        );
-      }
-    } catch (cleanupErr) {
-      logProblem(
-        logger, projectId,
-        `failed to remove the manifest published just before a failed ${mutationLabel} (${cleanupErr.message})`
-      );
-    }
-  }
-
-  /**
-   * Capture the manifest file's identity immediately after this operation's
-   * own `writeManifestSync` call succeeds, but only when no manifest
-   * existed before the mutation began — this is the proof
-   * {@link restorePriorManifest} needs to safely remove (and never
-   * over-broadly delete) a manifest this operation itself just created.
-   * Best-effort: a capture failure here just means compensation later logs
-   * instead of removing, never throws.
-   */
-  function capturePublishedManifestIdentity(absPath) {
-    try {
-      const stats = fs.lstatSync(path.join(absPath, MANIFEST_FILENAME));
-      return { dev: stats.dev, ino: stats.ino };
-    } catch {
-      return null;
-    }
-  }
-
   return {
     /**
      * List a project's categories (enabled and disabled), in deterministic
@@ -301,9 +216,9 @@ export function createProjectAssetCategoryService({
      * directory (only when enabled).
      */
     add(projectId, input) {
-      // Every argument is validated before any repository, filesystem, or
-      // manifest dependency is touched — malformed input must never cause a
-      // lookup to run first.
+      // Every argument is validated before any repository or filesystem
+      // dependency is touched — malformed input must never cause a lookup to
+      // run first.
       assertPositiveIntegerId(projectId, 'projectId');
       assertPlainObject(input, 'input');
       const { displayName, directorySlug } = validateCategoryInput(input);
@@ -317,8 +232,12 @@ export function createProjectAssetCategoryService({
       const project = requireMutableProject(projectId);
       assertNoLocalSlugConflict(projectId, directorySlug);
 
-      const absPath = resolveProjectAbsPath(project);
+      // A disabled category is database-only: the project directory is
+      // neither resolved nor inspected, so it may be unbound or unavailable.
+      // Only an enabled category creates a directory and needs ownership.
+      let absPath = null;
       if (enabled) {
+        absPath = resolveOwnedProjectAbsPath(project);
         preflightCategoryDestination(absPath, directorySlug);
       }
 
@@ -326,14 +245,6 @@ export function createProjectAssetCategoryService({
       const displayOrder = existing.length === 0
         ? 0
         : Math.max(...existing.map((c) => c.display_order)) + 1;
-
-      // Captured before any mutation, so a commit-time database failure —
-      // which can happen even after the manifest below has already been
-      // published from the (about-to-be-rolled-back) in-progress state —
-      // can be compensated for by restoring exactly what was here before.
-      const priorManifestExisted = manifestExists(absPath);
-      const categoriesBefore = existing;
-      let publishedManifestIdentity = null;
 
       let createdDir = null;
 
@@ -346,12 +257,6 @@ export function createProjectAssetCategoryService({
           createdDir = createCategoryDirExclusive(absPath, directorySlug);
         }
 
-        const categories = assetCategoryRepository.listProjectCategories(projectId);
-        writeManifestSync(absPath, project, projectsRoot, categories);
-        if (!priorManifestExisted) {
-          publishedManifestIdentity = capturePublishedManifestIdentity(absPath);
-        }
-
         return category;
       });
 
@@ -360,10 +265,8 @@ export function createProjectAssetCategoryService({
         logActivity('asset_category.created', projectId, { categoryId: category.id, enabled: Boolean(category.enabled) });
         return category;
       } catch (err) {
-        restorePriorManifest({
-          absPath, project, categoriesBefore, priorManifestExisted,
-          publishedIdentity: publishedManifestIdentity, projectId, mutationLabel: 'add',
-        });
+        // SQLite has rolled the row back; remove only the directory this
+        // operation itself created (e.g. after a commit-time failure).
         if (createdDir) {
           safeRemoveCreatedCategoryDir(absPath, directorySlug, createdDir.identity, projectId);
         }
@@ -372,8 +275,8 @@ export function createProjectAssetCategoryService({
     },
 
     /**
-     * Update only a category's display name. No filesystem rename, no
-     * preview-cache invalidation.
+     * Update only a category's display name. Database-only: no filesystem
+     * access, no preview-cache invalidation.
      */
     editDisplayName(projectId, categoryId, input) {
       // Validate every argument before any repository/filesystem lookup.
@@ -385,38 +288,19 @@ export function createProjectAssetCategoryService({
         throw new AssetCategoryValidationError({ displayName: error });
       }
 
-      const project = requireMutableProject(projectId);
+      requireMutableProject(projectId);
       const category = requireCategory(projectId, categoryId);
 
-      const absPath = resolveProjectAbsPath(project);
-      const priorManifestExisted = manifestExists(absPath);
-      const categoriesBefore = assetCategoryRepository.listProjectCategories(projectId);
-      let publishedManifestIdentity = null;
-
-      const runEdit = db.transaction(() => {
-        const updated = assetCategoryRepository.updateProjectCategoryDisplayName(projectId, categoryId, name);
-        const categories = assetCategoryRepository.listProjectCategories(projectId);
-        writeManifestSync(absPath, project, projectsRoot, categories);
-        if (!priorManifestExisted) {
-          publishedManifestIdentity = capturePublishedManifestIdentity(absPath);
-        }
-        return updated;
-      });
-
-      try {
-        const updated = runEdit();
-        if (category.display_name !== name) logActivity('asset_category.renamed', projectId, { categoryId });
-        return updated;
-      } catch (err) {
-        restorePriorManifest({
-          absPath, project, categoriesBefore, priorManifestExisted,
-          publishedIdentity: publishedManifestIdentity, projectId, mutationLabel: 'display-name edit',
-        });
-        throw err;
-      }
+      const updated = assetCategoryRepository.updateProjectCategoryDisplayName(projectId, categoryId, name);
+      if (category.display_name !== name) logActivity('asset_category.renamed', projectId, { categoryId });
+      return updated;
     },
 
-    /** Enable or disable a category. Enable validates/creates its directory. */
+    /**
+     * Enable or disable a category. Disable is database-only (the directory
+     * and its content are left untouched); enable validates/creates its
+     * directory.
+     */
     setEnabled(projectId, categoryId, enabled) {
       // Validate every argument before any repository/filesystem lookup.
       assertPositiveIntegerId(projectId, 'projectId');
@@ -426,37 +310,17 @@ export function createProjectAssetCategoryService({
       const project = requireMutableProject(projectId);
       const category = requireCategory(projectId, categoryId);
 
-      const absPath = resolveProjectAbsPath(project);
-      const slug = category.directory_slug;
-
-      const priorManifestExisted = manifestExists(absPath);
-      const categoriesBefore = assetCategoryRepository.listProjectCategories(projectId);
-      let publishedManifestIdentity = null;
-
       if (!enabled) {
-        const runDisable = db.transaction(() => {
-          const updated = assetCategoryRepository.setProjectCategoryEnabled(projectId, categoryId, false);
-          const categories = assetCategoryRepository.listProjectCategories(projectId);
-          writeManifestSync(absPath, project, projectsRoot, categories);
-          if (!priorManifestExisted) {
-            publishedManifestIdentity = capturePublishedManifestIdentity(absPath);
-          }
-          return updated;
-        });
-        try {
-          const updated = runDisable();
-          if (Boolean(category.enabled)) logActivity('asset_category.disabled', projectId, { categoryId, enabled: false });
-          return updated;
-        } catch (err) {
-          restorePriorManifest({
-            absPath, project, categoriesBefore, priorManifestExisted,
-            publishedIdentity: publishedManifestIdentity, projectId, mutationLabel: 'disable',
-          });
-          throw err;
-        }
+        const updated = assetCategoryRepository.setProjectCategoryEnabled(projectId, categoryId, false);
+        if (Boolean(category.enabled)) logActivity('asset_category.disabled', projectId, { categoryId, enabled: false });
+        return updated;
       }
 
       // ── Enable ──
+      // Whether enabling creates a directory is only known by inspecting the
+      // project root, so enable always requires the ownership witness.
+      const absPath = resolveOwnedProjectAbsPath(project);
+      const slug = category.directory_slug;
       const categoryPath = resolveCategoryDir(absPath, slug);
       let existedAlready = false;
       try {
@@ -477,25 +341,11 @@ export function createProjectAssetCategoryService({
         createdDir = createCategoryDirExclusive(absPath, slug);
       }
 
-      const runEnable = db.transaction(() => {
-        const updated = assetCategoryRepository.setProjectCategoryEnabled(projectId, categoryId, true);
-        const categories = assetCategoryRepository.listProjectCategories(projectId);
-        writeManifestSync(absPath, project, projectsRoot, categories);
-        if (!priorManifestExisted) {
-          publishedManifestIdentity = capturePublishedManifestIdentity(absPath);
-        }
-        return updated;
-      });
-
       try {
-        const updated = runEnable();
+        const updated = assetCategoryRepository.setProjectCategoryEnabled(projectId, categoryId, true);
         if (!Boolean(category.enabled)) logActivity('asset_category.enabled', projectId, { categoryId, enabled: true });
         return updated;
       } catch (err) {
-        restorePriorManifest({
-          absPath, project, categoriesBefore, priorManifestExisted,
-          publishedIdentity: publishedManifestIdentity, projectId, mutationLabel: 'enable',
-        });
         if (createdDir) {
           safeRemoveCreatedCategoryDir(absPath, slug, createdDir.identity, projectId);
         }
@@ -523,35 +373,18 @@ export function createProjectAssetCategoryService({
         });
       }
 
-      const project = requireMutableProject(projectId);
+      requireMutableProject(projectId);
 
       const categoriesBefore = assetCategoryRepository.listProjectCategories(projectId);
       assertCompleteReorderSet(orderedIds, categoriesBefore);
 
-      const absPath = resolveProjectAbsPath(project);
-      const priorManifestExisted = manifestExists(absPath);
-      let publishedManifestIdentity = null;
-
-      const runReorder = db.transaction(() => {
-        const reordered = assetCategoryRepository.reorderProjectCategories(projectId, orderedIds);
-        writeManifestSync(absPath, project, projectsRoot, reordered);
-        if (!priorManifestExisted) {
-          publishedManifestIdentity = capturePublishedManifestIdentity(absPath);
-        }
-        return reordered;
-      });
-
       try {
-        const reordered = runReorder();
+        const reordered = assetCategoryRepository.reorderProjectCategories(projectId, orderedIds);
         if (!categoriesBefore.every((category, index) => category.id === orderedIds[index])) {
           logActivity('asset_category.reordered', projectId, { categoryCount: reordered.length });
         }
         return reordered;
       } catch (err) {
-        restorePriorManifest({
-          absPath, project, categoriesBefore, priorManifestExisted,
-          publishedIdentity: publishedManifestIdentity, projectId, mutationLabel: 'reorder',
-        });
         if (isReorderValidationError(err)) {
           throw new AssetCategoryValidationError({
             orderedCategoryIds: 'Category order must contain every current project category exactly once.',
@@ -572,8 +405,8 @@ export function createProjectAssetCategoryService({
      * cannot prove anything: a file can appear between that check and the
      * quarantine rename, travel with the directory into quarantine, and
      * only be discovered once it's too late to matter. The database
-     * deletion and manifest rewrite are gated on the post-quarantine check,
-     * so they never commit ahead of proof that the directory is empty.
+     * deletion is gated on the post-quarantine check, so it never commits
+     * ahead of proof that the directory is empty.
      */
     delete(projectId, categoryId) {
       // Validate every argument before any repository/filesystem lookup.
@@ -592,15 +425,9 @@ export function createProjectAssetCategoryService({
         );
       }
 
-      const absPath = resolveProjectAbsPath(project);
-
-      // Captured before any mutation, so a commit-time database failure —
-      // which can happen even after the manifest below has already been
-      // published from the (about-to-be-rolled-back) in-progress state —
-      // can be compensated for by restoring exactly what was here before.
-      const priorManifestExisted = manifestExists(absPath);
-      const categoriesBefore = assetCategoryRepository.listProjectCategories(projectId);
-      let publishedManifestIdentity = null;
+      // Deletion inspects, quarantines, removes, and on rollback recreates
+      // the category directory: all of it requires the ownership witness.
+      const absPath = resolveOwnedProjectAbsPath(project);
 
       let categoryPath;
       try {
@@ -720,23 +547,11 @@ export function createProjectAssetCategoryService({
           // inside the same transaction as category deletion.
           assetBrowserPreferenceRepository.resetProjectPreferenceIfCategory(projectId, categoryId);
           assetCategoryRepository.deleteProjectCategoryAndCompact(projectId, categoryId);
-          const categories = assetCategoryRepository.listProjectCategories(projectId);
-          writeManifestSync(absPath, project, projectsRoot, categories);
-          if (!priorManifestExisted) {
-            publishedManifestIdentity = capturePublishedManifestIdentity(absPath);
-          }
         });
         runDelete();
       } catch (err) {
-        // A commit-time failure (e.g. a deferred constraint evaluated only
-        // at commit) can happen after the manifest above was already
-        // published from state that never actually committed. Restore the
-        // exact prior manifest first — SQLite has already rolled the row
-        // and its order back on its own.
-        restorePriorManifest({
-          absPath, project, categoriesBefore, priorManifestExisted,
-          publishedIdentity: publishedManifestIdentity, projectId, mutationLabel: 'delete',
-        });
+        // SQLite has already rolled the row and its order back on its own
+        // (including a commit-time failure such as a deferred constraint).
         if (directoryRemovedBeforeCommit) {
           // The transaction rolled back — the category row still exists —
           // but its physical directory was already removed moments ago

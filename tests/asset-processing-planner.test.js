@@ -24,6 +24,7 @@ import { createWatermarkScaleMapService } from '../src/services/watermark-scale-
 import { createProcessingPresetService } from '../src/services/processing-preset-service.js';
 import { createPngChunk, PNG_SIGNATURE } from '../src/services/workflow-prompt-editor.js';
 import { resolveProjectDir } from '../src/storage/project-storage.js';
+import { createProjectDirectoryOwnershipRepository } from '../src/data/project-directory-ownership-repository.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -198,6 +199,7 @@ describe('asset processing planner', () => {
     scopeService = createAssetProcessingScopeService({ projectRepository, assetRepository });
     const renameCapability = Object.freeze({});
     const assetActionService = createAssetActionService({
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
       projectRepository,
       assetRepository,
       assetCategoryRepository: categoryRepository,
@@ -206,6 +208,7 @@ describe('asset processing planner', () => {
       alreadyCoordinatedCapability: renameCapability,
     });
     planner = createAssetProcessingPlanner({
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
       scopeService,
       projectRepository,
       assetRepository,
@@ -417,7 +420,7 @@ describe('asset processing planner', () => {
     expect(recursivePlan.items.some((item) => item.assetId === nested.id)).toBe(true);
     expect(snapshotTree(projectDir)).toEqual(beforeTree);
     expect(snapshotDatabase(db)).toEqual(beforeDatabase);
-    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-'))).toEqual([]);
+    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-') && name !== '.creatorcrate-owner')).toEqual([]);
   });
 
   it('plans Convert same-extension re-encode, move/delete guards, and collisions', async () => {
@@ -537,7 +540,7 @@ describe('asset processing planner', () => {
     });
     expect(snapshotTree(projectDir)).toEqual(beforeTree);
     expect(snapshotDatabase(db)).toEqual(beforeDatabase);
-    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-'))).toEqual([]);
+    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-') && name !== '.creatorcrate-owner')).toEqual([]);
   });
 
   it('accepts all seeded Workflow presets through the planner execution entry point', async () => {
@@ -689,7 +692,7 @@ describe('asset processing planner', () => {
     ]));
     expect(snapshotTree(projectDir)).toEqual(beforeTree);
     expect(snapshotDatabase(db)).toEqual(beforeDatabase);
-    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-'))).toEqual([]);
+    expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-') && name !== '.creatorcrate-owner')).toEqual([]);
   });
 
   it('previews ZIP and CBZ artifacts without writing them and reports resized-only blockers', async () => {
@@ -767,6 +770,7 @@ describe('asset processing planner', () => {
       VALUES ('Historical map', '{"100x60":0.9,"default":0.1}')
     `).run().lastInsertRowid);
     const managedPlanner = createAssetProcessingPlanner({
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
       scopeService, projectRepository, assetRepository, assetCategoryService, projectsRoot,
       watermarkPath, watermarkRoot: tmpDir, scaleMapService,
     });

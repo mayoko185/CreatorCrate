@@ -29,6 +29,8 @@ import { buildAssetRevisionToken } from '../src/services/preview-service.js';
 import {
   formatProjectDirName,
 } from '../src/storage/project-storage.js';
+import { createProjectDirectoryOwnershipRepository } from '../src/data/project-directory-ownership-repository.js';
+import { bindTestProjectOwnership } from './helpers/project-ownership.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -68,6 +70,7 @@ describe('asset scanner', () => {
     // setProjectDir returns the updated record; replace the local project so
     // the returned record carries the stored flat project_dir.
     project = projectRepo.setProjectDir(project.id, relPath);
+    bindTestProjectOwnership(db, project.id, absPath);
 
     return { project, absPath, relPath };
   }
@@ -109,6 +112,7 @@ describe('asset scanner', () => {
     projectOperationCoordinator = createProjectOperationCoordinator();
     primaryImageRepository = createProjectPrimaryImageRepository(db);
     assetScanner = createAssetScanner(db, projectsRoot, {
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
       projectService,
       assetCategoryService,
       projectOperationCoordinator,
@@ -287,6 +291,19 @@ describe('asset scanner', () => {
     expect(result.added).toBe(1);
   });
 
+  it('never indexes the project ownership marker', () => {
+    const { project, absPath } = createProjectWithDir('Owner Marker');
+    // The fixture's real, bound marker is at the root; the scan must verify
+    // it without ever indexing it.
+    expect(fs.existsSync(path.join(absPath, '.creatorcrate-owner'))).toBe(true);
+    fs.writeFileSync(path.join(absPath, 'file.png'), 'png');
+
+    const result = assetScanner.scanProjectAssets(project.id);
+    expect(result.added).toBe(1);
+    expect(assetScanner.repository.findByProjectId(project.id).map((asset) => asset.relative_path))
+      .toEqual(['file.png']);
+  });
+
   it('ignores hidden files and directories', () => {
     const { project, absPath } = createProjectWithDir('Hidden');
     fs.writeFileSync(path.join(absPath, 'visible.png'), 'png');
@@ -459,8 +476,8 @@ describe('asset scanner', () => {
     const absPath = resolveProjectDirForTest(project);
     fs.rmSync(absPath, { recursive: true, force: true });
 
-    expect(() => assetScanner.scanProjectAssets(project.id)).toThrow(
-      'Project directory not found on disk.'
+    expect(() => assetScanner.scanProjectAssets(project.id)).toThrowError(
+      expect.objectContaining({ name: 'ProjectOwnershipError', code: 'PROJECT_DIRECTORY_MISSING' })
     );
   });
 
@@ -501,10 +518,10 @@ describe('asset scanner', () => {
       return;
     }
 
-    // resolveProjectDir throws StorageError which the scanner catches and
-    // re-throws as a generic "cannot be accessed" error (safe, no path leak)
-    expect(() => assetScanner.scanProjectAssets(project.id)).toThrow(
-      'Project directory cannot be accessed.'
+    // The canonical ownership verifier refuses the symlinked root before
+    // traversal (its message carries a basename only, never a full path).
+    expect(() => assetScanner.scanProjectAssets(project.id)).toThrowError(
+      expect.objectContaining({ name: 'ProjectOwnershipError', code: 'PROJECT_DIRECTORY_INVALID' })
     );
   });
 
@@ -1661,6 +1678,7 @@ describe('asset scanner', () => {
         now: () => 1,
       });
       const loggedScanner = createAssetScanner(db, projectsRoot, {
+        projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
         projectService,
         assetCategoryService,
         projectOperationCoordinator,
@@ -1696,6 +1714,7 @@ describe('asset scanner', () => {
 
       const failingLogger = { info: vi.fn(() => { throw new Error('logger failure'); }) };
       const failingLoggerScanner = createAssetScanner(db, projectsRoot, {
+        projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
         projectService,
         assetCategoryService,
         projectOperationCoordinator,

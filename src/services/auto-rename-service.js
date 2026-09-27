@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { resolveContainedAssetPath } from '../storage/asset-file.js';
-import { resolveProjectDir } from '../storage/project-storage.js';
+import { createProjectDirectoryOwnershipVerifier, ProjectOwnershipError } from './project-directory-ownership.js';
 import { ProjectOperationError } from './project-operation-coordinator.js';
 import { validateAssetFilename } from './asset-filename-validation.js';
 import { validateDirectorySlug } from './asset-category-validation.js';
@@ -22,6 +22,7 @@ export const AUTO_RENAME_ERROR_CODES = Object.freeze({
   CATEGORY_EMPTY: 'CATEGORY_EMPTY',
   PROJECT_BUSY: 'PROJECT_BUSY',
   PROJECT_DIRECTORY_UNSAFE: 'PROJECT_DIRECTORY_UNSAFE',
+  PROJECT_OWNERSHIP_UNAVAILABLE: 'PROJECT_OWNERSHIP_UNAVAILABLE',
   DATABASE_ERROR: 'DATABASE_ERROR',
   FILESYSTEM_INSPECTION_FAILED: 'FILESYSTEM_INSPECTION_FAILED',
   FILESYSTEM_OPERATION_FAILED: 'FILESYSTEM_OPERATION_FAILED',
@@ -1036,6 +1037,7 @@ export function createAutoRenameService({
   applicationLogger = null,
   projectImageSettingsService,
   sourceAnimationService,
+  projectDirectoryOwnershipRepository,
   _hooks,
 } = {}) {
   if (!projectRepository || typeof projectRepository.findById !== 'function') {
@@ -1053,6 +1055,13 @@ export function createAutoRenameService({
     throw new Error('createAutoRenameService requires an assetCategoryRepository dependency.');
   }
   if (!projectsRoot) throw new Error('createAutoRenameService requires a projectsRoot dependency.');
+  if (!projectDirectoryOwnershipRepository) {
+    throw new Error('createAutoRenameService requires a projectDirectoryOwnershipRepository dependency.');
+  }
+  const ownershipVerifier = createProjectDirectoryOwnershipVerifier({
+    ownershipRepository: projectDirectoryOwnershipRepository,
+    projectsRoot,
+  });
   if (!projectOperationCoordinator || typeof projectOperationCoordinator.run !== 'function') {
     throw new Error('createAutoRenameService requires a projectOperationCoordinator dependency.');
   }
@@ -1105,7 +1114,14 @@ export function createAutoRenameService({
     return project;
   }
 
-  function resolveProjectPath(project) {
+  /**
+   * Resolve the project root through the canonical ownership verifier.
+   * `ownership` is the current Preview's or Apply's operation handle, so
+   * Apply verifies once and reuses that across its plan rebuild,
+   * revalidation, and temporary/final rename phases. A previous Preview, a
+   * plan token, or a held coordinator lock is never ownership proof.
+   */
+  function resolveProjectPath(project, ownership) {
     if (!project.project_dir) {
       throw new AutoRenameError(
         'Project directory cannot be accessed.',
@@ -1113,8 +1129,18 @@ export function createAutoRenameService({
       );
     }
     try {
-      return resolveProjectDir(projectsRoot, project.project_dir);
+      return ownership.verifyProject(project).absPath;
     } catch (err) {
+      if (err instanceof ProjectOwnershipError) {
+        throw new AutoRenameError(
+          err.message,
+          {
+            code: AUTO_RENAME_ERROR_CODES.PROJECT_OWNERSHIP_UNAVAILABLE,
+            cause: err,
+            details: { ownershipCode: err.code },
+          }
+        );
+      }
       throw new AutoRenameError(
         'Project directory cannot be accessed.',
         { code: AUTO_RENAME_ERROR_CODES.PROJECT_DIRECTORY_UNSAFE, cause: err }
@@ -1156,13 +1182,13 @@ export function createAutoRenameService({
     }
   }
 
-  function buildPlanUnlocked(projectId, categoryId, orderedAssetIds, selectedAssetIds) {
+  function buildPlanUnlocked(projectId, categoryId, orderedAssetIds, selectedAssetIds, ownership) {
     const project = requireMutableProject(projectId);
     const category = requireCategoryRecord(projectId, categoryId);
     const { allProjectRows, browserRows } = loadRows(projectId, categoryId);
     if (browserRows.length === 0) throw categoryEmptyError();
 
-    const projectDir = resolveProjectPath(project);
+    const projectDir = resolveProjectPath(project, ownership);
     const browserRowsById = new Map(browserRows.map((row) => [row.id, row]));
     const membershipAssetIds = browserRows.map((row) => row.id);
     const normalizedOrder = assertExactCategoryPermutation(orderedAssetIds, membershipAssetIds);
@@ -1175,7 +1201,7 @@ export function createAutoRenameService({
     const orderedRows = normalizedOrder.map((assetId) => {
       const row = browserRowsById.get(assetId);
       if (!previewPng) return row;
-      const resolved = sourceAnimationService?.ensureKnown(row);
+      const resolved = sourceAnimationService?.ensureKnown(row, { ownership });
       return resolved ? { ...row, source_animated: resolved.source_animated } : row;
     });
     const namingRows = selectedAssetIdSet
@@ -1358,7 +1384,9 @@ export function createAutoRenameService({
     if (!Number.isSafeInteger(categoryId) || categoryId <= 0) throw categoryInvalidError();
     return runBuild(
       projectId,
-      () => buildPlanUnlocked(projectId, categoryId, orderedAssetIds, selectedAssetIds),
+      () => buildPlanUnlocked(
+        projectId, categoryId, orderedAssetIds, selectedAssetIds, ownershipVerifier.beginOperation(),
+      ),
     );
   }
 
@@ -1579,7 +1607,7 @@ export function createAutoRenameService({
     return directories;
   }
 
-  function revalidateExecutionPlan(projectId, plan) {
+  function revalidateExecutionPlan(projectId, plan, ownership) {
     let project;
     try {
       project = requireMutableProject(projectId);
@@ -1594,7 +1622,7 @@ export function createAutoRenameService({
       throw stalePlanError();
     }
 
-    const projectDir = resolveProjectPath(project);
+    const projectDir = resolveProjectPath(project, ownership);
     let allProjectRows;
     let browserRows;
     let category;
@@ -1968,6 +1996,9 @@ export function createAutoRenameService({
   }
 
   function applyPlanLocked(projectId, orderedAssetIds, authorizedSnapshot, { categoryId } = {}) {
+    // Apply's own ownership operation: verified here, independently of the
+    // Preview that issued the token, and reused through every phase below.
+    const ownership = ownershipVerifier.beginOperation();
     let plan;
     try {
       plan = buildPlanUnlocked(
@@ -1975,6 +2006,7 @@ export function createAutoRenameService({
         categoryId,
         orderedAssetIds,
         authorizedSnapshot.selectedAssetIds,
+        ownership,
       );
     } catch (err) {
       if (
@@ -2011,7 +2043,7 @@ export function createAutoRenameService({
       );
     }
 
-    const validated = revalidateExecutionPlan(projectId, plan);
+    const validated = revalidateExecutionPlan(projectId, plan, ownership);
     const execution = buildExecutionUnits(
       validated.projectDir,
       validated.allProjectRows,

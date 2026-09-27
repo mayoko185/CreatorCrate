@@ -159,44 +159,35 @@ describe('project creation integration', () => {
       expect(fs.existsSync(path.join(absPath, 'exports', 'full'))).toBe(false);
       expect(fs.existsSync(path.join(absPath, 'exports', 'web'))).toBe(false);
 
-      const topLevel = fs.readdirSync(absPath).filter((e) => e !== MANIFEST_FILENAME);
-      expect(topLevel.sort()).toEqual([...expected].sort());
+      // Exactly the category directories plus the ownership marker: no
+      // project.json sidecar.
+      const topLevel = fs.readdirSync(absPath);
+      expect(topLevel.sort()).toEqual(['.creatorcrate-owner', ...expected].sort());
     });
 
-    it('writes a schema-version-3 manifest without status', () => {
+    it('does not create a project.json manifest; SQLite holds the project metadata', () => {
       const project = service.create(validInput({
-        title: 'Manifest Data',
-        description: 'Desc for manifest',
-        notes: 'Notes for manifest',
+        title: 'Manifest Free',
+        description: 'Desc in SQLite',
+        notes: 'Notes in SQLite',
         status: 'planned',
-        plannedDate: '2026-09-15',
         patreonUrl: 'https://patreon.com/artist',
       }));
 
       const absPath = projectDirPath(project, projectsRoot);
-      const content = fs.readFileSync(path.join(absPath, MANIFEST_FILENAME), 'utf8');
-      const manifest = JSON.parse(content);
+      expect(fs.existsSync(path.join(absPath, MANIFEST_FILENAME))).toBe(false);
+      expect(fs.readdirSync(absPath).some((e) => e.includes('project.json'))).toBe(false);
 
-      expect(manifest.schemaVersion).toBe(3);
-      expect(manifest.id).toBe(project.id);
-      expect(manifest.title).toBe('Manifest Data');
-      expect(manifest.slug).toBe('manifest-data');
-      expect(manifest).not.toHaveProperty('status');
-      expect(content).not.toMatch(/"status"\s*:/);
-      expect(manifest).not.toHaveProperty('priority');
-      expect(content).not.toMatch(/"priority"\s*:/);
-      expect(manifest.description).toBe('Desc for manifest');
-      expect(manifest.notes).toBe('Notes for manifest');
-      expect(manifest).not.toHaveProperty('plannedDate');
-      expect(manifest).not.toHaveProperty('publishedDate');
-      expect(content).not.toMatch(/"(?:plannedDate|publishedDate)"\s*:/);
-      expect(manifest.patreonUrl).toBe('https://patreon.com/artist');
-      expect(manifest.createdAt).toBeTruthy();
-      expect(manifest.updatedAt).toBeTruthy();
-      expect(manifest.assetCategories.map((c) => c.directorySlug)).toEqual([
-        'final', 'wip', 'krz', 'wm', 'wm-lq',
-      ]);
-      expect(manifest.assetCategories.every((c) => c.enabled === true)).toBe(true);
+      const stored = service.findById(project.id);
+      expect(stored).toMatchObject({
+        title: 'Manifest Free',
+        slug: 'manifest-free',
+        description: 'Desc in SQLite',
+        notes: 'Notes in SQLite',
+        status: 'planned',
+        patreon_url: 'https://patreon.com/artist',
+        project_dir: formatProjectDirName(project.id, 'manifest-free'),
+      });
     });
 
     it('stores the flat relative path and returns the updated project', () => {
@@ -252,34 +243,6 @@ describe('project creation integration', () => {
       expect(service.repository.findBySlug('mkdir-fail')).toBeUndefined();
     });
 
-    it('removes directory and database record when manifest write fails', () => {
-      // writeManifestSync's atomic temp-file → project.json step uses
-      // fs.renameSync — inject failure only for that specific rename.
-      // Cleanup's own quarantine-and-verify sequence also uses
-      // fs.renameSync (to move tracked artifacts aside before removing
-      // them), so a blanket failure here would break compensation itself
-      // rather than exercising it.
-      const originalRenameSync = fs.renameSync;
-      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation((src, dest) => {
-        if (path.basename(dest) === 'project.json') {
-          throw new Error('rename failed');
-        }
-        return originalRenameSync(src, dest);
-      });
-
-      expect(() => service.create(validInput({ title: 'Manifest Fail' }))).toThrow(
-        'Project creation failed'
-      );
-      renameSpy.mockRestore();
-
-      // No database record
-      expect(service.repository.findBySlug('manifest-fail')).toBeUndefined();
-
-      // No flat project directory remains at the root
-      const entries = fs.readdirSync(projectsRoot);
-      expect(entries.filter((e) => e.endsWith('-manifest-fail'))).toHaveLength(0);
-    });
-
     it('removes directory and database record when setProjectDir fails', () => {
       const setDirSpy = vi.spyOn(service.repository, 'setProjectDir').mockImplementation(() => {
         throw new Error('DB update failed');
@@ -300,15 +263,18 @@ describe('project creation integration', () => {
       // Create a legitimate project first
       const legit = service.create(validInput({ title: 'Keep Me Safe' }));
 
-      // Now create another that fails
-      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
-        throw new Error('rename failed');
+      // Now create another that fails after its directory tree exists
+      const setDirSpy = vi.spyOn(service.repository, 'setProjectDir').mockImplementation(() => {
+        throw new Error('DB update failed');
       });
 
       expect(() => service.create(validInput({ title: 'Fail Project' }))).toThrow(
         'Project creation failed'
       );
-      renameSpy.mockRestore();
+      setDirSpy.mockRestore();
+
+      const entries = fs.readdirSync(projectsRoot);
+      expect(entries.filter((e) => e.endsWith('-fail-project'))).toHaveLength(0);
 
       // Legitimate project still exists
       const found = service.findById(legit.id);
@@ -333,23 +299,20 @@ describe('project creation integration', () => {
       const foreignFileName = 'important-foreign-file.txt';
       const foreignFileContent = 'do not delete me';
 
-      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation((src, dest) => {
-        // writeManifestSync's final step: renameSync(tempPath, manifestPath).
-        // Intercept exactly that call, once.
-        if (path.basename(dest) === 'project.json' && !capturedAbsPath) {
-          capturedAbsPath = path.dirname(dest);
-          movedAsidePath = `${capturedAbsPath}-moved-aside`;
+      // The last creation phase (persisting project_dir) fails after the
+      // directory tree exists; "another process" swaps the root first.
+      const setDirSpy = vi.spyOn(service.repository, 'setProjectDir').mockImplementation((_id, relPath) => {
+        capturedAbsPath = resolveProjectDir(projectsRoot, relPath);
+        movedAsidePath = `${capturedAbsPath}-moved-aside`;
 
-          renameSpy.mockRestore();
-          fs.renameSync(capturedAbsPath, movedAsidePath); // "another process" moves it away
+        fs.renameSync(capturedAbsPath, movedAsidePath); // "another process" moves it away
 
-          // A different, non-empty, non-symlink directory now occupies the
-          // exact original expected path — same basename, same containment.
-          fs.mkdirSync(capturedAbsPath, { recursive: true });
-          fs.writeFileSync(path.join(capturedAbsPath, foreignFileName), foreignFileContent);
+        // A different, non-empty, non-symlink directory now occupies the
+        // exact original expected path — same basename, same containment.
+        fs.mkdirSync(capturedAbsPath, { recursive: true });
+        fs.writeFileSync(path.join(capturedAbsPath, foreignFileName), foreignFileContent);
 
-          throw new Error('injected manifest write failure');
-        }
+        throw new Error('injected late creation failure');
       });
 
       try {
@@ -357,7 +320,7 @@ describe('project creation integration', () => {
           'Project creation failed. Please try again.'
         );
       } finally {
-        renameSpy.mockRestore();
+        setDirSpy.mockRestore();
       }
 
       // Database rows (project + copied categories) rolled back.

@@ -2,9 +2,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 export class StorageError extends Error {
-  constructor(message) {
-    super(message);
+  /**
+   * @param {string} message
+   * @param {{ code?: string, cause?: unknown }} [options] - `code` lets a
+   *   caller tell a proven unsafe path from "could not look"; `cause` keeps
+   *   the original filesystem error.
+   */
+  constructor(message, { code, cause } = {}) {
+    super(message, cause === undefined ? undefined : { cause });
     this.name = 'StorageError';
+    if (code) this.code = code;
   }
 }
 

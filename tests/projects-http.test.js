@@ -6,7 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
-import { MANIFEST_FILENAME, readManifestSync } from '../src/storage/manifest.js';
+import { MANIFEST_FILENAME } from '../src/storage/manifest.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
 import { buildAssetRevisionToken } from '../src/services/preview-service.js';
@@ -3091,7 +3091,7 @@ describe('project HTTP workflow', () => {
   // ─── Filesystem creation flow ────────────────────────────────────────
 
   describe('HTTP filesystem creation', () => {
-    it('creates a persisted Project root and manifest through POST /projects', async () => {
+    it('creates a persisted Project root without any manifest through POST /projects', async () => {
       const res = await agent
         .post('/projects')
         .send('title=HTTP+FS+Test')
@@ -3114,18 +3114,16 @@ describe('project HTTP workflow', () => {
       const projectDir = resolveProjectDir(projectsRoot, project.project_dir);
       expect(fs.existsSync(projectDir)).toBe(true);
       expect(fs.statSync(projectDir).isDirectory()).toBe(true);
-      const manifest = readManifestSync(projectDir);
-      expect(manifest).toMatchObject({ id: project.id, title: project.title });
+      expect(fs.existsSync(path.join(projectDir, MANIFEST_FILENAME))).toBe(false);
     });
 
-    it('maps a manifest-stage failure safely and leaves no durable Project state', async () => {
-      const originalRenameSync = fs.renameSync;
-      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation((source, destination) => {
-        if (path.basename(destination) === MANIFEST_FILENAME) {
+    it('maps a late creation failure safely and leaves no durable Project state', async () => {
+      // Fail the final creation phase, after the Project root and its
+      // category directories already exist on disk.
+      const setDirSpy = vi.spyOn(app.locals.projectService.repository, 'setProjectDir')
+        .mockImplementation(() => {
           throw new Error(`private filesystem detail: ${projectsRoot}`);
-        }
-        return originalRenameSync(source, destination);
-      });
+        });
 
       let res;
       try {
@@ -3138,7 +3136,7 @@ describe('project HTTP workflow', () => {
           .send('_csrf=' + encodeURIComponent(csrfToken))
           .expect(500);
       } finally {
-        renameSpy.mockRestore();
+        setDirSpy.mockRestore();
       }
 
       expect(res.headers.location).toBeUndefined();
@@ -3156,7 +3154,7 @@ describe('project HTTP workflow', () => {
   // ─── Filesystem update flow ────────────────────────────────────────
 
   describe('HTTP filesystem update', () => {
-    it('moves the Project root and refreshes its manifest through POST /projects/:id', async () => {
+    it('moves the Project root without writing a manifest through POST /projects/:id', async () => {
       const createRes = await agent
         .post('/projects')
         .send('title=Old+HTTP+Filesystem+Project')
@@ -3194,14 +3192,10 @@ describe('project HTTP workflow', () => {
       expect(fs.existsSync(oldDir)).toBe(false);
       expect(fs.existsSync(newDir)).toBe(true);
       expect(fs.readFileSync(path.join(newDir, 'route-marker.txt'), 'utf8')).toBe('survived');
-      expect(readManifestSync(newDir)).toMatchObject({
-        id,
-        title: after.title,
-        description: after.description,
-      });
+      expect(fs.existsSync(path.join(newDir, MANIFEST_FILENAME))).toBe(false);
     });
 
-    it('compensates a manifest-stage failure and renders a safe update error', async () => {
+    it('compensates a failure after the directory move and renders a safe update error', async () => {
       const originalTag = app.locals.tagService.createTag({ name: 'HTTP rollback original tag' });
       const replacementTag = app.locals.tagService.createTag({ name: 'HTTP rollback replacement tag' });
       const createRes = await agent
@@ -3224,13 +3218,13 @@ describe('project HTTP workflow', () => {
       const marker = path.join(originalDir, 'rollback-marker.txt');
       fs.writeFileSync(marker, 'original content');
 
-      const originalRenameSync = fs.renameSync;
-      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation((source, destination) => {
-        if (path.basename(destination) === MANIFEST_FILENAME) {
+      // The stored-path update fails after the Project root has moved.
+      let movedBeforeFailure = false;
+      const setDirSpy = vi.spyOn(app.locals.projectService.repository, 'setProjectDir')
+        .mockImplementation(() => {
+          movedBeforeFailure = fs.existsSync(attemptedDir) && !fs.existsSync(originalDir);
           throw new Error(`private filesystem detail: ${projectsRoot}`);
-        }
-        return originalRenameSync(source, destination);
-      });
+        });
 
       let res;
       try {
@@ -3245,7 +3239,7 @@ describe('project HTTP workflow', () => {
           .send('_csrf=' + encodeURIComponent(csrfToken))
           .expect(500);
       } finally {
-        renameSpy.mockRestore();
+        setDirSpy.mockRestore();
       }
 
       expect(res.headers.location).toBeUndefined();
@@ -3256,6 +3250,7 @@ describe('project HTTP workflow', () => {
         .toEqual(before);
       expect(db.prepare('SELECT tag_id FROM project_tags WHERE project_id = ? ORDER BY tag_id').all(id))
         .toEqual([{ tag_id: originalTag.id }]);
+      expect(movedBeforeFailure).toBe(true);
       expect(fs.existsSync(originalDir)).toBe(true);
       expect(fs.readFileSync(marker, 'utf8')).toBe('original content');
       expect(fs.existsSync(attemptedDir)).toBe(false);
@@ -3320,7 +3315,7 @@ describe('project HTTP workflow', () => {
       const quarantine = fs.readdirSync(projectsRoot)
         .filter((entry) => entry.startsWith('.cc-quarantine-'));
       expect(quarantine).toHaveLength(1);
-      expect(fs.existsSync(path.join(projectsRoot, quarantine[0], 'project.json'))).toBe(true);
+      expect(fs.readdirSync(path.join(projectsRoot, quarantine[0]))).toContain('final');
     });
   });
 

@@ -104,12 +104,16 @@ export function projectImageRebuildScope(previous, target, asset) {
 
 export function projectImagePresentationPolicy(policy, sourceAnimationService) {
   const resolvedUnknown = new Map();
+  // One policy object serves one presentation operation (a listing, a
+  // rebuild pass), so source reconciliation verifies each project once here.
+  let ownership;
   const resolveAsset = (asset) => {
     if (policy.preview.format !== 'png' || !sourceAnimationService || !asset?.is_present
       || asset.source_animated != null) return asset;
     const key = `${asset.project_id}:${asset.id}:${asset.relative_path}:${asset.size_bytes}:${asset.modified_at}:${asset.source_generation ?? 0}`;
     if (!resolvedUnknown.has(key)) {
-      resolvedUnknown.set(key, sourceAnimationService.ensureKnown(asset) ?? asset);
+      ownership ??= sourceAnimationService.beginOperation?.();
+      resolvedUnknown.set(key, sourceAnimationService.ensureKnown(asset, { ownership }) ?? asset);
     }
     return resolvedUnknown.get(key);
   };

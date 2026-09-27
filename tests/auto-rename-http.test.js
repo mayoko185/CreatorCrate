@@ -561,6 +561,26 @@ describe('category-scoped Auto Rename HTTP integration', () => {
 
   });
 
+  it('reports ownership failures distinctly for Preview and Apply without renaming anything', async () => {
+    const { id, projectDir } = await createProject('Ownership Conflict');
+    const category = categories(id)[0];
+    const asset = writeAsset(id, projectDir, 'source.png', 'source', { categoryId: category.id });
+    const preview = await previewRequest(id, category.id, [asset.id]).expect(200);
+    const token = tokenFromConfirmation(preview.text);
+    // Another project's marker now sits at this project's root.
+    fs.writeFileSync(path.join(projectDir, '.creatorcrate-owner'), `creatorcrate-owner/1 ${'c'.repeat(64)}\n`);
+
+    const refusedPreview = await previewRequest(id, category.id, [asset.id]).expect(409);
+    expect(refusedPreview.text).toContain('could not verify that the project folder belongs to this project');
+    const refusedApply = await applyRequest(id, {
+      _csrf: csrfToken, planToken: token, categoryId: String(category.id),
+    }).expect(409);
+    expect(refusedApply.text).toContain('could not verify that the project folder belongs to this project. No files were renamed.');
+    expect(refusedApply.text).not.toContain('PROJECT_OWNERSHIP');
+    expect(fs.existsSync(path.join(projectDir, 'source.png'))).toBe(true);
+    expect(assetRepository.findById(asset.id).relative_path).toBe('source.png');
+  });
+
   it('keeps render-model media/path safety independent of filesystem reads', () => {
     const plan = {
       projectId: 42,

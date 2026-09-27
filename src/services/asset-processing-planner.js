@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import sharp from 'sharp';
 import { resolveContainedAssetPath } from '../storage/asset-file.js';
-import { resolveProjectDir } from '../storage/project-storage.js';
+import { createProjectDirectoryOwnershipVerifier } from './project-directory-ownership.js';
 import { deriveExtensionFromFilename } from './asset-metadata.js';
 import { classifyAssetPath } from './asset-path-classification.js';
 import { isProjectArchived } from './project-state.js';
@@ -283,7 +283,11 @@ function hashRegularFile(absolutePath, code = 'OUTPUT_PATH_UNSAFE', label = 'Out
   }
 }
 
-function resolveProjectContext(projectRepository, projectId, projectsRoot) {
+// Every plan inspects project files, so planning verifies ownership once at
+// its boundary: early, correct ownership errors, and never a plan built from
+// a substituted root. The handle is returned for reuse by this plan's own
+// inspections only; it is not execution authority — Apply verifies again.
+function resolveProjectContext(projectRepository, projectId, ownershipVerifier) {
   const project = projectRepository.findById(projectId);
   if (!project) throw plannerError(`Project ${projectId} not found.`, 'PROJECT_NOT_FOUND');
   if (isProjectArchived(project)) {
@@ -291,15 +295,9 @@ function resolveProjectContext(projectRepository, projectId, projectsRoot) {
   }
   if (!project.project_dir) throw plannerError('Project has no stored directory path.', 'PROJECT_DIRECTORY_UNSAFE');
 
-  let projectDir;
-  try {
-    projectDir = resolveProjectDir(projectsRoot, project.project_dir);
-    const stats = fs.lstatSync(projectDir);
-    if (stats.isSymbolicLink() || !stats.isDirectory()) throw new Error('Project directory is unsafe.');
-  } catch (err) {
-    throw plannerError('Project directory cannot be accessed.', 'PROJECT_DIRECTORY_UNSAFE', err);
-  }
-  return { project, projectDir };
+  const ownership = ownershipVerifier.beginOperation();
+  const projectDir = ownership.verifyProject(project).absPath;
+  return { project, projectDir, ownership };
 }
 
 function resolveTrustedWatermarkPath(watermarkPath, watermarkRoot) {
@@ -448,6 +446,7 @@ export function createAssetProcessingPlanner({
   scaleMapService,
   watermarkScaleMap,
   renamePlanner,
+  projectDirectoryOwnershipRepository,
 } = {}) {
   const resolvedScopeService = scopeService || assetProcessingScopeService;
   const resolvedProjectRepository = projectRepository || projectService?.repository;
@@ -466,13 +465,20 @@ export function createAssetProcessingPlanner({
     throw new Error('createAssetProcessingPlanner requires an asset category service.');
   }
   if (!projectsRoot) throw new Error('createAssetProcessingPlanner requires a projectsRoot dependency.');
+  if (!projectDirectoryOwnershipRepository) {
+    throw new Error('createAssetProcessingPlanner requires a projectDirectoryOwnershipRepository dependency.');
+  }
+  const ownershipVerifier = createProjectDirectoryOwnershipVerifier({
+    ownershipRepository: projectDirectoryOwnershipRepository,
+    projectsRoot,
+  });
   if (typeof sharpImplementation !== 'function') {
     throw new Error('createAssetProcessingPlanner requires a Sharp implementation.');
   }
 
   function resolveScope(projectId, scope) {
     const resolved = resolvedScopeService.resolveAssetProcessingScope(projectId, scope);
-    const context = resolveProjectContext(resolvedProjectRepository, projectId, projectsRoot);
+    const context = resolveProjectContext(resolvedProjectRepository, projectId, ownershipVerifier);
     return { ...resolved, ...context };
   }
 
@@ -526,7 +532,7 @@ export function createAssetProcessingPlanner({
         operationEligibility: 'supported',
       };
       try {
-        const inspected = renamePlanner.inspectRenameAssetBasename(projectId, asset.id, basename);
+        const inspected = renamePlanner.inspectRenameAssetBasename(projectId, asset.id, basename, resolved.ownership);
         const ready = {
           ...item,
           status: 'ready',

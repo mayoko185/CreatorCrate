@@ -1,6 +1,18 @@
+/**
+ * Legacy `project.json` manifest support.
+ *
+ * SQLite is the sole runtime authority for project and category metadata.
+ * CreatorCrate no longer creates, requires, reads, or rewrites project.json
+ * during normal operation. What remains here is the legacy format's
+ * definition — parsing, validation, and deterministic serialization — kept
+ * for the legacy manifest cleanup lifecycle (PM-2), which removes only
+ * manifests proven redundant (see `describeLegacyManifestDivergence`).
+ * Nothing in this module is called on a normal request path. The other
+ * runtime reader, `readLegacyManifestEvidence`, serves only one-time project
+ * ownership adoption (PM-1C1) and reports nothing but the manifest's ID.
+ */
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import { StorageError } from './path-manager.js';
 
 export const MANIFEST_FILENAME = 'project.json';
@@ -124,8 +136,8 @@ function validateAssetCategoriesArray(categories) {
 }
 
 /**
- * The single authoritative manifest validator. Every direct manifest-read
- * acceptance path (deserialization, ownership checks, update preflight)
+ * The single authoritative legacy-manifest validator. Every direct
+ * manifest-read acceptance path (deserialization, legacy manifest cleanup)
  * must call this instead of inspecting manifest fields ad hoc.
  *
  * Validates schema version, required project identity fields (id, slug),
@@ -187,23 +199,6 @@ function formatDate(value) {
     return str.replace(' ', 'T') + '.000Z';
   }
   return str;
-}
-
-/**
- * Generate a hex string for temporary file naming.
- * @returns {string}
- */
-function randomHex() {
-  return crypto.randomBytes(6).toString('hex');
-}
-
-/**
- * Build a temporary filename that does not look like a valid manifest.
- * Format: .{hex}.project.json.tmp
- * @returns {string}
- */
-function tempFilename() {
-  return `.${randomHex()}.project.json.tmp`;
 }
 
 /**
@@ -326,105 +321,6 @@ export function formatManifestJson(manifest) {
   return JSON.stringify(manifest, null, 2) + '\n';
 }
 
-// ─── Atomic write ────────────────────────────────────────────────────────
-
-/**
- * Atomically write a manifest file for a project.
- *
- * Strategy:
- * 1. Serialize the project (and its current categories) to a manifest object.
- * 2. Write to a temporary file in the same project directory.
- * 3. Flush (fsync) and close the temporary file.
- * 4. Rename the temporary file to project.json (atomic on same filesystem).
- * 5. If any step fails, clean up the temporary file.
- *
- * @param {string} projectDir - Resolved absolute path to the project directory
- * @param {object} project - ProjectRecord from the repository
- * @param {string} projectsRoot - Absolute path to PROJECTS_ROOT (for safe error messages)
- * @param {Array<object>} [categories] - Project-owned asset-category rows,
- *   in deterministic project-category order
- * @throws {StorageError} if the directory is invalid or writing fails
- */
-export function writeManifestSync(projectDir, project, projectsRoot, categories = []) {
-  // ── Pre-check: verify projectDir is a real, non-symlink directory ──
-  let stats;
-  try {
-    stats = fs.lstatSync(projectDir);
-  } catch (err) {
-    if (err.code === 'ENOENT') {
-      throw new StorageError(
-        `Cannot write manifest: "${path.basename(projectDir)}" does not exist.`
-      );
-    }
-    throw new StorageError(
-      `Cannot access "${path.basename(projectDir)}".`
-    );
-  }
-
-  if (!stats.isDirectory()) {
-    throw new StorageError(
-      `Cannot write manifest: "${path.basename(projectDir)}" is not a directory.`
-    );
-  }
-
-  if (stats.isSymbolicLink()) {
-    throw new StorageError(
-      `Cannot write manifest: "${path.basename(projectDir)}" is a symbolic link.`
-    );
-  }
-
-  // ── Serialize ──
-  const manifest = serializeManifest(project, categories);
-  const content = formatManifestJson(manifest);
-  const manifestPath = path.join(projectDir, MANIFEST_FILENAME);
-  const tempName = tempFilename();
-  const tempPath = path.join(projectDir, tempName);
-
-  // ── Safe relative path for error messages ──
-  const safeRelPath = buildSafeRelPath(projectsRoot, projectDir);
-
-  // ── Atomic write: temp → fsync → rename ──
-  let fd;
-  try {
-    fd = fs.openSync(tempPath, 'w');
-    fs.writeSync(fd, content, 0, 'utf8');
-    fs.fsyncSync(fd);
-    fs.closeSync(fd);
-    fd = null;
-
-    fs.renameSync(tempPath, manifestPath);
-  } catch (err) {
-    // Clean up temp file if it exists
-    if (fd !== null) {
-      try { fs.closeSync(fd); } catch { /* ignore */ }
-    }
-    try { fs.rmSync(tempPath, { force: true }); } catch { /* ignore */ }
-
-    if (err instanceof StorageError) throw err;
-    throw new StorageError(
-      `Failed to write manifest for project ${project.id} (${safeRelPath}).`
-    );
-  }
-}
-
-/**
- * Build a safe relative path for error messages, falling back
- * to the directory basename if the path escapes projectsRoot.
- *
- * @param {string} projectsRoot
- * @param {string} projectDir
- * @returns {string}
- */
-function buildSafeRelPath(projectsRoot, projectDir) {
-  try {
-    const rel = path.relative(projectsRoot, projectDir);
-    if (!rel.startsWith('..') && !path.isAbsolute(rel)) {
-      return rel;
-    }
-  } catch { /* fall through */ }
-  return path.basename(projectDir);
-}
-
 // ─── Read / Remove ──────────────────────────────────────────────────────
 
 /**
@@ -473,6 +369,188 @@ export function removeManifestSync(projectDir) {
       `Failed to remove manifest from "${path.basename(projectDir)}".`
     );
   }
+}
+
+// ─── One-time upgrade evidence (PM-1C1) ─────────────────────────────────
+
+/** Larger manifests are rejected as malformed without being read. */
+export const LEGACY_MANIFEST_EVIDENCE_MAX_BYTES = 1024 * 1024;
+
+const O_NOFOLLOW = fs.constants.O_NOFOLLOW ?? 0;
+
+/**
+ * Inspect a legacy `project.json` solely as upgrade evidence of which project
+ * a directory was historically associated with. Used only by project
+ * ownership adoption; nothing here is imported into SQLite, and the file is
+ * never written, renamed, or removed.
+ *
+ * Result classes:
+ * - `{ status: 'valid', projectId }` — a regular non-symlink file that parses
+ *   and passes {@link validateManifest}; only its ID is reported, because
+ *   every other (possibly stale) field is irrelevant to ownership.
+ * - `{ status: 'missing' }` — no manifest entry exists.
+ * - `{ status: 'unsafe' }` — a symlink, directory, or other non-regular
+ *   entry, or an entry that changed while being read.
+ * - `{ status: 'unsupported' }` — valid JSON object with an unsupported
+ *   `schemaVersion`.
+ * - `{ status: 'malformed' }` — oversized, unparsable, or failing validation.
+ * - `{ status: 'unreadable', code }` — an I/O or permission failure (for
+ *   example an unavailable share). Uncertainty, never evidence.
+ *
+ * Never throws for filesystem conditions.
+ *
+ * @param {string} projectDir - Absolute, already safety-checked project directory
+ */
+export function readLegacyManifestEvidence(projectDir) {
+  const manifestPath = path.join(projectDir, MANIFEST_FILENAME);
+  let before;
+  try {
+    before = fs.lstatSync(manifestPath, { bigint: true });
+  } catch (err) {
+    if (err.code === 'ENOENT') return { status: 'missing' };
+    return { status: 'unreadable', code: err.code ?? null };
+  }
+  if (before.isSymbolicLink() || !before.isFile()) return { status: 'unsafe' };
+  if (before.size > BigInt(LEGACY_MANIFEST_EVIDENCE_MAX_BYTES)) return { status: 'malformed' };
+
+  let content;
+  let fd;
+  try {
+    try {
+      fd = fs.openSync(manifestPath, fs.constants.O_RDONLY | O_NOFOLLOW);
+    } catch (err) {
+      if (err.code === 'ENOENT') return { status: 'missing' };
+      if (err.code === 'ELOOP') return { status: 'unsafe' };
+      return { status: 'unreadable', code: err.code ?? null };
+    }
+    const opened = fs.fstatSync(fd, { bigint: true });
+    if (!opened.isFile() || opened.dev !== before.dev || opened.ino !== before.ino) {
+      return { status: 'unsafe' };
+    }
+    const buffer = Buffer.alloc(LEGACY_MANIFEST_EVIDENCE_MAX_BYTES + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const read = fs.readSync(fd, buffer, length, buffer.length - length, length);
+      if (read === 0) break;
+      length += read;
+    }
+    if (length > LEGACY_MANIFEST_EVIDENCE_MAX_BYTES) return { status: 'malformed' };
+    content = buffer.subarray(0, length).toString('utf8');
+  } catch (err) {
+    return { status: 'unreadable', code: err.code ?? null };
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* read already complete or failed */ }
+    }
+  }
+
+  const parsed = parseLegacyManifestContent(content);
+  return parsed.status === 'valid' ? { status: 'valid', projectId: parsed.manifest.id } : parsed;
+}
+
+/**
+ * Parse and validate legacy manifest text with the established legacy rules.
+ *
+ * @param {string} content
+ * @returns {{ status: 'valid', manifest: object } | { status: 'unsupported' } | { status: 'malformed' }}
+ */
+export function parseLegacyManifestContent(content) {
+  let manifest;
+  try {
+    manifest = JSON.parse(content);
+  } catch {
+    return { status: 'malformed' };
+  }
+  if (manifest && typeof manifest === 'object' && !Array.isArray(manifest)
+    && manifest.schemaVersion !== MANIFEST_SCHEMA_VERSION) {
+    return { status: 'unsupported' };
+  }
+  try {
+    validateManifest(manifest);
+  } catch {
+    return { status: 'malformed' };
+  }
+  return { status: 'valid', manifest };
+}
+
+// ─── Redundancy comparison (PM-2) ───────────────────────────────────────
+
+const ISO_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+/**
+ * Whether `value` is a real instant in exactly the legacy serializer's
+ * `YYYY-MM-DDTHH:mm:ss.SSSZ` form. The shape alone is not enough: an
+ * impossible month/day/time (`2025-99-99T99:99:99.000Z`, `2025-02-30…`)
+ * would still sort as "older". It must parse and serialize back to the
+ * identical string, so nothing JavaScript normalizes to another date passes.
+ * @returns {boolean}
+ */
+function isCanonicalLegacyTimestamp(value) {
+  if (typeof value !== 'string' || !ISO_TIMESTAMP_RE.test(value)) return false;
+  const time = Date.parse(value);
+  return Number.isFinite(time) && new Date(time).toISOString() === value;
+}
+
+/**
+ * Decide whether a validated legacy manifest is exactly the snapshot the
+ * legacy serializer ({@link serializeManifest}) would produce for the current
+ * SQLite project row and its project-owned categories — i.e. whether it
+ * holds nothing SQLite does not.
+ *
+ * The comparison follows the old writer's real semantics:
+ * - the manifest must carry exactly the serializer's key set (an unexpected
+ *   extra or missing field is a divergence);
+ * - `id`, `title`, `slug`, `description`, `notes`, `patreonUrl`, `createdAt`
+ *   and every `assetCategories` entry (name, slug, order, enabled, in
+ *   order) must equal the serializer's output;
+ * - `tags` must be the serializer's `[]` placeholder and `thumbnail` its
+ *   `null` placeholder — they never represented modern tags or primary
+ *   images, so any other value is unexpected and divergent;
+ * - `updatedAt` must equal the serializer's value, or be an older timestamp
+ *   of the same exact format. The legacy writer did not rewrite the
+ *   manifest for status/type/archive changes that still bumped the row's
+ *   `updated_at`, and the manifest's `updatedAt` was never read back as
+ *   authority, so a lagging mirror carries no business data. Both values
+ *   must be canonical real timestamps ({@link isCanonicalLegacyTimestamp});
+ *   a newer, impossible, non-canonical or differently formatted value is
+ *   divergent.
+ *
+ * Returns only a field name, never a value, so callers can log it safely.
+ *
+ * @param {object} manifest - Already validated by {@link validateManifest}
+ * @param {object} project - Current ProjectRecord (snake_case)
+ * @param {Array<object>} categories - Current project-owned category rows
+ * @returns {string|null} the first divergent field, or null when equivalent
+ */
+export function describeLegacyManifestDivergence(manifest, project, categories) {
+  const expected = serializeManifest(project, categories);
+  const expectedKeys = Object.keys(expected).sort();
+  const actualKeys = Object.keys(manifest).sort();
+  if (actualKeys.length !== expectedKeys.length || actualKeys.some((key, i) => key !== expectedKeys[i])) {
+    return 'fields';
+  }
+  for (const key of ['schemaVersion', 'id', 'title', 'slug', 'description', 'notes', 'createdAt', 'patreonUrl', 'thumbnail']) {
+    if (manifest[key] !== expected[key]) return key;
+  }
+  if (!Array.isArray(manifest.tags) || manifest.tags.length !== 0) return 'tags';
+  if (manifest.updatedAt !== expected.updatedAt) {
+    const older = isCanonicalLegacyTimestamp(manifest.updatedAt)
+      && isCanonicalLegacyTimestamp(expected.updatedAt)
+      && Date.parse(manifest.updatedAt) < Date.parse(expected.updatedAt);
+    if (!older) return 'updatedAt';
+  }
+  const actualCategories = manifest.assetCategories;
+  const expectedCategories = expected.assetCategories;
+  if (actualCategories.length !== expectedCategories.length) return 'assetCategories';
+  for (let i = 0; i < expectedCategories.length; i++) {
+    const a = actualCategories[i];
+    const e = expectedCategories[i];
+    if (a.displayName !== e.displayName || a.directorySlug !== e.directorySlug
+      || a.displayOrder !== e.displayOrder || a.enabled !== e.enabled) {
+      return 'assetCategories';
+    }
+  }
+  return null;
 }
 
 // ─── Temp-file identification ────────────────────────────────────────────

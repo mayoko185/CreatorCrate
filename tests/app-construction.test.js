@@ -435,7 +435,7 @@ import { createProjectOperationCoordinator, ProjectOperationError } from '../src
 import { AssetActionError } from '../src/services/asset-action-service.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { NOTE_REVISION_RETENTION_KEY } from '../src/services/note-revision-settings-service.js';
-import { readManifestSync } from '../src/storage/manifest.js';
+import { MANIFEST_FILENAME } from '../src/storage/manifest.js';
 import { resolveProjectDir } from '../src/storage/project-storage.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -510,9 +510,7 @@ describe('app construction — asset actions chunk 3 wiring', () => {
 
     const projectDir = resolveProjectDir(projectsRoot, project.project_dir);
     expect(fs.existsSync(path.join(projectDir, 'fake'))).toBe(true);
-    expect(readManifestSync(projectDir).assetCategories).toEqual([
-      { displayName: 'Fake', directorySlug: 'fake', displayOrder: 0, enabled: true },
-    ]);
+    expect(fs.existsSync(path.join(projectDir, MANIFEST_FILENAME))).toBe(false);
   });
 
   it('constructs and wires the Notes repository, service, and router explicitly', () => {
@@ -1010,6 +1008,17 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     expect(preferenceServiceArgs[0].preferenceRepository).toBe(repository);
     expect(categoryServiceArgs[0].assetBrowserPreferenceRepository).toBe(repository);
     expect(app.locals.assetBrowserPreferenceService).toBe(preferenceService);
+  });
+
+  it('shares one project-directory ownership repository between project and category services', () => {
+    buildApp();
+
+    const { args: projectServiceArgs } = dependencyInstrumentation.projectServices[0];
+    const { args: categoryServiceArgs } = dependencyInstrumentation.projectAssetCategoryServices[0];
+    const ownershipRepository = projectServiceArgs[2].projectDirectoryOwnershipRepository;
+
+    expect(typeof ownershipRepository?.findByProjectId).toBe('function');
+    expect(categoryServiceArgs[0].projectDirectoryOwnershipRepository).toBe(ownershipRepository);
   });
 
   it('passes the exact app-scoped preference service to all rooted preference-aware routers', () => {

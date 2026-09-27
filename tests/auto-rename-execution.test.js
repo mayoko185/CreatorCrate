@@ -17,6 +17,7 @@ import {
 } from '../src/services/auto-rename-service.js';
 import { createProjectOperationCoordinator } from '../src/services/project-operation-coordinator.js';
 import { resolveProjectDir } from '../src/storage/project-storage.js';
+import { createProjectDirectoryOwnershipRepository } from '../src/data/project-directory-ownership-repository.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const SIGNING_KEY = Buffer.from('creatorcrate-auto-rename-execution-test-key');
@@ -54,6 +55,7 @@ describe('category-scoped Auto Rename execution', () => {
 
   function buildService(_hooks = {}, signingKey = SIGNING_KEY) {
     return createAutoRenameService({
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(ctx.db),
       projectRepository: ctx.projectRepository,
       assetRepository: ctx.assetRepository,
       assetCategoryRepository: ctx.assetCategoryRepository,

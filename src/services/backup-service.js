@@ -3,6 +3,7 @@ import { managedUploadTracker } from './managed-upload-tracker.js';
 import path from 'node:path';
 import Database from 'better-sqlite3';
 import { openDatabase, closeDatabase, runMigrations } from '../db.js';
+import { resetGeneratedImagePublicationsForRestore } from '../data/generated-image-publication-lifecycle-repository.js';
 import {
   resolveBackupDir,
   resolveBackupFile,
@@ -69,6 +70,9 @@ function listMigrationFilenames(migrationsDir) {
  *   pruning — Phase 11.3 never deletes a backup without an explicit,
  *   positive configured policy.
  * @param {() => Date} [opts.now] - Clock used for backup metadata and naming
+ * @param {object} [opts._hooks] - Test-only injection points; never set in
+ *   production. `afterStagedRestorePrepared(stagingPath)` runs after the
+ *   staged restore database was reset and closed, before it is installed.
  */
 export function createBackupService({
   appDataRoot,
@@ -76,6 +80,7 @@ export function createBackupService({
   migrationsDir,
   retentionCount,
   now = () => new Date(),
+  _hooks = {},
 }) {
   // ─── Exclusive maintenance boundary ────────────────────────────────────
   // Smallest architecture that satisfies the Phase 11.1 contract: local
@@ -429,14 +434,46 @@ export function createBackupService({
   }
 
   /**
+   * Prepare the staged copy of a backup for adoption, before it can replace
+   * the live database: open it, run the normal migrations, and reset its
+   * derived generated-image publication index in one transaction (see
+   * resetGeneratedImagePublicationsForRestore). The restored database is
+   * thereby marked for regeneration, never for the legacy-cache import, and
+   * can never be trusted with publication rows describing whatever the
+   * current filesystem cache holds. The staged file is returned to a single
+   * rollback-journal file (WAL checkpointed, sidecars removed) and fsynced.
+   * Generated cache directories are not touched.
+   */
+  function prepareStagedRestore(stagingPath) {
+    const staged = openDatabase(stagingPath);
+    try {
+      runMigrations(staged, migrationsDir);
+      resetGeneratedImagePublicationsForRestore(staged, { now });
+      staged.pragma('journal_mode = DELETE');
+    } finally {
+      closeDatabase(staged);
+    }
+    removeIfExists(`${stagingPath}-wal`);
+    removeIfExists(`${stagingPath}-shm`);
+    const fd = fs.openSync(stagingPath, 'r+');
+    try {
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+
+  /**
    * Restore a managed, validated backup over the live database.
    *
    * Contract:
    *   1. only a validated backup selected from the managed directory is
    *      accepted (traversal/symlink inputs rejected by resolveBackupFile);
    *   2. validated again immediately before restore;
-   *   3. the backup is copied to a staging file beside the live database
-   *      and fsynced;
+   *   3. the backup is copied to a staging file beside the live database,
+   *      migrated, its derived generated-image publication index reset and
+   *      marked for regeneration (prepareStagedRestore), and fsynced — all
+   *      before the live database is moved aside;
    *   4. the live database is replaced atomically only while `db` (the
    *      caller's live connection) has already been closed by this call;
    *   5. the database is reopened and normal migrations/health checks rerun;
@@ -504,12 +541,8 @@ export function createBackupService({
       let newDb;
       try {
         fs.copyFileSync(backupPath, stagingPath);
-        const fd = fs.openSync(stagingPath, 'r+');
-        try {
-          fs.fsyncSync(fd);
-        } finally {
-          fs.closeSync(fd);
-        }
+        prepareStagedRestore(stagingPath);
+        await _hooks.afterStagedRestorePrepared?.(stagingPath);
 
         // Move the live database aside; install the staged restore in its
         // place. Both are same-filesystem renames (fast, effectively atomic).
@@ -531,6 +564,8 @@ export function createBackupService({
         );
       } finally {
         removeIfExists(stagingPath);
+        removeIfExists(`${stagingPath}-wal`);
+        removeIfExists(`${stagingPath}-shm`);
       }
 
       // Success — the prior database is no longer needed.

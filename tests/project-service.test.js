@@ -17,7 +17,7 @@ import {
   ProjectValidationError,
   ProjectNotFoundError,
 } from '../src/services/project-service.js';
-import { MANIFEST_FILENAME, readManifestSync, writeManifestSync } from '../src/storage/manifest.js';
+import { MANIFEST_FILENAME, formatManifestJson, serializeManifest } from '../src/storage/manifest.js';
 import { createTestProjectOptionCatalogueService } from './helpers/project-option-catalogue.js';
 import {
   formatProjectDirName,
@@ -107,10 +107,14 @@ describe('project service', () => {
 
       const project = fakeService.create(validInput({ title: 'Fake DI Project' }));
       expect(copyCallCount).toBe(1);
+      // The fake's categories drove directory creation.
+      expect(fs.existsSync(path.join(projectsRoot, project.project_dir, 'fake'))).toBe(true);
 
-      // A title change (rename path) must use the exact injected service
-      fakeService.update(project.id, validInput({ title: 'Fake DI Project Renamed' }));
-      expect(listCallCount).toBeGreaterThan(0);
+      // A rename is a directory move plus SQLite update: it no longer
+      // re-reads categories to publish a manifest.
+      const renamed = fakeService.update(project.id, validInput({ title: 'Fake DI Project Renamed' }));
+      expect(fs.existsSync(path.join(projectsRoot, renamed.project_dir, 'fake'))).toBe(true);
+      expect(listCallCount).toBe(0);
     });
   });
 
@@ -637,13 +641,10 @@ describe('project service', () => {
       return { dirName, relPath, absPath: resolveProjectDir(projectsRoot, relPath) };
     }
 
-    it('does not add priority to the database or manifest', () => {
+    it('does not add priority to the database', () => {
       const project = service.create(validInput({ title: 'No Priority' }));
       expect(project).not.toHaveProperty('priority');
       expect(service.findById(project.id)).not.toHaveProperty('priority');
-
-      const { absPath } = getProjectDir(project);
-      expect(readManifestSync(absPath)).not.toHaveProperty('priority');
     });
 
     it('creates a database record and project directory', () => {
@@ -693,44 +694,38 @@ describe('project service', () => {
       expect(fs.existsSync(path.join(absPath, 'exports', 'web'))).toBe(false);
     });
 
-    it('writes a schema-version-3 manifest with the exact expected project data and no status', () => {
-      const input = validInput({
-        title: 'Manifest Test',
+    it('creates no project.json; the new project is fully usable from SQLite state alone', () => {
+      const project = service.create(validInput({
+        title: 'Manifest Free Create',
         description: 'Desc content',
         notes: 'Note content',
         status: 'planned',
-        plannedDate: '2026-08-15',
-        publishedDate: null,
         patreonUrl: 'https://patreon.com/creator',
-      });
-      const project = service.create(input);
+      }));
       const { absPath } = getProjectDir(project);
 
-      const manifestPath = path.join(absPath, MANIFEST_FILENAME);
-      expect(fs.existsSync(manifestPath)).toBe(true);
+      expect(fs.existsSync(path.join(absPath, MANIFEST_FILENAME))).toBe(false);
+      expect(fs.readdirSync(absPath).sort()).toEqual(['.creatorcrate-owner', 'final', 'krz', 'wip', 'wm', 'wm-lq']);
+      expect(service.findById(project.id)).toMatchObject({
+        title: 'Manifest Free Create',
+        slug: 'manifest-free-create',
+        description: 'Desc content',
+        notes: 'Note content',
+        status: 'planned',
+        patreon_url: 'https://patreon.com/creator',
+        project_dir: formatProjectDirName(project.id, 'manifest-free-create'),
+      });
 
-      const content = fs.readFileSync(manifestPath, 'utf8');
-      const manifest = JSON.parse(content);
-
-      expect(manifest.schemaVersion).toBe(3);
-      expect(manifest.id).toBe(project.id);
-      expect(manifest.title).toBe('Manifest Test');
-      expect(manifest.slug).toBe('manifest-test');
-      expect(manifest).not.toHaveProperty('status');
-      expect(content).not.toMatch(/"status"\s*:/);
-      expect(manifest).not.toHaveProperty('priority');
-      expect(content).not.toMatch(/"priority"\s*:/);
-      expect(manifest.description).toBe('Desc content');
-      expect(manifest.notes).toBe('Note content');
-      expect(manifest).not.toHaveProperty('plannedDate');
-      expect(manifest).not.toHaveProperty('publishedDate');
-      expect(content).not.toMatch(/"(?:plannedDate|publishedDate)"\s*:/);
-      expect(manifest.patreonUrl).toBe('https://patreon.com/creator');
-      expect(manifest.tags).toEqual([]);
-      expect(manifest.thumbnail).toBeNull();
-      expect(manifest.assetCategories.map((c) => c.directorySlug)).toEqual([
-        'final', 'wip', 'krz', 'wm', 'wm-lq',
-      ]);
+      // Ordinary follow-up operations work without any manifest.
+      const edited = service.update(project.id, validInput({
+        title: 'Manifest Free Create',
+        description: 'Edited',
+      }));
+      expect(edited.description).toBe('Edited');
+      const renamed = service.update(project.id, validInput({ title: 'Manifest Free Renamed' }));
+      const renamedPath = resolveProjectDir(projectsRoot, renamed.project_dir);
+      expect(fs.existsSync(renamedPath)).toBe(true);
+      expect(fs.existsSync(path.join(renamedPath, MANIFEST_FILENAME))).toBe(false);
     });
 
     it('stores the relative path in the database', () => {
@@ -761,37 +756,6 @@ describe('project service', () => {
       expect(project).toBeUndefined();
     });
 
-    it('removes the database record and directory when manifest creation fails', () => {
-      // writeManifestSync uses fs.renameSync internally for its atomic
-      // temp-file → project.json step — inject failure only for that
-      // specific rename. Cleanup's own quarantine-and-verify sequence also
-      // uses fs.renameSync (to move tracked artifacts aside before removing
-      // them), so a blanket failure here would break compensation itself
-      // rather than exercising it.
-      const originalRenameSync = fs.renameSync;
-      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation((src, dest) => {
-        if (path.basename(dest) === 'project.json') {
-          throw new Error('rename failed');
-        }
-        return originalRenameSync(src, dest);
-      });
-
-      expect(() => service.create(validInput({ title: 'Manifest Fail' }))).toThrow(
-        'Project creation failed'
-      );
-
-      renameSpy.mockRestore();
-
-      // Verify DB record was removed
-      const record = service.repository.findBySlug('manifest-fail');
-      expect(record).toBeUndefined();
-
-      // Verify no directory exists for this slug (ID is unknown after rollback)
-      const entries = fs.readdirSync(projectsRoot);
-      const matching = entries.filter((e) => e.endsWith('-manifest-fail'));
-      expect(matching).toHaveLength(0);
-    });
-
     it('removes the directory and database record when setProjectDir fails', () => {
       // Spy on setProjectDir to inject failure
       const setDirSpy = vi.spyOn(service.repository, 'setProjectDir').mockImplementation(() => {
@@ -818,16 +782,17 @@ describe('project service', () => {
       // Create a legitimate project first
       const legit = service.create(validInput({ title: 'Keep Me' }));
 
-      // Now try to create a project that fails
-      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
-        throw new Error('rename failed');
+      // Now try to create a project that fails after its directory exists
+      const setDirSpy = vi.spyOn(service.repository, 'setProjectDir').mockImplementation(() => {
+        throw new Error('DB update failed');
       });
 
       expect(() => service.create(validInput({ title: 'Remove Fail' }))).toThrow(
         'Project creation failed'
       );
 
-      renameSpy.mockRestore();
+      setDirSpy.mockRestore();
+      expect(fs.readdirSync(projectsRoot).filter((e) => e.endsWith('-remove-fail'))).toHaveLength(0);
 
       // Verify legitimate project still exists
       const found = service.findBySlug('keep-me');
@@ -868,7 +833,7 @@ describe('project service', () => {
       return service.create(validInput(overrides));
     }
 
-    it('pure status-only update is DB/UI-only and leaves the manifest byte-identical', () => {
+    it('pure status-only update is DB-only and writes no manifest', () => {
       const project = createTestProject({ title: 'Meta Edit', status: 'tbd' });
       const { absPath: originalPath, relPath: originalRel } = getProjectDir(project);
 
@@ -877,7 +842,6 @@ describe('project service', () => {
       fs.writeFileSync(userFile, 'custom content');
 
       const manifestPath = path.join(originalPath, MANIFEST_FILENAME);
-      const manifestBefore = fs.readFileSync(manifestPath, 'utf8');
 
       const updated = service.update(project.id, validInput({
         title: 'Meta Edit',
@@ -893,20 +857,19 @@ describe('project service', () => {
       expect(fs.existsSync(userFile)).toBe(true);
       expect(fs.readFileSync(userFile, 'utf8')).toBe('custom content');
 
-      // Status lives only in the database — the manifest is not rewritten
+      // Status lives only in the database — no manifest is written
       expect(updated.status).toBe('in-progress');
       expect(service.findById(project.id).status).toBe('in-progress');
-      expect(fs.readFileSync(manifestPath, 'utf8')).toBe(manifestBefore);
+      expect(fs.existsSync(manifestPath)).toBe(false);
     });
 
-    it('type-only update is DB/UI-only and leaves the manifest byte-identical', () => {
+    it('type-only update is DB-only and writes no manifest', () => {
       const project = createTestProject({
         title: 'Type Only Edit',
         projectType: 'comic',
       });
       const { absPath: originalPath, relPath: originalRel } = getProjectDir(project);
       const manifestPath = path.join(originalPath, MANIFEST_FILENAME);
-      const manifestBefore = fs.readFileSync(manifestPath, 'utf8');
       const userFile = path.join(originalPath, 'user-data.txt');
       fs.writeFileSync(userFile, 'custom content');
 
@@ -919,22 +882,19 @@ describe('project service', () => {
       expect(updated.project_dir).toBe(originalRel);
       expect(fs.existsSync(userFile)).toBe(true);
       expect(fs.readFileSync(userFile, 'utf8')).toBe('custom content');
-      expect(fs.readFileSync(manifestPath, 'utf8')).toBe(manifestBefore);
-      expect(JSON.parse(manifestBefore)).not.toHaveProperty('projectType');
-      expect(JSON.parse(manifestBefore)).not.toHaveProperty('project_type');
+      expect(fs.existsSync(manifestPath)).toBe(false);
     });
 
-    it('metadata-only update rewrites project.json without renaming the directory', () => {
+    it('metadata-only update is DB-only and writes no project.json', () => {
       const project = createTestProject({ title: 'Meta Only', description: 'Old desc' });
       const { absPath: originalPath, relPath: originalRel } = getProjectDir(project);
 
-      const manifestPath = path.join(originalPath, MANIFEST_FILENAME);
-      const manifestBefore = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-
-      // Change only description — title/slug/status unchanged
+      // Change only description/notes/link — title/slug/status unchanged
       const updated = service.update(project.id, validInput({
         title: 'Meta Only',
         description: 'New description',
+        notes: 'New notes',
+        patreonUrl: 'https://patreon.com/new',
       }));
 
       // No rename — directory and project_dir unchanged
@@ -943,18 +903,53 @@ describe('project service', () => {
       expect(relPath).toBe(originalRel);
       expect(updated.project_dir).toBe(originalRel);
 
-      // Manifest rewritten in place with the new value; status still absent
-      const manifestAfter = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-      expect(manifestAfter.description).toBe('New description');
-      expect(manifestAfter.title).toBe('Meta Only');
-      expect(manifestAfter.slug).toBe('meta-only');
-      expect(manifestAfter).not.toHaveProperty('status');
+      // SQLite holds the new values; no manifest appears
+      expect(service.findById(project.id)).toMatchObject({
+        description: 'New description',
+        notes: 'New notes',
+        patreon_url: 'https://patreon.com/new',
+        status: 'tbd',
+      });
+      expect(fs.existsSync(path.join(originalPath, MANIFEST_FILENAME))).toBe(false);
+    });
 
-      // The rewrite actually happened — the file changed
-      expect(manifestAfter).not.toEqual(manifestBefore);
+    it('metadata-only update neither rewrites nor imports a stale or corrupt legacy manifest', () => {
+      const staleProject = createTestProject({ title: 'Stale Legacy', description: 'DB desc' });
+      const { absPath: stalePath } = getProjectDir(staleProject);
+      const staleBytes = formatManifestJson(serializeManifest({
+        ...staleProject,
+        title: 'Legacy Title',
+        description: 'Legacy desc',
+        notes: 'Legacy notes',
+        patreon_url: 'https://legacy.example/',
+      }));
+      const staleManifestPath = plantLegacyManifest(stalePath, staleBytes);
 
-      // Status unchanged in DB
-      expect(updated.status).toBe('tbd');
+      const corruptProject = createTestProject({ title: 'Corrupt Legacy' });
+      const { absPath: corruptPath } = getProjectDir(corruptProject);
+      const corruptManifestPath = plantLegacyManifest(corruptPath, '{ not json');
+
+      const updatedStale = service.update(staleProject.id, validInput({
+        title: 'Stale Legacy',
+        description: 'Newer DB desc',
+      }));
+      const updatedCorrupt = service.update(corruptProject.id, validInput({
+        title: 'Corrupt Legacy',
+        notes: 'Edited notes',
+      }));
+
+      // SQLite wins; nothing was imported from the legacy sidecar
+      expect(updatedStale).toMatchObject({
+        title: 'Stale Legacy',
+        description: 'Newer DB desc',
+        notes: 'Some notes',
+        patreon_url: null,
+      });
+      expect(updatedCorrupt.notes).toBe('Edited notes');
+
+      // Legacy files are left byte-identical
+      expect(fs.readFileSync(staleManifestPath, 'utf8')).toBe(staleBytes);
+      expect(fs.readFileSync(corruptManifestPath, 'utf8')).toBe('{ not json');
     });
 
     it('status-only update succeeds when the project directory is missing', () => {
@@ -996,10 +991,8 @@ describe('project service', () => {
       expect(fs.existsSync(path.join(newPath, 'user-data.txt'))).toBe(true);
       expect(fs.readFileSync(path.join(newPath, 'user-data.txt'), 'utf8')).toBe('surviving content');
 
-      // Manifest has new title
-      const manifest = readManifestSync(newPath);
-      expect(manifest.title).toBe('New Title');
-      expect(manifest.slug).toBe('new-title');
+      // No manifest is created by a rename
+      expect(fs.existsSync(path.join(newPath, MANIFEST_FILENAME))).toBe(false);
 
       // DB has updated project_dir
       expect(updated.project_dir).toBeTruthy();
@@ -1032,12 +1025,8 @@ describe('project service', () => {
       expect(fs.existsSync(path.join(newPath, 'final', 'asset.blend'))).toBe(true);
       expect(fs.readFileSync(path.join(newPath, 'final', 'asset.blend'), 'utf8')).toBe('blend file');
 
-      // Manifest is rewritten at the new location with the new title, but
-      // status itself is never written to the manifest
-      const manifest = readManifestSync(newPath);
-      expect(manifest.title).toBe('Combined Final');
-      expect(manifest.slug).toBe('combined-final');
-      expect(manifest).not.toHaveProperty('status');
+      // No manifest is created at the new location
+      expect(fs.existsSync(path.join(newPath, MANIFEST_FILENAME))).toBe(false);
 
       // Status is DB-only
       expect(updated.status).toBe('ready');
@@ -1119,14 +1108,14 @@ describe('project service', () => {
       expect(found.status).toBe('tbd');
       expect(found.project_dir).toBeTruthy();
 
-      // Manifest still has original content at original location
-      expect(fs.existsSync(path.join(srcPath, 'project.json'))).toBe(true);
+      // The conflicting directory is untouched
+      expect(fs.readdirSync(conflictDir)).toEqual(['placeholder']);
+      expect(fs.readFileSync(path.join(conflictDir, 'placeholder'), 'utf8')).toBe('exists');
     });
 
     it('legacy priority and scheduling input are not treated as metadata changes', () => {
       const project = createTestProject({ title: 'No Slug Change' });
       const { absPath: originalPath, relPath: originalRel } = getProjectDir(project);
-      const manifestBefore = fs.readFileSync(path.join(originalPath, MANIFEST_FILENAME), 'utf8');
       const updateSpy = vi.spyOn(service.repository, 'update');
 
       const updated = service.update(project.id, validInput({
@@ -1152,8 +1141,7 @@ describe('project service', () => {
 
       // Project_dir unchanged
       expect(updated.project_dir).toBe(originalRel);
-      expect(fs.readFileSync(path.join(originalPath, MANIFEST_FILENAME), 'utf8'))
-        .toBe(manifestBefore);
+      expect(fs.existsSync(path.join(originalPath, MANIFEST_FILENAME))).toBe(false);
     });
 
     it('unchanged status causes no move', () => {
@@ -1174,7 +1162,7 @@ describe('project service', () => {
       expect(fs.existsSync(path.join(absPath, 'proof.txt'))).toBe(true);
     });
 
-    it('manifest and database agree after a title/status rename', () => {
+    it('database is authoritative after a title/status rename', () => {
       const project = createTestProject({
         title: 'Agreement Test',
         status: 'tbd',
@@ -1188,59 +1176,131 @@ describe('project service', () => {
         plannedDate: 'ignored-legacy-value',
       }));
 
-      // DB values
-      expect(updated.title).toBe('Agreement Test Renamed');
-      expect(updated.slug).toBe('agreement-test-renamed');
-      expect(updated.status).toBe('ready');
-      expect(updated.description).toBe('New desc');
+      expect(service.findById(project.id)).toMatchObject({
+        id: project.id,
+        title: 'Agreement Test Renamed',
+        slug: 'agreement-test-renamed',
+        status: 'ready',
+        description: 'New desc',
+        project_dir: formatProjectDirName(project.id, 'agreement-test-renamed'),
+      });
       expect(updated).not.toHaveProperty('priority');
       expect(updated).not.toHaveProperty('planned_date');
       expect(updated).not.toHaveProperty('published_date');
 
-      // Read manifest at final location
       const { absPath } = getProjectDir(updated);
-      const manifest = readManifestSync(absPath);
-
-      expect(manifest.title).toBe(updated.title);
-      expect(manifest.slug).toBe(updated.slug);
-      expect(manifest).not.toHaveProperty('status');
-      expect(manifest.description).toBe(updated.description);
-      expect(manifest).not.toHaveProperty('priority');
-      expect(manifest).not.toHaveProperty('plannedDate');
-      expect(manifest).not.toHaveProperty('publishedDate');
-      expect(manifest.id).toBe(updated.id);
+      expect(fs.existsSync(path.join(absPath, MANIFEST_FILENAME))).toBe(false);
     });
 
-    it('source manifest mismatch is rejected', () => {
-      const project = createTestProject({ title: 'Manifest Mismatch' });
-      const { absPath } = getProjectDir(project);
+    describe('rename with a legacy project.json present', () => {
+      function listCategoryIdentity(projectId) {
+        return db.prepare(`
+          SELECT id, directory_slug, display_order, enabled
+          FROM project_asset_categories
+          WHERE project_id = ?
+          ORDER BY display_order
+        `).all(projectId);
+      }
 
-      // Corrupt manifest to have a different ID
-      const manifestPath = path.join(absPath, 'project.json');
-      const corrupt = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-      corrupt.id = 99999;
-      fs.writeFileSync(manifestPath, JSON.stringify(corrupt, null, 2));
+      function renameWithLegacyManifest(title, manifestContentFor) {
+        const project = createTestProject({ title });
+        const { absPath: oldPath } = getProjectDir(project);
+        const categoriesBefore = listCategoryIdentity(project.id);
+        const bytes = manifestContentFor(project);
+        plantLegacyManifest(oldPath, bytes);
 
-      // Pre-flight validation rejects the mismatch before any mutation
-      expect(() => service.update(project.id, validInput({
-        title: 'Manifest Mismatch Renamed', // triggers the flat rename
-        status: 'in-progress',
-      }))).toThrow('Existing manifest does not match the expected project');
+        const updated = service.update(project.id, validInput({ title: `${title} Renamed` }));
+        const { absPath: newPath } = getProjectDir(updated);
+
+        expect(updated.id).toBe(project.id);
+        expect(updated.project_dir).toBe(formatProjectDirName(project.id, updated.slug));
+        expect(fs.existsSync(oldPath)).toBe(false);
+        expect(fs.statSync(newPath).isDirectory()).toBe(true);
+        // The legacy file moved with its directory, byte-identical; it was
+        // neither validated, rewritten, nor imported.
+        expect(fs.readFileSync(path.join(newPath, MANIFEST_FILENAME), 'utf8')).toBe(bytes);
+        expect(service.findById(project.id).title).toBe(`${title} Renamed`);
+        // Category identities/order are unchanged by the rename.
+        expect(listCategoryIdentity(project.id)).toEqual(categoriesBefore);
+      }
+
+      it('renames when the legacy manifest is malformed JSON', () => {
+        renameWithLegacyManifest('Malformed Legacy', () => '{"schemaVersion": 3, "id": ');
+      });
+
+      it('renames when the legacy manifest has an unsupported schema version', () => {
+        renameWithLegacyManifest('Unsupported Legacy', (project) => formatManifestJson({
+          ...serializeManifest(project),
+          schemaVersion: 1,
+        }));
+      });
+
+      it('renames when the legacy manifest is structurally invalid', () => {
+        renameWithLegacyManifest('Invalid Legacy', (project) => {
+          const manifest = serializeManifest(project);
+          delete manifest.assetCategories;
+          return formatManifestJson(manifest);
+        });
+      });
+
+      it('renames when the legacy manifest carries stale business fields', () => {
+        renameWithLegacyManifest('Stale Fields Legacy', (project) => formatManifestJson(serializeManifest({
+          ...project,
+          title: 'Ancient Title',
+          slug: 'ancient-title',
+          description: 'Ancient',
+        })));
+      });
+
+      it('renames when the legacy manifest names a different project ID', () => {
+        renameWithLegacyManifest('Mismatched Legacy', (project) => formatManifestJson(serializeManifest({
+          ...project,
+          id: project.id + 9999,
+        })));
+      });
     });
 
-    it('rejects a structurally invalid manifest (missing assetCategories) on update preflight', () => {
-      const project = createTestProject({ title: 'Structurally Invalid' });
-      const { absPath } = getProjectDir(project);
+    describe('rename ownership protections without any manifest', () => {
+      it('refuses a stored directory whose name does not carry the project ID', () => {
+        const project = createTestProject({ title: 'Foreign Stored Dir' });
+        const foreignDir = path.join(projectsRoot, '000999-foreign');
+        fs.mkdirSync(foreignDir);
+        fs.writeFileSync(path.join(foreignDir, 'keep.txt'), 'foreign');
+        service.repository.setProjectDir(project.id, '000999-foreign');
 
-      const manifestPath = path.join(absPath, 'project.json');
-      const corrupt = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-      delete corrupt.assetCategories;
-      fs.writeFileSync(manifestPath, JSON.stringify(corrupt, null, 2));
+        expect(() => service.update(project.id, validInput({ title: 'Foreign Stored Dir Renamed' })))
+          .toThrow('Project directory ownership verification failed');
 
-      expect(() => service.update(project.id, validInput({
-        title: 'Structurally Invalid Renamed', // triggers the flat rename
-        status: 'in-progress',
-      }))).toThrow('Existing manifest does not match the expected project');
+        expect(fs.readFileSync(path.join(foreignDir, 'keep.txt'), 'utf8')).toBe('foreign');
+        expect(service.findById(project.id)).toMatchObject({
+          title: 'Foreign Stored Dir',
+          project_dir: '000999-foreign',
+        });
+      });
+
+      it('refuses a stored directory path that escapes or nests below PROJECTS_ROOT', () => {
+        const project = createTestProject({ title: 'Escaping Stored Dir' });
+        const original = project.project_dir;
+        for (const unsafe of [`../${original}`, `nested/${original}`]) {
+          service.repository.setProjectDir(project.id, unsafe);
+          expect(() => service.update(project.id, validInput({ title: 'Escaping Stored Dir Renamed' })))
+            .toThrow(/PROJECTS_ROOT/);
+          expect(service.findById(project.id).title).toBe('Escaping Stored Dir');
+        }
+        expect(fs.existsSync(path.join(projectsRoot, original))).toBe(true);
+      });
+
+      it('refuses a source that is a file rather than a directory', () => {
+        const project = createTestProject({ title: 'File Source' });
+        const { absPath } = getProjectDir(project);
+        fs.rmSync(absPath, { recursive: true, force: true });
+        fs.writeFileSync(absPath, 'not a directory');
+
+        expect(() => service.update(project.id, validInput({ title: 'File Source Renamed' })))
+          .toThrow('Project directory is not a safe directory');
+        expect(fs.readFileSync(absPath, 'utf8')).toBe('not a directory');
+        expect(service.findById(project.id).title).toBe('File Source');
+      });
     });
 
     it('missing source directory is reported safely when a rename is required', () => {
@@ -1291,53 +1351,19 @@ describe('project service', () => {
       expect(fs.statSync(originalPath).isDirectory()).toBe(true);
     });
 
-    it('injected manifest failure triggers compensation', () => {
-      const project = createTestProject({ title: 'Manifest Fail Update' });
-      const { absPath: originalPath } = getProjectDir(project);
-
-      // Custom file to prove restore
-      fs.writeFileSync(path.join(originalPath, 'extra.bin'), 'original content');
-
-      // Spy on renameSync to trigger failure after the directory rename succeeds
-      // writeManifestSync uses renameSync internally for the atomic write
-      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementationOnce(() => {
-        // First call succeeds (it's the directory rename), second call fails (manifest write)
-        renameSpy.mockImplementationOnce(() => { throw new Error('manifest write failed'); });
-        return undefined;
-      });
-
-      try {
-        service.update(project.id, validInput({
-          title: 'Manifest Fail Update Renamed', // triggers slug change
-          status: 'ready',
-        }));
-        expect(true).toBe(false);
-      } catch (err) {
-        expect(err.message).toContain('failed');
-      } finally {
-        renameSpy.mockRestore();
-      }
-
-      // Directory moved back to original location
-      expect(fs.existsSync(originalPath)).toBe(true);
-      expect(fs.statSync(originalPath).isDirectory()).toBe(true);
-
-      // Custom file survived the move-back
-      expect(fs.existsSync(path.join(originalPath, 'extra.bin'))).toBe(true);
-      expect(fs.readFileSync(path.join(originalPath, 'extra.bin'), 'utf8')).toBe('original content');
-
-      // DB restored
-      const found = service.findById(project.id);
-      expect(found.title).toBe('Manifest Fail Update');
-      expect(found.status).toBe('tbd');
-    });
-
     it('injected setProjectDir failure triggers compensation', () => {
       const project = createTestProject({ title: 'Set Dir Fail Update' });
       const { absPath: originalPath, relPath: originalRel } = getProjectDir(project);
+      fs.writeFileSync(path.join(originalPath, 'extra.bin'), 'original content');
+      const legacyBytes = '{"legacy": true}' + String.fromCharCode(10);
+      plantLegacyManifest(originalPath, legacyBytes);
+      const renamedPath = path.join(projectsRoot, formatProjectDirName(project.id, 'set-dir-fail-update-renamed'));
+      let movedBeforeFailure = false;
 
       // Spy on setProjectDir
       const setDirSpy = vi.spyOn(service.repository, 'setProjectDir').mockImplementation(() => {
+        // The directory has already been moved when the DB write fails.
+        movedBeforeFailure = fs.existsSync(renamedPath) && !fs.existsSync(originalPath);
         throw new Error('DB update failed');
       });
 
@@ -1353,8 +1379,12 @@ describe('project service', () => {
         setDirSpy.mockRestore();
       }
 
-      // Directory moved back
+      // Directory moved back with its contents (legacy sidecar included)
+      expect(movedBeforeFailure).toBe(true);
       expect(fs.existsSync(originalPath)).toBe(true);
+      expect(fs.existsSync(renamedPath)).toBe(false);
+      expect(fs.readFileSync(path.join(originalPath, 'extra.bin'), 'utf8')).toBe('original content');
+      expect(fs.readFileSync(path.join(originalPath, MANIFEST_FILENAME), 'utf8')).toBe(legacyBytes);
 
       // DB restored
       const found = service.findById(project.id);
@@ -1369,8 +1399,7 @@ describe('project service', () => {
 
       const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
-      // Both rename and manifest write will fail, but more critically,
-      // also make the compensation's rename fail by making all renames fail
+      // Make every rename fail, including any compensation attempt
       const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation(() => {
         throw new Error('all renames fail');
       });
@@ -1464,7 +1493,6 @@ describe('project service', () => {
       // Custom files to prove nothing moves
       const userFile = path.join(absPath, 'custom.txt');
       fs.writeFileSync(userFile, 'still here');
-      const manifestBefore = fs.readFileSync(path.join(absPath, MANIFEST_FILENAME), 'utf8');
 
       const archived = service.archive(project.id);
 
@@ -1483,8 +1511,8 @@ describe('project service', () => {
       expect(fs.statSync(absPath).isDirectory()).toBe(true);
       expect(fs.existsSync(userFile)).toBe(true);
       expect(fs.readFileSync(userFile, 'utf8')).toBe('still here');
-      // Manifest is untouched by archiving
-      expect(fs.readFileSync(path.join(absPath, MANIFEST_FILENAME), 'utf8')).toBe(manifestBefore);
+      // Archiving writes no manifest
+      expect(fs.existsSync(path.join(absPath, MANIFEST_FILENAME))).toBe(false);
       // No archived/ directory was created
       expect(fs.existsSync(path.join(projectsRoot, 'archived'))).toBe(false);
     });
@@ -1633,13 +1661,22 @@ describe('project service', () => {
       expect(fs.existsSync(getProjectDir(project))).toBe(false);
     });
 
-    it('deletes successfully when the project directory is already missing', () => {
+    it('fails closed when a bound project directory is missing (share may be unavailable)', () => {
       const project = service.create(validInput({ title: 'Missing Delete Directory' }));
       const projectDir = getProjectDir(project);
+      const categoryCount = db.prepare('SELECT COUNT(*) AS c FROM project_asset_categories WHERE project_id = ?')
+        .get(project.id).c;
       fs.rmSync(projectDir, { recursive: true, force: true });
 
-      expect(service.deleteProject(project.id)).toBe(true);
-      expect(service.findById(project.id)).toBeUndefined();
+      expect(() => service.deleteProject(project.id)).toThrowError(expect.objectContaining({
+        name: 'ProjectOwnershipError',
+        code: 'PROJECT_DIRECTORY_MISSING',
+      }));
+      expect(service.findById(project.id)).toBeTruthy();
+      expect(db.prepare('SELECT state FROM project_directory_ownership WHERE project_id = ?').get(project.id))
+        .toEqual({ state: 'bound' });
+      expect(db.prepare('SELECT COUNT(*) AS c FROM project_asset_categories WHERE project_id = ?')
+        .get(project.id).c).toBe(categoryCount);
     });
 
     it('rolls back database deletion and restores the directory when the transaction fails', () => {
@@ -1741,7 +1778,7 @@ describe('project service', () => {
       fs.mkdirSync(foreignDir);
       service.repository.setProjectDir(project.id, '000999-foreign');
 
-      expect(() => service.deleteProject(project.id)).toThrow(/deletion failed/i);
+      expect(() => service.deleteProject(project.id)).toThrow(/ownership verification failed/i);
       expect(service.findById(project.id)).toBeTruthy();
       expect(fs.existsSync(foreignDir)).toBe(true);
     });
@@ -1858,6 +1895,16 @@ describe('project service', () => {
     });
   });
 });
+
+/**
+ * Plant a legacy project.json directly on disk. CreatorCrate no longer
+ * writes manifests; these represent sidecars left by earlier versions.
+ */
+function plantLegacyManifest(absPath, content) {
+  const manifestPath = path.join(absPath, MANIFEST_FILENAME);
+  fs.writeFileSync(manifestPath, content, 'utf8');
+  return manifestPath;
+}
 
 function validInput(overrides = {}) {
   return {

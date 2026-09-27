@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { resolveProjectDir } from '../storage/project-storage.js';
+import { createProjectDirectoryOwnershipVerifier } from './project-directory-ownership.js';
 import { ProjectNotFoundError } from './project-service.js';
 import { createAssetRepository } from '../data/asset-repository.js';
 import { PRIMARY_IMAGE_PROVENANCE } from '../data/project-primary-image-repository.js';
@@ -212,6 +212,9 @@ function walkDirectory(dirPath, projectRelPrefix = '') {
  *   interleave for the same project.
  * @param {object} deps.previewCategorySettingsService
  * @param {object} deps.projectPrimaryImageRepository
+ * @param {object} deps.projectDirectoryOwnershipRepository - PM-1B: a scan
+ *   rewrites asset authority from what it finds, so it only traverses a
+ *   root proven to be this project's bound, marked directory.
  */
 export function createAssetScanner(
   db,
@@ -222,6 +225,7 @@ export function createAssetScanner(
     projectOperationCoordinator,
     previewCategorySettingsService,
     projectPrimaryImageRepository,
+    projectDirectoryOwnershipRepository,
     applicationLogger = null,
   }
 ) {
@@ -237,7 +241,15 @@ export function createAssetScanner(
     throw new Error('createAssetScanner requires a projectPrimaryImageRepository dependency.');
   }
 
+  if (!projectDirectoryOwnershipRepository) {
+    throw new Error('createAssetScanner requires a projectDirectoryOwnershipRepository dependency.');
+  }
+
   const repository = createAssetRepository(db);
+  const ownershipVerifier = createProjectDirectoryOwnershipVerifier({
+    ownershipRepository: projectDirectoryOwnershipRepository,
+    projectsRoot,
+  });
 
   function logScanCompleted(projectId, result, kind) {
     try {
@@ -332,29 +344,14 @@ export function createAssetScanner(
       throw new Error('Project has no stored directory path.');
     }
 
-    // Resolve the project directory safely (containment + symlink checks)
-    let absPath;
-    try {
-      absPath = resolveProjectDir(projectsRoot, project.project_dir);
-    } catch (err) {
-      throw new Error('Project directory cannot be accessed.');
-    }
-
-    // Verify the directory exists
-    let stats;
-    try {
-      stats = fs.lstatSync(absPath);
-    } catch {
-      throw new Error('Project directory not found on disk.');
-    }
-
-    if (!stats.isDirectory()) {
-      throw new Error('Project path exists but is not a directory.');
-    }
-
-    if (stats.isSymbolicLink()) {
-      throw new Error('Project directory is a symbolic link.');
-    }
+    // One ownership verification per scan. Unbound, missing, unreadable,
+    // unsafe, or mismatched roots — including a share that is momentarily
+    // unavailable — throw a ProjectOwnershipError here, before traversal, so
+    // nothing below can reconcile the project as empty or import another
+    // project's files. The previous index stays exactly as it was, and a
+    // later scan simply retries.
+    const verified = ownershipVerifier.verifyProject(project);
+    const absPath = verified.absPath;
 
     // Walk the directory and collect file metadata
     // Throws on permission/I/O errors to prevent false missing states
@@ -372,6 +369,19 @@ export function createAssetScanner(
       // Rethrow with a safe message (no path leakage)
       throw new Error('Project directory cannot be scanned.');
     }
+
+    // Root continuity: the snapshot is accepted only if the root is still the
+    // very directory verified above — by operation-local dev/ino (never
+    // stored) when the filesystem reports a usable file ID, otherwise (SMB
+    // without file IDs) by re-verifying the binding and marker once. A root
+    // replaced mid-traversal aborts the scan before reconciliation. Child
+    // files changing during the walk is ordinary external editing and keeps
+    // its existing semantics.
+    const current = projectService.findById(projectId);
+    if (!current) {
+      throw new ProjectNotFoundError(projectId);
+    }
+    ownershipVerifier.assertContinuity(current, verified);
 
     // Load project categories once per scan (including disabled ones) and
     // classify each discovered file against them. Filesystem traversal is

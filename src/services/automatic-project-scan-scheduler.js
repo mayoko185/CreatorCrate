@@ -23,7 +23,7 @@ function isPromiseLike(value) {
  *
  * @param {object} deps
  * @param {number|null} deps.intervalMinutes - null disables scheduling
- * @param {() => {projectService: object, assetScanner: object, appMetaRepository: object, watermarkService?: object}} deps.getScanDependencies
+ * @param {() => {projectService: object, assetScanner: object, appMetaRepository: object, watermarkService?: object, projectOwnershipAdoption?: object}} deps.getScanDependencies
  * @param {typeof setInterval} [deps.setIntervalFn]
  * @param {typeof clearInterval} [deps.clearIntervalFn]
  * @param {Console} [deps.logger]
@@ -153,6 +153,20 @@ export function createAutomaticProjectScanScheduler({
           }
         } catch (error) {
           logger.error(`[CreatorCrate] Automatic global Watermark scan failed: ${formatError(error)}`);
+        }
+      }
+
+      // PM-1C1: project scans never race ahead of the one-time ownership
+      // adoption pass. Wait for an in-flight run; if the pass still has not
+      // classified every existing project, skip project scans this cycle
+      // (the next interval tries again). Projects left unresolved by a
+      // completed pass do not hold scanning back: each fails closed alone.
+      const adoption = dependencies.projectOwnershipAdoption;
+      if (adoption && typeof adoption.isInitialPassComplete === 'function' && !adoption.isInitialPassComplete()) {
+        await adoption.waitForIdle?.();
+        if (!adoption.isInitialPassComplete()) {
+          logger.log('[CreatorCrate] Automatic project scan deferred; project ownership adoption is still running.');
+          return { ...summary, skipped: true, reason: 'ownership-adoption-pending' };
         }
       }
 

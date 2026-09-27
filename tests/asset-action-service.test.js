@@ -19,6 +19,7 @@ import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browse
 import { createAssetCategoryService } from '../src/services/asset-category-service.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
 import { createProjectService } from '../src/services/project-service.js';
+import { createProjectDirectoryOwnershipRepository } from '../src/data/project-directory-ownership-repository.js';
 import { createTestProjectOptionCatalogueService } from './helpers/project-option-catalogue.js';
 import { createProjectAssetCategoryService } from '../src/services/project-asset-category-service.js';
 import { createProjectPrimaryImageRepository } from '../src/data/project-primary-image-repository.js';
@@ -168,11 +169,13 @@ describe('asset action service', () => {
       assetCategoryRepository,
       assetRepository,
       assetBrowserPreferenceRepository,
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
       projectsRoot,
     });
     projectOperationCoordinator = createProjectOperationCoordinator();
     alreadyCoordinatedCapability = Object.freeze({});
     actionService = createAssetActionService({
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
       projectRepository, assetRepository, assetCategoryRepository, projectsRoot, projectOperationCoordinator,
       alreadyCoordinatedCapability,
     });
@@ -510,6 +513,67 @@ describe('asset action service', () => {
 
   // ─── moveAsset ───────────────────────────────────────────────────────
 
+  describe('reserved ownership-marker filename', () => {
+    it('refuses to rename, move, or copy an asset onto the project-root marker name', () => {
+      const category = createEnabledCategory('Renders', 'renders');
+      // New projects carry a real ownership marker at the project root.
+      const markerBefore = fs.readFileSync(path.join(absPath, '.creatorcrate-owner'));
+      writeFile('a.png', 'content');
+      const rootAsset = createAsset('a.png');
+      writeFile('renders/.creatorcrate-owner', 'user content');
+      const nested = createAsset('renders/.creatorcrate-owner', { categoryId: category.id });
+
+      expect(() => actionService.renameAsset(project.id, rootAsset.id, '.creatorcrate-owner'))
+        .toThrowError(expect.objectContaining({ code: 'INVALID_FILENAME' }));
+      expect(() => actionService.renameAsset(project.id, rootAsset.id, '.CreatorCrate-Owner'))
+        .toThrowError(expect.objectContaining({ code: 'INVALID_FILENAME' }));
+      expect(() => actionService.moveAsset(project.id, nested.id, UNCATEGORIZED))
+        .toThrowError(expect.objectContaining({ code: 'INVALID_FILENAME' }));
+      expect(() => actionService.moveAssets(project.id, [nested.id], UNCATEGORIZED))
+        .toThrowError(expect.objectContaining({ code: 'BATCH_PRECHECK_FAILED' }));
+      expect(() => actionService.copyAssets(project.id, [nested.id], UNCATEGORIZED))
+        .toThrowError(expect.objectContaining({ code: 'COPY_PRECHECK_FAILED' }));
+
+      expect(fs.readFileSync(path.join(absPath, '.creatorcrate-owner')).equals(markerBefore)).toBe(true);
+      expect(fs.readFileSync(path.join(absPath, 'renders', '.creatorcrate-owner'), 'utf8')).toBe('user content');
+      expect(fs.existsSync(path.join(absPath, 'a.png'))).toBe(true);
+    });
+
+    it('treats the marker name inside a category as ordinary content', () => {
+      const renders = createEnabledCategory('Renders', 'renders');
+      const wip = createEnabledCategory('Sketches', 'sketches');
+      const markerBefore = fs.readFileSync(path.join(absPath, '.creatorcrate-owner'));
+      writeFile('renders/notes.txt', 'notes');
+      writeFile('sketches/.creatorcrate-owner', 'wip content');
+      const notes = createAsset('renders/notes.txt', { categoryId: renders.id });
+      const wipMarkerNamed = createAsset('sketches/.creatorcrate-owner', { categoryId: wip.id });
+
+      // Rename within a category onto the marker name.
+      const renamed = actionService.renameAsset(project.id, notes.id, '.creatorcrate-owner');
+      expect(renamed.relative_path).toBe('renders/.creatorcrate-owner');
+      expect(fs.readFileSync(path.join(absPath, 'renders', '.creatorcrate-owner'), 'utf8')).toBe('notes');
+
+      // The nested marker-named asset stays operable: it can be renamed away…
+      const renamedAway = actionService.renameAsset(project.id, wipMarkerNamed.id, 'kept.txt');
+      expect(renamedAway.relative_path).toBe('sketches/kept.txt');
+      // …and a basename rename onto the marker name inside a category works.
+      const byBasename = actionService.renameAssetBasename(project.id, renamedAway.id, '.creatorcrate-owner');
+      expect(byBasename.relative_path).toBe('sketches/.creatorcrate-owner.txt');
+
+      // Move and copy into another category keep the name.
+      const moved = actionService.moveAsset(project.id, renamed.id, wip.id);
+      expect(moved.relative_path).toBe('sketches/.creatorcrate-owner');
+      const copied = actionService.copyAssets(project.id, [moved.id], renders.id);
+      expect(copied).toMatchObject({ copiedCount: 1, requestedCount: 1 });
+      expect(fs.readFileSync(path.join(absPath, 'renders', '.creatorcrate-owner'), 'utf8')).toBe('notes');
+
+      // Only a root-level destination is reserved; the marker is untouched.
+      expect(() => actionService.moveAsset(project.id, moved.id, UNCATEGORIZED))
+        .toThrowError(expect.objectContaining({ code: 'INVALID_FILENAME' }));
+      expect(fs.readFileSync(path.join(absPath, '.creatorcrate-owner')).equals(markerBefore)).toBe(true);
+    });
+  });
+
   describe('moveAsset', () => {
     it('moves an asset into an enabled category root', () => {
       const category = createEnabledCategory('Renders', 'renders');
@@ -788,10 +852,11 @@ describe('asset action service', () => {
       expect(link).toMatchObject({ release_id: release.id, asset_id: asset.id, role: 'primary', sort_order: 4 });
     });
 
-    it('leaves project.json bytes unchanged', () => {
+    it('leaves an existing legacy project.json byte-identical', () => {
       writeFile('a.png', 'content');
       const asset = createAsset('a.png');
       const manifestPath = path.join(absPath, MANIFEST_FILENAME);
+      fs.writeFileSync(manifestPath, '{"legacy": "sidecar"}');
       const before = fs.readFileSync(manifestPath);
 
       actionService.renameAsset(project.id, asset.id, 'b.png');
@@ -1043,6 +1108,7 @@ describe('asset action service', () => {
   describe('coordinator integration', () => {
     it('requires a projectOperationCoordinator dependency', () => {
       expect(() => createAssetActionService({
+        projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
         projectRepository, assetRepository, assetCategoryRepository, projectsRoot,
       })).toThrow();
     });
@@ -1598,6 +1664,7 @@ describe('asset action service', () => {
   describe('bulk move activity logging', () => {
     function createLoggingActionService(applicationLogger) {
       return createAssetActionService({
+        projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
         projectRepository,
         assetRepository,
         assetCategoryRepository,

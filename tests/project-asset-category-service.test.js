@@ -13,6 +13,7 @@ import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browse
 import { createAssetCategoryService } from '../src/services/asset-category-service.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createProjectRepository } from '../src/data/project-repository.js';
+import { createProjectDirectoryOwnershipRepository } from '../src/data/project-directory-ownership-repository.js';
 import { createProjectService } from '../src/services/project-service.js';
 import { createTestProjectOptionCatalogueService } from './helpers/project-option-catalogue.js';
 import { createAssetBrowserPreferenceService } from '../src/services/asset-browser-preference-service.js';
@@ -25,7 +26,7 @@ import {
   AssetCategoryValidationError,
 } from '../src/services/project-asset-category-service.js';
 import { resolveProjectDir } from '../src/storage/project-storage.js';
-import { readManifestSync } from '../src/storage/manifest.js';
+import { MANIFEST_FILENAME } from '../src/storage/manifest.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -51,6 +52,7 @@ describe('project asset category service', () => {
   let assetCategoryRepository;
   let assetBrowserPreferenceRepository;
   let assetRepository;
+  let projectDirectoryOwnershipRepository;
   let projectService;
   let assetBrowserPreferenceService;
   let service;
@@ -64,6 +66,7 @@ describe('project asset category service', () => {
       assetCategoryRepository,
       assetRepository,
       assetBrowserPreferenceRepository,
+      projectDirectoryOwnershipRepository,
       projectsRoot,
       ...overrides,
     });
@@ -83,18 +86,16 @@ describe('project asset category service', () => {
   }
 
   /**
-   * Force a REAL SQLite commit-time failure — not a thrown error from
-   * writeManifestSync — inside a project-category mutation's own
-   * transaction. Spies on one repository method that runs inside the
-   * transaction under test; on its `targetCallIndex`-th invocation (1-based,
-   * across the whole operation, including any pre-transaction calls this
-   * service now makes to capture prior manifest state), it calls through to
-   * the real implementation and then inserts an `assets` row referencing a
-   * nonexistent category id. The `assets.category_id` foreign key
-   * (migration 011) is DEFERRABLE INITIALLY DEFERRED, so the insert itself
-   * succeeds; the violation only surfaces when the operation's own
-   * `db.transaction(...)` call reaches its implicit COMMIT — exactly the
-   * "manifest published, then commit fails" sequence this defect requires.
+   * Force a REAL SQLite commit-time failure — not a thrown error — inside a
+   * project-category mutation's own transaction. Spies on one repository
+   * method that runs inside the transaction under test; on its
+   * `targetCallIndex`-th invocation (1-based, across the whole operation),
+   * it calls through to the real implementation and then inserts an
+   * `assets` row referencing a nonexistent category id. The
+   * `assets.category_id` foreign key (migration 011) is DEFERRABLE
+   * INITIALLY DEFERRED, so the insert itself succeeds; the violation only
+   * surfaces when the operation's own `db.transaction(...)` call reaches its
+   * implicit COMMIT — after any filesystem work inside that transaction.
    *
    * @returns the vi spy — caller must `.mockRestore()` it.
    */
@@ -114,6 +115,10 @@ describe('project asset category service', () => {
     });
   }
 
+  function expectNoManifest() {
+    expect(fs.existsSync(path.join(absPath, MANIFEST_FILENAME))).toBe(false);
+  }
+
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-pacs-'));
     projectsRoot = path.join(tmpDir, 'projects');
@@ -125,12 +130,14 @@ describe('project asset category service', () => {
     projectRepository = createProjectRepository(db);
     assetCategoryRepository = createAssetCategoryRepository(db);
     assetRepository = createAssetRepository(db);
+    projectDirectoryOwnershipRepository = createProjectDirectoryOwnershipRepository(db);
     const assetCategoryService = createAssetCategoryService(assetCategoryRepository);
     assetBrowserPreferenceRepository = createAssetBrowserPreferenceRepository(db);
     projectService = createProjectService(db, projectsRoot, {
       assetCategoryService,
       assetBrowserPreferenceRepository,
       projectOptionCatalogueService: createTestProjectOptionCatalogueService(db),
+      projectDirectoryOwnershipRepository,
     });
     assetBrowserPreferenceService = createAssetBrowserPreferenceService({
       preferenceRepository: assetBrowserPreferenceRepository,
@@ -163,6 +170,10 @@ describe('project asset category service', () => {
       expect(() => createProjectAssetCategoryService({
         db, projectRepository, assetCategoryRepository, assetRepository, projectsRoot,
       })).toThrow(/assetBrowserPreferenceRepository dependency/);
+      expect(() => createProjectAssetCategoryService({
+        db, projectRepository, assetCategoryRepository, assetRepository, projectsRoot,
+        assetBrowserPreferenceRepository,
+      })).toThrow(/projectDirectoryOwnershipRepository dependency/);
     });
   });
 
@@ -372,24 +383,24 @@ describe('project asset category service', () => {
   // ─── Add ───────────────────────────────────────────────────────────
 
   describe('add', () => {
-    it('creates one direct-child directory and a manifest entry when enabled', () => {
+    it('creates one direct-child directory and a SQLite row when enabled, with no manifest', () => {
       const category = service.add(project.id, { displayName: 'Raw', directorySlug: 'raw', enabled: true });
 
       expect(fs.existsSync(path.join(absPath, 'raw'))).toBe(true);
       expect(fs.statSync(path.join(absPath, 'raw')).isDirectory()).toBe(true);
 
-      const manifest = readManifestSync(absPath);
-      expect(manifest.assetCategories.find((c) => c.directorySlug === 'raw')).toEqual({
-        displayName: 'Raw', directorySlug: 'raw', displayOrder: category.display_order, enabled: true,
+      expect(assetCategoryRepository.findProjectCategoryById(project.id, category.id)).toMatchObject({
+        display_name: 'Raw', directory_slug: 'raw', display_order: category.display_order, enabled: 1,
       });
+      expectNoManifest();
     });
 
     it('creates no directory when disabled', () => {
-      service.add(project.id, { displayName: 'Raw', directorySlug: 'raw', enabled: false });
+      const category = service.add(project.id, { displayName: 'Raw', directorySlug: 'raw', enabled: false });
       expect(fs.existsSync(path.join(absPath, 'raw'))).toBe(false);
 
-      const manifest = readManifestSync(absPath);
-      expect(manifest.assetCategories.find((c) => c.directorySlug === 'raw').enabled).toBe(false);
+      expect(assetCategoryRepository.findProjectCategoryById(project.id, category.id).enabled).toBe(0);
+      expectNoManifest();
     });
 
     it('defaults to enabled when omitted', () => {
@@ -441,23 +452,6 @@ describe('project asset category service', () => {
         .toThrow(AssetCategoryValidationError);
     });
 
-    it('rolls back the category row and safely removes only the directory it created, on manifest failure', () => {
-      const before = service.list(project.id);
-
-      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementationOnce(() => {
-        throw new Error('manifest write failed');
-      });
-
-      try {
-        expect(() => service.add(project.id, { displayName: 'Raw', directorySlug: 'raw' })).toThrow();
-      } finally {
-        renameSpy.mockRestore();
-      }
-
-      expect(fs.existsSync(path.join(absPath, 'raw'))).toBe(false);
-      expect(service.list(project.id)).toEqual(before);
-    });
-
     it('never removes a pre-existing directory when creation itself fails due to a race', () => {
       // Pre-create the destination out from under the service (simulates a
       // race between the case-insensitive preflight and the exclusive mkdir).
@@ -477,14 +471,12 @@ describe('project asset category service', () => {
       expect(fs.existsSync(path.join(absPath, 'raw', 'keep.txt'))).toBe(true);
     });
 
-    // Defect 1: a real SQLite commit-time failure (not a thrown error from
-    // writeManifestSync) happening AFTER the manifest was already published
-    // from the in-progress (about-to-roll-back) state.
-    it('restores the prior manifest and rolls back the inserted row when the transaction fails at commit time', () => {
+    // A real SQLite commit-time failure happening AFTER the category
+    // directory was already created inside the transaction.
+    it('rolls back the inserted row and removes the created directory when the transaction fails at commit time', () => {
       const before = service.list(project.id);
-      const manifestBefore = readManifestSync(absPath);
 
-      const spy = forceCommitFailureOn(assetCategoryRepository, 'listProjectCategories', 2, project.id);
+      const spy = forceCommitFailureOn(assetCategoryRepository, 'addProjectCategory', 1, project.id);
       let caught;
       try {
         try {
@@ -501,8 +493,7 @@ describe('project asset category service', () => {
 
       // Inserted row rolled back.
       expect(service.list(project.id)).toEqual(before);
-      // Prior manifest is restored exactly.
-      expect(readManifestSync(absPath)).toEqual(manifestBefore);
+      expectNoManifest();
       // The directory created inside the failed transaction was cleaned up.
       expect(fs.existsSync(path.join(absPath, 'raw'))).toBe(false);
     });
@@ -511,7 +502,7 @@ describe('project asset category service', () => {
   // ─── editDisplayName ───────────────────────────────────────────────
 
   describe('editDisplayName', () => {
-    it('updates only the display name, with no filesystem rename', () => {
+    it('updates only the display name, with no filesystem change', () => {
       const [category] = service.list(project.id);
 
       const before = fs.readdirSync(absPath).sort();
@@ -519,11 +510,10 @@ describe('project asset category service', () => {
 
       expect(updated.display_name).toBe('Renamed Display');
       expect(updated.directory_slug).toBe(category.directory_slug);
+      expect(updated.id).toBe(category.id);
+      expect(updated.display_order).toBe(category.display_order);
       expect(fs.readdirSync(absPath).sort()).toEqual(before);
-
-      const manifest = readManifestSync(absPath);
-      expect(manifest.assetCategories.find((c) => c.directorySlug === category.directory_slug).displayName)
-        .toBe('Renamed Display');
+      expectNoManifest();
     });
 
     it('rejects an invalid display name', () => {
@@ -532,52 +522,11 @@ describe('project asset category service', () => {
         .toThrow(AssetCategoryValidationError);
     });
 
-    it('rolls back the database change when manifest publication fails', () => {
-      const [category] = service.list(project.id);
-      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementationOnce(() => {
-        throw new Error('manifest write failed');
-      });
-
-      try {
-        expect(() => service.editDisplayName(project.id, category.id, { displayName: 'New Name' })).toThrow();
-      } finally {
-        renameSpy.mockRestore();
-      }
-
-      expect(assetCategoryRepository.findProjectCategoryById(project.id, category.id).display_name)
-        .toBe(category.display_name);
-    });
-
     it('throws AssetCategoryNotFoundError for an unknown category', () => {
       expect(() => service.editDisplayName(project.id, 999999, { displayName: 'X' }))
         .toThrow(AssetCategoryNotFoundError);
     });
 
-    // Defect 1: old name and prior manifest remain after a real commit-time
-    // failure that happens after the manifest was already published.
-    it('restores the old name and the prior manifest when the transaction fails at commit time', () => {
-      const [category] = service.list(project.id);
-      const manifestBefore = readManifestSync(absPath);
-
-      const spy = forceCommitFailureOn(assetCategoryRepository, 'listProjectCategories', 2, project.id);
-      let caught;
-      try {
-        try {
-          service.editDisplayName(project.id, category.id, { displayName: 'New Name' });
-        } catch (err) {
-          caught = err;
-        }
-      } finally {
-        spy.mockRestore();
-      }
-
-      expect(caught).toBeInstanceOf(Error);
-      expect(caught.message).toMatch(/FOREIGN KEY constraint failed/i);
-
-      expect(assetCategoryRepository.findProjectCategoryById(project.id, category.id).display_name)
-        .toBe(category.display_name);
-      expect(readManifestSync(absPath)).toEqual(manifestBefore);
-    });
   });
 
   // ─── setEnabled ────────────────────────────────────────────────────
@@ -595,35 +544,9 @@ describe('project asset category service', () => {
       expect(updated.enabled).toBe(0);
       expect(fs.existsSync(path.join(absPath, category.directory_slug))).toBe(true);
       expect(assetRepository.findById(asset.id)).toBeTruthy();
-
-      const manifest = readManifestSync(absPath);
-      expect(manifest.assetCategories.find((c) => c.directorySlug === category.directory_slug).enabled).toBe(false);
+      expectNoManifest();
     });
 
-    // Defect 1: prior enabled state and manifest remain after a real
-    // commit-time failure that happens after the manifest was published.
-    it('restores the prior enabled state and manifest when the transaction fails at commit time', () => {
-      const [category] = service.list(project.id);
-      const manifestBefore = readManifestSync(absPath);
-
-      const spy = forceCommitFailureOn(assetCategoryRepository, 'listProjectCategories', 2, project.id);
-      let caught;
-      try {
-        try {
-          service.setEnabled(project.id, category.id, false);
-        } catch (err) {
-          caught = err;
-        }
-      } finally {
-        spy.mockRestore();
-      }
-
-      expect(caught).toBeInstanceOf(Error);
-      expect(caught.message).toMatch(/FOREIGN KEY constraint failed/i);
-
-      expect(assetCategoryRepository.findProjectCategoryById(project.id, category.id).enabled).toBe(1);
-      expect(readManifestSync(absPath)).toEqual(manifestBefore);
-    });
   });
 
   describe('setEnabled — enable', () => {
@@ -659,69 +582,46 @@ describe('project asset category service', () => {
       fs.mkdirSync(path.join(absPath, 'raw'));
       fs.writeFileSync(path.join(absPath, 'raw', 'keep.txt'), 'keep');
 
-      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementationOnce(() => {
-        throw new Error('manifest write failed');
+      const enableSpy = vi.spyOn(assetCategoryRepository, 'setProjectCategoryEnabled').mockImplementationOnce(() => {
+        throw new Error('database write failed');
       });
 
       try {
-        expect(() => service.setEnabled(project.id, category.id, true)).toThrow();
+        expect(() => service.setEnabled(project.id, category.id, true)).toThrow('database write failed');
       } finally {
-        renameSpy.mockRestore();
+        enableSpy.mockRestore();
       }
 
       expect(fs.existsSync(path.join(absPath, 'raw', 'keep.txt'))).toBe(true);
+      expect(assetCategoryRepository.findProjectCategoryById(project.id, category.id).enabled).toBe(0);
     });
 
     it('rolls back a directory it created itself when enabling fails', () => {
       const category = service.add(project.id, { displayName: 'Raw', directorySlug: 'raw', enabled: false });
 
-      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementationOnce(() => {
-        throw new Error('manifest write failed');
+      const enableSpy = vi.spyOn(assetCategoryRepository, 'setProjectCategoryEnabled').mockImplementationOnce(() => {
+        // The directory was created before the database write.
+        expect(fs.existsSync(path.join(absPath, 'raw'))).toBe(true);
+        throw new Error('database write failed');
       });
 
       try {
-        expect(() => service.setEnabled(project.id, category.id, true)).toThrow();
+        expect(() => service.setEnabled(project.id, category.id, true)).toThrow('database write failed');
       } finally {
-        renameSpy.mockRestore();
+        enableSpy.mockRestore();
       }
 
       expect(fs.existsSync(path.join(absPath, 'raw'))).toBe(false);
       expect(assetCategoryRepository.findProjectCategoryById(project.id, category.id).enabled).toBe(0);
+      expectNoManifest();
     });
 
-    // Defect 1: a newly created directory is compensated safely, and the
-    // prior enabled state and manifest are restored, after a real
-    // commit-time failure that happens after the manifest was published.
-    it('rolls back a newly created directory and restores prior state when the transaction fails at commit time', () => {
-      const category = service.add(project.id, { displayName: 'Raw', directorySlug: 'raw', enabled: false });
-      const manifestBefore = readManifestSync(absPath);
-
-      const spy = forceCommitFailureOn(assetCategoryRepository, 'listProjectCategories', 2, project.id);
-      let caught;
-      try {
-        try {
-          service.setEnabled(project.id, category.id, true);
-        } catch (err) {
-          caught = err;
-        }
-      } finally {
-        spy.mockRestore();
-      }
-
-      expect(caught).toBeInstanceOf(Error);
-      expect(caught.message).toMatch(/FOREIGN KEY constraint failed/i);
-
-      // The directory this call created was cleaned up.
-      expect(fs.existsSync(path.join(absPath, 'raw'))).toBe(false);
-      expect(assetCategoryRepository.findProjectCategoryById(project.id, category.id).enabled).toBe(0);
-      expect(readManifestSync(absPath)).toEqual(manifestBefore);
-    });
   });
 
   // ─── reorder ───────────────────────────────────────────────────────
 
   describe('reorder', () => {
-    it('persists a full reorder and rewrites the manifest', () => {
+    it('persists a full reorder in SQLite and writes no manifest', () => {
       const categories = service.list(project.id);
       const reversedIds = categories.map((c) => c.id).reverse();
 
@@ -729,10 +629,8 @@ describe('project asset category service', () => {
 
       expect(reordered.map((c) => c.id)).toEqual(reversedIds);
       expect(reordered.map((c) => c.display_order)).toEqual(reordered.map((_, i) => i));
-      const manifest = readManifestSync(absPath);
-      expect(manifest.assetCategories.map((c) => c.directorySlug)).toEqual(
-        reordered.map((c) => c.directory_slug)
-      );
+      expect(service.list(project.id).map((c) => c.id)).toEqual(reversedIds);
+      expectNoManifest();
     });
 
     it('preserves category metadata, asset assignments, browser preference, and directory identities', () => {
@@ -827,48 +725,6 @@ describe('project asset category service', () => {
       expect(service.list(project.id)).toEqual(categories);
     });
 
-    it('rolls back on manifest failure', () => {
-      const categories = service.list(project.id);
-      const before = service.list(project.id);
-
-      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementationOnce(() => {
-        throw new Error('manifest write failed');
-      });
-
-      try {
-        expect(() => service.reorder(project.id, categories.map((c) => c.id).reverse())).toThrow();
-      } finally {
-        renameSpy.mockRestore();
-      }
-
-      expect(service.list(project.id)).toEqual(before);
-    });
-
-    // Defect 1: prior order and manifest remain after a real commit-time
-    // failure that happens after the manifest was published.
-    it('restores the prior order and manifest when the transaction fails at commit time', () => {
-      const before = service.list(project.id);
-      const manifestBefore = readManifestSync(absPath);
-      const reversedIds = before.map((c) => c.id).reverse();
-
-      const spy = forceCommitFailureOn(assetCategoryRepository, 'reorderProjectCategories', 1, project.id);
-      let caught;
-      try {
-        try {
-          service.reorder(project.id, reversedIds);
-        } catch (err) {
-          caught = err;
-        }
-      } finally {
-        spy.mockRestore();
-      }
-
-      expect(caught).toBeInstanceOf(Error);
-      expect(caught.message).toMatch(/FOREIGN KEY constraint failed/i);
-
-      expect(service.list(project.id)).toEqual(before);
-      expect(readManifestSync(absPath)).toEqual(manifestBefore);
-    });
   });
 
   // ─── delete ────────────────────────────────────────────────────────
@@ -1089,9 +945,7 @@ describe('project asset category service', () => {
       const after = service.list(project.id);
       expect(after.find((c) => c.id === target.id)).toBeUndefined();
       expect(after.map((c) => c.display_order)).toEqual(after.map((_, i) => i));
-
-      const manifest = readManifestSync(absPath);
-      expect(manifest.assetCategories.find((c) => c.directorySlug === target.directory_slug)).toBeUndefined();
+      expectNoManifest();
     });
 
     it('rejects deletion of a symlinked category path', () => {
@@ -1127,33 +981,28 @@ describe('project asset category service', () => {
 
     // Defect 2: filesystem mutations cannot participate in the SQLite
     // transaction, so the (already-proven-empty) directory is removed
-    // BEFORE the category row is deleted. If the database/manifest
-    // transaction then fails, the row survives but its directory is gone —
+    // BEFORE the category row is deleted. If the database transaction then
+    // fails, the row survives but its directory is gone —
     // compensation must recreate that empty directory (or, if that isn't
     // safely possible, report the failure without touching the row).
-    it('recreates the empty category directory when the database/manifest transaction fails after pre-commit removal', () => {
+    it('recreates the empty category directory when the database transaction fails after pre-commit removal', () => {
       const [category] = service.list(project.id);
       const slug = category.directory_slug;
       const categoryPath = path.join(absPath, slug);
       assetBrowserPreferenceRepository.upsertProjectPreference(project.id, 'category', category.id);
 
-      const originalRenameSync = fs.renameSync.bind(fs);
-      let calls = 0;
-      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation((...args) => {
-        calls++;
-        // Call 1 is the quarantine rename (must succeed so the directory is
-        // proven empty and removed pre-commit); call 2 is the manifest's
-        // atomic temp->final rename inside the database transaction.
-        if (calls === 2) {
-          throw new Error('manifest write failed');
-        }
-        return originalRenameSync(...args);
-      });
+      // The directory is proven empty and removed pre-commit; the row
+      // deletion inside the database transaction then fails.
+      const deleteSpy = vi.spyOn(assetCategoryRepository, 'deleteProjectCategoryAndCompact')
+        .mockImplementationOnce(() => {
+          expect(fs.existsSync(categoryPath)).toBe(false);
+          throw new Error('database delete failed');
+        });
 
       try {
-        expect(() => service.delete(project.id, category.id)).toThrow();
+        expect(() => service.delete(project.id, category.id)).toThrow('database delete failed');
       } finally {
-        renameSpy.mockRestore();
+        deleteSpy.mockRestore();
       }
 
       // Category row remains — the transaction rolled back.
@@ -1163,9 +1012,7 @@ describe('project asset category service', () => {
         mode: 'category',
         categoryId: category.id,
       });
-      // Manifest remains unchanged (still lists the category).
-      const manifest = readManifestSync(absPath);
-      expect(manifest.assetCategories.find((c) => c.directorySlug === slug)).toBeTruthy();
+      expectNoManifest();
       // The empty directory was recreated as compensation.
       expect(fs.existsSync(categoryPath)).toBe(true);
       expect(fs.statSync(categoryPath).isDirectory()).toBe(true);
@@ -1175,14 +1022,11 @@ describe('project asset category service', () => {
       expect(leftover).toEqual([]);
     });
 
-    // Defect 1: a real SQLite commit-time failure (not a thrown error from
-    // writeManifestSync) happening AFTER the manifest was already
-    // published from the (about-to-roll-back) in-progress state, and after
-    // the category directory was already removed pre-commit.
-    it('restores the category row, order, selected preference, prior manifest bytes, and directory when the transaction fails at commit time', () => {
+    // A real SQLite commit-time failure happening after the category
+    // directory was already removed pre-commit.
+    it('restores the category row, order, selected preference, and directory when the transaction fails at commit time', () => {
       const categoriesBefore = service.list(project.id);
       const target = categoriesBefore[1];
-      const manifestBefore = readManifestSync(absPath);
       assetBrowserPreferenceRepository.upsertProjectPreference(project.id, 'category', target.id);
 
       // Unrelated asset/release state that must be completely undisturbed.
@@ -1195,7 +1039,7 @@ describe('project asset category service', () => {
       linkReleaseAsset(release.id, otherAsset.id);
       const releaseAssetsBefore = db.prepare('SELECT * FROM release_assets').all();
 
-      const spy = forceCommitFailureOn(assetCategoryRepository, 'listProjectCategories', 2, project.id);
+      const spy = forceCommitFailureOn(assetCategoryRepository, 'deleteProjectCategoryAndCompact', 1, project.id);
       let caught;
       try {
         try {
@@ -1218,8 +1062,7 @@ describe('project asset category service', () => {
         mode: 'category',
         categoryId: target.id,
       });
-      // The prior manifest bytes are restored exactly.
-      expect(readManifestSync(absPath)).toEqual(manifestBefore);
+      expectNoManifest();
       // The category directory was recreated (empty) as compensation.
       const categoryPath = path.join(absPath, target.directory_slug);
       expect(fs.existsSync(categoryPath)).toBe(true);
@@ -1241,24 +1084,19 @@ describe('project asset category service', () => {
       const slug = category.directory_slug;
       const categoryPath = path.join(absPath, slug);
 
-      const originalRenameSync = fs.renameSync.bind(fs);
-      let calls = 0;
-      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementation((...args) => {
-        calls++;
-        if (calls === 2) {
+      const deleteSpy = vi.spyOn(assetCategoryRepository, 'deleteProjectCategoryAndCompact')
+        .mockImplementationOnce(() => {
           // A foreign actor claims the now-empty slug in the window
-          // between pre-commit removal and the failed manifest write.
+          // between pre-commit removal and the failed database write.
           fs.mkdirSync(categoryPath);
           fs.writeFileSync(path.join(categoryPath, 'competing.txt'), 'competing');
-          throw new Error('manifest write failed');
-        }
-        return originalRenameSync(...args);
-      });
+          throw new Error('database delete failed');
+        });
 
       try {
-        expect(() => spiedService.delete(project.id, category.id)).toThrow();
+        expect(() => spiedService.delete(project.id, category.id)).toThrow('database delete failed');
       } finally {
-        renameSpy.mockRestore();
+        deleteSpy.mockRestore();
       }
 
       // The competing artifact was never overwritten by compensation.
@@ -1318,9 +1156,6 @@ describe('project asset category service', () => {
 
         // Category row remains — the database was never touched.
         expect(assetCategoryRepository.findProjectCategoryById(project.id, category.id)).toBeTruthy();
-        // Manifest remains unchanged.
-        const manifest = readManifestSync(absPath);
-        expect(manifest.assetCategories.find((c) => c.directorySlug === slug)).toBeTruthy();
 
         // Restoration can never safely move content back (no portable
         // no-replace rename), so the file is not lost — it is left inside
@@ -1372,9 +1207,7 @@ describe('project asset category service', () => {
         expect(caught.code).toBe('NOT_EMPTY');
 
         // Deletion did not commit.
-        expect(assetCategoryRepository.findProjectCategoryById(project.id, category.id)).toBeTruthy();
-        const manifest = readManifestSync(absPath);
-        expect(manifest.assetCategories.find((c) => c.directorySlug === slug)).toBeTruthy();
+        expect(assetCategoryRepository.findProjectCategoryById(project.id, category.id).directory_slug).toBe(slug);
 
         // The late file is not lost — it is left inside the quarantine.
         const quarantineEntry = fs.readdirSync(absPath).find((name) => name.startsWith('.cc-cat-quarantine-'));
@@ -1431,16 +1264,58 @@ describe('project asset category service', () => {
       expect(caught.message).not.toContain(absPath);
 
       // Database mutation never happened — category row remains.
-      expect(assetCategoryRepository.findProjectCategoryById(project.id, category.id)).toBeTruthy();
-      // Manifest was never rewritten.
-      const manifest = readManifestSync(absPath);
-      expect(manifest.assetCategories.find((c) => c.directorySlug === slug)).toBeTruthy();
+      expect(assetCategoryRepository.findProjectCategoryById(project.id, category.id).directory_slug).toBe(slug);
       // Quarantine remains preserved.
       const quarantineEntry = fs.readdirSync(absPath).find((name) => name.startsWith('.cc-cat-quarantine-'));
       expect(quarantineEntry).toBeTruthy();
       // A safe, path-free log entry was emitted with the structured reason.
       expect(errorLogs.some((m) => m.includes('read-failed'))).toBe(true);
       expect(errorLogs.every((m) => !m.includes(absPath))).toBe(true);
+    });
+  });
+
+  // ─── legacy project.json is not runtime authority ──────────────────
+
+  describe('legacy project.json independence', () => {
+    it('metadata-only mutations are database-only and need no project directory', () => {
+      const [first, second] = service.list(project.id);
+      fs.rmSync(absPath, { recursive: true, force: true });
+      projectRepository.setProjectDir(project.id, null);
+
+      service.editDisplayName(project.id, first.id, { displayName: 'No Dir Name' });
+      service.setEnabled(project.id, second.id, false);
+      const ids = service.list(project.id).map((c) => c.id).reverse();
+      service.reorder(project.id, ids);
+
+      const after = service.list(project.id);
+      expect(after.map((c) => c.id)).toEqual(ids);
+      expect(after.find((c) => c.id === first.id).display_name).toBe('No Dir Name');
+      expect(after.find((c) => c.id === second.id).enabled).toBe(0);
+      expect(fs.existsSync(absPath)).toBe(false);
+    });
+
+    it('never reads, rewrites, or imports an existing stale or corrupt legacy manifest', () => {
+      for (const legacyBytes of [
+        '{ corrupt',
+        JSON.stringify({ schemaVersion: 99, id: project.id + 1, assetCategories: [] }) + String.fromCharCode(10),
+      ]) {
+        const manifestPath = path.join(absPath, MANIFEST_FILENAME);
+        fs.writeFileSync(manifestPath, legacyBytes, 'utf8');
+        const idsBefore = service.list(project.id).map((c) => c.id);
+
+        const added = service.add(project.id, { displayName: 'Legacy Raw', directorySlug: 'legacy-raw' });
+        service.editDisplayName(project.id, added.id, { displayName: 'Legacy Raw Renamed' });
+        service.setEnabled(project.id, added.id, false);
+        service.setEnabled(project.id, added.id, true);
+        service.reorder(project.id, service.list(project.id).map((c) => c.id).reverse());
+        service.delete(project.id, added.id);
+
+        expect(fs.readFileSync(manifestPath, 'utf8')).toBe(legacyBytes);
+        // SQLite category identities are unchanged by the round trip.
+        expect(service.list(project.id).map((c) => c.id).sort((a, b) => a - b))
+          .toEqual([...idsBefore].sort((a, b) => a - b));
+        expect(fs.existsSync(path.join(absPath, 'legacy-raw'))).toBe(false);
+      }
     });
   });
 

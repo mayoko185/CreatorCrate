@@ -1,6 +1,7 @@
 import express from 'express';
 import { AssetProcessingError } from '../services/asset-processing-service.js';
 import { AssetProcessingScopeError } from '../services/asset-processing-scope-service.js';
+import { ProjectOwnershipError } from '../services/project-directory-ownership.js';
 import { WatermarkServiceError } from '../services/watermark-service.js';
 import { WatermarkScaleMapServiceError } from '../services/watermark-scale-map-service.js';
 import {
@@ -118,6 +119,9 @@ function isExpectedError(error) {
   return error instanceof ProcessingRouteError
     || error instanceof AssetProcessingError
     || error instanceof AssetProcessingScopeError
+    // Planning verifies project ownership; its codes and path-free messages
+    // are safe to report (409 via the error's own status).
+    || error instanceof ProjectOwnershipError
     || error instanceof WatermarkServiceError
     || error instanceof WatermarkScaleMapServiceError
     || error instanceof ProcessingPresetServiceError;

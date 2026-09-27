@@ -10,6 +10,8 @@ import {
   projectImagePresentationPolicy,
 } from './project-image-policy.js';
 import { createSourceAnimationService } from './source-animation-service.js';
+import { createProjectDirectoryOwnershipVerifier, ProjectOwnershipError } from './project-directory-ownership.js';
+import { createProjectDirectoryOwnershipRepository } from '../data/project-directory-ownership-repository.js';
 import { inspectSourceAnimation } from './source-animation.js';
 import { openAssetFile, closeAssetFile } from '../storage/asset-file.js';
 import {
@@ -30,15 +32,19 @@ import {
   atomicWriteBuffer,
   atomicWriteMeta,
   validateDerivativeFile,
+  describeDerivativeBuffer,
   readDerivativeBuffer,
   removeDerivative,
   getDerivativeBytes,
   makeStagingDir,
   buildRevisionDirName,
   writeCurrentPointer,
-  resolvePublishedDir,
   readCurrentPointer,
   removeDirTree,
+  getCacheDir,
+  inspectCachePath,
+  isValidRevisionDirName,
+  isValidStagingDirName,
   PreviewCacheError,
 } from '../storage/preview-cache.js';
 
@@ -109,6 +115,39 @@ export class PreviewGenerationError extends PreviewError {
   constructor(message) {
     super(message);
     this.name = 'PreviewGenerationError';
+  }
+}
+
+/**
+ * Generated-image publication journal state prevented a complete publication.
+ * `state` is:
+ *   - 'pending': another unresolved publication intent already owns the
+ *     asset; nothing was promoted and that intent was left untouched.
+ *   - 'unresolved': current.json names (or may name) this attempt's candidate
+ *     but SQLite finalization did not complete. The candidate directory and
+ *     its intent are deliberately retained for later recovery.
+ */
+export class PreviewPublicationJournalError extends PreviewGenerationError {
+  constructor(message, { state, candidateDirectoryName = null, cause } = {}) {
+    super(message);
+    this.name = 'PreviewPublicationJournalError';
+    this.state = state;
+    this.candidateDirectoryName = candidateDirectoryName;
+    if (cause !== undefined) this.cause = cause;
+  }
+}
+
+/**
+ * The normalized publication index is not yet trustworthy (the one-time
+ * upgrade backfill has not completed) and the asset has no committed
+ * publication, so a presentation request cannot tell "not generated" from
+ * "not imported yet". A controlled, retryable unavailability: nothing is
+ * read from current.json/meta.json and nothing is generated.
+ */
+export class PreviewPublicationNotReadyError extends PreviewGenerationError {
+  constructor(message = 'Generated-image publication index is not ready.') {
+    super(message);
+    this.name = 'PreviewPublicationNotReadyError';
   }
 }
 
@@ -360,6 +399,104 @@ function normalizeMtime(value) {
   return str;
 }
 
+/**
+ * The normalized SQLite publication snapshot of a validated staged set, built
+ * from the in-memory meta that validateStagedSet proved describes it (never
+ * re-read, and never from source/DB values observed after generation). Absent
+ * optional meta fields stay null, exactly as a legacy meta.json reads.
+ *
+ * @throws {InvalidGeneratedImagePublicationError} when the set cannot be journaled.
+ */
+function publicationSnapshot(meta, directoryName, revision) {
+  const identities = meta.generationIdentities ?? null;
+  const derivative = (kind) => ({
+    format: meta[kind].format,
+    width: meta[kind].width,
+    height: meta[kind].height,
+    sizeBytes: meta[kind].bytes,
+    generationIdentity: identities?.[kind] ?? null,
+  });
+  return normalizeGeneratedImagePublication({
+    projectId: meta.projectId,
+    assetId: meta.assetId,
+    directoryName,
+    revision,
+    generatedAt: meta.generatedAt,
+    cacheSchemaVersion: meta.schemaVersion,
+    derivativeConfigVersion: meta.derivativeConfigVersion,
+    sourceRelativePath: meta.source.relativePath,
+    sourceSizeBytes: meta.source.size,
+    sourceMtime: meta.source.mtime,
+    sourceGeneration: metaSourceGeneration(meta),
+    policyFingerprint: meta.policyFingerprint ?? null,
+    animated: meta.animated ?? null,
+    frameCount: meta.frameCount ?? null,
+    sourcePreviewQuality: meta.source.previewQuality ?? null,
+    generationIdentityVersion: identities?.version ?? null,
+    derivatives: { thumbnail: derivative('thumbnail'), preview: derivative('preview') },
+  });
+}
+
+/**
+ * The inverse of publicationSnapshot: an in-memory, parsed-meta.json-shaped
+ * view of a committed SQLite publication, so the existing freshness,
+ * prior-policy, animation, and reuse rules (compareFreshness and friends)
+ * evaluate the normalized snapshot exactly as they evaluated meta.json.
+ * Nothing is read from disk. Null optional columns stay absent, as in a
+ * legacy meta.json. The filename is always `<kind>.<format>`: parseMeta only
+ * accepts that name, and a legacy entry without one is `<kind>.webp`.
+ */
+function publicationMeta(publication) {
+  const identitiesRecorded = publication.generationIdentityVersion !== null;
+  const derivative = (kind) => {
+    const recorded = publication.derivatives[kind];
+    return {
+      width: recorded.width,
+      height: recorded.height,
+      bytes: recorded.sizeBytes,
+      format: recorded.format,
+      filename: `${kind}.${recorded.format}`,
+    };
+  };
+  const meta = {
+    schemaVersion: publication.cacheSchemaVersion,
+    derivativeConfigVersion: publication.derivativeConfigVersion,
+    projectId: publication.projectId,
+    assetId: publication.assetId,
+    source: {
+      relativePath: publication.sourceRelativePath,
+      size: publication.sourceSizeBytes,
+      mtime: publication.sourceMtime,
+      generation: publication.sourceGeneration,
+    },
+    generatedAt: publication.generatedAt,
+    thumbnail: derivative('thumbnail'),
+    preview: derivative('preview'),
+  };
+  if (publication.policyFingerprint !== null) meta.policyFingerprint = publication.policyFingerprint;
+  if (publication.animated !== null) meta.animated = publication.animated;
+  if (publication.frameCount !== null) meta.frameCount = publication.frameCount;
+  if (publication.sourcePreviewQuality !== null) meta.source.previewQuality = publication.sourcePreviewQuality;
+  if (identitiesRecorded) {
+    meta.generationIdentities = {
+      version: publication.generationIdentityVersion,
+      thumbnail: publication.derivatives.thumbnail.generationIdentity,
+      preview: publication.derivatives.preview.generationIdentity,
+    };
+  }
+  return meta;
+}
+
+/** The revision token a generation's own recorded source and policy hash to. */
+function metaRevision(meta) {
+  return buildRevisionToken({
+    projectId: meta.projectId, assetId: meta.assetId,
+    relativePath: meta.source.relativePath, size: meta.source.size,
+    mtime: meta.source.mtime, policyFingerprint: meta.policyFingerprint,
+    sourceGeneration: metaSourceGeneration(meta),
+  });
+}
+
 // ─── Service factory ─────────────────────────────────────────────────────
 
 /**
@@ -369,6 +506,24 @@ function normalizeMtime(value) {
  * @property {string} previewRoot
  * @property {Object} [processingConcurrencyService] - the shared processing
  *   pool; only actual derivative generation acquires a permit from it.
+ * @property {Object} [generatedImagePublicationRepository] - the runtime
+ *   publication authority: its committed snapshot is what every normal
+ *   reader resolves, and it journals each publication (intent before
+ *   promotion, finalization after current.json); defaults to one bound to `db`.
+ * @property {() => boolean} [publicationIndexReady] - whether the one-time
+ *   publication backfill has completed (the lifecycle record); until then a
+ *   presentation request for an asset without a committed publication is
+ *   refused as not ready (PreviewPublicationNotReadyError) instead of being
+ *   generated or read from JSON. Defaults to ready: a service built without
+ *   a lifecycle has no legacy cache to import, so its tables are complete.
+ * @property {(info: { projectId: number, assetId: number, state: string }) => void} [onPublicationUnresolved]
+ *   - notified after a publication journal error ('pending'/'unresolved') so
+ *   background recovery can run; it must not recover synchronously.
+ * @property {Object} [projectDirectoryOwnershipRepository] - PM-1B ownership
+ *   bindings; gates only source-derived SQLite authority (source
+ *   reconciliation, Krita-merged selection eligibility). Normal generated
+ *   Thumbnail/Preview serving never reads the ownership marker. Defaults to
+ *   one bound to `db`.
  * @property {Object} [_hooks] - Test-only injection points. Never set in
  *   production. Each hook may throw to simulate a failure at that stage, or
  *   return a Promise to gate generation timing for deterministic concurrency
@@ -386,7 +541,9 @@ function normalizeMtime(value) {
  * @param {PreviewServiceDeps} deps
  */
 export function createPreviewService({ db, projectsRoot, previewRoot, projectImageSettingsService,
-  processingConcurrencyService, _hooks } = {}) {
+  processingConcurrencyService, generatedImagePublicationRepository,
+  publicationIndexReady = () => true, onPublicationUnresolved = null,
+  projectDirectoryOwnershipRepository, _hooks } = {}) {
   // Actual derivative generation is admitted through the shared processing
   // pool; direct callers without one still receive a service-owned pool.
   const processingPool = processingConcurrencyService || createProcessingConcurrencyService();
@@ -395,9 +552,14 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
   }
   const projectRepo = createProjectRepository(db);
   const assetRepo = createAssetRepository(db);
+  const publications = generatedImagePublicationRepository || createGeneratedImagePublicationRepository(db);
   const hooks = _hooks || {};
+  const ownershipRepository = projectDirectoryOwnershipRepository
+    || createProjectDirectoryOwnershipRepository(db);
+  const ownershipVerifier = createProjectDirectoryOwnershipVerifier({ ownershipRepository, projectsRoot });
   const sourceAnimation = createSourceAnimationService({
     assetRepository: assetRepo, projectRepository: projectRepo, projectsRoot,
+    projectDirectoryOwnershipRepository: ownershipRepository,
   });
   const imageSettings = projectImageSettingsService || createProjectImageSettingsService({
     appMetaRepository: createAppMetaRepository(db),
@@ -523,9 +685,16 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
    *
    * @param {object} project - already-authorized project record
    * @param {object} asset - already-authorized asset record
+   * @param {object} [options]
+   * @param {boolean} [options.requireOwnership] - the result will authorize a
+   *   SQLite selection, so the project root must first be proven owned; an
+   *   unprovable root is never eligible (quality null). Presentation-only
+   *   hints skip this and stay pure reads.
+   * @param {object} [options.ownership] - the caller's operation handle, so
+   *   one selection operation verifies each project once.
    * @returns {Promise<{ quality: 'merged'|'thumbnail'|null, entryName?: string }>}
    */
-  async function inspectKritaPreviewSource(project, asset) {
+  async function inspectKritaPreviewSource(project, asset, { requireOwnership = false, ownership } = {}) {
     const projectId = typeof project === 'object' ? project?.id : project;
     const assetId = asset?.id;
     if (!Number.isInteger(projectId) || !Number.isInteger(assetId)) {
@@ -554,6 +723,15 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
       || classification.extension !== 'kra'
     ) {
       return { quality: null };
+    }
+
+    if (requireOwnership) {
+      try {
+        ownershipVerifier.operationFor(ownership).verifyProject(projectRecord);
+      } catch (err) {
+        if (err instanceof ProjectOwnershipError) return { quality: null };
+        throw err;
+      }
     }
 
     const opened = openAssetFile(projectsRoot, projectRecord.project_dir, currentAsset.relative_path);
@@ -608,32 +786,75 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
     }
   }
 
+  // A committed row the repository refuses to normalize (only possible by
+  // tampering; the writer and the backfill validate before writing) is no
+  // trustworthy publication: it reads as none, so it is republished.
+  function findCommittedRow(projectId, assetId) {
+    try {
+      return publications.findPublication(projectId, assetId);
+    } catch (err) {
+      if (err instanceof InvalidGeneratedImagePublicationError) return null;
+      throw err;
+    }
+  }
+
   /**
-   * Try to load and fully validate an existing cache entry for the given
-   * derivative type. Returns { state, path, meta, info } where state is one
-   * of: 'fresh', 'stale', 'corrupt', 'absent'.
+   * The asset's committed generated-image publication: the normal runtime
+   * authority. One SQLite read returns the parent row and both derivatives
+   * from one snapshot; a pending publication intent never hides it. The
+   * revision directory is derived from the configured preview root, the IDs,
+   * and the validated committed `directory_name` — current.json and
+   * meta.json are never consulted. Returns null when the asset has no
+   * committed publication.
+   *
+   * @returns {{ publication: object, meta: object, dir: string }|null}
+   */
+  function committedPublication(projectId, assetId) {
+    const publication = findCommittedRow(projectId, assetId);
+    if (!publication) return null;
+    return {
+      publication,
+      meta: publicationMeta(publication),
+      dir: path.join(getCacheDir(previewRoot, projectId, assetId), publication.directoryName),
+    };
+  }
+
+  // Both recorded derivative files of a committed pair exist as regular,
+  // non-symlinked files inside a real revision directory under the preview
+  // root (the complete-pair check the pointer-based resolver made).
+  function committedPairPresent(committed) {
+    return ['thumbnail', 'preview'].every((kind) => inspectCachePath(
+      previewRoot, path.join(committed.dir, committed.meta[kind].filename), 'file').ok);
+  }
+
+  /**
+   * Load and fully validate the committed publication for the given
+   * derivative type against the current source authority. Returns
+   * { state, dir, filePath, meta, info } where state is one of: 'fresh',
+   * 'prior-policy', 'stale', 'corrupt', 'absent'.
+   *
+   * SQLite is the only publication input: freshness is decided from the
+   * committed snapshot (via its meta-shaped view), and the requested
+   * derivative's actual bytes are validated on disk. 'absent' means no
+   * committed publication; 'corrupt' means the committed pair's bytes (or
+   * the snapshot's own consistency) failed validation.
    *
    * @param {number} projectId
    * @param {number} assetId
    * @param {object} currentCtx      - sourceContext(asset)
    * @param {'thumbnail'|'preview'} kind
+   * @param {boolean} [allowPolicyFallback]
+   * @param {object|null} [committed] - a snapshot already loaded by the caller
+   *   (so paired probes evaluate one publication); loaded when omitted.
    */
-  async function probeCacheEntry(projectId, assetId, currentCtx, kind, allowPolicyFallback = false) {
-    // Readers resolve ONLY a complete, published cache revision via the
-    // current.json pointer. Staged (tmp-*/) files are never visible here.
-    const dir = resolvePublishedDir(previewRoot, projectId, assetId);
-    if (!dir) {
+  async function probeCacheEntry(projectId, assetId, currentCtx, kind, allowPolicyFallback = false,
+    committed = committedPublication(projectId, assetId)) {
+    if (!committed) {
       return { state: 'absent' };
     }
-    const metaPath = path.join(dir, META_FILENAME);
-    const metaResult = readMetaFile(metaPath);
-    if (!metaResult.ok) {
-      return { state: 'corrupt', dir };
-    }
-    const meta = metaResult.meta;
-    const derivativeMeta = kind === 'thumbnail' ? meta.thumbnail : meta.preview;
-    const filename = derivativeMeta.filename || (kind === 'thumbnail' ? THUMBNAIL_FILENAME : PREVIEW_FILENAME);
-    const filePath = path.join(dir, filename);
+    const { meta, dir, publication } = committed;
+    const derivativeMeta = meta[kind];
+    const filePath = path.join(dir, derivativeMeta.filename);
 
     const freshness = compareFreshness(meta, currentCtx);
     const policyOnly = freshness.reasons.length === 1 && freshness.reasons[0] === 'policy changed';
@@ -641,18 +862,15 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
       return { state: 'stale', dir, filePath, meta, reasons: freshness.reasons };
     }
 
-    let actualRevision;
-    if (policyOnly) {
-      const pointer = readCurrentPointer(previewRoot, projectId, assetId);
-      actualRevision = buildRevisionToken({
-        projectId: meta.projectId, assetId: meta.assetId,
-        relativePath: meta.source.relativePath, size: meta.source.size,
-        mtime: meta.source.mtime, policyFingerprint: meta.policyFingerprint,
-        sourceGeneration: metaSourceGeneration(meta),
-      });
-      if (!meta.policyFingerprint || !pointer.ok || path.basename(dir) !== pointer.pointer.dir
-        || pointer.pointer.revision !== actualRevision) return { state: 'corrupt', dir };
+    // The committed row is the runtime-selected generation. Its revision
+    // must still be the one its own recorded source/policy hashes to (a
+    // prior-policy pair additionally needs a recorded fingerprint); the
+    // directory name was validated against that revision when read.
+    const actualRevision = metaRevision(meta);
+    if (actualRevision !== publication.revision || (policyOnly && !meta.policyFingerprint)) {
+      return { state: 'corrupt', dir };
     }
+    if (!committedPairPresent(committed)) return { state: 'corrupt', dir };
 
     const expectAnimated =
       kind === 'preview' && meta.animated === true;
@@ -674,7 +892,7 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
     if (policyOnly) {
       const otherKind = kind === 'thumbnail' ? 'preview' : 'thumbnail';
       const other = meta[otherKind];
-      const otherPath = path.join(dir, other.filename || `${otherKind}.webp`);
+      const otherPath = path.join(dir, other.filename);
       const otherValidation = await validateExistingDerivative(
         otherPath, other, otherKind === 'preview' && meta.animated === true);
       if (!otherValidation.valid) return { state: 'corrupt', dir };
@@ -686,7 +904,7 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
       filePath,
       meta,
       info: validation.info,
-      actualRevision,
+      actualRevision: policyOnly ? actualRevision : undefined,
     };
   }
 
@@ -1008,8 +1226,9 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
    * Find derivatives of the currently published pair that the next generation
    * may copy instead of re-encoding. Every condition must hold, otherwise the
    * kind is encoded normally:
-   *   - current.json and the published directory resolve to a complete pair
-   *     whose pointer revision matches its own metadata;
+   *   - the committed SQLite publication (never current.json/meta.json)
+   *     names a complete pair on disk whose committed revision matches its
+   *     own recorded source/policy;
    *   - schema/config version, project/asset identity, source path, size,
    *     mtime and source generation match the authoritative source this
    *     attempt already verified (only the policy may differ);
@@ -1021,22 +1240,14 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
    */
   function findReusableDerivatives(projectId, assetId, ctx, policy, targetIdentities, sourceAnimated) {
     const reusable = { thumbnail: null, preview: null };
-    const dir = resolvePublishedDir(previewRoot, projectId, assetId);
-    if (!dir) return reusable;
-    const pointer = readCurrentPointer(previewRoot, projectId, assetId);
-    const metaResult = readMetaFile(path.join(dir, META_FILENAME));
-    if (!pointer.ok || path.basename(dir) !== pointer.pointer.dir || !metaResult.ok) return reusable;
-    const meta = metaResult.meta;
+    const committed = committedPublication(projectId, assetId);
+    if (!committed || !committedPairPresent(committed)) return reusable;
+    const { meta, dir, publication } = committed;
     const freshness = compareFreshness(meta, ctx);
     if (!freshness.fresh && !(freshness.reasons.length === 1 && freshness.reasons[0] === 'policy changed')) {
       return reusable;
     }
-    if (!meta.policyFingerprint || pointer.pointer.revision !== buildRevisionToken({
-      projectId: meta.projectId, assetId: meta.assetId,
-      relativePath: meta.source.relativePath, size: meta.source.size,
-      mtime: meta.source.mtime, policyFingerprint: meta.policyFingerprint,
-      sourceGeneration: metaSourceGeneration(meta),
-    })) return reusable;
+    if (!meta.policyFingerprint || publication.revision !== metaRevision(meta)) return reusable;
     const identities = meta.generationIdentities;
     if (!identities || identities.version !== targetIdentities.version) return reusable;
     if (meta.animated !== sourceAnimated || meta.source.previewQuality !== undefined) return reusable;
@@ -1154,14 +1365,20 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
    *   - Before publication, both the database revision and the opened source
    *     descriptor/path are checked against the generation input. If either
    *     moved on, the staged output is discarded within the two-attempt bound.
-   *   - Publication is: rename staging → r-<rev>-<rand> (immutable dir), then
-   *     atomically replace current.json. A failure between the rename and
-   *     the pointer write removes the orphaned revision directory so no
-   *     staged output survives a failed publication.
+   *   - Publication is: commit a SQLite publication intent for the exact
+   *     candidate directory, rename staging → r-<rev>-<rand> (immutable dir),
+   *     atomically replace current.json, then atomically finalize the SQLite
+   *     publication snapshot (parent + both derivatives, intent deleted). A
+   *     failure between the rename and the pointer write removes the orphaned
+   *     revision directory and releases the intent, so no staged output
+   *     survives a failed publication.
    *
-   * On any failure the staging directory (or orphaned revision directory) is
-   * removed and the previously published cache is left byte-for-byte
-   * unchanged.
+   * On any failure before current.json switches, the staging directory (or
+   * orphaned revision directory) is removed and the previously published
+   * cache is left byte-for-byte unchanged. Once current.json names the
+   * candidate (or the pointer write's outcome cannot be proven), a failure
+   * keeps the candidate and its intent for recovery and is reported as a
+   * PreviewPublicationJournalError('unresolved').
    *
    * Selective reuse: for ordinary raster sources (not Krita) and unless
    * `allowReuse` is false (manual force rebuild), each attempt re-inspects
@@ -1187,6 +1404,16 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
    * @throws {PreviewError} if the source changed during both attempts and no
    *   consistent cache could be published.
    */
+  // Release this attempt's intent once its candidate is known unpublished.
+  // Conditional on the owning ID, so a newer intent is never cleared. A
+  // failed clear leaves the intent for recovery rather than masking the
+  // publication failure being reported.
+  function releaseIntent(intent) {
+    try {
+      publications.clearIntent(intent.projectId, intent.assetId, intent.intentId);
+    } catch { /* retained for recovery */ }
+  }
+
   function generateAndPublish(projectId, assetId, targetPolicy, isTargetAuthoritative, options = {}) {
     // Pin the source's descriptor identity before queueing (still inside the
     // asset lock, permit-free) so a post-admission fresh return can also
@@ -1195,7 +1422,14 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
     const queuedSource = options.recheckFresh
       ? statQueuedSource(projectId, assetId, options.sourceBaseline) : null;
     return processingPool.run(() => generateAndPublishAdmitted(projectId, assetId, targetPolicy,
-      isTargetAuthoritative, { ...options, queuedSource }));
+      isTargetAuthoritative, { ...options, queuedSource })).catch((err) => {
+      // An intent left behind (or one blocking this writer) is handed to
+      // background recovery; this caller still receives its own error.
+      if (err instanceof PreviewPublicationJournalError) {
+        try { onPublicationUnresolved?.({ projectId, assetId, state: err.state }); } catch { /* best effort */ }
+      }
+      throw err;
+    });
   }
 
   // The source generation is pinned with the descriptor identity so a
@@ -1281,8 +1515,12 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
       await runHook('onStagingCreated', staging.dirName);
 
       // Track whether staging was promoted to a revision directory so the
-      // failure path knows which directory to remove.
+      // failure path knows which directory to remove, this attempt's
+      // publication intent, and whether the candidate is (or may be)
+      // referenced by current.json and so must never be removed.
       let renamedTo = null;
+      let intent = null;
+      let candidateRetained = false;
       try {
         const source = await readSourceForDerivative(project, asset, classification);
         const { buffer: sourceBuffer, quality: sourceQuality } = source;
@@ -1436,6 +1674,27 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
         // atomically swap the pointer.
         const finalDirName = buildRevisionDirName(revNow);
         const finalDir = path.join(parentDir, finalDirName);
+        // Built (and validated) before the intent, so a set that cannot be
+        // journaled fails here instead of after current.json has switched.
+        const snapshot = publicationSnapshot(meta, finalDirName, revNow);
+
+        // Journal the candidate before the first publication-affecting
+        // filesystem operation. The per-asset lock already serializes writers
+        // in this process, so an existing intent is an unresolved earlier
+        // publication; it is never overwritten or cleared here.
+        const previousPointer = readCurrentPointer(previewRoot, projectId, assetId);
+        intent = publications.acquireIntent({
+          projectId,
+          assetId,
+          candidateDirectoryName: finalDirName,
+          stagingDirectoryName: staging.dirName,
+          expectedRevision: revNow,
+          previousDirectoryName: previousPointer.ok ? previousPointer.pointer.dir : null,
+        });
+        if (!intent) {
+          throw new PreviewPublicationJournalError(
+            'Another generated-image publication is unresolved for this asset.', { state: 'pending' });
+        }
 
         await runHook('beforePublishRename');
         try {
@@ -1450,6 +1709,7 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
         sourceMoved = ordinarySource && !sourceMatches(project, asset, source.stat);
         if (currentRevisionFor(assetId) !== revNow || sourceMoved) {
           removeDirTree(finalDir);
+          releaseIntent(intent);
           if (sourceMoved) {
             reuseAllowed = false;
             if (attempt === 0 && !reconcileMovedSource(asset, revNow)) {
@@ -1458,11 +1718,40 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
           }
           continue;
         }
-        writeCurrentPointer(parentDir, {
-          dir: finalDirName,
-          revision: revNow,
-          generatedAt,
-        });
+        try {
+          writeCurrentPointer(parentDir, {
+            dir: finalDirName,
+            revision: revNow,
+            generatedAt,
+          });
+        } catch (err) {
+          // current.json is the filesystem publication witness. Only a
+          // readable pointer naming another directory, or none at all, proves
+          // the candidate unpublished; anything else is left for recovery.
+          const after = readCurrentPointer(previewRoot, projectId, assetId);
+          if (after.ok ? after.pointer.dir !== finalDirName : after.reason === 'missing') throw err;
+          candidateRetained = true;
+          throw new PreviewPublicationJournalError(
+            'Generated-image publication state is unresolved after the pointer write failed.',
+            { state: 'unresolved', candidateDirectoryName: finalDirName, cause: err });
+        }
+        // current.json names the candidate: it is durably published on the
+        // filesystem and must never again be treated as removable output.
+        candidateRetained = true;
+
+        let finalized;
+        try {
+          finalized = publications.finalizePublication(intent.intentId, snapshot);
+        } catch (err) {
+          throw new PreviewPublicationJournalError(
+            'Generated-image publication was not finalized.',
+            { state: 'unresolved', candidateDirectoryName: finalDirName, cause: err });
+        }
+        if (!finalized) {
+          throw new PreviewPublicationJournalError(
+            'Generated-image publication intent is no longer owned by this writer.',
+            { state: 'unresolved', candidateDirectoryName: finalDirName });
+        }
 
         return {
           thumbnailPath: path.join(finalDir, thumb.filename),
@@ -1471,12 +1760,17 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
           revision: revNow,
         };
       } catch (err) {
+        // Once current.json names (or may name) the candidate, its bytes are
+        // published: keep the directory and the intent for recovery.
+        if (candidateRetained) throw err;
         // A failure after the rename (pointer write) leaves an orphaned
         // revision directory not referenced by the pointer; remove it so no
         // staged output survives. A failure before the rename leaves the
         // staging directory; remove that. The previously published cache is
-        // untouched in either case.
+        // untouched in either case. The candidate is then known unpublished,
+        // so this attempt's own intent is released.
         removeDirTree(renamedTo || staging.dir);
+        if (intent) releaseIntent(intent);
         throw err;
       }
     }
@@ -1516,12 +1810,36 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
     }
   }
 
+  // Animation authority of a published pair over the asset row's recorded
+  // source animation (never the pair's own meta.json), shared by
+  // presentation and the upgrade backfill. For a GIF/WebP source:
+  //   - `allowPolicyFallback`: a row with no recorded state (as loaded,
+  //     before resolution) admits no prior-policy pair;
+  //   - `matches(asset, meta)`: once the (resolved) row records a state, the
+  //     pair must record a boolean animation equal to it. A still-unknown
+  //     row is no mismatch here: presentation cannot prove such a source
+  //     (sourceProof answers 'unknown') and leaves it to the locked path.
+  // Other sources carry no animation authority.
+  function publishedAnimationAuthority(loadedAsset) {
+    const animationSource = ['gif', 'webp'].includes(String(loadedAsset.extension || '').toLowerCase());
+    return {
+      allowPolicyFallback: !(animationSource && loadedAsset.source_animated == null),
+      matches: (asset, meta) => !animationSource || asset.source_animated == null
+        || (typeof meta.animated === 'boolean' && meta.animated === Boolean(asset.source_animated)),
+    };
+  }
+
   // Presentation reads of the published pair, taken before the per-asset
-  // lock. Published revision directories are immutable and current.json is
-  // swapped atomically, so a pair that is fresh for the current authority is
+  // lock. The pair is the committed SQLite publication (current.json and
+  // meta.json are never read): its revision directory is immutable and the
+  // committed snapshot switches only in the writer's finalization
+  // transaction, so a pair that is fresh for the current authority is
   // served exactly as the locked path would serve it, without waiting behind
   // an in-flight generation (including a manual force rebuild) that is only
-  // replacing it. A complete prior-policy pair is served the same way.
+  // replacing it. A pending publication intent is not consulted: until its
+  // candidate is finalized, even after current.json already names it, the
+  // previous committed generation remains the one served. A complete
+  // prior-policy pair is served the same way.
   // Cache-vs-DB agreement is not enough to bypass the lock: the row can
   // predate an unscanned replacement, and the row or policy can move while
   // the pair is validated. So either candidate is returned only after the
@@ -1546,8 +1864,7 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
   // identity (after any GIF/WebP structural read) was proven.
   async function publishedForPresentation(kind, projectId, assetId) {
     const { project, asset: loadedAsset } = loadProjectAndAsset(projectId, assetId);
-    const animationSource = ['gif', 'webp'].includes(String(loadedAsset.extension || '').toLowerCase());
-    const animationUnknown = animationSource && loadedAsset.source_animated == null;
+    const animation = publishedAnimationAuthority(loadedAsset);
     const policy = currentPolicy();
     const { asset, fingerprint } = resolvedIdentity(policy, loadedAsset);
     const classification = classifyPreviewable(asset);
@@ -1555,7 +1872,7 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
     const target = buildAssetRevision(asset, fingerprint);
     if (!target) return {};
     const pinned = pinSourceStat(project, asset);
-    const probed = await probeCacheEntry(projectId, assetId, target.context, kind, !animationUnknown);
+    const probed = await probeCacheEntry(projectId, assetId, target.context, kind, animation.allowPolicyFallback);
     if (probed.state !== 'fresh' && probed.state !== 'prior-policy') return {};
     // Krita documents keep their existing (tuple-only) authority model.
     const ordinarySource = classification.kind === 'image';
@@ -1580,13 +1897,224 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
       } };
     }
     if (proof !== 'ok'
-      || (animationSource && (typeof probed.meta.animated !== 'boolean'
-        || probed.meta.animated !== Boolean(asset.source_animated)))
+      || !animation.matches(asset, probed.meta)
       || currentRevisionFor(assetId) !== target.revision
       || assetRepo.findById(assetId)?.source_animated !== asset.source_animated) return {};
     return { published: probed.state === 'fresh'
       ? readyDerivative(kind, probed, target.revision, 'fresh')
       : readyDerivative(kind, probed, probed.actualRevision, 'prior-policy') };
+  }
+
+  // ── Publication maintenance (backfill / intent recovery) ───────────
+  //
+  // Explicit maintenance only. The one-time legacy backfill and targeted
+  // intent recovery (generated-image-publication-lifecycle-service) read
+  // current.json and meta.json through these helpers, always while holding
+  // the per-asset lock (`withPublicationLock`). No request path calls them,
+  // and none of them writes to SQLite: the caller commits the decision.
+
+  // current.json for maintenance decisions. 'unsafe' is a definitive verdict
+  // only when inspection establishes a symlinked, non-file, or escaping
+  // pointer path; a path that inspects as a safe file (or cannot be
+  // inspected) after a failed read stays 'unreadable', a possibly transient
+  // I/O failure. 'schema' reads as 'malformed' (content was read and parsed).
+  function readPointerForMaintenance(projectId, assetId) {
+    const pointer = readCurrentPointer(previewRoot, projectId, assetId);
+    if (pointer.ok || pointer.reason === 'missing') return pointer;
+    if (pointer.reason === 'unreadable') {
+      const inspection = inspectCachePath(previewRoot,
+        path.join(getCacheDir(previewRoot, projectId, assetId), 'current.json'), 'file');
+      const unsafe = ['symlink', 'not-file', 'not-directory', 'containment'].includes(inspection.reason);
+      return { ok: false, reason: unsafe ? 'unsafe' : 'unreadable' };
+    }
+    return { ok: false, reason: 'malformed' };
+  }
+
+  // One recorded derivative of a generation under validation, already
+  // inspected as a safe regular file. Only bytes actually read can prove it
+  // incomplete (absent, wrong size, not decodable as recorded); a read that
+  // fails for any other reason is 'unreadable', never a verdict.
+  async function validateGenerationDerivative(filePath, recorded, expectAnimated) {
+    const sh = await sharp(); // a load failure is no verdict: it propagates
+    let buffer;
+    try {
+      buffer = fs.readFileSync(filePath);
+    } catch (err) {
+      return err?.code === 'ENOENT' ? 'incomplete' : 'unreadable';
+    }
+    if (buffer.length !== recorded.bytes) return 'incomplete';
+    let info;
+    try {
+      info = await describeDerivativeBuffer(sh, buffer, recorded.format || 'webp');
+    } catch {
+      return 'incomplete';
+    }
+    return info.width === recorded.width && info.height === recorded.height
+      && info.animated === expectAnimated ? 'ok' : 'incomplete';
+  }
+
+  /**
+   * Validate one generation directory of an asset as a complete,
+   * self-describing publication of `revision`: a real directory (never a
+   * symlink) under the asset cache root; a parseable meta.json naming this
+   * project/asset whose own recorded source/policy hashes to `revision`;
+   * and both derivatives present, of the recorded size and dimensions, and
+   * decodable in the recorded format and animation. The snapshot is built
+   * only from that immutable meta.json, never from current DB/policy values.
+   *
+   * @returns {Promise<{ ok: true, meta: object, snapshot: object }
+   *   | { ok: false, reason: 'unreadable'|'invalid'|'incomplete'|'unnormalizable', uncertain?: true }>}
+   *   `uncertain` marks a possibly transient I/O failure, not a verdict.
+   */
+  async function validateGeneration(projectId, assetId, dirName, revision) {
+    const unreadable = { ok: false, reason: 'unreadable', uncertain: true };
+    if (!isValidRevisionDirName(dirName) || !dirName.startsWith(`r-${revision}-`)) {
+      return { ok: false, reason: 'invalid' };
+    }
+    const dir = path.join(getCacheDir(previewRoot, projectId, assetId), dirName);
+    const dirCheck = inspectCachePath(previewRoot, dir, 'directory');
+    if (!dirCheck.ok) {
+      if (dirCheck.reason === 'unreadable') return unreadable;
+      return { ok: false, reason: dirCheck.reason === 'missing' ? 'incomplete' : 'invalid' };
+    }
+    const metaResult = readMetaFile(path.join(dir, META_FILENAME));
+    if (!metaResult.ok) return metaResult.reason === 'unreadable' ? unreadable : { ok: false, reason: 'invalid' };
+    const meta = metaResult.meta;
+    if (meta.projectId !== projectId || meta.assetId !== assetId || revision !== buildRevisionToken({
+      projectId: meta.projectId, assetId: meta.assetId,
+      relativePath: meta.source.relativePath, size: meta.source.size,
+      mtime: meta.source.mtime, policyFingerprint: meta.policyFingerprint,
+      sourceGeneration: metaSourceGeneration(meta),
+    })) return { ok: false, reason: 'invalid' };
+    for (const kind of ['thumbnail', 'preview']) {
+      const recorded = meta[kind];
+      const filePath = path.join(dir, recorded.filename || (kind === 'thumbnail' ? THUMBNAIL_FILENAME : PREVIEW_FILENAME));
+      const fileCheck = inspectCachePath(dir, filePath, 'file');
+      if (!fileCheck.ok) {
+        if (fileCheck.reason === 'unreadable') return unreadable;
+        return { ok: false, reason: fileCheck.reason === 'missing' ? 'incomplete' : 'invalid' };
+      }
+      // Thumbnails are always static; the preview is animated only when recorded.
+      const validation = await validateGenerationDerivative(filePath, recorded,
+        kind === 'preview' && meta.animated === true);
+      if (validation === 'unreadable') return unreadable;
+      if (validation !== 'ok') return { ok: false, reason: 'incomplete' };
+    }
+    try {
+      return { ok: true, meta, snapshot: publicationSnapshot(meta, dirName, revision) };
+    } catch (err) {
+      if (err instanceof InvalidGeneratedImagePublicationError) return { ok: false, reason: 'unnormalizable' };
+      throw err;
+    }
+  }
+
+  /**
+   * Upgrade backfill: classify the legacy filesystem publication of one
+   * DB-owned asset. Returns `{ outcome: 'imported', snapshot }` only for the
+   * generation current.json names, validated completely, whose meta.json
+   * corresponds to the pointer revision and to this asset, and which today's
+   * reader would serve for the asset's current source: fresh, or differing
+   * only by image policy under a recorded policy fingerprint (the
+   * prior-policy case; a fingerprint-less one is 'stale'), in both cases under the
+   * presentation animation authority (`publishedAnimationAuthority`); a pair
+   * that authority rejects is 'stale' (repaired, never imported). Anything
+   * else is an outcome with no snapshot; nothing is fabricated or guessed
+   * from other revision directories. Filesystem metadata never updates the
+   * asset row.
+   */
+  async function inspectLegacyPublication(projectId, assetId) {
+    const project = projectRepo.findById(projectId);
+    const loadedAsset = assetRepo.findById(assetId);
+    if (!project || !loadedAsset || loadedAsset.project_id !== projectId) return { outcome: 'gone' };
+    const pointer = readPointerForMaintenance(projectId, assetId);
+    if (!pointer.ok) return { outcome: pointer.reason === 'unsafe' ? 'unreadable' : pointer.reason };
+    const generation = await validateGeneration(projectId, assetId, pointer.pointer.dir, pointer.pointer.revision);
+    if (!generation.ok) return { outcome: generation.reason };
+    const { asset, fingerprint } = resolvedIdentity(currentPolicy(), loadedAsset);
+    const current = buildAssetRevision(asset, fingerprint);
+    if (!current) return { outcome: 'stale' };
+    const freshness = compareFreshness(generation.meta, current.context);
+    const policyOnly = freshness.reasons.length === 1 && freshness.reasons[0] === 'policy changed';
+    if (!freshness.fresh && !policyOnly) return { outcome: 'stale' };
+    // Same rule as probeCacheEntry: prior-policy output is servable only
+    // under its own recorded fingerprint; without one it is regenerated.
+    if (policyOnly && !generation.meta.policyFingerprint) return { outcome: 'stale' };
+    const animation = publishedAnimationAuthority(loadedAsset);
+    if ((policyOnly && !animation.allowPolicyFallback) || !animation.matches(asset, generation.meta)) {
+      return { outcome: 'stale' };
+    }
+    return { outcome: 'imported', snapshot: generation.snapshot };
+  }
+
+  /**
+   * Intent recovery: decide one unresolved publication intent from
+   * current.json alone (never from directory existence or timestamps).
+   *   - pointer names the candidate → validate it; 'finalize' with the
+   *     snapshot of its immutable meta.json, or 'abandon' when it is
+   *     definitively invalid/incomplete;
+   *   - pointer names the recorded previous directory → 'revert' (the
+   *     candidate never became the published generation);
+   *   - pointer missing, malformed, unsafe, or naming any other directory →
+   *     'abandon': the candidate is established as not publishable;
+   *   - a possibly transient read failure → 'retain' (decide later);
+   *   - the intent no longer owns the asset → 'superseded'.
+   * The committed publication is never an input: candidate uncertainty says
+   * nothing about the previous generation.
+   */
+  async function inspectPublicationIntent(intent) {
+    const owned = publications.findIntent(intent.projectId, intent.assetId);
+    if (!owned || owned.intentId !== intent.intentId) return { action: 'superseded' };
+    const pointer = readPointerForMaintenance(owned.projectId, owned.assetId);
+    if (!pointer.ok) {
+      return pointer.reason === 'unreadable'
+        ? { action: 'retain', reason: 'pointer-unreadable' }
+        : { action: 'abandon', reason: `pointer-${pointer.reason}` };
+    }
+    const named = pointer.pointer.dir;
+    if (named === owned.candidateDirectoryName) {
+      if (pointer.pointer.revision !== owned.expectedRevision) {
+        return { action: 'abandon', reason: 'candidate-invalid' };
+      }
+      const generation = await validateGeneration(owned.projectId, owned.assetId, named, owned.expectedRevision);
+      if (generation.ok) return { action: 'finalize', snapshot: generation.snapshot };
+      return generation.uncertain
+        ? { action: 'retain', reason: 'candidate-unreadable' }
+        : { action: 'abandon', reason: `candidate-${generation.reason}` };
+    }
+    if (owned.previousDirectoryName !== null && named === owned.previousDirectoryName) {
+      return { action: 'revert' };
+    }
+    return { action: 'abandon', reason: 'pointer-unexpected' };
+  }
+
+  /**
+   * Remove the reverted operation's own candidate and staging directories.
+   * Ownership is proven by the intent (server-generated, validated names in
+   * this asset's cache root), and only while current.json still names the
+   * intent's previous directory: a directory current.json or the committed
+   * publication names, or the previous one, is never removed.
+   * @returns {string[]} the removed directory names
+   */
+  function removeIntentRemnants(intent) {
+    const pointer = readCurrentPointer(previewRoot, intent.projectId, intent.assetId);
+    if (!pointer.ok || intent.previousDirectoryName === null
+      || pointer.pointer.dir !== intent.previousDirectoryName) return [];
+    const committed = publications.findPublication(intent.projectId, intent.assetId);
+    const parentDir = getCacheDir(previewRoot, intent.projectId, intent.assetId);
+    const removed = [];
+    for (const name of [intent.candidateDirectoryName, intent.stagingDirectoryName]) {
+      if (!isValidRevisionDirName(name) && !isValidStagingDirName(name)) continue;
+      if (name === pointer.pointer.dir || name === committed?.directoryName) continue;
+      const dir = path.join(parentDir, name);
+      if (!inspectCachePath(previewRoot, dir, 'directory').ok) continue;
+      removeDirTree(dir);
+      removed.push(name);
+    }
+    return removed;
+  }
+
+  function indexReady() {
+    try { return Boolean(publicationIndexReady()); } catch { return false; }
   }
 
   // ── Public: getThumbnail / getPreview ───────────────────────────────
@@ -1604,8 +2132,12 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
    *     presentation does not wait for a rebuild (automatic or manual force)
    *     of that asset. `ensureCurrent` callers skip this and always queue.
    *   - Inside the lock the authoritative project/asset is reloaded from the
-   *     DB, the current published cache is probed, and a fresh entry is
+   *     DB, the committed SQLite publication is probed, and a fresh entry is
    *     returned without regeneration when one already exists.
+   *   - Publication state comes only from SQLite. A missing committed
+   *     publication (once the index is ready) or a committed pair whose
+   *     bytes fail validation is regenerated here through the journal;
+   *     before the index is ready a missing one is refused as not ready.
    *   - Regeneration stages a complete set and publishes atomically, with a
    *     pre-publish source-revision recheck (see generateAndPublish).
    *
@@ -1658,6 +2190,14 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
         if (probed.state === 'fresh') {
           return readyDerivative(kind, probed, revision, 'fresh');
         }
+      }
+
+      // Before the one-time upgrade backfill completes, a missing committed
+      // publication may only mean "not imported yet": refuse (retryably)
+      // rather than trust the partial index, read legacy JSON, or generate.
+      // Once ready, a missing row is an unpublished asset and is generated.
+      if (!indexReady() && !findCommittedRow(projectId, assetId)) {
+        throw new PreviewPublicationNotReadyError();
       }
 
       // absent | stale | corrupt → regenerate the complete set atomically,
@@ -1721,8 +2261,15 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
         if (!revision) throw new PreviewNotFoundError('Asset source metadata is unavailable.');
         // A force rebuild always generates, so it never needs the probe
         // result (each probe re-reads and decodes a published derivative).
-        const thumbnail = force ? null : await probeCacheEntry(projectId, assetId, revision.context, 'thumbnail');
-        const preview = force ? null : await probeCacheEntry(projectId, assetId, revision.context, 'preview');
+        // Both probes evaluate one committed SQLite snapshot. Without one
+        // (never published, restore reset, not imported yet) the asset is
+        // published here through the journal (reuse allowed), so SQLite
+        // gains a trustworthy snapshot; legacy JSON is never consulted.
+        const committed = force ? null : committedPublication(projectId, assetId);
+        const thumbnail = force ? null
+          : await probeCacheEntry(projectId, assetId, revision.context, 'thumbnail', false, committed);
+        const preview = force ? null
+          : await probeCacheEntry(projectId, assetId, revision.context, 'preview', false, committed);
         if (JSON.stringify(currentPolicy()) !== JSON.stringify(target) || !isTargetAuthoritative()) {
           throw new PreviewGenerationError('Target image policy is obsolete.');
         }
@@ -1735,8 +2282,9 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
         const generated = await generateAndPublish(projectId, assetId, target, isTargetAuthoritative, {
           allowReuse: !force,
           recheckFresh: force ? null : async (ctxNow, revNow) => {
-            const thumb = await probeCacheEntry(projectId, assetId, ctxNow, 'thumbnail');
-            const prev = await probeCacheEntry(projectId, assetId, ctxNow, 'preview');
+            const committedNow = committedPublication(projectId, assetId);
+            const thumb = await probeCacheEntry(projectId, assetId, ctxNow, 'thumbnail', false, committedNow);
+            const prev = await probeCacheEntry(projectId, assetId, ctxNow, 'preview', false, committedNow);
             if (JSON.stringify(currentPolicy()) !== JSON.stringify(target) || !isTargetAuthoritative()) {
               throw new PreviewGenerationError('Target image policy is obsolete.');
             }
@@ -1757,7 +2305,31 @@ export function createPreviewService({ db, projectsRoot, previewRoot, projectIma
       });
     },
     getOriginalDescriptor,
-    inspectKritaPreviewSource: (project, asset) => {
+    // Publication maintenance (lifecycle service only; never a request path).
+    // The inspect helpers must run inside `withPublicationLock` for the asset.
+    withPublicationLock: (projectId, assetId, fn) => withLock(projectId, assetId, fn),
+    inspectLegacyPublication,
+    inspectPublicationIntent,
+    removeIntentRemnants,
+    // Selection authority (project/Book primary image): KRA eligibility is
+    // derived from source bytes only under a verified project root. The
+    // optional `options.ownership` handle reuses one verification per project
+    // within one selection operation.
+    inspectKritaPreviewSource: (project, asset, options = {}) => {
+      const projectId = typeof project === 'object' ? project?.id : project;
+      const assetId = asset?.id;
+      if (!Number.isInteger(projectId) || !Number.isInteger(assetId)) {
+        return Promise.resolve({ quality: null });
+      }
+      return withLock(projectId, assetId, () => inspectKritaPreviewSource(project, asset, {
+        requireOwnership: true, ownership: options?.ownership,
+      }));
+    },
+    // Viewer presentation hint only (whether to offer the primary-image
+    // control). A pure read: no ownership marker is consulted, and its
+    // result never authorizes a stored selection — the selection itself goes
+    // through inspectKritaPreviewSource above.
+    inspectKritaPreviewPresentation: (project, asset) => {
       const projectId = typeof project === 'object' ? project?.id : project;
       const assetId = asset?.id;
       if (!Number.isInteger(projectId) || !Number.isInteger(assetId)) {
@@ -1790,3 +2362,8 @@ export {
 // them. They are imported once, lazily, on first service construction.
 import { createProjectRepository } from '../data/project-repository.js';
 import { createAssetRepository } from '../data/asset-repository.js';
+import {
+  createGeneratedImagePublicationRepository,
+  InvalidGeneratedImagePublicationError,
+  normalizeGeneratedImagePublication,
+} from '../data/generated-image-publication-repository.js';

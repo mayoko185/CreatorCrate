@@ -21,6 +21,7 @@ import { createAssetProcessingService } from '../src/services/asset-processing-s
 import { createProjectOperationCoordinator } from '../src/services/project-operation-coordinator.js';
 import { createProcessingConcurrencyService } from '../src/services/processing-concurrency-service.js';
 import { read7zArchiveEntries } from '../src/services/watermark-7z.js';
+import { createProjectDirectoryOwnershipRepository } from '../src/data/project-directory-ownership-repository.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -105,6 +106,7 @@ describe('standalone archive processing', () => {
 
   function makeProcessingService(overrides = {}) {
     return createAssetProcessingService({
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
       projectRepository,
       assetRepository,
       generatedArtifactRepository,
@@ -148,6 +150,7 @@ describe('standalone archive processing', () => {
       assetRepository,
     });
     planner = createAssetProcessingPlanner({
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
       scopeService,
       projectRepository,
       assetRepository,
@@ -501,6 +504,7 @@ describe('standalone archive processing', () => {
     })).rejects.toMatchObject({ code: 'ARCHIVE_DESTINATION_CONFLICT' });
 
     const watermarkService = createAssetProcessingService({
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
       projectRepository,
       assetRepository,
       generatedArtifactRepository,

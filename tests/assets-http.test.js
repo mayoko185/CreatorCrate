@@ -2176,6 +2176,50 @@ describe('asset browser HTTP workflow', () => {
       expect(scanProjectAssets).not.toHaveBeenCalled();
     });
 
+    it('reports an unverifiable project root as a controlled conflict, never an empty successful scan', async () => {
+      const res = await createProject('Scan Ownership Conflict');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const projectDir = getProjectDir('Scan Ownership Conflict');
+      fs.writeFileSync(path.join(projectDir, 'art.png'), 'png');
+      await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+      // Another project's marker now sits at this project's root.
+      fs.writeFileSync(path.join(projectDir, '.creatorcrate-owner'), `creatorcrate-owner/1 ${'b'.repeat(64)}\n`);
+      fs.rmSync(path.join(projectDir, 'art.png'));
+
+      const json = await agent.post(`/projects/${id}/scan`)
+        .set('Accept', 'application/json')
+        .type('form')
+        .send({ _csrf: csrfToken })
+        .expect(409);
+      expect(json.body).toEqual({
+        ok: false,
+        error: { code: 'PROJECT_OWNERSHIP_UNAVAILABLE', message: 'Project directory belongs to a different project.' },
+      });
+      const form = await agent.post(`/projects/${id}/scan`).type('form').send({ _csrf: csrfToken }).expect(302);
+      expect(new URL(form.headers.location, 'http://localhost').searchParams.get('scan_error')).toBe('filesystem');
+
+      // The failed scans reconciled nothing: the asset is still present.
+      const rows = app.locals.assetScanner.repository.findByProjectId(id);
+      expect(rows.map((row) => [row.relative_path, row.is_present])).toEqual([['art.png', 1]]);
+    });
+
+    it('refuses asset actions under an unverifiable project root with a 409 and no mutation', async () => {
+      const res = await createProject('Action Ownership Conflict');
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      const projectDir = getProjectDir('Action Ownership Conflict');
+      const asset = writeIndexedAsset(id, projectDir, 'old.png', 'png', { extension: 'png', mimeType: 'image/png' });
+      fs.writeFileSync(path.join(projectDir, '.creatorcrate-owner'), `creatorcrate-owner/1 ${'d'.repeat(64)}\n`);
+
+      const renamed = await agent.post(`/projects/${id}/assets/${asset.id}/rename`)
+        .type('form')
+        .send({ filename: 'new', _csrf: csrfToken })
+        .expect(409);
+      expect(renamed.text).toContain('Project directory belongs to a different project.');
+      expect(renamed.text).not.toContain(projectsRoot);
+      expect(fs.existsSync(path.join(projectDir, 'old.png'))).toBe(true);
+      expect(app.locals.assetScanner.repository.findById(asset.id).relative_path).toBe('old.png');
+    });
+
     it('redirects scanner failures to a safe contextual notice without leaking the error', async () => {
       const res = await createProject('Scan Failure Notice');
       const id = Number(res.headers.location.replace('/projects/', ''));

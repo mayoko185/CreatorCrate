@@ -25,6 +25,15 @@ describe('asset filename validation', () => {
     expect(validateAssetFilename(null)).toBeTruthy();
   });
 
+  it('does not reserve the ownership-marker name: reservation is root-only and path-aware', () => {
+    // Syntax only. `final/.creatorcrate-owner` is ordinary content; only the
+    // project-root destination is reserved, by the asset action service.
+    expect(validateAssetFilename('.creatorcrate-owner')).toBeNull();
+    expect(validateAssetFilename('.CREATORCRATE-OWNER')).toBeNull();
+    expect(validateAssetFilename('.creatorcrate-owner.png')).toBeNull();
+    expect(validateAssetFilename('.hidden-file.txt')).toBeNull();
+  });
+
   it('rejects "." and ".."', () => {
     expect(validateAssetFilename('.')).toBeTruthy();
     expect(validateAssetFilename('..')).toBeTruthy();

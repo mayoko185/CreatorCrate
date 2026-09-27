@@ -95,6 +95,7 @@ import {
   enhanceAppConfirmationControls,
   requestAppConfirmation,
 } from './client/confirm-dialog.js';
+import { enhanceProjectOwnershipRecovery } from './client/project-ownership-recovery.js';
 import {
   enhanceProjectAssetsPreviewSlideshow,
   enhanceSlideshow,
@@ -282,6 +283,7 @@ if (typeof document !== 'undefined') {
     enhanceLogViewerAutoRefresh(document);
     enhanceAssetViewerFilterDisclosures(document);
     enhanceAppConfirmationControls(document);
+    enhanceProjectOwnershipRecovery(document);
     enhanceBookCoverUploads(document);
     enhanceDashboardDefaultsDialog(document);
     enhanceProjectAssetCategoryManagement(document);

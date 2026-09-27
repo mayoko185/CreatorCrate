@@ -118,36 +118,76 @@ export function createApplicationContext(
     || applicationLogger.getRepository?.()
     || null;
   let current = { db: initialDb, app: initialApp };
+  // PM-1C1: project ownership adoption is prepared first (lifecycle record)
+  // and its background pass signalled before any other background work, so
+  // existing unbound projects start binding right after migrations. The
+  // automatic scan scheduler waits for the one-time pass (see
+  // automatic-project-scan-scheduler.js); unresolved projects never block it.
+  initialApp.locals?.projectOwnershipAdoption?.prepare();
+  initialApp.locals?.projectOwnershipAdoption?.signal();
+  // PM-2: legacy project.json cleanup waits for the adoption pass itself and
+  // only ever touches bound projects; nothing else waits for it.
+  initialApp.locals?.legacyManifestCleanup?.prepare();
+  initialApp.locals?.legacyManifestCleanup?.signal();
+  // Startup order after migrations: rebuild-record recovery, then the
+  // publication lifecycle's synchronous readiness step (lifecycle record,
+  // unresolved-intent recovery set, durable repair admission), and only then
+  // the background runners. Readers resolve the committed SQLite publication.
   initialApp.locals?.generatedImageRebuildService?.recover();
+  initialApp.locals?.generatedImagePublicationLifecycle?.prepare();
   initialApp.locals?.generatedImageRebuildService?.signal();
+  initialApp.locals?.generatedImagePublicationLifecycle?.signal();
+
+  // Background generated-image work (rebuild runner and publication
+  // lifecycle runner) and project ownership adoption of one graph, paused
+  // together for replacement.
+  function pauseGeneratedImageWork(app) {
+    const pauses = [
+      app.locals?.generatedImageRebuildService?.pauseForMaintenance(),
+      app.locals?.generatedImagePublicationLifecycle?.pauseForMaintenance(),
+      app.locals?.projectOwnershipAdoption?.pauseForMaintenance(),
+      app.locals?.legacyManifestCleanup?.pauseForMaintenance(),
+    ].filter(Boolean);
+    return {
+      waitForIdle: () => Promise.all(pauses.map((pause) => pause.waitForIdle())),
+      release: () => { for (const pause of pauses) pause.release(); },
+    };
+  }
+
+  function resumeGeneratedImageWork() {
+    current.app.locals?.projectOwnershipAdoption?.signal();
+    current.app.locals?.legacyManifestCleanup?.signal();
+    current.app.locals?.generatedImageRebuildService?.signal(true);
+    current.app.locals?.generatedImagePublicationLifecycle?.signal();
+  }
 
   function beginReplacement(db = current.db, app = current.app) {
     const graph = current;
-    const pause = app.locals?.generatedImageRebuildService?.pauseForMaintenance();
+    const pause = pauseGeneratedImageWork(app);
     try {
       return beginReplacementMaintenance(
         db, () => current === graph && current.db === db && current.app === app,
         assertNoActiveProcessingJobs, graph,
-        () => { pause?.release(); current.app.locals?.generatedImageRebuildService?.signal(true); },
+        () => { pause.release(); resumeGeneratedImageWork(); },
       );
     } catch (error) {
-      pause?.release();
+      pause.release();
       throw error;
     }
   }
 
   async function beginReplacementAfterRebuild(db = current.db, app = current.app) {
     const graph = current;
-    const pause = app.locals?.generatedImageRebuildService?.pauseForMaintenance();
+    const pause = pauseGeneratedImageWork(app);
     try {
-      await pause?.waitForIdle();
+      await pause.waitForIdle();
       return beginReplacementMaintenance(
         db, () => current === graph && current.db === db && current.app === app,
         assertNoActiveProcessingJobs, graph,
-        () => { pause?.release(); current.app.locals?.generatedImageRebuildService?.signal(true); },
+        () => { pause.release(); resumeGeneratedImageWork(); },
       );
     } catch (error) {
-      pause?.release();
+      pause.release();
       throw error;
     }
   }
@@ -176,7 +216,15 @@ export function createApplicationContext(
       managedUploadTracker.assertMaintenanceOwner(owner, current.db, current);
       assertNoActiveProcessingJobs();
       newApp = buildApp(newDb, replacementAppOpts);
+      // A restored database carries its own ownership rows and adoption
+      // record; one that predates PM-1C1 starts the one-time pass, which
+      // adopts (never replaces) markers already on disk.
+      newApp.locals?.projectOwnershipAdoption?.prepare();
+      newApp.locals?.legacyManifestCleanup?.prepare();
       newApp.locals?.generatedImageRebuildService?.recover();
+      // A restored database arrives with its publication index already reset
+      // and marked for regeneration (see backup-service), never for import.
+      newApp.locals?.generatedImagePublicationLifecycle?.prepare();
       replacementApplicationLogRepository = newApp.locals?.applicationLogRepository
         || applicationLogger.getRepository?.()
         || null;
@@ -191,7 +239,10 @@ export function createApplicationContext(
       throw err;
     }
     applicationLogRepository = replacementApplicationLogRepository;
+    current.app.locals?.projectOwnershipAdoption?.stop();
+    current.app.locals?.legacyManifestCleanup?.stop();
     current.app.locals?.generatedImageRebuildService?.stop();
+    current.app.locals?.generatedImagePublicationLifecycle?.stop();
     current = { db: newDb, app: newApp };
     if (!maintenanceOwner) owner.release();
   }
@@ -216,7 +267,10 @@ export function createApplicationContext(
       let newApp;
       try {
         newApp = buildApp(current.db, candidateOpts, applicationLogRepository);
+        newApp.locals?.projectOwnershipAdoption?.prepare();
+        newApp.locals?.legacyManifestCleanup?.prepare();
         newApp.locals?.generatedImageRebuildService?.recover({ restartAutomatic: false });
+        newApp.locals?.generatedImagePublicationLifecycle?.prepare();
       } catch (err) {
         if (previousLoggerRepository) {
           applicationLogger.rebindRepository(previousLoggerRepository);
@@ -224,7 +278,10 @@ export function createApplicationContext(
         throw err;
       }
       activeAppOpts = candidateOpts;
+      current.app.locals?.projectOwnershipAdoption?.stop();
+      current.app.locals?.legacyManifestCleanup?.stop();
       current.app.locals?.generatedImageRebuildService?.stop();
+      current.app.locals?.generatedImagePublicationLifecycle?.stop();
       current = { db: current.db, app: newApp };
     } finally {
       if (!maintenanceOwner) owner.release();
@@ -246,6 +303,15 @@ export function createApplicationContext(
     },
     get generatedImageRebuildService() {
       return current.app.locals?.generatedImageRebuildService;
+    },
+    get generatedImagePublicationLifecycle() {
+      return current.app.locals?.generatedImagePublicationLifecycle;
+    },
+    get projectOwnershipAdoption() {
+      return current.app.locals?.projectOwnershipAdoption;
+    },
+    get legacyManifestCleanup() {
+      return current.app.locals?.legacyManifestCleanup;
     },
     replaceDatabase,
     beginReplacement,

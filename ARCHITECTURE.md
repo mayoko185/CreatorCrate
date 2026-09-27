@@ -64,8 +64,8 @@ Three properties shape almost every design decision:
    notes, tags, categories). Deleting the database loses metadata; it never
    loses artwork. Scanning rebuilds the index from disk.
 2. **Everything is synchronous where the filesystem is involved.**
-   `better-sqlite3` is synchronous, and the scanner, manifest writer, and
-   storage helpers all use `fs.*Sync`. Asynchronous code appears only where
+   `better-sqlite3` is synchronous, and the scanner and storage helpers all
+   use `fs.*Sync`. Asynchronous code appears only where
    an external library requires it (image encoding via `sharp`, archive
    generation, SQLite's online backup API).
 3. **There is exactly one process and one operator.** Locks are in-memory
@@ -114,7 +114,11 @@ signals. Its `main()` runs a fixed, fail-fast sequence:
    enabled state with no credential file is a hard startup failure rather
    than a silent default.
 7. **Build the application context** — `createApplicationContext()` builds
-   the Express app around the open connection (see §4 and §5).
+   the Express app around the open connection (see §4 and §5), then recovers
+   the generated-image rebuild record, runs the publication lifecycle's
+   synchronous `prepare()` (lifecycle record, unresolved-intent recovery
+   set, durable repair admission; §12), and only then signals both
+   background runners. Every later database adoption repeats that order.
 8. **Run the initial watermark scan** — a one-shot reconciliation of the
    global watermark library; a failure is logged, not fatal.
 9. **Create the HTTP server, attach Vite in development, start the scheduler,
@@ -447,7 +451,13 @@ The schema covers projects and their per-project asset categories, the asset
 index, releases and release assets, Social Preparation session/platform/asset
 snapshots (including hashed redemption material and attempt deadlines), notes/books/chapters and their
 associations, tags and their project/asset joins, watermarks and watermark
-scale maps, processing presets, generated artifacts, project primary images,
+scale maps, processing presets, generated artifacts, generated-image
+publication snapshots and intents (written by preview publication and the
+publication lifecycle; committed snapshots are the normal generated-image
+serving authority, switched by the SQLite finalization transaction, while
+`current.json` and revision-local `meta.json` remain filesystem
+publication/recovery witnesses; see section 12),
+project primary images,
 per-project and global page defaults, independently persisted per-project/page
 active-default scopes, sessions, and a generic `app_meta` key/value table.
 
@@ -763,10 +773,13 @@ express, and it deliberately **does not trust upstream validation**.
 Two roots, with different ownership:
 
 - **`PROJECTS_ROOT`** — operator media. CreatorCrate creates and manages
-  project directories and their category subdirectories, and writes a
-  `project.json` manifest, but the operator is expected to add and edit
-  files directly (including over SMB). Project directories are **flat direct
-  children** of `PROJECTS_ROOT`, named `<zero-padded-id>-<slug>`.
+  project directories and their category subdirectories, but the operator is
+  expected to add and edit files directly (including over SMB). Project
+  directories are **flat direct children** of `PROJECTS_ROOT`, named
+  `<zero-padded-id>-<slug>`. They hold artwork/content only: project and
+  category business metadata lives in SQLite (see **Legacy `project.json`**
+  below), so a project directory on its own is not a complete CreatorCrate
+  recovery or interchange format — database backups are.
 - **`APP_DATA_ROOT`** — application-owned. The SQLite database and its WAL
   sidecars, `backups/`, `previews/`, `assets/`, and the managed auth files. Only
   CreatorCrate writes here.
@@ -1094,10 +1107,441 @@ atomic rename-if-absent for directories, so
 `restoreQuarantinedCategoryDir` **reports** why it cannot restore and mutates
 nothing, rather than racing a concurrent creator.
 
-**Manifest.** [`manifest.js`](src/storage/manifest.js) serializes
-`project.json` and writes it via temp-file-plus-rename. Its temp files use a
-distinct pattern (`.{hex}.project.json.tmp`) that the scanner explicitly
-skips, and that cannot collide with the quarantine names above.
+**Legacy `project.json`.** SQLite is the sole runtime authority for project
+and project-category metadata (title, slug, description, notes, link, status,
+type, category names/slugs/order/enabled state). Earlier versions also wrote a
+duplicate `project.json` manifest into each project directory; CreatorCrate no
+longer creates, requires, reads, validates, or rewrites it during normal
+operation:
+
+- Project creation produces the database rows, the directory tree, and the
+  `.creatorcrate-owner` ownership marker (below) — never a manifest.
+- Metadata updates, archiving, and project-category mutations (add, rename,
+  enable/disable, reorder, delete) are database operations; only real
+  directory work (creating, enabling, or deleting a category directory)
+  touches the filesystem, and only that work carries filesystem
+  compensation.
+- A slug-changing rename proves directory ownership without any manifest,
+  through the ownership witness below: the source path comes only from the
+  stored `project_dir` (never from the request), `resolveProjectDir` enforces
+  a direct, symlink-free child of `PROJECTS_ROOT`, the directory name must
+  carry the project's unique zero-padded database ID, the source must be a
+  real directory carrying the project's bound marker, and the destination
+  must not exist. If the stored-path update fails after the move, the
+  directory is moved back.
+
+Manifests already on disk — valid, stale, corrupt, unsupported-version, or
+naming another project ID — are ignored by normal operation; one simply moves
+with its directory on rename and is never imported into SQLite. The scanner
+keeps skipping `project.json` and the legacy writer's temp pattern
+(`.{hex}.project.json.tmp`), so they are never indexed as assets.
+[`manifest.js`](src/storage/manifest.js) retains only the legacy format's
+parsing, validation, and serialization definitions. Its runtime readers are
+`readLegacyManifestEvidence`, used by PM-1C1 ownership adoption (below) as
+one-time upgrade evidence of a project ID, and the PM-2 legacy manifest
+cleanup lifecycle (below), which removes only manifests proven to be exact
+duplicates of SQLite state and retains everything else. No request path calls
+this module.
+
+**Project-directory ownership witness.** Removing the manifest also removed
+its role as evidence that the directory at a stored `project_dir` is still
+*that* project's directory. Its replacement is a two-part witness:
+
+- SQLite table `project_directory_ownership` (migration 042) binds a project
+  to an opaque 64-character lowercase-hex token from `crypto.randomBytes(32)`,
+  with state `pending` (token persisted, marker not yet confirmed) or `bound`.
+  No row means unbound. Rows cascade with their project.
+  [`project-directory-ownership-repository.js`](src/data/project-directory-ownership-repository.js)
+  offers only conditional, exact-(project, token) transitions: create pending
+  without replacing an existing row, pending → bound, and removal of a pending
+  row.
+- A `.creatorcrate-owner` marker, a direct child of the project directory,
+  containing exactly `creatorcrate-owner/1 <token>` plus one LF and nothing
+  else — no title, slug, ID, category, status, or timestamp. It is filesystem
+  ownership metadata, not a business-metadata sidecar.
+  [`project-ownership-marker.js`](src/storage/project-ownership-marker.js)
+  generates tokens, creates the marker exclusively (never overwriting any
+  existing entry) with fsync and read-back verification, and reads it
+  strictly (bounded size, regular non-symlink file only), reporting
+  `missing`, `malformed`, `unsafe`, and `unreadable` distinctly so I/O
+  uncertainty is never mistaken for an ownership mismatch.
+
+The witness represents **logical** project ownership, not physical directory
+identity: no inode or file ID is persisted, and a marker-preserving move or
+copy of the project tree carries the same token — a legitimate same-project
+rename therefore keeps a valid binding. Operations may still compare `dev/ino`
+*within* one mutation for continuity; that identity is never stored.
+
+**New projects are bound at creation.** Inside the single creation
+transaction: insert the project row → generate a token and insert it as the
+project's `pending` row → exclusively create the project root (an existing
+directory is never adopted) → create category directories → exclusively
+create the marker (read back and verified) → mark exactly that
+(project, token) `bound` → store `project_dir` → commit. Because every
+database write, including the pending and bound transitions, lives in that
+one transaction, a failed or interrupted creation leaves no project row and no
+ownership row; compensation removes only the tracked, identity-checked
+artifacts this call created (category directories, its own marker, the empty
+root) and never touches a marker or directory it did not create. If the
+marker pathname was exposed but the marker could not be confirmed
+(`RECOVERY_REQUIRED`), no filesystem compensation runs at all: the public
+entry may already be foreign, so the directory stays for inspection. A crash
+before commit can leave an orphan directory (with a marker whose token no row
+holds) — the same orphan-directory outcome as before PM-1B, never adopted by
+token presence alone.
+
+**Ownership-sensitive operations require the witness.** An operation is
+ownership-sensitive when it mutates project-root filesystem state, or reads
+project-root content and then changes SQLite authority from those bytes.
+[`project-directory-ownership.js`](src/services/project-directory-ownership.js)
+is the one verifier: bound row + safe stored path (containment, direct child,
+ID prefix, no symlinks, real directory) + marker token exactly equal to the
+SQLite token. Failures are distinct, fail closed, and are never repaired
+(`UNBOUND`, `PROJECT_DIRECTORY_INVALID`/`_MISSING`/`_UNREADABLE`,
+`MARKER_MISSING`/`_MALFORMED`/`_UNSAFE`/`_UNREADABLE`/`_MISMATCH`,
+`IDENTITY_CHANGED`). It gates:
+
+- **Project rename** (slug change): verified before the database update,
+  re-verified (same directory, same token) immediately before the rename, and
+  verified again at the destination before the new `project_dir` can commit;
+  a failure moves the directory back — only if the destination still holds
+  the directory this operation moved and the original path is free — and
+  never rewrites the marker.
+- **Project deletion**: verified before quarantine and again on the
+  quarantined directory (restored on mismatch), and once more before the
+  irreversible recursive removal. A missing or unavailable project directory
+  no longer authorizes database deletion — an offline `PROJECTS_ROOT` share
+  looks the same as a deleted folder — so deletion fails closed and the
+  project and its relationships survive. The only database-only deletion is a
+  row with no stored `project_dir` and no ownership row.
+- **Category directory work**: `add` with `enabled: true`, `setEnabled(true)`,
+  and `delete`. `add` with `enabled: false`, `setEnabled(false)`,
+  display-name edits, and reorder stay SQLite-only and never resolve the
+  project directory.
+
+- **Asset actions**: the shared project-path preflight of
+  [`asset-action-service.js`](src/services/asset-action-service.js) — rename,
+  basename rename, move, batch move, copy, batch copy, delete, and batch
+  delete, and queued processing Rename, which reuses the same prepared rename.
+  Move and copy remain same-project only.
+- **Processing execution**: the one project preflight of
+  [`asset-processing-service.js`](src/services/asset-processing-service.js),
+  run under the project lock before conversion/re-encode, watermarking,
+  archive generation, and workflow/prompt edits inspect, stage, publish,
+  replace, move to Originals, or delete anything.
+- **Auto Rename**: Preview and Apply each verify independently; Apply reuses
+  its one verification across plan rebuild, revalidation, and the temporary and
+  final rename phases, with existing rollback unchanged.
+- **Source-derived SQLite authority**: the asset scan (§10), source
+  animation/tuple/generation reconciliation
+  ([`source-animation-service.js`](src/services/source-animation-service.js)),
+  and KRA merged-preview eligibility when it authorizes a project or Book
+  primary-image selection (`previewService.inspectKritaPreviewSource`).
+
+**Planning is not execution authority.** Processing plans (Convert, Watermark,
+Archives, Prompt Editor, Rename) verify once at the planning boundary, so
+ownership errors surface early and no plan is built from a substituted root.
+Nothing a plan, a Preview token, or a held coordinator lock carries is an
+ownership witness: queued execution and Auto Rename Apply verify again.
+
+**Once per logical operation, never per file.** `verifier.beginOperation()`
+returns an operation-local handle that verifies each distinct project at its
+initial gate and reuses that result for the rest of the operation — a batch of
+N assets, one processing execution, one scan, one Preview, one Apply, one
+presentation policy. A scan with unusable filesystem identity re-verifies
+ownership once after traversal (§10), independent of asset count. Handles
+have no TTL, live in no module or service state, and are never carried across
+requests, scans, queued executions, plan/apply boundaries, or
+app-context reconstruction; a later operation verifies afresh. Verification is
+therefore not a hot-path sidecar: ordinary generated Thumbnail/Preview serving
+does not read the marker, and source reconciliation reads it only on the rare
+path where a source change or unknown animation state must be written.
+
+Project metadata edits (title without slug change, description, notes, link,
+status, type, tags), archiving, DB-only category operations, and DB-only
+primary-image selection/clear remain SQLite-only and never read the marker.
+The service graph shares one ownership repository across every gated service.
+
+**Pure read-only source serving is deliberately not gated.** Original-media
+HTTP serving and downloads, Social Prep downloads, read-only workflow and
+dimension/metadata inspection, and the viewer's KRA eligibility *hint*
+(`inspectKritaPreviewPresentation`, which never authorizes a stored selection)
+add no marker read; they keep their existing safe-descriptor and containment
+protections. Residual limitation: if an entire project root is substituted
+before such a pure read, the read may return whatever file is at the safe
+relative path inside the substituted directory. This is accepted and
+documented rather than hidden behind an ownership cache or per-request marker
+reads.
+
+**SMB and external edits.** Ownership binds the project *root*, not the
+artwork. Editing, adding, or removing files and category subfolders inside an
+owned root is supported and keeps being detected and reconciled — the marker
+does not change when artwork changes and a matching marker never implies the
+source bytes are unchanged. No persistent inode/file ID is stored, so a share
+remount with new inode numbers, or a project-directory rename, keeps ownership.
+A transient share or marker I/O failure (`PROJECT_DIRECTORY_MISSING`,
+`_UNREADABLE`, `MARKER_UNREADABLE`) fails the current operation without any
+destructive reconciliation; a later retry succeeds once the share is back.
+Replacing or moving an entire project directory concurrently with an
+ownership-sensitive CreatorCrate operation remains outside the supported
+external-edit contract.
+
+**Error surfaces.** Asset actions, processing, and scans propagate
+`ProjectOwnershipError` (HTTP 409 with a path-free message through the generic
+handler). A JSON scan request maps it to 409 `PROJECT_OWNERSHIP_UNAVAILABLE`;
+the form scan uses the existing `scan_error=filesystem` notice — never an
+apparent empty success. Auto Rename wraps it as
+`PROJECT_OWNERSHIP_UNAVAILABLE` (409) with `details.ownershipCode` and the
+original error as `cause`. Background processing jobs keep their generic
+job-failed presentation; the job diagnostic retains the underlying error.
+Optional source-derived enrichment (a listing learning an unknown animation
+state) keeps the prior safe state when ownership cannot be proven.
+
+**Existing projects are adopted automatically (PM-1C1).** Projects that
+existed before PM-1B have a `projects` row and a stored `project_dir` but no
+ownership row and no marker. Until adopted, every gated operation above fails
+closed with `UNBOUND` (metadata-only operations, DB-only category and
+selection operations, and pure read-only serving keep working).
+[`project-ownership-adoption-service.js`](src/services/project-ownership-adoption-service.js)
+binds those that can be proven from existing installation evidence and
+recovers interrupted marker publication; it never runs inside a SQL
+migration.
+
+- *Proof.* The only accepted legacy fact is "manifest project ID equals the
+  SQLite project ID": a `project.json` that is a regular non-symlink file
+  directly inside the safely resolved stored project directory (same
+  containment, direct-child, ID-prefix, and no-symlink rules as the
+  verifier), and that parses and validates under the established legacy
+  manifest parser at a supported schema version. Every other manifest field —
+  title, slug, description, notes, link, categories — may be stale and is
+  ignored: nothing from the manifest is ever written into SQLite, and the
+  file is never rewritten or removed. Pathname, ID prefix, directory
+  contents, asset similarity, timestamps, and inode identity never prove
+  ownership on their own. The manifest is one-time upgrade evidence only:
+  once a project is bound, rename, deletion, asset actions, scans,
+  categories, and processing never consult it, and the lifecycle never
+  revisits a bound project, so no `project.json` is read for it again.
+- *Restart-safe binding.* Establish proof → persist a `pending` token →
+  exclusively create the marker (read back and verified) → mark exactly that
+  (project, token) `bound`. Each project's step runs synchronously, so no
+  scan or request interleaves with it. A crash before the pending commit
+  leaves nothing; after it, the next run re-establishes proof before
+  publishing the marker; after a durable marker, the next run completes the
+  binding; a partial marker is reported `malformed` and left untouched.
+- *Existing markers are never replaced.* No row + matching manifest + valid
+  marker: the marker's token is adopted (pending → re-verify → bound) — the
+  case of an older database restored beside newer project files. No row +
+  malformed/unsafe marker, or a marker token already bound elsewhere: left
+  unbound. `pending X` + marker `X`: bound without re-reading the manifest
+  (the random token only this protocol writes, at the safely resolved stored
+  path, is the proof). `pending X` + no marker: published only after
+  re-establishing legacy proof. `pending X` + marker `Y` or a
+  malformed/unsafe marker: left pending. `bound` + missing, different,
+  malformed, or unsafe marker: never repaired. A project with no stored
+  `project_dir` needs no binding and is left DB-only.
+- *Classification.* Every project is classified as bound, not-required
+  (DB-only), `retryable` (could not currently inspect), or
+  `recovery-required` (definitively unprovable or conflicting, with a
+  path-free reason). `getProjectStatus(projectId)`, `listUnresolved()`, and
+  `readiness()` expose this for diagnostics; explicit recovery (PM-1C2A,
+  below) reads and clears it.
+- *Durable progress.* One bounded `app_meta` record
+  (`project_ownership.adoption.v1`: phase, committed cursor, fixed upper
+  bound, outcome counts) drives the one-time pass over SQLite projects —
+  archived included, never directory enumeration — in stable ID order up to
+  the maximum ID captured at its start; projects created later bind
+  themselves at creation. Each unresolved project has one small `app_meta`
+  row (`project_ownership.adoption.v1.project.<id>`: status and reason);
+  bound and DB-only projects have none. The pass is complete once every
+  project up to the bound is classified, not when every project is bound.
+- *SMB.* An unavailable `PROJECTS_ROOT`, a missing project directory, and any
+  I/O or permission failure reading the directory, marker, or manifest (or
+  writing the marker) are uncertainty, never evidence: nothing is created or
+  overwritten, the current unbound/pending/bound state is kept, the project
+  is `retryable`, and the pass moves on, so one offline project never blocks
+  the rest. Retryable projects (and unclassified pending rows) are retried on
+  a bounded backoff timer (1 min doubling to 30 min, unref'd), on `signal()`,
+  and on every startup. `recovery-required` projects stay quiet: they are not
+  re-read until explicit operator recovery (below).
+- *Startup.* After migrations the application context calls `prepare()`
+  (lifecycle record) and `signal()` (background pass) before the
+  generated-image rebuild and publication lifecycles, and again on every
+  database adoption (a restored database predating PM-1C1 starts its own
+  pass); replacement maintenance pauses it with the other background runners.
+  The automatic scan scheduler waits for an in-flight adoption run and skips
+  project scans for a cycle while the one-time pass is incomplete; afterwards
+  it scans normally and each still-unresolved project fails closed alone. The
+  verifier reads the ownership row per operation, so a newly bound project's
+  next scan or mutation works without a restart.
+
+**Explicit operator recovery (PM-1C2A, backend only).** Projects PM-1C1
+leaves `recovery-required` — missing, unsafe, malformed, unsupported, or
+mismatched legacy manifests; malformed or conflicting markers; pending rows
+without proof or with a conflicting marker; bound rows whose marker is
+missing, different, or malformed — and bound projects whose marker a PM-1B
+gate later finds missing or wrong, can be recovered by an explicit operator
+request through
+[`project-ownership-recovery-service.js`](src/services/project-ownership-recovery-service.js).
+The operator attests that the directory already stored for the project is
+that project's directory; that attestation replaces PM-1C1's legacy proof,
+and on success the SQLite row is `bound` to token X and the marker carries X.
+
+- *Explicit only.* Nothing calls it automatically — not scan, rename,
+  delete, edit, processing, reconciliation, startup, or retry timers. The
+  only entry point is `POST /projects/:id/ownership-recovery` (auth + CSRF
+  through the application-wide middleware); `GET` on the same path returns
+  the status. The operator UI (PM-1C2B) is a Project Detail notice plus
+  dialog ([`project-ownership-recovery.js`](src/static/client/project-ownership-recovery.js)):
+  the notice is rendered only from SQLite state (`getAttentionHint`: the
+  adoption classification and ownership row, never the marker), so browsing
+  a project costs no ownership-marker I/O; the marker-reading `GET` runs only
+  when the operator opens the dialog or presses "Check again", and the `POST`
+  only after the shared confirmation dialog, carrying the displayed
+  `statusVersion` and never retried automatically. A bound project whose
+  marker later vanished has no durable signal, so it gets no notice; the
+  gated operation reports it.
+- *Stored path only.* Recovery considers only `projects.project_dir`,
+  resolved under the same safe-path rules as PM-1B/PM-1C1 (shared
+  `inspectStoredProjectDirectory`). An invalid or unsafe stored path is
+  refused, never "fixed"; `project_dir` is never changed and no other path
+  can be supplied. Relocation is a separate future design.
+- *Token choice.* Existing bound token, else existing pending token, else a
+  valid marker token no row holds, else a fresh token. A marker token held by
+  another project (bound or pending) is never taken: recovery refuses
+  (`marker-token-in-use`) and touches neither project's row nor the marker.
+  A symlinked or non-regular marker is refused (`marker-unsafe`).
+- *Plans.* no row + no marker: pending → exclusive create → bind.
+  no row + free valid marker X: pending X → re-verify → bind (marker never
+  rewritten). pending X + X: re-verify → bind. pending X + none: create X →
+  bind. bound X + none: create X (row already bound). A malformed or
+  different (free) marker: *replacement* — the entry is fingerprinted,
+  atomically renamed to a random `.creatorcrate-owner.quarantine-*` sibling,
+  proven to be the inspected entry (else restored without clobbering), the
+  new marker is created exclusively (an entry that appears meanwhile is never
+  overwritten), and the quarantined file is removed only after the binding
+  committed. Before publication, failure removes this attempt's own pending
+  row (exact project/token/state) and restores the old marker. A new marker
+  whose pathname was exposed but never confirmed is left in place with the
+  quarantine (`marker-write-remnant`); after
+  publication the attempt rolls forward (pending X + marker X, completable on
+  retry), keeping the old marker quarantined as evidence. SQLite is never
+  `bound` to a token whose marker is not in place.
+- *Consistency.* No transaction spans filesystem I/O; each SQLite step is one
+  conditional statement on exact (project, token, state). The attempt runs
+  synchronously under the project's operation lock. A confirmation must carry
+  the opaque `statusVersion` of the status the operator saw (a hash of the
+  row, marker content fingerprint, and plan — no token, path, or inode); any
+  change in between is refused as stale.
+- *SMB.* An unavailable root, a missing project directory, or an I/O or
+  permission failure at any step is "retry later": the attempt fails, the
+  prior state and classification are kept, and nothing becomes a permanent
+  conflict. Filesystem identity (dev/ino, where reported) is used only within
+  one attempt and never persisted; content fingerprints cover shares that
+  report no file ID. Projects PM-1C1 still owns (retryable, not yet reached
+  by the pass, unclassified pending) are reported as retry-later, not offered
+  for recovery.
+- *After success.* The project's adoption classification is cleared. PM-1B
+  gates read the row and marker per operation, so the next scan or mutation
+  verifies the new marker normally — no restart, no scanner bypass, and no
+  scan inside recovery. Business metadata stays SQLite-authoritative: no
+  `project.json` is read, written, or imported.
+
+The scanner never indexes the marker (root-level dotfiles are skipped), and
+asset rename, move, and copy refuse to place an asset at the project-root
+marker name.
+
+**Legacy manifest cleanup (PM-2).**
+[`legacy-manifest-cleanup-service.js`](src/services/legacy-manifest-cleanup-service.js)
+is a background maintenance lifecycle that removes historical `project.json`
+files only when it can prove they are obsolete duplicates. "SQLite is
+authoritative now" is never, on its own, a reason to delete; anything
+ambiguous is retained and reported. There is no guarantee that every historical
+manifest is removed.
+
+- *Targets.* Only three exact name families directly in a project root:
+  `project.json`, the legacy writer's temp file `.<12 hex>.project.json.tmp`,
+  and the lifecycle's own interrupted-removal quarantine
+  `.project.json.cleanup-<time>-<18 hex>`. Nothing is found by pattern
+  matching on `*.json`: arbitrary user JSON (including lookalike names such as
+  `project.json.bak` or a nested `project.json`), Book exports,
+  processing-preset exports, auth files, and all `APP_DATA_ROOT` files —
+  generated-image `current.json`, revision `meta.json`, managed media — are
+  never inspected. Generated/publication JSON is retained on purpose; the
+  generated-image publication design depends on it.
+- *Ownership first.* A project is considered only when its
+  `project_directory_ownership` row is `bound`, PM-1C1/PM-1C2 hold no
+  adoption classification for it (not pending, retryable, or
+  recovery-required), its stored directory passes the canonical path rules,
+  and its `.creatorcrate-owner` marker matches the SQLite token. Otherwise it
+  is `ownership-not-ready` and reconsidered on later runs. The lifecycle also
+  waits for PM-1C1's one-time adoption pass, and each project step runs
+  synchronously under the project's operation lock, so it never interleaves
+  with a scan, a mutation, or explicit recovery of that project.
+- *Proof of redundancy.* The file must be a regular non-symlink file of at
+  most 1 MiB, strict UTF-8, parse and validate as a schema-3 legacy manifest,
+  name this project's ID, and match what the legacy serializer
+  (`serializeManifest`) would produce for the current SQLite row and its
+  project-owned categories (`describeLegacyManifestDivergence`): the exact
+  serializer key set; equal `id`, `title`, `slug`, `description`, `notes`,
+  `patreonUrl`, `createdAt`; every category's name, slug, order, and enabled
+  flag, in order; `tags: []` and `thumbnail: null` exactly as the old
+  placeholders (they never represented modern tags or primary images). The one
+  tolerance is `updatedAt`, which may be *older* than the row's value in the
+  same exact format: the legacy writer never rewrote the manifest for
+  status/type/archive changes that still bumped `updated_at`, and never read
+  that field back. A newer or differently formatted value is divergent.
+- *Retained, never overwritten, imported, or deleted:* divergent manifests
+  (old title, description, notes, category labels/order, non-placeholder tags
+  or thumbnail, unexpected fields), malformed or unsupported ones, ones naming
+  another project, symlinks and non-regular entries, oversized files, temp
+  files whose contents differ from current state (for example a partially
+  written temp), and interrupted-removal quarantines that are not proven
+  duplicates (kept where they are, never guessed back into place). A divergent
+  file may be the only copy of that historical metadata. Manifests in
+  directories with no SQLite project are never touched: the lifecycle is
+  driven by SQLite projects, never by enumerating `PROJECTS_ROOT`.
+- *Race-safe removal.* Removal is never "compare, then unlink the path". The
+  proven entry is renamed to an unpredictable sibling quarantine name, the
+  moved entry is re-read and must match the inspected content fingerprint
+  (size + SHA-256) and, where the filesystem reports a non-zero file ID, the
+  same operation-local dev/ino; only then is the quarantine unlinked.
+  Ownership is re-verified immediately before the rename. A replacement that
+  appeared in between is put back without clobbering (link(2), else an
+  exclusive-create copy) and judged on its own merits in a later run; if it
+  cannot be put back it stays in quarantine rather than being deleted. A zero
+  file ID (SMB) is "unknown", never continuity proof, so the fingerprint
+  decides. File IDs are never persisted.
+- *SMB and retries.* An unavailable root, EIO, a permission failure, a file
+  that changed while it was read, or a busy project leaves every file in
+  place, classifies the project `retryable`, and the pass continues with the
+  next project. Retryable and not-ready projects are revisited with a bounded,
+  non-busy backoff (1 min doubling to 30 min), on `signal()`, and on every
+  startup. Nothing in normal operation waits for cleanup.
+- *State (`app_meta`, no migration).* `legacy_manifest_cleanup.v1` holds the
+  one-time pass's phase, committed cursor over project IDs, fixed upper bound
+  (projects created later never get a manifest), and cumulative counts
+  (`removed`, `tempRemoved`, `noManifest`, `notRequired`).
+  `legacy_manifest_cleanup.v1.project.<id>` exists only for projects with
+  something to report: `retryable`, `ownership-not-ready`, or terminal
+  `retained`, each with short reason codes (for example `manifest-divergent`,
+  `temp-malformed`, `marker-unavailable`) — never paths or manifest content.
+  After the pass completes, only retryable/not-ready projects are revisited;
+  removed and retained projects are never re-read. The whole pass restarts
+  idempotently if its record is lost or untrusted (for example a restored
+  database). Rows of deleted projects are pruned.
+- *Visibility.* Diagnostic log events (`projects.legacy_manifest.removed`,
+  `.unresolved`, `.cleanup_pass_completed` with the counts) and the service's
+  `readiness()` report removed, absent, retained (divergent / invalid /
+  unsafe), retryable, and not-ready totals without manifest contents.
+  `dryRun()` classifies every project (`would-remove`, `retain-divergent`,
+  `retain-invalid`, `retain-unsafe`, `retry`, `ownership-not-ready`,
+  `no-manifest`, `not-required`) with the same predicate, deleting and
+  writing nothing; it is a service capability with no UI or CLI.
+
+Removing a manifest changes no SQLite state, marker, asset, release,
+category, Book reference, or primary image. Project directories remain
+artwork only and are still not a complete application backup: database
+backups are.
 
 ---
 
@@ -1114,16 +1558,36 @@ a processing run can never begin between traversal and reconciliation.
 
 Inside the lock:
 
-1. Resolve the project directory through the storage layer (containment and
-   symlink checks), then verify it exists, is a directory, and is not a
-   symlink.
+1. Load the current project and verify its root through the canonical
+   ownership verifier (§9): bound row, safe stored path, real non-symlink
+   directory, matching `.creatorcrate-owner` token. Traversal uses only the
+   verifier-returned path. Any ownership failure — unbound, mismatch, missing
+   or malformed marker, an unreadable marker, a missing root, an unavailable
+   share — aborts here, so the project is never reconciled as empty, another
+   project's files are never imported, and source generations and automatic
+   primary selection never move on unverified content.
 2. Walk it recursively, collecting **relative paths and metadata only** —
-   no absolute path is ever stored. Skips CreatorCrate-managed files
+   no absolute path is ever stored. Skips legacy CreatorCrate sidecars
    (`project.json` and its temp form), OS junk, archive extensions, root-level
-   dotfiles, hidden directories, and symlinks of any kind.
+   dotfiles (including the `.creatorcrate-owner` ownership marker), hidden
+   directories, and symlinks of any kind.
 3. **Abort on permission or I/O errors.** This is the critical invariant: a
    traversal that cannot see the whole tree must not reconcile, because a
    partial snapshot would mark real files as missing.
+   Before reconciling, the scanner establishes root continuity. When the
+   operation-local filesystem identity is trustworthy, it compares the
+   directory identity after traversal; a change aborts with
+   `IDENTITY_CHANGED`. A zero, unavailable, non-numeric, or numerically unsafe
+   file ID is never positive continuity proof. On such filesystems (including
+   SMB shares without usable IDs), the scanner instead repeats canonical
+   ownership verification once after traversal: the SQLite binding, stored
+   path, and ownership marker must still match. This adds constant work per
+   scan, regardless of asset count. A substituted root is rejected before
+   reconciliation, with either `IDENTITY_CHANGED` or an ownership-verification
+   error such as `MARKER_MISMATCH`, depending on the branch. Reconciliation
+   never uses a root whose continuity cannot be established. Child files
+   appearing, changing, or disappearing during the walk keep their existing
+   semantics.
 4. Load the project's categories once and classify every discovered path
    against them (both enabled and disabled, so disabled-category files still
    classify correctly).
@@ -1328,8 +1792,212 @@ rollback, and prefer a clear recovery signal to a risky automatic undo.
 ## 12. Preview generation and media delivery
 
 Previews are a **rebuildable derived cache** under
-`APP_DATA_ROOT/previews/projects/<project-id>/<asset-id>/`, with no database
-persistence. Deleting the whole preview root is always safe.
+`APP_DATA_ROOT/previews/projects/<project-id>/<asset-id>/`. Publication is
+journaled in SQLite, and the committed SQLite publication is what runtime
+serving resolves (below); the derivative bytes stay on disk. Deleting the
+whole preview root is always safe: the affected pairs fail byte validation and
+are regenerated.
+
+**Normalized publication state (the runtime authority).** Migration
+`041_add_generated_image_publications.sql` adds three SQLite tables that are the
+normalized runtime representation of a published pair:
+`generated_image_publications` (one committed publication per asset: revision
+directory basename, revision token, versions, source tuple and generation, and
+the optional legacy fields — policy fingerprint, animation, frame count, Krita
+preview quality, identity version — kept `NULL` when absent rather than
+defaulted), `generated_image_derivatives` (exactly one `thumbnail` and one
+`preview` row: format, dimensions, byte size, optional generation identity),
+and `generated_image_publication_intents` (at most one unresolved candidate per
+asset: owning intent ID, candidate/staging/previous directory basenames,
+expected revision). All three cascade from the owning asset through the
+composite `(project_id, asset_id)` ownership key; no absolute path, URL, ETag,
+or freshness result is stored. The migration only creates empty tables — it
+does not scan any root or backfill.
+[`generated-image-publication-repository.js`](src/data/generated-image-publication-repository.js)
+validates one canonical complete snapshot, reads it with a single statement
+that returns nothing unless both derivatives exist, acquires an intent without
+replacing a competing owner, clears an intent only for its owning ID, and
+finalizes in one transaction that verifies the owning intent and its recorded
+candidate, upserts the parent, replaces both derivative rows, and deletes the
+intent. An intent is writer/recovery coordination state only; it never hides
+the committed snapshot.
+
+**Journaled publication (writer only).** The Preview Service receives this
+repository from application construction (`app.js`; direct constructions bind
+one to their `db`) and journals every new publication around the unchanged
+filesystem steps below. After the staged set is generated, its `meta.json` is
+written, the complete set is validated, and the pre-promotion source/policy
+recheck passes, the normalized snapshot is built from that validated in-memory
+meta (never re-read, never current row values) and an intent is committed
+naming the exact candidate `r-<revision>-<rand>` directory, its staging
+directory, expected revision, and the directory `current.json` named before.
+Only then is staging promoted; the existing pointer-boundary recheck and the
+atomic `current.json` replacement follow unchanged, and only after the pointer
+names the candidate is the snapshot finalized in one synchronous transaction
+(parent upsert, both derivative rows replaced, owning intent deleted). A
+same-token force rebuild is therefore a distinct publication by directory.
+Per-asset serialization means an intent already present for the asset is an
+unresolved earlier publication: it is never overwritten or cleared, and the
+new publication fails before promotion. Any failure before the pointer names
+the candidate removes the operation's staging or promoted directory as before
+and conditionally releases its own intent. If the pointer write fails, the
+pointer is re-read: only a readable pointer naming another directory, or none,
+proves the candidate unpublished. Once the pointer names the candidate — or its
+outcome cannot be proven — a failure (including finalization) keeps the
+candidate directory and its intent, leaves the prior committed snapshot, and is
+reported as an unresolved publication rather than success; background
+recovery (below) resolves it. The writer notifies the lifecycle service of
+such a journal error (and of a `pending` refusal) so recovery runs in the
+background; the failing request itself recovers nothing.
+
+**Publication lifecycle (backfill, intent recovery, restore, repair).**
+[`generated-image-publication-lifecycle-service.js`](src/services/generated-image-publication-lifecycle-service.js)
+makes the tables trustworthy before anything reads them as the runtime
+authority. Its durable state is one versioned `app_meta` record,
+`images.publication_lifecycle.v1`
+([`generated-image-publication-lifecycle-repository.js`](src/data/generated-image-publication-lifecycle-repository.js)):
+`mode` (`upgrade`, `restore`, or `reset`), `phase` (`running` or
+`completed`), `cursor`, a fixed `upperBound`, per-outcome `counts`, and a
+durable `repairRequired` flag. `phase: 'completed'` is the readiness signal
+(`isPublicationIndexReady()`) that the one-time import or restore reset is
+finished; per asset, `isAssetRecoverySettled(assetId)` is false only while
+an unresolved intent for that asset still awaits recovery.
+
+- *One-time upgrade backfill.* The first start with no record captures
+  `upperBound` = the highest previewable asset ID and traverses SQLite assets
+  (never cache directories) in ID order, including archived projects and
+  not-present sources; orphan cache directories are never visited, and later
+  assets are journaled by the writer itself. Per asset, under the per-asset
+  lock, an existing committed row or intent decides it without touching the
+  filesystem. Otherwise only the generation `current.json` names is
+  considered (never the newest directory): the directory must be real, its
+  `meta.json` must parse, name this project/asset, and hash (from its own
+  recorded source/policy/generation) to the pointer revision; both
+  derivatives must match `meta.json` and decode; the snapshot must normalize
+  through the publication contract; and the pair must be what today's reader
+  would serve for the asset's current source: fresh, or differing only by
+  policy (prior-policy). Legacy-absent fields stay `NULL`, a missing source
+  generation is 0, and nothing is written to asset or project rows. The
+  conditional install (only while the asset has neither a committed row nor
+  an intent) and the cursor/count advance are one transaction, so a crash
+  never leaves the cursor past a lost import and a rerun is idempotent. Every
+  other outcome (`missing`, `malformed`, `unreadable`, `invalid`,
+  `incomplete`, `stale`, `unnormalizable`) records no row, advances the
+  cursor so one bad entry cannot block the pass, and sets `repairRequired`.
+  Once the record is `completed`, ordinary restarts do no publication JSON
+  scan; only unresolved intents are inspected.
+- *Targeted intent recovery.* The recovery set is the intent table
+  (`listIntents()`), re-read at `prepare()` and at the start of every run;
+  the cache is never enumerated to find work. Each intent is decided under
+  the per-asset lock after re-checking that its `intent_id` still owns the
+  asset (a live writer holds that lock from intent to finalization), and
+  every write is conditional on that ID, so a newer intent is never
+  finalized or cleared. By what `current.json` names: the candidate: its
+  directory, `meta.json`, correspondence, and derivative pair are validated
+  and the snapshot of its immutable `meta.json` is finalized through the
+  repository transaction; the recorded previous directory: the candidate
+  never published, so the operation's own candidate/staging directories are
+  removed (never one the pointer or committed row names) and the intent is
+  cleared; missing, malformed, unsafe, or naming any other directory: the
+  candidate is established as unpublishable, so the intent is cleared and
+  `repairRequired` set in one transaction, without touching the pointer or
+  choosing a directory by existence or time. A definitively invalid or
+  incomplete candidate is treated the same way. A possibly transient read
+  failure retains the intent (actionable, retried on the next run) and
+  blocks only that asset. The committed snapshot is never an input and is
+  never deleted or invalidated: while an intent exists it remains the last
+  known-good generation, and candidate uncertainty says nothing about it.
+- *Restore reset.* See §15: the staged restore database has its three
+  publication tables emptied and a `mode: 'restore'`, `completed`,
+  `repairRequired` record written before it can replace the live database.
+  A restored database is therefore never mistaken for an unfinished upgrade
+  and never imports whatever the current cache holds; its assets are
+  regenerated. Cache directories are left as ignored derived remnants. An
+  untrusted record is handled the same way (`mode: 'reset'`) without
+  deleting committed rows.
+- *Repair admission.* A `repairRequired` need on a completed record is
+  admitted to the existing generated-image rebuild service
+  (`queueRepair()`) in the same transaction that clears the flag: an
+  automatic reconcile-all run under the saved policy (marked
+  `reason: 'publication-repair'`), using the approved window and shared
+  processing pool unchanged. An unstarted repair or manual run already
+  covers it; a started manual run defers it (the flag stays durable). No
+  per-asset queue is stored: `ensureTargetGeneration` probes only the
+  committed SQLite publication, so an asset without a committed row, or
+  whose committed pair fails validation, is published through the journal
+  (derivative reuse still allowed) and the rebuild's normal traversal is the
+  repair. `requestRepair()` remains the explicit admission entry point for
+  maintenance callers; request paths do not call it (below).
+
+**Runtime authority (committed SQLite publication).** Every normal
+generated-image consumer resolves the committed SQLite publication and never
+inspects `current.json` or a revision-local `meta.json` — no read, open,
+stat/lstat, access, or path inspection of either file, on the first request
+after an ordinary restart or on any later one. The consumers are the
+pre-lock presentation read (`getThumbnail`, `getPreview`, including
+prior-policy presentation), the locked serving path and its post-admission
+fresh recheck, `ensureCurrentPreview` (Book export), automatic
+`ensureTargetGeneration` probes, and selective derivative reuse discovery.
+There is no in-memory publication cache, TTL, watcher, or pointer stat check:
+each request reads SQLite.
+
+- *One snapshot, existing rules.* One statement returns the parent row and
+  both derivatives. An in-memory, parsed-meta-shaped view of that snapshot
+  (the inverse of the writer's snapshot builder) feeds the existing
+  freshness comparison, prior-policy eligibility, animation authority, and
+  per-kind identity rules unchanged, so no second implementation exists. The
+  revision directory is derived from the preview root, the IDs, and the
+  validated committed `directory_name`; derivative filenames are
+  `<kind>.<format>`. The committed revision must still equal the hash of its
+  own recorded source/policy (the check that replaced the old pointer
+  correspondence re-read), and a prior-policy pair needs its recorded
+  fingerprint.
+- *Actual bytes stay filesystem-validated.* Both derivative files must exist
+  as regular, non-symlinked files under the preview root (complete pair); the
+  requested derivative is size-, decode-, dimension-, and animation-validated
+  (both, for prior-policy); then the existing source proof and final
+  DB/policy recheck run before the pair is served. SQLite replaces the JSON
+  lookup, not byte validation, and source freshness remains request-time
+  filesystem authority (source identity, source generation, animation
+  classification, same-tuple replacement handling). JSON-only path checks
+  are gone from this path.
+- *Pending intents.* Readers never consult the intent table. While committed
+  generation A has an unresolved candidate B — during staging, promotion,
+  after `current.json` already names B, while finalization is delayed or has
+  failed, and while recovery inspects B — requests keep evaluating A and serve
+  it when A passes its own checks, without waiting on the asset lock. The
+  runtime switch to B is the finalization transaction; a same-token force
+  rebuild is distinguished by directory name. A request already holding A
+  finishes under its own validation. If A itself is no longer servable (stale
+  source or policy), the request's republication meets the unresolved intent
+  and is refused as a retryable journal error (503) while recovery owns it.
+- *Missing or damaged state.* A missing committed row (a never-published
+  asset, a restore reset, a deleted row) or a committed pair whose bytes are
+  missing, wrong-sized, undecodable, or unsafe (including a deleted preview
+  root) is regenerated on demand by the locked path through the journaling
+  writer, exactly like any other absent or corrupt cache: legacy JSON is never
+  read, imported, or served, nothing is synchronously backfilled or
+  recovered, and the committed row is replaced only by that journaled
+  publication. The publication JSON the writer itself reads and writes is
+  publication activity, not runtime lookup.
+- *Readiness.* Before the one-time upgrade backfill completes
+  (`isPublicationIndexReady()` is false), a presentation request for an asset
+  without a committed row cannot tell "not generated" from "not imported
+  yet": it fails as `PreviewPublicationNotReadyError` (a controlled,
+  retryable 503) without JSON fallback, generation, or repair. Rows that are
+  already committed are complete snapshots and serve normally; automatic
+  rebuild probes publish row-less assets through the journal. A service
+  constructed without a lifecycle has no legacy cache to import and treats
+  its index as ready. After an ordinary restart with a completed record, the
+  first request reads SQLite directly.
+- *Restore.* A restored database's empty index is never refilled from the
+  surviving host cache by a request: row-less assets regenerate through the
+  journal while the lifecycle's durable repair pass covers the rest.
+
+`current.json` and each revision's `meta.json` remain the durable filesystem
+publication witness and immutable generation description. They are still
+written by every publication and read only by the journaling writer, explicit
+intent recovery, the one-time legacy backfill, and scoped maintenance.
 
 [`preview-cache.js`](src/storage/preview-cache.js) defines the on-disk
 contract, which is an atomic-set publication scheme:
@@ -1338,8 +2006,10 @@ contract, which is an atomic-set publication scheme:
 - Once validated, the staging directory is renamed to an immutable
   `r-<revision>-<rand>/`.
 - `current.json` is then replaced atomically (temp + fsync + rename). **That
-  single-file replacement is the publication event.** A reader sees either
-  the complete prior cache or the complete new one — never a mixed set.
+  single-file replacement is the filesystem publication event**; the runtime
+  switch is the SQLite finalization that follows it. A reader sees either
+  the complete prior committed pair or the complete new one — never a mixed
+  set.
 - Stale revision directories are harmless derived data; cleanup is deferred
   by design rather than racing readers.
 
@@ -1350,8 +2020,8 @@ comparing recorded source size/mtime plus schema and derivative-config
 version markers, the asset's source generation, and the fingerprint of the
 validated effective project-image policy. That same fingerprint contributes to
 rendered project derivative URL revisions. The source generation is part of
-the authoritative pair revision (`meta.json`, `current.json`, and the public
-`v=` token, hence the immutable-response ETag): generation 0 adds nothing to
+the authoritative pair revision (the committed publication, `meta.json`,
+`current.json`, and the public `v=` token, hence the immutable-response ETag): generation 0 adds nothing to
 the token, so pre-existing revisions stay stable, while any later generation
 yields a distinct revision even for an identical tuple. Metadata written
 without a generation reads as generation 0 and therefore qualifies only while
@@ -1390,9 +2060,9 @@ export) read the published pair before taking the generation lock. A pair that
 is fresh for the current source and policy authority is served as-is, exactly
 as the locked path would serve it, so browsing never waits behind an in-flight
 generation of that asset, including a manual force rebuild that is only
-replacing it; published revision directories are immutable and `current.json`
-swaps atomically. Absent, stale, source-mismatched, or corrupt pairs still
-queue on the lock. For a policy-only mismatch, presentation may likewise read
+replacing it; published revision directories are immutable and the committed
+SQLite publication switches only at finalization. Absent, stale,
+source-mismatched, or corrupt pairs still queue on the lock. For a policy-only mismatch, presentation may likewise read
 the prior published pair before taking the generation lock. Both files, metadata, cache schema, source
 tuple, source descriptor/path identity, and animation authority must remain
 valid. The service reports the pair's actual revision and `prior-policy`
@@ -1411,10 +2081,11 @@ effective encoder output rather than the selected presentation. Hidden WebP
 quality is ignored for PNG output, an animated source with PNG selected is
 identified as animated WebP, and Original keeps its fixed WebP 90/1600px
 generated-fallback identity. Inside the asset lock, after each attempt's
-source checks, generation re-inspects the published pair for ordinary raster
-sources. Reuse requires a valid pointer and revision, a matching cache version,
-source tuple, and animation state, plus a current-version identity for the
-kind. When those match, generation copies that derivative's bytes into the new
+source checks, generation re-inspects the committed SQLite publication (never
+`current.json`/`meta.json`) for ordinary raster sources. Reuse requires a
+complete pair on disk, a committed revision matching its own recorded
+source/policy, a matching cache version, source tuple, and animation state,
+plus a current-version identity for the kind. When those match, generation copies that derivative's bytes into the new
 staging directory as an independent file and validates the copy like a freshly
 encoded one. Only the other kind is encoded. The staged pair gets entirely new
 metadata and passes the same authority and source rechecks before
@@ -1660,8 +2331,15 @@ contract:
    (traversal, separators, symlinked components, and the `.staging`/
    `.rollback` shapes are all rejected).
 2. It is validated again immediately before use.
-3. The backup is copied to a staging file beside the live database and
-   fsynced.
+3. The backup is copied to a staging file beside the live database,
+   opened, migrated, and its derived generated-image publication index reset
+   in one transaction (all publication, derivative, and intent rows removed;
+   the lifecycle record set to `restore`/`completed`/`repairRequired`, see
+   §12). The staged file is returned to a single rollback-journal file and
+   fsynced. All of this happens before the live database is touched, so a
+   failed restore reopens the original with its publication rows and intents
+   intact, and the only file that can ever be installed is already reset.
+   Generated cache directories are not deleted.
 4. The live connection is checkpointed and **closed by this call**, then the
    live database (and its WAL/SHM) is renamed aside to `.rollback` and the
    staged file is renamed into place — all same-filesystem renames.

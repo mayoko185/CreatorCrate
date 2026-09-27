@@ -1111,7 +1111,6 @@ describe('settings — asset category defaults HTTP', () => {
       const project = ctx.db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(projectId);
       const projectDir = resolveProjectDir(ctx.projectsRoot, project.project_dir);
       const filesBefore = fs.readdirSync(projectDir, { recursive: true }).sort();
-      const manifestBefore = fs.readFileSync(path.join(projectDir, 'project.json'), 'utf8');
       ctx.db.prepare('UPDATE app_meta SET value = ? WHERE key = ?')
         .run('wip', 'asset_browser.default_category');
       const globalPreferenceBefore = getGlobalBrowserDefault(ctx.db);
@@ -1130,7 +1129,7 @@ describe('settings — asset category defaults HTTP', () => {
         FROM assets WHERE project_id = ? ORDER BY id
       `).all(projectId)).toEqual(assetsBefore);
       expect(fs.readdirSync(projectDir, { recursive: true }).sort()).toEqual(filesBefore);
-      expect(fs.readFileSync(path.join(projectDir, 'project.json'), 'utf8')).toBe(manifestBefore);
+      expect(filesBefore).not.toContain('project.json');
     });
 
     it('calls the injected batch service once for the complete submitted order', async () => {

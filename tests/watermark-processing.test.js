@@ -33,6 +33,7 @@ import { read7zArchiveEntries } from '../src/services/watermark-7z.js';
 import { createSourceAnimationService } from '../src/services/source-animation-service.js';
 import { inspectSourceAnimation } from '../src/services/source-animation.js';
 import { buildAssetRevisionToken } from '../src/services/preview-service.js';
+import { createProjectDirectoryOwnershipRepository } from '../src/data/project-directory-ownership-repository.js';
 
 function createAssetProcessingService(dependencies) {
   const service = createAssetProcessingServiceRaw({
@@ -228,6 +229,7 @@ describe('watermark asset processing', () => {
     overrides = {},
   ) {
     return createAssetProcessingService({
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
       projectRepository,
       assetRepository,
       generatedArtifactRepository,
@@ -269,6 +271,7 @@ describe('watermark asset processing', () => {
     });
     coordinator = createProjectOperationCoordinator();
     assetScanner = createAssetScanner(db, projectsRoot, {
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
       projectService,
       assetCategoryService,
       projectOperationCoordinator: coordinator,
@@ -592,6 +595,7 @@ describe('watermark asset processing', () => {
       pngBytes: await makeWatermark(),
     });
     const managedService = createAssetProcessingService({
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
       projectRepository,
       assetRepository,
       generatedArtifactRepository,
@@ -628,6 +632,7 @@ describe('watermark asset processing', () => {
       VALUES ('Historical map', '{"100x60":0.9,"default":0.1}')
     `).run().lastInsertRowid);
     const managedService = createAssetProcessingService({
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
       projectRepository, assetRepository, generatedArtifactRepository, assetCategoryService, projectsRoot,
       projectOperationCoordinator: coordinator, watermarkPath, watermarkRoot: tmpDir, scaleMapService,
     });
@@ -861,7 +866,7 @@ describe('watermark asset processing', () => {
     expect(revision).not.toBe(buildAssetRevisionToken(before));
     assetScanner.scanProjectAssets(project.id);
     expect(assetRepository.findById(outputId)).toEqual(recreated);
-    const sourceAnimation = createSourceAnimationService({ assetRepository, projectRepository, projectsRoot });
+    const sourceAnimation = createSourceAnimationService({ assetRepository, projectRepository, projectsRoot, projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db) });
     expect(sourceAnimation.reconcileSource(recreated)).toBeNull();
     expect(assetRepository.findById(outputId)).toEqual(recreated);
     expect(buildAssetRevisionToken(assetRepository.findById(outputId))).toBe(revision);
@@ -914,7 +919,7 @@ describe('watermark asset processing', () => {
 
     // Request-time Preview reconciliation runs while watermark rendering is
     // underway; it is not serialized by the project operation lock.
-    const sourceAnimation = createSourceAnimationService({ assetRepository, projectRepository, projectsRoot });
+    const sourceAnimation = createSourceAnimationService({ assetRepository, projectRepository, projectsRoot, projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db) });
     let reconciled;
     const pool = createProcessingConcurrencyService({ concurrency: 1 });
     const racingService = createConfiguredService(watermarkPath, tmpDir, coordinator, {
@@ -2044,6 +2049,7 @@ describe('watermark asset processing', () => {
   it('rejects a missing trusted watermark before mutating selected assets', async () => {
     const source = await writeIndexedImage('Final/missing-watermark.png');
     const missingService = createAssetProcessingService({
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
       projectRepository,
       assetRepository,
       assetCategoryService,
@@ -2097,6 +2103,7 @@ describe('watermark asset processing', () => {
     });
 
     const globalProcessingService = createAssetProcessingService({
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
       projectRepository,
       assetRepository,
       generatedArtifactRepository,
@@ -2106,6 +2113,7 @@ describe('watermark asset processing', () => {
       watermarkService: globalService,
     });
     const planner = createAssetProcessingPlanner({
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
       scopeService: createAssetProcessingScopeService({ projectRepository, assetRepository }),
       projectRepository,
       assetRepository,
@@ -2177,6 +2185,7 @@ describe('watermark asset processing', () => {
     const global = globalService.listWatermarks().find((candidate) => candidate.relativePath === 'stale.png');
     const source = await writeIndexedImage('Final/stale-source.png');
     const globalProcessingService = createAssetProcessingService({
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
       projectRepository,
       assetRepository,
       assetCategoryService,
@@ -2185,6 +2194,7 @@ describe('watermark asset processing', () => {
       watermarkService: globalService,
     });
     const planner = createAssetProcessingPlanner({
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
       scopeService: createAssetProcessingScopeService({ projectRepository, assetRepository }),
       projectRepository,
       assetRepository,
@@ -2236,6 +2246,7 @@ describe('watermark asset processing', () => {
     const global = globalService.listWatermarks().find((candidate) => candidate.relativePath === 'ownership.png');
     const source = await writeIndexedImage('Final/ownership.png');
     const globalProcessingService = createAssetProcessingService({
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
       projectRepository,
       assetRepository,
       assetCategoryService,

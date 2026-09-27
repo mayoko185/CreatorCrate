@@ -4,7 +4,7 @@
  * Covers dependency injection into the dedicated project-asset-categories
  * router, authentication/CSRF, listing/rendering, add/edit/rename/enable/
  * disable/reorder/move/delete route behavior, controlled error mapping, and
- * a focused set of real-service integration checks (manifest rewrite,
+ * a focused set of real-service integration checks (no manifest writes,
  * filesystem rename, asset/release ID stability, archived immutability,
  * and global-default independence).
  */
@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { resolveProjectDir } from '../src/storage/project-storage.js';
-import { readManifestSync } from '../src/storage/manifest.js';
+import { MANIFEST_FILENAME } from '../src/storage/manifest.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { ProjectAssetCategoryError } from '../src/services/project-asset-category-service.js';
 import { authenticate, AUTH_CONFIG } from './helpers/auth.js';
@@ -1694,7 +1694,7 @@ describe('project asset categories — HTTP', () => {
   // ─── Integration: real service through HTTP ─────────────────────────────
 
   describe('integration behavior (real service)', () => {
-    it('a successful name edit rewrites the manifest without renaming the directory', async () => {
+    it('a successful name edit updates SQLite only, without renaming the directory or writing a manifest', async () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent, csrfToken } = await authenticate(app);
@@ -1708,12 +1708,12 @@ describe('project asset categories — HTTP', () => {
         .send({ displayName: 'Renamed Label', _csrf: csrfToken }).expect(302);
 
       expect(fs.readdirSync(absPath).sort()).toEqual(dirsBefore);
-      const manifest = readManifestSync(absPath);
-      const entry = manifest.assetCategories.find((c) => c.directorySlug === category.directory_slug);
-      expect(entry.displayName).toBe('Renamed Label');
+      expect(ctx.db.prepare('SELECT display_name FROM project_asset_categories WHERE id = ?').get(category.id))
+        .toEqual({ display_name: 'Renamed Label' });
+      expect(fs.existsSync(path.join(absPath, MANIFEST_FILENAME))).toBe(false);
     });
 
-    it('enable/disable/reorder/delete each rewrite the manifest', async () => {
+    it('disable writes no manifest', async () => {
       ctx = setupTmp();
       const app = createApp({ appName: APP_NAME, db: ctx.db, projectsRoot: ctx.projectsRoot }, { authConfig: AUTH_CONFIG });
       const { agent, csrfToken } = await authenticate(app);
@@ -1723,8 +1723,10 @@ describe('project asset categories — HTTP', () => {
       const absPath = resolveProjectDir(ctx.projectsRoot, project.project_dir);
 
       await agent.post(`/projects/${projectId}/asset-categories/${category.id}/enabled`).type('form').send({ enabled: '0', _csrf: csrfToken }).expect(302);
-      let manifest = readManifestSync(absPath);
-      expect(manifest.assetCategories.find((c) => c.directorySlug === category.directory_slug).enabled).toBe(false);
+      expect(ctx.db.prepare('SELECT enabled FROM project_asset_categories WHERE id = ?').get(category.id))
+        .toEqual({ enabled: 0 });
+      expect(fs.existsSync(path.join(absPath, category.directory_slug))).toBe(true);
+      expect(fs.existsSync(path.join(absPath, MANIFEST_FILENAME))).toBe(false);
     });
 
     it('archived projects remain immutable through every mutation route', async () => {

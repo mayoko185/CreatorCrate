@@ -21,6 +21,7 @@ import { createSourceAnimationService } from '../src/services/source-animation-s
 import { createProcessingConcurrencyService } from '../src/services/processing-concurrency-service.js';
 import { createGeneratedImageRebuildService } from '../src/services/generated-image-rebuild-service.js';
 import { createGeneratedImageRebuildRepository } from '../src/data/generated-image-rebuild-repository.js';
+import { createGeneratedImagePublicationRepository } from '../src/data/generated-image-publication-repository.js';
 import {
   formatProjectDirName,
 } from '../src/storage/project-storage.js';
@@ -43,6 +44,7 @@ import {
   PreviewError,
   PreviewGenerationError,
   PreviewNotFoundError,
+  PreviewPublicationJournalError,
   classifyPreviewable,
   buildAssetRevisionToken,
   buildDerivativePipeline,
@@ -52,6 +54,8 @@ import {
 } from '../src/services/preview-service.js';
 import { makeZip } from './helpers/zip-fixture.js';
 import { makeAnimatedWebp, makeSolidAnimatedWebp } from './helpers/animated-webp.js';
+import { bindTestProjectOwnership } from './helpers/project-ownership.js';
+import { createProjectDirectoryOwnershipRepository } from '../src/data/project-directory-ownership-repository.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -201,6 +205,8 @@ function makeHarness() {
     // setProjectDir returns the updated record; replace the local project so
     // callers that pass it to indexAsset get a record with project_dir set.
     project = projectRepo.setProjectDir(project.id, relPath);
+    // Bound like real project creation: source reconciliation is ownership-gated.
+    bindTestProjectOwnership(db, project.id, absPath);
     return { project, absPath, relPath };
   }
 
@@ -295,6 +301,20 @@ function publishedDir(h, projectId, assetId) {
 // Resolve a file inside the currently-published revision directory.
 function publishedFile(h, projectId, assetId, filename) {
   return path.join(publishedDir(h, projectId, assetId), filename);
+}
+
+// Rewrite columns of an asset's committed SQLite publication (the runtime
+// authority) to simulate a recorded state; values stay within the schema.
+function updateCommitted(h, assetId, { publication = {}, thumbnail = {}, preview = {} } = {}) {
+  const update = (table, where, values, ...params) => {
+    const columns = Object.keys(values);
+    if (!columns.length) return;
+    h.db.prepare(`UPDATE ${table} SET ${columns.map((column) => `${column} = ?`).join(', ')} WHERE ${where}`)
+      .run(...Object.values(values), ...params);
+  };
+  update('generated_image_publications', 'asset_id = ?', publication, assetId);
+  update('generated_image_derivatives', "asset_id = ? AND kind = 'thumbnail'", thumbnail, assetId);
+  update('generated_image_derivatives', "asset_id = ? AND kind = 'preview'", preview, assetId);
 }
 
 // ─── Concurrency / failure-test helpers ──────────────────────────────────
@@ -881,6 +901,7 @@ describe('project image policy derivatives', () => {
         assetRepository: h.assetRepo,
         projectRepository: h.projectRepo,
         projectsRoot: h.projectsRoot,
+        projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(h.db),
       }),
     });
     return { project, asset, filePath, imageSettings };
@@ -1497,9 +1518,12 @@ describe('project image policy derivatives', () => {
     expect(thumbnail).toMatchObject({ cacheState: 'prior-policy', revision: first.revision });
   });
 
+  // The committed row, not meta.json, carries the recorded animation. A
+  // non-boolean value cannot be stored (schema CHECK), so unrecorded (NULL)
+  // is the remaining non-boolean case.
   it.each([
-    ['gif', undefined], ['gif', 'false'], ['webp', undefined],
-  ])('rejects a prior %s pair with animation metadata %s', async (extension, recordedAnimation) => {
+    ['gif'], ['webp'],
+  ])('rejects a prior %s pair with unrecorded animation metadata', async (extension) => {
     set('images.preview.format', 'png');
     const bytes = extension === 'gif'
       ? await (await sharp())({
@@ -1508,15 +1532,13 @@ describe('project image policy derivatives', () => {
       : await makeWebp(40, 30);
     const { project, asset } = await source(`missing.${extension}`, bytes);
     await h.service.getPreview(project.id, asset.id);
-    const metaPath = publishedFile(h, project.id, asset.id, META_FILENAME);
-    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-    if (recordedAnimation === undefined) delete meta.animated;
-    else meta.animated = recordedAnimation;
-    fs.writeFileSync(metaPath, JSON.stringify(meta));
+    updateCommitted(h, asset.id, { publication: { animated: null } });
     set('images.thumbnail.format', 'png');
     const next = await h.service.getPreview(project.id, asset.id);
     expect(next.cacheState).toBe('regenerated');
     expect(readMetaFile(publishedFile(h, project.id, asset.id, META_FILENAME)).meta.animated).toBe(false);
+    expect(h.db.prepare('SELECT animated FROM generated_image_publications WHERE asset_id = ?')
+      .pluck().get(asset.id)).toBe(0);
   });
 
   it('rejects an obsolete target before pointer publication', async () => {
@@ -1541,10 +1563,7 @@ describe('project image policy derivatives', () => {
     expect((await h.service.getThumbnail(project.id, asset.id)).cacheState).toBe('regenerated');
 
     set('images.thumbnail.format', 'webp');
-    const metaPath = publishedFile(h, project.id, asset.id, META_FILENAME);
-    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-    meta.schemaVersion = 999;
-    fs.writeFileSync(metaPath, JSON.stringify(meta));
+    updateCommitted(h, asset.id, { publication: { cache_schema_version: 999 } });
     expect((await h.service.getThumbnail(project.id, asset.id)).cacheState).toBe('regenerated');
 
     set('images.thumbnail.format', 'png');
@@ -1765,14 +1784,12 @@ describe('project image policy derivatives', () => {
     });
 
     it.each([
-      ['missing (legacy)', (meta) => { delete meta.generationIdentities; }],
-      ['from another identity version', (meta) => { meta.generationIdentities.version = 2; }],
-    ])('disables reuse when per-kind identities are %s', async (_label, mutate) => {
+      ['missing (legacy)', { publication: { generation_identity_version: null },
+        thumbnail: { generation_identity: null }, preview: { generation_identity: null } }],
+      ['from another identity version', { publication: { generation_identity_version: 2 } }],
+    ])('disables reuse when per-kind identities are %s', async (_label, recorded) => {
       const { project, asset } = await published('legacy.png', await makePng(900, 700));
-      const metaPath = publishedFile(h, project.id, asset.id, META_FILENAME);
-      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-      mutate(meta);
-      fs.writeFileSync(metaPath, JSON.stringify(meta));
+      updateCommitted(h, asset.id, recorded);
       set('images.preview.webp_quality', 40);
       const first = tracked();
       const result = await rebuild(first.service, project, asset);
@@ -1787,18 +1804,15 @@ describe('project image policy derivatives', () => {
     });
 
     // A malformed identity block is not partial proof: a valid, matching sibling
-    // identity must not be trusted when the other kind's value only coerces to a
-    // valid-looking hash.
+    // identity must not be trusted when the other kind's is absent. The schema
+    // rejects non-hash values outright; a partial set makes the committed row
+    // unreadable as a publication, so nothing of it is reused.
     it.each([
-      ['thumbnail', 'an array', (id) => [id], 'images.thumbnail.max_dimension', 128],
-      ['thumbnail', 'a number', () => 1234567890123456, 'images.thumbnail.max_dimension', 128],
-      ['preview', 'an array', (id) => [id], 'images.preview.webp_quality', 40],
-    ])('disables reuse of both kinds when the %s identity is %s', async (kind, _label, malform, key, value) => {
+      ['thumbnail', 'images.thumbnail.max_dimension', 128],
+      ['preview', 'images.preview.webp_quality', 40],
+    ])('disables reuse of both kinds when only the %s identity is missing', async (kind, key, value) => {
       const { project, asset } = await published('malformed.png', await makePng(900, 700));
-      const metaPath = publishedFile(h, project.id, asset.id, META_FILENAME);
-      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-      meta.generationIdentities[kind] = malform(meta.generationIdentities[kind]);
-      fs.writeFileSync(metaPath, JSON.stringify(meta));
+      updateCommitted(h, asset.id, { [kind]: { generation_identity: null } });
       // Only `kind` changes, so the sibling identity still matches the target.
       set(key, value);
       const { service, staged } = tracked();
@@ -3777,12 +3791,9 @@ describe('preview-service cache lifecycle', () => {
     const { project, asset } = await setupAssetWithPng();
     await h.service.getThumbnail(project.id, asset.id);
 
-    // Tamper with the meta.json's derivativeConfigVersion to simulate a
-    // pipeline-version bump on an existing entry.
-    const metaPath = publishedFile(h, project.id, asset.id, META_FILENAME);
-    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-    meta.derivativeConfigVersion = 999;
-    fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2) + '\n');
+    // Record another derivativeConfigVersion on the committed publication to
+    // simulate a pipeline-version bump on an existing entry.
+    updateCommitted(h, asset.id, { publication: { derivative_config_version: 999 } });
 
     const r = await h.service.getThumbnail(project.id, asset.id);
     expect(r.cacheState).toBe('regenerated');
@@ -3790,25 +3801,28 @@ describe('preview-service cache lifecycle', () => {
 
   // ── Corrupt-cache detection ─────────────────────────────────────────
 
-  it('regenerates when meta.json is missing', async () => {
+  // meta.json is a publication/recovery witness, never a runtime input: the
+  // committed SQLite publication keeps serving without it.
+  it('serves the committed publication when meta.json is missing', async () => {
     const { project, asset } = await setupAssetWithPng();
-    await h.service.getThumbnail(project.id, asset.id);
+    const first = await h.service.getThumbnail(project.id, asset.id);
+    const metaPath = publishedFile(h, project.id, asset.id, META_FILENAME);
 
-    fs.rmSync(publishedFile(h, project.id, asset.id, META_FILENAME));
+    fs.rmSync(metaPath);
     const r = await h.service.getThumbnail(project.id, asset.id);
-    expect(r.cacheState).toBe('regenerated');
+    expect(r).toMatchObject({ cacheState: 'fresh', path: first.path, revision: first.revision });
+    expect(fs.existsSync(metaPath)).toBe(false);
   });
 
-  it('regenerates when meta.json is malformed', async () => {
+  it('serves the committed publication when meta.json is malformed', async () => {
     const { project, asset } = await setupAssetWithPng();
-    await h.service.getThumbnail(project.id, asset.id);
+    const first = await h.service.getThumbnail(project.id, asset.id);
+    const metaPath = publishedFile(h, project.id, asset.id, META_FILENAME);
 
-    fs.writeFileSync(
-      publishedFile(h, project.id, asset.id, META_FILENAME),
-      '{ not valid json'
-    );
+    fs.writeFileSync(metaPath, '{ not valid json');
     const r = await h.service.getThumbnail(project.id, asset.id);
-    expect(r.cacheState).toBe('regenerated');
+    expect(r).toMatchObject({ cacheState: 'fresh', path: first.path, revision: first.revision });
+    expect(fs.readFileSync(metaPath, 'utf8')).toBe('{ not valid json');
   });
 
   it('regenerates when a derivative file is missing', async () => {
@@ -3845,17 +3859,16 @@ describe('preview-service cache lifecycle', () => {
     expect(r.cacheState).toBe('regenerated');
   });
 
-  it('regenerates when derivative metadata is incomplete (thumbnail block removed)', async () => {
+  it('regenerates when the committed publication is incomplete (thumbnail row removed)', async () => {
     const { project, asset } = await setupAssetWithPng();
     await h.service.getThumbnail(project.id, asset.id);
 
-    const metaPath = publishedFile(h, project.id, asset.id, META_FILENAME);
-    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-    delete meta.thumbnail;
-    fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2) + '\n');
+    h.db.prepare("DELETE FROM generated_image_derivatives WHERE asset_id = ? AND kind = 'thumbnail'").run(asset.id);
 
     const r = await h.service.getThumbnail(project.id, asset.id);
     expect(r.cacheState).toBe('regenerated');
+    expect(createGeneratedImagePublicationRepository(h.db).findPublication(project.id, asset.id)
+      .directoryName).toBe(path.basename(path.dirname(r.path)));
   });
 
   // ── Atomic failure cleanup ──────────────────────────────────────────
@@ -4641,6 +4654,355 @@ describe('preview-service failure preservation (forced failures per stage)', () 
 
   it('publication failure after the rename (before pointer replacement) preserves the prior cache', async () => {
     await runFailureCase('beforePointerWrite');
+  });
+});
+
+// ─── Generated-image publication journal ─────────────────────────────────
+
+describe('preview-service generated-image publication journal', () => {
+  let h;
+  beforeEach(() => { h = makeHarness(); });
+  afterEach(() => h.cleanup());
+
+  const repo = () => createGeneratedImagePublicationRepository(h.db);
+  const targetPolicy = () => createProjectImageSettingsService({
+    appMetaRepository: createAppMetaRepository(h.db),
+  }).getPolicy();
+
+  function journaledService(repository, hooks) {
+    return createPreviewService({
+      db: h.db, projectsRoot: h.projectsRoot, previewRoot: h.previewRoot,
+      generatedImagePublicationRepository: repository, _hooks: hooks,
+    });
+  }
+
+  async function fixture(name = 'journal.png') {
+    const ctx = h.createProject(`Journal ${name}`);
+    writeProjectFile(ctx.absPath, name, await makePng(900, 700));
+    return { project: ctx.project, asset: h.indexAsset(ctx.project, name) };
+  }
+
+  // The committed SQLite snapshot must describe exactly the pair current.json
+  // names, as recorded by its own meta.json, with no intent left behind.
+  function expectCommittedMatchesPointer(projectId, assetId) {
+    const pointer = readCurrentPointer(h.previewRoot, projectId, assetId).pointer;
+    const meta = readMetaFile(path.join(assetCacheRoot(h, projectId, assetId), pointer.dir, META_FILENAME)).meta;
+    const committed = repo().findPublication(projectId, assetId);
+    expect(committed).toMatchObject({
+      projectId, assetId,
+      directoryName: pointer.dir,
+      revision: pointer.revision,
+      generatedAt: meta.generatedAt,
+      cacheSchemaVersion: meta.schemaVersion,
+      derivativeConfigVersion: meta.derivativeConfigVersion,
+      sourceRelativePath: meta.source.relativePath,
+      sourceSizeBytes: meta.source.size,
+      sourceMtime: meta.source.mtime,
+      sourceGeneration: meta.source.generation ?? 0,
+      policyFingerprint: meta.policyFingerprint ?? null,
+      animated: meta.animated ?? null,
+      frameCount: meta.frameCount ?? null,
+      sourcePreviewQuality: meta.source.previewQuality ?? null,
+      generationIdentityVersion: meta.generationIdentities?.version ?? null,
+    });
+    for (const kind of ['thumbnail', 'preview']) {
+      expect(committed.derivatives[kind]).toEqual({
+        format: meta[kind].format,
+        width: meta[kind].width,
+        height: meta[kind].height,
+        sizeBytes: meta[kind].bytes,
+        generationIdentity: meta.generationIdentities?.[kind] ?? null,
+      });
+    }
+    expect(repo().findIntent(projectId, assetId)).toBeNull();
+    return committed;
+  }
+
+  it('journals the candidate only after staged validation and before promotion, then finalizes', async () => {
+    const { project, asset } = await fixture();
+    const root = assetCacheRoot(h, project.id, asset.id);
+    const intentNow = () => repo().findIntent(project.id, asset.id);
+    const observed = {};
+    const service = makeHookedService(h, {
+      beforeStagedSetValidate: () => { observed.beforeValidate = intentNow(); },
+      beforePublishRecheck: () => { observed.beforeRecheck = intentNow(); },
+      beforePublishRename: () => {
+        const intent = intentNow();
+        observed.atPromotion = {
+          intent,
+          stagingExists: fs.existsSync(path.join(root, intent.stagingDirectoryName)),
+          candidateExists: fs.existsSync(path.join(root, intent.candidateDirectoryName)),
+          revisionDirs: fs.readdirSync(root).filter((name) => name.startsWith('r-')),
+        };
+      },
+      beforePointerWrite: () => {
+        observed.beforePointer = {
+          intent: intentNow(),
+          pointer: readCurrentPointer(h.previewRoot, project.id, asset.id),
+          committed: repo().findPublication(project.id, asset.id),
+        };
+      },
+    });
+
+    const result = await service.getPreview(project.id, asset.id);
+
+    expect(result.cacheState).toBe('regenerated');
+    expect(observed.beforeValidate).toBeNull();
+    expect(observed.beforeRecheck).toBeNull();
+    const intent = observed.atPromotion.intent;
+    expect(intent).toMatchObject({
+      projectId: project.id, assetId: asset.id,
+      expectedRevision: result.revision, previousDirectoryName: null,
+    });
+    expect(intent.candidateDirectoryName.startsWith(`r-${result.revision}-`)).toBe(true);
+    expect(observed.atPromotion).toMatchObject({ stagingExists: true, candidateExists: false, revisionDirs: [] });
+    expect(observed.beforePointer.intent).toEqual(intent);
+    expect(observed.beforePointer.pointer).toMatchObject({ ok: false, reason: 'missing' });
+    expect(observed.beforePointer.committed).toBeNull();
+
+    // Filesystem publication is unchanged: current.json names the promoted
+    // immutable directory, which holds the served pair.
+    const committed = expectCommittedMatchesPointer(project.id, asset.id);
+    expect(committed.directoryName).toBe(intent.candidateDirectoryName);
+    expect(publishedDir(h, project.id, asset.id)).toBe(path.join(root, intent.candidateDirectoryName));
+    expect(result.path).toBe(path.join(root, intent.candidateDirectoryName, PREVIEW_FILENAME));
+    expect(stagingDirs(h, project.id, asset.id)).toEqual([]);
+  });
+
+  it('finalizes a same-token force rebuild as a distinct immutable directory', async () => {
+    const { project, asset } = await fixture('force.png');
+    await h.service.getPreview(project.id, asset.id);
+    const original = expectCommittedMatchesPointer(project.id, asset.id);
+
+    let intent = null;
+    const service = makeHookedService(h, {
+      beforePointerWrite: () => { intent = repo().findIntent(project.id, asset.id); },
+    });
+    const result = await service.ensureTargetGeneration(project.id, asset.id, targetPolicy(),
+      () => true, { force: true });
+
+    expect(result.cacheState).toBe('regenerated');
+    expect(intent).toMatchObject({
+      expectedRevision: original.revision,
+      previousDirectoryName: original.directoryName,
+    });
+    expect(intent.candidateDirectoryName).not.toBe(original.directoryName);
+    const rebuilt = expectCommittedMatchesPointer(project.id, asset.id);
+    expect(rebuilt.revision).toBe(original.revision);
+    expect(rebuilt.directoryName).toBe(intent.candidateDirectoryName);
+    expect(rebuilt.directoryName).not.toBe(original.directoryName);
+    // The previous immutable generation is not removed by publication.
+    expect(fs.existsSync(path.join(assetCacheRoot(h, project.id, asset.id), original.directoryName))).toBe(true);
+  });
+
+  it('releases a discarded candidate intent before a retry journals its own', async () => {
+    const { project, asset } = await fixture('retry.png');
+    const root = assetCacheRoot(h, project.id, asset.id);
+    const intents = [];
+    let moved = false;
+    const service = makeHookedService(h, {
+      beforePointerWrite: () => {
+        intents.push(repo().findIntent(project.id, asset.id));
+        // The pointer-boundary authority recheck discards this candidate.
+        if (!moved) {
+          moved = true;
+          createAppMetaRepository(h.db).setValue('images.thumbnail.format', 'png');
+        }
+      },
+    });
+
+    await service.getPreview(project.id, asset.id);
+
+    expect(intents).toHaveLength(2);
+    expect(intents[1].intentId).not.toBe(intents[0].intentId);
+    expect(intents[1].candidateDirectoryName).not.toBe(intents[0].candidateDirectoryName);
+    expect(fs.existsSync(path.join(root, intents[0].candidateDirectoryName))).toBe(false);
+    const committed = expectCommittedMatchesPointer(project.id, asset.id);
+    expect(committed.directoryName).toBe(intents[1].candidateDirectoryName);
+    expect(committed.derivatives.thumbnail.format).toBe('png');
+  });
+
+  describe('failure before current.json names the candidate', () => {
+    function injectPointerRenameFailure() {
+      const originalRenameSync = fs.renameSync;
+      return vi.spyOn(fs, 'renameSync').mockImplementation((source, target) => {
+        if (path.basename(String(target)) === CURRENT_POINTER_FILENAME) {
+          throw new Error('injected current pointer rename failure');
+        }
+        return originalRenameSync.call(fs, source, target);
+      });
+    }
+
+    it.each([
+      ['staging promotion', 'Failed to publish derivative cache', () => {
+        const originalRenameSync = fs.renameSync;
+        const spy = vi.spyOn(fs, 'renameSync').mockImplementation((source, target) => {
+          if (path.basename(String(source)).startsWith('tmp-') && path.basename(String(target)).startsWith('r-')) {
+            throw new Error('injected staging promotion failure');
+          }
+          return originalRenameSync.call(fs, source, target);
+        });
+        return { hooks: {}, restore: () => spy.mockRestore() };
+      }],
+      ['the promotion hook', 'forced promotion failure', () => ({
+        hooks: { beforePublishRename: () => { throw new Error('forced promotion failure'); } },
+        restore: () => {},
+      })],
+      ['the pointer-boundary hook', 'forced pointer-boundary failure', () => ({
+        hooks: { beforePointerWrite: () => { throw new Error('forced pointer-boundary failure'); } },
+        restore: () => {},
+      })],
+      ['current.json replacement', 'Cannot write cache file', () => {
+        const spy = injectPointerRenameFailure();
+        return { hooks: {}, restore: () => spy.mockRestore() };
+      }],
+    ])('%s failure preserves the old publication and releases the intent', async (_label, message, inject) => {
+      const { project, asset, snapshot } = await prepareFailureFixture(h);
+      const committed = expectCommittedMatchesPointer(project.id, asset.id);
+      const { hooks, restore } = inject();
+      let intent = null;
+      const service = makeHookedService(h, {
+        ...hooks,
+        beforePublishRename: async () => {
+          intent = repo().findIntent(project.id, asset.id);
+          await hooks.beforePublishRename?.();
+        },
+      });
+      try {
+        await expect(service.getPreview(project.id, asset.id)).rejects.toThrow(message);
+      } finally {
+        restore();
+      }
+
+      expect(intent).not.toBeNull();
+      assertFailurePreserved(h, project.id, asset.id, snapshot);
+      expect(repo().findPublication(project.id, asset.id)).toEqual(committed);
+      expect(repo().findIntent(project.id, asset.id)).toBeNull();
+    });
+
+    it('final source/policy authority failure preserves the old publication and releases the intent', async () => {
+      const { project, asset, snapshot } = await prepareFailureFixture(h);
+      const committed = expectCommittedMatchesPointer(project.id, asset.id);
+      let authoritative = true;
+      let intent = null;
+      const service = makeHookedService(h, {
+        beforePointerWrite: () => {
+          intent = repo().findIntent(project.id, asset.id);
+          authoritative = false;
+        },
+      });
+
+      await expect(service.ensureTargetGeneration(project.id, asset.id, targetPolicy(),
+        () => authoritative)).rejects.toThrow('obsolete');
+
+      expect(intent).not.toBeNull();
+      assertFailurePreserved(h, project.id, asset.id, snapshot);
+      expect(repo().findPublication(project.id, asset.id)).toEqual(committed);
+      expect(repo().findIntent(project.id, asset.id)).toBeNull();
+    });
+
+    it('keeps the candidate and intent when the pointer write fails but current.json names the candidate', async () => {
+      const { project, asset, snapshot } = await prepareFailureFixture(h);
+      const committed = expectCommittedMatchesPointer(project.id, asset.id);
+      const originalRenameSync = fs.renameSync;
+      const spy = vi.spyOn(fs, 'renameSync').mockImplementation((source, target) => {
+        const result = originalRenameSync.call(fs, source, target);
+        if (path.basename(String(target)) === CURRENT_POINTER_FILENAME) {
+          throw new Error('injected failure after the pointer rename');
+        }
+        return result;
+      });
+      let error;
+      try {
+        error = await h.service.getPreview(project.id, asset.id).catch((err) => err);
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(error).toBeInstanceOf(PreviewPublicationJournalError);
+      expect(error.state).toBe('unresolved');
+      const intent = repo().findIntent(project.id, asset.id);
+      expect(intent).not.toBeNull();
+      expect(error.candidateDirectoryName).toBe(intent.candidateDirectoryName);
+      expect(readCurrentPointer(h.previewRoot, project.id, asset.id).pointer.dir)
+        .toBe(intent.candidateDirectoryName);
+      expect(publishedDir(h, project.id, asset.id))
+        .toBe(path.join(assetCacheRoot(h, project.id, asset.id), intent.candidateDirectoryName));
+      expect(fs.existsSync(snapshot.dir)).toBe(true);
+      expect(repo().findPublication(project.id, asset.id)).toEqual(committed);
+    });
+  });
+
+  describe('failure after current.json names the candidate', () => {
+    it.each([
+      ['throws', () => { throw new Error('injected finalization failure'); }],
+      ['reports a lost intent', () => false],
+    ])('keeps the published candidate and its intent when finalization %s', async (_label, finalize) => {
+      const { project, asset, snapshot } = await prepareFailureFixture(h);
+      const committed = expectCommittedMatchesPointer(project.id, asset.id);
+      const root = assetCacheRoot(h, project.id, asset.id);
+      const failing = { ...repo(), finalizePublication: finalize };
+
+      const error = await journaledService(failing).getPreview(project.id, asset.id).catch((err) => err);
+
+      // The operation does not report success.
+      expect(error).toBeInstanceOf(PreviewPublicationJournalError);
+      expect(error.state).toBe('unresolved');
+      // Filesystem: current.json names the intact candidate.
+      const intent = repo().findIntent(project.id, asset.id);
+      expect(intent).toMatchObject({ previousDirectoryName: path.basename(snapshot.dir) });
+      expect(error.candidateDirectoryName).toBe(intent.candidateDirectoryName);
+      const pointer = readCurrentPointer(h.previewRoot, project.id, asset.id).pointer;
+      expect(pointer.dir).toBe(intent.candidateDirectoryName);
+      expect(publishedDir(h, project.id, asset.id)).toBe(path.join(root, intent.candidateDirectoryName));
+      for (const name of [THUMBNAIL_FILENAME, PREVIEW_FILENAME, META_FILENAME]) {
+        expect(fs.existsSync(path.join(root, intent.candidateDirectoryName, name))).toBe(true);
+      }
+      expect(fs.existsSync(snapshot.dir)).toBe(true);
+      expect(stagingDirs(h, project.id, asset.id)).toEqual([]);
+      expect(_lockCountForTests()).toBe(0);
+      // SQLite: the previous committed snapshot and the matching intent remain.
+      expect(repo().findPublication(project.id, asset.id)).toEqual(committed);
+
+      // Readers stay on the committed SQLite publication, never on
+      // current.json: the candidate is not served before finalization. Here
+      // the committed generation is stale (the fixture replaced the source),
+      // so the reader's own republication meets the unresolved intent and
+      // refuses with a controlled, retryable journal error; recovery owns it.
+      const refused = await h.service.getPreview(project.id, asset.id).catch((err) => err);
+      expect(refused).toBeInstanceOf(PreviewPublicationJournalError);
+      expect(refused.state).toBe('pending');
+
+      // A stale or wrong owner can neither clear nor finalize the intent.
+      const candidate = { ...committed, directoryName: intent.candidateDirectoryName,
+        revision: intent.expectedRevision };
+      expect(repo().clearIntent(project.id, asset.id, 'not-the-owner')).toBe(false);
+      expect(repo().finalizePublication('not-the-owner', candidate)).toBe(false);
+      expect(repo().findIntent(project.id, asset.id)).toEqual(intent);
+      expect(repo().findPublication(project.id, asset.id)).toEqual(committed);
+    });
+  });
+
+  it('refuses a competing publication while another intent owns the asset', async () => {
+    const { project, asset, snapshot } = await prepareFailureFixture(h);
+    const committed = expectCommittedMatchesPointer(project.id, asset.id);
+    const revision = 'abcdef0123456789';
+    const existing = repo().acquireIntent({
+      projectId: project.id, assetId: asset.id,
+      candidateDirectoryName: `r-${revision}-deadbeef`,
+      stagingDirectoryName: 'tmp-abcdef012345',
+      expectedRevision: revision,
+      previousDirectoryName: path.basename(snapshot.dir),
+    });
+
+    const error = await h.service.getPreview(project.id, asset.id).catch((err) => err);
+
+    expect(error).toBeInstanceOf(PreviewPublicationJournalError);
+    expect(error.state).toBe('pending');
+    // Nothing was promoted; the old publication and the owning intent stand.
+    assertFailurePreserved(h, project.id, asset.id, snapshot);
+    expect(repo().findIntent(project.id, asset.id)).toEqual(existing);
+    expect(repo().findPublication(project.id, asset.id)).toEqual(committed);
   });
 });
 

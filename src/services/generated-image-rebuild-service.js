@@ -67,6 +67,9 @@ export function createGeneratedImageRebuildService({
   // Only tests widen this to exercise the frontier with larger windows.
   maxBackgroundWindow = MAX_BACKGROUND_REBUILD_WINDOW,
   schedule = (callback, delay) => setTimeout(callback, delay),
+  // Told once a run this service drove reaches a terminal phase, e.g. so a
+  // publication repair deferred to a started manual run is admitted again.
+  onRunTerminal = null,
 } = {}) {
   if (!repository || !imageSettings || !previewService
     || !maintenanceState || !managedUploadTracker) {
@@ -117,6 +120,37 @@ export function createGeneratedImageRebuildService({
 
   function queueManual() {
     repository.save(newRecord('manual', null, imageSettings.getPolicy()));
+  }
+
+  // Publication repair admission (generated-image publication lifecycle):
+  // some assets have no trustworthy committed publication (legacy cache not
+  // importable, abandoned recovery, restore reset). A reconcile-all pass
+  // under the saved policy visits every eligible asset; Preview Service
+  // republishes those whose committed publication is missing or does not
+  // match the published pair, and skips the rest. It is the same automatic
+  // run a policy change queues, under the same window and processing pool.
+  // Returns:
+  //   'queued'   — a new reconcile-all run was recorded (an unfinished
+  //                automatic run is superseded, keeping its baseline);
+  //   'covered'  — a not-yet-started repair or manual run already visits
+  //                every asset under the saved policy;
+  //   'deferred' — a started manual (force) run is left to finish; the
+  //                caller keeps its repair need and admits it again when
+  //                `onRunTerminal` reports that run (or a successor) ended.
+  function queueRepair() {
+    let prior = null;
+    try { prior = repository.get(); } catch (error) {
+      if (!(error instanceof InvalidGeneratedImageRebuildRecordError)) throw error;
+    }
+    const active = trustedRecord(prior) && ACTIVE_PHASES.has(prior.phase) ? prior : null;
+    const policy = imageSettings.getPolicy();
+    const samePolicy = active && JSON.stringify(active.targetPolicy) === JSON.stringify(policy);
+    if (samePolicy && active.phase === 'queued' && active.cursor === 0 && !active.started
+      && (active.mode === 'manual' || active.reason === 'publication-repair')) return 'covered';
+    if (active?.mode === 'manual') return 'deferred';
+    const baseline = active?.mode === 'automatic' ? active.previousPolicy : policy;
+    repository.save({ ...newRecord('automatic', baseline, policy, true), reason: 'publication-repair' });
+    return 'queued';
   }
 
   function recover({ restartAutomatic = true } = {}) {
@@ -390,6 +424,22 @@ export function createGeneratedImageRebuildService({
     return true;
   }
 
+  // After a runner ends: if the last run it drove is now terminal
+  // ('completed', 'completed_with_failures', or 'failed' once retries are
+  // exhausted), report it. Neither a read failure nor a hook error changes
+  // the runner's own retry decision.
+  function notifyTerminal(runId) {
+    if (!onRunTerminal || !runId || stopped) return;
+    try {
+      const current = repository.get();
+      if (current?.runId !== runId || ACTIVE_PHASES.has(current.phase)) return;
+      onRunTerminal({ runId, mode: current.mode, phase: current.phase });
+    } catch (error) {
+      applicationLogger?.error?.({ kind: 'diagnostic', subsystem: 'generated_images',
+        event: 'generated_images.rebuild.failed', message: 'Could not report a terminal rebuild run.', error });
+    }
+  }
+
   // Returns the runner with its lifetime-completing `.finally()` attached.
   function startRunner(lifetime) {
     const attempt = { runId: null };
@@ -410,6 +460,7 @@ export function createGeneratedImageRebuildService({
     }).finally(() => {
       try {
         runner = null;
+        notifyTerminal(attempt.runId);
         // A woken successor takes its own lifetime before this one ends.
         if (wakeRequested) { wakeRequested = false; signal(true); return; }
         if (!stopped && !pauseCount && !maintenanceState.active && !timer && !retryDecided) {
@@ -434,7 +485,7 @@ export function createGeneratedImageRebuildService({
   }
 
   return {
-    readStatus, queueAutomatic, queueManual, recover, signal,
+    readStatus, queueAutomatic, queueManual, queueRepair, recover, signal,
     pauseForMaintenance() {
       pauseCount++;
       if (timer) clearTimeout(timer);

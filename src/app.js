@@ -18,6 +18,7 @@ import { createAssetLibraryRouter } from './routes/asset-library.js';
 import { createAssetLibraryCompatibilityRouter } from './routes/asset-library-compatibility.js';
 import { createProjectAssetCategoriesRouter } from './routes/project-asset-categories.js';
 import { createProjectTagsRouter } from './routes/project-tags.js';
+import { createProjectOwnershipRecoveryRouter } from './routes/project-ownership-recovery.js';
 import { createAssetTagsRouter } from './routes/asset-tags.js';
 import { createReleasesRouter } from './routes/releases.js';
 import { createReleaseManagementRouter } from './routes/release-management.js';
@@ -28,8 +29,13 @@ import { createMediaRouter } from './routes/media.js';
 import { createSettingsRouter } from './routes/settings.js';
 import { createDownloadsRouter } from './routes/downloads.js';
 import { createProjectService } from './services/project-service.js';
+import { createProjectDirectoryOwnershipRepository } from './data/project-directory-ownership-repository.js';
+import { createProjectOwnershipAdoptionRepository } from './data/project-ownership-adoption-repository.js';
+import { createLegacyManifestCleanupRepository } from './data/legacy-manifest-cleanup-repository.js';
 import { createAssetCategoryRepository } from './data/asset-category-repository.js';
 import { createGeneratedArtifactRepository } from './data/generated-artifact-repository.js';
+import { createGeneratedImagePublicationRepository } from './data/generated-image-publication-repository.js';
+import { createGeneratedImagePublicationLifecycleRepository } from './data/generated-image-publication-lifecycle-repository.js';
 import { createWatermarkRepository } from './data/watermark-repository.js';
 import { createWatermarkScaleMapRepository } from './data/watermark-scale-map-repository.js';
 import { createProcessingPresetRepository } from './data/processing-preset-repository.js';
@@ -64,6 +70,10 @@ import { createClockFormatSettingsService } from './services/clock-format-settin
 import { createProjectImageSettingsService } from './services/project-image-settings-service.js';
 import { createGeneratedImageRebuildRepository } from './data/generated-image-rebuild-repository.js';
 import { createGeneratedImageRebuildService } from './services/generated-image-rebuild-service.js';
+import { createGeneratedImagePublicationLifecycleService } from './services/generated-image-publication-lifecycle-service.js';
+import { createProjectOwnershipAdoptionService } from './services/project-ownership-adoption-service.js';
+import { createProjectOwnershipRecoveryService } from './services/project-ownership-recovery-service.js';
+import { createLegacyManifestCleanupService } from './services/legacy-manifest-cleanup-service.js';
 import { createSourceAnimationService } from './services/source-animation-service.js';
 import { createAssetRepository } from './data/asset-repository.js';
 import { formatIsoTimestamp, formatSqliteTimestamp, formatStoredTime } from './util/date.js';
@@ -362,8 +372,27 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   const clockFormatSettingsService = opts.clockFormatSettingsService
     || createClockFormatSettingsService({ appMetaRepository });
   app.locals.clockFormatSettingsService = clockFormatSettingsService;
+  // PM-1B: one project-directory ownership repository per application graph,
+  // shared by every service that performs ownership-sensitive project-root
+  // work: filesystem mutations (project rename/delete, category folders,
+  // asset actions, processing, Auto Rename) and source-derived SQLite
+  // authority (scans, source reconciliation, KRA selection eligibility).
+  const projectDirectoryOwnershipRepository = createProjectDirectoryOwnershipRepository(db);
+  // PM-1C1: automatic ownership adoption of pre-PM-1B projects and recovery of
+  // interrupted marker publication. Constructed here but never started by
+  // createApp: the application context prepares and signals it after
+  // migrations, before background scanning (see app-context.js).
+  const projectOwnershipAdoptionRepository = projectsRoot
+    ? createProjectOwnershipAdoptionRepository(db, { appMetaRepository }) : null;
+  app.locals.projectOwnershipAdoption = opts.projectOwnershipAdoption || (projectsRoot
+    ? createProjectOwnershipAdoptionService({
+      repository: projectOwnershipAdoptionRepository,
+      ownershipRepository: projectDirectoryOwnershipRepository,
+      projectsRoot, maintenanceState, managedUploadTracker, applicationLogger,
+    }) : null);
   const sourceAnimationService = createSourceAnimationService({
     assetRepository: createAssetRepository(db), projectRepository, projectsRoot,
+    projectDirectoryOwnershipRepository,
   });
   app.locals.projectImageSettingsService = opts.projectImageSettingsService
     || createProjectImageSettingsService({ appMetaRepository, sourceAnimationService });
@@ -377,6 +406,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     projectOptionCatalogueService,
     projectRepository,
     tagRepository,
+    projectDirectoryOwnershipRepository,
   });
   app.locals.projectService = projectService;
 
@@ -399,6 +429,29 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   const processingJobService = opts.processingJobService
     || createProcessingJobService({ projectOperationCoordinator, applicationLogger });
 
+  // PM-1C2A: explicit operator ownership recovery. Only the HTTP route below
+  // invokes it; no scan, mutation, lifecycle, or startup path does. It shares
+  // the operation coordinator so it never interleaves with a scan or an
+  // asset/processing mutation of the same project.
+  app.locals.projectOwnershipRecoveryService = projectsRoot
+    ? createProjectOwnershipRecoveryService({
+      ownershipRepository: projectDirectoryOwnershipRepository,
+      adoptionRepository: projectOwnershipAdoptionRepository,
+      projectsRoot, projectOperationCoordinator, maintenanceState, applicationLogger,
+    }) : null;
+
+  // PM-2: conservative removal of legacy project.json files proven to be
+  // exact duplicates of SQLite state, for bound projects only. Constructed
+  // here but never started by createApp: the application context prepares
+  // and signals it after ownership adoption (see app-context.js).
+  app.locals.legacyManifestCleanup = opts.legacyManifestCleanup || (projectsRoot
+    ? createLegacyManifestCleanupService({
+      repository: createLegacyManifestCleanupRepository(db, { appMetaRepository }),
+      ownershipRepository: projectDirectoryOwnershipRepository,
+      adoptionRepository: projectOwnershipAdoptionRepository,
+      projectsRoot, projectOperationCoordinator, maintenanceState, managedUploadTracker, applicationLogger,
+    }) : null);
+
   const projectPrimaryImageRepository = createProjectPrimaryImageRepository(db);
   const assetScanner = createAssetScanner(db, projectsRoot, {
     projectService,
@@ -406,6 +459,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     projectOperationCoordinator,
     previewCategorySettingsService,
     projectPrimaryImageRepository,
+    projectDirectoryOwnershipRepository,
     applicationLogger,
   });
   app.locals.assetScanner = assetScanner;
@@ -481,6 +535,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       assetCategoryRepository,
       assetRepository: assetScanner.repository,
       assetBrowserPreferenceRepository,
+      projectDirectoryOwnershipRepository,
       projectsRoot,
       applicationLogger,
     })
@@ -504,6 +559,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       projectsRoot,
       projectOperationCoordinator,
       alreadyCoordinatedCapability: processingJobExecutionCapability,
+      projectDirectoryOwnershipRepository,
       applicationLogger,
     })
     : null);
@@ -575,6 +631,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       scaleMapService: watermarkScaleMapService,
       watermarkScaleMap: opts.watermarkScaleMap,
       renamePlanner: assetActionProcessingPlanner,
+      projectDirectoryOwnershipRepository,
     })
     : null);
   app.locals.assetProcessingPlanner = assetProcessingPlanner;
@@ -600,6 +657,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       scaleMapService: watermarkScaleMapService,
       watermarkScaleMap: opts.watermarkScaleMap,
       alreadyCoordinatedCapability: processingJobExecutionCapability,
+      projectDirectoryOwnershipRepository,
       applicationLogger,
     })
     : null);
@@ -629,6 +687,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       applicationLogger,
       projectImageSettingsService: app.locals.projectImageSettingsService,
       sourceAnimationService,
+      projectDirectoryOwnershipRepository,
     }))
     : null;
   app.locals.autoRenameService = autoRenameService;
@@ -636,12 +695,23 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // Phase 10.1C: construct one app-scoped preview service before primary-image
   // dependencies so KRA eligibility probes share its descriptor safety and
   // per-asset lock state. Rootless applications keep the probe unavailable.
+  // Rootless applications have no generated-image cache and no publications.
+  const generatedImagePublicationRepository = previewRoot
+    ? opts.generatedImagePublicationRepository || createGeneratedImagePublicationRepository(db) : null;
+  const generatedImagePublicationLifecycleRepository = previewRoot
+    ? createGeneratedImagePublicationLifecycleRepository(db) : null;
   const previewService =
     opts.previewService ||
     (previewRoot
       ? createPreviewService({ db, projectsRoot, previewRoot,
         projectImageSettingsService: app.locals.projectImageSettingsService,
-        processingConcurrencyService })
+        processingConcurrencyService,
+        projectDirectoryOwnershipRepository,
+        // Runtime publication authority for every reader; also journals each publication.
+        generatedImagePublicationRepository,
+        publicationIndexReady: generatedImagePublicationLifecycleRepository.isPublicationIndexReady,
+        // Background only: the failing request never performs recovery.
+        onPublicationUnresolved: () => app.locals.generatedImagePublicationLifecycle?.signal() })
       : null);
 
   app.locals.previewRoot = previewRoot;
@@ -654,11 +724,26 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       applicationLogger,
       // Capacity only: Preview Service alone acquires the pool's permits.
       processingConcurrency: processingConcurrencyService.concurrency,
+      // A repair deferred to a started manual run is re-admitted when it ends.
+      onRunTerminal: () => app.locals.generatedImagePublicationLifecycle?.signal(),
     }) : null);
   app.locals.generatedImageRebuildService = generatedImageRebuildService;
+  // Backfill, intent recovery, and repair admission for the normalized
+  // publication index. It never serves requests; readers resolve SQLite only.
+  const generatedImagePublicationLifecycle = opts.generatedImagePublicationLifecycle
+    || (generatedImagePublicationLifecycleRepository && typeof previewService?.withPublicationLock === 'function'
+      ? createGeneratedImagePublicationLifecycleService({
+        repository: generatedImagePublicationLifecycleRepository,
+        publications: generatedImagePublicationRepository,
+        previewService, rebuildService: generatedImageRebuildService,
+        maintenanceState, managedUploadTracker, applicationLogger,
+      }) : null);
+  app.locals.generatedImagePublicationLifecycle = generatedImagePublicationLifecycle;
   if (opts.startGeneratedImageRebuild !== false) {
     generatedImageRebuildService?.recover();
+    generatedImagePublicationLifecycle?.prepare();
     generatedImageRebuildService?.signal();
+    generatedImagePublicationLifecycle?.signal();
   }
 
   const projectPrimaryImageService = createProjectPrimaryImageService({
@@ -963,7 +1048,9 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       bookService,
       bookPrimaryImageService,
       applicationLogger,
-      previewProbe: previewService?.inspectKritaPreviewSource,
+      // Viewer eligibility hint only; stored selections go through the
+      // primary-image services' ownership-gated probe.
+      previewProbe: previewService?.inspectKritaPreviewPresentation,
       projectImageSettingsService: app.locals.projectImageSettingsService,
     }));
     app.use('/projects', createProjectAssetCategoryManagementRouter({
@@ -993,6 +1080,11 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   }
 
   app.use('/projects', createProjectTagsRouter({ appName, projectService }));
+  if (app.locals.projectOwnershipRecoveryService) {
+    app.use('/projects', createProjectOwnershipRecoveryRouter({
+      projectOwnershipRecoveryService: app.locals.projectOwnershipRecoveryService,
+    }));
+  }
 
   // Phase: Open locally installer — serves the fixed Windows setup artifact
   // from the application-controlled downloads/ directory. Mounted before the

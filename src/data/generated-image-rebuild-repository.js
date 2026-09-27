@@ -6,12 +6,16 @@ export class InvalidGeneratedImageRebuildRecordError extends Error {
   }
 }
 
-const ELIGIBLE = `a.is_present = 1 AND p.project_dir IS NOT NULL AND p.project_dir <> ''
-  AND (LOWER(a.extension) = 'png' AND LOWER(a.mime_type) = 'image/png'
+// Assets (alias `a`) whose extension and recorded MIME are both on the
+// preview allowlist; shared with the publication backfill traversal.
+export const PREVIEWABLE_ASSET_SQL = `(LOWER(a.extension) = 'png' AND LOWER(a.mime_type) = 'image/png'
     OR LOWER(a.extension) IN ('jpg', 'jpeg') AND LOWER(a.mime_type) = 'image/jpeg'
     OR LOWER(a.extension) = 'webp' AND LOWER(a.mime_type) = 'image/webp'
     OR LOWER(a.extension) = 'gif' AND LOWER(a.mime_type) = 'image/gif'
     OR LOWER(a.extension) IN ('kra', 'krz') AND LOWER(a.mime_type) = 'application/x-krita')`;
+
+const ELIGIBLE = `a.is_present = 1 AND p.project_dir IS NOT NULL AND p.project_dir <> ''
+  AND ${PREVIEWABLE_ASSET_SQL}`;
 
 export function createGeneratedImageRebuildRepository(db, appMetaRepository) {
   const bounds = db.prepare(`SELECT COUNT(*) AS total, COALESCE(MAX(a.id), 0) AS upperBound

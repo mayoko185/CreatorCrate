@@ -23,6 +23,7 @@ import { createProjectOperationCoordinator } from '../src/services/project-opera
 import { createProcessingConcurrencyService } from '../src/services/processing-concurrency-service.js';
 import { createAssetScanner } from '../src/services/asset-scanner.js';
 import { resolveProjectDir } from '../src/storage/project-storage.js';
+import { createProjectDirectoryOwnershipRepository } from '../src/data/project-directory-ownership-repository.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -211,6 +212,7 @@ describe('watermark verification', () => {
     operationCoordinator = createProjectOperationCoordinator(),
   ) {
     return createAssetProcessingService({
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
       projectRepository,
       assetRepository,
       assetCategoryService,
@@ -244,6 +246,7 @@ describe('watermark verification', () => {
     fs.writeFileSync(watermarkPath, await makeWatermark());
     coordinator = createProjectOperationCoordinator();
     assetScanner = createAssetScanner(db, projectsRoot, {
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
       projectService,
       assetCategoryService,
       projectOperationCoordinator: coordinator,
@@ -256,6 +259,7 @@ describe('watermark verification', () => {
     processingService = createConfiguredService(watermarkPath, tmpDir, coordinator);
     const scopeService = createAssetProcessingScopeService({ projectRepository, assetRepository });
     planner = createAssetProcessingPlanner({
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
       scopeService,
       projectRepository,
       assetRepository,
@@ -1495,7 +1499,7 @@ describe('watermark verification', () => {
 
     expect(snapshotTree(projectDir)).toEqual(beforeTree);
     expect(snapshotDatabase(db)).toEqual(beforeDatabase);
-    expect(fs.readdirSync(projectDir).filter((n) => n.startsWith('.creatorcrate-'))).toEqual([]);
+    expect(fs.readdirSync(projectDir).filter((n) => n.startsWith('.creatorcrate-') && n !== '.creatorcrate-owner')).toEqual([]);
   });
 
   // ─── Item 21: Migration 012 verification ─────────────────────────────

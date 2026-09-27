@@ -24,7 +24,7 @@ export class PreviewCacheError extends Error {
 // ─── Cache layout ────────────────────────────────────────────────────────
 //
 // APP_DATA_ROOT/previews/projects/<project-id>/<asset-id>/ is the per-asset
-// cache root (a rebuildable derived cache; no database persistence). It holds:
+// cache root (a rebuildable derived cache). It holds:
 //
 //   current.json                     — atomically replaced pointer to the
 //                                      currently published revision directory.
@@ -33,12 +33,15 @@ export class PreviewCacheError extends Error {
 //   tmp-<rand>/                      — transient staging directory for the next
 //                                      complete set; removed on failure.
 //
-// Readers resolve a cache entry by reading current.json and descending into
-// the referenced revision directory. Publication swaps current.json
+// Normal runtime readers do NOT read current.json or meta.json: they resolve
+// the committed SQLite publication (generated-image-publication-repository)
+// and derive the revision directory from its recorded directory name. The
+// JSON files remain the durable filesystem publication witness and the
+// immutable generation description used by publication itself, intent
+// recovery, and the one-time legacy backfill. Publication swaps current.json
 // atomically (temp + fsync + rename) AFTER the revision directory is fully
-// written and validated, so readers observe either the complete prior cache
-// or the complete new cache — never a mixed set. Stale revision directories
-// accumulate as harmless derived cache; cleanup is deferred.
+// written and validated, then finalizes the SQLite snapshot. Stale revision
+// directories accumulate as harmless derived cache; cleanup is deferred.
 //
 // No absolute host paths are ever stored in meta.json or current.json.
 
@@ -775,7 +778,9 @@ export function writeCurrentPointer(parentDir, pointer) {
 }
 
 /**
- * Resolve the currently-published revision directory for an asset, with a
+ * Filesystem inspection only (tests and diagnostics); no runtime reader uses
+ * it — normal resolution goes through the committed SQLite publication.
+ * Resolve the directory current.json names for an asset, with a
  * defensive containment check against a tampered pointer. Returns the
  * absolute directory path, or null when the pointer is missing/malformed,
  * references an invalid name, escapes the cache root, or the directory does
@@ -852,7 +857,18 @@ export async function validateDerivativeFile(filePath, expectedFormat = 'webp') 
     throw new Error('Derivative file is unavailable.');
   }
   const sharp = (await import('sharp')).default;
-  const buffer = fs.readFileSync(filePath);
+  return describeDerivativeBuffer(sharp, fs.readFileSync(filePath), expectedFormat);
+}
+
+/**
+ * The decode half of validateDerivativeFile, over bytes already read: a
+ * rejection here is a verdict on those bytes, never an I/O failure.
+ *
+ * @param {Function} sharp - the loaded sharp constructor
+ * @param {Buffer} buffer
+ * @returns {Promise<{bytes: number, sha: string, width: number, height: number, animated: boolean, frameCount: number}>}
+ */
+export async function describeDerivativeBuffer(sharp, buffer, expectedFormat = 'webp') {
   const meta = await sharp(buffer).metadata();
 
   if (meta.format !== expectedFormat) {

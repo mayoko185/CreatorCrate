@@ -18,6 +18,8 @@ import { createWatermarkDefaultService } from '../src/services/watermark-default
 import {
   WatermarkScaleMapServiceError,
 } from '../src/services/watermark-scale-map-service.js';
+import { createProjectOwnershipMarker, generateProjectOwnershipToken } from '../src/storage/project-ownership-marker.js';
+import { ProjectOwnershipError } from '../src/services/project-directory-ownership.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -27,10 +29,16 @@ async function settle() {
 
 function createRealPlannerForAsset(relativePath) {
   const projectsRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-processing-http-'));
-  const projectDirectory = 'project-1';
+  const projectDirectory = '000001-project';
   fs.mkdirSync(path.join(projectsRoot, projectDirectory));
+  // Planning verifies ownership: give the fake project a bound marker.
+  const ownershipToken = generateProjectOwnershipToken();
+  createProjectOwnershipMarker(path.join(projectsRoot, projectDirectory), ownershipToken);
   const asset = { id: 9, project_id: 1, relative_path: relativePath, is_present: 1 };
   const assetProcessingPlanner = createAssetProcessingPlanner({
+    projectDirectoryOwnershipRepository: {
+      findByProjectId: (projectId) => ({ projectId, token: ownershipToken, state: 'bound' }),
+    },
     scopeService: {
       resolveAssetProcessingScope: (_projectId, scope) => ({
         projectId: 1,
@@ -783,6 +791,24 @@ describe('processing HTTP routes', () => {
     expect(services.assetProcessingScopeService.resolveAssetProcessingScope).not.toHaveBeenCalled();
     expect(services.alreadyCoordinatedProcessingExecutor.convertAssets).not.toHaveBeenCalled();
     expect(services.alreadyCoordinatedProcessingExecutor.editWorkflowPrompts).not.toHaveBeenCalled();
+  });
+
+  it('reports a planning ownership failure as a controlled 409 before it allocates a job', async () => {
+    const { app, services } = createHarness();
+    const enqueue = vi.spyOn(services.processingJobService, 'enqueue');
+    services.assetProcessingPlanner.planConvert.mockRejectedValue(new ProjectOwnershipError('MARKER_MISMATCH'));
+
+    for (const endpoint of ['plan', 'apply']) {
+      const response = await request(app)
+        .post(`/projects/1/assets/processing/convert/${endpoint}`)
+        .send({ scope: { type: 'selected', assetIds: [9] }, options: { format: 'webp', quality: 85, originalHandling: 'keep' } })
+        .expect(409);
+      expect(response.body).toEqual({
+        ok: false,
+        error: { code: 'MARKER_MISMATCH', message: 'Project directory belongs to a different project.' },
+      });
+    }
+    expect(enqueue).not.toHaveBeenCalled();
   });
 
   it('rejects the real planner unsupported representation before it allocates or executes a job', async () => {

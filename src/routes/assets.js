@@ -1,5 +1,6 @@
 import express from 'express';
 import { ProjectNotFoundError } from '../services/project-service.js';
+import { ProjectOwnershipError } from '../services/project-directory-ownership.js';
 import { ReleaseValidationError } from '../services/release-service.js';
 import { UNCATEGORIZED } from '../services/asset-action-service.js';
 import { PRIMARY_IMAGE_ERROR_CODES } from '../services/project-primary-image-service.js';
@@ -150,6 +151,7 @@ const AUTO_RENAME_ERROR_STATUS = Object.freeze({
   [AUTO_RENAME_ERROR_CODES.ORDER_INVALID]: 422,
   [AUTO_RENAME_ERROR_CODES.PROJECT_BUSY]: 409,
   [AUTO_RENAME_ERROR_CODES.PROJECT_DIRECTORY_UNSAFE]: 500,
+  [AUTO_RENAME_ERROR_CODES.PROJECT_OWNERSHIP_UNAVAILABLE]: 409,
   [AUTO_RENAME_ERROR_CODES.DATABASE_ERROR]: 500,
   [AUTO_RENAME_ERROR_CODES.FILESYSTEM_INSPECTION_FAILED]: 500,
   [AUTO_RENAME_ERROR_CODES.FILESYSTEM_OPERATION_FAILED]: 500,
@@ -171,6 +173,7 @@ const AUTO_RENAME_PREVIEW_MESSAGES = Object.freeze({
   [AUTO_RENAME_ERROR_CODES.PROJECT_ARCHIVED]: 'This project is archived and read-only.',
   [AUTO_RENAME_ERROR_CODES.PROJECT_BUSY]: 'Another project operation is already in progress. Try again.',
   [AUTO_RENAME_ERROR_CODES.PROJECT_DIRECTORY_UNSAFE]: 'Auto Rename preview could not access the project directory. Please try again.',
+  [AUTO_RENAME_ERROR_CODES.PROJECT_OWNERSHIP_UNAVAILABLE]: 'Auto Rename preview could not verify that the project folder belongs to this project.',
   [AUTO_RENAME_ERROR_CODES.DATABASE_ERROR]: 'Auto Rename preview could not be generated. Please try again.',
   [AUTO_RENAME_ERROR_CODES.FILESYSTEM_INSPECTION_FAILED]: 'Auto Rename preview could not inspect the project files. Please try again.',
   [AUTO_RENAME_ERROR_CODES.FILESYSTEM_OPERATION_FAILED]: 'Auto Rename preview could not inspect the project files. Please try again.',
@@ -186,6 +189,7 @@ const AUTO_RENAME_APPLY_MESSAGES = Object.freeze({
   [AUTO_RENAME_ERROR_CODES.PROJECT_ARCHIVED]: 'This project is archived and read-only.',
   [AUTO_RENAME_ERROR_CODES.PROJECT_BUSY]: 'Another project operation is already in progress. Try again.',
   [AUTO_RENAME_ERROR_CODES.PROJECT_DIRECTORY_UNSAFE]: 'Auto Rename could not be applied. Please try again.',
+  [AUTO_RENAME_ERROR_CODES.PROJECT_OWNERSHIP_UNAVAILABLE]: 'Auto Rename could not verify that the project folder belongs to this project. No files were renamed.',
   [AUTO_RENAME_ERROR_CODES.DATABASE_ERROR]: 'Auto Rename could not be applied. Please try again.',
   [AUTO_RENAME_ERROR_CODES.FILESYSTEM_INSPECTION_FAILED]: 'Auto Rename could not be applied. Please try again.',
   [AUTO_RENAME_ERROR_CODES.FILESYSTEM_OPERATION_FAILED]: 'Auto Rename could not be applied. Please try again.',
@@ -1080,6 +1084,11 @@ export function createAssetsRouter({
         return next(createNotFound());
       }
       if (wantsJson) {
+        // An unverifiable project root is a state conflict, never an empty
+        // successful scan; the scanner left the previous index untouched.
+        if (err instanceof ProjectOwnershipError) {
+          return sendAssetJsonError(res, 409, 'PROJECT_OWNERSHIP_UNAVAILABLE', err.message);
+        }
         return sendAssetJsonError(res, 500, 'SCAN_FAILED', 'Project scan failed.');
       }
       // Catch filesystem errors and redirect with an error flag.

@@ -19,6 +19,7 @@ import {
 import { createProjectOperationCoordinator } from '../src/services/project-operation-coordinator.js';
 import { createSourceAnimationService } from '../src/services/source-animation-service.js';
 import { resolveProjectDir } from '../src/storage/project-storage.js';
+import { createProjectDirectoryOwnershipRepository } from '../src/data/project-directory-ownership-repository.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -139,6 +140,7 @@ describe('category-scoped Auto Rename service', () => {
     const projectRepository = createProjectRepository(db);
     const assetRepository = createAssetRepository(db);
     const service = createAutoRenameService({
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
       projectRepository,
       assetRepository,
       assetCategoryRepository,
@@ -204,6 +206,7 @@ describe('category-scoped Auto Rename service', () => {
     }).webp().toBuffer();
     const asset = writeAsset('legacy.webp', bytes, { mimeType: 'image/webp' });
     const service = createAutoRenameService({
+      projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(ctx.db),
       projectRepository: createProjectRepository(ctx.db),
       assetRepository: ctx.assetRepository,
       assetCategoryRepository: ctx.assetCategoryRepository,
@@ -215,6 +218,7 @@ describe('category-scoped Auto Rename service', () => {
         assetRepository: ctx.assetRepository,
         projectRepository: createProjectRepository(ctx.db),
         projectsRoot: ctx.projectsRoot,
+        projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(ctx.db),
       }),
     });
 

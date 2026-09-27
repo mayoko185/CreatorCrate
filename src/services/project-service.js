@@ -9,21 +9,26 @@ import {
 import { createTagRepository } from '../data/tag-repository.js';
 import { createAppMetaRepository } from '../data/app-meta-repository.js';
 import { createReleaseRepository } from '../data/release-repository.js';
+import { createProjectDirectoryOwnershipRepository } from '../data/project-directory-ownership-repository.js';
 import { createPageDefaultsService } from './page-defaults-service.js';
 import {
   formatProjectDirName,
   resolveProjectDir,
   ensureNoConflict,
   createProjectCategoryDirs,
-  verifyProjectDirOwnership,
   renameProjectDirSync,
 } from '../storage/project-storage.js';
 import {
-  writeManifestSync,
-  readManifestSync,
-  validateManifest,
-  MANIFEST_FILENAME,
-} from '../storage/manifest.js';
+  PROJECT_OWNERSHIP_MARKER_FILENAME,
+  createProjectOwnershipMarker,
+  generateProjectOwnershipToken,
+} from '../storage/project-ownership-marker.js';
+import {
+  ProjectOwnershipError,
+  assertProjectOwnershipMarker,
+  assertSameDirectory,
+  createProjectDirectoryOwnershipVerifier,
+} from './project-directory-ownership.js';
 import { isValidWebUrl } from '../util/url.js';
 import { isProjectArchived } from './project-state.js';
 
@@ -67,6 +72,9 @@ const TAGS_UNCHANGED = Symbol('tags-unchanged');
  *   application graph. Defaults to a repository over `db` for direct callers.
  * @param {object} [deps.tagRepository] - Shared tag repository for atomic
  *   requested-tag validation and assignment during project creation/update.
+ * @param {object} [deps.projectDirectoryOwnershipRepository] - Shared
+ *   project-directory ownership repository (PM-1A). Defaults to a repository
+ *   over `db` for direct callers.
  */
 export function createProjectService(
   db,
@@ -79,6 +87,7 @@ export function createProjectService(
     projectOptionCatalogueService,
     projectRepository,
     tagRepository,
+    projectDirectoryOwnershipRepository,
   } = {}
 ) {
   if (!assetCategoryService) {
@@ -96,6 +105,9 @@ export function createProjectService(
   const repository = projectRepository ?? createProjectRepository(db);
   const tags = tagRepository ?? createTagRepository(db);
   const releaseRepository = createReleaseRepository(db);
+  const ownershipRepository = projectDirectoryOwnershipRepository
+    ?? createProjectDirectoryOwnershipRepository(db);
+  const ownershipVerifier = createProjectDirectoryOwnershipVerifier({ ownershipRepository, projectsRoot });
   const creationDefaultsService = pageDefaultsService ?? createPageDefaultsService({
     appMetaRepository: createAppMetaRepository(db),
     projectOptionCatalogueService,
@@ -207,50 +219,54 @@ export function createProjectService(
   }
 
   /**
-   * Compensate an update failure by restoring the previous filesystem state.
-   * Database state is restored by the update transaction rollback.
+   * Compensate a failed rename by moving the project directory back to its
+   * original location. Database state is restored by the update transaction
+   * rollback.
    *
    * Safety: all paths are derived from project.project_dir (which passed
    * resolveProjectDir at creation time) and the project ID.
    *
+   * Only the directory this operation moved (operation-local dev/ino) is
+   * moved back, and never onto an occupied original path. The ownership
+   * marker travels with it untouched.
+   *
    * @param {object} project - Original project record (pre-update)
-   * @param {boolean} dirNeedsChange - Whether a dir change was planned
-   * @param {string|null} currentAbsPath - Original absolute directory path
-   * @param {string|null} newAbsPath - New absolute path (may or may not exist)
-   * @param {boolean} dirMoved - Whether the directory was actually moved
+   * @param {string} currentAbsPath - Original absolute directory path
+   * @param {string} newAbsPath - New absolute path (may or may not exist)
+   * @param {{dev: number, ino: number}} identity - Identity of the moved directory
    */
-  function compensateUpdate(project, dirNeedsChange, currentAbsPath, newAbsPath, dirMoved) {
+  function compensateUpdate(project, currentAbsPath, newAbsPath, identity) {
     try {
-      // Step A: If directory was moved to newAbsPath, move it back
-      if (dirNeedsChange && dirMoved && newAbsPath && currentAbsPath) {
-        try {
-          if (fs.existsSync(newAbsPath)) {
-            renameProjectDirSync(newAbsPath, currentAbsPath);
-          }
-        } catch (moveBackErr) {
-          console.error(
-            `[CreatorCrate] Update rollback — failed to move directory ` +
-            `"${path.basename(newAbsPath)}" back: ${moveBackErr.message}`
-          );
-        }
+      let moved;
+      try {
+        moved = fs.lstatSync(newAbsPath);
+      } catch (err) {
+        if (err.code === 'ENOENT') return;
+        throw err;
       }
-
-      // Step B: Restore original manifest at original location
-      if (currentAbsPath && fs.existsSync(currentAbsPath)) {
-        try {
-          const categories = assetCategoryService.listProjectCategories(project.id);
-          writeManifestSync(currentAbsPath, project, projectsRoot, categories);
-        } catch (manifestErr) {
-          console.error(
-            `[CreatorCrate] Update rollback — failed to restore manifest ` +
-            `for project ${project.id}: ${manifestErr.message}`
-          );
-        }
+      if (
+        !moved.isDirectory()
+        || moved.isSymbolicLink()
+        || moved.dev !== identity.dev
+        || moved.ino !== identity.ino
+      ) {
+        throw new Error('destination no longer holds the moved directory');
       }
-    } catch (compErr) {
+      let originalOccupied = true;
+      try {
+        fs.lstatSync(currentAbsPath);
+      } catch (err) {
+        if (err.code !== 'ENOENT') throw err;
+        originalOccupied = false;
+      }
+      if (originalOccupied) {
+        throw new Error('original location is occupied');
+      }
+      renameProjectDirSync(newAbsPath, currentAbsPath);
+    } catch (moveBackErr) {
       console.error(
-        `[CreatorCrate] Update rollback — compensation failed for project ` +
-        `${project.id}: ${compErr.message}`
+        `[CreatorCrate] Update rollback — failed to move directory ` +
+        `"${path.basename(newAbsPath)}" back for project ${project.id}: ${moveBackErr.message}`
       );
     }
   }
@@ -277,6 +293,9 @@ export function createProjectService(
       // a preflight check; it is the sole authority for what compensation
       // is allowed to recursively remove.
       let ownership = null;
+      // Set when marker creation exposed `.creatorcrate-owner` and then
+      // failed: from then on no filesystem compensation runs.
+      let markerAmbiguous = false;
 
       const runCreate = db.transaction(() => {
         // Phase 1: Insert the project row to obtain a numeric ID.
@@ -314,33 +333,66 @@ export function createProjectService(
         // transaction, so a failure rolls back the project and copied rows.
         assetBrowserPreferenceRepository.ensureProjectPreference(project.id);
 
-        // Phase 4: Compute the canonical (unchanged) project-directory name.
+        // Phase 4: Persist a fresh ownership token as this project's pending
+        // binding. Like every write above it, the row is only durable if the
+        // whole creation transaction commits — and it only commits once the
+        // row is bound below — so no pending binding survives a failed or
+        // interrupted creation.
+        const ownershipToken = generateProjectOwnershipToken();
+        if (!ownershipRepository.createPending(project.id, ownershipToken)) {
+          throw new Error('Project ownership binding already exists.');
+        }
+
+        // Phase 5: Compute the canonical (unchanged) project-directory name.
         // Status does not participate: the project directory is always a
         // direct child of PROJECTS_ROOT.
         const dirName = formatProjectDirName(project.id, project.slug);
         relPath = dirName;
         const absPath = resolveProjectDir(projectsRoot, relPath);
 
-        // Phase 5: Destination safety check.
+        // Phase 6: Destination safety check.
         ensureNoConflict(absPath);
 
-        // Phase 6: Exclusively create the final project root.
+        // Phase 7: Exclusively create the final project root. An existing
+        // directory is never adopted, whatever it contains.
         createProjectRootExclusive(absPath, dirName);
         dirCreated = true;
         ownership = beginOwnership(project.id, relPath, dirName, absPath);
 
-        // Phase 7: Category-driven child directories (enabled categories only).
+        // Phase 8: Category-driven child directories (enabled categories only).
         createProjectCategoryDirs(absPath, categories);
         for (const category of categories) {
           if (!isCategoryEnabled(category)) continue;
           trackOwnedChild(ownership, absPath, category.directory_slug ?? category.directorySlug, true);
         }
 
-        // Phase 8: Write the schema-version-3 manifest with those categories.
-        writeManifestSync(absPath, project, projectsRoot, categories);
-        trackOwnedChild(ownership, absPath, MANIFEST_FILENAME, false);
+        // Phase 9: Exclusively create the ownership marker. The primitive
+        // reads the written marker back and confirms its token before
+        // reporting `created`. An entry already present is never
+        // overwritten, verified into success, or cleaned up by this
+        // operation: this directory was just created, so any pre-existing
+        // marker is foreign and creation fails. RECOVERY_REQUIRED means the
+        // marker pathname was exposed but could not be confirmed; its entry
+        // may be foreign, so the directory is left in place (see below).
+        let marker;
+        try {
+          marker = createProjectOwnershipMarker(absPath, ownershipToken);
+        } catch (err) {
+          if (err?.code === 'RECOVERY_REQUIRED') markerAmbiguous = true;
+          throw err;
+        }
+        if (marker.status !== 'created') {
+          throw new Error('Project ownership marker already exists.');
+        }
+        trackOwnedChild(ownership, absPath, PROJECT_OWNERSHIP_MARKER_FILENAME, false);
 
-        // Phase 9: Persist the relative project path.
+        // Phase 10: Bind exactly this project's pending token.
+        if (!ownershipRepository.markBound(project.id, ownershipToken)) {
+          throw new Error('Project ownership binding could not be completed.');
+        }
+
+        // Phase 11: Persist the relative project path. SQLite is the sole
+        // authority for project/category metadata; no project.json is written.
         project = repository.setProjectDir(project.id, relPath);
 
         return project;
@@ -356,8 +408,16 @@ export function createProjectService(
       } catch (err) {
         // ── Compensation ──────────────────────────────────────────
         // By the time we reach here, SQLite has already rolled back the
-        // project row and any project-category rows inserted above.
-        if (dirCreated && ownership) {
+        // project row, any project-category rows, and the ownership binding
+        // inserted above. Only tracked, operation-created artifacts
+        // (category directories, the marker this call created, and the root)
+        // are removed, each after an identity check.
+        //
+        // After an ambiguous marker exposure nothing is moved or removed:
+        // the public marker may already be a foreign replacement, and even
+        // quarantining the root would carry it along. SQLite has rolled
+        // back; the directory stays for manual inspection.
+        if (dirCreated && ownership && !markerAmbiguous) {
           safeRemoveCreatedDir(ownership, projectsRoot);
         }
 
@@ -371,6 +431,13 @@ export function createProjectService(
 
         // Let validation errors propagate normally
         if (err instanceof ProjectValidationError) throw err;
+
+        if (markerAmbiguous) {
+          throw Object.assign(
+            new Error('Project creation failed. Its folder was left in place and needs ownership recovery.', { cause: err }),
+            { code: 'RECOVERY_REQUIRED' },
+          );
+        }
 
         // Generic user-visible error — no absolute paths leaked
         throw new Error('Project creation failed. Please try again.');
@@ -406,94 +473,55 @@ export function createProjectService(
       // Phase 2: Compute changes and pre-flight validation.
       //
       // Only a title/slug change may rename the flat project directory.
-      // A status-only change is a database/UI transition: it must not
-      // inspect, rename, or move anything on the filesystem and must not
-      // require a valid manifest or stored directory.
+      // Every other change (description, notes, link, status, type, tags) is
+      // a database-only transition: SQLite owns project metadata, so it must
+      // not inspect or write anything on the filesystem and must not require
+      // a stored directory. Legacy project.json files are never read,
+      // required, or rewritten.
       const slugChanged = normalized.slug !== project.slug;
       const dirNeedsChange = slugChanged;
 
-      // The manifest serializes title, slug, description, notes, and Patreon
-      // URL. Status and project type are database/UI metadata, so either alone
-      // skips the filesystem entirely.
-      // Fields are compared via their DB→input
-      // (snake_case→camelCase) mapping.
-      const metadataChanged = [
+      // Fields are compared via their DB→input (snake_case→camelCase) mapping.
+      const persistedChanged = [
         ['title', 'title'],
         ['slug', 'slug'],
         ['description', 'description'],
         ['notes', 'notes'],
         ['patreon_url', 'patreonUrl'],
+        ['status', 'status'],
+        ['project_type', 'projectType'],
       ].some(([dbField, inputField]) => normalized[inputField] !== project[dbField]);
-      const manifestNeedsRewrite = dirNeedsChange || metadataChanged;
-      const persistedChanged = metadataChanged
-        || normalized.status !== project.status
-        || normalized.projectType !== project.project_type;
 
       let currentAbsPath = null;
       let newRelPath = null;
       let newAbsPath = null;
+      let source = null;
 
       if (dirNeedsChange) {
-        if (!project.project_dir) {
-          throw new Error('Project has no stored directory path.');
-        }
-
-        currentAbsPath = resolveProjectDir(projectsRoot, project.project_dir);
-
-        // Verify source directory ownership (ID prefix)
-        if (!verifyProjectDirOwnership(currentAbsPath, project.id)) {
-          throw new Error('Source directory ownership verification failed.');
-        }
-
-        // Verify source directory exists and is not a symlink
-        let srcStats;
-        try {
-          srcStats = fs.lstatSync(currentAbsPath);
-        } catch (err) {
-          if (err.code === 'ENOENT') {
-            throw new Error('Project directory not found.');
-          }
-          throw new Error('Cannot access project directory.');
-        }
-        if (!srcStats.isDirectory()) {
-          throw new Error('Source is not a directory.');
-        }
-        if (srcStats.isSymbolicLink()) {
-          throw new Error('Source is a symbolic link.');
-        }
-
-        // Verify existing manifest belongs to the expected project
-        let manifest = null;
-        try {
-          manifest = validateManifest(readManifestSync(currentAbsPath));
-        } catch {
-          manifest = null;
-        }
-        if (!manifest || manifest.id !== project.id) {
-          throw new Error('Existing manifest does not match the expected project.');
-        }
+        // Ownership is proven by the persistent witness, never by pathname,
+        // ID prefix, or any legacy project.json: the source path comes only
+        // from the stored project_dir (never from the caller), must pass the
+        // existing containment/direct-child/ID-prefix/symlink checks, and
+        // must hold a `.creatorcrate-owner` marker whose token matches this
+        // project's bound SQLite binding. An unbound (legacy) project fails
+        // closed here; nothing is bound or written.
+        source = ownershipVerifier.verifyProject(project);
+        currentAbsPath = source.absPath;
 
         // Compute new path and verify no destination conflict
         const dirName = formatProjectDirName(project.id, normalized.slug);
         newRelPath = dirName;
         newAbsPath = resolveProjectDir(projectsRoot, newRelPath);
         ensureNoConflict(newAbsPath);
-      } else if (manifestNeedsRewrite) {
-        if (!project.project_dir) {
-          throw new Error('Project has no stored directory path.');
-        }
-        currentAbsPath = resolveProjectDir(projectsRoot, project.project_dir);
       }
 
       // ── Execution ─────────────────────────────────────────────────
       let updated;
       let dirMoved = false;
-      let filesystemMutationStarted = false;
 
       try {
         const runUpdate = db.transaction(() => {
-          // Phase 3: Update database metadata (status included — it is a
-          // DB/UI-only value and must not be written to the manifest).
+          // Phase 3: Update database metadata.
           updated = repository.update(id, normalized);
           if (!updated) {
             throw new ProjectNotFoundError(id);
@@ -513,28 +541,27 @@ export function createProjectService(
             tags.replaceForProject(id, uniqueTagIds);
           }
 
-          // Phase 4: Rename the flat project directory if the slug changed.
-          // A status-only update never touches the filesystem.
+          // Phase 4: Rename the flat project directory if the slug changed,
+          // then update the stored path. No other update touches the
+          // filesystem. A legacy project.json, if present, simply moves with
+          // its containing directory and is otherwise left untouched.
           if (dirNeedsChange) {
+            // Mutation boundary: re-prove, immediately before the rename,
+            // that the stored path still holds the same directory verified
+            // above and that it still carries this project's token.
+            assertSameDirectory(currentAbsPath, source.identity);
+            assertProjectOwnershipMarker(currentAbsPath, source.token);
+
             renameProjectDirSync(currentAbsPath, newAbsPath);
             dirMoved = true;
-            filesystemMutationStarted = true;
-          }
 
-          // Phase 5: Write the updated manifest at the final location,
-          // preserving the project's current categories (never recopied or
-          // propagated from global defaults here). A metadata-only update
-          // (no slug change) rewrites project.json in place; a pure
-          // status-only update skips the manifest entirely.
-          if (manifestNeedsRewrite) {
-            filesystemMutationStarted = true;
-            const manifestTarget = dirNeedsChange ? newAbsPath : currentAbsPath;
-            const categories = assetCategoryService.listProjectCategories(id);
-            writeManifestSync(manifestTarget, updated, projectsRoot, categories);
-          }
+            // The marker lives inside the directory and moves with it.
+            // Confirm the destination is the directory this operation moved
+            // and still carries the expected token before the new stored
+            // path can commit; otherwise the move is compensated below.
+            assertSameDirectory(newAbsPath, source.identity);
+            assertProjectOwnershipMarker(newAbsPath, source.token);
 
-          // Phase 6: Update stored path in database (only on rename)
-          if (dirNeedsChange) {
             updated = repository.setProjectDir(id, newRelPath);
           }
 
@@ -554,8 +581,8 @@ export function createProjectService(
         return committed;
       } catch (err) {
         // ── Compensation ─────────────────────────────────────────
-        if (filesystemMutationStarted) {
-          compensateUpdate(project, dirNeedsChange, currentAbsPath, newAbsPath, dirMoved);
+        if (dirMoved) {
+          compensateUpdate(project, currentAbsPath, newAbsPath, source.identity);
         }
 
         // Log the primary failure (project ID + relative path, no absolute paths)
@@ -566,6 +593,7 @@ export function createProjectService(
 
         if (err instanceof ProjectValidationError) throw err;
         if (err instanceof ProjectNotFoundError) throw err;
+        if (err instanceof ProjectOwnershipError) throw err;
         throw new Error('Project update failed. Please try again.');
       }
     },
@@ -624,7 +652,7 @@ export function createProjectService(
       let staged = null;
       let databaseDeleted = false;
       try {
-        staged = quarantineProjectDirForDeletion(project, projectsRoot);
+        staged = quarantineProjectDirForDeletion(project, { ownershipVerifier, ownershipRepository });
 
         const deleteInTransaction = db.transaction(() => {
           // releases.project_id intentionally remains ON DELETE RESTRICT.
@@ -675,6 +703,7 @@ export function createProjectService(
         console.error(
           `[CreatorCrate] Project deletion failed for project ${id}: ${err.message}`
         );
+        if (err instanceof ProjectOwnershipError) throw err;
         throw new Error('Project deletion failed. Please try again.');
       }
     },
@@ -780,14 +809,14 @@ function beginOwnership(projectId, relPath, expectedBasename, absPath) {
 }
 
 /**
- * Record the filesystem identity of an artifact (category directory or the
- * manifest file) immediately after this operation created it, so
+ * Record the filesystem identity of an artifact (a category directory)
+ * immediately after this operation created it, so
  * compensation can later verify it is still the exact artifact created here
  * before removing it.
  *
  * @param {object} ownership - Record from {@link beginOwnership}
  * @param {string} rootAbsPath - Absolute path to the owned project root
- * @param {string} name - Direct-child name (category slug or manifest filename)
+ * @param {string} name - Direct-child name (category slug)
  * @param {boolean} isDirectory
  */
 function trackOwnedChild(ownership, rootAbsPath, name, isDirectory) {
@@ -810,9 +839,9 @@ function logCleanupProblem(projectId, reason) {
 
 /**
  * Generate an unpredictable, collision-resistant quarantine basename. Kept
- * visually distinct from manifest.js's own temp-file pattern
+ * visually distinct from the legacy manifest temp-file pattern
  * (`.{hex12}.project.json.tmp`) so the two never collide or get confused
- * with one another during normal manifest cleanup.
+ * with one another during legacy manifest cleanup.
  *
  * @returns {string}
  */
@@ -852,7 +881,7 @@ function restoreQuarantined(quarantinePath, originalPath, projectId, name) {
 
 /**
  * Atomic quarantine-and-verify removal of one tracked artifact (a category
- * directory, the manifest file, or the project root itself).
+ * directory or the project root itself).
  *
  * Never checks identity at the artifact's well-known pathname and then
  * removes that same pathname later — that TOCTOU window is exactly what
@@ -986,36 +1015,36 @@ function safeRemoveCreatedDir(ownership, projectsRoot) {
 /**
  * Move an existing project root into a private sibling quarantine before the
  * database transaction. The root is never recursively removed by pathname:
- * its ownership and identity are checked after the atomic move instead.
+ * its ownership witness and identity are checked after the atomic move.
+ *
+ * Deletion is gated on the persistent ownership witness (bound SQLite token +
+ * matching `.creatorcrate-owner` marker). A directory that cannot be proven
+ * to be this project's — unbound, missing, unreadable, unmarked, or carrying
+ * another project's token — fails closed: nothing is moved and the database
+ * row and its relationships survive. In particular, an absent project root
+ * no longer authorizes database deletion, because an empty or unavailable
+ * PROJECTS_ROOT share is indistinguishable from a deleted directory.
+ *
+ * The only DB-only deletion is a row with no stored directory and no
+ * ownership binding at all: there is no path at which content could exist.
  *
  * @param {object} project
- * @param {string} projectsRoot
- * @returns {{ originalPath: string, quarantinePath: string, identity: {dev: number, ino: number} }|null}
+ * @param {object} deps
+ * @param {object} deps.ownershipVerifier
+ * @param {object} deps.ownershipRepository
+ * @returns {{ originalPath: string, quarantinePath: string, identity: {dev: number, ino: number}, token: string }|null}
  */
-function quarantineProjectDirForDeletion(project, projectsRoot) {
-  if (project.project_dir == null) return null;
+function quarantineProjectDirForDeletion(project, { ownershipVerifier, ownershipRepository }) {
+  if (project.project_dir == null && !ownershipRepository.findByProjectId(project.id)) return null;
 
-  const resolved = resolveProjectDir(projectsRoot, project.project_dir);
-  if (!verifyProjectDirOwnership(resolved, project.id)) {
-    throw new Error('Project directory ownership verification failed.');
-  }
-
-  let stats;
-  try {
-    stats = fs.lstatSync(resolved);
-  } catch (err) {
-    if (err.code === 'ENOENT') return null;
-    throw new Error('Cannot safely verify project directory.');
-  }
-
-  if (!stats.isDirectory() || stats.isSymbolicLink()) {
-    throw new Error('Project directory is not a safe directory.');
-  }
+  const verified = ownershipVerifier.verifyProject(project);
+  const resolved = verified.absPath;
 
   const staged = {
     originalPath: resolved,
     quarantinePath: null,
-    identity: { dev: stats.dev, ino: stats.ino },
+    identity: verified.identity,
+    token: verified.token,
     restored: false,
   };
 
@@ -1025,7 +1054,9 @@ function quarantineProjectDirForDeletion(project, projectsRoot) {
       fs.renameSync(resolved, candidate);
       staged.quarantinePath = candidate;
     } catch (err) {
-      if (err.code === 'ENOENT') return null; // Already absent — nothing to remove.
+      // The verified directory vanished before it could be staged: fail
+      // closed rather than deleting the database row without its content.
+      if (err.code === 'ENOENT') throw new ProjectOwnershipError('PROJECT_DIRECTORY_MISSING');
       if (err.code === 'EEXIST' || err.code === 'ENOTEMPTY') continue;
       throw new Error('Project directory could not be safely staged.');
     }
@@ -1035,16 +1066,11 @@ function quarantineProjectDirForDeletion(project, projectsRoot) {
     throw new Error('Project directory could not be safely staged.');
   }
 
+  // The staged directory must be the exact directory verified above and
+  // still carry this project's token; otherwise it is put back untouched.
   try {
-    const quarantined = fs.lstatSync(staged.quarantinePath);
-    if (
-      !quarantined.isDirectory()
-      || quarantined.isSymbolicLink()
-      || quarantined.dev !== staged.identity.dev
-      || quarantined.ino !== staged.identity.ino
-    ) {
-      throw new Error('Project directory identity changed during deletion.');
-    }
+    assertSameDirectory(staged.quarantinePath, staged.identity);
+    assertProjectOwnershipMarker(staged.quarantinePath, staged.token);
   } catch (err) {
     if (!restoreQuarantinedProjectDir(staged)) {
       logDeletionCleanupProblem(project.id, 'project directory could not be restored after verification failure');
@@ -1058,8 +1084,9 @@ function quarantineProjectDirForDeletion(project, projectsRoot) {
 
 /**
  * Recursively remove a quarantined project root only after rechecking the
- * captured identity. An absent quarantine is already clean; all other access
- * or removal failures are surfaced to the caller.
+ * captured identity and its ownership marker. An absent quarantine is
+ * already clean; all other access or removal failures are surfaced to the
+ * caller.
  *
  * @param {object} staged
  */
@@ -1079,6 +1106,14 @@ function removeQuarantinedProjectDir(staged) {
     || stats.ino !== staged.identity.ino
   ) {
     throw new Error('Project directory identity changed before removal.');
+  }
+
+  // Last check before the irreversible recursive removal: the staged tree
+  // must still be this project's ownership witness.
+  try {
+    assertProjectOwnershipMarker(staged.quarantinePath, staged.token);
+  } catch {
+    throw new Error('Project directory ownership changed before removal.');
   }
 
   try {

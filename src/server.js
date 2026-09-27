@@ -130,6 +130,9 @@ export function createShutdownHandler({
     shuttingDown = true;
     managedUploadTracker.beginShutdown();
     appContext.generatedImageRebuildService?.stop();
+    appContext.generatedImagePublicationLifecycle?.stop();
+    appContext.projectOwnershipAdoption?.stop();
+    appContext.legacyManifestCleanup?.stop();
     applicationLogger.info({
       kind: 'diagnostic',
       subsystem: 'runtime',
@@ -144,6 +147,9 @@ export function createShutdownHandler({
       await managedUploadTracker.waitForIdle();
       await appContext.processingJobService.waitForIdle();
       await appContext.generatedImageRebuildService?.waitForIdle();
+      await appContext.generatedImagePublicationLifecycle?.waitForIdle();
+      await appContext.projectOwnershipAdoption?.waitForIdle();
+      await appContext.legacyManifestCleanup?.waitForIdle();
       applicationLogger.info({
         kind: 'diagnostic',
         subsystem: 'runtime',
@@ -325,6 +331,7 @@ async function main() {
       assetScanner: appContext.app.locals.assetScanner,
       appMetaRepository: appContext.app.locals.appMetaRepository,
       watermarkService: appContext.app.locals.watermarkService,
+      projectOwnershipAdoption: appContext.app.locals.projectOwnershipAdoption,
     }),
   });
 

@@ -33,7 +33,6 @@ import { createAppMetaRepository } from '../src/data/app-meta-repository.js';
 import { createProjectImageSettingsService } from '../src/services/project-image-settings-service.js';
 import { projectImagePolicyFingerprint } from '../src/services/project-image-policy.js';
 import { formatProjectDirName } from '../src/storage/project-storage.js';
-import { writeManifestSync } from '../src/storage/manifest.js';
 import { resolvePublishedDir, THUMBNAIL_FILENAME, PREVIEW_FILENAME } from '../src/storage/preview-cache.js';
 import {
   createMediaService,
@@ -46,6 +45,7 @@ import { createWorkflowQueryService } from '../src/services/workflow-query-servi
 import { Readable } from 'node:stream';
 import http from 'node:http';
 import { makeZip } from './helpers/zip-fixture.js';
+import { bindTestProjectOwnership } from './helpers/project-ownership.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -133,11 +133,9 @@ function makeHarness({ withMediaService = true } = {}) {
     const relPath = dirName;
     const absPath = path.resolve(projectsRoot, relPath);
     fs.mkdirSync(absPath, { recursive: true });
-    // Write the manifest so the archive HTTP flow (which reads the manifest
-    // to verify ownership) succeeds — mirrors what the project service
-    // does on create.
-    writeManifestSync(absPath, project, projectsRoot);
     project = projectRepo.setProjectDir(project.id, relPath);
+    // Bound like real creation: source reconciliation is ownership-gated.
+    bindTestProjectOwnership(db, project.id, absPath);
     return { project, absPath, relPath };
   }
 
