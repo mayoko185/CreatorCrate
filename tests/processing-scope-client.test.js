@@ -1455,3 +1455,118 @@ describe('Processing dialog scope serialization', () => {
     expect(resultBody.children[0].textContent).toContain('Generated 1 archive artifact');
   });
 });
+
+describe('Processing preview plan-item source actions', () => {
+  let doc;
+
+  const sourceAction = (type, extra = {}) => ({ type, relativePath: 'Final/example.png', destructive: type === 'delete', ...extra });
+  const planItem = (assetId, action, plannedDestination) => ({
+    assetId,
+    relativePath: `Final/example-${assetId}.png`,
+    status: 'ready',
+    plannedDestination,
+    sourceAction: action,
+  });
+
+  // Each surface renders its plan items through the shared renderer.
+  const surfaces = {
+    convert: {
+      destination: 'Final/example.webp',
+      setup() {},
+    },
+    watermark: {
+      destination: 'Watermarked/example.png',
+      setup(root) {
+        const outputCategory = makeNode('input', { type: 'text', 'data-processing-field': 'outputCategorySlug', 'data-processing-type': 'string' });
+        const primaryFormat = makeNode('select', { 'data-processing-field': 'primaryFormat', 'data-processing-type': 'string' });
+        primaryFormat.appendChild(makeOption('png', 'PNG'));
+        const watermarkSelect = makeNode('select', { id: 'watermark-resource-select' });
+        watermarkSelect.appendChild(makeOption('', 'Choose'));
+        watermarkSelect.appendChild(makeOption('5', 'Logo'));
+        root.append(outputCategory, primaryFormat, watermarkSelect);
+        // Opening the dialog resets idle fields, so fill them afterwards.
+        return () => {
+          outputCategory.value = 'watermarked';
+          primaryFormat.value = 'png';
+          watermarkSelect.value = '5';
+        };
+      },
+    },
+    archive: {
+      destination: { operation: 'archive', formats: ['zip'], cbz: false },
+      setup() {},
+    },
+    'workflow-prompt': {
+      destination: 'Final/example-1.png',
+      setup() {},
+    },
+  };
+
+  beforeEach(() => {
+    doc = makeDocument();
+    vi.stubGlobal('document', doc);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function previewItems(operation, items) {
+    vi.stubGlobal('fetch', vi.fn(async (url) => {
+      const ok = (body) => ({ ok: true, status: 200, json: async () => body });
+      if (url.endsWith('/plan')) {
+        return ok({ ok: true, plan: { operation, counts: { total: items.length, eligible: items.length }, items } });
+      }
+      if (url === '/processing/watermarks') return ok({ ok: true, watermarks: [{ id: 5, filename: 'logo.png' }] });
+      if (url === '/processing/watermarks/default') return ok({ ok: true, watermarkId: 5 });
+      return ok({ ok: true });
+    }));
+    const fixture = buildDialogRoot(doc, { operation });
+    const list = makeNode('ul', { 'data-processing-plan-items': '' });
+    fixture.root.querySelector('[data-processing-plan]').appendChild(list);
+    const fill = surfaces[operation].setup(fixture.root);
+    fixture.scope.projectRadio.checked = true;
+    enhanceProcessingDialogs(doc);
+    fixture.trigger.dispatch('click', { target: fixture.trigger });
+    await flush();
+    fill?.();
+    fixture.previewBtn.dispatch('click', { target: fixture.previewBtn });
+    await flush();
+    await flush();
+    expect(fixture.errorText.textContent).toBe('');
+    return list.children.map((li) => ({
+      name: li.children[0].textContent,
+      detail: li.children.find((child) => child.className === 'processing-plan-item-detail')?.textContent ?? null,
+    }));
+  }
+
+  it.each(Object.keys(surfaces))('renders descriptor types rather than [object Object] for %s previews', async (operation) => {
+    const { destination } = surfaces[operation];
+    const rows = await previewItems(operation, [
+      planItem(1, sourceAction('move', { destinationRelativePath: 'Originals/example.png' }), destination),
+      planItem(2, sourceAction('delete'), destination),
+      planItem(3, sourceAction('keep'), destination),
+      planItem(4, null, destination),
+      planItem(5, undefined, destination),
+    ]);
+
+    expect(rows).toHaveLength(5);
+    rows.forEach((row) => expect(row.detail).not.toContain('[object Object]'));
+    const base = typeof destination === 'string' ? `→ ${destination}` : '→ ZIP archive outputs';
+    expect(rows.map((row) => row.detail)).toEqual([
+      `${base} (move source)`,
+      `${base} (delete source)`,
+      base,
+      base,
+      base,
+    ]);
+  });
+
+  it('renders no source suffix when the watermark planner converts a requested deletion to keep', async () => {
+    const rows = await previewItems('watermark', [
+      planItem(1, { type: 'keep', relativePath: 'Final/example.png', destructive: false }, 'Watermarked/example.png'),
+    ]);
+
+    expect(rows).toEqual([{ name: 'Final/example-1.png', detail: '→ Watermarked/example.png' }]);
+  });
+});

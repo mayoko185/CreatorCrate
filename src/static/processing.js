@@ -1029,7 +1029,8 @@ function planItemLine(item) {
   } else if (destination && typeof destination === 'object' && destination.action === 'rename-in-place') {
     parts.push(`→ ${destination.relativePath || destination.filename || 'renamed file'}`);
   }
-  if (item.sourceAction && item.sourceAction !== 'keep') parts.push(`(${item.sourceAction} source)`);
+  const sourceActionType = item.sourceAction?.type;
+  if (sourceActionType && sourceActionType !== 'keep') parts.push(`(${sourceActionType} source)`);
   return parts.join(' ');
 }
 
