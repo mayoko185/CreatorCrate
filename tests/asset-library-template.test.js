@@ -1665,3 +1665,37 @@ describe('slideshow sequence — data contract', () => {
     expect(parsed[0].thumbnailUrl).toBeUndefined();
   });
 });
+
+describe('Asset Library supported video presentation', () => {
+  const videoAsset = {
+    ...alphaAsset,
+    id: 303,
+    filename: 'clip.mp4',
+    relative_path: 'renders/clip.mp4',
+    extension: 'mp4',
+    mime_type: 'video/mp4',
+    formattedDimensions: '—',
+    preview: { kind: 'video', previewable: false, playbackUrl: '/projects/1/assets/303/original' },
+    preview_state: 'video',
+    thumbnail_url: null,
+    preview_url: null,
+    detailUrl: '/projects/1/assets/303?pageSize=all',
+  };
+
+  it.each(['grid', 'list'])('renders %s video cards with an inert intrinsic-size frame that opens the shared video preview', (view) => {
+    const html = renderPage({ assets: [videoAsset], filters: { view }, presentation: { view } });
+    const card = html.match(/<article class="asset-(?:list-)?card[\s\S]*?<\/article>/)?.[0];
+
+    expect(card).toBeDefined();
+    expect(card).not.toMatch(/<img/);
+    expect(card).toMatch(/<video class="asset-video-frame-media" src="\/projects\/1\/assets\/303\/original"\s+preload="metadata" playsinline disablepictureinpicture aria-hidden="true" data-asset-video-frame><\/video>/);
+    expect(card).not.toMatch(/autoplay|\bcontrols\b/);
+    expect(card).not.toContain('data-project-assets-preview-id');
+    // Unmodified clicks open the shared preview dialog; the href keeps library viewer navigation.
+    expect(card).toContain('data-asset-video-preview-trigger data-video-src="/projects/1/assets/303/original" data-video-title="clip.mp4"');
+    expect(card).toContain('data-asset-video-placeholder hidden');
+    expect(card).toContain('MP4 video');
+    expect(card).toMatch(/<a class="asset-(?:list-)?card-media-link asset-video-link" href="\/projects\/1\/assets\/303\?pageSize=all" aria-label="Play video clip/);
+    expect(card).toContain('Alpha Project');
+  });
+});

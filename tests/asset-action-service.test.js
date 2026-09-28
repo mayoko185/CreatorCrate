@@ -293,6 +293,17 @@ describe('asset action service', () => {
       expect(result.mime_type).toBe('image/jpeg');
     });
 
+    it('derives video MIME types from the shared mapping on rename', () => {
+      writeFile('clip.webm', 'content');
+      const asset = createAsset('clip.webm', { extension: 'webm', mimeType: 'video/webm' });
+
+      const renamed = actionService.renameAsset(project.id, asset.id, 'clip.MP4');
+      expect(renamed).toMatchObject({ id: asset.id, extension: 'mp4', mime_type: 'video/mp4' });
+
+      const unsupported = actionService.renameAsset(project.id, asset.id, 'clip.mov');
+      expect(unsupported).toMatchObject({ extension: 'mov', mime_type: 'application/octet-stream' });
+    });
+
     it('renames from a basename while preserving the current extension', () => {
       writeFile('archive.final.png', 'content');
       const asset = createAsset('archive.final.png');
@@ -1503,6 +1514,16 @@ describe('asset action service', () => {
 
       const updated = assetRepository.findById(asset.id);
       expect(updated.mime_type).toBe('image/png');
+    });
+
+    it('repairs a legacy octet-stream video MIME on move', () => {
+      const category = createEnabledCategory('Clips', 'clips');
+      writeFile('clip.webm', 'content');
+      const asset = createAsset('clip.webm', { mimeType: 'application/octet-stream' });
+
+      actionService.moveAssets(project.id, [asset.id], category.id);
+
+      expect(assetRepository.findById(asset.id).mime_type).toBe('video/webm');
     });
 
     it('preserves release associations across the move', () => {

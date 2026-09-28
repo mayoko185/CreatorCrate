@@ -25,7 +25,8 @@ import {
 import { createWorkflowQueryService } from '../src/services/workflow-query-service.js';
 import { createProjectOperationCoordinator, ProjectOperationError } from '../src/services/project-operation-coordinator.js';
 import { makeSolidAnimatedWebp } from './helpers/animated-webp.js';
-import { buildAssetRevisionToken } from '../src/services/preview-service.js';
+import { buildAssetRevisionToken, classifyPreviewable } from '../src/services/preview-service.js';
+import { classifySupportedVideo } from '../src/services/asset-metadata.js';
 import {
   formatProjectDirName,
 } from '../src/storage/project-storage.js';
@@ -209,6 +210,70 @@ describe('asset scanner', () => {
     expect(assetScanner.classifyType('bmp')).toBe('image');
     expect(assetScanner.repository.findByProjectIdAndPath(project.id, 'source.BMP'))
       .toMatchObject({ extension: 'bmp', mime_type: 'image/bmp', is_present: 1 });
+  });
+
+  it('indexes WebM and MP4 as supported videos that stay outside image preview paths', () => {
+    const { project, absPath } = createProjectWithDir('Video Project');
+    fs.writeFileSync(path.join(absPath, 'clip.webm'), 'webm data');
+    fs.writeFileSync(path.join(absPath, 'clip.mp4'), 'mp4 data');
+    fs.writeFileSync(path.join(absPath, 'LOUD.WEBM'), 'webm data');
+    fs.writeFileSync(path.join(absPath, 'LOUD.MP4'), 'mp4 data');
+
+    const result = assetScanner.scanProjectAssets(project.id);
+    expect(result).toMatchObject({ added: 4, total: 4 });
+
+    const expected = {
+      'clip.webm': ['webm', 'video/webm'],
+      'clip.mp4': ['mp4', 'video/mp4'],
+      'LOUD.WEBM': ['webm', 'video/webm'],
+      'LOUD.MP4': ['mp4', 'video/mp4'],
+    };
+    for (const [relativePath, [extension, mimeType]] of Object.entries(expected)) {
+      const asset = assetScanner.repository.findByProjectIdAndPath(project.id, relativePath);
+      expect(asset).toMatchObject({ extension, mime_type: mimeType, is_present: 1, source_animated: null });
+      expect(classifySupportedVideo(asset).supported).toBe(true);
+      expect(classifyPreviewable(asset).supported).toBe(false);
+    }
+  });
+
+  it('leaves other video containers as unsupported generic files', () => {
+    const { project, absPath } = createProjectWithDir('Other Video Project');
+    for (const name of ['a.mov', 'a.mkv', 'a.avi', 'a.m4v', 'a.ogv', 'a.ogg']) {
+      fs.writeFileSync(path.join(absPath, name), 'data');
+    }
+
+    expect(assetScanner.scanProjectAssets(project.id)).toMatchObject({ added: 6 });
+    for (const asset of assetScanner.repository.findByProjectId(project.id)) {
+      expect(asset.mime_type).toBe('application/octet-stream');
+      expect(classifySupportedVideo(asset).supported).toBe(false);
+    }
+  });
+
+  it('repairs a legacy octet-stream video row on rescan without replacing the asset', () => {
+    const { project, absPath } = createProjectWithDir('Legacy Video Project');
+    const filePath = path.join(absPath, 'clip.webm');
+    fs.writeFileSync(filePath, 'webm data');
+    assetScanner.repository.upsert(project.id, 'clip.webm', {
+      filename: 'clip.webm', extension: 'webm', mimeType: 'application/octet-stream',
+      sizeBytes: fs.statSync(filePath).size, modifiedAt: fs.statSync(filePath).mtime.toISOString(),
+    });
+    const before = assetScanner.repository.findByProjectIdAndPath(project.id, 'clip.webm');
+    expect(before.mime_type).toBe('application/octet-stream');
+    const tagId = db.prepare('INSERT INTO tags (display_name, normalized_name) VALUES (?, ?)')
+      .run('Motion', 'motion').lastInsertRowid;
+    db.prepare('INSERT INTO asset_tags (asset_id, tag_id) VALUES (?, ?)').run(before.id, tagId);
+
+    const result = assetScanner.scanProjectAssets(project.id);
+    expect(result).toMatchObject({ added: 0, updated: 1, total: 1 });
+
+    const after = assetScanner.repository.findByProjectIdAndPath(project.id, 'clip.webm');
+    expect(after.id).toBe(before.id);
+    expect(after.mime_type).toBe('video/webm');
+    expect(after.created_at).toBe(before.created_at);
+    expect(after.source_generation).toBe(before.source_generation);
+    expect(classifySupportedVideo(after).supported).toBe(true);
+    expect(db.prepare('SELECT tag_id FROM asset_tags WHERE asset_id = ?').all(after.id))
+      .toEqual([{ tag_id: tagId }]);
   });
 
   it('discovers Krita files', () => {

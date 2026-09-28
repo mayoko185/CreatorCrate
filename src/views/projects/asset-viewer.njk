@@ -68,6 +68,17 @@
         {% set noticeText = "Missing at last scan. Preview and original viewing are unavailable." %}
         {% include "partials/notice.njk" %}
         <p class="asset-preview-placeholder">Preview unavailable for missing assets.</p>
+      {% elseif asset.preview_state == 'video' and asset.preview.playbackUrl %}
+        {# Playback starts only from the native controls: no autoplay, and the Loop toggle only sets `.loop`. preload="metadata" fetches only enough to learn the intrinsic size, so the player keeps the video's real aspect ratio. #}
+        <figure class="asset-preview-frame asset-preview-frame--video" data-asset-video-playback>
+          <video class="asset-preview-video" src="{{ asset.preview.playbackUrl }}" controls playsinline preload="metadata" data-asset-video>
+            <p class="asset-preview-placeholder">This browser does not support embedded video playback.</p>
+          </video>
+          <p class="asset-preview-placeholder asset-video-error" data-asset-video-error role="status" hidden>
+            This video could not be played in this browser. Its codec may not be supported.{% if openLocallyUri %} Use Open locally to view it in another application.{% endif %}
+          </p>
+          <figcaption class="asset-video-viewer-controls">{% include "partials/asset-video-loop-control.njk" %}</figcaption>
+        </figure>
       {% elseif asset.preview_state == 'unsupported' %}
         {% set noticeVariant = "warning" %}
         {% set noticeText = "Unsupported asset preview. This asset type or recorded MIME cannot be previewed inline." %}

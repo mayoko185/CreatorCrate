@@ -2822,6 +2822,105 @@ describe('asset browser HTTP workflow', () => {
     expect(res2.text).not.toContain('()');
   });
 
+  it.each([
+    ['webm', 'video/webm'],
+    ['mp4', 'video/mp4'],
+  ])('renders a native, non-autoplaying %s player in the asset viewer only', async (extension, mimeType) => {
+    const title = `Viewer Video ${extension}`;
+    const res = await createProject(title);
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir(title);
+    const video = writeIndexedAsset(id, projectDir, `clips/clip.${extension}`, Buffer.from('video-bytes'), {
+      extension, mimeType,
+    });
+
+    const viewer = await agent.get(`/projects/${id}/assets/${video.id}`).expect(200);
+    const preview = previewSectionHtml(viewer.text);
+    const players = preview.match(/<video\b[^>]*>/g) || [];
+    expect(players).toHaveLength(1);
+    const [player] = players;
+    expect(player).toContain(`src="/projects/${id}/assets/${video.id}/original"`);
+    expect(player).toMatch(/\scontrols(?=[\s>])/);
+    expect(player).toMatch(/\splaysinline(?=[\s>])/);
+    // Metadata only: enough for the intrinsic aspect ratio, never playback.
+    expect(player).toContain('preload="metadata"');
+    expect(player).not.toMatch(/autoplay|loop|muted/);
+    // Transient Loop toggle beside the player: unchecked and never persisted.
+    const loopInputs = preview.match(/<input\b[^>]*data-asset-video-loop\b[^>]*>/g) || [];
+    expect(loopInputs).toHaveLength(1);
+    expect(loopInputs[0]).toContain('type="checkbox"');
+    expect(loopInputs[0]).not.toMatch(/\schecked|\sname=/);
+    expect(preview).toMatch(/<label class="asset-video-loop-control"[^>]*>[\s\S]*?<span>Loop<\/span>/);
+    expect(preview).not.toMatch(/<img\b/);
+    expect(preview).not.toContain('asset-preview-link');
+    expect(preview).toMatch(/data-asset-video-error[^>]*hidden/);
+    expect(viewer.text).toContain(`<code>video/${extension === 'mp4' ? 'mp4' : 'webm'}</code>`);
+    expect(viewer.text).not.toContain('asset-primary-image-section');
+    expect(viewer.text).not.toContain('asset-book-primary-image-section');
+  });
+
+  it('keeps unsupported video containers on the unsupported viewer fallback', async () => {
+    const res = await createProject('Viewer Unsupported Video');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Viewer Unsupported Video');
+    const mov = writeIndexedAsset(id, projectDir, 'clip.mov', Buffer.from('mov'), {
+      extension: 'mov', mimeType: 'video/quicktime',
+    });
+
+    const viewer = await agent.get(`/projects/${id}/assets/${mov.id}`).expect(200);
+    const preview = previewSectionHtml(viewer.text);
+    expect(preview).toContain('Preview unavailable for unsupported assets.');
+    expect(preview).not.toMatch(/<(?:video|img)\b/);
+  });
+
+  it.each([
+    ['grid', 'webm', 'video/webm'],
+    ['list', 'webm', 'video/webm'],
+    ['grid', 'mp4', 'video/mp4'],
+    ['list', 'mp4', 'video/mp4'],
+  ])('renders project asset %s %s video cards as on-page preview triggers kept out of the slideshow', async (view, extension, mimeType) => {
+    const title = `Video Cards ${view} ${extension}`;
+    const res = await createProject(title);
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir(title);
+    const png = await makePng();
+    const image = writeIndexedAsset(id, projectDir, 'still.png', png);
+    const video = writeIndexedAsset(id, projectDir, `clip.${extension}`, Buffer.from('video'), {
+      extension, mimeType,
+    });
+
+    const page = await agent.get(`/projects/${id}/assets?view=${view}`).expect(200);
+    const cardPattern = view === 'grid'
+      ? /<article class="asset-card[^"]*"[\s\S]*?<\/article>/g
+      : /<article class="asset-list-card[^"]*"[\s\S]*?<\/article>/g;
+    const cards = page.text.match(cardPattern) || [];
+    const videoCard = cards.find((card) => card.includes(`data-asset-id="${video.id}"`));
+    const originalUrl = `/projects/${id}/assets/${video.id}/original`;
+    expect(videoCard).toBeDefined();
+    expect(videoCard).toContain('data-asset-selectable-card');
+    expect(videoCard).toContain('data-asset-video-placeholder hidden');
+    expect(videoCard).toContain(`${extension.toUpperCase()} video`);
+    expect(videoCard).toMatch(new RegExp(`class="asset-(?:list-)?card-media-link asset-video-link" href="/projects/${id}/assets/${video.id}[?"][^>]*data-asset-video-preview-trigger data-video-src="${originalUrl}"`));
+    expect(videoCard).toMatch(new RegExp(`class="asset-details-link[^"]*" href="/projects/${id}/assets/${video.id}[?"]`));
+    expect(videoCard).not.toMatch(/<img\b/);
+    const frames = videoCard.match(/<video\b[^>]*>/g) || [];
+    expect(frames).toHaveLength(1);
+    expect(frames[0]).toContain(`src="${originalUrl}"`);
+    expect(frames[0]).toContain('preload="metadata"');
+    expect(frames[0]).not.toMatch(/\scontrols|autoplay/);
+    expect(videoCard).not.toContain('data-project-assets-preview-id');
+    expect(page.text).not.toContain('autoplay');
+    expect(extractSlideshowSequence(page.text).map((entry) => entry.id)).toEqual([image.id]);
+
+    // One shared, empty layout-level preview dialog: the client inserts the player on demand.
+    const dialogs = page.text.match(/<dialog id="asset-video-preview-dialog"[\s\S]*?<\/dialog>/g) || [];
+    expect(dialogs).toHaveLength(1);
+    expect(dialogs[0]).toContain('data-asset-video-preview-slot></div>');
+    expect(dialogs[0]).not.toMatch(/<video\b/);
+    expect(dialogs[0]).toMatch(/data-asset-video-error[^>]*hidden/);
+    expect(dialogs[0]).toMatch(/<input type="checkbox" autocomplete="off" data-asset-video-loop>/);
+  });
+
   // ─── Defect fix: browser row links carry normalized/clamped context ────
 
   it('a browser row viewer link carries normalized context, strips unknown fields, and the viewer preserves it on Back', async () => {
@@ -4803,6 +4902,111 @@ describe('asset browser HTTP workflow', () => {
         expect(await outcome(`/projects/${archivedId}/assets?category=${category.id}&sort=${sort}`)).toEqual(none);
       }
     });
+
+    describe('supported video category integration', () => {
+      // Grid and list cards both carry data-asset-id on their card root.
+      const renderedIds = (html) => [...html.matchAll(/<(?:div|article)[^>]*class="asset-(?:card|list-card)[^"]*"[^>]*data-asset-id="(\d+)"/g)]
+        .map((match) => Number(match[1]));
+      const sorted = (ids) => [...ids].sort((a, b) => a - b);
+
+      async function seedVideoCategories(title) {
+        const res = await createProject(title);
+        const id = Number(res.headers.location.replace('/projects/', ''));
+        const addCategory = (displayName, directorySlug, displayOrder, enabled = true) => assetCategoryRepo.addProjectCategory({
+          projectId: id, displayName, directorySlug, displayOrder, enabled,
+        });
+        const clips = addCategory('Clips', 'clips', 0);
+        const mixed = addCategory('Mixed', 'mixed', 1);
+        const hidden = addCategory('Hidden', 'hidden', 2, false);
+        const MIME = { png: 'image/png', webm: 'video/webm', mp4: 'video/mp4' };
+        const seed = (relativePath, category, modifiedAt = null) => {
+          const filename = relativePath.split('/').pop();
+          const extension = filename.split('.').pop();
+          return assetRepo.upsert(id, relativePath, {
+            filename, extension, mimeType: MIME[extension], sizeBytes: 10, modifiedAt,
+            ...(category ? { categoryId: category.id, nestedPath: '' } : {}),
+          });
+        };
+        return {
+          id, clips, mixed, hidden,
+          clipWebm: seed('clips/alpha.webm', clips, '2026-01-02T00:00:00.000Z'),
+          clipMp4: seed('clips/bravo.mp4', clips, '2026-01-01T00:00:00.000Z'),
+          mixedImage: seed('mixed/alpha.png', mixed, '2026-01-02T00:00:00.000Z'),
+          mixedVideo: seed('mixed/bravo.webm', mixed, '2026-01-01T00:00:00.000Z'),
+          hiddenVideo: seed('hidden/clip.mp4', hidden),
+          rootVideo: seed('loose.webm', null),
+        };
+      }
+
+      it('counts videos as ordinary category members in the Project Assets category dropdown and filters', async () => {
+        const fixture = await seedVideoCategories('Video Category Dropdown');
+        const { id, clips, mixed, hidden } = fixture;
+
+        const all = await agent.get(`/projects/${id}/assets`).expect(200);
+        expect(all.text).toContain('aria-label="Category filter: All categories (6)"');
+        expect(all.text).toContain(`id="asset-category-option-${clips.id}" name="category" type="radio" value="${clips.id}"`);
+        expect(all.text).toContain('>Clips (2)</span>');
+        expect(all.text).toContain('>Mixed (2)</span>');
+        expect(all.text).toContain('>Hidden (1) <em class="asset-category-disabled-marker">(disabled)</em></span>');
+        expect(all.text).toContain('>Uncategorized (1)</span>');
+        expect(sorted(renderedIds(all.text))).toEqual(sorted([
+          fixture.clipWebm.id, fixture.clipMp4.id, fixture.mixedImage.id,
+          fixture.mixedVideo.id, fixture.hiddenVideo.id, fixture.rootVideo.id,
+        ]));
+
+        for (const [query, label, expectedIds] of [
+          [`category=${clips.id}`, 'Clips (2)', [fixture.clipWebm.id, fixture.clipMp4.id]],
+          [`category=${mixed.id}`, 'Mixed (2)', [fixture.mixedImage.id, fixture.mixedVideo.id]],
+          [`category=${hidden.id}`, 'Hidden (1) (disabled)', [fixture.hiddenVideo.id]],
+          ['category=uncategorized', 'Uncategorized (1)', [fixture.rootVideo.id]],
+        ]) {
+          for (const view of ['grid', 'list']) {
+            const page = await agent.get(`/projects/${id}/assets?${query}&view=${view}`).expect(200);
+            expect(page.text, `${query} ${view}`).toContain(`aria-label="Category filter: ${label}"`);
+            expect(sorted(renderedIds(page.text)), `${query} ${view}`).toEqual(sorted(expectedIds));
+            // Only inert card frames: no player controls or autoplay in the listing.
+            expect(page.text).not.toMatch(/<video\b[^>]*\s(?:controls|autoplay)\b/);
+          }
+        }
+
+        // An extension filter narrows to the video members; resetting restores the full category.
+        const webmOnly = await agent.get(`/projects/${id}/assets?category=${mixed.id}&extension=webm`).expect(200);
+        expect(renderedIds(webmOnly.text)).toEqual([fixture.mixedVideo.id]);
+        const reset = await agent.get(`/projects/${id}/assets?category=${mixed.id}`).expect(200);
+        expect(sorted(renderedIds(reset.text))).toEqual(sorted([fixture.mixedImage.id, fixture.mixedVideo.id]));
+      });
+
+      it('includes video asset IDs in complete-category membership and capabilities', async () => {
+        const fixture = await seedVideoCategories('Video Category Capabilities');
+        const { id, clips, mixed } = fixture;
+        const capabilitiesFor = async (query) => renderedCapabilities(
+          (await agent.get(`/projects/${id}/assets?${query}`).expect(200)).text,
+        );
+
+        // Mixed image + video category: complete for every sort, including the video member.
+        for (const sort of ASSET_BROWSER_SORT_VALUES) {
+          const capabilities = await capabilitiesFor(`category=${mixed.id}&sort=${sort}&order=desc&pageSize=1`);
+          expect(capabilities, sort).toMatchObject({ membershipComplete: true, reorder: true, autoRename: true, paginated: false });
+          expect(sorted(capabilities.renderedIds)).toEqual(sorted([fixture.mixedImage.id, fixture.mixedVideo.id]));
+          expect(capabilities.orderedIds).toEqual(capabilities.renderedIds);
+        }
+
+        // Filtering the video out is a real subset and removes complete-category operations.
+        const subset = await agent.get(`/projects/${id}/assets?category=${mixed.id}&extension=png`).expect(200);
+        expect(renderedIds(subset.text)).toEqual([fixture.mixedImage.id]);
+        expect(renderedCapabilities(subset.text)).toMatchObject({ membershipComplete: false, reorder: false, autoRename: false });
+        // An extension filter covering both members stays complete.
+        expect(await capabilitiesFor(`category=${mixed.id}&extension=png&extension=webm&sort=modified&order=asc`))
+          .toMatchObject({ membershipComplete: true, orderedIds: [fixture.mixedVideo.id, fixture.mixedImage.id] });
+
+        // A video-only category is complete for generic category operations.
+        const videoOnly = await capabilitiesFor(`category=${clips.id}&sort=modified&order=asc`);
+        expect(videoOnly).toMatchObject({
+          membershipComplete: true, reorder: true, autoRename: true,
+          orderedIds: [fixture.clipMp4.id, fixture.clipWebm.id],
+        });
+      });
+    });
   });
 
   it('serves the Auto Rename drag, marker, surface, and disabled-action CSS contracts', async () => {
@@ -6501,6 +6705,35 @@ describe('asset browser HTTP workflow', () => {
           .expect(403);
         expect(app.locals.bookPrimaryImageService.getPrimaryImage(book.id)).toBeUndefined();
 
+      });
+    });
+
+    describe('supported video primary-image safety', () => {
+      it.each([
+        ['webm', 'video/webm'],
+        ['mp4', 'video/mp4'],
+      ])('rejects %s as a project or Book primary image without writing a selection', async (extension, mimeType) => {
+        const title = `Video Primary ${extension}`;
+        const res = await createProject(title);
+        const id = Number(res.headers.location.replace('/projects/', ''));
+        const video = writeIndexedAsset(id, getProjectDir(title), `clip.${extension}`, Buffer.from('video-bytes'), {
+          extension, mimeType,
+        });
+        const book = app.locals.bookService.createBook({ title: `Video Book ${extension}` });
+
+        await agent
+          .post(`/projects/${id}/assets/${video.id}/primary-image`)
+          .type('form')
+          .send({ _csrf: csrfToken })
+          .expect(422);
+        expect(app.locals.projectPrimaryImageService.getPrimaryImage(id)).toBeFalsy();
+
+        await agent
+          .post(`/projects/${id}/assets/${video.id}/book-primary-image`)
+          .type('form')
+          .send({ bookId: String(book.id), _csrf: csrfToken })
+          .expect(422);
+        expect(app.locals.bookPrimaryImageService.getPrimaryImage(book.id)).toBeUndefined();
       });
     });
 

@@ -1083,7 +1083,21 @@ function renderPlan(root, plan) {
   renderDestructiveWarning(root, plan.counts);
   renderPlanItems(root, plan.items);
   if (plan?.operation === 'archive') renderArchivePlanDetails(root, plan);
-  return archivePlanCanApply(plan);
+  return planItemsCanApply(plan) && archivePlanCanApply(plan);
+}
+
+// Mirrors the server's apply gate (assertApplyablePlan in routes/processing.js):
+// any blocking item, or an item skipped because the operation does not support
+// its source type (for example a video under an image-only operation), makes
+// the plan non-applyable, so Apply stays disabled instead of submitting a
+// request the server will reject.
+const NON_APPLYABLE_PLAN_ITEM_STATUSES = new Set(['unsupported', 'error', 'conflict', 'blocked']);
+
+function planItemsCanApply(plan) {
+  const items = Array.isArray(plan?.items) ? plan.items : [];
+  const blockers = Array.isArray(plan?.operationBlockers) ? plan.operationBlockers : [];
+  return blockers.length === 0 && !items.some((item) => NON_APPLYABLE_PLAN_ITEM_STATUSES.has(item?.status)
+    || (item?.status === 'skipped' && item?.operationEligibility === 'unsupported'));
 }
 
 // ─── Result rendering ────────────────────────────────────────────────────

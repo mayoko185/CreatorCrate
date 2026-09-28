@@ -18,7 +18,9 @@
 //   - Originals are served inline ONLY when extension and recorded MIME
 //     match the PNG/JPEG/WebP/GIF allowlisted pairs, with a sanitized
 //     `Content-Disposition: inline` header and `nosniff`. Krita, unknown,
-//     missing MIME, octet-stream, and mismatches get 415.
+//     missing MIME, octet-stream, and mismatches get 415. Supported WebM/MP4
+//     videos (per `classifySupportedVideo`) are also served inline, with
+//     single `bytes=` Range support (206/416) for seeking.
 //   - Routes pipe only service-prepared streams and call only generic cleanup;
 //     no absolute derivative path, source path, or descriptor crosses the
 //     media-service boundary.
@@ -143,6 +145,16 @@ function sendPreparedMediaResponse(req, res, next, prepared) {
 
   try {
     const { stream } = prepared;
+    // `stream: null` with 416 is an explicit bodiless response; the service
+    // has already released its descriptor.
+    if (stream === null && prepared.status === 416) {
+      res.status(416);
+      for (const [name, value] of Object.entries(prepared.headers || {})) {
+        res.setHeader(name, value);
+      }
+      res.end();
+      return;
+    }
     if (!stream || typeof stream.pipe !== 'function' || typeof stream.on !== 'function') {
       throw new Error('Media service returned an invalid stream.');
     }
@@ -219,7 +231,10 @@ function makeOriginalHandler(mediaService) {
 
     let prepared;
     try {
-      prepared = mediaService.prepareOriginalResponse(projectId, assetId);
+      prepared = mediaService.prepareOriginalResponse(projectId, assetId, {
+        range: req.headers.range,
+        ifRange: req.headers['if-range'],
+      });
     } catch (err) {
       const mapped = mapMediaError(res, err);
       if (mapped) return;

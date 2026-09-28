@@ -2062,6 +2062,60 @@
         text-align: center;
       }
       .asset-card-placeholder-missing { color: var(--danger); }
+      .asset-video-link { width: 100%; }
+      /* Video card media: the inert metadata-only <video> sizes itself from
+         the file's intrinsic width/height, so portrait videos read as
+         portrait. Clicks pass through to the surrounding link. */
+      .asset-video-frame {
+        position: relative;
+        display: block;
+        width: 100%;
+      }
+      .asset-video-frame-media {
+        display: block;
+        width: 100%;
+        height: auto;
+        pointer-events: none;
+        background: var(--bg);
+      }
+      .asset-video-frame--list {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100%;
+      }
+      .asset-video-frame--list .asset-video-frame-media {
+        height: 100%;
+        object-fit: contain;
+      }
+      .asset-video-badge {
+        position: absolute;
+        left: var(--space-xs);
+        bottom: var(--space-xs);
+        display: inline-flex;
+        align-items: center;
+        gap: 0.25rem;
+        padding: 0.125rem 0.375rem;
+        border-radius: var(--radius-sm);
+        background: rgb(0 0 0 / 0.65);
+        color: #fff;
+        font-size: 0.6875rem;
+        font-weight: 600;
+        line-height: 1.2;
+        pointer-events: none;
+      }
+      .asset-video-badge svg {
+        width: 0.875rem;
+        height: 0.875rem;
+      }
+      .asset-video-placeholder {
+        flex-direction: column;
+        gap: var(--space-xs);
+      }
+      .asset-video-placeholder svg {
+        width: 1.75rem;
+        height: 1.75rem;
+      }
       .asset-card-body {
         display: flex;
         flex-direction: column;
@@ -3706,6 +3760,10 @@
         width: 100%;
         height: auto;
       }
+      .asset-list--project[data-list-size="compact"] .asset-video-frame--list,
+      .asset-list--project[data-list-size="compact"] .asset-video-frame--list .asset-video-frame-media {
+        height: auto;
+      }
       .asset-list--project[data-list-size="compact"] .asset-list-card-media-image {
         width: 100%;
         max-width: 100%;
@@ -3941,6 +3999,40 @@
         width: 1.25em;
         height: 1.25em;
       }
+      /* Auto width/height with max bounds keeps the browser's intrinsic
+         video ratio (known once metadata loads) instead of a forced frame. */
+      .asset-preview-video {
+        display: block;
+        width: auto;
+        height: auto;
+        max-width: 100%;
+        max-height: 70vh;
+        margin-inline: auto;
+        border-radius: var(--radius-md);
+        background: var(--bg);
+      }
+      .asset-preview-frame--video {
+        flex-direction: column;
+        gap: var(--space-sm);
+      }
+      .asset-video-viewer-controls {
+        display: flex;
+        justify-content: flex-end;
+        align-self: stretch;
+      }
+      /* Transient Loop toggle beside a playable video; kept outside the native
+         controls so it never collides with them. */
+      .asset-video-loop-control {
+        display: inline-flex;
+        align-items: center;
+        gap: var(--space-xs);
+        color: var(--muted);
+        font-size: 0.875rem;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .asset-video-loop-control input { margin: 0; cursor: pointer; }
+      .asset-video-loop-control[hidden] { display: none; }
       .asset-preview-placeholder {
         color: var(--muted);
         padding: var(--space-xl);
@@ -4128,7 +4220,8 @@
          }
           .asset-preview-nav--previous { left: var(--space-sm); }
           .asset-preview-nav--next { right: var(--space-sm); }
-        .asset-preview-image {
+        .asset-preview-image,
+        .asset-preview-video {
           max-height: 50vh;
         }
         .asset-metadata-section-body {
@@ -4909,6 +5002,35 @@
       }
       .app-dialog::backdrop { background: rgba(13, 15, 19, 0.78); }
       .app-confirmation-dialog::backdrop { background: rgba(13, 15, 19, 0.84); }
+      .asset-video-preview-dialog {
+        width: fit-content;
+        min-width: min(20rem, calc(100vw - 2rem));
+      }
+      .asset-video-preview {
+        display: flex;
+        flex-direction: column;
+        gap: var(--space-sm);
+        margin: 0 0 var(--space-lg);
+      }
+      .asset-video-preview-caption {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--space-sm);
+        min-width: 0;
+      }
+      .asset-video-preview-actions {
+        display: inline-flex;
+        align-items: center;
+        gap: var(--space-md);
+        flex-shrink: 0;
+      }
+      .asset-video-preview-title {
+        min-width: 0;
+        overflow-wrap: anywhere;
+        color: var(--muted);
+        font-size: 0.875rem;
+      }
       .app-dialog-card {
         display: flex;
         flex-direction: column;

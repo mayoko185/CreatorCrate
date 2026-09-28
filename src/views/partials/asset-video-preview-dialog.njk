@@ -1,0 +1,26 @@
+{#
+  Shared singleton on-page video preview, reachable from every surface whose
+  video cards carry `data-asset-video-preview-trigger` (Project Assets, Asset
+  Library, release selection, release detail). Deliberately separate from the
+  image-only slideshow. The client inserts a fresh <video controls playsinline
+  preload="metadata"> on open, plays it from that same click, and removes it on
+  close. Loop is transient: it starts unchecked for every opened video.
+#}
+{% import "partials/dialog.njk" as dialog %}
+{% call dialog.render('asset-video-preview-dialog', 'Video preview', false, '', '', 'asset-video-preview-dialog') %}
+  <div class="app-dialog-body">
+    <figure class="asset-video-preview" data-asset-video-playback data-asset-video-preview>
+      <div class="asset-video-preview-stage" data-asset-video-preview-slot></div>
+      <p class="asset-preview-placeholder asset-video-error" data-asset-video-error role="status" hidden>
+        This video could not be played in this browser. Its codec may not be supported. Open its details to use Open locally.
+      </p>
+      <figcaption class="asset-video-preview-caption">
+        <span class="asset-video-preview-title" data-asset-video-preview-title></span>
+        <span class="asset-video-preview-actions">
+          {% include "partials/asset-video-loop-control.njk" %}
+          <a class="button button-small button-secondary" href="#" data-asset-video-preview-details>View details</a>
+        </span>
+      </figcaption>
+    </figure>
+  </div>
+{% endcall %}

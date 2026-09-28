@@ -5,8 +5,10 @@
 {% import "partials/dialog.njk" as dialog %}
 {% import "partials/dropdown.njk" as dropdown %}
 {% import "partials/asset-information.njk" as assetInformation %}
+{% import "partials/asset-presentation.njk" as assetPresentation %}
 
 {% set page_title = "Asset Viewer" %}
+{% set assetVideoPreview = true %}
 {% set currentView = presentation.view or filters.view %}
 {% set projectFilterHasSelection = false %}
 {% set projectFilterSummary = 'All projects' %}
@@ -96,6 +98,8 @@
       <span class="asset-card-placeholder asset-card-fallback" data-preview-fallback hidden>{{ asset.extension or 'Preview unavailable' }}</span>
     {% elif not asset.is_present %}
       <span class="asset-card-placeholder asset-card-placeholder-missing">Missing at last scan</span>
+    {% elif asset.preview_state == 'video' %}
+      {{ assetPresentation.videoPlaceholder(asset, 'grid', detailUrl, 'Play video ' ~ displayName, { nsfwBlur: asset.nsfwBlur, title: displayName }) }}
     {% elif asset.preview_state == 'unsupported' %}
       <span class="asset-card-placeholder">{{ asset.extension or 'Asset' }} — preview not supported</span>
     {% else %}
@@ -121,6 +125,8 @@
       <span class="asset-list-card-media-fallback" data-preview-fallback hidden>{{ asset.extension or 'Preview unavailable' }}</span>
     {% elif not asset.is_present %}
       <span class="asset-list-card-media-placeholder asset-list-card-media-placeholder--missing">Missing at last scan</span>
+    {% elif asset.preview_state == 'video' %}
+      {{ assetPresentation.videoPlaceholder(asset, 'list', detailUrl, 'Play video ' ~ displayName ~ ' from ' ~ asset.project_title, { nsfwBlur: asset.nsfwBlur, title: displayName }) }}
     {% elif asset.preview_state == 'unsupported' %}
       <span class="asset-list-card-media-placeholder">{{ asset.extension or 'Asset' }} — preview not supported</span>
     {% else %}

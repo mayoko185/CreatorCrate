@@ -839,6 +839,31 @@ describe('processing HTTP routes', () => {
     }
   });
 
+  it.each(['Final/clip.webm', 'Final/clip.mp4'])('rejects image-only Apply for a video-only selection (%s) before it allocates a job', async (relativePath) => {
+    const realPlanner = createRealPlannerForAsset(relativePath);
+    try {
+      const { app, services } = createHarness({ assetProcessingPlanner: realPlanner.assetProcessingPlanner });
+      const enqueue = vi.spyOn(services.processingJobService, 'enqueue');
+
+      const plan = await request(app)
+        .post('/projects/1/assets/processing/convert/plan')
+        .send({ scope: { type: 'selected', assetIds: [9] }, options: { format: 'webp', quality: 85, originalHandling: 'keep' } })
+        .expect(200);
+      expect(plan.body.plan.counts).toMatchObject({ total: 1, eligible: 0, skipped: 1 });
+      expect(plan.body.plan.items[0]).toMatchObject({ status: 'skipped', operationEligibility: 'unsupported' });
+
+      const apply = await request(app)
+        .post('/projects/1/assets/processing/convert/apply')
+        .send({ scope: { type: 'selected', assetIds: [9] }, options: { format: 'webp', quality: 85, originalHandling: 'keep' } })
+        .expect(400);
+      expect(apply.body.error.code).toBe('UNSUPPORTED_SOURCE_TYPE');
+      expect(enqueue).not.toHaveBeenCalled();
+      expect(services.alreadyCoordinatedProcessingExecutor.convertAssets).not.toHaveBeenCalled();
+    } finally {
+      realPlanner.cleanup();
+    }
+  });
+
   it('rejects direct blocking and operation-blocker planner output before it enqueues a job', async () => {
     const { app, services } = createHarness();
     const enqueue = vi.spyOn(services.processingJobService, 'enqueue');

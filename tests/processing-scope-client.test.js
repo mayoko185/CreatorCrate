@@ -1454,6 +1454,72 @@ describe('Processing dialog scope serialization', () => {
     ]);
     expect(resultBody.children[0].textContent).toContain('Generated 1 archive artifact');
   });
+
+  describe('Apply gating for items the operation does not support', () => {
+    const readyImage = { assetId: 1, relativePath: 'Final/still.png', status: 'ready', eligible: true, operationEligibility: 'supported' };
+    const skippedVideo = (assetId, extension) => ({
+      assetId,
+      relativePath: `Final/clip-${assetId}.${extension}`,
+      status: 'skipped',
+      eligible: false,
+      operationEligibility: 'unsupported',
+      reasonCode: 'UNSUPPORTED_SOURCE_TYPE',
+      reason: 'The source type is not supported by this operation.',
+    });
+
+    async function previewSelected(operation, assetIds, items) {
+      calls = [];
+      fetchMock = vi.fn(async (url, init = {}) => {
+        calls.push({ url, body: init.body ? JSON.parse(init.body) : null });
+        const eligible = items.filter((item) => item.eligible).length;
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            ok: true,
+            plan: {
+              operation,
+              counts: { total: items.length, eligible, skipped: items.length - eligible },
+              items,
+            },
+          }),
+        };
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      assetIds.forEach((assetId) => doc.appendChild(makeCheckbox(assetId, true)));
+      const fixture = buildDialogRoot(doc, { operation });
+      enhanceProcessingDialogs(doc);
+      fixture.trigger.dispatch('click', { target: fixture.trigger });
+      await flush();
+      fixture.previewBtn.dispatch('click', { target: fixture.previewBtn });
+      await flush();
+      return fixture;
+    }
+
+    it.each(['convert', 'workflow-prompt'])('keeps %s Apply disabled for a video-only selection and never submits it', async (operation) => {
+      const fixture = await previewSelected(operation, [7, 8], [skippedVideo(7, 'webm'), skippedVideo(8, 'mp4')]);
+      expect(calls[0].body.scope).toEqual({ type: 'selected', assetIds: [7, 8] });
+      expect(fixture.applyBtn.disabled).toBe(true);
+      expect(fixture.status.textContent).toBe('Preview ready, but conflicts or blockers must be resolved before Apply.');
+
+      fixture.applyBtn.dispatch('click', { target: fixture.applyBtn });
+      await flush();
+      expect(calls.every((call) => call.url.endsWith('/plan'))).toBe(true);
+    });
+
+    it('mirrors the server gate for a mixed image and video selection', async () => {
+      const fixture = await previewSelected('convert', [1, 7], [readyImage, skippedVideo(7, 'webm')]);
+      expect(fixture.applyBtn.disabled).toBe(true);
+      fixture.applyBtn.dispatch('click', { target: fixture.applyBtn });
+      await flush();
+      expect(calls.map((call) => call.url)).toEqual(['/projects/1/assets/processing/convert/plan']);
+    });
+
+    it('still enables Apply for an image-only plan', async () => {
+      const image = await previewSelected('convert', [1], [readyImage]);
+      expect(image.applyBtn.disabled).toBe(false);
+    });
+  });
 });
 
 describe('Processing preview plan-item source actions', () => {

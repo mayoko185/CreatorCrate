@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import nunjucks from 'nunjucks';
 import { fileURLToPath } from 'node:url';
 import { buildAssetPreviewModel } from '../src/services/asset-presentation.js';
+import { buildReleaseAssetPresentation } from '../src/services/release-asset-presenter.js';
+import { formatIsoTimestamp, formatSqliteTimestamp } from '../src/util/date.js';
 import { projectImagePolicyFingerprint, projectImagePresentationPolicy } from '../src/services/project-image-policy.js';
 
 const VIEWS_DIR = fileURLToPath(new URL('../src/views', import.meta.url));
@@ -212,5 +214,160 @@ describe('reusable asset presentation macros', () => {
     expect(hiddenCard).not.toContain('data-associations-slot');
     expect(hiddenCard).toContain('class="asset-card-top"');
     expect(hiddenCard).toContain('class="asset-card-media');
+  });
+});
+
+describe('supported video presentation', () => {
+  const videoEnv = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: true })
+    .addFilter('formatSqliteTimestamp', formatSqliteTimestamp)
+    .addFilter('formatIsoTimestamp', formatIsoTimestamp);
+  const policy = projectImagePresentationPolicy({
+    thumbnail: { format: 'webp', webpQuality: 80, maxDimension: 256 },
+    preview: { format: 'original', webpQuality: 90, maxDimension: 1600 },
+  });
+  const videoSource = (overrides = {}) => ({
+    id: 80, project_id: 7, is_present: true, relative_path: 'clips/clip.webm',
+    filename: 'clip.webm', extension: 'webm', mime_type: 'video/webm',
+    size_bytes: 4096, modified_at: '2026-09-24T10:00:00.000Z', ...overrides,
+  });
+
+  it.each([
+    ['webm', 'video/webm'],
+    ['mp4', 'video/mp4'],
+  ])('gives %s a video state with the authenticated original as playback URL', (extension, mime_type) => {
+    const model = buildAssetPreviewModel(videoSource({ extension, mime_type }), policy);
+    expect(model).toEqual({
+      state: 'video',
+      previewable: false,
+      kind: 'video',
+      sourceMetadataValid: false,
+      revision: null,
+      urls: { thumbnail: null, preview: null },
+      playbackUrl: '/projects/7/assets/80/original',
+    });
+  });
+
+  it.each([
+    ['mov', 'video/quicktime'],
+    ['mkv', 'video/x-matroska'],
+    ['avi', 'video/x-msvideo'],
+    ['webm', 'video/mp4'],
+    ['mp4', 'application/octet-stream'],
+  ])('keeps %s (%s) on the unsupported fallback', (extension, mime_type) => {
+    const model = buildAssetPreviewModel(videoSource({ extension, mime_type }), policy);
+    expect(model.state).toBe('unsupported');
+    expect(model.playbackUrl).toBeNull();
+    expect(model.urls).toEqual({ thumbnail: null, preview: null });
+  });
+
+  it('keeps missing videos missing and image models free of playback URLs', () => {
+    expect(buildAssetPreviewModel(videoSource({ is_present: false }), policy))
+      .toMatchObject({ state: 'missing', playbackUrl: null });
+    const image = buildAssetPreviewModel(videoSource({ extension: 'png', mime_type: 'image/png' }), policy);
+    expect(image).toMatchObject({ state: 'previewable', kind: 'image', playbackUrl: null });
+  });
+
+  function videoCardAsset(overrides = {}) {
+    const source = videoSource(overrides);
+    const preview = buildAssetPreviewModel(source, policy);
+    return {
+      ...source,
+      displayFilename: 'clip',
+      typeLabel: source.extension.toUpperCase(),
+      presenceLabel: 'Present',
+      preview,
+      preview_state: preview.state,
+      preview_url: preview.urls.preview,
+      thumbnail_url: preview.urls.thumbnail,
+      viewerUrl: '/projects/7/assets/80?view=grid',
+    };
+  }
+
+  // Inert metadata-only frame: intrinsic geometry, never controls/autoplay/play.
+  const INERT_FRAME = /<video class="asset-video-frame-media" src="\/projects\/7\/assets\/80\/original"\s+preload="metadata" playsinline disablepictureinpicture aria-hidden="true" data-asset-video-frame><\/video>/g;
+
+  it.each([
+    ['webm', 'video/webm', 'WEBM'],
+    ['mp4', 'video/mp4', 'MP4'],
+  ])('renders Project Assets %s grid and list cards as on-page video preview triggers with selection intact', (extension, mime_type, label) => {
+    const asset = videoCardAsset({ extension, mime_type, filename: `clip.${extension}` });
+    const html = videoEnv.renderString(`
+      {% import "partials/asset-presentation.njk" as presentation %}
+      {{ presentation.gridCard(asset, { projectLayout: true, selectable: true, selectableTabIndex: true, previewSlideshowAssetId: asset.id }) }}
+      {{ presentation.listCard(asset, { projectLayout: true, selectable: true, titleControls: true, previewSlideshowAssetId: asset.id }) }}
+    `, { asset });
+
+    expect(html).not.toMatch(/<img/);
+    expect(html.match(INERT_FRAME)).toHaveLength(2);
+    expect(html).not.toMatch(/autoplay|controls|tabindex="-1"/);
+    // Videos never join the image slideshow or image preview enhancement.
+    expect(html).not.toContain('data-project-assets-preview-id');
+    expect(html).not.toContain('data-preview-enhancement');
+    expect(html).not.toContain('data-preview-image');
+    expect(html.match(/data-asset-video-preview-trigger data-video-src="\/projects\/7\/assets\/80\/original" data-video-title="clip"/g)).toHaveLength(2);
+    expect(html).toContain(`<a class="asset-card-media-link asset-video-link" href="/projects/7/assets/80?view=grid" aria-label="Play video clip.${extension}"`);
+    expect(html).toContain(`<a class="asset-list-card-media-link asset-video-link" href="/projects/7/assets/80?view=grid" aria-label="Play video clip.${extension}"`);
+    // The static placeholder remains only as the hidden failure fallback.
+    expect(html.match(/data-asset-video-placeholder hidden/g)).toHaveLength(2);
+    expect(html.match(new RegExp(`${label} video`, 'g'))).toHaveLength(2);
+    expect(html.match(/data-asset-selectable-card/g)).toHaveLength(2);
+    expect(html).toContain(`aria-label="Toggle selection for clip.${extension}"`);
+    expect(html).toContain(`View details for clip.${extension}`);
+  });
+
+  it('blurs NSFW video frames like NSFW image thumbnails', () => {
+    const asset = videoCardAsset();
+    const html = videoEnv.renderString(`
+      {% import "partials/asset-presentation.njk" as presentation %}
+      {{ presentation.gridCard(asset, { previewSlideshowAssetId: asset.id, nsfwBlur: true }) }}
+    `, { asset });
+    expect(html).toContain('class="asset-video-frame-media asset-image--nsfw-blurred"');
+  });
+
+  it('falls back to the visible static placeholder without a playback URL', () => {
+    const asset = { ...videoCardAsset(), preview: { ...videoCardAsset().preview, playbackUrl: null } };
+    const html = videoEnv.renderString(`
+      {% import "partials/asset-presentation.njk" as presentation %}
+      {{ presentation.gridCard(asset, { previewSlideshowAssetId: asset.id }) }}
+    `, { asset });
+    expect(html).not.toMatch(/<video/);
+    expect(html).not.toContain('data-asset-video-preview-trigger');
+    expect(html).toContain('asset-video-placeholder" data-asset-video-placeholder>');
+  });
+
+  it('renders release grid and list cards with inert frames that open the shared video preview', () => {
+    for (const [extension, mime_type] of [['webm', 'video/webm'], ['mp4', 'video/mp4']]) {
+      const asset = buildReleaseAssetPresentation({
+        ...videoSource({ extension, mime_type, filename: `clip.${extension}` }),
+        asset_id: 80, role: 'primary', sort_order: 0,
+      }, { policyFingerprint: policy, selected: true });
+      expect(asset).toMatchObject({
+        preview_state: 'video', preview_url: null, thumbnail_url: null,
+        previewAvailable: false, isPreviewable: false, hasThumbnail: false,
+      });
+      expect(asset.preview.playbackUrl).toBe('/projects/7/assets/80/original');
+
+      const html = videoEnv.renderString(`
+        {% import "partials/asset-presentation.njk" as presentation %}
+        {{ presentation.gridCard(asset, { filenameLink: true }) }}
+        {{ presentation.listCard(asset, { cardClass: 'asset-list-card--release', headerStatusDetails: true, hideActions: true }) }}
+      `, { asset });
+      expect(html).not.toMatch(/<img/);
+      expect(html.match(INERT_FRAME)).toHaveLength(2);
+      expect(html).not.toMatch(/autoplay|controls/);
+      expect(html.match(/data-asset-video-preview-trigger data-video-src="\/projects\/7\/assets\/80\/original"/g)).toHaveLength(2);
+      expect(html.match(new RegExp(`${extension.toUpperCase()} video`, 'g'))).toHaveLength(2);
+      expect(html.match(/href="\/projects\/7\/assets\/80" aria-label="Play video clip\./g)).toHaveLength(2);
+    }
+  });
+
+  it('renders release selection cards without links so clicks still toggle selection', () => {
+    const asset = { ...videoCardAsset(), viewerUrl: null };
+    const html = videoEnv.renderString(`
+      {% import "partials/asset-presentation.njk" as presentation %}
+      {{ presentation.gridCard(asset, { selectable: true }) }}
+    `, { asset });
+    expect(html).not.toContain('asset-video-link');
+    expect(html.match(INERT_FRAME)).toHaveLength(1);
   });
 });

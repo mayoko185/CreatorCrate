@@ -11,6 +11,11 @@ import {
   markPreviewLoaded,
 } from './client/preview.js';
 import {
+  enhanceAssetVideoPreview,
+  enhanceVideoFrames,
+  enhanceVideoPlayback,
+} from './client/asset-video-playback.js';
+import {
   enhanceAssetAutoRenameOrdering,
   enhanceAssetRenames,
   enhanceAssetSelection,
@@ -194,6 +199,9 @@ export {
   enhancePreview,
   enhancePreviewMedia,
   enhanceProjectCards,
+  enhanceAssetVideoPreview,
+  enhanceVideoFrames,
+  enhanceVideoPlayback,
   markPreviewFailed,
   markPreviewLoaded,
 };
@@ -226,6 +234,7 @@ export {
 if (typeof document !== 'undefined') {
   const run = () => {
     enhancePreviewMedia(document);
+    enhanceVideoPlayback(document);
     enhanceNumberInputs(document);
     enhanceNotesCodeBlocks(document);
     enhanceProjectCards(document);
@@ -303,6 +312,8 @@ if (typeof document !== 'undefined') {
     enhanceTimePickers(document);
     enhanceSlideshow(document);
     enhanceProjectAssetsPreviewSlideshow(document);
+    enhanceVideoFrames(document);
+    enhanceAssetVideoPreview(document, openAppDialogById);
   };
 
   if (document.readyState === 'loading') {

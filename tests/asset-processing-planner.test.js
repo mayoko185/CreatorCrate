@@ -163,6 +163,7 @@ describe('asset processing planner', () => {
   let wmCategory;
   let watermarkPath;
   let baseImage;
+  let sharpInputs;
 
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-planner-'));
@@ -197,6 +198,7 @@ describe('asset processing planner', () => {
       },
     }).png().toBuffer());
     scopeService = createAssetProcessingScopeService({ projectRepository, assetRepository });
+    sharpInputs = [];
     const renameCapability = Object.freeze({});
     const assetActionService = createAssetActionService({
       projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
@@ -218,6 +220,10 @@ describe('asset processing planner', () => {
       watermarkPath,
       watermarkRoot: tmpDir,
       renamePlanner: assetActionService.createProcessingPlanner(renameCapability),
+      sharpImplementation: (input, ...rest) => {
+        sharpInputs.push(input);
+        return sharp(input, ...rest);
+      },
     });
   });
 
@@ -226,7 +232,7 @@ describe('asset processing planner', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  function writeAsset(relativePath, buffer = baseImage) {
+  function writeAsset(relativePath, buffer = baseImage, mimeType = null) {
     const normalized = relativePath.replace(/\\/g, '/');
     const filename = path.posix.basename(normalized);
     const absolutePath = path.join(projectDir, ...normalized.split('/'));
@@ -239,7 +245,7 @@ describe('asset processing planner', () => {
       nestedPath: '',
       filename,
       extension,
-      mimeType: extension === 'jpg' || extension === 'jpeg' ? 'image/jpeg' : `image/${extension}`,
+      mimeType: mimeType || (extension === 'jpg' || extension === 'jpeg' ? 'image/jpeg' : `image/${extension}`),
       sizeBytes: stats.size,
       modifiedAt: stats.mtime.toISOString(),
     });
@@ -300,6 +306,64 @@ describe('asset processing planner', () => {
     expect(plan.items.map((item) => item.plannedDestination)).toEqual([
       expect.objectContaining({ relativePath: 'renamed-second.jpg', filename: 'renamed-second.jpg', extension: 'jpg' }),
       expect.objectContaining({ relativePath: 'Final/renamed-first.png', filename: 'renamed-first.png', extension: 'png' }),
+    ]);
+  });
+
+  it('skips supported WebM/MP4 videos in every image operation without decoding them, while Rename treats them as ordinary assets', async () => {
+    const image = writeAsset('Final/still.png');
+    const videoBytes = Buffer.from('not-an-image-video-bytes');
+    const webm = writeAsset('Final/clip.webm', videoBytes, 'video/webm');
+    const mp4 = writeAsset('Final/clip.mp4', videoBytes, 'video/mp4');
+    const videoIds = [webm.id, mp4.id];
+    const scope = { type: 'selected', assetIds: [image.id, ...videoIds] };
+    const expectVideosSkipped = (plan) => {
+      for (const assetId of videoIds) {
+        expect(plan.items.find((item) => item.assetId === assetId)).toMatchObject({
+          eligible: false,
+          status: 'skipped',
+          operationEligibility: 'unsupported',
+          reasonCode: 'UNSUPPORTED_SOURCE_TYPE',
+          plannedDestination: null,
+        });
+      }
+    };
+
+    const convert = await planner.planConvert(project.id, scope, { format: 'webp', originalHandling: 'keep' });
+    expectVideosSkipped(convert);
+    expect(convert.items.find((item) => item.assetId === image.id)).toMatchObject({ eligible: true, status: 'ready' });
+    expect(convert.counts).toMatchObject({ total: 3, eligible: 1, skipped: 2 });
+
+    const watermark = await planner.planWatermark(project.id, scope, {
+      mode: 'patreon', primaryFormat: 'png', secondaryFormat: null, resizedFormat: null, deleteSource: false,
+    });
+    expectVideosSkipped(watermark);
+    expect(watermark.items.find((item) => item.assetId === image.id)).toMatchObject({ eligible: true });
+
+    expectVideosSkipped(await planner.planWorkflowPromptEdit(project.id, scope, {
+      positive: { rules: [{ type: 'append', text: ', detailed' }] },
+      negative: { rules: [] },
+    }));
+    expectVideosSkipped(planner.planArchives(project.id, scope, { archiveFormat: '7z', makeCbz: false, setName: 'Set' }));
+
+    // Video-only selections have no eligible image work at all.
+    const videoOnly = await planner.planConvert(project.id, { type: 'selected', assetIds: videoIds }, {
+      format: 'png', originalHandling: 'keep',
+    });
+    expectVideosSkipped(videoOnly);
+    expect(videoOnly.counts).toMatchObject({ total: 2, eligible: 0, skipped: 2 });
+
+    // The spy is live (the PNG was inspected), and no video bytes ever reached it.
+    expect(sharpInputs.length).toBeGreaterThan(0);
+    expect(sharpInputs.some((input) => Buffer.isBuffer(input) && input.equals(videoBytes))).toBe(false);
+    expect(sharpInputs.some((input) => typeof input === 'string' && /\.(?:webm|mp4)$/i.test(input))).toBe(false);
+
+    const rename = await planner.planRename(project.id, { type: 'selected', assetIds: videoIds }, {
+      renames: [{ assetId: webm.id, basename: 'renamed-clip' }, { assetId: mp4.id, basename: 'renamed-clip' }],
+    });
+    expect(rename.counts).toMatchObject({ total: 2, eligible: 2, changed: 2, conflicts: 0 });
+    expect(rename.items.map((item) => item.plannedDestination)).toEqual([
+      expect.objectContaining({ relativePath: 'Final/renamed-clip.webm', extension: 'webm' }),
+      expect.objectContaining({ relativePath: 'Final/renamed-clip.mp4', extension: 'mp4' }),
     ]);
   });
 

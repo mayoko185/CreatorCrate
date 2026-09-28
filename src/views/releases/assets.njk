@@ -8,6 +8,7 @@
 {% import "partials/view-switcher.njk" as viewSwitcher %}
 
 {% set page_title = "Releases — " ~ release.title ~ " — Assets" %}
+{% set assetVideoPreview = true %}
 
 {% macro releaseAssetSelectionControl(asset, readOnly) %}
   {% if not readOnly and (asset.is_present or asset.releaseContext.selected) %}

@@ -14,6 +14,39 @@
   {% endif %}
 {% endmacro %}
 
+{#
+  Card media for a supported video in grids and lists. The inert <video> has
+  no controls, no autoplay, and is never played: preload="metadata" only lets
+  the browser learn the real width/height (and usually paint the first frame)
+  so the card uses the video's intrinsic aspect ratio. Pointer events pass
+  through to the surrounding link, which never joins the image-only
+  slideshow. On every surface an unmodified click on that link opens and plays
+  the shared layout-level video preview dialog; modified clicks and no-JS keep
+  navigating to `href` (the Asset Viewer). The static placeholder is the
+  fallback when there is no playback URL or the frame fails.
+#}
+{% macro videoPlaceholder(asset, variant='grid', href=null, ariaLabel='', options={}) %}
+  {% set typeLabel = asset.typeLabel or (asset.extension | upper) or 'Video' %}
+  {% set placeholderClass = 'asset-list-card-media-placeholder' if variant == 'list' else 'asset-card-placeholder' %}
+  {% set playbackUrl = asset.preview.playbackUrl if asset.preview else null %}
+  {% set content %}
+    {%- if playbackUrl -%}
+      <span class="asset-video-frame asset-video-frame--{{ variant }}" data-asset-video-frame-root>
+        <video class="asset-video-frame-media{% if options.nsfwBlur %} asset-image--nsfw-blurred{% endif %}" src="{{ playbackUrl }}"
+               preload="metadata" playsinline disablepictureinpicture aria-hidden="true" data-asset-video-frame></video>
+        <span class="asset-video-badge" aria-hidden="true">{{ icons.icon('video') }}<span>{{ typeLabel }}</span></span>
+      </span>
+    {%- endif -%}
+    <span class="{{ placeholderClass }} asset-video-placeholder" data-asset-video-placeholder{% if playbackUrl %} hidden{% endif %}>{{ icons.icon('video') }}<span>{{ typeLabel }} video</span></span>
+  {%- endset %}
+  {% if href %}
+    <a class="{{ 'asset-list-card-media-link' if variant == 'list' else 'asset-card-media-link' }} asset-video-link" href="{{ href }}" aria-label="{{ ariaLabel }}"
+       {%- if playbackUrl %} data-asset-video-preview-trigger data-video-src="{{ playbackUrl }}" data-video-title="{{ options.title or asset.displayFilename or asset.filename }}"{% endif %}>{{ content | safe }}</a>
+  {% else %}
+    {{ content | safe }}
+  {% endif %}
+{% endmacro %}
+
 {% macro gridCard(asset, options={}) %}
   {% set filenameLabel = asset.filename or asset.displayFilename or 'Unnamed asset' %}
   {% set displayName = asset.displayFilename or asset.filename or 'Unnamed asset' %}
@@ -56,6 +89,8 @@
         <span class="asset-card-placeholder asset-card-fallback" data-preview-fallback hidden>{{ asset.typeLabel or 'File' }}</span>
       {% elif not asset.is_present %}
         <span class="asset-card-placeholder asset-card-placeholder-missing">Missing at last scan</span>
+      {% elif asset.preview_state == 'video' %}
+        {{ videoPlaceholder(asset, 'grid', asset.viewerUrl, 'Play video ' ~ filenameLabel, { nsfwBlur: options.nsfwBlur, title: displayName }) }}
       {% elif asset.preview_state == 'unsupported' %}
         <span class="asset-card-placeholder">{{ asset.typeLabel or 'File' }} — preview not supported</span>
       {% else %}
@@ -163,6 +198,8 @@
         <span class="asset-list-card-media-fallback" data-preview-fallback hidden>{{ asset.typeLabel or 'File' }}</span>
       {% elif not asset.is_present %}
         <span class="asset-list-card-media-placeholder asset-list-card-media-placeholder--missing">Missing at last scan</span>
+      {% elif asset.preview_state == 'video' %}
+        {{ videoPlaceholder(asset, 'list', asset.viewerUrl, 'Play video ' ~ filenameLabel ~ ((' from ' ~ options.mediaContextLabel) if options.mediaContextLabel else ''), { nsfwBlur: options.nsfwBlur, title: displayName }) }}
       {% elif asset.preview_state == 'unsupported' %}
         <span class="asset-list-card-media-placeholder">{{ asset.typeLabel or 'File' }} — preview not supported</span>
       {% else %}

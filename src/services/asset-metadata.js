@@ -20,7 +20,20 @@ const EXTENSION_MIME_MAP = {
   tiff: 'image/tiff',
   kra: 'application/x-krita',
   krz: 'application/x-krita',
+  webm: 'video/webm',
+  mp4: 'video/mp4',
 };
+
+/**
+ * Supported CreatorCrate video formats. Deliberately separate from the image
+ * preview allowlist in preview-service.js: a supported video is recognized as
+ * video only and never becomes eligible for Sharp decoding, thumbnails,
+ * previews, animation inspection, or primary-image handling.
+ */
+const SUPPORTED_VIDEO_MIME_BY_EXTENSION = Object.freeze({
+  webm: 'video/webm',
+  mp4: 'video/mp4',
+});
 
 /**
  * Map a file extension to its MIME type.
@@ -40,4 +53,19 @@ export function deriveExtensionFromFilename(filename) {
   const dotIndex = filename.lastIndexOf('.');
   if (dotIndex <= 0) return ''; // no dot, or a leading dot only (dotfile)
   return filename.slice(dotIndex + 1).toLowerCase();
+}
+
+/**
+ * Decide whether an asset record is a supported CreatorCrate video. Both the
+ * extension and the recorded MIME must be on the video allowlist and agree;
+ * an arbitrary `video/*` MIME or an extension/MIME mismatch is unsupported.
+ *
+ * @param {{ extension: string, mime_type: string }} asset
+ * @returns {{ supported: boolean, extension: string, mimeType: string }}
+ */
+export function classifySupportedVideo(asset) {
+  const ext = String(asset?.extension || '').toLowerCase();
+  const mime = String(asset?.mime_type || '').toLowerCase();
+  const expected = SUPPORTED_VIDEO_MIME_BY_EXTENSION[ext];
+  return { supported: Boolean(expected) && mime === expected, extension: ext, mimeType: mime };
 }

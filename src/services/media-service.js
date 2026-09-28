@@ -13,10 +13,12 @@
 //       `{ status, headers, stream, cleanup }`. Absolute cache paths never cross
 //       the route boundary.
 //
-//   - prepareOriginalResponse(projectId, assetId)
+//   - prepareOriginalResponse(projectId, assetId, { range, ifRange })
 //       Resolves original metadata, builds safe headers, opens the original via
 //       `openAssetFile`, and returns `{ status, headers, stream, cleanup }`.
-//       The route never receives the source path or descriptor.
+//       The route never receives the source path or descriptor. Supported
+//       video originals (WebM/MP4) additionally honor one `bytes=` range
+//       (206/416); `stream` is null for a bodiless 416.
 //
 //   - buildInlineDisposition(filename)
 //       Sanitizes a filename for use in `Content-Disposition: inline` and
@@ -27,7 +29,8 @@
 //       Returns the allowlisted inline MIME only when the extension and
 //       recorded MIME match one of the explicit safe image pairs. Krita,
 //       unknown extensions, missing MIME, `application/octet-stream`, and
-//       mismatches are rejected.
+//       mismatches are rejected. Supported videos are authorized separately
+//       through `classifySupportedVideo()` and never through this image map.
 //
 // Error mapping is done here so routes stay declarative. The service throws
 // typed errors that the route translates into controlled HTTP responses.
@@ -38,6 +41,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { openAssetFile, closeAssetFile } from '../storage/asset-file.js';
 import { StorageError } from '../storage/path-manager.js';
+import { classifySupportedVideo } from './asset-metadata.js';
 import { PreviewCacheError } from '../storage/preview-cache.js';
 import {
   PreviewAccessError,
@@ -166,6 +170,59 @@ export function inlineMimeFor(extension, recordedMimeType) {
   const expected = INLINE_MIME_BY_EXTENSION[ext];
   if (!expected || mime !== expected) return null;
   return expected;
+}
+
+/**
+ * Resolve the inline MIME for an original: the image allowlist above, or a
+ * supported video (WebM/MP4) via the shared `classifySupportedVideo()`
+ * classifier. Video originals are inline-serveable only; this does not make
+ * them previewable (preview eligibility stays with `classifyPreviewable()`).
+ *
+ * @param {string} extension
+ * @param {string} recordedMimeType
+ * @returns {{ mimeType: string, video: boolean }|null}
+ */
+function originalInlineTypeFor(extension, recordedMimeType) {
+  const imageMime = inlineMimeFor(extension, recordedMimeType);
+  if (imageMime !== null) return { mimeType: imageMime, video: false };
+  const video = classifySupportedVideo({ extension, mime_type: recordedMimeType });
+  if (video.supported) return { mimeType: video.mimeType, video: true };
+  return null;
+}
+
+// ─── Single byte-range parsing (video originals only) ────────────────────
+//
+// Deliberately minimal: exactly one `bytes=` range-spec. Anything else —
+// other units, multiple ranges, malformed syntax, last-pos < first-pos —
+// returns null and the caller serves the normal full 200 response (RFC 9110
+// permits ignoring Range). Multipart/byteranges is never produced.
+
+const SINGLE_BYTE_RANGE_RE = /^bytes=(\d*)-(\d*)$/;
+
+/**
+ * @param {unknown} header - raw `Range` request header.
+ * @param {number} size - size of the opened descriptor being streamed.
+ * @returns {null | { unsatisfiable: true } | { start: number, end: number }}
+ */
+export function parseSingleByteRange(header, size) {
+  if (typeof header !== 'string') return null;
+  const match = SINGLE_BYTE_RANGE_RE.exec(header.trim());
+  if (!match) return null;
+  const [, first, last] = match;
+  if (first === '' && last === '') return null;
+
+  if (first === '') {
+    // Suffix range: the final N bytes (the whole file when N exceeds it).
+    const suffix = Number(last);
+    if (suffix === 0 || size === 0) return { unsatisfiable: true };
+    return { start: Math.max(0, size - suffix), end: size - 1 };
+  }
+
+  const start = Number(first);
+  const end = last === '' ? Infinity : Number(last);
+  if (end < start) return null;
+  if (start >= size) return { unsatisfiable: true };
+  return { start, end: Math.min(end, size - 1) };
 }
 
 // ─── Filename sanitization ───────────────────────────────────────────────
@@ -444,7 +501,11 @@ export function createMediaService({ previewService, projectsRoot, previewRoot }
    *
    * @param {number} projectId
    * @param {number} assetId
-   * @returns {{ filename: string, mimeType: string, size: number, revision: string|null, extension: string, openStream: () => { stream: fs.ReadStream, size: number } }}
+   * `openSource()` opens the original once and returns the descriptor's
+   * fstat size plus `createStream(start, end)` / `close()` bound to that same
+   * descriptor, so range math and streaming use the same opened file.
+   *
+   * @returns {{ filename: string, mimeType: string, video: boolean, size: number, revision: string|null, extension: string, openSource: () => { size: number, createStream: (start: number, end: number) => fs.ReadStream, close: () => void } }}
    * @throws {MediaNotFoundError} unknown project/asset, asset missing.
    * @throws {MediaUnsupportedError} extension not inline-serveable.
    * @throws {MediaError} storage failure, unreadable source, unsafe path.
@@ -463,8 +524,8 @@ export function createMediaService({ previewService, projectsRoot, previewRoot }
       throw err;
     }
 
-    const inlineMime = inlineMimeFor(descriptor.extension, descriptor.mimeType);
-    if (inlineMime === null) {
+    const inlineType = originalInlineTypeFor(descriptor.extension, descriptor.mimeType);
+    if (inlineType === null) {
       throw new MediaUnsupportedError(
         'Original is not available for this asset type.'
       );
@@ -472,11 +533,12 @@ export function createMediaService({ previewService, projectsRoot, previewRoot }
 
     return {
       filename: descriptor.filename,
-      mimeType: inlineMime,
+      mimeType: inlineType.mimeType,
+      video: inlineType.video,
       size: descriptor.size,
       revision: descriptor.revision,
       extension: descriptor.extension,
-      openStream: () => {
+      openSource: () => {
         let opened;
         try {
           opened = openAssetFile(
@@ -492,21 +554,23 @@ export function createMediaService({ previewService, projectsRoot, previewRoot }
           throw err;
         }
 
-        const fdSize = opened.stat.size;
-
-        try {
-          const stream = fs.createReadStream('', {
-            fd: opened.handle,
-            autoClose: true,
-            start: 0,
-            end: Math.max(0, fdSize - 1),
-          });
-
-          return { stream, size: fdSize };
-        } catch (err) {
-          closeAssetFile(opened);
-          throw err;
-        }
+        return {
+          size: opened.stat.size,
+          createStream: (start, end) => {
+            try {
+              return fs.createReadStream('', {
+                fd: opened.handle,
+                autoClose: true,
+                start,
+                end,
+              });
+            } catch (err) {
+              closeAssetFile(opened);
+              throw err;
+            }
+          },
+          close: () => closeAssetFile(opened),
+        };
       },
     };
   }
@@ -542,25 +606,65 @@ export function createMediaService({ previewService, projectsRoot, previewRoot }
     };
   }
 
-  function prepareOriginalResponse(projectId, assetId) {
+  /**
+   * @param {number} projectId
+   * @param {number} assetId
+   * @param {{ range?: string, ifRange?: string }} [request] - raw `Range` and
+   *   `If-Range` headers. Only supported video originals consult them. Any
+   *   `If-Range` disables range handling: the only validator this route
+   *   emits is a weak ETag, which can never satisfy If-Range, so the safe
+   *   answer is the full representation.
+   */
+  function prepareOriginalResponse(projectId, assetId, { range, ifRange } = {}) {
     const desc = getOriginalDescriptor(projectId, assetId);
     const disposition = buildInlineDisposition(desc.filename);
-    const opened = desc.openStream();
-    const { stream, size } = opened;
+    const source = desc.openSource();
+    const { size } = source;
+
+    const byteRange = desc.video && ifRange === undefined
+      ? parseSingleByteRange(range, size)
+      : null;
+
+    if (byteRange?.unsatisfiable) {
+      // No body: release the descriptor now instead of creating a stream.
+      source.close();
+      return {
+        status: 416,
+        headers: {
+          'Content-Range': `bytes */${size}`,
+          'Content-Length': '0',
+          'Accept-Ranges': 'bytes',
+          'X-Content-Type-Options': 'nosniff',
+          'Cache-Control': CACHE_ORIGINAL,
+        },
+        stream: null,
+        cleanup: () => {},
+      };
+    }
+
+    const start = byteRange ? byteRange.start : 0;
+    const end = byteRange ? byteRange.end : Math.max(0, size - 1);
+    const stream = source.createStream(start, end);
 
     const headers = {
       'Content-Type': desc.mimeType,
-      'Content-Length': String(size),
+      'Content-Length': String(byteRange ? end - start + 1 : size),
       'Content-Disposition': disposition,
       'X-Content-Type-Options': 'nosniff',
       'Cache-Control': CACHE_ORIGINAL,
     };
+    if (desc.video) {
+      headers['Accept-Ranges'] = 'bytes';
+    }
+    if (byteRange) {
+      headers['Content-Range'] = `bytes ${start}-${end}/${size}`;
+    }
     if (desc.revision) {
       headers.ETag = `W/"${desc.revision}-${size}"`;
     }
 
     return {
-      status: 200,
+      status: byteRange ? 206 : 200,
       headers,
       stream,
       cleanup: () => cleanupStream(stream),

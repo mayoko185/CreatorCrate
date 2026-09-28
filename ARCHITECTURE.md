@@ -2176,6 +2176,31 @@ the policy-aware revision, while `/original` uses its existing no-store response
 Fitted slideshows use the selected normal preview URL, and Original Size keeps
 its separate source URL and natural-size display behavior.
 
+Supported browser video is WebM (`video/webm`) and MP4 (`video/mp4`), decided
+by `classifySupportedVideo()` in
+[`asset-metadata.js`](src/services/asset-metadata.js) from a matching extension
+and recorded MIME. That classifier is deliberately separate from
+`classifyPreviewable()`: a video is never previewable, so it never reaches
+Sharp, thumbnail/preview generation or rebuild, source-animation inspection,
+image processing operations, or project/Book primary-image selection. The
+presentation model gives it a `video` state with null thumbnail/preview URLs
+and a `playbackUrl` on the authenticated `/original` route. Grid, list, and
+release cards render an inert `<video preload="metadata">` frame (no controls,
+never played) so the card takes the file's intrinsic aspect ratio, falling back
+to a static placeholder on error. On every card surface (Project Assets, Asset
+Library, release selection, release detail) an unmodified activation of the
+video media link opens the one layout-level `asset-video-preview-dialog` (not
+the image-only slideshow), which inserts a fresh native `<video controls
+playsinline preload="metadata">` and calls `play()` on it from that same click;
+modified clicks still navigate to the Asset Viewer. Closing pauses and removes
+the player. The Asset Viewer embeds the same native player but never plays it
+programmatically. Both offer a transient Loop checkbox that only sets `.loop`,
+starts off for every opened video, and is never persisted. Card frames, page
+load, and filter or view changes never play anything. For videos only, `/original`
+honors a single `bytes=` Range (206/416) for seeking. Videos are otherwise
+ordinary assets for categories, ordering, Auto Rename, rename/move, tags, and
+release selection.
+
 [`preview-service.js`](src/services/preview-service.js) owns generation and
 holds a per-asset in-process lock so concurrent requests for the same asset
 generate once. [`media-service.js`](src/services/media-service.js) sits above

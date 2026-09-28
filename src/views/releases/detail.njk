@@ -8,6 +8,7 @@
 {% import "partials/release-publish-dialog.njk" as releasePublishDialog %}
 
 {% set page_title = "Releases — " ~ release.title %}
+{% set assetVideoPreview = true %}
 
 {% macro releaseAssetMetadata(asset, includeCategory=true) %}
   <div class="release-asset-card-details">

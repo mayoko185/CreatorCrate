@@ -1,5 +1,6 @@
 import { classifyPreviewable, buildAssetRevisionToken } from './preview-service.js';
 import { inlineMimeFor } from './media-service.js';
+import { classifySupportedVideo } from './asset-metadata.js';
 
 function buildPreviewUrls(asset, revision) {
   if (!revision) {
@@ -23,14 +24,20 @@ function buildPreviewUrls(asset, revision) {
  * Generated URLs require source metadata; Original uses the media route's
  * inline MIME eligibility and its own cache behavior.
  *
+ * A supported video gets its own `video` state: it is never previewable and
+ * its thumbnail/preview URLs stay null so no `<img>` ever requests video
+ * bytes. `playbackUrl` is the authenticated original route, used only by the
+ * Asset Viewer's native player.
+ *
  * @param {object} asset
  * @returns {{
- *   state: 'missing'|'unsupported'|'previewable',
+ *   state: 'missing'|'unsupported'|'previewable'|'video',
  *   previewable: boolean,
- *   kind: 'image'|'krita'|null,
+ *   kind: 'image'|'krita'|'video'|null,
  *   sourceMetadataValid: boolean,
  *   revision: string|null,
  *   urls: { thumbnail: string|null, preview: string|null },
+ *   playbackUrl: string|null,
  * }}
  */
 export function buildAssetPreviewModel(asset, presentationPolicy) {
@@ -43,11 +50,24 @@ export function buildAssetPreviewModel(asset, presentationPolicy) {
       sourceMetadataValid: false,
       revision: null,
       urls: { thumbnail: null, preview: null },
+      playbackUrl: null,
     };
   }
 
   const classification = classifyPreviewable(resolvedAsset);
   if (!classification.supported) {
+    const viewerUrl = buildAssetViewerUrl(resolvedAsset.project_id, resolvedAsset.id);
+    if (viewerUrl && classifySupportedVideo(resolvedAsset).supported) {
+      return {
+        state: 'video',
+        previewable: false,
+        kind: 'video',
+        sourceMetadataValid: false,
+        revision: null,
+        urls: { thumbnail: null, preview: null },
+        playbackUrl: `${viewerUrl}/original`,
+      };
+    }
     return {
       state: 'unsupported',
       previewable: false,
@@ -55,6 +75,7 @@ export function buildAssetPreviewModel(asset, presentationPolicy) {
       sourceMetadataValid: false,
       revision: null,
       urls: { thumbnail: null, preview: null },
+      playbackUrl: null,
     };
   }
 
@@ -73,6 +94,7 @@ export function buildAssetPreviewModel(asset, presentationPolicy) {
     sourceMetadataValid: revision !== null,
     revision,
     urls,
+    playbackUrl: null,
   };
 }
 

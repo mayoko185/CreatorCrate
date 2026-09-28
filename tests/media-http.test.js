@@ -2619,3 +2619,281 @@ describe('media routes — original descriptor cleanup', () => {
     await expectDescriptorCounts(local);
   });
 });
+
+// ─── Section 18 — Supported video originals and single byte ranges ────────
+
+describe('media routes — video originals and byte ranges', () => {
+  let h;
+
+  beforeEach(() => {
+    h = makeHarness();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    h.cleanup();
+  });
+
+  const VIDEO_BYTES = Buffer.from(Array.from({ length: 1000 }, (_, i) => i % 251));
+
+  function binaryParser(res, callback) {
+    const chunks = [];
+    res.on('data', (chunk) => chunks.push(chunk));
+    res.on('end', () => callback(null, Buffer.concat(chunks)));
+  }
+
+  function getOriginal(project, asset) {
+    return request(h.app)
+      .get(`/projects/${project.id}/assets/${asset.id}/original`)
+      .buffer(true)
+      .parse(binaryParser);
+  }
+
+  function setupVideo(filename = 'clip.webm', mimeType = 'video/webm', buf = VIDEO_BYTES) {
+    const { project, absPath } = h.createProject(`Video ${filename} ${mimeType}`);
+    const srcPath = writeProjectFile(absPath, filename, buf);
+    const asset = h.indexAsset(project, filename, { mimeType });
+    return { project, absPath, asset, srcPath };
+  }
+
+  it('serves a WebM original in full with video/webm and the original security/cache headers', async () => {
+    const { project, asset } = setupVideo();
+
+    const res = await getOriginal(project, asset).expect(200);
+
+    expect(res.headers['content-type']).toBe('video/webm');
+    expect(res.headers['content-length']).toBe('1000');
+    expect(res.headers['accept-ranges']).toBe('bytes');
+    expect(res.headers['content-range']).toBeUndefined();
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+    expect(res.headers['cache-control']).toBe('private, no-store');
+    expect(res.headers['content-disposition']).toContain('inline');
+    expect(res.headers['content-disposition']).toContain('filename="clip.webm"');
+    expect(res.body.equals(VIDEO_BYTES)).toBe(true);
+  });
+
+  it('serves an MP4 original in full with video/mp4', async () => {
+    const { project, asset } = setupVideo('clip.mp4', 'video/mp4');
+
+    const res = await getOriginal(project, asset).expect(200);
+
+    expect(res.headers['content-type']).toBe('video/mp4');
+    expect(res.headers['accept-ranges']).toBe('bytes');
+    expect(res.body.equals(VIDEO_BYTES)).toBe(true);
+  });
+
+  it.each([
+    ['bounded', 'bytes=100-199', 100, 199],
+    ['open-ended', 'bytes=100-', 100, 999],
+    ['end past EOF clamps to EOF', 'bytes=900-5000', 900, 999],
+    ['suffix', 'bytes=-500', 500, 999],
+    ['suffix larger than the file', 'bytes=-5000', 0, 999],
+  ])('serves a %s range as 206 with the exact slice', async (_label, range, start, end) => {
+    const { project, asset } = setupVideo();
+
+    const res = await getOriginal(project, asset).set('Range', range).expect(206);
+
+    expect(res.headers['content-type']).toBe('video/webm');
+    expect(res.headers['content-range']).toBe(`bytes ${start}-${end}/1000`);
+    expect(res.headers['content-length']).toBe(String(end - start + 1));
+    expect(res.headers['accept-ranges']).toBe('bytes');
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
+    expect(res.headers['cache-control']).toBe('private, no-store');
+    expect(res.headers['content-disposition']).toContain('inline');
+    expect(res.body.equals(VIDEO_BYTES.subarray(start, end + 1))).toBe(true);
+  });
+
+  it.each(['bytes=1000-', 'bytes=5000-6000', 'bytes=-0'])(
+    'answers unsatisfiable %s with a bodiless 416',
+    async (range) => {
+      const { project, asset } = setupVideo();
+
+      const res = await getOriginal(project, asset).set('Range', range).expect(416);
+
+      expect(res.headers['content-range']).toBe('bytes */1000');
+      expect(res.headers['content-length']).toBe('0');
+      expect(res.headers['x-content-type-options']).toBe('nosniff');
+      expect(res.headers['cache-control']).toBe('private, no-store');
+      expect(res.body.length).toBe(0);
+    }
+  );
+
+  it.each([
+    ['multiple ranges', 'bytes=0-9,20-29'],
+    ['unsupported unit', 'items=0-9'],
+    ['malformed syntax', 'bytes=abc-def'],
+    ['empty range-spec', 'bytes=-'],
+    ['last-pos before first-pos', 'bytes=200-100'],
+  ])('ignores %s and serves the full 200 response', async (_label, range) => {
+    const { project, asset } = setupVideo();
+
+    const res = await getOriginal(project, asset).set('Range', range).expect(200);
+
+    expect(res.headers['content-range']).toBeUndefined();
+    expect(res.headers['content-length']).toBe('1000');
+    expect(res.headers['accept-ranges']).toBe('bytes');
+    expect(res.body.equals(VIDEO_BYTES)).toBe(true);
+  });
+
+  it('If-Range falls back to the full response (weak ETag is never a strong validator)', async () => {
+    const { project, asset } = setupVideo();
+    const first = await getOriginal(project, asset).expect(200);
+    expect(first.headers.etag).toMatch(/^W\//);
+
+    const res = await getOriginal(project, asset)
+      .set('Range', 'bytes=100-199')
+      .set('If-Range', first.headers.etag)
+      .expect(200);
+
+    expect(res.headers['content-range']).toBeUndefined();
+    expect(res.body.equals(VIDEO_BYTES)).toBe(true);
+  });
+
+  it('HEAD mirrors full, ranged, and unsatisfiable GET headers without a body', async () => {
+    const { project, asset } = setupVideo();
+    const url = `/projects/${project.id}/assets/${asset.id}/original`;
+
+    const full = await request(h.app).head(url).expect(200);
+    expect(full.headers['content-type']).toBe('video/webm');
+    expect(full.headers['content-length']).toBe('1000');
+    expect(full.headers['accept-ranges']).toBe('bytes');
+    expect(full.text ?? '').toBe('');
+
+    const ranged = await request(h.app).head(url).set('Range', 'bytes=100-199').expect(206);
+    expect(ranged.headers['content-range']).toBe('bytes 100-199/1000');
+    expect(ranged.headers['content-length']).toBe('100');
+    expect(ranged.text ?? '').toBe('');
+
+    const unsatisfiable = await request(h.app).head(url).set('Range', 'bytes=1000-').expect(416);
+    expect(unsatisfiable.headers['content-range']).toBe('bytes */1000');
+    expect(unsatisfiable.text ?? '').toBe('');
+  });
+
+  it.each([
+    ['clip.webm', 'video/mp4'],
+    ['clip.mp4', 'video/webm'],
+    ['clip.webm', 'application/octet-stream'],
+    ['clip.mp4', 'video/x-matroska'],
+    ['clip.mov', 'video/quicktime'],
+    ['clip.mkv', 'video/x-matroska'],
+    ['clip.avi', 'video/x-msvideo'],
+    ['clip.bin', 'video/webm'],
+  ])('%s recorded as %s is not an inline original (415, even with Range)', async (filename, mimeType) => {
+    const { project, asset } = setupVideo(filename, mimeType);
+
+    const res = await getOriginal(project, asset).set('Range', 'bytes=0-9').expect(415);
+
+    expect(res.headers['cache-control']).toBe('no-store');
+    expect(res.headers['content-range']).toBeUndefined();
+    expect(res.headers['accept-ranges']).toBeUndefined();
+  });
+
+  it('cross-project, missing, and on-disk-missing videos keep the existing 404 contract', async () => {
+    const { project: owner, asset, srcPath } = setupVideo();
+    const { project: other } = h.createProject('Other Video Project');
+
+    await request(h.app)
+      .get(`/projects/${other.id}/assets/${asset.id}/original`)
+      .set('Range', 'bytes=0-9')
+      .expect(404);
+    await request(h.app)
+      .get(`/projects/${owner.id}/assets/99999/original`)
+      .set('Range', 'bytes=0-9')
+      .expect(404);
+
+    fs.rmSync(srcPath);
+    await request(h.app)
+      .get(`/projects/${owner.id}/assets/${asset.id}/original`)
+      .set('Range', 'bytes=0-9')
+      .expect(404);
+  });
+
+  it('serving a video original never invokes derivative generation', async () => {
+    const { project, asset } = setupVideo();
+    const spies = ['getPreview', 'getThumbnail', 'ensureCurrentPreview']
+      .map((name) => vi.spyOn(h.previewService, name));
+
+    await getOriginal(project, asset).expect(200);
+    await getOriginal(project, asset).set('Range', 'bytes=0-9').expect(206);
+    await request(h.app).head(`/projects/${project.id}/assets/${asset.id}/original`).expect(200);
+
+    for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+    expect(resolvePublishedDir(h.previewRoot, project.id, asset.id)).toBeNull();
+    expect(h.previewService.getOriginalDescriptor(project.id, asset.id).previewable).toBe(false);
+  });
+
+  it('image originals ignore Range and keep their existing full-response headers', async () => {
+    const { project, absPath } = h.createProject('PNG Range Ignored');
+    const buf = await makePng(64, 48);
+    writeProjectFile(absPath, 'range.png', buf);
+    const asset = h.indexAsset(project, 'range.png');
+
+    const res = await request(h.app)
+      .get(`/projects/${project.id}/assets/${asset.id}/original`)
+      .set('Range', 'bytes=0-9')
+      .expect(200);
+
+    expect(res.headers['content-type']).toBe('image/png');
+    expect(res.headers['content-length']).toBe(String(buf.length));
+    expect(res.headers['content-range']).toBeUndefined();
+    expect(res.headers['accept-ranges']).toBeUndefined();
+    expect(res.headers['cache-control']).toBe('private, no-store');
+    expect(res.body.equals(buf)).toBe(true);
+  });
+
+  describe('descriptor lifecycle', () => {
+    function trackSourceDescriptors(srcPath) {
+      const originalOpenSync = fs.openSync;
+      const originalCloseSync = fs.closeSync;
+      const originalClose = fs.close;
+      const openFds = new Set();
+      const counts = { opened: 0, closed: 0 };
+      const recordClose = (fd) => {
+        if (openFds.delete(fd)) counts.closed++;
+      };
+      vi.spyOn(fs, 'openSync').mockImplementation(function openSync(file, ...args) {
+        const fd = originalOpenSync.call(this, file, ...args);
+        if (path.resolve(String(file)) === srcPath) {
+          counts.opened++;
+          openFds.add(fd);
+        }
+        return fd;
+      });
+      vi.spyOn(fs, 'closeSync').mockImplementation(function closeSync(fd) {
+        recordClose(fd);
+        return originalCloseSync.call(this, fd);
+      });
+      vi.spyOn(fs, 'close').mockImplementation(function close(fd, ...args) {
+        recordClose(fd);
+        return originalClose.call(this, fd, ...args);
+      });
+      return counts;
+    }
+
+    async function expectOpenedAndClosedOnce(counts) {
+      for (let i = 0; i < 50 && counts.closed < counts.opened; i++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(counts).toEqual({ opened: 1, closed: 1 });
+    }
+
+    it.each([
+      ['GET', 'bytes=100-199', 206],
+      ['GET', 'bytes=1000-', 416],
+      ['HEAD', null, 200],
+      ['HEAD', 'bytes=100-199', 206],
+      ['HEAD', 'bytes=1000-', 416],
+    ])('%s with Range %s (%i) opens and closes exactly one descriptor', async (method, range, status) => {
+      const { project, asset, srcPath } = setupVideo();
+      const counts = trackSourceDescriptors(path.resolve(srcPath));
+
+      let req = request(h.app)[method.toLowerCase()](
+        `/projects/${project.id}/assets/${asset.id}/original`
+      );
+      if (range) req = req.set('Range', range);
+      await req.expect(status);
+
+      await expectOpenedAndClosedOnce(counts);
+    });
+  });
+});

@@ -7878,6 +7878,138 @@ describe('release HTTP workflow', () => {
       expect(missingSection).not.toContain('src=""');
     });
 
+    // Cards carry one inert, metadata-only frame for intrinsic geometry: never controls or autoplay.
+    const expectInertVideoFrame = (card, src) => {
+      const frames = card.match(/<video\b[^>]*>/g) || [];
+      expect(frames).toHaveLength(1);
+      expect(frames[0]).toContain(`src="${src}"`);
+      expect(frames[0]).toContain('preload="metadata"');
+      expect(frames[0]).toContain('data-asset-video-frame');
+      expect(frames[0]).not.toMatch(/\scontrols|autoplay/);
+    };
+
+    it('renders selected supported videos as inert intrinsic-size frames on detail and managed release surfaces', async () => {
+      const fixture = await setupReleaseWithAssets();
+      const projectDir = getProjectDir(projectsRoot, fixture.projectId, 'candidate-discovery-test');
+      fs.writeFileSync(path.join(projectDir, 'clip.webm'), 'webm content');
+      await agent.post(`/projects/${fixture.projectId}/scan`)
+        .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+      const video = createAssetRepository(db).findByProjectId(Number(fixture.projectId))
+        .find((asset) => asset.filename === 'clip.webm');
+      expect(video).toMatchObject({ extension: 'webm', mime_type: 'video/webm' });
+
+      const candidates = await agent.get(`${fixture.releaseLocation}/assets`).expect(200);
+      const candidateCard = assetCard(candidates.text, video.id);
+      expect(candidateCard).toContain('data-asset-selectable-card');
+      expect(candidateCard).toContain('data-asset-video-placeholder');
+      expect(candidateCard).not.toMatch(/<img\b/);
+      expectInertVideoFrame(candidateCard, `/projects/${fixture.projectId}/assets/${video.id}/original`);
+
+      await agent.post(`${fixture.releaseLocation}/assets/add`)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send(`assetId=${video.id}`)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+      expect(getReleaseAssets(db, fixture.releaseId)
+        .map((row) => row.asset_id)).toContain(video.id);
+
+      const viewerUrl = `/projects/${fixture.projectId}/assets/${video.id}`;
+      for (const url of [
+        fixture.releaseLocation,
+        `${fixture.releaseLocation}?view=list`,
+        `${fixture.releaseLocation}/assets`,
+        `${fixture.releaseLocation}/assets?view=list`,
+      ]) {
+        const page = await agent.get(url).expect(200);
+        const card = assetCard(page.text, video.id);
+        expect(card, url).toContain('WEBM video');
+        expect(card, url).toMatch(new RegExp(`class="asset-(?:list-)?card-media-link asset-video-link" href="${viewerUrl}"`));
+        expect(card, url).not.toMatch(/<img\b/);
+        expectInertVideoFrame(card, `${viewerUrl}/original`);
+        expect(card, url).toContain(`data-asset-video-preview-trigger data-video-src="${viewerUrl}/original"`);
+        expect(page.text.match(/<dialog id="asset-video-preview-dialog"/g), url).toHaveLength(1);
+      }
+    });
+
+    it('keeps WebM/MP4 release role, order, removal, and grid/list parity with Project Assets', async () => {
+      const fixture = await setupReleaseWithAssets({ title: 'Video Release Parity', slug: 'video-release-parity' });
+      const projectDir = getProjectDir(projectsRoot, fixture.projectId, 'video-release-parity');
+      fs.writeFileSync(path.join(projectDir, 'clip.webm'), 'webm content');
+      fs.writeFileSync(path.join(projectDir, 'clip.mp4'), 'mp4 content');
+      await agent.post(`/projects/${fixture.projectId}/scan`)
+        .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+      const assets = createAssetRepository(db).findByProjectId(Number(fixture.projectId));
+      const webm = assets.find((asset) => asset.filename === 'clip.webm');
+      const mp4 = assets.find((asset) => asset.filename === 'clip.mp4');
+      expect(webm).toMatchObject({ mime_type: 'video/webm' });
+      expect(mp4).toMatchObject({ mime_type: 'video/mp4' });
+      const post = (url, body = '') => agent.post(url)
+        .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send(body)
+        .set('Content-Type', 'application/x-www-form-urlencoded')
+        .expect(302);
+
+      // Selection accepts both containers exactly like other present project assets.
+      await post(`${fixture.releaseLocation}/assets/add`, `assetId=${webm.id}`);
+      await post(`${fixture.releaseLocation}/assets/add`, `assetId=${mp4.id}`);
+      expect(getReleaseAssets(db, fixture.releaseId).map((row) => [row.asset_id, row.role]))
+        .toEqual([[expect.any(Number), 'primary'], [webm.id, 'attachment'], [mp4.id, 'attachment']]);
+
+      // Role and order are ordinary release metadata for videos.
+      await post(`${fixture.releaseLocation}/assets/${mp4.id}/role`, 'role=primary');
+      await post(`${fixture.releaseLocation}/assets/${mp4.id}/move-up`);
+      const rows = getReleaseAssets(db, fixture.releaseId);
+      expect(rows.slice(1).map((row) => [row.asset_id, row.role])).toEqual([[mp4.id, 'primary'], [webm.id, 'attachment']]);
+      // The release "primary" role never becomes the project primary image.
+      expect(app.locals.projectPrimaryImageService.getPrimaryImage(Number(fixture.projectId))).toBeFalsy();
+
+      const videoMedia = (card) => {
+        const link = card.match(/<a class="asset-(?:list-)?card-media-link asset-video-link"[^>]*>[\s\S]*?<\/a>/)?.[0] || '';
+        return {
+          href: link.match(/href="([^"?]*)/)?.[1] || null,
+          placeholder: link.match(/<span class="[^"]*asset-video-placeholder"[\s\S]*<\/span>/)?.[0] || null,
+        };
+      };
+      const mp4Row = rows.find((row) => row.asset_id === mp4.id);
+      for (const view of ['grid', 'list']) {
+        const releasePage = await agent.get(`${fixture.releaseLocation}?view=${view}`).expect(200);
+        const projectPage = await agent.get(`/projects/${fixture.projectId}/assets?view=${view}`).expect(200);
+        const releaseCard = assetCard(releasePage.text, mp4.id);
+        const projectCard = assetCard(projectPage.text, mp4.id);
+
+        expect(releaseCard, view).toContain('MP4 video');
+        expect(releaseCard, view).toContain('clip.mp4');
+        expect(releaseCard, view).toContain('<strong>Role</strong> Primary');
+        expect(releaseCard, view).toContain(`<strong>Order</strong> ${mp4Row.sort_order}`);
+        expect(releaseCard, view).not.toMatch(/<img\b/);
+        expectInertVideoFrame(releaseCard, `/projects/${fixture.projectId}/assets/${mp4.id}/original`);
+        // Release and Project Assets cards share the same video preview trigger.
+        expect(releaseCard, view).toContain('data-asset-video-preview-trigger');
+        expect(projectCard, view).toContain('data-asset-video-preview-trigger');
+        expect(videoMedia(releaseCard).placeholder, view).not.toBeNull();
+        expect(videoMedia(releaseCard), view).toEqual(videoMedia(projectCard));
+        expect(videoMedia(releaseCard).href).toBe(`/projects/${fixture.projectId}/assets/${mp4.id}`);
+        expect(assetCard(releasePage.text, webm.id), view).toContain('WEBM video');
+      }
+
+      // Removing one video leaves the other selection intact.
+      await post(`${fixture.releaseLocation}/assets/${webm.id}/remove-selected`);
+      expect(getReleaseAssets(db, fixture.releaseId).map((row) => row.asset_id)).not.toContain(webm.id);
+      expect(getReleaseAssets(db, fixture.releaseId).map((row) => row.asset_id)).toContain(mp4.id);
+
+      // A missing selected video keeps its release metadata and uses the shared missing state.
+      fs.rmSync(path.join(projectDir, 'clip.mp4'));
+      await agent.post(`/projects/${fixture.projectId}/scan`)
+        .send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+      for (const view of ['grid', 'list']) {
+        const card = assetCard((await agent.get(`${fixture.releaseLocation}?view=${view}`).expect(200)).text, mp4.id);
+        expect(card, view).toContain('Missing at last scan');
+        expect(card, view).toContain('<strong>Role</strong> Primary');
+        expect(card, view).not.toContain('data-asset-video-placeholder');
+        expect(card, view).not.toMatch(/<(?:img|video)\b/);
+      }
+    });
+
     it('published and archived detail cards remain read-only while preserving roles', async () => {
       for (const lifecycle of ['published', 'archived']) {
         const fixture = await setupReleaseWithAssets({

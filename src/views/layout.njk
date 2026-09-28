@@ -141,5 +141,7 @@
       {% block overlay %}{% endblock %}
     </div>
     {% include "partials/confirm-dialog.njk" %}
+    {# Pages with video cards opt in to the one shared video preview dialog. #}
+    {% if assetVideoPreview %}{% include "partials/asset-video-preview-dialog.njk" %}{% endif %}
   </body>
 </html>

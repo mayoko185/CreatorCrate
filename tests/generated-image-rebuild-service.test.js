@@ -33,6 +33,7 @@ function fixture(preview, options = {}) {
   insert.run(3, 1, 'missing.png', 'missing.png', 'png', 'image/png', 0);
   insert.run(4, 1, 'readme.txt', 'readme.txt', 'txt', 'text/plain', 1);
   for (const id of options.extraIds || []) insert.run(id, 1, `${id}.png`, `${id}.png`, 'png', 'image/png', 1);
+  for (const row of options.extraRows || []) insert.run(...row);
   const repository = createGeneratedImageRebuildRepository(db, createAppMetaRepository(db));
   let policy = base;
   const imageSettings = {
@@ -128,6 +129,35 @@ describe('generated-image rebuild', () => {
     expect(repository.bounds()).toEqual({ total: 2, upperBound: 2 });
     expect(repository.page(0, 2, 1).map((asset) => asset.id)).toEqual([1]);
     expect(repository.page(1, 2, 1).map((asset) => asset.id)).toEqual([2]);
+  });
+
+  it('never enumerates or dispatches supported WebM/MP4 videos while still rebuilding images', async () => {
+    const videoRows = [
+      [10, 1, 'clip.webm', 'clip.webm', 'webm', 'video/webm', 1],
+      [11, 1, 'clip.mp4', 'clip.mp4', 'mp4', 'video/mp4', 1],
+    ];
+    const calls = [];
+    const { service, repository } = fixture(async (_projectId, assetId) => {
+      calls.push(assetId);
+      return { cacheState: 'regenerated' };
+    }, { extraRows: videoRows });
+    expect(repository.bounds()).toEqual({ total: 2, upperBound: 2 });
+    expect(repository.page(0, 11, 32).map((asset) => asset.id)).toEqual([1, 2]);
+    service.queueManual();
+    service.signal();
+    await service.waitForIdle();
+    expect(calls).toEqual([1, 2]);
+    expect(service.readStatus()).toMatchObject({ phase: 'completed', attempted: 2, succeeded: 2, failed: 0 });
+
+    const videoOnly = fixture(async (_projectId, assetId) => {
+      throw new Error(`Video asset ${assetId} reached the image rebuild.`);
+    }, { extraRows: videoRows });
+    videoOnly.db.prepare("DELETE FROM assets WHERE extension NOT IN ('webm', 'mp4')").run();
+    expect(videoOnly.repository.bounds()).toEqual({ total: 0, upperBound: 0 });
+    videoOnly.service.queueManual();
+    videoOnly.service.signal();
+    await videoOnly.service.waitForIdle();
+    expect(videoOnly.service.readStatus()).toMatchObject({ phase: 'completed', total: 0, attempted: 0, failed: 0 });
   });
 
   it('queues effective changes and processes one asset at a time through the target API', async () => {
