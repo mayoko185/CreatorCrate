@@ -46,7 +46,7 @@ function buildReleaseInsertValues(input) {
  * overdue, upcoming, and missing-planned-date queries so the active-set
  * definition stays in one place.
  */
-const ACTIVE_UNPUBLISHED = `releases.archived_at IS NULL AND releases.published_date IS NULL`;
+export const ACTIVE_UNPUBLISHED = `releases.archived_at IS NULL AND releases.published_date IS NULL`;
 
 /**
  * Shared EXISTS fragment: release belongs to a project that is not archived.
@@ -58,7 +58,7 @@ const ACTIVE_UNPUBLISHED = `releases.archived_at IS NULL AND releases.published_
  * The fragment references `releases.project_id` and assumes the implicit
  * from-table of the surrounding query is `releases`.
  */
-const ACTIVE_PARENT_PROJECT = `EXISTS (
+export const ACTIVE_PARENT_PROJECT = `EXISTS (
   SELECT 1 FROM projects
   WHERE projects.id = releases.project_id
     AND projects.archived_at IS NULL

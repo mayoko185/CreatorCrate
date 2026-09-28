@@ -1062,6 +1062,31 @@ describe('Reusable app dialog enhancement', () => {
     expect(date.value).toBe('2026-09-24');
   });
 
+  it('resets a rejected Update project status choice to Keep current status after dismissal', () => {
+    const page = makeDialogPage();
+    const field = makeElement('div');
+    const dropdown = addStandardDropdown(field, null, 'projectStatus', [
+      { value: '', label: 'Keep current status' },
+      { value: 'ready', label: 'Ready' },
+    ], 'ready');
+    const radios = dropdown.panel.querySelectorAll('input[type="radio"]');
+    radios.forEach((radio) => radio.setAttribute('name', 'projectStatus'));
+    dropdown.summary.querySelector('[data-cc-dropdown-summary-current]').textContent = 'Ready';
+    page.form.appendChild(field);
+    markOrdinaryDialogForm(page);
+    page.form.setAttribute('data-dialog-reset-values', JSON.stringify({ projectStatus: '' }));
+    enhanceDropdowns(page.document);
+    enhanceAppDialogs(page.document);
+
+    expect(radios.map((radio) => radio.checked)).toEqual([false, true]);
+    page.close.dispatch('click');
+    openAppDialogById(page.document, page.dialog.id, page.trigger);
+
+    expect(radios.map((radio) => radio.checked)).toEqual([true, false]);
+    expect(dropdown.summary.querySelector('[data-cc-dropdown-summary-current]').textContent)
+      .toBe('Keep current status');
+  });
+
   it('restores persisted Edit values after a rejected rerender', () => {
     const page = makeDialogPage();
     const title = makeElement('input', { name: 'title', value: 'Rejected edit' });

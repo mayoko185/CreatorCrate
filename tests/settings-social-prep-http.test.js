@@ -54,7 +54,7 @@ describe('settings — Social Preparation HTTP', () => {
     expect(res.text).toContain('<h1 class="app-section-title">Settings — Social Preparation</h1>');
     expect(settingsNavLabels(res.text)).toEqual([
       'Overview', 'Security', 'Backups', 'Logs', 'Defaults', 'NSFW Filter',
-      'Social Preparation', 'Asset Categories', 'Tags', 'Open locally',
+      'Social Preparation', 'Release Notifications', 'Asset Categories', 'Tags', 'Open locally',
     ]);
     expect(res.text).toContain('Social Preparation is disabled unless you explicitly opt in.');
     expect(res.text).toContain('This setting does not prepare, publish, or send anything.');

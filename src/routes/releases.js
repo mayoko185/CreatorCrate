@@ -16,6 +16,8 @@ import { buildSocialContent } from '../services/social-content-builder.js';
 import { buildReleaseSocialPrepPresentation } from '../services/release-social-prep-presenter.js';
 import { SOCIAL_PREP_SUPPORTED_PLATFORMS } from '../services/social-prep-settings-service.js';
 import { isProjectArchived } from '../services/project-state.js';
+import { presentProjectOptionCatalogue } from '../services/project-option-presenter.js';
+import { ARCHIVED_PROJECT_STATUS } from '../data/project-repository.js';
 import { isSafeRedirectTarget } from '../middleware/auth.js';
 import {
   buildPageDefaultsDialogModel,
@@ -517,9 +519,10 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
       return next(createNotFound());
     }
     const publishedDate = submittedDate || existingRelease.published_date || null;
+    const submittedProjectStatus = req.body.projectStatus ?? '';
 
     try {
-      releaseService.publishRelease(id, publishedDate);
+      releaseService.publishRelease(id, publishedDate, { projectStatus: submittedProjectStatus });
 
       let socialPreparationAvailable = false;
       const selectedPlatforms = req.app.locals.socialPrepRepository.listPlatformsByReleaseId(id)
@@ -587,6 +590,7 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
           publishDialogOpen: true,
           publishDialogForm: {
             prefillDate,
+            projectStatus: submittedProjectStatus,
             errors,
           },
         }));
@@ -1470,6 +1474,35 @@ function buildSocialPrepPublishModel(req, release, releaseAssets, selectedPlatfo
   };
 }
 
+const KEEP_CURRENT_PROJECT_STATUS_OPTION = Object.freeze({ value: '', label: 'Keep current status' });
+
+/**
+ * Review & Publish Project status model: the persisted status (read-only)
+ * plus the optional target selector sourced from the live editable Project
+ * status catalogue, the same one the Project edit form uses.
+ */
+function buildPublishProjectStatusModel(req, project, submittedStatus) {
+  const statusCatalogue = presentProjectOptionCatalogue(
+    getReleasePageDefaultsService(req, 'new_project').getOptionCatalogue('new_project', 'status'),
+    'status',
+  );
+  const options = [
+    KEEP_CURRENT_PROJECT_STATUS_OPTION,
+    ...statusCatalogue
+      .filter(({ value }) => value !== ARCHIVED_PROJECT_STATUS)
+      .map(({ value, label }) => ({ value, label: label || value })),
+  ];
+  const selectedOption = options.find(({ value }) => typeof submittedStatus === 'string' && value === submittedStatus)
+    || KEEP_CURRENT_PROJECT_STATUS_OPTION;
+  return {
+    current: project?.status || null,
+    currentOption: statusCatalogue.find(({ value }) => value === project?.status) || null,
+    options,
+    selected: selectedOption.value,
+    summary: selectedOption.label,
+  };
+}
+
 function buildReleaseDetailRenderModel({
   appName,
   releaseService,
@@ -1513,11 +1546,12 @@ function buildReleaseDetailRenderModel({
     prefillDate: release.published_date || getLocalTodayIso(),
     errors: {},
   };
-  if (publishDialogForm) {
-    resolvedPublishDialogForm.resetValues = {
-      publishedDate: release.published_date || getLocalTodayIso(),
-    };
-  }
+  // Always carry reset values so an abandoned Update project status choice
+  // (and the custom dropdown summary) returns to Keep current status on close.
+  resolvedPublishDialogForm.resetValues = {
+    publishedDate: release.published_date || getLocalTodayIso(),
+    projectStatus: '',
+  };
   const socialPreparation = buildReleaseSocialPrepPresentation(
     req.app.locals.socialPrepRepository.listPlatformsByReleaseId(release.id),
     req.app.locals.socialPrepSettingsService.getSettings(),
@@ -1556,6 +1590,9 @@ function buildReleaseDetailRenderModel({
     platformChoices: getReleasePlatformChoices(req, savedPlatforms),
     publishDialogOpen: publishAvailable && !resolvedEditDialogOpen && (publishDialogOpen || req?.query?.publish === '1'),
     publishDialogForm: resolvedPublishDialogForm,
+    publishProjectStatus: publishAvailable
+      ? buildPublishProjectStatusModel(req, project, resolvedPublishDialogForm.projectStatus)
+      : null,
     socialPrepPublish: publishAvailable ? buildSocialPrepPublishModel(req, release, selectedAssets, savedPlatforms) : null,
     socialPreparation,
   };

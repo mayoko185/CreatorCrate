@@ -21,6 +21,7 @@ const env = nunjucks.configure(VIEWS_DIR, { autoescape: true, noCache: true });
 // the contract that this test is meant to protect.
 const KNOWN_ICON_KEYS = [
   'assets',
+  'bell',
   'boxes',
   'calendar',
   'chevron-left',

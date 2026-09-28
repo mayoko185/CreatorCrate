@@ -4,6 +4,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 import { openDatabase, closeDatabase, runMigrations } from '../db.js';
 import { resetGeneratedImagePublicationsForRestore } from '../data/generated-image-publication-lifecycle-repository.js';
+import { disableReleaseNotificationsForRestore } from './release-notification-restore.js';
 import {
   resolveBackupDir,
   resolveBackupFile,
@@ -440,7 +441,10 @@ export function createBackupService({
    * resetGeneratedImagePublicationsForRestore). The restored database is
    * thereby marked for regeneration, never for the legacy-cache import, and
    * can never be trusted with publication rows describing whatever the
-   * current filesystem cache holds. The staged file is returned to a single
+   * current filesystem cache holds. Release notifications in the restored
+   * copy are saved disabled and its unsent deliveries cancelled, so an older
+   * notification ledger never replays (see release-notification-restore.js).
+   * The staged file is returned to a single
    * rollback-journal file (WAL checkpointed, sidecars removed) and fsynced.
    * Generated cache directories are not touched.
    */
@@ -449,6 +453,7 @@ export function createBackupService({
     try {
       runMigrations(staged, migrationsDir);
       resetGeneratedImagePublicationsForRestore(staged, { now });
+      disableReleaseNotificationsForRestore(staged, { now });
       staged.pragma('journal_mode = DELETE');
     } finally {
       closeDatabase(staged);

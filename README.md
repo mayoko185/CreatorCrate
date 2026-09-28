@@ -14,6 +14,7 @@ CreatorCrate is a self-hosted workspace for one creator to organize art projects
 - Build releases from project assets, choose asset roles and ordering, publish completed work, and view releases on a calendar.
 - Protect a self-hosted instance with optional single-operator authentication, server-side sessions, CSRF protection, security headers, and login throttling.
 - Create, retain, restore, and delete managed SQLite backups from Settings.
+- Send server-driven release reminders by Email, ntfy, Gotify, or Webhook (see [Release Notifications](#release-notifications)).
 
 In Notes, click a chapter title or its arrow in **Book contents** to expand or collapse its Pages. Page links open their Pages. New/Edit Page dialogs start with their outer **Book contents** disclosure collapsed; use its compact Expand/Collapse tab to reveal the polished navigator, which has no **View Chapter** links.
 
@@ -117,6 +118,134 @@ AUTO_SCAN_INTERVAL_MINUTES=60
 ```
 
 `TZ` is also accepted by the Compose service and defaults to `UTC`. If you need the optional auth, session, backup, or automatic-scanning settings inside Docker, add them explicitly to the service environment.
+
+### Release Notifications
+
+Release Notifications are server-driven. The CreatorCrate server detects due releases and delivers notifications itself, so the browser does not need to stay open, but CreatorCrate must be running for detection and delivery to happen.
+
+Configuration is split in two:
+
+- **Settings > Release Notifications** turns notifications on, chooses the enabled channels, sets the timing rules and date-only release time, holds the Email recipient address, and offers **Send test** for each channel.
+- **Deployment environment variables** hold every transport credential and endpoint. They are never stored in the database. Settings shows only sanitized summaries, such as the SMTP host, port, security mode, and sender; the ntfy, Gotify, and Webhook origins (scheme, host, and port); and whether credentials are configured. Secret values (the SMTP password and access, application, or bearer tokens) and full secret-bearing URL paths or queries are never shown. A channel whose variables are missing or invalid shows as **Not ready** in Settings and does not send.
+
+All variables below are optional. The Compose file already forwards each of them from `.env`. They are read only at startup. With Docker Compose, apply changes by recreating the container with `docker compose up -d`; `docker compose restart` keeps the old environment. When running directly (for example `pnpm start`), restart the process.
+
+#### Shared
+
+```dotenv
+RELEASE_NOTIFICATIONS_BASE_URL=
+```
+
+The externally reachable CreatorCrate URL, for example `https://creatorcrate.example.com`. It is used to put Release links into external notifications. It must be `http` or `https` without credentials, a query string, or a fragment. When it is unset or invalid, notifications are sent without links. CreatorCrate never infers this URL from request headers.
+
+#### Email (SMTP)
+
+```dotenv
+RELEASE_NOTIFICATIONS_SMTP_HOST=
+RELEASE_NOTIFICATIONS_SMTP_PORT=
+RELEASE_NOTIFICATIONS_SMTP_SECURITY=
+RELEASE_NOTIFICATIONS_SMTP_USERNAME=
+RELEASE_NOTIFICATIONS_SMTP_PASSWORD=
+RELEASE_NOTIFICATIONS_SMTP_FROM=
+```
+
+| `SMTP_SECURITY` | Behavior | Default port |
+| --- | --- | --- |
+| `starttls` (default when unset) | Connects in plain text and requires a STARTTLS upgrade; it never falls back to an unencrypted session | `587` |
+| `tls` | Implicit TLS from the start of the connection | `465` |
+| `plain` | No TLS; only for a trusted local relay | None: `SMTP_PORT` is required |
+
+`SMTP_USERNAME` and `SMTP_PASSWORD` must be set together or both left unset (for an unauthenticated relay); setting only one leaves Email not ready. `SMTP_FROM` is the sender address. The recipient address is not an environment variable; enter it in **Settings > Release Notifications**. Many mail providers require an application password or an SMTP-specific credential instead of your normal account password. CreatorCrate supports only username/password SMTP authentication, not OAuth.
+
+#### ntfy
+
+```dotenv
+RELEASE_NOTIFICATIONS_NTFY_URL=
+RELEASE_NOTIFICATIONS_NTFY_TOPIC=
+RELEASE_NOTIFICATIONS_NTFY_TOKEN=
+```
+
+Use the hosted service (`https://ntfy.sh`) or a self-hosted ntfy server URL, plus a topic name. The token is optional. Leave it unset when the server permits anonymous publishing to that topic; when set, it is sent as a Bearer access token. Subscribe to the same topic in your ntfy client to receive notifications.
+
+#### Gotify
+
+```dotenv
+RELEASE_NOTIFICATIONS_GOTIFY_URL=
+RELEASE_NOTIFICATIONS_GOTIFY_TOKEN=
+```
+
+Set the Gotify server URL and a Gotify **application** token (create an application in Gotify for CreatorCrate). Messages arrive through your Gotify clients.
+
+#### Webhook
+
+```dotenv
+RELEASE_NOTIFICATIONS_WEBHOOK_URL=
+RELEASE_NOTIFICATIONS_WEBHOOK_TOKEN=
+```
+
+CreatorCrate sends a fixed JSON contract to the configured URL with an HTTP `POST`. Treat the URL as a secret, because it may embed a signature or path secret. The token is optional; when set, it is sent as `Authorization: Bearer <token>`. CreatorCrate does not support templates or custom headers. Your receiver or automation decides what action to take for each event.
+
+Request:
+
+```text
+POST <RELEASE_NOTIFICATIONS_WEBHOOK_URL>
+Content-Type: application/json
+Idempotency-Key: <deliveryId>
+Authorization: Bearer <token>   # only when RELEASE_NOTIFICATIONS_WEBHOOK_TOKEN is set
+```
+
+Release event body (`schemaVersion` 1):
+
+```json
+{
+  "schemaVersion": 1,
+  "eventId": "2b0c6f4e-5a0e-4a53-9a57-2f1d0c7e9b11",
+  "deliveryId": "8d3f1a27-6c4b-4f0e-b1d2-93a7e5c4f608",
+  "type": "release.scheduled",
+  "createdAt": "2026-10-01T14:00:03.120Z",
+  "dueAt": "2026-10-01T14:00:00.000Z",
+  "release": {
+    "id": 42,
+    "title": "October sketchbook",
+    "url": "https://creatorcrate.example.com/releases/42"
+  },
+  "project": {
+    "id": 17,
+    "title": "Sketchbook 2026"
+  },
+  "schedule": {
+    "plannedDate": "2026-10-01",
+    "plannedTime": null,
+    "effectiveTime": "09:00",
+    "usedDefaultTime": true,
+    "timeZone": "America/Chicago",
+    "scheduledAt": "2026-10-01T14:00:00.000Z"
+  }
+}
+```
+
+- `release.url` is `null` when `RELEASE_NOTIFICATIONS_BASE_URL` is not configured.
+- `schedule.plannedTime` is `null` for date-only releases. In that case `usedDefaultTime` is `true` and `effectiveTime` is the date-only release time from Settings.
+- Timestamps (`createdAt`, `dueAt`, `scheduledAt`) are UTC ISO-8601 instants. `plannedDate`, `plannedTime`, and `effectiveTime` are local values in `timeZone`.
+
+Event `type` values:
+
+| Type | Meaning |
+| --- | --- |
+| `release.advance` | Advance reminder before the scheduled time |
+| `release.scheduled` | The release reached its scheduled time |
+| `release.overdue` | The release is still unpublished after the grace period |
+| `release.overdue_repeat` | Repeated overdue reminder |
+| `notification.test` | Sent by **Send test** in Settings |
+
+A `notification.test` body has the same top-level fields, with `dueAt`, `release`, `project`, and `schedule` all set to `null`.
+
+Delivery and idempotency:
+
+- `eventId` identifies the logical CreatorCrate notification occurrence, which is shared by every channel it is sent to. `deliveryId` identifies this Webhook delivery of that occurrence.
+- Retries reuse the same `eventId`, `deliveryId`, and body, including `createdAt`. The `Idempotency-Key` header carries the `deliveryId`.
+- CreatorCrate does not assume that your receiver honors `Idempotency-Key`. Consumers that need exactly-once handling should deduplicate on `deliveryId` (or on `eventId` across channels).
+- Any `2xx` response counts as accepted. `408`, `429`, and `5xx` responses are retried later; for `429` and `5xx`, a valid `Retry-After` header sets the retry delay (`408` uses the normal retry schedule). Redirects are not followed, and other responses fail the delivery without a retry.
 
 ## Data and workflows
 

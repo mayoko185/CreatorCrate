@@ -96,6 +96,7 @@ describe('settings — NSFW Filter HTTP', () => {
       'Defaults',
       'NSFW Filter',
       'Social Preparation',
+      'Release Notifications',
       'Asset Categories',
       'Tags',
       'Open locally',

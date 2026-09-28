@@ -27,6 +27,16 @@ import { createNotesRouter } from './routes/notes.js';
 import { createManagedMediaRouter } from './routes/managed-media.js';
 import { createMediaRouter } from './routes/media.js';
 import { createSettingsRouter } from './routes/settings.js';
+import {
+  createReleaseNotificationSettingsRouter,
+  RELEASE_NOTIFICATION_SETTINGS_PATH,
+} from './routes/release-notification-settings.js';
+import { createReleaseNotificationService } from './services/release-notification-service.js';
+import { createReleaseNotificationRecentResultService } from './services/release-notification-recent-result-service.js';
+import {
+  createReleaseNotificationRuntime,
+  createReleaseUrlBuilder,
+} from './services/release-notification-runtime.js';
 import { createDownloadsRouter } from './routes/downloads.js';
 import { createProjectService } from './services/project-service.js';
 import { createProjectDirectoryOwnershipRepository } from './data/project-directory-ownership-repository.js';
@@ -313,6 +323,33 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   applicationLogger.prune();
   app.locals.applicationLogger = applicationLogger;
   app.locals.applicationLogRepository = applicationLogRepository;
+
+  // Release notifications: the WP1 core and the recent-result store are bound
+  // to this graph's database. The runtime (transport configuration, lanes,
+  // Send Test, scheduled cycles) outlives graph rebuilds and is supplied by
+  // the application context; a standalone app gets an unstarted one bound to
+  // this graph so the Settings page still works.
+  const releaseNotificationService = opts.releaseNotificationService || createReleaseNotificationService({
+    db,
+    releaseUrlForId: createReleaseUrlBuilder(opts.releaseNotifications?.baseUrl),
+  });
+  const releaseNotificationRecentResultService = opts.releaseNotificationRecentResultService
+    || createReleaseNotificationRecentResultService({ appMetaRepository });
+  const releaseNotificationRuntime = opts.releaseNotificationRuntime || createReleaseNotificationRuntime({
+    transportConfig: opts.releaseNotifications,
+    applicationLogger,
+    getServices: () => ({
+      releaseNotificationService,
+      recentResultService: releaseNotificationRecentResultService,
+    }),
+  });
+  app.locals.releaseNotificationService = releaseNotificationService;
+  app.locals.releaseNotificationRecentResultService = releaseNotificationRecentResultService;
+  // WP1 revalidates at claim and send time; this only cancels stale work
+  // promptly after a release/project mutation. It never throws.
+  const onReleaseNotificationStateChanged = (releaseId = null) => {
+    releaseNotificationRuntime.invalidateStale(releaseNotificationService, releaseId);
+  };
   const assetCategoryRepository = opts.assetCategoryRepository || createAssetCategoryRepository(db);
   const assetCategoryService = opts.assetCategoryService || createAssetCategoryService(assetCategoryRepository);
   const assetBrowserPreferenceRepository =
@@ -407,6 +444,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     projectRepository,
     tagRepository,
     projectDirectoryOwnershipRepository,
+    onReleaseNotificationStateChanged,
   });
   app.locals.projectService = projectService;
 
@@ -782,7 +820,8 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   app.locals.bookService = bookService;
 
   const releaseService = opts.releaseService || createReleaseService({ db, applicationLogger, socialPrepSettingsService,
-    projectImageSettingsService: app.locals.projectImageSettingsService });
+    projectImageSettingsService: app.locals.projectImageSettingsService, onReleaseNotificationStateChanged,
+    projectService });
   const socialPrepRepository = opts.socialPrepRepository || createSocialPrepRepository(db);
   app.locals.socialPrepRepository = socialPrepRepository;
   const socialPrepService = opts.socialPrepService || createSocialPrepService({
@@ -1122,6 +1161,14 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     tagRepository,
     nsfwFilterSettingsService,
     projectImageSettingsService: app.locals.projectImageSettingsService,
+  }));
+
+  app.use(RELEASE_NOTIFICATION_SETTINGS_PATH, createReleaseNotificationSettingsRouter({
+    appName,
+    releaseNotificationService,
+    recentResultService: releaseNotificationRecentResultService,
+    releaseNotificationRuntime,
+    applicationLogger,
   }));
 
   app.use('/settings', createSettingsRouter({

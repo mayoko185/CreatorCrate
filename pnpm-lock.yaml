@@ -32,6 +32,9 @@ importers:
       markdown-it:
         specifier: ^15.0.0
         version: 15.0.0
+      nodemailer:
+        specifier: 10.0.10
+        version: 10.0.10
       nunjucks:
         specifier: ^3.2.4
         version: 3.2.4
@@ -852,6 +855,10 @@ packages:
   node-addon-api@8.9.1:
     resolution: {integrity: sha512-4eUQWVPCUUUiBjLnHS3cXWeC6ryoPUc0U3rP7IuzapoGbzMqd/r6KKO0clr0b+snQhsrueFEhCZDdK+LK7hxKg==}
     engines: {node: ^18 || ^20 || >= 21}
+
+  nodemailer@10.0.10:
+    resolution: {integrity: sha512-He9XskOFms62SyAKkLu8CcGcYHAo+BSHSsORI8s4PJH8qZgZY4L4lDfvyN0twvmbpyG+eGrxpyBlskj9d9rJ8A==}
+    engines: {node: '>=20.0.0'}
 
   nunjucks@3.2.4:
     resolution: {integrity: sha512-26XRV6BhkgK0VOxfbU5cQI+ICFUtMLixv1noZn1tGU38kQH5A5nmmbk/O45xdyBhD1esk47nKrY0mvQpZIhRjQ==}
@@ -1853,6 +1860,8 @@ snapshots:
   negotiator@0.6.3: {}
 
   node-addon-api@8.9.1: {}
+
+  nodemailer@10.0.10: {}
 
   nunjucks@3.2.4:
     dependencies:

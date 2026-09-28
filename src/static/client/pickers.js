@@ -280,6 +280,25 @@ function findTimePickerParts(field) {
   return { input, trigger, panel };
 }
 
+// Every enhanced time picker, across all enhanceTimePickers() scopes. The one
+// document-level listener pair reads this registry at event time, so it always
+// sees the current pickers; states whose field left the DOM (for example after
+// an autosave region replacement) are pruned and never acted on.
+const timePickerStates = new Set();
+const timePickerStateByField = new WeakMap();
+const timePickerDocuments = new WeakSet();
+
+function pruneDetachedTimePickerStates() {
+  for (const state of timePickerStates) {
+    if (state.field.isConnected === false) timePickerStates.delete(state);
+  }
+}
+
+function liveTimePickerStates() {
+  pruneDetachedTimePickerStates();
+  return Array.from(timePickerStates);
+}
+
 function timePickerState(field) {
   return {
     field,
@@ -536,9 +555,9 @@ function closeTimePicker(state, restoreFocus = false) {
   }
 }
 
-function openTimePicker(state, allStates) {
+function openTimePicker(state) {
   if (state.open) return;
-  for (const other of allStates) {
+  for (const other of liveTimePickerStates()) {
     if (other !== state) closeTimePicker(other);
   }
   renderTimePicker(state);
@@ -555,18 +574,18 @@ function openTimePicker(state, allStates) {
   selectedOptions[0]?.focus?.();
 }
 
-function bindTimePickerState(state, allStates) {
+function bindTimePickerState(state) {
   if (!state.trigger || !state.panel || !state.input) return;
 
   const open = (event) => {
     event?.preventDefault?.();
-    if (!state.open) openTimePicker(state, allStates);
+    if (!state.open) openTimePicker(state);
   };
 
   state.trigger.addEventListener('click', (event) => {
     event.preventDefault?.();
     if (state.open) closeTimePicker(state, true);
-    else openTimePicker(state, allStates);
+    else openTimePicker(state);
   });
   state.input.addEventListener('click', open);
   state.panel.addEventListener('click', (event) => event.stopPropagation());
@@ -579,39 +598,48 @@ function bindTimePickerState(state, allStates) {
   });
 }
 
+// Registered once per document, however often pickers are (re-)enhanced.
+function bindTimePickerDocument(doc) {
+  if (!doc || timePickerDocuments.has(doc)) return;
+  timePickerDocuments.add(doc);
+
+  doc.addEventListener?.('click', (event) => {
+    const target = event.target;
+    for (const active of liveTimePickerStates().filter((state) => state.open)) {
+      if (target && (active.field.contains(target) || active.panel.contains(target))) continue;
+      closeTimePicker(active);
+    }
+  });
+
+  doc.addEventListener?.('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    for (const active of liveTimePickerStates().filter((state) => state.open)) {
+      if (active.panel.contains(doc.activeElement)) continue;
+      event.preventDefault?.();
+      closeTimePicker(active, true);
+    }
+  });
+}
+
 export function enhanceTimePickers(scope = globalThis.document) {
   if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
 
   const fields = Array.from(scope.querySelectorAll(TIME_PICKER_FIELD_SELECTOR) || []);
   if (fields.length === 0) return 0;
 
-  const states = fields.map(timePickerState);
-  states.forEach((state) => {
-    if (isEnhancementBound(state.field, TIME_PICKER_BOUND_KEY)) return;
-    markEnhancementBound(state.field, TIME_PICKER_BOUND_KEY);
-    bindTimePickerState(state, states);
+  // Drop pickers removed by earlier region replacements now, so the registry
+  // stays bounded even when no click, Escape, or open happens between saves.
+  pruneDetachedTimePickerStates();
+  fields.forEach((field) => {
+    if (isEnhancementBound(field, TIME_PICKER_BOUND_KEY) && timePickerStateByField.has(field)) return;
+    markEnhancementBound(field, TIME_PICKER_BOUND_KEY);
+    const state = timePickerState(field);
+    timePickerStateByField.set(field, state);
+    timePickerStates.add(state);
+    bindTimePickerState(state);
   });
 
-  if (!isEnhancementBound(scope, 'timePickerDocumentBound')) {
-    markEnhancementBound(scope, 'timePickerDocumentBound');
-
-    document.addEventListener?.('click', (event) => {
-      const target = event.target;
-      const active = states.find((state) => state.open);
-      if (!active) return;
-      if (target && (active.field.contains(target) || active.panel.contains(target))) return;
-      closeTimePicker(active);
-    });
-
-    document.addEventListener?.('keydown', (event) => {
-      if (event.key !== 'Escape') return;
-      const active = states.find((state) => state.open);
-      if (!active) return;
-      if (active.panel.contains(document.activeElement)) return;
-      event.preventDefault?.();
-      closeTimePicker(active, true);
-    });
-  }
+  bindTimePickerDocument(globalThis.document);
 
   return fields.length;
 }

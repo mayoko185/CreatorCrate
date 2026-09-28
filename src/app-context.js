@@ -6,6 +6,7 @@ import { createProjectOperationCoordinator } from './services/project-operation-
 import { createProcessingJobService } from './services/processing-job-service.js';
 import { createProcessingConcurrencyService } from './services/processing-concurrency-service.js';
 import { createApplicationLogger } from './services/application-logger.js';
+import { createReleaseNotificationRuntime } from './services/release-notification-runtime.js';
 
 /**
  * Phase 11.2 live-restore fix — the mutable application context that owns
@@ -85,6 +86,22 @@ export function createApplicationContext(
   const processingConcurrencyService = activeAppOpts.processingConcurrencyService
     || createProcessingConcurrencyService({ concurrency: activeAppOpts.processingConcurrency });
 
+  // Release-notification runtime: transport configuration, the four channel
+  // lanes, Send Test, and scheduled cycles live for the whole process. Its
+  // database-bound collaborators are always resolved from the currently
+  // published graph, never cached, so a live restore cannot leave it holding
+  // the previous database's core or recent-result store.
+  let current = null;
+  const releaseNotificationRuntime = activeAppOpts.releaseNotificationRuntime
+    || createReleaseNotificationRuntime({
+      transportConfig: activeAppOpts.releaseNotifications,
+      applicationLogger,
+      getServices: () => ({
+        releaseNotificationService: current?.app.locals?.releaseNotificationService,
+        recentResultService: current?.app.locals?.releaseNotificationRecentResultService,
+      }),
+    });
+
   function assertNoActiveProcessingJobs() {
     if (processingJobService.hasActiveJobs()) {
       throw new Error('Cannot replace the application context while processing jobs are active.');
@@ -100,6 +117,7 @@ export function createApplicationContext(
         projectOperationCoordinator,
         processingJobService,
         processingConcurrencyService,
+        releaseNotificationRuntime,
         startGeneratedImageRebuild: false,
         applicationLogger,
         ...(applicationLogRepository ? { applicationLogRepository } : {}),
@@ -117,7 +135,9 @@ export function createApplicationContext(
   let applicationLogRepository = initialApp.locals?.applicationLogRepository
     || applicationLogger.getRepository?.()
     || null;
-  let current = { db: initialDb, app: initialApp };
+  current = { db: initialDb, app: initialApp };
+  // Establish current destination identities before any delivery can begin.
+  releaseNotificationRuntime.reconcile();
   // PM-1C1: project ownership adoption is prepared first (lifecycle record)
   // and its background pass signalled before any other background work, so
   // existing unbound projects start binding right after migrations. The
@@ -139,14 +159,17 @@ export function createApplicationContext(
   initialApp.locals?.generatedImagePublicationLifecycle?.signal();
 
   // Background generated-image work (rebuild runner and publication
-  // lifecycle runner) and project ownership adoption of one graph, paused
-  // together for replacement.
+  // lifecycle runner), project ownership adoption of one graph, and release
+  // notification admission (scheduled cycles, Send Test, lane work), paused
+  // together for replacement. Releasing the notification pause reconciles
+  // destinations against whichever graph is then current.
   function pauseGeneratedImageWork(app) {
     const pauses = [
       app.locals?.generatedImageRebuildService?.pauseForMaintenance(),
       app.locals?.generatedImagePublicationLifecycle?.pauseForMaintenance(),
       app.locals?.projectOwnershipAdoption?.pauseForMaintenance(),
       app.locals?.legacyManifestCleanup?.pauseForMaintenance(),
+      releaseNotificationRuntime.pauseForMaintenance(),
     ].filter(Boolean);
     return {
       waitForIdle: () => Promise.all(pauses.map((pause) => pause.waitForIdle())),
@@ -312,6 +335,9 @@ export function createApplicationContext(
     },
     get legacyManifestCleanup() {
       return current.app.locals?.legacyManifestCleanup;
+    },
+    get releaseNotificationRuntime() {
+      return releaseNotificationRuntime;
     },
     replaceDatabase,
     beginReplacement,

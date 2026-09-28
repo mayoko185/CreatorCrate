@@ -94,6 +94,16 @@ const SETTINGS_CHILDREN = [
     matches: ['/settings/social-prep'],
   },
   {
+    key: 'release-notifications',
+      icon: 'bell',
+    label: 'Release Notifications',
+    href: '/settings/release-notifications',
+    matches: [
+      '/settings/release-notifications',
+      '/settings/release-notifications/channels/:channel/test',
+    ],
+  },
+  {
     key: 'asset-categories',
       icon: 'boxes',
     label: 'Asset Categories',

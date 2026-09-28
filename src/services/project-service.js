@@ -88,6 +88,7 @@ export function createProjectService(
     projectRepository,
     tagRepository,
     projectDirectoryOwnershipRepository,
+    onReleaseNotificationStateChanged = null,
   } = {}
 ) {
   if (!assetCategoryService) {
@@ -622,6 +623,9 @@ export function createProjectService(
           status: archived.status,
           projectType: archived.project_type,
         });
+        // Queued notifications for this project's releases are now stale; the
+        // notification core revalidates before sending regardless.
+        try { onReleaseNotificationStateChanged?.(null); } catch { /* best-effort */ }
         return archived;
       } catch (err) {
         // Log the primary failure (safe relative path, no absolute paths)

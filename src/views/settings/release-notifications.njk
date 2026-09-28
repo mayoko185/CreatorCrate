@@ -1,0 +1,235 @@
+{% extends "layout.njk" %}
+{% import "partials/page-heading.njk" as pageHeading %}
+{% import "partials/form-switch.njk" as formSwitch %}
+
+{% set page_title = "Settings — Release Notifications" %}
+
+{% macro fieldError(key, errors) %}{% if errors[key] %}<span class="field-error-message" id="release-notifications-{{ key }}-error">{{ errors[key] }}</span>{% endif %}{% endmacro %}
+
+{% macro duration(prefix, label, amount, unit, units, errorKey, errors, min) %}
+  <div class="field-row release-notification-duration{% if errors[errorKey] %} field-error{% endif %}">
+    <div class="field">
+      <label for="release-notifications-{{ prefix }}-amount">{{ label }}</label>
+      <input type="number" id="release-notifications-{{ prefix }}-amount" name="{{ prefix }}Amount" value="{{ amount }}" min="{{ min }}" step="1" inputmode="numeric" required data-autosubmit="fetch"{% if errors[errorKey] %} aria-invalid="true" aria-describedby="release-notifications-{{ errorKey }}-error"{% endif %}>
+    </div>
+    <div class="field">
+      <label for="release-notifications-{{ prefix }}-unit">Unit</label>
+      <select id="release-notifications-{{ prefix }}-unit" name="{{ prefix }}Unit" required data-autosubmit="fetch">
+        {% for option in units %}
+          <option value="{{ option.value }}"{% if option.value == unit %} selected{% endif %}>{{ option.label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+  </div>
+  {{ fieldError(errorKey, errors) }}
+{% endmacro %}
+
+{% block content %}
+  {{ pageHeading.render() }}
+  <div class="settings-release-notifications-content">
+
+  {% if notice %}
+    {% set noticeVariant = notice.variant %}
+    {% set noticeText = notice.text %}
+    {% include "partials/notice.njk" %}
+  {% endif %}
+
+  <div class="settings-layout">
+    <div class="settings-content">
+      <div data-settings-release-notifications-region>
+        <form id="release-notifications-form" method="post" action="/settings/release-notifications" class="project-form" novalidate>
+          {% if errorMessages.length > 0 %}
+            <div class="error-summary" role="alert" id="release-notifications-errors">
+              <p>Release notification settings could not be saved. Fix the fields below and try again.</p>
+              <ul>
+                {% for error in errorMessages %}<li>{{ error }}</li>{% endfor %}
+              </ul>
+            </div>
+          {% endif %}
+
+          <input type="hidden" name="_csrf" value="{{ _csrf }}">
+
+          <section class="settings-section release-notifications-section" aria-labelledby="release-notifications-main-heading">
+            <h3 id="release-notifications-main-heading">Release notifications</h3>
+            <p class="help-text" id="release-notifications-enabled-help">The CreatorCrate server generates these notifications, so they can be sent while this page is closed as long as the server is running. Delivery depends on each channel's service; acceptance by a service does not confirm that you received the message.</p>
+            <p class="help-text">When notifications are first enabled, releases that are already overdue are not sent.</p>
+
+            <div class="field field--switch{% if errors.enabled %} field-error{% endif %}">
+              <span class="field-label">Enable release notifications</span>
+              {{ formSwitch.control(
+                "release-notifications-enabled",
+                "enabled",
+                values.enabled,
+                "Release notifications enabled state",
+                "release-notifications-enabled-help release-notifications-enabled-error" if errors.enabled else "release-notifications-enabled-help",
+                true if errors.enabled else false,
+                false,
+                "fetch",
+                false
+              ) }}
+              {{ fieldError("enabled", errors) }}
+              <p class="help-text" data-settings-fetch-save-status aria-live="polite" aria-atomic="true"></p>
+            </div>
+            {% if saved.enabled and not saved.hasReadyDestination %}
+              <div class="panel panel--warning release-notifications-warning" role="status">
+                <p>Release notifications are enabled, but no selected channel is ready. Nothing will be sent until a selected channel is configured.</p>
+              </div>
+            {% endif %}
+          </section>
+
+          <section class="settings-section release-notifications-section" aria-labelledby="release-notifications-channels-heading">
+            <h3 id="release-notifications-channels-heading">Enabled channels</h3>
+            <fieldset class="field release-notification-channels{% if errors.channels %} field-error{% endif %}"{% if errors.channels %} aria-describedby="release-notifications-channels-help release-notifications-channels-error"{% else %} aria-describedby="release-notifications-channels-help"{% endif %}>
+              <legend class="sr-only">Enabled channels</legend>
+              <p class="help-text" id="release-notifications-channels-help">Select every channel that should receive scheduled release notifications. Readiness reflects the server's configuration only; it does not check that the service is reachable.</p>
+              {{ fieldError("channels", errors) }}
+              <div class="release-notification-channel-grid">
+              {% for channel in channels %}
+                <div class="release-notification-channel" data-release-notification-channel="{{ channel.key }}">
+                  <label class="checkbox-label release-notification-channel-choice" for="release-notifications-channel-{{ channel.key }}">
+                    <input class="release-notification-channel-checkbox" id="release-notifications-channel-{{ channel.key }}" type="checkbox" name="channels" value="{{ channel.key }}" data-autosubmit="fetch"{% if channel.selected %} checked{% endif %}>
+                    <span>{{ channel.label }}</span>
+                  </label>
+
+                  {% if channel.key == 'email' %}
+                    <div class="field release-notification-recipient{% if errors.emailRecipient %} field-error{% endif %}">
+                      <label for="release-notifications-email-recipient">Recipient email address</label>
+                      <input type="email" id="release-notifications-email-recipient" name="emailRecipient" value="{{ values.emailRecipient }}" autocomplete="email" maxlength="254" data-autosubmit="fetch"{% if errors.emailRecipient %} aria-invalid="true" aria-describedby="release-notifications-emailRecipient-error"{% endif %}>
+                      {{ fieldError("emailRecipient", errors) }}
+                    </div>
+                  {% endif %}
+
+                  {% if channel.key == 'webhook' %}
+                    <details class="notes-workspace-disclosure release-notification-help" data-release-notification-webhook-help>
+                      <summary>How Webhooks work</summary>
+                      <div class="notes-workspace-disclosure-content release-notification-help-content">
+                        <p>CreatorCrate sends an HTTP <code>POST</code> with a JSON body (<code>Content-Type: application/json</code>) to the URL in <code>RELEASE_NOTIFICATIONS_WEBHOOK_URL</code>. If <code>RELEASE_NOTIFICATIONS_WEBHOOK_TOKEN</code> is set, it also sends <code>Authorization: Bearer &lt;token&gt;</code>.</p>
+                        <p><code>Idempotency-Key</code> carries the stable delivery ID, and retries resend the same body. Receivers can deduplicate on <code>eventId</code> or <code>deliveryId</code>.</p>
+                        <p>Event types: <code>release.advance</code>, <code>release.scheduled</code>, <code>release.overdue</code>, <code>release.overdue_repeat</code>. Send test posts a <code>notification.test</code> event. Your receiver decides what to do with each event; see the README for the full payload.</p>
+                      </div>
+                    </details>
+                  {% endif %}
+
+                  <div class="release-notification-channel-status" data-release-notification-channel-status="{{ channel.key }}">
+                    <p class="release-notification-readiness">
+                      {% if channel.ready %}
+                        <span class="status-badge status-badge--success">Ready</span>
+                      {% else %}
+                        <span class="status-badge status-badge--warning">Not ready</span>
+                      {% endif %}
+                      <span data-release-notification-readiness>{{ channel.readinessText }}</span>
+                    </p>
+                    {% if channel.selected and not channel.ready %}
+                      <p class="help-text release-notification-selected-warning">Selected, but this channel will not send until its configuration is ready.</p>
+                    {% endif %}
+
+                    <div class="release-notification-summary">
+                      {% for row in channel.summaryRows %}
+                        <div class="kv"><span class="kv-key">{{ row.label }}</span><span class="kv-value">{{ row.value }}</span></div>
+                      {% endfor %}
+                    </div>
+
+                    <div class="release-notification-recent" data-release-notification-recent>
+                      {% if channel.recentResult %}
+                        {% set result = channel.recentResult %}
+                        <p>
+                          <span class="status-badge status-badge--{{ result.variant }}">{{ result.stateLabel }}</span>
+                          <span>{{ result.kindLabel }}{% if result.attemptedAt %} · {{ result.attemptedAt }}{% endif %}</span>
+                        </p>
+                        {% if result.detail %}<p class="help-text">{{ result.detail }}.</p>{% endif %}
+                        {% if result.nextRetryAt %}<p class="help-text">Next retry {{ result.nextRetryAt }}</p>{% endif %}
+                      {% else %}
+                        <p class="help-text">No attempts yet.</p>
+                      {% endif %}
+                    </div>
+
+                    <div class="release-notification-test">
+                      <button type="submit" form="release-notifications-test-{{ channel.key }}" class="button button-small button-secondary" data-release-notification-test-button{% if not channel.ready %} disabled aria-describedby="release-notifications-test-{{ channel.key }}-unavailable"{% endif %}>Send test</button>
+                      {% if not channel.ready %}<span class="help-text" id="release-notifications-test-{{ channel.key }}-unavailable">Available once this channel is ready.</span>{% endif %}
+                      <p class="help-text" data-release-notification-test-status role="status" aria-live="polite" aria-atomic="true">{% if channel.testFeedback %}<span class="release-notification-test-feedback release-notification-test-feedback--{{ channel.testFeedback.variant }}">{{ channel.testFeedback.text }}</span>{% endif %}</p>
+                    </div>
+                  </div>
+                </div>
+              {% endfor %}
+              </div>
+            </fieldset>
+          </section>
+
+          <section class="settings-section release-notifications-section" aria-labelledby="release-notifications-timing-heading">
+            <h3 id="release-notifications-timing-heading">Timing</h3>
+            <p class="help-text">These rules apply to every selected channel.</p>
+
+            <div class="release-notification-timing" data-release-notification-timing="advance">
+              <div class="field field--switch{% if errors.advanceEnabled %} field-error{% endif %}">
+                <span class="field-label">Advance reminder</span>
+                {{ formSwitch.control("release-notifications-advance-enabled", "advanceEnabled", values.advanceEnabled, "Advance reminder enabled state", "release-notifications-advance-help", false, false, "fetch", false) }}
+                <p class="help-text" id="release-notifications-advance-help">Notify ahead of the scheduled time.</p>
+                {{ fieldError("advanceEnabled", errors) }}
+              </div>
+              <div data-release-notification-detail="advance"{% if not values.advanceEnabled and not errors.advanceLead %} hidden{% endif %}>
+                {{ duration("advance", "Lead time", values.advanceAmount, values.advanceUnit, durationUnits, "advanceLead", errors, 1) }}
+              </div>
+            </div>
+
+            <div class="release-notification-timing" data-release-notification-timing="scheduled">
+              <div class="field field--switch{% if errors.scheduledEnabled %} field-error{% endif %}">
+                <span class="field-label">At scheduled time</span>
+                {{ formSwitch.control("release-notifications-scheduled-enabled", "scheduledEnabled", values.scheduledEnabled, "Scheduled-time notification enabled state", "release-notifications-scheduled-help", false, false, "fetch", false) }}
+                <p class="help-text" id="release-notifications-scheduled-help">Notify when a release reaches its scheduled time.</p>
+                {{ fieldError("scheduledEnabled", errors) }}
+              </div>
+            </div>
+
+            <div class="release-notification-timing" data-release-notification-timing="overdue">
+              <div class="field field--switch{% if errors.overdueEnabled %} field-error{% endif %}">
+                <span class="field-label">Overdue reminder</span>
+                {{ formSwitch.control("release-notifications-overdue-enabled", "overdueEnabled", values.overdueEnabled, "Overdue reminder enabled state", "release-notifications-overdue-help", false, false, "fetch", false) }}
+                <p class="help-text" id="release-notifications-overdue-help">Notify when a release is still unpublished after its scheduled time plus the grace period. A zero grace period cannot be combined with the scheduled-time notification.</p>
+                {{ fieldError("overdueEnabled", errors) }}
+              </div>
+              <div data-release-notification-detail="overdue"{% if not values.overdueEnabled and not values.repeatEnabled and not errors.overdueGrace and not errors.repeatEnabled and not errors.repeatInterval %} hidden{% endif %}>
+                {{ duration("overdue", "Grace period", values.overdueAmount, values.overdueUnit, durationUnits, "overdueGrace", errors, 0) }}
+
+                <div class="release-notification-timing release-notification-timing--nested" data-release-notification-timing="repeat">
+                  <div class="field field--switch{% if errors.repeatEnabled %} field-error{% endif %}">
+                    <span class="field-label">Repeat overdue reminder</span>
+                    {{ formSwitch.control("release-notifications-repeat-enabled", "repeatEnabled", values.repeatEnabled, "Repeat overdue reminder enabled state", "release-notifications-repeat-help release-notifications-repeatEnabled-error" if errors.repeatEnabled else "release-notifications-repeat-help", true if errors.repeatEnabled else false, false, "fetch", false) }}
+                    <p class="help-text" id="release-notifications-repeat-help">Keep reminding at this interval while the release stays overdue. Requires the overdue reminder.</p>
+                    {{ fieldError("repeatEnabled", errors) }}
+                  </div>
+                  <div data-release-notification-detail="repeat"{% if not values.repeatEnabled and not errors.repeatInterval %} hidden{% endif %}>
+                    {{ duration("repeat", "Repeat every", values.repeatAmount, values.repeatUnit, durationUnits, "repeatInterval", errors, 1) }}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="settings-section release-notifications-section" aria-labelledby="release-notifications-date-only-heading">
+            <h3 id="release-notifications-date-only-heading">Date-only releases</h3>
+            <div class="field scheduling-field release-notification-date-only{% if errors.dateOnlyTime %} field-error{% endif %}" data-time-picker-field data-clock-format="{{ clockFormat }}">
+              <label for="release-notifications-date-only-time">Date-only release notification time</label>
+              <div class="picker-control"><div class="picker-input-row">
+                <input class="picker-input" type="time" id="release-notifications-date-only-time" name="dateOnlyTime" value="{{ values.dateOnlyTime }}" required data-time-picker-input data-autosubmit="fetch" aria-describedby="release-notifications-date-only-help{% if errors.dateOnlyTime %} release-notifications-dateOnlyTime-error{% endif %}"{% if errors.dateOnlyTime %} aria-invalid="true"{% endif %}>
+                <button type="button" class="picker-trigger time-picker-trigger" aria-haspopup="dialog" aria-expanded="false" aria-controls="release-notifications-date-only-time-picker" aria-label="Open time picker for date-only release notification time" data-time-picker-trigger><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"></circle><polyline points="12 7 12 12 15 14"></polyline></svg></button>
+              </div><div id="release-notifications-date-only-time-picker" class="date-picker-panel time-picker-panel" role="dialog" aria-label="Date-only release notification time picker" hidden data-time-picker-panel data-time-picker-for="release-notifications-date-only-time"></div></div>
+              <span class="help-text" id="release-notifications-date-only-help">Releases with a planned date but no planned time use this time for notification scheduling.</span>
+              {{ fieldError("dateOnlyTime", errors) }}
+            </div>
+            <div class="kv"><span class="kv-key">Effective timezone</span><span class="kv-value" data-release-notification-timezone>{{ timeZone or 'Unavailable' }}</span></div>
+            {% if dateOnlyExample %}
+              <div class="kv"><span class="kv-key">Example</span><span class="kv-value">A release planned for {{ dateOnlyExample.plannedDate }} without a time is scheduled at {{ dateOnlyExample.scheduledAt }}{% if timeZone %} ({{ timeZone }}){% endif %}.</span></div>
+            {% endif %}
+          </section>
+        </form>
+
+        {% for channel in channels %}
+          <form id="release-notifications-test-{{ channel.key }}" method="post" action="/settings/release-notifications/channels/{{ channel.key }}/test" data-release-notification-test-form="{{ channel.key }}">
+            <input type="hidden" name="_csrf" value="{{ _csrf }}">
+          </form>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  </div>
+{% endblock %}

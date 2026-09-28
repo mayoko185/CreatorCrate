@@ -12,6 +12,7 @@ import { projectImagePresentationPolicy } from './project-image-policy.js';
 import { formatLocalDate, formatLocalTime, getLocalTodayIso } from '../util/date.js';
 import { isValidWebUrl } from '../util/url.js';
 import { isProjectArchived } from './project-state.js';
+import { ProjectValidationError } from './project-service.js';
 
 export class ReleaseValidationError extends Error {
   constructor(errors) {
@@ -172,7 +173,10 @@ function matchesReleaseAssetFilters(asset, filters, categoryId) {
   return true;
 }
 
-export function createReleaseService({ db, applicationLogger = null, socialPrepSettingsService = null, projectImageSettingsService = null }) {
+export function createReleaseService({
+  db, applicationLogger = null, socialPrepSettingsService = null, projectImageSettingsService = null,
+  onReleaseNotificationStateChanged = null, projectService = null,
+}) {
   const imageSettings = projectImageSettingsService ?? createProjectImageSettingsService({
     appMetaRepository: createAppMetaRepository(db),
   });
@@ -231,11 +235,65 @@ export function createReleaseService({ db, applicationLogger = null, socialPrepS
     }
   }
 
+  /**
+   * Let release notifications cancel now-stale queued work after a committed
+   * schedule/publication/archive change. Correctness never depends on it (the
+   * notification core revalidates before every send), so it must not fail
+   * the mutation.
+   */
+  function notifyReleaseNotificationState(releaseId) {
+    try {
+      onReleaseNotificationStateChanged?.(releaseId);
+    } catch {
+      // Best-effort prompt invalidation only.
+    }
+  }
+
   function getAssetCountContext(releaseId) {
     try {
       return { assetCount: repository.countReleaseAssets(releaseId) };
     } catch {
       return {};
+    }
+  }
+
+  /**
+   * Apply a publication-requested Project status change through the shared
+   * Project update path. The Project is read server-side inside the caller's
+   * transaction, so every other editable field (and tags, by omission) is
+   * resubmitted unchanged and only `status` differs.
+   */
+  function updateProjectStatusForPublication(projectId, status) {
+    if (typeof projectService?.update !== 'function') {
+      throw new Error('Release publication with a Project status update requires a projectService dependency.');
+    }
+    const project = projectRepository.findById(projectId);
+    if (!project) {
+      throw new ReleaseValidationError({ general: 'The parent project no longer exists.' });
+    }
+    try {
+      projectService.update(project.id, {
+        title: project.title,
+        description: project.description,
+        notes: project.notes,
+        status,
+        projectType: project.project_type,
+        patreonUrl: project.patreon_url,
+      });
+    } catch (err) {
+      if (err instanceof ProjectValidationError) {
+        const errors = err.errors || {};
+        if (errors.status) {
+          throw new ReleaseValidationError({
+            projectStatus: 'The selected project status is no longer available. Choose another status.',
+          });
+        }
+        const [message] = Object.values(errors);
+        throw new ReleaseValidationError({
+          general: errors.general || `The project status could not be updated: ${message || 'validation failed.'}`,
+        });
+      }
+      throw err;
     }
   }
 
@@ -635,18 +693,27 @@ export function createReleaseService({ db, applicationLogger = null, socialPrepS
         throw new ReleaseNotFoundError(id);
       }
       if (changed) logActivity('release.updated', updated);
+      if (release.planned_date !== normalized.plannedDate
+        || release.planned_time !== normalized.plannedTime
+        || release.published_date !== normalized.publishedDate) {
+        notifyReleaseNotificationState(id);
+      }
       return updated;
     },
 
     /**
      * Publish a release. Sets published_date to today if not provided.
      * Publication is independent of project workflow status and asset
-     * selection state.
+     * selection state unless the caller requests an optional Project status
+     * change, which commits atomically with the publication.
      * @param {number} id
      * @param {string} [publishedDate] - ISO date string YYYY-MM-DD, defaults to today
+     * @param {object} [options]
+     * @param {string|null} [options.projectStatus] - Optional target Project
+     *   status; null/undefined keeps the current status.
      * @returns {ReleaseRecord}
      */
-    publishRelease(id, publishedDate = null) {
+    publishRelease(id, publishedDate = null, { projectStatus = null } = {}) {
       const release = repository.findById(id);
       if (!release) {
         throw new ReleaseNotFoundError(id);
@@ -669,11 +736,26 @@ export function createReleaseService({ db, applicationLogger = null, socialPrepS
         throw new ReleaseValidationError({ publishedDate: 'Published date must be a valid date (YYYY-MM-DD).' });
       }
 
-      const updated = repository.publish(id, date);
-      if (!updated) {
-        throw new ReleaseNotFoundError(id);
+      if (projectStatus !== null && projectStatus !== undefined && typeof projectStatus !== 'string') {
+        throw new ReleaseValidationError({ projectStatus: 'Choose a valid project status.' });
       }
+      const requestedProjectStatus = projectStatus || null;
+
+      const publish = () => {
+        const published = repository.publish(id, date);
+        if (!published) {
+          throw new ReleaseNotFoundError(id);
+        }
+        // The Project update runs last inside the publication transaction so
+        // its savepoint is the final write before commit.
+        if (requestedProjectStatus !== null) {
+          updateProjectStatusForPublication(release.project_id, requestedProjectStatus);
+        }
+        return published;
+      };
+      const updated = requestedProjectStatus === null ? publish() : db.transaction(publish)();
       logActivity('release.published', updated, getAssetCountContext(id));
+      notifyReleaseNotificationState(id);
       return updated;
     },
 
@@ -703,6 +785,7 @@ export function createReleaseService({ db, applicationLogger = null, socialPrepS
         throw new ReleaseNotFoundError(id);
       }
       logActivity('release.archived', archived);
+      notifyReleaseNotificationState(id);
       return archived;
     },
 

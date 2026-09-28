@@ -4617,6 +4617,14 @@
       #release-publish-dialog .scheduling-field {
         flex: 0 1 auto;
       }
+      /* Release details moved inside the publish form; keep its prior spacing. */
+      #release-publish-dialog .project-form > .release-publish-summary-section {
+        gap: 0;
+        padding: 0;
+      }
+      #release-publish-dialog .project-form > .release-publish-summary-section > h3 {
+        margin-inline: 0;
+      }
 
 
       /* Notes Book/Page dialog sections intentionally override later generic project-form spacing. */
@@ -10524,7 +10532,8 @@
   margin-block-start: 0;
 }
 .app-dialog--processing .processing-watermark-choice-control input[type='checkbox'],
-.app-dialog--processing .processing-watermark-choice-control input[type='radio'] {
+.app-dialog--processing .processing-watermark-choice-control input[type='radio'],
+.release-notification-channel-choice input[type='checkbox'] {
   appearance: none;
   inline-size: 1rem;
   block-size: 1rem;
@@ -10534,7 +10543,8 @@
   border-radius: var(--radius-sm);
   background: var(--surface);
 }
-.app-dialog--processing .processing-watermark-choice-control input:is([type='checkbox'], [type='radio']):checked {
+.app-dialog--processing .processing-watermark-choice-control input:is([type='checkbox'], [type='radio']):checked,
+.release-notification-channel-choice input[type='checkbox']:checked {
   border-color: var(--accent);
   background: var(--accent);
   box-shadow: inset 0 0 0 0.2rem var(--surface);
@@ -10981,6 +10991,232 @@
 
 .settings-nsfw-filter-content .form-switch-label {
   min-height: 2.5rem;
+}
+
+.settings-release-notifications-content .settings-section {
+  margin-bottom: var(--space-md);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.settings-release-notifications-content .settings-section h3 {
+  background: var(--surface-hover);
+}
+
+/* Compact variant: the shared Settings and project-form rules pad and gap every
+   section child by --space-md/--space-lg, which is too loose for this page's
+   many small controls. Children below own their spacing instead. */
+.settings-release-notifications-content .project-form .release-notifications-section {
+  gap: 0;
+  padding: 0 0 var(--space-xs);
+}
+
+.settings-release-notifications-content .project-form .release-notifications-section > h3 {
+  margin-inline: 0;
+}
+
+.settings-release-notifications-content .settings-section .help-text {
+  margin: 0;
+  padding: 0;
+}
+
+.settings-release-notifications-content .release-notifications-section > .help-text,
+.settings-release-notifications-content .release-notification-channels > .help-text {
+  padding: var(--space-sm) var(--space-md) var(--space-xs);
+}
+
+.settings-release-notifications-content .release-notifications-section > .help-text + .help-text {
+  padding-top: 0;
+}
+
+/* Label and toggle share one row; help, errors, and save status wrap below. */
+.settings-release-notifications-content .field--switch {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0 var(--space-md);
+  padding: var(--space-xs) var(--space-md) var(--space-sm);
+}
+
+.settings-release-notifications-content .field--switch > :not(.field-label):not(.form-switch) {
+  flex: 1 0 100%;
+}
+
+.settings-release-notifications-content .field--switch .form-switch-label {
+  min-height: 2rem;
+}
+
+.settings-release-notifications-content .release-notification-duration,
+.settings-release-notifications-content .release-notification-date-only,
+.settings-release-notifications-content .release-notification-channels > .field-error-message,
+.settings-release-notifications-content .release-notification-timing > [data-release-notification-detail] > .field-error-message {
+  padding: 0 var(--space-md) var(--space-sm);
+}
+
+.settings-release-notifications-content .release-notification-date-only {
+  flex: 0 0 auto;
+  max-width: none;
+  padding-top: var(--space-sm);
+}
+
+.settings-release-notifications-content .release-notification-date-only .picker-control {
+  width: 100%;
+  max-width: 16rem;
+}
+
+.settings-release-notifications-content .release-notifications-warning,
+.settings-release-notifications-content .error-summary {
+  margin: 0 var(--space-md) var(--space-sm);
+}
+
+.settings-release-notifications-content .release-notifications-warning {
+  padding: var(--space-xs) var(--space-sm);
+  font-size: 0.875rem;
+}
+
+.settings-release-notifications-content .release-notifications-warning p {
+  margin: 0;
+}
+
+.settings-release-notifications-content .release-notifications-section > .kv {
+  padding: var(--space-xs) var(--space-md);
+}
+
+.settings-release-notifications-content .release-notification-channels {
+  border: 0;
+  margin: 0;
+  padding: 0;
+}
+
+.release-notification-channel-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md) var(--space-md);
+}
+
+.release-notification-channel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  min-width: 0;
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.release-notification-channel-choice {
+  display: inline-flex;
+  align-items: center;
+  align-self: flex-start;
+  gap: var(--space-xs);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.release-notification-channel-choice input[type='checkbox'] {
+  border-color: var(--border-strong);
+  cursor: pointer;
+}
+
+.release-notification-channel-choice input[type='checkbox']:hover {
+  border-color: var(--accent);
+}
+
+.release-notification-channel-choice input[type='checkbox']:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.release-notification-channel .kv,
+.settings-release-notifications-content .release-notification-channel .help-text {
+  padding: 0;
+}
+
+.release-notification-channel .status-badge {
+  padding: 0.0625rem 0.375rem;
+  font-size: 0.6875rem;
+}
+
+.release-notification-channel-status {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: var(--space-xs);
+}
+
+.release-notification-readiness,
+.release-notification-recent p:first-child {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs);
+  margin: 0;
+  font-size: 0.875rem;
+}
+
+.settings-release-notifications-content .release-notification-channel .release-notification-selected-warning {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+.release-notification-summary .kv {
+  padding-block: 0.125rem;
+  font-size: 0.8125rem;
+}
+
+.release-notification-recent p {
+  margin: 0;
+}
+
+.release-notification-test {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs) var(--space-sm);
+  margin-top: auto;
+  padding-top: var(--space-xs);
+}
+
+.release-notification-test [data-release-notification-test-status]:empty {
+  display: none;
+}
+
+.release-notification-test-feedback--success { color: var(--success); }
+.release-notification-test-feedback--warning { color: var(--warning); }
+.release-notification-test-feedback--error { color: var(--danger); }
+
+.release-notification-help summary {
+  min-height: 1.75rem;
+  padding: 0.125rem 0;
+  font-size: 0.8125rem;
+}
+
+.release-notification-help-content {
+  gap: var(--space-xs);
+  padding-bottom: var(--space-xs);
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.release-notification-help-content p {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.release-notification-timing {
+  border-top: 1px solid var(--border);
+}
+
+.release-notification-timing--nested {
+  margin-left: var(--space-md);
+  border-left: 2px solid var(--border);
+}
+
+@media (max-width: 767px) {
+  .release-notification-channel-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }
 
 .settings-nsfw-filter-content .help-text,

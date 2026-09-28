@@ -10,6 +10,7 @@ import { ensurePreviewRoot, StorageError } from './storage/path-manager.js';
 import { openDatabase, runMigrations, closeDatabase, DatabaseError } from './db.js';
 import { createBackupService } from './services/backup-service.js';
 import { createAutomaticProjectScanScheduler } from './services/automatic-project-scan-scheduler.js';
+import { createReleaseNotificationScheduler } from './services/release-notification-scheduler.js';
 import { createApplicationContext } from './app-context.js';
 import { ASSET_MODES, resolveAssetMode } from './app.js';
 import { createManagedCredentialProvider, CredentialError } from './auth/credential-provider.js';
@@ -121,8 +122,8 @@ export async function runInitialWatermarkScan(appContext, logger = console, appl
 
 // The process tracker, not HTTP connection lifetime, owns upload resource safety.
 export function createShutdownHandler({
-  appContext, server, viteServer, automaticProjectScanScheduler, applicationLogger,
-  retireDatabase = closeDatabase, exit = (code) => process.exit(code),
+  appContext, server, viteServer, automaticProjectScanScheduler, releaseNotificationScheduler = null,
+  applicationLogger, retireDatabase = closeDatabase, exit = (code) => process.exit(code),
 }) {
   let shuttingDown = false;
   return async function shutdown() {
@@ -140,6 +141,10 @@ export function createShutdownHandler({
       message: 'CreatorCrate shutdown requested.',
     });
     automaticProjectScanScheduler.stop();
+    // Release notifications: no new cycles, test sends, or lane work; sends
+    // already in flight drain below (bounded by the transports' timeouts).
+    releaseNotificationScheduler?.stop();
+    appContext.releaseNotificationRuntime?.stop();
     try {
       await viteServer?.close();
     } finally {
@@ -150,6 +155,8 @@ export function createShutdownHandler({
       await appContext.generatedImagePublicationLifecycle?.waitForIdle();
       await appContext.projectOwnershipAdoption?.waitForIdle();
       await appContext.legacyManifestCleanup?.waitForIdle();
+      await releaseNotificationScheduler?.waitForIdle();
+      await appContext.releaseNotificationRuntime?.waitForIdle();
       applicationLogger.info({
         kind: 'diagnostic',
         subsystem: 'runtime',
@@ -293,6 +300,7 @@ async function main() {
       backupRetentionCount: config.backupRetentionCount,
       autoScanIntervalMinutes: config.autoScanIntervalMinutes,
       persistDebugLogs: config.persistDebugLogs,
+      releaseNotifications: config.releaseNotifications,
       maintenanceState,
       authConfig,
       authSettings: config.auth,
@@ -308,6 +316,16 @@ async function main() {
     event: 'runtime.migrations.completed',
     message: 'Database migrations completed.',
   });
+
+  if (config.releaseNotifications.baseUrlInvalid) {
+    // The value itself is never logged; notifications are sent without links.
+    applicationLogger.warn({
+      kind: 'diagnostic',
+      subsystem: 'release_notifications',
+      event: 'release_notifications.base_url.invalid',
+      message: 'RELEASE_NOTIFICATIONS_BASE_URL is not a valid http(s) URL; notification links are omitted.',
+    });
+  }
 
   await runInitialWatermarkScan(appContext, console, applicationLogger);
 
@@ -335,6 +353,13 @@ async function main() {
     }),
   });
 
+  // Independent of project scanning: one timer for all release notifications,
+  // always resolving the runtime (and through it the current graph) per cycle.
+  const releaseNotificationScheduler = createReleaseNotificationScheduler({
+    runCycle: (options) => appContext.releaseNotificationRuntime.runCycle(options),
+    applicationLogger,
+  });
+
   server.on('request', createApplicationRequestHandler(appContext, viteServer));
   server.listen(config.port, () => {
     console.log(`${config.appName} listening on port ${config.port} in ${config.nodeEnv} mode`);
@@ -346,10 +371,11 @@ async function main() {
       context: { port: config.port },
     });
     automaticProjectScanScheduler.start();
+    releaseNotificationScheduler.start();
   });
 
   const shutdown = createShutdownHandler({
-    appContext, server, viteServer, automaticProjectScanScheduler, applicationLogger,
+    appContext, server, viteServer, automaticProjectScanScheduler, releaseNotificationScheduler, applicationLogger,
   });
 
   process.on('SIGTERM', shutdown);

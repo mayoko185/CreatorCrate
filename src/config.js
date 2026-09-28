@@ -71,6 +71,78 @@ function parseOptionalPositiveIntegerEnv(rawEnv, key) {
   return value;
 }
 
+function optionalEnvText(rawEnv, key) {
+  const value = rawEnv[key];
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed === '' ? null : trimmed;
+}
+
+/**
+ * Validate the optional external base URL used for release links in
+ * notifications. Only http(s) without credentials, query, or fragment is
+ * accepted; anything else is reported as invalid (without echoing the value)
+ * and notifications simply omit the link.
+ */
+function parseReleaseNotificationBaseUrl(rawValue) {
+  if (rawValue === null) return { baseUrl: null, baseUrlInvalid: false };
+  let url;
+  try {
+    url = new URL(rawValue);
+  } catch {
+    return { baseUrl: null, baseUrlInvalid: true };
+  }
+  if ((url.protocol !== 'http:' && url.protocol !== 'https:') || !url.hostname
+    || url.username !== '' || url.password !== '' || url.search !== '' || url.hash !== ''
+    || rawValue.includes('#') || rawValue.includes('?')) {
+    return { baseUrl: null, baseUrlInvalid: true };
+  }
+  return { baseUrl: `${url.origin}${url.pathname.replace(/\/+$/, '')}`, baseUrlInvalid: false };
+}
+
+/**
+ * Deployment-controlled release-notification transport settings. Every key is
+ * optional; values are only parsed into in-memory shapes here. Final
+ * readiness is decided by each transport's own configuration check, so a
+ * malformed value makes that channel "not ready" instead of failing startup.
+ * Secrets (SMTP password, tokens, webhook URL) live only in this object and
+ * are never persisted or rendered.
+ */
+function parseReleaseNotificationConfig(rawEnv) {
+  const portText = optionalEnvText(rawEnv, 'RELEASE_NOTIFICATIONS_SMTP_PORT');
+  // A malformed port stays a non-integer so the SMTP readiness check reports
+  // invalid_port; an absent port lets that check apply the TLS/STARTTLS default.
+  const port = portText === null ? null : (parseCanonicalInteger(portText) ?? Number.NaN);
+  const security = optionalEnvText(rawEnv, 'RELEASE_NOTIFICATIONS_SMTP_SECURITY');
+  const rawPassword = rawEnv.RELEASE_NOTIFICATIONS_SMTP_PASSWORD;
+  return Object.freeze({
+    ...parseReleaseNotificationBaseUrl(optionalEnvText(rawEnv, 'RELEASE_NOTIFICATIONS_BASE_URL')),
+    smtp: Object.freeze({
+      host: optionalEnvText(rawEnv, 'RELEASE_NOTIFICATIONS_SMTP_HOST'),
+      port,
+      // STARTTLS (mandatory upgrade) unless the deployment chooses otherwise.
+      security: security === null ? 'starttls' : security.toLowerCase(),
+      username: optionalEnvText(rawEnv, 'RELEASE_NOTIFICATIONS_SMTP_USERNAME'),
+      // Passwords are taken verbatim: surrounding spaces may be significant.
+      password: typeof rawPassword === 'string' && rawPassword !== '' ? rawPassword : null,
+      from: optionalEnvText(rawEnv, 'RELEASE_NOTIFICATIONS_SMTP_FROM'),
+    }),
+    ntfy: Object.freeze({
+      server: optionalEnvText(rawEnv, 'RELEASE_NOTIFICATIONS_NTFY_URL'),
+      topic: optionalEnvText(rawEnv, 'RELEASE_NOTIFICATIONS_NTFY_TOPIC'),
+      token: optionalEnvText(rawEnv, 'RELEASE_NOTIFICATIONS_NTFY_TOKEN'),
+    }),
+    gotify: Object.freeze({
+      server: optionalEnvText(rawEnv, 'RELEASE_NOTIFICATIONS_GOTIFY_URL'),
+      token: optionalEnvText(rawEnv, 'RELEASE_NOTIFICATIONS_GOTIFY_TOKEN'),
+    }),
+    webhook: Object.freeze({
+      url: optionalEnvText(rawEnv, 'RELEASE_NOTIFICATIONS_WEBHOOK_URL'),
+      token: optionalEnvText(rawEnv, 'RELEASE_NOTIFICATIONS_WEBHOOK_TOKEN'),
+    }),
+  });
+}
+
 export function createConfig(rawEnv = process.env) {
   const nodeEnv = getEnv(rawEnv, 'NODE_ENV');
   const appName = getEnv(rawEnv, 'APP_NAME');
@@ -178,6 +250,8 @@ export function createConfig(rawEnv = process.env) {
 
   const managedCredentialPath = credentialFilePathForRoot(appDataRoot);
 
+  const releaseNotifications = parseReleaseNotificationConfig(rawEnv);
+
   return Object.freeze({
     nodeEnv,
     port,
@@ -191,6 +265,7 @@ export function createConfig(rawEnv = process.env) {
     backupRetentionCount,
     autoScanIntervalMinutes,
     persistDebugLogs,
+    releaseNotifications,
     auth: Object.freeze({
       sessionTtlHours,
       cookieSecure,

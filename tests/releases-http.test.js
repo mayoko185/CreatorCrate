@@ -794,7 +794,7 @@ describe('release HTTP workflow', () => {
     const oneCells = extractTableCells(extractReleaseListRow(res.text, 'One Asset Release'));
     const multipleCells = extractTableCells(extractReleaseListRow(res.text, 'Multiple Asset Release'));
 
-    expect(headings).toEqual(['Title', 'Project', 'Release status', 'Project status', 'Planned', 'Social Posts', 'Assets', '']);
+    expect(headings).toEqual(['Release Title', 'Project', 'Release status', 'Project status', 'Planned', 'Social Posts', 'Assets', '']);
     expect(headings.filter((heading) => heading === 'Assets')).toHaveLength(1);
     expect(zeroCells).toHaveLength(8);
     expect(oneCells).toHaveLength(8);
@@ -2204,8 +2204,9 @@ describe('release HTTP workflow', () => {
     db.prepare("UPDATE projects SET status = 'ready' WHERE id = ?").run(projectId);
 
     const res = await agent.get(createRes.headers.location).expect(200);
-    expect(res.text).toMatch(/<dt>Project status<\/dt>[\s\S]*?<span class="status-badge status-badge--active">Ready<\/span>/);
-    expect(res.text).not.toMatch(/<dt>Project status<\/dt>[\s\S]*?<span class="status-badge status-badge--neutral">Tbd<\/span>/);
+    const currentStatus = res.text.match(/<dt>Project Status<\/dt>\s*<dd[^>]*>([\s\S]*?)<\/dd>/)?.[1] || '';
+    expect(currentStatus).toMatch(/<span class="status-badge project-option-badge project-status-badge status-badge--active"[^>]*>Ready<\/span>/);
+    expect(currentStatus).not.toContain('>Tbd<');
     expect(releaseRepository.findById(releaseId).project_status).toBe('ready');
   });
 
@@ -2337,7 +2338,7 @@ describe('release HTTP workflow', () => {
       expect(res.text).toContain('<div class="app-dialog-body project-edit-dialog-body">');
       expect(res.text).toContain('<form id="release-publish-form" method="post" action="' + releaseLocation + '/publish" class="app-dialog-form project-form project-edit-dialog-form"');
       expect(res.text).toMatch(/<form id="release-publish-form"[^>]*data-dialog-reset-on-close/);
-      expect(res.text).toContain('<section class="settings-section project-edit-dialog-section" aria-labelledby="release-publish-summary-heading">');
+      expect(res.text).toMatch(/<form id="release-publish-form"[^>]*>[\s\S]*?<section class="settings-section project-edit-dialog-section release-publish-summary-section" aria-labelledby="release-publish-summary-heading">/);
       expect(res.text).toContain('<section class="settings-section project-edit-dialog-section" data-release-dialog-compact-section aria-labelledby="release-publish-assets-heading">');
       expect(res.text).toContain('<section class="settings-section project-edit-dialog-section" data-release-dialog-compact-section aria-labelledby="release-publish-publication-heading">');
       expect(res.text).toContain('Selected release assets for publication');

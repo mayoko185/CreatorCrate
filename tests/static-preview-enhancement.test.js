@@ -9186,6 +9186,18 @@ describe('Release form date picker enhancement', () => {
       all: fields,
       listeners,
       documentStub,
+      // Simulates an autosave region swap: the old field leaves the DOM and a
+      // fresh, unenhanced field takes its place in the scope.
+      replaceTimeField(options = {}) {
+        const previous = timeFields.shift();
+        previous.field.isConnected = false;
+        makeTimeField({ inputValue: timeValue, format: clockFormat, ...options });
+        return timeFields[timeFields.length - 1];
+      },
+      // A new region element, as the autosave passes to enhanceTimePickers().
+      regionScope() {
+        return { dataset: {}, querySelectorAll: scope.querySelectorAll };
+      },
       restoreDocument() {
         if (previousDocument === undefined) delete globalThis.document;
         else globalThis.document = previousDocument;
@@ -9251,6 +9263,107 @@ describe('Release form date picker enhancement', () => {
       expect(fixture.time.panel.hidden).toBe(true);
       expect(fixture.time.trigger.attrs['aria-expanded']).toBe('false');
       expect(fixture.time.trigger.focused.value).toBe(true);
+    } finally {
+      fixture.restoreDocument();
+    }
+  });
+
+  it('keeps one document listener pair across region replacement and ignores detached pickers', () => {
+    const fixture = makeDatePickerScope();
+    const documentListeners = () => fixture.listeners
+      .filter((entry) => entry.target === fixture.documentStub)
+      .map((entry) => entry.type);
+    try {
+      enhanceTimePickers(fixture.scope);
+      expect(documentListeners()).toEqual(['click', 'keydown']);
+
+      const stale = fixture.time;
+      stale.trigger.dispatch('click');
+      expect(stale.panel.hidden).toBe(false);
+
+      let current;
+      for (let swap = 0; swap < 3; swap += 1) {
+        current = fixture.replaceTimeField();
+        expect(enhanceTimePickers(fixture.regionScope())).toBe(1);
+      }
+      expect(documentListeners()).toEqual(['click', 'keydown']);
+      expect(fixture.listeners.filter((entry) => entry.target === current.trigger && entry.type === 'click')).toHaveLength(1);
+
+      // The replacement opens, and opening it leaves the detached picker untouched.
+      current.trigger.dispatch('click');
+      expect(current.panel.hidden).toBe(false);
+      expect(current.trigger.attrs['aria-expanded']).toBe('true');
+      expect(stale.panel.hidden).toBe(false);
+
+      // Outside click closes only the live picker.
+      const outside = { parentElement: null, parentNode: null };
+      fixture.documentStub.activeElement = outside;
+      fixture.documentStub.dispatch('click', outside);
+      expect(current.panel.hidden).toBe(true);
+      expect(current.trigger.attrs['aria-expanded']).toBe('false');
+      expect(stale.panel.hidden).toBe(false);
+      expect(stale.trigger.attrs['aria-expanded']).toBe('true');
+
+      // Escape from outside the panel closes the live picker once and refocuses its trigger.
+      current.trigger.dispatch('click');
+      fixture.documentStub.activeElement = outside;
+      const escape = fixture.documentStub.dispatch('keydown', outside, { key: 'Escape' });
+      expect(escape.defaultPrevented).toBe(true);
+      expect(current.panel.hidden).toBe(true);
+      expect(current.trigger.focused.value).toBe(true);
+      expect(stale.trigger.focused).toBeUndefined();
+      expect(stale.panel.hidden).toBe(false);
+    } finally {
+      fixture.restoreDocument();
+    }
+  });
+
+  it('prunes detached time pickers during enhancement without any click, Escape, or open', () => {
+    const fixture = makeDatePickerScope();
+    // Count how often the registry checks each detached field; a pruned state
+    // is never checked again, so the counts show the registry staying bounded.
+    const detachedReads = [];
+    const detach = (entry) => {
+      const reads = { count: 0 };
+      Object.defineProperty(entry.field, 'isConnected', {
+        configurable: true,
+        get() { reads.count += 1; return false; },
+      });
+      detachedReads.push(reads);
+    };
+    try {
+      enhanceTimePickers(fixture.scope);
+
+      let current = fixture.time;
+      for (let swap = 0; swap < 4; swap += 1) {
+        const previous = current;
+        current = fixture.replaceTimeField();
+        detach(previous);
+        const before = detachedReads.map((reads) => reads.count);
+
+        expect(enhanceTimePickers(fixture.regionScope())).toBe(1);
+
+        const after = detachedReads.map((reads) => reads.count);
+        // The field detached by this swap is checked (and pruned) right away...
+        expect(after[after.length - 1]).toBeGreaterThan(before[before.length - 1]);
+        // ...and fields pruned by earlier passes are no longer retained.
+        expect(after.slice(0, -1)).toEqual(before.slice(0, -1));
+      }
+
+      const documentListeners = fixture.listeners
+        .filter((entry) => entry.target === fixture.documentStub)
+        .map((entry) => entry.type);
+      expect(documentListeners).toEqual(['click', 'keydown']);
+
+      current.trigger.dispatch('click');
+      expect(current.panel.hidden).toBe(false);
+      expect(current.trigger.attrs['aria-expanded']).toBe('true');
+      const outside = { parentElement: null, parentNode: null };
+      fixture.documentStub.activeElement = outside;
+      fixture.documentStub.dispatch('click', outside);
+      expect(current.panel.hidden).toBe(true);
+      expect(current.trigger.attrs['aria-expanded']).toBe('false');
+      expect(detachedReads.map((reads) => reads.count)).toEqual(detachedReads.map(() => 1));
     } finally {
       fixture.restoreDocument();
     }

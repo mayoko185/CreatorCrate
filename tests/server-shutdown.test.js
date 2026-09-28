@@ -314,3 +314,60 @@ it.each([false, true])('waits for disconnected cleanup (recovery required=%s)', 
   expect(files()).toEqual(recovery ? retained : []);
   expect(h.exit).toHaveBeenCalledWith(0);
 });
+it('stops release notification admission and drains an in-flight send before database retirement', async () => {
+  const { createReleaseNotificationRuntime } = await import('../src/services/release-notification-runtime.js');
+  const { createReleaseNotificationScheduler } = await import('../src/services/release-notification-scheduler.js');
+  const { createNtfySender } = await import('../src/services/release-notification-transports/ntfy.js');
+  const gate = deferred();
+  const sends = [];
+  const runtime = createReleaseNotificationRuntime({
+    transportConfig: { ntfy: { server: 'https://ntfy.example.test', topic: 'releases' } },
+    getServices: () => ({
+      releaseNotificationService: app.locals.releaseNotificationService,
+      recentResultService: app.locals.releaseNotificationRecentResultService,
+    }),
+    senderFactories: {
+      email: () => ({ getReadiness: () => ({ ready: false, reason: 'missing_host' }), send: async () => ({ outcome: 'accepted' }) }),
+      gotify: () => ({ getReadiness: () => ({ ready: false, reason: 'missing_server' }), send: async () => ({ outcome: 'accepted' }) }),
+      webhook: () => ({ getReadiness: () => ({ ready: false, reason: 'missing_endpoint' }), send: async () => ({ outcome: 'accepted' }) }),
+      ntfy: (config) => ({
+        getReadiness: () => createNtfySender(config).getReadiness(),
+        send: () => { sends.push('ntfy'); return gate.promise; },
+      }),
+    },
+  });
+  const scheduler = createReleaseNotificationScheduler({
+    runCycle: () => runtime.runCycle(),
+    setTimeoutFn: () => null, clearTimeoutFn: () => {}, setIntervalFn: () => null, clearIntervalFn: () => {},
+  });
+  const inFlight = runtime.sendTest('ntfy');
+  await vi.waitFor(() => expect(sends).toEqual(['ntfy']));
+
+  const events = [];
+  const retireDatabase = vi.fn((connection) => { events.push('database'); closeDatabase(connection); });
+  const exit = vi.fn(() => events.push('exit'));
+  const shutdown = createShutdownHandler({
+    appContext: { get db() { return db; }, processingJobService: jobs, releaseNotificationRuntime: runtime },
+    applicationLogger: { info: ({ event }) => events.push(event) },
+    automaticProjectScanScheduler: { stop: () => events.push('scheduler') },
+    releaseNotificationScheduler: scheduler,
+    viteServer: null,
+    server: { close: (callback) => { events.push('http'); callback(); } },
+    retireDatabase, exit,
+  });
+  const stopping = shutdown();
+
+  await expect(runtime.sendTest('ntfy')).resolves.toEqual({ outcome: 'transient_failure', failureCode: 'unexpected_error' });
+  await expect(scheduler.runCycle()).resolves.toEqual({ skipped: true, reason: 'stopped' });
+  expect(runtime.runCycle()).toEqual({ skipped: true, reason: 'paused' });
+  await new Promise((resolve) => setImmediate(resolve));
+  expect(retireDatabase).not.toHaveBeenCalled();
+  expect(db.open).toBe(true);
+
+  gate.resolve({ outcome: 'accepted' });
+  await expect(inFlight).resolves.toEqual({ outcome: 'accepted' });
+  await stopping;
+  expect(sends).toEqual(['ntfy']);
+  expect(events.slice(-3)).toEqual(['runtime.shutdown.completed', 'database', 'exit']);
+  expect(exit).toHaveBeenCalledWith(0);
+});
