@@ -25,6 +25,9 @@ describe('Processing Apply project asset rescan', () => {
       credentials: 'same-origin',
       headers: expect.objectContaining({ Accept: 'application/json', 'X-CSRF-Token': 'csrf-token' }),
     }));
+    // The automatic refresh identifies itself so it never counts as the
+    // manual scan that clears a processing recovery gate.
+    expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({ trigger: 'processing-refresh' });
     expect(refreshAssets).toHaveBeenCalledTimes(1);
     expect(refreshAssets).toHaveBeenCalledWith(document);
   });

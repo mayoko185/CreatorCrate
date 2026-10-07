@@ -102,6 +102,7 @@ import {
   requestAppConfirmation,
 } from './client/confirm-dialog.js';
 import { enhanceProjectOwnershipRecovery } from './client/project-ownership-recovery.js';
+import { enhanceProcessingRecoveryDetails } from './client/processing-recovery-details.js';
 import {
   enhanceProjectAssetsPreviewSlideshow,
   enhanceSlideshow,
@@ -296,6 +297,7 @@ if (typeof document !== 'undefined') {
     enhanceAssetViewerFilterDisclosures(document);
     enhanceAppConfirmationControls(document);
     enhanceProjectOwnershipRecovery(document);
+    enhanceProcessingRecoveryDetails(document);
     enhanceBookCoverUploads(document);
     enhanceDashboardDefaultsDialog(document);
     enhanceProjectAssetCategoryManagement(document);

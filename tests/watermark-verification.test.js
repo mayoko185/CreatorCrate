@@ -24,6 +24,9 @@ import { createProcessingConcurrencyService } from '../src/services/processing-c
 import { createAssetScanner } from '../src/services/asset-scanner.js';
 import { resolveProjectDir } from '../src/storage/project-storage.js';
 import { createProjectDirectoryOwnershipRepository } from '../src/data/project-directory-ownership-repository.js';
+import { processingRecoveryEvidenceDependencies } from './helpers/processing-recovery-evidence.js';
+import { createProcessingRecoveryEvidenceRepository } from '../src/data/processing-recovery-evidence-repository.js';
+import { stagingWorkspaces } from './helpers/processing-staging.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -212,6 +215,7 @@ describe('watermark verification', () => {
     operationCoordinator = createProjectOperationCoordinator(),
   ) {
     return createAssetProcessingService({
+      ...processingRecoveryEvidenceDependencies(db),
       projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
       projectRepository,
       assetRepository,
@@ -967,7 +971,7 @@ describe('watermark verification', () => {
       expect(fs.existsSync(path.join(projectDir, 'Final', 'db-failure.png'))).toBe(true);
 
       // No staging artifacts remain
-      expect(fs.readdirSync(projectDir).filter((n) => n.startsWith('.creatorcrate-watermark-'))).toEqual([]);
+      expect(stagingWorkspaces(projectDir, '.creatorcrate-watermark-')).toEqual([]);
     } finally {
       applySpy.mockRestore();
     }
@@ -1037,7 +1041,7 @@ describe('watermark verification', () => {
       expect(fs.existsSync(path.join(projectDir, 'Final', 'mixed-recovery.png'))).toBe(true);
 
       // No staging artifacts
-      expect(fs.readdirSync(projectDir).filter((n) => n.startsWith('.creatorcrate-watermark-'))).toEqual([]);
+      expect(stagingWorkspaces(projectDir, '.creatorcrate-watermark-')).toEqual([]);
     } finally {
       applySpy.mockRestore();
     }
@@ -1084,7 +1088,7 @@ describe('watermark verification', () => {
       expect(fs.existsSync(path.join(projectDir, 'Final', 'mixed-new.png'))).toBe(true);
 
       // No staging artifacts
-      expect(fs.readdirSync(projectDir).filter((n) => n.startsWith('.creatorcrate-watermark-'))).toEqual([]);
+      expect(stagingWorkspaces(projectDir, '.creatorcrate-watermark-')).toEqual([]);
     } finally {
       applySpy.mockRestore();
     }
@@ -1114,12 +1118,14 @@ describe('watermark verification', () => {
     assetScanner.scanProjectAssets(project.id);
 
     const externalBytes = Buffer.from('external race content for multi-output');
-    const realLink = fs.linkSync.bind(fs);
-    const linkSpy = vi.spyOn(fs, 'linkSync').mockImplementation((srcPath, targetPath) => {
-      if (targetPath === racePath && srcPath.includes('.creatorcrate-watermark-')) {
+    const realOpen = fs.openSync.bind(fs);
+    let raced = false;
+    const openSpy = vi.spyOn(fs, 'openSync').mockImplementation((targetPath, flags, ...args) => {
+      if (targetPath === racePath && typeof flags === 'string' && flags.startsWith('wx') && !raced) {
+        raced = true;
         fs.writeFileSync(racePath, externalBytes);
       }
-      return realLink(srcPath, targetPath);
+      return realOpen(targetPath, flags, ...args);
     });
 
     try {
@@ -1134,9 +1140,10 @@ describe('watermark verification', () => {
         overwrite: true,
       })).rejects.toMatchObject({ code: 'OUTPUT_DESTINATION_CONFLICT' });
     } finally {
-      linkSpy.mockRestore();
+      openSpy.mockRestore();
     }
 
+    expect(raced).toBe(true);
     // Foreign file untouched
     expect(fs.readFileSync(racePath)).toEqual(externalBytes);
     // Source retained

@@ -8,6 +8,7 @@ import { deriveExtensionFromFilename } from './asset-metadata.js';
 import { classifyAssetPath } from './asset-path-classification.js';
 import { isProjectArchived } from './project-state.js';
 import {
+  currentFileMatchesGeneratedOutputProvenance,
   isOwnedWatermarkDestination as isOwnedWatermarkDestinationShared,
   isValidGeneratedOutputSha256,
   resolveTrustedWatermarkFile,
@@ -352,6 +353,17 @@ function watermarkDestinationOwnership({
         : 'MALFORMED_PROVENANCE',
     };
   }
+  // Metadata and hash prove only expected content. Replacing an existing output unlinks
+  // it, which Apply allows only for the exact object CreatorCrate published (persisted
+  // provenance), so Preview reports that permanent blocker too. Apply re-checks freshly.
+  if (destinationStats && options.overwrite) {
+    const provenance = typeof assetRepository.findGeneratedOutputProvenance === 'function'
+      ? assetRepository.findGeneratedOutputProvenance(destinationAsset.project_id, destinationAsset.id)
+      : null;
+    if (!currentFileMatchesGeneratedOutputProvenance(outputAbsPath, provenance)) {
+      return { owned: false, reasonCode: 'FOREIGN_DESTINATION', unprovenReplacement: true };
+    }
+  }
   return {
     owned: true,
     kind: destinationStats ? 'creatorcrate-owned-overwrite' : 'missing-generated-destination',
@@ -667,6 +679,9 @@ export function createAssetProcessingPlanner({
             status = 'conflict'; reasonCode = 'ARCHIVE_DESTINATION_CONFLICT'; ownership = 'externally-replaced';
           } else if (!options.replaceExistingArchives) {
             status = 'conflict'; reasonCode = 'ARCHIVE_DESTINATION_CONFLICT'; ownership = 'replace-disabled';
+          } else if (!currentFileMatchesGeneratedOutputProvenance(outputPath, artifact.output_provenance)) {
+            // Row and hash prove only content; Apply replaces only the exact published object.
+            status = 'conflict'; reasonCode = 'ARCHIVE_DESTINATION_CONFLICT'; ownership = 'invalid-provenance';
           } else {
             ownership = 'creatorcrate-owned-replace';
           }
@@ -688,7 +703,17 @@ export function createAssetProcessingPlanner({
         preventsSourceDeletion: options.deleteSource && status !== 'ready',
       });
     }
-    return { archives, blockers: [] };
+    // A requested archive that cannot be applied blocks the whole Watermark
+    // operation, matching the standalone Archives plan contract.
+    const blockers = archives.filter((archive) => archive.status !== 'ready').map((archive) => ({
+      code: archive.reasonCode,
+      reason: archive.ownership === 'invalid-provenance' || archive.ownership === 'externally-replaced'
+        ? 'CreatorCrate cannot safely replace the existing generated archive.'
+        : `The planned archive ${archive.relativePath} cannot be safely applied.`,
+      relativePath: archive.relativePath,
+      preventsSourceDeletion: options.deleteSource,
+    }));
+    return { archives, blockers };
   }
 
   async function planConvert(projectId, scope, rawOptions) {
@@ -1066,6 +1091,11 @@ export function createAssetProcessingPlanner({
             status = 'conflict';
             reasonCode = 'ARCHIVE_DESTINATION_CONFLICT';
             ownership = 'replace-disabled';
+          } else if (!currentFileMatchesGeneratedOutputProvenance(outputPath, artifact.output_provenance)) {
+            // Row and hash prove only content; Apply replaces only the exact published object.
+            status = 'conflict';
+            reasonCode = 'ARCHIVE_DESTINATION_CONFLICT';
+            ownership = 'invalid-provenance';
           } else {
             ownership = 'creatorcrate-owned-replace';
           }
@@ -1290,7 +1320,9 @@ export function createAssetProcessingPlanner({
               code: candidate.candidateOwnership.reasonCode,
               reason: candidate.candidateOwnership.reasonCode === 'MALFORMED_PROVENANCE'
                 ? 'The indexed watermark destination has malformed provenance.'
-                : 'The existing watermark destination is not owned by CreatorCrate.',
+                : candidate.candidateOwnership.unprovenReplacement
+                  ? 'CreatorCrate cannot safely replace the existing watermark output.'
+                  : 'The existing watermark destination is not owned by CreatorCrate.',
             });
           }
         }

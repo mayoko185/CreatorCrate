@@ -222,7 +222,9 @@ const AUTO_RENAME_BLOCK_REASON_MESSAGES = Object.freeze({
  *   GET  /projects/:id/assets — Asset listing page
  *   GET  /projects/:projectId/assets/:assetId — Asset viewer page
  *   POST /projects/:projectId/assets/:assetId/delete — Permanently delete the viewed asset
- *   POST /projects/:id/scan  — Trigger a manual scan
+ *   POST /projects/:id/scan  — Trigger a scan (never touches processing recovery state)
+ *   POST /projects/:id/scan/manual — The user's manual scan; accepts current project state and
+ *     settles processing recovery evidence, checkpoints and gate
  *   POST /projects/:id/assets/add-to-release — Bulk-add selected present assets to one release
  *   POST /projects/:id/assets/create-release — Open a release form for selected present assets
  *   POST /projects/:id/assets/move-selected — Batch-move selected present assets to a category
@@ -255,6 +257,9 @@ const AUTO_RENAME_BLOCK_REASON_MESSAGES = Object.freeze({
  * @param {object|null} [deps.applicationLogger]
  * @param {Function} [deps.previewProbe]
  *   Application-scoped bounded Krita preview probe used only by the viewer.
+ * @param {{ reconcileAfterManualScan(projectId: number, acceptance: object): object }} deps.processingRecoveryEvidenceService
+ *   Settles recovery evidence, checkpoints and the processing recovery gate, only after a
+ *   completed `/scan/manual` of the project and inside that scan's project operation.
  */
 export function createAssetsRouter({
   appName,
@@ -274,6 +279,7 @@ export function createAssetsRouter({
   applicationLogger = null,
   previewProbe,
   projectImageSettingsService,
+  processingRecoveryEvidenceService,
 } = {}) {
   if (!assetBrowserPreferenceService || typeof assetBrowserPreferenceService.resolveEffectiveCategory !== 'function') {
     throw new Error('createAssetsRouter requires an assetBrowserPreferenceService dependency.');
@@ -297,6 +303,9 @@ export function createAssetsRouter({
   if (!autoRenameService || typeof autoRenameService.buildPlan !== 'function'
     || typeof autoRenameService.applyPlan !== 'function') {
     throw new Error('createAssetsRouter requires an autoRenameService dependency.');
+  }
+  if (!processingRecoveryEvidenceService || typeof processingRecoveryEvidenceService.reconcileAfterManualScan !== 'function') {
+    throw new Error('createAssetsRouter requires a processingRecoveryEvidenceService dependency.');
   }
 
   function logMissingAssetRemoval(projectId, result) {
@@ -1010,8 +1019,16 @@ export function createAssetsRouter({
     }
   });
 
-  // POST /projects/:id/scan — Trigger a manual scan
-  router.post('/:id/scan', (req, res, next) => {
+  // POST /projects/:id/scan — Scan without recovery authority. Automatic
+  // callers (the Processing dialog's post-Apply refresh, older clients) land
+  // here whatever their request body says.
+  // POST /projects/:id/scan/manual — The asset browser's manual scan form.
+  // Only this server action accepts the project's current state for processing
+  // recovery: it may settle evidence and checkpoints and clear the gate.
+  router.post('/:id/scan', (req, res, next) => handleProjectScan(req, res, next, { acceptsProjectState: false }));
+  router.post('/:id/scan/manual', (req, res, next) => handleProjectScan(req, res, next, { acceptsProjectState: true }));
+
+  function handleProjectScan(req, res, next, { acceptsProjectState }) {
     const wantsJson = isEnhancedAssetRequest(req);
     try {
       const pageDefaultsService = wantsJson ? null : getPageDefaultsService(req);
@@ -1046,7 +1063,20 @@ export function createAssetsRouter({
         ));
       }
 
-      const result = assetScanner.scanProjectAssets(id);
+      // Only a completed manual scan of this project accepts its current state
+      // after a processing recovery failure; the scheduler never reaches this
+      // route. The settlement runs inside the scan's own project operation and
+      // only after the scan succeeded. A failed settlement rolls back as a
+      // whole (the project stays gated) and throws into the scan failure
+      // response below; the completed scan itself stays committed.
+      let reconciliation = null;
+      const result = acceptsProjectState
+        ? assetScanner.scanProjectAssets(id, {
+          afterScan: (_result, acceptance) => {
+            reconciliation = processingRecoveryEvidenceService.reconcileAfterManualScan(id, acceptance);
+          },
+        })
+        : assetScanner.scanProjectAssets(id);
 
       if (wantsJson) {
         return res.json({
@@ -1057,6 +1087,14 @@ export function createAssetsRouter({
             missing: result.removed,
             total: result.total,
           },
+          ...(reconciliation ? {
+            recovery: {
+              publicTrackingRetired: reconciliation.publicTrackingRetired,
+              privateMadeDispensable: reconciliation.privateMadeDispensable,
+              privateRetained: reconciliation.privateRetained,
+              groupsResolved: reconciliation.groupsResolved,
+            },
+          } : {}),
         });
       }
 
@@ -1106,7 +1144,7 @@ export function createAssetsRouter({
         pageDefaultsService,
       ));
     }
-  });
+  }
 
   // POST /projects/:id/assets/add-to-release — Bulk-add selected present
   // assets (from the current page-local selection) to one mutable release.

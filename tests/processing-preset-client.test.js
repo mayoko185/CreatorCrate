@@ -1977,3 +1977,466 @@ describe('Processing dialog preset management', () => {
     });
   });
 });
+
+// ─── Consecutive Workflow Prompt runs from one still-open dialog ─────────
+
+describe('consecutive Workflow Prompt runs in one open dialog', () => {
+  const PLAN_PATH = '/projects/1/assets/processing/workflow-prompt/plan';
+  const APPLY_PATH = '/projects/1/assets/processing/workflow-prompt/apply';
+  const PRESET_A = {
+    id: 11, operationType: 'workflow-prompt', displayName: 'Workflow A', watermarkId: null,
+    config: { positive: [{ type: 'append', text: ', run a' }], negative: [{ type: 'remove', text: 'blurry' }] },
+  };
+  const PRESET_B = {
+    id: 12, operationType: 'workflow-prompt', displayName: 'Workflow B', watermarkId: null,
+    config: { positive: [{ type: 'replace', search: 'sunset', replacement: 'sunrise' }], negative: [{ type: 'prepend', text: 'lowres, ' }] },
+  };
+
+  let doc;
+  let fetchState;
+  let applyJobIds;
+  let jobResponses;
+  let planOverrides;
+  let applyOverrides;
+
+  const ok = (body, status = 200) => ({ ok: true, status, json: async () => body });
+  const jobPayload = (id, state, { progress = null, result = null, error = null } = {}) => ({
+    ok: true, job: { id, state, progress, result, error },
+  });
+  const succeeded = (id, changedCount) => jobPayload(id, 'succeeded', {
+    result: { result: { changedCount, unchangedCount: 0 }, refreshUrl: '/projects/1/assets' },
+  });
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    doc = makeDocument();
+    fetchState = makeFetchMock();
+    fetchState.seed(PRESET_A);
+    fetchState.seed(PRESET_B);
+    applyJobIds = [];
+    jobResponses = new Map();
+    planOverrides = [];
+    applyOverrides = [];
+    const delegate = fetchState.fetchMock;
+    const fetchMock = vi.fn(async (url, init = {}) => {
+      const method = init.method || 'POST';
+      if (url === PLAN_PATH || url === APPLY_PATH) {
+        fetchState.calls.push({ url, method, body: JSON.parse(init.body) });
+        if (url === PLAN_PATH) {
+          if (planOverrides.length) return planOverrides.shift();
+          return ok({
+            ok: true,
+            operation: 'workflow-prompt',
+            plan: { counts: { total: 1, eligible: 1, changed: 1 }, items: [{ assetId: 5, relativePath: 'final/a.png', status: 'ready' }] },
+          });
+        }
+        if (applyOverrides.length) return applyOverrides.shift();
+        const jobId = applyJobIds.shift();
+        if (!jobId) throw new Error('Unexpected Workflow Prompt apply.');
+        return ok({ ok: true, operation: 'workflow-prompt', jobId }, 202);
+      }
+      const jobMatch = url.match(/^\/processing\/jobs\/([^/]+)$/);
+      if (jobMatch && method === 'GET') {
+        fetchState.calls.push({ url, method });
+        const queue = jobResponses.get(jobMatch[1]);
+        if (!queue?.length) throw new Error(`Unexpected poll for ${jobMatch[1]}.`);
+        return ok(queue.length > 1 ? queue.shift() : queue[0]);
+      }
+      return delegate(url, init);
+    });
+    vi.stubGlobal('document', doc);
+    vi.stubGlobal('fetch', fetchMock);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  function buildFixture() {
+    const fixture = buildWorkflowRoot(doc);
+    // The real Workflow dialog renders scopeSection('workflow'); the shared
+    // preset fixture omits it, so add the project scope radio Preview needs.
+    const scope = makeNode('fieldset', { 'data-processing-scope': '' });
+    scope.appendChild(makeNode('input', { type: 'radio', value: 'project', 'data-processing-scope-option': 'project' }));
+    fixture.root.insertBefore(scope, fixture.footer.error);
+    fixture.resultBody = makeNode('div', { 'data-processing-result-body': '' });
+    fixture.footer.result.appendChild(fixture.resultBody);
+    fixture.closeEvents = 0;
+    fixture.dialog.addEventListener('close', () => { fixture.closeEvents += 1; });
+    return fixture;
+  }
+
+  async function settle() {
+    await flush();
+    await vi.advanceTimersByTimeAsync(0);
+    await flush();
+  }
+
+  async function openOnce(fixture) {
+    enhanceProcessingDialogs(doc);
+    doc.dispatch('click', { target: fixture.trigger });
+    await settle();
+  }
+
+  async function selectPreset(fixture, id) {
+    fixture.preset.select.value = String(id);
+    fixture.preset.select.dispatch('change', { target: fixture.preset.select });
+    await settle();
+  }
+
+  async function click(button) {
+    button.dispatch('click', { target: button });
+    await settle();
+  }
+
+  const requestsTo = (url) => fetchState.calls.filter((call) => call.url === url);
+  const pollsFor = (jobId) => requestsTo(`/processing/jobs/${jobId}`).length;
+  const ruleValues = (fixture, side) => fixture.sides[side].list.children.map((row) => {
+    const type = row.querySelector('[data-processing-rule-operation]').value;
+    return type === 'replace'
+      ? { type, search: row.querySelector('[data-processing-rule-search]').value, replacement: row.querySelector('[data-processing-rule-replacement]').value }
+      : { type, text: row.querySelector('[data-processing-rule-text]').value };
+  });
+
+  function expectIdleAndReady(fixture) {
+    expect(fixture.root.__ccProcessingJob ?? null).toBeNull();
+    expect(fixture.root.__ccProcessingBusy).toBe(false);
+    expect(fixture.root.__ccProcessingSubmission).toBeNull();
+    expect(fixture.root.__ccProcessingJobPolling ?? null).toBeNull();
+    expect(fixture.root.__ccProcessingJobPollTimer ?? null).toBeNull();
+    expect(vi.getTimerCount()).toBe(0);
+    expect(fixture.footer.previewBtn.disabled).toBe(false);
+  }
+
+  it('consecutive Workflow Prompt success → success tracks a fresh job built from the current preset', async () => {
+    const fixture = buildFixture();
+    applyJobIds.push('job-a', 'job-b');
+    jobResponses.set('job-a', [jobPayload('job-a', 'queued'), succeeded('job-a', 1)]);
+    jobResponses.set('job-b', [
+      jobPayload('job-b', 'running', { progress: { completed: 0, total: 1 } }),
+      succeeded('job-b', 2),
+    ]);
+    await openOnce(fixture);
+
+    // Run A from preset A.
+    await selectPreset(fixture, PRESET_A.id);
+    expect(ruleValues(fixture, 'positive')).toEqual(PRESET_A.config.positive);
+    await click(fixture.footer.previewBtn);
+    expect(fixture.footer.applyBtn.disabled).toBe(false);
+    await click(fixture.footer.applyBtn);
+    expect(fixture.root.__ccProcessingJob).toMatchObject({ id: 'job-a' });
+    expect(fixture.footer.status.textContent).toBe('Processing queued.');
+    expect(fixture.footer.previewBtn.disabled).toBe(true);
+    expect(fixture.footer.applyBtn.disabled).toBe(true);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await settle();
+
+    // A reached terminal success: the dialog is still open and ready again.
+    expect(fixture.footer.status.textContent).toBe('Applied.');
+    expect(fixture.resultBody.children.map((p) => p.textContent)).toEqual(['Changed: 1']);
+    expectIdleAndReady(fixture);
+    expect(fixture.root.__ccPreviewValid).toBe(false);
+    expect(fixture.footer.applyBtn.disabled).toBe(true);
+    const jobAPolls = pollsFor('job-a');
+    expect(jobAPolls).toBe(2);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(pollsFor('job-a')).toBe(jobAPolls);
+
+    // Run B from preset B in the same dialog instance.
+    await selectPreset(fixture, PRESET_B.id);
+    expect(ruleValues(fixture, 'positive')).toEqual(PRESET_B.config.positive);
+    expect(ruleValues(fixture, 'negative')).toEqual(PRESET_B.config.negative);
+    expect(fixture.footer.result.hidden).toBe(true);
+    await click(fixture.footer.previewBtn);
+    await click(fixture.footer.applyBtn);
+    expect(fixture.root.__ccProcessingJob).toMatchObject({ id: 'job-b' });
+    expect(fixture.footer.status.textContent).toBe('Processing… 0 of 1.');
+    await vi.advanceTimersByTimeAsync(1_000);
+    await settle();
+
+    expect(fixture.footer.status.textContent).toBe('Applied.');
+    expect(fixture.resultBody.children.map((p) => p.textContent)).toEqual(['Changed: 2']);
+    expectIdleAndReady(fixture);
+    expect(pollsFor('job-a')).toBe(jobAPolls);
+    expect(pollsFor('job-b')).toBe(2);
+
+    const plans = requestsTo(PLAN_PATH).map((call) => call.body);
+    const applies = requestsTo(APPLY_PATH).map((call) => call.body);
+    expect(plans).toEqual([
+      { scope: { type: 'project' }, presetId: PRESET_A.id },
+      { scope: { type: 'project' }, presetId: PRESET_B.id },
+    ]);
+    expect(applies).toEqual(plans);
+    expect(fixture.closeEvents).toBe(0);
+  });
+
+  it('consecutive Workflow Prompt runs require a fresh Preview after success even with unchanged inputs', async () => {
+    const fixture = buildFixture();
+    applyJobIds.push('job-a', 'job-b');
+    jobResponses.set('job-a', [succeeded('job-a', 1)]);
+    jobResponses.set('job-b', [succeeded('job-b', 1)]);
+    await openOnce(fixture);
+
+    await selectPreset(fixture, PRESET_A.id);
+    await click(fixture.footer.previewBtn);
+    await click(fixture.footer.applyBtn);
+    expectIdleAndReady(fixture);
+
+    // A's Preview is retired: Apply cannot resubmit it without a new Preview.
+    await click(fixture.footer.applyBtn);
+    expect(requestsTo(APPLY_PATH)).toHaveLength(1);
+    expect(requestsTo(PLAN_PATH)).toHaveLength(1);
+
+    await click(fixture.footer.previewBtn);
+    expect(requestsTo(PLAN_PATH)).toHaveLength(2);
+    expect(fixture.footer.applyBtn.disabled).toBe(false);
+    await click(fixture.footer.applyBtn);
+    expect(requestsTo(APPLY_PATH)).toHaveLength(2);
+    expect(pollsFor('job-a')).toBe(1);
+    expect(pollsFor('job-b')).toBe(1);
+    expectIdleAndReady(fixture);
+    expect(fixture.closeEvents).toBe(0);
+  });
+
+  it('consecutive Workflow Prompt success → failure → custom run clears failed job state and serializes current rules', async () => {
+    const fixture = buildFixture();
+    applyJobIds.push('job-a', 'job-b', 'job-c');
+    jobResponses.set('job-a', [succeeded('job-a', 1)]);
+    jobResponses.set('job-b', [
+      jobPayload('job-b', 'running', { progress: { completed: 0, total: 1 } }),
+      jobPayload('job-b', 'failed', { error: { code: 'PROCESSING_FAILED', message: 'Processing failed.' } }),
+    ]);
+    jobResponses.set('job-c', [succeeded('job-c', 3)]);
+    await openOnce(fixture);
+
+    await selectPreset(fixture, PRESET_A.id);
+    await click(fixture.footer.previewBtn);
+    await click(fixture.footer.applyBtn);
+    expect(fixture.footer.status.textContent).toBe('Applied.');
+    expectIdleAndReady(fixture);
+
+    await selectPreset(fixture, PRESET_B.id);
+    await click(fixture.footer.previewBtn);
+    await click(fixture.footer.applyBtn);
+    expect(fixture.root.__ccProcessingJob).toMatchObject({ id: 'job-b' });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await settle();
+
+    // B failed: busy/polling/job ownership are released and the error is shown.
+    expect(fixture.footer.error.hidden).toBe(false);
+    expect(fixture.footer.errorText.textContent).toBe('Processing failed.');
+    expect(fixture.footer.status.textContent).toBe('');
+    expectIdleAndReady(fixture);
+    expect(pollsFor('job-b')).toBe(2);
+    // Observed contract: a failed job does not invalidate B's Preview, so
+    // Apply is re-enabled for the same, unchanged inputs.
+    expect(fixture.root.__ccPreviewValid).toBe(true);
+    expect(fixture.footer.applyBtn.disabled).toBe(false);
+
+    // Edit the rules loaded from preset B: the next request is rebuilt from
+    // the live rows as custom options, not from B's preset request.
+    const firstPositive = fixture.sides.positive.list.children[0];
+    const search = firstPositive.querySelector('[data-processing-rule-search]');
+    search.value = 'dusk';
+    search.dispatch('input', { target: search });
+    expect(fixture.preset.modified.hidden).toBe(false);
+    expect(fixture.root.__ccPreviewValid).toBe(false);
+    expect(fixture.footer.applyBtn.disabled).toBe(true);
+
+    await click(fixture.footer.previewBtn);
+    expect(fixture.footer.error.hidden).toBe(true);
+    await click(fixture.footer.applyBtn);
+    expect(fixture.footer.status.textContent).toBe('Applied.');
+    expect(fixture.resultBody.children.map((p) => p.textContent)).toEqual(['Changed: 3']);
+    expect(fixture.footer.error.hidden).toBe(true);
+    expectIdleAndReady(fixture);
+
+    const expectedCustom = {
+      scope: { type: 'project' },
+      options: {
+        positive: { rules: [{ type: 'replace', search: 'dusk', replacement: 'sunrise' }] },
+        negative: { rules: [{ type: 'prepend', text: 'lowres, ' }] },
+      },
+    };
+    const plans = requestsTo(PLAN_PATH).map((call) => call.body);
+    expect(plans).toEqual([
+      { scope: { type: 'project' }, presetId: PRESET_A.id },
+      { scope: { type: 'project' }, presetId: PRESET_B.id },
+      expectedCustom,
+    ]);
+    expect(requestsTo(APPLY_PATH).map((call) => call.body)).toEqual(plans);
+    expect(pollsFor('job-a')).toBe(1);
+    expect(pollsFor('job-b')).toBe(2);
+    expect(pollsFor('job-c')).toBe(1);
+    expect(fixture.closeEvents).toBe(0);
+  });
+
+  it('consecutive Workflow Prompt safe failure → immediate retry with unchanged inputs submits a fresh job', async () => {
+    const fixture = buildFixture();
+    applyJobIds.push('job-a', 'job-b');
+    jobResponses.set('job-a', [jobPayload('job-a', 'failed', { error: { code: 'PROCESSING_FAILED', message: 'Processing failed.' } })]);
+    jobResponses.set('job-b', [succeeded('job-b', 1)]);
+    await openOnce(fixture);
+
+    await selectPreset(fixture, PRESET_A.id);
+    await click(fixture.footer.previewBtn);
+    await click(fixture.footer.applyBtn);
+    expect(fixture.footer.errorText.textContent).toBe('Processing failed.');
+    expectIdleAndReady(fixture);
+    expect(fixture.root.__ccPreviewValid).toBe(true);
+    expect(fixture.footer.applyBtn.disabled).toBe(false);
+
+    await click(fixture.footer.applyBtn);
+    expect(fixture.footer.status.textContent).toBe('Applied.');
+    expectIdleAndReady(fixture);
+    expect(requestsTo(PLAN_PATH)).toHaveLength(1);
+    expect(requestsTo(APPLY_PATH).map((call) => call.body)).toEqual([
+      { scope: { type: 'project' }, presetId: PRESET_A.id },
+      { scope: { type: 'project' }, presetId: PRESET_A.id },
+    ]);
+    expect(pollsFor('job-a')).toBe(1);
+    expect(pollsFor('job-b')).toBe(1);
+    expect(fixture.closeEvents).toBe(0);
+  });
+
+  it('consecutive Workflow Prompt recovery required failure keeps Apply blocked until a manual scan and a fresh Preview', async () => {
+    const fixture = buildFixture();
+    const recoveryStatus = 'Manual recovery required. Inspect the project folder, run a manual scan, then run Preview again before applying.';
+    const recoveryMessage = 'Manual recovery required. CreatorCrate could not confirm the project files were restored. Inspect the project folder, run a manual scan, then run Preview again before applying.';
+    const gatedPlan = () => ({
+      ok: false, status: 409, json: async () => ({ ok: false, error: { code: 'PROCESSING_RECOVERY_REQUIRED', message: recoveryMessage } }),
+    });
+    applyJobIds.push('job-a', 'job-b');
+    jobResponses.set('job-a', [
+      jobPayload('job-a', 'running', { progress: { completed: 0, total: 1 } }),
+      jobPayload('job-a', 'failed', { error: { code: 'PROCESSING_RECOVERY_REQUIRED', message: recoveryMessage } }),
+    ]);
+    jobResponses.set('job-b', [succeeded('job-b', 1)]);
+    await openOnce(fixture);
+
+    await selectPreset(fixture, PRESET_A.id);
+    await click(fixture.footer.previewBtn);
+    await click(fixture.footer.applyBtn);
+    await vi.advanceTimersByTimeAsync(1_000);
+    await settle();
+
+    // Lifecycle recovers normally; the guidance names the manual scan.
+    expectIdleAndReady(fixture);
+    expect(pollsFor('job-a')).toBe(2);
+    expect(fixture.footer.error.hidden).toBe(false);
+    expect(fixture.footer.errorText.textContent).toBe(recoveryMessage);
+    expect(fixture.footer.status.textContent).toBe(recoveryStatus);
+    expect(fixture.footer.status.textContent).toMatch(/run a manual scan/);
+
+    // The old Preview is retired: Apply cannot resubmit it.
+    expect(fixture.root.__ccPreviewValid).toBe(false);
+    expect(fixture.footer.applyBtn.disabled).toBe(true);
+    await click(fixture.footer.applyBtn);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(requestsTo(APPLY_PATH)).toHaveLength(1);
+    expect(fetchState.calls.some((call) => /scan/.test(call.url))).toBe(false);
+
+    // Before the manual scan the server refuses Preview, so Apply stays locked.
+    planOverrides.push(gatedPlan());
+    await click(fixture.footer.previewBtn);
+    expect(fixture.root.__ccPreviewValid).toBe(false);
+    expect(fixture.footer.applyBtn.disabled).toBe(true);
+    expect(fixture.footer.errorText.textContent).toBe(recoveryMessage);
+    expect(fixture.footer.status.textContent).toBe(recoveryStatus);
+
+    // Closing and reopening the dialog restores nothing while the gate holds.
+    fixture.dialog.dispatch('close');
+    doc.dispatch('click', { target: fixture.trigger });
+    await settle();
+    expect(fixture.footer.applyBtn.disabled).toBe(true);
+    planOverrides.push(gatedPlan());
+    await click(fixture.footer.previewBtn);
+    expect(fixture.root.__ccPreviewValid).toBe(false);
+    expect(fixture.footer.applyBtn.disabled).toBe(true);
+    expect(requestsTo(APPLY_PATH)).toHaveLength(1);
+
+    // After the manual scan clears the server gate, a fresh Preview is the
+    // only way back to Apply.
+    await selectPreset(fixture, PRESET_A.id);
+    expect(fixture.footer.applyBtn.disabled).toBe(true);
+    await click(fixture.footer.previewBtn);
+    expect(fixture.footer.applyBtn.disabled).toBe(false);
+    await click(fixture.footer.applyBtn);
+    expect(fixture.footer.status.textContent).toBe('Applied.');
+    expectIdleAndReady(fixture);
+    expect(requestsTo(PLAN_PATH)).toHaveLength(4);
+    expect(requestsTo(APPLY_PATH)).toHaveLength(2);
+    expect(pollsFor('job-b')).toBe(1);
+    expect(fetchState.calls.some((call) => /scan/.test(call.url))).toBe(false);
+  });
+  it('consecutive Workflow Prompt ordinary direct Apply rejection keeps the Preview retryable', async () => {
+    const fixture = buildFixture();
+    applyOverrides.push({
+      ok: false, status: 500, json: async () => ({ ok: false, error: { code: 'PROCESSING_FAILED', message: 'Processing failed.' } }),
+    });
+    applyJobIds.push('job-a');
+    jobResponses.set('job-a', [succeeded('job-a', 1)]);
+    await openOnce(fixture);
+
+    await selectPreset(fixture, PRESET_A.id);
+    await click(fixture.footer.previewBtn);
+    await click(fixture.footer.applyBtn);
+    expect(fixture.footer.errorText.textContent).toBe('Processing failed.');
+    expect(fixture.footer.status.textContent).toBe('');
+    expectIdleAndReady(fixture);
+    expect(fixture.root.__ccPreviewValid).toBe(true);
+    expect(fixture.footer.applyBtn.disabled).toBe(false);
+
+    await click(fixture.footer.applyBtn);
+    expect(fixture.footer.status.textContent).toBe('Applied.');
+    expect(requestsTo(PLAN_PATH)).toHaveLength(1);
+    expect(requestsTo(APPLY_PATH)).toHaveLength(2);
+    expect(fixture.closeEvents).toBe(0);
+  });
+
+  it('consecutive Workflow Prompt direct Apply recovery required rejection blocks Apply until a manual scan and a fresh Preview', async () => {
+    const fixture = buildFixture();
+    const recoveryStatus = 'Manual recovery required. Inspect the project folder, run a manual scan, then run Preview again before applying.';
+    const recoveryMessage = 'Manual recovery required. CreatorCrate could not confirm the project files were restored. Inspect the project folder, run a manual scan, then run Preview again before applying.';
+    // Another dialog gated the project after this dialog's Preview succeeded.
+    applyOverrides.push({
+      ok: false, status: 409, json: async () => ({ ok: false, error: { code: 'PROCESSING_RECOVERY_REQUIRED', message: recoveryMessage } }),
+    });
+    applyJobIds.push('job-b');
+    jobResponses.set('job-b', [succeeded('job-b', 1)]);
+    await openOnce(fixture);
+
+    await selectPreset(fixture, PRESET_A.id);
+    await click(fixture.footer.previewBtn);
+    expect(fixture.root.__ccPreviewValid).toBe(true);
+    expect(fixture.footer.applyBtn.disabled).toBe(false);
+    await click(fixture.footer.applyBtn);
+
+    // Busy clears normally, but the Preview is retired and Apply stays locked.
+    expectIdleAndReady(fixture);
+    expect(fixture.root.__ccPreviewValid).toBe(false);
+    expect(fixture.footer.applyBtn.disabled).toBe(true);
+    expect(fixture.footer.error.hidden).toBe(false);
+    expect(fixture.footer.errorText.textContent).toBe(recoveryMessage);
+    expect(fixture.footer.status.textContent).toBe(recoveryStatus);
+    expect(fetchState.calls.some((call) => /^\/processing\/jobs\//.test(call.url))).toBe(false);
+
+    await click(fixture.footer.applyBtn);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(requestsTo(APPLY_PATH)).toHaveLength(1);
+    expect(fetchState.calls.some((call) => /scan/.test(call.url))).toBe(false);
+    expect(fixture.closeEvents).toBe(0);
+
+    // After the manual scan clears the server gate, a fresh Preview restores Apply.
+    await click(fixture.footer.previewBtn);
+    expect(fixture.footer.applyBtn.disabled).toBe(false);
+    await click(fixture.footer.applyBtn);
+    expect(fixture.footer.status.textContent).toBe('Applied.');
+    expectIdleAndReady(fixture);
+    expect(requestsTo(PLAN_PATH)).toHaveLength(2);
+    expect(requestsTo(APPLY_PATH)).toHaveLength(2);
+    expect(pollsFor('job-b')).toBe(1);
+    expect(fixture.closeEvents).toBe(0);
+  });
+});

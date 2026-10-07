@@ -1455,6 +1455,115 @@ describe('Processing dialog scope serialization', () => {
     expect(resultBody.children[0].textContent).toContain('Generated 1 archive artifact');
   });
 
+  describe('Watermark archive output gating', () => {
+    const ARCHIVE_PATH = 'archives/release-set/release-set_jpg.zip';
+    const readyItem = { assetId: 1, relativePath: 'Final/still.png', status: 'ready', eligible: true, operationEligibility: 'supported' };
+    const archiveRow = (status) => ({
+      kind: 'archive-jpg', format: 'zip', relativePath: ARCHIVE_PATH, quality: 80, entryCount: 1, status,
+      reasonCode: status === 'ready' ? null : 'ARCHIVE_DESTINATION_CONFLICT',
+      ownership: status === 'ready' ? 'creatorcrate-owned-replace' : 'invalid-provenance',
+    });
+    // Shape of the planner's Watermark archive blocker for an unproven generated archive.
+    const provenanceBlocker = {
+      code: 'ARCHIVE_DESTINATION_CONFLICT',
+      reason: 'CreatorCrate cannot safely replace the existing generated archive.',
+      relativePath: ARCHIVE_PATH,
+      preventsSourceDeletion: false,
+    };
+
+    async function previewWatermark({ archives, operationBlockers }) {
+      calls = [];
+      fetchMock = vi.fn(async (url, init = {}) => {
+        calls.push({ url, body: init.body ? JSON.parse(init.body) : null });
+        const json = (body) => ({ ok: true, status: 200, json: async () => body });
+        if (url === '/processing/watermarks') return json({ ok: true, watermarks: [{ id: 7, filename: 'mark.png', relativePath: 'mark.png' }] });
+        if (url === '/processing/watermarks/default') return json({ ok: true, watermarkId: 7 });
+        if (url.endsWith('/watermark/preview-image')) return { ok: true, status: 204 };
+        if (url.endsWith('/watermark/plan')) {
+          return json({
+            ok: true,
+            plan: {
+              operation: 'watermark',
+              counts: { total: 1, eligible: 1 },
+              items: [readyItem],
+              archives,
+              operationBlockers,
+            },
+          });
+        }
+        if (url.endsWith('/watermark/apply')) return json({ ok: true, result: { generatedCount: 1, requestedCount: 1 } });
+        return json({ ok: true });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+
+      const fixture = buildDialogRoot(doc, { operation: 'watermark' });
+      const planItems = makeNode('ul', { 'data-processing-plan-items': '' });
+      fixture.root.querySelector('[data-processing-plan]').appendChild(planItems);
+      const watermarkSelect = makeNode('select', { id: 'watermark-resource-select' });
+      watermarkSelect.id = 'watermark-resource-select';
+      fixture.root.append(
+        watermarkSelect,
+        makeNode('input', { type: 'hidden', 'data-processing-field': 'outputCategorySlug', 'data-processing-type': 'string', value: 'final' }),
+        makeNode('input', { type: 'hidden', 'data-processing-field': 'primaryFormat', 'data-processing-type': 'string', value: 'png' }),
+      );
+      fixture.scope.projectRadio.checked = true;
+      enhanceProcessingDialogs(doc);
+      fixture.trigger.dispatch('click', { target: fixture.trigger });
+      await flush();
+      watermarkSelect.value = '7';
+      fixture.previewBtn.dispatch('click', { target: fixture.previewBtn });
+      await flush();
+      return { ...fixture, planItems };
+    }
+
+    const planCalls = () => calls.filter((call) => call.url.endsWith('/watermark/plan'));
+    const applyCalls = () => calls.filter((call) => call.url.endsWith('/watermark/apply'));
+
+    it('surfaces a Watermark archive conflict as a blocker and keeps Apply disabled', async () => {
+      const { root, planItems, applyBtn, status } = await previewWatermark({
+        archives: [archiveRow('conflict')],
+        operationBlockers: [provenanceBlocker],
+      });
+
+      expect(planCalls()).toHaveLength(1);
+      expect(planItems.children
+        .filter((li) => li.className.split(' ').includes('processing-plan-item--conflict'))
+        .map((li) => li.textContent)).toEqual([
+        'Blocker: CreatorCrate cannot safely replace the existing generated archive. (release-set_jpg.zip)',
+      ]);
+      expect(root.__ccPreviewValid).toBe(false);
+      expect(applyBtn.disabled).toBe(true);
+      expect(status.textContent).toBe('Preview ready, but conflicts or blockers must be resolved before Apply.');
+
+      applyBtn.disabled = false;
+      applyBtn.dispatch('click', { target: applyBtn });
+      await flush();
+      expect(applyCalls()).toEqual([]);
+    });
+
+    it('enables Watermark Apply when the requested archive is replacement-ready', async () => {
+      const { root, planItems, applyBtn, status } = await previewWatermark({
+        archives: [archiveRow('ready')],
+        operationBlockers: [],
+      });
+
+      expect(planItems.children.some((li) => li.className.split(' ').includes('processing-plan-item--conflict'))).toBe(false);
+      expect(root.__ccPreviewValid).toBe(true);
+      expect(applyBtn.disabled).toBe(false);
+      expect(status.textContent).toBe('Preview ready.');
+      applyBtn.dispatch('click', { target: applyBtn });
+      await flush();
+      expect(applyCalls()).toHaveLength(1);
+    });
+
+    it('does not gate Watermark Apply on archives when no archive output is planned', async () => {
+      const { root, applyBtn } = await previewWatermark({ archives: [], operationBlockers: [] });
+
+      expect(root.__ccPreviewValid).toBe(true);
+      expect(applyBtn.disabled).toBe(false);
+    });
+  });
+
   describe('Apply gating for items the operation does not support', () => {
     const readyImage = { assetId: 1, relativePath: 'Final/still.png', status: 'ready', eligible: true, operationEligibility: 'supported' };
     const skippedVideo = (assetId, extension) => ({

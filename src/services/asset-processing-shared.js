@@ -8,6 +8,65 @@ export function isValidGeneratedOutputSha256(value) {
     && /^[0-9a-f]{64}$/i.test(value);
 }
 
+// Durable generated-output provenance: the exact filesystem object CreatorCrate itself
+// published, recorded only at a strict (exact bigint identity) publication boundary.
+// Values are exact unsigned decimals, never rounded Numbers. Birth time is an additional
+// qualifier against inode-number reuse; it never proves ownership on its own.
+// A zero birth time means the filesystem exposes none, so the tuple cannot tell a reused
+// (dev, ino) apart: it is never formatted and never grants cross-run authority. Legacy
+// `v1:<dev>:<ino>:0` values still parse, but callers must treat them as unproven.
+const PROVENANCE_VERSION = 'v1';
+const PROVENANCE_PATTERN = /^v1:(0|[1-9]\d{0,19}):([1-9]\d{0,19}):(0|[1-9]\d{0,29})$/;
+
+/** Whether a birth time can serve as a durable anti-reuse discriminator (never 0n). */
+export function isDurableBirthtimeNs(value) {
+  return typeof value === 'bigint' && value > 0n;
+}
+
+/**
+ * @param {{ dev: bigint, ino: bigint, birthtimeNs: bigint }} stats owned output tuple
+ * @returns {string|null} null when the identity is unknown (zero/non-bigint IDs) or the
+ *   birth time is not a durable discriminator
+ */
+export function formatGeneratedOutputProvenance(stats) {
+  if (!stats || typeof stats.dev !== 'bigint' || typeof stats.ino !== 'bigint'
+    || !isDurableBirthtimeNs(stats.birthtimeNs)
+    || stats.dev < 0n || stats.ino <= 0n) {
+    return null;
+  }
+  return `${PROVENANCE_VERSION}:${stats.dev}:${stats.ino}:${stats.birthtimeNs}`;
+}
+
+/**
+ * @returns {{ dev: bigint, ino: bigint, birthtimeNs: bigint }|null} null for absent or
+ *   malformed provenance, which never authorizes a destructive action
+ */
+export function parseGeneratedOutputProvenance(value) {
+  if (typeof value !== 'string') return null;
+  const match = PROVENANCE_PATTERN.exec(value);
+  if (!match) return null;
+  return { dev: BigInt(match[1]), ino: BigInt(match[2]), birthtimeNs: BigInt(match[3]) };
+}
+
+/**
+ * Read-only observation for planning: whether the regular file currently at `absPath`
+ * is exactly the object a persisted provenance tuple records (exact bigint dev, ino and
+ * a durable nonzero birth time). Absent, malformed, zero-birth-time, unmatched or
+ * unreadable provenance is false. Never authority: execution re-proves ownership itself.
+ */
+export function currentFileMatchesGeneratedOutputProvenance(absPath, provenance) {
+  const recorded = parseGeneratedOutputProvenance(provenance);
+  if (!recorded || !isDurableBirthtimeNs(recorded.birthtimeNs)) return false;
+  try {
+    const stats = fs.lstatSync(absPath, { bigint: true });
+    return !stats.isSymbolicLink() && stats.isFile()
+      && stats.dev === recorded.dev && stats.ino === recorded.ino
+      && stats.birthtimeNs === recorded.birthtimeNs;
+  } catch {
+    return false;
+  }
+}
+
 export function resolveTrustedWatermarkFile(watermarkPath, watermarkRoot) {
   if (!watermarkPath) {
     const error = new Error('No trusted watermark file is configured.');

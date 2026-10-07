@@ -9,8 +9,10 @@ import { createApp } from '../../src/app.js';
 import { createAssetManifest } from '../../src/asset-manifest.js';
 import { ensureAuthEnablement } from '../../src/auth/auth-state.js';
 import { closeDatabase, openDatabase, runMigrations } from '../../src/db.js';
+import { createProcessingRecoveryGateRepository } from '../../src/data/processing-recovery-gate-repository.js';
 import { createProcessingJobService } from '../../src/services/processing-job-service.js';
 import { createProjectOperationCoordinator } from '../../src/services/project-operation-coordinator.js';
+import { createPngChunk } from '../../src/services/workflow-prompt-editor.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../../migrations', import.meta.url));
 
@@ -28,8 +30,8 @@ function requestPath(request) {
   return new URL(request.url()).pathname;
 }
 
-function processingState(page) {
-  return page.locator('#processing-convert-dialog [data-processing-root]').evaluate((root) => ({
+function processingState(page, dialogId = 'processing-convert-dialog') {
+  return page.locator(`#${dialogId} [data-processing-root]`).evaluate((root) => ({
     busy: root.__ccProcessingBusy,
     jobId: root.__ccProcessingJob?.id || null,
     jobState: root.__ccProcessingJob?.state || null,
@@ -60,7 +62,17 @@ test.afterAll(() => {
   if (buildRoot) fs.rmSync(buildRoot, { recursive: true, force: true });
 });
 
-async function createFixture(page, executeConvert) {
+function withPngTextChunk(png, key, value) {
+  // Insert a tEXt chunk directly after the 33-byte signature + IHDR prefix.
+  const chunk = createPngChunk('tEXt', Buffer.concat([
+    Buffer.from(key, 'latin1'),
+    Buffer.from([0]),
+    Buffer.from(value, 'utf8'),
+  ]));
+  return Buffer.concat([png.subarray(0, 33), chunk, png.subarray(33)]);
+}
+
+async function createFixture(page, executeConvert, { executeWorkflowPrompt, workflowPresets = [] } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-processing-browser-'));
   const projectsRoot = path.join(root, 'projects');
   const appDataRoot = path.join(root, 'app');
@@ -71,6 +83,7 @@ async function createFixture(page, executeConvert) {
   const processingJobService = createProcessingJobService({ projectOperationCoordinator });
   const executionCalls = [];
   const renameExecutionCalls = [];
+  const workflowExecutionCalls = [];
   let server;
 
   try {
@@ -86,6 +99,10 @@ async function createFixture(page, executeConvert) {
         updateProgress({ completed: 0, total: assetIds.length });
         updateProgress({ completed: assetIds.length, total: assetIds.length });
         return { requestedCount: assetIds.length, changedCount: options.renames.length };
+      },
+      async editWorkflowPrompts(projectId, assetIds, options, updateProgress) {
+        workflowExecutionCalls.push({ assetIds, options });
+        return executeWorkflowPrompt(projectId, assetIds, options, updateProgress, workflowExecutionCalls.length);
       },
     };
     const app = createApp({ appName: 'CreatorCrate', db, projectsRoot }, {
@@ -105,9 +122,16 @@ async function createFixture(page, executeConvert) {
     expect(project.id).toBe(1);
 
     const sourcePath = path.join(projectsRoot, project.project_dir, 'final', 'source.png');
-    await sharp({
+    const sourcePng = await sharp({
       create: { width: 12, height: 12, channels: 4, background: '#336699' },
-    }).png().toFile(sourcePath);
+    }).png().toBuffer();
+    fs.writeFileSync(sourcePath, executeWorkflowPrompt
+      ? withPngTextChunk(sourcePng, 'parameters', 'sunset portrait\nNegative prompt: blurry\nSteps: 20')
+      : sourcePng);
+    const presets = workflowPresets.map((preset) => app.locals.processingPresetService.createPreset({
+      operationType: 'workflow-prompt',
+      ...preset,
+    }));
     const secondSourcePath = path.join(projectsRoot, project.project_dir, 'final', 'second.jpg');
     await sharp({
       create: { width: 12, height: 12, channels: 3, background: '#993366' },
@@ -130,6 +154,7 @@ async function createFixture(page, executeConvert) {
       db,
       dialog,
       executionCalls,
+      presets,
       processingJobService,
       project,
       projectOperationCoordinator,
@@ -137,6 +162,7 @@ async function createFixture(page, executeConvert) {
       root,
       secondSourcePath,
       sourcePath,
+      workflowExecutionCalls,
       async close() {
         if (server) {
           server.closeAllConnections();
@@ -964,6 +990,335 @@ test('overlapping stale and current polls complete, rescan, and refresh exactly 
     allowSecondPollFetch.resolve();
     releaseFirstPoll.resolve();
     await page.unroute('**/processing/jobs/*').catch(() => {});
+    await fixture.close();
+  }
+});
+
+const WORKFLOW_PRESET_A = {
+  displayName: 'Workflow A',
+  config: { positive: [{ type: 'append', text: ', run a' }], negative: [{ type: 'remove', text: 'blurry' }] },
+};
+const WORKFLOW_PRESET_B = {
+  displayName: 'Workflow B',
+  config: { positive: [{ type: 'replace', search: 'sunset', replacement: 'sunrise' }], negative: [{ type: 'prepend', text: 'lowres, ' }] },
+};
+
+async function openWorkflowDialogOnce(page, fixture) {
+  await page.locator('.asset-select-checkbox[data-asset-filename="source.png"]').setChecked(true);
+  await page.getByRole('button', { name: 'Image workflows editor', exact: true }).click();
+  const dialog = page.locator('#processing-workflow-dialog');
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('[data-processing-root]')).toHaveAttribute('data-project-id', String(fixture.project.id));
+  // Mark this exact dialog/root instance and count any close, so the test can
+  // prove every run happens without closing, reopening, or re-rendering it.
+  await dialog.evaluate((element) => {
+    window.__ccWorkflowDialogCloses = 0;
+    element.addEventListener('close', () => { window.__ccWorkflowDialogCloses += 1; });
+    element.querySelector('[data-processing-root]').__ccConsecutiveMarker = 'same-instance';
+  });
+  return dialog;
+}
+
+async function expectSameOpenWorkflowDialog(page, dialog) {
+  await expect(dialog).toBeVisible();
+  expect(await dialog.evaluate((element) => ({
+    open: element.open,
+    closes: window.__ccWorkflowDialogCloses,
+    marker: element.querySelector('[data-processing-root]').__ccConsecutiveMarker,
+  }))).toEqual({ open: true, closes: 0, marker: 'same-instance' });
+}
+
+async function selectWorkflowPreset(dialog, displayName) {
+  const dropdown = dialog.locator('#workflow-preset-select-dropdown');
+  await dropdown.locator('summary').click();
+  const option = dropdown.getByRole('radio', { name: displayName, exact: true });
+  await dropdown.locator(`label[for="${await option.getAttribute('id')}"]`).click();
+  await expect(dialog.locator('[data-processing-preset-select]')).toHaveValue(/\d+/);
+  await expect(dropdown.locator('[data-cc-dropdown-summary-current]')).toHaveText(displayName);
+}
+
+const RECOVERY_STATUS = 'Manual recovery required. Inspect the project folder, run a manual scan, then run Preview again before applying.';
+
+async function previewWorkflow(page, dialog, fixture) {
+  const planResponse = page.waitForResponse((response) => (
+    response.request().method() === 'POST'
+    && requestPath(response.request()) === `/projects/${fixture.project.id}/assets/processing/workflow-prompt/plan`
+  ));
+  await dialog.getByRole('button', { name: 'Preview', exact: true }).click();
+  expect((await planResponse).status()).toBe(200);
+  await expect(dialog.locator('[data-processing-status]')).toHaveText('Preview ready.');
+  await expect(dialog.getByRole('button', { name: 'Apply', exact: true })).toBeEnabled();
+}
+
+async function applyWorkflow(page, dialog, fixture) {
+  const applyResponsePromise = page.waitForResponse((response) => (
+    response.request().method() === 'POST'
+    && requestPath(response.request()) === `/projects/${fixture.project.id}/assets/processing/workflow-prompt/apply`
+  ));
+  await dialog.getByRole('button', { name: 'Apply', exact: true }).click();
+  const applyResponse = await applyResponsePromise;
+  expect(applyResponse.status()).toBe(202);
+  const { jobId } = await applyResponse.json();
+  expect(jobId).toEqual(expect.any(String));
+  return jobId;
+}
+
+function workflowRequestLog(page) {
+  const requests = [];
+  page.on('request', (request) => {
+    const entry = { method: request.method(), path: requestPath(request) };
+    if (entry.path.includes('/processing/workflow-prompt/')) entry.body = request.postDataJSON?.();
+    requests.push(entry);
+  });
+  return requests;
+}
+
+test('consecutive Workflow Prompt success → success in one open dialog tracks a fresh job with the current preset', async ({ page }) => {
+  const fixture = await createFixture(page, async () => ({ convertedCount: 0 }), {
+    workflowPresets: [WORKFLOW_PRESET_A, WORKFLOW_PRESET_B],
+    executeWorkflowPrompt: async (_projectId, assetIds, _options, updateProgress, run) => {
+      updateProgress({ completed: assetIds.length, total: assetIds.length });
+      return { requestedCount: assetIds.length, changedCount: run, unchangedCount: 0 };
+    },
+  });
+  const requests = workflowRequestLog(page);
+  const [presetA, presetB] = fixture.presets;
+
+  try {
+    const dialog = await openWorkflowDialogOnce(page, fixture);
+    const assetId = Number(await page.locator('.asset-select-checkbox[data-asset-filename="source.png"]').getAttribute('value'));
+    const status = dialog.locator('[data-processing-status]');
+    const applyButton = dialog.getByRole('button', { name: 'Apply', exact: true });
+    const previewButton = dialog.getByRole('button', { name: 'Preview', exact: true });
+
+    await selectWorkflowPreset(dialog, 'Workflow A');
+    await previewWorkflow(page, dialog, fixture);
+    const jobA = await applyWorkflow(page, dialog, fixture);
+    await expect(status).toHaveText('Applied.');
+    await expect(dialog.locator('[data-processing-result-body]')).toHaveText('Changed: 1');
+    expect(await processingState(page, 'processing-workflow-dialog')).toMatchObject({
+      busy: false, jobId: null, polling: false, timer: false, submission: null,
+    });
+    await expect(previewButton).toBeEnabled();
+    await expect(applyButton).toBeDisabled();
+    await expectSameOpenWorkflowDialog(page, dialog);
+    const jobAPath = `/processing/jobs/${jobA}`;
+    const jobAPolls = requests.filter(({ method, path }) => method === 'GET' && path === jobAPath).length;
+    expect(jobAPolls).toBeGreaterThan(0);
+
+    await selectWorkflowPreset(dialog, 'Workflow B');
+    await expect(dialog.locator('[data-processing-result]')).toBeHidden();
+    await previewWorkflow(page, dialog, fixture);
+    const jobB = await applyWorkflow(page, dialog, fixture);
+    expect(jobB).not.toBe(jobA);
+    await expect(status).toHaveText('Applied.');
+    await expect(dialog.locator('[data-processing-result-body]')).toHaveText('Changed: 2');
+    expect(await processingState(page, 'processing-workflow-dialog')).toMatchObject({
+      busy: false, jobId: null, polling: false, timer: false, submission: null,
+    });
+    await expect(previewButton).toBeEnabled();
+    await expect(applyButton).toBeDisabled();
+    await expectSameOpenWorkflowDialog(page, dialog);
+
+    expect(fixture.processingJobService.getJob(jobA)?.state).toBe('succeeded');
+    expect(fixture.processingJobService.getJob(jobB)?.state).toBe('succeeded');
+    expect(requests.filter(({ method, path }) => method === 'GET' && path === jobAPath)).toHaveLength(jobAPolls);
+    expect(requests.some(({ method, path }) => method === 'GET' && path === `/processing/jobs/${jobB}`)).toBe(true);
+
+    const scope = { type: 'selected', assetIds: [assetId] };
+    const bodiesFor = (operationPath) => requests
+      .filter(({ method, path }) => method === 'POST' && path === `/projects/${fixture.project.id}/assets/processing/workflow-prompt/${operationPath}`)
+      .map(({ body }) => body);
+    expect(bodiesFor('plan')).toEqual([{ scope, presetId: presetA.id }, { scope, presetId: presetB.id }]);
+    expect(bodiesFor('apply')).toEqual([{ scope, presetId: presetA.id }, { scope, presetId: presetB.id }]);
+    expect(fixture.workflowExecutionCalls.map(({ assetIds }) => assetIds)).toEqual([[assetId], [assetId]]);
+    expect(JSON.stringify(fixture.workflowExecutionCalls[0].options)).toContain(', run a');
+    expect(JSON.stringify(fixture.workflowExecutionCalls[0].options)).not.toContain('sunrise');
+    expect(JSON.stringify(fixture.workflowExecutionCalls[1].options)).toContain('sunrise');
+    expect(JSON.stringify(fixture.workflowExecutionCalls[1].options)).not.toContain(', run a');
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('consecutive Workflow Prompt success → failure → retry keeps the same open dialog usable', async ({ page }) => {
+  const fixture = await createFixture(page, async () => ({ convertedCount: 0 }), {
+    workflowPresets: [WORKFLOW_PRESET_A, WORKFLOW_PRESET_B],
+    executeWorkflowPrompt: async (_projectId, assetIds, _options, _updateProgress, run) => {
+      if (run === 2) throw new Error('Injected Workflow Prompt failure for run B.');
+      return { requestedCount: assetIds.length, changedCount: run, unchangedCount: 0 };
+    },
+  });
+  const requests = workflowRequestLog(page);
+  const [presetA, presetB] = fixture.presets;
+
+  try {
+    const dialog = await openWorkflowDialogOnce(page, fixture);
+    const assetId = Number(await page.locator('.asset-select-checkbox[data-asset-filename="source.png"]').getAttribute('value'));
+    const status = dialog.locator('[data-processing-status]');
+    const error = dialog.locator('[data-processing-error]');
+    const previewButton = dialog.getByRole('button', { name: 'Preview', exact: true });
+
+    await selectWorkflowPreset(dialog, 'Workflow A');
+    await previewWorkflow(page, dialog, fixture);
+    const jobA = await applyWorkflow(page, dialog, fixture);
+    await expect(status).toHaveText('Applied.');
+
+    await selectWorkflowPreset(dialog, 'Workflow B');
+    await previewWorkflow(page, dialog, fixture);
+    const jobB = await applyWorkflow(page, dialog, fixture);
+    expect(jobB).not.toBe(jobA);
+    await expect(error).toBeVisible();
+    await expect(error).toHaveText('Processing failed.');
+    await expect(status).toHaveText('');
+    expect(fixture.processingJobService.getJob(jobB)?.state).toBe('failed');
+    expect(await processingState(page, 'processing-workflow-dialog')).toMatchObject({
+      busy: false, jobId: null, polling: false, timer: false, submission: null,
+    });
+    await expect(previewButton).toBeEnabled();
+    await expectSameOpenWorkflowDialog(page, dialog);
+    const jobBPolls = requests.filter(({ method, path }) => method === 'GET' && path === `/processing/jobs/${jobB}`).length;
+
+    // Edit the rules B loaded; the retry must serialize the live rows.
+    const positiveSearch = dialog.locator('[data-processing-rules="positive"] [data-processing-rule-search]').first();
+    await positiveSearch.fill('portrait');
+    await expect(dialog.locator('[data-processing-preset-modified]')).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Apply', exact: true })).toBeDisabled();
+    await previewWorkflow(page, dialog, fixture);
+    await expect(error).toBeHidden();
+    const jobC = await applyWorkflow(page, dialog, fixture);
+    expect(new Set([jobA, jobB, jobC]).size).toBe(3);
+    await expect(status).toHaveText('Applied.');
+    await expect(dialog.locator('[data-processing-result-body]')).toHaveText('Changed: 3');
+    await expect(error).toBeHidden();
+    expect(await processingState(page, 'processing-workflow-dialog')).toMatchObject({
+      busy: false, jobId: null, polling: false, timer: false, submission: null,
+    });
+    await expectSameOpenWorkflowDialog(page, dialog);
+    expect(requests.filter(({ method, path }) => method === 'GET' && path === `/processing/jobs/${jobB}`)).toHaveLength(jobBPolls);
+
+    const scope = { type: 'selected', assetIds: [assetId] };
+    const custom = {
+      scope,
+      options: {
+        positive: { rules: [{ type: 'replace', search: 'portrait', replacement: 'sunrise' }] },
+        negative: { rules: [{ type: 'prepend', text: 'lowres, ' }] },
+      },
+    };
+    const bodiesFor = (operationPath) => requests
+      .filter(({ method, path }) => method === 'POST' && path === `/projects/${fixture.project.id}/assets/processing/workflow-prompt/${operationPath}`)
+      .map(({ body }) => body);
+    expect(bodiesFor('plan')).toEqual([{ scope, presetId: presetA.id }, { scope, presetId: presetB.id }, custom]);
+    expect(bodiesFor('apply')).toEqual([{ scope, presetId: presetA.id }, { scope, presetId: presetB.id }, custom]);
+    expect(fixture.workflowExecutionCalls).toHaveLength(3);
+    expect(JSON.stringify(fixture.workflowExecutionCalls[2].options)).toContain('portrait');
+  } finally {
+    await fixture.close();
+  }
+});
+
+test('consecutive Workflow Prompt recovery required failure blocks Apply until a manual scan and a fresh Preview in the same open dialog', async ({ page }) => {
+  const fixture = await createFixture(page, async () => ({ convertedCount: 0 }), {
+    workflowPresets: [WORKFLOW_PRESET_A],
+    executeWorkflowPrompt: async (_projectId, assetIds, _options, _updateProgress, run) => {
+      if (run === 1) {
+        throw Object.assign(new Error('Injected unrecoverable failure at C:/private/source.png'), { code: 'RECOVERY_REQUIRED' });
+      }
+      return { requestedCount: assetIds.length, changedCount: run, unchangedCount: 0 };
+    },
+  });
+  const requests = workflowRequestLog(page);
+
+  try {
+    const dialog = await openWorkflowDialogOnce(page, fixture);
+    const status = dialog.locator('[data-processing-status]');
+    const error = dialog.locator('[data-processing-error]');
+    const applyButton = dialog.getByRole('button', { name: 'Apply', exact: true });
+    const previewButton = dialog.getByRole('button', { name: 'Preview', exact: true });
+
+    await selectWorkflowPreset(dialog, 'Workflow A');
+    await previewWorkflow(page, dialog, fixture);
+    const jobA = await applyWorkflow(page, dialog, fixture);
+    await expect(status).toHaveText(RECOVERY_STATUS);
+    await expect(status).toContainText('run a manual scan');
+    await expect(error).toBeVisible();
+    await expect(error).toContainText('Inspect the project folder');
+    await expect(error).not.toContainText('private');
+    expect(fixture.processingJobService.getJob(jobA)?.error?.code).toBe('PROCESSING_RECOVERY_REQUIRED');
+    expect(await processingState(page, 'processing-workflow-dialog')).toMatchObject({
+      busy: false, jobId: null, polling: false, timer: false, submission: null,
+    });
+    await expect(previewButton).toBeEnabled();
+    await expect(applyButton).toBeDisabled();
+    await expectSameOpenWorkflowDialog(page, dialog);
+
+    const applyPath = `/projects/${fixture.project.id}/assets/processing/workflow-prompt/apply`;
+    const appliesFor = () => requests.filter(({ method, path }) => method === 'POST' && path === applyPath);
+    await applyButton.click({ force: true });
+    expect(appliesFor()).toHaveLength(1);
+    expect(requests.some(({ path }) => /scan/.test(path))).toBe(false);
+
+    // Preview before the manual scan is refused and cannot unlock Apply.
+    const gatedPlan = page.waitForResponse((response) => (
+      response.request().method() === 'POST'
+      && requestPath(response.request()) === `/projects/${fixture.project.id}/assets/processing/workflow-prompt/plan`
+    ));
+    await previewButton.click();
+    expect((await gatedPlan).status()).toBe(409);
+    await expect(status).toHaveText(RECOVERY_STATUS);
+    await expect(applyButton).toBeDisabled();
+
+    // The user's manual scan of the project reconciles it and lifts the gate.
+    const scanStatus = await page.evaluate(async ({ projectId, csrf }) => (await fetch(`/projects/${projectId}/scan/manual`, {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'X-CSRF-Token': csrf },
+    })).status, { projectId: fixture.project.id, csrf: await dialog.locator('[data-processing-root]').getAttribute('data-csrf') });
+    expect(scanStatus).toBe(200);
+    await expect(applyButton).toBeDisabled();
+
+    await previewWorkflow(page, dialog, fixture);
+    const jobB = await applyWorkflow(page, dialog, fixture);
+    expect(jobB).not.toBe(jobA);
+    await expect(status).toHaveText('Applied.');
+    await expectSameOpenWorkflowDialog(page, dialog);
+    expect(fixture.workflowExecutionCalls).toHaveLength(2);
+
+    // Race: this dialog holds a valid Preview when another run gates the
+    // project, so the server refuses the direct Apply itself.
+    await previewWorkflow(page, dialog, fixture);
+    createProcessingRecoveryGateRepository(fixture.db).markRecoveryRequired(fixture.project.id);
+    const gatedApply = page.waitForResponse((response) => (
+      response.request().method() === 'POST' && requestPath(response.request()) === applyPath
+    ));
+    await applyButton.click();
+    const gatedApplyResponse = await gatedApply;
+    expect(gatedApplyResponse.status()).toBe(409);
+    expect((await gatedApplyResponse.json()).error?.code).toBe('PROCESSING_RECOVERY_REQUIRED');
+    await expect(status).toHaveText(RECOVERY_STATUS);
+    await expect(error).toBeVisible();
+    await expect(error).toContainText('Inspect the project folder');
+    await expect(applyButton).toBeDisabled();
+    expect(await processingState(page, 'processing-workflow-dialog')).toMatchObject({
+      busy: false, jobId: null, polling: false, timer: false, submission: null,
+    });
+    await expectSameOpenWorkflowDialog(page, dialog);
+    await applyButton.click({ force: true });
+    expect(appliesFor()).toHaveLength(3);
+    expect(fixture.workflowExecutionCalls).toHaveLength(2);
+
+    const rescanStatus = await page.evaluate(async ({ projectId, csrf }) => (await fetch(`/projects/${projectId}/scan/manual`, {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'X-CSRF-Token': csrf },
+    })).status, { projectId: fixture.project.id, csrf: await dialog.locator('[data-processing-root]').getAttribute('data-csrf') });
+    expect(rescanStatus).toBe(200);
+    await expect(applyButton).toBeDisabled();
+    await previewWorkflow(page, dialog, fixture);
+    const jobC = await applyWorkflow(page, dialog, fixture);
+    expect(jobC).not.toBe(jobB);
+    await expect(status).toHaveText('Applied.');
+    await expectSameOpenWorkflowDialog(page, dialog);
+    expect(fixture.workflowExecutionCalls).toHaveLength(3);
+  } finally {
     await fixture.close();
   }
 });

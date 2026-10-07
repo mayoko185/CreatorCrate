@@ -8,6 +8,7 @@ const ARTIFACT_COLUMNS = [
   'generated_watermark_id',
   'sha256',
   'size_bytes',
+  'output_provenance',
   'created_at',
   'updated_at',
 ];

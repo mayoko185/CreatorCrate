@@ -11,6 +11,8 @@ import { createAssetCategoryRepository } from '../src/data/asset-category-reposi
 import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browser-preference-repository.js';
 import { buildAssetRevisionToken } from '../src/services/preview-service.js';
 import { createAppMetaRepository } from '../src/data/app-meta-repository.js';
+import { createProcessingRecoveryGateRepository } from '../src/data/processing-recovery-gate-repository.js';
+import { createAutomaticProjectScanScheduler } from '../src/services/automatic-project-scan-scheduler.js';
 import { createProjectImageSettingsService } from '../src/services/project-image-settings-service.js';
 import { projectImagePolicyFingerprint } from '../src/services/project-image-policy.js';
 import { createReleaseService } from '../src/services/release-service.js';
@@ -386,7 +388,7 @@ describe('asset browser HTTP workflow', () => {
 
     expect(res2.text).toContain('Assets — Browser Title Test');
     expectProjectReturnLead(res2.text, { href: `/projects/${id}`, title: 'Browser Title Test' });
-    expect(res2.text).toContain(`action="/projects/${id}/scan"`);
+    expect(res2.text).toContain(`action="/projects/${id}/scan/manual"`);
     expect(renderedAsset).toContain('project-asset.png');
     expect(res2.text).not.toContain('other-project-asset.png');
   });
@@ -1786,7 +1788,7 @@ describe('asset browser HTTP workflow', () => {
     expect(new URL(decodeHtmlHref(anchorHref(viewer.text, 'asset-preview-nav--next')), 'http://localhost').pathname)
       .toBe(`/projects/${id}/assets/${assets.bravo.id}`);
 
-    const scanForm = response.text.match(/<form method="post" action="\/projects\/\d+\/scan"[^>]*>[\s\S]*?<\/form>/)?.[0];
+    const scanForm = response.text.match(/<form method="post" action="\/projects\/\d+\/scan\/manual"[^>]*>[\s\S]*?<\/form>/)?.[0];
     expect(scanForm).toContain('<input type="hidden" name="category" value="all">');
 
     const pageSizeForm = response.text.match(/<form class="page-size-form"[^>]*>[\s\S]*?<\/form>/)?.[0];
@@ -2096,7 +2098,7 @@ describe('asset browser HTTP workflow', () => {
       const scanNowButtons = html.match(/<button\b(?=[^>]*aria-label="Manually scan project files")[^>]*>[\s\S]*?<\/button>/g) || [];
       expect(scanNowButtons).toHaveLength(1);
 
-      const formMatch = html.match(new RegExp(`<form\\b[^>]*\\baction="/projects/${id}/scan"[^>]*>[\\s\\S]*?<\\/form>`));
+      const formMatch = html.match(new RegExp(`<form\\b[^>]*\\baction="/projects/${id}/scan/manual"[^>]*>[\\s\\S]*?<\\/form>`));
       expect(formMatch).not.toBeNull();
       const form = formMatch[0];
       expect(form.match(/\bmethod="([^"]+)"/)?.[1].toLowerCase()).toBe('post');
@@ -3378,7 +3380,7 @@ describe('asset browser HTTP workflow', () => {
       expect(scanIndex).toBeGreaterThanOrEqual(0);
       expect(removeMissingIndex).toBeGreaterThan(scanIndex);
       expect(editIndex).toBeGreaterThan(removeMissingIndex);
-      const scanForm = headingActions.match(new RegExp(`<form method="post" action="/projects/${id}/scan" class="inline-form">[\\s\\S]*?<\\/form>`))?.[0] || '';
+      const scanForm = headingActions.match(new RegExp(`<form method="post" action="/projects/${id}/scan/manual" class="inline-form">[\\s\\S]*?<\\/form>`))?.[0] || '';
       expect(scanForm).toContain('name="_csrf"');
       expect(scanForm).toContain('type="submit" aria-label="Manually scan project files" data-tooltip="Manually scan project files"');
       expect(scanForm).toContain('<path d="M4 10a8 8 0 1 1 2.3 5.7"/>');
@@ -5760,6 +5762,148 @@ describe('asset browser HTTP workflow', () => {
     });
   });
 
+  describe('processing recovery gate is cleared only by a completed manual scan', () => {
+    const CONVERT = { format: 'webp', quality: 85, originalHandling: 'keep' };
+
+    async function createScannedProject(title) {
+      const res = await createProject(title);
+      const id = Number(res.headers.location.replace('/projects/', ''));
+      fs.writeFileSync(path.join(getProjectDir(title), 'art.png'), await makePng(16, 16));
+      await agent.post(`/projects/${id}/scan`).type('form').send({ _csrf: csrfToken }).expect(302);
+      const [asset] = app.locals.assetScanner.repository.findByProjectId(id);
+      return { id, assetId: asset.id, body: { scope: { type: 'selected', assetIds: [asset.id] }, options: CONVERT } };
+    }
+
+    function processing(id, mode, body) {
+      return agent.post(`/projects/${id}/assets/processing/convert/${mode}`)
+        .set('Accept', 'application/json')
+        .set('X-CSRF-Token', csrfToken)
+        .send(body);
+    }
+
+    async function waitForJob(jobId) {
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        const { body } = await agent.get(`/processing/jobs/${jobId}`).set('Accept', 'application/json').expect(200);
+        if (!['queued', 'running'].includes(body.job.state)) return body.job;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error('Processing job did not finish.');
+    }
+
+    const RECOVERY_REQUIRED = {
+      ok: false,
+      error: {
+        code: 'PROCESSING_RECOVERY_REQUIRED',
+        message: 'Manual recovery required. CreatorCrate could not confirm the project files were restored. Inspect the project folder, run a manual scan, then run Preview again before applying.',
+      },
+    };
+
+    it('keeps the gate through Preview, Apply, and an automatic scan; a manual scan clears only its own project', async () => {
+      const gate = createProcessingRecoveryGateRepository(db);
+      const a = await createScannedProject('Recovery Gate A');
+      const b = await createScannedProject('Recovery Gate B');
+      gate.markRecoveryRequired(a.id);
+      gate.markRecoveryRequired(b.id);
+
+      expect((await processing(a.id, 'plan', a.body).expect(409)).body).toEqual(RECOVERY_REQUIRED);
+      expect((await processing(a.id, 'apply', a.body).expect(409)).body).toEqual(RECOVERY_REQUIRED);
+      expect(gate.isRecoveryRequired(a.id)).toBe(true);
+
+      // A scheduled cycle scans every eligible project successfully but is
+      // not the user's manual reconciliation.
+      const scheduler = createAutomaticProjectScanScheduler({
+        intervalMinutes: 5,
+        getScanDependencies: () => ({
+          projectService: app.locals.projectService,
+          assetScanner: app.locals.assetScanner,
+          appMetaRepository: createAppMetaRepository(db),
+        }),
+        logger: { log() {}, error() {} },
+      });
+      expect(await scheduler.runCycle()).toMatchObject({ scanned: 2, failed: 0 });
+      expect(gate.isRecoveryRequired(a.id)).toBe(true);
+      expect(gate.isRecoveryRequired(b.id)).toBe(true);
+      await processing(a.id, 'plan', a.body).expect(409);
+
+      // The Processing dialog's automatic post-Apply refresh never clears it,
+      // and neither does any other /scan request, marked or not: clearing
+      // authority belongs to the server's manual scan action alone.
+      await agent.post(`/projects/${a.id}/scan`)
+        .set('Accept', 'application/json')
+        .set('X-CSRF-Token', csrfToken)
+        .send({ trigger: 'processing-refresh' })
+        .expect(200);
+      await agent.post(`/projects/${a.id}/scan`)
+        .set('Accept', 'application/json')
+        .set('X-CSRF-Token', csrfToken)
+        .send({})
+        .expect(200);
+      await agent.post(`/projects/${a.id}/scan`)
+        .set('Accept', 'application/json')
+        .set('X-CSRF-Token', csrfToken)
+        .send({ trigger: 'manual' })
+        .expect(200);
+      await agent.post(`/projects/${a.id}/scan`).type('form').send({ _csrf: csrfToken }).expect(302);
+      expect(gate.isRecoveryRequired(a.id)).toBe(true);
+      await processing(a.id, 'plan', a.body).expect(409);
+
+      await agent.post(`/projects/${a.id}/scan/manual`).type('form').send({ _csrf: csrfToken }).expect(302);
+      expect(gate.isRecoveryRequired(a.id)).toBe(false);
+      expect(gate.isRecoveryRequired(b.id)).toBe(true);
+      await processing(b.id, 'plan', b.body).expect(409);
+
+      // A fresh Preview is now possible and Apply proceeds normally.
+      const preview = await processing(a.id, 'plan', a.body).expect(200);
+      expect(preview.body.plan.assetIds).toEqual([a.assetId]);
+      const applied = await processing(a.id, 'apply', a.body).expect(202);
+      expect(await waitForJob(applied.body.jobId)).toMatchObject({ state: 'succeeded' });
+    });
+
+    it('leaves the gate active when the manual scan fails', async () => {
+      const gate = createProcessingRecoveryGateRepository(db);
+      const a = await createScannedProject('Recovery Gate Failed Scan');
+      gate.markRecoveryRequired(a.id);
+      // Another project's marker at the root makes the scan fail before reconciliation.
+      fs.writeFileSync(path.join(getProjectDir('Recovery Gate Failed Scan'), '.creatorcrate-owner'), `creatorcrate-owner/1 ${'c'.repeat(64)}
+`);
+
+      const form = await agent.post(`/projects/${a.id}/scan/manual`).type('form').send({ _csrf: csrfToken }).expect(302);
+      expect(new URL(form.headers.location, 'http://localhost').searchParams.get('scan_error')).toBe('filesystem');
+      await agent.post(`/projects/${a.id}/scan/manual`)
+        .set('Accept', 'application/json')
+        .type('form')
+        .send({ _csrf: csrfToken })
+        .expect(409);
+      expect(gate.isRecoveryRequired(a.id)).toBe(true);
+    });
+    it('reports a failed gate clear after a successful manual scan and stays gated', async () => {
+      const gate = createProcessingRecoveryGateRepository(db);
+      const a = await createScannedProject('Recovery Gate Clear Failure');
+      gate.markRecoveryRequired(a.id);
+      db.exec(`CREATE TRIGGER fail_gate_clear BEFORE DELETE ON app_meta
+        WHEN OLD.key LIKE 'processing.recovery_required.%'
+        BEGIN SELECT RAISE(ABORT, 'disk I/O error'); END`);
+      try {
+        const form = await agent.post(`/projects/${a.id}/scan/manual`).type('form').send({ _csrf: csrfToken }).expect(302);
+        const location = new URL(form.headers.location, 'http://localhost').searchParams;
+        expect(location.get('scan_error')).toBe('filesystem');
+        expect(location.get('scan_result')).toBeNull();
+        const json = await agent.post(`/projects/${a.id}/scan/manual`)
+          .set('Accept', 'application/json')
+          .type('form')
+          .send({ _csrf: csrfToken })
+          .expect(500);
+        expect(json.body).toMatchObject({ ok: false, error: { code: 'SCAN_FAILED' } });
+        expect(gate.isRecoveryRequired(a.id)).toBe(true);
+        await processing(a.id, 'plan', a.body).expect(409);
+      } finally {
+        db.exec('DROP TRIGGER IF EXISTS fail_gate_clear');
+      }
+      await agent.post(`/projects/${a.id}/scan/manual`).type('form').send({ _csrf: csrfToken }).expect(302);
+      expect(gate.isRecoveryRequired(a.id)).toBe(false);
+    });
+  });
+
   describe('manual scan context preservation and result notices', () => {
     it('scan form carries normalized browser context as hidden fields', async () => {
       const res = await createProject('Scan Context Form');
@@ -5769,7 +5913,7 @@ describe('asset browser HTTP workflow', () => {
       await agent.post(`/projects/${id}/scan`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
 
       const res2 = await agent.get(`/projects/${id}/assets?search=hero&presence=present&sort=size&order=desc&pageSize=50`).expect(200);
-      const formMatch = res2.text.match(/<form method="post" action="\/projects\/\d+\/scan"[^>]*>[\s\S]*?<\/form>/);
+      const formMatch = res2.text.match(/<form method="post" action="\/projects\/\d+\/scan\/manual"[^>]*>[\s\S]*?<\/form>/);
       expect(formMatch).not.toBeNull();
       const form = formMatch[0];
       expect(form).toContain('<input type="hidden" name="category" value="all">');

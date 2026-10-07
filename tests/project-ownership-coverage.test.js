@@ -48,6 +48,7 @@ import { createPngChunk, PNG_SIGNATURE } from '../src/services/workflow-prompt-e
 import { resolveProjectDir, formatProjectDirName } from '../src/storage/project-storage.js';
 import { PROJECT_OWNERSHIP_MARKER_FILENAME } from '../src/storage/project-ownership-marker.js';
 import { createTestProjectOptionCatalogueService } from './helpers/project-option-catalogue.js';
+import { processingRecoveryEvidenceDependencies } from './helpers/processing-recovery-evidence.js';
 import { makeZip } from './helpers/zip-fixture.js';
 import { makeAnimatedWebp } from './helpers/animated-webp.js';
 import { countMarkerOpens, snapshotTree, substituteProjectRoot } from './helpers/project-ownership.js';
@@ -202,6 +203,7 @@ describe('PM-1B ownership coverage', () => {
       processingConcurrencyService: createProcessingConcurrencyService({ concurrency: 1 }),
       alreadyCoordinatedCapability: capability,
       projectDirectoryOwnershipRepository: ownershipRepository,
+      ...processingRecoveryEvidenceDependencies(db),
       ...overrides,
     });
   }

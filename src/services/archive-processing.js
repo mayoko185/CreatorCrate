@@ -213,11 +213,14 @@ export function deriveArchivePlans({ sources, options, projectSlug }) {
   return plans;
 }
 
-async function writeZipArchive(filePath, entries) {
+async function writeZipArchive(filePath, entries, descriptor) {
   const { default: yazl } = await import('yazl');
   await new Promise((resolve, reject) => {
     const zip = new yazl.ZipFile();
-    const output = fs.createWriteStream(filePath, { flags: 'wx' });
+    // A caller-owned descriptor stays open for the caller to verify and close.
+    const output = descriptor === undefined
+      ? fs.createWriteStream(filePath, { flags: 'wx' })
+      : fs.createWriteStream(null, { fd: descriptor, autoClose: false });
     let settled = false;
     const finish = (error) => {
       if (settled) return;
@@ -226,7 +229,7 @@ async function writeZipArchive(filePath, entries) {
       else resolve();
     };
     output.once('error', finish);
-    output.once('close', () => finish());
+    output.once(descriptor === undefined ? 'close' : 'finish', () => finish());
     zip.outputStream.once('error', finish);
     zip.outputStream.pipe(output);
     try {
@@ -244,12 +247,18 @@ async function writeZipArchive(filePath, entries) {
   });
 }
 
-export async function writeArchiveFile(filePath, format, entries) {
+/**
+ * Writes an archive exclusively at `filePath`, or into `descriptor` when the caller already
+ * created the file exclusively and owns that open descriptor (the caller closes it).
+ */
+export async function writeArchiveFile(filePath, format, entries, { descriptor } = {}) {
   try {
     if (format === '7z') {
-      fs.writeFileSync(filePath, await create7zArchive(entries), { flag: 'wx' });
+      const bytes = await create7zArchive(entries);
+      if (descriptor === undefined) fs.writeFileSync(filePath, bytes, { flag: 'wx' });
+      else fs.writeFileSync(descriptor, bytes);
     } else {
-      await writeZipArchive(filePath, entries);
+      await writeZipArchive(filePath, entries, descriptor);
     }
   } catch (cause) {
     if (cause instanceof ArchiveProcessingError) throw cause;

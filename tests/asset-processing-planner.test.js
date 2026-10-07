@@ -720,9 +720,11 @@ describe('asset processing planner', () => {
         },
       },
     });
+    // Matching metadata and hash with legacy NULL provenance is not replaceable (Apply
+    // refuses it), so Preview reports the same permanent blocker.
     expect(patreonPlan.items.find((item) => item.assetId === safeSource.id)).toMatchObject({
-      status: 'ready',
-      destinationOwnership: 'creatorcrate-owned-overwrite',
+      status: 'conflict',
+      reasonCode: 'FOREIGN_DESTINATION',
     });
     expect(patreonPlan.items.find((item) => item.assetId === missingSource.id)).toMatchObject({
       status: 'ready',
@@ -757,6 +759,212 @@ describe('asset processing planner', () => {
     expect(snapshotTree(projectDir)).toEqual(beforeTree);
     expect(snapshotDatabase(db)).toEqual(beforeDatabase);
     expect(fs.readdirSync(projectDir).filter((name) => name.startsWith('.creatorcrate-') && name !== '.creatorcrate-owner')).toEqual([]);
+  });
+
+  describe('generated-output replacement provenance', () => {
+    const UNSAFE_REPLACE_REASON = 'CreatorCrate cannot safely replace the existing watermark output.';
+
+    function provenanceOf(absolutePath, { birthtimeNs } = {}) {
+      const stats = fs.lstatSync(absolutePath, { bigint: true });
+      return `v1:${stats.dev}:${stats.ino}:${birthtimeNs ?? stats.birthtimeNs}`;
+    }
+
+    // Same bytes, separate filesystem object: the replacement exists before the original
+    // is removed, so it cannot reuse the original's identity.
+    function replaceWithSameBytes(absolutePath) {
+      const replacementPath = `${absolutePath}.replacement`;
+      fs.writeFileSync(replacementPath, fs.readFileSync(absolutePath));
+      fs.unlinkSync(absolutePath);
+      fs.renameSync(replacementPath, absolutePath);
+    }
+
+    function hasDurableBirthtime(absolutePath) {
+      return fs.lstatSync(absolutePath, { bigint: true }).birthtimeNs > 0n;
+    }
+
+    async function writeOwnedWatermarkOutput(name) {
+      const source = writeAsset(`Final/${name}.png`);
+      const buffer = await imageBuffer();
+      const output = writeAsset(`wm/${name}_wm.png`, buffer);
+      db.prepare('UPDATE assets SET category_id = ?, nested_path = ? WHERE id = ?').run(wmCategory.id, '', output.id);
+      setWatermarkProvenance(output, source, 'patreon', sha256(buffer));
+      const absolutePath = path.join(projectDir, 'wm', `${name}_wm.png`);
+      const setOutputProvenance = (value) => db.prepare(
+        'UPDATE assets SET generated_output_provenance = ? WHERE id = ?',
+      ).run(value, output.id);
+      return { source, absolutePath, setOutputProvenance };
+    }
+
+    function planWatermarkOutputs(assetIds) {
+      return planner.planWatermark(project.id, { type: 'selected', assetIds }, {
+        mode: 'patreon', primaryFormat: 'png', secondaryFormat: null, resizedFormat: null, deleteSource: false,
+      });
+    }
+
+    function expectUnsafeReplacement(item) {
+      expect(item).toMatchObject({
+        status: 'conflict',
+        reasonCode: 'FOREIGN_DESTINATION',
+        reason: UNSAFE_REPLACE_REASON,
+      });
+      expect(item).not.toHaveProperty('destinationOwnership');
+      expect(item.plannedDestinations).toEqual([
+        expect.objectContaining({ status: 'conflict', reasonCode: 'FOREIGN_DESTINATION' }),
+      ]);
+    }
+
+    // Host-independent: NULL and zero-birth-time provenance never prove ownership, so
+    // these blockers must hold even where the filesystem reports no birth time.
+    it('blocks Watermark replacement when the output has NULL or zero-birthtime provenance', async () => {
+      const legacy = await writeOwnedWatermarkOutput('legacy');
+      const zeroBirth = await writeOwnedWatermarkOutput('zero-birth');
+      const absent = writeAsset('Final/absent.png');
+      zeroBirth.setOutputProvenance(provenanceOf(zeroBirth.absolutePath, { birthtimeNs: 0n }));
+
+      const beforeTree = snapshotTree(projectDir);
+      const beforeDatabase = snapshotDatabase(db);
+      const plan = await planWatermarkOutputs([legacy.source.id, zeroBirth.source.id, absent.id]);
+      const itemFor = (source) => plan.items.find((item) => item.assetId === source.id);
+
+      expectUnsafeReplacement(itemFor(legacy.source));
+      expectUnsafeReplacement(itemFor(zeroBirth.source));
+      expect(itemFor(absent)).toMatchObject({
+        status: 'ready',
+        destinationOwnership: 'new-destination',
+        plannedDestination: { existsInIndex: false, existsOnFilesystem: false },
+      });
+      // Preview never records or upgrades provenance from the current path.
+      expect(snapshotTree(projectDir)).toEqual(beforeTree);
+      expect(snapshotDatabase(db)).toEqual(beforeDatabase);
+      expect(db.prepare('SELECT generated_output_provenance FROM assets WHERE relative_path = ?')
+        .pluck().get('wm/legacy_wm.png')).toBeNull();
+    });
+
+    // A valid tuple can only be recorded from a host that reports a durable birth time.
+    it('replaces only the provenance-recorded Watermark output object', async (ctx) => {
+      const owned = await writeOwnedWatermarkOutput('owned');
+      const substituted = await writeOwnedWatermarkOutput('substituted');
+      if (!hasDurableBirthtime(owned.absolutePath)) ctx.skip();
+      owned.setOutputProvenance(provenanceOf(owned.absolutePath));
+      substituted.setOutputProvenance(provenanceOf(substituted.absolutePath));
+      replaceWithSameBytes(substituted.absolutePath);
+
+      const beforeTree = snapshotTree(projectDir);
+      const beforeDatabase = snapshotDatabase(db);
+      const plan = await planWatermarkOutputs([owned.source.id, substituted.source.id]);
+      const itemFor = (source) => plan.items.find((item) => item.assetId === source.id);
+
+      expectUnsafeReplacement(itemFor(substituted.source));
+      expect(itemFor(owned.source)).toMatchObject({
+        status: 'ready',
+        destinationOwnership: 'creatorcrate-owned-overwrite',
+        plannedDestinations: [expect.objectContaining({ status: 'planned', reasonCode: null })],
+      });
+      expect(snapshotTree(projectDir)).toEqual(beforeTree);
+      expect(snapshotDatabase(db)).toEqual(beforeDatabase);
+    });
+
+    async function planArchiveReplacement(generatedBy, planFor) {
+      const initial = await planFor();
+      const target = initial.archives[0];
+      expect(target).toMatchObject({ status: 'ready', ownership: 'new-artifact' });
+      const absolutePath = path.join(projectDir, ...target.relativePath.split('/'));
+      fs.mkdirSync(path.dirname(absolutePath), { recursive: true });
+      const bytes = Buffer.from(`previous ${target.kind} archive`);
+      fs.writeFileSync(absolutePath, bytes);
+      const artifactId = Number(db.prepare(`
+        INSERT INTO generated_artifacts (project_id, relative_path, kind, generated_by, sha256, size_bytes)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(project.id, target.relativePath, target.kind, generatedBy, sha256(bytes), bytes.length).lastInsertRowid);
+      const setOutputProvenance = (value) => db.prepare(
+        'UPDATE generated_artifacts SET output_provenance = ? WHERE id = ?',
+      ).run(value, artifactId);
+      // Returns the whole plan: an archive conflict must also block the operation.
+      const planTarget = async () => {
+        const beforeTree = snapshotTree(projectDir);
+        const beforeArtifacts = db.prepare('SELECT * FROM generated_artifacts ORDER BY id').all();
+        const plan = await planFor();
+        expect(snapshotTree(projectDir)).toEqual(beforeTree);
+        expect(db.prepare('SELECT * FROM generated_artifacts ORDER BY id').all()).toEqual(beforeArtifacts);
+        return { plan, archive: plan.archives.find((archive) => archive.relativePath === target.relativePath) };
+      };
+      return { absolutePath, relativePath: target.relativePath, setOutputProvenance, planTarget };
+    }
+
+    const BLOCKED_ARCHIVE = { status: 'conflict', reasonCode: 'ARCHIVE_DESTINATION_CONFLICT', ownership: 'invalid-provenance' };
+
+    function expectArchiveBlocked({ plan, archive }, relativePath, blockerReason) {
+      expect(archive).toMatchObject(BLOCKED_ARCHIVE);
+      expect(plan.operationBlockers).toEqual([expect.objectContaining({
+        code: 'ARCHIVE_DESTINATION_CONFLICT',
+        reason: blockerReason(relativePath),
+        relativePath,
+      })]);
+    }
+
+    // Host-independent: the stored tuples are synthetic, so no durable birth time is needed.
+    async function expectArchiveReplacementBlockedWithoutDurableProvenance(generatedBy, planFor, blockerReason) {
+      const { absolutePath, relativePath, setOutputProvenance, planTarget } = await planArchiveReplacement(generatedBy, planFor);
+
+      // Legacy NULL provenance: row and hash match, but the object is unproven.
+      expectArchiveBlocked(await planTarget(), relativePath, blockerReason);
+
+      // Zero birth time is never a durable discriminator.
+      setOutputProvenance(provenanceOf(absolutePath, { birthtimeNs: 0n }));
+      expectArchiveBlocked(await planTarget(), relativePath, blockerReason);
+    }
+
+    // A valid tuple can only be recorded from a host that reports a durable birth time.
+    async function expectArchiveReplacementRequiresRecordedObject(ctx, generatedBy, planFor, blockerReason) {
+      const { absolutePath, relativePath, setOutputProvenance, planTarget } = await planArchiveReplacement(generatedBy, planFor);
+      if (!hasDurableBirthtime(absolutePath)) ctx.skip();
+
+      // The exact provenance-recorded object may be replaced.
+      setOutputProvenance(provenanceOf(absolutePath));
+      const ready = await planTarget();
+      expect(ready.archive).toMatchObject({ status: 'ready', reasonCode: null, ownership: 'creatorcrate-owned-replace' });
+      expect(ready.plan.operationBlockers).toEqual([]);
+
+      // A same-byte substitute is a different object.
+      replaceWithSameBytes(absolutePath);
+      expectArchiveBlocked(await planTarget(), relativePath, blockerReason);
+    }
+
+    const archiveCases = [
+      {
+        label: 'Watermark archive',
+        generatedBy: 'watermark',
+        blockerReason: () => 'CreatorCrate cannot safely replace the existing generated archive.',
+        planFor: () => {
+          const source = writeAsset('Final/archive-source.png');
+          return () => planner.planWatermark(project.id, { type: 'selected', assetIds: [source.id] }, {
+            mode: 'custom', primaryFormat: 'png', secondaryFormat: null, resizedFormat: null, deleteSource: false,
+            makeArchives: true, replaceExistingArchives: true, setName: 'Provenance Set',
+          });
+        },
+      },
+      {
+        label: 'Archives',
+        generatedBy: 'archives',
+        blockerReason: (relativePath) => `The planned archive ${relativePath} cannot be safely applied.`,
+        planFor: () => {
+          const source = writeAsset('Final/archives-source.png');
+          return () => planner.planArchives(project.id, { type: 'selected', assetIds: [source.id] }, {
+            makeArchives: true, replaceExistingArchives: true, setName: 'Provenance Archives',
+          });
+        },
+      },
+    ];
+
+    for (const { label, generatedBy, blockerReason, planFor } of archiveCases) {
+      it(`blocks ${label} replacement when the archive has NULL or zero-birthtime provenance`, async () => {
+        await expectArchiveReplacementBlockedWithoutDurableProvenance(generatedBy, planFor(), blockerReason);
+      });
+
+      it(`replaces only the provenance-recorded ${label} object`, async (ctx) => {
+        await expectArchiveReplacementRequiresRecordedObject(ctx, generatedBy, planFor(), blockerReason);
+      });
+    }
   });
 
   it('previews ZIP and CBZ artifacts without writing them and reports resized-only blockers', async () => {

@@ -2,6 +2,7 @@ import express from 'express';
 import { AssetProcessingError } from '../services/asset-processing-service.js';
 import { AssetProcessingScopeError } from '../services/asset-processing-scope-service.js';
 import { ProjectOwnershipError } from '../services/project-directory-ownership.js';
+import { PROCESSING_RECOVERY_REQUIRED_FAILURE } from '../services/processing-job-service.js';
 import { WatermarkServiceError } from '../services/watermark-service.js';
 import { WatermarkScaleMapServiceError } from '../services/watermark-scale-map-service.js';
 import {
@@ -307,7 +308,12 @@ function assertApplyablePlan(plan, operation) {
   return assetIds;
 }
 
-function createExecutionHandler({ operation, mode, projectService, assetRepository, assetProcessingPlanner, assetProcessingService, processingPresetService, processingJobService, alreadyCoordinatedProcessingExecutor }) {
+function sendRecoveryRequired(res) {
+  const { code, message } = PROCESSING_RECOVERY_REQUIRED_FAILURE;
+  return sendError(res, 409, code, message);
+}
+
+function createExecutionHandler({ operation, mode, projectService, assetRepository, assetProcessingPlanner, assetProcessingService, processingPresetService, processingJobService, processingRecoveryGate, alreadyCoordinatedProcessingExecutor }) {
   const methods = OPERATION_METHODS[operation];
   return async (req, res, next) => {
     let reservation = null;
@@ -318,6 +324,9 @@ function createExecutionHandler({ operation, mode, projectService, assetReposito
       if (project.archived_at || project.status === 'archived') {
         return sendError(res, 409, 'PROJECT_ARCHIVED', 'Archived projects cannot be processed.');
       }
+      // Until a manual scan reconciles the project, neither a Preview nor an
+      // Apply may describe or act on its uncertain files.
+      if (processingRecoveryGate.isRecoveryRequired(projectId)) return sendRecoveryRequired(res);
 
       let { scope, options } = parseExecutionRequest(req.body, {
         operation, projectId, assetRepository, processingPresetService,
@@ -325,6 +334,9 @@ function createExecutionHandler({ operation, mode, projectService, assetReposito
 
       reservation = mode === 'apply' ? processingJobService.reserveSubmission(projectId) : null;
       const plan = await assetProcessingPlanner[methods.plan](projectId, scope, options);
+      // Another job may have left the project gated while the planner ran:
+      // no usable plan and no new job once the gate exists.
+      if (processingRecoveryGate.isRecoveryRequired(projectId)) return sendRecoveryRequired(res);
       if (mode === 'plan') {
         return res.json({ ok: true, operation, plan });
       }
@@ -341,14 +353,26 @@ function createExecutionHandler({ operation, mode, projectService, assetReposito
         assetCount: assetIds.length,
         reservation,
         execute: async ({ jobId, updateProgress }) => {
+          // The gate row is durable before any file is touched: a job queued
+          // behind one that left the project gated is refused here, and a
+          // failed write fails this job before it can change anything.
+          const hold = processingRecoveryGate.holdForProcessing(projectId);
           const jobProgress = (progress) => updateProgress(progress);
           jobProgress.jobId = jobId;
-          return {
-          result: await alreadyCoordinatedProcessingExecutor[methods.apply](
-            projectId, assetIds, options, jobProgress,
-          ),
-          refreshUrl,
-          };
+          let result;
+          try {
+            result = await alreadyCoordinatedProcessingExecutor[methods.apply](
+              projectId, assetIds, options, jobProgress,
+            );
+          } catch (error) {
+            // An unresolved rollback keeps the row, already durable, as the
+            // project gate before the job becomes terminal.
+            if (error?.code === 'RECOVERY_REQUIRED') hold.retain();
+            else hold.release();
+            throw error;
+          }
+          hold.release();
+          return { result, refreshUrl };
         },
       });
 
@@ -379,6 +403,7 @@ export function createProcessingRouter({
   watermarkScaleMapService,
   processingPresetService,
   processingJobService,
+  processingRecoveryGate,
   alreadyCoordinatedProcessingExecutor,
   applicationLogger = null,
 } = {}) {
@@ -421,6 +446,11 @@ export function createProcessingRouter({
       || typeof processingJobService.reserveSubmission !== 'function') {
       throw new TypeError('processingJobService is required for processing execution routes');
     }
+    if (!processingRecoveryGate
+      || typeof processingRecoveryGate.isRecoveryRequired !== 'function'
+      || typeof processingRecoveryGate.holdForProcessing !== 'function') {
+      throw new TypeError('processingRecoveryGate is required for processing execution routes');
+    }
     if (!alreadyCoordinatedProcessingExecutor
       || typeof alreadyCoordinatedProcessingExecutor !== 'object') {
       throw new TypeError('alreadyCoordinatedProcessingExecutor is required for processing execution routes');
@@ -433,10 +463,10 @@ export function createProcessingRouter({
         || typeof operationService?.[methods.serviceMethod || methods.apply] !== 'function'
         || typeof alreadyCoordinatedProcessingExecutor[methods.apply] !== 'function') continue;
       router.post(`/projects/:id/assets/processing/${operation}/plan`, createExecutionHandler({
-        operation, mode: 'plan', projectService, assetRepository, assetProcessingPlanner, assetProcessingService, processingPresetService,
+        operation, mode: 'plan', projectService, assetRepository, assetProcessingPlanner, assetProcessingService, processingPresetService, processingRecoveryGate,
       }));
       router.post(`/projects/:id/assets/processing/${operation}/apply`, createExecutionHandler({
-        operation, mode: 'apply', projectService, assetRepository, assetProcessingPlanner, assetProcessingService, processingPresetService, processingJobService, alreadyCoordinatedProcessingExecutor,
+        operation, mode: 'apply', projectService, assetRepository, assetProcessingPlanner, assetProcessingService, processingPresetService, processingJobService, processingRecoveryGate, alreadyCoordinatedProcessingExecutor,
       }));
     }
 
@@ -449,10 +479,16 @@ export function createProcessingRouter({
           if (project.archived_at || project.status === 'archived') {
             return sendError(res, 409, 'PROJECT_ARCHIVED', 'Archived projects cannot be processed.');
           }
+          // The preview reads and renders a project file; an unresolved
+          // project's files are not rendered until a manual scan.
+          if (processingRecoveryGate.isRecoveryRequired(projectId)) return sendRecoveryRequired(res);
           const { scope, options } = parseExecutionRequest(req.body, {
             operation: 'watermark', projectId, assetRepository, processingPresetService,
           });
           const preview = await assetProcessingPlanner.renderWatermarkPreview(projectId, scope, options);
+          // Rendering is asynchronous; a same-project job may have reached
+          // recovery meanwhile, so its result must not be sent.
+          if (processingRecoveryGate.isRecoveryRequired(projectId)) return sendRecoveryRequired(res);
           if (!preview) return res.status(204).end();
           return res
             .type(preview.contentType)

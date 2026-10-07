@@ -13,6 +13,17 @@ const PROCESSING_FAILURE = Object.freeze({
   message: 'Processing failed.',
 });
 
+// Filesystem state could not be positively restored or verified, so the
+// project stays gated until the user inspects it and runs a manual scan.
+export const PROCESSING_RECOVERY_REQUIRED_FAILURE = Object.freeze({
+  code: 'PROCESSING_RECOVERY_REQUIRED',
+  message: 'Manual recovery required. CreatorCrate could not confirm the project files were restored. Inspect the project folder, run a manual scan, then run Preview again before applying.',
+});
+
+function clientFailureFor(error) {
+  return error?.code === 'RECOVERY_REQUIRED' ? PROCESSING_RECOVERY_REQUIRED_FAILURE : PROCESSING_FAILURE;
+}
+
 function assertPositiveProjectId(projectId) {
   if (!Number.isSafeInteger(projectId) || projectId <= 0) {
     throw new TypeError('Processing jobs require a positive integer project ID.');
@@ -43,7 +54,7 @@ function snapshot(job) {
     state: job.state,
     progress: job.progress ? { ...job.progress } : null,
     result: job.state === PROCESSING_JOB_STATES.SUCCEEDED ? job.result : null,
-    error: job.state === PROCESSING_JOB_STATES.FAILED ? { ...PROCESSING_FAILURE } : null,
+    error: job.state === PROCESSING_JOB_STATES.FAILED ? { ...(job.failure || PROCESSING_FAILURE) } : null,
   };
 }
 
@@ -224,6 +235,7 @@ export function createProcessingJobService({
       state: PROCESSING_JOB_STATES.QUEUED,
       progress: null,
       result: null,
+      failure: null,
     };
     jobs.set(job.id, job);
     activeJobIds.add(job.id);
@@ -243,6 +255,7 @@ export function createProcessingJobService({
         completeJob(job, PROCESSING_JOB_STATES.SUCCEEDED);
         logLifecycle('info', 'processing.job.succeeded', job, { resultSummary: safeResultSummary(job.result) });
       } catch (error) {
+        job.failure = clientFailureFor(error);
         completeJob(job, PROCESSING_JOB_STATES.FAILED);
         logLifecycle('error', 'processing.job.failed', job, { error });
       }

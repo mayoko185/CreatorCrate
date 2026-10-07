@@ -904,11 +904,55 @@ describe('app construction — asset actions chunk 3 wiring', () => {
     expect(dependencyInstrumentation.assetRouters[0].args[0]).not.toHaveProperty('assetProcessingPlanner');
   });
 
+  it('wires the recovery evidence recorder over the shared connection into asset processing', () => {
+    const app = buildApp();
+    const recorder = app.locals.processingRecoveryEvidenceRecorder;
+
+    expect(recorder).toBeTruthy();
+    expect(app.locals.assetProcessingService.recoveryEvidenceRecorder).toBe(recorder);
+    // Same connection: a group written through the app's recorder is visible to a
+    // repository over the test's own handle, and to the app's evidence repository.
+    const projectId = Number(db.prepare(`
+      INSERT INTO projects (title, slug, status, project_type) VALUES ('Wired', 'wired', 'tbd', 'images')
+    `).run().lastInsertRowid);
+    const group = recorder.startMutationGroup({ projectId, operation: 'convert', runId: 'job-wired' });
+    expect(db.prepare('SELECT run_id FROM processing_recovery_mutation_groups WHERE group_id = ?')
+      .pluck().get(group.groupId)).toBe('job-wired');
+    expect(app.locals.processingRecoveryEvidenceRepository.findMutationGroup(projectId, group.groupId))
+      .toMatchObject({ runId: 'job-wired', checkpoint: null });
+  });
+
   it('preserves an injected native asset processing service', () => {
     const injected = { convertAssets: vi.fn() };
     const app = buildApp({ assetProcessingService: injected });
 
     expect(app.locals.assetProcessingService).toBe(injected);
+  });
+
+  it('wires recovery evidence cleanup over the same repository and project operation coordinator', async () => {
+    const coordinator = createProjectOperationCoordinator();
+    const app = buildApp({ projectOperationCoordinator: coordinator });
+    const service = app.locals.processingRecoveryEvidenceService;
+    const repository = app.locals.processingRecoveryEvidenceRepository;
+    const projectId = Number(db.prepare(`
+      INSERT INTO projects (title, slug, status, project_type) VALUES ('Cleanup', 'cleanup', 'tbd', 'images')
+    `).run().lastInsertRowid);
+    const group = repository.createMutationGroup({ projectId, operation: 'convert', runId: 'cleanup-wired' });
+    const row = repository.createEvidence({
+      projectId, mutationGroupId: group.groupId, artifactRole: 'originals-copy', retentionReason: 'residue',
+      artifactPath: 'Final/originals/source.png', lifecycle: 'dispensable',
+    });
+    expect(service.listProjectEvidence(projectId)[0].evidenceId).toBe(row.evidenceId);
+    const run = vi.spyOn(coordinator, 'runAsync');
+    expect(await service.cleanupEvidence(projectId, [row.evidenceId])).toEqual([
+      expect.objectContaining({ status: 'blocked', reason: 'public-tracking' }),
+    ]);
+    expect(run).toHaveBeenCalledExactlyOnceWith(projectId, expect.any(Function));
+    await Promise.resolve();
+    let contending;
+    coordinator.run(projectId, () => { contending = service.cleanupEvidence(projectId, [row.evidenceId]); });
+    await expect(contending).rejects.toMatchObject({ code: 'PROJECT_OPERATION_IN_PROGRESS' });
+    expect(repository.findEvidence(projectId, row.evidenceId)).toEqual(row);
   });
 
   it('omits the Assets router when filesystem roots are unavailable', () => {

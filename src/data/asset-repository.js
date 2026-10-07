@@ -391,17 +391,99 @@ export function createAssetRepository(db) {
     WHERE project_id = ? AND relative_path = ?
   `);
 
+  // Durable provenance of a generated output is internal ownership state for
+  // processing, so it is read separately and never included in ASSET_COLUMNS.
+  const findGeneratedOutputProvenanceStmt = db.prepare(`
+    SELECT generated_output_provenance
+    FROM assets
+    WHERE project_id = ? AND id = ?
+  `).pluck();
+  // A rolled-back replacement restores the prior output's bytes as a new file, so the row's
+  // provenance must describe that restored object. Compare-and-set against the provenance
+  // and content the row held when processing began; nothing else about the row changes.
+  const reconcileGeneratedOutputProvenanceStmt = db.prepare(`
+    UPDATE assets
+    SET generated_output_provenance = ?
+    WHERE project_id = ?
+      AND id = ?
+      AND relative_path = ?
+      AND generated_by = 'watermark'
+      AND generated_output_sha256 IS ?
+      AND generated_output_provenance IS ?
+    RETURNING id
+  `).pluck();
+  const reconcileGeneratedOutputProvenanceTx = db.transaction((projectId, updates) => {
+    if (!Array.isArray(updates)) {
+      throw new TypeError('Generated output provenance reconciliation requires an array.');
+    }
+    for (const update of updates) {
+      const reconciled = reconcileGeneratedOutputProvenanceStmt.get(
+        update.provenance ?? null,
+        projectId,
+        update.assetId,
+        update.expectedRelativePath,
+        update.expectedGeneratedOutputSha256 ?? null,
+        update.expectedProvenance ?? null,
+      );
+      if (reconciled === undefined) {
+        const error = new Error('Generated output provenance did not match the expected database state.');
+        error.code = 'STALE_STATE';
+        throw error;
+      }
+    }
+    return updates.length;
+  });
+  // The generated-artifact counterpart: a rolled-back archive replacement restores the prior
+  // archive's bytes as a new file. Compare-and-set against the path, hash and provenance the
+  // row held when processing began; nothing else about the row changes.
+  const reconcileGeneratedArtifactProvenanceStmt = db.prepare(`
+    UPDATE generated_artifacts
+    SET output_provenance = ?
+    WHERE project_id = ?
+      AND id = ?
+      AND relative_path = ?
+      AND sha256 = ?
+      AND output_provenance IS ?
+    RETURNING id
+  `).pluck();
+  const reconcileGeneratedArtifactProvenanceTx = db.transaction((projectId, updates) => {
+    if (!Array.isArray(updates)) {
+      throw new TypeError('Generated artifact provenance reconciliation requires an array.');
+    }
+    for (const update of updates) {
+      const reconciled = reconcileGeneratedArtifactProvenanceStmt.get(
+        update.provenance ?? null,
+        projectId,
+        update.artifactId,
+        update.expectedRelativePath,
+        update.expectedSha256,
+        update.expectedProvenance ?? null,
+      );
+      if (reconciled === undefined) {
+        const error = new Error('Generated artifact provenance did not match the expected database state.');
+        error.code = 'STALE_STATE';
+        throw error;
+      }
+    }
+    return updates.length;
+  });
+
   const insertGeneratedArtifactStmt = db.prepare(`
     INSERT INTO generated_artifacts (
-      project_id, relative_path, kind, generated_by, generated_mode, generated_watermark_id, sha256, size_bytes
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    RETURNING id, project_id, relative_path, kind, generated_by, generated_mode, generated_watermark_id, sha256, size_bytes, created_at, updated_at
+      project_id, relative_path, kind, generated_by, generated_mode, generated_watermark_id, sha256, size_bytes,
+      output_provenance
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    RETURNING id, project_id, relative_path, kind, generated_by, generated_mode, generated_watermark_id, sha256, size_bytes, output_provenance, created_at, updated_at
   `);
+  // output_provenance is always rewritten: a replacement records the new output's
+  // provenance, or NULL when its publication was not strictly proven.
   const updateGeneratedArtifactStmt = db.prepare(`
     UPDATE generated_artifacts
-    SET sha256 = ?, size_bytes = ?, generated_by = ?, generated_mode = ?, generated_watermark_id = ?, updated_at = datetime('now')
+    SET sha256 = ?, size_bytes = ?, generated_by = ?, generated_mode = ?, generated_watermark_id = ?,
+        output_provenance = ?, updated_at = datetime('now')
     WHERE project_id = ? AND id = ? AND relative_path = ? AND kind = ? AND sha256 = ? AND generated_watermark_id IS ?
-    RETURNING id, project_id, relative_path, kind, generated_by, generated_mode, generated_watermark_id, sha256, size_bytes, created_at, updated_at
+      AND output_provenance IS ?
+    RETURNING id, project_id, relative_path, kind, generated_by, generated_mode, generated_watermark_id, sha256, size_bytes, output_provenance, created_at, updated_at
   `);
 
   const findPresentProjectAssetsStmt = db.prepare(`
@@ -491,8 +573,8 @@ export function createAssetRepository(db) {
   `);
 
   const insertWatermarkOutputStmt = db.prepare(`
-    INSERT INTO assets (project_id, relative_path, category_id, nested_path, filename, extension, mime_type, size_bytes, modified_at, is_present, last_seen_at, missing_since, generated_by, generated_source_asset_id, generated_source_relative_path, generated_mode, generated_variant, generated_output_sha256, generated_watermark_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), NULL, 'watermark', ?, ?, ?, ?, ?, ?)
+    INSERT INTO assets (project_id, relative_path, category_id, nested_path, filename, extension, mime_type, size_bytes, modified_at, is_present, last_seen_at, missing_since, generated_by, generated_source_asset_id, generated_source_relative_path, generated_mode, generated_variant, generated_output_sha256, generated_watermark_id, generated_output_provenance)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, datetime('now'), NULL, 'watermark', ?, ?, ?, ?, ?, ?, ?)
     RETURNING ${ASSET_COLUMNS.join(', ')}
   `);
 
@@ -523,6 +605,7 @@ export function createAssetRepository(db) {
         generated_variant = ?,
         generated_output_sha256 = ?,
         generated_watermark_id = ?,
+        generated_output_provenance = ?,
         source_generation = source_generation + 1,
         updated_at = datetime('now')
     WHERE project_id = ?
@@ -535,6 +618,7 @@ export function createAssetRepository(db) {
       AND generated_variant IS ?
       AND generated_output_sha256 IS ?
       AND generated_watermark_id IS ?
+      AND generated_output_provenance IS ?
       AND extension IS ?
       AND size_bytes IS ?
       AND modified_at IS ?
@@ -995,6 +1079,7 @@ export function createAssetRepository(db) {
         replacement.generatedVariant ?? null,
         replacement.generatedOutputSha256,
         replacement.generatedWatermarkId ?? null,
+        replacement.generatedOutputProvenance ?? null,
         projectId,
         replacement.assetId,
         replacement.expectedOldRelativePath,
@@ -1004,6 +1089,7 @@ export function createAssetRepository(db) {
         replacement.expectedGeneratedVariant ?? null,
         replacement.expectedGeneratedOutputSha256 ?? null,
         replacement.expectedGeneratedWatermarkId ?? null,
+        replacement.expectedGeneratedOutputProvenance ?? null,
         replacement.expectedExtension ?? null,
         replacement.expectedSizeBytes ?? null,
         replacement.expectedModifiedAt ?? null,
@@ -1049,6 +1135,7 @@ export function createAssetRepository(db) {
           output.generatedVariant ?? null,
           output.generatedOutputSha256,
           output.generatedWatermarkId ?? null,
+          output.generatedOutputProvenance ?? null,
         ));
       } catch (err) {
         if (isGeneratedArtifactPathUniqueConstraintError(err)) {
@@ -1068,12 +1155,14 @@ export function createAssetRepository(db) {
         artifact.generatedBy,
         artifact.generatedMode ?? null,
         artifact.generatedWatermarkId ?? null,
+        artifact.outputProvenance ?? null,
         projectId,
         artifact.id,
         artifact.relativePath,
         artifact.kind,
         artifact.expectedSha256,
         artifact.expectedGeneratedWatermarkId ?? null,
+        artifact.expectedOutputProvenance ?? null,
       );
       if (!updated) {
         const error = new Error('Generated artifact replacement did not match the expected database state.');
@@ -1094,6 +1183,7 @@ export function createAssetRepository(db) {
           artifact.generatedWatermarkId ?? null,
           artifact.sha256,
           artifact.sizeBytes,
+          artifact.outputProvenance ?? null,
         ));
       } catch (err) {
         if (isGeneratedArtifactPathUniqueConstraintError(err)) {
@@ -1491,6 +1581,39 @@ export function createAssetRepository(db) {
      */
     findByProjectIdAndPath(projectId, relativePath) {
       return findByPathStmt.get(projectId, relativePath);
+    },
+
+    /**
+     * The persisted publication provenance of a generated output, or null when
+     * none was recorded (legacy row, or a publication without strict proof).
+     * @returns {string|null}
+     */
+    findGeneratedOutputProvenance(projectId, assetId) {
+      return findGeneratedOutputProvenanceStmt.get(projectId, assetId) ?? null;
+    },
+
+    /**
+     * Atomically rewrites the provenance of generated outputs whose prior bytes a rolled-back
+     * processing run restored as new files. Every row must still hold the expected path,
+     * output hash and provenance, or nothing changes (STALE_STATE).
+     * @param {number} projectId
+     * @param {Array<{assetId: number, expectedRelativePath: string, expectedGeneratedOutputSha256: string, expectedProvenance: string|null, provenance: string|null}>} updates
+     * @returns {number} rows reconciled
+     */
+    reconcileGeneratedOutputProvenance(projectId, updates) {
+      return reconcileGeneratedOutputProvenanceTx(projectId, updates);
+    },
+
+    /**
+     * Atomically rewrites the provenance of generated artifacts (archives) whose prior bytes a
+     * rolled-back processing run restored as new files. Every row must still hold the expected
+     * path, hash and provenance, or nothing changes (STALE_STATE).
+     * @param {number} projectId
+     * @param {Array<{artifactId: number, expectedRelativePath: string, expectedSha256: string, expectedProvenance: string|null, provenance: string|null}>} updates
+     * @returns {number} rows reconciled
+     */
+    reconcileGeneratedArtifactProvenance(projectId, updates) {
+      return reconcileGeneratedArtifactProvenanceTx(projectId, updates);
     },
 
     /**

@@ -92,6 +92,43 @@ describe('processing job service', () => {
     expect(service.hasActiveJobs()).toBe(false);
   });
 
+  it('classifies RECOVERY_REQUIRED failures without exposing the thrown error', async () => {
+    const service = createService();
+    const failure = Object.assign(new Error('Could not restore C:/secret/project/prompt.png'), {
+      code: 'RECOVERY_REQUIRED',
+      cause: new Error('EPERM C:/secret'),
+      recoveryDiagnostics: { path: 'C:/secret/project/prompt.png' },
+    });
+    const jobId = service.enqueue({ projectId: 1, execute: () => { throw failure; } });
+
+    await settle();
+    const job = service.getJob(jobId);
+    expect(job).toMatchObject({
+      state: 'failed',
+      result: null,
+      error: { code: 'PROCESSING_RECOVERY_REQUIRED' },
+    });
+    expect(Object.keys(job.error).sort()).toEqual(['code', 'message']);
+    expect(job.error.message).toMatch(/Inspect the project folder/);
+    expect(JSON.stringify(job)).not.toContain('secret');
+  });
+
+  it('keeps verified-rollback filesystem failures as ordinary retryable failures', async () => {
+    const service = createService();
+    const jobId = service.enqueue({
+      projectId: 1,
+      execute: () => {
+        throw Object.assign(new Error('Prompt write failed and was rolled back.'), { code: 'FILESYSTEM_OPERATION_FAILED' });
+      },
+    });
+
+    await settle();
+    expect(service.getJob(jobId)).toMatchObject({
+      state: 'failed',
+      error: { code: 'PROCESSING_FAILED', message: 'Processing failed.' },
+    });
+  });
+
   it('accepts progress updates only while a job is running', async () => {
     const service = createService();
     let begin;

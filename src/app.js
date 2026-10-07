@@ -14,6 +14,7 @@ import { createProjectsRouter } from './routes/projects.js';
 import { createAssetsRouter } from './routes/assets.js';
 import { createProjectAssetCategoryManagementRouter } from './routes/project-asset-category-management.js';
 import { createProcessingRouter } from './routes/processing.js';
+import { createProcessingRecoveryRouter } from './routes/processing-recovery.js';
 import { createAssetLibraryRouter } from './routes/asset-library.js';
 import { createAssetLibraryCompatibilityRouter } from './routes/asset-library-compatibility.js';
 import { createProjectAssetCategoriesRouter } from './routes/project-asset-categories.js';
@@ -57,6 +58,8 @@ import { createBookPrimaryImageRepository } from './data/book-primary-image-repo
 import { createBookPagePreviewSettingsRepository } from './data/book-page-preview-settings-repository.js';
 import { createAssetCategoryService } from './services/asset-category-service.js';
 import { createAssetBrowserPreferenceRepository } from './data/asset-browser-preference-repository.js';
+import { createProcessingRecoveryGateRepository } from './data/processing-recovery-gate-repository.js';
+import { createProcessingRecoveryEvidenceRepository } from './data/processing-recovery-evidence-repository.js';
 import { createAppMetaRepository } from './data/app-meta-repository.js';
 import { APPLICATION_LOG_DEFAULT_PAGE_SIZE, createApplicationLogRepository } from './data/application-log-repository.js';
 import { createProjectPageDefaultRepository } from './data/project-page-default-repository.js';
@@ -94,6 +97,9 @@ import { createProjectAssetCategoryService } from './services/project-asset-cate
 import { createAssetScanner } from './services/asset-scanner.js';
 import { createAssetActionService } from './services/asset-action-service.js';
 import { createAssetProcessingService } from './services/asset-processing-service.js';
+import { createProcessingRecoveryEvidenceRecorder } from './services/processing-recovery-evidence-recorder.js';
+import { createProcessingRecoveryEvidenceService } from './services/processing-recovery-evidence-service.js';
+import { createManualScanAcceptanceAuthority } from './services/manual-scan-acceptance.js';
 import { createAssetProcessingScopeService } from './services/asset-processing-scope-service.js';
 import { createAssetProcessingPlanner } from './services/asset-processing-planner.js';
 import { createWatermarkService } from './services/watermark-service.js';
@@ -273,9 +279,12 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
 
   app.use(express.json());
   app.use(express.urlencoded({ extended: true }));
-  app.use(express.static(path.join(__dirname, 'static'), {
+  const staticAssets = express.static(path.join(__dirname, 'static'), {
     index: false,
-  }));
+  });
+  // Recovery Details is SQLite-only, including middleware before its protected route.
+  app.use((req, res, next) => /^\/projects\/[^/]+\/assets\/processing\/recovery\/?$/i.test(req.path)
+    ? next() : staticAssets(req, res, next));
   app.use(VITE_PUBLIC_PATH, express.static(opts.viteDistRoot || VITE_DIST_ROOT, {
     index: false,
     dotfiles: 'ignore',
@@ -466,6 +475,9 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   const projectOperationCoordinator = opts.projectOperationCoordinator || createProjectOperationCoordinator();
   const processingJobService = opts.processingJobService
     || createProcessingJobService({ projectOperationCoordinator, applicationLogger });
+  // Durable per-project processing gate after an unresolved rollback; set by
+  // the processing routes' job hook, cleared only by a manual project scan.
+  const processingRecoveryGate = createProcessingRecoveryGateRepository(db, { appMetaRepository });
 
   // PM-1C2A: explicit operator ownership recovery. Only the HTTP route below
   // invokes it; no scan, mutation, lifecycle, or startup path does. It shares
@@ -491,6 +503,9 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     }) : null);
 
   const projectPrimaryImageRepository = createProjectPrimaryImageRepository(db);
+  // WP8B: per-scan, one-shot recovery acceptance. The scanner may only mint it (inside a
+  // successful manual scan's afterScan); the Recovery Evidence service may only consume it.
+  const manualScanAcceptanceAuthority = createManualScanAcceptanceAuthority();
   const assetScanner = createAssetScanner(db, projectsRoot, {
     projectService,
     assetCategoryService,
@@ -498,6 +513,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     previewCategorySettingsService,
     projectPrimaryImageRepository,
     projectDirectoryOwnershipRepository,
+    manualScanAcceptance: manualScanAcceptanceAuthority.grant,
     applicationLogger,
   });
   app.locals.assetScanner = assetScanner;
@@ -682,6 +698,23 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
   // rebuilds; direct createApp callers still receive one app-owned pool.
   const processingConcurrencyService = opts.processingConcurrencyService
     || createProcessingConcurrencyService({ concurrency: opts.processingConcurrency });
+  // Recovery evidence shares the application connection, so its finalization can
+  // commit in the same transaction as the asset/index writes of a processing run.
+  const processingRecoveryEvidenceRepository = createProcessingRecoveryEvidenceRepository(db);
+  const processingRecoveryEvidenceRecorder = createProcessingRecoveryEvidenceRecorder({
+    db, repository: processingRecoveryEvidenceRepository,
+  });
+  app.locals.processingRecoveryEvidenceRepository = processingRecoveryEvidenceRepository;
+  app.locals.processingRecoveryEvidenceRecorder = processingRecoveryEvidenceRecorder;
+  app.locals.processingRecoveryEvidenceService = projectsRoot
+    ? createProcessingRecoveryEvidenceService({
+      db, repository: processingRecoveryEvidenceRepository,
+      projectRepository: projectService.repository,
+      projectDirectoryOwnershipRepository, projectsRoot, projectOperationCoordinator,
+      // Cleared only inside the manual scan's settlement transaction (WP8B).
+      processingRecoveryGate,
+      manualScanAcceptance: manualScanAcceptanceAuthority.verifier,
+    }) : null;
   const assetProcessingService = opts.assetProcessingService || (projectsRoot
     ? createAssetProcessingService({
       projectRepository: projectService.repository,
@@ -696,6 +729,8 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       watermarkScaleMap: opts.watermarkScaleMap,
       alreadyCoordinatedCapability: processingJobExecutionCapability,
       projectDirectoryOwnershipRepository,
+      processingRecoveryEvidenceRecorder,
+      processingRecoveryEvidenceRepository,
       applicationLogger,
     })
     : null);
@@ -1051,8 +1086,16 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     watermarkScaleMapService,
     processingPresetService,
     processingJobService,
+    processingRecoveryGate,
     alreadyCoordinatedProcessingExecutor,
     applicationLogger,
+  }));
+
+  app.use('/projects', createProcessingRecoveryRouter({
+    projectService,
+    processingRecoveryEvidenceRepository,
+    processingRecoveryGate,
+    processingRecoveryEvidenceService: app.locals.processingRecoveryEvidenceService,
   }));
 
   // Media routes stay before the asset browser/viewer router. The media
@@ -1091,6 +1134,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
       // primary-image services' ownership-gated probe.
       previewProbe: previewService?.inspectKritaPreviewPresentation,
       projectImageSettingsService: app.locals.projectImageSettingsService,
+      processingRecoveryEvidenceService: app.locals.processingRecoveryEvidenceService,
     }));
     app.use('/projects', createProjectAssetCategoryManagementRouter({
       appName,

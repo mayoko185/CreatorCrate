@@ -7,6 +7,7 @@
    appDialogBindForm submit handler never engages them. #}
 {% import "partials/dialog.njk" as dialog %}
 {% import "partials/dropdown.njk" as dropdown %}
+{% import "partials/processing-recovery-details.njk" as recoveryDetails %}
 
 {# Static-option select: routed through the shared cc-dropdown component like
    every other choice control on this page (see dropdown.njk). #}
@@ -203,6 +204,7 @@
     <p data-processing-error-text></p>
   </div>
   <div class="app-dialog-status" data-processing-status role="status" aria-live="polite"></div>
+  {{ recoveryDetails.dialogEntryPoint() }}
   <footer class="app-dialog-footer">
     <button type="button" class="button button-secondary" data-processing-preview>Preview</button>
     <button type="button" class="button button-primary" data-processing-apply disabled aria-disabled="true">{{ applyLabel }}</button>

@@ -1,0 +1,114 @@
+{# Recovery Details (WP9): project-level presentation of processing recovery
+   evidence. Rendered once on Project Assets. client/processing-recovery-details.js
+   fills it from the DB-only GET /projects/:id/assets/processing/recovery on
+   every open; files are only inspected when the user clicks Refresh.
+   Archived projects (readOnly) get the same GET-backed dialog with no Refresh,
+   Cleanup or Manual Scan control and wording that asks for no action. #}
+{% import "partials/dialog.njk" as dialog %}
+
+{# One entry point per surface. The client shows exactly one variant (or
+   none) for the GET state: `gated` while processing is blocked, `evidence`
+   while recovery evidence remains but processing is not blocked. #}
+{% macro pageEntryPoint(readOnly=false) %}
+  <div class="processing-recovery-entry-point processing-recovery-entry-point--page"
+       data-recovery-details-entry data-recovery-state="none" hidden>
+  {% if readOnly %}
+    <div class="processing-recovery-reminder" data-recovery-entry-variant="gated" role="status" hidden>
+      <p>Recovery state is unresolved. This archived project is read-only.</p>
+      <button class="button button-small button-secondary" type="button"
+              data-dialog-open="processing-recovery-details-dialog">Recovery Details</button>
+    </div>
+    <div class="processing-recovery-reminder" data-recovery-entry-variant="evidence" role="status" hidden>
+      <p>Recovery information remains for this archived project.</p>
+      <button class="button button-small button-secondary" type="button"
+              data-dialog-open="processing-recovery-details-dialog">Recovery Details</button>
+    </div>
+  {% else %}
+    <div class="notice notice--warning processing-recovery-notice" data-recovery-entry-variant="gated" role="status" hidden>
+      <p><strong>Manual recovery required.</strong> Processing is blocked for this project. Inspect the project folder, then run a manual scan to accept its current files before processing again.</p>
+      <p>
+        <button class="button button-small button-secondary" type="button"
+                data-dialog-open="processing-recovery-details-dialog">Recovery Details</button>
+      </p>
+    </div>
+    <div class="processing-recovery-reminder" data-recovery-entry-variant="evidence" role="status" hidden>
+      <p>Recovery evidence remains from earlier processing. Processing is not blocked.</p>
+      <button class="button button-small button-secondary" type="button"
+              data-dialog-open="processing-recovery-details-dialog">Recovery Details</button>
+    </div>
+  {% endif %}
+  </div>
+{% endmacro %}
+
+{% macro dialogEntryPoint() %}
+  <div class="processing-recovery-entry-point processing-recovery-entry-point--dialog"
+       data-recovery-details-entry data-recovery-state="none" hidden>
+    <p data-recovery-entry-variant="gated" hidden>
+      <span>Manual recovery required for this project.</span>
+      <button class="button button-small button-secondary" type="button"
+              data-dialog-open="processing-recovery-details-dialog">Recovery Details</button>
+    </p>
+    <p data-recovery-entry-variant="evidence" hidden>
+      <span>Recovery evidence remains.</span>
+      <button class="button button-small button-secondary" type="button"
+              data-dialog-open="processing-recovery-details-dialog">Recovery Details</button>
+    </p>
+  </div>
+{% endmacro %}
+
+{% macro render(project, csrfToken, readOnly=false) %}
+{% if readOnly %}
+  {% set cardAttributes = [
+    ['data-recovery-details', true],
+    ['data-project-id', project.id],
+    ['data-csrf', csrfToken],
+    ['data-recovery-details-read-only', true]
+  ] %}
+{% else %}
+  {% set cardAttributes = [
+    ['data-recovery-details', true],
+    ['data-project-id', project.id],
+    ['data-csrf', csrfToken]
+  ] %}
+{% endif %}
+{% call dialog.render('processing-recovery-details-dialog', 'Recovery Details', false, 'processing-recovery-details-description', '', 'app-dialog--recovery-details', cardAttributes) %}
+  <p id="processing-recovery-details-description" class="app-dialog-description">
+    Files and records CreatorCrate kept after processing in this project was interrupted or could not fully finish.
+    {% if readOnly %}
+    This archived project is read-only. The list shows the last recorded state for review.
+    {% else %}
+    This list shows the last recorded state; Refresh checks the listed files on disk.
+    {% endif %}
+  </p>
+  <div class="app-dialog-body processing-recovery-details-body">
+    <div class="notice notice--info processing-recovery-summary" data-recovery-details-summary>
+      <p>Loading Recovery Details…</p>
+    </div>
+    {% if not readOnly %}
+    <section class="processing-recovery-manual-scan" data-recovery-details-manual-scan-section
+             aria-labelledby="processing-recovery-manual-scan-heading" hidden>
+      <h3 id="processing-recovery-manual-scan-heading">Manual scan</h3>
+      <p>A successful manual scan accepts the project's current files as the state to continue from. It does not delete recovery copies; some may remain afterward for review.</p>
+      <div class="processing-recovery-actions">
+        <button class="button button-small button-primary" type="button" data-recovery-details-manual-scan>Run Manual Scan</button>
+      </div>
+    </section>
+    {% endif %}
+    <div class="processing-recovery-toolbar">
+      <h3 class="processing-recovery-list-heading" id="processing-recovery-list-heading">Recovery entries</h3>
+      {% if not readOnly %}
+      <button class="button button-small button-secondary" type="button" data-recovery-details-refresh hidden>Refresh</button>
+      {% endif %}
+    </div>
+    <div class="app-dialog-error" data-recovery-details-error role="alert" hidden>
+      <p data-recovery-details-error-text></p>
+    </div>
+    <div class="app-dialog-status processing-recovery-status" data-recovery-details-status role="status" aria-live="polite"></div>
+    <ul class="processing-recovery-list" data-recovery-details-list tabindex="-1"
+        aria-labelledby="processing-recovery-list-heading"></ul>
+  </div>
+  <footer class="app-dialog-footer">
+    <button class="button button-secondary" type="button" data-dialog-close>Close</button>
+  </footer>
+{% endcall %}
+{% endmacro %}

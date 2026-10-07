@@ -7,6 +7,7 @@
 {% import "partials/dialog.njk" as dialog %}
 {% import "partials/dropdown.njk" as dropdown %}
 {% import "partials/processing-actions.njk" as processingActions %}
+{% import "partials/processing-recovery-details.njk" as recoveryDetails %}
 
 {% macro renderContextFields(context, contextFields, disabled) %}
   {% for key in contextFields %}
@@ -333,7 +334,7 @@
   {% else %}
     {% call pageHeading.render(assetsHeadingDescription, "", "", "/projects/" ~ project.id, "Back to main project page: " ~ project.title, "", "projects") %}
     {% if not isArchived %}
-      <form method="post" action="/projects/{{ project.id }}/scan" class="inline-form">
+      <form method="post" action="/projects/{{ project.id }}/scan/manual" class="inline-form">
         <input type="hidden" name="_csrf" value="{{ _csrf }}">
         {{ renderContextFields(context, contextFields, false) }}
         <button class="button button-small button-primary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--left"
@@ -482,6 +483,9 @@
     {% set noticeText = projectAssetsNsfwError %}
     {% include "partials/notice.njk" %}
   {% endif %}
+
+  {# Archived projects keep read-only Recovery Details: the GET stays available. #}
+  {{ recoveryDetails.pageEntryPoint(isArchived) }}
 
   <div class="notice notice--success app-dialog-feedback" data-dialog-feedback role="status" hidden>
     <p data-dialog-feedback-text></p>
@@ -1065,6 +1069,7 @@
   {% if not isArchived %}
     {% include "partials/processing-dialogs.njk" %}
   {% endif %}
+  {{ recoveryDetails.render(project, _csrf, isArchived) }}
   {% call dialog.render('project-asset-category-management-dialog', 'Manage Categories', categoryManagementDialogOpen, 'project-asset-category-management-description') %}
     <p id="project-asset-category-management-description" class="app-dialog-description">
       Manage categories and asset browser defaults for {{ project.title }}. Changes here apply only to this project.

@@ -226,6 +226,7 @@ export function createAssetScanner(
     previewCategorySettingsService,
     projectPrimaryImageRepository,
     projectDirectoryOwnershipRepository,
+    manualScanAcceptance = null,
     applicationLogger = null,
   }
 ) {
@@ -321,13 +322,31 @@ export function createAssetScanner(
   /**
    * Scan a project's directory and sync the asset index.
    *
+   * `afterScan(result, acceptance)` (the manual scan's recovery acceptance only) runs under
+   * the same project lock once the scan's reconciliation has committed, and only if it
+   * succeeded; whatever it throws propagates without undoing the committed scan.
+   * `acceptance` is a fresh one-shot authority for this project, minted by the
+   * `manualScanAcceptance` grant only for this callback and dead once it returns. Scans
+   * without `afterScan` (automatic, scheduled, processing refresh) mint none.
+   *
    * @param {number} projectId
+   * @param {{ kind?: string, afterScan?: (result: object, acceptance?: object) => any }} [options]
    * @returns {{ added: number, updated: number, removed: number, total: number }}
    * @throws {ProjectNotFoundError} if the project is unknown
    * @throws {Error} if the project directory is missing or unsafe
    */
-  function scanProjectAssets(projectId, { kind = 'activity' } = {}) {
-    return projectOperationCoordinator.run(projectId, () => scanProjectAssetsLocked(projectId, kind));
+  function scanProjectAssets(projectId, { kind = 'activity', afterScan } = {}) {
+    return projectOperationCoordinator.run(projectId, () => {
+      const result = scanProjectAssetsLocked(projectId, kind);
+      if (afterScan) {
+        if (manualScanAcceptance) {
+          manualScanAcceptance.withAcceptance(projectId, (acceptance) => afterScan(result, acceptance));
+        } else {
+          afterScan(result);
+        }
+      }
+      return result;
+    });
   }
 
   // Runs only while projectOperationCoordinator holds this project's lock —

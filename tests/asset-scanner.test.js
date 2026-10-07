@@ -24,6 +24,7 @@ import {
 } from '../src/services/preview-category-settings-service.js';
 import { createWorkflowQueryService } from '../src/services/workflow-query-service.js';
 import { createProjectOperationCoordinator, ProjectOperationError } from '../src/services/project-operation-coordinator.js';
+import { createManualScanAcceptanceAuthority } from '../src/services/manual-scan-acceptance.js';
 import { makeSolidAnimatedWebp } from './helpers/animated-webp.js';
 import { buildAssetRevisionToken, classifyPreviewable } from '../src/services/preview-service.js';
 import { classifySupportedVideo } from '../src/services/asset-metadata.js';
@@ -1613,6 +1614,80 @@ describe('asset scanner', () => {
   describe('coordinator integration', () => {
     it('requires a projectOperationCoordinator dependency', () => {
       expect(() => createAssetScanner(db, projectsRoot, { projectService })).toThrow();
+    });
+
+    describe('manual-scan acceptance authority', () => {
+      function scannerWithAuthority() {
+        const authority = createManualScanAcceptanceAuthority();
+        const grant = { withAcceptance: vi.fn((...args) => authority.grant.withAcceptance(...args)) };
+        const scanner = createAssetScanner(db, projectsRoot, {
+          projectDirectoryOwnershipRepository: createProjectDirectoryOwnershipRepository(db),
+          projectService,
+          assetCategoryService,
+          projectOperationCoordinator,
+          previewCategorySettingsService,
+          projectPrimaryImageRepository: primaryImageRepository,
+          manualScanAcceptance: grant,
+        });
+        return { scanner, grant, verifier: authority.verifier };
+      }
+
+      it('mints one live acceptance per successful afterScan, inside the lock, dead once it returns', () => {
+        const { scanner, grant, verifier } = scannerWithAuthority();
+        const { project, absPath } = createProjectWithDir('Acceptance Scan');
+        fs.writeFileSync(path.join(absPath, 'a.png'), 'png');
+        const seen = [];
+        const acceptances = [];
+        for (let i = 0; i < 2; i += 1) {
+          scanner.scanProjectAssets(project.id, {
+            afterScan: (result, acceptance) => {
+              acceptances.push(acceptance);
+              seen.push({
+                total: result.total,
+                active: projectOperationCoordinator.isActive(project.id),
+                foreign: verifier.consume(project.id + 1, acceptance),
+                own: verifier.consume(project.id, acceptance),
+                again: verifier.consume(project.id, acceptance),
+              });
+            },
+          });
+        }
+        expect(seen).toEqual(Array(2).fill({ total: 1, active: true, foreign: false, own: true, again: false }));
+        expect(grant.withAcceptance).toHaveBeenCalledTimes(2);
+        expect(grant.withAcceptance.mock.calls.map(([id]) => id)).toEqual([project.id, project.id]);
+        expect(acceptances[0]).not.toBe(acceptances[1]);
+        expect(Object.isFrozen(acceptances[0]) && Object.keys(acceptances[0])).toEqual([]);
+      });
+
+      it('an acceptance never consumed in its callback is still dead after it returns', () => {
+        const { scanner, verifier } = scannerWithAuthority();
+        const { project } = createProjectWithDir('Unconsumed Acceptance');
+        let stale;
+        scanner.scanProjectAssets(project.id, { afterScan: (result, acceptance) => { stale = acceptance; } });
+        expect(stale).toBeTypeOf('object');
+        expect(verifier.consume(project.id, stale)).toBe(false);
+        expect(projectOperationCoordinator.run(project.id, () => verifier.consume(project.id, stale))).toBe(false);
+      });
+
+      it('scans without afterScan (automatic, scheduled, refresh) mint no acceptance', () => {
+        const { scanner, grant } = scannerWithAuthority();
+        const { project, absPath } = createProjectWithDir('Automatic Scan');
+        fs.writeFileSync(path.join(absPath, 'a.png'), 'png');
+        scanner.scanProjectAssets(project.id);
+        scanner.scanProjectAssets(project.id, { kind: 'diagnostic' });
+        expect(grant.withAcceptance).not.toHaveBeenCalled();
+      });
+
+      it('a failed scan mints no acceptance and never runs afterScan', () => {
+        const { scanner, grant } = scannerWithAuthority();
+        const { project, absPath } = createProjectWithDir('Failed Scan');
+        fs.rmSync(absPath, { recursive: true, force: true });
+        const afterScan = vi.fn();
+        expect(() => scanner.scanProjectAssets(project.id, { afterScan })).toThrow();
+        expect(afterScan).not.toHaveBeenCalled();
+        expect(grant.withAcceptance).not.toHaveBeenCalled();
+        expect(projectOperationCoordinator.isActive(project.id)).toBe(false);
+      });
     });
 
     it('rejects same-project scan re-entry while the coordinator holds the lock', () => {

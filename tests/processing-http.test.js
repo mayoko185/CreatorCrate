@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
+import Database from 'better-sqlite3';
 import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
 import { createProcessingRouter } from '../src/routes/processing.js';
@@ -14,6 +15,7 @@ import { createApplicationLogger } from '../src/services/application-logger.js';
 import { createApplicationLogRepository } from '../src/data/application-log-repository.js';
 import { closeDatabase, openDatabase, runMigrations } from '../src/db.js';
 import { createAppMetaRepository } from '../src/data/app-meta-repository.js';
+import { createProcessingRecoveryGateRepository } from '../src/data/processing-recovery-gate-repository.js';
 import { createWatermarkDefaultService } from '../src/services/watermark-default-service.js';
 import {
   WatermarkScaleMapServiceError,
@@ -61,6 +63,31 @@ function createRealPlannerForAsset(relativePath) {
     assetProcessingPlanner,
     cleanup: () => fs.rmSync(projectsRoot, { recursive: true, force: true }),
   };
+}
+
+// The real app_meta-backed gate over a throwaway database; `db` lets tests
+// inject genuine SQLite write failures.
+function createRecoveryGate() {
+  const db = new Database(':memory:');
+  db.exec('CREATE TABLE app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)');
+  return Object.assign(createProcessingRecoveryGateRepository(db), { db });
+}
+
+function failGateWrites(db, statements = ['INSERT', 'UPDATE', 'DELETE']) {
+  for (const statement of statements) {
+    db.exec(`CREATE TRIGGER fail_gate_${statement.toLowerCase()} BEFORE ${statement} ON app_meta
+      BEGIN SELECT RAISE(ABORT, 'disk I/O error at C:/private/creatorcrate.db'); END`);
+  }
+}
+
+function restoreGateWrites(db) {
+  for (const statement of ['insert', 'update', 'delete']) db.exec(`DROP TRIGGER IF EXISTS fail_gate_${statement}`);
+}
+
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
 }
 
 function createHarness(overrides = {}) {
@@ -129,6 +156,7 @@ function createHarness(overrides = {}) {
       replaceScaleMap: vi.fn((definition) => ({ definition })),
     },
     processingJobService,
+    processingRecoveryGate: createRecoveryGate(),
     processingPresetService: {
       listPresets: vi.fn(() => []),
       createPreset: vi.fn((input) => ({ id: 12, ...input })),
@@ -694,6 +722,234 @@ describe('processing HTTP routes', () => {
     expect(order).toEqual(['job-1-start', 'job-1-end', 'job-2-start', 'job-2-end']);
     expect(services.alreadyCoordinatedProcessingExecutor.convertAssets).toHaveBeenCalledTimes(2);
     expect(coordinator.isActive(1)).toBe(false);
+  });
+
+  describe('processing recovery gate', () => {
+    const RECOVERY_REQUIRED = {
+      ok: false,
+      error: {
+        code: 'PROCESSING_RECOVERY_REQUIRED',
+        message: 'Manual recovery required. CreatorCrate could not confirm the project files were restored. Inspect the project folder, run a manual scan, then run Preview again before applying.',
+      },
+    };
+    const convertBody = { scope: { type: 'selected', assetIds: [9] }, options: { format: 'webp', quality: 85, originalHandling: 'keep' } };
+
+    function createTwoProjectHarness() {
+      const projects = new Map([1, 2].map((id) => [id, { id, status: 'active', archived_at: null }]));
+      return createHarness({ projectService: { findById: vi.fn((id) => projects.get(id) || null) } });
+    }
+
+    it('gates only the project whose job reported RECOVERY_REQUIRED; a verified rollback stays retryable', async () => {
+      const { app, services } = createTwoProjectHarness();
+      const gate = services.processingRecoveryGate;
+      services.alreadyCoordinatedProcessingExecutor.convertAssets.mockImplementation(async (projectId) => {
+        if (projectId === 1) throw Object.assign(new Error('Could not restore C:/private/a.png'), { code: 'RECOVERY_REQUIRED' });
+        throw Object.assign(new Error('Rolled back C:/private/b.png'), { code: 'FILESYSTEM_OPERATION_FAILED' });
+      });
+
+      const failedA = await request(app).post('/projects/1/assets/processing/convert/apply').send(convertBody).expect(202);
+      const failedB = await request(app).post('/projects/2/assets/processing/convert/apply').send(convertBody).expect(202);
+      await services.processingJobService.waitForIdle();
+
+      const jobA = (await request(app).get(`/processing/jobs/${failedA.body.jobId}`).expect(200)).body.job;
+      expect(jobA).toMatchObject({ state: 'failed', error: RECOVERY_REQUIRED.error });
+      const jobB = (await request(app).get(`/processing/jobs/${failedB.body.jobId}`).expect(200)).body.job;
+      expect(jobB).toMatchObject({ state: 'failed', error: { code: 'PROCESSING_FAILED', message: 'Processing failed.' } });
+      expect([1, 2].map((projectId) => gate.isRecoveryRequired(projectId))).toEqual([true, false]);
+
+      // Project B retries immediately; project A is refused before planning.
+      services.alreadyCoordinatedProcessingExecutor.convertAssets.mockImplementation(async () => ({ changedCount: 1 }));
+      await request(app).post('/projects/2/assets/processing/convert/plan').send(convertBody).expect(200);
+      await request(app).post('/projects/2/assets/processing/convert/apply').send(convertBody).expect(202);
+      services.assetProcessingPlanner.planConvert.mockClear();
+      expect((await request(app).post('/projects/1/assets/processing/convert/plan').send(convertBody).expect(409)).body).toEqual(RECOVERY_REQUIRED);
+      expect(services.assetProcessingPlanner.planConvert).not.toHaveBeenCalled();
+      await services.processingJobService.waitForIdle();
+    });
+
+    it('refuses direct Preview and Apply submissions for a gated project regardless of client-supplied inputs', async () => {
+      const { app, services } = createTwoProjectHarness();
+      services.processingRecoveryGate.markRecoveryRequired(1);
+
+      for (const operation of ['convert', 'workflow-prompt', 'watermark', 'archive', 'rename']) {
+        for (const mode of ['plan', 'apply']) {
+          const res = await request(app)
+            .post(`/projects/1/assets/processing/${operation}/${mode}`)
+            .send({ ...convertBody, recovered: true, previewValid: true, presetId: 1 })
+            .expect(409);
+          expect(res.body).toEqual(RECOVERY_REQUIRED);
+        }
+      }
+      for (const method of Object.values(services.assetProcessingPlanner)) expect(method).not.toHaveBeenCalled();
+      for (const method of Object.values(services.alreadyCoordinatedProcessingExecutor)) expect(method).not.toHaveBeenCalled();
+      expect(services.processingJobService.hasActiveJobs()).toBe(false);
+      expect(services.processingRecoveryGate.isRecoveryRequired(1)).toBe(true);
+
+      await request(app).post('/projects/2/assets/processing/convert/apply').send(convertBody).expect(202);
+      await services.processingJobService.waitForIdle();
+      expect(services.alreadyCoordinatedProcessingExecutor.convertAssets).toHaveBeenCalledTimes(1);
+    });
+
+    it('fails a job queued behind the recovery failure without running it', async () => {
+      const { app, services } = createHarness();
+      let releaseFirst;
+      const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
+      services.alreadyCoordinatedProcessingExecutor.convertAssets.mockImplementationOnce(async () => {
+        await firstGate;
+        throw Object.assign(new Error('unresolved rollback'), { code: 'RECOVERY_REQUIRED' });
+      });
+
+      await request(app).post('/projects/1/assets/processing/convert/apply').send(convertBody).expect(202);
+      const queued = await request(app).post('/projects/1/assets/processing/convert/apply').send(convertBody).expect(202);
+      releaseFirst();
+      await services.processingJobService.waitForIdle();
+
+      expect(services.alreadyCoordinatedProcessingExecutor.convertAssets).toHaveBeenCalledTimes(1);
+      expect(services.processingJobService.getJob(queued.body.jobId)).toMatchObject({
+        state: 'failed', error: { code: 'PROCESSING_RECOVERY_REQUIRED' },
+      });
+    });
+
+    it('keeps the project fail-closed across restart when every gate write fails after an unresolved rollback', async () => {
+      const { app, services } = createTwoProjectHarness();
+      const gate = services.processingRecoveryGate;
+      const executor = services.alreadyCoordinatedProcessingExecutor;
+      const releaseFirst = deferred();
+      let durableBeforeFileWork = null;
+      executor.convertAssets.mockImplementationOnce(async () => {
+        // A fresh repository (as after a restart) already sees the gate
+        // before the job changes any file.
+        durableBeforeFileWork = createProcessingRecoveryGateRepository(gate.db).isRecoveryRequired(1);
+        await releaseFirst.promise;
+        failGateWrites(gate.db);
+        throw Object.assign(new Error('Could not restore C:/private/a.png'), { code: 'RECOVERY_REQUIRED' });
+      });
+
+      const first = await request(app).post('/projects/1/assets/processing/convert/apply').send(convertBody).expect(202);
+      const queued = await request(app).post('/projects/1/assets/processing/convert/apply').send(convertBody).expect(202);
+      releaseFirst.resolve();
+      await services.processingJobService.waitForIdle();
+
+      expect(durableBeforeFileWork).toBe(true);
+      expect(services.processingJobService.getJob(first.body.jobId)).toMatchObject({ state: 'failed', error: RECOVERY_REQUIRED.error });
+      expect(services.processingJobService.getJob(queued.body.jobId)).toMatchObject({ state: 'failed', error: RECOVERY_REQUIRED.error });
+      expect(executor.convertAssets).toHaveBeenCalledTimes(1);
+
+      services.assetProcessingPlanner.planConvert.mockClear();
+      expect((await request(app).post('/projects/1/assets/processing/convert/plan').send(convertBody).expect(409)).body).toEqual(RECOVERY_REQUIRED);
+      expect((await request(app).post('/projects/1/assets/processing/convert/apply').send(convertBody).expect(409)).body).toEqual(RECOVERY_REQUIRED);
+      expect(services.assetProcessingPlanner.planConvert).not.toHaveBeenCalled();
+      expect(createProcessingRecoveryGateRepository(gate.db).isRecoveryRequired(1)).toBe(true);
+      // A failed clear throws rather than reporting the gate cleared.
+      expect(() => gate.clearRecoveryRequired(1)).toThrow();
+      expect(gate.isRecoveryRequired(1)).toBe(true);
+
+      restoreGateWrites(gate.db);
+      await request(app).post('/projects/2/assets/processing/convert/apply').send(convertBody).expect(202);
+      await services.processingJobService.waitForIdle();
+      expect(executor.convertAssets).toHaveBeenCalledTimes(2);
+      expect(gate.isRecoveryRequired(2)).toBe(false);
+    });
+
+    it('fails a job before any file work when the gate cannot be written ahead, leaving it retryable', async () => {
+      const { app, services } = createHarness();
+      const gate = services.processingRecoveryGate;
+      failGateWrites(gate.db, ['INSERT']);
+
+      const failed = await request(app).post('/projects/1/assets/processing/convert/apply').send(convertBody).expect(202);
+      await services.processingJobService.waitForIdle();
+      const job = services.processingJobService.getJob(failed.body.jobId);
+      expect(job).toMatchObject({ state: 'failed', error: { code: 'PROCESSING_FAILED', message: 'Processing failed.' } });
+      expect(JSON.stringify(job)).not.toContain('private');
+      expect(services.alreadyCoordinatedProcessingExecutor.convertAssets).not.toHaveBeenCalled();
+      expect(gate.isRecoveryRequired(1)).toBe(false);
+
+      restoreGateWrites(gate.db);
+      const retried = await request(app).post('/projects/1/assets/processing/convert/apply').send(convertBody).expect(202);
+      await services.processingJobService.waitForIdle();
+      expect(services.processingJobService.getJob(retried.body.jobId)).toMatchObject({ state: 'succeeded' });
+      expect(gate.isRecoveryRequired(1)).toBe(false);
+    });
+
+    it('stays gated when the gate cannot be removed after the job', async () => {
+      const { app, services } = createHarness();
+      const gate = services.processingRecoveryGate;
+      failGateWrites(gate.db, ['DELETE']);
+
+      await request(app).post('/projects/1/assets/processing/convert/apply').send(convertBody).expect(202);
+      await services.processingJobService.waitForIdle();
+      expect(gate.isRecoveryRequired(1)).toBe(true);
+      expect((await request(app).post('/projects/1/assets/processing/convert/plan').send(convertBody).expect(409)).body).toEqual(RECOVERY_REQUIRED);
+    });
+
+    it.each(['plan', 'apply'])('refuses %s when the gate appears while the planner is running', async (mode) => {
+      const { app, services } = createHarness();
+      const entered = deferred();
+      const release = deferred();
+      services.assetProcessingPlanner.planConvert.mockImplementationOnce(async (_id, scope, options) => {
+        entered.resolve();
+        await release.promise;
+        return { scope, options, assetIds: [9], items: [] };
+      });
+      const enqueue = vi.spyOn(services.processingJobService, 'enqueue');
+
+      const pending = request(app).post(`/projects/1/assets/processing/convert/${mode}`).send(convertBody).then((res) => res);
+      await entered.promise;
+      services.processingRecoveryGate.markRecoveryRequired(1);
+      release.resolve();
+      const res = await pending;
+
+      expect(res.status).toBe(409);
+      expect(res.body).toEqual(RECOVERY_REQUIRED);
+      expect(enqueue).not.toHaveBeenCalled();
+      expect(services.alreadyCoordinatedProcessingExecutor.convertAssets).not.toHaveBeenCalled();
+      expect(services.processingJobService.hasActiveJobs()).toBe(false);
+    });
+
+    it('refuses the Watermark preview image for a gated project without rendering', async () => {
+      const { app, services } = createTwoProjectHarness();
+      services.processingRecoveryGate.markRecoveryRequired(1);
+      const body = { scope: { type: 'selected', assetIds: [9] }, options: { mode: 'patreon', outputFormat: 'png', deleteSource: false, watermarkId: 10 } };
+
+      const gated = await request(app).post('/projects/1/assets/processing/watermark/preview-image').send(body).expect(409);
+      expect(gated.body).toEqual(RECOVERY_REQUIRED);
+      expect(services.assetProcessingPlanner.renderWatermarkPreview).not.toHaveBeenCalled();
+
+      await request(app).post('/projects/2/assets/processing/watermark/preview-image').send(body).expect(200);
+      expect(services.assetProcessingPlanner.renderWatermarkPreview).toHaveBeenCalledTimes(1);
+      expect(services.assetProcessingPlanner.renderWatermarkPreview.mock.calls[0][0]).toBe(2);
+    });
+
+    it.each([
+      ['an image (200)', { buffer: Buffer.from('preview-bytes'), contentType: 'image/png', filename: 'source.png', eligibleCount: 2, variant: 'resized' }],
+      ['no preview (204)', null],
+    ])('refuses the Watermark preview when the gate appears while rendering %s', async (_label, result) => {
+      const { app, services } = createTwoProjectHarness();
+      const entered = deferred();
+      const release = deferred();
+      services.assetProcessingPlanner.renderWatermarkPreview.mockImplementationOnce(async () => {
+        entered.resolve();
+        await release.promise;
+        return result;
+      });
+      const body = { scope: { type: 'selected', assetIds: [9] }, options: { mode: 'patreon', outputFormat: 'png', deleteSource: false, watermarkId: 10 } };
+
+      const pending = request(app).post('/projects/1/assets/processing/watermark/preview-image').send(body).then((res) => res);
+      await entered.promise;
+      services.processingRecoveryGate.markRecoveryRequired(1);
+      release.resolve();
+      const res = await pending;
+
+      expect(res.status).toBe(409);
+      expect(res.body).toEqual(RECOVERY_REQUIRED);
+      expect(res.headers['content-type']).not.toMatch(/image/);
+      expect(res.headers['x-creatorcrate-preview-source']).toBeUndefined();
+      expect(services.assetProcessingPlanner.renderWatermarkPreview).toHaveBeenCalledTimes(1);
+      expect(services.assetProcessingPlanner.renderWatermarkPreview.mock.calls[0][0]).toBe(1);
+      expect(services.processingRecoveryGate.isRecoveryRequired(1)).toBe(true);
+
+      await request(app).post('/projects/2/assets/processing/watermark/preview-image').send(body).expect(200);
+    });
   });
 
   it('cancels only queued jobs and prevents their processing execution', async () => {

@@ -223,6 +223,7 @@ describe('HTTP routes', () => {
     ['rename', (id) => `/projects/${id}/assets/1/rename`, { filename: 'renamed.png' }],
     ['move', (id) => `/projects/${id}/assets/1/move`, { destinationCategory: 'uncategorized' }],
     ['scan', (id) => `/projects/${id}/scan`, {}],
+    ['manual scan', (id) => `/projects/${id}/scan/manual`, {}],
     ['batch move', (id) => `/projects/${id}/assets/move-selected`, {
       selectedAssetIds: '1',
       destinationCategory: 'uncategorized',

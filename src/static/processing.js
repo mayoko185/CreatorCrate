@@ -8,6 +8,7 @@ import {
   creatorCrateDropdownSummaryForNativeSelect,
   initializeCreatorCrateDropdown,
 } from './client/dropdowns.js';
+import { RECOVERY_DETAILS_SYNC_EVENT } from './client/processing-recovery-details.js';
 
 /**
  * Processing actions: Rename, Convert, Workflow Prompt Editor, Watermark, and Archives
@@ -31,6 +32,11 @@ const PROCESSING_JOB_POLL_INTERVAL_MS = 1_000;
 const AUTO_RESCAN_OPERATIONS = new Set(['rename', 'convert', 'watermark']);
 const ACTIVE_PROCESSING_JOB_STATES = new Set(['queued', 'running']);
 const TERMINAL_PROCESSING_JOB_STATES = new Set(['succeeded', 'failed', 'cancelled']);
+const PROCESSING_RECOVERY_REQUIRED_CODE = 'PROCESSING_RECOVERY_REQUIRED';
+const PROCESSING_RECOVERY_REQUIRED_STATUS = 'Manual recovery required. Inspect the project folder, run a manual scan, then run Preview again before applying.';
+// Marks the automatic post-Apply refresh so the server never treats it as the
+// user's manual scan (which is what clears a processing recovery gate).
+const PROCESSING_REFRESH_SCAN_TRIGGER = 'processing-refresh';
 const LEGACY_WATERMARK_ARCHIVE_FIELDS = new Set([
   'makeArchives', 'archiveIncludeResized', 'replaceExistingArchives', 'archiveFormat',
   'zipJpgQuality', 'zipWebpQuality', 'setName', 'archivePrefix', 'zipBaseName',
@@ -511,6 +517,7 @@ export async function rescanProjectAssetsAfterApply(root, {
     : `/projects/${encodeURIComponent(projectId)}/scan`;
   await processingFetchJson(scanUrl, {
     csrf: root.dataset.csrf,
+    body: { trigger: PROCESSING_REFRESH_SCAN_TRIGGER },
   });
   if (!refreshAssets(liveDocument(root))) {
     throw new ProcessingRequestError('Could not refresh the asset browser.');
@@ -835,6 +842,25 @@ function invalidatePreview(root) {
   }
 }
 
+// Recovery Details re-reads its DB-only state (and its entry points) when a
+// run may have changed recovery evidence or the gate. Processing itself never
+// reads or changes recovery state.
+function requestRecoveryDetailsSync(root) {
+  const document = liveDocument(root);
+  const EventConstructor = document?.defaultView?.CustomEvent || globalThis.CustomEvent;
+  if (typeof EventConstructor !== 'function' || typeof document?.dispatchEvent !== 'function') return;
+  document.dispatchEvent(new EventConstructor(RECOVERY_DETAILS_SYNC_EVENT));
+}
+
+// The server refuses this project until a manual scan, so any earlier Preview
+// may no longer describe the filesystem.
+function enterProcessingRecoveryRequired(root, message) {
+  invalidatePreview(root);
+  showError(root, message || PROCESSING_RECOVERY_REQUIRED_STATUS);
+  setStatus(root, PROCESSING_RECOVERY_REQUIRED_STATUS);
+  requestRecoveryDetailsSync(root);
+}
+
 function setStatus(root, message) {
   const status = root.querySelector('[data-processing-status]');
   if (status) status.textContent = message || '';
@@ -1083,7 +1109,23 @@ function renderPlan(root, plan) {
   renderDestructiveWarning(root, plan.counts);
   renderPlanItems(root, plan.items);
   if (plan?.operation === 'archive') renderArchivePlanDetails(root, plan);
+  else renderPlanOperationBlockers(root, plan?.operationBlockers);
   return planItemsCanApply(plan) && archivePlanCanApply(plan);
+}
+
+// Operations without an archive details panel (for example Watermark with
+// archive output) list their operation blockers after the planned items.
+function renderPlanOperationBlockers(root, blockers) {
+  const list = root.querySelector('[data-processing-plan-items]');
+  if (!list || !Array.isArray(blockers) || blockers.length === 0) return;
+  const document = liveDocument(root);
+  blockers.forEach((blocker) => {
+    const li = document.createElement('li');
+    li.className = 'processing-plan-item processing-plan-item--conflict';
+    const target = blocker?.relativePath ? ` (${basename(blocker.relativePath)})` : '';
+    li.textContent = `Blocker: ${blocker?.reason || blocker?.code || 'This plan cannot be applied.'}${target}`;
+    list.append(li);
+  });
 }
 
 // Mirrors the server's apply gate (assertApplyablePlan in routes/processing.js):
@@ -2081,8 +2123,12 @@ async function runPreview(root) {
     }
     setStatus(root, canApply ? 'Preview ready.' : 'Preview ready, but conflicts or blockers must be resolved before Apply.');
   } catch (error) {
-    showError(root, error.message);
-    setStatus(root, '');
+    if (error.code === PROCESSING_RECOVERY_REQUIRED_CODE) {
+      enterProcessingRecoveryRequired(root, error.message);
+    } else {
+      showError(root, error.message);
+      setStatus(root, '');
+    }
   } finally {
     setBusy(root, false);
   }
@@ -2125,6 +2171,7 @@ async function completeApply(root, { result, refreshUrl } = {}) {
   } else {
     setStatus(root, 'Applied.');
   }
+  requestRecoveryDetailsSync(root);
 }
 
 function scheduleProcessingJobPoll(root, job, generation) {
@@ -2175,8 +2222,13 @@ async function pollProcessingJob(root) {
       if (job.state === 'succeeded') {
         await completeApply(root, nextJob.result);
       } else if (job.state === 'failed') {
-        showError(root, nextJob.error?.message || 'Processing could not be completed.');
-        setStatus(root, '');
+        if (nextJob.error?.code === PROCESSING_RECOVERY_REQUIRED_CODE) {
+          enterProcessingRecoveryRequired(root, nextJob.error.message);
+        } else {
+          showError(root, nextJob.error?.message || 'Processing could not be completed.');
+          setStatus(root, '');
+          requestRecoveryDetailsSync(root);
+        }
       } else {
         setStatus(root, 'Processing cancelled.');
       }
@@ -2286,8 +2338,13 @@ async function runApply(root) {
     }
   } catch (error) {
     if (root.__ccProcessingSubmission !== submission) return;
-    showError(root, error.message);
-    setStatus(root, '');
+    if (error.code === PROCESSING_RECOVERY_REQUIRED_CODE) {
+      enterProcessingRecoveryRequired(root, error.message);
+    } else {
+      showError(root, error.message);
+      setStatus(root, '');
+      requestRecoveryDetailsSync(root);
+    }
   } finally {
     if (root.__ccProcessingSubmission !== submission) return;
     root.__ccProcessingSubmission = null;
