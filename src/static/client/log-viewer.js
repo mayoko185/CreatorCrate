@@ -1,8 +1,14 @@
+import { downloadBlob, filenameFromResponse } from './blob-download.js';
+
 const AUTO_REFRESH_INTERVAL_MS = 30_000;
 const LOG_FILTER_NAMES = new Set(['level', 'kind', 'subsystem', 'time']);
 const LOG_QUERY_CONTROL_NAMES = new Set(['pageSize']);
 const LOG_FORM_STATE_NAMES = new Set([...LOG_FILTER_NAMES, ...LOG_QUERY_CONTROL_NAMES]);
 const LOCAL_TIMEZONE = 'local';
+const LOG_EXPORT_URL = '/settings/logs/export';
+const LOG_EXPORT_FALLBACK_FILENAME = 'creatorcrate-logs.txt';
+const LOG_EXPORT_FAILED = 'Logs export failed. Try again.';
+const LOG_EXPORT_SESSION_EXPIRED = 'Your session has expired. Reload the page, sign in, and export again.';
 const viewerStates = new WeakMap();
 
 export function formatLogTimestamp(timestampMs, timezone = LOCAL_TIMEZONE, { localTimeZone, clockFormat = '24h' } = {}) {
@@ -343,6 +349,87 @@ function clearCurrentFilters(state) {
   return applyCurrentFilters(state);
 }
 
+function setExportStatus(state, message, kind = null) {
+  if (!state.exportStatus) return;
+  state.exportStatus.textContent = message;
+  if (kind) state.exportStatus.setAttribute?.('data-status-kind', kind);
+  else state.exportStatus.removeAttribute?.('data-status-kind');
+}
+
+// Every filter is sent, empty ones included, so a filter the viewer cleared
+// overrides its saved default. Page, page size and auto-refresh never are.
+function logExportUrl(state) {
+  const url = new URL(LOG_EXPORT_URL, state.window.location.href);
+  LOG_FILTER_NAMES.forEach((name) => url.searchParams.set(name, currentLogFilterValue(state, name)));
+  return url.href;
+}
+
+function responseHeader(response, name) {
+  return response?.headers?.get?.(name) || '';
+}
+
+// Only the backend's TXT attachment is saved. A followed login redirect or any
+// other HTML/JSON body is reported instead of being downloaded as a .txt file.
+function isLogExportAttachment(response) {
+  return !response.redirected
+    && /^text\/plain\b/i.test(responseHeader(response, 'content-type'))
+    && /^\s*attachment\b/i.test(responseHeader(response, 'content-disposition'));
+}
+
+async function logExportFailureMessage(response) {
+  if (response?.status === 401) return LOG_EXPORT_SESSION_EXPIRED;
+  if (!/^application\/json\b/i.test(responseHeader(response, 'content-type'))) return LOG_EXPORT_FAILED;
+  const payload = await response.json().catch(() => null);
+  return typeof payload?.message === 'string' && payload.message ? payload.message : LOG_EXPORT_FAILED;
+}
+
+function releaseExport(state, request) {
+  if (state.exportRequest !== request) return false;
+  state.exportRequest = null;
+  state.exportControl?.removeAttribute?.('aria-disabled');
+  return true;
+}
+
+// One export at a time. The request is owned by the viewer, not by filter or
+// refresh generations, so polling and filter changes never abort it; only
+// teardown does, after which nothing is downloaded or announced.
+async function exportLogs(state) {
+  if (state.exportRequest) return;
+  const request = {
+    controller: typeof state.window.AbortController === 'function' ? new state.window.AbortController() : null,
+  };
+  state.exportRequest = request;
+  state.exportControl?.setAttribute?.('aria-disabled', 'true');
+  setExportStatus(state, 'Preparing logs export…');
+
+  let message = LOG_EXPORT_FAILED;
+  try {
+    const response = await state.window.fetch(logExportUrl(state), {
+      method: 'GET',
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { Accept: 'text/plain, application/json' },
+      signal: request.controller?.signal,
+    });
+    if (state.exportRequest !== request) return;
+    if (!response?.ok) {
+      message = await logExportFailureMessage(response);
+    } else if (!isLogExportAttachment(response)) {
+      message = response.redirected ? LOG_EXPORT_SESSION_EXPIRED : LOG_EXPORT_FAILED;
+    } else {
+      const blob = await response.blob();
+      if (state.exportRequest !== request) return;
+      downloadBlob(state.window, state.document, blob, filenameFromResponse(response, LOG_EXPORT_FALLBACK_FILENAME));
+      releaseExport(state, request);
+      setExportStatus(state, 'Logs export download started.', 'success');
+    }
+  } catch (error) {
+    if (error?.name !== 'AbortError') message = 'Logs export failed. Check your connection and try again.';
+  } finally {
+    if (releaseExport(state, request)) setExportStatus(state, message, 'error');
+  }
+}
+
 function destroy(state) {
   state.enabled = false;
   clearScheduledRefresh(state);
@@ -353,7 +440,29 @@ function destroy(state) {
   state.form.removeEventListener?.('submit', state.onFilterSubmit);
   state.refreshControl?.removeEventListener?.('click', state.onManualRefresh);
   state.clearFiltersControl?.removeEventListener?.('click', state.onClearFilters);
+  teardownExport(state);
   viewerStates.delete(state.viewer);
+}
+
+// Teardown aborts the active export and leaves its status untouched, so no
+// late download or announcement follows navigation away.
+function teardownExport(state) {
+  state.window.removeEventListener?.('pagehide', state.onExportPageHide);
+  state.exportControl?.removeEventListener?.('click', state.onExport);
+  state.exportRequest?.controller?.abort?.();
+  state.exportRequest = null;
+}
+
+// A page restored from the back/forward cache keeps its DOM, filters and
+// pagination but not the export binding that teardown removed. Rebind Export
+// with the same listener (never duplicated) and return it to idle.
+function restoreExport(state) {
+  if (!state.exportControl || !state.onExport) return;
+  state.exportRequest = null;
+  state.exportControl.removeAttribute?.('aria-disabled');
+  setExportStatus(state, '');
+  state.exportControl.addEventListener?.('click', state.onExport);
+  state.window.addEventListener?.('pagehide', state.onExportPageHide);
 }
 
 export function enhanceLogViewerAutoRefresh(scope = globalThis.document) {
@@ -369,6 +478,9 @@ export function enhanceLogViewerAutoRefresh(scope = globalThis.document) {
   const refreshControl = viewer.querySelector?.('[data-logs-refresh]');
   const clearFiltersControl = viewer.querySelector?.('[data-logs-clear-filters]');
   const autoRefreshHelp = viewer.querySelector?.('[data-logs-auto-refresh-help]');
+  const exportControl = viewer.querySelector?.('[data-logs-export]');
+  const exportFeedback = viewer.querySelector?.('[data-logs-export-feedback]');
+  const exportStatus = viewer.querySelector?.('[data-logs-export-status]');
   if (!windowObject?.fetch || !windowObject?.DOMParser || !control || !form) return 0;
 
   const state = {
@@ -381,6 +493,9 @@ export function enhanceLogViewerAutoRefresh(scope = globalThis.document) {
     refreshControl,
     clearFiltersControl,
     autoRefreshHelp,
+    exportControl,
+    exportStatus,
+    exportRequest: null,
     enabled: viewer.dataset?.logsAutoRefreshEnabled === 'true' && isPageOne(viewer),
     autoRefreshPreference: viewer.dataset?.logsAutoRefreshPreference === 'true',
     timezone: viewer.dataset?.logsTimezone || LOCAL_TIMEZONE,
@@ -395,6 +510,8 @@ export function enhanceLogViewerAutoRefresh(scope = globalThis.document) {
     onFilterSubmit: null,
     onManualRefresh: null,
     onClearFilters: null,
+    onExport: null,
+    onExportPageHide: null,
   };
 
   control.hidden = false;
@@ -443,6 +560,15 @@ export function enhanceLogViewerAutoRefresh(scope = globalThis.document) {
     clearCurrentFilters(state);
   };
   clearFiltersControl?.addEventListener?.('click', state.onClearFilters);
+  if (exportControl) {
+    state.onExport = (event) => {
+      event?.preventDefault?.();
+      exportLogs(state);
+    };
+    exportControl.hidden = false;
+    if (exportFeedback) exportFeedback.hidden = false;
+    exportControl.addEventListener?.('click', state.onExport);
+  }
 
   state.onVisibilityChange = () => {
     if (isHidden(documentObject)) {
@@ -453,9 +579,14 @@ export function enhanceLogViewerAutoRefresh(scope = globalThis.document) {
     }
   };
   state.onPageHide = () => destroy(state);
+  state.onExportPageHide = () => teardownExport(state);
 
   documentObject.addEventListener?.('visibilitychange', state.onVisibilityChange);
   windowObject.addEventListener?.('pagehide', state.onPageHide);
+  // Registered once for the document's lifetime; teardown never removes it.
+  windowObject.addEventListener?.('pageshow', (event) => {
+    if (event?.persisted) restoreExport(state);
+  });
   viewerStates.set(viewer, state);
   return 1;
 }

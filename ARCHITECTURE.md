@@ -739,6 +739,18 @@ raw processing options, stack traces, absolute local paths, and arbitrary
 user-authored content when an ID or count suffices. The resulting viewer is an
 operational/activity log, not a tamper-resistant audit system.
 
+Settings → Logs **Export logs** is a read-only `GET /settings/logs/export`
+returning one UTF-8 TXT attachment of every entry matching the level, kind,
+subsystem, and time filters, across all pages. Absent filters resolve through
+saved Logs defaults; an explicitly empty filter means unfiltered. Page, page
+size, and auto-refresh never affect the export. The export is built fully in
+memory and refused with a controlled error above 50,000 matching entries or
+20 MiB of output. Text redaction is best-effort, and the file tells readers to
+review it before sharing. The viewer requests it with the current filter
+controls (empty values included) via fetch, saves only a `text/plain`
+attachment under the server-provided filename, and shows JSON, authentication,
+and network failures as status text without leaving the page.
+
 The same logger identity survives an application-context database replacement.
 It is rebound while a candidate app is built; a failed candidate restores the
 previous repository/state. A restored backup runs migrations before publication,

@@ -37,6 +37,11 @@
              data-dialog-open="logs-defaults-dialog" data-logs-defaults-link>
             {{ icons.icon('settings') }}
           </a>
+          <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
+                  data-logs-export aria-label="Export logs" data-tooltip="Export logs"
+                  aria-describedby="logs-export-help logs-export-status" hidden>
+            {{ icons.icon('download') }}<span class="sr-only">Export logs</span>
+          </button>
           <a class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
              href="{{ clearFiltersUrl }}" aria-label="Clear filters" data-tooltip="Clear filters" data-logs-clear-filters>
             {{ icons.icon('reset') }}<span class="sr-only">Reset</span>
@@ -101,6 +106,10 @@
         <noscript><button class="button" type="submit">Filter</button></noscript>
         <p id="logs-auto-refresh-help" class="form-help" data-logs-auto-refresh-help{% if page == 1 %} hidden{% endif %}>Auto-refresh is available only on page 1.</p>
         <p data-logs-live-status class="sr-only" aria-live="polite" aria-atomic="true"></p>
+        <div class="logs-export-feedback" data-logs-export-feedback hidden>
+          <p id="logs-export-help" class="form-help">Exports all matching entries across pages. Review before sharing.</p>
+          <p id="logs-export-status" class="form-help logs-export-status" data-logs-export-status role="status" aria-live="polite" aria-atomic="true"></p>
+        </div>
       </form>
 
       <section class="project-detail-section logs-results-section" aria-labelledby="logs-results-heading">

@@ -83,6 +83,9 @@ function makePage({
   });
   const refreshControl = node({ attrs: { 'data-logs-refresh': '' } });
   const clearFiltersControl = node({ attrs: { 'data-logs-clear-filters': '' } });
+  const exportControl = node({ attrs: { 'data-logs-export': '', hidden: '' } });
+  const exportFeedback = node({ attrs: { 'data-logs-export-feedback': '', hidden: '' } });
+  const exportStatus = node({ attrs: { 'data-logs-export-status': '' } });
   control.querySelector = (selector) => selector === '[data-logs-auto-refresh-label]' ? autoRefreshLabel : null;
   const status = node({ attrs: { 'data-logs-live-status': '' } });
   const fields = dropdownFilters
@@ -139,6 +142,9 @@ function makePage({
     '[data-logs-refresh]': refreshControl,
     '[data-logs-results]': viewer.results,
     '[data-logs-clear-filters]': clearFiltersControl,
+    '[data-logs-export]': exportControl,
+    '[data-logs-export-feedback]': exportFeedback,
+    '[data-logs-export-status]': exportStatus,
   })[selector] || null;
 
   if (logsDefaultsDialogState?.dialog) {
@@ -148,8 +154,14 @@ function makePage({
     logsClearDialogState.dialog.__creatorCrateAppDialogState = logsClearDialogState;
   }
 
+  const downloads = [];
   const document = {
     hidden: false,
+    body: { append: vi.fn() },
+    createElement: () => ({
+      click() { downloads.push({ href: this.href, filename: this.download }); },
+      remove: vi.fn(),
+    }),
     activeElement: null,
     defaultView: null,
     querySelector: (selector) => selector === '[data-logs-viewer]' ? viewer : null,
@@ -171,15 +183,19 @@ function makePage({
       }
     },
     AbortController,
+    URL: { createObjectURL: vi.fn(() => 'blob:logs-export'), revokeObjectURL: vi.fn() },
     setTimeout(callback) {
       const id = ++nextTimerId;
       timers.set(id, callback);
       return id;
     },
     clearTimeout(id) { timers.delete(id); },
-    addEventListener: (type, listener) => windowListeners.set(type, listener),
-    removeEventListener: (type) => windowListeners.delete(type),
-    dispatch: (type) => windowListeners.get(type)?.(),
+    addEventListener: (type, listener) => {
+      if (!windowListeners.has(type)) windowListeners.set(type, new Set());
+      windowListeners.get(type).add(listener);
+    },
+    removeEventListener: (type, listener) => windowListeners.get(type)?.delete(listener),
+    dispatch: (type, event = {}) => [...(windowListeners.get(type) || [])].forEach((listener) => listener(event)),
   };
   document.defaultView = windowObject;
   viewer.ownerDocument = document;
@@ -197,6 +213,10 @@ function makePage({
     autoRefreshHelp,
     refreshControl,
     clearFiltersControl,
+    exportControl,
+    exportFeedback,
+    exportStatus,
+    downloads,
     status,
     fields,
     parsed,
@@ -918,5 +938,221 @@ describe('logs auto-refresh client enhancement', () => {
     await flush();
     expect(page.viewer.results).toBe(page.parsed.get('latest'));
     expect(page.status.textContent).toBe('');
+  });
+
+  describe('logs export', () => {
+    const SESSION_EXPIRED = 'Your session has expired. Reload the page, sign in, and export again.';
+
+    function exportResponse({
+      ok = true,
+      status = 200,
+      contentType = 'text/plain; charset=utf-8',
+      disposition = 'attachment; filename="creatorcrate-logs-20261008T123456Z.txt"',
+      redirected = false,
+      json = null,
+    } = {}) {
+      const headers = new Map([['content-type', contentType], ['content-disposition', disposition]]);
+      return {
+        ok,
+        status,
+        redirected,
+        headers: { get: (name) => headers.get(name.toLowerCase()) || null },
+        blob: vi.fn(async () => ({ type: 'text/plain' })),
+        json: vi.fn(async () => {
+          if (!json) throw new SyntaxError('Unexpected token <');
+          return json;
+        }),
+      };
+    }
+
+    it('reveals the Export logs button and its help only when enhanced', () => {
+      const page = makePage();
+      expect(page.exportControl.hidden).toBe(true);
+      expect(page.exportFeedback.hidden).toBe(true);
+      enhanceLogViewerAutoRefresh(page.document);
+      expect(page.exportControl.hidden).toBe(false);
+      expect(page.exportFeedback.hidden).toBe(false);
+    });
+
+    it('exports the current filters with explicit empty values and keeps every page concern unchanged', async () => {
+      const page = makePage({
+        page: 3,
+        dropdownFilters: true,
+        autoRefreshPreference: true,
+        filters: { level: 'error', subsystem: 'worker', pageSize: '50' },
+      });
+      page.windowObject.fetch.mockResolvedValueOnce(exportResponse());
+      enhanceLogViewerAutoRefresh(page.document);
+      const resultsBefore = page.viewer.results;
+
+      page.exportControl.fire('click', { preventDefault: vi.fn() });
+      expect(page.exportStatus.textContent).toBe('Preparing logs export…');
+      await flush();
+
+      expect(page.windowObject.fetch).toHaveBeenCalledTimes(1);
+      const [url, options] = page.windowObject.fetch.mock.calls[0];
+      expect(url).toBe('http://creatorcrate.test/settings/logs/export?level=error&kind=&subsystem=worker&time=');
+      expect(options).toEqual(expect.objectContaining({
+        method: 'GET',
+        credentials: 'same-origin',
+        headers: { Accept: 'text/plain, application/json' },
+      }));
+      expect(page.downloads).toEqual([{
+        href: 'blob:logs-export',
+        filename: 'creatorcrate-logs-20261008T123456Z.txt',
+      }]);
+      expect(page.exportStatus.textContent).toBe('Logs export download started.');
+      expect(page.exportStatus.getAttribute('data-status-kind')).toBe('success');
+      expect(page.exportControl.getAttribute('aria-disabled')).toBeNull();
+      expect(page.windowObject.history.replaceState).not.toHaveBeenCalled();
+      expect(page.viewer.results).toBe(resultsBefore);
+      expect(page.viewer.dataset.logsPage).toBe('3');
+      expect(page.control.disabled).toBe(true);
+      expect(page.fields.filter((field) => field.checked).map((field) => `${field.name}=${field.value}`))
+        .toEqual(['level=error', 'kind=', 'subsystem=worker', 'time=', 'pageSize=50']);
+    });
+
+    it('ignores repeated clicks while an export is active and is not aborted by polling', async () => {
+      const page = makePage({ autoRefreshEnabled: true });
+      let resolveExport;
+      page.windowObject.fetch
+        .mockImplementationOnce(() => new Promise((resolve) => { resolveExport = resolve; }))
+        .mockResolvedValueOnce(response('poll'));
+      page.parsed.set('poll', results(['2']));
+      enhanceLogViewerAutoRefresh(page.document);
+
+      page.exportControl.fire('click');
+      page.exportControl.fire('click');
+      page.exportControl.fire('click');
+      expect(page.windowObject.fetch).toHaveBeenCalledTimes(1);
+      expect(page.exportControl.getAttribute('aria-disabled')).toBe('true');
+      const exportSignal = page.windowObject.fetch.mock.calls[0][1].signal;
+
+      await page.runNext();
+      expect(page.windowObject.fetch).toHaveBeenCalledTimes(2);
+      expect(exportSignal.aborted).toBe(false);
+      expect(page.viewer.results).toBe(page.parsed.get('poll'));
+
+      resolveExport(exportResponse());
+      await flush();
+      expect(page.downloads).toHaveLength(1);
+      expect(page.exportControl.getAttribute('aria-disabled')).toBeNull();
+
+      page.windowObject.fetch.mockResolvedValueOnce(exportResponse());
+      page.exportControl.fire('click');
+      await flush();
+      expect(page.downloads).toHaveLength(2);
+    });
+
+    it.each([
+      ['a followed login redirect',
+        { contentType: 'text/html; charset=utf-8', disposition: null, redirected: true }, SESSION_EXPIRED],
+      ['an expired session',
+        { ok: false, status: 401, contentType: 'application/json', json: { status: 'error', message: 'Authentication required.' } },
+        SESSION_EXPIRED],
+      ['an HTML error page',
+        { ok: false, status: 503, contentType: 'text/html; charset=utf-8' }, 'Logs export failed. Try again.'],
+      ['an unexpected HTML success body',
+        { contentType: 'text/html; charset=utf-8', disposition: null }, 'Logs export failed. Try again.'],
+      ['the record limit',
+        { ok: false, status: 422, contentType: 'application/json; charset=utf-8', json: { status: 'error', code: 'EXPORT_LIMIT_EXCEEDED', message: 'More than 50,000 log entries match the selected filters. Narrow the filters and try again.' } },
+        'More than 50,000 log entries match the selected filters. Narrow the filters and try again.'],
+      ['maintenance mode',
+        { ok: false, status: 503, contentType: 'application/json; charset=utf-8', json: { status: 'error', message: 'Service temporarily unavailable for maintenance.' } },
+        'Service temporarily unavailable for maintenance.'],
+    ])('reports %s without saving a file', async (_label, responseOptions, message) => {
+      const page = makePage();
+      const exportResult = exportResponse(responseOptions);
+      page.windowObject.fetch.mockResolvedValueOnce(exportResult);
+      enhanceLogViewerAutoRefresh(page.document);
+
+      page.exportControl.fire('click');
+      await flush();
+
+      expect(exportResult.blob).not.toHaveBeenCalled();
+      expect(page.downloads).toEqual([]);
+      expect(page.exportStatus.textContent).toBe(message);
+      expect(page.exportStatus.getAttribute('data-status-kind')).toBe('error');
+      expect(page.exportControl.getAttribute('aria-disabled')).toBeNull();
+    });
+
+    it('reports a network failure and allows a retry', async () => {
+      const page = makePage();
+      page.windowObject.fetch.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+      enhanceLogViewerAutoRefresh(page.document);
+
+      page.exportControl.fire('click');
+      await flush();
+
+      expect(page.exportStatus.textContent).toBe('Logs export failed. Check your connection and try again.');
+      expect(page.exportControl.getAttribute('aria-disabled')).toBeNull();
+    });
+
+    it('aborts an in-flight export on teardown without downloading or announcing', async () => {
+      const page = makePage();
+      let resolveExport;
+      page.windowObject.fetch.mockImplementationOnce(() => new Promise((resolve) => { resolveExport = resolve; }));
+      enhanceLogViewerAutoRefresh(page.document);
+
+      page.exportControl.fire('click');
+      const signal = page.windowObject.fetch.mock.calls[0][1].signal;
+      page.windowObject.dispatch('pagehide');
+      expect(signal.aborted).toBe(true);
+
+      resolveExport(exportResponse());
+      await flush();
+      expect(page.downloads).toEqual([]);
+      expect(page.exportStatus.textContent).toBe('Preparing logs export…');
+      page.exportControl.fire('click');
+      expect(page.windowObject.fetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('rebinds Export once and returns it to idle when restored from the back/forward cache', async () => {
+      const page = makePage();
+      let resolveExport;
+      page.windowObject.fetch.mockImplementationOnce(() => new Promise((resolve) => { resolveExport = resolve; }));
+      enhanceLogViewerAutoRefresh(page.document);
+
+      page.exportControl.fire('click');
+      const signal = page.windowObject.fetch.mock.calls[0][1].signal;
+      page.windowObject.dispatch('pagehide', { persisted: true });
+      expect(signal.aborted).toBe(true);
+      page.exportControl.fire('click');
+      expect(page.windowObject.fetch).toHaveBeenCalledTimes(1);
+
+      // A normal (non-cache) pageshow changes nothing.
+      page.windowObject.dispatch('pageshow', { persisted: false });
+      page.exportControl.fire('click');
+      expect(page.windowObject.fetch).toHaveBeenCalledTimes(1);
+
+      page.windowObject.dispatch('pageshow', { persisted: true });
+      page.windowObject.dispatch('pageshow', { persisted: true });
+      expect(page.exportStatus.textContent).toBe('');
+      expect(page.exportControl.getAttribute('aria-disabled')).toBeNull();
+      resolveExport(exportResponse());
+      await flush();
+      expect(page.downloads).toEqual([]);
+      expect(page.exportStatus.textContent).toBe('');
+
+      page.windowObject.fetch.mockResolvedValueOnce(exportResponse());
+      page.exportControl.fire('click');
+      expect(page.windowObject.fetch).toHaveBeenCalledTimes(2);
+      await flush();
+      expect(page.downloads).toHaveLength(1);
+      expect(page.exportStatus.textContent).toBe('Logs export download started.');
+
+      // Navigating away again after restoration still aborts an active export.
+      let resolveSecond;
+      page.windowObject.fetch.mockImplementationOnce(() => new Promise((resolve) => { resolveSecond = resolve; }));
+      page.exportControl.fire('click');
+      const secondSignal = page.windowObject.fetch.mock.calls[2][1].signal;
+      page.windowObject.dispatch('pagehide', { persisted: true });
+      expect(secondSignal.aborted).toBe(true);
+      resolveSecond(exportResponse());
+      await flush();
+      expect(page.downloads).toHaveLength(1);
+      page.exportControl.fire('click');
+      expect(page.windowObject.fetch).toHaveBeenCalledTimes(3);
+    });
   });
 });

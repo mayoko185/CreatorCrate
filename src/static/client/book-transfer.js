@@ -2,6 +2,7 @@ import {
   beginNotesBooksLiveRefresh,
   installNotesBooksLiveRegionSnapshot,
 } from './live-regions.js';
+import { downloadBlob, filenameFromResponse } from './blob-download.js';
 
 const DIALOG_SELECTOR = '#book-transfer-dialog';
 const CONTENT_SELECTOR = '[data-book-transfer-content]';
@@ -18,28 +19,8 @@ function safeJson(response) {
   return response?.json?.().catch?.(() => null) ?? Promise.resolve(null);
 }
 
-function filenameFromResponse(response) {
-  const disposition = response?.headers?.get?.('content-disposition') || '';
-  const utf8 = disposition.match(/filename\*=UTF-8''([^;]+)/i);
-  if (utf8) {
-    try { return decodeURIComponent(utf8[1]); } catch { /* use the default below */ }
-  }
-  const plain = disposition.match(/filename="?([^";]+)"?/i);
-  return plain?.[1] || 'creatorcrate-books.zip';
-}
-
 function triggerDownload(state, response, blob) {
-  const urlApi = state.window.URL;
-  if (!urlApi?.createObjectURL) throw new Error('Downloads are unavailable.');
-  const url = urlApi.createObjectURL(blob);
-  const link = state.document.createElement('a');
-  link.href = url;
-  link.download = filenameFromResponse(response);
-  link.hidden = true;
-  state.document.body?.append?.(link);
-  link.click?.();
-  link.remove?.();
-  state.window.setTimeout?.(() => urlApi.revokeObjectURL?.(url), 0);
+  downloadBlob(state.window, state.document, blob, filenameFromResponse(response, 'creatorcrate-books.zip'));
 }
 
 function checkedChoices(content) {

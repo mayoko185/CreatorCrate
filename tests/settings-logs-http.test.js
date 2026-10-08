@@ -128,6 +128,23 @@ describe('settings — logs HTTP', () => {
     expect(template).toContain("{{ icons.icon('warning') }}");
   });
 
+  it('renders a labeled, script-revealed Export logs toolbar button with its review warning', async () => {
+    const response = await agent.get('/settings/logs').expect(200);
+    const toolbar = response.text.match(/<nav[^>]*aria-label="Log actions">[\s\S]*?<\/nav>/)?.[0] || '';
+    const exportButton = toolbar.match(/<button[^>]*data-logs-export[^>]*>[\s\S]*?<\/button>/)?.[0] || '';
+    const feedback = response.text.match(/<div class="logs-export-feedback"[\s\S]*?<\/div>/)?.[0] || '';
+
+    expect(exportButton).toContain('type="button"');
+    expect(exportButton).toContain('aria-label="Export logs"');
+    expect(exportButton).toContain('data-tooltip="Export logs"');
+    expect(exportButton).toContain('aria-describedby="logs-export-help logs-export-status"');
+    expect(exportButton).toMatch(/\shidden>/);
+    expect(exportButton).toContain('<span class="sr-only">Export logs</span>');
+    expect(feedback).toMatch(/data-logs-export-feedback hidden>/);
+    expect(feedback).toContain('<p id="logs-export-help" class="form-help">Exports all matching entries across pages. Review before sharing.</p>');
+    expect(feedback).toMatch(/<p id="logs-export-status"[^>]*role="status" aria-live="polite"/);
+  });
+
   it('renders one Any time choice in both the Logs filter and Defaults dialog', async () => {
     const res = await agent.get('/settings/logs').expect(200);
     const timeFilterValues = [...res.text.matchAll(/<input[^>]*name="time"[^>]*type="radio"[^>]*value="([^"]*)"/g)]
