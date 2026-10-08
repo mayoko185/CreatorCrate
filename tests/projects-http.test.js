@@ -3556,6 +3556,74 @@ describe('project HTTP workflow', () => {
     expect(emptyItem).not.toContain('release-thumbnail-link');
   });
 
+  it('project detail renders supported release videos through the shared video placeholder', async () => {
+    const projectId = await createProject({ title: 'Release Video Project' });
+    const assetRepository = createAssetRepository(db);
+    const releaseRepository = createReleaseRepository(db);
+    const upsert = (filename, extension, mimeType) => assetRepository.upsert(projectId, filename, {
+      filename, extension, mimeType, sizeBytes: 4096, modifiedAt: '2026-08-06 12:00:00',
+    });
+    const image = upsert('still.png', 'png', 'image/png');
+    const webm = upsert('clip.webm', 'webm', 'video/webm');
+    const mp4 = upsert('clip.mp4', 'mp4', 'video/mp4');
+    const soloVideo = upsert('solo.webm', 'webm', 'video/webm');
+    const overflowImages = Array.from({ length: 10 }, (_, index) => upsert(`fill-${index}.png`, 'png', 'image/png'));
+    const createRelease = (title) => releaseRepository.create({
+      projectId, title, description: '', notes: '', plannedDate: null, plannedTime: null, patreonUrl: null, publishedDate: null,
+    });
+    const mixedRelease = createRelease('Mixed Media Release');
+    const videoRelease = createRelease('Video Only Release');
+    [image, webm, mp4, ...overflowImages].forEach((asset, index) => {
+      releaseRepository.addReleaseAsset(mixedRelease.id, asset.id, 'attachment', index);
+    });
+    releaseRepository.addReleaseAsset(videoRelease.id, soloVideo.id, 'attachment', 0);
+
+    const res = await agent.get(`/projects/${projectId}`).expect(200);
+    expect(res.text.match(/<dialog id="asset-video-preview-dialog"/g)).toHaveLength(1);
+    const releaseList = extractReleaseList(extractProjectDetailSection(res.text, 'project-detail-releases'));
+    const mixedItem = extractReleaseItem(releaseList, mixedRelease.id);
+    const videoItem = extractReleaseItem(releaseList, videoRelease.id);
+
+    const expectVideoTile = (item, asset, typeLabel) => {
+      const viewerUrl = `/projects/${projectId}/assets/${asset.id}`;
+      const tile = item.match(new RegExp(`<span class="release-thumbnail-video">\\s*<a class="asset-list-card-media-link asset-video-link" href="${viewerUrl}"[\\s\\S]*?</a>\\s*</span>`))?.[0] ?? '';
+      expect(tile).not.toBe('');
+      expect(tile).toContain(`aria-label="Play video ${asset.filename}"`);
+      expect(tile).toContain(`data-asset-video-preview-trigger data-video-src="${viewerUrl}/original" data-video-title="${asset.filename}"`);
+      const frames = tile.match(/<video\b[^>]*>/g) || [];
+      expect(frames).toHaveLength(1);
+      expect(frames[0]).toContain(`src="${viewerUrl}/original"`);
+      expect(frames[0]).toContain('preload="metadata"');
+      expect(frames[0]).not.toMatch(/\scontrols|autoplay/);
+      expect(tile).toContain(`<span>${typeLabel}</span>`);
+      expect(tile).toContain(`${typeLabel} video`);
+      expect(tile).not.toMatch(/<img\b/);
+      expect(tile).not.toContain(`${viewerUrl}/thumbnail`);
+      // The shared trigger is the tile's only link: no nested anchors.
+      expect(tile.match(/<a\b/g)).toHaveLength(1);
+    };
+
+    expect(mixedItem).toContain(
+      `<a class="release-thumbnail-link" href="/projects/${projectId}/assets/${image.id}" aria-label="View still.png">`,
+    );
+    expect(mixedItem).toContain(
+      `src="/projects/${projectId}/assets/${image.id}/thumbnail?v=${buildAssetRevisionToken(image, imageFingerprint(db))}"`,
+    );
+    expectVideoTile(mixedItem, webm, 'WEBM');
+    expectVideoTile(mixedItem, mp4, 'MP4');
+    expect(mixedItem.indexOf(`/assets/${image.id}/thumbnail`)).toBeLessThan(mixedItem.indexOf(`/assets/${webm.id}/original`));
+    expect(mixedItem.indexOf(`/assets/${webm.id}/original`)).toBeLessThan(mixedItem.indexOf(`/assets/${mp4.id}/original`));
+    // 13 eligible items: the two videos count toward the 12-item limit.
+    expect(mixedItem).toContain(`/assets/${overflowImages.at(-2).id}/thumbnail`);
+    expect(mixedItem).not.toContain(`/assets/${overflowImages.at(-1).id}/thumbnail`);
+    expect(mixedItem).toContain(`href="/releases/${mixedRelease.id}">+1 more</a>`);
+
+    expectVideoTile(videoItem, soloVideo, 'WEBM');
+    expect(videoItem).toContain('release-thumbnail-strip');
+    expect(videoItem).not.toContain('release-thumbnail-link');
+    expect(videoItem).not.toContain('+1 more');
+  });
+
   // ─── Phase 7D-3: Project status preserves filesystem behavior ──────
   // --- Phase 7D-3: Project status never affects filesystem layout ------
   //

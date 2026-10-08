@@ -7910,7 +7910,8 @@
         max-width: 100%;
         margin-top: var(--space-xs);
       }
-      .release-thumbnail-link {
+      .release-thumbnail-link,
+      .release-thumbnail-video {
         display: block;
         flex: 0 1 5.5rem;
         width: 5.5rem;
@@ -7926,6 +7927,13 @@
       .release-thumbnail-link:focus-visible {
         outline: 2px solid var(--focus-ring);
         outline-offset: 2px;
+      }
+      /* The shared video placeholder's list variant, fitted to the strip tile. */
+      .release-thumbnail-video { line-height: normal; }
+      .release-thumbnail-video .asset-list-card-media-placeholder {
+        min-height: 0;
+        padding: var(--space-xs);
+        font-size: 0.6875rem;
       }
       .release-thumbnail-image {
         display: block;

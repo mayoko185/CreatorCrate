@@ -1658,8 +1658,9 @@ function normalizeAssetBrowserQuery(
   }
 
   /**
-   * Attach every selected asset that can produce a revisioned thumbnail to
-   * each release. The repository query preserves release-asset order; this
+   * Attach every selected asset that can produce a revisioned thumbnail, or
+   * that the canonical preview model presents as a playable video, to each
+   * release. The repository query preserves release-asset order; this
    * projection only groups those rows and never deduplicates them.
    *
    * @param {Array} releases
@@ -1692,9 +1693,11 @@ function normalizeAssetBrowserQuery(
         is_present: row.is_present,
       }, policyFingerprint);
 
-      if (!previewModel.previewable || !previewModel.sourceMetadataValid || !previewModel.urls.thumbnail) {
-        continue;
-      }
+      const hasThumbnail = previewModel.previewable
+        && previewModel.sourceMetadataValid
+        && Boolean(previewModel.urls.thumbnail);
+      const isPlayableVideo = previewModel.state === 'video' && Boolean(previewModel.playbackUrl);
+      if (!hasThumbnail && !isPlayableVideo) continue;
 
       const filename = typeof row.filename === 'string' && row.filename.trim() !== ''
         ? row.filename
@@ -1703,8 +1706,10 @@ function normalizeAssetBrowserQuery(
       thumbnailsByReleaseId.get(row.release_id).push({
         assetId: row.asset_id,
         filename,
+        extension: row.extension,
         thumbnailUrl: previewModel.urls.thumbnail,
         viewerUrl: buildProjectAssetViewerUrl(row.asset_project_id, row.asset_id),
+        preview: previewModel,
       });
     }
 

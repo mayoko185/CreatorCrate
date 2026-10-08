@@ -3,8 +3,10 @@
 {% import "partials/icons.njk" as icons %}
 {% import "partials/dialog.njk" as dialog %}
 {% import "partials/release-social-prep-summary.njk" as socialPrepSummary %}
+{% import "partials/asset-presentation.njk" as assetPresentation %}
 
 {% set page_title = "Projects — " ~ project.title %}
+{% set assetVideoPreview = true %}
 
 {% block content %}
   {% if project.isArchived %}
@@ -179,9 +181,16 @@
                 <div class="release-thumbnail-strip">
                   {% for thumbnail in r.thumbnails %}
                     {% if loop.index <= thumbnailLimit %}
-                      <a class="release-thumbnail-link" href="{{ thumbnail.viewerUrl }}" aria-label="View {{ thumbnail.filename }}">
-                        <img class="release-thumbnail-image" src="{{ thumbnail.thumbnailUrl }}" alt="{{ thumbnail.filename }}" loading="lazy" decoding="async">
-                      </a>
+                      {% if thumbnail.preview and thumbnail.preview.state == 'video' %}
+                        {# The shared macro renders its own link/trigger, so the tile is a plain wrapper. #}
+                        <span class="release-thumbnail-video">
+                          {{ assetPresentation.videoPlaceholder(thumbnail, 'list', thumbnail.viewerUrl, 'Play video ' ~ thumbnail.filename, { title: thumbnail.filename }) }}
+                        </span>
+                      {% else %}
+                        <a class="release-thumbnail-link" href="{{ thumbnail.viewerUrl }}" aria-label="View {{ thumbnail.filename }}">
+                          <img class="release-thumbnail-image" src="{{ thumbnail.thumbnailUrl }}" alt="{{ thumbnail.filename }}" loading="lazy" decoding="async">
+                        </a>
+                      {% endif %}
                     {% endif %}
                   {% endfor %}
                   {% if r.thumbnails.length > thumbnailLimit %}

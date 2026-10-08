@@ -196,6 +196,7 @@ test('every video card surface opens the shared preview and plays it from the cl
       `/releases/${fixture.release.id}/assets?view=list`,
       `/releases/${fixture.release.id}?view=grid`,
       `/releases/${fixture.release.id}?view=list`,
+      `/projects/${fixture.project.id}`,
     ];
     for (const surface of surfaces) {
       await test.step(surface, async () => {

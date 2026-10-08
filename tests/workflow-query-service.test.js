@@ -1067,14 +1067,32 @@ describe('workflow query service', () => {
         {
           assetId: secondById.id,
           filename: 'second-by-id.png',
+          extension: 'png',
           thumbnailUrl: `/projects/${project.id}/assets/${secondById.id}/thumbnail?v=${secondRevision}`,
           viewerUrl: `/projects/${project.id}/assets/${secondById.id}`,
+          preview: expect.objectContaining({
+            state: 'previewable',
+            kind: 'image',
+            playbackUrl: null,
+            urls: expect.objectContaining({
+              thumbnail: `/projects/${project.id}/assets/${secondById.id}/thumbnail?v=${secondRevision}`,
+            }),
+          }),
         },
         {
           assetId: firstById.id,
           filename: 'first-by-id.png',
+          extension: 'png',
           thumbnailUrl: `/projects/${project.id}/assets/${firstById.id}/thumbnail?v=${firstRevision}`,
           viewerUrl: `/projects/${project.id}/assets/${firstById.id}`,
+          preview: expect.objectContaining({
+            state: 'previewable',
+            kind: 'image',
+            playbackUrl: null,
+            urls: expect.objectContaining({
+              thumbnail: `/projects/${project.id}/assets/${firstById.id}/thumbnail?v=${firstRevision}`,
+            }),
+          }),
         },
       ]);
     });
@@ -1129,6 +1147,76 @@ describe('workflow query service', () => {
 
       expect(result.releaseSummary.recent[0].thumbnails.map((thumbnail) => thumbnail.filename))
         .toEqual(['source.kra', 'source.krz']);
+    });
+
+    it('keeps supported WebM/MP4 selections alongside images in selection order', () => {
+      const project = insertProject(db, { title: 'Release Video Selections' });
+      const release = insertRelease(db, { projectId: project.id, title: 'Video Release' });
+      const asset = (name, extension, mimeType, extra = {}) => insertAsset(db, {
+        projectId: project.id,
+        relativePath: name,
+        filename: name,
+        extension,
+        mimeType,
+        sizeBytes: 4096,
+        modifiedAt: '2026-08-02T12:00:00.000Z',
+        ...extra,
+      });
+      const webm = asset('clip.webm', 'webm', 'video/webm');
+      const image = asset('still.png', 'png', 'image/png');
+      const mp4 = asset('clip.mp4', 'mp4', 'video/mp4');
+      const missingVideo = asset('gone.webm', 'webm', 'video/webm', { isPresent: 0 });
+      const mismatchedVideo = asset('mismatch.webm', 'webm', 'video/mp4');
+      [webm, image, missingVideo, mp4, mismatchedVideo].forEach((selected, sortOrder) => {
+        linkAssetToRelease(db, { releaseId: release.id, assetId: selected.id, sortOrder });
+      });
+
+      const thumbnails = service.getProjectWorkspace(project.id).releaseSummary.recent[0].thumbnails;
+
+      expect(thumbnails.map((thumbnail) => thumbnail.filename))
+        .toEqual(['clip.webm', 'still.png', 'clip.mp4']);
+      for (const [video, extension] of [[webm, 'webm'], [mp4, 'mp4']]) {
+        expect(thumbnails.find((thumbnail) => thumbnail.assetId === video.id)).toEqual({
+          assetId: video.id,
+          filename: `clip.${extension}`,
+          extension,
+          thumbnailUrl: null,
+          viewerUrl: `/projects/${project.id}/assets/${video.id}`,
+          preview: {
+            state: 'video',
+            previewable: false,
+            kind: 'video',
+            sourceMetadataValid: false,
+            revision: null,
+            urls: { thumbnail: null, preview: null },
+            playbackUrl: `/projects/${project.id}/assets/${video.id}/original`,
+          },
+        });
+      }
+    });
+
+    it('keeps supported videos for a release with no image thumbnails', () => {
+      const project = insertProject(db, { title: 'Video Only Release' });
+      const release = insertRelease(db, { projectId: project.id, title: 'Only Video' });
+      const mp4 = insertAsset(db, {
+        projectId: project.id,
+        relativePath: 'only.mp4',
+        filename: 'only.mp4',
+        extension: 'mp4',
+        mimeType: 'video/mp4',
+      });
+      linkAssetToRelease(db, { releaseId: release.id, assetId: mp4.id });
+
+      const thumbnails = service.getProjectWorkspace(project.id).releaseSummary.recent[0].thumbnails;
+
+      expect(thumbnails).toEqual([expect.objectContaining({
+        assetId: mp4.id,
+        thumbnailUrl: null,
+        preview: expect.objectContaining({
+          state: 'video',
+          playbackUrl: `/projects/${project.id}/assets/${mp4.id}/original`,
+        }),
+      })]);
     });
 
     it('returns an empty thumbnail array when a release has no qualifying assets', () => {
