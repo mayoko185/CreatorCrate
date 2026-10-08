@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
 import { closeDatabase, openDatabase, runMigrations } from '../src/db.js';
 import { authenticate, AUTH_CONFIG } from './helpers/auth.js';
+import { ApplicationLogRepositoryError } from '../src/data/application-log-repository.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const APP_NAME = 'CreatorCrate';
@@ -56,6 +57,7 @@ describe('settings — logs HTTP', () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     try { closeDatabase(db); } catch {}
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
@@ -477,6 +479,36 @@ describe('settings — logs HTTP', () => {
     expect(res.text).toContain('Token validation failed');
   });
 
+  it('renders directly persisted malformed or oversized legacy context without errors', async () => {
+    // The schema only bounds context_json size, so legacy rows may bypass repository validation.
+    const insertRaw = db.prepare(`
+      INSERT INTO application_logs (occurred_at_ms, level, kind, subsystem, event, message, context_json)
+      VALUES (?, 'info', 'activity', 'settings', ?, 'Legacy message.', ?)
+    `);
+    const malformedContexts = ['{not json', '[1,2,3]', '"scalar"', 'null', ''];
+    for (const [index, contextJson] of malformedContexts.entries()) {
+      insertRaw.run(1_000 + index, `legacy.context.malformed.${index}`, contextJson);
+    }
+    insertRaw.run(2_000, 'legacy.context.deep', JSON.stringify({
+      a: { b: { c: { d: { e: { f: 'hidden-deep-value' } }, shallow: 'visible-shallow-value' } } },
+    }));
+    insertRaw.run(3_000, 'legacy.context.wide', JSON.stringify(
+      Object.fromEntries(Array.from({ length: 150 }, (_, index) => [`wideKey${index}`, index])),
+    ));
+
+    const res = await agent.get('/settings/logs').expect(200);
+
+    for (const index of malformedContexts.keys()) {
+      expect(res.text).toContain(`legacy.context.malformed.${index}`);
+    }
+    expect(res.text.match(/<p>No additional safe context\.<\/p>/g)).toHaveLength(malformedContexts.length);
+    expect(res.text).toMatch(/<dt>a\.b\.c\.d\.e<\/dt>\s*<dd>\[truncated\]<\/dd>/);
+    expect(res.text).not.toContain('hidden-deep-value');
+    expect(res.text).toMatch(/<dt>a\.b\.c\.shallow<\/dt>\s*<dd>visible-shallow-value<\/dd>/);
+    expect(res.text).toContain('<dt>wideKey99</dt>');
+    expect(res.text).not.toContain('<dt>wideKey100</dt>');
+  });
+
   it('omits unsafe legacy metadata from filter options while preserving canonical filters', async () => {
     const unsafeSubsystems = [
       'token=visible-token-secret',
@@ -805,5 +837,178 @@ describe('settings — logs HTTP', () => {
     expect(app.locals.pageDefaultsService.resolve('logs', 'autoRefresh')).toBe('enabled');
     const firstPage = await agent.get('/settings/logs').expect(200);
     expect(firstPage.text).toContain('data-logs-auto-refresh-enabled="true"');
+  });
+
+  describe('logs export', () => {
+    const EXPORT_FILENAME = /^attachment; filename="creatorcrate-logs-\d{8}T\d{6}Z\.txt"$/;
+
+    function expectNoAttachment(res) {
+      expect(res.headers['content-disposition']).toBeUndefined();
+      expect(res.headers['cache-control']).toBe('private, no-store');
+    }
+
+    it('downloads every matching record as an unpaginated, no-store TXT attachment', async () => {
+      for (let index = 0; index < 120; index += 1) insertLog({ occurredAtMs: index + 1, event: `export-${index}` });
+
+      const res = await agent.get('/settings/logs/export?page=2&pageSize=25').expect(200);
+
+      expect(res.headers['content-type']).toBe('text/plain; charset=utf-8');
+      expect(res.headers['content-disposition']).toMatch(EXPORT_FILENAME);
+      expect(res.headers['cache-control']).toBe('private, no-store');
+      expect(res.headers['x-content-type-options']).toBe('nosniff');
+      expect(res.headers.etag).toBeUndefined();
+      expect(Number(res.headers['content-length'])).toBe(Buffer.byteLength(res.text, 'utf8'));
+      expect(res.text).toContain('CreatorCrate Logs Export');
+      expect(res.text).toContain('Entries exported: 120');
+      expect(res.text).toContain('Event: export-0\n');
+      expect(res.text).toContain('Event: export-119\n');
+      expect(res.text.indexOf('Event: export-119\n')).toBeLessThan(res.text.indexOf('Event: export-0\n'));
+    });
+
+    it('applies level, kind, subsystem, and relative time filters exactly', async () => {
+      const now = Date.now();
+      insertLog({ occurredAtMs: now, level: 'error', kind: 'diagnostic', subsystem: 'backup', event: 'match.event' });
+      insertLog({ occurredAtMs: now, level: 'warn', kind: 'diagnostic', subsystem: 'backup', event: 'wrong.level' });
+      insertLog({ occurredAtMs: now, level: 'error', kind: 'activity', subsystem: 'backup', event: 'wrong.kind' });
+      insertLog({ occurredAtMs: now, level: 'error', kind: 'diagnostic', subsystem: 'settings', event: 'wrong.subsystem' });
+      insertLog({ occurredAtMs: now - 2 * 60 * 60 * 1000, level: 'error', kind: 'diagnostic', subsystem: 'backup', event: 'too.old' });
+
+      const res = await agent
+        .get('/settings/logs/export?level=error&kind=diagnostic&subsystem=backup&time=hour')
+        .expect(200);
+
+      expect(res.text).toContain('Entries exported: 1');
+      expect(res.text).toContain('Event: match.event');
+      for (const excluded of ['wrong.level', 'wrong.kind', 'wrong.subsystem', 'too.old']) {
+        expect(res.text).not.toContain(excluded);
+      }
+      expect(res.text).toContain('  Level: error');
+      expect(res.text).toContain('  Subsystem: backup');
+      expect(res.text).toContain('  Time range: Last hour');
+    });
+
+    it('uses saved Logs defaults for absent filters and treats explicitly cleared filters as unrestricted', async () => {
+      await agent
+        .post('/settings/logs/defaults')
+        .type('form')
+        .send({
+          _csrf: csrfToken, level: 'error', kind: '', subsystem: '', time: '',
+          pageSize: '50', timezone: 'local', autoRefresh: 'enabled',
+        })
+        .expect(302);
+      insertLog({ level: 'error', event: 'saved.error' });
+      insertLog({ level: 'warn', event: 'other.warn' });
+
+      const defaulted = await agent.get('/settings/logs/export').expect(200);
+      expect(defaulted.text).toContain('saved.error');
+      expect(defaulted.text).not.toContain('other.warn');
+
+      const cleared = await agent.get('/settings/logs/export?level=').expect(200);
+      expect(cleared.text).toContain('saved.error');
+      expect(cleared.text).toContain('other.warn');
+      expect(cleared.text).toContain('  Level: Any level (not filtered)');
+      expect(app.locals.pageDefaultsService.resolve('logs', 'level')).toBe('error');
+    });
+
+    it('rejects invalid or unsupported filter input instead of broadening the export', async () => {
+      insertLog({ subsystem: 'settings', event: 'never.exported' });
+      const invalidQueries = [
+        'time=year',
+        'level=invalid',
+        'kind=other',
+        'subsystem=missing',
+        'level=error&level=warn',
+        'level[x]=error',
+        'timezone=UTC',
+        'unexpected=1',
+      ];
+
+      for (const query of invalidQueries) {
+        const res = await agent
+          .get(`/settings/logs/export?${query}`)
+          .set('Accept', 'application/json')
+          .expect(400);
+        expect(res.body).toEqual({ status: 'error', code: 'INVALID_EXPORT_FILTER', message: expect.any(String) });
+        expect(res.text).not.toContain('never.exported');
+        expectNoAttachment(res);
+      }
+
+      const html = await agent.get('/settings/logs/export?kind=<script>alert(1)</script>').expect(400);
+      expect(html.headers['content-type']).toMatch(/^text\/html/);
+      expect(html.text).not.toContain('<script>alert(1)</script>');
+      expectNoAttachment(html);
+    });
+
+    it('returns a distinguishable controlled error when too many records match', async () => {
+      vi.spyOn(repository, 'forEachExportRecord').mockImplementation(() => {
+        throw new ApplicationLogRepositoryError('Too many rows in application_logs.', { code: 'EXPORT_LIMIT_EXCEEDED' });
+      });
+
+      const res = await agent.get('/settings/logs/export').set('Accept', 'application/json').expect(422);
+
+      expect(res.body.code).toBe('EXPORT_LIMIT_EXCEEDED');
+      expect(res.body.message).toContain('50,000');
+      expect(res.text).not.toContain('application_logs');
+      expectNoAttachment(res);
+    });
+
+    it('returns a distinguishable controlled error when the TXT output exceeds 20 MiB', async () => {
+      const chunk = 'word '.repeat(399).trim();
+      const context = Object.fromEntries(Array.from({ length: 100 }, (_, index) => [`note${index}`, chunk]));
+      vi.spyOn(repository, 'forEachExportRecord').mockImplementation((_filters, visit) => {
+        for (let index = 0; index < 200; index += 1) {
+          visit({
+            id: index + 1, occurred_at_ms: 1_000, level: 'info', kind: 'activity', subsystem: 'settings',
+            event: 'big.event', message: chunk, project_id: null, correlation_id: null,
+            context_json: JSON.stringify(context),
+          }, index);
+        }
+        return { count: 200 };
+      });
+
+      const res = await agent.get('/settings/logs/export').set('Accept', 'application/json').expect(422);
+
+      expect(res.body.code).toBe('EXPORT_TOO_LARGE');
+      expect(res.body.message).toContain('20 MiB');
+      expectNoAttachment(res);
+    });
+
+    it('hides unexpected failure details behind a controlled server error', async () => {
+      const secret = 'SQLITE_CORRUPT: /srv/creatorcrate/data/creatorcrate.db SELECT * FROM application_logs';
+      vi.spyOn(repository, 'forEachExportRecord').mockImplementation(() => { throw new Error(secret); });
+
+      const json = await agent.get('/settings/logs/export').set('Accept', 'application/json').expect(500);
+      expect(json.body).toEqual({
+        status: 'error',
+        code: 'EXPORT_FAILED',
+        message: 'The logs export could not be generated. Try again later.',
+      });
+      expectNoAttachment(json);
+
+      const html = await agent.get('/settings/logs/export').expect(500);
+      for (const leaked of ['SQLITE_CORRUPT', '/srv/creatorcrate', 'SELECT', 'application_logs']) {
+        expect(html.text).not.toContain(leaked);
+      }
+      expectNoAttachment(html);
+      vi.restoreAllMocks();
+      expect(repository.findPage().some((entry) => entry.event === 'logging.export_failed')).toBe(true);
+    });
+
+    it('requires authentication and respects the maintenance boundary', async () => {
+      insertLog({ event: 'protected.event' });
+
+      const anonymous = await request(app).get('/settings/logs/export').expect(302);
+      expect(anonymous.headers['content-disposition']).toBeUndefined();
+      expect(anonymous.text).not.toContain('protected.event');
+
+      app.locals.maintenanceState.active = true;
+      try {
+        const blocked = await agent.get('/settings/logs/export').expect(503);
+        expect(blocked.headers['content-disposition']).toBeUndefined();
+        expect(blocked.text).not.toContain('protected.event');
+      } finally {
+        app.locals.maintenanceState.active = false;
+      }
+    });
   });
 });

@@ -17,6 +17,7 @@ export const APPLICATION_LOG_MAX_PAGE_SIZE = 100;
 export const APPLICATION_LOG_RETENTION_DAYS = 90;
 export const APPLICATION_LOG_MAX_RECORDS = 50_000;
 export const APPLICATION_LOG_MAX_CONTEXT_JSON_BYTES = 16_384;
+export const APPLICATION_LOG_EXPORT_MAX_RECORDS = 50_000;
 
 export class ApplicationLogRepositoryError extends Error {
   constructor(message, { code } = {}) {
@@ -173,6 +174,30 @@ export function createApplicationLogRepository(db) {
     )
   `);
   const clear = db.transaction(() => clearStmt.run().changes);
+  // A deferred read transaction pins one WAL snapshot for both the bounded
+  // count and the row walk, so concurrent inserts cannot shift the export.
+  const readExport = db.transaction((where, params, visit) => {
+    const matched = db.prepare(`
+      SELECT COUNT(*) AS count FROM (SELECT 1 FROM application_logs ${where} LIMIT ?)
+    `).get(...params, APPLICATION_LOG_EXPORT_MAX_RECORDS + 1).count;
+    if (matched > APPLICATION_LOG_EXPORT_MAX_RECORDS) {
+      throw new ApplicationLogRepositoryError(
+        `More than ${APPLICATION_LOG_EXPORT_MAX_RECORDS} application logs match the export filters.`,
+        { code: 'EXPORT_LIMIT_EXCEEDED' }
+      );
+    }
+
+    let count = 0;
+    for (const row of db.prepare(`
+      ${SELECT_ALL}
+      ${where}
+      ORDER BY occurred_at_ms DESC, id DESC
+    `).iterate(...params)) {
+      visit(row, count);
+      count += 1;
+    }
+    return { count };
+  });
   const prune = db.transaction((cutoffMs) => {
     const ageDeleted = deleteOlderThanStmt.run(cutoffMs).changes;
     const excess = Math.max(0, countStmt.get().count - APPLICATION_LOG_MAX_RECORDS);
@@ -231,6 +256,27 @@ export function createApplicationLogRepository(db) {
     count(filters = {}) {
       const { where, params } = buildFilterQuery(filters);
       return db.prepare(`SELECT COUNT(*) AS count FROM application_logs ${where}`).get(...params).count;
+    },
+
+    /**
+     * Stream every matching record, newest first, from one consistent snapshot.
+     * Fails with code EXPORT_LIMIT_EXCEEDED before visiting any row when more
+     * than APPLICATION_LOG_EXPORT_MAX_RECORDS match. `visit` runs synchronously
+     * inside the read transaction: it must not use this database connection or
+     * await, and throwing from it aborts the read and releases the snapshot.
+     *
+     * @param {{level?: string, kind?: string, subsystem?: string, sinceMs?: number}} filters
+     * @param {(row: {id: number, occurred_at_ms: number, level: string, kind: string, subsystem: string, event: string, message: string, project_id: number|null, correlation_id: string|null, context_json: string}, index: number) => void} visit
+     * @returns {{count: number}}
+     */
+    forEachExportRecord(filters, visit) {
+      if (typeof visit !== 'function') {
+        throw new ApplicationLogRepositoryError('Application log export visitor must be a function.', {
+          code: 'INVALID_INPUT',
+        });
+      }
+      const { where, params } = buildFilterQuery(filters ?? {});
+      return readExport(where, params, visit);
     },
 
     /** @returns {{levels: string[], kinds: string[], subsystems: string[]}} */

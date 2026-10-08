@@ -158,6 +158,27 @@ describe('live restore — same-process application context', () => {
     expect(healthRes.body).toEqual({ status: 'ok', database: 'ok' });
   });
 
+  it('exports logs from the restored database, not the retired pre-restore connection', async () => {
+    const backupRes = await request(appContext.handleRequest).post('/settings/backups').expect(302);
+    expect(backupRes.headers.location).toBe('/settings/backups?notice=backup_created');
+    const backupFilename = backupService.listBackups()[0].filename;
+    appContext.app.locals.applicationLogRepository.insert({
+      occurredAtMs: Date.now(), level: 'info', kind: 'activity', subsystem: 'settings',
+      event: 'state_b.only', message: 'Written after the backup.', context: {},
+    });
+    const before = await request(appContext.handleRequest).get('/settings/logs/export').expect(200);
+    expect(before.text).toContain('Event: state_b.only');
+
+    const dbBeforeRestore = appContext.db;
+    await request(appContext.handleRequest).post(`/settings/backups/${backupFilename}/restore`).expect(302);
+    expect(appContext.db).not.toBe(dbBeforeRestore);
+
+    const after = await request(appContext.handleRequest).get('/settings/logs/export').expect(200);
+    expect(after.headers['content-disposition']).toMatch(/^attachment; /);
+    expect(after.text).toContain('Event: backup.restored');
+    expect(after.text).not.toContain('state_b.only');
+  });
+
   it('returns 503 maintenance during replacement and healthy again immediately after', async () => {
     const backupRes = await request(appContext.handleRequest).post('/settings/backups').expect(302);
     expect(backupRes.headers.location).toBe('/settings/backups?notice=backup_created');

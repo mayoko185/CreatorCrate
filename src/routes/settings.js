@@ -40,6 +40,15 @@ import {
 } from '../services/automatic-project-scan-scheduler.js';
 import { APPLICATION_LOG_LEVELS } from '../services/application-logger.js';
 import {
+  LOG_TIME_OPTIONS,
+  LOG_TIME_PRESETS,
+  formatLogRecord,
+  resolveLogSinceMs,
+  safeLogViewerText,
+} from '../services/application-log-presentation.js';
+import { ApplicationLogExportError, buildApplicationLogExport } from '../services/application-log-export.js';
+import { ApplicationLogRepositoryError } from '../data/application-log-repository.js';
+import {
   buildPageDefaultsDialogModel,
   handlePageDefaultsPost,
 } from './page-defaults.js';
@@ -332,31 +341,6 @@ function buildAutomaticScanTiming(appMetaRepository, intervalMinutes, clockForma
   };
 }
 
-const LOG_CONTEXT_SENSITIVE_KEY = /(?:authorization|cookie|credential|csrf|password|secret|session|token|watermark|(?:^|[_-])(?:request|body|headers?|options?)(?:[_-]|$)|(?:request|body|headers?|options?)(?:body|payload|data|headers?|options?)$)/i;
-const LOG_SENSITIVE_TEXT = /(?:\b(?:proxy-)?authorization\s*:\s*(?:bearer|basic|digest)\s+\S+|\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]{4,}|\b(?:api[ _-]?key|access[ _-]?token|refresh[ _-]?token|session(?:[ _-]?id)?|password|secret|credential)\b(?:\s*[:=]\s*|\s+[\"'(\[<]\s*)\S+|\b(?:cookie|set-cookie)\s*:\s*[^;\r\n]+)/i;
-const LOG_GENERIC_SECRET_TEXT = /\b(?:token|csrf|auth(?:orization)?)\b\s*[:=]\s*\S+/i;
-const LOG_ABSOLUTE_PATH = /(?:^|[\s"'`([{<=,:;])(?:[A-Za-z]:[\\/]|\\\\|\/(?!\/)(?!(?:div|script)>))/i;
-const LOG_STACK_TRACE = /^[^\S\r\n]*(?:[A-Za-z_$][\w$]*(?:Error|Exception)|Error|Exception)\b[^\r\n]*(?:\r?\n[^\S\r\n]*at\s+[^\r\n]+)+/i;
-const LOG_CONTEXT_MAX_ENTRIES = 100;
-const LOG_CONTEXT_MAX_DEPTH = 4;
-
-function safeLogViewerText(value, fallback = '—') {
-  if (typeof value !== 'string') return fallback;
-  const normalized = value.replace(/[\u0000-\u001F\u007F]/g, ' ').replace(/\s+/g, ' ').trim();
-  if (!normalized) return fallback;
-  if (LOG_STACK_TRACE.test(value)) return '[redacted stack trace]';
-  if (LOG_SENSITIVE_TEXT.test(normalized) || LOG_GENERIC_SECRET_TEXT.test(normalized)) return '[redacted secret]';
-  if (LOG_ABSOLUTE_PATH.test(normalized)) return '[redacted path]';
-  return normalized.slice(0, 2_000);
-}
-
-function isSafeWatermarkIdLogContextEntry(label, value) {
-  return label.split(/[.\[\]]/).at(-1) === 'watermarkId'
-    && typeof value === 'number'
-    && Number.isSafeInteger(value)
-    && value > 0;
-}
-
 function logSettingsActivity(applicationLogger, event, context = {}, message = 'Settings activity completed.') {
   try {
     applicationLogger?.info?.({
@@ -371,66 +355,6 @@ function logSettingsActivity(applicationLogger, event, context = {}, message = '
   }
 }
 
-function safeLogContextEntries(contextJson) {
-  let context;
-  try {
-    context = JSON.parse(contextJson);
-  } catch {
-    return [];
-  }
-  if (!context || typeof context !== 'object' || Array.isArray(context)) return [];
-
-  const entries = [];
-  const visit = (value, label, depth) => {
-    if (entries.length >= LOG_CONTEXT_MAX_ENTRIES) return;
-    const safeLabel = LOG_ABSOLUTE_PATH.test(label) ? '[redacted key]' : safeLogViewerText(label, '[unavailable key]');
-    if (LOG_CONTEXT_SENSITIVE_KEY.test(label.split(/[.\[\]]/).at(-1)) && !isSafeWatermarkIdLogContextEntry(label, value)) {
-      entries.push({ label: safeLabel, value: '[redacted]' });
-      return;
-    }
-    if (value === null || typeof value === 'boolean') {
-      entries.push({ label: safeLabel, value: String(value) });
-      return;
-    }
-    if (typeof value === 'number') {
-      entries.push({ label: safeLabel, value: Number.isFinite(value) ? String(value) : '[invalid number]' });
-      return;
-    }
-    if (typeof value === 'string') {
-      entries.push({ label: safeLabel, value: safeLogViewerText(value, '') });
-      return;
-    }
-    if (depth >= LOG_CONTEXT_MAX_DEPTH || !value || typeof value !== 'object') {
-      entries.push({ label: safeLabel, value: '[truncated]' });
-      return;
-    }
-    const children = Array.isArray(value) ? value.entries() : Object.entries(value);
-    for (const [key, child] of children) {
-      visit(child, Array.isArray(value) ? `${label}[${key}]` : `${label}.${key}`, depth + 1);
-      if (entries.length >= LOG_CONTEXT_MAX_ENTRIES) return;
-    }
-  };
-
-  for (const [key, value] of Object.entries(context)) {
-    visit(value, key, 0);
-    if (entries.length >= LOG_CONTEXT_MAX_ENTRIES) break;
-  }
-  return entries;
-}
-
-const LOG_TIME_PRESETS = Object.freeze({
-  hour: 60 * 60 * 1000,
-  day: 24 * 60 * 60 * 1000,
-  '7d': 7 * 24 * 60 * 60 * 1000,
-  '30d': 30 * 24 * 60 * 60 * 1000,
-});
-const LOG_TIME_OPTIONS = Object.freeze([
-  Object.freeze({ value: '', label: 'Any time' }),
-  Object.freeze({ value: 'hour', label: 'Last hour' }),
-  Object.freeze({ value: 'day', label: 'Last 24 hours' }),
-  Object.freeze({ value: '7d', label: 'Last 7 days' }),
-  Object.freeze({ value: '30d', label: 'Last 30 days' }),
-]);
 const LOG_TIMEZONE_LABELS = Object.freeze({
   local: 'Local / Browser timezone',
   UTC: 'UTC',
@@ -506,44 +430,6 @@ function buildLogsUrl(filters, page = 1) {
   return query ? '/settings/logs?' + query : '/settings/logs';
 }
 
-function formatLogTimestamp(timestamp, timezone, clockFormat) {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: clockFormat === '12h' ? 'numeric' : '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hourCycle: clockFormat === '12h' ? 'h12' : 'h23',
-    timeZone: timezone === 'local' ? 'UTC' : timezone,
-    timeZoneName: 'short',
-  }).formatToParts(timestamp);
-  const values = Object.fromEntries(parts
-    .filter(({ type }) => type !== 'literal')
-    .map(({ type, value }) => [type, value]));
-  const meridiem = clockFormat === '12h' ? ` ${/^a/i.test(values.dayPeriod) ? 'AM' : 'PM'}` : '';
-  return `${values.year}-${values.month}-${values.day} ${values.hour}:${values.minute}:${values.second}${meridiem} ${values.timeZoneName}`;
-}
-
-function formatLogRecord(record, timezone, clockFormat) {
-  const timestamp = new Date(record.occurred_at_ms);
-  const timestampValid = !Number.isNaN(timestamp.getTime());
-  return {
-    id: record.id,
-    timestampMs: timestampValid ? record.occurred_at_ms : null,
-    timestampIso: timestampValid ? timestamp.toISOString() : null,
-    timestamp: timestampValid ? formatLogTimestamp(timestamp, timezone, clockFormat) : 'Unknown time',
-    level: safeLogViewerText(record.level),
-    kind: safeLogViewerText(record.kind),
-    subsystem: safeLogViewerText(record.subsystem),
-    event: safeLogViewerText(record.event),
-    message: safeLogViewerText(record.message),
-    projectId: Number.isSafeInteger(record.project_id) && record.project_id > 0 ? record.project_id : null,
-    correlationId: safeLogViewerText(record.correlation_id, null),
-    contextEntries: safeLogContextEntries(record.context_json),
-  };
-}
-
 function isSafeLogFilterValue(value) {
   return typeof value === 'string' && safeLogViewerText(value, '') === value;
 }
@@ -597,7 +483,7 @@ function renderLogsPage(req, res, {
     pageSize: resolvedDefaults.pageSize,
   };
   const pageSize = Number(resolvedDefaults.pageSize) || applicationLogDefaultPageSize;
-  const sinceMs = filters.time ? Math.max(0, Date.now() - LOG_TIME_PRESETS[filters.time]) : undefined;
+  const sinceMs = resolveLogSinceMs(filters.time, Date.now());
   const repositoryFilters = sinceMs === undefined ? filters : { ...filters, sinceMs };
   const totalLogs = applicationLogRepository.count(repositoryFilters);
   const totalPages = Math.max(1, Math.ceil(totalLogs / pageSize));
@@ -638,6 +524,94 @@ function renderLogsPage(req, res, {
     previousUrl: page > 1 ? buildLogsUrl(filters, page - 1) : null,
     nextUrl: page < totalPages ? buildLogsUrl(filters, page + 1) : null,
   });
+}
+
+const LOG_EXPORT_FILTER_FIELDS = Object.freeze(['level', 'kind', 'subsystem', 'time']);
+// Viewer-only parameters a client may carry over from the Logs URL. The export
+// is never paginated, so they are accepted and ignored.
+const LOG_EXPORT_IGNORED_PARAMS = Object.freeze(['page', 'pageSize']);
+
+class LogExportRequestError extends Error {
+  constructor(status, code, message) {
+    super(message);
+    this.status = status;
+    this.code = code;
+  }
+}
+
+function invalidLogExportFilter(message) {
+  return new LogExportRequestError(400, 'INVALID_EXPORT_FILTER', message);
+}
+
+/**
+ * Strictly validate explicit export filters, then resolve them through the same
+ * saved-defaults pipeline as the viewer. Unlike the viewer, which falls back to
+ * "any" for unrecognized input, an unsupported value is rejected so a typo can
+ * never silently broaden the export. An explicitly empty value clears that
+ * filter; an absent one uses the saved Logs default.
+ */
+function resolveLogExportFilters(req, applicationLogRepository) {
+  const query = req.query && typeof req.query === 'object' ? req.query : {};
+  for (const key of Object.keys(query)) {
+    if (!LOG_EXPORT_FILTER_FIELDS.includes(key) && !LOG_EXPORT_IGNORED_PARAMS.includes(key)) {
+      throw invalidLogExportFilter('The export request contains an unsupported parameter.');
+    }
+  }
+
+  const filterOptions = getLogFilterOptions(applicationLogRepository);
+  const allowed = {
+    level: new Set(filterOptions.levels),
+    kind: new Set(filterOptions.kinds),
+    subsystem: new Set(filterOptions.subsystems),
+    time: new Set(Object.keys(LOG_TIME_PRESETS)),
+  };
+  const explicit = {};
+  for (const field of LOG_EXPORT_FILTER_FIELDS) {
+    if (!Object.hasOwn(query, field)) continue;
+    const value = query[field];
+    if (typeof value !== 'string') {
+      throw invalidLogExportFilter(`The ${field} filter must be a single value.`);
+    }
+    if (value !== '' && !allowed[field].has(value)) {
+      throw invalidLogExportFilter(`The selected ${field} filter is not supported.`);
+    }
+    explicit[field] = value;
+  }
+
+  const resolvedDefaults = getPageDefaultsService(req).resolvePageDefaults(
+    LOGS_PAGE_DEFAULTS,
+    explicit,
+    buildLogsDefaultOptionCatalogues(filterOptions),
+  );
+  return buildLogFilters(resolvedDefaults, filterOptions);
+}
+
+function buildLogExportFilename(generatedAt) {
+  // 2026-10-08T12:34:56.789Z -> 20261008T123456Z: ASCII only, no separators.
+  const stamp = generatedAt.replace(/\.\d+Z$/, 'Z').replace(/[-:]/g, '');
+  return `creatorcrate-logs-${stamp}.txt`;
+}
+
+function classifyLogExportError(err) {
+  if (err instanceof LogExportRequestError) return err;
+  if (err instanceof ApplicationLogRepositoryError && err.code === 'EXPORT_LIMIT_EXCEEDED') {
+    return new LogExportRequestError(422, 'EXPORT_LIMIT_EXCEEDED',
+      'More than 50,000 log entries match the selected filters. Narrow the filters and try again.');
+  }
+  if (err instanceof ApplicationLogExportError && err.code === 'EXPORT_TOO_LARGE') {
+    return new LogExportRequestError(422, 'EXPORT_TOO_LARGE',
+      'The logs export would be larger than 20 MiB. Narrow the filters and try again.');
+  }
+  return null;
+}
+
+function sendLogExportError(req, res, { status, code, message }) {
+  res.setHeader('Cache-Control', 'private, no-store');
+  res.status(status);
+  if (req.get('accept')?.includes('application/json')) {
+    return res.json({ status: 'error', code, message });
+  }
+  return res.render('error.njk', { status, message });
 }
 
 function renderTagsPage(req, res, {
@@ -1398,6 +1372,47 @@ export function createSettingsRouter({
         res.redirect(buildLogsUrl(validatedValues));
       },
     });
+  });
+
+  // GET never mutates — downloads the complete filtered logs as a TXT file.
+  // The export is built synchronously and fully in memory before any success
+  // header is written: the maintenance gate admitted this request against the
+  // live connection, nothing can close it mid-build, and an aborted request
+  // leaves no temporary file, open transaction, or export state behind.
+  router.get('/logs/export', (req, res) => {
+    let result;
+    try {
+      const filters = resolveLogExportFilters(req, applicationLogRepository);
+      result = buildApplicationLogExport({ applicationLogRepository, filters });
+    } catch (err) {
+      const known = classifyLogExportError(err);
+      if (known) return sendLogExportError(req, res, known);
+      try {
+        applicationLogger.error({
+          kind: 'diagnostic',
+          subsystem: 'settings',
+          event: 'logging.export_failed',
+          message: 'The logs export failed unexpectedly.',
+          error: err,
+        });
+      } catch {
+        // Diagnostic logging must never replace the controlled response.
+      }
+      return sendLogExportError(req, res, {
+        status: 500,
+        code: 'EXPORT_FAILED',
+        message: 'The logs export could not be generated. Try again later.',
+      });
+    }
+
+    res.status(200);
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${buildLogExportFilename(result.generatedAt)}"`);
+    res.setHeader('Cache-Control', 'private, no-store');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Length', String(result.byteLength));
+    // res.end, not res.send: no ETag/304 negotiation for a no-store download.
+    return res.end(result.content);
   });
 
   // GET never mutates — this is the no-JavaScript confirmation fallback for
