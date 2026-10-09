@@ -166,8 +166,13 @@ function ownedPathWriteFingerprint(absPath, identity, trace, phase) {
 // post-hash stat, therefore still meets the second hash (bytes) or its bracket (metadata);
 // metadata that moves across both reads is a 'content' failure, marked `unstable` (bytes
 // matched each read; only write-metadata continuity failed).
+// `deferUnsettled` (Watermark outputs only): that unstable outcome is returned instead as
+// { failure: null, fingerprint: null, unsettled: true }: the bytes matched both reads under the
+// owned identity, but no fingerprint is yet evidence of continuity, so the caller must settle
+// it with ownedPathSettledContentSnapshot after its other reads, before any continuity sweep.
 // `trace`: archive pre-commit validation only (see the archive validation trace).
-export function ownedPathContentSnapshot(projectDir, absPath, identity, content, trace) {
+export function ownedPathContentSnapshot(projectDir, absPath, identity, content, trace,
+  { deferUnsettled = false } = {}) {
   let baseline = ownedPathWriteFingerprint(absPath, identity, trace, 'precommit-before-hash');
   if (!baseline) return { failure: 'identity' };
   for (const phase of ['precommit-after-hash', 'precommit-after-rehash']) {
@@ -178,15 +183,50 @@ export function ownedPathContentSnapshot(projectDir, absPath, identity, content,
     if (sameWriteFingerprint(baseline, after)) return { failure: null, fingerprint: after };
     baseline = after;
   }
-  return { failure: 'content', unstable: true };
+  return deferUnsettled ? { failure: null, fingerprint: null, unsettled: true } : { failure: 'content', unstable: true };
+}
+
+// The one settling verification of an unsettled snapshot (NAS write metadata that reported a
+// new mtime/ctime after each of its reads: production showed three distinct values with
+// identity, size and both hashes matching). No earlier observation is evidence: a value seen
+// after a read may equally stamp a write that landed after that read. So the bytes are
+// verified once more (identity, content, identity) and the fingerprint must hold unchanged
+// across that read, the same bracket ownedPathContentSnapshot requires; it then becomes the
+// baseline of the continuity sweep. Run later than the snapshot (after the caller's other
+// content reads), with no wait or retry: metadata still moving fails as `unstable`.
+// `phases` names the bracket's two trace phases (the Watermark final-sweep reverification
+// records its own); the verification itself is identical.
+export function ownedPathSettledContentSnapshot(projectDir, absPath, identity, content, trace, {
+  before: beforePhase = 'precommit-settle-before-hash', after: afterPhase = 'precommit-settle-after-hash',
+} = {}) {
+  const before = ownedPathWriteFingerprint(absPath, identity, trace, beforePhase);
+  if (!before) return { failure: 'identity' };
+  const failure = ownedPathContentFailure(projectDir, absPath, identity, content, trace);
+  if (failure) return { failure };
+  const after = ownedPathWriteFingerprint(absPath, identity, trace, afterPhase);
+  if (!after) return { failure: 'identity' };
+  return sameWriteFingerprint(before, after)
+    ? { failure: null, fingerprint: after }
+    : { failure: 'content', unstable: true };
 }
 
 // Metadata-only continuity with a snapshot: null, 'identity' (not the owned object) or
 // 'content' (the owned object was written since its bytes were verified). Reads no bytes.
 export function ownedPathContinuityFailure(absPath, identity, fingerprint, trace) {
+  const change = ownedPathContinuityChange(absPath, identity, fingerprint, trace);
+  return change === null || change === 'identity' ? change : 'content';
+}
+
+// ownedPathContinuityFailure's one observation, with its 'content' outcome split by that same
+// observation (WP3 C6): 'write-times' only when the exact owned identity holds at the verified
+// size and only mtimeNs/ctimeNs moved; 'size' when the size differs (any timestamps aside),
+// which no later observation can undo; 'content' when there is no verified fingerprint.
+export function ownedPathContinuityChange(absPath, identity, fingerprint, trace) {
   const current = ownedPathWriteFingerprint(absPath, identity, trace, 'precommit-final-sweep');
   if (!current) return 'identity';
-  return sameWriteFingerprint(current, fingerprint) ? null : 'content';
+  if (sameWriteFingerprint(current, fingerprint)) return null;
+  if (!fingerprint) return 'content';
+  return current.size === fingerprint.size ? 'write-times' : 'size';
 }
 
 // Diagnostics only (WP4 archive validation trace): why hashRegularFileInProject rejected a

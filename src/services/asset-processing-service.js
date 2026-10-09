@@ -32,6 +32,8 @@ import {
   hashRegularFileInProject,
   ownedPathContentFailure,
   ownedPathContentSnapshot,
+  ownedPathSettledContentSnapshot,
+  ownedPathContinuityChange,
   ownedPathContinuityFailure,
   TRACE_STAT_FIELDS,
   traceStats,
@@ -943,39 +945,118 @@ export function createAssetProcessingService({
   // the exact descriptor-created object (its full tuple when its birth time is durable) and
   // hold the published bytes under a post-hash write fingerprint (ownedPathContentSnapshot),
   // and the owned backup of a replaced destination must still be valid recovery material
-  // until the commit no longer needs it. The committed provenance is derived only from the
-  // public output's own creating descriptor.
+  // until the commit no longer needs it. An output whose NAS write metadata moved across both
+  // of its reads gets one settling verification (ownedPathSettledContentSnapshot) after every
+  // output and backup read, and before the archive reads, so every output's baseline was
+  // bracketing a hash and the final sweep still follows every read. An output whose write
+  // metadata moved by the final sweep, under its exact owned identity, gets one bracketed
+  // content reverification (reverifyWatermarkOutputs); every output and archive is then swept
+  // again, strictly. Every Watermark and archive recovery backup keeps the write fingerprint
+  // its bytes were verified under and is swept last, after every content read and output
+  // sweep (assertRecoveryBackupsUnchanged), so no backup goes unchecked between its
+  // verification and the index transaction. The committed provenance is derived only from
+  // the public output's own creating descriptor.
   function revalidateWatermarkPublications(items, archivePlans, projectDir) {
     const fingerprints = new Map();
+    const backupFingerprints = new Map();
+    const unsettled = [];
     for (const item of items) {
       item.outputProvenance = null;
-      const { failure: outputFailure, fingerprint } = ownedPathContentSnapshot(projectDir, item.outputAbsPath,
-        watermarkOutputIdentity(item), { size: item.outputSize, sha256: item.outputSha256 }, item.validationTrace);
+      const { failure: outputFailure, fingerprint, unsettled: deferred } = ownedPathContentSnapshot(projectDir,
+        item.outputAbsPath, watermarkOutputIdentity(item), { size: item.outputSize, sha256: item.outputSha256 },
+        item.validationTrace, { deferUnsettled: true });
       fingerprints.set(item, fingerprint);
-      if (outputFailure) {
-        recordRecoveryDiagnostic(stagingDiagnostics(item.staging), () => ({
-          assetId: item.asset?.id,
-          itemIndex: item.stageIndex,
-          artifactRole: 'published-output',
-          check: `precommit-${outputFailure}`,
-          publicationMode: watermarkPublicationMode(item),
-          ...observeDiagnosticArtifact(item.outputAbsPath, watermarkOutputIdentity(item)),
-        }));
-        const error = new AssetProcessingError(outputFailure === 'unreadable'
-          ? 'The watermark output could not be read before it was recorded.'
-          : 'The watermark output changed before it could be recorded.', {
-          code: outputFailure === 'unreadable' ? 'FILESYSTEM_OPERATION_FAILED' : 'OUTPUT_DESTINATION_CONFLICT',
-        });
-        noteWatermarkValidationFailure(error, () => watermarkPrecommitFailureContext(item, `precommit-${outputFailure}`, 1));
-        throw error;
-      }
-      if (item.destinationRemoved) assertWatermarkBackupValid(item, projectDir, 'precommit');
+      if (outputFailure) throwWatermarkPrecommitFailure(item, outputFailure);
+      if (deferred) unsettled.push(item);
+      if (item.destinationRemoved) backupFingerprints.set(item, assertWatermarkBackupValid(item, projectDir, 'precommit'));
       item.outputProvenance = item.outputBirthtimeNs === null || item.outputBirthtimeNs === undefined
         ? null
         : formatGeneratedOutputProvenance({ ...item.outputExactIdentity, birthtimeNs: item.outputBirthtimeNs });
     }
-    revalidateArchivePublications(archivePlans, projectDir);
-    assertWatermarkOutputsUnchanged(items, fingerprints);
+    for (const item of unsettled) {
+      const { failure, fingerprint } = ownedPathSettledContentSnapshot(projectDir, item.outputAbsPath,
+        watermarkOutputIdentity(item), { size: item.outputSize, sha256: item.outputSha256 }, item.validationTrace);
+      if (failure) throwWatermarkPrecommitFailure(item, failure);
+      fingerprints.set(item, fingerprint);
+    }
+    const { fingerprints: archiveFingerprints, backupFingerprints: archiveBackupFingerprints } =
+      revalidateArchivePublications(archivePlans, projectDir);
+    const moved = assertWatermarkOutputsUnchanged(items, fingerprints, { reverifiable: true });
+    if (moved.length > 0) {
+      reverifyWatermarkOutputs(items, moved, fingerprints, projectDir);
+      assertArchiveOutputsUnchanged(archivePlans, archiveFingerprints);
+      assertWatermarkOutputsUnchanged(items, fingerprints);
+    }
+    assertRecoveryBackupsUnchanged(backupFingerprints, archiveBackupFingerprints);
+  }
+
+  // Final backup sweep (WP3 C5), after every pre-commit read, including any final-sweep
+  // reverification: a backup proven before a later hash (an output, another backup, an
+  // archive, a reverification) may have been displaced, or rewritten in place under the same
+  // identity, during it. Each owned Watermark and archive backup must still be its exact
+  // descriptor-created object with the write fingerprint its bytes were verified under. Moved
+  // backup metadata is never reverified or adopted: any change rejects the commit, and rollback
+  // then restores from the backup only after re-proving its identity and bytes (otherwise it
+  // keeps the backup as evidence). No content is read here.
+  function assertRecoveryBackupsUnchanged(watermarkBackupFingerprints, archiveBackupFingerprints) {
+    for (const [item, fingerprint] of watermarkBackupFingerprints) {
+      const change = ownedPathContinuityFailure(item.destinationBackupPath, item.destinationBackupExactIdentity,
+        fingerprint);
+      if (change) failWatermarkBackup(item, `precommit-final-backup-${OWNED_PATH_FAILURE_CHECKS[change]}`);
+    }
+    for (const [plan, fingerprint] of archiveBackupFingerprints) {
+      const change = ownedPathContinuityFailure(plan.destinationBackupPath, plan.destinationBackupExactIdentity,
+        fingerprint);
+      if (change) failArchiveBackup(plan, `precommit-final-backup-${OWNED_PATH_FAILURE_CHECKS[change]}`);
+    }
+  }
+
+  // The one final-sweep reverification (WP3 C4). NAS write metadata of an output may move
+  // after a hash it held across (production: identity, size and the re-hash matched, the
+  // post-rehash mtime/ctime held, then the final sweep reported both about 1.2 s later). A
+  // moved fingerprint is never adopted as continuity: each moved output's bytes are verified
+  // afresh (identity, size, SHA-256 of the rendered bytes, identity) under a write fingerprint
+  // that must hold unchanged across that read, the bracket every earlier verification
+  // required. That fingerprint becomes its baseline, and the caller then sweeps every output
+  // and archive again after these reads, with no further reverification. Any failure here
+  // rejects the commit.
+  function reverifyWatermarkOutputs(items, moved, fingerprints, projectDir) {
+    for (const item of items) item.finalReverify = moved.includes(item) ? 'performed' : 'other-output';
+    for (const item of moved) {
+      // The snapshot and first-sweep evidence stay in the failure context; the reverification
+      // records its own trace so that context stays within the logger budget.
+      try {
+        const { rehash, settling, compared, changedFields } = watermarkPrecommitFailureContext(item,
+          'precommit-final-content-mismatch', 1);
+        item.finalSweepMoved = { rehash, settling, compared, changedFields };
+      } catch {
+        // Diagnostics must not alter validation.
+      }
+      item.validationTrace = [];
+      const { failure, fingerprint } = ownedPathSettledContentSnapshot(projectDir, item.outputAbsPath,
+        watermarkOutputIdentity(item), { size: item.outputSize, sha256: item.outputSha256 }, item.validationTrace,
+        { before: 'precommit-reverify-before-hash', after: 'precommit-reverify-after-hash' });
+      if (failure) throwWatermarkPrecommitFailure(item, failure, `precommit-final-${OWNED_PATH_FAILURE_CHECKS[failure]}`);
+      fingerprints.set(item, fingerprint);
+    }
+  }
+
+  function throwWatermarkPrecommitFailure(item, outputFailure, check = `precommit-${outputFailure}`) {
+    recordRecoveryDiagnostic(stagingDiagnostics(item.staging), () => ({
+      assetId: item.asset?.id,
+      itemIndex: item.stageIndex,
+      artifactRole: 'published-output',
+      check,
+      publicationMode: watermarkPublicationMode(item),
+      ...observeDiagnosticArtifact(item.outputAbsPath, watermarkOutputIdentity(item)),
+    }));
+    const error = new AssetProcessingError(outputFailure === 'unreadable'
+      ? 'The watermark output could not be read before it was recorded.'
+      : 'The watermark output changed before it could be recorded.', {
+      code: outputFailure === 'unreadable' ? 'FILESYSTEM_OPERATION_FAILED' : 'OUTPUT_DESTINATION_CONFLICT',
+    });
+    noteWatermarkValidationFailure(error, () => watermarkPrecommitFailureContext(item, check, 1));
+    throw error;
   }
 
   // Final sweep, after every pre-commit read: an output proven before a later hash (another
@@ -984,13 +1065,21 @@ export function createAssetProcessingService({
   // object with the write fingerprint its committed hash was verified under; no content is
   // read here, so no fallible read separates this sweep from the index transaction. A
   // mismatch is never adopted and a changed output is never recorded.
-  function assertWatermarkOutputsUnchanged(items, fingerprints) {
+  // `reverifiable` (the first sweep only): when every mismatch is moved mtime/ctime alone under
+  // the exact owned identity at the verified size, those outputs are returned for one content
+  // reverification instead of rejected; any identity or size mismatch (WP3 C6: decided by this
+  // sweep's own observation, so a size restored before a reverification cannot erase it) still
+  // rejects the whole set. Otherwise returns [].
+  function assertWatermarkOutputsUnchanged(items, fingerprints, { reverifiable = false } = {}) {
+    const changes = items.map((item) => {
+      const change = ownedPathContinuityChange(item.outputAbsPath, watermarkOutputIdentity(item),
+        fingerprints.get(item), item.validationTrace);
+      return { item, change: change === null || change === 'identity' ? change : 'content', timesOnly: change === 'write-times' };
+    }).filter(({ change }) => change);
+    if (reverifiable && changes.every(({ timesOnly }) => timesOnly)) return changes.map(({ item }) => item);
     let owned = true;
     const changed = [];
-    for (const item of items) {
-      const change = ownedPathContinuityFailure(item.outputAbsPath, watermarkOutputIdentity(item),
-        fingerprints.get(item), item.validationTrace);
-      if (!change) continue;
+    for (const { item, change } of changes) {
       owned = false;
       changed.push({ item, check: `precommit-final-${OWNED_PATH_FAILURE_CHECKS[change]}` });
       recordRecoveryDiagnostic(stagingDiagnostics(item.staging), () => ({
@@ -1010,6 +1099,7 @@ export function createAssetProcessingService({
         changed.length));
       throw error;
     }
+    return [];
   }
 
   // Rollback may unlink a published Prompt destination only while the pathname is still the
@@ -1557,8 +1647,11 @@ export function createAssetProcessingService({
   // hold the published bytes, and the owned backup of a replaced archive must still be valid
   // recovery material. The committed provenance is derived only from the public archive's own
   // creating descriptor, never from its stage, its backup or a later pathname stat.
+  // Returns the archives' and their backups' verified write fingerprints for a caller with
+  // later pre-commit reads (Watermark Apply) to sweep again.
   function revalidateArchivePublications(plans, projectDir) {
     const fingerprints = new Map();
+    const backupFingerprints = new Map();
     for (const plan of plans) {
       plan.outputProvenance = null;
       const { failure, fingerprint } = ownedPathContentSnapshot(projectDir, plan.outputAbsPath,
@@ -1578,12 +1671,13 @@ export function createAssetProcessingService({
         noteArchiveValidationFailure(error, plan, `precommit-${failure}`, 1);
         throw error;
       }
-      if (plan.destinationRemoved) assertArchiveBackupValid(plan, projectDir, 'precommit');
+      if (plan.destinationRemoved) backupFingerprints.set(plan, assertArchiveBackupValid(plan, projectDir, 'precommit'));
       plan.outputProvenance = plan.outputBirthtimeNs === null || plan.outputBirthtimeNs === undefined
         ? null
         : formatGeneratedOutputProvenance({ ...plan.outputExactIdentity, birthtimeNs: plan.outputBirthtimeNs });
     }
     assertArchiveOutputsUnchanged(plans, fingerprints);
+    return { fingerprints, backupFingerprints };
   }
 
   // Final sweep, after every archive validation read: an archive proven before a later hash
@@ -1674,11 +1768,20 @@ export function createAssetProcessingService({
   // write metadata moved across the first hash (performed | not-needed | not-reached). The
   // re-verification counts as performed once it recorded any step, whether or not it reached
   // its post-rehash fingerprint; it is not-needed only when the post-hash identity held.
-  // settling: the outcome of that one settling re-verification: held-after-hash |
-  // held-after-rehash (the post-rehash fingerprint became the baseline) | unstable (it moved
-  // across the re-hash too) | not-reached (an earlier step, or the re-verification itself, decided).
+  // settling: which bracketed read the baseline came from: held-after-hash |
+  // held-after-rehash (the post-rehash fingerprint became the baseline) | held-after-settle
+  // (it moved across both snapshot reads; the settling verification's post-hash fingerprint
+  // held across its read and became the baseline) | deferred (it moved across both snapshot
+  // reads and the settling verification itself decided before its bracket closed) | unstable
+  // (it moved across the settling read too) | not-reached (an earlier step, or the
+  // re-verification itself, decided).
   // A post-hash phase is recorded before its identity is decided, so it counts as held only
   // when its recorded identity relation is 'matched'.
+  // finalReverify: the final-sweep reverification (reverifyWatermarkOutputs): performed (this
+  // output's metadata moved by the first sweep; `phases` is then its reverification and the
+  // second sweep, `finalSweepMoved` the first sweep's comparison, and rehash/settling describe
+  // its snapshot) | other-output (only other outputs were reverified; a final-sweep phase is
+  // the second sweep) | not-reached.
   function watermarkPrecommitFailureContext(item, check, failedOutputCount) {
     const expected = validationTraceExpected(watermarkOutputIdentity(item), item.outputSize);
     const {
@@ -1689,10 +1792,17 @@ export function createAssetProcessingService({
     const rehashed = afterHashIndex >= 0
       && trace.slice(afterHashIndex + 1).some((entry) => entry.phase !== 'precommit-final-sweep');
     const identityHeldAt = (phase) => trace.some((entry) => entry.phase === phase && entry.identity === 'matched');
+    const observedAt = (phase) => trace.find((entry) => entry.phase === phase && entry.identity === 'matched');
+    const heldAcross = (from, to) => Boolean(observedAt(from) && observedAt(to))
+      && ['size', 'mtimeNs', 'ctimeNs'].every((key) => observedAt(from)[key] === observedAt(to)[key]);
     let settling = 'not-reached';
-    if (subcheck === 'fingerprint-changed' && last.phase === 'precommit-after-rehash') settling = 'unstable';
-    else if (identityHeldAt('precommit-after-rehash')) settling = 'held-after-rehash';
+    if (subcheck === 'fingerprint-changed' && last.phase === 'precommit-settle-after-hash') settling = 'unstable';
+    else if (heldAcross('precommit-settle-before-hash', 'precommit-settle-after-hash')) settling = 'held-after-settle';
+    else if (identityHeldAt('precommit-after-rehash') && !heldAcross('precommit-after-hash', 'precommit-after-rehash')) {
+      settling = 'deferred';
+    } else if (identityHeldAt('precommit-after-rehash')) settling = 'held-after-rehash';
     else if (!rehashed && identityHeldAt('precommit-after-hash')) settling = 'held-after-hash';
+    const moved = item.finalSweepMoved;
     return {
       assetId: item.asset?.id,
       itemIndex: item.stageIndex,
@@ -1701,8 +1811,11 @@ export function createAssetProcessingService({
       subcheck,
       identityMatch,
       hashMatch,
-      rehash: rehashed ? 'performed' : identityHeldAt('precommit-after-hash') ? 'not-needed' : 'not-reached',
-      settling,
+      rehash: moved ? moved.rehash
+        : rehashed ? 'performed' : identityHeldAt('precommit-after-hash') ? 'not-needed' : 'not-reached',
+      settling: moved ? moved.settling : settling,
+      finalReverify: item.finalReverify ?? 'not-reached',
+      ...(moved ? { finalSweepMoved: { compared: moved.compared, changedFields: moved.changedFields } } : {}),
       changedFields,
       ...(compared ? { compared } : {}),
       ...(firstChangedPhase ? { firstChangedPhase } : {}),
@@ -1814,11 +1927,21 @@ export function createAssetProcessingService({
     } else {
       // Identity held: the write fingerprint {size, mtimeNs, ctimeNs} moved from its post-hash
       // baseline: at the final sweep, from the one the bytes were verified under (after the
-      // re-hash when there was one); at the re-hash, from the first post-hash one. The
-      // pre-hash observation stays in `phases` but is never the rejected comparison.
+      // re-hash, or the Watermark settling verification or final-sweep reverification, when
+      // there was one); at the re-hash, from the first post-hash one; at the settling
+      // verification or reverification, from its own pre-hash bracket. The snapshot's pre-hash observation stays in `phases` but is never the
+      // rejected comparison.
       subcheck = 'fingerprint-changed';
-      const baseline = last.phase === 'precommit-final-sweep' && phases['precommit-after-rehash']
-        ? 'precommit-after-rehash' : 'precommit-after-hash';
+      let baseline = 'precommit-after-hash';
+      if (last.phase === 'precommit-settle-after-hash') baseline = 'precommit-settle-before-hash';
+      else if (last.phase === 'precommit-reverify-after-hash') baseline = 'precommit-reverify-before-hash';
+      else if (last.phase === 'precommit-final-sweep' && phases['precommit-reverify-after-hash']) {
+        baseline = 'precommit-reverify-after-hash';
+      } else if (last.phase === 'precommit-final-sweep' && phases['precommit-settle-after-hash']) {
+        baseline = 'precommit-settle-after-hash';
+      } else if (last.phase === 'precommit-final-sweep' && phases['precommit-after-rehash']) {
+        baseline = 'precommit-after-rehash';
+      }
       compared = [baseline, last.phase];
       changedFields = differing(phases[baseline], last, ['size', 'mtimeNs', 'ctimeNs']);
     }
@@ -2773,9 +2896,10 @@ export function createAssetProcessingService({
       item.sourceSha256 = createHash('sha256').update(sourceBuffer).digest('hex');
       item.outputMode = currentStats.mode & 0o7777;
       // Owned exact identity comes from the exclusive descriptor, plus a candidate birth time.
+      const renderedSha256 = createHash('sha256').update(rendered.buffer).digest('hex');
       const stage = await item.recoveryMutation.group.createArtifact({
         intent: watermarkIntent(item, 'stage-output', stageOutputPath, {
-          size: rendered.buffer.length, sha256: createHash('sha256').update(rendered.buffer).digest('hex'),
+          size: rendered.buffer.length, sha256: renderedSha256,
         }),
         create: ({ onCreated, onOwned }) => writeOwnedStageFile(
           stageOutputPath, (descriptor) => writeBytesToDescriptor(descriptor, rendered.buffer), {
@@ -2788,8 +2912,25 @@ export function createAssetProcessingService({
       const owned = stage.value;
       item.stageOutputBirthtimeNs = owned.birthtimeNs;
       const stageStats = inspectGeneratedFile(stageOutputPath, 'WATERMARK_OUTPUT_INVALID');
-      item.outputSize = stageStats.size;
-      item.outputSha256 = hashRegularFileInProject(projectDir, stageOutputPath);
+      // The expected content is the bytes CreatorCrate rendered in memory, never whatever the
+      // stage path held when hashed: a stage whose readback differs from the rendered output
+      // is rejected here, before it can be published or recorded.
+      const stagedSha256 = hashRegularFileInProject(projectDir, stageOutputPath);
+      if (stagedSha256 !== renderedSha256 || stageStats.size !== rendered.buffer.length) {
+        recordRecoveryDiagnostic(stagingDiagnostics(staging), () => ({
+          assetId: item.asset?.id,
+          itemIndex: index,
+          artifactRole: 'stage-output',
+          check: 'stage-content-mismatch',
+          ...observeDiagnosticArtifact(stageOutputPath, item.stageOutputExactIdentity),
+        }));
+        throw new AssetProcessingError('A private processing stage changed before it could be verified.', {
+          code: 'FILESYSTEM_OPERATION_FAILED',
+        });
+      }
+      item.outputSize = rendered.buffer.length;
+      item.outputSha256 = renderedSha256;
+      item.stageOutputContentPinned = true;
       const metadata = await sharpImplementation(rendered.buffer).metadata();
       if (metadata.format !== sharpOutputFormat(item.outputFormat)
         || metadata.width !== rendered.width
@@ -2955,12 +3096,18 @@ export function createAssetProcessingService({
             throw err;
           }
           removeDestination?.();
+          // The stage is CreatorCrate's own descriptor-created output with pinned rendered
+          // bytes, so its open check may accept NAS write-time disagreement between the
+          // pathname and the descriptor; identity, size, copy continuity and the copied
+          // bytes' SHA-256 stay strict. A stage whose readback was not the rendered output never
+          // reaches publication: staging rejects it.
           return copyTrustedFileToOwnedFile({
             sourcePath: item.stageOutput,
             sourceExactIdentity: item.stageOutputExactIdentity,
             destinationPath: item.outputAbsPath,
             expectedSha256: item.outputSha256,
             expectedSize: item.outputSize,
+            pinnedOwnedSource: item.stageOutputContentPinned === true,
             mode: item.outputMode,
             onCreated: () => { item.outputCreateStarted = true; onCreated(); },
             onOwned: (identity) => {

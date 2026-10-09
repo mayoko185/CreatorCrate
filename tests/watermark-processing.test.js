@@ -425,6 +425,143 @@ function modelSmbTimeSettling(matches) {
   };
 }
 
+// WP3 production NAS trace (project 41, asset 3165, output 6 of nine; Docker in a Debian VM,
+// NAS-backed project storage): the pathname mtime (= ctime) reported before the first
+// pre-commit hash, after it and after the re-hash, with identity, size and both hashes
+// matching. Three distinct values: neither stable nor reverting.
+const PRODUCTION_NAS_TIMES = Object.freeze([1791505303076261800n, 1791505302897584100n, 1791505304096824900n]);
+
+// Models that trace: once a matching file's creating descriptor closes, every bigint pathname
+// lstat of it reports mtime = ctime = timeAfter(n) after n completed read-only opens of it,
+// plus any real change since that close (so a real write still shows). The default reports
+// the three production values over the pre-commit hash and re-hash, then holds the last.
+// `timeAfter(n, path)` may model each path separately.
+// `onReadOpen(path, n)` runs before the n-th (0-based) read-only open of a modelled path;
+// `observed` maps each path to its modelled mtimeNs values, in order.
+function modelNasWriteTimes(matches, {
+  timeAfter = (reads) => PRODUCTION_NAS_TIMES[Math.min(reads, PRODUCTION_NAS_TIMES.length - 1)],
+  onReadOpen,
+  onLstat,
+} = {}) {
+  const realOpen = fs.openSync.bind(fs);
+  const realClose = fs.closeSync.bind(fs);
+  const realLstat = fs.lstatSync.bind(fs);
+  const creating = new Map();
+  const reading = new Map();
+  const closed = new Map();
+  const observed = new Map();
+  const openSpy = vi.spyOn(fs, 'openSync').mockImplementation((filePath, flags, ...args) => {
+    const resolved = typeof filePath === 'string' ? path.resolve(filePath) : null;
+    const state = resolved ? closed.get(resolved) : undefined;
+    if (state && flags === 'r') onReadOpen?.(resolved, state.opens++);
+    const descriptor = realOpen(filePath, flags, ...args);
+    if (state && flags === 'r') reading.set(descriptor, state);
+    if (resolved && typeof flags === 'string' && flags.startsWith('wx') && matches(resolved)) {
+      creating.set(descriptor, resolved);
+    }
+    return descriptor;
+  });
+  const closeSpy = vi.spyOn(fs, 'closeSync').mockImplementation((descriptor, ...args) => {
+    const created = creating.get(descriptor);
+    const result = realClose(descriptor, ...args);
+    creating.delete(descriptor);
+    const read = reading.get(descriptor);
+    reading.delete(descriptor);
+    if (read) read.reads += 1;
+    if (created) {
+      const real = realLstat(created, { bigint: true });
+      closed.set(created, { ino: real.ino, real, reads: 0, opens: 0 });
+    }
+    return result;
+  });
+  const lstatSpy = vi.spyOn(fs, 'lstatSync').mockImplementation((filePath, ...args) => {
+    const stats = realLstat(filePath, ...args);
+    const resolved = typeof filePath === 'string' ? path.resolve(filePath) : null;
+    const state = resolved ? closed.get(resolved) : undefined;
+    if (!state || typeof stats?.ino !== 'bigint' || stats.ino !== state.ino) return stats;
+    const base = timeAfter(state.reads, resolved);
+    const modelled = Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, {
+      mtimeNs: base + (stats.mtimeNs - state.real.mtimeNs), ctimeNs: base + (stats.ctimeNs - state.real.ctimeNs),
+    });
+    observed.set(resolved, [...(observed.get(resolved) ?? []), modelled.mtimeNs]);
+    // Runs after this observation is taken, before the caller acts on it.
+    onLstat?.(resolved, modelled);
+    return modelled;
+  });
+  return {
+    observed,
+    restore() {
+      lstatSpy.mockRestore();
+      closeSpy.mockRestore();
+      openSpy.mockRestore();
+    },
+  };
+}
+
+// WP3 C4 production NAS trace (project 41, asset 3165, output 6 of nine): identity, size and
+// the re-hash matched and the post-rehash mtime (= ctime) held; the final metadata sweep,
+// after the later outputs' reads, then reported a later mtime (= ctime) under the same
+// dev/ino and size.
+const PRODUCTION_FINAL_SWEEP_TIMES = Object.freeze({
+  afterRehash: 1791519731780353400n,
+  finalSweep: 1791519732993764300n,
+});
+
+// WP3 C2 production NAS trace (project 41, asset 3167, output 8 of nine): when publication
+// copied the private stage output, its pathname lstat reported mtime = ctime 1040648900 ns
+// earlier than the descriptor it then opened, with dev/ino, size and birth time identical.
+const PRODUCTION_STAGE_OPEN_LAG_NS = 1791508505669399100n - 1791508504628750200n;
+
+// Models that shape on the real file: immediately before each read-only open of a path accepted
+// by `isStage`, its write metadata advances by PRODUCTION_STAGE_OPEN_LAG_NS (utimes: same
+// inode, size, birth time and bytes), so a pathname stat taken just before the open reports
+// earlier mtime/ctime than the descriptor the open returns, and every later stat agrees with
+// that descriptor. `onOpen(path, { copy })` replaces the advance (e.g. to rewrite bytes
+// instead); `copy` marks an open preceded by a bigint pathname lstat of that path (the trusted
+// copy's source inspection; the stage hash inspects with a Number lstat). `observed` pairs the
+// pathname stat just before each open with that descriptor's first bigint fstat. It wraps the
+// current fs functions (so it composes with other spies); restore it first.
+function modelStageOpenWriteTimeLag(isStage, { onOpen } = {}) {
+  const previous = { lstatSync: fs.lstatSync, openSync: fs.openSync, fstatSync: fs.fstatSync };
+  const opened = new Map();
+  const bigintLstat = new Map();
+  const observed = [];
+  const advance = (target) => {
+    const { atimeMs, mtimeMs } = fs.statSync(target);
+    fs.utimesSync(target, atimeMs / 1000, (mtimeMs + Number(PRODUCTION_STAGE_OPEN_LAG_NS / 1000000n)) / 1000);
+  };
+  fs.lstatSync = (filePath, ...args) => {
+    const resolved = typeof filePath === 'string' ? path.resolve(filePath) : null;
+    if (resolved && isStage(resolved)) bigintLstat.set(resolved, Boolean(args[0]?.bigint));
+    return previous.lstatSync.call(fs, filePath, ...args);
+  };
+  fs.openSync = (filePath, flags, ...args) => {
+    const resolved = typeof filePath === 'string' ? path.resolve(filePath) : null;
+    const modelled = Boolean(resolved && flags === 'r' && isStage(resolved));
+    const copy = modelled && bigintLstat.get(resolved) === true;
+    const pathname = modelled ? previous.lstatSync.call(fs, resolved, { bigint: true }) : null;
+    if (modelled) (onOpen ?? advance)(resolved, { copy });
+    const descriptor = previous.openSync.call(fs, filePath, flags, ...args);
+    if (modelled) opened.set(descriptor, pathname);
+    else opened.delete(descriptor);
+    return descriptor;
+  };
+  fs.fstatSync = (descriptor, ...args) => {
+    const stats = previous.fstatSync.call(fs, descriptor, ...args);
+    if (opened.has(descriptor) && typeof stats?.ino === 'bigint') {
+      observed.push({ pathname: opened.get(descriptor), descriptor: stats });
+      opened.delete(descriptor);
+    }
+    return stats;
+  };
+  return {
+    observed,
+    restore() {
+      Object.assign(fs, previous);
+    },
+  };
+}
+
 const exactIdOf = (filePath) => {
   const stats = fs.lstatSync(filePath, { bigint: true });
   return { dev: stats.dev, ino: stats.ino };
@@ -4085,23 +4222,22 @@ describe('watermark asset processing', () => {
           itemIndex: 0,
           check: 'precommit-final-content-mismatch',
           publicationMode: 'descriptor-owned',
-          subcheck: 'fingerprint-changed',
+          // The final sweep saw A's write metadata move; its one reverification read the new bytes.
+          subcheck: 'hash-mismatch',
           identityMatch: 'matched',
-          hashMatch: true,
+          hashMatch: false,
           rehash: 'not-needed',
           settling: 'held-after-hash',
-          compared: ['precommit-after-hash', 'precommit-final-sweep'],
+          finalReverify: 'performed',
+          finalSweepMoved: { compared: ['precommit-after-hash', 'precommit-final-sweep'] },
           failedOutputCount: 1,
         });
-        expect(context.changedFields).toContain('mtimeNs');
+        expect(context.finalSweepMoved.changedFields).toContain('mtimeNs');
         const { phases } = context;
-        expect(context.changedFields).toEqual(['size', 'mtimeNs', 'ctimeNs']
-          .filter((key) => phases['precommit-after-hash'][key] !== phases['precommit-final-sweep'][key]));
         expect(Object.keys(phases)).toEqual([
-          'public-descriptor-final', 'public-post-close', 'precommit-before-hash', 'precommit-identity-before-hash',
-          'precommit-size-check', 'precommit-identity-after-hash', 'precommit-after-hash', 'precommit-final-sweep',
+          'precommit-reverify-before-hash', 'precommit-identity-before-hash', 'precommit-size-check',
         ]);
-        expect(context.expected).toMatchObject({ size: phases['precommit-final-sweep'].size });
+        expect(context.expected).toMatchObject({ size: phases['precommit-size-check'].size });
         expectSafeContext(context);
       });
 
@@ -4344,6 +4480,842 @@ describe('watermark asset processing', () => {
         expect(context.copySource.copiedSize).toBe(observations['opened-fstat'].size);
         expect(BigInt(observations['after-fstat'].mtimeNs) - BigInt(observations['opened-fstat'].mtimeNs)).toBe(1000n);
         expectSafeContext(context);
+      });
+      describe('NAS write-time settling (WP3)', () => {
+        // Runs `onRead(path)` once, immediately before read-only open number `index` (0-based) of
+        // `target`: 0 is the first pre-commit hash, 1 the re-hash, 2 the settling verification.
+        const beforeReadOf = (target, index, onRead) => {
+          const state = { fired: false };
+          state.onReadOpen = (filePath, opened) => {
+            if (filePath !== target || opened !== index || state.fired) return;
+            state.fired = true;
+            onRead(filePath);
+          };
+          return state;
+        };
+        const nasOn = (outputs, settings) => {
+          const resolved = new Set(outputs);
+          return modelNasWriteTimes((filePath) => resolved.has(filePath), settings);
+        };
+        const indexedOutput = (name) => assetRepository.findByProjectIdAndPath(project.id, `wm/${name}_wm.png`);
+        const [timeB, timeA, timeC] = PRODUCTION_NAS_TIMES.map(String);
+
+        // Production shape: identity, size and both hashes matched while the pathname reported
+        // B, then A, then C. Previously the output was rejected as fingerprint-changed/unstable.
+        it('records every output of a multi-output run under the production A-B-C write-time sequence', async () => {
+          const records = withRealLogger();
+          const names = ['nas-a', 'nas-b', 'nas-c'];
+          const sources = [];
+          for (const name of names) sources.push(await writeIndexedImage(`Final/${name}.png`));
+          const outputs = names.map((name) => path.resolve(projectDir, 'wm', `${name}_wm.png`));
+          const nas = nasOn(outputs);
+          let result;
+          try {
+            result = await processingService.watermarkAssets(project.id, sources.map((source) => source.id), options);
+          } finally {
+            nas.restore();
+          }
+
+          for (const output of outputs) {
+            // B before the first hash, A after it, C after the re-hash, C through the final sweep.
+            const values = nas.observed.get(output).map(String);
+            expect([...new Set(values)]).toEqual([timeB, timeA, timeC]);
+            expect(values.at(-1)).toBe(timeC);
+          }
+          expect(result).toMatchObject({ status: 'completed' });
+          expect(result.generatedAssetIds).toHaveLength(outputs.length);
+          for (const [index, name] of names.entries()) {
+            const row = indexedOutput(name);
+            expect(result.generatedAssetIds).toContain(row.id);
+            expect(row.generated_output_sha256).toBe(sha256For(outputs[index]));
+            expect(assetRepository.findGeneratedOutputProvenance(project.id, row.id)).toBe(provenanceTupleOf(outputs[index]));
+          }
+          expect(watermarkWorkspaces()).toEqual([]);
+          expect(records.filter((entry) => entry.event === VALIDATION_EVENT)).toEqual([]);
+        });
+
+        it('rejects write times that still move across the settling verification', async () => {
+          const records = withRealLogger();
+          const source = await writeIndexedImage('Final/nas-drift.png');
+          const output = path.resolve(projectDir, 'wm', 'nas-drift_wm.png');
+          // The production A-B-C, then a new value after every further read: never settles.
+          const nas = nasOn([output], {
+            timeAfter: (reads) => (reads < 3 ? PRODUCTION_NAS_TIMES[reads] : PRODUCTION_NAS_TIMES[2] + BigInt(reads) * 1000n),
+          });
+          let failure;
+          try {
+            failure = await processingService.watermarkAssets(project.id, [source.id], options).catch((err) => err);
+          } finally {
+            nas.restore();
+          }
+
+          expect(failure).toMatchObject({ code: 'OUTPUT_DESTINATION_CONFLICT' });
+          expect(failure.recoveryDiagnostics.failures).toContainEqual(expect.objectContaining({
+            assetId: source.id, artifactRole: 'published-output', check: 'precommit-content',
+          }));
+          expect(fs.existsSync(output)).toBe(false);
+          expect(indexedOutput('nas-drift')).toBeFalsy();
+          expect(watermarkWorkspaces()).toEqual([]);
+          const [record, ...others] = records.filter((entry) => entry.event === VALIDATION_EVENT);
+          expect(others).toEqual([]);
+          expect(record.context).toMatchObject({
+            check: 'precommit-content',
+            subcheck: 'fingerprint-changed',
+            identityMatch: 'matched',
+            hashMatch: true,
+            rehash: 'performed',
+            settling: 'unstable',
+            compared: ['precommit-settle-before-hash', 'precommit-settle-after-hash'],
+            changedFields: ['mtimeNs', 'ctimeNs'],
+          });
+          // The snapshot observed exactly the production sequence.
+          expect(record.context.phases).toMatchObject({
+            'precommit-before-hash': { mtimeNs: timeB, ctimeNs: timeB },
+            'precommit-after-hash': { mtimeNs: timeA, ctimeNs: timeA },
+            'precommit-after-rehash': { mtimeNs: timeC, ctimeNs: timeC },
+          });
+          expectSafeContext(record.context);
+        });
+
+        for (const [read, label, settling] of [[1, 're-hash', 'not-reached'], [2, 'settling verification', 'deferred']]) {
+          it(`rejects A-B-C write times when the bytes change before the ${label}`, async () => {
+            const records = withRealLogger();
+            const source = await writeIndexedImage(`Final/nas-bytes-${read}.png`);
+            const output = path.resolve(projectDir, 'wm', `nas-bytes-${read}_wm.png`);
+            // Rewritten in place (same inode, same size) after the earlier hashes matched.
+            const hook = beforeReadOf(output, read,
+              (filePath) => rewriteInPlace(filePath, Buffer.alloc(fs.statSync(filePath).size, 0x45)));
+            const nas = nasOn([output], { onReadOpen: hook.onReadOpen });
+            let failure;
+            try {
+              failure = await processingService.watermarkAssets(project.id, [source.id], options).catch((err) => err);
+            } finally {
+              nas.restore();
+            }
+
+            expect(hook.fired).toBe(true);
+            expect(failure).toMatchObject({ code: 'OUTPUT_DESTINATION_CONFLICT' });
+            expect(failure.recoveryDiagnostics.failures).toContainEqual(expect.objectContaining({
+              assetId: source.id, artifactRole: 'published-output', check: 'precommit-content',
+            }));
+            expect(indexedOutput(`nas-bytes-${read}`)).toBeFalsy();
+            const [record] = records.filter((entry) => entry.event === VALIDATION_EVENT);
+            expect(record.context).toMatchObject({
+              subcheck: 'hash-mismatch', hashMatch: false, rehash: 'performed', settling,
+            });
+            expectSafeContext(record.context);
+          });
+
+          it(`rejects A-B-C write times when a same-bytes foreign file replaces the output before the ${label}`, async () => {
+            const source = await writeIndexedImage(`Final/nas-foreign-${read}.png`);
+            const output = path.resolve(projectDir, 'wm', `nas-foreign-${read}_wm.png`);
+            let foreignIno;
+            const hook = beforeReadOf(output, read, (filePath) => {
+              foreignIno = replaceWithSameBytes(filePath);
+            });
+            const nas = nasOn([output], { onReadOpen: hook.onReadOpen });
+            let failure;
+            try {
+              failure = await processingService.watermarkAssets(project.id, [source.id], options).catch((err) => err);
+            } finally {
+              nas.restore();
+            }
+
+            expect(hook.fired).toBe(true);
+            // The foreign file is never adopted, removed or recorded; it blocks a complete rollback.
+            expect(failure).toMatchObject({ code: 'RECOVERY_REQUIRED' });
+            expect(failure.recoveryDiagnostics.failures).toContainEqual(expect.objectContaining({
+              assetId: source.id, artifactRole: 'published-output', check: 'precommit-unreadable',
+            }));
+            expect(failure.recoveryDiagnostics.failures).toContainEqual(expect.objectContaining({
+              assetId: source.id, artifactRole: 'published-output', check: 'rollback-identity-mismatch',
+            }));
+            expect(fs.statSync(output, { bigint: true }).ino).toBe(foreignIno);
+            expect(indexedOutput(`nas-foreign-${read}`)).toBeFalsy();
+          });
+        }
+
+        // A settled at its settling verification; B's reads follow it. Index 0 of B is B's
+        // first pre-commit hash; index 2 is B's own settling verification (both unsettled).
+        for (const [read, label] of [[0, 'first hash'], [2, 'settling verification']]) {
+          it(`rejects a settled output rewritten in place during a later output's ${label}`, async () => {
+            const records = withRealLogger();
+            const first = await writeIndexedImage(`Final/nas-sweep-a${read}.png`);
+            const second = await writeIndexedImage(`Final/nas-sweep-b${read}.png`);
+            const outputA = path.resolve(projectDir, 'wm', `nas-sweep-a${read}_wm.png`);
+            const outputB = path.resolve(projectDir, 'wm', `nas-sweep-b${read}_wm.png`);
+            // Before B's first hash, A has had its two snapshot reads; before B's settling read,
+            // A has also had its own settling verification.
+            const hook = beforeReadOf(outputB, read,
+              () => rewriteInPlaceLater(outputA, Buffer.alloc(fs.statSync(outputA).size, 0x46)));
+            const nas = nasOn([outputA, outputB], { onReadOpen: hook.onReadOpen });
+            let failure;
+            try {
+              failure = await processingService.watermarkAssets(project.id, [first.id, second.id], options)
+                .catch((err) => err);
+            } finally {
+              nas.restore();
+            }
+
+            expect(hook.fired).toBe(true);
+            expect(failure).toMatchObject({ code: 'OUTPUT_DESTINATION_CONFLICT' });
+            expect(indexedOutput(`nas-sweep-a${read}`)).toBeFalsy();
+            expect(indexedOutput(`nas-sweep-b${read}`)).toBeFalsy();
+            const [record, ...others] = records.filter((entry) => entry.event === VALIDATION_EVENT);
+            expect(others).toEqual([]);
+            if (read === 0) {
+              // Rewritten before its own settling verification: that read sees the new bytes.
+              expect(record.context).toMatchObject({
+                assetId: first.id, check: 'precommit-content', subcheck: 'hash-mismatch', settling: 'deferred',
+              });
+            } else {
+              // Rewritten after its own settling verification: the final sweep sees its write
+              // metadata move, and its one reverification reads the new bytes.
+              expect(record.context).toMatchObject({
+                assetId: first.id,
+                check: 'precommit-final-content-mismatch',
+                subcheck: 'hash-mismatch',
+                hashMatch: false,
+                rehash: 'performed',
+                settling: 'held-after-settle',
+                finalReverify: 'performed',
+                finalSweepMoved: {
+                  compared: ['precommit-settle-after-hash', 'precommit-final-sweep'],
+                  changedFields: ['mtimeNs', 'ctimeNs'],
+                },
+              });
+            }
+            expectSafeContext(record.context);
+          });
+        }
+
+        // WP3 C4: the final metadata sweep observed moved write times on a verified output.
+        describe('final-sweep write-time movement (WP3 C4)', () => {
+          const { afterRehash, finalSweep } = PRODUCTION_FINAL_SWEEP_TIMES;
+          // Before the first hash (not in the production evidence; any value other than afterRehash).
+          const beforeHash = afterRehash - 1000000000n;
+          // Nine outputs, as in production. Output 6 reports beforeHash, then afterRehash across
+          // its first hash and re-hash (held-after-rehash); the other outputs hold one value. Once
+          // a later output's first pre-commit read opens (`trigger`, 7 by default), each output in
+          // `late` reports finalSweep (+ `drift(n)` after n reads), as production's final sweep
+          // did. `onTrigger` and `onReadOpen` run further changes at those points.
+          const runFinalSweepMovement = async (prefix, {
+            late = [6], trigger = 7, drift = () => 0n, onTrigger, onReadOpen, onLstat, logger = true,
+          } = {}) => {
+            const records = logger ? withRealLogger() : [];
+            const names = Array.from({ length: 9 }, (_, index) => `${prefix}-${index}`);
+            const sources = [];
+            for (const name of names) sources.push(await writeIndexedImage(`Final/${name}.png`));
+            const outputs = names.map((name) => path.resolve(projectDir, 'wm', `${name}_wm.png`));
+            const moved = new Set();
+            const target = outputs[6];
+            const nas = nasOn(outputs, {
+              timeAfter: (reads, filePath) => {
+                if (moved.has(filePath)) return finalSweep + drift(reads);
+                if (filePath !== target) return afterRehash;
+                return reads === 0 ? beforeHash : afterRehash;
+              },
+              onReadOpen: (filePath, opened) => {
+                if (filePath === outputs[trigger] && opened === 0 && moved.size === 0) {
+                  for (const index of late) moved.add(outputs[index]);
+                  onTrigger?.(outputs);
+                }
+                onReadOpen?.(filePath, opened, outputs);
+              },
+              onLstat: (filePath, stats) => onLstat?.(filePath, stats, outputs),
+            });
+            const applySpy = vi.spyOn(assetRepository, 'applyAssetWatermarks');
+            let result;
+            let failure;
+            let applyCalls;
+            try {
+              result = await processingService.watermarkAssets(project.id, sources.map((source) => source.id), options)
+                .catch((err) => { failure = err; });
+            } finally {
+              // mockRestore() clears call history, so capture it first.
+              applyCalls = applySpy.mock.calls.length;
+              applySpy.mockRestore();
+              nas.restore();
+            }
+            expect(moved.size).toBe(late.length);
+            const validation = records.filter((entry) => entry.event === VALIDATION_EVENT);
+            return { result, failure, applyCalls, outputs, names, sources, nas, validation };
+          };
+          const expectNothingRecorded = (names) => {
+            for (const name of names) expect(indexedOutput(name)).toBeFalsy();
+          };
+          const sameSizeBytes = (target, fill) => Buffer.alloc(fs.statSync(target).size, fill);
+
+          it('records all nine outputs when only the final sweep observes later write times and the bytes are intact', async () => {
+            const { result, applyCalls, outputs, names, nas, validation } = await runFinalSweepMovement('c4-ok');
+
+            // Production: the post-rehash value held, then the final sweep reported a later one.
+            const values = nas.observed.get(outputs[6]).map(String);
+            expect([...new Set(values)]).toEqual([beforeHash, afterRehash, finalSweep].map(String));
+            expect(values.at(-1)).toBe(String(finalSweep));
+            expect(result).toMatchObject({ status: 'completed' });
+            expect(applyCalls).toBe(1);
+            expect(result.generatedAssetIds).toHaveLength(9);
+            for (const [index, name] of names.entries()) {
+              const row = indexedOutput(name);
+              expect(result.generatedAssetIds).toContain(row.id);
+              expect(row.generated_output_sha256).toBe(sha256For(outputs[index]));
+              expect(assetRepository.findGeneratedOutputProvenance(project.id, row.id)).toBe(provenanceTupleOf(outputs[index]));
+            }
+            expect(watermarkWorkspaces()).toEqual([]);
+            expect(validation).toEqual([]);
+          });
+
+          it('records outputs reverified by the final sweep when several outputs moved', async () => {
+            const { result, names } = await runFinalSweepMovement('c4-multi', { late: [0, 3, 6], logger: false });
+            expect(result).toMatchObject({ status: 'completed' });
+            for (const name of names) expect(result.generatedAssetIds).toContain(indexedOutput(name).id);
+          });
+
+          // A same-size modification moves only write times, so it is reverified and its hash rejects it.
+          for (const [label, rewrite, subcheck] of [
+            ['a same-size byte modification', (target) => rewriteInPlace(target, sameSizeBytes(target, 0x47)), 'hash-mismatch'],
+          ]) {
+            it(`rejects ${label} after the earlier hashes, before the final sweep`, async () => {
+              const { failure, applyCalls, outputs, names, sources, validation } = await runFinalSweepMovement(
+                `c4-mod-${subcheck}`, { onTrigger: (all) => rewrite(all[6]) });
+
+              expect(applyCalls).toBe(0);
+              expect(failure).toMatchObject({ code: 'OUTPUT_DESTINATION_CONFLICT' });
+              expect(failure.recoveryDiagnostics.failures).toContainEqual(expect.objectContaining({
+                assetId: sources[6].id, artifactRole: 'published-output', check: 'precommit-final-content-mismatch',
+              }));
+              expectNothingRecorded(names);
+              for (const output of outputs) expect(fs.existsSync(output)).toBe(false);
+              expect(watermarkWorkspaces()).toEqual([]);
+              const [record, ...others] = validation;
+              expect(others).toEqual([]);
+              expect(record.context).toMatchObject({
+                assetId: sources[6].id,
+                itemIndex: 6,
+                check: 'precommit-final-content-mismatch',
+                subcheck,
+                identityMatch: 'matched',
+                rehash: 'performed',
+                settling: 'held-after-rehash',
+                finalReverify: 'performed',
+                finalSweepMoved: { compared: ['precommit-after-rehash', 'precommit-final-sweep'] },
+              });
+              expect(record.context.finalSweepMoved.changedFields).toEqual(expect.arrayContaining(['mtimeNs', 'ctimeNs']));
+              expectSafeContext(record.context);
+            });
+          }
+
+          // WP3 C6: a size the final sweep saw differ from the verified size rejects at once, never
+          // deferred to the reverification, so a size restored before that read cannot erase it.
+          const expectSizeRejected = ({ failure, applyCalls, outputs, names, sources, validation }) => {
+            expect(applyCalls).toBe(0);
+            expect(failure).toMatchObject({ code: 'OUTPUT_DESTINATION_CONFLICT' });
+            expect(failure.recoveryDiagnostics.failures).toContainEqual(expect.objectContaining({
+              assetId: sources[6].id, artifactRole: 'published-output', check: 'precommit-final-content-mismatch',
+            }));
+            expectNothingRecorded(names);
+            for (const output of outputs) expect(fs.existsSync(output)).toBe(false);
+            expect(watermarkWorkspaces()).toEqual([]);
+            const [record, ...others] = validation;
+            expect(others).toEqual([]);
+            expect(record.context).toMatchObject({
+              assetId: sources[6].id,
+              itemIndex: 6,
+              check: 'precommit-final-content-mismatch',
+              identityMatch: 'matched',
+              finalReverify: 'not-reached',
+              compared: ['precommit-after-rehash', 'precommit-final-sweep'],
+            });
+            expect(record.context.changedFields).toContain('size');
+            expect(record.context.finalSweepMoved).toBeUndefined();
+            expectSafeContext(record.context);
+          };
+
+          it('rejects a size change seen by the final sweep although the size is restored before reverification', async () => {
+            let original;
+            const sizes = {};
+            const run = await runFinalSweepMovement('c6-transient', {
+              onTrigger: (all) => {
+                original = fs.readFileSync(all[6]);
+                sizes.verified = original.length;
+                rewriteInPlace(all[6], Buffer.concat([original, Buffer.alloc(16, 0x4d)]));
+              },
+              // The first observation of the appended size is the final sweep's; the bytes and size
+              // are restored immediately after it, before any reverification could read them.
+              onLstat: (filePath, stats, all) => {
+                if (filePath !== all[6] || original === undefined || sizes.swept !== undefined
+                  || stats.size !== BigInt(sizes.verified + 16)) return;
+                sizes.swept = Number(stats.size);
+                rewriteInPlace(filePath, original);
+                sizes.restored = fs.statSync(filePath).size;
+              },
+            });
+
+            expect(sizes).toEqual({ verified: sizes.verified, swept: sizes.verified + 16, restored: sizes.verified });
+            expectSizeRejected(run);
+          });
+
+          it('rejects a size change that persists through the final sweep', async () => {
+            const run = await runFinalSweepMovement('c6-persistent', {
+              onTrigger: (all) => rewriteInPlace(all[6], Buffer.alloc(fs.statSync(all[6]).size + 16, 0x48)),
+            });
+            expectSizeRejected(run);
+          });
+
+          it('rejects a size change seen by the final sweep with unchanged write times', async () => {
+            // No modelled write-time movement: the size alone differs at the final sweep.
+            const run = await runFinalSweepMovement('c6-size-only', {
+              late: [],
+              onTrigger: (all) => {
+                const { atimeMs, mtimeMs } = fs.statSync(all[6]);
+                rewriteInPlace(all[6], Buffer.alloc(fs.statSync(all[6]).size + 16, 0x4e));
+                fs.utimesSync(all[6], atimeMs / 1000, mtimeMs / 1000);
+              },
+            });
+            expectSizeRejected(run);
+          });
+
+          it('rejects a same-bytes foreign replacement seen by the final sweep without reverifying it', async () => {
+            let foreignIno;
+            const { failure, applyCalls, outputs, names, sources, validation } = await runFinalSweepMovement('c4-foreign', {
+              onTrigger: (all) => { foreignIno = replaceWithSameBytes(all[6]); },
+            });
+
+            expect(applyCalls).toBe(0);
+            // The foreign file is never adopted, removed or recorded; it blocks a complete rollback.
+            expect(failure).toMatchObject({ code: 'RECOVERY_REQUIRED' });
+            expect(failure.recoveryDiagnostics.failures).toContainEqual(expect.objectContaining({
+              assetId: sources[6].id, artifactRole: 'published-output', check: 'precommit-final-identity-mismatch',
+            }));
+            expect(failure.recoveryDiagnostics.failures).toContainEqual(expect.objectContaining({
+              assetId: sources[6].id, artifactRole: 'published-output', check: 'rollback-identity-mismatch',
+            }));
+            expect(fs.statSync(outputs[6], { bigint: true }).ino).toBe(foreignIno);
+            expectNothingRecorded(names);
+            const [record] = validation;
+            expect(record.context).toMatchObject({
+              assetId: sources[6].id, check: 'precommit-final-identity-mismatch', subcheck: 'dev-ino-mismatch',
+              finalReverify: 'not-reached',
+            });
+            expectSafeContext(record.context);
+          });
+
+          // Output 6 has two pre-commit reads (hash, re-hash); open 2 is its final reverification.
+          it('rejects a same-size byte modification during the final reverification', async () => {
+            const { failure, names, sources, validation } = await runFinalSweepMovement('c4-during', {
+              onReadOpen: (filePath, opened, all) => {
+                if (filePath === all[6] && opened === 2) rewriteInPlace(filePath, sameSizeBytes(filePath, 0x49));
+              },
+            });
+
+            expect(failure).toMatchObject({ code: 'OUTPUT_DESTINATION_CONFLICT' });
+            expectNothingRecorded(names);
+            expect(watermarkWorkspaces()).toEqual([]);
+            expect(validation[0].context).toMatchObject({
+              assetId: sources[6].id, check: 'precommit-final-content-mismatch', subcheck: 'hash-mismatch',
+              hashMatch: false, finalReverify: 'performed',
+            });
+            expectSafeContext(validation[0].context);
+          });
+
+          it('rejects a same-bytes foreign replacement during the final reverification', async () => {
+            let foreignIno;
+            const { failure, outputs, names, sources } = await runFinalSweepMovement('c4-during-foreign', {
+              logger: false,
+              onReadOpen: (filePath, opened, all) => {
+                if (filePath === all[6] && opened === 2) foreignIno = replaceWithSameBytes(filePath);
+              },
+            });
+
+            expect(foreignIno).toBeDefined();
+            expect(failure).toMatchObject({ code: 'RECOVERY_REQUIRED' });
+            expect(failure.recoveryDiagnostics.failures).toContainEqual(expect.objectContaining({
+              assetId: sources[6].id, artifactRole: 'published-output', check: 'precommit-final-content-unreadable',
+            }));
+            expect(fs.statSync(outputs[6], { bigint: true }).ino).toBe(foreignIno);
+            expectNothingRecorded(names);
+          });
+
+          it('rejects write times that still move across the final reverification', async () => {
+            const { failure, names, sources, validation } = await runFinalSweepMovement('c4-drift', {
+              drift: (reads) => BigInt(reads) * 1000n,
+            });
+
+            expect(failure).toMatchObject({ code: 'OUTPUT_DESTINATION_CONFLICT' });
+            expectNothingRecorded(names);
+            expect(watermarkWorkspaces()).toEqual([]);
+            expect(validation[0].context).toMatchObject({
+              assetId: sources[6].id,
+              check: 'precommit-final-content-mismatch',
+              subcheck: 'fingerprint-changed',
+              hashMatch: true,
+              finalReverify: 'performed',
+              compared: ['precommit-reverify-before-hash', 'precommit-reverify-after-hash'],
+              changedFields: ['mtimeNs', 'ctimeNs'],
+            });
+            expectSafeContext(validation[0].context);
+          });
+
+          // The second sweep is strict: nothing it sees moved is reverified again.
+          for (const [label, change] of [
+            ['rewritten in place', (target) => rewriteInPlaceLater(target, sameSizeBytes(target, 0x4a))],
+            ['given later write times with intact bytes', (target) => {
+              const { atimeMs, mtimeMs } = fs.statSync(target);
+              fs.utimesSync(target, atimeMs / 1000, mtimeMs / 1000 + 5);
+            }],
+          ]) {
+            it(`rejects an earlier output ${label} during a later output's final reverification`, async () => {
+              const { failure, names, sources, validation } = await runFinalSweepMovement(`c4-other-${label.length}`, {
+                onReadOpen: (filePath, opened, all) => {
+                  if (filePath === all[6] && opened === 2) change(all[2]);
+                },
+              });
+
+              expect(failure).toMatchObject({ code: 'OUTPUT_DESTINATION_CONFLICT' });
+              expect(failure.recoveryDiagnostics.failures).toContainEqual(expect.objectContaining({
+                assetId: sources[2].id, artifactRole: 'published-output', check: 'precommit-final-content-mismatch',
+              }));
+              expectNothingRecorded(names);
+              expect(watermarkWorkspaces()).toEqual([]);
+              expect(validation[0].context).toMatchObject({
+                assetId: sources[2].id,
+                check: 'precommit-final-content-mismatch',
+                subcheck: 'fingerprint-changed',
+                finalReverify: 'other-output',
+                compared: ['precommit-after-hash', 'precommit-final-sweep'],
+                changedFields: ['mtimeNs', 'ctimeNs'],
+              });
+              expectSafeContext(validation[0].context);
+            });
+          }
+
+          it('rejects an already reverified output rewritten during a later output\'s final reverification', async () => {
+            const { failure, names, sources, validation } = await runFinalSweepMovement('c4-reverified', {
+              late: [3, 6],
+              onReadOpen: (filePath, opened, all) => {
+                if (filePath === all[6] && opened === 2) rewriteInPlaceLater(all[3], sameSizeBytes(all[3], 0x4b));
+              },
+            });
+
+            expect(failure).toMatchObject({ code: 'OUTPUT_DESTINATION_CONFLICT' });
+            expectNothingRecorded(names);
+            expect(validation[0].context).toMatchObject({
+              assetId: sources[3].id,
+              check: 'precommit-final-content-mismatch',
+              subcheck: 'fingerprint-changed',
+              finalReverify: 'performed',
+              compared: ['precommit-reverify-after-hash', 'precommit-final-sweep'],
+            });
+            expectSafeContext(validation[0].context);
+          });
+        });
+
+        // WP3 C5: every recovery backup stays under continuity through C4's final-sweep
+        // reverification and every later pre-commit check.
+        describe('recovery backup continuity through the final sweep (WP3 C5)', () => {
+          const { afterRehash, finalSweep } = PRODUCTION_FINAL_SWEEP_TIMES;
+          const isBackup = inStaging('.destination');
+          const isArchiveBackup = (filePath) => path.basename(filePath).includes('archive-');
+          const isOutput = (filePath) => !filePath.includes('.creatorcrate-') && path.basename(filePath).includes('_wm.');
+          // Overwrites the prior run's owned outputs (and archives), so each has a verified backup.
+          // Only the outputs' write times are modelled; backup reads are observed, unmodelled, so
+          // rollback's restore copy sees a backup whose pathname and descriptor agree.
+          // Once a backup's pre-commit read opens after an output's first pre-commit hash, the
+          // outputs hashed so far report later write times (production's final-sweep shape), so
+          // the final sweep reverifies them (C4). `duringReverify(backups)` runs once, as the first
+          // reverification read opens; `backups` lists the backup paths read so far.
+          const overwriteWithReverification = async (name, {
+            runOptions = options, overwriteOptions = { overwrite: true }, duringReverify, injectIndexFailure = false,
+          } = {}) => {
+            const source = await writeIndexedImage(`Final/${name}.png`);
+            await processingService.watermarkAssets(project.id, [source.id], runOptions);
+            const outputs = fs.readdirSync(path.resolve(projectDir, 'wm')).filter((entry) => entry.startsWith(`${name}_`))
+              .map((entry) => path.resolve(projectDir, 'wm', entry));
+            const previous = new Map(outputs.map((output) => [output, fs.readFileSync(output)]));
+            const hashed = new Set();
+            const moved = new Set();
+            const backups = new Set();
+            let reverifyReads = 0;
+            const realOpen = fs.openSync;
+            fs.openSync = (filePath, flags, ...args) => {
+              const resolved = typeof filePath === 'string' ? path.resolve(filePath) : null;
+              if (resolved && flags === 'r' && isBackup(resolved)) {
+                backups.add(resolved);
+                if (hashed.size > 0 && moved.size === 0) for (const output of hashed) moved.add(output);
+              }
+              return realOpen.call(fs, filePath, flags, ...args);
+            };
+            const nas = modelNasWriteTimes(isOutput, {
+              timeAfter: (reads, filePath) => (moved.has(filePath) ? finalSweep : afterRehash),
+              onReadOpen: (filePath, opened) => {
+                if (opened === 0) hashed.add(filePath);
+                if (moved.has(filePath) && opened === 1 && reverifyReads++ === 0) duringReverify?.([...backups]);
+              },
+            });
+            const applySpy = injectIndexFailure ? failingIndex() : vi.spyOn(assetRepository, 'applyAssetWatermarks');
+            let result;
+            let failure;
+            let applyCalls;
+            try {
+              result = await processingService.watermarkAssets(project.id, [source.id], { ...runOptions, ...overwriteOptions })
+                .catch((err) => { failure = err; });
+            } finally {
+              // mockRestore() clears call history, so capture it first.
+              applyCalls = applySpy.mock.calls.length;
+              applySpy.mockRestore();
+              nas.restore();
+              fs.openSync = realOpen;
+            }
+            expect(outputs.length).toBeGreaterThan(0);
+            expect(moved.size).toBeGreaterThan(0);
+            expect(reverifyReads).toBeGreaterThan(0);
+            return { result, failure, applyCalls, source, outputs, previous };
+          };
+          const corruptInPlace = (target) => rewriteInPlaceLater(target, Buffer.alloc(fs.statSync(target).size, 0x4c));
+          const retainedBackup = (name) => {
+            const [workspace, ...others] = watermarkWorkspaces();
+            expect(others).toEqual([]);
+            return stageArtifact(path.join(projectDir, workspace), name);
+          };
+
+          it('records the overwrite when backups stay unchanged through the final reverification', async () => {
+            const { result, applyCalls, outputs } = await overwriteWithReverification('c5-ok');
+            expect(result).toMatchObject({ status: 'completed' });
+            expect(applyCalls).toBe(1);
+            for (const output of outputs) {
+              const row = assetRepository.findByProjectIdAndPath(project.id, path.relative(projectDir, output)
+                .split(path.sep).join('/'));
+              expect(row.generated_output_sha256).toBe(sha256For(output));
+            }
+            expect(watermarkWorkspaces()).toEqual([]);
+          });
+
+          it('rejects a Watermark backup corrupted during the final reverification before the index commit', async () => {
+            let corrupted;
+            const { failure, applyCalls, source, outputs, previous } = await overwriteWithReverification('c5-wm', {
+              duringReverify: (backups) => {
+                corrupted = backups.find((backup) => !isArchiveBackup(backup));
+                corruptInPlace(corrupted);
+              },
+            });
+
+            expect(applyCalls).toBe(0);
+            // The damaged backup is never restoration material: the destination stays missing,
+            // the backup is kept as evidence and recovery is required.
+            expect(failure).toMatchObject({ code: 'RECOVERY_REQUIRED', cause: { code: 'FILESYSTEM_OPERATION_FAILED' } });
+            expect(failure.recoveryDiagnostics.failures).toContainEqual(expect.objectContaining({
+              assetId: source.id, artifactRole: 'destination-backup', check: 'precommit-final-backup-content-mismatch',
+            }));
+            expect(failure.recoveryDiagnostics.failures).toContainEqual(expect.objectContaining({
+              assetId: source.id, artifactRole: 'destination-backup', check: 'destination-restore-content-mismatch',
+            }));
+            expect(fs.existsSync(outputs[0])).toBe(false);
+            const backup = retainedBackup('0.destination');
+            expect(path.resolve(backup)).toBe(corrupted);
+            expect(fs.readFileSync(backup)).not.toEqual(previous.get(outputs[0]));
+          });
+
+          it('rejects and keeps a foreign replacement of a Watermark backup during the final reverification', async () => {
+            let foreignIno;
+            const { failure, applyCalls, source } = await overwriteWithReverification('c5-wm-foreign', {
+              duringReverify: (backups) => { foreignIno = replaceWithSameBytes(backups[0]); },
+            });
+
+            expect(applyCalls).toBe(0);
+            expect(failure).toMatchObject({ code: 'RECOVERY_REQUIRED' });
+            expect(failure.recoveryDiagnostics.failures).toContainEqual(expect.objectContaining({
+              assetId: source.id, artifactRole: 'destination-backup', check: 'precommit-final-backup-identity-mismatch',
+            }));
+            expect(fs.statSync(retainedBackup('0.destination'), { bigint: true }).ino).toBe(foreignIno);
+          });
+
+          it('rejects an archive backup corrupted during the final reverification before the index commit', async () => {
+            let corrupted;
+            let corruptedBytes;
+            const { failure, applyCalls } = await overwriteWithReverification('c5-archive', {
+              runOptions: { ...archiveOptions, setName: 'C5Archive' },
+              overwriteOptions: { overwrite: true, replaceExistingArchives: true },
+              duringReverify: (backups) => {
+                corrupted = backups.find(isArchiveBackup);
+                corruptInPlace(corrupted);
+                corruptedBytes = fs.readFileSync(corrupted);
+              },
+            });
+
+            expect(corrupted).toBeDefined();
+            expect(applyCalls).toBe(0);
+            expect(failure).toMatchObject({ code: 'RECOVERY_REQUIRED', cause: { code: 'FILESYSTEM_OPERATION_FAILED' } });
+            expect(failure.recoveryDiagnostics.failures).toContainEqual(expect.objectContaining({
+              artifactRole: 'archive-backup', check: 'precommit-final-backup-content-mismatch',
+            }));
+            // Kept as evidence, never restored from or removed.
+            expect(fs.readFileSync(corrupted)).toEqual(corruptedBytes);
+          });
+
+          it('restores from unchanged backups after an injected index failure following the final reverification', async () => {
+            const { failure, applyCalls, outputs, previous } = await overwriteWithReverification('c5-index', {
+              runOptions: { ...archiveOptions, setName: 'C5Index' },
+              overwriteOptions: { overwrite: true, replaceExistingArchives: true },
+              injectIndexFailure: true,
+            });
+
+            expect(applyCalls).toBe(1);
+            expect(failure).toMatchObject({ code: 'DATABASE_OPERATION_FAILED' });
+            for (const output of outputs) expect(fs.readFileSync(output)).toEqual(previous.get(output));
+            expect(watermarkWorkspaces()).toEqual([]);
+          });
+
+          it('never reaches a failing index transaction with a backup corrupted during the final reverification', async () => {
+            const { failure, applyCalls, outputs } = await overwriteWithReverification('c5-index-corrupt', {
+              injectIndexFailure: true,
+              duringReverify: (backups) => corruptInPlace(backups[0]),
+            });
+
+            expect(applyCalls).toBe(0);
+            expect(failure).toMatchObject({ code: 'RECOVERY_REQUIRED' });
+            expect(failure.recoveryDiagnostics.failures).toContainEqual(expect.objectContaining({
+              artifactRole: 'destination-backup', check: 'precommit-final-backup-content-mismatch',
+            }));
+            expect(fs.existsSync(outputs[0])).toBe(false);
+            expect(fs.existsSync(retainedBackup('0.destination'))).toBe(true);
+          });
+        });
+
+        // WP3 C2: the publication copy's open check of the private stage output.
+        describe('stage open write-time disagreement (WP3 C2)', () => {
+          const lagStages = (settings) => modelStageOpenWriteTimeLag(inStaging('.output'), settings);
+          // Same size, different bytes: the last byte of the PNG's IEND CRC.
+          const flipLastByte = (target) => {
+            const bytes = fs.readFileSync(target);
+            bytes[bytes.length - 1] ^= 0xff;
+            rewriteInPlace(target, bytes);
+          };
+
+          it('publishes pinned stages whose pathname reports earlier write times than the opened descriptor', async () => {
+            const records = withRealLogger();
+            const names = ['stage-lag-a', 'stage-lag-b', 'stage-lag-c'];
+            const sources = [];
+            for (const name of names) sources.push(await writeIndexedImage(`Final/${name}.png`));
+            const outputs = names.map((name) => path.resolve(projectDir, 'wm', `${name}_wm.png`));
+            // The public outputs also follow the C1 production write-time sequence, so publication
+            // continues into the deferred settling and final-sweep validation.
+            const nas = nasOn(outputs);
+            const lag = lagStages();
+            let result;
+            try {
+              result = await processingService.watermarkAssets(project.id, sources.map((source) => source.id), options);
+            } finally {
+              lag.restore();
+              nas.restore();
+            }
+
+            // Each publication open saw the production comparison: same identity, size and birth
+            // time; the descriptor's mtime/ctime later than the pathname's.
+            expect(lag.observed).toHaveLength(names.length);
+            for (const { pathname, descriptor } of lag.observed) {
+              for (const key of ['dev', 'ino', 'size', 'birthtimeNs']) expect(pathname[key]).toBe(descriptor[key]);
+              expect(descriptor.mtimeNs).toBeGreaterThan(pathname.mtimeNs);
+              expect(descriptor.ctimeNs).toBeGreaterThan(pathname.ctimeNs);
+            }
+            for (const output of outputs) {
+              expect([...new Set(nas.observed.get(output).map(String))]).toEqual([timeB, timeA, timeC]);
+            }
+            expect(result).toMatchObject({ status: 'completed' });
+            expect(result.generatedAssetIds).toHaveLength(outputs.length);
+            for (const [index, name] of names.entries()) {
+              const row = indexedOutput(name);
+              expect(row.generated_output_sha256).toBe(sha256For(outputs[index]));
+              expect(assetRepository.findGeneratedOutputProvenance(project.id, row.id)).toBe(provenanceTupleOf(outputs[index]));
+            }
+            expect(watermarkWorkspaces()).toEqual([]);
+            expect(records.filter((entry) => entry.event === VALIDATION_EVENT)).toEqual([]);
+          });
+
+          it('rejects a same-size stage rewrite between the pathname stat and the open, and rolls back', async () => {
+            const source = await writeIndexedImage('Final/stage-lag-rewrite.png');
+            const sourcePath = path.resolve(projectDir, 'Final', 'stage-lag-rewrite.png');
+            const sourceBytes = fs.readFileSync(sourcePath);
+            const output = path.resolve(projectDir, 'wm', 'stage-lag-rewrite_wm.png');
+            let rewritten = false;
+            // Same inode, size and birth time; only the bytes (and write times) differ at open.
+            const lag = lagStages({
+              onOpen: (stagePath, { copy }) => {
+                if (!copy || rewritten) return;
+                rewritten = true;
+                rewriteInPlaceLater(stagePath, (() => {
+                  const bytes = fs.readFileSync(stagePath);
+                  bytes[bytes.length - 1] ^= 0xff;
+                  return bytes;
+                })());
+              },
+            });
+            let failure;
+            try {
+              failure = await processingService.watermarkAssets(project.id, [source.id], options).catch((err) => err);
+            } finally {
+              lag.restore();
+            }
+
+            expect(rewritten).toBe(true);
+            expect(lag.observed).toHaveLength(1);
+            const [{ pathname, descriptor }] = lag.observed;
+            for (const key of ['dev', 'ino', 'size', 'birthtimeNs']) expect(pathname[key]).toBe(descriptor[key]);
+            expect(descriptor.mtimeNs).not.toBe(pathname.mtimeNs);
+            expect(failure).toMatchObject({ code: 'FILESYSTEM_OPERATION_FAILED' });
+            expect(failure.recoveryDiagnostics.failures).toContainEqual(expect.objectContaining({
+              artifactRole: 'published-output', check: 'publish-create-failed', proof: 'content-mismatch',
+            }));
+            expect(fs.existsSync(output)).toBe(false);
+            expect(indexedOutput('stage-lag-rewrite')).toBeFalsy();
+            expect(fs.readFileSync(sourcePath).equals(sourceBytes)).toBe(true);
+          });
+
+          // WP3 C3: rewritten after its creating descriptor closed, before CreatorCrate hashed it,
+          // so the stage hash matches the stage but not the bytes CreatorCrate rendered. The
+          // rendered bytes stay authoritative: staging rejects it, with or without NAS lag,
+          // before any publication, commit or source removal.
+          for (const [label, withLag] of [['without write-time lag', false], ['with write-time lag', true]]) {
+            it(`rejects a stage whose readback is not the rendered output ${label}`, async () => {
+              const records = withRealLogger();
+              const name = `stage-mismatch-${withLag ? 'lag' : 'plain'}`;
+              const source = await writeIndexedImage(`Final/${name}.png`);
+              const sourcePath = path.resolve(projectDir, 'Final', `${name}.png`);
+              const sourceBytes = fs.readFileSync(sourcePath);
+              const output = path.resolve(projectDir, 'wm', `${name}_wm.png`);
+              const hook = hookOwnedCreate(inStaging('0.output'), { after: flipLastByte, times: 1 });
+              const lag = withLag ? lagStages() : null;
+              const applySpy = vi.spyOn(assetRepository, 'applyAssetWatermarks');
+              let failure;
+              try {
+                failure = await processingService.watermarkAssets(project.id, [source.id], {
+                  ...options, deleteSource: true,
+                }).catch((err) => err);
+                expect(applySpy).not.toHaveBeenCalled();
+              } finally {
+                applySpy.mockRestore();
+                lag?.restore();
+                hook.restore();
+              }
+
+              expect(hook.calls).toBe(1);
+              // Rejected at staging: the publication open was never reached.
+              if (lag) expect(lag.observed).toEqual([]);
+              expect(failure).toMatchObject({ code: 'FILESYSTEM_OPERATION_FAILED' });
+              expect(failure.recoveryDiagnostics.failures).toContainEqual(expect.objectContaining({
+                artifactRole: 'stage-output', check: 'stage-content-mismatch',
+              }));
+              expect(fs.existsSync(output)).toBe(false);
+              expect(indexedOutput(name)).toBeFalsy();
+              expect(fs.readFileSync(sourcePath).equals(sourceBytes)).toBe(true);
+              expect(assetRepository.findById(source.id)).toBeTruthy();
+              // The changed stage was CreatorCrate's own private artifact and nothing was
+              // recovery-critical yet, so rollback disposed it and left no workspace.
+              expect(watermarkWorkspaces()).toEqual([]);
+              expect(records.filter((entry) => entry.event === VALIDATION_EVENT)).toEqual([]);
+            });
+          }
+        });
       });
     });
   });

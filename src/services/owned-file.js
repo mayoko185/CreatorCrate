@@ -252,8 +252,9 @@ export async function createOwnedFile(absPath, write, {
   };
 }
 
-// {dev, ino, size, mtimeNs} decide source continuity. ctimeNs and birthtimeNs are carried
-// as diagnostic observations only and never compared.
+// {dev, ino, size, mtimeNs} decide source continuity. ctimeNs is carried as a diagnostic
+// observation only and never compared; birthtimeNs is compared only by the pinned owned
+// source's open check (sameSourceObject).
 function sourceSnapshot(stats) {
   return {
     dev: stats.dev, ino: stats.ino, size: stats.size, mtimeNs: stats.mtimeNs,
@@ -265,6 +266,18 @@ function sameSourceSnapshot(left, right) {
   const identityKnown = isExactKnownIdentity(left) || isExactKnownIdentity(right);
   return (!identityKnown || sameExactFileIdentity(left, right))
     && left.size === right.size && left.mtimeNs === right.mtimeNs;
+}
+
+// Pinned owned source only (see copyTrustedFileToOwnedFile `pinnedOwnedSource`): the
+// pathname and the opened descriptor are the same object when both report the same known
+// exact identity, size and birth time. Write metadata (mtime/ctime) is not compared here:
+// a NAS pathname stat may report write times the opened descriptor has already moved past.
+// What the descriptor then reads is proven by the pinned SHA-256, and the descriptor's own
+// stat becomes the strict continuity baseline for the copy.
+function sameSourceObject(left, right) {
+  return isExactKnownIdentity(left) && sameExactFileIdentity(left, right)
+    && left.size === right.size
+    && typeof left.birthtimeNs === 'bigint' && left.birthtimeNs === right.birthtimeNs;
 }
 
 function sourceUnsafe(message) {
@@ -361,6 +374,14 @@ function inspectTrustedSource(sourcePath) {
  * pin the source content; the destination is then read back and must hash to the copied
  * bytes. Hashes prove content only.
  *
+ * `pinnedOwnedSource` (a caller's own staged output only): requires `sourceExactIdentity`,
+ * `expectedSha256` and `expectedSize`. At open, the path/descriptor comparison then accepts
+ * differing write metadata (mtime/ctime) when exact identity, size and birth time agree
+ * (sameSourceObject); everything after open is unchanged and strict: the descriptor must be
+ * `sourceExactIdentity` with `expectedSize`, its stat and the pathname's after the copy must
+ * still equal the opened descriptor's {identity, size, mtime}, the copied length must equal
+ * that size and the copied bytes must hash to `expectedSha256`.
+ *
  * @returns same result as createOwnedFile; `content` is always present.
  */
 export async function copyTrustedFileToOwnedFile({
@@ -373,16 +394,23 @@ export async function copyTrustedFileToOwnedFile({
   onCreated,
   onOwned,
   times,
+  pinnedOwnedSource = false,
 }) {
   if (sourceExactIdentity !== undefined && !isExactKnownIdentity(sourceExactIdentity)) {
     throw sourceUnsafe('The trusted copy source identity is unknown.');
+  }
+  if (pinnedOwnedSource && (sourceExactIdentity === undefined || expectedSize === undefined
+    || typeof expectedSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(expectedSha256))) {
+    throw sourceUnsafe('The owned copy source has no pinned identity and content.');
   }
   const before = inspectTrustedSource(sourcePath);
   let source;
   try {
     source = fs.openSync(sourcePath, 'r');
     const opened = fs.fstatSync(source, { bigint: true });
-    if (!opened.isFile() || !sameSourceSnapshot(before, sourceSnapshot(opened))) {
+    const openContinuous = (openedSnapshot) => sameSourceSnapshot(before, openedSnapshot)
+      || (pinnedOwnedSource && sameSourceObject(before, openedSnapshot));
+    if (!opened.isFile() || !openContinuous(sourceSnapshot(opened))) {
       throw sourceChanged(() => {
         const openedSnapshot = sourceSnapshot(opened);
         const changed = changedSourceFields(before, openedSnapshot);
@@ -390,7 +418,7 @@ export async function copyTrustedFileToOwnedFile({
           phase: 'source-open',
           failed: [
             ...(opened.isFile() ? [] : ['descriptor-not-regular-file']),
-            ...(sameSourceSnapshot(before, openedSnapshot) ? [] : ['open-continuity']),
+            ...(openContinuous(openedSnapshot) ? [] : ['open-continuity']),
           ],
           identityKnown: isExactKnownIdentity(before) || isExactKnownIdentity(openedSnapshot),
           pathDescriptorIdentity: pathDescriptorIdentity(before, openedSnapshot),

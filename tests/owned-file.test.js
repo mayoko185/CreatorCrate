@@ -639,5 +639,171 @@ describe('owned file primitive', () => {
       expect(result.content.sha256).toBe(sha256(bytes));
       expect(fs.readFileSync(destinationPath).equals(bytes)).toBe(true);
     });
+
+    // WP3 C2 production trace (project 41, asset 3167, output 8): the publication copy's
+    // pathname lstat of CreatorCrate's private stage and the descriptor it then opened agreed
+    // on dev/ino, size and birth time, but the descriptor reported later mtime/ctime.
+    describe('pinned owned source (WP3 C2)', () => {
+      const PRODUCTION_ID = { dev: 77n, ino: 4069076n };
+      const BIRTH = 1791508504536747700n;
+      const PATH_TIME = 1791508504628750200n;
+      const DESCRIPTOR_TIME = 1791508505669399100n;
+      const bytes = Buffer.from('staged watermark output bytes');
+      let sourcePath;
+      let destinationPath;
+
+      beforeEach(() => {
+        sourcePath = path.join(tmpDir, 'stage.output');
+        destinationPath = path.join(tmpDir, 'published.png');
+        fs.writeFileSync(sourcePath, bytes);
+      });
+
+      // Every source stat reports the production identity and birth time; the first pathname
+      // lstat (before open) reports PATH_TIME, everything later DESCRIPTOR_TIME. `lstat(index)`
+      // and `fstat(index)` add per-call overrides on top.
+      const productionStats = ({ lstat = () => ({}), fstat = () => ({}) } = {}) => {
+        let lstats = 0;
+        const times = (time) => ({ mtimeNs: time, ctimeNs: time });
+        return mock(overrideStats({
+          lstat: (filePath) => {
+            if (filePath !== sourcePath) return undefined;
+            const index = lstats;
+            lstats += 1;
+            return {
+              ...PRODUCTION_ID, birthtimeNs: BIRTH, ...times(index === 0 ? PATH_TIME : DESCRIPTOR_TIME),
+              ...lstat(index),
+            };
+          },
+          fstat: (filePath, index) => (filePath === sourcePath
+            ? { ...PRODUCTION_ID, birthtimeNs: BIRTH, ...times(DESCRIPTOR_TIME), ...fstat(index) } : undefined),
+        }));
+      };
+      const unmock = () => restoreMocks.pop()();
+      const pinnedCopy = (overrides = {}) => {
+        let owned;
+        return copyTrustedFileToOwnedFile({
+          sourcePath,
+          sourceExactIdentity: PRODUCTION_ID,
+          destinationPath,
+          expectedSha256: sha256(bytes),
+          expectedSize: bytes.length,
+          pinnedOwnedSource: true,
+          onOwned: (identity) => { owned = identity; },
+          ...overrides,
+        }).then((result) => ({ result, owned }), (failure) => ({ failure, owned }));
+      };
+
+      it('reproduces the production open comparison: rejected unpinned, published when pinned', async () => {
+        productionStats();
+        const unpinned = await pinnedCopy({ pinnedOwnedSource: false });
+        expect(unpinned.failure.reason).toBe(OWNED_FILE_FAILURE.sourceChanged);
+        expect(fs.existsSync(destinationPath)).toBe(false);
+        expect(ownedFileSourceChangeEvidence(unpinned.failure)).toMatchObject({
+          phase: 'source-open',
+          failed: ['open-continuity'],
+          identityKnown: true,
+          pathDescriptorIdentity: 'matched',
+          changed: { 'before-lstat/opened-fstat': ['mtimeNs', 'ctimeNs'] },
+          involved: ['mtime', 'ctime'],
+          observations: {
+            'before-lstat': { dev: '77', ino: '4069076', mtimeNs: String(PATH_TIME), birthtimeNs: String(BIRTH) },
+            'opened-fstat': {
+              dev: '77', ino: '4069076', mtimeNs: String(DESCRIPTOR_TIME), birthtimeNs: String(BIRTH),
+            },
+          },
+        });
+        unmock();
+
+        productionStats();
+        const { result, failure } = await pinnedCopy();
+        expect(failure).toBeUndefined();
+        expect(result.content).toEqual({ size: BigInt(bytes.length), sha256: sha256(bytes) });
+        expect(fs.readFileSync(destinationPath).equals(bytes)).toBe(true);
+        expect(fs.readFileSync(sourcePath).equals(bytes)).toBe(true);
+      });
+
+      it('rejects same-size changed source bytes under the same metadata disagreement', async () => {
+        fs.writeFileSync(sourcePath, Buffer.from('staged watermark output BYTES'));
+        productionStats();
+        const { failure, owned } = await pinnedCopy();
+        expect(failure.reason).toBe(OWNED_FILE_FAILURE.contentMismatch);
+        // The partial destination is left for the caller's ownership-gated cleanup.
+        expect(removeFileIfExactIdentityMatches(destinationPath, owned)).toBe(true);
+      });
+
+      it('rejects a foreign replacement at the pathname or behind the descriptor', async () => {
+        productionStats({ lstat: (index) => (index === 0 ? { ino: PRODUCTION_ID.ino + 1n } : {}) });
+        const pathForeign = await pinnedCopy();
+        expect(pathForeign.failure.reason).toBe(OWNED_FILE_FAILURE.sourceChanged);
+        expect(ownedFileSourceChangeEvidence(pathForeign.failure)).toMatchObject({
+          phase: 'source-open', failed: ['open-continuity'], pathDescriptorIdentity: 'mismatched',
+        });
+        expect(fs.existsSync(destinationPath)).toBe(false);
+        unmock();
+
+        // Path and descriptor agree with each other but are not the owned stage.
+        productionStats({ lstat: () => ({ ino: 9n }), fstat: () => ({ ino: 9n }) });
+        const swapped = await pinnedCopy();
+        expect(swapped.failure.reason).toBe(OWNED_FILE_FAILURE.sourceUnsafe);
+        expect(fs.existsSync(destinationPath)).toBe(false);
+      });
+
+      it('rejects a differing birth time or size at open, and an unknown identity', async () => {
+        productionStats({ lstat: (index) => (index === 0 ? { birthtimeNs: BIRTH + 1n } : {}) });
+        const reborn = await pinnedCopy();
+        expect(reborn.failure.reason).toBe(OWNED_FILE_FAILURE.sourceChanged);
+        expect(ownedFileSourceChangeEvidence(reborn.failure).failed).toEqual(['open-continuity']);
+        unmock();
+
+        productionStats({ lstat: (index) => (index === 0 ? { size: BigInt(bytes.length + 1) } : {}) });
+        const resized = await pinnedCopy();
+        expect(resized.failure.reason).toBe(OWNED_FILE_FAILURE.sourceChanged);
+        unmock();
+
+        productionStats({ lstat: () => ({ dev: 0n, ino: 0n }), fstat: () => ({ dev: 0n, ino: 0n }) });
+        const unknown = await pinnedCopy();
+        expect(unknown.failure.reason).toBe(OWNED_FILE_FAILURE.sourceChanged);
+        expect(fs.existsSync(destinationPath)).toBe(false);
+      });
+
+      it('rejects modification during the copy at the descriptor or the pathname', async () => {
+        productionStats({ fstat: (index) => (index > 0 ? { mtimeNs: DESCRIPTOR_TIME + 1n } : {}) });
+        const descriptorMoved = await pinnedCopy();
+        expect(descriptorMoved.failure.reason).toBe(OWNED_FILE_FAILURE.sourceChanged);
+        expect(ownedFileSourceChangeEvidence(descriptorMoved.failure).failed).toEqual(['descriptor-continuity']);
+        expect(removeFileIfExactIdentityMatches(destinationPath, descriptorMoved.owned)).toBe(true);
+        unmock();
+
+        // After open the pathname must equal the opened descriptor exactly, write times included.
+        productionStats({ lstat: (index) => (index > 0 ? { mtimeNs: PATH_TIME, ctimeNs: PATH_TIME } : {}) });
+        const pathMoved = await pinnedCopy();
+        expect(pathMoved.failure.reason).toBe(OWNED_FILE_FAILURE.sourceChanged);
+        expect(ownedFileSourceChangeEvidence(pathMoved.failure).failed).toEqual(['path-continuity']);
+        expect(removeFileIfExactIdentityMatches(destinationPath, pathMoved.owned)).toBe(true);
+      });
+
+      it('rejects an unexpected copied length', async () => {
+        const reported = () => ({ size: BigInt(bytes.length + 1) });
+        productionStats({ lstat: reported, fstat: reported });
+        const { failure, owned } = await pinnedCopy({ expectedSize: bytes.length + 1 });
+        expect(failure.reason).toBe(OWNED_FILE_FAILURE.sourceChanged);
+        expect(ownedFileSourceChangeEvidence(failure).failed).toEqual(['copied-length']);
+        expect(removeFileIfExactIdentityMatches(destinationPath, owned)).toBe(true);
+      });
+
+      it('refuses to pin a source without identity, size or SHA-256 proof', async () => {
+        productionStats();
+        for (const missing of [
+          { sourceExactIdentity: undefined },
+          { expectedSize: undefined },
+          { expectedSha256: undefined },
+          { expectedSha256: 'not-a-sha256' },
+        ]) {
+          const { failure } = await pinnedCopy(missing);
+          expect(failure.reason).toBe(OWNED_FILE_FAILURE.sourceUnsafe);
+          expect(fs.existsSync(destinationPath)).toBe(false);
+        }
+      });
+    });
   });
 });
