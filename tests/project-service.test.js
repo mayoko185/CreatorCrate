@@ -1894,6 +1894,299 @@ describe('project service', () => {
       expect(loggedService.findById(created.id)).toBeUndefined();
     });
   });
+
+  describe('project update failure diagnostics', () => {
+    let applicationLogRepository;
+    let loggedService;
+    let consoleSpy;
+
+    function makeService(applicationLogger) {
+      return createProjectService(db, projectsRoot, {
+        assetCategoryService: createAssetCategoryService(createAssetCategoryRepository(db)),
+        assetBrowserPreferenceRepository,
+        applicationLogger,
+        pageDefaultsService,
+        projectOptionCatalogueService: createTestProjectOptionCatalogueService(db),
+      });
+    }
+
+    function fsError(code, syscall, ...paths) {
+      return Object.assign(new Error(`${code}: operation failed, ${syscall} '${paths.join("' -> '")}'`), {
+        code, syscall, path: paths[0], dest: paths[1],
+      });
+    }
+
+    function diagnostics(event) {
+      return applicationLogRepository.findPage({ kind: 'diagnostic' })
+        .filter((record) => record.event === event)
+        .map((record) => ({ ...record, context: JSON.parse(record.context_json) }));
+    }
+
+    function expectPathFree(records) {
+      const persisted = JSON.stringify(records);
+      expect(persisted).not.toContain(tmpDir);
+      expect(persisted).not.toContain(tmpDir.replace(/\\/g, '\\\\'));
+      expect(persisted).not.toMatch(/\bat\s+\S+:\d+:\d+/);
+    }
+
+    function dirOf(project, slug = project.slug) {
+      const relPath = formatProjectDirName(project.id, slug);
+      return { relPath, absPath: resolveProjectDir(projectsRoot, relPath) };
+    }
+
+    beforeEach(() => {
+      applicationLogRepository = createApplicationLogRepository(db);
+      loggedService = makeService(createApplicationLogger({
+        repository: applicationLogRepository,
+        console: { error: vi.fn() },
+        now: () => 1,
+      }));
+      consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it.each(['EACCES', 'EPERM'])('records a %s rename refusal with phase and errno, leaving dir and binding unchanged', (code) => {
+      const project = loggedService.create(validInput({ title: `Smb Refusal ${code}` }));
+      const original = dirOf(project);
+      const target = dirOf(project, `smb-refusal-${code.toLowerCase()}-renamed`);
+      const renameSpy = vi.spyOn(fs, 'renameSync').mockImplementationOnce((from, to) => {
+        throw fsError(code, 'rename', from, to);
+      });
+
+      expect(() => loggedService.update(project.id, validInput({
+        title: `Smb Refusal ${code} Renamed`,
+      }))).toThrow('Project update failed. Please try again.');
+
+      expect(renameSpy).toHaveBeenCalledTimes(1);
+      expect(fs.statSync(original.absPath).isDirectory()).toBe(true);
+      expect(fs.existsSync(target.absPath)).toBe(false);
+      const found = loggedService.findById(project.id);
+      expect(found.project_dir).toBe(original.relPath);
+      expect(found.title).toBe(`Smb Refusal ${code}`);
+
+      const [record, ...rest] = diagnostics('project.update.failed');
+      expect(rest).toEqual([]);
+      expect(record).toMatchObject({ level: 'error', subsystem: 'projects', project_id: project.id });
+      expect(record.context).toMatchObject({
+        phase: 'directory.rename',
+        slugChanged: true,
+        projectDir: original.relPath,
+        targetProjectDir: target.relPath,
+        errorName: 'StorageError',
+        errorCode: 'PROJECT_DIR_RENAME_FAILED',
+        errno: code,
+        syscall: 'rename',
+        compensation: { attempted: false },
+      });
+      expect(diagnostics('project.update.rollback_failed')).toEqual([]);
+      expectPathFree(applicationLogRepository.findPage({}));
+    });
+
+    it('records DESTINATION_EXISTS without touching the destination or moving the project directory', () => {
+      const project = loggedService.create(validInput({ title: 'Dest Conflict' }));
+      const original = dirOf(project);
+      const target = dirOf(project, 'dest-conflict-renamed');
+      fs.mkdirSync(target.absPath);
+      fs.writeFileSync(path.join(target.absPath, 'keep.txt'), 'pre-existing');
+      const renameSpy = vi.spyOn(fs, 'renameSync');
+
+      expect(() => loggedService.update(project.id, validInput({
+        title: 'Dest Conflict Renamed',
+      }))).toThrow(/already exists/);
+
+      expect(renameSpy).not.toHaveBeenCalled();
+      expect(fs.readFileSync(path.join(target.absPath, 'keep.txt'), 'utf8')).toBe('pre-existing');
+      expect(fs.readdirSync(target.absPath)).toEqual(['keep.txt']);
+      expect(fs.statSync(original.absPath).isDirectory()).toBe(true);
+      expect(loggedService.findById(project.id).project_dir).toBe(original.relPath);
+
+      const [record, ...rest] = diagnostics('project.update.failed');
+      expect(rest).toEqual([]);
+      expect(record.level).toBe('error');
+      expect(record.context).toMatchObject({
+        phase: 'preflight.destination_check',
+        slugChanged: true,
+        targetProjectDir: target.relPath,
+        errorCode: 'DESTINATION_EXISTS',
+        errno: null,
+        compensation: { attempted: false },
+      });
+      expectPathFree(applicationLogRepository.findPage({}));
+    });
+
+    it('records rollback_failed when compensation fails, without changing compensation behavior', () => {
+      const project = loggedService.create(validInput({ title: 'Comp Fails' }));
+      const original = dirOf(project);
+      const target = dirOf(project, 'comp-fails-renamed');
+      const realRename = fs.renameSync.bind(fs);
+      const renameSpy = vi.spyOn(fs, 'renameSync')
+        .mockImplementation((from, to) => { throw fsError('EPERM', 'rename', from, to); })
+        .mockImplementationOnce((from, to) => realRename(from, to));
+      vi.spyOn(loggedService.repository, 'setProjectDir').mockImplementation(() => {
+        throw new Error('binding write failed');
+      });
+
+      expect(() => loggedService.update(project.id, validInput({
+        title: 'Comp Fails Renamed',
+      }))).toThrow('Project update failed. Please try again.');
+
+      // Exactly the original move plus one move-back attempt; no retries.
+      expect(renameSpy).toHaveBeenCalledTimes(2);
+      // Existing behavior: the failed move-back leaves the directory moved,
+      // the DB rollback restores the stored path, and stdout still reports it.
+      expect(fs.existsSync(target.absPath)).toBe(true);
+      expect(fs.existsSync(original.absPath)).toBe(false);
+      expect(loggedService.findById(project.id).project_dir).toBe(original.relPath);
+      expect(consoleSpy.mock.calls.some(([line]) => /Update rollback — failed/.test(line))).toBe(true);
+
+      const [rollback, ...moreRollbacks] = diagnostics('project.update.rollback_failed');
+      expect(moreRollbacks).toEqual([]);
+      expect(rollback).toMatchObject({ level: 'error', project_id: project.id });
+      expect(rollback.context).toMatchObject({
+        step: 'move_back',
+        projectDir: original.relPath,
+        targetProjectDir: target.relPath,
+        errorCode: 'PROJECT_DIR_RENAME_FAILED',
+        errno: 'EPERM',
+      });
+
+      const [failed, ...moreFailed] = diagnostics('project.update.failed');
+      expect(moreFailed).toEqual([]);
+      expect(failed.context).toMatchObject({
+        phase: 'database.persist_binding',
+        errorCode: null,
+        errno: null,
+        compensation: { attempted: true, outcome: 'failed' },
+      });
+      expectPathFree(applicationLogRepository.findPage({}));
+    });
+
+    it('keeps the diagnostic after the update transaction rolls back and records a restored compensation', () => {
+      const project = loggedService.create(validInput({ title: 'Binding Fails' }));
+      const original = dirOf(project);
+      vi.spyOn(loggedService.repository, 'setProjectDir').mockImplementation(() => {
+        throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+      });
+
+      expect(() => loggedService.update(project.id, validInput({
+        title: 'Binding Fails Renamed',
+        status: 'in-progress',
+      }))).toThrow('Project update failed. Please try again.');
+
+      const found = loggedService.findById(project.id);
+      expect(found.status).toBe('tbd');
+      expect(found.project_dir).toBe(original.relPath);
+      expect(fs.statSync(original.absPath).isDirectory()).toBe(true);
+
+      const [record] = diagnostics('project.update.failed');
+      expect(record.context).toMatchObject({
+        phase: 'database.persist_binding',
+        errorCode: 'SQLITE_BUSY',
+        compensation: { attempted: true, outcome: 'restored' },
+      });
+    });
+
+    it('keeps the diagnostic when a caller-owned outer transaction also rolls back', async () => {
+      const project = loggedService.create(validInput({ title: 'Outer Rollback' }));
+      vi.spyOn(loggedService.repository, 'update').mockImplementation(() => {
+        throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' });
+      });
+
+      expect(() => db.transaction(() => {
+        loggedService.update(project.id, validInput({ title: 'Outer Rollback', status: 'ready' }));
+      })()).toThrow('Project update failed. Please try again.');
+      expect(db.inTransaction).toBe(false);
+
+      await new Promise((resolve) => setImmediate(resolve));
+      const [record, ...rest] = diagnostics('project.update.failed');
+      expect(rest).toEqual([]);
+      expect(record.context).toMatchObject({
+        phase: 'database.update',
+        slugChanged: false,
+        errorCode: 'SQLITE_BUSY',
+        compensation: { attempted: false },
+      });
+    });
+
+    it('records a SQLITE_IOERR during duplicate-title validation as a preflight failure', () => {
+      const project = loggedService.create(validInput({ title: 'Preflight Io' }));
+      const original = dirOf(project);
+      loggedService.create(validInput({ title: 'Preflight Taken' }));
+      const renameSpy = vi.spyOn(fs, 'renameSync');
+
+      // Ordinary duplicate-title validation stays unlogged.
+      expect(() => loggedService.update(project.id, validInput({
+        title: 'Preflight Taken',
+      }))).toThrow(ProjectValidationError);
+      expect(diagnostics('project.update.failed')).toEqual([]);
+
+      const ioErr = Object.assign(new Error('disk I/O error'), { code: 'SQLITE_IOERR' });
+      vi.spyOn(loggedService.repository, 'slugExists').mockImplementationOnce(() => { throw ioErr; });
+
+      let thrown;
+      try {
+        loggedService.update(project.id, validInput({ title: 'Preflight Io Renamed', status: 'ready' }));
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown).toBe(ioErr);
+
+      expect(renameSpy).not.toHaveBeenCalled();
+      expect(fs.statSync(original.absPath).isDirectory()).toBe(true);
+      const found = loggedService.findById(project.id);
+      expect(found).toMatchObject({ title: 'Preflight Io', status: 'tbd', project_dir: original.relPath });
+
+      const [record, ...rest] = diagnostics('project.update.failed');
+      expect(rest).toEqual([]);
+      expect(record).toMatchObject({ level: 'error', subsystem: 'projects', project_id: project.id });
+      expect(record.context).toMatchObject({
+        phase: 'preflight.validate',
+        errorName: 'Error',
+        errorCode: 'SQLITE_IOERR',
+        compensation: { attempted: false },
+      });
+      expectPathFree(applicationLogRepository.findPage({}));
+    });
+
+    it('preserves the original failure and rollback when diagnostic logging throws', () => {
+      const throwingLogger = {
+        info: vi.fn(),
+        warn: vi.fn(() => { throw new Error('log unavailable'); }),
+        error: vi.fn(() => { throw new Error('log unavailable'); }),
+      };
+      const brokenLogService = makeService(throwingLogger);
+      const project = brokenLogService.create(validInput({ title: 'Broken Log' }));
+      const original = dirOf(project);
+      const target = dirOf(project, 'broken-log-renamed');
+
+      vi.spyOn(fs, 'renameSync').mockImplementationOnce((from, to) => {
+        throw fsError('EACCES', 'rename', from, to);
+      });
+      expect(() => brokenLogService.update(project.id, validInput({
+        title: 'Broken Log Renamed',
+      }))).toThrow('Project update failed. Please try again.');
+      expect(throwingLogger.error).toHaveBeenCalledTimes(1);
+
+      // Compensation still runs and restores the directory when logging fails.
+      vi.spyOn(brokenLogService.repository, 'setProjectDir').mockImplementation(() => {
+        throw new Error('binding write failed');
+      });
+      expect(() => brokenLogService.update(project.id, validInput({
+        title: 'Broken Log Renamed',
+      }))).toThrow('Project update failed. Please try again.');
+      expect(throwingLogger.error).toHaveBeenCalledTimes(2);
+
+      expect(db.inTransaction).toBe(false);
+      expect(fs.statSync(original.absPath).isDirectory()).toBe(true);
+      expect(fs.existsSync(target.absPath)).toBe(false);
+      const found = brokenLogService.findById(project.id);
+      expect(found.title).toBe('Broken Log');
+      expect(found.project_dir).toBe(original.relPath);
+    });
+  });
 });
 
 /**

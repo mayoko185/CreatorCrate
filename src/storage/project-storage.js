@@ -189,19 +189,23 @@ async function checkSymlinksAsync(root, target) {
  * Never silently overwrites.
  *
  * @param {string} dirPath - Resolved absolute path to check
- * @throws {StorageError} if the path already exists or is inaccessible
+ * @throws {StorageError} `DESTINATION_EXISTS` if the path already exists, or
+ *   `DESTINATION_UNAVAILABLE` (with the filesystem error as `cause`) if it
+ *   cannot be checked
  */
 export function ensureNoConflict(dirPath) {
   try {
     fs.statSync(dirPath);
     throw new StorageError(
-      `Destination "${path.basename(dirPath)}" already exists.`
+      `Destination "${path.basename(dirPath)}" already exists.`,
+      { code: 'DESTINATION_EXISTS' }
     );
   } catch (err) {
     if (err instanceof StorageError) throw err;
     if (err.code === 'ENOENT') return;
     throw new StorageError(
-      `Cannot access "${path.basename(dirPath)}".`
+      `Cannot access "${path.basename(dirPath)}".`,
+      { code: 'DESTINATION_UNAVAILABLE', cause: err }
     );
   }
 }
@@ -460,7 +464,9 @@ export function removeProjectDir(projectDir, expectedId, projectsRoot) {
  *
  * @param {string} oldPath - Current absolute path
  * @param {string} newPath - Target absolute path
- * @throws {StorageError} if the rename fails or crosses filesystems
+ * @throws {StorageError} `PROJECT_DIR_CROSS_DEVICE` if the rename crosses
+ *   filesystems, otherwise `PROJECT_DIR_RENAME_FAILED`; either way the
+ *   original filesystem error (and its errno code) is kept as `cause`
  */
 export function renameProjectDirSync(oldPath, newPath) {
   try {
@@ -468,11 +474,13 @@ export function renameProjectDirSync(oldPath, newPath) {
   } catch (err) {
     if (err.code === 'EXDEV') {
       throw new StorageError(
-        'Cannot move project directory across filesystems. Use a rename within the same filesystem.'
+        'Cannot move project directory across filesystems. Use a rename within the same filesystem.',
+        { code: 'PROJECT_DIR_CROSS_DEVICE', cause: err }
       );
     }
     throw new StorageError(
-      `Failed to move directory "${path.basename(oldPath)}" to "${path.basename(newPath)}".`
+      `Failed to move directory "${path.basename(oldPath)}" to "${path.basename(newPath)}".`,
+      { code: 'PROJECT_DIR_RENAME_FAILED', cause: err }
     );
   }
 }

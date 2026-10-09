@@ -132,6 +132,52 @@ export function createProjectService(
     }
   }
 
+  /**
+   * Record a project-update diagnostic. The caller's own update transaction
+   * has always ended (rolled back) by the time this runs; when an outer,
+   * caller-owned transaction is still open (e.g. release publication), the
+   * write is deferred until it has finished so the diagnostic cannot be
+   * rolled back with it. A logging failure never reaches the caller.
+   */
+  function logUpdateDiagnostic(level, event, message, projectId, context, error) {
+    const write = () => {
+      try {
+        applicationLogger?.[level]?.({
+          event,
+          kind: 'diagnostic',
+          subsystem: 'projects',
+          message,
+          projectId,
+          context,
+          error,
+        });
+      } catch {
+        // Diagnostic persistence must not alter the update result or rollback.
+      }
+    };
+    try {
+      if (db?.inTransaction) setImmediate(write);
+      else write();
+    } catch {
+      // Diagnostic persistence must not alter the update result or rollback.
+    }
+  }
+
+  /**
+   * Safe, path-free error classification. The logger keeps only the top-level
+   * error's name/message/code, so the original filesystem errno carried as
+   * `cause` (M1A StorageError contract) is copied out explicitly here.
+   */
+  function updateErrorContext(err) {
+    const cause = err?.cause;
+    return {
+      errorName: typeof err?.name === 'string' ? err.name : 'Error',
+      errorCode: typeof err?.code === 'string' ? err.code : null,
+      errno: typeof cause?.code === 'string' ? cause.code : null,
+      syscall: typeof cause?.syscall === 'string' ? cause.syscall : null,
+    };
+  }
+
   function validate(input, options = {}) {
     const { existingId, existingProjectType } = options;
     const errors = {};
@@ -235,14 +281,17 @@ export function createProjectService(
    * @param {string} currentAbsPath - Original absolute directory path
    * @param {string} newAbsPath - New absolute path (may or may not exist)
    * @param {{dev: number, ino: number}} identity - Identity of the moved directory
+   * @param {string} newRelPath - Project-relative destination (diagnostics only)
+   * @returns {'restored'|'destination_missing'|'failed'} Outcome, for diagnostics only
    */
-  function compensateUpdate(project, currentAbsPath, newAbsPath, identity) {
+  function compensateUpdate(project, currentAbsPath, newAbsPath, identity, newRelPath) {
+    let step = 'inspect_destination';
     try {
       let moved;
       try {
         moved = fs.lstatSync(newAbsPath);
       } catch (err) {
-        if (err.code === 'ENOENT') return;
+        if (err.code === 'ENOENT') return 'destination_missing';
         throw err;
       }
       if (
@@ -253,6 +302,7 @@ export function createProjectService(
       ) {
         throw new Error('destination no longer holds the moved directory');
       }
+      step = 'inspect_original';
       let originalOccupied = true;
       try {
         fs.lstatSync(currentAbsPath);
@@ -263,12 +313,22 @@ export function createProjectService(
       if (originalOccupied) {
         throw new Error('original location is occupied');
       }
+      step = 'move_back';
       renameProjectDirSync(newAbsPath, currentAbsPath);
+      return 'restored';
     } catch (moveBackErr) {
       console.error(
         `[CreatorCrate] Update rollback — failed to move directory ` +
         `"${path.basename(newAbsPath)}" back for project ${project.id}: ${moveBackErr.message}`
       );
+      logUpdateDiagnostic('error', 'project.update.rollback_failed',
+        'Project directory rename could not be compensated.', project.id, {
+          projectDir: project.project_dir,
+          targetProjectDir: newRelPath,
+          step,
+          ...updateErrorContext(moveBackErr),
+        }, moveBackErr);
+      return 'failed';
     }
   }
 
@@ -446,7 +506,32 @@ export function createProjectService(
     },
 
     update(id, input, { tagIds = TAGS_UNCHANGED } = {}) {
-      const project = repository.findById(id);
+      // Diagnostics only: the step that was running when a failure surfaced.
+      let phase = null;
+
+      // Preflight lookup/validation: record unexpected operational failures
+      // (e.g. SQLite I/O errors) as project.update.failed; validation and
+      // not-found outcomes stay unlogged. The original error propagates.
+      const preflight = (step, run) => {
+        phase = step;
+        try {
+          return run();
+        } catch (err) {
+          if (!(err instanceof ProjectValidationError || err instanceof ProjectNotFoundError)) {
+            logUpdateDiagnostic('error', 'project.update.failed', 'Project update failed.', id, {
+              phase,
+              slugChanged: null,
+              projectDir: null,
+              targetProjectDir: null,
+              ...updateErrorContext(err),
+              compensation: { attempted: false },
+            }, err);
+          }
+          throw err;
+        }
+      };
+
+      const project = preflight('preflight.lookup', () => repository.findById(id));
       if (!project) {
         throw new ProjectNotFoundError(id);
       }
@@ -456,10 +541,10 @@ export function createProjectService(
       }
 
       // Phase 1: Validate input
-      const normalized = validate(input, {
+      const normalized = preflight('preflight.validate', () => validate(input, {
         existingId: id,
         existingProjectType: project.project_type,
-      });
+      }));
       if (tagIds !== TAGS_UNCHANGED && (
         !Array.isArray(tagIds) || tagIds.some((tagId) => (
           typeof tagId !== 'number' || !Number.isSafeInteger(tagId) || tagId <= 0
@@ -498,22 +583,48 @@ export function createProjectService(
       let newAbsPath = null;
       let source = null;
 
-      if (dirNeedsChange) {
-        // Ownership is proven by the persistent witness, never by pathname,
-        // ID prefix, or any legacy project.json: the source path comes only
-        // from the stored project_dir (never from the caller), must pass the
-        // existing containment/direct-child/ID-prefix/symlink checks, and
-        // must hold a `.creatorcrate-owner` marker whose token matches this
-        // project's bound SQLite binding. An unbound (legacy) project fails
-        // closed here; nothing is bound or written.
-        source = ownershipVerifier.verifyProject(project);
-        currentAbsPath = source.absPath;
+      // Record one project.update.failed diagnostic. Validation and not-found
+      // outcomes are ordinary results, not operational failures; ownership
+      // refusals are expected state conflicts and are warnings.
+      const logUpdateFailure = (err, compensation = null) => {
+        if ((err instanceof ProjectValidationError || err instanceof ProjectNotFoundError) && !compensation) {
+          return;
+        }
+        const level = err instanceof ProjectOwnershipError && !compensation ? 'warn' : 'error';
+        logUpdateDiagnostic(level, 'project.update.failed', 'Project update failed.', project.id, {
+          phase,
+          slugChanged,
+          projectDir: project.project_dir ?? null,
+          targetProjectDir: newRelPath,
+          ...updateErrorContext(err),
+          compensation: compensation ?? { attempted: false },
+        }, err);
+      };
 
-        // Compute new path and verify no destination conflict
-        const dirName = formatProjectDirName(project.id, normalized.slug);
-        newRelPath = dirName;
-        newAbsPath = resolveProjectDir(projectsRoot, newRelPath);
-        ensureNoConflict(newAbsPath);
+      if (dirNeedsChange) {
+        try {
+          phase = 'preflight.verify_source';
+          // Ownership is proven by the persistent witness, never by pathname,
+          // ID prefix, or any legacy project.json: the source path comes only
+          // from the stored project_dir (never from the caller), must pass the
+          // existing containment/direct-child/ID-prefix/symlink checks, and
+          // must hold a `.creatorcrate-owner` marker whose token matches this
+          // project's bound SQLite binding. An unbound (legacy) project fails
+          // closed here; nothing is bound or written.
+          source = ownershipVerifier.verifyProject(project);
+          currentAbsPath = source.absPath;
+
+          // Compute new path and verify no destination conflict
+          const dirName = formatProjectDirName(project.id, normalized.slug);
+          newRelPath = dirName;
+          phase = 'preflight.destination_check';
+          newAbsPath = resolveProjectDir(projectsRoot, newRelPath);
+          ensureNoConflict(newAbsPath);
+        } catch (err) {
+          // Observe only: the original error propagates unchanged.
+          logUpdateFailure(err);
+          throw err;
+        }
       }
 
       // ── Execution ─────────────────────────────────────────────────
@@ -523,6 +634,7 @@ export function createProjectService(
       try {
         const runUpdate = db.transaction(() => {
           // Phase 3: Update database metadata.
+          phase = 'database.update';
           updated = repository.update(id, normalized);
           if (!updated) {
             throw new ProjectNotFoundError(id);
@@ -550,9 +662,11 @@ export function createProjectService(
             // Mutation boundary: re-prove, immediately before the rename,
             // that the stored path still holds the same directory verified
             // above and that it still carries this project's token.
+            phase = 'directory.verify_source';
             assertSameDirectory(currentAbsPath, source.identity);
             assertProjectOwnershipMarker(currentAbsPath, source.token);
 
+            phase = 'directory.rename';
             renameProjectDirSync(currentAbsPath, newAbsPath);
             dirMoved = true;
 
@@ -560,12 +674,15 @@ export function createProjectService(
             // Confirm the destination is the directory this operation moved
             // and still carries the expected token before the new stored
             // path can commit; otherwise the move is compensated below.
+            phase = 'directory.verify_destination';
             assertSameDirectory(newAbsPath, source.identity);
             assertProjectOwnershipMarker(newAbsPath, source.token);
 
+            phase = 'database.persist_binding';
             updated = repository.setProjectDir(id, newRelPath);
           }
 
+          phase = 'database.commit';
           return updated;
         });
 
@@ -582,9 +699,12 @@ export function createProjectService(
         return committed;
       } catch (err) {
         // ── Compensation ─────────────────────────────────────────
+        let compensation = null;
         if (dirMoved) {
-          compensateUpdate(project, currentAbsPath, newAbsPath, source.identity);
+          const outcome = compensateUpdate(project, currentAbsPath, newAbsPath, source.identity, newRelPath);
+          compensation = { attempted: true, outcome };
         }
+        logUpdateFailure(err, compensation);
 
         // Log the primary failure (project ID + relative path, no absolute paths)
         console.error(

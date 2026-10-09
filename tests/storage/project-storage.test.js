@@ -200,6 +200,39 @@ describe('ensureNoConflict', () => {
     fs.writeFileSync(existing, '');
     expect(() => ensureNoConflict(existing)).toThrow(StorageError);
   });
+
+  it('marks an existing destination as DESTINATION_EXISTS', () => {
+    const existing = path.join(tmpDir, 'existing-dir');
+    fs.mkdirSync(existing);
+    expect(() => ensureNoConflict(existing)).toThrow(expect.objectContaining({
+      name: 'StorageError',
+      code: 'DESTINATION_EXISTS',
+      message: 'Destination "existing-dir" already exists.',
+    }));
+    expect(fs.statSync(existing).isDirectory()).toBe(true);
+  });
+
+  it('marks an inaccessible destination as DESTINATION_UNAVAILABLE and keeps the errno', () => {
+    const target = path.join(tmpDir, 'locked');
+    const mockError = new Error('access denied');
+    mockError.code = 'EACCES';
+    const spy = vi.spyOn(fs, 'statSync').mockImplementation(() => { throw mockError; });
+
+    let thrown;
+    try {
+      ensureNoConflict(target);
+    } catch (err) {
+      thrown = err;
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(thrown).toBeInstanceOf(StorageError);
+    expect(thrown.code).toBe('DESTINATION_UNAVAILABLE');
+    expect(thrown.message).toBe('Cannot access "locked".');
+    expect(thrown.cause).toBe(mockError);
+    expect(thrown.cause.code).toBe('EACCES');
+  });
 });
 
 // ─── createProjectCategoryDirs ───────────────────────────────────────────
@@ -613,11 +646,22 @@ describe('renameProjectDirSync', () => {
     mockError.code = 'EXDEV';
     const spy = vi.spyOn(fs, 'renameSync').mockImplementation(() => { throw mockError; });
 
+    let thrown;
     try {
-      expect(() => renameProjectDirSync(oldPath, newPath)).toThrow(StorageError);
+      renameProjectDirSync(oldPath, newPath);
+    } catch (err) {
+      thrown = err;
     } finally {
       spy.mockRestore();
     }
+
+    expect(thrown).toBeInstanceOf(StorageError);
+    expect(thrown.code).toBe('PROJECT_DIR_CROSS_DEVICE');
+    expect(thrown.message).toBe(
+      'Cannot move project directory across filesystems. Use a rename within the same filesystem.'
+    );
+    expect(thrown.cause).toBe(mockError);
+    expect(thrown.cause.code).toBe('EXDEV');
   });
 
   it('surfaces unexpected rename errors', () => {
@@ -633,6 +677,50 @@ describe('renameProjectDirSync', () => {
     } finally {
       spy.mockRestore();
     }
+  });
+
+  it.each(['EPERM', 'EACCES', 'EBUSY'])(
+    'preserves the original %s rename failure as the cause',
+    (errno) => {
+      const oldPath = path.join(projectsRoot, '000042-old');
+      const newPath = path.join(projectsRoot, '000042-new');
+
+      const mockError = new Error(`${errno}: rename refused`);
+      mockError.code = errno;
+      const spy = vi.spyOn(fs, 'renameSync').mockImplementation(() => { throw mockError; });
+
+      let thrown;
+      try {
+        renameProjectDirSync(oldPath, newPath);
+      } catch (err) {
+        thrown = err;
+      } finally {
+        spy.mockRestore();
+      }
+
+      expect(thrown).toBeInstanceOf(StorageError);
+      expect(thrown.code).toBe('PROJECT_DIR_RENAME_FAILED');
+      expect(thrown.message).toBe('Failed to move directory "000042-old" to "000042-new".');
+      expect(thrown.cause).toBe(mockError);
+      expect(thrown.cause.code).toBe(errno);
+    }
+  );
+
+  it('preserves the real errno when the source directory is missing', () => {
+    const oldPath = path.join(projectsRoot, '000042-missing');
+    const newPath = path.join(projectsRoot, '000042-target');
+
+    let thrown;
+    try {
+      renameProjectDirSync(oldPath, newPath);
+    } catch (err) {
+      thrown = err;
+    }
+
+    expect(thrown).toBeInstanceOf(StorageError);
+    expect(thrown.code).toBe('PROJECT_DIR_RENAME_FAILED');
+    expect(thrown.cause?.code).toBe('ENOENT');
+    expect(fs.existsSync(newPath)).toBe(false);
   });
 });
 
