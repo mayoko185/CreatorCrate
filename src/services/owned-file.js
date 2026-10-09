@@ -252,8 +252,13 @@ export async function createOwnedFile(absPath, write, {
   };
 }
 
+// {dev, ino, size, mtimeNs} decide source continuity. ctimeNs and birthtimeNs are carried
+// as diagnostic observations only and never compared.
 function sourceSnapshot(stats) {
-  return { dev: stats.dev, ino: stats.ino, size: stats.size, mtimeNs: stats.mtimeNs };
+  return {
+    dev: stats.dev, ino: stats.ino, size: stats.size, mtimeNs: stats.mtimeNs,
+    ctimeNs: stats.ctimeNs, birthtimeNs: stats.birthtimeNs,
+  };
 }
 
 function sameSourceSnapshot(left, right) {
@@ -266,8 +271,72 @@ function sourceUnsafe(message) {
   return new OwnedFileError(OWNED_FILE_FAILURE.sourceUnsafe, message);
 }
 
-function sourceChanged() {
-  return new OwnedFileError(OWNED_FILE_FAILURE.sourceChanged, 'The copy source changed while it was read.');
+function sourceChanged(describe) {
+  const error = new OwnedFileError(OWNED_FILE_FAILURE.sourceChanged, 'The copy source changed while it was read.');
+  if (describe) {
+    try {
+      sourceChangeEvidence.set(error, describe());
+    } catch {
+      // Diagnostics must not alter validation.
+    }
+  }
+  return error;
+}
+
+// Diagnostics only (WP1 source-changed evidence): the observations that decided a
+// copyTrustedFileToOwnedFile source-changed failure, keyed by the thrown error. Built from
+// values the decision already read (no extra read of the source), as decimal strings and
+// fixed tokens only: never a path, bytes or an Error. Best-effort; never part of a decision.
+//   phase: 'source-open' (pathname lstat vs opened descriptor fstat) | 'source-after-copy'
+//     (opened descriptor fstat vs that descriptor and the pathname after the copy).
+//   failed: every deciding comparison that failed, in the decision's order:
+//     descriptor-not-regular-file | open-continuity | descriptor-continuity |
+//     path-inspection | path-continuity | copied-length.
+//   changed: per compared pair, every observed field that differs, including the
+//     observation-only ctimeNs/birthtimeNs, so metadata drift is visible beside the
+//     compared field that decided.
+//   involved: the mismatch kinds seen: identity | size | mtime | ctime | copied-length
+//     (ctime is reported but never decides).
+//   pathDescriptorIdentity: whether the pathname and the descriptor stat of the same step
+//     report the same exact identity: matched | mismatched | unknown (zero/unsafe IDs).
+//   copiedContent: the bytes the copy read against the caller's pinned SHA-256 (already
+//     computed by the copy): matched | mismatched | not-pinned.
+const sourceChangeEvidence = new WeakMap();
+
+export function ownedFileSourceChangeEvidence(err) {
+  return err && typeof err === 'object' ? sourceChangeEvidence.get(err) : undefined;
+}
+
+const SOURCE_OBSERVATION_FIELDS = Object.freeze(['dev', 'ino', 'size', 'mtimeNs', 'ctimeNs', 'birthtimeNs']);
+
+function sourceObservation(snapshot, regularFile) {
+  const observation = {};
+  for (const key of SOURCE_OBSERVATION_FIELDS) {
+    if (typeof snapshot?.[key] === 'bigint') observation[key] = String(snapshot[key]);
+  }
+  if (regularFile === false) observation.regularFile = false;
+  return observation;
+}
+
+function changedSourceFields(left, right) {
+  return SOURCE_OBSERVATION_FIELDS.filter((key) => typeof left?.[key] === 'bigint'
+    && typeof right?.[key] === 'bigint' && left[key] !== right[key]);
+}
+
+function pathDescriptorIdentity(pathname, descriptor) {
+  if (!isExactKnownIdentity(pathname) || !isExactKnownIdentity(descriptor)) return 'unknown';
+  return sameExactFileIdentity(pathname, descriptor) ? 'matched' : 'mismatched';
+}
+
+function involvedSourceMismatches(changedLists, copiedLengthDiffers) {
+  const fields = new Set(changedLists.flat());
+  return [
+    ...(fields.has('dev') || fields.has('ino') ? ['identity'] : []),
+    ...(fields.has('size') ? ['size'] : []),
+    ...(fields.has('mtimeNs') ? ['mtime'] : []),
+    ...(fields.has('ctimeNs') ? ['ctime'] : []),
+    ...(copiedLengthDiffers ? ['copied-length'] : []),
+  ];
 }
 
 // The source is a trusted content input, never an ownership claim: its identity only pins
@@ -314,7 +383,25 @@ export async function copyTrustedFileToOwnedFile({
     source = fs.openSync(sourcePath, 'r');
     const opened = fs.fstatSync(source, { bigint: true });
     if (!opened.isFile() || !sameSourceSnapshot(before, sourceSnapshot(opened))) {
-      throw sourceChanged();
+      throw sourceChanged(() => {
+        const openedSnapshot = sourceSnapshot(opened);
+        const changed = changedSourceFields(before, openedSnapshot);
+        return {
+          phase: 'source-open',
+          failed: [
+            ...(opened.isFile() ? [] : ['descriptor-not-regular-file']),
+            ...(sameSourceSnapshot(before, openedSnapshot) ? [] : ['open-continuity']),
+          ],
+          identityKnown: isExactKnownIdentity(before) || isExactKnownIdentity(openedSnapshot),
+          pathDescriptorIdentity: pathDescriptorIdentity(before, openedSnapshot),
+          changed: { 'before-lstat/opened-fstat': changed },
+          involved: involvedSourceMismatches([changed], false),
+          observations: {
+            'before-lstat': sourceObservation(before),
+            'opened-fstat': sourceObservation(openedSnapshot, opened.isFile()),
+          },
+        };
+      });
     }
     if (sourceExactIdentity !== undefined && !sameExactFileIdentity(opened, sourceExactIdentity)) {
       throw sourceUnsafe('The copy source is not the trusted file.');
@@ -339,16 +426,52 @@ export async function copyTrustedFileToOwnedFile({
       }
       copied = { size: BigInt(position), sha256: hash.digest('hex') };
       const after = fs.fstatSync(source, { bigint: true });
+      const snapshot = sourceSnapshot(opened);
+      // Evidence of this step's decision, from the values it read; never part of it.
+      const describeAfterCopy = (afterPath, inspectionError) => () => {
+        const afterSnapshot = sourceSnapshot(after);
+        const descriptorChanged = changedSourceFields(snapshot, afterSnapshot);
+        const pathChanged = afterPath ? changedSourceFields(snapshot, afterPath) : [];
+        const copiedLengthDiffers = copied.size !== opened.size;
+        return {
+          phase: 'source-after-copy',
+          failed: [
+            ...(after.isFile() ? [] : ['descriptor-not-regular-file']),
+            ...(sameSourceSnapshot(snapshot, afterSnapshot) ? [] : ['descriptor-continuity']),
+            ...(afterPath ? [] : ['path-inspection']),
+            ...(afterPath && !sameSourceSnapshot(snapshot, afterPath) ? ['path-continuity'] : []),
+            ...(copiedLengthDiffers ? ['copied-length'] : []),
+          ],
+          identityKnown: isExactKnownIdentity(snapshot) || isExactKnownIdentity(afterSnapshot)
+            || isExactKnownIdentity(afterPath),
+          pathDescriptorIdentity: afterPath ? pathDescriptorIdentity(afterPath, afterSnapshot) : 'unknown',
+          changed: {
+            'opened-fstat/after-fstat': descriptorChanged,
+            ...(afterPath ? { 'opened-fstat/after-lstat': pathChanged } : {}),
+          },
+          involved: involvedSourceMismatches([descriptorChanged, pathChanged], copiedLengthDiffers),
+          copiedSize: String(copied.size),
+          copiedContent: expectedSha256 === undefined ? 'not-pinned'
+            : copied.sha256 === expectedSha256 ? 'matched' : 'mismatched',
+          observations: {
+            'before-lstat': sourceObservation(before),
+            'opened-fstat': sourceObservation(snapshot),
+            'after-fstat': sourceObservation(afterSnapshot, after.isFile()),
+            ...(afterPath ? { 'after-lstat': sourceObservation(afterPath) } : {}),
+          },
+          ...(inspectionError instanceof OwnedFileError ? { pathInspection: inspectionError.reason } : {}),
+          ...(typeof inspectionError?.code === 'string' ? { errorCode: inspectionError.code } : {}),
+        };
+      };
       let afterPath;
       try {
         afterPath = inspectTrustedSource(sourcePath);
-      } catch {
-        throw sourceChanged();
+      } catch (err) {
+        throw sourceChanged(describeAfterCopy(undefined, err));
       }
-      const snapshot = sourceSnapshot(opened);
       if (!after.isFile() || !sameSourceSnapshot(snapshot, sourceSnapshot(after))
         || !sameSourceSnapshot(snapshot, afterPath) || copied.size !== opened.size) {
-        throw sourceChanged();
+        throw sourceChanged(describeAfterCopy(afterPath));
       }
       if (expectedSha256 !== undefined && copied.sha256 !== expectedSha256) {
         throw contentMismatch('The copy source does not have the expected content.');

@@ -4025,6 +4025,327 @@ describe('watermark asset processing', () => {
       expect(fs.existsSync(path.resolve(projectDir, 'Final', 'wm-archive-cross-item.png'))).toBe(true);
       expect(generatedArtifactRepository.listByProjectId(project.id)).toEqual([]);
     });
+
+    // WP1 diagnostics: the two observed failure classes log the comparison that decided them
+    // through the real application logger and its sanitizer, as processing.watermark.validation.failed.
+    describe('validation failure diagnostics', () => {
+      const VALIDATION_EVENT = 'processing.watermark.validation.failed';
+      const withRealLogger = () => {
+        const records = [];
+        const applicationLogger = createApplicationLogger({
+          repository: { insert: (record) => records.push(record), prune: () => {} },
+        });
+        processingService = createConfiguredService(watermarkPath, tmpDir, coordinator, { applicationLogger });
+        return records;
+      };
+      // Every object key and array element counts one against the logger's 100-entry budget.
+      const contextEntries = (value) => {
+        if (Array.isArray(value)) return value.reduce((sum, item) => sum + 1 + contextEntries(item), 0);
+        if (value && typeof value === 'object') {
+          return Object.values(value).reduce((sum, item) => sum + 1 + contextEntries(item), 0);
+        }
+        return 0;
+      };
+      const expectSafeContext = (context) => {
+        const json = JSON.stringify(context);
+        expect(json).not.toContain('[truncated]');
+        expect(json).not.toContain('[redacted');
+        expect(json).not.toContain('[unsupported value]');
+        expect(json).not.toContain(projectDir);
+        expect(json).not.toContain(path.basename(tmpDir));
+        expect(contextEntries(context)).toBeLessThanOrEqual(100);
+      };
+
+      it('logs the fingerprint fields and settling outcome of a precommit-final-content-mismatch', async () => {
+        const records = withRealLogger();
+        const first = await writeIndexedImage('Final/diag-final-a.png');
+        const second = await writeIndexedImage('Final/diag-final-b.png');
+        const outputA = path.resolve(projectDir, 'wm', 'diag-final-a_wm.png');
+        const outputB = path.resolve(projectDir, 'wm', 'diag-final-b_wm.png');
+        // A passes its own pre-commit check; while B is hashed, A is rewritten in place.
+        const hook = hookReadAfter((filePath) => filePath === outputA, (filePath) => filePath === outputB,
+          () => rewriteInPlaceLater(outputA, Buffer.alloc(fs.lstatSync(outputA).size, 0x42)));
+        let failure;
+        try {
+          failure = await processingService.watermarkAssets(project.id, [first.id, second.id], options)
+            .catch((err) => err);
+        } finally {
+          hook.restore();
+        }
+
+        expect(hook.fired).toBe(true);
+        expect(failure).toMatchObject({ code: 'OUTPUT_DESTINATION_CONFLICT' });
+        const [record, ...others] = records.filter((entry) => entry.event === VALIDATION_EVENT);
+        expect(others).toEqual([]);
+        expect(record).toMatchObject({ level: 'warn', kind: 'diagnostic', subsystem: 'processing', projectId: project.id });
+        const { context } = record;
+        expect(context).toMatchObject({
+          operation: 'watermark',
+          assetId: first.id,
+          itemIndex: 0,
+          check: 'precommit-final-content-mismatch',
+          publicationMode: 'descriptor-owned',
+          subcheck: 'fingerprint-changed',
+          identityMatch: 'matched',
+          hashMatch: true,
+          rehash: 'not-needed',
+          settling: 'held-after-hash',
+          compared: ['precommit-after-hash', 'precommit-final-sweep'],
+          failedOutputCount: 1,
+        });
+        expect(context.changedFields).toContain('mtimeNs');
+        const { phases } = context;
+        expect(context.changedFields).toEqual(['size', 'mtimeNs', 'ctimeNs']
+          .filter((key) => phases['precommit-after-hash'][key] !== phases['precommit-final-sweep'][key]));
+        expect(Object.keys(phases)).toEqual([
+          'public-descriptor-final', 'public-post-close', 'precommit-before-hash', 'precommit-identity-before-hash',
+          'precommit-size-check', 'precommit-identity-after-hash', 'precommit-after-hash', 'precommit-final-sweep',
+        ]);
+        expect(context.expected).toMatchObject({ size: phases['precommit-final-sweep'].size });
+        expectSafeContext(context);
+      });
+
+      it('logs an attempted re-hash whose second content validation fails as performed, not settled', async () => {
+        const records = withRealLogger();
+        const source = await writeIndexedImage('Final/diag-rehash-mismatch.png');
+        const output = path.resolve(projectDir, 'wm', 'diag-rehash-mismatch_wm.png');
+        // The first pre-commit hash reads the published bytes; once it closes, the output is
+        // rewritten in place (same size, later mtime), so the post-hash fingerprint moves and
+        // the re-hash reads mismatching bytes.
+        const realOpen = fs.openSync.bind(fs);
+        const realClose = fs.closeSync.bind(fs);
+        let hashDescriptor = null;
+        let hashReads = 0;
+        let fired = false;
+        const openSpy = vi.spyOn(fs, 'openSync').mockImplementation((filePath, flags, ...args) => {
+          const descriptor = realOpen(filePath, flags, ...args);
+          if (typeof filePath === 'string' && flags === 'r' && path.resolve(filePath) === output) {
+            hashReads += 1;
+            if (hashReads === 1) hashDescriptor = descriptor;
+          }
+          return descriptor;
+        });
+        const closeSpy = vi.spyOn(fs, 'closeSync').mockImplementation((descriptor) => {
+          realClose(descriptor);
+          if (!fired && descriptor === hashDescriptor) {
+            fired = true;
+            rewriteInPlaceLater(output, Buffer.alloc(fs.lstatSync(output).size, 0x44));
+          }
+        });
+        let failure;
+        try {
+          failure = await processingService.watermarkAssets(project.id, [source.id], options).catch((err) => err);
+        } finally {
+          closeSpy.mockRestore();
+          openSpy.mockRestore();
+        }
+
+        expect(fired).toBe(true);
+        expect(hashReads).toBe(2);
+        expect(failure).toMatchObject({ code: 'OUTPUT_DESTINATION_CONFLICT' });
+        const [record, ...others] = records.filter((entry) => entry.event === VALIDATION_EVENT);
+        expect(others).toEqual([]);
+        const { context } = record;
+        expect(context).toMatchObject({
+          operation: 'watermark',
+          assetId: source.id,
+          check: 'precommit-content',
+          subcheck: 'hash-mismatch',
+          hashMatch: false,
+          rehash: 'performed',
+          settling: 'not-reached',
+        });
+        expect(context.phases['precommit-after-hash']).toBeDefined();
+        expect(context.phases['precommit-after-rehash']).toBeUndefined();
+        expectSafeContext(context);
+      });
+
+      // Forges the post-hash fingerprint lstat (the second bigint lstat of `output` after a
+      // pre-commit hash descriptor closes; the first is precommit-identity-after-hash) of the
+      // hashes listed in `forge`, keyed by the 1-based hash read.
+      const forgePostHashFingerprint = (output, forge) => {
+        const realOpen = fs.openSync.bind(fs);
+        const realClose = fs.closeSync.bind(fs);
+        const realLstat = fs.lstatSync.bind(fs);
+        const hashDescriptors = new Map();
+        const state = { hashReads: 0, forged: [] };
+        let pending = null;
+        const openSpy = vi.spyOn(fs, 'openSync').mockImplementation((filePath, flags, ...args) => {
+          const descriptor = realOpen(filePath, flags, ...args);
+          if (typeof filePath === 'string' && flags === 'r' && path.resolve(filePath) === output) {
+            state.hashReads += 1;
+            hashDescriptors.set(descriptor, state.hashReads);
+          }
+          return descriptor;
+        });
+        const closeSpy = vi.spyOn(fs, 'closeSync').mockImplementation((descriptor) => {
+          realClose(descriptor);
+          const read = hashDescriptors.get(descriptor);
+          hashDescriptors.delete(descriptor);
+          if (forge[read]) pending = { read, lstats: 0 };
+        });
+        const lstatSpy = vi.spyOn(fs, 'lstatSync').mockImplementation((filePath, ...args) => {
+          const stats = realLstat(filePath, ...args);
+          if (!pending || typeof stats.ino !== 'bigint' || path.resolve(String(filePath)) !== output) return stats;
+          pending.lstats += 1;
+          if (pending.lstats < 2) return stats;
+          const { read } = pending;
+          pending = null;
+          state.forged.push(read);
+          return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, forge[read](stats));
+        });
+        state.restore = () => {
+          lstatSpy.mockRestore();
+          closeSpy.mockRestore();
+          openSpy.mockRestore();
+        };
+        return state;
+      };
+
+      it('logs a post-hash identity rejection after a passing first validation as not settled', async () => {
+        const records = withRealLogger();
+        const source = await writeIndexedImage('Final/diag-after-hash-identity.png');
+        const output = path.resolve(projectDir, 'wm', 'diag-after-hash-identity_wm.png');
+        // identity → size → hash → identity pass; the post-hash fingerprint then sees a foreign inode.
+        const hook = forgePostHashFingerprint(output, { 1: (stats) => ({ ino: stats.ino + 1n }) });
+        let failure;
+        try {
+          failure = await processingService.watermarkAssets(project.id, [source.id], options).catch((err) => err);
+        } finally {
+          hook.restore();
+        }
+
+        expect(hook.forged).toEqual([1]);
+        expect(hook.hashReads).toBe(1);
+        expect(failure).toMatchObject({ code: 'OUTPUT_DESTINATION_CONFLICT' });
+        const [record, ...others] = records.filter((entry) => entry.event === VALIDATION_EVENT);
+        expect(others).toEqual([]);
+        const { context } = record;
+        expect(context).toMatchObject({
+          operation: 'watermark',
+          assetId: source.id,
+          check: 'precommit-identity',
+          subcheck: 'dev-ino-mismatch',
+          identityMatch: 'dev-ino-mismatch',
+          hashMatch: true,
+          rehash: 'not-reached',
+          settling: 'not-reached',
+          compared: ['expected', 'precommit-after-hash'],
+        });
+        expect(context.phases['precommit-identity-after-hash']).not.toHaveProperty('identity');
+        expect(context.phases['precommit-after-hash']).toMatchObject({ identity: 'dev-ino-mismatch' });
+        expect(context.phases['precommit-after-rehash']).toBeUndefined();
+        expectSafeContext(context);
+      });
+
+      it('logs a post-rehash identity rejection after a passing second validation as performed, not settled', async () => {
+        const records = withRealLogger();
+        const source = await writeIndexedImage('Final/diag-after-rehash-identity.png');
+        const output = path.resolve(projectDir, 'wm', 'diag-after-rehash-identity_wm.png');
+        // The first post-hash fingerprint moves (identity held), so the bytes are verified again;
+        // that second validation passes and the post-rehash fingerprint sees a foreign inode.
+        const hook = forgePostHashFingerprint(output, {
+          1: (stats) => ({ mtimeNs: stats.mtimeNs + 1000n, ctimeNs: stats.ctimeNs + 1000n }),
+          2: (stats) => ({ ino: stats.ino + 1n }),
+        });
+        let failure;
+        try {
+          failure = await processingService.watermarkAssets(project.id, [source.id], options).catch((err) => err);
+        } finally {
+          hook.restore();
+        }
+
+        expect(hook.forged).toEqual([1, 2]);
+        expect(hook.hashReads).toBe(2);
+        expect(failure).toMatchObject({ code: 'OUTPUT_DESTINATION_CONFLICT' });
+        const [record, ...others] = records.filter((entry) => entry.event === VALIDATION_EVENT);
+        expect(others).toEqual([]);
+        const { context } = record;
+        expect(context).toMatchObject({
+          operation: 'watermark',
+          assetId: source.id,
+          check: 'precommit-identity',
+          subcheck: 'dev-ino-mismatch',
+          identityMatch: 'dev-ino-mismatch',
+          hashMatch: true,
+          rehash: 'performed',
+          settling: 'not-reached',
+          compared: ['expected', 'precommit-after-rehash'],
+        });
+        expect(context.phases['precommit-after-hash']).not.toHaveProperty('identity');
+        expect(context.phases['precommit-after-rehash']).toMatchObject({ identity: 'dev-ino-mismatch' });
+        expectSafeContext(context);
+      });
+
+      it('logs the copy-source comparison of a publish-create-failed source-changed failure', async () => {
+        const records = withRealLogger();
+        const source = await writeIndexedImage('Final/diag-source-changed.png');
+        const output = path.resolve(projectDir, 'wm', 'diag-source-changed_wm.png');
+        // The stage's read descriptor reports a later mtime/ctime after the copy; its identity,
+        // size, bytes and pathname stat are unchanged.
+        const realOpen = fs.openSync.bind(fs);
+        const realFstat = fs.fstatSync.bind(fs);
+        const stageReads = new Map();
+        let fired = false;
+        const openSpy = vi.spyOn(fs, 'openSync').mockImplementation((filePath, flags, ...args) => {
+          const descriptor = realOpen(filePath, flags, ...args);
+          if (typeof filePath === 'string' && flags === 'r' && inStaging('0.output')(path.resolve(filePath))) {
+            stageReads.set(descriptor, 0);
+          }
+          return descriptor;
+        });
+        const fstatSpy = vi.spyOn(fs, 'fstatSync').mockImplementation((descriptor, ...args) => {
+          const stats = realFstat(descriptor, ...args);
+          if (!stageReads.has(descriptor) || typeof stats.ino !== 'bigint') return stats;
+          const index = stageReads.get(descriptor);
+          stageReads.set(descriptor, index + 1);
+          if (fired || index === 0) return stats;
+          fired = true;
+          return Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, {
+            mtimeNs: stats.mtimeNs + 1000n, ctimeNs: stats.ctimeNs + 1000n,
+          });
+        });
+        let failure;
+        try {
+          failure = await processingService.watermarkAssets(project.id, [source.id], options).catch((err) => err);
+        } finally {
+          fstatSpy.mockRestore();
+          openSpy.mockRestore();
+        }
+
+        expect(fired).toBe(true);
+        expect(failure).toMatchObject({ code: 'FILESYSTEM_OPERATION_FAILED' });
+        expect(failure.recoveryDiagnostics.failures).toContainEqual(expect.objectContaining({
+          artifactRole: 'published-output', check: 'publish-create-failed', proof: 'source-changed',
+        }));
+        expect(fs.existsSync(output)).toBe(false);
+        const [record, ...others] = records.filter((entry) => entry.event === VALIDATION_EVENT);
+        expect(others).toEqual([]);
+        const { context } = record;
+        expect(context).toMatchObject({
+          operation: 'watermark',
+          assetId: source.id,
+          itemIndex: 0,
+          check: 'publish-create-failed',
+          proof: 'source-changed',
+          copySourceRole: 'stage-output',
+          copySource: {
+            phase: 'source-after-copy',
+            failed: ['descriptor-continuity'],
+            identityKnown: true,
+            pathDescriptorIdentity: 'matched',
+            changed: { 'opened-fstat/after-fstat': ['mtimeNs', 'ctimeNs'], 'opened-fstat/after-lstat': [] },
+            involved: ['mtime', 'ctime'],
+            copiedContent: 'matched',
+          },
+        });
+        const { observations } = context.copySource;
+        expect(Object.keys(observations)).toEqual(['before-lstat', 'opened-fstat', 'after-fstat', 'after-lstat']);
+        expect(context.copySource.copiedSize).toBe(observations['opened-fstat'].size);
+        expect(BigInt(observations['after-fstat'].mtimeNs) - BigInt(observations['opened-fstat'].mtimeNs)).toBe(1000n);
+        expectSafeContext(context);
+      });
+    });
   });
 
   describe('ownership provenance and unknown file IDs', () => {

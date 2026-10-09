@@ -8,6 +8,7 @@ import {
   createOwnedFile,
   OWNED_FILE_FAILURE,
   OwnedFileError,
+  ownedFileSourceChangeEvidence,
   removeFileIfExactIdentityMatches,
 } from '../src/services/owned-file.js';
 import { formatGeneratedOutputProvenance } from '../src/services/asset-processing-shared.js';
@@ -541,6 +542,59 @@ describe('owned file primitive', () => {
       expect(failure.reason).toBe(OWNED_FILE_FAILURE.sourceChanged);
       expect(removeFileIfExactIdentityMatches(destinationPath, owned)).toBe(true);
       expect(fs.readFileSync(sourcePath, 'utf8')).toBe('bytes');
+    });
+
+    // WP1 diagnostics: the evidence names the failing comparison and every drifted field.
+    it('reports which after-copy comparison and stat fields decided a source-changed failure', async () => {
+      const sourcePath = path.join(tmpDir, 'source.bin');
+      const destinationPath = path.join(tmpDir, 'destination.bin');
+      fs.writeFileSync(sourcePath, 'bytes');
+      const real = fs.lstatSync(sourcePath, { bigint: true });
+      // Only the descriptor's post-copy metadata moves; identity, size, bytes and path hold.
+      mock(overrideStats({
+        fstat: (filePath, index) => (filePath === sourcePath && index > 0
+          ? { mtimeNs: real.mtimeNs + 1n, ctimeNs: real.ctimeNs + 1n } : undefined),
+      }));
+      const failure = await copyTrustedFileToOwnedFile({
+        sourcePath, destinationPath, expectedSha256: sha256(Buffer.from('bytes')),
+      }).catch((err) => err);
+      expect(failure.reason).toBe(OWNED_FILE_FAILURE.sourceChanged);
+      const evidence = ownedFileSourceChangeEvidence(failure);
+      expect(evidence).toMatchObject({
+        phase: 'source-after-copy',
+        failed: ['descriptor-continuity'],
+        identityKnown: true,
+        pathDescriptorIdentity: 'matched',
+        changed: { 'opened-fstat/after-fstat': ['mtimeNs', 'ctimeNs'], 'opened-fstat/after-lstat': [] },
+        involved: ['mtime', 'ctime'],
+        copiedSize: '5',
+        copiedContent: 'matched',
+      });
+      expect(Object.keys(evidence.observations))
+        .toEqual(['before-lstat', 'opened-fstat', 'after-fstat', 'after-lstat']);
+      expect(evidence.observations['after-fstat'].mtimeNs).toBe(String(real.mtimeNs + 1n));
+      expect(evidence.observations['after-lstat'].mtimeNs).toBe(String(real.mtimeNs));
+      expect(JSON.stringify(evidence)).not.toContain(tmpDir);
+    });
+
+    it('reports a pathname/descriptor identity mismatch when the source is opened', async () => {
+      const sourcePath = path.join(tmpDir, 'source.bin');
+      const destinationPath = path.join(tmpDir, 'destination.bin');
+      fs.writeFileSync(sourcePath, 'bytes');
+      const real = fs.lstatSync(sourcePath, { bigint: true });
+      mock(overrideStats({
+        lstat: (filePath) => (filePath === sourcePath ? { ino: real.ino + 1n } : undefined),
+      }));
+      const failure = await copyTrustedFileToOwnedFile({ sourcePath, destinationPath }).catch((err) => err);
+      expect(failure.reason).toBe(OWNED_FILE_FAILURE.sourceChanged);
+      expect(fs.existsSync(destinationPath)).toBe(false);
+      expect(ownedFileSourceChangeEvidence(failure)).toMatchObject({
+        phase: 'source-open',
+        failed: ['open-continuity'],
+        pathDescriptorIdentity: 'mismatched',
+        changed: { 'before-lstat/opened-fstat': ['ino'] },
+        involved: ['identity'],
+      });
     });
 
     it('refuses a source that is not a regular file', async () => {

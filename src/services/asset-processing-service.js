@@ -23,6 +23,7 @@ import {
   matchesOwnedIdentity,
   OWNED_FILE_FAILURE,
   OwnedFileError,
+  ownedFileSourceChangeEvidence,
   pathMatchesExactIdentity,
   removeFileIfExactIdentityMatches,
   sameExactFileIdentity,
@@ -437,15 +438,23 @@ export function createAssetProcessingService({
   const PROCESSING_ARCHIVE_VALIDATION_FAILED = Object.freeze({
     level: 'warn', name: 'processing.archive.validation.failed', message: 'Archive validation failed before it was recorded.',
   });
+  // Decision-time evidence for a Watermark output publication or pre-commit validation
+  // failure (WP1 diagnostics): the copy-source observations of a source-changed publication,
+  // or the validation trace of a pre-commit check. See watermarkPrecommitFailureContext and
+  // watermarkPublicationFailureContext.
+  const PROCESSING_WATERMARK_VALIDATION_FAILED = Object.freeze({
+    level: 'warn', name: 'processing.watermark.validation.failed',
+    message: 'Watermark output validation failed before it was recorded.',
+  });
 
-  function logArchiveValidationFailure({ operation, projectId, assetCount, onProgress }, failure) {
+  function logValidationFailure(event, { operation, projectId, assetCount, onProgress }, failure) {
     try {
       applicationLogger?.warn?.({
         subsystem: 'processing',
-        event: PROCESSING_ARCHIVE_VALIDATION_FAILED.name,
-        level: PROCESSING_ARCHIVE_VALIDATION_FAILED.level,
+        event: event.name,
+        level: event.level,
         kind: 'diagnostic',
-        message: PROCESSING_ARCHIVE_VALIDATION_FAILED.message,
+        message: event.message,
         projectId,
         ...(typeof onProgress?.jobId === 'string' ? { correlationId: onProgress.jobId } : {}),
         context: { operation, assetCount, ...failure },
@@ -477,7 +486,9 @@ export function createAssetProcessingService({
       return await execute();
     } catch (error) {
       const archiveFailure = archiveValidationFailureOf(error);
-      if (archiveFailure) logArchiveValidationFailure(observed, archiveFailure);
+      if (archiveFailure) logValidationFailure(PROCESSING_ARCHIVE_VALIDATION_FAILED, observed, archiveFailure);
+      const watermarkFailure = watermarkValidationFailureOf(error);
+      if (watermarkFailure) logValidationFailure(PROCESSING_WATERMARK_VALIDATION_FAILED, observed, watermarkFailure);
       // A verified rollback that still carries recovery evidence (Prompt and Watermark attach
       // it to an ordinary failure) is logged like a database rollback.
       const event = error?.code === 'RECOVERY_REQUIRED'
@@ -939,7 +950,7 @@ export function createAssetProcessingService({
     for (const item of items) {
       item.outputProvenance = null;
       const { failure: outputFailure, fingerprint } = ownedPathContentSnapshot(projectDir, item.outputAbsPath,
-        watermarkOutputIdentity(item), { size: item.outputSize, sha256: item.outputSha256 });
+        watermarkOutputIdentity(item), { size: item.outputSize, sha256: item.outputSha256 }, item.validationTrace);
       fingerprints.set(item, fingerprint);
       if (outputFailure) {
         recordRecoveryDiagnostic(stagingDiagnostics(item.staging), () => ({
@@ -950,11 +961,13 @@ export function createAssetProcessingService({
           publicationMode: watermarkPublicationMode(item),
           ...observeDiagnosticArtifact(item.outputAbsPath, watermarkOutputIdentity(item)),
         }));
-        throw new AssetProcessingError(outputFailure === 'unreadable'
+        const error = new AssetProcessingError(outputFailure === 'unreadable'
           ? 'The watermark output could not be read before it was recorded.'
           : 'The watermark output changed before it could be recorded.', {
           code: outputFailure === 'unreadable' ? 'FILESYSTEM_OPERATION_FAILED' : 'OUTPUT_DESTINATION_CONFLICT',
         });
+        noteWatermarkValidationFailure(error, () => watermarkPrecommitFailureContext(item, `precommit-${outputFailure}`, 1));
+        throw error;
       }
       if (item.destinationRemoved) assertWatermarkBackupValid(item, projectDir, 'precommit');
       item.outputProvenance = item.outputBirthtimeNs === null || item.outputBirthtimeNs === undefined
@@ -973,11 +986,13 @@ export function createAssetProcessingService({
   // mismatch is never adopted and a changed output is never recorded.
   function assertWatermarkOutputsUnchanged(items, fingerprints) {
     let owned = true;
+    const changed = [];
     for (const item of items) {
       const change = ownedPathContinuityFailure(item.outputAbsPath, watermarkOutputIdentity(item),
-        fingerprints.get(item));
+        fingerprints.get(item), item.validationTrace);
       if (!change) continue;
       owned = false;
+      changed.push({ item, check: `precommit-final-${OWNED_PATH_FAILURE_CHECKS[change]}` });
       recordRecoveryDiagnostic(stagingDiagnostics(item.staging), () => ({
         assetId: item.asset?.id,
         itemIndex: item.stageIndex,
@@ -988,9 +1003,12 @@ export function createAssetProcessingService({
       }));
     }
     if (!owned) {
-      throw new AssetProcessingError('The watermark output changed before it could be recorded.', {
+      const error = new AssetProcessingError('The watermark output changed before it could be recorded.', {
         code: 'OUTPUT_DESTINATION_CONFLICT',
       });
+      noteWatermarkValidationFailure(error, () => watermarkPrecommitFailureContext(changed[0].item, changed[0].check,
+        changed.length));
+      throw error;
     }
   }
 
@@ -1623,8 +1641,129 @@ export function createAssetProcessingService({
       ?? (error?.cause && typeof error.cause === 'object' ? archiveValidationFailures.get(error.cause) : undefined);
   }
 
+  // WP1 Watermark diagnostics: compact evidence for the FIRST Watermark output whose
+  // publication failed on a source-changed copy or whose pre-commit validation failed, keyed
+  // by the error that reports it and logged once as processing.watermark.validation.failed.
+  // A publication failure is keyed by the primitive's OwnedFileError, which rollback may wrap
+  // (cause) once or twice. Same logger budget as the archive event: the pre-commit form is
+  // the archive context plus rehash/settling; the publication form carries the copy source's
+  // own evidence (ownedFileSourceChangeEvidence, at most ~60 entries).
+  const watermarkValidationFailures = new WeakMap();
+
+  function noteWatermarkValidationFailure(error, build) {
+    if (!error || typeof error !== 'object' || watermarkValidationFailures.has(error)) return;
+    try {
+      const context = build();
+      if (context) watermarkValidationFailures.set(error, context);
+    } catch {
+      // Diagnostics must not alter validation.
+    }
+  }
+
+  function watermarkValidationFailureOf(error) {
+    let current = error;
+    for (let depth = 0; depth < 4 && current && typeof current === 'object'; depth++) {
+      const context = watermarkValidationFailures.get(current);
+      if (context) return context;
+      current = current.cause;
+    }
+    return undefined;
+  }
+
+  // rehash: whether ownedPathContentSnapshot verified the bytes a second time because the
+  // write metadata moved across the first hash (performed | not-needed | not-reached). The
+  // re-verification counts as performed once it recorded any step, whether or not it reached
+  // its post-rehash fingerprint; it is not-needed only when the post-hash identity held.
+  // settling: the outcome of that one settling re-verification: held-after-hash |
+  // held-after-rehash (the post-rehash fingerprint became the baseline) | unstable (it moved
+  // across the re-hash too) | not-reached (an earlier step, or the re-verification itself, decided).
+  // A post-hash phase is recorded before its identity is decided, so it counts as held only
+  // when its recorded identity relation is 'matched'.
+  function watermarkPrecommitFailureContext(item, check, failedOutputCount) {
+    const expected = validationTraceExpected(watermarkOutputIdentity(item), item.outputSize);
+    const {
+      subcheck, identityMatch, hashMatch, changedFields, compared, firstChangedPhase, errorCode, phases, last,
+    } = validationTraceSummary(item.validationTrace, expected);
+    const trace = Array.isArray(item.validationTrace) ? item.validationTrace : [];
+    const afterHashIndex = trace.findIndex((entry) => entry.phase === 'precommit-after-hash');
+    const rehashed = afterHashIndex >= 0
+      && trace.slice(afterHashIndex + 1).some((entry) => entry.phase !== 'precommit-final-sweep');
+    const identityHeldAt = (phase) => trace.some((entry) => entry.phase === phase && entry.identity === 'matched');
+    let settling = 'not-reached';
+    if (subcheck === 'fingerprint-changed' && last.phase === 'precommit-after-rehash') settling = 'unstable';
+    else if (identityHeldAt('precommit-after-rehash')) settling = 'held-after-rehash';
+    else if (!rehashed && identityHeldAt('precommit-after-hash')) settling = 'held-after-hash';
+    return {
+      assetId: item.asset?.id,
+      itemIndex: item.stageIndex,
+      check,
+      publicationMode: watermarkPublicationMode(item),
+      subcheck,
+      identityMatch,
+      hashMatch,
+      rehash: rehashed ? 'performed' : identityHeldAt('precommit-after-hash') ? 'not-needed' : 'not-reached',
+      settling,
+      changedFields,
+      ...(compared ? { compared } : {}),
+      ...(firstChangedPhase ? { firstChangedPhase } : {}),
+      expected,
+      ...(errorCode ? { errorCode } : {}),
+      failedOutputCount,
+      phases,
+    };
+  }
+
+  // A source-changed publication: the copy source is the item's private stage output.
+  function watermarkPublicationFailureContext(item, check, err) {
+    const copySource = ownedFileSourceChangeEvidence(err);
+    if (!copySource) return undefined;
+    return {
+      assetId: item.asset?.id,
+      itemIndex: item.stageIndex,
+      check,
+      proof: err.reason,
+      copySourceRole: 'stage-output',
+      copySource,
+    };
+  }
+
   function archiveValidationFailureContext(plan, check, failedArchiveCount) {
-    const trace = Array.isArray(plan.validationTrace) ? plan.validationTrace : [];
+    const expected = validationTraceExpected(archiveOutputIdentity(plan), plan.outputStats?.size);
+    const {
+      subcheck, identityMatch, hashMatch, changedFields, compared, firstChangedPhase, errorCode, phases,
+    } = validationTraceSummary(plan.validationTrace, expected);
+    return {
+      itemIndex: plan.stageIndex,
+      archiveKind: plan.kind,
+      ...(plan.containerFormat ? { container: plan.containerFormat } : {}),
+      check,
+      subcheck,
+      identityMatch,
+      hashMatch,
+      changedFields,
+      ...(compared ? { compared } : {}),
+      ...(firstChangedPhase ? { firstChangedPhase } : {}),
+      expected,
+      ...(errorCode ? { errorCode } : {}),
+      failedArchiveCount,
+      phases,
+    };
+  }
+
+  // The owned identity and expected size a validation trace is compared against, as decimal strings.
+  function validationTraceExpected(expectedIdentity, size) {
+    return {
+      ...(expectedIdentity ? { dev: String(expectedIdentity.dev), ino: String(expectedIdentity.ino) } : {}),
+      ...(expectedIdentity?.birthtimeNs !== undefined ? { birthtimeNs: String(expectedIdentity.birthtimeNs) } : {}),
+      ...(size !== undefined && size !== null ? { size: String(size) } : {}),
+    };
+  }
+
+  // The deciding comparison of a pre-commit validation trace (ownedPathContentSnapshot and
+  // ownedPathContinuityFailure record it), shared by the archive and Watermark validation
+  // failure events. Reads only the recorded values; never re-reads the path.
+  function validationTraceSummary(validationTrace, expected) {
+    const trace = Array.isArray(validationTrace) ? validationTrace : [];
     const phases = {};
     let hashMatch = 'not-evaluated';
     let errorCode;
@@ -1642,12 +1781,6 @@ export function createAssetProcessingService({
       const { identity, ...values } = fields;
       phases[phase] = identity && identity !== 'matched' ? { ...values, identity } : values;
     }
-    const expectedIdentity = archiveOutputIdentity(plan);
-    const expected = {
-      ...(expectedIdentity ? { dev: String(expectedIdentity.dev), ino: String(expectedIdentity.ino) } : {}),
-      ...(expectedIdentity?.birthtimeNs !== undefined ? { birthtimeNs: String(expectedIdentity.birthtimeNs) } : {}),
-      ...(plan.outputStats?.size !== undefined ? { size: String(plan.outputStats.size) } : {}),
-    };
 
     // The deciding observation is the last one the validation recorded.
     const last = trace[trace.length - 1] ?? {};
@@ -1680,9 +1813,9 @@ export function createAssetProcessingService({
       changedFields = differing(expected, last, ['dev', 'ino', 'birthtimeNs']);
     } else {
       // Identity held: the write fingerprint {size, mtimeNs, ctimeNs} moved from its post-hash
-      // baseline: at the final sweep, from the one the archive's bytes were verified under
-      // (after the re-hash when there was one); at the re-hash, from the first post-hash one.
-      // The pre-hash observation stays in `phases` but is never the rejected comparison.
+      // baseline: at the final sweep, from the one the bytes were verified under (after the
+      // re-hash when there was one); at the re-hash, from the first post-hash one. The
+      // pre-hash observation stays in `phases` but is never the rejected comparison.
       subcheck = 'fingerprint-changed';
       const baseline = last.phase === 'precommit-final-sweep' && phases['precommit-after-rehash']
         ? 'precommit-after-rehash' : 'precommit-after-hash';
@@ -1706,22 +1839,7 @@ export function createAssetProcessingService({
       for (const key of TRACE_STAT_FIELDS) if (entry[key] !== undefined) seen[key] = entry[key];
     }
 
-    return {
-      itemIndex: plan.stageIndex,
-      archiveKind: plan.kind,
-      ...(plan.containerFormat ? { container: plan.containerFormat } : {}),
-      check,
-      subcheck,
-      identityMatch,
-      hashMatch,
-      changedFields,
-      ...(compared ? { compared } : {}),
-      ...(firstChangedPhase ? { firstChangedPhase } : {}),
-      expected,
-      ...(errorCode ? { errorCode } : {}),
-      failedArchiveCount,
-      phases,
-    };
+    return { subcheck, identityMatch, hashMatch, changedFields, compared, firstChangedPhase, errorCode, phases, last };
   }
 
   // Rollback of the public archives, per plan: a created archive is removed only while its
@@ -2799,6 +2917,7 @@ export function createAssetProcessingService({
   // never overwrites or adopts what appeared.
   async function publishWatermarkOutput(item, projectDir) {
     item.outputProvenance = null;
+    item.validationTrace = [];
     let removeDestination;
     revalidatePublicationTarget(projectDir, item.outputAbsPath, 'OUTPUT_PATH_UNSAFE', 'Output');
     if (item.destinationAsset) {
@@ -2855,8 +2974,14 @@ export function createAssetProcessingService({
       });
       const owned = publication.value;
       item.outputBirthtimeNs = durableDescriptorBirthtimeNs(owned);
+      // The creating descriptor's final stat (dev/ino, birth time, ctime) and hashed size:
+      // the baseline later pre-commit path observations are read against (diagnostics only).
+      traceStats(item.validationTrace, 'public-descriptor-final', {
+        ...owned.exactIdentity, size: owned.content?.size, birthtimeNs: owned.birthtimeNs, ctimeNs: owned.ctimeNs,
+      });
       const outputStats = fs.lstatSync(item.outputAbsPath);
-      if (!pathMatchesExactIdentity(item.outputAbsPath, watermarkOutputIdentity(item))) {
+      if (!tracedPathMatchesExactIdentity(item.outputAbsPath, watermarkOutputIdentity(item), item.validationTrace,
+        'public-post-close')) {
         throw new OwnedFileError(OWNED_FILE_FAILURE.pathnameChanged, 'The published watermark output changed.');
       }
       item.outputStats = outputStats;
@@ -2877,6 +3002,11 @@ export function createAssetProcessingService({
         // The created public path stays unresolved: never residue, never removed here.
         ...(item.outputCreateUnclaimed ? { cleanup: 'recovery-critical' } : {}),
       }));
+      const copyFailure = [err, err?.cause].find((candidate) => ownedFileSourceChangeEvidence(candidate));
+      if (copyFailure) {
+        noteWatermarkValidationFailure(copyFailure, () => watermarkPublicationFailureContext(item,
+          item.outputCreateUnclaimed ? 'public-output-identity-inspection-failed' : 'publish-create-failed', copyFailure));
+      }
       if (err instanceof AssetProcessingError) throw err;
       if (err?.code === 'EEXIST') {
         throw new AssetProcessingError('A watermark output destination appeared during processing.', {
