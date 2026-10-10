@@ -125,6 +125,16 @@
     </div>
     {% endif %}
   </div>
+  {% if not release %}
+  <label class="field field--checkbox release-no-set-date-field" for="noSetReleaseDate">
+    <input type="checkbox" id="noSetReleaseDate" name="noSetReleaseDate" value="1" aria-controls="plannedDate plannedTime"{% if values.noSetReleaseDate %} checked{% endif %}>
+    <span>No set release date</span>
+  </label>
+  {# Schedule set aside while "No set release date" is checked; the client enables these only when it holds a draft. #}
+  {% set retainedSchedule = values.retainedSchedule %}
+  <input type="hidden" name="retainedPlannedDate" value="{{ retainedSchedule.plannedDate if retainedSchedule else '' }}" data-release-schedule-retained{% if not retainedSchedule %} disabled{% endif %}>
+  <input type="hidden" name="retainedPlannedTime" value="{{ retainedSchedule.plannedTime if retainedSchedule else '' }}" data-release-schedule-retained{% if not retainedSchedule %} disabled{% endif %}>
+  {% endif %}
   </div>
 </div>
 

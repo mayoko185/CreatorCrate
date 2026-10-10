@@ -19,7 +19,7 @@
     </div>
   {% endif %}
 
-  <form id="release-form" method="post" action="{{ submitUrl }}" class="project-form" data-release-create-fresh="{{ 'true' if isFreshCreate else 'false' }}" novalidate>
+  <form id="release-form" method="post" action="{{ submitUrl }}" class="project-form" data-release-create-fresh="{{ 'true' if isFreshCreate else 'false' }}" data-release-schedule-defaults="{{ 'fresh' if scheduleDefaulted else 'keep' }}" novalidate>
     <input type="hidden" name="_csrf" value="{{ _csrf }}">
     {% for assetId in values.selectedAssetIds %}
       <input type="hidden" name="selectedAssetIds" value="{{ assetId }}">

@@ -3,6 +3,7 @@ import { enhanceProjectOptionMutations } from './client/settings-project-option-
 import { enhanceProjectOptionReorder } from './client/settings-project-option-reorder.js';
 import { enhanceReleaseSignatureManagers } from './client/release-signature-manager.js';
 import { enhanceReleaseSignatures } from './client/release-signatures.js';
+import { enhanceReleaseScheduleDefaults } from './client/release-schedule-defaults.js';
 import {
   enhancePreview,
   enhancePreviewMedia,
@@ -162,6 +163,7 @@ export {
   enhanceProjectOptionReorder,
   enhanceReleaseSignatureManagers,
   enhanceReleaseSignatures,
+  enhanceReleaseScheduleDefaults,
   enhanceProjectOptionColorPickers,
   enhanceDefaultsFetchSave,
   enhanceAssetCategoryPreferencesFetchSave,
@@ -291,6 +293,7 @@ if (typeof document !== 'undefined') {
     enhanceProjectAssetsDefaultsFetchSave(document);
     enhanceAppDialogs(document);
     enhanceAssetEditDialog(document);
+    enhanceReleaseScheduleDefaults(document);
     enhanceNoteDialogUnsavedChanges(document);
     enhanceBookHierarchyReorder(document);
     enhanceLogViewerAutoRefresh(document);

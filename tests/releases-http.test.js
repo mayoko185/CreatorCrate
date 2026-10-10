@@ -14,6 +14,7 @@ import { createReleaseRepository } from '../src/data/release-repository.js';
 import { createReleaseService } from '../src/services/release-service.js';
 import { getLocalTodayIso } from '../src/util/date.js';
 import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
+import { buildCreateReleaseFormModel } from '../src/routes/releases.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
@@ -2041,6 +2042,318 @@ describe('release HTTP workflow', () => {
 
       expect(res.text).toContain('Invalid asset selection format.');
       expect(releaseRepository.findByProjectId(projectId, { includeArchived: true })).toEqual([]);
+    });
+  });
+
+  describe('No set release date create submission', () => {
+    function postCreate(fields) {
+      let req = agent
+        .post('/releases')
+        .send('_csrf=' + encodeURIComponent(csrfToken));
+      for (const field of fields) req = req.send(field);
+      return req.set('Content-Type', 'application/x-www-form-urlencoded');
+    }
+
+    function renderedScheduleValues(html) {
+      return {
+        plannedDate: html.match(/id="plannedDate" name="plannedDate" value="([^"]*)"/)?.[1],
+        plannedTime: html.match(/id="plannedTime" name="plannedTime" value="([^"]*)"/)?.[1],
+      };
+    }
+
+    it('persists NULL planned date/time and ignores stale or invalid schedule fields', async () => {
+      const projectId = await createTestProject('Undated Release Project');
+
+      const res = await postCreate([
+        `projectId=${projectId}`,
+        'title=Undated+Release',
+        'noSetReleaseDate=1',
+        'plannedDate=not-a-date',
+        'plannedTime=99:99',
+        'retainedPlannedDate=also-not-a-date',
+        'retainedPlannedTime=25:61',
+      ]).expect(302);
+
+      const releaseId = Number(res.headers.location.split('/')[2]);
+      expect(res.headers.location).toBe(`/releases/${releaseId}`);
+      expect(releaseRepository.findById(releaseId)).toMatchObject({
+        planned_date: null,
+        planned_time: null,
+      });
+    });
+
+    it('persists NULL planned date/time for selected-assets creation', async () => {
+      const projectId = await createTestProject('Undated Selected Project');
+      const asset = insertAssetDirect(db, projectId, 'undated.png');
+
+      const res = await postCreate([
+        `projectId=${projectId}`,
+        'title=Undated+Selected+Release',
+        'releaseCreateFlow=selected-assets',
+        'noSetReleaseDate=1',
+        'plannedDate=2026-12-01',
+        'plannedTime=09:45',
+        'retainedPlannedDate=2026-12-02',
+        'retainedPlannedTime=10:15',
+        `selectedAssetIds=${asset.id}`,
+      ]).expect(302);
+
+      const releaseId = Number(res.headers.location.split('/')[2]);
+      expect(res.headers.location).toBe(`/releases/${releaseId}/assets`);
+      expect(releaseRepository.findById(releaseId)).toMatchObject({
+        planned_date: null,
+        planned_time: null,
+      });
+      expect(getReleaseAssets(db, releaseId).map(({ asset_id }) => asset_id)).toEqual([asset.id]);
+    });
+
+    it('keeps explicit schedules when unchecked or when the field is not exactly "1"', async () => {
+      const projectId = await createTestProject('Scheduled Release Project');
+
+      for (const marker of [null, 'noSetReleaseDate=', 'noSetReleaseDate=on', 'noSetReleaseDate=true']) {
+        const fields = [`projectId=${projectId}`, 'title=Scheduled+Release', 'plannedDate=2026-11-20', 'plannedTime=14:30'];
+        if (marker) fields.push(marker);
+        const res = await postCreate(fields).expect(302);
+        const releaseId = Number(res.headers.location.split('/')[2]);
+        expect(releaseRepository.findById(releaseId)).toMatchObject({
+          planned_date: '2026-11-20',
+          planned_time: '14:30',
+        });
+      }
+    });
+
+    it('still validates schedule fields when unchecked', async () => {
+      const projectId = await createTestProject('Unchecked Invalid Schedule Project');
+
+      const res = await postCreate([
+        `projectId=${projectId}`,
+        'title=Invalid+Schedule',
+        'plannedDate=not-a-date',
+      ]).expect(422);
+
+      expect(res.text).toContain('Planned date must be a valid date (YYYY-MM-DD).');
+      expect(releaseRepository.findByProjectId(projectId, { includeArchived: true })).toEqual([]);
+    });
+
+    it('validation rerender keeps a checked submission undated', async () => {
+      const projectId = await createTestProject('Undated Rerender Project');
+
+      const res = await postCreate([
+        `projectId=${projectId}`,
+        'title=',
+        'noSetReleaseDate=1',
+        'plannedDate=2026-12-01',
+        'plannedTime=09:45',
+      ]).expect(422);
+
+      expect(res.text).toContain('Title is required');
+      expect(renderedScheduleValues(res.text)).toEqual({ plannedDate: '', plannedTime: '' });
+      expect(selectedProjectRadioValue(res.text)).toBe(String(projectId));
+      expect(releaseRepository.findByProjectId(projectId, { includeArchived: true })).toEqual([]);
+    });
+
+    it('validation rerender keeps intentionally blank fields blank and explicit schedules intact', async () => {
+      const projectId = await createTestProject('Blank Rerender Project');
+
+      const blank = await postCreate([
+        `projectId=${projectId}`,
+        'title=',
+        'plannedDate=',
+        'plannedTime=',
+      ]).expect(422);
+      expect(renderedScheduleValues(blank.text)).toEqual({ plannedDate: '', plannedTime: '' });
+
+      const explicit = await postCreate([
+        `projectId=${projectId}`,
+        'title=',
+        'plannedDate=2026-11-20',
+        'plannedTime=14:30',
+      ]).expect(422);
+      expect(renderedScheduleValues(explicit.text)).toEqual({ plannedDate: '2026-11-20', plannedTime: '14:30' });
+    });
+
+    function retainedDraftInputs(html) {
+      return ['retainedPlannedDate', 'retainedPlannedTime'].map((name) => (
+        html.match(new RegExp(`<input type="hidden" name="${name}"[^>]*>`))?.[0] || ''
+      ));
+    }
+
+    function retainedDraft(html) {
+      const [date, time] = retainedDraftInputs(html);
+      if (!date || !time) return undefined;
+      if (date.includes(' disabled') || time.includes(' disabled')) return null;
+      return {
+        plannedDate: date.match(/value="([^"]*)"/)?.[1],
+        plannedTime: time.match(/value="([^"]*)"/)?.[1],
+      };
+    }
+
+    it('checked validation rerender echoes the retained schedule draft as form state', async () => {
+      const projectId = await createTestProject('Retained Draft Project');
+      const rerender = (fields) => postCreate([`projectId=${projectId}`, 'title=', ...fields]).expect(422);
+
+      const custom = await rerender(['noSetReleaseDate=1', 'retainedPlannedDate=2027-02-14', 'retainedPlannedTime=18:45']);
+      expect(noSetDateCheckbox(custom.text)).toContain(' checked');
+      expect(renderedScheduleValues(custom.text)).toEqual({ plannedDate: '', plannedTime: '' });
+      expect(retainedDraft(custom.text)).toEqual({ plannedDate: '2027-02-14', plannedTime: '18:45' });
+      expect(selectedProjectRadioValue(custom.text)).toBe(String(projectId));
+
+      const blank = await rerender(['noSetReleaseDate=1', 'retainedPlannedDate=', 'retainedPlannedTime=']);
+      expect(retainedDraft(blank.text)).toEqual({ plannedDate: '', plannedTime: '' });
+
+      const partial = await rerender(['noSetReleaseDate=1', 'retainedPlannedDate=2027-02-14', 'retainedPlannedTime=']);
+      expect(retainedDraft(partial.text)).toEqual({ plannedDate: '2027-02-14', plannedTime: '' });
+
+      // No draft held, an incomplete draft, or an unchecked form renders the
+      // fields disabled and empty.
+      expect(retainedDraft((await rerender(['noSetReleaseDate=1'])).text)).toBeNull();
+      expect(retainedDraft((await rerender(['noSetReleaseDate=1', 'retainedPlannedDate=2027-02-14'])).text)).toBeNull();
+      const unchecked = await rerender(['plannedDate=2026-11-20', 'plannedTime=14:30', 'retainedPlannedDate=2027-02-14', 'retainedPlannedTime=18:45']);
+      expect(retainedDraft(unchecked.text)).toBeNull();
+      expect(renderedScheduleValues(unchecked.text)).toEqual({ plannedDate: '2026-11-20', plannedTime: '14:30' });
+      retainedDraftInputs(unchecked.text).forEach((input) => expect(input).toContain('value=""'));
+
+      // Values are escaped and length-capped.
+      const hostile = await rerender(['noSetReleaseDate=1', `retainedPlannedDate=${encodeURIComponent('"><b>x')}`, `retainedPlannedTime=${'9'.repeat(100)}`]);
+      expect(hostile.text).not.toContain('"><b>x');
+      expect(retainedDraft(hostile.text)).toEqual({ plannedDate: '&quot;&gt;&lt;b&gt;x', plannedTime: '9'.repeat(32) });
+      expect(releaseRepository.findByProjectId(projectId, { includeArchived: true })).toEqual([]);
+    });
+
+    it('selected-assets checked rerender echoes the retained draft and keeps its handoff', async () => {
+      const projectId = await createTestProject('Retained Selected Project');
+      const asset = insertAssetDirect(db, projectId, 'retained.png');
+
+      const res = await postCreate([
+        `projectId=${projectId}`,
+        'title=',
+        'releaseCreateFlow=selected-assets',
+        'noSetReleaseDate=1',
+        'retainedPlannedDate=2027-02-14',
+        'retainedPlannedTime=',
+        `selectedAssetIds=${asset.id}`,
+      ]).expect(422);
+
+      const createForm = res.text.match(/<form id="release-create-form"[\s\S]*?<\/form>/)?.[0] || '';
+      expect(createForm).toContain(`name="selectedAssetIds" value="${asset.id}"`);
+      expect(noSetDateCheckbox(createForm)).toContain(' checked');
+      expect(retainedDraft(createForm)).toEqual({ plannedDate: '2027-02-14', plannedTime: '' });
+    });
+
+    function noSetDateCheckbox(html) {
+      return html.match(/<input type="checkbox" id="noSetReleaseDate"[^>]*>/)?.[0] || '';
+    }
+
+    function scheduleDefaultsMarker(html, formId) {
+      return html.match(new RegExp(`<form id="${formId}"[^>]*data-release-schedule-defaults="([^"]*)"`))?.[1];
+    }
+
+    it('renders the checkbox in the New Release scheduling section only, never in Edit Release', async () => {
+      const projectId = await createTestProject('Checkbox Placement Project');
+      const release = releaseRepository.create({ projectId, title: 'Checkbox edit release', description: '', notes: '' });
+
+      const list = await agent.get('/releases').expect(200);
+      const createForm = list.text.match(/<form id="release-create-form"[\s\S]*?<\/form>/)?.[0] || '';
+      const scheduling = createForm.match(/<h3>Scheduling<\/h3>[\s\S]*?<h3>Platforms<\/h3>/)?.[0] || '';
+      expect(noSetDateCheckbox(scheduling)).toContain('name="noSetReleaseDate" value="1"');
+      expect(noSetDateCheckbox(scheduling)).not.toContain('checked');
+      expect(scheduling).toMatch(/<label class="field field--checkbox release-no-set-date-field" for="noSetReleaseDate">[\s\S]*?<span>No set release date<\/span>\s*<\/label>/);
+      expect(scheduleDefaultsMarker(list.text, 'release-create-form')).toBe('fresh');
+
+      expect(retainedDraft(createForm)).toBeNull();
+
+      const standalone = await agent.get('/releases/new').expect(200);
+      expect(noSetDateCheckbox(standalone.text)).toContain('name="noSetReleaseDate" value="1"');
+      expect(retainedDraft(standalone.text)).toBeNull();
+      const prefilledDraft = await agent.get('/releases/new?noSetReleaseDate=1&retainedPlannedDate=2027-02-14&retainedPlannedTime=18:45').expect(200);
+      expect(retainedDraft(prefilledDraft.text)).toBeNull();
+      expect(scheduleDefaultsMarker(standalone.text, 'release-form')).toBe('fresh');
+
+      const detail = await agent.get(`/releases/${release.id}`).expect(200);
+      const editForm = detail.text.match(/<form id="release-edit-form"[\s\S]*?<\/form>/)?.[0] || '';
+      expect(editForm).toContain('name="plannedDate"');
+      expect(editForm).not.toContain('noSetReleaseDate');
+      expect(editForm).not.toContain('retainedPlanned');
+      expect(editForm).not.toContain('data-release-schedule-defaults');
+    });
+
+    it('marks explicit prefills and validation drafts so the client keeps their schedules', async () => {
+      const projectId = await createTestProject('Schedule Marker Project');
+
+      const prefilled = await agent.get('/releases/new?plannedDate=2026-11-20&plannedTime=14:30').expect(200);
+      expect(scheduleDefaultsMarker(prefilled.text, 'release-form')).toBe('keep');
+      expect(renderedScheduleValues(prefilled.text)).toEqual({ plannedDate: '2026-11-20', plannedTime: '14:30' });
+
+      const checked = await postCreate([`projectId=${projectId}`, 'title=', 'noSetReleaseDate=1']).expect(422);
+      expect(scheduleDefaultsMarker(checked.text, 'release-form')).toBe('keep');
+      expect(noSetDateCheckbox(checked.text)).toContain(' checked');
+
+      const unchecked = await postCreate([`projectId=${projectId}`, 'title=', 'plannedDate=', 'plannedTime=']).expect(422);
+      expect(scheduleDefaultsMarker(unchecked.text, 'release-form')).toBe('keep');
+      expect(noSetDateCheckbox(unchecked.text)).not.toContain('checked');
+    });
+
+    it('keeps explicitly blank schedule query prefills instead of defaulting them', async () => {
+      await createTestProject('Blank Prefill Project');
+      const prefill = async (query) => {
+        const res = await agent.get(`/releases/new?${query}`).expect(200);
+        return { marker: scheduleDefaultsMarker(res.text, 'release-form'), values: renderedScheduleValues(res.text) };
+      };
+
+      expect(await prefill('plannedDate=2027-02-14&plannedTime=')).toEqual({
+        marker: 'keep', values: { plannedDate: '2027-02-14', plannedTime: '' },
+      });
+      expect(await prefill('plannedDate=&plannedTime=18:45')).toEqual({
+        marker: 'keep', values: { plannedDate: '', plannedTime: '18:45' },
+      });
+      expect(await prefill('plannedDate=&plannedTime=')).toEqual({
+        marker: 'keep', values: { plannedDate: '', plannedTime: '' },
+      });
+      expect(await prefill('plannedDate=2026-11-20&plannedTime=14:30')).toEqual({
+        marker: 'keep', values: { plannedDate: '2026-11-20', plannedTime: '14:30' },
+      });
+
+      // No scheduling fields at all: placeholders the client replaces.
+      const fresh = await prefill('title=Fresh');
+      expect(fresh.marker).toBe('fresh');
+      expect(fresh.values.plannedDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(fresh.values.plannedTime).toMatch(/^\d{2}:\d{2}$/);
+    });
+
+    it('exposes the checkbox state on the create form model for fresh and rerendered forms', () => {
+      const projectService = { list: () => ({ rows: [] }), findById: () => null };
+      const build = (values, isFreshCreate) => buildCreateReleaseFormModel({
+        appName: 'CreatorCrate',
+        projectService,
+        values,
+        isFreshCreate,
+      });
+
+      const fresh = build({}, true);
+      expect(fresh.noSetReleaseDate).toBe(false);
+      expect(fresh.values.noSetReleaseDate).toBe(false);
+      expect(fresh.values.plannedDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(fresh.values.plannedTime).toMatch(/^\d{2}:\d{2}$/);
+      expect(fresh.scheduleDefaulted).toBe(true);
+      expect(build({ plannedDate: '2026-11-20' }, true).scheduleDefaulted).toBe(false);
+      expect(build({ plannedDate: '' }, true)).toMatchObject({ scheduleDefaulted: false, values: { plannedDate: '' } });
+      expect(build({ noSetReleaseDate: '1' }, true).scheduleDefaulted).toBe(false);
+
+      const checked = build({ noSetReleaseDate: '1', plannedDate: '2026-12-01', plannedTime: '09:45' }, false);
+      expect(checked.noSetReleaseDate).toBe(true);
+      expect(checked.values).toMatchObject({ noSetReleaseDate: true, plannedDate: '', plannedTime: '' });
+      expect(checked.scheduleDefaulted).toBe(false);
+      expect(checked.values.retainedSchedule).toBeNull();
+      expect(checked.resetValues.noSetReleaseDate).toBe(false);
+      expect(checked.resetValues.retainedSchedule).toBeNull();
+
+      const retained = build({ noSetReleaseDate: '1', retainedPlannedDate: '2027-02-14', retainedPlannedTime: '' }, false);
+      expect(retained.values.retainedSchedule).toEqual({ plannedDate: '2027-02-14', plannedTime: '' });
+      expect(retained.values).not.toHaveProperty('retainedPlannedDate');
+      expect(retained.values).not.toHaveProperty('retainedPlannedTime');
+      expect(build({ noSetReleaseDate: '1', retainedPlannedDate: '2027-02-14', retainedPlannedTime: '' }, true)
+        .values.retainedSchedule).toBeNull();
+      expect(checked.resetValues.plannedDate).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     });
   });
 

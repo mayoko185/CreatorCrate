@@ -10669,7 +10669,8 @@
 }
 .app-dialog--processing .processing-watermark-choice-control input[type='checkbox'],
 .app-dialog--processing .processing-watermark-choice-control input[type='radio'],
-.release-notification-channel-choice input[type='checkbox'] {
+.release-notification-channel-choice input[type='checkbox'],
+.release-no-set-date-field input[type='checkbox'] {
   appearance: none;
   inline-size: 1rem;
   block-size: 1rem;
@@ -10680,7 +10681,8 @@
   background: var(--surface);
 }
 .app-dialog--processing .processing-watermark-choice-control input:is([type='checkbox'], [type='radio']):checked,
-.release-notification-channel-choice input[type='checkbox']:checked {
+.release-notification-channel-choice input[type='checkbox']:checked,
+.release-no-set-date-field input[type='checkbox']:checked {
   border-color: var(--accent);
   background: var(--accent);
   box-shadow: inset 0 0 0 0.2rem var(--surface);
@@ -11250,16 +11252,19 @@
   cursor: pointer;
 }
 
-.release-notification-channel-choice input[type='checkbox'] {
+.release-notification-channel-choice input[type='checkbox'],
+.release-no-set-date-field input[type='checkbox'] {
   border-color: var(--border-strong);
   cursor: pointer;
 }
 
-.release-notification-channel-choice input[type='checkbox']:hover {
+.release-notification-channel-choice input[type='checkbox']:hover,
+.release-no-set-date-field input[type='checkbox']:hover {
   border-color: var(--accent);
 }
 
-.release-notification-channel-choice input[type='checkbox']:focus-visible {
+.release-notification-channel-choice input[type='checkbox']:focus-visible,
+.release-no-set-date-field input[type='checkbox']:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }

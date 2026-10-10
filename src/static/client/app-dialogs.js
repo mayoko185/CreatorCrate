@@ -930,6 +930,14 @@ function appDialogBindForm(state) {
 }
 
 function appDialogOpen(state, opener = null, openerAllowsFallback = true) {
+  // An accepted close whose native close event is still queued must finish
+  // (reset, onClose, focus) before the next lifecycle begins; its late event
+  // then arrives stale and is ignored by the close listener. Reopening
+  // supersedes that close's return navigation, as it always has.
+  if (state.open && !state.dialog.open) {
+    state.pendingReturnLocation = null;
+    appDialogFinishClose(state);
+  }
   state.lifecycle += 1;
   state.closeRequest = null;
   state.backdropPointer = null;
@@ -942,7 +950,16 @@ function appDialogOpen(state, opener = null, openerAllowsFallback = true) {
   state.onOpen?.();
   try {
     if (typeof state.dialog.showModal === 'function') {
-      if (state.dialog.open) state.dialog.close?.();
+      if (state.dialog.open) {
+        // Re-showing an already-open (e.g. server-rendered) dialog as modal is
+        // not a dismissal and must not finish the lifecycle or reset drafts.
+        state.reshowing = true;
+        try {
+          state.dialog.close?.();
+        } finally {
+          state.reshowing = false;
+        }
+      }
       state.dialog.showModal();
     } else {
       state.dialog.setAttribute?.('open', '');
@@ -965,7 +982,14 @@ function appDialogBind(state) {
   state.form = state.dialog.querySelector?.(APP_DIALOG_FORM_SELECTOR) || null;
   appDialogBindForm(state);
   appDialogBindLiveAssetBrowserDefault(state);
-  state.dialog.addEventListener?.('close', () => appDialogFinishClose(state));
+  state.dialog.addEventListener?.('close', () => {
+    // Only a genuine close that has not been finalized completes the
+    // lifecycle. Events from re-showing an open dialog, or from a close that
+    // appDialogOpen() already finalized before a rapid reopen, arrive while
+    // the dialog is open again or after state.open was cleared.
+    if (state.reshowing || state.dialog.open || !state.open) return;
+    appDialogFinishClose(state);
+  });
   state.dialog.addEventListener?.('cancel', (event) => {
     event.preventDefault?.();
     if (appDialogCloseOpenDropdown(state)) return;
@@ -1055,6 +1079,7 @@ export function enhanceAppDialogs(scope = globalThis.document) {
       openerAllowsFallback: true,
       savedValues: null,
       open: false,
+      reshowing: false,
       submitting: false,
       lifecycle: 0,
       closeRequest: null,

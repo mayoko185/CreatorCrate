@@ -47,6 +47,12 @@ const RELEASES_NOTICES = Object.freeze({
   defaultsSaved: 'Releases defaults saved successfully.',
 });
 const SELECTED_ASSETS_RELEASE_CREATE_FLOW = 'selected-assets';
+const NO_SET_RELEASE_DATE_VALUE = '1';
+const RETAINED_SCHEDULE_FIELDS = Object.freeze({
+  plannedDate: 'retainedPlannedDate',
+  plannedTime: 'retainedPlannedTime',
+});
+const RETAINED_SCHEDULE_MAX_LENGTH = 32;
 
 function readReleaseEditReturnLocation(candidate) {
   if (!isSafeRedirectTarget(candidate)) return '';
@@ -269,6 +275,12 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
       }
 
       const input = { ...parseReleaseInput(body), publishedDate: null };
+      // "No set release date" wins over any stale date/time fields so the
+      // service validation never rejects values the user opted out of.
+      if (isNoSetReleaseDateSelected(body)) {
+        input.plannedDate = null;
+        input.plannedTime = null;
+      }
       if (selectedAssetsFlow) {
         const normalizedSelection = normalizeSelectedAssetIds(body.selectedAssetIds);
         if (!normalizedSelection.valid) {
@@ -1365,17 +1377,48 @@ function shouldRedirectToSavedReleaseManagementDefaults(
   });
 }
 
-function buildNewReleaseFormValues(rawQuery) {
+function isNoSetReleaseDateSelected(source) {
+  return source?.noSetReleaseDate === NO_SET_RELEASE_DATE_VALUE;
+}
+
+// The schedule the client set aside when "No set release date" was checked.
+// It is form state only: echoed back on a checked validation rerender so
+// unchecking can restore it, and never read when creating a release. A draft
+// exists only when both fields arrive as strings; either may be blank.
+function readRetainedScheduleDraft(source) {
+  const plannedDate = source?.[RETAINED_SCHEDULE_FIELDS.plannedDate];
+  const plannedTime = source?.[RETAINED_SCHEDULE_FIELDS.plannedTime];
+  if (typeof plannedDate !== 'string' || typeof plannedTime !== 'string') return null;
+  return {
+    plannedDate: plannedDate.slice(0, RETAINED_SCHEDULE_MAX_LENGTH),
+    plannedTime: plannedTime.slice(0, RETAINED_SCHEDULE_MAX_LENGTH),
+  };
+}
+
+// Schedule fields that were supplied (query prefill or submitted draft) are
+// kept exactly as sent, including intentional blanks; only fields that were
+// never supplied fall back to defaults.
+function buildNewReleaseFormValues(rawQuery, { isFreshCreate = true } = {}) {
   const query = rawQuery && typeof rawQuery === 'object' && !Array.isArray(rawQuery)
     ? omitLegacyStatusField(rawQuery)
     : {};
+  // Raw retained fields never pass through as ordinary form values.
+  Object.values(RETAINED_SCHEDULE_FIELDS).forEach((field) => delete query[field]);
   const now = new Date();
+  const noSetReleaseDate = isNoSetReleaseDateSelected(query);
+  const scheduleValue = (field, fallback) => {
+    if (noSetReleaseDate) return '';
+    if (Object.hasOwn(query, field)) return query[field] ?? '';
+    return fallback;
+  };
 
   const values = {
     ...query,
     selectedPlatforms: readSubmittedSocialPlatforms(query.selectedPlatforms),
-    plannedDate: query.plannedDate || formatLocalDate(now),
-    plannedTime: query.plannedTime || formatLocalTime(now),
+    noSetReleaseDate,
+    retainedSchedule: noSetReleaseDate && !isFreshCreate ? readRetainedScheduleDraft(rawQuery) : null,
+    plannedDate: scheduleValue('plannedDate', formatLocalDate(now)),
+    plannedTime: scheduleValue('plannedTime', formatLocalTime(now)),
   };
 
   if (Object.hasOwn(query, 'selectedAssetIds')) {
@@ -1384,6 +1427,10 @@ function buildNewReleaseFormValues(rawQuery) {
   }
 
   return values;
+}
+
+function hasOwnField(source, field) {
+  return Boolean(source) && typeof source === 'object' && Object.hasOwn(source, field);
 }
 
 function omitLegacyStatusField(value) {
@@ -1403,7 +1450,7 @@ function buildCreateReleaseFormModel({
   invocationReturnTo = '',
   isFreshCreate = true,
 }) {
-  const formValues = buildNewReleaseFormValues(values);
+  const formValues = buildNewReleaseFormValues(values, { isFreshCreate });
   const context = buildReleaseFormProjectContext(formValues.projectId, projectService);
 
   return {
@@ -1428,6 +1475,12 @@ function buildCreateReleaseFormModel({
     selectedAssetsRecoveryUrl,
     invocationReturnTo,
     isFreshCreate,
+    noSetReleaseDate: formValues.noSetReleaseDate,
+    // The client replaces placeholder schedule defaults with browser-local
+    // time; explicit prefills (even blank ones) and validation drafts are left
+    // untouched, so presence, not truthiness, decides.
+    scheduleDefaulted: isFreshCreate && !formValues.noSetReleaseDate
+      && !hasOwnField(values, 'plannedDate') && !hasOwnField(values, 'plannedTime'),
   };
 }
 

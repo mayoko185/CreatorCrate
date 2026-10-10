@@ -452,7 +452,7 @@ function closeDatePicker(state, restoreFocus = false) {
 }
 
 function openDatePicker(state, allStates) {
-  if (state.open) return;
+  if (state.open || state.input?.disabled || state.trigger?.disabled) return;
   for (const other of allStates) {
     if (other !== state) closeDatePicker(other);
   }
@@ -495,6 +495,8 @@ function bindDatePickerState(state, allStates) {
   });
 }
 
+const datePickerStateByField = new WeakMap();
+
 function getDatePickerFields(scope) {
   return Array.from(scope?.querySelectorAll?.(DATE_PICKER_FIELD_SELECTOR) || []);
 }
@@ -511,6 +513,7 @@ export function enhanceDatePickers(scope = globalThis.document) {
   states.forEach((state) => {
     if (isEnhancementBound(state.field, DATE_PICKER_BOUND_KEY)) return;
     markEnhancementBound(state.field, DATE_PICKER_BOUND_KEY);
+    datePickerStateByField.set(state.field, state);
     bindDatePickerState(state, states);
   });
 
@@ -556,7 +559,7 @@ function closeTimePicker(state, restoreFocus = false) {
 }
 
 function openTimePicker(state) {
-  if (state.open) return;
+  if (state.open || state.input?.disabled || state.trigger?.disabled) return;
   for (const other of liveTimePickerStates()) {
     if (other !== state) closeTimePicker(other);
   }
@@ -642,4 +645,17 @@ export function enhanceTimePickers(scope = globalThis.document) {
   bindTimePickerDocument(globalThis.document);
 
   return fields.length;
+}
+
+// Close any enhanced date/time picker panels inside scope without moving
+// focus, for callers that are about to disable or hide those fields.
+export function closePickersWithin(scope) {
+  scope?.querySelectorAll?.(DATE_PICKER_FIELD_SELECTOR).forEach((field) => {
+    const state = datePickerStateByField.get(field);
+    if (state) closeDatePicker(state);
+  });
+  scope?.querySelectorAll?.(TIME_PICKER_FIELD_SELECTOR).forEach((field) => {
+    const state = timePickerStateByField.get(field);
+    if (state) closeTimePicker(state);
+  });
 }
