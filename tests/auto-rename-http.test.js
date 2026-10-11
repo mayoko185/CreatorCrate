@@ -12,6 +12,7 @@ import { createAssetBrowserPreferenceRepository } from '../src/data/asset-browse
 import { buildAutoRenamePlanRenderModel } from '../src/routes/assets.js';
 import { projectImagePolicyFingerprint, projectImagePresentationPolicy } from '../src/services/project-image-policy.js';
 import { AUTO_RENAME_ERROR_CODES } from '../src/services/auto-rename-service.js';
+import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 
@@ -138,6 +139,42 @@ describe('category-scoped Auto Rename HTTP integration', () => {
 
   function formMarkup(html, action) {
     return html.match(new RegExp(`<form[^>]*action="${action.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"[\\s\\S]*?<\\/form>`))?.[0];
+  }
+
+  function decodeHtmlAttribute(value) {
+    return value
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&amp;/g, '&');
+  }
+
+  // Collects a rendered form's enabled hidden inputs in document order, as a
+  // browser submission would.
+  function hiddenFormFields(form) {
+    const fields = new URLSearchParams();
+    for (const [input] of form.matchAll(/<input\b(?=[^>]*\btype="hidden")[^>]*>/g)) {
+      if (/\sdisabled\b/.test(input)) continue;
+      const name = input.match(/\bname="([^"]*)"/)?.[1];
+      const value = input.match(/\bvalue="([^"]*)"/)?.[1] ?? '';
+      if (name) fields.append(decodeHtmlAttribute(name), decodeHtmlAttribute(value));
+    }
+    return fields;
+  }
+
+  function autoRenamePreviewForm(html) {
+    return html.match(/<form id="auto-rename-assets-form"[\s\S]*?<\/form>/)?.[0];
+  }
+
+  function autoRenameCancelUrl(html) {
+    const href = html.match(/<a class="button button-secondary" href="([^"]+)">Cancel<\/a>/)?.[1];
+    return href ? new URL(decodeHtmlAttribute(href), 'http://localhost') : null;
+  }
+
+  function browsingContextParams(url) {
+    return [...url.searchParams.entries()]
+      .filter(([key]) => key !== 'notice' && !key.startsWith('auto_rename_'));
   }
 
   function surfaceAssetIds(html) {
@@ -480,8 +517,9 @@ describe('category-scoped Auto Rename HTTP integration', () => {
     expect(redirect.pathname).toBe(`/projects/${id}/assets`);
     expect(redirect.searchParams.get('category')).toBe(String(category.id));
     expect(redirect.searchParams.get('view')).toBe('list');
-    expect(redirect.searchParams.has('search')).toBe(false);
-    expect(redirect.searchParams.has('page')).toBe(false);
+    // Supported browsing context round-trips; Auto Rename plan fields do not.
+    expect(redirect.searchParams.get('search')).toBe('drop-me');
+    expect(redirect.searchParams.get('page')).toBe('9');
     expect(redirect.searchParams.has('orderedAssetIds')).toBe(false);
     expect(redirect.searchParams.has('selectedAssetIds')).toBe(false);
 
@@ -579,6 +617,192 @@ describe('category-scoped Auto Rename HTTP integration', () => {
     expect(refusedApply.text).not.toContain('PROJECT_OWNERSHIP');
     expect(fs.existsSync(path.join(projectDir, 'source.png'))).toBe(true);
     expect(assetRepository.findById(asset.id).relative_path).toBe('source.png');
+  });
+
+  describe('browsing context through Preview, Cancel and Apply', () => {
+    async function filteredCategoryProject(title) {
+      const created = await createProject(title);
+      const category = categories(created.id)[0];
+      const assets = [
+        writeAsset(created.id, created.projectDir, 'one.png', 'one', { categoryId: category.id }),
+        writeAsset(created.id, created.projectDir, 'two.png', 'two', { categoryId: category.id }),
+        writeAsset(created.id, created.projectDir, 'three.kra', 'three', {
+          categoryId: category.id,
+          mimeType: 'application/x-krita',
+        }),
+      ];
+      return { ...created, category, assets };
+    }
+
+    function postForm(url, fields) {
+      return agent.post(url).type('form').send(fields.toString());
+    }
+
+    it('round-trips explicit filters, sort, view and page size without duplicate or plan fields', async () => {
+      const { id, project, projectDir, category } = await filteredCategoryProject('Filtered Context');
+      const browse = await agent
+        .get(`/projects/${id}/assets?category=${category.id}&extension=png&sort=modified&order=desc&view=list&pageSize=50`)
+        .expect(200);
+
+      // The Preview request carries the active browsing context.
+      const previewForm = autoRenamePreviewForm(browse.text);
+      expect(previewForm).toBeDefined();
+      const previewFields = hiddenFormFields(previewForm);
+      expect(previewFields.getAll('categoryId')).toEqual([String(category.id)]);
+      expect(previewFields.getAll('extension')).toEqual(['png']);
+      expect(previewFields.getAll('sort')).toEqual(['modified']);
+      expect(previewFields.getAll('order')).toEqual(['desc']);
+      expect(previewFields.getAll('view')).toEqual(['list']);
+      expect(previewFields.getAll('pageSize')).toEqual(['50']);
+      expect(previewFields.has('inheritedFilterDefaults')).toBe(false);
+      // categoryId stays the only category field; plan contract fields stay single.
+      expect(previewFields.has('category')).toBe(false);
+      for (const name of ['_csrf', 'orderedAssetIds', 'selectedAssetIds', 'view', 'sort', 'order', 'page', 'pageSize']) {
+        expect(previewFields.getAll(name).length).toBeLessThanOrEqual(1);
+      }
+      for (const name of ['_csrf', 'orderedAssetIds', 'selectedAssetIds']) {
+        expect(previewFields.getAll(name)).toHaveLength(1);
+      }
+
+      const preview = await postForm(`/projects/${id}/assets/auto-rename/preview`, previewFields).expect(200);
+      expect(preview.text).toContain('id="auto-rename-confirmation-dialog" class="app-dialog" data-app-dialog open');
+
+      // Cancel returns to the same category, filters, sort, view and page size.
+      const cancelUrl = autoRenameCancelUrl(preview.text);
+      expect(cancelUrl.pathname).toBe(`/projects/${id}/assets`);
+      expect(cancelUrl.searchParams.get('category')).toBe(String(category.id));
+      expect(cancelUrl.searchParams.getAll('extension')).toEqual(['png']);
+      expect(cancelUrl.searchParams.get('sort')).toBe('modified');
+      expect(cancelUrl.searchParams.get('order')).toBe('desc');
+      expect(cancelUrl.searchParams.get('view')).toBe('list');
+      expect(cancelUrl.searchParams.get('pageSize')).toBe('50');
+      expect(cancelUrl.searchParams.has('inheritedFilterDefaults')).toBe(false);
+
+      const applyFields = hiddenFormFields(formMarkup(preview.text, `/projects/${id}/assets/auto-rename/apply`));
+      expect(applyFields.getAll('_csrf')).toHaveLength(1);
+      expect(applyFields.getAll('planToken')).toHaveLength(1);
+      expect(applyFields.getAll('categoryId')).toEqual([String(category.id)]);
+      expect(applyFields.has('category')).toBe(false);
+      expect(applyFields.getAll('view')).toEqual(['list']);
+      expect(applyFields.getAll('extension')).toEqual(['png']);
+      expect(applyFields.getAll('sort')).toEqual(['modified']);
+      expect(applyFields.getAll('order')).toEqual(['desc']);
+      for (const name of ['orderedAssetIds', 'selectedAssetIds', 'proposedFilename', 'destinationPath']) {
+        expect(applyFields.has(name)).toBe(false);
+      }
+
+      // Apply lands on the Cancel context; the explicit extension stays explicit.
+      const apply = await postForm(`/projects/${id}/assets/auto-rename/apply`, applyFields).expect(302);
+      const redirect = new URL(apply.headers.location, 'http://localhost');
+      expect(redirect.pathname).toBe(`/projects/${id}/assets`);
+      expect(redirect.searchParams.get('notice')).toBe('auto-rename-success');
+      expect(browsingContextParams(redirect)).toEqual(browsingContextParams(cancelUrl));
+      for (const original of ['one.png', 'two.png', 'three.kra']) {
+        expect(fs.existsSync(path.join(projectDir, original))).toBe(false);
+      }
+      expect(fs.readdirSync(projectDir).filter((name) => name.startsWith(`${project.slug}-${category.directory_slug}-`)))
+        .toHaveLength(3);
+
+      const landed = await agent.get(apply.headers.location).expect(200);
+      expect(hiddenFormFields(autoRenamePreviewForm(landed.text)).getAll('extension')).toEqual(['png']);
+      expect(landed.text).not.toContain('name="inheritedFilterDefaults"');
+    });
+
+    it('keeps saved inherited defaults marked through Preview, Cancel and Apply', async () => {
+      const { id, category, assets } = await filteredCategoryProject('Inherited Context');
+      db.prepare(`
+        INSERT INTO app_meta (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      `).run(PAGE_DEFAULT_DEFINITIONS.projectAssets.extension.key, 'png');
+
+      const browse = await agent
+        .get(`/projects/${id}/assets?category=${category.id}&view=list&inheritedFilterDefaults=extension`)
+        .expect(200);
+      // The inherited extension stays suspended for a concrete category.
+      expect([...surfaceAssetIds(browse.text)].sort()).toEqual(assets.map((asset) => asset.id).sort());
+
+      const previewFields = hiddenFormFields(autoRenamePreviewForm(browse.text));
+      expect(previewFields.getAll('inheritedFilterDefaults')).toEqual(['extension']);
+      expect(previewFields.has('extension')).toBe(false);
+      expect(previewFields.getAll('view')).toEqual(['list']);
+      expect(previewFields.has('category')).toBe(false);
+
+      const preview = await postForm(`/projects/${id}/assets/auto-rename/preview`, previewFields).expect(200);
+      const cancelUrl = autoRenameCancelUrl(preview.text);
+      expect(cancelUrl.searchParams.get('category')).toBe(String(category.id));
+      expect(cancelUrl.searchParams.get('inheritedFilterDefaults')).toBe('extension');
+      expect(cancelUrl.searchParams.has('extension')).toBe(false);
+
+      const applyFields = hiddenFormFields(formMarkup(preview.text, `/projects/${id}/assets/auto-rename/apply`));
+      expect(applyFields.getAll('inheritedFilterDefaults')).toEqual(['extension']);
+      expect(applyFields.has('extension')).toBe(false);
+
+      const apply = await postForm(`/projects/${id}/assets/auto-rename/apply`, applyFields).expect(302);
+      const redirect = new URL(apply.headers.location, 'http://localhost');
+      expect(browsingContextParams(redirect)).toEqual(browsingContextParams(cancelUrl));
+      expect(redirect.searchParams.get('inheritedFilterDefaults')).toBe('extension');
+      expect(redirect.searchParams.has('extension')).toBe(false);
+    });
+
+    it('preserves the browsing context when Preview validation and stale Apply re-render the page', async () => {
+      const { id, category, assets } = await filteredCategoryProject('Error Context');
+      const context = { extension: 'png', sort: 'modified', order: 'desc', view: 'list', search: 'o' };
+      const browserFormFields = (html) => hiddenFormFields(formMarkup(html, `/projects/${id}/assets/add-to-release`));
+      const expectContext = (fields) => {
+        expect(fields.getAll('category')).toEqual([String(category.id)]);
+        expect(fields.getAll('extension')).toEqual(['png']);
+        expect(fields.getAll('sort')).toEqual(['modified']);
+        expect(fields.getAll('order')).toEqual(['desc']);
+        expect(fields.getAll('view')).toEqual(['list']);
+        expect(fields.getAll('search')).toEqual(['o']);
+      };
+
+      const invalid = await previewRequest(id, category.id, [assets[0].id], context).expect(422);
+      expect(invalid.text).toContain('must contain every category asset exactly once');
+      expectContext(browserFormFields(invalid.text));
+
+      const preview = await previewRequest(id, category.id, assets.map((asset) => asset.id), context).expect(200);
+      const applyFields = hiddenFormFields(formMarkup(preview.text, `/projects/${id}/assets/auto-rename/apply`));
+      db.prepare('UPDATE assets SET filename = ? WHERE id = ?').run('changed.png', assets[0].id);
+      const stale = await postForm(`/projects/${id}/assets/auto-rename/apply`, applyFields).expect(409);
+      expect(stale.text).toContain('rename preview is no longer current');
+      expectContext(browserFormFields(stale.text));
+    });
+
+    it('rebuilds the Apply redirect only from allowlisted context fields', async () => {
+      const { id, category } = await filteredCategoryProject('Allowlisted Context');
+      const injected = await buildInjectedApp({
+        buildPlan() {},
+        applyPlan() { return { renamed: 1, unchanged: 0 }; },
+      });
+      const fields = new URLSearchParams({
+        _csrf: injected.csrfToken,
+        planToken: 'opaque-token',
+        categoryId: String(category.id),
+        category: '999999',
+        view: 'list',
+        returnTo: '/elsewhere',
+        notice: 'injected',
+        defaults: '1',
+        inheritedFilterDefaults: 'extension,bogus',
+      });
+      fields.append('search[nested]', 'object');
+
+      const apply = await injected.agent
+        .post(`/projects/${id}/assets/auto-rename/apply`)
+        .type('form')
+        .send(fields.toString())
+        .expect(302);
+      const redirect = new URL(apply.headers.location, 'http://localhost');
+      expect(redirect.pathname).toBe(`/projects/${id}/assets`);
+      expect(redirect.searchParams.get('category')).toBe(String(category.id));
+      expect(redirect.searchParams.get('view')).toBe('list');
+      expect(redirect.searchParams.get('notice')).toBe('auto-rename-success');
+      expect(redirect.searchParams.get('inheritedFilterDefaults')).toBe('extension');
+      for (const key of ['returnTo', 'defaults', 'search', 'search[nested]', 'categoryId', 'planToken', '_csrf']) {
+        expect(redirect.searchParams.has(key)).toBe(false);
+      }
+    });
   });
 
   it('keeps render-model media/path safety independent of filesystem reads', () => {

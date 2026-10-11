@@ -1486,6 +1486,8 @@ const PROJECT_ASSETS_LIVE_REGION_SELECTOR = '[data-project-assets-live-region]';
 const PROJECT_ASSETS_FILTER_SELECTOR = ['#asset-filters', '.page-size-form'];
 const PROJECT_ASSETS_RESET_FORM_SELECTOR = '#project-assets-filter-dialog .projects-filter-reset';
 const PROJECT_ASSETS_SEARCH_SELECTOR = '#search';
+const PROJECT_ASSETS_MANUAL_SCAN_FORM_SELECTOR = 'form[method="post"][action$="/scan/manual"]';
+const PROJECT_ASSETS_MANUAL_SCAN_CONTEXT_SELECTOR = 'input[type="hidden"]:not([name="_csrf"])';
 const PROJECT_ASSETS_LIVE_STATUS_SELECTOR = '[data-project-assets-live-status]';
 const PROJECT_ASSETS_LIVE_STATE_ATTRIBUTE = 'data-project-assets-live-state';
 const PROJECT_ASSETS_NSFW_FORM_SELECTOR = '[data-project-assets-nsfw-filter]';
@@ -1668,6 +1670,26 @@ function omitInheritedProjectAssetsFiltersForCategory(params, form) {
   inheritedProjectAssetsFilterDefaults(form).forEach((key) => params.delete(key));
 }
 
+// The Manual scan form sits in the page heading, outside the live region, and
+// its scan redirect rebuilds the page URL from its hidden context fields. Copy
+// the context the server rendered for the newly applied view so the scan
+// returns to that view (including inheritedFilterDefaults) instead of the
+// first render's filters. The _csrf input and submit button stay in place.
+function reconcileProjectAssetsManualScanContext(state, parsed) {
+  const currentForm = state.document?.querySelector?.(PROJECT_ASSETS_MANUAL_SCAN_FORM_SELECTOR);
+  const nextForm = parsed?.querySelector?.(PROJECT_ASSETS_MANUAL_SCAN_FORM_SELECTOR);
+  if (!currentForm || !nextForm || currentForm === nextForm) return;
+
+  const contextInputs = (form) => Array.from(
+    form.querySelectorAll?.(PROJECT_ASSETS_MANUAL_SCAN_CONTEXT_SELECTOR) || [],
+  );
+  contextInputs(currentForm).forEach((input) => input.remove?.());
+  const nextInputs = contextInputs(nextForm);
+  const csrf = currentForm.querySelector?.('input[name="_csrf"]');
+  if (csrf) csrf.after?.(...nextInputs);
+  else currentForm.prepend?.(...nextInputs);
+}
+
 function enhanceProjectAssetsLiveRegion(region) {
   enhancePreviewMedia(region);
   enhanceAssetViewerInfoCards(region);
@@ -1709,6 +1731,7 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
   onResponseParsed(state, parsed) {
     if (state.projectAssetCategoriesNeedSync) state.projectAssetCategoriesPage = parsed;
     reconcileExternalFilterForm(state, parsed, '#asset-filters');
+    reconcileProjectAssetsManualScanContext(state, parsed);
 
     const currentResetForm = state.document?.querySelector?.(PROJECT_ASSETS_RESET_FORM_SELECTOR);
     const nextResetForm = parsed?.querySelector?.(PROJECT_ASSETS_RESET_FORM_SELECTOR);

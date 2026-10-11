@@ -889,6 +889,66 @@ describe('asset repository', () => {
         release_usage_count: 0,
       });
     });
+
+    it('orders the complete category by the active browser sort and direction, matching filtered and paged browser rows', () => {
+      const category = insertCategoryFor(projectId, 'Sorted Category', 'sorted-category', 2, 1);
+      const otherCategory = insertCategoryFor(projectId, 'Sorted Other', 'sorted-other', 5, 1);
+      const specs = [
+        { filename: 'delta.png', sizeBytes: 5, modifiedAt: '2026-01-03T00:00:00.000Z', nestedPath: 'b' },
+        { filename: 'alpha.png', sizeBytes: 5, modifiedAt: null, nestedPath: 'a' },
+        { filename: 'Charlie.png', sizeBytes: 1, modifiedAt: '2026-01-01T00:00:00.000Z', nestedPath: 'b' },
+        { filename: 'bravo.png', sizeBytes: 3, modifiedAt: '2026-01-03T00:00:00.000Z', nestedPath: 'a' },
+        { filename: 'echo.png', sizeBytes: 9, modifiedAt: '2026-01-02T00:00:00.000Z', nestedPath: 'a' },
+        { filename: 'alpha.png', sizeBytes: 1, modifiedAt: '2026-01-02T00:00:00.000Z', nestedPath: 'b' },
+        { filename: 'foxtrot.png', sizeBytes: 3, modifiedAt: null, nestedPath: 'b' },
+      ];
+      specs.forEach((spec, index) => assetRepo.upsert(projectId, `${spec.nestedPath}/${index}-${spec.filename}`, {
+        ...spec,
+        extension: 'png',
+        mimeType: 'image/png',
+        categoryId: category.id,
+      }));
+      const outsider = assetRepo.upsert(projectId, 'other/alpha.png', {
+        filename: 'alpha.png',
+        extension: 'png',
+        mimeType: 'image/png',
+        sizeBytes: 5,
+        modifiedAt: null,
+        categoryId: otherCategory.id,
+        nestedPath: 'other',
+      });
+
+      const ids = (rows) => rows.map((asset) => asset.id);
+      const defaultOrder = ids(assetRepo.findProjectAssetsByCategoryInBrowserOrder(projectId, category.id));
+      expect(defaultOrder).toEqual(ids(assetRepo.findProjectAssetsByCategoryInBrowserOrder(
+        projectId,
+        category.id,
+        { sort: 'filename', order: 'asc' },
+      )));
+
+      for (const sort of ['filename', 'modified', 'size', 'category']) {
+        for (const order of ['asc', 'desc']) {
+          const full = ids(assetRepo.findProjectAssetsByCategoryInBrowserOrder(projectId, category.id, { sort, order }));
+          expect(full).toHaveLength(specs.length);
+          expect(new Set(full).size).toBe(specs.length);
+          expect(full).not.toContain(outsider.id);
+          expect([...full].sort((left, right) => left - right))
+            .toEqual([...defaultOrder].sort((left, right) => left - right));
+
+          const paged = [1, 2, 3].flatMap((page) => ids(assetRepo.findProjectAssetPage(projectId, {
+            category: category.id, sort, order, page, pageSize: 3,
+          })));
+          expect(paged).toEqual(full);
+
+          const filtered = ids(assetRepo.findProjectAssetPage(projectId, {
+            category: category.id, search: 'a', sort, order, pageSize: 'all',
+          }));
+          expect(filtered.length).toBeGreaterThan(0);
+          expect(filtered.length).toBeLessThan(full.length);
+          expect(filtered).toEqual(full.filter((id) => filtered.includes(id)));
+        }
+      }
+    });
   });
 
   /**

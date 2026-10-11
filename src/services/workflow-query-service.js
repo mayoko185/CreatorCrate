@@ -2237,11 +2237,14 @@ function normalizeAssetBrowserQuery(
   /**
    * Complete, unpaged Assets-browser surface for exactly one effective
    * concrete category. Ordinary search, extension, presence, usage, sorting,
-   * and pagination inputs are intentionally ignored; only `view` remains as
-   * presentation state.
+   * and pagination inputs in `rawQuery` are intentionally ignored; only
+   * `view` remains as presentation state. A caller rendering a filtered or
+   * sorted browser page passes its normalized sort/direction through
+   * `ordering` so the complete membership order matches that page.
    *
    * @param {number} projectId
    * @param {Object} [rawQuery]
+   * @param {{ sort?: string, order?: string }} [ordering] - active browser sort/direction (default filename asc)
    * @returns {null | {
    *   effectiveCategory: { id: number, displayName: string, directorySlug: string, enabled: boolean }|null,
    *   assets: Array,
@@ -2252,9 +2255,12 @@ function normalizeAssetBrowserQuery(
    *   autoRenameUnavailableReason?: string,
    * }}
    */
-  function getProjectAutoRenameCategory(projectId, rawQuery = {}) {
+  function getProjectAutoRenameCategory(projectId, rawQuery = {}, ordering = {}) {
     const project = projectRepository.findById(projectId);
     if (!project) return null;
+    const safeOrdering = ordering && typeof ordering === 'object' ? ordering : {};
+    const sort = ASSET_BROWSER_SORT_VALUES.includes(safeOrdering.sort) ? safeOrdering.sort : 'filename';
+    const order = ASSET_BROWSER_ORDER_VALUES.includes(safeOrdering.order) ? safeOrdering.order : 'asc';
 
     const safeRawQuery = rawQuery && typeof rawQuery === 'object' ? rawQuery : {};
     const view = normalizeAssetBrowserView(safeRawQuery.view);
@@ -2281,7 +2287,7 @@ function normalizeAssetBrowserQuery(
       directorySlug: category.directory_slug,
       enabled: Boolean(category.enabled),
     };
-    const rows = assetRepository.findProjectAssetsByCategoryInBrowserOrder(projectId, category.id);
+    const rows = assetRepository.findProjectAssetsByCategoryInBrowserOrder(projectId, category.id, { sort, order });
     if (rows.length === 0) {
       return {
         effectiveCategory,

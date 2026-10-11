@@ -1458,15 +1458,19 @@ export function createAssetRepository(db) {
 
     /**
      * Find every indexed asset in one exact project-owned category, in the
-     * canonical default Assets-browser order. This intentionally has no
-     * filters, LIMIT, or OFFSET: Auto Rename must receive the complete
-     * category membership rather than a browser subset.
+     * Assets-browser order (canonical filename ascending by default). This
+     * intentionally has no filters, LIMIT, or OFFSET: Auto Rename must
+     * receive the complete category membership rather than a browser subset.
+     * The optional sort/order reuse the browser page's order clause, so a
+     * filtered or paginated browser page is always a subsequence of this
+     * complete order.
      *
      * @param {number} projectId
      * @param {number} categoryId
+     * @param {{ sort?: string, order?: string }} [options] - active browser sort/direction
      * @returns {import('./asset-repository.js').AssetRecord[]}
      */
-    findProjectAssetsByCategoryInBrowserOrder(projectId, categoryId) {
+    findProjectAssetsByCategoryInBrowserOrder(projectId, categoryId, { sort = 'filename', order = 'asc' } = {}) {
       if (
         !Number.isSafeInteger(projectId)
         || projectId <= 0
@@ -1485,7 +1489,7 @@ export function createAssetRepository(db) {
         FROM assets a
         ${CATEGORY_JOIN}
         WHERE a.project_id = ? AND a.category_id = ?
-        ${buildAssetBrowserOrderClause('filename', 'asc')}
+        ${buildAssetBrowserOrderClause(sort, order)}
       `;
       return db.prepare(sql).all(projectId, categoryId);
     },

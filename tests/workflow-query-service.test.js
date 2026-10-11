@@ -3909,6 +3909,52 @@ describe('workflow query service', () => {
       }
     });
 
+    it('orders the complete category by an explicit active sort/direction that agrees with filtered browser pages', () => {
+      const assetRepository = createAssetRepository(db);
+      const project = insertProject(db, { title: 'Auto Rename Sorted Category' });
+      const category = addCategory(project.id, 'Renders', 'renders', 0);
+      const sizes = [30, 10, 40, 20, 10];
+      const members = sizes.map((sizeBytes, index) => addAsset(
+        assetRepository,
+        project.id,
+        category.id,
+        `renders/${String.fromCharCode(97 + index)}-${index % 2 === 0 ? 'match' : 'skip'}.png`,
+        { sizeBytes },
+      ));
+      const missing = members[2];
+      db.prepare('UPDATE assets SET is_present = 0, missing_since = datetime(\'now\') WHERE id = ?')
+        .run(missing.id);
+
+      const defaultOrder = service.getProjectAutoRenameCategory(project.id, { category: String(category.id) });
+      expect(defaultOrder.orderedAssetIds).toEqual(members.map((asset) => asset.id));
+      // Unsupported ordering inputs fall back to the canonical default.
+      expect(service.getProjectAutoRenameCategory(project.id, { category: String(category.id) }, {
+        sort: 'project', order: 'sideways',
+      }).orderedAssetIds).toEqual(defaultOrder.orderedAssetIds);
+
+      const sizeDesc = service.getProjectAutoRenameCategory(
+        project.id,
+        { category: String(category.id), sort: 'filename', order: 'asc' },
+        { sort: 'size', order: 'desc' },
+      );
+      // Size descending with the ascending id tiebreaker for equal sizes.
+      expect(sizeDesc.orderedAssetIds).toEqual([2, 0, 3, 1, 4].map((index) => members[index].id));
+      expect(sizeDesc.assets.map((asset) => asset.id)).toEqual(sizeDesc.orderedAssetIds);
+      expect(sizeDesc.total).toBe(members.length);
+
+      // Filtered and paginated browser pages are subsequences of the complete order;
+      // the missing member and off-page members remain in it exactly once.
+      const filtered = service.getProjectAssetBrowser(project.id, {
+        category: String(category.id), search: 'match', presence: 'present', sort: 'size', order: 'desc', pageSize: '1',
+      });
+      const visibleIds = filtered.assets.map((asset) => asset.id);
+      expect(visibleIds).toEqual([members[0].id]);
+      expect(filtered.pageCount).toBe(2);
+      expect(new Set(sizeDesc.orderedAssetIds).size).toBe(members.length);
+      expect(sizeDesc.orderedAssetIds).toContain(missing.id);
+      expect(sizeDesc.orderedAssetIds.filter((id) => visibleIds.includes(id))).toEqual(visibleIds);
+    });
+
     it('uses a concrete default when category is absent and lets an explicit category override it', () => {
       const assetRepository = createAssetRepository(db);
       const project = insertProject(db, { title: 'Auto Rename Effective Category' });

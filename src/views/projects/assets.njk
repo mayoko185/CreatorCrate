@@ -67,7 +67,7 @@
   </div>
 {% endmacro %}
 
-{% macro renderAutoRenameForm(projectId, csrfToken, currentView, autoRenameCategory) %}
+{% macro renderAutoRenameForm(projectId, csrfToken, context, contextFields, autoRenameCategory) %}
   <form id="auto-rename-assets-form" method="post" action="/projects/{{ projectId }}/assets/auto-rename/preview"
         class="auto-rename-assets-form" data-auto-rename-form>
     <input type="hidden" name="_csrf" value="{{ csrfToken }}">
@@ -76,7 +76,9 @@
            data-auto-rename-order-input>
     <input type="hidden" name="selectedAssetIds" value="[]"
            data-auto-rename-selection-input>
-    <input type="hidden" name="view" value="{{ currentView }}">
+    {# categoryId is the authoritative category; the rest of the browsing
+       context (including view) round-trips through the shared fields. #}
+    {{ renderContextFields(context, contextFields | reject('equalto', 'category'), false) }}
     <div class="auto-rename-live-region sr-only" data-auto-rename-live aria-live="polite" aria-atomic="true"></div>
   </form>
 {% endmacro %}
@@ -565,10 +567,17 @@
         <p class="results-meta asset-results-category">Category: {{ activeCategoryLabel }}</p>
       </div>
 
-      {% if assets.length > 0 %}
+      {# Project actions render independently of the asset result count so
+         empty projects, empty categories, and zero-match filters keep the
+         same action structure. canReorderCategory requires a non-empty
+         visible subset of the category, so the ordering surface below only
+         opens when assets are rendered. data-auto-rename-base-order is the
+         complete category order (hidden and off-page assets included) that
+         the visible arrangement is merged into. #}
         {% set capabilityCategory = categoryCapabilities.category %}
         {% if categoryCapabilities.canReorderCategory %}
           <section class="asset-auto-rename-surface" data-auto-rename-surface data-auto-rename-view="{{ filters.view }}"
+                   data-auto-rename-base-order="{{ capabilityCategory.orderedAssetIdsJson }}"
                    data-category-membership-complete="{{ 'true' if categoryCapabilities.hasCompleteCategoryMembership else 'false' }}"
                    data-category-reorder-enabled="true"
                    data-auto-rename-enabled="{{ 'true' if categoryCapabilities.canAutoRename else 'false' }}"
@@ -655,7 +664,7 @@
                     </div>
                     </form>
                     {% if categoryCapabilities.canAutoRename %}
-                      {{ renderAutoRenameForm(project.id, _csrf, filters.view, capabilityCategory) }}
+                      {{ renderAutoRenameForm(project.id, _csrf, context, contextFields, capabilityCategory) }}
                     {% endif %}
                   {% endif %}
                 </div>
@@ -755,18 +764,73 @@
         {% endif %}
 
         {% if isArchived %}
-          {# Release / File are mutation forms and
-             stay fully hidden for archived projects, but Processing actions
-             must still surface — visibly disabled — per its archived-state
-             requirement, so it gets its own minimal panel here rather than
-             living inside the bulk-select-form gated above. #}
-          <div class="asset-actions-panel asset-actions-panel--archived-processing" data-asset-actions-panel>
-            <div class="asset-action-groups">
-              {{ processingActions.render(isArchived) }}
+          {# Archived projects keep the Release / File / Processing structure
+             visible but read-only: no bulk-select-form, no field names, no
+             formaction, and every control disabled, so nothing here can
+             submit a mutation. Server-side archived guards remain the
+             authority. canReorderCategory is never granted when archived. #}
+          <section class="project-detail-section asset-actions-panel asset-actions-panel--archived" data-asset-actions-panel aria-labelledby="project-actions-heading">
+            <h2 id="project-actions-heading">Project actions</h2>
+            <div class="project-detail-section-body">
+              <div class="asset-selection-controls">
+                <div class="asset-action-groups">
+                  <section class="asset-action-group">
+                    <h3 class="asset-action-group-heading">Release</h3>
+                    <div class="asset-action-group-controls">
+                      {{ dropdown.singleSelect({
+                        id: "releaseId-action",
+                        label: "Add to release",
+                        visuallyHiddenLabel: true,
+                        fieldClasses: "bulk-release-field",
+                        options: releaseActionOptions,
+                        optionIdPrefix: "releaseId-action",
+                        selected: '',
+                        placeholder: "Select a release…",
+                        panelLabel: "Release options",
+                        disabled: true,
+                        nativeSelect: { id: "releaseId-action-native" }
+                      }) }}
+                      <button type="button" class="button button-small button-primary project-filter-control asset-tooltip asset-tooltip--top"
+                              disabled aria-disabled="true" aria-label="Add to release" data-tooltip="Add to release">{{ icons.icon('releases') }}</button>
+                      <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top"
+                              disabled aria-disabled="true" aria-label="New release" data-tooltip="New release">{{ icons.icon('plus') }}</button>
+                    </div>
+                  </section>
+                  <section class="asset-action-group">
+                    <h3 class="asset-action-group-heading">File</h3>
+                    <div class="asset-action-group-controls">
+                      {{ dropdown.singleSelect({
+                        id: "destination-category-action",
+                        label: "Move selected to",
+                        visuallyHiddenLabel: true,
+                        fieldClasses: "bulk-move-field",
+                        options: destinationCategoryActionOptions,
+                        optionIdPrefix: "destination-category-action",
+                        selected: 'uncategorized',
+                        panelLabel: "Destination category options",
+                        disabled: true,
+                        nativeSelect: { id: "destinationCategory-action-native" }
+                      }) }}
+                      <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top"
+                              disabled aria-disabled="true" aria-label="Convert" data-tooltip="Convert">{{ icons.icon('convert') }}</button>
+                      <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top"
+                              disabled aria-disabled="true" aria-label="Rename" data-tooltip="Rename">{{ icons.icon('edit') }}</button>
+                      <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top"
+                              disabled aria-disabled="true" aria-label="Move selected" data-tooltip="Move selected">{{ icons.icon('folder-move') }}</button>
+                      <button type="button" class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--top"
+                              disabled aria-disabled="true" aria-label="Copy selected" data-tooltip="Copy selected">{{ icons.icon('copy') }}</button>
+                      <button type="button" class="button button-small button-danger project-filter-control asset-tooltip asset-tooltip--top"
+                              disabled aria-disabled="true" aria-label="Delete selected" data-tooltip="Delete selected">{{ icons.icon('trash') }}</button>
+                    </div>
+                  </section>
+                  {{ processingActions.render(isArchived) }}
+                </div>
+              </div>
             </div>
-          </div>
+          </section>
         {% endif %}
 
+      {% if assets.length > 0 %}
         {% if filters.view == 'grid' %}
           <ul class="asset-grid" role="listbox" aria-label="Assets">
             {% for asset in assets %}
@@ -780,11 +844,13 @@
             {% endfor %}
           </ul>
         {% endif %}
+      {% endif %}
 
         {% if categoryCapabilities.canReorderCategory %}
           </section>
         {% endif %}
 
+      {% if assets.length > 0 %}
          {# Pagination #}
          {% if not categoryCapabilities.hasCompleteCategoryMembership %}
           {% if pageCount > 1 %}
@@ -860,11 +926,6 @@
           </form>
         {% endif %}
       {% elseif emptyState %}
-        <div class="asset-actions-panel asset-actions-panel--empty-processing" data-asset-actions-panel>
-          <div class="asset-action-groups">
-            {{ processingActions.render(isArchived) }}
-          </div>
-        </div>
         {% set emptyHeading = emptyState.heading %}
         {% set emptyDescription = emptyState.description %}
         {% set emptyHeadingLevel = "h2" %}
@@ -1220,12 +1281,11 @@
         {% if autoRenameDialogContext.category is defined and autoRenameDialogContext.category is not none and autoRenameDialogContext.category != '' %}
           <input type="hidden" name="categoryId" value="{{ autoRenameDialogContext.category }}">
         {% endif %}
-        {% if autoRenameDialogContext.tag is defined and autoRenameDialogContext.tag is not none and autoRenameDialogContext.tag != '' %}
-          <input type="hidden" name="tag" value="{{ autoRenameDialogContext.tag }}">
-        {% endif %}
-        {% if autoRenameDialogContext.view is defined and autoRenameDialogContext.view is not none and autoRenameDialogContext.view != '' %}
-          <input type="hidden" name="view" value="{{ autoRenameDialogContext.view }}">
-        {% endif %}
+        {# The dialog context is the allowlisted Auto Rename return context; its
+           category already travels as categoryId above. #}
+        {% for contextKey, contextValue in autoRenameDialogContext %}
+          {% if contextKey != 'category' %}{{ renderContextFields(autoRenameDialogContext, [contextKey], false) }}{% endif %}
+        {% endfor %}
 
         <div class="app-dialog-body auto-rename-confirmation-body">
           <p class="auto-rename-confirmation-summary">

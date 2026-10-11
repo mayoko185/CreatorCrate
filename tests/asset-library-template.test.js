@@ -1368,6 +1368,101 @@ describe('Project Assets Asset Information popup', () => {
     }
   });
 
+  it('exposes the authoritative complete category order on the ordering surface and Auto Rename form for a filtered subset', () => {
+    const fullOrder = [205, 101, 309];
+    const html = renderProjectAssetsPage({
+      _csrf: 'test-csrf',
+      assets: [projectAsset],
+      total: 1,
+      page: 1,
+      pageCount: 2,
+      categoryCapabilities: {
+        hasCompleteCategoryMembership: false,
+        canReorderCategory: true,
+        canAutoRename: true,
+        category: {
+          categoryId: 5,
+          displayName: 'Renders',
+          directorySlug: 'renders',
+          orderedAssetIds: fullOrder,
+          orderedAssetIdsJson: JSON.stringify(fullOrder),
+        },
+      },
+      submittedSelectedAssetIds: [],
+    });
+    const surface = html.match(/<section class="asset-auto-rename-surface"[^>]*>/)?.[0] ?? '';
+
+    expect(surface).toContain('data-auto-rename-base-order="[205,101,309]"');
+    expect(surface).toContain('data-category-membership-complete="false"');
+    expect(surface).toContain('data-category-reorder-enabled="true"');
+    expect(surface).toContain('data-auto-rename-enabled="true"');
+    expect((html.match(/data-auto-rename-base-order=/g) || [])).toHaveLength(1);
+
+    // One Auto Rename form, initialized from the same complete sequence.
+    expect((html.match(/<form id="auto-rename-assets-form"/g) || [])).toHaveLength(1);
+    expect(html).toMatch(/<input type="hidden" name="orderedAssetIds" value="\[205,101,309\]"\s+data-auto-rename-order-input>/);
+    expect(html).toContain('<input type="hidden" name="categoryId" value="5">');
+    // Only the visible asset is an ordering item; hidden members exist only in the order.
+    expect(html.match(/data-auto-rename-asset-id="(\d+)"/g)).toEqual(['data-auto-rename-asset-id="101"']);
+    // Incomplete membership keeps pagination.
+    expect(html).toContain('class="pagination-next"');
+  });
+
+  it('submits the shared browsing context with Auto Rename Preview without duplicating category or view', () => {
+    const html = renderProjectAssetsPage({
+      _csrf: 'test-csrf',
+      assets: [projectAsset],
+      total: 1,
+      filters: { view: 'list' },
+      context: {
+        category: '5',
+        tag: ['7', '8'],
+        search: 'hero',
+        extension: ['png'],
+        presence: 'all',
+        usage: 'all',
+        sort: 'modified',
+        order: 'desc',
+        page: 2,
+        pageSize: 50,
+        view: 'list',
+        inheritedFilterDefaults: 'tag',
+      },
+      contextFields: ['category', 'tag', 'search', 'extension', 'presence', 'usage', 'sort', 'order', 'page', 'pageSize', 'view', 'inheritedFilterDefaults'],
+      categoryCapabilities: {
+        hasCompleteCategoryMembership: false,
+        canReorderCategory: true,
+        canAutoRename: true,
+        category: {
+          categoryId: 5,
+          displayName: 'Renders',
+          directorySlug: 'renders',
+          orderedAssetIds: [101],
+          orderedAssetIdsJson: '[101]',
+        },
+      },
+      submittedSelectedAssetIds: [],
+    });
+    const form = html.match(/<form id="auto-rename-assets-form"[\s\S]*?<\/form>/)?.[0] ?? '';
+    const values = (name) => [...form.matchAll(new RegExp(`<input type="hidden" name="${name}" value="([^"]*)"`, 'g'))]
+      .map((match) => match[1]);
+
+    expect(values('_csrf')).toEqual(['test-csrf']);
+    expect(values('categoryId')).toEqual(['5']);
+    expect(values('orderedAssetIds')).toEqual(['[101]']);
+    expect(values('selectedAssetIds')).toEqual(['[]']);
+    expect(values('category')).toEqual([]);
+    expect(values('view')).toEqual(['list']);
+    expect(values('tag')).toEqual(['7', '8']);
+    expect(values('search')).toEqual(['hero']);
+    expect(values('extension')).toEqual(['png']);
+    expect(values('sort')).toEqual(['modified']);
+    expect(values('order')).toEqual(['desc']);
+    expect(values('page')).toEqual(['2']);
+    expect(values('pageSize')).toEqual(['50']);
+    expect(values('inheritedFilterDefaults')).toEqual(['tag']);
+  });
+
   it('maps missing Project Assets Details status while preserving List presence and release information', () => {
     const missingAsset = {
       ...projectAsset,

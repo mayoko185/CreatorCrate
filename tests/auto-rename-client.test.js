@@ -195,6 +195,8 @@ function makeAssetPage({
   view = 'list',
   ids = [1, 2, 3],
   initialOrder = ids,
+  baseOrder = ids,
+  membershipComplete = baseOrder === ids,
   selectionToolsOutsideForm = false,
   reorderEnabled = true,
   autoRenameEnabled = true,
@@ -207,12 +209,15 @@ function makeAssetPage({
   const surface = makeNode({ attrs: {
     'data-auto-rename-surface': '',
     'data-auto-rename-view': view,
-    'data-category-membership-complete': String(reorderEnabled),
+    'data-category-membership-complete': String(reorderEnabled && membershipComplete),
     'data-category-reorder-enabled': String(reorderEnabled),
     'data-auto-rename-enabled': String(autoRenameEnabled),
   }, rect: view === 'grid'
     ? { top: 0, left: 0, width: 400, height: 500 }
     : { top: 0, left: 0, width: 500, height: 500 } });
+  if (baseOrder !== null) {
+    surface.setAttribute('data-auto-rename-base-order', typeof baseOrder === 'string' ? baseOrder : JSON.stringify(baseOrder));
+  }
   const form = makeNode({ tagName: 'form', attrs: { id: 'auto-rename-assets-form', 'data-auto-rename-form': '' } });
   const selectionForm = makeNode({ tagName: 'form', attrs: {
     id: 'bulk-select-form',
@@ -221,7 +226,7 @@ function makeAssetPage({
   const selectAll = makeNode({ tagName: 'button', attrs: { type: 'button', 'data-select-all': '' } });
   const clearSelection = makeNode({ tagName: 'button', attrs: { type: 'button', 'data-clear-selection': '' } });
   const orderInput = makeNode({ tagName: 'input', attrs: { 'data-auto-rename-order-input': '' } });
-  orderInput.value = JSON.stringify(initialOrder);
+  orderInput.value = typeof initialOrder === 'string' ? initialOrder : JSON.stringify(initialOrder);
   const selectionInput = makeNode({ tagName: 'input', attrs: {
     type: 'hidden',
     name: 'selectedAssetIds',
@@ -823,10 +828,11 @@ describe('Assets-page Auto Rename ordering enhancement', () => {
     expect(enhanceAssetAutoRenameOrdering(duplicate.document)).toBe(0);
     expect(duplicate.submit.disabled).toBe(true);
 
-    const missing = makeAssetPage({ ids: [1, 2], initialOrder: [1, 2] });
-    missing.orderInput.value = '[1]';
+    // A visible card absent from the authoritative base order is rejected.
+    const missing = makeAssetPage({ ids: [1, 2], baseOrder: [1] });
     expect(enhanceAssetAutoRenameOrdering(missing.document)).toBe(0);
     expect(missing.submit.disabled).toBe(true);
+    expect(missing.assets[0].item.draggable).toBe(false);
 
     const added = makeAssetPage();
     enhanceAssetAutoRenameOrdering(added.document);
@@ -842,4 +848,239 @@ describe('Assets-page Auto Rename ordering enhancement', () => {
     expect(added.orderInput.value).toBe('');
   });
 
+});
+
+describe('Assets-page Auto Rename ordering with hidden category assets', () => {
+  // Full category order A=1, B=2, C=3, D=4 with B and D hidden by a filter.
+  const filteredPage = (options = {}) => makeAssetPage({ ids: [1, 3], baseOrder: [1, 2, 3, 4], ...options });
+
+  function select(page, index) {
+    page.assets[index].checkbox.checked = true;
+    page.assets[index].checkbox.dispatch('change');
+  }
+
+  it('keeps complete-category serialization identical to the visible order', () => {
+    const page = makeAssetPage({ view: 'list', ids: [3, 1, 2] });
+    expect(enhanceAssetAutoRenameOrdering(page.document)).toBe(1);
+    expect(page.orderInput.value).toBe('[3,1,2]');
+
+    dragTo(page, 0, { clientY: 200 });
+    expect(page.order()).toEqual(['1', '2', '3']);
+    expect(page.orderInput.value).toBe('[1,2,3]');
+    expect(page.surface.getAttribute('data-auto-rename-current-order')).toBe('[1,2,3]');
+  });
+
+  it('merges a reordered visible subset into the base order around hidden assets', () => {
+    for (const view of ['list', 'grid']) {
+      const page = filteredPage({ view });
+      expect(enhanceAssetAutoRenameOrdering(page.document)).toBe(1);
+      expect(page.surface.getAttribute('data-auto-rename-membership')).toBe('valid');
+      expect(page.orderInput.value).toBe('[1,2,3,4]');
+      expect(page.assets[0].item.draggable).toBe(true);
+
+      // Drag C before A: visible C, A submits C, B, A, D.
+      const result = view === 'grid'
+        ? dragTo(page, 1, { clientX: 0, clientY: 50 })
+        : dragTo(page, 1, { clientY: 0 });
+      expect(result.markerSlot).toBe(0);
+      expect(page.order()).toEqual(['3', '1']);
+      expect(page.orderInput.value).toBe('[3,2,1,4]');
+      expect(page.surface.getAttribute('data-auto-rename-current-order')).toBe('[3,2,1,4]');
+      // Position indicators describe the visible ordering surface.
+      expect(page.assets[1].indicator.textContent).toBe('1 of 2');
+      expect(page.assets[0].indicator.textContent).toBe('2 of 2');
+      expect(page.assets[0].item.getAttribute('aria-setsize')).toBe('2');
+    }
+  });
+
+  it('keeps off-page positions unchanged for a paginated subset', () => {
+    // Page 2 of a six-asset category rendered in a descending sort.
+    const page = makeAssetPage({ view: 'grid', ids: [13, 12], baseOrder: [15, 14, 13, 12, 11, 10] });
+    expect(enhanceAssetAutoRenameOrdering(page.document)).toBe(1);
+    expect(page.orderInput.value).toBe('[15,14,13,12,11,10]');
+
+    const item = page.assets[0].item;
+    item.focus();
+    item.dispatch('keydown', { key: ' ' });
+    item.dispatch('keydown', { key: 'ArrowRight' });
+    item.dispatch('keydown', { key: 'Enter' });
+    expect(page.order()).toEqual(['12', '13']);
+    expect(page.orderInput.value).toBe('[15,14,12,13,11,10]');
+  });
+
+  it('serializes only selected visible IDs and never selects hidden assets', () => {
+    const page = filteredPage();
+    enhanceAssetAutoRenameOrdering(page.document);
+    enhanceAssetSelection(page.document);
+
+    select(page, 1);
+    expect(page.selectionInput.value).toBe('[3]');
+    expect(page.orderInput.value).toBe('[1,2,3,4]');
+
+    page.selectAll.dispatch('click');
+    expect(JSON.parse(page.selectionInput.value)).toEqual([1, 3]);
+    expect(JSON.parse(page.selectionInput.value)).not.toContain(2);
+    expect(JSON.parse(page.selectionInput.value)).not.toContain(4);
+
+    const submit = page.form.dispatch('submit');
+    expect(submit.defaultPrevented).toBe(false);
+    expect(page.orderInput.value).toBe('[1,2,3,4]');
+  });
+
+  it('enables Auto Rename for a selected subset and blocks empty-selection submission', () => {
+    const page = filteredPage();
+    enhanceAssetAutoRenameOrdering(page.document);
+    enhanceAssetSelection(page.document);
+    expect(page.submit.disabled).toBe(true);
+
+    // An empty selection would mean the whole category to the service.
+    const unselected = page.form.dispatch('submit');
+    expect(unselected.defaultPrevented).toBe(true);
+    expect(page.selectionInput.value).toBe('[]');
+    expect(page.live.textContent).toContain('Select at least one asset');
+
+    select(page, 0);
+    expect(page.submit.disabled).toBe(false);
+    expect(page.submit.getAttribute('aria-disabled')).toBe(null);
+
+    page.clearSelection.dispatch('click');
+    expect(page.submit.disabled).toBe(true);
+    expect(page.selectionInput.value).toBe('[]');
+    expect(page.form.dispatch('submit').defaultPrevented).toBe(true);
+
+    page.selectAll.dispatch('click');
+    expect(page.submit.disabled).toBe(false);
+
+    const noAutoRename = filteredPage({ autoRenameEnabled: false });
+    expect(enhanceAssetAutoRenameOrdering(noAutoRename.document)).toBe(1);
+    enhanceAssetSelection(noAutoRename.document);
+    select(noAutoRename, 0);
+    expect(noAutoRename.submit.disabled).toBe(true);
+    expect(noAutoRename.form.dispatch('submit').defaultPrevented).toBe(true);
+  });
+
+  it('disables Auto Rename when a checked selection falls outside the visible ordering surface', () => {
+    const page = filteredPage();
+    enhanceAssetAutoRenameOrdering(page.document);
+    enhanceAssetSelection(page.document);
+    select(page, 0);
+    expect(page.submit.disabled).toBe(false);
+
+    page.assets[0].checkbox.value = '2';
+    page.assets[0].checkbox.dispatch('change');
+    expect(page.submit.disabled).toBe(true);
+    expect(page.form.dispatch('submit').defaultPrevented).toBe(true);
+  });
+
+  it('rejects malformed base orders and inconsistent visible membership', () => {
+    const invalidPages = {
+      missingBase: filteredPage({ baseOrder: null }),
+      emptyBase: filteredPage({ baseOrder: '[]' }),
+      malformedBase: filteredPage({ baseOrder: '[1,2' }),
+      nonArrayBase: filteredPage({ baseOrder: '{"ids":[1,2,3,4]}' }),
+      nonIntegerBase: filteredPage({ baseOrder: '[1,"2",3,4]' }),
+      zeroBase: filteredPage({ baseOrder: '[0,1,3]' }),
+      duplicateBase: filteredPage({ baseOrder: [1, 2, 3, 3, 4] }),
+      duplicateVisible: makeAssetPage({ ids: [1, 1], baseOrder: [1, 2, 3] }),
+      unknownVisible: makeAssetPage({ ids: [1, 99], baseOrder: [1, 2, 3, 4] }),
+      outOfBaseOrder: makeAssetPage({ ids: [3, 1], baseOrder: [1, 2, 3, 4] }),
+    };
+
+    for (const [name, page] of Object.entries(invalidPages)) {
+      expect(enhanceAssetAutoRenameOrdering(page.document), name).toBe(0);
+      enhanceAssetSelection(page.document);
+      expect(page.surface.getAttribute('data-auto-rename-membership'), name).toBe('invalid');
+      expect(page.assets[0].item.draggable, name).toBe(false);
+      page.assets[0].checkbox.checked = true;
+      page.assets[0].checkbox.dispatch('change');
+      expect(page.submit.disabled, name).toBe(true);
+    }
+
+    const shiftedIndex = filteredPage();
+    shiftedIndex.assets[1].item.setAttribute('data-auto-rename-initial-index', '2');
+    expect(enhanceAssetAutoRenameOrdering(shiftedIndex.document)).toBe(0);
+  });
+
+  it('keeps hidden slots through keyboard moves and Escape restoration', () => {
+    const page = makeAssetPage({ ids: [1, 3, 5], baseOrder: [1, 2, 3, 4, 5] });
+    enhanceAssetAutoRenameOrdering(page.document);
+    const item = page.assets[0].item;
+    item.focus();
+
+    item.dispatch('keydown', { key: 'Enter' });
+    item.dispatch('keydown', { key: 'ArrowDown' });
+    expect(page.orderInput.value).toBe('[3,2,1,4,5]');
+    expect(page.live.textContent).toContain('position 2 of 3');
+    item.dispatch('keydown', { key: 'ArrowDown' });
+    expect(page.order()).toEqual(['3', '5', '1']);
+    expect(page.orderInput.value).toBe('[3,2,5,4,1]');
+    item.dispatch('keydown', { key: 'Escape' });
+    expect(page.order()).toEqual(['1', '3', '5']);
+    expect(page.orderInput.value).toBe('[1,2,3,4,5]');
+    expect(item.focused).toBe(true);
+
+    item.dispatch('keydown', { key: ' ' });
+    item.dispatch('keydown', { key: 'ArrowDown' });
+    item.dispatch('keydown', { key: ' ' });
+    expect(page.orderInput.value).toBe('[3,2,1,4,5]');
+
+    const last = page.assets[2].item;
+    last.focus();
+    last.dispatch('keydown', { key: 'Enter' });
+    last.dispatch('keydown', { key: 'ArrowUp' });
+    last.dispatch('keydown', { key: 'ArrowUp' });
+    expect(page.orderInput.value).toBe('[5,2,3,4,1]');
+    last.dispatch('keydown', { key: 'Escape' });
+    expect(page.order()).toEqual(['3', '1', '5']);
+    expect(page.orderInput.value).toBe('[3,2,1,4,5]');
+  });
+
+  it('replaces stale order-field contents from the authoritative base order', () => {
+    for (const stale of ['[3,1]', '[4,3,2,1]', '[1,3]', 'not json', '']) {
+      const page = filteredPage({ initialOrder: stale });
+      expect(enhanceAssetAutoRenameOrdering(page.document), stale).toBe(1);
+      expect(page.orderInput.value, stale).toBe('[1,2,3,4]');
+    }
+  });
+
+  it('reads a replacement surface base order and discards the unsubmitted reorder', () => {
+    const page = filteredPage();
+    enhanceAssetAutoRenameOrdering(page.document);
+    enhanceAssetSelection(page.document);
+    dragTo(page, 1, { clientY: 0 });
+    select(page, 0);
+    expect(page.orderInput.value).toBe('[3,2,1,4]');
+
+    // A live-region swap (or Back/Forward re-render) inserts a fresh surface
+    // whose restored order field still holds the previous arrangement.
+    const next = makeAssetPage({
+      ids: [2, 4],
+      baseOrder: [1, 2, 3, 4],
+      initialOrder: page.orderInput.value,
+    });
+    next.assets[1].checkbox.checked = true;
+    page.document.children.splice(page.document.children.indexOf(page.surface), 1);
+    page.surface.parentElement = null;
+    page.document.appendChild(next.surface);
+
+    expect(enhanceAssetAutoRenameOrdering(page.document)).toBe(1);
+    enhanceAssetSelection(page.document);
+    expect(next.surface.autoRenameOrderingState).not.toBe(page.surface.autoRenameOrderingState);
+    expect(next.surface.autoRenameOrderingState.baseOrder).toEqual([1, 2, 3, 4]);
+    expect(next.orderInput.value).toBe('[1,2,3,4]');
+    expect(next.selectionInput.value).toBe('[4]');
+    expect(next.submit.disabled).toBe(false);
+
+    // Re-enhancing the same surface binds no duplicate handlers.
+    const keydownCount = next.assets[0].item.listeners.filter(({ type }) => type === 'keydown').length;
+    expect(enhanceAssetAutoRenameOrdering(page.document)).toBe(1);
+    expect(next.assets[0].item.listeners.filter(({ type }) => type === 'keydown').length).toBe(keydownCount);
+
+    const item = next.assets[0].item;
+    item.focus();
+    item.dispatch('keydown', { key: 'Enter' });
+    item.dispatch('keydown', { key: 'ArrowDown' });
+    item.dispatch('keydown', { key: 'Enter' });
+    expect(next.orderInput.value).toBe('[1,4,3,2]');
+  });
 });

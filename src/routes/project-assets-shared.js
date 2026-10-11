@@ -821,9 +821,11 @@ export function buildBrowserRenderModel(
     preservePageSizeQuery: Boolean(presentation?.forceFallback?.pageSize),
     // Flat context + field allowlist so the scan and bulk-add forms can
     // render their hidden context-preservation fields with one loop instead
-    // of hardcoding each key.
-    context,
-    contextFields: data.contextFields || ASSET_BROWSER_CONTEXT_FIELDS,
+    // of hardcoding each key. Action redirects rebuild the page URL from
+    // these fields, so they must carry the inherited-defaults marker too;
+    // without it, saved tag/extension defaults come back as explicit filters
+    // that are no longer suspended when a concrete category is chosen.
+    ...buildActionContext(context, data.contextFields || ASSET_BROWSER_CONTEXT_FIELDS, inheritedFilterDefaults),
     pageUrl,
     projectAssetsDefaults: buildPageDefaultsDialogModel({
       pageDefaultsService,
@@ -1044,7 +1046,9 @@ function buildAssetsPageData(
 // non-default sort/order or filter. When the filters omit no category asset,
 // the complete membership is rendered on one page in the selected sort order
 // (matching the default filename surface, which also ignores pageSize), so
-// every sort exposes the same category capabilities. Real subsets paginate.
+// every sort exposes the same category capabilities. Real subsets paginate;
+// their capabilities carry the complete category order in the active sort so
+// hidden and off-page assets keep their positions around the visible ones.
 function buildCategoryBrowserPageData(workflowQueryService, projectId, project, categoryQuery) {
   let rendered = workflowQueryService.getProjectAssetBrowser(projectId, categoryQuery);
   if (!rendered) return rendered;
@@ -1054,6 +1058,9 @@ function buildCategoryBrowserPageData(workflowQueryService, projectId, project, 
     : workflowQueryService.getProjectAutoRenameCategory(projectId, {
       category: String(rendered.filters?.category ?? ''),
       view: rendered.filters?.view,
+    }, {
+      sort: rendered.filters?.sort,
+      order: rendered.filters?.order,
     });
   if (
     categoryMembership?.autoRenameAvailable === true
@@ -1073,6 +1080,14 @@ function buildCategoryBrowserPageData(workflowQueryService, projectId, project, 
       categoryMembership,
       renderedAssetIds: (rendered.assets || []).map((asset) => asset.id),
     }),
+  };
+}
+
+function buildActionContext(context, contextFields, inheritedFilterDefaults = []) {
+  if (inheritedFilterDefaults.length === 0) return { context, contextFields };
+  return {
+    context: { ...context, [INHERITED_FILTER_DEFAULTS_QUERY_KEY]: inheritedFilterDefaults.join(',') },
+    contextFields: [...contextFields, INHERITED_FILTER_DEFAULTS_QUERY_KEY],
   };
 }
 
@@ -1193,7 +1208,7 @@ function omitInheritedFilterDefaultsForCategory(rawQuery = {}) {
 }
 
 // Presentation controls choose display/query behavior only. Processing
-// capabilities are resolved from complete category membership.
+// capabilities are resolved from category membership and the visible subset.
 function hasNonDefaultCategoryBrowserControls(rawQuery = {}) {
   const extensions = (Array.isArray(rawQuery.extension) ? rawQuery.extension : [rawQuery.extension])
     .filter((value) => typeof value === 'string')

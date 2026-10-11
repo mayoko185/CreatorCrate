@@ -130,7 +130,7 @@ describe('Processing actions placement', () => {
     expect(card).toContain('data-dialog-open="processing-watermark-dialog"');
     expect(card).toContain('data-dialog-open="processing-workflow-dialog"');
     expect(card).toContain('data-dialog-open="processing-archive-dialog"');
-    expectUnavailableAutoRename(card, 'Auto Rename — available only for a complete category with selected assets');
+    expectUnavailableAutoRename(card, 'Auto Rename');
     // Exactly one card — no duplicate render in a single response.
     expect((res.text.match(/class="asset-action-group processing-action-group"/g) || [])).toHaveLength(1);
   });
@@ -142,7 +142,7 @@ describe('Processing actions placement', () => {
     const card = processingActionsCard(res.text);
     expect(card).not.toBe('');
     expectProcessingButtons(card);
-    expectUnavailableAutoRename(card, 'Auto Rename — available only for a complete category with selected assets');
+    expectUnavailableAutoRename(card, 'Auto Rename');
   });
 
   it('renders on the complete-category/auto-rename surface for a concrete category', async () => {
@@ -160,6 +160,7 @@ describe('Processing actions placement', () => {
     expect(autoRename).toContain('type="submit"');
     expect(autoRename).toContain('form="auto-rename-assets-form"');
     expect(autoRename).toContain('data-auto-rename-submit');
+    expect(autoRename).toContain('data-tooltip="Auto Rename"');
     expect(autoRename).toMatch(/\bdisabled\b/);
     expect(autoRename).toContain('aria-disabled="true"');
     expect(autoRename).toContain('<path d="M8 6h12M8 12h8M8 18h4"/>');
@@ -167,19 +168,27 @@ describe('Processing actions placement', () => {
     expect((res.text.match(/class="asset-action-group processing-action-group"/g) || [])).toHaveLength(1);
   });
 
-  it('renders on the downgraded/ordinary surface when a concrete category uses search', async () => {
-    const id = await createProject('Downgraded Category Processing');
+  it('renders on the auto-rename surface with the complete category order when a concrete category uses search', async () => {
+    const id = await createProject('Filtered Category Processing');
     const category = assetCategoryRepo.addProjectCategory({
       projectId: id, displayName: 'Renders', directorySlug: 'renders', displayOrder: 0, enabled: true,
     });
-    addAsset(id, 'renders/keep.png', { categoryId: category.id });
-    addAsset(id, 'renders/other.png', { categoryId: category.id });
+    const keep = addAsset(id, 'renders/keep.png', { categoryId: category.id });
+    const other = addAsset(id, 'renders/other.png', { categoryId: category.id });
     const res = await agent.get(`/projects/${id}/assets?category=${category.id}&search=keep`).expect(200);
-    expect(res.text).not.toContain('data-auto-rename-surface');
+    const surface = res.text.match(/<section class="asset-auto-rename-surface"[^>]*>/)?.[0] || '';
+    expect(surface).toContain('data-category-membership-complete="false"');
+    expect(surface).toContain(`data-auto-rename-base-order="${JSON.stringify([keep.id, other.id])}"`);
+    expect(res.text).toContain(`name="orderedAssetIds" value="${JSON.stringify([keep.id, other.id])}"`);
+    expect(res.text).toContain(`data-auto-rename-asset-id="${keep.id}"`);
+    expect(res.text).not.toContain(`data-auto-rename-asset-id="${other.id}"`);
     const card = processingActionsCard(res.text);
     expect(card).not.toBe('');
     expectProcessingButtons(card);
-    expectUnavailableAutoRename(card, 'Auto Rename — available only for a complete category with selected assets');
+    const autoRename = iconButton(card, 'Auto Rename');
+    expect(autoRename).toContain('form="auto-rename-assets-form"');
+    expect(autoRename).toContain('data-auto-rename-submit');
+    expect((res.text.match(/class="asset-action-group processing-action-group"/g) || [])).toHaveLength(1);
   });
 
   it('renders disabled Auto Rename for an unavailable disabled-category surface', async () => {
@@ -191,7 +200,7 @@ describe('Processing actions placement', () => {
     const res = await agent.get(`/projects/${id}/assets?category=${category.id}`).expect(200);
     const card = processingActionsCard(res.text);
     expect(card).not.toBe('');
-    expectUnavailableAutoRename(card, 'Auto Rename — available only for a complete category with selected assets');
+    expectUnavailableAutoRename(card, 'Auto Rename');
   });
 
   it('keeps Processing and disabled Auto Rename on empty and no-results pages', async () => {
@@ -199,7 +208,7 @@ describe('Processing actions placement', () => {
     const empty = await agent.get(`/projects/${emptyId}/assets`).expect(200);
     expectUnavailableAutoRename(
       processingActionsCard(empty.text),
-      'Auto Rename — available only for a complete category with selected assets',
+      'Auto Rename',
     );
 
     const filteredId = await createProject('No Results Processing');
@@ -207,7 +216,7 @@ describe('Processing actions placement', () => {
     const noResults = await agent.get(`/projects/${filteredId}/assets?search=absent`).expect(200);
     expectUnavailableAutoRename(
       processingActionsCard(noResults.text),
-      'Auto Rename — available only for a complete category with selected assets',
+      'Auto Rename',
     );
   });
 
@@ -236,11 +245,12 @@ describe('Processing actions placement', () => {
       const button = iconButton(card, label);
       expect(button).toMatch(/\bdisabled\b/);
       expect(button).toContain('aria-disabled="true"');
-      expect(button).toContain(`data-tooltip="${label} — unavailable for archived projects"`);
+      const tooltip = label === 'Auto Rename' ? label : `${label} — unavailable for archived projects`;
+      expect(button).toContain(`data-tooltip="${tooltip}"`);
       expect(button).toMatch(/<svg[^>]*aria-hidden="true"[^>]*focusable="false"/);
       expect(button.replace(/<[^>]+>/g, '').trim()).toBe('');
     }
-    expectUnavailableAutoRename(card, 'Auto Rename — unavailable for archived projects');
+    expectUnavailableAutoRename(card, 'Auto Rename');
     const workflow = iconButton(card, 'Image workflows editor');
     expect(workflow).toContain('<path d="M4 6h5"/>');
     expect(workflow).not.toContain('<path d="M4 20h4L19 9l-4-4L4 16v4z"/>');
@@ -313,7 +323,7 @@ describe('Processing actions placement', () => {
     await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken))
       .set('Content-Type', 'application/x-www-form-urlencoded');
     const res = await agent.get(`/projects/${id}/assets`).expect(200);
-    expectUnavailableAutoRename(processingActionsCard(res.text), 'Auto Rename — unavailable for archived projects');
+    expectUnavailableAutoRename(processingActionsCard(res.text), 'Auto Rename');
   });
 
   function releaseSectionHtml(html) {
@@ -451,6 +461,170 @@ describe('Processing actions placement', () => {
     expect(css).toMatch(/\.asset-actions-panel\s*\{[\s\S]*?overflow:\s*visible/);
     expect(css).toMatch(/\.asset-actions-panel\s*>\s*h2\s*\{[\s\S]*?border-radius:\s*calc\(var\(--radius-lg\) - 1px\) calc\(var\(--radius-lg\) - 1px\) 0 0/);
     expect(css).toMatch(/\.asset-filter-multiselect summary:focus-visible\s*\{\s*outline:\s*2px solid var\(--focus-ring\);\s*outline-offset:\s*2px/);
+  });
+
+  function count(html, pattern) {
+    return (html.match(pattern) || []).length;
+  }
+
+  function expectFullProjectActions(html) {
+    expect(count(html, /<h2 id="project-actions-heading">Project actions<\/h2>/g)).toBe(1);
+    expect(count(html, /id="project-actions-heading"/g)).toBe(1);
+    expect(count(html, /<section class="[^"]*\basset-actions-panel\b[^"]*" data-asset-actions-panel/g)).toBe(1);
+    expect(count(html, /data-asset-actions-panel/g)).toBe(1);
+    expect(actionGroupHeadings(html).filter((h) => h === 'Release')).toHaveLength(1);
+    expect(actionGroupHeadings(html).filter((h) => h === 'File')).toHaveLength(1);
+    expect(actionGroupHeadings(html).filter((h) => h === 'Processing')).toHaveLength(1);
+    expect(count(html, /<form id="bulk-select-form"/g)).toBe(1);
+    expect(count(html, /id="bulk-select-form"/g)).toBe(1);
+    for (const id of ['releaseId-action-native', 'destinationCategory-action-native']) {
+      expect(count(html, new RegExp(`id="${id}"`, 'g'))).toBe(1);
+    }
+    // Release / File / Processing are owned by the single bulk-select-form.
+    const form = html.match(/<form id="bulk-select-form"[\s\S]*?<\/form>/)?.[0] || '';
+    expect(actionGroupHeadings(form)).toEqual(['Release', 'File', 'Processing']);
+    // The panel stays inside the live region that live filtering replaces.
+    const liveRegion = html.indexOf('data-project-assets-live-region');
+    expect(liveRegion).toBeGreaterThan(-1);
+    expect(html.indexOf('data-asset-actions-panel')).toBeGreaterThan(liveRegion);
+    expect(html).not.toContain('asset-actions-panel--empty-processing');
+  }
+
+  function expectEmptyResults(html, { resettable }) {
+    expect(html).toContain('<div class="empty-state">');
+    expect(html.indexOf('<div class="empty-state">')).toBeGreaterThan(html.indexOf('data-asset-actions-panel'));
+    expect(html).not.toContain('class="pagination"');
+    expect(html).not.toContain('class="page-size-form"');
+    expect(html).not.toMatch(/<ul class="asset-(?:grid|list)\b/);
+    expect(html).not.toContain('data-auto-rename-surface');
+    expect(html).not.toMatch(/<input\b[^>]*form="bulk-select-form"[^>]*name="selectedAssetIds"/);
+    const emptyState = html.slice(html.indexOf('<div class="empty-state">')).match(/^[\s\S]*?<\/div>\s*<\/div>/)?.[0] || '';
+    if (resettable) expect(emptyState).toContain('data-project-assets-reset');
+    else expect(emptyState).not.toContain('data-project-assets-reset');
+  }
+
+  it('keeps the full Project actions panel for an empty project in Grid and List', async () => {
+    const id = await createProject('WP2 Empty Project');
+    for (const view of ['grid', 'list']) {
+      const res = await agent.get(`/projects/${id}/assets?view=${view}`).expect(200);
+      expectFullProjectActions(res.text);
+      expectEmptyResults(res.text, { resettable: false });
+    }
+  });
+
+  it('keeps the full Project actions panel when filters match zero assets in Grid and List', async () => {
+    const id = await createProject('WP2 Zero Matches');
+    addAsset(id, 'present.png');
+    for (const view of ['grid', 'list']) {
+      const res = await agent.get(`/projects/${id}/assets?search=absent&view=${view}`).expect(200);
+      expectFullProjectActions(res.text);
+      expectEmptyResults(res.text, { resettable: true });
+    }
+  });
+
+  it('keeps the full Project actions panel for an empty or zero-match category', async () => {
+    const id = await createProject('WP2 Empty Category');
+    const empty = assetCategoryRepo.addProjectCategory({
+      projectId: id, displayName: 'Empty', directorySlug: 'empty', displayOrder: 0, enabled: true,
+    });
+    const filled = assetCategoryRepo.addProjectCategory({
+      projectId: id, displayName: 'Renders', directorySlug: 'renders', displayOrder: 1, enabled: true,
+    });
+    addAsset(id, 'renders/keep.png', { categoryId: filled.id });
+
+    for (const query of [`category=${empty.id}`, `category=${filled.id}&search=absent`]) {
+      for (const view of ['grid', 'list']) {
+        const res = await agent.get(`/projects/${id}/assets?${query}&view=${view}`).expect(200);
+        expectFullProjectActions(res.text);
+        expect(res.text).toContain('<div class="empty-state">');
+        expect(res.text).not.toContain('data-auto-rename-surface');
+      }
+    }
+  });
+
+  it('renders the same Project actions structure with and without results, preserving checkbox ownership', async () => {
+    const id = await createProject('WP2 Structure Parity');
+    const category = assetCategoryRepo.addProjectCategory({
+      projectId: id, displayName: 'Renders', directorySlug: 'renders', displayOrder: 0, enabled: true,
+    });
+    addAsset(id, 'renders/keep.png', { categoryId: category.id });
+
+    for (const view of ['grid', 'list']) {
+      const withResults = await agent.get(`/projects/${id}/assets?view=${view}`).expect(200);
+      expectFullProjectActions(withResults.text);
+      expect(withResults.text).toMatch(/<input\b(?=[^>]*form="bulk-select-form")(?=[^>]*name="selectedAssetIds")[^>]*>/);
+
+      // A directly viewed complete category keeps the ordering surface wrapping
+      // the single panel and the asset results.
+      const concrete = await agent.get(`/projects/${id}/assets?category=${category.id}&view=${view}`).expect(200);
+      expectFullProjectActions(concrete.text);
+      const surfaceStart = concrete.text.indexOf('data-auto-rename-surface');
+      expect(surfaceStart).toBeGreaterThan(-1);
+      expect(concrete.text.indexOf('data-asset-actions-panel')).toBeGreaterThan(surfaceStart);
+      expect(concrete.text.search(/<ul class="asset-(?:grid|list)\b/)).toBeGreaterThan(concrete.text.indexOf('</form>', concrete.text.indexOf('<form id="bulk-select-form"')));
+      expect(count(concrete.text, /id="auto-rename-assets-form"/g)).toBe(1);
+      expect(count(concrete.text, /form="auto-rename-assets-form"/g)).toBe(1);
+
+      const empty = await agent.get(`/projects/${id}/assets?search=absent&view=${view}`).expect(200);
+      expectFullProjectActions(empty.text);
+      expect(actionGroupHeadings(empty.text)).toEqual(actionGroupHeadings(withResults.text));
+    }
+  });
+
+  it('keeps disabled Release / File / Processing sections for archived projects with and without matching assets', async () => {
+    const withAssets = await createProject('WP2 Archived Zero Matches');
+    addAsset(withAssets, 'a.png');
+    const noAssets = await createProject('WP2 Archived No Assets');
+    for (const id of [withAssets, noAssets]) {
+      await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken))
+        .set('Content-Type', 'application/x-www-form-urlencoded');
+    }
+
+    const pages = [
+      `/projects/${withAssets}/assets`,
+      `/projects/${withAssets}/assets?search=absent`,
+      `/projects/${withAssets}/assets?view=list&search=absent`,
+      `/projects/${noAssets}/assets`,
+    ];
+    for (const url of pages) {
+      const res = await agent.get(url).expect(200);
+      expect(count(res.text, /data-asset-actions-panel/g)).toBe(1);
+      expect(count(res.text, /<h2 id="project-actions-heading">Project actions<\/h2>/g)).toBe(1);
+      expect(res.text).toContain('asset-actions-panel--archived');
+      expect(actionGroupHeadings(res.text)).toEqual(['Release', 'File', 'Processing']);
+
+      // No archived mutation is executable: no bulk form, no submit buttons,
+      // no form targets, no named action fields, no dialog openers.
+      expect(res.text).not.toContain('id="bulk-select-form"');
+      expect(res.text).not.toContain('id="auto-rename-assets-form"');
+      expect(res.text).not.toContain('data-auto-rename-surface');
+      const panelStart = res.text.indexOf('data-asset-actions-panel');
+      const panel = res.text.slice(panelStart, res.text.indexOf('</section>', res.text.indexOf('processing-action-group')));
+      expect(panel).toContain('processing-action-group');
+      expect(panel).not.toMatch(/<form\b/);
+      expect(panel).not.toMatch(/type="submit"/);
+      expect(panel).not.toMatch(/\bformaction=/);
+      expect(panel).not.toMatch(/\bform="/);
+      expect(panel).not.toMatch(/\bdata-dialog-open=/);
+      expect(panel).not.toMatch(/\bname="(?:releaseId|destinationCategory)"/);
+
+      const release = releaseSectionHtml(res.text);
+      for (const label of ['Add to release', 'New release']) {
+        expect(iconButton(release, label)).toMatch(/\bdisabled\b/);
+        expect(iconButton(release, label)).toContain('aria-disabled="true"');
+      }
+      expect(release).toMatch(/<select id="releaseId-action-native"[^>]*\bdisabled\b/);
+      const file = fileSectionHtml(res.text);
+      for (const label of ['Convert', 'Rename', 'Move selected', 'Copy selected', 'Delete selected']) {
+        expect(iconButton(file, label)).toMatch(/\bdisabled\b/);
+        expect(iconButton(file, label)).toContain('aria-disabled="true"');
+      }
+      expect(file).toMatch(/<select id="destinationCategory-action-native"[^>]*\bdisabled\b/);
+      const card = processingActionsCard(res.text);
+      for (const label of ['Auto Rename', 'Watermark', 'Image workflows editor', 'Archives']) {
+        expect(iconButton(card, label)).toMatch(/\bdisabled\b/);
+      }
+    }
   });
 
   it('sizes View asset details only within Project Assets grid and list cards', () => {

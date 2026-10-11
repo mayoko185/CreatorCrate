@@ -1839,14 +1839,32 @@ function parseStrictAutoRenameSelection(raw) {
   return { valid: true, ids };
 }
 
+// Auto Rename round-trips the same asset-browser fields as the other action
+// forms. categoryId is the form's authoritative category, so a submitted
+// `category` field is never read. Only string (or repeated string) values of
+// allowlisted keys are kept; canonical normalization happens when the
+// context is rendered or turned into a redirect URL.
 function buildAutoRenameReturnContext(rawContext = {}) {
   const context = {};
   const categoryId = parseCanonicalPositiveId(rawContext.categoryId);
   if (categoryId !== null) context.category = String(categoryId);
-  const tagId = parseCanonicalPositiveId(rawContext.tag);
-  if (tagId !== null) context.tag = String(tagId);
-  if (rawContext.view === 'list' || rawContext.view === 'grid') context.view = rawContext.view;
+  for (const key of ASSET_BROWSER_CONTEXT_FIELDS) {
+    if (key === 'category' || !Object.hasOwn(rawContext, key)) continue;
+    const value = readAutoRenameContextValue(rawContext[key]);
+    if (value !== null) context[key] = value;
+  }
+  const inheritedFilterDefaults = getProjectAssetsInheritedFilterDefaults(rawContext);
+  if (inheritedFilterDefaults.length > 0) {
+    context.inheritedFilterDefaults = inheritedFilterDefaults.join(',');
+  }
   return context;
+}
+
+function readAutoRenameContextValue(raw) {
+  if (typeof raw === 'string') return raw === '' ? null : raw;
+  if (!Array.isArray(raw)) return null;
+  const values = raw.filter((value) => typeof value === 'string' && value !== '');
+  return values.length > 0 ? values : null;
 }
 
 function safeDisplayRelativePath(value) {

@@ -1044,10 +1044,10 @@ describe('asset browser HTTP workflow', () => {
     const [category] = assetCategoryRepo.listProjectCategories(id);
     if (!category) throw new Error('project has no category');
 
-    writeIndexedAsset(id, projectDir, 'matching.png', 'matching', { categoryId: category.id });
-    writeIndexedAsset(id, projectDir, 'wrong.jpg', 'wrong', { categoryId: category.id });
+    const matchingPng = writeIndexedAsset(id, projectDir, 'matching.png', 'matching', { categoryId: category.id });
+    const wrongJpg = writeIndexedAsset(id, projectDir, 'wrong.jpg', 'wrong', { categoryId: category.id });
     const missingPng = writeIndexedAsset(id, projectDir, 'missing.png', 'missing', { categoryId: category.id });
-    writeIndexedAsset(id, projectDir, 'unused.png', 'unused', { categoryId: category.id });
+    const unusedPng = writeIndexedAsset(id, projectDir, 'unused.png', 'unused', { categoryId: category.id });
     const usedPng = writeIndexedAsset(id, projectDir, 'used.png', 'used', { categoryId: category.id });
     db.prepare("UPDATE assets SET is_present = 0, missing_since = datetime('now') WHERE id = ?").run(missingPng.id);
     await createReleaseUsingAsset(id, usedPng.id, 'Concrete Category Used Asset');
@@ -1061,7 +1061,13 @@ describe('asset browser HTTP workflow', () => {
     expect(extension.text).toContain('used.png');
     expect(extension.text).not.toContain('wrong.jpg');
     expect(assetExtensionFilterHtml(extension.text)).toContain('aria-label="Extension filter: .png"');
-    expect(extension.text).not.toContain('data-auto-rename-surface');
+    // The filtered subset keeps the ordering surface; its base order still
+    // carries the hidden wrong.jpg member in canonical filename order.
+    const extensionSurface = extension.text.match(/<section class="asset-auto-rename-surface"[^>]*>/)?.[0] || '';
+    expect(extensionSurface).toContain('data-category-membership-complete="false"');
+    expect(extensionSurface).toContain(`data-auto-rename-base-order="${JSON.stringify([
+      matchingPng.id, missingPng.id, unusedPng.id, usedPng.id, wrongJpg.id,
+    ])}"`);
 
     const present = await agent
       .get(`/projects/${id}/assets?category=${category.id}&presence=present`)
@@ -1754,6 +1760,42 @@ describe('asset browser HTTP workflow', () => {
       _csrf: csrfToken,
     }).expect(422);
     expect(validation.text).toContain('name="inheritedFilterDefaults" value="extension"');
+  });
+
+  it('keeps saved filter defaults suspended for categories after a rendered action form round-trips', async () => {
+    const res = await createProject('Inherited Filter Rendered Action');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Inherited Filter Rendered Action');
+    const [category] = assetCategoryRepo.listProjectCategories(id);
+    if (!category) throw new Error('project has no category');
+    writeIndexedAsset(id, projectDir, `${category.directory_slug}/shown.png`, 'shown', { categoryId: category.id });
+    writeIndexedAsset(id, projectDir, `${category.directory_slug}/hidden-by-default.kra`, 'hidden', { categoryId: category.id });
+
+    const all = await agent
+      .get(`/projects/${id}/assets?extension=png&inheritedFilterDefaults=extension`)
+      .expect(200);
+    const scanForm = all.text.match(new RegExp(`<form method="post" action="/projects/${id}/scan/manual"[^>]*>[\\s\\S]*?<\\/form>`))?.[0] || '';
+    expect(scanForm).toContain('<input type="hidden" name="inheritedFilterDefaults" value="extension">');
+    const bulkForm = all.text.match(/<form id="bulk-select-form"[\s\S]*?<\/form>/)?.[0] || '';
+    expect(bulkForm).toContain('<input type="hidden" name="inheritedFilterDefaults" value="extension">');
+
+    const submitted = new URLSearchParams();
+    for (const [, name, value] of scanForm.matchAll(/<input type="hidden" name="([^"]+)" value="([^"]*)">/g)) {
+      submitted.append(name, value);
+    }
+    const scan = await agent.post(`/projects/${id}/scan/manual`).type('form').send(submitted.toString()).expect(302);
+    const scanUrl = new URL(scan.headers.location, 'http://localhost');
+    expect(scanUrl.searchParams.getAll('extension')).toEqual(['png']);
+    expect(scanUrl.searchParams.get('inheritedFilterDefaults')).toBe('extension');
+
+    // Choosing a category from the filter form after the action: the saved
+    // extension default stays suspended, so the complete category remains
+    // eligible instead of degrading into a filtered subset.
+    const categoryResponse = await agent
+      .get(`/projects/${id}/assets?category=${category.id}&extension=png&inheritedFilterDefaults=extension`)
+      .expect(200);
+    expect(categoryResponse.text).toContain('hidden-by-default.kra');
+    expect(categoryResponse.text).toContain('data-auto-rename-enabled="true"');
   });
 
   it('preserves explicit All through browser links, forms, viewer navigation, and pagination', async () => {
@@ -4551,7 +4593,7 @@ describe('asset browser HTTP workflow', () => {
     expect(ordinaryActionPanel).not.toContain('data-auto-rename-submit');
   });
 
-  it('keeps Auto Rename and category reorder available for complete category membership regardless of sort', async () => {
+  it('keeps Auto Rename and category reorder available for complete and filtered category membership regardless of sort', async () => {
     const res = await createProject('Complete Membership Sort');
     const id = Number(res.headers.location.replace('/projects/', ''));
     const category = assetCategoryRepo.addProjectCategory({
@@ -4587,8 +4629,11 @@ describe('asset browser HTTP workflow', () => {
       expect(button).toContain('form="auto-rename-assets-form"');
       expect(button).toContain('disabled');
     };
-    const expectReorderSurface = (html, orderedIds) => {
+    const expectReorderSurface = (html, orderedIds, { baseOrder = orderedIds, complete = true } = {}) => {
       expect(html).toContain('<section class="asset-auto-rename-surface" data-auto-rename-surface data-auto-rename-view="grid"');
+      const surface = html.match(/<section class="asset-auto-rename-surface"[^>]*>/)?.[0] || '';
+      expect(surface).toContain(`data-auto-rename-base-order="${JSON.stringify(baseOrder)}"`);
+      expect(surface).toContain(`data-category-membership-complete="${complete}"`);
       expect(html).not.toContain('asset-actions-panel--selection-only');
       expect(html).not.toContain('data-auto-rename-mode');
       orderedIds.forEach((assetId, index) => {
@@ -4597,14 +4642,6 @@ describe('asset browser HTTP workflow', () => {
         expect(item).toContain('draggable="true"');
         expect(item).toContain('aria-describedby="auto-rename-instructions"');
       });
-    };
-    const expectUnavailable = (html) => {
-      expect(html).not.toContain('data-auto-rename-surface');
-      expect(html).not.toContain('data-auto-rename-asset');
-      expect(html).not.toContain('data-auto-rename-form');
-      const button = autoRenameButton(assetActionsPanelHtml(html));
-      expect(button).toContain('aria-label="Auto Rename"');
-      expect(button).not.toContain('data-auto-rename-submit');
     };
     const base = `/projects/${id}/assets?category=${category.id}&pageSize=50&presence=all&usage=all`;
 
@@ -4631,15 +4668,23 @@ describe('asset browser HTTP workflow', () => {
     expectReorderSurface(matchingAll.text, [charlie.id, alpha.id, bravo.id]);
     expectAvailable(matchingAll.text, [charlie.id, alpha.id, bravo.id]);
 
-    // Explicit extension and search subsets remain unavailable.
+    // Explicit extension and search subsets keep both capabilities: only the
+    // visible assets are arranged, while the form and base order carry the
+    // complete category order in the active sort, hidden members included.
     const extensionSubset = await agent.get(`${base}&extension=png&sort=modified&order=asc`).expect(200);
     expect(extensionSubset.text).toContain('alpha.png');
     expect(extensionSubset.text).not.toContain('charlie.txt');
-    expectUnavailable(extensionSubset.text);
-    const searchSubset = await agent.get(`${base}&search=alpha&sort=modified&order=asc`).expect(200);
+    expectReorderSurface(extensionSubset.text, [alpha.id, bravo.id], {
+      baseOrder: [charlie.id, alpha.id, bravo.id], complete: false,
+    });
+    expectAvailable(extensionSubset.text, [charlie.id, alpha.id, bravo.id]);
+    const searchSubset = await agent.get(`${base}&search=alpha&sort=modified&order=desc`).expect(200);
     expect(searchSubset.text).toContain('alpha.png');
     expect(searchSubset.text).not.toContain('bravo.png');
-    expectUnavailable(searchSubset.text);
+    expectReorderSurface(searchSubset.text, [alpha.id], {
+      baseOrder: [bravo.id, alpha.id, charlie.id], complete: false,
+    });
+    expectAvailable(searchSubset.text, [bravo.id, alpha.id, charlie.id]);
 
     // A pageSize below the category count still renders the full membership
     // for a complete category, exactly as the filename sort does.
@@ -4658,13 +4703,15 @@ describe('asset browser HTTP workflow', () => {
   });
   describe('category capability contract matrix', () => {
     // Sorting is presentation-only: every supported sort/order must expose the
-    // same category capabilities, and only filters that actually omit category
-    // assets may remove them.
+    // same category capabilities. Filters that omit category assets only clear
+    // complete membership; any nonempty visible subset keeps reorder and Auto
+    // Rename, and the order field carries the complete category order.
     const renderedCapabilities = (html) => {
       const surface = html.match(/<section class="asset-auto-rename-surface"[^>]*>/)?.[0] || '';
       const renderedIds = [...html.matchAll(/<li\b(?=[^>]*data-auto-rename-asset\b)[^>]*?data-auto-rename-asset-id="(\d+)"/g)]
         .map((match) => Number(match[1]));
       const orderJson = html.match(/name="orderedAssetIds" value="([^"]*)"/)?.[1] || null;
+      const baseOrderJson = surface.match(/data-auto-rename-base-order="([^"]*)"/)?.[1] || null;
       return {
         membershipComplete: surface.includes('data-category-membership-complete="true"'),
         reorder: surface.includes('data-category-reorder-enabled="true"') && renderedIds.length > 0,
@@ -4673,8 +4720,24 @@ describe('asset browser HTTP workflow', () => {
           && /<button\b(?=[^>]*aria-label="Auto Rename")(?=[^>]*data-auto-rename-submit)[^>]*>/.test(html),
         renderedIds,
         orderedIds: orderJson ? JSON.parse(orderJson.replace(/&quot;/g, '"')) : null,
+        baseOrderIds: baseOrderJson ? JSON.parse(baseOrderJson.replace(/&quot;/g, '"')) : null,
         paginated: html.includes('class="pagination-next"'),
       };
+    };
+    // Complete order of seedCategory members for a browser sort/direction.
+    const memberOrder = (members, sort, order) => {
+      const [alpha, bravo, charlie, delta] = members;
+      const ascending = (sort === 'modified' || sort === 'size'
+        ? [bravo, delta, alpha, charlie]
+        : [alpha, bravo, charlie, delta]).map((asset) => asset.id);
+      return order === 'desc' ? ascending.reverse() : ascending;
+    };
+    // Every member exactly once, in the active order; visible ids keep that order.
+    const expectFullCategoryOrder = (capabilities, fullOrder) => {
+      expect(capabilities.orderedIds).toEqual(fullOrder);
+      expect(capabilities.baseOrderIds).toEqual(fullOrder);
+      expect(capabilities.renderedIds.length).toBeGreaterThan(0);
+      expect(capabilities.renderedIds).toEqual(fullOrder.filter((assetId) => capabilities.renderedIds.includes(assetId)));
     };
 
     async function seedCategory(title) {
@@ -4702,7 +4765,7 @@ describe('asset browser HTTP workflow', () => {
     const sortCases = ASSET_BROWSER_SORT_VALUES.flatMap((sort) => ['asc', 'desc'].map((order) => [sort, order]));
 
     it.each(sortCases)('complete category sorted by %s %s exposes reorder and Auto Rename over the full membership', async (sort, order) => {
-      const { id, category, memberIds } = await seedCategory(`Capability ${sort} ${order}`);
+      const { id, category, members, memberIds } = await seedCategory(`Capability ${sort} ${order}`);
       // pageSize=2 is below the category count; complete categories still render in full.
       const response = await agent
         .get(`/projects/${id}/assets?category=${category.id}&sort=${sort}&order=${order}&pageSize=2`)
@@ -4712,6 +4775,7 @@ describe('asset browser HTTP workflow', () => {
       expect(capabilities).toMatchObject({ membershipComplete: true, reorder: true, autoRename: true, paginated: false });
       expect([...capabilities.renderedIds].sort((a, b) => a - b)).toEqual([...memberIds].sort((a, b) => a - b));
       expect(capabilities.orderedIds).toEqual(capabilities.renderedIds);
+      expectFullCategoryOrder(capabilities, memberOrder(members, sort, order));
       // The selected sort is preserved, never switched to filename.
       expectCheckedAssetFilter(response.text, 'sort', sort);
     });
@@ -4730,20 +4794,24 @@ describe('asset browser HTTP workflow', () => {
       db.prepare('UPDATE assets SET is_present = 0 WHERE id = ?').run(members[3].id);
       await createReleaseUsingAsset(id, members[0].id, 'Capability Usage Release');
 
-      for (const sort of ['filename', 'modified']) {
+      for (const [sort, order] of [['filename', 'asc'], ['modified', 'asc'], ['size', 'desc']]) {
         const response = await agent
-          .get(`/projects/${id}/assets?category=${category.id}&${filterQuery}&sort=${sort}&order=asc&pageSize=2`)
+          .get(`/projects/${id}/assets?category=${category.id}&${filterQuery}&sort=${sort}&order=${order}&pageSize=2`)
           .expect(200);
         const capabilities = renderedCapabilities(response.text);
-        expect({ sort, ...capabilities, renderedIds: undefined, orderedIds: undefined }).toMatchObject({
+        expect({ sort, ...capabilities, renderedIds: undefined, orderedIds: undefined, baseOrderIds: undefined }).toMatchObject({
           sort,
           membershipComplete: available,
-          reorder: available,
-          autoRename: available,
+          reorder: true,
+          autoRename: true,
         });
+        // Hidden and off-page members stay in the complete order exactly once.
+        expectFullCategoryOrder(capabilities, memberOrder(members, sort, order));
         if (available) {
           expect(capabilities.renderedIds).toHaveLength(members.length);
           expect(capabilities.paginated).toBe(false);
+        } else {
+          expect(capabilities.renderedIds.length).toBeLessThan(members.length);
         }
       }
     });
@@ -4772,12 +4840,13 @@ describe('asset browser HTTP workflow', () => {
           .get(`/projects/${id}/assets?category=${category.id}&${tagQuery}&sort=${sort}&order=asc&pageSize=2`)
           .expect(200);
         const capabilities = renderedCapabilities(response.text);
-        expect({ sort, ...capabilities, renderedIds: undefined, orderedIds: undefined }).toMatchObject({
+        expect({ sort, ...capabilities, renderedIds: undefined, orderedIds: undefined, baseOrderIds: undefined }).toMatchObject({
           sort,
           membershipComplete: available,
-          reorder: available,
-          autoRename: available,
+          reorder: true,
+          autoRename: true,
         });
+        expectFullCategoryOrder(capabilities, memberOrder(members, sort, 'asc'));
         expectCheckedAssetFilter(response.text, 'sort', sort);
         if (available) {
           // pageSize=2 is below the category count; the complete membership renders in full.
@@ -4817,15 +4886,17 @@ describe('asset browser HTTP workflow', () => {
         expectCheckedAssetFilter(complete.html, 'sort', 'modified');
       }
 
-      // A direct tag on a subset keeps subset rows and removes capabilities.
+      // A direct tag on a subset keeps subset rows and both capabilities over the complete order.
       const subset = await view(`category=${category.id}&tag=${benji.id}&sort=modified&order=asc&pageSize=2`);
       expect(subset.ids).toEqual([alpha.id]);
-      expect(subset.capabilities).toMatchObject({ membershipComplete: false, reorder: false, autoRename: false });
+      expect(subset.capabilities).toMatchObject({ membershipComplete: false, reorder: true, autoRename: true });
+      expectFullCategoryOrder(subset.capabilities, memberOrder(members, 'modified', 'asc'));
 
       // The inherited tag still composes with search.
       const searched = await view(`category=${category.id}&tag=${max.id}&search=alpha&sort=modified&order=asc`);
       expect(searched.ids).toEqual([alpha.id]);
-      expect(searched.capabilities).toMatchObject({ membershipComplete: false, reorder: false, autoRename: false });
+      expect(searched.capabilities).toMatchObject({ membershipComplete: false, reorder: true, autoRename: true });
+      expectFullCategoryOrder(searched.capabilities, memberOrder(members, 'modified', 'asc'));
 
       // All categories: the project tag matches every project asset, including uncategorized ones.
       const everything = await view(`category=all&tag=${max.id}&sort=filename&order=asc`);
@@ -4863,7 +4934,9 @@ describe('asset browser HTTP workflow', () => {
         expect(sorted(byFilename.ids)).toEqual(sorted(expected));
         expect(sorted(byModified.ids)).toEqual(sorted(expected));
         expect(byFilename.ids).not.toContain(charlie.id);
-        expect(renderedCapabilities(byModified.html)).toMatchObject({ reorder: false, autoRename: false });
+        const modifiedCapabilities = renderedCapabilities(byModified.html);
+        expect(modifiedCapabilities).toMatchObject({ membershipComplete: false, reorder: true, autoRename: true });
+        expectFullCategoryOrder(modifiedCapabilities, memberOrder(members, 'modified', 'asc'));
       }
       expect((await rendered(`tag=${first.id}&sort=modified&order=asc`)).ids).toEqual([delta.id, alpha.id]);
     });
@@ -4993,10 +5066,15 @@ describe('asset browser HTTP workflow', () => {
           expect(capabilities.orderedIds).toEqual(capabilities.renderedIds);
         }
 
-        // Filtering the video out is a real subset and removes complete-category operations.
+        // Filtering the video out is a real subset: membership is incomplete,
+        // but the hidden video stays in the complete order for both operations.
         const subset = await agent.get(`/projects/${id}/assets?category=${mixed.id}&extension=png`).expect(200);
         expect(renderedIds(subset.text)).toEqual([fixture.mixedImage.id]);
-        expect(renderedCapabilities(subset.text)).toMatchObject({ membershipComplete: false, reorder: false, autoRename: false });
+        expect(renderedCapabilities(subset.text)).toMatchObject({
+          membershipComplete: false, reorder: true, autoRename: true,
+          orderedIds: [fixture.mixedImage.id, fixture.mixedVideo.id],
+          baseOrderIds: [fixture.mixedImage.id, fixture.mixedVideo.id],
+        });
         // An extension filter covering both members stays complete.
         expect(await capabilitiesFor(`category=${mixed.id}&extension=png&extension=webm&sort=modified&order=asc`))
           .toMatchObject({ membershipComplete: true, orderedIds: [fixture.mixedVideo.id, fixture.mixedImage.id] });
@@ -5113,7 +5191,16 @@ describe('asset browser HTTP workflow', () => {
       .get(`/projects/${id}/assets?category=${category.id}&search=match&sort=size&order=desc&pageSize=1&view=list`)
       .expect(200);
 
-    expect(response.text).not.toContain('data-auto-rename-surface');
+    // A filtered, paginated subset keeps the ordering surface; the base order
+    // is the complete category in size-descending order, including the
+    // search-hidden other.png and the off-page smaller-match.png.
+    const fullSizeDescOrder = ['other.png', 'larger-match.png', 'smaller-match.png']
+      .map((filename) => assetRepo.findByProjectIdAndPath(id, `renders/${filename}`).id);
+    const subsetSurface = response.text.match(/<section class="asset-auto-rename-surface"[^>]*>/)?.[0] || '';
+    expect(subsetSurface).toContain('data-auto-rename-view="list"');
+    expect(subsetSurface).toContain('data-category-membership-complete="false"');
+    expect(subsetSurface).toContain(`data-auto-rename-base-order="${JSON.stringify(fullSizeDescOrder)}"`);
+    expect(response.text).toContain(`name="orderedAssetIds" value="${JSON.stringify(fullSizeDescOrder)}"`);
     expect(response.text).toContain('value="match"');
     expectCheckedAssetFilter(response.text, 'sort', 'size');
     expectCheckedAssetFilter(response.text, 'order', 'desc');
@@ -5124,7 +5211,8 @@ describe('asset browser HTTP workflow', () => {
     expect(response.text).not.toContain('smaller-match');
 
     const actionPanel = assetActionsPanelHtml(response.text);
-    expectProjectActionsSection(actionPanel, { selectionOnly: true });
+    expectProjectActionsSection(actionPanel, { selectionOnly: false });
+    expect(actionPanel).toContain('data-auto-rename-form');
     expect((actionPanel.match(/<h2 id="project-actions-heading">Project actions<\/h2>/g) || [])).toHaveLength(1);
     expect(actionPanel).not.toContain('Drag assets to change their filename order');
     expect(actionPanel).toContain('<h3 class="asset-action-group-heading">Release</h3>');

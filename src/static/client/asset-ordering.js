@@ -88,6 +88,19 @@ function autoRenameSameOrder(left, right) {
   return left.length === right.length && left.every((id, index) => id === right[index]);
 }
 
+// Filters and pagination can hide category assets. The base order is the
+// server's complete category order; visible positions are refilled from the
+// rearranged visible sequence and hidden or off-page positions stay put, e.g.
+// base A, B, C, D with B and D hidden and visible order C, A gives C, B, A, D.
+// Returns null unless the visible IDs fill exactly the visible base slots.
+function autoRenameComposeOrder(baseOrder, visibleOrder) {
+  const visibleIds = new Set(visibleOrder);
+  if (visibleIds.size !== visibleOrder.length) return null;
+  let next = 0;
+  const composed = baseOrder.map((id) => (visibleIds.has(id) ? visibleOrder[next++] : id));
+  return next === visibleOrder.length ? composed : null;
+}
+
 function autoRenameParseOrderJson(value) {
   if (typeof value !== 'string' || value.length === 0) return null;
   let parsed;
@@ -157,20 +170,26 @@ function autoRenameMembershipIsValid(state) {
 function autoRenameSync(state) {
   const input = state.orderInput;
   const button = state.submit;
-  const valid = autoRenameMembershipIsValid(state);
-  const ids = valid ? autoRenameOrder(state.surface) : [];
+  const ids = autoRenameMembershipIsValid(state)
+    ? autoRenameComposeOrder(state.baseOrder, autoRenameOrder(state.surface))
+    : null;
+  const valid = ids !== null;
 
   if (input) input.value = valid ? JSON.stringify(ids) : '';
   state.surface.setAttribute?.('data-auto-rename-current-order', valid ? JSON.stringify(ids) : '');
   state.surface.setAttribute?.('data-auto-rename-membership', valid ? 'valid' : 'invalid');
 
+  // Only rendered checkboxes can be checked, so hidden and off-page assets are
+  // never selected. An empty selection means the whole category to the server,
+  // so submission additionally requires a nonempty selection of visible assets.
+  const visibleIds = new Set(state.initialOrder);
+  const selectedIds = autoRenameSelectedAssetIds(state.surface);
+  const selectionValid = selectedIds.length > 0 && selectedIds.every((id) => visibleIds.has(id));
   if (state.selectionInput) {
-    state.selectionInput.value = JSON.stringify(autoRenameSelectedAssetIds(state.surface));
+    state.selectionInput.value = JSON.stringify(selectedIds);
   }
-  const hasSelectedAssets = Array.from(
-    state.surface.querySelectorAll?.(ASSET_SELECTION_CHECKBOX_SELECTOR) || [],
-  ).some((checkbox) => checkbox.checked);
-  autoRenameSetDisabled(button, !state.autoRenameEnabled || !valid || !hasSelectedAssets);
+  state.canSubmit = state.autoRenameEnabled && valid && selectionValid;
+  autoRenameSetDisabled(button, !state.canSubmit);
 
   const items = autoRenameSurfaceItems(state.surface);
   items.forEach((item, index) => {
@@ -736,6 +755,9 @@ function autoRenameBindSurface(state) {
     if (!autoRenameSync(state)) {
       event.preventDefault?.();
       autoRenameLiveMessage(state, 'The complete category order is invalid. No preview was submitted.');
+    } else if (!state.canSubmit) {
+      event.preventDefault?.();
+      autoRenameLiveMessage(state, 'Select at least one asset to rename. No preview was submitted.');
     }
   });
 }
@@ -753,6 +775,8 @@ export function enhanceAssetAutoRenameOrdering(scope = globalThis.document) {
 
     // Capability comes only from the server's explicit contract; the client
     // still validates that the rendered markup matches the server order.
+    // The base order attribute is authoritative: the order input may hold a
+    // stale restored value, so it is rewritten from the base on sync.
     const reorderEnabled = surface.getAttribute?.('data-category-reorder-enabled') === 'true';
     const form = surface.querySelector?.(AUTO_RENAME_FORM_SELECTOR);
     const orderInput = form?.querySelector?.(AUTO_RENAME_ORDER_INPUT_SELECTOR);
@@ -760,15 +784,16 @@ export function enhanceAssetAutoRenameOrdering(scope = globalThis.document) {
     const items = autoRenameSurfaceItems(surface);
     const initialOrder = autoRenameOrder(surface);
     const initialIndexes = items.map(autoRenameInitialIndex);
-    const initialInputOrder = autoRenameParseOrderJson(orderInput?.value);
+    const baseOrder = autoRenameParseOrderJson(surface.getAttribute?.('data-auto-rename-base-order'));
+    const visibleIds = new Set(initialOrder);
     const validInitialMarkup = Boolean(
       reorderEnabled
       && form && orderInput && submit && items.length > 0
       && initialOrder.every((id) => id !== null)
-      && new Set(initialOrder).size === items.length
+      && visibleIds.size === items.length
       && initialIndexes.every((index, position) => index === position)
-      && initialInputOrder !== null
-      && autoRenameSameOrder(initialInputOrder, initialOrder)
+      && baseOrder !== null
+      && autoRenameSameOrder(baseOrder.filter((id) => visibleIds.has(id)), initialOrder)
     );
 
     if (!validInitialMarkup) {
@@ -784,6 +809,8 @@ export function enhanceAssetAutoRenameOrdering(scope = globalThis.document) {
       submit,
       items,
       initialOrder,
+      baseOrder,
+      canSubmit: false,
       autoRenameEnabled: surface.getAttribute?.('data-auto-rename-enabled') === 'true',
       view: surface.dataset?.autoRenameView || surface.getAttribute?.('data-auto-rename-view') || 'grid',
       live: surface.querySelector?.(AUTO_RENAME_LIVE_SELECTOR),

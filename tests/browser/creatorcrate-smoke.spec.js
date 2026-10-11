@@ -336,7 +336,10 @@ test.describe('CreatorCrate development browser smoke', () => {
     await expectSortModified();
     await expect(submit).toBeDisabled();
 
-    // Live subset filter removes the complete-category hooks.
+    // A live subset filter keeps the server ordering contract: the surface stays,
+    // membership is incomplete, and the base order carries every category asset
+    // exactly once (hidden ones included). Filtered drag, keyboard reorder and
+    // Preview/Apply are covered in project-assets-filtered-ordering.spec.js.
     const liveSearch = async (value) => {
       await page.locator('#search').evaluate((input, nextValue) => {
         input.value = nextValue;
@@ -347,10 +350,14 @@ test.describe('CreatorCrate development browser smoke', () => {
     };
     await liveSearch('alpha');
     await expect(checkboxes).toHaveCount(1);
-    await expect(liveRegion.locator('[data-auto-rename-surface]')).toHaveCount(0);
-    await expect(liveRegion.locator('[data-category-reorder-enabled="true"]')).toHaveCount(0);
-    await expect(liveRegion.locator('[data-auto-rename-asset]')).toHaveCount(0);
-    await expect(page.locator('[data-auto-rename-submit]')).toHaveCount(0);
+    await expect(surface).toHaveCount(1);
+    await expect(surface).toHaveAttribute('data-category-membership-complete', 'false');
+    await expect(surface).toHaveAttribute('data-category-reorder-enabled', 'true');
+    await expect(assets).toHaveCount(1);
+    const subsetBaseOrder = JSON.parse(await surface.getAttribute('data-auto-rename-base-order'));
+    expect(subsetBaseOrder).toHaveLength(filenames.length);
+    expect([...subsetBaseOrder].sort((a, b) => a - b)).toEqual([...draggedOrder].sort((a, b) => a - b));
+    expect(subsetBaseOrder).toContain((await renderedOrder())[0]);
 
     // Clearing it while keeping Modified sort restores re-enhanced hooks without a reload.
     await liveSearch('');
