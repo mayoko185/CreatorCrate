@@ -2805,3 +2805,462 @@ describe('release repository', () => {
     });
   });
 });
+
+describe('release repository dashboard projections', () => {
+  const TODAY = '2026-10-12';
+  const WEEK_END = '2026-10-19';
+
+  let tmpDir;
+  let db;
+  let releaseRepo;
+  let projectRepo;
+  let assetRepo;
+  let projectId;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-release-dashboard-'));
+    db = openDatabase(path.join(tmpDir, 'test.db'));
+    runMigrations(db, MIGRATIONS_DIR);
+    releaseRepo = createReleaseRepository(db);
+    projectRepo = createProjectRepository(db);
+    assetRepo = createAssetRepository(db);
+    projectId = projectRepo.create(sampleProject({ title: 'Dashboard Project' })).id;
+  });
+
+  afterEach(() => {
+    closeDatabase(db);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function createRelease(overrides = {}, owner = projectId) {
+    const { createdAt, updatedAt, ...input } = overrides;
+    const release = releaseRepo.create({ projectId: owner, ...sampleRelease(input) });
+    if (createdAt) db.prepare('UPDATE releases SET created_at = ? WHERE id = ?').run(createdAt, release.id);
+    if (updatedAt) db.prepare('UPDATE releases SET updated_at = ? WHERE id = ?').run(updatedAt, release.id);
+    return release;
+  }
+
+  function createProject(title) {
+    return projectRepo.create(sampleProject({ title })).id;
+  }
+
+  function archiveProjectByTimestamp(id) {
+    db.prepare("UPDATE projects SET archived_at = datetime('now') WHERE id = ?").run(id);
+  }
+
+  function archiveProjectByLegacyStatus(id) {
+    db.prepare("UPDATE projects SET status = 'archived', archived_at = NULL WHERE id = ?").run(id);
+  }
+
+  function createAsset(owner, filename, { missing = false } = {}) {
+    const asset = assetRepo.upsert(owner, filename, sampleAsset(owner, { relativePath: filename, filename }));
+    if (missing) {
+      db.prepare("UPDATE assets SET is_present = 0, missing_since = datetime('now') WHERE id = ?").run(asset.id);
+    }
+    return asset;
+  }
+
+  // Releases in every excluded state, dated inside the strip and undated, so
+  // each projection can assert that none of them leak through.
+  function seedExcludedReleases() {
+    const archivedRelease = createRelease({ title: 'Archived Release', plannedDate: '2026-10-14' });
+    releaseRepo.archive(archivedRelease.id);
+    const archivedUndated = createRelease({ title: 'Archived Undated' });
+    releaseRepo.archive(archivedUndated.id);
+
+    const timestampArchived = createProject('Timestamp Archived');
+    const statusArchived = createProject('Status Archived');
+    for (const owner of [timestampArchived, statusArchived]) {
+      createRelease({ title: 'Hidden Overdue', plannedDate: '2026-10-01' }, owner);
+      createRelease({ title: 'Hidden Today', plannedDate: TODAY }, owner);
+      createRelease({ title: 'Hidden Strip', plannedDate: '2026-10-15' }, owner);
+      createRelease({ title: 'Hidden Later', plannedDate: '2026-12-01' }, owner);
+      createRelease({ title: 'Hidden Undated' }, owner);
+      createRelease({ title: 'Hidden Published', publishedDate: '2026-10-16' }, owner);
+    }
+    archiveProjectByTimestamp(timestampArchived);
+    archiveProjectByLegacyStatus(statusArchived);
+    return { timestampArchived, statusArchived };
+  }
+
+  describe('schedule buckets', () => {
+    it('classifies yesterday, today, tomorrow, +7, and +8 against injected boundaries', () => {
+      const yesterday = createRelease({ title: 'Yesterday', plannedDate: '2026-10-11' });
+      const todayDateOnly = createRelease({ title: 'Today date-only', plannedDate: TODAY });
+      const todayTimed = createRelease({ title: 'Today timed', plannedDate: TODAY, plannedTime: '18:00' });
+      const tomorrow = createRelease({ title: 'Tomorrow', plannedDate: '2026-10-13' });
+      const plusSeven = createRelease({ title: 'Plus seven', plannedDate: WEEK_END });
+      const plusEight = createRelease({ title: 'Plus eight', plannedDate: '2026-10-20' });
+      createRelease({ title: 'Undated' });
+      createRelease({ title: 'Published', plannedDate: TODAY, publishedDate: TODAY });
+
+      expect(releaseRepo.getDashboardScheduleSummary({ today: TODAY, weekEnd: WEEK_END })).toMatchObject({
+        overdue: 1,
+        today: 2,
+        next7: 2,
+        later: 1,
+        undated: 1,
+      });
+
+      const rows = releaseRepo.findDashboardScheduledReleases({ today: TODAY, weekEnd: WEEK_END });
+      expect(rows.map((row) => [row.id, row.schedule_group])).toEqual([
+        [yesterday.id, 'overdue'],
+        [todayTimed.id, 'today'],
+        [todayDateOnly.id, 'today'],
+        [tomorrow.id, 'next7'],
+        [plusSeven.id, 'next7'],
+        [plusEight.id, 'later'],
+      ]);
+    });
+
+    it('orders dated rows by time, then created_at, then id within a date', () => {
+      const lateTime = createRelease({ title: 'Late time', plannedDate: '2026-10-14', plannedTime: '20:00' });
+      const earlyTime = createRelease({ title: 'Early time', plannedDate: '2026-10-14', plannedTime: '09:00' });
+      const newerUntimed = createRelease({ title: 'Newer', plannedDate: '2026-10-14', createdAt: '2026-09-02 00:00:00' });
+      const olderUntimed = createRelease({ title: 'Older', plannedDate: '2026-10-14', createdAt: '2026-09-01 00:00:00' });
+      const tiedA = createRelease({ title: 'Tie A', plannedDate: '2026-10-14', createdAt: '2026-09-03 00:00:00' });
+      const tiedB = createRelease({ title: 'Tie B', plannedDate: '2026-10-14', createdAt: '2026-09-03 00:00:00' });
+      const blankTime = createRelease({ title: 'Blank time', plannedDate: '2026-10-14', createdAt: '2026-09-04 00:00:00' });
+      db.prepare("UPDATE releases SET planned_time = '' WHERE id = ?").run(blankTime.id);
+
+      const rows = releaseRepo.findDashboardScheduledReleases({ today: TODAY, weekEnd: WEEK_END });
+      expect(rows.map((row) => row.id)).toEqual([
+        earlyTime.id, lateTime.id, olderUntimed.id, newerUntimed.id, tiedA.id, tiedB.id, blankTime.id,
+      ]);
+    });
+
+    it('caps only Later rows while every total stays exact', () => {
+      const overdueIds = [];
+      for (let i = 1; i <= 8; i += 1) {
+        overdueIds.push(createRelease({ title: `Overdue ${i}`, plannedDate: `2026-09-${String(i).padStart(2, '0')}` }).id);
+      }
+      const laterIds = [];
+      for (let i = 1; i <= 7; i += 1) {
+        laterIds.push(createRelease({ title: `Later ${i}`, plannedDate: `2026-11-${String(i).padStart(2, '0')}` }).id);
+      }
+
+      expect(releaseRepo.getDashboardScheduleSummary({ today: TODAY, weekEnd: WEEK_END }))
+        .toMatchObject({ overdue: 8, later: 7 });
+
+      const rows = releaseRepo.findDashboardScheduledReleases({ today: TODAY, weekEnd: WEEK_END });
+      expect(rows.filter((row) => row.schedule_group === 'overdue').map((row) => row.id)).toEqual(overdueIds);
+      expect(rows.filter((row) => row.schedule_group === 'later').map((row) => row.id)).toEqual(laterIds.slice(0, 5));
+
+      const twoLater = releaseRepo.findDashboardScheduledReleases({ today: TODAY, weekEnd: WEEK_END, laterLimit: 2 });
+      expect(twoLater.filter((row) => row.schedule_group === 'later')).toHaveLength(2);
+      expect(twoLater.filter((row) => row.schedule_group === 'overdue')).toHaveLength(8);
+    });
+
+    it('keeps totals and uncapped groups exact beyond 500 releases in every category', () => {
+      const insert = db.prepare(`
+        INSERT INTO releases (project_id, title, planned_date, created_at)
+        VALUES (?, ?, ?, ?)
+      `);
+      db.transaction(() => {
+        for (let i = 0; i < 520; i += 1) {
+          insert.run(projectId, `Overdue ${i}`, '2026-10-01', '2026-01-01 00:00:00');
+          insert.run(projectId, `Next ${i}`, '2026-10-15', '2026-01-01 00:00:00');
+          insert.run(projectId, `Later ${i}`, '2027-01-01', '2026-01-01 00:00:00');
+          insert.run(projectId, `Undated ${i}`, null, `2026-02-01 00:00:${String(i % 60).padStart(2, '0')}`);
+        }
+      })();
+
+      expect(releaseRepo.getDashboardScheduleSummary({ today: TODAY, weekEnd: WEEK_END })).toEqual({
+        overdue: 520,
+        today: 0,
+        next7: 520,
+        later: 520,
+        undated: 520,
+        oldestUndatedCreatedAt: '2026-02-01 00:00:00',
+      });
+
+      const rows = releaseRepo.findDashboardScheduledReleases({ today: TODAY, weekEnd: WEEK_END });
+      expect(rows.filter((row) => row.schedule_group === 'overdue')).toHaveLength(520);
+      expect(rows.filter((row) => row.schedule_group === 'next7')).toHaveLength(520);
+      expect(rows.filter((row) => row.schedule_group === 'later')).toHaveLength(5);
+      expect(releaseRepo.findDashboardUndatedReleases(10)).toHaveLength(10);
+    });
+
+    it('excludes archived releases, published releases, and both project archive indicators', () => {
+      const visible = createRelease({ title: 'Visible', plannedDate: '2026-10-14' });
+      const visibleUndated = createRelease({ title: 'Visible undated' });
+      seedExcludedReleases();
+
+      expect(releaseRepo.getDashboardScheduleSummary({ today: TODAY, weekEnd: WEEK_END })).toEqual({
+        overdue: 0,
+        today: 0,
+        next7: 1,
+        later: 0,
+        undated: 1,
+        oldestUndatedCreatedAt: expect.any(String),
+      });
+      expect(releaseRepo.findDashboardScheduledReleases({ today: TODAY, weekEnd: WEEK_END }).map((row) => row.id))
+        .toEqual([visible.id]);
+      expect(releaseRepo.findDashboardUndatedReleases().map((row) => row.id)).toEqual([visibleUndated.id]);
+    });
+
+    it('returns zero counts and no rows for an empty schedule', () => {
+      expect(releaseRepo.getDashboardScheduleSummary({ today: TODAY, weekEnd: WEEK_END })).toEqual({
+        overdue: 0, today: 0, next7: 0, later: 0, undated: 0, oldestUndatedCreatedAt: null,
+      });
+      expect(releaseRepo.findDashboardScheduledReleases({ today: TODAY, weekEnd: WEEK_END })).toEqual([]);
+      expect(releaseRepo.findDashboardUndatedReleases()).toEqual([]);
+    });
+
+    it('rejects missing or malformed date boundaries instead of classifying nothing', () => {
+      expect(() => releaseRepo.getDashboardScheduleSummary({ today: TODAY })).toThrow(TypeError);
+      expect(() => releaseRepo.findDashboardScheduledReleases({ today: '12/10/2026', weekEnd: WEEK_END })).toThrow(TypeError);
+      expect(() => releaseRepo.countDashboardCalendarDays({ startDate: TODAY, endDate: WEEK_END })).toThrow(TypeError);
+      expect(() => releaseRepo.findOpenDays(undefined)).toThrow(TypeError);
+    });
+  });
+
+  describe('undated releases', () => {
+    it('orders oldest first with an id tie-breaker and reports the oldest timestamp beyond the cap', () => {
+      const ids = [];
+      for (let i = 0; i < 12; i += 1) {
+        ids.push(createRelease({ title: `Undated ${i}`, createdAt: `2026-09-${String(20 - i).padStart(2, '0')} 00:00:00` }).id);
+      }
+      const tiedFirst = createRelease({ title: 'Tied first', createdAt: '2026-08-01 00:00:00' });
+      const tiedSecond = createRelease({ title: 'Tied second', createdAt: '2026-08-01 00:00:00' });
+
+      expect(releaseRepo.findDashboardUndatedReleases(10).map((row) => row.id)).toEqual([
+        tiedFirst.id,
+        tiedSecond.id,
+        ...ids.slice().reverse().slice(0, 8),
+      ]);
+
+      const summary = releaseRepo.getDashboardScheduleSummary({ today: TODAY, weekEnd: WEEK_END });
+      expect(summary.undated).toBe(14);
+      expect(summary.oldestUndatedCreatedAt).toBe('2026-08-01 00:00:00');
+      expect(releaseRepo.findDashboardUndatedReleases(1).map((row) => row.id)).toEqual([tiedFirst.id]);
+    });
+
+    it('projects project fields and selected versus missing asset counts', () => {
+      const release = createRelease({ title: 'With assets' });
+      const present = createAsset(projectId, 'present.png');
+      const missing = createAsset(projectId, 'missing.png', { missing: true });
+      createAsset(projectId, 'unselected-missing.png', { missing: true });
+      releaseRepo.addReleaseAsset(release.id, present.id, 'primary', 0);
+      releaseRepo.addReleaseAsset(release.id, missing.id, 'attachment', 1);
+
+      expect(releaseRepo.findDashboardUndatedReleases()).toEqual([
+        expect.objectContaining({
+          id: release.id,
+          project_id: projectId,
+          project_title: 'Dashboard Project',
+          project_status: 'tbd',
+          selected_asset_count: 2,
+          missing_asset_count: 1,
+        }),
+      ]);
+    });
+  });
+
+  describe('findRecentlyPublished', () => {
+    it('orders by published date, updated_at, then id and limits to four by default', () => {
+      const oldest = createRelease({ title: 'Oldest', publishedDate: '2026-09-01' });
+      const newest = createRelease({ title: 'Newest', publishedDate: '2026-10-10' });
+      const sameDayStale = createRelease({ title: 'Stale', publishedDate: '2026-10-05', updatedAt: '2026-10-05 08:00:00' });
+      const sameDayFresh = createRelease({ title: 'Fresh', publishedDate: '2026-10-05', updatedAt: '2026-10-06 08:00:00' });
+      const tieLow = createRelease({ title: 'Tie low', publishedDate: '2026-10-01', updatedAt: '2026-10-01 08:00:00' });
+      const tieHigh = createRelease({ title: 'Tie high', publishedDate: '2026-10-01', updatedAt: '2026-10-01 08:00:00' });
+      createRelease({ title: 'Unpublished', plannedDate: '2026-10-11' });
+
+      expect(releaseRepo.findRecentlyPublished().map((row) => row.id))
+        .toEqual([newest.id, sameDayFresh.id, sameDayStale.id, tieHigh.id]);
+      expect(releaseRepo.findRecentlyPublished(10).map((row) => row.id))
+        .toEqual([newest.id, sameDayFresh.id, sameDayStale.id, tieHigh.id, tieLow.id, oldest.id]);
+    });
+
+    it('excludes archived releases and both project archive indicators', () => {
+      const visible = createRelease({ title: 'Visible', publishedDate: '2026-09-01' });
+      const archived = createRelease({ title: 'Archived', publishedDate: '2026-10-10' });
+      // archive() is the production path; a published release can be archived too.
+      releaseRepo.archive(archived.id);
+      seedExcludedReleases();
+
+      expect(releaseRepo.findRecentlyPublished(10).map((row) => row.id)).toEqual([visible.id]);
+    });
+  });
+
+  describe('calendar strip and open days', () => {
+    it('counts published, scheduled, and overdue releases by effective date without archived projects', () => {
+      createRelease({ title: 'Overdue', plannedDate: '2026-10-08' });
+      createRelease({ title: 'Published late', plannedDate: '2026-10-01', publishedDate: '2026-10-09' });
+      createRelease({ title: 'Published early', plannedDate: '2026-10-30', publishedDate: '2026-10-09' });
+      createRelease({ title: 'Today A', plannedDate: TODAY, plannedTime: '09:00' });
+      createRelease({ title: 'Today B', plannedDate: TODAY });
+      createRelease({ title: 'Future', plannedDate: '2026-10-15' });
+      createRelease({ title: 'Outside', plannedDate: '2026-10-19' });
+      const { timestampArchived, statusArchived } = seedExcludedReleases();
+
+      expect(releaseRepo.countDashboardCalendarDays({ startDate: '2026-10-05', endDate: '2026-10-19', today: TODAY }))
+        .toEqual([
+          { date: '2026-10-08', published: 0, scheduled: 0, overdue: 1 },
+          { date: '2026-10-09', published: 2, scheduled: 0, overdue: 0 },
+          { date: TODAY, published: 0, scheduled: 2, overdue: 0 },
+          { date: '2026-10-15', published: 0, scheduled: 1, overdue: 0 },
+        ]);
+
+      // The Calendar page keeps archived-project releases visible.
+      const calendarProjects = new Set(
+        releaseRepo.findCalendarRange('2026-10-05', '2026-10-19').map((row) => row.project_id),
+      );
+      expect(calendarProjects).toEqual(new Set([projectId, timestampArchived, statusArchived]));
+    });
+
+    it('finds the first open days from the start date, spilling past the strip', () => {
+      // Occupy 2026-10-13 through 2026-10-27 except 2026-10-20.
+      for (let day = 13; day <= 27; day += 1) {
+        if (day === 20) continue;
+        const date = `2026-10-${day}`;
+        if (day % 2 === 0) createRelease({ title: `Published ${date}`, publishedDate: date });
+        else createRelease({ title: `Scheduled ${date}`, plannedDate: date });
+      }
+      createRelease({ title: 'Shared', plannedDate: '2026-10-14' });
+      createRelease({ title: 'Earlier', plannedDate: '2026-10-01' });
+      createRelease({ title: 'Undated' });
+
+      expect(releaseRepo.findOpenDays('2026-10-13')).toEqual(['2026-10-20', '2026-10-28', '2026-10-29']);
+      expect(releaseRepo.findOpenDays('2026-10-13', 1)).toEqual(['2026-10-20']);
+    });
+
+    it('treats days held only by archived releases or archived projects as open', () => {
+      seedExcludedReleases();
+      createRelease({ title: 'Real', plannedDate: '2026-10-13' });
+
+      expect(releaseRepo.findOpenDays('2026-10-13')).toEqual(['2026-10-14', '2026-10-15', '2026-10-16']);
+    });
+
+    it('crosses month and year boundaries', () => {
+      createRelease({ title: 'Eve', plannedDate: '2026-12-31' });
+
+      expect(releaseRepo.findOpenDays('2026-12-30')).toEqual(['2026-12-30', '2027-01-01', '2027-01-02']);
+    });
+  });
+
+  describe('missing-asset tile counts', () => {
+    it('counts distinct affected active releases separately from all missing active-project assets', () => {
+      const sharedMissing = createAsset(projectId, 'shared-missing.png', { missing: true });
+      const secondMissing = createAsset(projectId, 'second-missing.png', { missing: true });
+      createAsset(projectId, 'unselected-missing.png', { missing: true });
+      const present = createAsset(projectId, 'present.png');
+
+      const twoMissing = createRelease({ title: 'Two missing', plannedDate: '2026-10-14' });
+      releaseRepo.addReleaseAsset(twoMissing.id, sharedMissing.id, 'primary', 0);
+      releaseRepo.addReleaseAsset(twoMissing.id, secondMissing.id, 'attachment', 1);
+      const sharing = createRelease({ title: 'Sharing' });
+      releaseRepo.addReleaseAsset(sharing.id, sharedMissing.id, 'primary', 0);
+      const presentOnly = createRelease({ title: 'Present only' });
+      releaseRepo.addReleaseAsset(presentOnly.id, present.id, 'primary', 0);
+      const published = createRelease({ title: 'Published', publishedDate: '2026-10-01' });
+      releaseRepo.addReleaseAsset(published.id, sharedMissing.id, 'primary', 0);
+      const archived = createRelease({ title: 'Archived' });
+      releaseRepo.addReleaseAsset(archived.id, sharedMissing.id, 'primary', 0);
+      releaseRepo.archive(archived.id);
+
+      for (const archiveProject of [archiveProjectByTimestamp, archiveProjectByLegacyStatus]) {
+        const owner = createProject(`Archived owner ${archiveProject.name}`);
+        const asset = createAsset(owner, 'gone.png', { missing: true });
+        const release = createRelease({ title: 'Hidden' }, owner);
+        releaseRepo.addReleaseAsset(release.id, asset.id, 'primary', 0);
+        archiveProject(owner);
+      }
+
+      expect(releaseRepo.countActiveReleasesWithMissingSelectedAssets()).toBe(2);
+      expect(releaseRepo.findReleasesWithMissingSelectedAssets(100).map((row) => row.id).sort((a, b) => a - b))
+        .toEqual([twoMissing.id, sharing.id].sort((a, b) => a - b));
+      expect(assetRepo.countMissingInActiveProjects()).toBe(3);
+      expect(assetRepo.getTotalMissingCount()).toBe(5);
+    });
+
+    it('returns zero when no active release selects a missing asset', () => {
+      createAsset(projectId, 'missing.png', { missing: true });
+      createRelease({ title: 'Nothing selected' });
+
+      expect(releaseRepo.countActiveReleasesWithMissingSelectedAssets()).toBe(0);
+      expect(assetRepo.countMissingInActiveProjects()).toBe(1);
+    });
+  });
+
+  describe('findReleaseScheduleSummaryByProjectIds', () => {
+    it('returns [] for empty input without querying', () => {
+      const prepareSpy = vi.spyOn(db, 'prepare');
+
+      expect(releaseRepo.findReleaseScheduleSummaryByProjectIds([])).toEqual([]);
+      expect(prepareSpy).not.toHaveBeenCalled();
+    });
+
+    it('summarizes next dated release, undated count, and last publication per project in one statement', () => {
+      const overdue = createRelease({ title: 'Overdue next', plannedDate: '2026-10-01' });
+      createRelease({ title: 'Later', plannedDate: '2026-11-01' });
+      createRelease({ title: 'Undated A' });
+      createRelease({ title: 'Undated B' });
+      createRelease({ title: 'Published old', publishedDate: '2026-08-01' });
+      createRelease({ title: 'Published new', publishedDate: '2026-09-15' });
+      const archivedPublished = createRelease({ title: 'Archived published', publishedDate: '2026-10-05' });
+      releaseRepo.archive(archivedPublished.id);
+      const archivedEarlier = createRelease({ title: 'Archived earlier', plannedDate: '2026-09-01' });
+      releaseRepo.archive(archivedEarlier.id);
+
+      const timedProject = createProject('Timed Project');
+      createRelease({ title: 'Date only', plannedDate: TODAY }, timedProject);
+      const timed = createRelease({ title: 'Timed', plannedDate: TODAY, plannedTime: '18:00' }, timedProject);
+
+      const undatedOnly = createProject('Undated Only');
+      createRelease({ title: 'Only undated' }, undatedOnly);
+
+      const empty = createProject('Empty Project');
+
+      const statusArchived = createProject('Status Archived Summary');
+      createRelease({ title: 'Hidden', plannedDate: '2026-10-14' }, statusArchived);
+      createRelease({ title: 'Hidden undated' }, statusArchived);
+      createRelease({ title: 'Hidden published', publishedDate: '2026-09-15' }, statusArchived);
+      archiveProjectByLegacyStatus(statusArchived);
+
+      const timestampArchived = createProject('Timestamp Archived Summary');
+      createRelease({ title: 'Hidden', plannedDate: '2026-10-14' }, timestampArchived);
+      createRelease({ title: 'Hidden undated' }, timestampArchived);
+      createRelease({ title: 'Hidden published', publishedDate: '2026-09-15' }, timestampArchived);
+      archiveProjectByTimestamp(timestampArchived);
+
+      const prepareSpy = vi.spyOn(db, 'prepare');
+      const rows = releaseRepo.findReleaseScheduleSummaryByProjectIds([
+        empty, statusArchived, timestampArchived, undatedOnly, timedProject, projectId, projectId, 999999,
+      ]);
+      expect(prepareSpy).toHaveBeenCalledTimes(1);
+
+      const noRelease = {
+        next_release_id: null,
+        next_release_title: null,
+        next_planned_date: null,
+        next_planned_time: null,
+      };
+      expect(rows).toEqual([
+        {
+          project_id: projectId,
+          next_release_id: overdue.id,
+          next_release_title: 'Overdue next',
+          next_planned_date: '2026-10-01',
+          next_planned_time: null,
+          undated_count: 2,
+          last_published_date: '2026-09-15',
+        },
+        {
+          project_id: timedProject,
+          next_release_id: timed.id,
+          next_release_title: 'Timed',
+          next_planned_date: TODAY,
+          next_planned_time: '18:00',
+          undated_count: 0,
+          last_published_date: null,
+        },
+        { project_id: undatedOnly, ...noRelease, undated_count: 1, last_published_date: null },
+        { project_id: empty, ...noRelease, undated_count: 0, last_published_date: null },
+        { project_id: statusArchived, ...noRelease, undated_count: 0, last_published_date: null },
+        { project_id: timestampArchived, ...noRelease, undated_count: 0, last_published_date: null },
+      ]);
+    });
+  });
+});

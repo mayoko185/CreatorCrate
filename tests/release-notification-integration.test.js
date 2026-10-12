@@ -236,6 +236,39 @@ describe('release notifications — application integration', () => {
     expect(deliveries().every((row) => row.state === 'cancelled')).toBe(true);
   });
 
+  it('cancels queued work when a release is quick-scheduled, but not for a stale schedule request', async () => {
+    buildContext();
+    enableNtfy();
+    const rescheduled = createRelease();
+    const unchanged = createRelease();
+    vi.setSystemTime(local(6, 10, 14));
+    const runtime = appContext.releaseNotificationRuntime;
+    core().materializeDueOccurrences({ destinations: runtime.resolveDestinations(core().getSettings()) });
+    expect(deliveries().map((row) => row.state)).toEqual(['pending', 'pending']);
+    const token = await csrf();
+
+    await agent.post(`/releases/${unchanged}/schedule`).set('X-CSRF-Token', token)
+      .send({ plannedDate: '2026-06-20', expectedPlannedDate: '2026-06-10', expectedPlannedTime: null })
+      .expect(409);
+    expect(deliveries().every((row) => row.state === 'pending')).toBe(true);
+
+    const res = await agent.post(`/releases/${rescheduled}/schedule`).set('X-CSRF-Token', token)
+      .send({ plannedDate: '2026-06-20', expectedPlannedDate: '2026-06-10', expectedPlannedTime: '14:00' })
+      .expect(200);
+    expect(res.body.release.schedule).toEqual({ plannedDate: '2026-06-20', plannedTime: null });
+
+    const rows = appContext.db.prepare(`
+      SELECT o.release_id, d.state, d.failure_code
+      FROM release_notification_deliveries d
+      JOIN release_notification_occurrences o ON o.event_id = d.event_id
+      ORDER BY o.release_id
+    `).all();
+    expect(rows).toEqual([
+      { release_id: rescheduled, state: 'cancelled', failure_code: 'schedule_changed' },
+      { release_id: unchanged, state: 'pending', failure_code: null },
+    ]);
+  });
+
   it('drains an in-flight send before a live restore, rebuilds services, and restores notifications disabled', async () => {
     buildContext();
     enableNtfy();

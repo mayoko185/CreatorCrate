@@ -12087,4 +12087,172 @@ describe('release HTTP workflow', () => {
 
 });
 
+
+  describe('release quick-schedule endpoint', () => {
+    function createScheduleRelease(projectId, overrides = {}) {
+      return releaseRepository.create({
+        projectId,
+        title: 'Schedule Release',
+        description: 'Keep description',
+        notes: 'Keep notes',
+        plannedDate: null,
+        plannedTime: null,
+        patreonUrl: 'https://example.com/post',
+        publishedDate: null,
+        ...overrides,
+      });
+    }
+
+    function postSchedule(id, body, { token = csrfToken } = {}) {
+      const req = agent.post(`/releases/${id}/schedule`).set('Accept', 'application/json');
+      if (token !== null) req.set('X-CSRF-Token', token);
+      return req.send(body);
+    }
+
+    function readRelease(id) {
+      return db.prepare('SELECT * FROM releases WHERE id = ?').get(id);
+    }
+
+    it('schedules an undated release and returns both schedule pairs as JSON', async () => {
+      const projectId = insertProjectDirect(db, { title: 'Schedule Project' });
+      const release = createScheduleRelease(projectId);
+      const before = readRelease(release.id);
+
+      const res = await postSchedule(release.id, {
+        plannedDate: '2026-10-13', expectedPlannedDate: null, expectedPlannedTime: null,
+      }).expect(200);
+
+      expect(res.headers['content-type']).toMatch(/application\/json/);
+      expect(res.body).toEqual({
+        status: 'success',
+        message: 'Release scheduled for 2026-10-13.',
+        changed: true,
+        release: {
+          id: release.id,
+          previousSchedule: { plannedDate: null, plannedTime: null },
+          schedule: { plannedDate: '2026-10-13', plannedTime: null },
+        },
+      });
+      const after = readRelease(release.id);
+      expect(after.planned_date).toBe('2026-10-13');
+      expect(after.planned_time).toBeNull();
+      expect({ ...after, planned_date: null, updated_at: null }).toEqual({ ...before, updated_at: null });
+    });
+
+    it('undoes a schedule with a blank form-encoded date', async () => {
+      const projectId = insertProjectDirect(db);
+      const release = createScheduleRelease(projectId, { plannedDate: '2026-10-13' });
+
+      const res = await agent.post(`/releases/${release.id}/schedule`)
+        .set('Accept', 'application/json')
+        .type('form')
+        .send({ _csrf: csrfToken, plannedDate: '', plannedTime: '', expectedPlannedDate: '2026-10-13', expectedPlannedTime: '' })
+        .expect(200);
+
+      expect(res.body.message).toBe('Release schedule cleared.');
+      expect(res.body.release.schedule).toEqual({ plannedDate: null, plannedTime: null });
+      expect(readRelease(release.id).planned_date).toBeNull();
+    });
+
+    it('reports a no-op without changing updated_at', async () => {
+      const projectId = insertProjectDirect(db);
+      const release = createScheduleRelease(projectId, { plannedDate: '2026-10-13' });
+      db.prepare("UPDATE releases SET updated_at = '2000-01-01 00:00:00' WHERE id = ?").run(release.id);
+
+      const res = await postSchedule(release.id, {
+        plannedDate: '2026-10-13', expectedPlannedDate: '2026-10-13', expectedPlannedTime: null,
+      }).expect(200);
+
+      expect(res.body).toMatchObject({ status: 'success', changed: false, message: 'Release schedule unchanged.' });
+      expect(readRelease(release.id).updated_at).toBe('2000-01-01 00:00:00');
+    });
+
+    it('rejects a missing or invalid CSRF token without changing the release', async () => {
+      const projectId = insertProjectDirect(db);
+      const release = createScheduleRelease(projectId);
+      const body = { plannedDate: '2026-10-13', expectedPlannedDate: null, expectedPlannedTime: null };
+
+      const missing = await postSchedule(release.id, body, { token: null }).expect(403);
+      expect(missing.body).toEqual({ status: 'error', message: 'Invalid or missing CSRF token.' });
+      await postSchedule(release.id, body, { token: 'not-the-token' }).expect(403);
+      expect(readRelease(release.id).planned_date).toBeNull();
+    });
+
+    it('returns 422 JSON for invalid input', async () => {
+      const projectId = insertProjectDirect(db);
+      const release = createScheduleRelease(projectId);
+
+      const invalidDate = await postSchedule(release.id, {
+        plannedDate: '2026-02-30', expectedPlannedDate: null, expectedPlannedTime: null,
+      }).expect(422);
+      expect(invalidDate.body).toMatchObject({
+        status: 'error', code: 'VALIDATION_FAILED', errors: { plannedDate: expect.any(String) },
+      });
+      expect(invalidDate.body.message).toBe(invalidDate.body.errors.plannedDate);
+
+      const wrongType = await postSchedule(release.id, {
+        plannedDate: 20261013, expectedPlannedDate: null, expectedPlannedTime: null,
+      }).expect(422);
+      expect(wrongType.body.errors).toHaveProperty('plannedDate');
+
+      const withTime = await postSchedule(release.id, {
+        plannedDate: '2026-10-13', plannedTime: '10:00', expectedPlannedDate: null, expectedPlannedTime: null,
+      }).expect(422);
+      expect(withTime.body.errors).toHaveProperty('plannedTime');
+
+      const missingExpected = await postSchedule(release.id, { plannedDate: '2026-10-13' }).expect(422);
+      expect(Object.keys(missingExpected.body.errors).sort()).toEqual(['expectedPlannedDate', 'expectedPlannedTime']);
+
+      expect(readRelease(release.id).planned_date).toBeNull();
+    });
+
+    it('returns 422 JSON for lifecycle rejections', async () => {
+      const archivedProjectId = insertProjectDirect(db, { archivedAt: '2026-01-01 00:00:00' });
+      const legacyProjectId = insertProjectDirect(db, { status: 'archived' });
+      const projectId = insertProjectDirect(db);
+      const body = { plannedDate: '2026-10-13', expectedPlannedDate: null, expectedPlannedTime: null };
+
+      const archivedProject = await postSchedule(createScheduleRelease(archivedProjectId).id, body).expect(422);
+      expect(archivedProject.body).toMatchObject({ status: 'error', code: 'PROJECT_ARCHIVED', errors: { general: expect.any(String) } });
+      const legacyProject = await postSchedule(createScheduleRelease(legacyProjectId).id, body).expect(422);
+      expect(legacyProject.body.code).toBe('PROJECT_ARCHIVED');
+
+      const archivedRelease = createScheduleRelease(projectId);
+      releaseRepository.archive(archivedRelease.id);
+      const archived = await postSchedule(archivedRelease.id, body).expect(422);
+      expect(archived.body.code).toBe('RELEASE_ARCHIVED');
+
+      const publishedRelease = createScheduleRelease(projectId, { publishedDate: '2026-10-01' });
+      const published = await postSchedule(publishedRelease.id, body).expect(422);
+      expect(published.body).toMatchObject({ code: 'VALIDATION_FAILED', errors: { plannedDate: expect.any(String) } });
+      expect(readRelease(publishedRelease.id).planned_date).toBeNull();
+    });
+
+    it('returns 404 JSON for an unknown or malformed release id', async () => {
+      const body = { plannedDate: '2026-10-13', expectedPlannedDate: null, expectedPlannedTime: null };
+      const unknown = await postSchedule(999999, body).expect(404);
+      expect(unknown.body).toEqual({ status: 'error', code: 'RELEASE_NOT_FOUND', message: 'Release not found.' });
+      const malformed = await postSchedule('abc', body).expect(404);
+      expect(malformed.body.code).toBe('RELEASE_NOT_FOUND');
+    });
+
+    it('returns 409 JSON with the current schedule when the expected schedule is stale', async () => {
+      const projectId = insertProjectDirect(db);
+      const release = createScheduleRelease(projectId);
+      await postSchedule(release.id, { plannedDate: '2026-10-13', expectedPlannedDate: null, expectedPlannedTime: null }).expect(200);
+      db.prepare("UPDATE releases SET planned_date = '2026-11-01', planned_time = '18:00' WHERE id = ?").run(release.id);
+
+      const res = await postSchedule(release.id, {
+        plannedDate: null, expectedPlannedDate: '2026-10-13', expectedPlannedTime: null,
+      }).expect(409);
+
+      expect(res.body).toMatchObject({
+        status: 'error',
+        code: 'SCHEDULE_CONFLICT',
+        message: expect.any(String),
+        currentSchedule: { plannedDate: '2026-11-01', plannedTime: '18:00' },
+      });
+      expect(readRelease(release.id).planned_date).toBe('2026-11-01');
+    });
+  });
 });

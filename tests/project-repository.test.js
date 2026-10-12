@@ -329,6 +329,36 @@ describe('project repository', () => {
     }
   });
 
+  it('breaks equal sort keys by id in the sort direction only when requested', () => {
+    const first = repository.create(sampleProject({ title: 'Same Moment A' }));
+    const second = repository.create(sampleProject({ title: 'Same Moment B' }));
+    const third = repository.create(sampleProject({ title: 'Same Moment C' }));
+    const newest = repository.create(sampleProject({ title: 'Newest' }));
+    const archived = repository.create(sampleProject({ title: 'Archived Same Moment' }));
+    db.prepare('UPDATE projects SET updated_at = ? WHERE id IN (?, ?, ?)')
+      .run('2026-10-01 00:00:00', first.id, second.id, third.id);
+    db.prepare('UPDATE projects SET updated_at = ? WHERE id = ?').run('2026-10-02 00:00:00', newest.id);
+    repository.archive(archived.id);
+    db.prepare('UPDATE projects SET updated_at = ? WHERE id = ?').run('2026-10-01 00:00:00', archived.id);
+
+    const stable = { sortBy: 'updated', order: 'desc', includeArchived: false, tieBreakById: true };
+    const descending = repository.list(stable);
+    expect(descending.rows.map((project) => project.id)).toEqual([newest.id, third.id, second.id, first.id]);
+    expect(descending.total).toBe(4);
+
+    const pageOne = repository.list({ ...stable, limit: 2, offset: 0 });
+    const pageTwo = repository.list({ ...stable, limit: 2, offset: 2 });
+    expect([...pageOne.rows, ...pageTwo.rows].map((project) => project.id))
+      .toEqual([newest.id, third.id, second.id, first.id]);
+
+    expect(repository.list({ ...stable, order: 'asc' }).rows.map((project) => project.id))
+      .toEqual([first.id, second.id, third.id, newest.id]);
+
+    const prepareSpy = vi.spyOn(db, 'prepare');
+    repository.list({ sortBy: 'updated', order: 'desc' });
+    expect(prepareSpy.mock.calls.at(-1)[0]).toContain('ORDER BY updated_at DESC LIMIT');
+  });
+
   it('composes tag, search, status, and archived predicates and stops matching after tag deletion', () => {
     const tag = tagRepository.create({ displayName: 'Needle', normalizedName: 'needle' });
     const planned = repository.create(sampleProject({ title: 'Needle Planned', status: 'planned' }));

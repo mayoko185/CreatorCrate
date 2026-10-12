@@ -66,6 +66,22 @@ export class ReleasePublishedError extends Error {
   }
 }
 
+/**
+ * Thrown when a schedule change names an expected current schedule that no
+ * longer matches the stored one, so a newer edit is never overwritten.
+ * `currentSchedule` is the stored schedule observed when the conflict was
+ * detected.
+ */
+export class ReleaseScheduleConflictError extends Error {
+  constructor(id, currentSchedule) {
+    super(`Release ${id} schedule changed since it was loaded.`);
+    this.name = 'ReleaseScheduleConflictError';
+    this.status = 409;
+    this.code = 'SCHEDULE_CONFLICT';
+    this.currentSchedule = currentSchedule;
+  }
+}
+
 export class AssetNotFoundError extends Error {
   constructor(id) {
     super(`Asset ${id} not found`);
@@ -97,6 +113,75 @@ function isValidDate(value) {
   if (month < 1 || month > 12 || day < 1) return false;
   const daysInMonth = [31, isLeapYear(year) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
   return day <= daysInMonth[month - 1];
+}
+
+/** Stored schedule pair with blank values read as null (date-only/undated). */
+function readSchedule(release) {
+  return {
+    plannedDate: release.planned_date || null,
+    plannedTime: release.planned_time || null,
+  };
+}
+
+function isBlankScheduleValue(value) {
+  return value === null || (typeof value === 'string' && value.trim() === '');
+}
+
+/**
+ * Validate the quick-schedule input. Every field except `plannedTime` must be
+ * present: omission is a client error, while null/blank intentionally means
+ * "no date" or "no time".
+ */
+function normalizeScheduleInput(input) {
+  const errors = {};
+  const source = input !== null && typeof input === 'object' ? input : {};
+
+  const readDate = (field, label) => {
+    if (!Object.hasOwn(source, field)) {
+      errors[field] = `${label} is required (use null for no date).`;
+      return null;
+    }
+    const value = source[field];
+    if (isBlankScheduleValue(value)) return null;
+    if (typeof value !== 'string' || !isValidDate(value.trim())) {
+      errors[field] = `${label} must be a valid date (YYYY-MM-DD) or null.`;
+      return null;
+    }
+    return value.trim();
+  };
+
+  const plannedDate = readDate('plannedDate', 'Planned date');
+  const expectedPlannedDate = readDate('expectedPlannedDate', 'Expected planned date');
+
+  let expectedPlannedTime = null;
+  if (!Object.hasOwn(source, 'expectedPlannedTime')) {
+    errors.expectedPlannedTime = 'Expected planned time is required (use null for no time).';
+  } else if (!isBlankScheduleValue(source.expectedPlannedTime)) {
+    const value = source.expectedPlannedTime;
+    if (typeof value !== 'string' || !isValidTime(value.trim())) {
+      errors.expectedPlannedTime = 'Expected planned time must be a valid time (HH:MM) or null.';
+    } else {
+      expectedPlannedTime = value.trim();
+    }
+  }
+
+  if (Object.hasOwn(source, 'plannedTime') && source.plannedTime !== undefined
+    && !isBlankScheduleValue(source.plannedTime)) {
+    errors.plannedTime = 'Quick scheduling sets a date only; planned time must be empty.';
+  }
+
+  if (Object.keys(errors).length > 0) {
+    throw new ReleaseValidationError(errors);
+  }
+
+  return {
+    schedule: { plannedDate, plannedTime: null },
+    expected: { plannedDate: expectedPlannedDate, plannedTime: expectedPlannedTime },
+  };
+}
+
+function isSameSchedule(a, b) {
+  return a.plannedDate === b.plannedDate && a.plannedTime === b.plannedTime;
 }
 
 function isValidTime(value) {
@@ -699,6 +784,57 @@ export function createReleaseService({
         notifyReleaseNotificationState(id);
       }
       return updated;
+    },
+
+    /**
+     * Date-only quick schedule (or Undo to undated) guarded by the caller's
+     * view of the current schedule. Only planned_date, planned_time, and
+     * updated_at change; the resulting planned_time is always null.
+     *
+     * @param {number} id
+     * @param {{ plannedDate: string|null, expectedPlannedDate: string|null,
+     *   expectedPlannedTime: string|null, plannedTime?: null|'' }} input
+     *   all fields but `plannedTime` must be present; null/blank means none
+     * @returns {{ release: ReleaseRecord, changed: boolean,
+     *   previousSchedule: { plannedDate: string|null, plannedTime: string|null },
+     *   schedule: { plannedDate: string|null, plannedTime: string|null } }}
+     * @throws {ReleaseNotFoundError|ReleaseParentArchivedError|ReleaseArchivedError|
+     *   ReleaseValidationError|ReleaseScheduleConflictError}
+     */
+    scheduleRelease(id, input) {
+      const guardSchedulable = (release) => {
+        if (!release) throw new ReleaseNotFoundError(id);
+        guardParentProjectNotArchived(release.project_id);
+        guardReleaseNotArchived(release);
+        if (release.published_date != null) {
+          throw new ReleaseValidationError({ plannedDate: 'Published releases cannot be rescheduled here.' });
+        }
+      };
+
+      const release = repository.findById(id);
+      guardSchedulable(release);
+      const { schedule, expected } = normalizeScheduleInput(input);
+
+      const previousSchedule = readSchedule(release);
+      if (!isSameSchedule(previousSchedule, expected)) {
+        throw new ReleaseScheduleConflictError(id, previousSchedule);
+      }
+      if (isSameSchedule(previousSchedule, schedule)) {
+        return { release, changed: false, previousSchedule, schedule: previousSchedule };
+      }
+
+      const updated = repository.updateSchedule(id, schedule, expected);
+      if (!updated) {
+        // The row changed after the read above; report the current reason
+        // rather than treating the unapplied write as success.
+        const current = repository.findById(id);
+        guardSchedulable(current);
+        throw new ReleaseScheduleConflictError(id, readSchedule(current));
+      }
+
+      logActivity('release.updated', updated);
+      notifyReleaseNotificationState(id);
+      return { release: updated, changed: true, previousSchedule, schedule: readSchedule(updated) };
     },
 
     /**

@@ -418,6 +418,8 @@ export function createProjectRepository(db) {
      * @param {string} [options.order]
      * @param {number} [options.limit]
      * @param {number} [options.offset]
+     * @param {boolean} [options.tieBreakById] - break equal sort keys by id in
+     *   the sort direction (e.g. updated_at DESC, id DESC)
      * @param {number} [options.knownTotal] - previously counted total for the
      *   identical filters on a row-returning request
      * @returns {{ rows: ProjectRecord[], total: number }}
@@ -437,6 +439,7 @@ export function createProjectRepository(db) {
         order = 'desc',
         limit = 25,
         offset = 0,
+        tieBreakById = false,
         knownTotal,
       } = options;
 
@@ -496,7 +499,7 @@ export function createProjectRepository(db) {
       }
 
       const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-      const orderClause = buildOrderClause(sortBy, order);
+      const orderClause = buildOrderClause(sortBy, order, tieBreakById);
 
       const countSql = `SELECT COUNT(*) AS c FROM projects ${where}`;
       const total = limit !== 0 && Number.isSafeInteger(knownTotal) && knownTotal >= 0
@@ -569,8 +572,12 @@ const ALLOWED_SORTS = Object.freeze({
   title: DASHBOARD_SORTS.title,
 });
 
-function buildOrderClause(sortBy, order) {
+// Equal sort keys are common (timestamps written in the same second). The
+// opt-in id tie-breaker follows the sort direction; without it, existing
+// listings keep SQLite's implicit order for ties.
+function buildOrderClause(sortBy, order, tieBreakById = false) {
   const sort = ALLOWED_SORTS[sortBy] || ALLOWED_SORTS.updated;
   const direction = order === 'asc' ? 'ASC' : 'DESC';
-  return `ORDER BY ${sort.column} ${direction}`;
+  const tieBreak = tieBreakById ? `, id ${direction}` : '';
+  return `ORDER BY ${sort.column} ${direction}${tieBreak}`;
 }

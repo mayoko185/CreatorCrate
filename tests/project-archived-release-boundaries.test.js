@@ -121,4 +121,41 @@ describe('legacy status-only Archived release boundaries', () => {
     expect(missingIds).not.toContain(archivedRelease.id);
     expect(missingIds).toContain(activeRelease.id);
   });
+
+  it('excludes a status-only archived parent from every Dashboard projection', () => {
+    const archivedProject = projectRepository.create(projectInput('Legacy Archived Dashboard'));
+    const activeProject = projectRepository.create(projectInput('Active Dashboard Control'));
+    for (const project of [archivedProject, activeProject]) {
+      releaseRepository.create({ projectId: project.id, ...releaseInput('Overdue', '2025-06-10') });
+      releaseRepository.create({ projectId: project.id, ...releaseInput('Undated') });
+      releaseRepository.create({
+        projectId: project.id,
+        ...releaseInput('Published'),
+        publishedDate: '2025-06-16',
+      });
+      const missing = assetRepository.upsert(project.id, 'missing.txt', assetInput(project.id, 'missing.txt'));
+      db.prepare("UPDATE assets SET is_present = 0, missing_since = datetime('now') WHERE id = ?").run(missing.id);
+      const release = releaseRepository.create({ projectId: project.id, ...releaseInput('Missing', '2025-06-17') });
+      releaseRepository.addReleaseAsset(release.id, missing.id, 'attachment', 0);
+    }
+    db.prepare("UPDATE projects SET status = 'archived', archived_at = NULL WHERE id = ?").run(archivedProject.id);
+
+    const boundaries = { today: '2025-06-15', weekEnd: '2025-06-22' };
+    expect(releaseRepository.getDashboardScheduleSummary(boundaries))
+      .toMatchObject({ overdue: 1, today: 0, next7: 1, later: 0, undated: 1 });
+    const projectIdsOf = (rows) => new Set(rows.map((row) => row.project_id));
+    expect(projectIdsOf(releaseRepository.findDashboardScheduledReleases(boundaries))).toEqual(new Set([activeProject.id]));
+    expect(projectIdsOf(releaseRepository.findDashboardUndatedReleases())).toEqual(new Set([activeProject.id]));
+    expect(projectIdsOf(releaseRepository.findRecentlyPublished())).toEqual(new Set([activeProject.id]));
+    expect(releaseRepository.countDashboardCalendarDays({ startDate: '2025-06-09', endDate: '2025-06-23', today: '2025-06-15' }))
+      .toEqual([
+        { date: '2025-06-10', published: 0, scheduled: 0, overdue: 1 },
+        { date: '2025-06-16', published: 1, scheduled: 0, overdue: 0 },
+        { date: '2025-06-17', published: 0, scheduled: 1, overdue: 0 },
+      ]);
+    expect(releaseRepository.countActiveReleasesWithMissingSelectedAssets()).toBe(1);
+    expect(assetRepository.countMissingInActiveProjects()).toBe(1);
+    expect(releaseRepository.findReleaseScheduleSummaryByProjectIds([archivedProject.id]))
+      .toEqual([expect.objectContaining({ next_release_id: null, undated_count: 0 })]);
+  });
 });

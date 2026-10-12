@@ -3632,3 +3632,381 @@ describe('release activity logging', () => {
     expect(failingLogger.info).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('scheduleRelease', () => {
+  let tmpDir;
+  let db;
+  let projectRepo;
+  let assetRepo;
+  let socialPrepRepo;
+  let logger;
+  let notify;
+  let service;
+  let projectId;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-release-schedule-'));
+    db = openDatabase(path.join(tmpDir, 'test.db'));
+    runMigrations(db, MIGRATIONS_DIR);
+    projectRepo = createProjectRepository(db);
+    assetRepo = createAssetRepository(db);
+    socialPrepRepo = createSocialPrepRepository(db);
+    logger = { info: vi.fn() };
+    notify = vi.fn();
+    service = createReleaseService({
+      db,
+      applicationLogger: logger,
+      onReleaseNotificationStateChanged: notify,
+      socialPrepSettingsService: { getPlatforms: () => ['x', 'bluesky'] },
+    });
+    projectId = projectRepo.create(sampleProject({ title: 'Schedule Project' })).id;
+  });
+
+  afterEach(() => {
+    closeDatabase(db);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function createRelease(overrides = {}) {
+    const release = service.createRelease(projectId, validInput(overrides));
+    logger.info.mockClear();
+    notify.mockClear();
+    return release;
+  }
+
+  function backdate(releaseId) {
+    db.prepare("UPDATE releases SET updated_at = '2000-01-01 00:00:00' WHERE id = ?").run(releaseId);
+  }
+
+  function schedule(id, plannedDate, expectedPlannedDate = null, expectedPlannedTime = null, extra = {}) {
+    return service.scheduleRelease(id, { plannedDate, expectedPlannedDate, expectedPlannedTime, ...extra });
+  }
+
+  function updatedActivityCount() {
+    return logger.info.mock.calls.filter(([entry]) => entry.event === 'release.updated').length;
+  }
+
+  function snapshotAll(releaseId) {
+    const release = db.prepare('SELECT * FROM releases WHERE id = ?').get(releaseId);
+    const { planned_date: _date, planned_time: _time, updated_at: _updated, ...rest } = release;
+    return {
+      release: rest,
+      project: db.prepare('SELECT * FROM projects WHERE id = ?').get(release.project_id),
+      assets: db.prepare('SELECT * FROM release_assets WHERE release_id = ? ORDER BY asset_id').all(releaseId),
+      platforms: db.prepare('SELECT * FROM release_social_platforms WHERE release_id = ? ORDER BY platform').all(releaseId),
+      sessions: db.prepare('SELECT * FROM social_prep_sessions WHERE release_id = ? ORDER BY id').all(releaseId),
+    };
+  }
+
+  it('schedules an undated release date-only and returns both schedule pairs', () => {
+    const release = createRelease();
+    backdate(release.id);
+
+    const result = schedule(release.id, '2026-10-13');
+
+    expect(result.changed).toBe(true);
+    expect(result.previousSchedule).toEqual({ plannedDate: null, plannedTime: null });
+    expect(result.schedule).toEqual({ plannedDate: '2026-10-13', plannedTime: null });
+    const row = db.prepare('SELECT planned_date, planned_time, updated_at FROM releases WHERE id = ?').get(release.id);
+    expect(row.planned_date).toBe('2026-10-13');
+    expect(row.planned_time).toBeNull();
+    expect(row.updated_at).not.toBe('2000-01-01 00:00:00');
+  });
+
+  it('undoes back to an undated schedule', () => {
+    const release = createRelease();
+    schedule(release.id, '2026-10-13');
+
+    const result = schedule(release.id, null, '2026-10-13', null);
+
+    expect(result.previousSchedule).toEqual({ plannedDate: '2026-10-13', plannedTime: null });
+    expect(result.schedule).toEqual({ plannedDate: null, plannedTime: null });
+    expect(service.findRelease(release.id).planned_date).toBeNull();
+  });
+
+  it('accepts a blank target date as Undo', () => {
+    const release = createRelease({ plannedDate: '2026-10-13' });
+    expect(schedule(release.id, '  ', '2026-10-13', '').schedule).toEqual({ plannedDate: null, plannedTime: null });
+  });
+
+  it('clears an existing planned time when rescheduling date-only', () => {
+    const release = createRelease({ plannedDate: '2026-10-13', plannedTime: '09:30' });
+
+    const result = schedule(release.id, '2026-10-20', '2026-10-13', '09:30');
+
+    expect(result.previousSchedule).toEqual({ plannedDate: '2026-10-13', plannedTime: '09:30' });
+    expect(result.schedule).toEqual({ plannedDate: '2026-10-20', plannedTime: null });
+    expect(db.prepare('SELECT planned_time FROM releases WHERE id = ?').get(release.id).planned_time).toBeNull();
+  });
+
+  it('treats a blank stored planned time as date-only', () => {
+    const release = createRelease({ plannedDate: '2026-10-13' });
+    db.prepare("UPDATE releases SET planned_time = '' WHERE id = ?").run(release.id);
+
+    expect(schedule(release.id, '2026-10-14', '2026-10-13', null).changed).toBe(true);
+  });
+
+  it('requires every schedule field except plannedTime to be explicitly supplied', () => {
+    const release = createRelease();
+    for (const field of ['plannedDate', 'expectedPlannedDate', 'expectedPlannedTime']) {
+      const input = { plannedDate: '2026-10-13', expectedPlannedDate: null, expectedPlannedTime: null };
+      delete input[field];
+      expect(() => service.scheduleRelease(release.id, input))
+        .toThrow(expect.objectContaining({ name: 'ReleaseValidationError', errors: { [field]: expect.any(String) } }));
+    }
+    expect(() => service.scheduleRelease(release.id, undefined)).toThrow(ReleaseValidationError);
+    expect(service.findRelease(release.id).planned_date).toBeNull();
+  });
+
+  it.each([
+    ['2026-02-30'],
+    ['2026-13-01'],
+    ['2026-1-01'],
+    ['20261013'],
+    ['not-a-date'],
+    [20261013],
+    [true],
+    [{}],
+    [['2026-10-13']],
+  ])('rejects invalid target date %j', (plannedDate) => {
+    const release = createRelease();
+    expect(() => schedule(release.id, plannedDate))
+      .toThrow(expect.objectContaining({ errors: { plannedDate: expect.any(String) } }));
+  });
+
+  it('accepts a real leap day and rejects a non-leap one', () => {
+    const release = createRelease();
+    expect(schedule(release.id, '2028-02-29').schedule.plannedDate).toBe('2028-02-29');
+    expect(() => schedule(release.id, '2027-02-29', '2028-02-29')).toThrow(ReleaseValidationError);
+  });
+
+  it('rejects invalid expected values', () => {
+    const release = createRelease();
+    expect(() => schedule(release.id, '2026-10-13', '2026-02-31'))
+      .toThrow(expect.objectContaining({ errors: { expectedPlannedDate: expect.any(String) } }));
+    expect(() => schedule(release.id, '2026-10-13', null, '25:00'))
+      .toThrow(expect.objectContaining({ errors: { expectedPlannedTime: expect.any(String) } }));
+    expect(() => schedule(release.id, '2026-10-13', null, 930))
+      .toThrow(expect.objectContaining({ errors: { expectedPlannedTime: expect.any(String) } }));
+  });
+
+  it('rejects a nonempty target time and accepts a blank or null one', () => {
+    const release = createRelease();
+    expect(() => schedule(release.id, '2026-10-13', null, null, { plannedTime: '10:00' }))
+      .toThrow(expect.objectContaining({ errors: { plannedTime: expect.any(String) } }));
+    expect(() => schedule(release.id, '2026-10-13', null, null, { plannedTime: 0 })).toThrow(ReleaseValidationError);
+    expect(service.findRelease(release.id).planned_date).toBeNull();
+
+    expect(schedule(release.id, '2026-10-13', null, null, { plannedTime: '' }).changed).toBe(true);
+    expect(schedule(release.id, '2026-10-14', '2026-10-13', null, { plannedTime: null }).changed).toBe(true);
+  });
+
+  it('throws ReleaseNotFoundError for an unknown release', () => {
+    expect(() => schedule(999999, '2026-10-13')).toThrow(ReleaseNotFoundError);
+  });
+
+  it('rejects releases of an archived project', () => {
+    const release = createRelease();
+    projectRepo.archive(projectId);
+    expect(() => schedule(release.id, '2026-10-13')).toThrow(ReleaseParentArchivedError);
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('rejects releases of a project with legacy archived status', () => {
+    const release = createRelease();
+    db.prepare("UPDATE projects SET status = 'archived', archived_at = NULL WHERE id = ?").run(projectId);
+    expect(() => schedule(release.id, '2026-10-13')).toThrow(ReleaseParentArchivedError);
+    expect(service.findRelease(release.id).planned_date).toBeNull();
+  });
+
+  it('rejects an archived release', () => {
+    const release = createRelease();
+    service.archiveRelease(release.id);
+    expect(() => schedule(release.id, '2026-10-13')).toThrow(ReleaseArchivedError);
+  });
+
+  it('rejects an already-published release without changing it', () => {
+    const release = createRelease();
+    service.publishRelease(release.id, '2026-10-01');
+    const before = db.prepare('SELECT * FROM releases WHERE id = ?').get(release.id);
+
+    expect(() => schedule(release.id, '2026-10-13'))
+      .toThrow(expect.objectContaining({ name: 'ReleaseValidationError', errors: { plannedDate: expect.any(String) } }));
+    expect(db.prepare('SELECT * FROM releases WHERE id = ?').get(release.id)).toEqual(before);
+  });
+
+  it('rejects a stale expected date or time with the current schedule', () => {
+    const release = createRelease({ plannedDate: '2026-10-13', plannedTime: '09:30' });
+
+    expect(() => schedule(release.id, '2026-10-20', '2026-10-12', '09:30'))
+      .toThrow(expect.objectContaining({
+        name: 'ReleaseScheduleConflictError',
+        status: 409,
+        currentSchedule: { plannedDate: '2026-10-13', plannedTime: '09:30' },
+      }));
+    expect(() => schedule(release.id, '2026-10-20', '2026-10-13', null))
+      .toThrow(expect.objectContaining({ name: 'ReleaseScheduleConflictError' }));
+    expect(service.findRelease(release.id).planned_date).toBe('2026-10-13');
+  });
+
+  it('does not treat a matching target as a no-op when the expected schedule is stale', () => {
+    const release = createRelease({ plannedDate: '2026-10-13' });
+    expect(() => schedule(release.id, '2026-10-13', null, null))
+      .toThrow(expect.objectContaining({ name: 'ReleaseScheduleConflictError' }));
+  });
+
+  it('refuses Undo after a full edit changed the schedule in between', () => {
+    const release = createRelease();
+    schedule(release.id, '2026-10-13');
+    service.updateRelease(release.id, validInput({ plannedDate: '2026-11-01', plannedTime: '18:00' }));
+
+    expect(() => schedule(release.id, null, '2026-10-13', null))
+      .toThrow(expect.objectContaining({
+        name: 'ReleaseScheduleConflictError',
+        currentSchedule: { plannedDate: '2026-11-01', plannedTime: '18:00' },
+      }));
+    const row = service.findRelease(release.id);
+    expect([row.planned_date, row.planned_time]).toEqual(['2026-11-01', '18:00']);
+  });
+
+  describe('compare-and-update atomicity', () => {
+    // Simulates another writer committing between the service read and the
+    // conditional write.
+    function interleave(change) {
+      const original = service.repository.updateSchedule;
+      service.repository.updateSchedule = (...args) => {
+        change();
+        return original(...args);
+      };
+    }
+
+    it('does not overwrite a schedule changed after the service read', () => {
+      const release = createRelease();
+      interleave(() => db.prepare("UPDATE releases SET planned_date = '2026-12-24', planned_time = '08:00' WHERE id = ?").run(release.id));
+
+      expect(() => schedule(release.id, '2026-10-13'))
+        .toThrow(expect.objectContaining({
+          name: 'ReleaseScheduleConflictError',
+          currentSchedule: { plannedDate: '2026-12-24', plannedTime: '08:00' },
+        }));
+      expect(service.findRelease(release.id).planned_date).toBe('2026-12-24');
+      expect(updatedActivityCount()).toBe(0);
+      expect(notify).not.toHaveBeenCalled();
+    });
+
+    it('reports a publication that lands after the service read as a lifecycle rejection', () => {
+      const release = createRelease();
+      interleave(() => db.prepare("UPDATE releases SET published_date = '2026-10-10' WHERE id = ?").run(release.id));
+      expect(() => schedule(release.id, '2026-10-13')).toThrow(ReleaseValidationError);
+      expect(service.findRelease(release.id).planned_date).toBeNull();
+    });
+
+    it('reports an archive that lands after the service read', () => {
+      const release = createRelease();
+      interleave(() => db.prepare("UPDATE releases SET archived_at = datetime('now') WHERE id = ?").run(release.id));
+      expect(() => schedule(release.id, '2026-10-13')).toThrow(ReleaseArchivedError);
+    });
+
+    it('reports a parent project archive that lands after the service read', () => {
+      const release = createRelease();
+      interleave(() => db.prepare("UPDATE projects SET status = 'archived' WHERE id = ?").run(projectId));
+      expect(() => schedule(release.id, '2026-10-13')).toThrow(ReleaseParentArchivedError);
+      expect(service.findRelease(release.id).planned_date).toBeNull();
+    });
+
+    it('reports a deletion that lands after the service read', () => {
+      const release = createRelease();
+      interleave(() => db.prepare('DELETE FROM releases WHERE id = ?').run(release.id));
+      expect(() => schedule(release.id, '2026-10-13')).toThrow(ReleaseNotFoundError);
+    });
+
+    it('repository updateSchedule applies only when the expected schedule matches', () => {
+      const release = createRelease({ plannedDate: '2026-10-13', plannedTime: '09:30' });
+      const repo = createReleaseRepository(db);
+
+      expect(repo.updateSchedule(release.id, { plannedDate: '2026-10-20', plannedTime: null },
+        { plannedDate: '2026-10-13', plannedTime: null })).toBeUndefined();
+      expect(repo.updateSchedule(release.id, { plannedDate: '2026-10-20', plannedTime: null },
+        { plannedDate: '2026-10-13', plannedTime: '09:30' })).toMatchObject({ planned_date: '2026-10-20', planned_time: null });
+    });
+  });
+
+  it('preserves every unrelated release field and associated record', () => {
+    const release = createRelease({
+      title: 'Keep Title',
+      description: 'Keep description',
+      notes: 'Keep notes',
+      patreonUrl: 'https://example.com/post',
+      selectedPlatforms: ['x', 'bluesky'],
+    });
+    const first = assetRepo.upsert(projectId, 'a.txt', sampleAsset(projectId, { relativePath: 'a.txt', filename: 'a.txt' }));
+    const second = assetRepo.upsert(projectId, 'b.txt', sampleAsset(projectId, { relativePath: 'b.txt', filename: 'b.txt' }));
+    service.selectAssets(release.id, [
+      { assetId: second.id, role: 'primary', sortOrder: 0 },
+      { assetId: first.id, role: 'preview', sortOrder: 1 },
+    ]);
+    socialPrepRepo.insertSession({ id: 'prep', releaseId: release.id, kind: 'initial', expiresAt: new Date('2030-01-01') });
+    socialPrepRepo.reassignPlatformsToSession('prep', ['x']);
+    const before = snapshotAll(release.id);
+
+    schedule(release.id, '2026-10-13');
+    schedule(release.id, null, '2026-10-13', null);
+
+    expect(snapshotAll(release.id)).toEqual(before);
+    expect(before.release).toMatchObject({ title: 'Keep Title', notes: 'Keep notes', patreon_url: 'https://example.com/post' });
+    expect(before.assets).toHaveLength(2);
+    expect(before.platforms.filter((row) => row.is_selected)).toHaveLength(2);
+    expect(before.sessions).toHaveLength(1);
+  });
+
+  it('does not write, log, or notify for a no-op schedule', () => {
+    const release = createRelease({ plannedDate: '2026-10-13' });
+    backdate(release.id);
+    const writeSpy = vi.spyOn(service.repository, 'updateSchedule');
+    const before = db.prepare('SELECT * FROM releases WHERE id = ?').get(release.id);
+
+    const result = schedule(release.id, '2026-10-13', '2026-10-13', null);
+
+    expect(result).toMatchObject({
+      changed: false,
+      previousSchedule: { plannedDate: '2026-10-13', plannedTime: null },
+      schedule: { plannedDate: '2026-10-13', plannedTime: null },
+    });
+    expect(writeSpy).not.toHaveBeenCalled();
+    expect(db.prepare('SELECT * FROM releases WHERE id = ?').get(release.id)).toEqual(before);
+    expect(logger.info).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+
+    const undated = createRelease();
+    expect(schedule(undated.id, null, null, null).changed).toBe(false);
+    expect(writeSpy).not.toHaveBeenCalled();
+    expect(notify).not.toHaveBeenCalled();
+  });
+
+  it('logs release.updated and notifies once after a changed schedule is committed', () => {
+    const release = createRelease();
+    let plannedDateSeenByNotifier;
+    notify.mockImplementation((id) => {
+      plannedDateSeenByNotifier = db.prepare('SELECT planned_date FROM releases WHERE id = ?').get(id).planned_date;
+    });
+
+    schedule(release.id, '2026-10-13');
+
+    expect(logger.info).toHaveBeenCalledTimes(1);
+    expect(logger.info.mock.calls[0][0]).toMatchObject({
+      event: 'release.updated', kind: 'activity', projectId, context: { releaseId: release.id },
+    });
+    expect(notify).toHaveBeenCalledTimes(1);
+    expect(notify).toHaveBeenCalledWith(release.id);
+    expect(plannedDateSeenByNotifier).toBe('2026-10-13');
+  });
+
+  it('keeps the committed schedule when logging or notification fails', () => {
+    const release = createRelease();
+    logger.info.mockImplementation(() => { throw new Error('log down'); });
+    notify.mockImplementation(() => { throw new Error('notify down'); });
+
+    expect(schedule(release.id, '2026-10-13').changed).toBe(true);
+    expect(service.findRelease(release.id).planned_date).toBe('2026-10-13');
+  });
+});

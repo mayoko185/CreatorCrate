@@ -73,6 +73,53 @@ export const ACTIVE_PARENT_PROJECT = `EXISTS (
 const DASHBOARD_ACTIVE = `${ACTIVE_UNPUBLISHED} AND ${ACTIVE_PARENT_PROJECT}`;
 
 /**
+ * Correlated selected/missing asset counts for the release in the
+ * surrounding query (from-table `releases`). The project guard keeps
+ * malformed cross-project junction rows out of both counts.
+ */
+const SELECTED_ASSET_COUNT_SQL = `(SELECT COUNT(DISTINCT a.id) FROM release_assets ra JOIN assets a ON a.id = ra.asset_id AND a.project_id = releases.project_id WHERE ra.release_id = releases.id)`;
+const MISSING_ASSET_COUNT_SQL = `(SELECT COUNT(DISTINCT a.id) FROM release_assets ra JOIN assets a ON a.id = ra.asset_id AND a.project_id = releases.project_id WHERE ra.release_id = releases.id AND a.is_present = 0)`;
+
+/**
+ * Dashboard release row: release columns plus parent project display fields
+ * and asset counts. Expects `releases JOIN projects` in the FROM clause.
+ */
+const DASHBOARD_RELEASE_SELECT = `${QUALIFIED_RELEASE_COLUMNS},
+  projects.title AS project_title,
+  projects.status AS project_status,
+  ${SELECTED_ASSET_COUNT_SQL} AS selected_asset_count,
+  ${MISSING_ASSET_COUNT_SQL} AS missing_asset_count`;
+
+/**
+ * Dated dashboard order: earliest date first; within a date, timed releases
+ * precede date-only releases. Blank stored times are treated as date-only,
+ * matching the Calendar order.
+ */
+const DASHBOARD_DATED_ORDER = `releases.planned_date ASC,
+  (NULLIF(releases.planned_time, '') IS NULL) ASC,
+  NULLIF(releases.planned_time, '') ASC,
+  releases.created_at ASC,
+  releases.id ASC`;
+
+/** Release date used by the Calendar: publication date once published. */
+const EFFECTIVE_RELEASE_DATE = 'CASE WHEN releases.published_date IS NOT NULL THEN releases.published_date ELSE releases.planned_date END';
+
+const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+
+// Date boundaries are application-local values supplied by the caller. An
+// absent boundary would bind NULL and silently classify nothing, so reject it.
+function requireIsoDate(value, name) {
+  if (typeof value !== 'string' || !ISO_DATE_PATTERN.test(value)) {
+    throw new TypeError(`${name} must be an ISO date string (YYYY-MM-DD).`);
+  }
+  return value;
+}
+
+function normalizeLimit(value, fallback) {
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+/**
  * @typedef {object} ReleaseRecord
  * @property {number} id
  * @property {number} project_id
@@ -127,6 +174,20 @@ export function createReleaseRepository(db) {
     WHERE id = ? AND archived_at IS NULL
     RETURNING ${COLUMNS.join(', ')}
   `);
+  // Compare-and-set: the expected schedule and every lifecycle guard are part
+  // of the WHERE clause so a concurrent edit, publication, or archive between
+  // the caller's read and this write makes it affect no row. Blank stored
+  // values are treated as NULL, matching the date-only convention.
+  const updateScheduleStmt = db.prepare(`
+    UPDATE releases
+    SET planned_date = @plannedDate, planned_time = @plannedTime, updated_at = datetime('now')
+    WHERE id = @id
+      AND ${ACTIVE_UNPUBLISHED}
+      AND ${ACTIVE_PARENT_PROJECT}
+      AND NULLIF(planned_date, '') IS @expectedPlannedDate
+      AND NULLIF(planned_time, '') IS @expectedPlannedTime
+    RETURNING ${COLUMNS.join(', ')}
+  `);
 
   const findCalendarRangeStmt = db.prepare(`
     SELECT
@@ -152,6 +213,120 @@ export function createReleaseRepository(db) {
       (NULLIF(r.planned_time, '') IS NULL) ASC,
       NULLIF(r.planned_time, '') ASC,
       r.id ASC
+  `);
+
+  // ─── Dashboard Projections ─────────────────────────────────────────────
+
+  // Each comparison yields 0/1 (NULL for undated rows, which SUM ignores), so
+  // the bucket counts are exact regardless of any display cap.
+  const dashboardScheduleSummaryStmt = db.prepare(`
+    SELECT
+      COALESCE(SUM(releases.planned_date < @today), 0) AS overdue,
+      COALESCE(SUM(releases.planned_date = @today), 0) AS today,
+      COALESCE(SUM(releases.planned_date > @today AND releases.planned_date <= @weekEnd), 0) AS next7,
+      COALESCE(SUM(releases.planned_date > @weekEnd), 0) AS later,
+      COALESCE(SUM(releases.planned_date IS NULL), 0) AS undated,
+      MIN(CASE WHEN releases.planned_date IS NULL THEN releases.created_at END) AS oldest_undated_created_at
+    FROM releases
+    WHERE ${DASHBOARD_ACTIVE}
+  `);
+
+  // Overdue, Today, and Next 7 days are uncapped; only Later is ranked and cut.
+  // Asset counts are computed in the outer query so cut Later rows cost nothing.
+  const dashboardScheduledStmt = db.prepare(`
+    WITH dated AS (
+      SELECT releases.id,
+        CASE
+          WHEN releases.planned_date < @today THEN 'overdue'
+          WHEN releases.planned_date = @today THEN 'today'
+          WHEN releases.planned_date <= @weekEnd THEN 'next7'
+          ELSE 'later'
+        END AS schedule_group,
+        ROW_NUMBER() OVER (
+          PARTITION BY (releases.planned_date > @weekEnd)
+          ORDER BY ${DASHBOARD_DATED_ORDER}
+        ) AS group_rank
+      FROM releases
+      WHERE ${DASHBOARD_ACTIVE}
+        AND releases.planned_date IS NOT NULL
+    )
+    SELECT ${DASHBOARD_RELEASE_SELECT}, dated.schedule_group
+    FROM dated
+    JOIN releases ON releases.id = dated.id
+    JOIN projects ON projects.id = releases.project_id
+    WHERE dated.schedule_group <> 'later' OR dated.group_rank <= @laterLimit
+    ORDER BY ${DASHBOARD_DATED_ORDER}
+  `);
+
+  const dashboardUndatedStmt = db.prepare(`
+    SELECT ${DASHBOARD_RELEASE_SELECT}
+    FROM releases
+    JOIN projects ON projects.id = releases.project_id
+    WHERE ${DASHBOARD_ACTIVE}
+      AND releases.planned_date IS NULL
+    ORDER BY releases.created_at ASC, releases.id ASC
+    LIMIT ?
+  `);
+
+  const recentlyPublishedStmt = db.prepare(`
+    SELECT ${DASHBOARD_RELEASE_SELECT}
+    FROM releases
+    JOIN projects ON projects.id = releases.project_id
+    WHERE releases.archived_at IS NULL
+      AND releases.published_date IS NOT NULL
+      AND ${ACTIVE_PARENT_PROJECT}
+    ORDER BY releases.published_date DESC, releases.updated_at DESC, releases.id DESC
+    LIMIT ?
+  `);
+
+  const dashboardCalendarDaysStmt = db.prepare(`
+    SELECT effective_date AS date,
+      SUM(published_date IS NOT NULL) AS published,
+      SUM(published_date IS NULL AND effective_date >= @today) AS scheduled,
+      SUM(published_date IS NULL AND effective_date < @today) AS overdue
+    FROM (
+      SELECT ${EFFECTIVE_RELEASE_DATE} AS effective_date, releases.published_date
+      FROM releases
+      WHERE releases.archived_at IS NULL
+        AND ${ACTIVE_PARENT_PROJECT}
+    )
+    WHERE effective_date >= @startDate AND effective_date < @endDate
+    GROUP BY effective_date
+    ORDER BY effective_date ASC
+  `);
+
+  // Among the first (occupied + count) days from the start date at most
+  // `occupied` days can be taken, so the generated range always contains
+  // `count` open days. This bounds the recursion without scanning ahead day by
+  // day in application code.
+  const openDaysStmt = db.prepare(`
+    WITH RECURSIVE occupied(day) AS (
+      SELECT DISTINCT ${EFFECTIVE_RELEASE_DATE}
+      FROM releases
+      WHERE releases.archived_at IS NULL
+        AND ${ACTIVE_PARENT_PROJECT}
+        AND ${EFFECTIVE_RELEASE_DATE} >= @startDate
+    ),
+    candidate(day, day_index) AS (
+      SELECT date(@startDate), 0
+      UNION ALL
+      SELECT date(day, '+1 day'), day_index + 1
+      FROM candidate
+      WHERE day_index + 1 < (SELECT COUNT(*) FROM occupied) + @count
+    )
+    SELECT day FROM candidate
+    WHERE day NOT IN (SELECT day FROM occupied)
+    ORDER BY day ASC
+    LIMIT @count
+  `);
+
+  const countActiveReleasesWithMissingSelectedAssetsStmt = db.prepare(`
+    SELECT COUNT(DISTINCT releases.id) AS c
+    FROM releases
+    JOIN release_assets ra ON ra.release_id = releases.id
+    JOIN assets a ON a.id = ra.asset_id AND a.project_id = releases.project_id
+    WHERE ${DASHBOARD_ACTIVE}
+      AND a.is_present = 0
   `);
 
   // ─── Release Asset Selection ───────────────────────────────────────────
@@ -583,6 +758,29 @@ export function createReleaseRepository(db) {
     },
 
     /**
+     * Set only planned_date, planned_time, and updated_at, provided the stored
+     * schedule still equals the expected one and the release is active,
+     * unpublished, and inside a non-archived project. No other release column
+     * or associated row is touched.
+     *
+     * @param {number} id
+     * @param {{ plannedDate: string|null, plannedTime: string|null }} schedule
+     * @param {{ plannedDate: string|null, plannedTime: string|null }} expected
+     *   stored schedule the caller observed; blank stored values match null
+     * @returns {ReleaseRecord|undefined} the updated row, or undefined when the
+     *   release is missing, ineligible, or its schedule no longer matches
+     */
+    updateSchedule(id, schedule, expected) {
+      return updateScheduleStmt.get({
+        id,
+        plannedDate: schedule.plannedDate ?? null,
+        plannedTime: schedule.plannedTime ?? null,
+        expectedPlannedDate: expected.plannedDate ?? null,
+        expectedPlannedTime: expected.plannedTime ?? null,
+      });
+    },
+
+    /**
      * Non-archived releases whose effective Calendar date falls within a
      * bounded range. Published releases use publication date; others use
      * planned date. Archived parent projects remain included.
@@ -852,6 +1050,196 @@ export function createReleaseRepository(db) {
           AND r.archived_at IS NULL
       `).get(projectId, projectId);
       return row.c;
+    },
+
+    // ─── Dashboard Projections ───────────────────────────────────────────
+
+    /**
+     * Exact schedule bucket counts over every active release (unpublished,
+     * unarchived, parent project not archived by either indicator). Buckets:
+     * overdue `< today`, today `= today`, next7 `today < d <= weekEnd`,
+     * later `> weekEnd`, undated `IS NULL`. Independent of any display cap.
+     *
+     * @param {{ today: string, weekEnd: string }} boundaries application-local
+     *   ISO dates; `weekEnd` is normally today + 7 days
+     * @returns {{ overdue: number, today: number, next7: number, later: number,
+     *   undated: number, oldestUndatedCreatedAt: string|null }}
+     */
+    getDashboardScheduleSummary({ today, weekEnd } = {}) {
+      const row = dashboardScheduleSummaryStmt.get({
+        today: requireIsoDate(today, 'today'),
+        weekEnd: requireIsoDate(weekEnd, 'weekEnd'),
+      });
+      return {
+        overdue: row.overdue,
+        today: row.today,
+        next7: row.next7,
+        later: row.later,
+        undated: row.undated,
+        oldestUndatedCreatedAt: row.oldest_undated_created_at,
+      };
+    },
+
+    /**
+     * Dated active releases for the Dashboard schedule, tagged with
+     * `schedule_group` ('overdue'|'today'|'next7'|'later'). Overdue, today,
+     * and next7 rows are uncapped; at most `laterLimit` later rows are
+     * returned. Ordered by planned date, timed before date-only, then
+     * created_at and id. Totals come from {@link getDashboardScheduleSummary}.
+     *
+     * @param {{ today: string, weekEnd: string, laterLimit?: number }} options
+     * @returns {Array<ReleaseRecord & {project_title: string, project_status: string,
+     *   selected_asset_count: number, missing_asset_count: number,
+     *   schedule_group: 'overdue'|'today'|'next7'|'later'}>}
+     */
+    findDashboardScheduledReleases({ today, weekEnd, laterLimit = 5 } = {}) {
+      return dashboardScheduledStmt.all({
+        today: requireIsoDate(today, 'today'),
+        weekEnd: requireIsoDate(weekEnd, 'weekEnd'),
+        laterLimit: normalizeLimit(laterLimit, 5),
+      });
+    },
+
+    /**
+     * Oldest active releases without a planned date, ordered by created_at
+     * then id. The undated total and oldest timestamp come from
+     * {@link getDashboardScheduleSummary}.
+     *
+     * @param {number} [limit=10]
+     * @returns {Array<ReleaseRecord & {project_title: string, project_status: string,
+     *   selected_asset_count: number, missing_asset_count: number}>}
+     */
+    findDashboardUndatedReleases(limit = 10) {
+      return dashboardUndatedStmt.all(normalizeLimit(limit, 10));
+    },
+
+    /**
+     * Most recently published non-archived releases whose parent project is
+     * not archived, ordered by published_date, updated_at, then id (all DESC).
+     *
+     * @param {number} [limit=4]
+     * @returns {Array<ReleaseRecord & {project_title: string, project_status: string,
+     *   selected_asset_count: number, missing_asset_count: number}>}
+     */
+    findRecentlyPublished(limit = 4) {
+      return recentlyPublishedStmt.all(normalizeLimit(limit, 4));
+    },
+
+    /**
+     * Per-day release counts for the Dashboard strip, keyed by effective date
+     * (published_date once published, otherwise planned_date). Unlike
+     * {@link findCalendarRange}, releases of archived projects are excluded.
+     * Unpublished releases dated before `today` count as overdue, others as
+     * scheduled. Days without releases are omitted.
+     *
+     * @param {{ startDate: string, endDate: string, today: string }} range
+     *   `startDate` inclusive, `endDate` exclusive
+     * @returns {Array<{date: string, published: number, scheduled: number, overdue: number}>}
+     */
+    countDashboardCalendarDays({ startDate, endDate, today } = {}) {
+      return dashboardCalendarDaysStmt.all({
+        startDate: requireIsoDate(startDate, 'startDate'),
+        endDate: requireIsoDate(endDate, 'endDate'),
+        today: requireIsoDate(today, 'today'),
+      });
+    },
+
+    /**
+     * The first `count` days on or after `startDate` with no eligible release
+     * (non-archived release of a non-archived project, scheduled or published
+     * on that effective date). May extend past any display range. Advisory
+     * only: several releases can still share a date.
+     *
+     * @param {string} startDate ISO date, normally tomorrow
+     * @param {number} [count=3]
+     * @returns {string[]} ISO dates in ascending order
+     */
+    findOpenDays(startDate, count = 3) {
+      return openDaysStmt.pluck().all({
+        startDate: requireIsoDate(startDate, 'startDate'),
+        count: normalizeLimit(count, 3),
+      });
+    },
+
+    /**
+     * Distinct active releases that select at least one missing asset of
+     * their own project. Same predicate as
+     * {@link findReleasesWithMissingSelectedAssets}, without a limit.
+     *
+     * @returns {number}
+     */
+    countActiveReleasesWithMissingSelectedAssets() {
+      return countActiveReleasesWithMissingSelectedAssetsStmt.get().c;
+    },
+
+    /**
+     * One row per existing supplied project: its next dated active release
+     * (earliest planned date, overdue included; timed before date-only, then
+     * created_at and id), the number of undated active releases, and the
+     * latest published_date among its non-archived releases. Projects with no
+     * releases yield null/zero fields, as do archived projects (no active
+     * releases and no publication date). Returns [] for empty input without
+     * querying.
+     *
+     * @param {number[]} projectIds
+     * @returns {Array<{project_id: number, next_release_id: number|null,
+     *   next_release_title: string|null, next_planned_date: string|null,
+     *   next_planned_time: string|null, undated_count: number,
+     *   last_published_date: string|null}>}
+     */
+    findReleaseScheduleSummaryByProjectIds(projectIds) {
+      const uniqueProjectIds = [...new Set(projectIds)];
+      if (uniqueProjectIds.length === 0) return [];
+
+      const placeholders = uniqueProjectIds.map(() => '?').join(', ');
+      const sql = `
+        WITH requested AS (
+          SELECT id FROM projects WHERE id IN (${placeholders})
+        ),
+        ranked_dated AS (
+          SELECT releases.project_id, releases.id, releases.title,
+                 releases.planned_date, NULLIF(releases.planned_time, '') AS planned_time,
+                 ROW_NUMBER() OVER (
+                   PARTITION BY releases.project_id
+                   ORDER BY ${DASHBOARD_DATED_ORDER}
+                 ) AS date_rank
+          FROM releases
+          JOIN requested ON requested.id = releases.project_id
+          WHERE ${DASHBOARD_ACTIVE}
+            AND releases.planned_date IS NOT NULL
+        ),
+        undated AS (
+          SELECT releases.project_id, COUNT(*) AS undated_count
+          FROM releases
+          JOIN requested ON requested.id = releases.project_id
+          WHERE ${DASHBOARD_ACTIVE}
+            AND releases.planned_date IS NULL
+          GROUP BY releases.project_id
+        ),
+        published AS (
+          SELECT releases.project_id, MAX(releases.published_date) AS last_published_date
+          FROM releases
+          JOIN requested ON requested.id = releases.project_id
+          WHERE releases.archived_at IS NULL
+            AND releases.published_date IS NOT NULL
+            AND ${ACTIVE_PARENT_PROJECT}
+          GROUP BY releases.project_id
+        )
+        SELECT requested.id AS project_id,
+               ranked_dated.id AS next_release_id,
+               ranked_dated.title AS next_release_title,
+               ranked_dated.planned_date AS next_planned_date,
+               ranked_dated.planned_time AS next_planned_time,
+               COALESCE(undated.undated_count, 0) AS undated_count,
+               published.last_published_date
+        FROM requested
+        LEFT JOIN ranked_dated
+          ON ranked_dated.project_id = requested.id AND ranked_dated.date_rank = 1
+        LEFT JOIN undated ON undated.project_id = requested.id
+        LEFT JOIN published ON published.project_id = requested.id
+        ORDER BY requested.id ASC
+      `;
+      return db.prepare(sql).all(...uniqueProjectIds);
     },
 
     // ─── Release Asset Selection ─────────────────────────────────────────
@@ -1216,12 +1604,6 @@ export function createReleaseRepository(db) {
       const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
       const orderClause = buildOrderClauseWithTable('releases', sortBy, order);
 
-      // Subqueries for asset counts — correlated aggregates avoid duplicate rows
-      // Both subqueries include a project guard (a.project_id = releases.project_id)
-      // to prevent malformed cross-project junction rows from affecting counts.
-      const selectedCountSubquery = `(SELECT COUNT(DISTINCT a.id) FROM release_assets ra JOIN assets a ON a.id = ra.asset_id AND a.project_id = releases.project_id WHERE ra.release_id = releases.id)`;
-      const missingCountSubquery = `(SELECT COUNT(DISTINCT a.id) FROM release_assets ra JOIN assets a ON a.id = ra.asset_id AND a.project_id = releases.project_id WHERE ra.release_id = releases.id AND a.is_present = 0)`;
-
       const sql = `
         SELECT releases.id, releases.project_id, projects.title AS project_title,
                projects.status AS project_status,
@@ -1229,8 +1611,8 @@ export function createReleaseRepository(db) {
                releases.planned_date, releases.planned_time, releases.published_date,
                releases.patreon_url, releases.created_at, releases.updated_at,
                releases.archived_at,
-               ${selectedCountSubquery} AS selected_asset_count,
-               ${missingCountSubquery} AS missing_asset_count
+               ${SELECTED_ASSET_COUNT_SQL} AS selected_asset_count,
+               ${MISSING_ASSET_COUNT_SQL} AS missing_asset_count
         FROM releases
         JOIN projects ON projects.id = releases.project_id
         ${where}

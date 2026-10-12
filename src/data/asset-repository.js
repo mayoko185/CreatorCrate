@@ -1256,6 +1256,15 @@ export function createAssetRepository(db) {
     SELECT COUNT(*) AS c FROM assets WHERE is_present = 0
   `);
 
+  const activeProjectMissingCountStmt = db.prepare(`
+    SELECT COUNT(*) AS c
+    FROM assets
+    JOIN projects ON projects.id = assets.project_id
+    WHERE assets.is_present = 0
+      AND projects.archived_at IS NULL
+      AND projects.status <> 'archived'
+  `);
+
   const presentCountByProjectStmt = db.prepare(`
     SELECT COUNT(*) AS c FROM assets WHERE project_id = ? AND is_present = 1
   `);
@@ -1946,9 +1955,10 @@ export function createAssetRepository(db) {
 
     /**
      * Count assets for multiple projects in one query. Existing projects with
-     * no assets are returned with an asset_count of zero.
+     * no assets are returned with zero counts. `missing_asset_count` counts
+     * assets currently marked missing (is_present = 0).
      * @param {number[]} projectIds
-     * @returns {Array<{project_id: number, asset_count: number}>}
+     * @returns {Array<{project_id: number, asset_count: number, missing_asset_count: number}>}
      */
     countByProjectIds(projectIds) {
       const uniqueProjectIds = [...new Set(projectIds)];
@@ -1956,7 +1966,9 @@ export function createAssetRepository(db) {
 
       const placeholders = uniqueProjectIds.map(() => '?').join(', ');
       return db.prepare(`
-        SELECT projects.id AS project_id, COUNT(assets.id) AS asset_count
+        SELECT projects.id AS project_id,
+               COUNT(assets.id) AS asset_count,
+               COUNT(CASE WHEN assets.is_present = 0 THEN 1 END) AS missing_asset_count
         FROM projects
         LEFT JOIN assets ON assets.project_id = projects.id
         WHERE projects.id IN (${placeholders})
@@ -1981,6 +1993,15 @@ export function createAssetRepository(db) {
     getTotalMissingCount() {
       const row = totalMissingCountStmt.get();
       return row.c;
+    },
+
+    /**
+     * Count missing assets belonging to projects that are not archived by
+     * either indicator (archived_at or the legacy 'archived' status).
+     * @returns {number}
+     */
+    countMissingInActiveProjects() {
+      return activeProjectMissingCountStmt.get().c;
     },
 
     /**

@@ -6,6 +6,7 @@ import {
   ReleaseArchivedError,
   ReleaseParentArchivedError,
   ReleasePublishedError,
+  ReleaseScheduleConflictError,
   ReleaseValidationError,
   ReleaseNotFoundError,
 } from '../services/release-service.js';
@@ -53,6 +54,7 @@ const RETAINED_SCHEDULE_FIELDS = Object.freeze({
   plannedTime: 'retainedPlannedTime',
 });
 const RETAINED_SCHEDULE_MAX_LENGTH = 32;
+const SCHEDULE_REQUEST_FIELDS = Object.freeze(['plannedDate', 'plannedTime', 'expectedPlannedDate', 'expectedPlannedTime']);
 
 function readReleaseEditReturnLocation(candidate) {
   if (!isSafeRedirectTarget(candidate)) return '';
@@ -679,6 +681,69 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
           errors: { general: err.message },
         }));
         return;
+      }
+      next(err);
+    }
+  });
+
+  // POST /releases/:id/schedule — JSON-only date-only quick schedule / Undo.
+  // Fields are forwarded only when present so the service can tell an omitted
+  // expected schedule from an intentional null.
+  router.post('/:id/schedule', (req, res, next) => {
+    const id = parseId(req.params.id);
+    if (id === null) {
+      return res.status(404).json({ status: 'error', code: 'RELEASE_NOT_FOUND', message: 'Release not found.' });
+    }
+
+    const body = req.body !== null && typeof req.body === 'object' ? req.body : {};
+    const input = {};
+    for (const field of SCHEDULE_REQUEST_FIELDS) {
+      if (Object.hasOwn(body, field)) input[field] = body[field];
+    }
+
+    try {
+      const result = releaseService.scheduleRelease(id, input);
+      const { plannedDate } = result.schedule;
+      let message = 'Release schedule unchanged.';
+      if (result.changed) message = plannedDate ? `Release scheduled for ${plannedDate}.` : 'Release schedule cleared.';
+      res.json({
+        status: 'success',
+        message,
+        changed: result.changed,
+        release: {
+          id: result.release.id,
+          previousSchedule: result.previousSchedule,
+          schedule: result.schedule,
+        },
+      });
+    } catch (err) {
+      if (err instanceof ReleaseNotFoundError) {
+        return res.status(404).json({ status: 'error', code: 'RELEASE_NOT_FOUND', message: 'Release not found.' });
+      }
+      if (err instanceof ReleaseScheduleConflictError) {
+        return res.status(409).json({
+          status: 'error',
+          code: err.code,
+          message: 'This release was changed elsewhere. Reload to see its current schedule.',
+          currentSchedule: err.currentSchedule,
+        });
+      }
+      if (err instanceof ReleaseValidationError) {
+        const errors = err.errors || {};
+        return res.status(422).json({
+          status: 'error',
+          code: 'VALIDATION_FAILED',
+          message: Object.values(errors)[0] || 'Release schedule is invalid.',
+          errors,
+        });
+      }
+      if (err instanceof ReleaseArchivedError || err instanceof ReleaseParentArchivedError) {
+        return res.status(422).json({
+          status: 'error',
+          code: err instanceof ReleaseArchivedError ? 'RELEASE_ARCHIVED' : 'PROJECT_ARCHIVED',
+          message: err.message,
+          errors: { general: err.message },
+        });
       }
       next(err);
     }

@@ -330,9 +330,9 @@ describe('asset repository', () => {
 
     const batchCounts = assetRepo.countByProjectIds([p2.id, empty.id, projectId, p2.id]);
     expect(batchCounts).toEqual([
-      { project_id: projectId, asset_count: 2 },
-      { project_id: p2.id, asset_count: 1 },
-      { project_id: empty.id, asset_count: 0 },
+      { project_id: projectId, asset_count: 2, missing_asset_count: 0 },
+      { project_id: p2.id, asset_count: 1, missing_asset_count: 1 },
+      { project_id: empty.id, asset_count: 0, missing_asset_count: 0 },
     ]);
     expect(batchCounts.map(({ project_id, asset_count }) => [
       project_id,
