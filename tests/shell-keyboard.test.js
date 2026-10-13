@@ -10,7 +10,7 @@
  *  - every shared interactive pattern exposes a :focus-visible rule;
  *  - scrollable wrappers use :focus-visible (not bare :focus), so a mouse
  *    click inside a scroll region does not leave a persistent ring;
- *  - reduced-motion media query covers summary-card hover transitions;
+ *  - reduced-motion media query covers dashboard tile hover transitions;
  *  - form validation errors associate fields with aria-invalid and
  *    aria-describedby, and preserve submitted values;
  *  - asset viewer actions follow a logical DOM/focus order.
@@ -255,7 +255,7 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
       '.pagination-next',
       '.asset-filter-multiselect summary',
       '.asset-file-link',
-      '.summary-card',
+      '.dashboard-tile',
       '.field input',
       '.table-scroll',
       '.calendar-scroll',
@@ -314,8 +314,8 @@ describe('Phase 10.6A: keyboard and focus-state hardening', () => {
       expect(reduced.length).toBeGreaterThan(0);
     });
 
-    it('covers summary-card hover transitions', () => {
-      expect(reduced).toMatch(/\.summary-card\b/);
+    it('covers dashboard tile hover transitions', () => {
+      expect(reduced).toMatch(/\.dashboard-tile\b/);
     });
 
     it('covers all previously-listed elements (no regression)', () => {

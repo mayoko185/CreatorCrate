@@ -1,0 +1,118 @@
+{#
+  Dashboard projects table: active projects, most recently updated first.
+
+  When the table holds every active project, the status tabs are toggle
+  buttons for in-page filtering by each row's data-status; they stay disabled
+  until the Dashboard filtering enhancement initializes them. An incomplete
+  table cannot be filtered in place, so its tabs link to the Projects page.
+
+  Usage:
+    {% import "partials/dashboard-project-table.njk" as projectTable %}
+    {{ projectTable.render(dashboard.projectTable, clockFormat) }}
+#}
+{% import "partials/dashboard-thumbnail.njk" as dashboardThumbnail %}
+{% import "partials/dashboard-title-info.njk" as titleInfo %}
+
+{% macro tabContent(tab) -%}
+  {%- if tab.option -%}
+    {%- set status = tab.value -%}
+    {%- set projectStatusOption = tab.option -%}
+    {%- include "partials/status-badge.njk" -%}
+  {%- else -%}
+    <span class="dashboard-status-tab-label">{{ tab.label }}</span>
+  {%- endif %}
+  <span class="dashboard-status-tab-count">{{ tab.count }}</span>
+{%- endmacro %}
+
+{% macro nextReleaseCell(next, clockFormat) %}
+  {% if next.releaseId %}
+    <a class="dashboard-next-release dashboard-next-release--{{ next.state }}" href="/releases/{{ next.releaseId }}" title="{{ next.title }}">{{ next.label }}{% if next.state == 'today' and next.plannedTime %} {{ next.plannedTime | formatStoredTime(clockFormat) }}{% endif %}</a>
+  {% else %}
+    <span class="dashboard-next-release dashboard-next-release--{{ next.state }}">{{ next.label }}</span>
+  {% endif %}
+  {% if next.extraUndatedLabel %}
+    <span class="dashboard-next-release-extra">{{ next.extraUndatedLabel }}</span>
+  {% endif %}
+{% endmacro %}
+
+{% macro render(table, clockFormat) %}
+  {% if table.complete %}
+    <div class="dashboard-status-tabs" role="group" aria-label="Filter projects by status" data-dashboard-status-filters>
+      {% for tab in table.tabs %}
+        <button class="dashboard-status-tab" type="button" disabled
+                aria-pressed="{{ 'true' if tab.value == 'all' else 'false' }}"
+                {% if table.rows.length %}aria-controls="dashboard-projects-table"{% endif %}
+                data-dashboard-status-filter="{{ tab.value }}">{{ tabContent(tab) }}</button>
+      {% endfor %}
+    </div>
+  {% else %}
+    <nav class="dashboard-status-tabs" aria-label="Project status filters">
+      {% for tab in table.tabs %}
+        <a class="dashboard-status-tab" href="{{ tab.href }}" data-dashboard-status-link="{{ tab.value }}">{{ tabContent(tab) }}</a>
+      {% endfor %}
+    </nav>
+  {% endif %}
+
+  {% if table.rows.length %}
+    <div class="dashboard-table-scroll" role="region" aria-labelledby="dashboard-projects-heading" tabindex="0">
+      <table class="dashboard-projects-table" id="dashboard-projects-table" data-dashboard-projects-table data-complete="{{ 'true' if table.complete else 'false' }}">
+        <caption class="sr-only">Active projects, most recently updated first</caption>
+        <thead>
+          <tr>
+            <th scope="col">Project</th>
+            <th scope="col">Status</th>
+            <th scope="col">Type</th>
+            <th scope="col">Assets</th>
+            <th scope="col">Next release</th>
+            <th scope="col">Last published</th>
+            <th scope="col" aria-sort="descending">Updated</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for project in table.rows %}
+            <tr class="dashboard-project-row" data-dashboard-project-row data-project-id="{{ project.id }}" data-status="{{ project.status }}">
+              <td class="dashboard-project-cell">
+                {{ dashboardThumbnail.render(project.thumbnail) }}
+                {{ titleInfo.project(project, 'table', project.id, clockFormat) }}
+              </td>
+              <td>
+                {% set status = project.status %}
+                {% set projectStatusOption = project.projectStatusOption %}
+                {% include "partials/status-badge.njk" %}
+              </td>
+              <td>
+                {% set projectType = project.project_type %}
+                {% set projectTypeOption = project.projectTypeOption %}
+                {% if projectType %}{% include "partials/project-type-badge.njk" %}{% else %}<span class="dashboard-muted">—</span>{% endif %}
+              </td>
+              <td class="dashboard-number-cell">
+                {{ project.assetCount }}
+                {% if project.missingAssetCount > 0 %}
+                  <span class="dashboard-missing-count">({{ project.missingAssetCount }} missing)</span>
+                {% endif %}
+              </td>
+              <td>{{ nextReleaseCell(project.nextReleasePresentation, clockFormat) }}</td>
+              <td>
+                {% if project.lastPublishedLabel %}
+                  <time datetime="{{ project.lastPublishedDate }}">{{ project.lastPublishedLabel }}</time>
+                {% else %}
+                  <span class="dashboard-muted">—</span>
+                {% endif %}
+              </td>
+              <td>
+                <time datetime="{{ project.updated_at }}" title="{{ project.updated_at | formatSqliteTimestamp(clockFormat) }}">{{ project.updatedLabel }}</time>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <p class="dashboard-empty-line">No active projects.</p>
+  {% endif %}
+
+  <p class="dashboard-projects-footer">
+    <span data-dashboard-projects-count>{{ table.shown }} of {{ table.total }} active {{ "project" if table.total == 1 else "projects" }} · archived hidden</span>
+    <a class="dashboard-view-all" href="/projects">Open in Projects<span aria-hidden="true"> →</span></a>
+  </p>
+{% endmacro %}

@@ -1,0 +1,84 @@
+{#
+  Calendar information card: the popover shown for Calendar entries and for
+  Dashboard release and project titles. Positioning and the open/close
+  lifecycle live in static/client/info-cards.js, keyed on
+  data-calendar-info-card.
+
+  Usage:
+    {% import "partials/calendar-info-card.njk" as infoCard %}
+    {{ infoCard.release(entry, detailId, clockFormat) }}
+    {{ infoCard.project(project, detailId, clockFormat) }}
+#}
+
+{% macro shell(detailId, title, primaryImage, nsfwBlur) %}
+  {% set hasPrimaryImage = primaryImage and primaryImage.state == 'available' and primaryImage.previewUrl %}
+  <div id="{{ detailId }}" class="asset-viewer-grid-card-info calendar-release-info calendar-release-info--glass{% if hasPrimaryImage %} calendar-release-info--with-media{% endif %}" data-calendar-info-card popover="manual"
+       role="group" aria-label="Details for {{ title }}">
+    <div class="calendar-release-info-layout">
+      {% if hasPrimaryImage %}
+        <div class="calendar-release-info-media" data-preview-enhancement data-preview-state="loading">
+          <img class="calendar-release-info-image{% if nsfwBlur %} project-image--nsfw-blurred{% endif %}{% if primaryImage.mediaModifier %} project-card-media-image--{{ primaryImage.mediaModifier }}{% endif %}"
+               data-preview-image src="{{ primaryImage.previewUrl }}" alt="{{ primaryImage.alt }}" loading="lazy" decoding="async">
+          <span class="project-card-media-fallback" data-preview-fallback hidden>Image unavailable</span>
+        </div>
+      {% endif %}
+      <div class="calendar-release-info-content">
+        {{ caller() }}
+      </div>
+    </div>
+  </div>
+{% endmacro %}
+
+{% macro release(entry, detailId, clockFormat) %}
+  {% call shell(detailId, entry.title, entry.primaryImage, entry.nsfwBlur) %}
+    <div class="calendar-release-info-actions">
+      <a class="button button-small button-secondary" href="/releases/{{ entry.id }}">Open release</a>
+      {% if entry.editUrl %}<a class="button button-small button-secondary" href="{{ entry.editUrl }}">Edit release</a>{% endif %}
+      <a class="button button-small button-secondary" href="/projects/{{ entry.project_id }}">Open project</a>
+    </div>
+    <h3 class="asset-viewer-grid-card-info-heading">{{ entry.title }}</h3>
+    <p class="calendar-release-info-project"><a href="/projects/{{ entry.project_id }}">{{ entry.project_title }}</a></p>
+    <dl class="asset-viewer-grid-card-info-list">
+      <div class="asset-viewer-grid-card-info-row"><dt>Status</dt><dd>{{ 'Published' if entry.status == 'published' else 'Planned' }}</dd></div>
+      {% if entry.planned_date %}<div class="asset-viewer-grid-card-info-row"><dt>Planned</dt><dd><time datetime="{{ entry.planned_date }}{% if entry.planned_time %}T{{ entry.planned_time }}{% endif %}">{{ entry.planned_date }}{% if entry.planned_time %} {{ entry.planned_time | formatStoredTime(clockFormat) }}{% endif %}</time></dd></div>{% endif %}
+      <div class="asset-viewer-grid-card-info-row"><dt>Platforms</dt><dd>{{ entry.platforms | join(', ') if entry.platforms.length else 'None' }}</dd></div>
+      {% if entry.published_date %}<div class="asset-viewer-grid-card-info-row"><dt>Published</dt><dd><time datetime="{{ entry.published_date }}">{{ entry.published_date }}</time></dd></div>{% endif %}
+    </dl>
+    {% if entry.notes %}
+      <div class="asset-viewer-grid-card-info-section">
+        <span class="asset-viewer-grid-card-info-section-label">Notes</span>
+        <p class="calendar-release-info-notes">{{ entry.notes }}</p>
+      </div>
+    {% endif %}
+  {% endcall %}
+{% endmacro %}
+
+{#
+  Project variant: the same card shell with the project's own facts only.
+  Callers render it for non-archived projects, so the edit action is valid.
+#}
+{% macro project(project, detailId, clockFormat) %}
+  {% call shell(detailId, project.title, project.primaryImage, project.nsfwBlur) %}
+    <div class="calendar-release-info-actions">
+      <a class="button button-small button-secondary" href="/projects/{{ project.id }}">Open project</a>
+      <a class="button button-small button-secondary" href="/projects/{{ project.id }}/edit">Edit project</a>
+    </div>
+    <h3 class="asset-viewer-grid-card-info-heading">{{ project.title }}</h3>
+    <dl class="asset-viewer-grid-card-info-list">
+      <div class="asset-viewer-grid-card-info-row"><dt>Status</dt><dd>{% set status = project.status %}{% set projectStatusOption = project.projectStatusOption %}{% include "partials/status-badge.njk" %}</dd></div>
+      {% if project.project_type %}<div class="asset-viewer-grid-card-info-row"><dt>Type</dt><dd>{% set projectType = project.project_type %}{% set projectTypeOption = project.projectTypeOption %}{% include "partials/project-type-badge.njk" %}</dd></div>{% endif %}
+      <div class="asset-viewer-grid-card-info-row"><dt>Assets</dt><dd>{{ project.assetCount }}{% if project.missingAssetCount > 0 %} ({{ project.missingAssetCount }} missing){% endif %}</dd></div>
+      <div class="asset-viewer-grid-card-info-row"><dt>Next release</dt><dd>{{ project.nextReleasePresentation.label }}{% if project.nextReleasePresentation.state == 'today' and project.nextReleasePresentation.plannedTime %} {{ project.nextReleasePresentation.plannedTime | formatStoredTime(clockFormat) }}{% endif %}{% if project.nextReleasePresentation.extraUndatedLabel %} {{ project.nextReleasePresentation.extraUndatedLabel }}{% endif %}</dd></div>
+      {% if project.lastPublishedDate %}<div class="asset-viewer-grid-card-info-row"><dt>Last published</dt><dd><time datetime="{{ project.lastPublishedDate }}">{{ project.lastPublishedDate }}</time></dd></div>{% endif %}
+      {% if project.updated_at %}<div class="asset-viewer-grid-card-info-row"><dt>Updated</dt><dd>{{ project.updated_at | formatSqliteTimestamp(clockFormat) }}</dd></div>{% endif %}
+    </dl>
+    {% if project.tags and project.tags.length %}
+      <div class="asset-viewer-grid-card-info-section">
+        <span class="asset-viewer-grid-card-info-section-label">Tags</span>
+        <ul class="asset-viewer-grid-card-info-tags" aria-label="Assigned tags">
+          {% for tag in project.tags %}<li>{{ tag.displayName }}</li>{% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+  {% endcall %}
+{% endmacro %}

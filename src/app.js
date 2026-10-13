@@ -879,6 +879,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     projectPrimaryImageRepository,
     assetBrowserPreferenceService,
     tagRepository,
+    pageDefaultsService,
     dashboardSectionRegistryProvider: () => dashboardDefaultsService.getSectionRegistry(),
   });
 

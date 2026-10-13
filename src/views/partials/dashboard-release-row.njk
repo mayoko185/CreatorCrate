@@ -1,0 +1,51 @@
+{#
+  Dashboard scheduled-release row.
+
+  Usage:
+    {% import "partials/dashboard-release-row.njk" as releaseRow %}
+    {{ releaseRow.render(release, group.id, _csrf, clockFormat) }}
+#}
+{% import "partials/dashboard-thumbnail.njk" as dashboardThumbnail %}
+{% import "partials/dashboard-title-info.njk" as titleInfo %}
+{% import "partials/release-social-prep-summary.njk" as socialPrepSummary %}
+
+{% macro render(release, groupId, csrfToken, clockFormat) %}
+  <li class="dashboard-release-row dashboard-release-row--{{ groupId }}" data-dashboard-release-row data-release-id="{{ release.id }}">
+    <p class="dashboard-date-block">
+      <time datetime="{{ release.planned_date }}" title="{{ release.dateLabel }}">
+        <span class="dashboard-date-block-month">{{ release.dateBlock.month }}</span>
+        <span class="dashboard-date-block-day">{{ release.dateBlock.day }}</span>
+      </time>
+      <span class="dashboard-date-block-time">{% if release.planned_time %}{{ release.planned_time | formatStoredTime(clockFormat) }}{% else %}Any time{% endif %}</span>
+    </p>
+    {{ dashboardThumbnail.render(release.thumbnail) }}
+    <div class="dashboard-release-row-body">
+      <div class="dashboard-item-title">
+        {{ titleInfo.release(release, 'scheduled', clockFormat) }}
+      </div>
+      <div class="dashboard-item-meta">
+        {{ titleInfo.project(release.project, 'scheduled', release.id, clockFormat) }}
+        <span class="dashboard-item-meta-separator" aria-hidden="true">·</span>
+        <span>{{ release.selected_asset_count }} {{ "asset" if release.selected_asset_count == 1 else "assets" }}</span>
+      </div>
+      {% if release.daysLate or release.missing_asset_count > 0 %}
+        <p class="dashboard-release-row-flags">
+          {% if release.daysLate %}
+            <span class="status-badge status-badge--error dashboard-late-badge">{{ release.daysLate }} {{ "day" if release.daysLate == 1 else "days" }} late</span>
+          {% endif %}
+          {% if release.missing_asset_count > 0 %}
+            <span class="status-badge status-badge--error dashboard-missing-badge">{{ release.missing_asset_count }} missing</span>
+          {% endif %}
+        </p>
+      {% endif %}
+      {% if release.socialPreparation and release.socialPreparation.targets.length %}
+        {{ socialPrepSummary.render(release.socialPreparation, release.id, csrfToken, false, true) }}
+      {% endif %}
+    </div>
+    {# Next 7 days rows rely on the title link; an Open button would duplicate it. #}
+    {% if groupId != 'next7' %}
+      <a class="button button-small {% if release.action.kind == 'publish' %}button-primary{% else %}button-secondary{% endif %} dashboard-release-row-action dashboard-release-row-action--{{ release.action.kind }}"
+         href="{{ release.action.href }}" aria-label="{{ release.action.label }} {{ release.title }}">{{ release.action.label }}</a>
+    {% endif %}
+  </li>
+{% endmacro %}

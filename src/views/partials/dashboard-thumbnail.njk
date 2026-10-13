@@ -1,0 +1,22 @@
+{#
+  Dashboard project thumbnail. Decorative: every caller renders the project
+  or release title as adjacent link text, so the image carries an empty alt.
+  Initials replace a missing image, and also a thumbnail that fails to load
+  through the shared preview enhancement.
+
+  Usage:
+    {% import "partials/dashboard-thumbnail.njk" as dashboardThumbnail %}
+    {{ dashboardThumbnail.render(item.thumbnail) }}
+#}
+{% macro render(thumbnail) %}
+  {% if thumbnail.available %}
+    <span class="dashboard-thumb dashboard-thumb--image{% if thumbnail.mediaModifier %} dashboard-thumb--{{ thumbnail.mediaModifier }}{% endif %}" data-preview-enhancement data-preview-state="loading" aria-hidden="true">
+      <img class="dashboard-thumb-image{% if thumbnail.nsfwBlur %} project-image--nsfw-blurred{% endif %}" data-preview-image src="{{ thumbnail.url }}" alt="" loading="lazy" decoding="async">
+      <span class="dashboard-thumb-initials" data-preview-fallback>{{ thumbnail.initials }}</span>
+    </span>
+  {% else %}
+    <span class="dashboard-thumb dashboard-thumb--initials" aria-hidden="true">
+      <span class="dashboard-thumb-initials">{{ thumbnail.initials }}</span>
+    </span>
+  {% endif %}
+{% endmacro %}

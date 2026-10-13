@@ -1,0 +1,80 @@
+{#
+  Dashboard "Needs a release date" item with date-only scheduling controls.
+
+  The forms target the JSON-only POST /releases/:id/schedule endpoint, so their
+  controls stay disabled until the Dashboard scheduling enhancement takes over
+  submission; a native submit would otherwise navigate to a JSON response.
+
+  Usage:
+    {% import "partials/dashboard-needs-date-item.njk" as needsDateItem %}
+    {{ needsDateItem.render(release, quickPicks, _csrf, clockFormat) }}
+#}
+{% import "partials/dashboard-thumbnail.njk" as dashboardThumbnail %}
+{% import "partials/dashboard-title-info.njk" as titleInfo %}
+{% import "partials/release-social-prep-summary.njk" as socialPrepSummary %}
+
+{% macro scheduleHiddenFields(release, csrfToken) %}
+  <input type="hidden" name="_csrf" value="{{ csrfToken }}">
+  <input type="hidden" name="expectedPlannedDate" value="{{ release.planned_date or '' }}">
+  <input type="hidden" name="expectedPlannedTime" value="{{ release.planned_time or '' }}">
+  <input type="hidden" name="plannedTime" value="">
+{% endmacro %}
+
+{% macro render(release, quickPicks, csrfToken, clockFormat) %}
+  {% set scheduleUrl = "/releases/" + release.id + "/schedule" %}
+  {% set errorId = "dashboard-schedule-error-" + release.id %}
+  <li class="dashboard-needs-date-item" data-dashboard-needs-date-item data-release-id="{{ release.id }}">
+    {{ dashboardThumbnail.render(release.thumbnail) }}
+    <div class="dashboard-needs-date-body">
+      <div class="dashboard-item-title">
+        {{ titleInfo.release(release, 'needs-date', clockFormat) }}
+      </div>
+      <div class="dashboard-item-meta">
+        {{ titleInfo.project(release.project, 'needs-date', release.id, clockFormat) }}
+        <span class="dashboard-item-meta-separator" aria-hidden="true">·</span>
+        <span>{{ release.selected_asset_count }} {{ "asset" if release.selected_asset_count == 1 else "assets" }} selected</span>
+      </div>
+      <p class="dashboard-age dashboard-age--{{ release.ageTone }}">{{ release.ageLabel }}</p>
+      <div class="dashboard-readiness" role="group" aria-label="Readiness">
+        <span class="dashboard-chip dashboard-chip--{{ release.assetReadiness.tone }}">{{ release.assetReadiness.label }}</span>
+        {% if release.socialPreparation and release.socialPreparation.targets.length %}
+          {{ socialPrepSummary.render(release.socialPreparation, release.id, csrfToken, false, true) }}
+        {% else %}
+          <span class="dashboard-chip dashboard-chip--muted">No platforms chosen</span>
+        {% endif %}
+      </div>
+
+      <div class="dashboard-schedule" data-dashboard-schedule
+           data-release-id="{{ release.id }}"
+           data-schedule-url="{{ scheduleUrl }}"
+           data-expected-planned-date="{{ release.planned_date or '' }}"
+           data-expected-planned-time="{{ release.planned_time or '' }}">
+        {% if quickPicks.length %}
+          <form class="dashboard-schedule-form dashboard-schedule-form--quick" method="post" action="{{ scheduleUrl }}" data-dashboard-schedule-quick-form>
+            {{ scheduleHiddenFields(release, csrfToken) }}
+            <fieldset class="dashboard-schedule-fieldset" disabled data-dashboard-schedule-controls aria-describedby="{{ errorId }}">
+              <legend class="sr-only">Quick schedule {{ release.title }}</legend>
+              {% for pick in quickPicks %}
+                <button class="button button-small button-secondary dashboard-schedule-pick{% if not pick.inStrip %} dashboard-schedule-pick--beyond-strip{% endif %}"
+                        type="submit" name="plannedDate" value="{{ pick.date }}"
+                        data-dashboard-schedule-pick data-planned-date="{{ pick.date }}"
+                        aria-label="Schedule for {{ pick.accessibleDate }}">{{ pick.label }}</button>
+              {% endfor %}
+            </fieldset>
+          </form>
+        {% endif %}
+        <form class="dashboard-schedule-form dashboard-schedule-form--custom" method="post" action="{{ scheduleUrl }}" data-dashboard-schedule-custom-form>
+          {{ scheduleHiddenFields(release, csrfToken) }}
+          <fieldset class="dashboard-schedule-fieldset" disabled data-dashboard-schedule-controls aria-describedby="{{ errorId }}">
+            <legend class="sr-only">Choose a date for {{ release.title }}</legend>
+            <label class="sr-only" for="dashboard-schedule-date-{{ release.id }}">Release date</label>
+            <input class="dashboard-schedule-date" id="dashboard-schedule-date-{{ release.id }}" type="date" name="plannedDate" required data-dashboard-schedule-date>
+            <button class="button button-small button-secondary dashboard-schedule-set" type="submit" data-dashboard-schedule-set>Set</button>
+          </fieldset>
+        </form>
+        <p class="dashboard-schedule-error field-error" id="{{ errorId }}" data-dashboard-schedule-error hidden></p>
+        <div class="dashboard-schedule-status" role="status" data-dashboard-schedule-status></div>
+      </div>
+    </div>
+  </li>
+{% endmacro %}

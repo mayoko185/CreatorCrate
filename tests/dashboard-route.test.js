@@ -1,80 +1,135 @@
 /**
- * Route-level tests for the Dashboard route view-model composition.
- * The services are stubbed and res.render is intercepted, so these tests
- * deliberately do not depend on the staged index.njk template.
+ * Route-level tests for the Dashboard presentation model. The query service
+ * is stubbed with the release-first Dashboard contract and res.render is
+ * intercepted, so these tests do not depend on index.njk.
  */
 import { describe, it, expect, vi } from 'vitest';
 import express from 'express';
 import request from 'supertest';
 import { createIndexRouter } from '../src/routes/index.js';
-import { buildDashboardSectionRegistry } from '../src/services/dashboard-defaults-service.js';
 
 const STATUS_CATALOGUE = [
   { value: 'tbd', label: 'Tbd', color: '#64748B' },
   { value: 'planned', label: 'Planned', color: '#3B82F6' },
-  { value: 'in-progress', label: 'In Progress', color: '#F59E0B' },
+  { value: 'editorial-review', label: 'Editorial Review', color: '#123456' },
   { value: 'ready', label: 'Ready', color: '#22C55E' },
-  { value: 'completed', label: 'Completed', color: '#10B981' },
   { value: 'archived', label: 'Archived', color: '#475569' },
 ];
 const PROJECT_TYPE_CATALOGUE = [
   { value: 'images', label: 'Images', color: '#64748B' },
 ];
-const DASHBOARD_SECTION_REGISTRY = buildDashboardSectionRegistry(STATUS_CATALOGUE);
-const SECTION_IDS = DASHBOARD_SECTION_REGISTRY.map(({ id }) => id);
+const NSFW_TAGS = [{ displayName: 'NSFW' }];
+const AVAILABLE_IMAGE = { state: 'available', thumbnailUrl: '/thumb.webp', alt: 'Cover' };
 
-function buildProject(overrides = {}) {
-  return { id: 1, title: 'Project', tags: [], ...overrides };
-}
-
-function buildDefaults({ order = SECTION_IDS, sections = {} } = {}) {
+function buildRelease(overrides = {}) {
+  const release = {
+    id: 1,
+    title: 'Release',
+    project_id: 10,
+    project_title: 'Moon Garden',
+    project_status: 'ready',
+    planned_date: null,
+    planned_time: null,
+    published_date: null,
+    created_at: '2026-10-01 10:00:00',
+    selected_asset_count: 2,
+    missing_asset_count: 0,
+    primaryImage: { state: 'none' },
+    tags: [],
+    socialPreparation: { targets: [] },
+    ...overrides,
+  };
+  // The service attaches the parent project's summary from the same
+  // enrichment as the release, so it shares the release's image and tags.
   return {
-    version: 1,
-    order,
-    sections: Object.fromEntries(SECTION_IDS.map((id) => [
-      id,
-      { visible: true, itemCount: 8, ...sections[id] },
-    ])),
+    project: buildProjectRow({
+      id: release.project_id,
+      title: release.project_title,
+      status: release.project_status,
+      primaryImage: release.primaryImage,
+      tags: release.tags,
+    }),
+    ...release,
   };
 }
 
-function emptyDashboard(sections = {}) {
+function buildProjectRow(overrides = {}) {
   return {
-    sections: Object.fromEntries(SECTION_IDS.map((id) => [id, sections[id] || []])),
-    workflowSummary: {
-      totalProjects: 0,
-      totalAssets: 0,
-      totalReleases: 0,
-      missingAssetSummary: { total: 0 },
+    id: 10,
+    title: 'Moon Garden',
+    status: 'ready',
+    project_type: 'images',
+    updated_at: '2026-10-11 09:30:00',
+    archived_at: null,
+    primaryImage: { state: 'none' },
+    tags: [],
+    assetCount: 4,
+    missingAssetCount: 0,
+    nextRelease: {
+      state: 'none', releaseId: null, title: null, plannedDate: null, plannedTime: null, daysLate: null, undatedCount: 0,
     },
-    today: '2026-01-01',
+    undatedReleaseCount: 0,
+    lastPublishedDate: null,
+    ...overrides,
+  };
+}
+
+function buildStripDays(today = '2026-10-12') {
+  const start = Date.UTC(2026, 9, 12);
+  return Array.from({ length: 14 }, (_, index) => {
+    const date = new Date(start + index * 86400000).toISOString().slice(0, 10);
+    return {
+      date,
+      isToday: date === today,
+      isPast: date < today,
+      isOpen: date > today,
+      counts: { overdue: 0, scheduled: 0, published: 0 },
+      calendarHref: `/calendar?month=${date.slice(0, 7)}`,
+    };
+  });
+}
+
+function buildDashboard(overrides = {}) {
+  return {
+    today: '2026-10-12',
+    weekStart: 'monday',
+    tiles: {
+      overdue: { count: 0, href: '/releases?schedule=overdue' },
+      needsDate: { count: 0, oldestAgeDays: null, href: '#needs-date' },
+      dueToday: { count: 0, firstRelease: null, href: '/releases?schedule=today' },
+      next7Days: { count: 0, throughDate: '2026-10-19', href: '/releases?schedule=upcoming' },
+      missingAssets: { count: 0, affectedReleaseCount: 0, href: '/asset-viewer?presence=missing' },
+    },
+    strip: {
+      startDate: '2026-10-12',
+      endDateExclusive: '2026-10-26',
+      days: buildStripDays(),
+      openDays: [
+        { date: '2026-10-13', inStrip: true, calendarHref: '/calendar?month=2026-10' },
+        { date: '2026-10-14', inStrip: true, calendarHref: '/calendar?month=2026-10' },
+        { date: '2026-10-27', inStrip: false, calendarHref: '/calendar?month=2026-10' },
+      ],
+    },
+    needsDate: { total: 0, items: [], viewAllHref: null },
+    scheduled: { groups: [] },
+    recentlyPublished: { items: [] },
+    projectTable: {
+      total: 0, shown: 0, complete: true, statusCounts: {}, rows: [],
+    },
+    ...overrides,
   };
 }
 
 function createTestApp({
-  dashboard = emptyDashboard(),
-  dashboardDefaults = buildDefaults(),
+  dashboard = buildDashboard(),
   nsfwEnabled = false,
   withNsfwService = true,
-  withDashboardDefaultsService = true,
 } = {}) {
   const app = express();
   let captured = null;
 
   if (withNsfwService) {
     app.locals.nsfwFilterSettingsService = { isEnabled: () => nsfwEnabled };
-  }
-  const dashboardDefaultsService = {
-    getConfiguration: vi.fn(() => ({
-      defaults: dashboardDefaults,
-      sectionRegistry: DASHBOARD_SECTION_REGISTRY,
-    })),
-    getDefaults: vi.fn(() => dashboardDefaults),
-    getSectionRegistry: vi.fn(() => DASHBOARD_SECTION_REGISTRY),
-    saveDefaults: vi.fn(),
-  };
-  if (withDashboardDefaultsService) {
-    app.locals.dashboardDefaultsService = dashboardDefaultsService;
   }
   const pageDefaultsService = {
     resolve: vi.fn((_page, _field, value) => value || 'tbd'),
@@ -108,7 +163,6 @@ function createTestApp({
 
   return {
     app,
-    dashboardDefaultsService,
     getCaptured: () => captured,
     pageDefaultsService,
     tagService,
@@ -116,46 +170,45 @@ function createTestApp({
   };
 }
 
+async function renderLocals(options) {
+  const testApp = createTestApp(options);
+  await request(testApp.app).get('/').expect(200);
+  return testApp.getCaptured().locals;
+}
+
 describe('dashboard route wiring', () => {
-  it('resolves normalized defaults once, passes them to the query service, and preserves Dashboard locals', async () => {
-    const dashboard = emptyDashboard();
-    const dashboardDefaults = buildDefaults();
+  it('requests the Dashboard model without retired section defaults and preserves the New Project form', async () => {
     const {
       app,
-      dashboardDefaultsService,
       getCaptured,
       pageDefaultsService,
       tagService,
       workflowQueryService,
-    } = createTestApp({ dashboard, dashboardDefaults });
+    } = createTestApp();
 
     await request(app).get('/').expect(200);
 
     const { view, locals } = getCaptured();
     expect(view).toBe('index.njk');
-    expect(dashboardDefaultsService.getConfiguration).toHaveBeenCalledOnce();
-    expect(workflowQueryService.getDashboardData).toHaveBeenCalledWith({
-      dashboardDefaults,
-      dashboardSectionRegistry: DASHBOARD_SECTION_REGISTRY,
-    });
+    expect(workflowQueryService.getDashboardData).toHaveBeenCalledOnce();
+    expect(workflowQueryService.getDashboardData).toHaveBeenCalledWith();
     expect(pageDefaultsService.getSavedDefault).toHaveBeenCalledWith('new_project', 'status');
     expect(pageDefaultsService.getSavedDefault).toHaveBeenCalledWith('new_project', 'projectType');
     expect(tagService.listTags).toHaveBeenCalledOnce();
     expect(locals).toMatchObject({
       appName: 'Test App',
-      summary: dashboard.workflowSummary,
       nsfwFilterEnabled: false,
-      dashboardDefaults,
-      dashboardSectionRegistry: DASHBOARD_SECTION_REGISTRY,
-      assetsUrl: '/asset-viewer',
-      missingAssetsUrl: '/asset-viewer?presence=missing',
+      projectCreateDialogOpen: false,
     });
-    expect(locals).not.toHaveProperty('projectCounts');
+    for (const retired of ['dashboardSections', 'dashboardDefaults', 'dashboardSectionRegistry', 'summary', 'recentlyUpdated']) {
+      expect(locals).not.toHaveProperty(retired);
+    }
     expect(locals.projectCreateForm).toMatchObject({
       values: { status: 'tbd' },
       tags: [],
       selectedTagIds: [],
     });
+    expect(locals.dashboard).toMatchObject({ today: '2026-10-12', todayLabel: 'Monday, October 12, 2026' });
   });
 
   it('declares the New Project form services at router composition time', () => {
@@ -169,91 +222,275 @@ describe('dashboard route wiring', () => {
       .toThrow('createIndexRouter requires a tagService dependency.');
   });
 
-  it('builds ordered visible section view-models with canonical labels and independent counts', async () => {
-    const customFirst = ['status:ready', 'status:planned', 'recently-updated'];
-    const dashboardDefaults = buildDefaults({
-      order: [...customFirst, ...SECTION_IDS.filter((id) => !customFirst.includes(id))],
-      sections: {
-        'status:ready': { itemCount: 3 },
-        'status:planned': { itemCount: 7 },
-        'recently-updated': { itemCount: 9 },
-        'status:archived': { visible: false },
+  it('does not depend on the retired Dashboard defaults service', async () => {
+    const { app } = createTestApp();
+    expect(app.locals.dashboardDefaultsService).toBeUndefined();
+    await request(app).get('/').expect(200);
+  });
+
+  it('returns a 500 when the NSFW filter service is missing', async () => {
+    const { app } = createTestApp({ withNsfwService: false });
+    await request(app).get('/').expect(500);
+  });
+});
+
+describe('dashboard attention tile presentation', () => {
+  it('describes zero-value tiles', async () => {
+    const { tiles } = (await renderLocals()).dashboard;
+
+    expect(tiles.overdue).toMatchObject({ count: 0, context: 'Nothing overdue', href: '/releases?schedule=overdue' });
+    expect(tiles.needsDate).toMatchObject({ count: 0, context: 'All releases have dates', href: '#needs-date' });
+    expect(tiles.dueToday).toMatchObject({ count: 0, context: 'Nothing today', firstRelease: null });
+    expect(tiles.next7Days).toMatchObject({ count: 0, context: 'Through Mon, Oct 19' });
+    expect(tiles.missingAssets).toMatchObject({ count: 0, context: 'No missing files', href: '/asset-viewer?presence=missing' });
+  });
+
+  it('carries counts and secondary context from the service model', async () => {
+    const dashboard = buildDashboard();
+    dashboard.tiles = {
+      overdue: { count: 2, href: '/releases?schedule=overdue' },
+      needsDate: { count: 14, oldestAgeDays: 23, href: '#needs-date' },
+      dueToday: {
+        count: 1,
+        firstRelease: buildRelease({ title: 'Evening drop', planned_date: '2026-10-12', planned_time: '18:00' }),
+        href: '/releases?schedule=today',
+      },
+      next7Days: { count: 5, throughDate: '2026-10-19', href: '/releases?schedule=upcoming' },
+      missingAssets: { count: 7, affectedReleaseCount: 1, href: '/asset-viewer?presence=missing' },
+    };
+
+    const { tiles } = (await renderLocals({ dashboard })).dashboard;
+
+    expect(tiles.overdue).toMatchObject({ count: 2, context: 'Unpublished, date passed' });
+    expect(tiles.needsDate).toMatchObject({ count: 14, context: 'Oldest waiting 23 days' });
+    expect(tiles.dueToday).toMatchObject({
+      count: 1,
+      context: null,
+      firstRelease: {
+        id: 1,
+        title: 'Evening drop',
+        plannedTime: '18:00',
+        infoCard: { id: 1, title: 'Evening drop', planned_date: '2026-10-12', planned_time: '18:00', editUrl: '/releases/1/edit' },
       },
     });
-    const { app, getCaptured } = createTestApp({
-      dashboardDefaults,
-      dashboard: emptyDashboard({
-        'status:ready': [buildProject({ id: 1 })],
-        'status:planned': [buildProject({ id: 3 })],
-        'recently-updated': [buildProject({ id: 4 })],
-        'status:archived': [buildProject({ id: 5 })],
+    expect(tiles.next7Days).toMatchObject({ count: 5, context: 'Through Mon, Oct 19' });
+    expect(tiles.missingAssets).toMatchObject({ count: 7, context: '1 release affected' });
+  });
+
+  it('presents the Due today release card from the shown release with NSFW blur', async () => {
+    const dashboard = buildDashboard();
+    dashboard.tiles.dueToday = {
+      count: 2,
+      firstRelease: buildRelease({
+        id: 42, title: 'Shown first', planned_date: '2026-10-12', primaryImage: AVAILABLE_IMAGE, tags: NSFW_TAGS,
       }),
+      href: '/releases?schedule=today',
+    };
+
+    const enabled = (await renderLocals({ dashboard, nsfwEnabled: true })).dashboard.tiles.dueToday;
+    expect(enabled.firstRelease).toMatchObject({ id: 42, title: 'Shown first', plannedTime: null });
+    expect(enabled.firstRelease.infoCard).toMatchObject({
+      id: 42, title: 'Shown first', primaryImage: AVAILABLE_IMAGE, nsfwBlur: true, status: 'planned',
     });
 
-    await request(app).get('/').expect(200);
+    const disabled = (await renderLocals({ dashboard, nsfwEnabled: false })).dashboard.tiles.dueToday;
+    expect(disabled.firstRelease.infoCard.nsfwBlur).toBe(false);
+  });
+});
 
-    const { dashboardSections, recentlyUpdated } = getCaptured().locals;
-    expect(dashboardSections.map(({ id }) => id)).toEqual(dashboardDefaults.order.filter(
-      (id) => id !== 'status:archived'
-    ));
-    expect(dashboardSections.slice(0, 3)).toEqual([
-      { id: 'status:ready', label: 'Ready', visible: true, itemCount: 3, projects: [expect.objectContaining({ id: 1 })] },
-      { id: 'status:planned', label: 'Planned', visible: true, itemCount: 7, projects: [expect.objectContaining({ id: 3 })] },
-      { id: 'recently-updated', label: 'Recently updated projects', visible: true, itemCount: 9, projects: [expect.objectContaining({ id: 4 })] },
+describe('dashboard strip and quick-pick presentation', () => {
+  it('labels all fourteen days accessibly and presents open-day quick picks', async () => {
+    const dashboard = buildDashboard();
+    dashboard.strip.days[0].isOpen = false;
+    dashboard.strip.days[0].counts = { overdue: 0, scheduled: 1, published: 0 };
+    dashboard.strip.days[2].isOpen = false;
+    dashboard.strip.days[2].counts = { overdue: 1, scheduled: 0, published: 2 };
+
+    const { strip, quickPicks } = (await renderLocals({ dashboard })).dashboard;
+
+    expect(strip.days).toHaveLength(14);
+    expect(strip.days[0]).toMatchObject({
+      weekdayLabel: 'Mon',
+      dayNumber: 12,
+      isToday: true,
+      accessibleLabel: 'October 12, today, 1 scheduled',
+      calendarHref: '/calendar?month=2026-10',
+    });
+    expect(strip.days[1].accessibleLabel).toBe('October 13, open day');
+    expect(strip.days[2].accessibleLabel).toBe('October 14, 1 overdue, 2 published');
+    expect(quickPicks).toEqual([
+      { date: '2026-10-13', inStrip: true, label: 'Tue 13', accessibleDate: 'Tuesday, October 13, 2026' },
+      { date: '2026-10-14', inStrip: true, label: 'Wed 14', accessibleDate: 'Wednesday, October 14, 2026' },
+      { date: '2026-10-27', inStrip: false, label: 'Tue 27', accessibleDate: 'Tuesday, October 27, 2026' },
     ]);
-    expect(dashboardSections).not.toContainEqual(expect.objectContaining({ id: 'status:archived' }));
-    expect(recentlyUpdated).toBe(dashboardSections.find(({ id }) => id === 'recently-updated').projects);
-    expect(getCaptured().locals).not.toHaveProperty('overdue');
-    expect(getCaptured().locals).not.toHaveProperty('upcoming');
   });
+});
 
-  it('uses the canonical static and status labels for visible sections', async () => {
-    const { app, getCaptured } = createTestApp();
-
-    await request(app).get('/').expect(200);
-
-    expect(getCaptured().locals.dashboardSections.map(({ id, label }) => ({ id, label }))).toEqual(expect.arrayContaining([
-      { id: 'recently-updated', label: 'Recently updated projects' },
-      { id: 'status:tbd', label: 'Tbd' },
-      { id: 'status:in-progress', label: 'In Progress' },
-      { id: 'status:archived', label: 'Archived' },
-    ]));
-  });
-
-  it('applies NSFW presentation state to every visible static and status section only', async () => {
-    const dashboardDefaults = buildDefaults({ sections: { 'status:archived': { visible: false } } });
-    const dashboard = emptyDashboard({
-      'recently-updated': [buildProject({ id: 1, tags: [{ displayName: 'NSFW' }] })],
-      'status:ready': [buildProject({ id: 2, tags: [{ display_name: 'nsfw' }] })],
-      'status:archived': [buildProject({ id: 3, tags: [{ displayName: 'NSFW' }] })],
-    });
-    const { app, getCaptured } = createTestApp({ dashboard, dashboardDefaults, nsfwEnabled: true });
-
-    await request(app).get('/').expect(200);
-
-    const { dashboardSections, recentlyUpdated } = getCaptured().locals;
-    expect(recentlyUpdated[0].nsfwBlur).toBe(true);
-    expect(dashboardSections.find(({ id }) => id === 'status:ready').projects[0].nsfwBlur).toBe(true);
-    expect(dashboardSections).not.toContainEqual(expect.objectContaining({ id: 'status:archived' }));
-  });
-
-  it('does not blur qualifying status-section projects when the filter is disabled', async () => {
-    const { app, getCaptured } = createTestApp({
-      dashboard: emptyDashboard({
-        'status:ready': [buildProject({ tags: [{ displayName: 'NSFW' }] })],
-      }),
+describe('dashboard release presentation', () => {
+  it('classifies needs-date age and readiness without inventing social states', async () => {
+    const items = [
+      buildRelease({ id: 1, ageDays: 0 }),
+      buildRelease({ id: 2, ageDays: 6 }),
+      buildRelease({ id: 3, ageDays: 7, selected_asset_count: 0 }),
+      buildRelease({ id: 4, ageDays: 20, missing_asset_count: 3 }),
+      buildRelease({ id: 5, ageDays: 21 }),
+    ];
+    const dashboard = buildDashboard({
+      needsDate: { total: 12, items, viewAllHref: '/releases?schedule=unscheduled' },
     });
 
-    await request(app).get('/').expect(200);
+    const { needsDate } = (await renderLocals({ dashboard })).dashboard;
 
-    expect(getCaptured().locals.dashboardSections.find(({ id }) => id === 'status:ready').projects[0].nsfwBlur).toBe(false);
+    expect(needsDate.total).toBe(12);
+    expect(needsDate.viewAllHref).toBe('/releases?schedule=unscheduled');
+    expect(needsDate.items.map(({ ageTone, ageLabel }) => [ageTone, ageLabel])).toEqual([
+      ['neutral', 'No date · added today'],
+      ['neutral', 'No date · 6 days'],
+      ['warning', 'No date · 7 days'],
+      ['warning', 'No date · 20 days'],
+      ['danger', 'No date · 21 days'],
+    ]);
+    expect(needsDate.items.map(({ assetReadiness }) => assetReadiness)).toEqual([
+      { tone: 'ok', label: 'Assets selected' },
+      { tone: 'ok', label: 'Assets selected' },
+      { tone: 'danger', label: 'No assets selected' },
+      { tone: 'danger', label: '3 missing' },
+      { tone: 'ok', label: 'Assets selected' },
+    ]);
+    expect(needsDate.items[0].socialPreparation).toBe(items[0].socialPreparation);
+    expect(needsDate.items[0].thumbnail).toMatchObject({ available: false, initials: 'MG' });
   });
 
-  it('returns a 500 when a required Dashboard service is missing', async () => {
-    const { app: withoutDefaults } = createTestApp({ withDashboardDefaultsService: false });
-    const { app: withoutNsfw } = createTestApp({ withNsfwService: false });
+  it('chooses Publish for overdue and today rows and keeps true group totals', async () => {
+    const dashboard = buildDashboard({
+      scheduled: {
+        groups: [
+          {
+            id: 'overdue', label: 'Overdue', total: 1, viewAllHref: '/releases?schedule=overdue',
+            items: [buildRelease({ id: 7, planned_date: '2026-10-08', daysLate: 4 })],
+          },
+          {
+            id: 'today', label: 'Today', total: 1, viewAllHref: '/releases?schedule=today',
+            items: [buildRelease({ id: 8, planned_date: '2026-10-12', planned_time: '18:00' })],
+          },
+          {
+            id: 'later', label: 'Later', total: 9, viewAllHref: '/releases?schedule=upcoming',
+            items: [buildRelease({ id: 9, planned_date: '2027-01-04' })],
+          },
+        ],
+      },
+    });
 
-    await request(withoutDefaults).get('/').expect(500);
-    await request(withoutNsfw).get('/').expect(500);
+    const { scheduled } = (await renderLocals({ dashboard })).dashboard;
+    const [overdue, today, later] = scheduled.groups;
+
+    expect(overdue.viewAllHref).toBeNull();
+    expect(overdue.items[0]).toMatchObject({
+      daysLate: 4,
+      dateBlock: { month: 'Oct', day: 8 },
+      action: { kind: 'publish', label: 'Publish', href: '/releases/7/publish' },
+    });
+    expect(today.items[0].action).toEqual({ kind: 'publish', label: 'Publish', href: '/releases/8/publish' });
+    expect(later).toMatchObject({ total: 9, viewAllHref: '/releases?schedule=upcoming' });
+    expect(later.items[0]).toMatchObject({
+      dateLabel: 'January 4, 2027',
+      action: { kind: 'open', label: 'Open', href: '/releases/9' },
+    });
+  });
+
+  it('applies NSFW blur to every release and project thumbnail only while the filter is enabled', async () => {
+    const dashboard = buildDashboard({
+      needsDate: { total: 1, items: [buildRelease({ id: 1, primaryImage: AVAILABLE_IMAGE, tags: NSFW_TAGS })], viewAllHref: null },
+      scheduled: {
+        groups: [{
+          id: 'next7', label: 'Next 7 days', total: 1, viewAllHref: '/releases?schedule=upcoming',
+          items: [buildRelease({ id: 2, planned_date: '2026-10-14', tags: [{ display_name: 'nsfw' }] })],
+        }],
+      },
+      recentlyPublished: { items: [buildRelease({ id: 3, published_date: '2026-10-10', tags: NSFW_TAGS })] },
+      projectTable: {
+        total: 2, shown: 2, complete: true, statusCounts: { ready: 2 },
+        rows: [
+          buildProjectRow({ id: 10, primaryImage: AVAILABLE_IMAGE, tags: NSFW_TAGS }),
+          buildProjectRow({ id: 11, title: 'Safe' }),
+        ],
+      },
+    });
+
+    const enabled = (await renderLocals({ dashboard, nsfwEnabled: true })).dashboard;
+    expect(enabled.needsDate.items[0].thumbnail).toMatchObject({ available: true, url: '/thumb.webp', nsfwBlur: true });
+    expect(enabled.scheduled.groups[0].items[0].thumbnail.nsfwBlur).toBe(true);
+    expect(enabled.recentlyPublished[0].thumbnail.nsfwBlur).toBe(true);
+    expect(enabled.projectTable.rows.map(({ thumbnail }) => thumbnail.nsfwBlur)).toEqual([true, false]);
+    expect(enabled.needsDate.items[0].infoCard).toMatchObject({ nsfwBlur: true, status: 'planned', editUrl: '/releases/1/edit' });
+    expect(enabled.needsDate.items[0].project).toMatchObject({ id: 10, nsfwBlur: true });
+    expect(enabled.recentlyPublished[0].infoCard).toMatchObject({ nsfwBlur: true, status: 'published', editUrl: null });
+
+    const disabled = (await renderLocals({ dashboard, nsfwEnabled: false })).dashboard;
+    expect(disabled.needsDate.items[0].thumbnail.nsfwBlur).toBe(false);
+    expect(disabled.projectTable.rows[0].thumbnail.nsfwBlur).toBe(false);
+    expect(disabled.needsDate.items[0].infoCard.nsfwBlur).toBe(false);
+    expect(disabled.needsDate.items[0].project.nsfwBlur).toBe(false);
+  });
+});
+
+describe('dashboard project table presentation', () => {
+  it('builds catalogue-ordered non-archived status tabs including zero counts', async () => {
+    const dashboard = buildDashboard({
+      projectTable: {
+        total: 60,
+        shown: 50,
+        complete: false,
+        statusCounts: { ready: 58, 'editorial-review': 2 },
+        rows: [buildProjectRow()],
+      },
+    });
+
+    const { projectTable } = (await renderLocals({ dashboard })).dashboard;
+
+    expect(projectTable).toMatchObject({ complete: false, total: 60, shown: 50 });
+    expect(projectTable.tabs.map(({ value, label, count, href }) => ({ value, label, count, href }))).toEqual([
+      { value: 'all', label: 'All', count: 60, href: '/projects?status=all' },
+      { value: 'tbd', label: 'Tbd', count: 0, href: '/projects?status=tbd' },
+      { value: 'planned', label: 'Planned', count: 0, href: '/projects?status=planned' },
+      { value: 'editorial-review', label: 'Editorial Review', count: 2, href: '/projects?status=editorial-review' },
+      { value: 'ready', label: 'Ready', count: 58, href: '/projects?status=ready' },
+    ]);
+    expect(projectTable.tabs[3].option).toMatchObject({ color: '#123456', foregroundColor: '#8495A7' });
+  });
+
+  it('presents status/type options and every Next release state', async () => {
+    const next = (state, extra = {}) => ({
+      state, releaseId: null, title: null, plannedDate: null, plannedTime: null, daysLate: null, undatedCount: 0, ...extra,
+    });
+    const dashboard = buildDashboard({
+      projectTable: {
+        total: 5, shown: 5, complete: true, statusCounts: { ready: 5 },
+        rows: [
+          buildProjectRow({ id: 1, nextRelease: next('overdue', { releaseId: 21, title: 'Late', plannedDate: '2026-10-08', undatedCount: 2 }) }),
+          buildProjectRow({ id: 2, nextRelease: next('today', { releaseId: 22, title: 'Now', plannedDate: '2026-10-12', plannedTime: '18:00' }) }),
+          buildProjectRow({ id: 3, nextRelease: next('scheduled', { releaseId: 23, title: 'Soon', plannedDate: '2026-10-24' }) }),
+          buildProjectRow({ id: 4, nextRelease: next('undated', { undatedCount: 1 }) }),
+          buildProjectRow({ id: 5, lastPublishedDate: '2026-09-30' }),
+        ],
+      },
+    });
+
+    const { rows } = (await renderLocals({ dashboard })).dashboard.projectTable;
+
+    expect(rows[0]).toMatchObject({
+      projectStatusOption: { value: 'ready', label: 'Ready' },
+      projectTypeOption: { value: 'images', label: 'Images' },
+      updatedLabel: 'Oct 11',
+    });
+    expect(rows.map(({ nextReleasePresentation: { state, label, extraUndatedLabel } }) => [state, label, extraUndatedLabel])).toEqual([
+      ['overdue', 'Overdue · Oct 8', '(+2 no date)'],
+      ['today', 'Today', ''],
+      ['scheduled', 'Oct 24', ''],
+      ['undated', 'No date set', ''],
+      ['none', 'None planned', ''],
+    ]);
+    expect(rows[1].nextReleasePresentation.plannedTime).toBe('18:00');
+    expect(rows[4].lastPublishedLabel).toBe('Sep 30');
   });
 });

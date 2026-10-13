@@ -23,7 +23,6 @@ import { buildRevisionToken } from '../src/storage/preview-cache.js';
 import { createAppMetaRepository } from '../src/data/app-meta-repository.js';
 import { createProjectImageSettingsService } from '../src/services/project-image-settings-service.js';
 import { projectImagePolicyFingerprint } from '../src/services/project-image-policy.js';
-import { buildDashboardSectionRegistry } from '../src/services/dashboard-defaults-service.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const imageFingerprint = (db) => projectImagePolicyFingerprint(
@@ -46,21 +45,6 @@ const ASSET_VIEWER_FIXED_STATEMENT_EXECUTIONS = 5;
 // findPage (page rows), plus one saved-target batch and two Settings reads
 // for nonempty pages. Empty pages retain the original three statements.
 const RELEASE_LIST_FIXED_STATEMENT_EXECUTIONS = 6;
-const DASHBOARD_SECTION_REGISTRY = buildDashboardSectionRegistry([
-  { value: 'tbd', label: 'Tbd' },
-  { value: 'planned', label: 'Planned' },
-  { value: 'in-progress', label: 'In Progress' },
-  { value: 'ready', label: 'Ready' },
-  { value: 'completed', label: 'Completed' },
-]);
-const dashboardSectionRegistryProvider = () => DASHBOARD_SECTION_REGISTRY;
-
-function dashboardDefaults(sectionOverrides = {}) {
-  return {
-    version: 1,
-    sections: sectionOverrides,
-  };
-}
 
 /**
  * Helper to insert a project directly without filesystem operations.
@@ -187,7 +171,6 @@ describe('workflow query service', () => {
       projectPrimaryImageRepository: primaryImageRepository,
       releaseRepository,
       tagRepository,
-      dashboardSectionRegistryProvider,
     });
   });
 
@@ -210,7 +193,6 @@ describe('workflow query service', () => {
         db,
         socialPrepRepository: repository,
         socialPrepSettingsService: settings,
-        dashboardSectionRegistryProvider,
       });
       const changes = db.prepare('SELECT total_changes() AS n').get().n;
       const result = query.getReleaseList({ sort: 'title', order: 'asc' });
@@ -250,7 +232,7 @@ describe('workflow query service', () => {
       expect(two.id).not.toBe(one.id);
     });
 
-    it('skips enrichment for empty collections and unrelated dashboard/asset references', () => {
+    it('skips enrichment for empty collections and unrelated asset references', () => {
       const project = insertProject(db, { title: 'No saved releases' });
       const repository = createSocialPrepRepository(db);
       const batch = vi.spyOn(repository, 'listPlatformsByReleaseIds');
@@ -259,12 +241,10 @@ describe('workflow query service', () => {
         db,
         socialPrepRepository: repository,
         socialPrepSettingsService: settings,
-        dashboardSectionRegistryProvider,
       });
       query.getReleaseList({});
       query.getProjectWorkspace(project.id);
       insertRelease(db, { projectId: project.id, title: 'Calendar release', plannedDate: '2030-01-01' });
-      query.getDashboardData();
       query.getProjectAssetBrowser(project.id, {});
       expect(batch).not.toHaveBeenCalled();
       expect(settings.getSettings).not.toHaveBeenCalled();
@@ -301,31 +281,6 @@ describe('workflow query service', () => {
       insertAsset(db, { projectId: archived.id, relativePath: 'archived.gif', filename: 'archived.gif', extension: 'gif' });
 
       expect(service.getProjectAssetsDefaultExtensions()).toEqual(['gif', 'png']);
-    });
-  });
-
-  // ─── getDashboardData: empty state ─────────────────────────────────
-
-  describe('getDashboardData — empty state', () => {
-    it('returns safe empty sections for an empty database', () => {
-      const data = service.getDashboardData();
-
-      expect(data).not.toHaveProperty('overdue');
-      expect(data).not.toHaveProperty('upcoming');
-      expect(data.workflowSummary.totalProjects).toBe(0);
-      expect(data.workflowSummary.totalAssets).toBe(0);
-      expect(data.workflowSummary.totalReleases).toBe(0);
-      expect(data.workflowSummary.missingAssetSummary.total).toBe(0);
-      expect(data.workflowSummary.missingAssetSummary).not.toHaveProperty('referencedByReleases');
-      expect(data.workflowSummary).not.toHaveProperty('releaseStatusCounts');
-      expect(data).not.toHaveProperty('projectCounts');
-      expect(data.recentlyUpdated).toEqual([]);
-      expect(data.sections).not.toHaveProperty('overdue');
-      expect(data.sections).not.toHaveProperty('upcoming');
-    });
-
-    it('does not throw for an empty database', () => {
-      expect(() => service.getDashboardData()).not.toThrow();
     });
   });
 
@@ -665,297 +620,6 @@ describe('workflow query service', () => {
       });
       expect(countBatch).not.toHaveBeenCalled();
       expect(releaseBatch).not.toHaveBeenCalled();
-    });
-  });
-
-  // ─── getDashboardData: workflow summary ────────────────────────────
-
-  describe('getDashboardData — workflow summary', () => {
-    it('derives total projects from internal status counts without exposing them', () => {
-      insertProject(db, { title: 'Alpha', status: 'tbd' });
-      insertProject(db, { title: 'Beta', status: 'planned' });
-      insertProject(db, { title: 'Gamma', status: 'in-progress' });
-
-      const data = service.getDashboardData();
-      expect(data.workflowSummary.totalProjects).toBe(3);
-      expect(data).not.toHaveProperty('projectCounts');
-    });
-
-    it('computes total assets and missing asset summary', () => {
-      const project = insertProject(db, { title: 'Asset Count Project' });
-      insertAsset(db, { projectId: project.id, relativePath: 'a.txt', filename: 'a.txt', isPresent: 1 });
-      insertAsset(db, { projectId: project.id, relativePath: 'b.txt', filename: 'b.txt', isPresent: 1 });
-      insertAsset(db, { projectId: project.id, relativePath: 'c.txt', filename: 'c.txt', isPresent: 0 });
-
-      const data = service.getDashboardData();
-      expect(data.workflowSummary.totalAssets).toBe(3);
-      expect(data.workflowSummary.missingAssetSummary.total).toBe(1);
-      expect(data.workflowSummary.missingAssetSummary).not.toHaveProperty('referencedByReleases');
-    });
-
-    it('counts all release records, including archived releases', () => {
-      const project = insertProject(db, { title: 'Release Count Project' });
-      insertRelease(db, { projectId: project.id, title: 'Active Release' });
-      insertRelease(db, {
-        projectId: project.id,
-        title: 'Archived Release',
-        archivedAt: '2026-01-01 00:00:00',
-      });
-
-      const data = service.getDashboardData();
-
-      expect(data.workflowSummary.totalReleases).toBe(2);
-    });
-
-    it('does not expose removed release-status or project-status counts', () => {
-      const project = insertProject(db, { title: 'Project Counts Project', status: 'ready' });
-      insertRelease(db, { projectId: project.id, title: 'First' });
-      insertRelease(db, { projectId: project.id, title: 'Second' });
-
-      const data = service.getDashboardData();
-      expect(data.workflowSummary).not.toHaveProperty('releaseStatusCounts');
-      expect(data.workflowSummary.totalProjects).toBe(1);
-      expect(data).not.toHaveProperty('projectCounts');
-    });
-  });
-
-  // ─── getDashboardData: recently updated ────────────────────────────
-
-  describe('getDashboardData — recently updated', () => {
-    it('returns the most-recently-updated projects first', async () => {
-      const old = insertProject(db, { title: 'Old Project' });
-      // Force a difference in updated_at
-      db.prepare(`UPDATE projects SET updated_at = '2020-01-01 00:00:00' WHERE id = ?`).run(old.id);
-      const recent = insertProject(db, { title: 'Recent Project' });
-      db.prepare(`UPDATE projects SET updated_at = '2099-01-01 00:00:00' WHERE id = ?`).run(recent.id);
-
-      const data = service.getDashboardData();
-      expect(data.recentlyUpdated.length).toBe(2);
-      expect(data.recentlyUpdated[0].title).toBe('Recent Project');
-    });
-
-    it('excludes archived projects from recently updated', () => {
-      const project = insertProject(db, { title: 'Archived Hide' });
-      db.prepare(`UPDATE projects SET archived_at = datetime('now') WHERE id = ?`).run(project.id);
-
-      const data = service.getDashboardData();
-      expect(data.recentlyUpdated).toEqual([]);
-    });
-
-    it('respects bounded limit for recently updated', () => {
-      for (let i = 0; i < 20; i++) {
-        insertProject(db, { title: `P${i}` });
-      }
-
-      const data = service.getDashboardData({
-        dashboardDefaults: dashboardDefaults({ 'recently-updated': { visible: true, itemCount: 5 } }),
-      });
-      expect(data.recentlyUpdated).toHaveLength(5);
-    });
-
-    it('attaches primary image and tag data to recently-updated projects', () => {
-      const tag = tagRepository.create({ displayName: 'Recent Tag', normalizedName: 'recent-tag' });
-      const project = insertProject(db, { title: 'Enriched Recent' });
-      tagRepository.assignToProject(project.id, tag.id);
-
-      const data = service.getDashboardData();
-      const row = data.recentlyUpdated.find((p) => p.id === project.id);
-      expect(row.tags).toEqual([{ displayName: 'Recent Tag' }]);
-      expect(row.primaryImage.state).toBe('none');
-    });
-
-    it('composes retained sections with bounded, deduplicated enrichment', () => {
-      const configuredDefaults = dashboardDefaults(Object.fromEntries([
-        'recently-updated',
-        'status:tbd',
-        'status:planned',
-        'status:in-progress',
-        'status:ready',
-        'status:completed',
-        'status:archived',
-      ].map((sectionId) => [sectionId, { visible: true, itemCount: 8 }])));
-
-      function insertDashboardFixture(label) {
-        const recentlyUpdated = insertProject(db, { title: `${label} Recent`, status: 'ready' });
-        const statuses = [
-          insertProject(db, { title: `${label} TBD`, status: 'tbd' }),
-          insertProject(db, { title: `${label} Planned`, status: 'planned' }),
-          insertProject(db, { title: `${label} In Progress`, status: 'in-progress' }),
-          insertProject(db, { title: `${label} Completed`, status: 'completed' }),
-          insertProject(db, { title: `${label} Archived`, status: 'tbd', archivedAt: '2026-01-01 00:00:00' }),
-        ];
-        const recentAsset = insertAsset(db, {
-          projectId: recentlyUpdated.id,
-          relativePath: `${label}-recent.png`,
-          filename: `${label}-recent.png`,
-          extension: 'png',
-          mimeType: 'image/png',
-        });
-        primaryImageRepository.setPrimaryImage(recentlyUpdated.id, recentAsset.id);
-
-        return { recentlyUpdated, statuses, recentAsset };
-      }
-
-      const smallFixture = insertDashboardFixture('Dashboard Query Small');
-      const counter = instrumentStatementExecution(db);
-      const instrumentedService = createWorkflowQueryService({ db, dashboardSectionRegistryProvider });
-
-      const smallStatementStart = counter.statements().length;
-      counter.reset();
-      const smallData = instrumentedService.getDashboardData({ dashboardDefaults: configuredDefaults });
-      const smallCount = counter.count();
-
-      expect(smallData.recentlyUpdated.map((project) => project.id)).toContain(smallFixture.recentlyUpdated.id);
-      expect(smallData.recentlyUpdated.find((project) => project.id === smallFixture.recentlyUpdated.id).primaryImage)
-        .toMatchObject({ selectedAssetId: smallFixture.recentAsset.id, state: 'available' });
-      expect(smallData.sections['status:archived'].map((project) => project.id))
-        .toContain(smallFixture.statuses[4].id);
-      expect(smallData.sections['status:ready'][0]).toBe(
-        smallData.recentlyUpdated.find((project) => project.id === smallFixture.recentlyUpdated.id)
-      );
-      expect(['tbd', 'planned', 'in-progress', 'ready', 'completed', 'archived'].every(
-        (status) => smallData.sections[`status:${status}`].length > 0
-      )).toBe(true);
-      expect(counter.statements().slice(smallStatementStart)
-        .filter((statement) => statement.includes('requested_statuses'))).toHaveLength(1);
-
-      for (let i = 1; i <= 20; i++) insertDashboardFixture(`Dashboard Query Large ${i}`);
-
-      const largeStatementStart = counter.statements().length;
-      counter.reset();
-      const largeData = instrumentedService.getDashboardData({ dashboardDefaults: configuredDefaults });
-      const largeCount = counter.count();
-
-      expect(smallData.recentlyUpdated).toHaveLength(5);
-      expect(largeData.recentlyUpdated).toHaveLength(8);
-      expect(largeData.workflowSummary.totalProjects).toBeGreaterThan(smallData.workflowSummary.totalProjects);
-      expect(smallCount).toBe(largeCount);
-      expect(smallCount).toBe(11);
-      expect(counter.statements().slice(largeStatementStart)
-        .filter((statement) => statement.includes('requested_statuses'))).toHaveLength(1);
-    });
-
-    it('uses default eight-item retained sections and skips hidden project-list queries', () => {
-      for (let i = 0; i < 10; i++) {
-        insertProject(db, { title: `Default Recent ${i}`, status: 'tbd' });
-        for (const status of ['tbd', 'planned', 'in-progress', 'ready', 'completed', 'archived']) {
-          insertProject(db, {
-            title: `Default ${status} ${i}`,
-            status,
-            archivedAt: status === 'archived' ? '2026-01-01 00:00:00' : null,
-          });
-        }
-      }
-
-      const defaults = service.getDashboardData();
-      expect(defaults.recentlyUpdated).toHaveLength(8);
-      expect(defaults).not.toHaveProperty('overdue');
-      expect(defaults).not.toHaveProperty('upcoming');
-      for (const status of ['tbd', 'planned', 'in-progress', 'ready', 'completed', 'archived']) {
-        expect(defaults.sections[`status:${status}`]).toHaveLength(8);
-      }
-
-      const allHidden = dashboardDefaults(Object.fromEntries([
-        'recently-updated',
-        'status:tbd',
-        'status:planned',
-        'status:in-progress',
-        'status:ready',
-        'status:completed',
-        'status:archived',
-      ].map((sectionId) => [sectionId, { visible: false, itemCount: 8 }])));
-      const counter = instrumentStatementExecution(db);
-      const instrumentedService = createWorkflowQueryService({ db, dashboardSectionRegistryProvider });
-      const statementStart = counter.statements().length;
-      counter.reset();
-      const hiddenData = instrumentedService.getDashboardData({ dashboardDefaults: allHidden });
-
-      expect(counter.count()).toBe(5);
-      expect(Object.values(hiddenData.sections).every((projects) => projects.length === 0)).toBe(true);
-      expect(counter.statements().slice(statementStart).some(
-        (statement) => statement.includes('requested_statuses')
-      )).toBe(false);
-    });
-    it('uses independent visible status limits in one status query', () => {
-      for (let i = 0; i < 4; i++) {
-        insertProject(db, { title: `TBD status ${i}`, status: 'tbd' });
-        insertProject(db, { title: `Ready status ${i}`, status: 'ready' });
-      }
-      const counter = instrumentStatementExecution(db);
-      const instrumentedService = createWorkflowQueryService({ db, dashboardSectionRegistryProvider });
-      const statementStart = counter.statements().length;
-      counter.reset();
-      const data = instrumentedService.getDashboardData({
-        dashboardDefaults: dashboardDefaults({
-          overdue: { visible: false, itemCount: 8 },
-          upcoming: { visible: false, itemCount: 8 },
-          'recently-updated': { visible: false, itemCount: 8 },
-          'status:tbd': { visible: true, itemCount: 2 },
-          'status:ready': { visible: true, itemCount: 3 },
-          'status:planned': { visible: false, itemCount: 8 },
-          'status:in-progress': { visible: false, itemCount: 8 },
-          'status:completed': { visible: false, itemCount: 8 },
-          'status:archived': { visible: false, itemCount: 8 },
-        }),
-      });
-
-      expect(data.sections['status:tbd']).toHaveLength(2);
-      expect(data.sections['status:ready']).toHaveLength(3);
-      expect(data.sections['status:planned']).toEqual([]);
-      expect(counter.statements().slice(statementStart).filter(
-        (statement) => statement.includes('requested_statuses')
-      )).toHaveLength(1);
-    });
-
-    it('queries and counts a custom status without repository membership knowledge', () => {
-      const custom = insertProject(db, { title: 'Custom review', status: 'quality-review' });
-      const registry = buildDashboardSectionRegistry([
-        ...DASHBOARD_SECTION_REGISTRY.filter(({ status }) => status).map(({ status, label }) => ({
-          value: status,
-          label,
-        })),
-        { value: 'quality-review', label: 'Editorial Review' },
-      ]);
-
-      const data = service.getDashboardData({ dashboardSectionRegistry: registry });
-
-      expect(data.workflowSummary.totalProjects).toBe(1);
-      expect(data.sections['status:quality-review'].map(({ id }) => id)).toEqual([custom.id]);
-    });
-  });
-
-  // ─── getDashboardData: release-count source ───────────────────────
-
-  describe('getDashboardData — release-count source', () => {
-    it('uses the established all-records release count without release-attention queries', () => {
-      const releaseRepositorySpy = {
-        findOverdue: vi.fn(),
-        findUpcoming: vi.fn(),
-        findActiveWithoutPlannedDate: vi.fn(),
-        findReleasesWithMissingSelectedAssets: vi.fn(),
-        findReleasesWithoutSelectedAssets: vi.fn(),
-        countMissingAssetsReferenced: vi.fn(),
-        countFiltered: vi.fn(() => 7),
-      };
-      const spiedService = createWorkflowQueryService({
-        db,
-        projectPrimaryImageRepository: primaryImageRepository,
-        tagRepository,
-        releaseRepository: releaseRepositorySpy,
-        dashboardSectionRegistryProvider,
-      });
-
-      const data = spiedService.getDashboardData();
-
-      expect(data.workflowSummary.totalReleases).toBe(7);
-      expect(releaseRepositorySpy.countFiltered).toHaveBeenCalledOnce();
-      expect(releaseRepositorySpy.countFiltered).toHaveBeenCalledWith({ includeArchived: true });
-      expect(releaseRepositorySpy.findOverdue).not.toHaveBeenCalled();
-      expect(releaseRepositorySpy.findUpcoming).not.toHaveBeenCalled();
-      expect(releaseRepositorySpy.findActiveWithoutPlannedDate).not.toHaveBeenCalled();
-      expect(releaseRepositorySpy.findReleasesWithMissingSelectedAssets).not.toHaveBeenCalled();
-      expect(releaseRepositorySpy.findReleasesWithoutSelectedAssets).not.toHaveBeenCalled();
-      expect(releaseRepositorySpy.countMissingAssetsReferenced).not.toHaveBeenCalled();
     });
   });
 
@@ -4652,18 +4316,6 @@ describe('workflow query service', () => {
       }
     });
 
-    it('getDashboardData returns retained sections at no more than configured limits', () => {
-      for (let i = 0; i < 20; i++) {
-        insertProject(db, { title: `Bounded Dashboard Project ${i}`, status: 'planned' });
-      }
-
-      const data = service.getDashboardData();
-      expect(data.recentlyUpdated.length).toBeLessThanOrEqual(8);
-      expect(data.sections['status:planned'].length).toBeLessThanOrEqual(8);
-      expect(data.sections).not.toHaveProperty('overdue');
-      expect(data.sections).not.toHaveProperty('upcoming');
-    });
-
     it('getReleaseList returns at most pageSize releases', () => {
       const result = service.getReleaseList({ pageSize: '5' }, { today: '2099-01-01' });
       expect(result.releases.length).toBeLessThanOrEqual(5);
@@ -4671,39 +4323,552 @@ describe('workflow query service', () => {
 
   });
 
-  describe('getDashboardData — configured section sorting', () => {
-    it('uses configured trusted sorting for retained recently updated and status sections', () => {
-      const recentZulu = insertProject(db, { title: 'Zulu recent', status: 'tbd' });
-      const recentAlpha = insertProject(db, { title: 'Alpha recent', status: 'tbd' });
-      const readyZulu = insertProject(db, { title: 'Zulu ready', status: 'ready' });
-      const readyAlpha = insertProject(db, { title: 'Alpha ready', status: 'ready' });
+  // ─── getDashboardData ──────────────────────────────────────────────
 
-      const data = service.getDashboardData({
-        dashboardDefaults: dashboardDefaults({
-          'recently-updated': { visible: true, itemCount: 25, sort: 'title', order: 'asc' },
-          'status:ready': { visible: true, itemCount: 8, sort: 'title', order: 'asc' },
-        }),
+  describe('getDashboardData', () => {
+    // A Wednesday: the Monday strip starts 2026-06-08, the Sunday strip 2026-06-07.
+    const TODAY = '2026-06-10';
+
+    function compose(options = {}) {
+      return service.getDashboardData({ today: TODAY, weekStart: 'monday', ...options });
+    }
+
+    function setReleaseCreatedAt(releaseId, createdAt) {
+      db.prepare('UPDATE releases SET created_at = ? WHERE id = ?').run(createdAt, releaseId);
+    }
+
+    function setProjectUpdatedAt(projectId, updatedAt) {
+      db.prepare('UPDATE projects SET updated_at = ? WHERE id = ?').run(updatedAt, projectId);
+    }
+
+    function dayByDate(data, date) {
+      return data.strip.days.find((day) => day.date === date);
+    }
+
+    const ids = (items) => items.map(({ id }) => id);
+
+    function withTimezone(timezone, callback) {
+      const original = process.env.TZ;
+      process.env.TZ = timezone;
+      try {
+        return callback();
+      } finally {
+        if (original === undefined) delete process.env.TZ;
+        else process.env.TZ = original;
+      }
+    }
+
+    it('returns safe empty totals and a full strip for an empty database', () => {
+      const data = compose();
+
+      expect(data.today).toBe(TODAY);
+      expect(data.weekStart).toBe('monday');
+      expect(data.tiles).toEqual({
+        overdue: { count: 0, href: '/releases?schedule=overdue' },
+        needsDate: { count: 0, oldestAgeDays: null, href: '#needs-date' },
+        dueToday: { count: 0, firstRelease: null, href: '/releases?schedule=today' },
+        next7Days: { count: 0, throughDate: '2026-06-17', href: '/releases?schedule=upcoming' },
+        missingAssets: { count: 0, affectedReleaseCount: 0, href: '/asset-viewer?presence=missing' },
       });
-
-      expect(data.sections['recently-updated'].map((project) => project.id))
-        .toContain(recentAlpha.id);
-      expect(data.sections['recently-updated'].findIndex((project) => project.id === recentAlpha.id))
-        .toBeLessThan(data.sections['recently-updated'].findIndex((project) => project.id === recentZulu.id));
-      expect(data.sections['status:ready'].map((project) => project.id))
-        .toEqual([readyAlpha.id, readyZulu.id]);
+      expect(data.scheduled.groups).toEqual([]);
+      expect(data.needsDate).toEqual({ total: 0, items: [], viewAllHref: null });
+      expect(data.recentlyPublished.items).toEqual([]);
+      expect(data.projectTable).toEqual({ total: 0, shown: 0, complete: true, statusCounts: {}, rows: [] });
+      expect(data.strip.days).toHaveLength(14);
+      expect(data.strip.openDays.map(({ date }) => date)).toEqual(['2026-06-11', '2026-06-12', '2026-06-13']);
     });
 
-    it('keeps the established updated-date default when no sorting is stored', () => {
-      const readyFirst = insertProject(db, { title: 'First ready', status: 'ready' });
-      const readySecond = insertProject(db, { title: 'Second ready', status: 'ready' });
+    it('classifies every schedule bucket at its boundaries without merging releases of one project', () => {
+      const project = insertProject(db, { title: 'Bucket project' });
+      const release = (title, plannedDate, plannedTime = null) => insertRelease(db, {
+        projectId: project.id, title, plannedDate, plannedTime,
+      });
+      const longOverdue = release('Long overdue', '2026-06-01');
+      const yesterday = release('Yesterday', '2026-06-09');
+      const todayDateOnly = release('Today date-only', TODAY);
+      const todayBlankTime = release('Today blank time', TODAY, '');
+      const todayTimed = release('Today timed', TODAY, '09:30');
+      const tomorrow = release('Tomorrow', '2026-06-11');
+      const weekEnd = release('Week end', '2026-06-17');
+      const later = release('Later', '2026-06-18');
+      const undated = release('Undated', null);
 
-      const data = service.getDashboardData({
-        dashboardDefaults: { version: 1, sections: {} },
+      const data = compose();
+      const groups = Object.fromEntries(data.scheduled.groups.map((group) => [group.id, group]));
+
+      expect(data.scheduled.groups.map(({ id, label, total, viewAllHref }) => ({ id, label, total, viewAllHref })))
+        .toEqual([
+          { id: 'overdue', label: 'Overdue', total: 2, viewAllHref: '/releases?schedule=overdue' },
+          { id: 'today', label: 'Today', total: 3, viewAllHref: '/releases?schedule=today' },
+          { id: 'next7', label: 'Next 7 days', total: 2, viewAllHref: '/releases?schedule=upcoming' },
+          { id: 'later', label: 'Later', total: 1, viewAllHref: '/releases?schedule=upcoming' },
+        ]);
+      expect(ids(groups.overdue.items)).toEqual([longOverdue.id, yesterday.id]);
+      expect(groups.overdue.items.map(({ daysLate }) => daysLate)).toEqual([9, 1]);
+      expect(ids(groups.today.items)).toEqual([todayTimed.id, todayDateOnly.id, todayBlankTime.id]);
+      expect(groups.today.items.map(({ planned_time: time }) => time)).toEqual(['09:30', null, null]);
+      expect(ids(groups.next7.items)).toEqual([tomorrow.id, weekEnd.id]);
+      expect(groups.next7.items.every(({ daysLate }) => daysLate === null)).toBe(true);
+      expect(ids(groups.later.items)).toEqual([later.id]);
+      expect(ids(data.needsDate.items)).toEqual([undated.id]);
+
+      const displayed = [...data.scheduled.groups.flatMap(({ items }) => items), ...data.needsDate.items];
+      expect(new Set(ids(displayed)).size).toBe(9);
+      expect(displayed.every((item) => item.project_id === project.id && item.project_title === 'Bucket project'))
+        .toBe(true);
+
+      expect(data.tiles.overdue.count).toBe(2);
+      expect(data.tiles.dueToday.count).toBe(3);
+      expect(data.tiles.dueToday.firstRelease.id).toBe(todayTimed.id);
+      expect(data.tiles.next7Days).toMatchObject({ count: 2, throughDate: '2026-06-17' });
+      expect(data.tiles.needsDate.count).toBe(1);
+    });
+
+    it('hides empty schedule groups', () => {
+      const project = insertProject(db, { title: 'Later only' });
+      insertRelease(db, { projectId: project.id, title: 'Far away', plannedDate: '2026-09-01' });
+
+      expect(compose().scheduled.groups.map(({ id }) => id)).toEqual(['later']);
+    });
+
+    it('keeps true totals independent of display limits', () => {
+      const project = insertProject(db, { title: 'Busy project' });
+      const overdue = [];
+      const later = [];
+      const undated = [];
+      const published = [];
+      for (let day = 1; day <= 8; day++) {
+        overdue.push(insertRelease(db, { projectId: project.id, title: `Overdue ${day}`, plannedDate: `2026-05-0${day}` }));
+      }
+      for (let day = 7; day >= 1; day--) {
+        later.unshift(insertRelease(db, { projectId: project.id, title: `Later ${day}`, plannedDate: `2026-07-0${day}` }));
+      }
+      for (let index = 0; index < 12; index++) {
+        const release = insertRelease(db, { projectId: project.id, title: `Undated ${index}` });
+        setReleaseCreatedAt(release.id, `2026-05-${String(index + 1).padStart(2, '0')} 12:00:00`);
+        undated.push(release);
+      }
+      for (let day = 1; day <= 6; day++) {
+        published.push(insertRelease(db, {
+          projectId: project.id, title: `Published ${day}`, plannedDate: `2026-06-0${day}`, publishedDate: `2026-06-0${day}`,
+        }));
+      }
+
+      const data = compose();
+      const groups = Object.fromEntries(data.scheduled.groups.map((group) => [group.id, group]));
+
+      expect(groups.overdue.total).toBe(8);
+      expect(ids(groups.overdue.items)).toEqual(ids(overdue));
+      expect(groups.later.total).toBe(7);
+      expect(ids(groups.later.items)).toEqual(ids(later.slice(0, 5)));
+      expect(data.tiles.overdue.count).toBe(8);
+
+      expect(data.needsDate.total).toBe(12);
+      expect(data.tiles.needsDate.count).toBe(12);
+      expect(ids(data.needsDate.items)).toEqual(ids(undated.slice(0, 10)));
+      expect(data.needsDate.items.map(({ ageDays }) => ageDays)).toEqual([40, 39, 38, 37, 36, 35, 34, 33, 32, 31]);
+      expect(data.needsDate.viewAllHref).toBe('/releases?schedule=unscheduled');
+      expect(data.tiles.needsDate.oldestAgeDays).toBe(40);
+
+      expect(ids(data.recentlyPublished.items)).toEqual(ids(published.slice(2).reverse()));
+    });
+
+    it('calculates ages and lateness from application-local calendar dates across DST', () => {
+      withTimezone('America/New_York', () => {
+        // 03:30 UTC on 2026-03-10 is 23:30 EDT on 2026-03-09; DST began 2026-03-08.
+        expect(new Date('2026-03-10T03:30:00Z').getDate()).toBe(9);
+        const project = insertProject(db, { title: 'DST project' });
+        const beforeDst = insertRelease(db, { projectId: project.id, title: 'Before DST' });
+        setReleaseCreatedAt(beforeDst.id, '2026-03-07 12:00:00');
+        const nearMidnight = insertRelease(db, { projectId: project.id, title: 'Near midnight' });
+        setReleaseCreatedAt(nearMidnight.id, '2026-03-10 03:30:00');
+        const overdue = insertRelease(db, { projectId: project.id, title: 'Overdue', plannedDate: '2026-03-07' });
+
+        const data = service.getDashboardData({ today: '2026-03-10', weekStart: 'sunday' });
+
+        expect(ids(data.needsDate.items)).toEqual([beforeDst.id, nearMidnight.id]);
+        expect(data.needsDate.items.map(({ ageDays }) => ageDays)).toEqual([3, 1]);
+        expect(data.tiles.needsDate.oldestAgeDays).toBe(3);
+        expect(data.scheduled.groups[0].items.map(({ id, daysLate }) => [id, daysLate])).toEqual([[overdue.id, 3]]);
+        expect(data.strip.days.map(({ date }) => date)).toEqual([
+          '2026-03-08', '2026-03-09', '2026-03-10', '2026-03-11', '2026-03-12', '2026-03-13', '2026-03-14',
+          '2026-03-15', '2026-03-16', '2026-03-17', '2026-03-18', '2026-03-19', '2026-03-20', '2026-03-21',
+        ]);
+      });
+    });
+
+    it('anchors the two-week strip to Monday or Sunday week starts', () => {
+      const monday = compose({ weekStart: 'monday' });
+      expect(monday.strip).toMatchObject({ startDate: '2026-06-08', endDateExclusive: '2026-06-22' });
+      expect(monday.strip.days.map(({ date }) => date).at(-1)).toBe('2026-06-21');
+      expect(monday.strip.days.findIndex(({ isToday }) => isToday)).toBe(2);
+      expect(monday.strip.days.filter(({ isPast }) => isPast).map(({ date }) => date))
+        .toEqual(['2026-06-08', '2026-06-09']);
+
+      const sunday = compose({ weekStart: 'sunday' });
+      expect(sunday.weekStart).toBe('sunday');
+      expect(sunday.strip).toMatchObject({ startDate: '2026-06-07', endDateExclusive: '2026-06-21' });
+      expect(sunday.strip.days.findIndex(({ isToday }) => isToday)).toBe(3);
+
+      // Today on the week-start day itself.
+      expect(compose({ today: '2026-06-14', weekStart: 'sunday' }).strip.startDate).toBe('2026-06-14');
+      expect(compose({ today: '2026-06-14', weekStart: 'monday' }).strip.startDate).toBe('2026-06-08');
+    });
+
+    it('defaults the week start to the saved Calendar preference', () => {
+      expect(service.getDashboardData({ today: TODAY }).weekStart).toBe('monday');
+
+      const pageDefaultsService = { resolvePageDefaults: vi.fn(() => ({ weekStart: 'sunday' })) };
+      const query = createWorkflowQueryService({ db, pageDefaultsService });
+
+      expect(query.getDashboardData({ today: TODAY })).toMatchObject({
+        weekStart: 'sunday',
+        strip: { startDate: '2026-06-07' },
+      });
+      expect(pageDefaultsService.resolvePageDefaults).toHaveBeenCalledWith('calendar');
+      expect(query.getDashboardData({ today: TODAY, weekStart: 'friday' }).weekStart).toBe('sunday');
+      expect(query.getDashboardData({ today: TODAY, weekStart: 'monday' }).weekStart).toBe('monday');
+    });
+
+    it('spans month and year transitions with eligible per-day counts', () => {
+      const project = insertProject(db, { title: 'New year' });
+      const archivedProject = insertProject(db, { title: 'Archived new year', archivedAt: '2026-01-01 00:00:00' });
+      insertRelease(db, { projectId: project.id, title: 'Overdue', plannedDate: '2026-12-29' });
+      insertRelease(db, { projectId: project.id, title: 'Published', plannedDate: '2026-12-20', publishedDate: '2026-12-28' });
+      insertRelease(db, { projectId: project.id, title: 'Scheduled A', plannedDate: '2027-01-02' });
+      insertRelease(db, { projectId: project.id, title: 'Scheduled B', plannedDate: '2027-01-02' });
+      insertRelease(db, {
+        projectId: project.id, title: 'Archived', plannedDate: '2027-01-03', archivedAt: '2026-12-01 00:00:00',
+      });
+      insertRelease(db, { projectId: archivedProject.id, title: 'Archived parent', plannedDate: '2027-01-04' });
+
+      const data = compose({ today: '2026-12-30' });
+
+      expect(data.strip.startDate).toBe('2026-12-28');
+      expect(data.strip.endDateExclusive).toBe('2027-01-11');
+      expect(data.strip.days.map(({ date }) => date)).toEqual([
+        '2026-12-28', '2026-12-29', '2026-12-30', '2026-12-31', '2027-01-01', '2027-01-02', '2027-01-03',
+        '2027-01-04', '2027-01-05', '2027-01-06', '2027-01-07', '2027-01-08', '2027-01-09', '2027-01-10',
+      ]);
+      expect(dayByDate(data, '2026-12-28')).toMatchObject({
+        isPast: true, isOpen: false, counts: { overdue: 0, scheduled: 0, published: 1 },
+      });
+      expect(dayByDate(data, '2026-12-29')).toMatchObject({
+        isPast: true, isOpen: false, counts: { overdue: 1, scheduled: 0, published: 0 },
+      });
+      expect(dayByDate(data, '2026-12-30')).toMatchObject({ isToday: true, isPast: false, isOpen: false });
+      expect(dayByDate(data, '2027-01-02')).toMatchObject({
+        isOpen: false, counts: { overdue: 0, scheduled: 2, published: 0 },
+      });
+      expect(dayByDate(data, '2027-01-03')).toMatchObject({
+        isOpen: true, counts: { overdue: 0, scheduled: 0, published: 0 },
+      });
+      expect(dayByDate(data, '2027-01-04').isOpen).toBe(true);
+      expect(dayByDate(data, '2026-12-31').calendarHref).toBe('/calendar?month=2026-12');
+      expect(dayByDate(data, '2027-01-01').calendarHref).toBe('/calendar?month=2027-01');
+      expect(data.strip.openDays).toEqual([
+        { date: '2026-12-31', inStrip: true, calendarHref: '/calendar?month=2026-12' },
+        { date: '2027-01-01', inStrip: true, calendarHref: '/calendar?month=2027-01' },
+        { date: '2027-01-03', inStrip: true, calendarHref: '/calendar?month=2027-01' },
+      ]);
+    });
+
+    it('suggests open days beyond the visible strip', () => {
+      const project = insertProject(db, { title: 'Fully booked' });
+      for (let day = 11; day <= 21; day++) {
+        insertRelease(db, { projectId: project.id, title: `Booked ${day}`, plannedDate: `2026-06-${day}` });
+      }
+      insertRelease(db, { projectId: project.id, title: 'Published on 22', plannedDate: '2026-06-01', publishedDate: '2026-06-22' });
+      insertRelease(db, {
+        projectId: project.id, title: 'Archived on 23', plannedDate: '2026-06-23', archivedAt: '2026-06-01 00:00:00',
       });
 
-      expect(data.sections['status:ready'].slice(0, 2).map((project) => project.id))
-        .toEqual([readySecond.id, readyFirst.id]);
+      const data = compose();
+
+      expect(data.strip.days.some(({ isOpen }) => isOpen)).toBe(false);
+      expect(data.strip.openDays.map(({ date, inStrip }) => [date, inStrip])).toEqual([
+        ['2026-06-23', false], ['2026-06-24', false], ['2026-06-25', false],
+      ]);
+    });
+
+    it('excludes archived releases and projects archived by either indicator', () => {
+      const active = insertProject(db, { title: 'Active', status: 'ready' });
+      const activeRelease = insertRelease(db, { projectId: active.id, title: 'Active overdue', plannedDate: '2026-06-09' });
+      insertRelease(db, {
+        projectId: active.id, title: 'Archived overdue', plannedDate: '2026-06-09', archivedAt: '2026-06-01 00:00:00',
+      });
+      insertRelease(db, {
+        projectId: active.id, title: 'Archived published', publishedDate: '2026-06-09', archivedAt: '2026-06-01 00:00:00',
+      });
+      for (const archivedProject of [
+        insertProject(db, { title: 'Archived at', status: 'ready', archivedAt: '2026-01-01 00:00:00' }),
+        insertProject(db, { title: 'Legacy archived', status: 'archived' }),
+      ]) {
+        insertRelease(db, { projectId: archivedProject.id, title: 'Overdue', plannedDate: '2026-06-09' });
+        insertRelease(db, { projectId: archivedProject.id, title: 'Today', plannedDate: TODAY });
+        insertRelease(db, { projectId: archivedProject.id, title: 'Soon', plannedDate: '2026-06-12' });
+        insertRelease(db, { projectId: archivedProject.id, title: 'Undated' });
+        insertRelease(db, { projectId: archivedProject.id, title: 'Published', publishedDate: '2026-06-08' });
+        const asset = insertAsset(db, {
+          projectId: archivedProject.id, relativePath: 'gone.png', filename: 'gone.png', isPresent: 0,
+        });
+        const selecting = insertRelease(db, { projectId: archivedProject.id, title: 'Selects missing' });
+        linkAssetToRelease(db, { releaseId: selecting.id, assetId: asset.id });
+      }
+
+      const data = compose();
+
+      expect(data.scheduled.groups.map(({ id, total }) => [id, total])).toEqual([['overdue', 1]]);
+      expect(ids(data.scheduled.groups[0].items)).toEqual([activeRelease.id]);
+      expect(data.tiles.overdue.count).toBe(1);
+      expect(data.tiles.dueToday.count).toBe(0);
+      expect(data.tiles.next7Days.count).toBe(0);
+      expect(data.tiles.needsDate.count).toBe(0);
+      expect(data.needsDate.items).toEqual([]);
+      expect(data.recentlyPublished.items).toEqual([]);
+      expect(data.tiles.missingAssets).toMatchObject({ count: 0, affectedReleaseCount: 0 });
+      expect(dayByDate(data, '2026-06-09').counts).toEqual({ overdue: 1, scheduled: 0, published: 0 });
+      expect(dayByDate(data, '2026-06-08').counts).toEqual({ overdue: 0, scheduled: 0, published: 0 });
+      expect(dayByDate(data, '2026-06-12').isOpen).toBe(true);
+      expect(data.projectTable).toMatchObject({ total: 1, shown: 1, complete: true, statusCounts: { ready: 1 } });
+      expect(ids(data.projectTable.rows)).toEqual([active.id]);
+    });
+
+    it('counts missing assets in active projects and distinct active releases selecting them', () => {
+      const project = insertProject(db, { title: 'Missing assets' });
+      const missingA = insertAsset(db, { projectId: project.id, relativePath: 'a.png', filename: 'a.png', isPresent: 0 });
+      const missingB = insertAsset(db, { projectId: project.id, relativePath: 'b.png', filename: 'b.png', isPresent: 0 });
+      const present = insertAsset(db, { projectId: project.id, relativePath: 'c.png', filename: 'c.png' });
+      const both = insertRelease(db, { projectId: project.id, title: 'Selects both' });
+      linkAssetToRelease(db, { releaseId: both.id, assetId: missingA.id });
+      linkAssetToRelease(db, { releaseId: both.id, assetId: missingB.id, sortOrder: 1 });
+      const one = insertRelease(db, { projectId: project.id, title: 'Selects one', plannedDate: TODAY });
+      linkAssetToRelease(db, { releaseId: one.id, assetId: missingA.id });
+      const presentOnly = insertRelease(db, { projectId: project.id, title: 'Selects present' });
+      linkAssetToRelease(db, { releaseId: presentOnly.id, assetId: present.id });
+      const archived = insertRelease(db, { projectId: project.id, title: 'Archived', archivedAt: '2026-06-01 00:00:00' });
+      linkAssetToRelease(db, { releaseId: archived.id, assetId: missingA.id });
+      const published = insertRelease(db, { projectId: project.id, title: 'Published', publishedDate: '2026-06-01' });
+      linkAssetToRelease(db, { releaseId: published.id, assetId: missingB.id });
+
+      const data = compose();
+
+      expect(data.tiles.missingAssets).toEqual({
+        count: 2, affectedReleaseCount: 2, href: '/asset-viewer?presence=missing',
+      });
+      const todayItem = data.scheduled.groups.find(({ id }) => id === 'today').items[0];
+      expect(todayItem).toMatchObject({ id: one.id, selected_asset_count: 1, missing_asset_count: 1 });
+      expect(data.needsDate.items.find(({ id }) => id === both.id))
+        .toMatchObject({ selected_asset_count: 2, missing_asset_count: 2 });
+      expect(data.projectTable.rows[0]).toMatchObject({ assetCount: 3, missingAssetCount: 2 });
+    });
+
+    it('projects next release, undated count, and last publication per project row', () => {
+      const overdueProject = insertProject(db, { title: 'Overdue project', status: 'planned', projectType: 'images' });
+      const overdueRelease = insertRelease(db, { projectId: overdueProject.id, title: 'Late', plannedDate: '2026-06-05' });
+      insertRelease(db, { projectId: overdueProject.id, title: 'After', plannedDate: '2026-06-20', plannedTime: '08:00' });
+      insertRelease(db, { projectId: overdueProject.id, title: 'No date' });
+      const todayProject = insertProject(db, { title: 'Today project' });
+      const todayRelease = insertRelease(db, {
+        projectId: todayProject.id, title: 'Now', plannedDate: TODAY, plannedTime: '10:00',
+      });
+      const scheduledProject = insertProject(db, { title: 'Scheduled project' });
+      const scheduledRelease = insertRelease(db, { projectId: scheduledProject.id, title: 'July', plannedDate: '2026-07-01' });
+      insertRelease(db, { projectId: scheduledProject.id, title: 'Old post', publishedDate: '2026-05-01' });
+      insertRelease(db, { projectId: scheduledProject.id, title: 'New post', publishedDate: '2026-05-20' });
+      const undatedProject = insertProject(db, { title: 'Undated project' });
+      insertRelease(db, { projectId: undatedProject.id, title: 'One' });
+      insertRelease(db, { projectId: undatedProject.id, title: 'Two' });
+      const emptyProject = insertProject(db, { title: 'Empty project' });
+      const archivedOnlyProject = insertProject(db, { title: 'Archived releases only' });
+      insertRelease(db, {
+        projectId: archivedOnlyProject.id, title: 'Archived', plannedDate: '2026-06-12', archivedAt: '2026-06-01 00:00:00',
+      });
+      insertAsset(db, { projectId: overdueProject.id, relativePath: 'a.png', filename: 'a.png' });
+      insertAsset(db, { projectId: overdueProject.id, relativePath: 'b.png', filename: 'b.png', isPresent: 0 });
+
+      const rows = new Map(compose().projectTable.rows.map((row) => [row.id, row]));
+
+      expect(rows.get(overdueProject.id)).toMatchObject({
+        title: 'Overdue project',
+        status: 'planned',
+        project_type: 'images',
+        assetCount: 2,
+        missingAssetCount: 1,
+        undatedReleaseCount: 1,
+        lastPublishedDate: null,
+        nextRelease: {
+          state: 'overdue', releaseId: overdueRelease.id, title: 'Late',
+          plannedDate: '2026-06-05', plannedTime: null, daysLate: 5, undatedCount: 1,
+        },
+      });
+      expect(rows.get(overdueProject.id).updated_at).toEqual(expect.any(String));
+      expect(rows.get(todayProject.id).nextRelease).toMatchObject({
+        state: 'today', releaseId: todayRelease.id, plannedTime: '10:00', daysLate: null,
+      });
+      expect(rows.get(scheduledProject.id)).toMatchObject({
+        lastPublishedDate: '2026-05-20',
+        nextRelease: { state: 'scheduled', releaseId: scheduledRelease.id, plannedDate: '2026-07-01', plannedTime: null },
+      });
+      expect(rows.get(undatedProject.id).nextRelease).toEqual({
+        state: 'undated', releaseId: null, title: null, plannedDate: null, plannedTime: null, daysLate: null, undatedCount: 2,
+      });
+      expect(rows.get(emptyProject.id)).toMatchObject({
+        assetCount: 0, missingAssetCount: 0, undatedReleaseCount: 0, lastPublishedDate: null,
+        nextRelease: { state: 'none', undatedCount: 0 },
+      });
+      expect(rows.get(archivedOnlyProject.id).nextRelease.state).toBe('none');
+    });
+
+    it('reports true project totals and completeness beyond the 50-row table', () => {
+      const projects = [];
+      for (let index = 0; index < 52; index++) {
+        const project = insertProject(db, { title: `Table ${index}`, status: index % 2 === 0 ? 'tbd' : 'ready' });
+        setProjectUpdatedAt(project.id, '2026-06-01 00:00:00');
+        projects.push(project);
+      }
+      insertProject(db, { title: 'Archived at', status: 'ready', archivedAt: '2026-01-01 00:00:00' });
+      insertProject(db, { title: 'Legacy archived', status: 'archived' });
+
+      const data = compose();
+
+      expect(data.projectTable).toMatchObject({ total: 52, shown: 50, complete: false, statusCounts: { tbd: 26, ready: 26 } });
+      expect(data.projectTable.statusCounts).not.toHaveProperty('archived');
+      // Equal updated_at values are ordered by id, newest first.
+      expect(ids(data.projectTable.rows)).toEqual(ids(projects).reverse().slice(0, 50));
+
+      db.prepare("UPDATE projects SET archived_at = '2026-06-01 00:00:00' WHERE id IN (?, ?)")
+        .run(projects[0].id, projects[1].id);
+      expect(compose().projectTable).toMatchObject({ total: 50, shown: 50, complete: true });
+    });
+
+    it('enriches every displayed project once and keeps statement counts fixed', () => {
+      const nsfw = tagRepository.create({ displayName: 'NSFW', normalizedName: 'nsfw' });
+
+      function insertFixture(label, updatedAt) {
+        const project = insertProject(db, { title: `${label} project` });
+        setProjectUpdatedAt(project.id, updatedAt);
+        tagRepository.assignToProject(project.id, nsfw.id);
+        const asset = insertAsset(db, {
+          projectId: project.id, relativePath: `${label}.png`, filename: `${label}.png`, extension: 'png', mimeType: 'image/png',
+        });
+        primaryImageRepository.setPrimaryImage(project.id, asset.id);
+        const scheduled = insertRelease(db, { projectId: project.id, title: `${label} scheduled`, plannedDate: '2026-06-12' });
+        insertRelease(db, { projectId: project.id, title: `${label} undated` });
+        insertRelease(db, { projectId: project.id, title: `${label} published`, publishedDate: '2026-06-01' });
+        return { project, asset, scheduled };
+      }
+
+      // Oldest update: shown through its release while falling outside the project table.
+      const releaseOnly = insertFixture('Release only', '2020-01-01 00:00:00');
+      for (let index = 0; index < 50; index++) insertProject(db, { title: `Filler ${index}` });
+
+      const findByProjectIds = vi.spyOn(primaryImageRepository, 'findByProjectIds');
+      const listForProjectIds = vi.spyOn(tagRepository, 'listForProjectIds');
+      const countByProjectIds = vi.spyOn(assetRepository, 'countByProjectIds');
+      const scheduleSummaries = vi.spyOn(releaseRepository, 'findReleaseScheduleSummaryByProjectIds');
+      const data = compose();
+
+      expect(findByProjectIds).toHaveBeenCalledOnce();
+      expect(listForProjectIds).toHaveBeenCalledOnce();
+      const enrichedIds = findByProjectIds.mock.calls[0][0];
+      expect(new Set(enrichedIds).size).toBe(enrichedIds.length);
+      expect(enrichedIds).toHaveLength(51);
+      expect(enrichedIds).toContain(releaseOnly.project.id);
+      expect(listForProjectIds.mock.calls[0][0]).toEqual(enrichedIds);
+      expect(countByProjectIds).toHaveBeenCalledExactlyOnceWith(enrichedIds);
+      expect(scheduleSummaries).toHaveBeenCalledExactlyOnceWith(enrichedIds);
+      expect(ids(data.projectTable.rows)).not.toContain(releaseOnly.project.id);
+
+      const releaseItem = data.scheduled.groups[0].items[0];
+      expect(releaseItem.id).toBe(releaseOnly.scheduled.id);
+      expect(releaseItem.tags).toEqual([{ displayName: 'NSFW' }]);
+      expect(releaseItem.primaryImage).toMatchObject({ selectedAssetId: releaseOnly.asset.id, state: 'available' });
+      expect(releaseItem.project).toMatchObject({
+        id: releaseOnly.project.id,
+        title: 'Release only project',
+        status: releaseOnly.project.status,
+        project_type: releaseOnly.project.project_type,
+        updated_at: '2020-01-01 00:00:00',
+        tags: [{ displayName: 'NSFW' }],
+        assetCount: 1,
+        missingAssetCount: 0,
+        undatedReleaseCount: 1,
+        lastPublishedDate: '2026-06-01',
+      });
+      expect(releaseItem.project.primaryImage).toBe(releaseItem.primaryImage);
+      expect(data.needsDate.items[0].tags).toEqual([{ displayName: 'NSFW' }]);
+      expect(data.recentlyPublished.items[0].primaryImage.state).toBe('available');
+
+      const counter = instrumentStatementExecution(db);
+      const instrumentedService = createWorkflowQueryService({ db });
+      counter.reset();
+      instrumentedService.getDashboardData({ today: TODAY, weekStart: 'monday' });
+      const smallCount = counter.count();
+
+      for (let index = 0; index < 20; index++) insertFixture(`Large ${index}`, '2026-06-02 00:00:00');
+      counter.reset();
+      const largeData = instrumentedService.getDashboardData({ today: TODAY, weekStart: 'monday' });
+
+      expect(largeData.scheduled.groups[0].items.length).toBeGreaterThan(data.scheduled.groups[0].items.length);
+      expect(counter.count()).toBe(smallCount);
+    });
+
+    it('batches selected-only Social Preparation once over every displayed release', () => {
+      const project = insertProject(db, { title: 'Social dashboard' });
+      const scheduled = insertRelease(db, { projectId: project.id, title: 'Scheduled', plannedDate: TODAY });
+      const undated = insertRelease(db, { projectId: project.id, title: 'Undated' });
+      const published = insertRelease(db, { projectId: project.id, title: 'Published', publishedDate: '2026-06-01' });
+      const repository = createSocialPrepRepository(db);
+      repository.ensurePlatforms(scheduled.id, ['x', 'bluesky']);
+      repository.replaceSelectedPlatforms(scheduled.id, ['x']);
+      repository.ensurePlatforms(published.id, ['patreon']);
+      const batch = vi.spyOn(repository, 'listPlatformsByReleaseIds');
+      const single = vi.spyOn(repository, 'listPlatformsByReleaseId');
+      const query = createWorkflowQueryService({ db, socialPrepRepository: repository });
+      const changes = db.prepare('SELECT total_changes() AS n').get().n;
+
+      const data = query.getDashboardData({ today: TODAY, weekStart: 'monday' });
+
+      expect(batch).toHaveBeenCalledExactlyOnceWith([scheduled.id, undated.id, published.id]);
+      expect(single).not.toHaveBeenCalled();
+      const todayItem = data.scheduled.groups[0].items[0];
+      expect(todayItem.socialPreparation.targets.map(({ platform }) => platform)).toEqual(['x']);
+      expect(data.tiles.dueToday.firstRelease.socialPreparation).toEqual(todayItem.socialPreparation);
+      expect(data.needsDate.items[0].socialPreparation.targets).toEqual([]);
+      expect(data.recentlyPublished.items[0].socialPreparation.targets.map(({ platform }) => platform))
+        .toEqual(['patreon']);
+      expect(db.prepare('SELECT total_changes() AS n').get().n).toBe(changes);
+    });
+
+    it('composes synchronously without filesystem probes or state changes', () => {
+      const project = insertProject(db, { title: 'Read only' });
+      const asset = insertAsset(db, {
+        projectId: project.id, relativePath: 'absent-on-disk.png', filename: 'absent-on-disk.png',
+        extension: 'png', mimeType: 'image/png',
+      });
+      primaryImageRepository.setPrimaryImage(project.id, asset.id);
+      insertRelease(db, { projectId: project.id, title: 'Scheduled', plannedDate: TODAY });
+      insertRelease(db, { projectId: project.id, title: 'Published', publishedDate: '2026-06-01' });
+      const assetWorkflowMetadataService = {
+        getImageDimensions: vi.fn(),
+        getKritaQuality: vi.fn(),
+      };
+      const query = createWorkflowQueryService({
+        db,
+        assetWorkflowMetadataService,
+        projectPrimaryImageRepository: primaryImageRepository,
+      });
+      const changes = db.prepare('SELECT total_changes() AS n').get().n;
+      const socialRows = db.prepare('SELECT COUNT(*) AS c FROM release_social_platforms').get().c;
+
+      const data = query.getDashboardData({ today: TODAY, weekStart: 'monday' });
+
+      expect(typeof data.then).toBe('undefined');
+      expect(assetWorkflowMetadataService.getImageDimensions).not.toHaveBeenCalled();
+      expect(assetWorkflowMetadataService.getKritaQuality).not.toHaveBeenCalled();
+      expect(db.prepare('SELECT total_changes() AS n').get().n).toBe(changes);
+      expect(db.prepare('SELECT COUNT(*) AS c FROM release_social_platforms').get().c).toBe(socialRows);
     });
   });
-
 });

@@ -1,9 +1,7 @@
 /**
- * HTTP-level tests for the dashboard composition.
- *
- * The dashboard renders configurable retained project sections composed by
- * `workflowQueryService.getDashboardData()` through the established
- * `partials/project-card.njk` + `.project-grid` pattern.
+ * HTTP-level tests for the release-first Dashboard rendered from
+ * `workflowQueryService.getDashboardData()` through `renderDashboardPage`.
+ * Dates are seeded relative to the application-local today.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
@@ -13,87 +11,98 @@ import { fileURLToPath } from 'node:url';
 import { createApp } from '../src/app.js';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
-import { createAppMetaRepository } from '../src/data/app-meta-repository.js';
 import { ensureAuthEnablement } from '../src/auth/auth-state.js';
+import { resolveProjectDir } from '../src/storage/project-storage.js';
+import { getLocalTodayIso } from '../src/util/date.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
-const STYLESHEET_PATH = fileURLToPath(new URL('../src/static/creatorcrate.css', import.meta.url));
-const SERVED_CSS = fs.readFileSync(STYLESHEET_PATH, 'utf8');
-const DASHBOARD_TEMPLATE_PATH = fileURLToPath(new URL('../src/views/index.njk', import.meta.url));
-const DASHBOARD_TEMPLATE = fs.readFileSync(DASHBOARD_TEMPLATE_PATH, 'utf8');
 
 function countTags(html, tag) {
   const re = new RegExp(`<${tag}[\\s>]`, 'g');
   return (html.match(re) || []).length;
 }
 
-function hasClass(html, className) {
-  const re = new RegExp(`class="[^"]*\\b${className}\\b[^"]*"`);
-  return re.test(html);
+function addDays(isoDate, days) {
+  const [year, month, day] = isoDate.split('-').map(Number);
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
 }
 
-/** Return the served local stylesheet linked by the rendered page. */
-function extractStyle(html) {
-  expect(html).toContain('<link rel="stylesheet" href="/creatorcrate.css">');
-  return SERVED_CSS;
+function extractRegion(html, headingId) {
+  const re = new RegExp(`<section\\b[^>]*aria-labelledby="${headingId}"[^>]*>[\\s\\S]*?<\\/section>`);
+  return html.match(re)?.[0] || '';
 }
 
-function extractSummaryCards(html) {
-  const m = html.match(/<section class="summary-cards"[\s\S]*?<\/section>/);
-  return m ? m[0] : '';
+function extractById(html, tag, id) {
+  return html.match(new RegExp(`<${tag}\\b[^>]*\\bid="${id}"[\\s\\S]*?<\\/${tag}>`))?.[0] || '';
 }
 
-function extractSection(html, className) {
-  const sectionIds = {
-    'recent-projects': 'recently-updated',
-  };
-  const sectionId = sectionIds[className] || className;
-  const re = new RegExp(`<section\\b[^>]*data-dashboard-section="${sectionId}"[^>]*>[\\s\\S]*?<\\/section>`);
-  const m = html.match(re);
-  return m ? m[0] : '';
+function extractNeedsDatePanel(html) {
+  const start = html.indexOf('<section class="dashboard-panel dashboard-needs-date"');
+  const end = html.indexOf('<div class="dashboard-primary-column">');
+  return start >= 0 && end > start ? html.slice(start, end) : '';
 }
 
-function extractDashboardDefaultsDialog(html) {
-  return html.match(/<dialog id="dashboard-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+function extractScheduledPanel(html) {
+  const start = html.indexOf('<section class="dashboard-panel dashboard-scheduled"');
+  const end = html.indexOf('<section class="dashboard-panel dashboard-recent"');
+  return start >= 0 && end > start ? html.slice(start, end) : '';
+}
+
+function extractRecentPanel(html) {
+  const start = html.indexOf('<section class="dashboard-panel dashboard-recent"');
+  const end = html.indexOf('<section class="dashboard-panel dashboard-projects"');
+  return start >= 0 && end > start ? html.slice(start, end) : '';
+}
+
+function extractProjectsPanel(html) {
+  const start = html.indexOf('<section class="dashboard-panel dashboard-projects"');
+  return start >= 0 ? html.slice(start, html.indexOf('</section>', html.indexOf('dashboard-projects-footer', start)) + 10) : '';
+}
+
+function extractTile(html, tile) {
+  return html.match(new RegExp(`<a class="dashboard-tile[^"]*"[^>]*data-dashboard-tile="${tile}">[\\s\\S]*?<\\/a>`))?.[0] || '';
+}
+
+function extractNeedsDateItem(html, releaseId) {
+  return html.match(new RegExp(`<li class="dashboard-needs-date-item" data-dashboard-needs-date-item data-release-id="${releaseId}">[\\s\\S]*?data-dashboard-schedule-status></div>\\s*</div>\\s*</div>\\s*</li>`))?.[0] || '';
+}
+
+function extractReleaseRow(html, releaseId) {
+  return html.match(new RegExp(`<li class="dashboard-release-row[^"]*" data-dashboard-release-row data-release-id="${releaseId}">[\\s\\S]*?<\\/li>`))?.[0] || '';
+}
+
+function extractProjectRow(html, projectId) {
+  return html.match(new RegExp(`<tr class="dashboard-project-row"[^>]*data-project-id="${projectId}"[\\s\\S]*?<\\/tr>`))?.[0] || '';
 }
 
 function extractProjectCreateDialog(html) {
   return html.match(/<dialog id="project-create-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
 }
 
-function extractProjectCard(html, projectId) {
-  const cards = html.match(/<article\b[^>]*data-project-card[^>]*>[\s\S]*?<\/article>/g) || [];
-  return cards.find((card) => card.includes(`data-project-card-link href="/projects/${projectId}"`)) || '';
-}
-
 async function createProject(app, { title, status = 'tbd', projectType = 'images' }) {
-  const parts = [
-    `title=${encodeURIComponent(title)}`,
-    `status=${status}`,
-    `projectType=${projectType}`,
-    'priority=normal',
-  ];
-  parts.push('_csrf=' + encodeURIComponent(app.testCsrfToken));
-
   const res = await app.testAgent
     .post('/projects')
-    .send(parts.join('&'))
-    .set('Content-Type', 'application/x-www-form-urlencoded')
+    .type('form')
+    .send({ title, status, projectType, priority: 'normal', _csrf: app.testCsrfToken })
     .expect(302);
-  return res.headers.location.replace('/projects/', '');
+  return Number(res.headers.location.replace('/projects/', ''));
 }
 
-function setDashboardSectionVisibility(app, sectionId, visible) {
-  const defaultsService = app.locals.dashboardDefaultsService;
-  const defaults = defaultsService.getDefaults();
-  defaultsService.saveDefaults({
-    ...defaults,
-    sections: {
-      ...defaults.sections,
-      [sectionId]: { ...defaults.sections[sectionId], visible },
-    },
-  });
+function insertRelease(db, projectId, {
+  title,
+  plannedDate = null,
+  plannedTime = null,
+  publishedDate = null,
+  archivedAt = null,
+  createdAt = null,
+} = {}) {
+  const { lastInsertRowid } = db.prepare(`
+    INSERT INTO releases (project_id, title, description, notes, planned_date, planned_time, patreon_url, published_date, archived_at)
+    VALUES (?, ?, '', '', ?, ?, NULL, ?, ?)
+  `).run(projectId, title, plannedDate, plannedTime, publishedDate, archivedAt);
+  if (createdAt) db.prepare('UPDATE releases SET created_at = ? WHERE id = ?').run(createdAt, lastInsertRowid);
+  return Number(lastInsertRowid);
 }
 
 function buildDashboardDefaultsForm(app, {
@@ -121,6 +130,7 @@ describe('dashboard HTTP composition', () => {
   let app;
   let tmpDir;
   let projectsRoot;
+  let today;
 
   beforeEach(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-dashboard-'));
@@ -137,6 +147,7 @@ describe('dashboard HTTP composition', () => {
     const { agent, csrfToken } = await getDisabledModeCsrf(app, appDataRoot);
     app.testAgent = agent;
     app.testCsrfToken = csrfToken;
+    today = getLocalTodayIso();
   });
 
   afterEach(() => {
@@ -144,292 +155,606 @@ describe('dashboard HTTP composition', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  // ─── Summary cards ──────────────────────────────────────────────────
+  function seedPrimaryImage(projectId, filename = 'cover.png') {
+    const project = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(projectId);
+    const projectDir = resolveProjectDir(projectsRoot, project.project_dir);
+    fs.writeFileSync(path.join(projectDir, filename), 'content');
+    app.locals.assetScanner.scanProjectAssets(projectId);
+    const asset = app.locals.assetScanner.repository.findByProjectId(projectId)[0];
+    app.locals.projectPrimaryImageService.setPrimaryImage(projectId, asset.id);
+    return asset;
+  }
 
-  describe('dashboard summary cards', () => {
-    it('renders exactly the four established summary-card concepts', async () => {
-      const res = await app.testAgent.get('/').expect(200);
-      const cards = extractSummaryCards(res.text);
-      const cardCount = (cards.match(/class="summary-card( summary-card--[\w-]+)?"/g) || []).length;
-      expect(cardCount).toBe(4);
-      expect(cards).toContain('Projects');
-      expect(cards).toContain('Assets');
-      expect(cards).toContain('Releases');
-      expect(cards).toContain('Missing assets');
+  function tagProjectNsfw(projectId) {
+    const tag = app.locals.tagService.createTag({ name: 'NSFW' });
+    db.prepare('INSERT INTO project_tags (project_id, tag_id) VALUES (?, ?)').run(projectId, tag.id);
+  }
+
+  function addMissingSelectedAsset(projectId, releaseId, filename) {
+    const asset = createAssetRepository(db).upsert(projectId, filename, {
+      filename, extension: 'txt', mimeType: 'text/plain', sizeBytes: 0, modifiedAt: null,
     });
+    db.prepare(`UPDATE assets SET is_present = 0, missing_since = datetime('now') WHERE id = ?`).run(asset.id);
+    db.prepare('INSERT INTO release_assets (release_id, asset_id) VALUES (?, ?)').run(releaseId, asset.id);
+    return asset;
+  }
 
-    it('does not render a Needs attention card or section', async () => {
+  describe('page header', () => {
+    it('renders one h1, the local date, New Release, and the hosted New Project action without retired controls', async () => {
       const res = await app.testAgent.get('/').expect(200);
-      expect(res.text).not.toContain('Need attention');
-      expect(res.text).not.toContain('needs-attention');
-      expect(res.text).not.toContain('summary-card--attention');
-    });
+      const heading = res.text.match(/<header class="page-heading">[\s\S]*?<\/header>/)?.[0] || '';
 
-    it('Projects summary card links to /projects', async () => {
-      const res = await app.testAgent.get('/').expect(200);
-      const cards = extractSummaryCards(res.text);
-      expect(cards).toContain('href="/projects"');
-    });
-
-    it('Assets summary card links to the canonical assetsUrl (/asset-viewer)', async () => {
-      const res = await app.testAgent.get('/').expect(200);
-      const cards = extractSummaryCards(res.text);
-      expect(cards).toMatch(/<a class="summary-card" href="\/asset-viewer">/);
-    });
-
-    it('renders the total Releases card with the canonical /releases destination', async () => {
-      const projectId = await createProject(app, { title: 'Release Summary Project' });
-      db.prepare(`
-        INSERT INTO releases (project_id, title, description, notes, planned_date, planned_time, patreon_url, published_date)
-        VALUES (?, ?, '', '', NULL, NULL, NULL, NULL)
-      `).run(Number(projectId), 'Active Release');
-      db.prepare(`
-        INSERT INTO releases (project_id, title, description, notes, planned_date, planned_time, patreon_url, published_date, archived_at)
-        VALUES (?, ?, '', '', NULL, NULL, NULL, NULL, '2026-01-01 00:00:00')
-      `).run(Number(projectId), 'Archived Release');
-
-      const res = await app.testAgent.get('/').expect(200);
-      const releaseCard = extractSummaryCards(res.text).match(
-        /<a class="summary-card" href="\/releases">[\s\S]*?<\/a>/,
-      )?.[0] || '';
-
-      expect(releaseCard).toContain('<span class="summary-card-value">2</span>');
-      expect(releaseCard).toContain('<span class="summary-card-label">Releases</span>');
-      expect(releaseCard).toContain('Including archived releases');
-    });
-
-    it('Missing assets summary card links to the canonical missingAssetsUrl (/asset-viewer?presence=missing)', async () => {
-      const res = await app.testAgent.get('/').expect(200);
-      const cards = extractSummaryCards(res.text);
-      expect(cards).toContain('href="/asset-viewer?presence=missing"');
-    });
-
-    it('renders the missing-assets count and link without the removed release-reference field', async () => {
-      const projectId = await createProject(app, { title: 'Missing Asset Summary Project' });
-      const asset = createAssetRepository(db).upsert(Number(projectId), 'missing.txt', {
-        filename: 'missing.txt',
-        extension: 'txt',
-        mimeType: 'text/plain',
-        sizeBytes: 0,
-        modifiedAt: null,
-      });
-      db.prepare(`UPDATE assets SET is_present = 0, missing_since = datetime('now') WHERE id = ?`).run(asset.id);
-
-      const res = await app.testAgent.get('/').expect(200);
-      const missingCard = extractSummaryCards(res.text).match(
-        /<a class="summary-card summary-card--warning" href="\/asset-viewer\?presence=missing">[\s\S]*?<\/a>/,
-      )?.[0] || '';
-
-      expect(missingCard).toContain('<span class="summary-card-value">1</span>');
-      expect(missingCard).toContain('href="/asset-viewer?presence=missing"');
-      expect(DASHBOARD_TEMPLATE).not.toContain('referencedByReleases');
-    });
-
-    it('renders concise supporting context on every summary card', async () => {
-      const res = await app.testAgent.get('/').expect(200);
-      const cards = extractSummaryCards(res.text);
-      expect((cards.match(/summary-card-context/g) || []).length).toBe(4);
-      expect(cards).toContain('Projects currently tracked');
-      expect(cards).toContain('Across all projects');
-      expect(cards).toContain('Including archived releases');
-      expect(cards).toContain('Files missing at the last scan');
-    });
-
-    it('uses the established summary-card structure for all four cards', async () => {
-      const res = await app.testAgent.get('/').expect(200);
-      const cards = extractSummaryCards(res.text).match(
-        /<a class="summary-card(?: summary-card--[\w-]+)?" href="[^"]+">[\s\S]*?<\/a>/g,
-      ) || [];
-
-      expect(cards).toHaveLength(4);
-      for (const card of cards) {
-        expect(card).toContain('summary-card-value');
-        expect(card).toContain('summary-card-label');
-        expect(card).toContain('summary-card-context');
+      expect(countTags(res.text, 'h1')).toBe(1);
+      expect(res.text).toContain('<h1 class="app-section-title">Dashboard</h1>');
+      expect(res.text).toContain(`<p class="dashboard-today"><time datetime="${today}">`);
+      expect(heading).toContain('<a class="button button-secondary" href="/releases/new">New Release</a>');
+      expect(heading).toContain('<a class="button button-primary" href="/projects/new" data-dialog-open="project-create-dialog">New Project</a>');
+      for (const retired of [
+        'data-dashboard-defaults-link', 'dashboard-defaults-dialog', 'href="/?defaults=1"',
+        'id="projects-nsfw-toggle"', 'data-projects-nsfw-filter', 'data-asset-grid-size-controls',
+        'data-project-grid-size-controls', 'summary-card', 'data-dashboard-section=',
+      ]) {
+        expect(res.text).not.toContain(retired);
       }
+      expect(res.text).not.toMatch(/<input[^>]*type="search"/);
     });
 
-    it('removes redundant View All Projects and View All Releases actions', async () => {
-      const res = await app.testAgent.get('/').expect(200);
-
-      expect(res.text).not.toMatch(/View all projects/i);
-      expect(res.text).not.toMatch(/View all releases/i);
+    it('ignores the retired ?defaults=1 dialog entry point', async () => {
+      const res = await app.testAgent.get('/?defaults=1').expect(200);
+      expect(res.text).not.toContain('dashboard-defaults-dialog');
     });
 
-    it('summary cards have aria-label on the section', async () => {
+    it('renders all seven Dashboard regions with Needs a date before Scheduled releases in source order', async () => {
       const res = await app.testAgent.get('/').expect(200);
-      expect(res.text).toContain('aria-label="Overview"');
-    });
+      const positions = [
+        'class="dashboard-attention"',
+        'class="dashboard-strip"',
+        'id="needs-date"',
+        'id="dashboard-scheduled-heading"',
+        'id="dashboard-recent-heading"',
+        'id="dashboard-projects-heading"',
+      ].map((marker) => res.text.indexOf(marker));
 
-    it('summary-card-value has numeric content', async () => {
-      const res = await app.testAgent.get('/').expect(200);
-      expect(res.text).toContain('summary-card-value');
-      expect(res.text).toContain('summary-card-label');
-    });
-
-    it('summary cards have tabular-nums font-variant-numeric in CSS', async () => {
-      const res = await app.testAgent.get('/').expect(200);
-      const css = extractStyle(res.text);
-      expect(css).toContain('.summary-card-value');
-      expect(css).toContain('font-variant-numeric: tabular-nums');
-    });
-
-    it('summary cards have responsive grid rules', async () => {
-      const res = await app.testAgent.get('/').expect(200);
-      const css = extractStyle(res.text);
-      expect(css).toContain('.summary-cards');
-      expect(css).toContain('grid-template-columns');
-      expect(css).toMatch(/@media\s*\(max-width:\s*540px\)/);
+      expect(positions.every((position) => position >= 0)).toBe(true);
+      expect(positions).toEqual([...positions].sort((left, right) => left - right));
+      for (const id of ['dashboard-attention-heading', 'dashboard-strip-heading', 'dashboard-needs-date-heading',
+        'dashboard-scheduled-heading', 'dashboard-recent-heading', 'dashboard-projects-heading']) {
+        expect(res.text).toMatch(new RegExp(`<section\\b[^>]*aria-labelledby="${id}"`));
+      }
+      const ids = [...res.text.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
+      expect(new Set(ids).size).toBe(ids.length);
+      const dashboardMarkup = res.text.slice(res.text.indexOf('<div class="dashboard" data-dashboard'));
+      const styledElements = dashboardMarkup.match(/<[a-z]+\b[^>]*\sstyle="[^"]*"[^>]*>/g) || [];
+      expect(styledElements.every((element) => element.includes('project-option-badge'))).toBe(true);
     });
   });
 
-  describe('dashboard project controls', () => {
-    it('renders the established NSFW toggle contract for both persisted states and returns to the Dashboard', async () => {
+  describe('empty Dashboard', () => {
+    it('renders zero tiles and compact one-line empty states', async () => {
       const res = await app.testAgent.get('/').expect(200);
-      const nsfwForm = res.text.match(/<form method="post" action="\/projects\/nsfw-filter" class="inline-form" data-projects-nsfw-filter>[\s\S]*?<\/form>/)?.[0] || '';
 
-      expect(nsfwForm).toContain('name="enabled" value="1"');
-      expect(nsfwForm).toContain('name="returnTo" value="/"');
-      expect(nsfwForm).toContain('id="projects-nsfw-toggle"');
-      expect(nsfwForm).toContain('data-projects-nsfw-toggle');
-      expect(nsfwForm).toContain('aria-pressed="false"');
-      expect(nsfwForm).toContain('aria-label="Enable NSFW filter"');
-      expect(nsfwForm).toContain('data-tooltip="Enable NSFW filter"');
-      expect(DASHBOARD_TEMPLATE).not.toContain('creatorcrate-dashboard');
+      expect(extractTile(res.text, 'overdue')).toContain('dashboard-tile--zero');
+      expect(extractTile(res.text, 'overdue')).toContain('Nothing overdue');
+      expect(extractTile(res.text, 'needs-date')).toContain('All releases have dates');
+      expect(extractTile(res.text, 'today')).toContain('Nothing today');
+      expect(extractTile(res.text, 'next7')).toContain('Through ');
+      expect(extractTile(res.text, 'missing-assets')).toContain('No missing files');
+      expect(extractNeedsDatePanel(res.text)).toContain('<p class="dashboard-empty-line">Every active release has a date.</p>');
+      expect(extractScheduledPanel(res.text)).toContain('<p class="dashboard-empty-line">Nothing scheduled.</p>');
+      expect(extractRecentPanel(res.text)).toContain('<p class="dashboard-empty-line">Nothing published yet.</p>');
+      expect(extractRecentPanel(res.text)).toContain('href="/releases">History');
+      expect(extractProjectsPanel(res.text)).toContain('No active projects.');
+      expect(extractProjectsPanel(res.text)).toContain('0 of 0 active projects · archived hidden');
+      expect(res.text).not.toContain('empty-state-heading');
+    });
 
-      await app.testAgent
-        .post('/projects/nsfw-filter')
+    it('omits aria-controls from status filter toggles when no projects table is rendered', async () => {
+      const res = await app.testAgent.get('/').expect(200);
+      const panel = extractProjectsPanel(res.text);
+
+      expect(panel).toContain('data-dashboard-status-filters');
+      expect(panel).toContain('data-dashboard-status-filter="all"');
+      expect(panel).not.toContain('id="dashboard-projects-table"');
+      expect(panel).not.toContain('aria-controls=');
+    });
+  });
+
+  describe('attention tiles', () => {
+    it('links all five tiles, emphasizes Needs a date, and shows service counts with context', async () => {
+      const projectId = await createProject(app, { title: 'Tile Project', status: 'ready' });
+      insertRelease(db, projectId, { title: 'Late One', plannedDate: addDays(today, -3) });
+      insertRelease(db, projectId, { title: 'Due Now', plannedDate: today, plannedTime: '18:05' });
+      insertRelease(db, projectId, { title: 'This Week', plannedDate: addDays(today, 7) });
+      insertRelease(db, projectId, { title: 'Next Week', plannedDate: addDays(today, 8) });
+      const undatedId = insertRelease(db, projectId, { title: 'Undated', createdAt: '2020-01-01 12:00:00' });
+      addMissingSelectedAsset(projectId, undatedId, 'lost.txt');
+
+      app.locals.clockFormatSettingsService.setClockFormat('12h');
+      const res = await app.testAgent.get('/').expect(200);
+
+      const overdue = extractTile(res.text, 'overdue');
+      expect(overdue).toContain('href="/releases?schedule=overdue"');
+      expect(overdue).toContain('<span class="dashboard-tile-value" data-dashboard-tile-count>1</span>');
+      expect(overdue).toContain('Unpublished, date passed');
+
+      const needsDate = extractTile(res.text, 'needs-date');
+      expect(needsDate).toContain('class="dashboard-tile dashboard-tile--needs-date dashboard-tile--emphasis"');
+      expect(needsDate).toContain('href="#needs-date"');
+      expect(needsDate).toMatch(/Oldest waiting \d+ days/);
+
+      const dueToday = extractTile(res.text, 'today');
+      expect(dueToday).toContain('href="/releases?schedule=today"');
+      expect(dueToday).toContain('data-dashboard-tile-info-title>Due Now</span> · 6:05 PM');
+
+      const next7 = extractTile(res.text, 'next7');
+      expect(next7).toContain('href="/releases?schedule=upcoming"');
+      expect(next7).toContain('<span class="dashboard-tile-value" data-dashboard-tile-count>1</span>');
+
+      const missing = extractTile(res.text, 'missing-assets');
+      expect(missing).toContain('href="/asset-viewer?presence=missing"');
+      expect(missing).toContain('<span class="dashboard-tile-value" data-dashboard-tile-count>1</span>');
+      expect(missing).toContain('1 release affected');
+    });
+
+    it('pairs the Due today title with its release card beside the tile link', async () => {
+      const projectId = await createProject(app, { title: 'Tile Card Project' });
+      const shownId = insertRelease(db, projectId, { title: 'Morning Drop', plannedDate: today, plannedTime: '09:00' });
+      const laterId = insertRelease(db, projectId, { title: 'Evening Drop', plannedDate: today, plannedTime: '20:00' });
+
+      const res = await app.testAgent.get('/').expect(200);
+      const item = res.text.match(/<li class="dashboard-tile-info" data-dashboard-tile-info>[\s\S]*?<\/li>/)?.[0] || '';
+      const tile = extractTile(item, 'today');
+      const cardId = `dashboard-release-info-today-tile-${shownId}`;
+      const card = extractById(item, 'div', cardId);
+
+      expect(tile).toContain('href="/releases?schedule=today"');
+      expect(tile).toContain('data-dashboard-tile-info-title>Morning Drop</span>');
+      expect(tile).not.toContain(' title=');
+      // The card follows the tile link; nothing interactive nests inside it.
+      expect(countTags(tile, 'a')).toBe(1);
+      expect(tile).not.toContain('<button');
+      expect(tile).not.toContain('data-calendar-info-card');
+      expect(item.indexOf(cardId)).toBeGreaterThan(item.indexOf('</a>'));
+      expect(card).toContain('data-calendar-info-card popover="manual"');
+      expect(card).toContain('aria-label="Details for Morning Drop"');
+      expect(item).toContain(`href="/releases/${shownId}">Open release</a>`);
+      expect(item).toContain(`href="/releases/${shownId}/edit">Edit release</a>`);
+      expect(item).toContain(`href="/projects/${projectId}">Open project</a>`);
+      expect(item).not.toContain(`/releases/${laterId}`);
+      expect(item).not.toContain('Evening Drop');
+    });
+
+    it('keeps the empty Due today tile without a release card', async () => {
+      const res = await app.testAgent.get('/').expect(200);
+      const tile = extractTile(res.text, 'today');
+
+      expect(tile).toContain('Nothing today');
+      expect(tile).toContain('dashboard-tile--zero');
+      expect(res.text).not.toContain('data-dashboard-tile-info');
+      expect(res.text).not.toContain('dashboard-release-info-today-tile-');
+    });
+
+    it('excludes archived projects from missing-asset and release counts', async () => {
+      const archivedId = await createProject(app, { title: 'Archived Tile Project' });
+      const releaseId = insertRelease(db, archivedId, { title: 'Hidden Late', plannedDate: addDays(today, -2) });
+      addMissingSelectedAsset(archivedId, releaseId, 'hidden.txt');
+      db.prepare("UPDATE projects SET archived_at = datetime('now') WHERE id = ?").run(archivedId);
+
+      const res = await app.testAgent.get('/').expect(200);
+
+      expect(extractTile(res.text, 'overdue')).toContain('data-dashboard-tile-count>0</span>');
+      expect(extractTile(res.text, 'missing-assets')).toContain('data-dashboard-tile-count>0</span>');
+      expect(res.text).not.toContain('Hidden Late');
+      expect(res.text).not.toContain('Archived Tile Project');
+    });
+  });
+
+  describe('two-week strip', () => {
+    it('renders fourteen labelled calendar links with today, open days, indicators, and a legend', async () => {
+      const projectId = await createProject(app, { title: 'Strip Project' });
+      insertRelease(db, projectId, { title: 'Tomorrow Release', plannedDate: addDays(today, 1) });
+
+      const res = await app.testAgent.get('/').expect(200);
+      const strip = extractRegion(res.text, 'dashboard-strip-heading');
+      const days = strip.match(/<li class="dashboard-strip-day[\s\S]*?<\/li>/g) || [];
+      const todayDay = days.find((day) => day.includes(`data-date="${today}"`)) || '';
+      const tomorrowDay = days.find((day) => day.includes(`data-date="${addDays(today, 1)}"`)) || '';
+      const openDay = days.find((day) => day.includes(`data-date="${addDays(today, 2)}"`)) || '';
+
+      expect(strip).toContain('<ol class="dashboard-strip-days">');
+      expect(days).toHaveLength(14);
+      expect((strip.match(/aria-current="date"/g) || [])).toHaveLength(1);
+      expect(todayDay).toContain('dashboard-strip-day--today');
+      expect(todayDay).toContain('aria-current="date"');
+      expect(todayDay).toContain(`href="/calendar?month=${today.slice(0, 7)}"`);
+      expect(todayDay).toMatch(/aria-label="[A-Z][a-z]+ \d+, today, no releases"/);
+      expect(tomorrowDay).toContain('dashboard-strip-dot--scheduled');
+      expect(tomorrowDay).toMatch(/aria-label="[A-Z][a-z]+ \d+, 1 scheduled"/);
+      expect(tomorrowDay).not.toContain('dashboard-strip-day--open');
+      if (openDay) {
+        expect(openDay).toContain('dashboard-strip-day--open');
+        expect(openDay).toMatch(/aria-label="[A-Z][a-z]+ \d+, open day"/);
+      }
+      expect(strip).toContain('class="dashboard-strip-legend"');
+      for (const label of ['Overdue', 'Scheduled', 'Published', 'Open day']) expect(strip).toContain(label);
+      expect(strip).not.toMatch(/Previous|Next week|chevron/i);
+    });
+  });
+
+  describe('Needs a release date panel', () => {
+    it('renders release/project links, readiness, age, quick picks, and the disabled scheduling contract', async () => {
+      const projectId = await createProject(app, { title: 'Needs Date Project', status: 'ready' });
+      const releaseId = insertRelease(db, projectId, { title: 'Waiting Release', createdAt: '2020-01-01 12:00:00' });
+      addMissingSelectedAsset(projectId, releaseId, 'gone.txt');
+
+      const res = await app.testAgent.get('/').expect(200);
+      const panel = extractNeedsDatePanel(res.text);
+      const item = extractNeedsDateItem(res.text, releaseId);
+
+      expect(panel).toContain('id="needs-date"');
+      expect(panel).toContain('1 waiting');
+      expect(panel).toContain('Oldest first. Pick an open day, or choose any date.');
+      expect(panel).not.toContain('View all');
+      expect(item).toContain(`<a class="dashboard-truncate" href="/releases/${releaseId}">Waiting Release</a>`);
+      expect(item).toContain(`<a class="dashboard-truncate" href="/projects/${projectId}">Needs Date Project</a>`);
+      expect(item).not.toMatch(/<a class="dashboard-truncate"[^>]*\stitle=/);
+      expect(item).toContain(`id="dashboard-release-info-needs-date-${releaseId}"`);
+      expect(item).toContain(`id="dashboard-project-info-needs-date-${releaseId}"`);
+      expect(item).toContain('1 asset selected');
+      expect(item).toContain('dashboard-age dashboard-age--danger');
+      expect(item).toContain('dashboard-chip dashboard-chip--danger">1 missing');
+      expect(item).toContain('No platforms chosen');
+      expect(item).toContain('dashboard-thumb--initials');
+      expect(item).toContain('>NP</span>');
+
+      expect(item).toContain(`data-dashboard-schedule
+           data-release-id="${releaseId}"
+           data-schedule-url="/releases/${releaseId}/schedule"
+           data-expected-planned-date=""
+           data-expected-planned-time=""`);
+      const forms = item.match(/<form\b[\s\S]*?<\/form>/g) || [];
+      expect(forms).toHaveLength(2);
+      for (const form of forms) {
+        expect(form).toContain(`method="post" action="/releases/${releaseId}/schedule"`);
+        expect(form).toContain(`name="_csrf" value="${app.testCsrfToken}"`);
+        expect(form).toContain('name="expectedPlannedDate" value=""');
+        expect(form).toContain('name="expectedPlannedTime" value=""');
+        expect(form).toContain('name="plannedTime" value=""');
+        expect(form).toMatch(/<fieldset class="dashboard-schedule-fieldset" disabled data-dashboard-schedule-controls/);
+      }
+      const picks = item.match(/<button[^>]*data-dashboard-schedule-pick[^>]*>/g) || [];
+      expect(picks).toHaveLength(3);
+      for (const pick of picks) {
+        expect(pick).toMatch(/name="plannedDate" value="(\d{4}-\d{2}-\d{2})"/);
+        expect(pick).toMatch(/data-planned-date="\d{4}-\d{2}-\d{2}"/);
+        expect(pick).toMatch(/aria-label="Schedule for [A-Z][a-z]+day, [A-Z][a-z]+ \d+, \d{4}"/);
+        expect(pick.match(/value="([^"]+)"/)[1] > today).toBe(true);
+      }
+      expect(item).toContain(`<label class="sr-only" for="dashboard-schedule-date-${releaseId}">Release date</label>`);
+      expect(item).toContain(`id="dashboard-schedule-date-${releaseId}" type="date" name="plannedDate" required data-dashboard-schedule-date`);
+      expect(item).toContain('data-dashboard-schedule-set>Set</button>');
+      expect(item).toContain(`id="dashboard-schedule-error-${releaseId}" data-dashboard-schedule-error hidden`);
+      expect(item).toContain('role="status" data-dashboard-schedule-status');
+    });
+
+    it('caps the list at ten items oldest first and links to all undated releases', async () => {
+      const projectId = await createProject(app, { title: 'Many Undated' });
+      const ids = Array.from({ length: 12 }, (_, index) => insertRelease(db, projectId, {
+        title: `Undated ${String(index + 1).padStart(2, '0')}`,
+        createdAt: `2026-01-${String(index + 1).padStart(2, '0')} 12:00:00`,
+      }));
+
+      const res = await app.testAgent.get('/').expect(200);
+      const panel = extractNeedsDatePanel(res.text);
+      const rendered = [...panel.matchAll(/data-dashboard-needs-date-item data-release-id="(\d+)"/g)].map((match) => Number(match[1]));
+
+      expect(rendered).toEqual(ids.slice(0, 10));
+      expect(panel).toContain('12 waiting');
+      expect(panel).toContain('<a class="dashboard-view-all" href="/releases?schedule=unscheduled">View all 12');
+    });
+  });
+
+  describe('Scheduled releases', () => {
+    it('groups rows, formats times with the clock preference, and offers Publish only where it is actionable', async () => {
+      const projectId = await createProject(app, { title: 'Schedule Project' });
+      const lateId = insertRelease(db, projectId, { title: 'Late Release', plannedDate: addDays(today, -4) });
+      const todayId = insertRelease(db, projectId, { title: 'Today Release', plannedDate: today, plannedTime: '13:05' });
+      const soonId = insertRelease(db, projectId, { title: 'Soon Release', plannedDate: addDays(today, 2) });
+      addMissingSelectedAsset(projectId, soonId, 'soon-missing.txt');
+
+      for (const [preference, time] of [['12h', '1:05 PM'], ['24h', '13:05']]) {
+        app.locals.clockFormatSettingsService.setClockFormat(preference);
+        const res = await app.testAgent.get('/').expect(200);
+        expect(extractReleaseRow(res.text, todayId)).toContain(`<span class="dashboard-date-block-time">${time}</span>`);
+      }
+
+      const res = await app.testAgent.get('/').expect(200);
+      const panel = extractScheduledPanel(res.text);
+      const groups = [...panel.matchAll(/data-dashboard-schedule-group="([^"]+)"/g)].map((match) => match[1]);
+      const late = extractReleaseRow(res.text, lateId);
+      const soon = extractReleaseRow(res.text, soonId);
+
+      expect(groups).toEqual(['overdue', 'today', 'next7']);
+      expect(late).toContain('4 days late');
+      expect(late).toContain('Any time');
+      expect(late).toContain(`href="/releases/${lateId}/publish" aria-label="Publish Late Release">Publish</a>`);
+      expect(extractReleaseRow(res.text, todayId)).toContain(`href="/releases/${todayId}/publish"`);
+      expect(soon).toContain(`<a class="dashboard-truncate" href="/releases/${soonId}">Soon Release</a>`);
+      expect(soon).not.toContain('dashboard-release-row-action');
+      expect(soon).toContain('1 missing');
+      expect(soon).toContain(`href="/projects/${projectId}"`);
+      expect(soon).not.toContain('days late');
+    });
+
+    it('keeps the true Later total with View all when more than five exist', async () => {
+      const projectId = await createProject(app, { title: 'Later Project' });
+      for (let index = 0; index < 7; index += 1) {
+        insertRelease(db, projectId, { title: `Later ${index}`, plannedDate: addDays(today, 20 + index) });
+      }
+
+      const res = await app.testAgent.get('/').expect(200);
+      const later = res.text.match(/<section class="dashboard-schedule-group dashboard-schedule-group--later"[\s\S]*?<\/section>/)?.[0] || '';
+
+      expect((later.match(/data-dashboard-release-row/g) || [])).toHaveLength(5);
+      expect(later).toContain('<span class="dashboard-schedule-group-count">7</span>');
+      expect(later).toContain('<a class="dashboard-view-all" href="/releases?schedule=upcoming">View all 7');
+      expect(later).toContain('aria-label="Open Later 0">Open</a>');
+    });
+
+    it('shows long titles in full text with the full title in the popover instead of a native tooltip', async () => {
+      const projectId = await createProject(app, { title: 'Long Title Project' });
+      const longTitle = `Chapter ${'very long words '.repeat(12)}& <finale>`;
+      const releaseId = insertRelease(db, projectId, { title: longTitle, plannedDate: addDays(today, 3) });
+
+      const res = await app.testAgent.get('/').expect(200);
+      const escaped = longTitle.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+      const row = extractReleaseRow(res.text, releaseId);
+      expect(row).toContain(`<a class="dashboard-truncate" href="/releases/${releaseId}">${escaped}</a>`);
+      expect(row).toContain(`<h3 class="asset-viewer-grid-card-info-heading">${escaped}</h3>`);
+      expect(row).toContain(`aria-label="Details for ${escaped}"`);
+      expect(res.text).not.toContain('<finale>');
+    });
+  });
+
+  describe('Recently published', () => {
+    it('renders up to four published releases with dates, social outcome, and archived exclusions', async () => {
+      const projectId = await createProject(app, { title: 'Published Project' });
+      const ids = Array.from({ length: 5 }, (_, index) => insertRelease(db, projectId, {
+        title: `Published ${index}`,
+        publishedDate: addDays(today, -(index + 1)),
+      }));
+      insertRelease(db, projectId, { title: 'Archived Published', publishedDate: today, archivedAt: '2026-01-01 00:00:00' });
+
+      const res = await app.testAgent.get('/').expect(200);
+      const panel = extractRecentPanel(res.text);
+      const rendered = [...panel.matchAll(/<li class="dashboard-recent-item" data-release-id="(\d+)"/g)].map((match) => Number(match[1]));
+
+      expect(rendered).toEqual(ids.slice(0, 4));
+      expect(panel).toContain(`<time datetime="${addDays(today, -1)}">`);
+      expect(panel).toContain('No social posts');
+      expect(panel).not.toContain('Archived Published');
+    });
+  });
+
+  describe('Projects table', () => {
+    it('uses real table semantics, catalogue badges, asset counts, and next-release states', async () => {
+      app.locals.projectOptionCatalogueService.addOption('status', { name: 'Editorial Review', color: '#123456' });
+      const editorialId = await createProject(app, { title: 'Editorial Project', status: 'editorial-review', projectType: 'comic' });
+      const mixedId = await createProject(app, { title: 'Mixed Project', status: 'ready' });
+      const lateId = insertRelease(db, mixedId, { title: 'Mixed Late', plannedDate: addDays(today, -2) });
+      insertRelease(db, mixedId, { title: 'Mixed Undated' });
+      addMissingSelectedAsset(mixedId, lateId, 'mixed.txt');
+      const undatedOnlyId = await createProject(app, { title: 'Undated Only', status: 'ready' });
+      insertRelease(db, undatedOnlyId, { title: 'Only Undated' });
+
+      const res = await app.testAgent.get('/').expect(200);
+      const panel = extractProjectsPanel(res.text);
+      const table = extractById(panel, 'table', 'dashboard-projects-table');
+
+      expect(panel).toContain('<div class="dashboard-table-scroll" role="region" aria-labelledby="dashboard-projects-heading" tabindex="0">');
+      expect(table).toContain('data-complete="true"');
+      expect(table).toContain('<caption class="sr-only">');
+      expect([...table.matchAll(/<th scope="col"[^>]*>([^<]+)<\/th>/g)].map((match) => match[1]))
+        .toEqual(['Project', 'Status', 'Type', 'Assets', 'Next release', 'Last published', 'Updated']);
+      expect(table).toContain('<th scope="col" aria-sort="descending">Updated</th>');
+
+      const editorial = extractProjectRow(table, editorialId);
+      expect(editorial).toContain('data-status="editorial-review"');
+      expect(editorial).toContain('style="--project-badge-bg: #123456; --project-badge-tint: 18%; --project-badge-fg: #8495A7">Editorial Review</span>');
+      expect(editorial).toContain('project-type-badge');
+      expect(editorial).toContain('None planned');
+
+      const mixed = extractProjectRow(table, mixedId);
+      expect(mixed).toContain('(1 missing)');
+      expect(mixed).toContain(`<a class="dashboard-next-release dashboard-next-release--overdue" href="/releases/${lateId}"`);
+      expect(mixed).toContain('Overdue · ');
+      expect(mixed).toContain('(+1 no date)');
+
+      expect(extractProjectRow(table, undatedOnlyId)).toContain('dashboard-next-release--undated">No date set</span>');
+      expect(extractProjectRow(table, undatedOnlyId)).not.toContain('no date)');
+      expect(panel).toContain('3 of 3 active projects · archived hidden');
+      expect(panel).toContain('<a class="dashboard-view-all" href="/projects">Open in Projects');
+    });
+
+    it('renders disabled status filter toggles for every non-archived catalogue status, including zero counts', async () => {
+      app.locals.projectOptionCatalogueService.addOption('status', { name: 'Editorial Review', color: '#123456' });
+      await createProject(app, { title: 'Ready Tab Project', status: 'ready' });
+
+      const res = await app.testAgent.get('/').expect(200);
+      const tabs = res.text.match(/<div class="dashboard-status-tabs"[\s\S]*?<\/div>/)?.[0] || '';
+      const values = [...tabs.matchAll(/data-dashboard-status-filter="([^"]+)"/g)].map((match) => match[1]);
+      const catalogue = app.locals.projectOptionCatalogueService.getStatusCatalogue()
+        .map(({ value }) => value).filter((value) => value !== 'archived');
+
+      expect(tabs).toContain('role="group" aria-label="Filter projects by status"');
+      expect(values).toEqual(['all', ...catalogue]);
+      expect(values).toContain('editorial-review');
+      expect(values).not.toContain('archived');
+      expect(tabs).toMatch(/aria-pressed="true"\s+aria-controls="dashboard-projects-table"\s+data-dashboard-status-filter="all"/);
+      expect((tabs.match(/aria-controls="dashboard-projects-table"/g) || [])).toHaveLength(values.length);
+      expect(res.text).toContain('id="dashboard-projects-table"');
+      expect((tabs.match(/type="button" disabled/g) || [])).toHaveLength(values.length);
+      expect(tabs).toMatch(/Editorial Review<\/span>\s*<span class="dashboard-status-tab-count">0<\/span>/);
+    });
+
+    it('caps rows at fifty unique projects and links incomplete tabs to the Projects page', async () => {
+      for (let index = 0; index < 52; index += 1) {
+        const id = await createProject(app, { title: `Bulk ${index}`, status: 'ready' });
+        db.prepare('UPDATE projects SET updated_at = ? WHERE id = ?')
+          .run(`2026-01-01 00:${String(index).padStart(2, '0')}:00`, id);
+        if (index === 0) {
+          insertRelease(db, id, { title: 'Bulk Release A', plannedDate: addDays(today, 1) });
+          insertRelease(db, id, { title: 'Bulk Release B', plannedDate: addDays(today, 2) });
+        }
+      }
+      const archivedId = await createProject(app, { title: 'Archived Bulk' });
+      db.prepare("UPDATE projects SET archived_at = datetime('now') WHERE id = ?").run(archivedId);
+      const legacyArchivedId = await createProject(app, { title: 'Legacy Archived Bulk' });
+      db.prepare("UPDATE projects SET status = 'archived' WHERE id = ?").run(legacyArchivedId);
+
+      const res = await app.testAgent.get('/').expect(200);
+      const panel = extractProjectsPanel(res.text);
+      const rowIds = [...panel.matchAll(/data-dashboard-project-row data-project-id="(\d+)"/g)].map((match) => match[1]);
+      const nav = panel.match(/<nav class="dashboard-status-tabs"[\s\S]*?<\/nav>/)?.[0] || '';
+
+      expect(rowIds).toHaveLength(50);
+      expect(new Set(rowIds).size).toBe(50);
+      expect(panel).toContain('data-complete="false"');
+      expect(panel).toContain('50 of 52 active projects · archived hidden');
+      expect(panel).not.toContain('Archived Bulk');
+      expect(nav).toContain('aria-label="Project status filters"');
+      expect(nav).toContain('href="/projects?status=all"');
+      expect(nav).toContain('href="/projects?status=ready"');
+      expect(nav).toMatch(/<a class="dashboard-status-tab" href="\/projects\?status=all" data-dashboard-status-link="all"><span class="dashboard-status-tab-label">All<\/span>\s*<span class="dashboard-status-tab-count">52<\/span>/);
+      expect(nav).toMatch(/Ready<\/span>\s*<span class="dashboard-status-tab-count">52<\/span>/);
+      expect(nav).not.toContain('status=archived');
+      expect(panel).not.toContain('data-dashboard-status-filter=');
+    });
+  });
+
+  describe('title popovers', () => {
+    it('renders the Calendar release card for release titles with record-valid actions', async () => {
+      app.locals.clockFormatSettingsService.setClockFormat('12h');
+      const projectId = await createProject(app, { title: 'Popover Project' });
+      const plannedId = insertRelease(db, projectId, { title: 'Planned <One>', plannedDate: addDays(today, 2), plannedTime: '18:05' });
+      db.prepare('UPDATE releases SET notes = ? WHERE id = ?').run('Remember & check', plannedId);
+      const publishedId = insertRelease(db, projectId, { title: 'Shipped One', publishedDate: addDays(today, -1) });
+
+      const res = await app.testAgent.get('/').expect(200);
+      const planned = extractReleaseRow(res.text, plannedId);
+      const published = extractRecentPanel(res.text);
+
+      expect(planned).toContain('data-dashboard-title-info');
+      expect(planned).toContain(`id="dashboard-release-info-scheduled-${plannedId}" class="asset-viewer-grid-card-info calendar-release-info calendar-release-info--glass" data-calendar-info-card popover="manual"`);
+      expect(planned).toContain('aria-label="Details for Planned &lt;One&gt;"');
+      expect(planned).toContain(`href="/releases/${plannedId}">Open release</a>`);
+      expect(planned).toContain(`href="/releases/${plannedId}/edit">Edit release</a>`);
+      expect(planned).toContain(`href="/projects/${projectId}">Open project</a>`);
+      expect(planned).toContain('<dt>Status</dt><dd>Planned</dd>');
+      expect(planned).toContain(`${addDays(today, 2)} 6:05 PM</time>`);
+      expect(planned).toContain('<dt>Platforms</dt><dd>None</dd>');
+      expect(planned).toContain('<p class="calendar-release-info-notes">Remember &amp; check</p>');
+
+      expect(published).toContain(`id="dashboard-release-info-recent-${publishedId}"`);
+      expect(published).toContain('<dt>Status</dt><dd>Published</dd>');
+      expect(published).not.toContain(`/releases/${publishedId}/edit`);
+    });
+
+    it('renders a project-only card for project titles wherever they appear', async () => {
+      app.locals.projectOptionCatalogueService.addOption('status', { name: 'Editorial Review', color: '#123456' });
+      const projectId = await createProject(app, { title: 'Card Project', status: 'editorial-review', projectType: 'comic' });
+      const releaseId = insertRelease(db, projectId, { title: 'Card Release', plannedDate: addDays(today, 3) });
+      addMissingSelectedAsset(projectId, releaseId, 'card.txt');
+
+      const res = await app.testAgent.get('/').expect(200);
+      const tableRow = extractProjectRow(res.text, projectId);
+      const releaseRow = extractReleaseRow(res.text, releaseId);
+      const tableCard = tableRow.match(/<div id="dashboard-project-info-table-\d+"[\s\S]*?<\/dl>/)?.[0] || '';
+      const rowCard = releaseRow.match(/<div id="dashboard-project-info-scheduled-\d+"[\s\S]*?<\/dl>/)?.[0] || '';
+
+      expect(tableRow).toContain(`<a class="dashboard-truncate" href="/projects/${projectId}">Card Project</a>`);
+      for (const card of [tableCard, rowCard]) {
+        expect(card).toContain('data-calendar-info-card popover="manual"');
+        expect(card).toContain(`href="/projects/${projectId}">Open project</a>`);
+        expect(card).toContain(`href="/projects/${projectId}/edit">Edit project</a>`);
+        expect(card).not.toContain('Open release');
+        expect(card).toContain('Editorial Review');
+        expect(card).toContain('<dt>Type</dt>');
+        expect(card).toContain('<dt>Assets</dt><dd>1 (1 missing)</dd>');
+        expect(card).toContain('<dt>Next release</dt>');
+      }
+      expect(rowCard.replace(/id="[^"]+"/, '')).toBe(tableCard.replace(/id="[^"]+"/, ''));
+    });
+  });
+
+  describe('NSFW thumbnail blur', () => {
+    it('blurs NSFW-tagged project thumbnails across regions only while the global filter is enabled', async () => {
+      const projectId = await createProject(app, { title: 'Spicy Project' });
+      seedPrimaryImage(projectId);
+      tagProjectNsfw(projectId);
+      const releaseId = insertRelease(db, projectId, { title: 'Spicy Release', plannedDate: addDays(today, 2) });
+
+      app.locals.nsfwFilterSettingsService.setEnabled(true);
+      const enabled = await app.testAgent.get('/').expect(200);
+      const enabledRow = extractReleaseRow(enabled.text, releaseId);
+      const enabledProject = extractProjectRow(enabled.text, projectId);
+
+      expect(enabledRow).toContain('data-preview-image');
+      expect(enabledRow).toContain('class="dashboard-thumb-image project-image--nsfw-blurred"');
+      expect(enabledProject).toContain('class="dashboard-thumb-image project-image--nsfw-blurred"');
+      expect(enabledRow).toContain('class="calendar-release-info-image project-image--nsfw-blurred');
+      expect(enabledProject).toContain('class="calendar-release-info-image project-image--nsfw-blurred');
+      expect(enabled.text).not.toContain('id="projects-nsfw-toggle"');
+
+      app.locals.nsfwFilterSettingsService.setEnabled(false);
+      const disabled = await app.testAgent.get('/').expect(200);
+      expect(extractReleaseRow(disabled.text, releaseId)).toContain('class="dashboard-thumb-image"');
+      expect(disabled.text).not.toContain('project-image--nsfw-blurred');
+    });
+  });
+
+  describe('New Project dialog hosting', () => {
+    it('renders one closed native New Project dialog with the standalone form defaults', async () => {
+      app.locals.pageDefaultsService.saveDefault('new_project', 'status', 'ready');
+      app.locals.tagService.createTag({ name: 'Dashboard dialog tag' });
+
+      const [dashboard, standalone] = await Promise.all([
+        app.testAgent.get('/').expect(200),
+        app.testAgent.get('/projects/new').expect(200),
+      ]);
+      const dialog = extractProjectCreateDialog(dashboard.text);
+
+      expect((dashboard.text.match(/<dialog id="project-create-dialog"/g) || [])).toHaveLength(1);
+      expect(dialog).not.toBe('');
+      expect(dialog).not.toMatch(/<dialog\b[^>]*\bopen(?:\s|>|=)/);
+      const footer = dialog.match(/<footer class="app-dialog-footer">[\s\S]*?<\/footer>/)?.[0] || '';
+      expect(footer).toContain('Create project');
+      expect(footer).not.toContain('Cancel');
+      expect(dialog).toContain('<form id="project-create-form" method="post" action="/projects"');
+      expect(dialog).toContain('data-dialog-form data-dialog-async="false"');
+      expect(dialog).toContain('name="returnTo" value="/"');
+      expect(dialog).toMatch(/name="status"[^>]*value="ready"[^>]*checked/);
+      expect(standalone.text).toMatch(/name="status"[^>]*value="ready"[^>]*checked/);
+      expect(dialog).toContain('Dashboard dialog tag');
+    });
+
+    it('re-renders the Dashboard with the open dialog, submitted values, and errors after invalid creation', async () => {
+      const res = await app.testAgent
+        .post('/projects')
         .type('form')
-        .send({ _csrf: app.testCsrfToken, enabled: '1', returnTo: '/' })
-        .expect('Location', '/')
-        .expect(302);
+        .send({ title: '', status: 'ready', projectType: 'images', priority: 'normal', returnTo: '/', notes: 'Keep these notes', _csrf: app.testCsrfToken })
+        .expect(422);
+      const dialog = extractProjectCreateDialog(res.text);
 
-      expect(db.prepare("SELECT value FROM app_meta WHERE key = 'nsfw_filter.enabled'").pluck().get()).toBe('1');
-
-      const enabledDashboard = await app.testAgent.get('/').expect(200);
-      const enabledNsfwForm = enabledDashboard.text.match(/<form method="post" action="\/projects\/nsfw-filter" class="inline-form" data-projects-nsfw-filter>[\s\S]*?<\/form>/)?.[0] || '';
-
-      expect(enabledNsfwForm).toContain('name="enabled" value="0"');
-      expect(enabledNsfwForm).toContain('aria-pressed="true"');
-      expect(enabledNsfwForm).toContain('aria-label="Disable NSFW filter"');
-      expect(enabledNsfwForm).toContain('data-tooltip="Disable NSFW filter"');
-    });
-
-    it('reuses one established project-grid size control for Dashboard project sections', async () => {
-      await createProject(app, { title: 'Recent Size Project', status: 'ready' });
-      await createProject(app, { title: 'Planned Size Project', status: 'planned' });
-
-      const res = await app.testAgent.get('/').expect(200);
-      const controls = res.text;
-
-      expect((controls.match(/data-project-grid-size-controls/g) || [])).toHaveLength(1);
-      expect((controls.match(/data-asset-grid-size-controls/g) || [])).toHaveLength(1);
-      expect(controls).toContain('data-asset-grid-size-controls');
-      expect(controls).toContain('data-grid-size-labels-interactive');
-      expect(controls).toContain('data-grid-size-slider');
-      expect(controls).toContain('min="1" max="3" step="1" value="2"');
-      expect(controls).toContain('data-grid-size-option-label="compact"');
-      expect(controls).toContain('data-grid-size-option-label="default"');
-      expect(controls).toContain('data-grid-size-option-label="large"');
-      expect(DASHBOARD_TEMPLATE).not.toContain('creatorcrate-dashboard-grid-size');
-
-      for (const sectionName of ['recent-projects', 'status:planned']) {
-        expect(extractSection(res.text, sectionName)).toContain('<ul class="project-grid">');
-      }
-    });
-  });
-
-
-  describe('dashboard defaults dialog markup', () => {
-    it('renders the established Defaults control and keeps the dialog available but closed by default', async () => {
-      const res = await app.testAgent.get('/').expect(200);
-      const dialog = extractDashboardDefaultsDialog(res.text);
-
-      expect(res.text).toContain('href="/?defaults=1" aria-label="Dashboard defaults"');
-      expect(res.text).toContain('data-dialog-open="dashboard-defaults-dialog"');
-      expect(res.text).toContain('data-dashboard-defaults-link');
-      expect(dialog).toContain('class="app-dialog" data-app-dialog');
-      expect(dialog).not.toContain('data-app-dialog open');
-      expect(res.text).toContain('id="projects-nsfw-toggle"');
-      expect(res.text).toContain('data-asset-grid-size-controls');
-    });
-
-    it('opens from ?defaults=1 and renders every normalized section in saved order', async () => {
-      const defaults = app.locals.dashboardDefaultsService.getDefaults();
-      defaults.order = [...defaults.order].reverse();
-      defaults.sections['recently-updated'] = { ...defaults.sections['recently-updated'], visible: false, itemCount: 3 };
-      defaults.sections['status:ready'] = { ...defaults.sections['status:ready'], itemCount: 17 };
-      app.locals.dashboardDefaultsService.saveDefaults(defaults);
-
-      const res = await app.testAgent.get('/?defaults=1').expect(200);
-      const dialog = extractDashboardDefaultsDialog(res.text);
-      const renderedIds = Array.from(dialog.matchAll(/data-dashboard-section-id="([^"]+)"/g), ([, id]) => id);
-      const sortDialog = res.text.match(/<dialog id="dashboard-defaults-sort-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
-      const sortSelect = sortDialog.match(/<select id="dashboard-defaults-sort-select"[\s\S]*?<\/select>/)?.[0] || '';
-      const sortOptionValues = new Set(
-        Array.from(sortSelect.matchAll(/<option value="([^"]+)"/g), ([, value]) => value),
-      );
-
-      expect(dialog).toContain('class="app-dialog" data-app-dialog open');
-      expect(dialog).toContain('method="post" action="/dashboard/defaults"');
-      expect(dialog).toContain('data-dialog-form data-dashboard-defaults-reorder-form');
-      expect(renderedIds).toEqual(defaults.order);
-      expect(dialog).toContain('name="orderedSectionIds" data-dashboard-defaults-order-input value="' + defaults.order.join(',') + '"');
-      expect(renderedIds).toHaveLength(7);
-      expect(dialog).not.toContain('data-dashboard-section-id="projects"');
-      expect(dialog).not.toContain('data-dashboard-section-id="assets"');
-      expect(dialog).not.toContain('data-dashboard-section-id="missing-assets"');
-      expect(dialog).not.toContain('data-dashboard-section-id="releases"');
-
-      for (const sectionId of defaults.order) {
-        const section = app.locals.dashboardDefaultsService.getDefaults().sections[sectionId];
-        const id = 'dashboard-defaults-section-' + sectionId;
-        const checkbox = dialog.match(new RegExp('<input\\s+type="checkbox"\\s+id="' + id + '-visible"[^>]*>'))?.[0] || '';
-
-        expect(dialog).toContain('data-dashboard-defaults-reorder-item');
-        expect(dialog).toContain('data-dashboard-section-id="' + sectionId + '"');
-        expect(dialog).toContain('class="notes-reorder-row dashboard-defaults-section"');
-        expect(dialog).toContain('data-dashboard-defaults-reorder-handle');
-        expect(dialog).toContain('name="sections[' + sectionId + '][visible]" value="0"');
-        expect(checkbox).toContain('name="sections[' + sectionId + '][visible]"');
-        expect(checkbox.includes('checked')).toBe(section.visible);
-        expect(dialog).toContain('id="' + id + '-item-count" type="number" name="sections[' + sectionId + '][itemCount]" value="' + section.itemCount + '"');
-        expect(dialog).toContain('name="sections[' + sectionId + '][sort]" value="' + section.sort + '" data-dashboard-defaults-sort-input');
-        expect(dialog).toContain('name="sections[' + sectionId + '][order]" value="' + section.order + '" data-dashboard-defaults-section-order-input');
-        expect(dialog).toContain('data-dashboard-defaults-sort-options-trigger data-dialog-open="dashboard-defaults-sort-dialog"');
-      }
-
-      expect(dialog).toContain('class="notes-reorder-list dashboard-defaults-section-list"');
-      expect(dialog).toContain('class="settings-section dashboard-defaults-settings-section"');
-      expect(dialog).toContain('class="dashboard-defaults-section-content"');
-      expect(dialog).not.toContain('data-dashboard-defaults-order-position');
-      expect(dialog).not.toContain('<span class="field-label">Show section</span>');
-      expect(dialog.match(/<span class="sr-only">Show [^<]+<\/span>/g)).toHaveLength(7);
-      expect(dialog.match(/<label class="sr-only" for="dashboard-defaults-section-[^"]+-item-count">Items to show for [^<]+<\/label>/g)).toHaveLength(7);
-      expect(dialog).toContain('min="1" max="25" step="1"');
-      expect(dialog).toContain('Drag a handle to move a section, or focus a handle and use Arrow Up, Arrow Down, Home, or End. Select Save defaults to keep the new order.');
-      expect(dialog).not.toMatch(/<button[^>]+(?:aria-label|title)="[^"]*\b(?:Up|Down)\b/i);
-      expect(dialog).not.toContain('>Cancel</button>');
-      expect(dialog).toContain('>Save defaults</button>');
-      expect((dialog.match(/aria-label="Sort options for [^"]+"/g) || [])).toHaveLength(7);
-      expect((res.text.match(/id="dashboard-defaults-sort-dialog"/g) || [])).toHaveLength(1);
-      expect(sortDialog).toContain('Sort by');
-      expect(sortOptionValues).toEqual(new Set(['updated', 'created', 'title']));
-      expect(sortDialog).not.toContain('value="published"');
-      expect(sortDialog).not.toContain('value="planned"');
-      expect(sortDialog).toContain('data-dashboard-defaults-sort-apply');
-    });
-
-    it('keeps the shared dialog body as the Dashboard Defaults scroll owner', async () => {
-      const res = await app.testAgent.get('/?defaults=1').expect(200);
-      const dialog = extractDashboardDefaultsDialog(res.text);
-
-      expect(dialog).toContain('class="app-dialog-body"');
-      expect(dialog).toContain('class="settings-section dashboard-defaults-settings-section"');
-      expect(SERVED_CSS).toMatch(/#dashboard-defaults-dialog \.app-dialog-form \{\r?\n        flex: 1 1 auto;\r?\n        min-height: 0;\r?\n        overflow: hidden;\r?\n      \}/);
-      expect(SERVED_CSS).toMatch(/#dashboard-defaults-dialog \.app-dialog-body \{\r?\n        flex: 1 1 auto;\r?\n        min-height: 0;\r?\n      \}/);
-      expect(SERVED_CSS).toMatch(/#dashboard-defaults-dialog \.dashboard-defaults-settings-section \{\r?\n        flex: 0 0 auto;\r?\n        gap: var\(--space-md\);\r?\n        margin-bottom: 0;\r?\n        padding-bottom: var\(--space-md\);\r?\n        overflow: visible;\r?\n      \}/);
-      expect(SERVED_CSS).toContain('grid-template-columns: minmax(0, 1fr) auto auto minmax(7rem, 7.5rem);');
+      expect(countTags(res.text, 'h1')).toBe(1);
+      expect(res.text).toContain('<h1 class="app-section-title">Dashboard</h1>');
+      expect(res.text).toContain('id="dashboard-projects-heading"');
+      expect(dialog).toMatch(/<dialog\b[^>]*\bopen(?:\s|>|=)/);
+      expect(dialog).toContain('name="returnTo" value="/"');
+      expect(dialog).toMatch(/name="status"[^>]*value="ready"[^>]*checked/);
+      expect(dialog).toContain('Keep these notes');
+      expect(dialog).toMatch(/aria-invalid="true"/);
     });
   });
 
@@ -665,30 +990,14 @@ describe('dashboard HTTP composition', () => {
         .expect(403);
     });
 
-    it('re-renders the open dialog with submitted count errors for native invalid posts', async () => {
-      const form = buildDashboardDefaultsForm(app, {
-        order: [...app.locals.dashboardDefaultsService.getDefaults().order].reverse(),
-      });
-      form.sections['recently-updated'].itemCount = '0';
 
-      const res = await app.testAgent
-        .post('/dashboard/defaults')
-        .type('form')
-        .send(form)
-        .expect(422);
-      const dialog = extractDashboardDefaultsDialog(res.text);
-
-      expect(dialog).toContain('class="app-dialog" data-app-dialog open');
-      expect(dialog).toContain('Dashboard defaults could not be saved. Fix the invalid fields and try again.');
-      expect(dialog).toContain('Items to show must be between 1 and 25.');
-      expect(dialog).toContain('value="0"');
-      expect(Array.from(dialog.matchAll(/data-dashboard-section-id="([^"]+)"/g), ([, id]) => id)).toEqual(form.orderedSectionIds.split(','));
-    });
-
-    it('re-renders static and status visibility errors with switch-level ARIA feedback without persisting', async () => {
+    // The save endpoint stays until the section-defaults system is retired;
+    // the Dashboard no longer hosts its dialog, so a native invalid post
+    // re-renders the plain Dashboard without persisting anything.
+    it('rejects native invalid posts with a 422 Dashboard render without persisting', async () => {
       const previous = app.locals.dashboardDefaultsService.getDefaults();
       const form = buildDashboardDefaultsForm(app);
-      form.sections['recently-updated'].visible = 'invalid';
+      form.sections['recently-updated'].itemCount = '0';
       form.sections['status:ready'].visible = 'invalid';
 
       const res = await app.testAgent
@@ -696,348 +1005,10 @@ describe('dashboard HTTP composition', () => {
         .type('form')
         .send(form)
         .expect(422);
-      const dialog = extractDashboardDefaultsDialog(res.text);
 
-      expect(dialog).toContain('class="app-dialog" data-app-dialog open');
-      expect(dialog).toContain('data-dialog-field="sections[recently-updated][visible]"');
-      expect(dialog).toContain('data-dialog-field="sections[status:ready][visible]"');
-      expect(dialog).toContain('id="dashboard-defaults-section-recently-updated-visible"');
-      expect(dialog).toContain('id="dashboard-defaults-section-status:ready-visible"');
-      expect(dialog).toContain('aria-describedby="dashboard-defaults-section-recently-updated-visible-error"');
-      expect(dialog).toContain('aria-describedby="dashboard-defaults-section-status:ready-visible-error"');
-      expect(dialog).toContain('Show section must be explicitly enabled or disabled.');
-      expect(dialog).toMatch(/id="dashboard-defaults-section-recently-updated-visible"[\s\S]*?aria-invalid="true">/);
-      expect(dialog).toMatch(/id="dashboard-defaults-section-status:ready-visible"[\s\S]*?aria-invalid="true">/);
-      expect(dialog).not.toMatch(/id="dashboard-defaults-section-recently-updated-visible"[^>]*\schecked/);
-      expect(dialog).not.toMatch(/id="dashboard-defaults-section-status:ready-visible"[^>]*\schecked/);
-      expect(dialog).toContain(`value="${previous.sections['status:planned'].itemCount}"`);
-      expect(Array.from(dialog.matchAll(/data-dashboard-section-id="([^"]+)"/g), ([, id]) => id)).toEqual(form.orderedSectionIds.split(','));
+      expect(res.text).toContain('<h1 class="app-section-title">Dashboard</h1>');
+      expect(res.text).not.toContain('dashboard-defaults-dialog');
       expect(app.locals.dashboardDefaultsService.getDefaults()).toEqual(previous);
-    });
-  });
-
-  describe('dashboard static section visibility', () => {
-    it('omits the Recently updated projects section and empty state when recently-updated is hidden', async () => {
-      setDashboardSectionVisibility(app, 'recently-updated', false);
-
-      const res = await app.testAgent.get('/').expect(200);
-
-      expect(extractSection(res.text, 'recent-projects')).toBe('');
-      expect(res.text).not.toContain('<h2>Recently updated projects</h2>');
-      expect(res.text).not.toContain('No projects are currently tracked');
-    });
-
-    it('keeps a visible but empty retained section and its established empty state', async () => {
-      const res = await app.testAgent.get('/').expect(200);
-      const section = extractSection(res.text, 'recent-projects');
-
-      expect(section).toContain('<h2>Recently updated projects</h2>');
-      expect(section).toContain('empty-state');
-      expect(section).toContain('No projects are currently tracked');
-    });
-  });
-  describe('dashboard configurable section rendering', () => {
-    it('observes a custom status live for heading metadata, queries, counts, and shared Project cards', async () => {
-      app.locals.projectOptionCatalogueService.addOption('status', {
-        name: 'Editorial Review',
-        color: '#123456',
-      });
-      const projectId = await createProject(app, {
-        title: 'Editorial Project',
-        status: 'editorial-review',
-      });
-
-      const dashboard = (await app.testAgent.get('/?defaults=1').expect(200)).text;
-      const section = extractSection(dashboard, 'status:editorial-review');
-      const card = extractProjectCard(section, projectId);
-
-      expect(section).toContain('<h2>Editorial Review</h2>');
-      expect(section).toContain('Editorial Project');
-      expect(card).toContain('>Editorial Review</span>');
-      expect(card).toContain('style="--project-badge-bg: #123456; --project-badge-tint: 18%; --project-badge-fg: #8495A7"');
-      expect(extractSummaryCards(dashboard)).toContain('<span class="summary-card-value">1</span>');
-      expect(extractDashboardDefaultsDialog(dashboard)).toContain('data-dashboard-section-id="status:editorial-review"');
-    });
-
-    it('renders every visible static and status section in saved order with service-provided limits', async () => {
-      const defaults = app.locals.dashboardDefaultsService.getDefaults();
-      defaults.order = [
-        'status:ready',
-        'status:archived',
-        'recently-updated',
-        'status:tbd',
-        'status:planned',
-        'status:in-progress',
-        'status:completed',
-      ];
-      defaults.sections['status:ready'].itemCount = 1;
-      defaults.sections['status:tbd'].itemCount = 2;
-      app.locals.dashboardDefaultsService.saveDefaults(defaults);
-
-      await createProject(app, { title: 'Ready First', status: 'ready' });
-      await createProject(app, { title: 'Ready Second', status: 'ready' });
-      await createProject(app, { title: 'TBD First', status: 'tbd' });
-      await createProject(app, { title: 'TBD Second', status: 'tbd' });
-      await createProject(app, { title: 'Planned Status Project', status: 'planned' });
-      await createProject(app, { title: 'In Progress Status Project', status: 'in-progress' });
-      await createProject(app, { title: 'Completed Status Project', status: 'completed' });
-      const archivedProjectId = await createProject(app, { title: 'Archived Status Project', status: 'completed' });
-      db.prepare('UPDATE projects SET status = ? WHERE id = ?').run('archived', Number(archivedProjectId));
-
-      const dashboard = (await app.testAgent.get('/').expect(200)).text;
-      const expectedHeadings = [
-        'Ready',
-        'Archived',
-        'Recently updated projects',
-        'Tbd',
-        'Planned',
-        'In Progress',
-        'Completed',
-      ];
-
-      const headingPositions = expectedHeadings.map((heading) => dashboard.indexOf(`<h2>${heading}</h2>`));
-      expect(headingPositions.every((position) => position >= 0)).toBe(true);
-      expect(headingPositions).toEqual([...headingPositions].sort((left, right) => left - right));
-
-      for (const [sectionId, title] of [
-        ['status:tbd', 'TBD First'],
-        ['status:planned', 'Planned Status Project'],
-        ['status:in-progress', 'In Progress Status Project'],
-        ['status:completed', 'Completed Status Project'],
-        ['status:archived', 'Archived Status Project'],
-      ]) {
-        expect(extractSection(dashboard, sectionId)).toContain(title);
-      }
-
-      const archivedSection = extractSection(dashboard, 'status:archived');
-      expect(archivedSection).toContain('<span class="status-badge status-badge--archived">Archived</span>');
-      expect(extractSection(dashboard, 'recent-projects')).not.toContain('Archived Status Project');
-      expect(app.locals.projectOptionCatalogueService.getStatusCatalogue().map(({ value }) => value))
-        .not.toContain('archived');
-
-      const readySection = extractSection(dashboard, 'status:ready');
-      expect(readySection).toMatch(/Ready (First|Second)/);
-      expect((readySection.match(/<article\b[^>]*\bdata-project-card(?:\s|=|>)[^>]*>/g) || [])).toHaveLength(1);
-      expect((extractSection(dashboard, 'status:tbd').match(/<article\b[^>]*\bdata-project-card(?:\s|=|>)[^>]*>/g) || [])).toHaveLength(2);
-      expect(readySection).toMatch(/<h3 class="project-grid-card-title">[\s\S]*?<\/h3>/);
-      expect(extractSummaryCards(dashboard)).toContain('summary-card-value');
-      expect(dashboard).toContain('data-dashboard-defaults-link');
-      expect(dashboard).toContain('id="projects-nsfw-toggle"');
-      expect(dashboard).toContain('data-asset-grid-size-controls');
-    });
-
-    it('omits hidden static and status sections while keeping a visible empty status section', async () => {
-      setDashboardSectionVisibility(app, 'status:planned', false);
-
-      const dashboard = (await app.testAgent.get('/').expect(200)).text;
-
-      expect(extractSection(dashboard, 'status:planned')).toBe('');
-      expect(dashboard).not.toContain('<h2>Planned</h2>');
-      expect(extractSection(dashboard, 'status:ready')).toContain('<h2>Ready</h2>');
-      expect(extractSection(dashboard, 'status:ready')).toContain('empty-state');
-      expect(extractSection(dashboard, 'status:ready')).toContain('No ready projects');
-      expect(extractSection(dashboard, 'status:ready')).not.toContain('href="/projects/new"');
-    });
-
-    it('uses the one generic Dashboard section loop without legacy static blocks', () => {
-      expect(DASHBOARD_TEMPLATE).toContain('{% for section in dashboardSections %}');
-      expect(DASHBOARD_TEMPLATE).not.toContain('overdue-projects');
-      expect(DASHBOARD_TEMPLATE).not.toContain('upcoming-releases');
-      expect(DASHBOARD_TEMPLATE).not.toContain('recent-projects');
-    });
-  });
-
-  // ─── Recently updated projects ──────────────────────────────────────
-
-  describe('dashboard recently updated projects section', () => {
-    it('formats shared grid-card Project timestamps with the clock preference', async () => {
-      const projectId = await createProject(app, { title: 'Dashboard Timestamp Project', status: 'ready' });
-      db.prepare('UPDATE projects SET created_at = ?, updated_at = ? WHERE id = ?')
-        .run('2025-06-15 13:05:09', '2025-06-16 14:06:10', Number(projectId));
-
-      for (const [preference, created, updated] of [
-        ['12h', '1:05:09 PM', '2:06:10 PM'],
-        ['24h', '13:05:09', '14:06:10'],
-      ]) {
-        app.locals.clockFormatSettingsService.setClockFormat(preference);
-        const dashboard = (await app.testAgent.get('/').expect(200)).text;
-        const card = extractProjectCard(extractSection(dashboard, 'recent-projects'), projectId);
-
-        expect(card).toMatch(new RegExp(`<dt>Created</dt>\\s*<dd>2025-06-15 ${created}</dd>`));
-        expect(card).toMatch(new RegExp(`<dt>Updated</dt>\\s*<dd>2025-06-16 ${updated}</dd>`));
-      }
-    });
-
-    it('renders recently updated projects through shared cards with Status and Project Type badges, no Priority', async () => {
-      const projectId = await createProject(app, { title: 'Recent Card Project', status: 'ready', projectType: 'comic' });
-
-      const res = await app.testAgent.get('/').expect(200);
-      const section = extractSection(res.text, 'recent-projects');
-      const card = extractProjectCard(section, projectId);
-      expect(section).toContain('<ul class="project-grid">');
-      expect(card).toMatch(/<article class="project-card project-card--grid project-grid-card" data-project-card>/);
-      expect(card).toContain('Recent Card Project');
-      expect(card).toContain('project-status-badge');
-      expect(card).toContain('>Ready</span>');
-      expect(card.match(/project-option-badge project-type-badge/g) || []).toHaveLength(2);
-      expect(card).toContain('style="--project-badge-bg: #34D399; --project-badge-tint: 18%; --project-badge-fg: #34D399"');
-      expect(card).toContain('style="--project-badge-bg: #A78BFA; --project-badge-tint: 18%; --project-badge-fg: #B299FB"');
-      expect(card).not.toMatch(/\bpriority\b/i);
-    });
-
-    it('shows the established empty-state contract when no projects are tracked', async () => {
-      const res = await app.testAgent.get('/').expect(200);
-      const section = extractSection(res.text, 'recent-projects');
-      expect(section).toContain('empty-state');
-      expect(section).toContain('No projects are currently tracked');
-      expect(section).toContain('Create a project to start organizing releases and assets.');
-      expect(section).toContain('href="/projects/new"');
-    });
-  });
-
-  describe('dashboard project-card heading hierarchy', () => {
-    it('renders section headings as h2 and grid-card titles as h3 without changing the default Projects card title', async () => {
-      const recentId = await createProject(app, { title: 'Recent Heading Project', status: 'ready' });
-
-      const dashboard = (await app.testAgent.get('/').expect(200)).text;
-      const sections = [
-        ['recent-projects', 'Recently updated projects', recentId],
-        ['status:ready', 'Ready', recentId],
-      ];
-
-      for (const [className, heading, projectId] of sections) {
-        const section = extractSection(dashboard, className);
-        expect(section).toContain(`<h2>${heading}</h2>`);
-        expect(extractProjectCard(section, projectId)).toMatch(/<h3 class="project-grid-card-title">[\s\S]*?<\/h3>/);
-        expect(section).not.toMatch(/<h2 class="project-grid-card-title">/);
-      }
-
-      const projects = (await app.testAgent.get('/projects').expect(200)).text;
-      expect(extractProjectCard(projects, recentId)).toMatch(/<h2 class="project-grid-card-title">[\s\S]*?<\/h2>/);
-    });
-  });
-
-  // ─── Removed sections ───────────────────────────────────────────────
-
-  describe('removed dashboard sections', () => {
-    it('normalizes stale Project-date Dashboard defaults without losing retained preferences', async () => {
-      createAppMetaRepository(db).setValue('page_defaults.dashboard', JSON.stringify({
-        version: 1,
-        order: ['status:ready', 'overdue', 'upcoming', 'recently-updated'],
-        sections: {
-          overdue: { visible: true, itemCount: 3, sort: 'planned', order: 'asc' },
-          upcoming: { visible: true, itemCount: 4, sort: 'planned', order: 'asc' },
-          'status:ready': { visible: false, itemCount: 12, sort: 'title', order: 'asc' },
-          'recently-updated': { visible: true, itemCount: 6, sort: 'published', order: 'asc' },
-        },
-      }));
-
-      const res = await app.testAgent.get('/?defaults=1').expect(200);
-      const defaults = app.locals.dashboardDefaultsService.getDefaults();
-      const dialog = extractDashboardDefaultsDialog(res.text);
-
-      expect(defaults.order.slice(0, 2)).toEqual(['status:ready', 'recently-updated']);
-      expect(defaults.sections).not.toHaveProperty('overdue');
-      expect(defaults.sections).not.toHaveProperty('upcoming');
-      expect(defaults.sections['status:ready']).toEqual({
-        visible: false, itemCount: 12, sort: 'title', order: 'asc',
-      });
-      expect(defaults.sections['recently-updated']).toEqual({
-        visible: true, itemCount: 6, sort: 'updated', order: 'asc',
-      });
-      expect(res.text).not.toContain('data-dashboard-section="overdue"');
-      expect(res.text).not.toContain('data-dashboard-section="upcoming"');
-      expect(dialog).not.toContain('data-dashboard-section-id="overdue"');
-      expect(dialog).not.toContain('data-dashboard-section-id="upcoming"');
-      expect(dialog).not.toContain('data-dashboard-section-id="releases"');
-    });
-
-    it('does not render the Releases needing attention section', async () => {
-      const res = await app.testAgent.get('/').expect(200);
-      expect(res.text).not.toContain('Releases needing attention');
-      expect(res.text).not.toContain('id="needs-attention"');
-    });
-
-    it('does not render the Missing selection section', async () => {
-      const res = await app.testAgent.get('/').expect(200);
-      expect(res.text).not.toContain('Missing selection');
-      expect(res.text).not.toContain('attention-selection');
-    });
-
-    it('does not render the Workflow summary section or its project-counts details', async () => {
-      const res = await app.testAgent.get('/').expect(200);
-      expect(res.text).not.toContain('Workflow summary');
-      expect(res.text).not.toContain('project-counts-details');
-      expect(res.text).not.toContain('count-grid');
-    });
-
-    it('does not render any old release-list or attention-group markup', async () => {
-      await createProject(app, { title: 'No Old Markup Project', status: 'planned' });
-
-      const res = await app.testAgent.get('/').expect(200);
-      expect(res.text).not.toContain('release-list');
-      expect(res.text).not.toContain('attention-group');
-    });
-  });
-
-  // ─── Dashboard visual and structural contracts ─────────────────────
-  //
-  // Unrelated to the redesign — kept as-is where they still apply.
-
-  describe('dashboard visual and structural contracts', () => {
-    it('has exactly one h1', async () => {
-      const res = await app.testAgent.get('/').expect(200);
-      expect(countTags(res.text, 'h1')).toBe(1);
-    });
-
-    it('has a page-heading carrying navigation actions, not a description', async () => {
-      const res = await app.testAgent.get('/').expect(200);
-      expect(hasClass(res.text, 'page-heading')).toBe(true);
-      expect(hasClass(res.text, 'page-heading-description')).toBe(false);
-    });
-
-    it('renders summary cards section', async () => {
-      const res = await app.testAgent.get('/').expect(200);
-      expect(hasClass(res.text, 'summary-cards')).toBe(true);
-    });
-
-    it('dashboard renders data from the composed view-model', async () => {
-      await createProject(app, { title: 'Composed Model Project', status: 'ready' });
-
-      const res = await app.testAgent.get('/').expect(200);
-      expect(res.text).toContain('summary-card-value');
-      expect(res.text).toContain('project-grid');
-      expect(res.text).toContain('Projects currently tracked');
-    });
-
-    it('renders one closed native New Project dialog with the standalone form defaults', async () => {
-      app.locals.pageDefaultsService.saveDefault('new_project', 'status', 'ready');
-      app.locals.tagService.createTag({ name: 'Dashboard dialog tag' });
-
-      const [dashboard, standalone] = await Promise.all([
-        app.testAgent.get('/').expect(200),
-        app.testAgent.get('/projects/new').expect(200),
-      ]);
-      const dialog = extractProjectCreateDialog(dashboard.text);
-      const ids = [...dashboard.text.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
-      const newProjectOpeners = dashboard.text.match(/<a class="button button-primary" href="\/projects\/new" data-dialog-open="project-create-dialog">New Project<\/a>/g) || [];
-
-      expect((dashboard.text.match(/<dialog id="project-create-dialog"/g) || [])).toHaveLength(1);
-      expect(newProjectOpeners).toHaveLength(2);
-      expect(extractSection(dashboard.text, 'recent-projects')).toContain('<a class="button button-primary" href="/projects/new" data-dialog-open="project-create-dialog">New Project</a>');
-      expect(dialog).not.toBe('');
-      expect(dialog).not.toMatch(/<dialog\b[^>]*\bopen(?:\s|>|=)/);
-      const footer = dialog.match(/<footer class="app-dialog-footer">[\s\S]*?<\/footer>/)?.[0] || '';
-      expect(footer).toContain('Create project');
-      expect(footer).not.toContain('Cancel');
-      expect((footer.match(/<button\b/g) || [])).toHaveLength(1);
-      expect(dialog).toContain('<form id="project-create-form" method="post" action="/projects"');
-      expect(dialog).toContain('data-dialog-form data-dialog-async="false"');
-      expect(dialog).toContain('name="returnTo" value="/"');
-      expect(dialog).toMatch(/name="status"[^>]*value="ready"[^>]*checked/);
-      expect(standalone.text).toMatch(/name="status"[^>]*value="ready"[^>]*checked/);
-      expect(dialog).toContain('Dashboard dialog tag');
-      expect(new Set(ids).size).toBe(ids.length);
     });
   });
 });

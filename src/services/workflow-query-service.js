@@ -27,7 +27,7 @@ import { createSocialPrepRepository } from '../data/social-prep-repository.js';
 import { createAppMetaRepository } from '../data/app-meta-repository.js';
 import { createSocialPrepSettingsService } from './social-prep-settings-service.js';
 import { buildReleaseSocialPrepPresentation } from './release-social-prep-presenter.js';
-import { createProjectRepository } from '../data/project-repository.js';
+import { ARCHIVED_PROJECT_STATUS, createProjectRepository } from '../data/project-repository.js';
 import { createAssetRepository } from '../data/asset-repository.js';
 import { createAssetCategoryRepository } from '../data/asset-category-repository.js';
 import { createAssetBrowserPreferenceRepository } from '../data/asset-browser-preference-repository.js';
@@ -55,9 +55,8 @@ import {
   buildProjectOptionPresentation,
   presentProjectOptions,
 } from './project-option-presenter.js';
-import {
-  normalizeDashboardDefaults,
-} from './dashboard-defaults-service.js';
+import { PAGE_DEFAULT_DEFINITIONS } from './page-defaults-service.js';
+import { buildAssetLibraryUrl } from '../routes/asset-library-query.js';
 import { formatLocalDate, formatLocalTime, getLocalTodayIso } from '../util/date.js';
 import { isProjectArchived } from './project-state.js';
 import { supportsImageDimensionInspection } from './asset-workflow-metadata-service.js';
@@ -70,6 +69,22 @@ const DEFAULT_LIMITS = Object.freeze({
   activeReleases: 5,
   recentReleases: 5,
 });
+
+const DASHBOARD_LIMITS = Object.freeze({
+  needsDate: 10,
+  laterReleases: 5,
+  recentlyPublished: 4,
+  projects: 50,
+  openDays: 3,
+});
+const DASHBOARD_STRIP_DAYS = 14;
+const DASHBOARD_SCHEDULE_GROUPS = Object.freeze([
+  Object.freeze({ id: 'overdue', label: 'Overdue', viewAllHref: '/releases?schedule=overdue' }),
+  Object.freeze({ id: 'today', label: 'Today', viewAllHref: '/releases?schedule=today' }),
+  Object.freeze({ id: 'next7', label: 'Next 7 days', viewAllHref: '/releases?schedule=upcoming' }),
+  Object.freeze({ id: 'later', label: 'Later', viewAllHref: '/releases?schedule=upcoming' }),
+]);
+const DASHBOARD_WEEK_STARTS = PAGE_DEFAULT_DEFINITIONS.calendar.weekStart.values;
 
 const ASSET_BROWSER_DEFAULT_PAGE_SIZE = 25;
 const ASSET_BROWSER_MAX_PAGE_SIZE = 200;
@@ -354,9 +369,50 @@ function isLeapYear(year) {
   return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
 }
 
-function totalFromCounts(counts) {
-  if (!counts) return 0;
-  return Object.values(counts).reduce((sum, n) => sum + (Number.isFinite(n) ? n : 0), 0);
+// Dashboard date arithmetic works on calendar dates anchored at UTC midnight,
+// so day differences never depend on elapsed hours across a DST transition.
+const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
+
+function isoDateToUtcMs(isoDate) {
+  const [year, month, day] = isoDate.split('-').map(Number);
+  return Date.UTC(year, month - 1, day);
+}
+
+function addCalendarDays(isoDate, days) {
+  return new Date(isoDateToUtcMs(isoDate) + days * MILLISECONDS_PER_DAY).toISOString().slice(0, 10);
+}
+
+function calendarDaysBetween(fromIsoDate, toIsoDate) {
+  return Math.round((isoDateToUtcMs(toIsoDate) - isoDateToUtcMs(fromIsoDate)) / MILLISECONDS_PER_DAY);
+}
+
+function startOfCalendarWeek(isoDate, weekStart) {
+  const weekday = new Date(isoDateToUtcMs(isoDate)).getUTCDay();
+  const offset = weekStart === 'sunday' ? weekday : (weekday + 6) % 7;
+  return addCalendarDays(isoDate, -offset);
+}
+
+/**
+ * Application-local creation date of a SQLite `datetime('now')` UTC
+ * timestamp. Near local midnight the UTC date differs from the local one, so
+ * the stored date prefix cannot be used directly.
+ */
+function sqliteUtcTimestampToLocalDate(value) {
+  if (typeof value !== 'string' || value.length === 0) return null;
+  const normalized = value.includes('T') ? value : value.replace(' ', 'T');
+  const date = new Date(/(?:Z|[+-]\d{2}:\d{2})$/.test(normalized) ? normalized : `${normalized}Z`);
+  return Number.isNaN(date.getTime()) ? null : formatLocalDate(date);
+}
+
+// Clamped at zero: a creation timestamp ahead of the supplied today (clock
+// skew or an injected past date) is treated as created today.
+function ageInCalendarDays(createdAt, today) {
+  const createdDate = sqliteUtcTimestampToLocalDate(createdAt);
+  return createdDate ? Math.max(0, calendarDaysBetween(createdDate, today)) : null;
+}
+
+function calendarMonthHref(isoDate) {
+  return `/calendar?month=${isoDate.slice(0, 7)}`;
 }
 
 /**
@@ -389,6 +445,8 @@ export function isPrimaryImageAssetUsable(asset, { kritaQuality = null } = {}) {
  * @param {object} [deps.releaseRepository] — release repository for page-local
  *   batch enrichment
  * @param {object} [deps.tagRepository] — shared project/asset tag repository
+ * @param {object} [deps.pageDefaultsService] — source of the saved Calendar
+ *   week start used by the Dashboard strip when a caller does not supply one
  */
 export function createWorkflowQueryService({
   db,
@@ -401,7 +459,7 @@ export function createWorkflowQueryService({
   socialPrepRepository: injectedSocialPrepRepository,
   socialPrepSettingsService: injectedSocialPrepSettingsService,
   tagRepository: injectedTagRepository,
-  dashboardSectionRegistryProvider,
+  pageDefaultsService,
   imageDimensionConcurrencyService: injectedImageDimensionConcurrencyService,
   projectImageSettingsService: injectedProjectImageSettingsService,
 }) {
@@ -537,85 +595,257 @@ export function createWorkflowQueryService({
   }
 
   /**
-   * Compose dashboard project data from an already-normalized section document.
-   * Project enrichment is deliberately applied to one deduplicated union, then
-   * projected back into each section to retain repository order.
+   * Saved Calendar week start, used when the Dashboard caller does not supply
+   * one, so the strip and the Calendar page share a single preference.
+   */
+  function resolveDashboardWeekStart(requested) {
+    if (DASHBOARD_WEEK_STARTS.includes(requested)) return requested;
+    const saved = pageDefaultsService?.resolvePageDefaults?.('calendar')?.weekStart;
+    return DASHBOARD_WEEK_STARTS.includes(saved) ? saved : PAGE_DEFAULT_DEFINITIONS.calendar.weekStart.fallback;
+  }
+
+  function presentDashboardNextRelease(summary, today) {
+    const undatedCount = summary?.undated_count ?? 0;
+    if (summary?.next_release_id == null) {
+      return {
+        state: undatedCount > 0 ? 'undated' : 'none',
+        releaseId: null,
+        title: null,
+        plannedDate: null,
+        plannedTime: null,
+        daysLate: null,
+        undatedCount,
+      };
+    }
+    const plannedDate = summary.next_planned_date;
+    let state = 'scheduled';
+    if (plannedDate < today) state = 'overdue';
+    else if (plannedDate === today) state = 'today';
+    return {
+      state,
+      releaseId: summary.next_release_id,
+      title: summary.next_release_title,
+      plannedDate,
+      plannedTime: summary.next_planned_time || null,
+      daysLate: state === 'overdue' ? calendarDaysBetween(plannedDate, today) : null,
+      undatedCount,
+    };
+  }
+
+  /**
+   * Compose the release-first Dashboard model for one application-local
+   * `today`. Totals come from repository aggregates, never from displayed
+   * rows. Project image/tag enrichment and Social Preparation each run once
+   * over the deduplicated union of every displayed project and release.
+   * Read-only: no filesystem probes and no Social Preparation initialization.
    *
    * @param {object} [options]
-   * @param {object} [options.dashboardDefaults] normalized Dashboard defaults
+   * @param {string} [options.today] application-local YYYY-MM-DD override
+   * @param {'monday'|'sunday'} [options.weekStart] strip week start; defaults
+   *   to the saved Calendar preference
    */
   function getDashboardData(options = {}) {
-    const dashboardSectionRegistry = options.dashboardSectionRegistry
-      ?? dashboardSectionRegistryProvider?.();
-    if (!Array.isArray(dashboardSectionRegistry)) {
-      throw new Error('Dashboard queries require a Dashboard section registry.');
-    }
-    const dashboardDefaults = normalizeDashboardDefaults(
-      options.dashboardDefaults,
-      dashboardSectionRegistry,
+    const today = options.today || defaultToday();
+    const weekStart = resolveDashboardWeekStart(options.weekStart);
+    const tomorrow = addCalendarDays(today, 1);
+    const weekEnd = addCalendarDays(today, 7);
+    const stripStart = startOfCalendarWeek(today, weekStart);
+    const stripEndExclusive = addCalendarDays(stripStart, DASHBOARD_STRIP_DAYS);
+
+    const scheduleSummary = releaseRepository.getDashboardScheduleSummary({ today, weekEnd });
+    const scheduledRows = releaseRepository.findDashboardScheduledReleases({
+      today,
+      weekEnd,
+      laterLimit: DASHBOARD_LIMITS.laterReleases,
+    });
+    const undatedRows = releaseRepository.findDashboardUndatedReleases(DASHBOARD_LIMITS.needsDate);
+    const publishedRows = releaseRepository.findRecentlyPublished(DASHBOARD_LIMITS.recentlyPublished);
+    const calendarCounts = releaseRepository.countDashboardCalendarDays({
+      startDate: stripStart,
+      endDate: stripEndExclusive,
+      today,
+    });
+    const openDates = releaseRepository.findOpenDays(tomorrow, DASHBOARD_LIMITS.openDays);
+    const missingAssetCount = assetRepository.countMissingInActiveProjects();
+    const affectedReleaseCount = releaseRepository.countActiveReleasesWithMissingSelectedAssets();
+
+    // `list` and `countByStatus` both exclude projects archived by either
+    // archived_at or the legacy status; only the separate archived bucket of
+    // `countByStatus` is dropped here.
+    const { rows: projectRows, total: projectTotal } = projectRepository.list({
+      sortBy: 'updated',
+      order: 'desc',
+      limit: DASHBOARD_LIMITS.projects,
+      includeArchived: false,
+      tieBreakById: true,
+    });
+    const statusCounts = Object.fromEntries(
+      Object.entries(projectRepository.countByStatus())
+        .filter(([status]) => status !== ARCHIVED_PROJECT_STATUS)
     );
-    const sections = Object.fromEntries(
-      dashboardSectionRegistry.map(({ id }) => [id, []])
+    const tableProjectIds = projectRows.map((project) => project.id);
+    const releaseRows = [...scheduledRows, ...undatedRows, ...publishedRows];
+    // Every displayed project, table row or release parent, gets the same
+    // summary so its title popover reads identically wherever it appears.
+    const enrichmentProjectIds = [...new Set([
+      ...releaseRows.map((release) => release.project_id),
+      ...tableProjectIds,
+    ])];
+    const assetCountsByProjectId = new Map(
+      assetRepository.countByProjectIds(enrichmentProjectIds).map((row) => [row.project_id, row])
     );
-    const { sections: sectionDefaults } = dashboardDefaults;
-
-    if (sectionDefaults['recently-updated'].visible) {
-      sections['recently-updated'] = projectRepository.list({
-        sortBy: sectionDefaults['recently-updated'].sort,
-        order: sectionDefaults['recently-updated'].order,
-        limit: sectionDefaults['recently-updated'].itemCount,
-        includeArchived: false,
-      }).rows;
-    }
-
-    const statusLimits = Object.fromEntries(
-      dashboardSectionRegistry
-        .filter(({ status }) => status && sectionDefaults[`status:${status}`].visible)
-        .map(({ status }) => {
-          const section = sectionDefaults[`status:${status}`];
-          return [status, {
-            limit: section.itemCount,
-            sort: section.sort,
-            order: section.order,
-          }];
-        })
+    const releaseSummaryByProjectId = new Map(
+      releaseRepository.findReleaseScheduleSummaryByProjectIds(enrichmentProjectIds)
+        .map((row) => [row.project_id, row])
     );
-    if (Object.keys(statusLimits).length > 0) {
-      for (const project of projectRepository.findDashboardProjectsByStatus(statusLimits)) {
-        sections[`status:${project.effective_status}`].push(project);
-      }
-    }
-
-    const projectCounts = projectRepository.countByStatus();
-    const totalAssets = assetRepository.getTotalCount();
-    const totalReleases = releaseRepository.countFiltered({ includeArchived: true });
-    const missingTotal = assetRepository.getTotalMissingCount();
-
-    const uniqueProjectsById = new Map();
-    for (const projects of Object.values(sections)) {
-      for (const project of projects) {
-        if (!uniqueProjectsById.has(project.id)) uniqueProjectsById.set(project.id, project);
-      }
-    }
-    const enrichedProjectsById = new Map(
-      attachProjectTags(attachPrimaryImages([...uniqueProjectsById.values()]))
+    const projectEnrichmentById = new Map(
+      attachProjectTags(attachPrimaryImages(enrichmentProjectIds.map((id) => ({ id }))))
         .map((project) => [project.id, project])
     );
-    for (const [sectionId, projects] of Object.entries(sections)) {
-      sections[sectionId] = projects.map((project) => enrichedProjectsById.get(project.id));
+    const presentProjectSummary = (project) => {
+      const enrichment = projectEnrichmentById.get(project.id);
+      const assetCounts = assetCountsByProjectId.get(project.id);
+      const releaseSummary = releaseSummaryByProjectId.get(project.id);
+      return {
+        ...project,
+        primaryImage: enrichment.primaryImage,
+        tags: enrichment.tags,
+        assetCount: assetCounts?.asset_count ?? 0,
+        missingAssetCount: assetCounts?.missing_asset_count ?? 0,
+        nextRelease: presentDashboardNextRelease(releaseSummary, today),
+        undatedReleaseCount: releaseSummary?.undated_count ?? 0,
+        lastPublishedDate: releaseSummary?.last_published_date ?? null,
+      };
+    };
+    const uniqueReleaseRows = [...new Map(releaseRows.map((release) => [release.id, release])).values()];
+    const socialPreparationByReleaseId = new Map(
+      attachReleaseSocialPreparation(uniqueReleaseRows, { allowActions: false, selectedOnly: true })
+        .map((release) => [release.id, release.socialPreparation])
+    );
+
+    const presentRelease = (release) => {
+      const enrichment = projectEnrichmentById.get(release.project_id);
+      return {
+        ...release,
+        // Date-only releases keep a null time; blank stored times are date-only.
+        planned_time: release.planned_time || null,
+        primaryImage: enrichment.primaryImage,
+        tags: enrichment.tags,
+        socialPreparation: socialPreparationByReleaseId.get(release.id),
+        project: presentProjectSummary({
+          id: release.project_id,
+          title: release.project_title,
+          status: release.project_status,
+          project_type: release.project_type,
+          updated_at: release.project_updated_at,
+        }),
+      };
+    };
+
+    const scheduledItemsByGroup = new Map(DASHBOARD_SCHEDULE_GROUPS.map(({ id }) => [id, []]));
+    for (const release of scheduledRows) {
+      scheduledItemsByGroup.get(release.schedule_group)?.push({
+        ...presentRelease(release),
+        daysLate: release.schedule_group === 'overdue'
+          ? calendarDaysBetween(release.planned_date, today)
+          : null,
+      });
     }
+    const groups = DASHBOARD_SCHEDULE_GROUPS
+      .map(({ id, label, viewAllHref }) => ({
+        id,
+        label,
+        total: scheduleSummary[id],
+        items: scheduledItemsByGroup.get(id),
+        viewAllHref,
+      }))
+      .filter((group) => group.total > 0 || group.items.length > 0);
+
+    const needsDateItems = undatedRows.map((release) => ({
+      ...presentRelease(release),
+      ageDays: ageInCalendarDays(release.created_at, today),
+    }));
+
+    const countsByDate = new Map(calendarCounts.map((row) => [row.date, row]));
+    const days = Array.from({ length: DASHBOARD_STRIP_DAYS }, (_, index) => {
+      const date = addCalendarDays(stripStart, index);
+      const row = countsByDate.get(date);
+      const counts = {
+        overdue: row?.overdue ?? 0,
+        scheduled: row?.scheduled ?? 0,
+        published: row?.published ?? 0,
+      };
+      return {
+        date,
+        isToday: date === today,
+        isPast: date < today,
+        isOpen: date > today && counts.overdue + counts.scheduled + counts.published === 0,
+        counts,
+        calendarHref: calendarMonthHref(date),
+      };
+    });
+
+    const rows = projectRows.map(presentProjectSummary);
+
+    const todayGroup = groups.find((group) => group.id === 'today');
 
     return {
-      workflowSummary: {
-        totalProjects: totalFromCounts(projectCounts),
-        totalAssets,
-        totalReleases,
-        missingAssetSummary: {
-          total: missingTotal,
+      today,
+      weekStart,
+      tiles: {
+        overdue: {
+          count: scheduleSummary.overdue,
+          href: '/releases?schedule=overdue',
+        },
+        needsDate: {
+          count: scheduleSummary.undated,
+          oldestAgeDays: scheduleSummary.undated > 0
+            ? ageInCalendarDays(scheduleSummary.oldestUndatedCreatedAt, today)
+            : null,
+          href: '#needs-date',
+        },
+        dueToday: {
+          count: scheduleSummary.today,
+          firstRelease: todayGroup?.items[0] ?? null,
+          href: '/releases?schedule=today',
+        },
+        next7Days: {
+          count: scheduleSummary.next7,
+          throughDate: weekEnd,
+          href: '/releases?schedule=upcoming',
+        },
+        missingAssets: {
+          count: missingAssetCount,
+          affectedReleaseCount,
+          href: buildAssetLibraryUrl({}, { presence: 'missing' }),
         },
       },
-      recentlyUpdated: sections['recently-updated'],
-      sections,
+      strip: {
+        startDate: stripStart,
+        endDateExclusive: stripEndExclusive,
+        days,
+        openDays: openDates.map((date) => ({
+          date,
+          inStrip: date < stripEndExclusive,
+          calendarHref: calendarMonthHref(date),
+        })),
+      },
+      needsDate: {
+        total: scheduleSummary.undated,
+        items: needsDateItems,
+        viewAllHref: scheduleSummary.undated > needsDateItems.length
+          ? '/releases?schedule=unscheduled'
+          : null,
+      },
+      scheduled: { groups },
+      recentlyPublished: { items: publishedRows.map(presentRelease) },
+      projectTable: {
+        total: projectTotal,
+        shown: rows.length,
+        complete: rows.length === projectTotal,
+        statusCounts,
+        rows,
+      },
     };
   }
 

@@ -87,6 +87,8 @@ const MISSING_ASSET_COUNT_SQL = `(SELECT COUNT(DISTINCT a.id) FROM release_asset
 const DASHBOARD_RELEASE_SELECT = `${QUALIFIED_RELEASE_COLUMNS},
   projects.title AS project_title,
   projects.status AS project_status,
+  projects.project_type AS project_type,
+  projects.updated_at AS project_updated_at,
   ${SELECTED_ASSET_COUNT_SQL} AS selected_asset_count,
   ${MISSING_ASSET_COUNT_SQL} AS missing_asset_count`;
 

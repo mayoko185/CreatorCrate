@@ -1,105 +1,195 @@
 {% extends "layout.njk" %}
 {% import "partials/page-heading.njk" as pageHeading %}
-{% import "partials/project-card.njk" as projectCard %}
 {% import "partials/icons.njk" as icons %}
-{% import "partials/dashboard-defaults-dialog.njk" as dashboardDefaultsDialog %}
 {% import "partials/project-create-dialog.njk" as projectCreateDialog %}
+{% import "partials/dashboard-thumbnail.njk" as dashboardThumbnail %}
+{% import "partials/dashboard-needs-date-item.njk" as needsDateItem %}
+{% import "partials/dashboard-release-row.njk" as releaseRow %}
+{% import "partials/dashboard-project-table.njk" as projectTable %}
+{% import "partials/dashboard-title-info.njk" as titleInfo %}
+{% import "partials/calendar-info-card.njk" as infoCard %}
+{% import "partials/release-social-prep-summary.njk" as socialPrepSummary %}
 
 {% set page_title = "Dashboard" %}
 
 {% block content %}
-  {% call pageHeading.render("Organize your art projects in one self-hosted place.") %}
+  {% set tiles = dashboard.tiles %}
+
+  {% call pageHeading.render() %}
+    <a class="button button-secondary" href="/releases/new">New Release</a>
     <a class="button button-primary" href="/projects/new" data-dialog-open="project-create-dialog">New Project</a>
   {% endcall %}
+  <p class="dashboard-today"><time datetime="{{ dashboard.today }}">{{ dashboard.todayLabel }}</time></p>
 
-  <div class="asset-viewer-display-controls" data-project-grid-size-controls>
-    {% set gridSizeLabelsInteractive = true %}
-    {% include "partials/asset-grid-size-control.njk" %}
-
-    <div class="project-filter-actions project-filter-actions--projects">
-    <a class="asset-viewer-defaults-link button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
-       href="/?defaults=1" aria-label="Dashboard defaults"
-       data-dialog-open="dashboard-defaults-dialog" data-tooltip="Dashboard defaults" data-dashboard-defaults-link>
-      {{ icons.icon('settings') }}
-    </a>
-      {% set nsfwToggleLabel = "Disable NSFW filter" if nsfwFilterEnabled else "Enable NSFW filter" %}
-      <form method="post" action="/projects/nsfw-filter" class="inline-form" data-projects-nsfw-filter>
-        <input type="hidden" name="_csrf" value="{{ _csrf }}">
-        <input type="hidden" name="enabled" value="{{ '0' if nsfwFilterEnabled else '1' }}" data-projects-nsfw-value>
-        <input type="hidden" name="returnTo" value="/">
-        <button class="button button-small button-secondary project-filter-control asset-tooltip asset-tooltip--left"
-                id="projects-nsfw-toggle" type="submit" data-projects-nsfw-toggle
-                aria-pressed="{{ 'true' if nsfwFilterEnabled else 'false' }}"
-                aria-label="{{ nsfwToggleLabel }}" data-tooltip="{{ nsfwToggleLabel }}">
-          {{ icons.icon('nsfw-filter') }}
-        </button>
-      </form>
-    </div>
-  </div>
-
-  {# ─── Summary cards ─────────────────────────────────────────────── #}
-  <section class="summary-cards" aria-label="Overview">
-    <a class="summary-card" href="/projects">
-      <span class="summary-card-value">{{ summary.totalProjects }}</span>
-      <span class="summary-card-label">Projects</span>
-      <span class="summary-card-context">Projects currently tracked</span>
-    </a>
-    <a class="summary-card" href="{{ assetsUrl }}">
-      <span class="summary-card-value">{{ summary.totalAssets }}</span>
-      <span class="summary-card-label">Assets</span>
-      <span class="summary-card-context">Across all projects</span>
-    </a>
-    {% if summary.missingAssetSummary.total > 0 %}
-      <a class="summary-card summary-card--warning" href="{{ missingAssetsUrl }}">
-        <span class="summary-card-value">{{ summary.missingAssetSummary.total }}</span>
-        <span class="summary-card-label">Missing assets</span>
-        <span class="summary-card-context">Files missing at the last scan</span>
-      </a>
-    {% else %}
-      <a class="summary-card" href="{{ missingAssetsUrl }}">
-        <span class="summary-card-value">{{ summary.missingAssetSummary.total }}</span>
-        <span class="summary-card-label">Missing assets</span>
-        <span class="summary-card-context">Files missing at the last scan</span>
-      </a>
-    {% endif %}
-    <a class="summary-card" href="/releases">
-      <span class="summary-card-value">{{ summary.totalReleases }}</span>
-      <span class="summary-card-label">Releases</span>
-      <span class="summary-card-context">Including archived releases</span>
-    </a>
-  </section>
-
-  {% for section in dashboardSections %}
-    <section class="dashboard-project-section" data-dashboard-section="{{ section.id }}">
-      <h2>{{ section.label }}</h2>
-      {% if section.projects.length > 0 %}
-        <ul class="project-grid">
-          {% for project in section.projects %}
-            {{ projectCard.render(project, 'grid', 'h3', clockFormat) }}
-          {% endfor %}
-        </ul>
-      {% else %}
-        {% set emptyActionUrl = "" %}
-        {% set emptyActionLabel = "" %}
-        {% set emptyActionDialogId = "" %}
-        {% if section.id == 'recently-updated' %}
-          {% set emptyHeading = "No projects are currently tracked" %}
-          {% set emptyDescription = "Create a project to start organizing releases and assets." %}
-          {% set emptyActionUrl = "/projects/new" %}
-          {% set emptyActionLabel = "New Project" %}
-          {% set emptyActionDialogId = "project-create-dialog" %}
-        {% else %}
-          {% set emptyHeading = "No " + (section.label | lower) + " projects" %}
-          {% set emptyDescription = "No projects currently have the " + (section.label | lower) + " status." %}
-        {% endif %}
-        {% set emptyHeadingLevel = "h3" %}
-        {% include "partials/empty-state.njk" %}
-      {% endif %}
+  <div class="dashboard" data-dashboard data-today="{{ dashboard.today }}">
+    <section class="dashboard-attention" aria-labelledby="dashboard-attention-heading">
+      <h2 class="sr-only" id="dashboard-attention-heading">Needs attention</h2>
+      <ul class="dashboard-tiles">
+        <li>
+          <a class="dashboard-tile dashboard-tile--overdue{% if tiles.overdue.count == 0 %} dashboard-tile--zero{% endif %}" href="{{ tiles.overdue.href }}" data-dashboard-tile="overdue">
+            <span class="dashboard-tile-value" data-dashboard-tile-count>{{ tiles.overdue.count }}</span>
+            <span class="dashboard-tile-label">Overdue</span>
+            <span class="dashboard-tile-context">{{ tiles.overdue.context }}</span>
+          </a>
+        </li>
+        <li>
+          <a class="dashboard-tile dashboard-tile--needs-date dashboard-tile--emphasis{% if tiles.needsDate.count == 0 %} dashboard-tile--zero{% endif %}" href="{{ tiles.needsDate.href }}" data-dashboard-tile="needs-date">
+            <span class="dashboard-tile-value" data-dashboard-tile-count>{{ tiles.needsDate.count }}</span>
+            <span class="dashboard-tile-label">Needs a date</span>
+            <span class="dashboard-tile-context">{{ tiles.needsDate.context }}</span>
+          </a>
+        </li>
+        {% set dueTodayRelease = tiles.dueToday.firstRelease %}
+        {# The release card holds links, so it sits beside the tile link rather than inside it. #}
+        <li{% if dueTodayRelease %} class="dashboard-tile-info" data-dashboard-tile-info{% endif %}>
+          <a class="dashboard-tile dashboard-tile--today{% if tiles.dueToday.count == 0 %} dashboard-tile--zero{% endif %}" href="{{ tiles.dueToday.href }}" data-dashboard-tile="today">
+            <span class="dashboard-tile-value" data-dashboard-tile-count>{{ tiles.dueToday.count }}</span>
+            <span class="dashboard-tile-label">Due today</span>
+            <span class="dashboard-tile-context">
+              {%- if dueTodayRelease -%}
+                <span class="dashboard-truncate" data-dashboard-tile-info-title>{{ dueTodayRelease.title }}</span> · {% if dueTodayRelease.plannedTime %}{{ dueTodayRelease.plannedTime | formatStoredTime(clockFormat) }}{% else %}Any time{% endif %}
+              {%- else -%}
+                {{ tiles.dueToday.context }}
+              {%- endif -%}
+            </span>
+          </a>
+          {%- if dueTodayRelease %}
+            {{ infoCard.release(dueTodayRelease.infoCard, 'dashboard-release-info-today-tile-' ~ dueTodayRelease.id, clockFormat) }}
+          {%- endif %}
+        </li>
+        <li>
+          <a class="dashboard-tile dashboard-tile--next7{% if tiles.next7Days.count == 0 %} dashboard-tile--zero{% endif %}" href="{{ tiles.next7Days.href }}" data-dashboard-tile="next7">
+            <span class="dashboard-tile-value" data-dashboard-tile-count>{{ tiles.next7Days.count }}</span>
+            <span class="dashboard-tile-label">Next 7 days</span>
+            <span class="dashboard-tile-context">{{ tiles.next7Days.context }}</span>
+          </a>
+        </li>
+        <li>
+          <a class="dashboard-tile dashboard-tile--missing{% if tiles.missingAssets.count == 0 %} dashboard-tile--zero{% endif %}" href="{{ tiles.missingAssets.href }}" data-dashboard-tile="missing-assets">
+            <span class="dashboard-tile-value" data-dashboard-tile-count>{{ tiles.missingAssets.count }}</span>
+            <span class="dashboard-tile-label">Missing assets</span>
+            <span class="dashboard-tile-context">{{ tiles.missingAssets.context }}</span>
+          </a>
+        </li>
+      </ul>
     </section>
-  {% endfor %}
+
+    <section class="dashboard-strip" aria-labelledby="dashboard-strip-heading">
+      <div class="dashboard-section-header">
+        <h2 id="dashboard-strip-heading">This week and next</h2>
+      </div>
+      <ol class="dashboard-strip-days">
+        {% for day in dashboard.strip.days %}
+          <li class="dashboard-strip-day{% if day.isToday %} dashboard-strip-day--today{% endif %}{% if day.isPast %} dashboard-strip-day--past{% endif %}{% if day.isOpen %} dashboard-strip-day--open{% endif %}" data-date="{{ day.date }}">
+            <a class="dashboard-strip-day-link" href="{{ day.calendarHref }}" aria-label="{{ day.accessibleLabel }}"{% if day.isToday %} aria-current="date"{% endif %}>
+              <span class="dashboard-strip-weekday" aria-hidden="true">{{ day.weekdayLabel }}</span>
+              <span class="dashboard-strip-day-number" aria-hidden="true">{{ day.dayNumber }}</span>
+              <span class="dashboard-strip-indicators" aria-hidden="true">
+                {% if day.counts.overdue > 0 %}<span class="dashboard-strip-dot dashboard-strip-dot--overdue"></span>{% endif %}
+                {% if day.counts.scheduled > 0 %}<span class="dashboard-strip-dot dashboard-strip-dot--scheduled"></span>{% endif %}
+                {% if day.counts.published > 0 %}<span class="dashboard-strip-dot dashboard-strip-dot--published"></span>{% endif %}
+              </span>
+            </a>
+          </li>
+        {% endfor %}
+      </ol>
+      <ul class="dashboard-strip-legend" aria-label="Legend">
+        <li><span class="dashboard-strip-dot dashboard-strip-dot--overdue" aria-hidden="true"></span> Overdue</li>
+        <li><span class="dashboard-strip-dot dashboard-strip-dot--scheduled" aria-hidden="true"></span> Scheduled</li>
+        <li><span class="dashboard-strip-dot dashboard-strip-dot--published" aria-hidden="true"></span> Published</li>
+        <li><span class="dashboard-strip-open-swatch" aria-hidden="true"></span> Open day</li>
+      </ul>
+    </section>
+
+    <div class="dashboard-columns">
+      <section class="dashboard-panel dashboard-needs-date" id="needs-date" aria-labelledby="dashboard-needs-date-heading">
+        <div class="dashboard-section-header">
+          <h2 id="dashboard-needs-date-heading">{{ icons.icon('calendar') }} Needs a release date</h2>
+          {% if dashboard.needsDate.total > 0 %}
+            <span class="status-badge dashboard-count-badge" data-dashboard-needs-date-count>{{ dashboard.needsDate.total }} waiting</span>
+          {% endif %}
+        </div>
+        {% if dashboard.needsDate.items.length %}
+          <p class="dashboard-section-help">Oldest first. Pick an open day, or choose any date.</p>
+          <ul class="dashboard-needs-date-list">
+            {% for release in dashboard.needsDate.items %}
+              {{ needsDateItem.render(release, dashboard.quickPicks, _csrf, clockFormat) }}
+            {% endfor %}
+          </ul>
+          {% if dashboard.needsDate.viewAllHref %}
+            <a class="dashboard-view-all" href="{{ dashboard.needsDate.viewAllHref }}">View all {{ dashboard.needsDate.total }}<span aria-hidden="true"> →</span></a>
+          {% endif %}
+        {% else %}
+          <p class="dashboard-empty-line">Every active release has a date.</p>
+        {% endif %}
+      </section>
+
+      <div class="dashboard-primary-column">
+        <section class="dashboard-panel dashboard-scheduled" aria-labelledby="dashboard-scheduled-heading">
+          <div class="dashboard-section-header">
+            <h2 id="dashboard-scheduled-heading">Scheduled releases</h2>
+          </div>
+          {% if dashboard.scheduled.groups.length %}
+            {% for group in dashboard.scheduled.groups %}
+              <section class="dashboard-schedule-group dashboard-schedule-group--{{ group.id }}" aria-labelledby="{{ group.headingId }}" data-dashboard-schedule-group="{{ group.id }}">
+                <h3 class="dashboard-schedule-group-heading" id="{{ group.headingId }}">{{ group.label }} <span class="dashboard-schedule-group-count">{{ group.total }}</span></h3>
+                <ul class="dashboard-release-list">
+                  {% for release in group.items %}
+                    {{ releaseRow.render(release, group.id, _csrf, clockFormat) }}
+                  {% endfor %}
+                </ul>
+                {% if group.viewAllHref %}
+                  <a class="dashboard-view-all" href="{{ group.viewAllHref }}">View all {{ group.total }}<span aria-hidden="true"> →</span></a>
+                {% endif %}
+              </section>
+            {% endfor %}
+          {% else %}
+            <p class="dashboard-empty-line">Nothing scheduled.</p>
+          {% endif %}
+        </section>
+
+        <section class="dashboard-panel dashboard-recent" aria-labelledby="dashboard-recent-heading">
+          <div class="dashboard-section-header">
+            <h2 id="dashboard-recent-heading">Recently published</h2>
+            <a class="dashboard-view-all" href="/releases">History<span aria-hidden="true"> →</span></a>
+          </div>
+          {% if dashboard.recentlyPublished.length %}
+            <ul class="dashboard-recent-list">
+              {% for release in dashboard.recentlyPublished %}
+                <li class="dashboard-recent-item" data-release-id="{{ release.id }}">
+                  {{ dashboardThumbnail.render(release.thumbnail) }}
+                  <div class="dashboard-recent-body">
+                    <div class="dashboard-item-title">
+                      {{ titleInfo.release(release, 'recent', clockFormat) }}
+                    </div>
+                    <p class="dashboard-item-meta">Published <time datetime="{{ release.published_date }}">{{ release.publishedLabel }}</time></p>
+                    <div class="dashboard-recent-social">
+                      {% if release.socialPreparation and release.socialPreparation.targets.length %}
+                        {{ socialPrepSummary.render(release.socialPreparation, release.id, _csrf, false, true) }}
+                      {% else %}
+                        <span class="dashboard-muted">No social posts</span>
+                      {% endif %}
+                    </div>
+                  </div>
+                </li>
+              {% endfor %}
+            </ul>
+          {% else %}
+            <p class="dashboard-empty-line">Nothing published yet.</p>
+          {% endif %}
+        </section>
+      </div>
+    </div>
+
+    <section class="dashboard-panel dashboard-projects" aria-labelledby="dashboard-projects-heading">
+      <div class="dashboard-section-header">
+        <h2 id="dashboard-projects-heading">Projects</h2>
+      </div>
+      {{ projectTable.render(dashboard.projectTable, clockFormat) }}
+    </section>
+  </div>
 {% endblock %}
 
 {% block overlay %}
-  {{ dashboardDefaultsDialog.render(dashboardDefaults, dashboardSectionRegistry, dashboardDefaultsDialogOpen, _csrf, dashboardDefaultsFormState or {}) }}
   {{ projectCreateDialog.render(projectCreateForm, '/', _csrf, projectCreateDialogOpen) }}
 {% endblock %}

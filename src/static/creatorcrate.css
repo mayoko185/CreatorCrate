@@ -465,7 +465,6 @@
       }
       .button-danger { border-color: var(--danger); color: var(--danger); }
       .inline-form { display: inline; margin: 0; }
-      .dashboard-counts { margin: 1.5rem 0; }
       .count-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
@@ -3491,7 +3490,9 @@
         .skip-link,
         .status-badge,
         .button,
-        .summary-card,
+        .dashboard-tile,
+        .dashboard-strip-day-link,
+        .dashboard-status-tab,
         .panel {
           transition: none !important;
         }
@@ -4237,16 +4238,6 @@
         }
         .asset-metadata dd {
           margin: 0;
-        }
-        .summary-cards {
-          grid-template-columns: repeat(auto-fit, minmax(min(8rem, 100%), 1fr));
-          gap: var(--space-md);
-        }
-        .summary-card {
-          padding: var(--space-md);
-        }
-        .summary-card-value {
-          font-size: 1.375rem;
         }
         .detail-list {
           grid-template-columns: minmax(0, 1fr);
@@ -6612,76 +6603,6 @@
       }
       .form-actions--spaced {
         margin-top: var(--space-2xl);
-      }
-
-      /* ── Summary cards ── */
-      .summary-cards {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
-        gap: var(--space-lg);
-        margin-bottom: var(--space-xl);
-      }
-      .summary-card {
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        padding: var(--space-lg);
-        background: var(--surface);
-        border: 1px solid var(--border);
-        border-radius: var(--radius-lg);
-        text-decoration: none;
-        color: inherit;
-        text-align: center;
-        transition: background var(--transition-fast), border-color var(--transition-fast);
-      }
-      .summary-card:hover {
-        background: var(--surface-hover);
-        border-color: var(--border-strong);
-      }
-      .summary-card:focus-visible {
-        outline: 2px solid var(--focus-ring);
-        outline-offset: 2px;
-      }
-      /* Non-interactive summary card (no link) */
-      .summary-card:not([href]) {
-        cursor: default;
-      }
-      .summary-card:not([href]):hover {
-        background: var(--surface);
-        border-color: var(--border);
-      }
-      .summary-card-value {
-        display: block;
-        font-size: 1.75rem;
-        font-weight: 700;
-        color: var(--text);
-        font-variant-numeric: tabular-nums;
-        line-height: 1.2;
-      }
-      .summary-card-label {
-        display: block;
-        font-size: 0.875rem;
-        color: var(--muted);
-        margin-top: var(--space-xs);
-      }
-      .summary-card-context {
-        display: block;
-        margin-top: var(--space-xs);
-        color: var(--muted);
-        font-size: 0.75rem;
-        line-height: 1.35;
-      }
-      .summary-card--attention {
-        border-color: var(--accent);
-      }
-      .summary-card--attention .summary-card-value {
-        color: var(--accent);
-      }
-      .summary-card--warning {
-        border-color: var(--danger);
-      }
-      .summary-card--warning .summary-card-value {
-        color: var(--danger);
       }
 
       /* ═══ Phase 13.4: Settings — application control center ═══ */
@@ -11878,5 +11799,1003 @@
   }
   .processing-recovery-entry-point--dialog {
     padding: 0 var(--space-md);
+  }
+}
+
+/* ═══ Dashboard ═══
+   Release-first overview. Regions keep their source order for assistive
+   technology and narrow screens (Needs a release date precedes Scheduled
+   releases); the desktop placement uses grid lines only. */
+.dashboard {
+  --dashboard-thumb-size: 2.5rem;
+  display: grid;
+  gap: var(--space-xl);
+  min-width: 0;
+}
+.dashboard-today {
+  margin: calc(-1 * var(--space-md)) 0 var(--space-lg);
+  color: var(--muted);
+  font-size: 0.875rem;
+}
+/* Zero-specificity resets so component rules below always win. */
+:where(.dashboard) :where(h2, h3, p) {
+  margin: 0;
+}
+:where(.dashboard) :where(ul, ol) {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.dashboard-muted,
+.dashboard-empty-line {
+  color: var(--muted);
+}
+.dashboard-empty-line {
+  font-size: 0.875rem;
+}
+
+/* ── Shared text and link treatment ── */
+:where(.dashboard) a:where(:not([class*="button"], .dashboard-tile, .dashboard-strip-day-link, .dashboard-status-tab, .dashboard-view-all)) {
+  color: inherit;
+  text-decoration: none;
+}
+:where(.dashboard) a:where(:not([class*="button"], .dashboard-tile, .dashboard-strip-day-link, .dashboard-status-tab, .dashboard-view-all)):hover {
+  color: var(--link);
+}
+.dashboard a:focus-visible,
+.dashboard button:focus-visible,
+.dashboard input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.dashboard-truncate {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dashboard-item-title {
+  min-width: 0;
+  font-weight: 600;
+  line-height: 1.35;
+}
+.dashboard-item-meta {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-xs);
+  min-width: 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+.dashboard-item-meta > .dashboard-truncate {
+  flex: 0 1 auto;
+}
+.dashboard-item-meta > :not(.dashboard-truncate) {
+  flex: none;
+  white-space: nowrap;
+}
+.dashboard-title-info {
+  min-width: 0;
+  max-width: 100%;
+}
+.dashboard-item-meta > .dashboard-title-info {
+  flex: 0 1 auto;
+}
+/* The card is a DOM child of compact title text, so it restores the
+   typography it inherits on the Calendar instead of the row's. */
+.dashboard-title-info > .asset-viewer-grid-card-info,
+.dashboard-tile-info > .asset-viewer-grid-card-info {
+  font-size: 0.75rem;
+  font-weight: 400;
+  line-height: 1.6;
+  white-space: normal;
+  text-align: start;
+}
+.dashboard-view-all {
+  display: inline-block;
+  color: var(--link);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.dashboard-view-all:visited {
+  color: var(--link);
+}
+.dashboard-view-all:hover {
+  color: var(--accent-2);
+}
+
+/* ── Thumbnails ── */
+.dashboard-thumb {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: var(--dashboard-thumb-size);
+  height: var(--dashboard-thumb-size);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+  vertical-align: middle;
+}
+.dashboard-thumb-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.dashboard-thumb--krita .dashboard-thumb-image {
+  object-fit: contain;
+}
+.dashboard-thumb[data-preview-state="loading"] .dashboard-thumb-image {
+  opacity: 0.65;
+}
+.dashboard-thumb-initials {
+  display: grid;
+  place-items: center;
+  width: 100%;
+  height: 100%;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+/* An image thumbnail shows its initials only after the shared preview
+   enhancement reports that the image failed to load. */
+.dashboard-thumb--image .dashboard-thumb-initials,
+.dashboard-thumb--image[data-preview-state="failed"] .dashboard-thumb-image {
+  display: none;
+}
+.dashboard-thumb--image[data-preview-state="failed"] .dashboard-thumb-initials {
+  display: grid;
+}
+
+/* ── Panels and section headers ── */
+.dashboard-panel {
+  min-width: 0;
+  padding: var(--space-lg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.dashboard-section-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs) var(--space-sm);
+  min-width: 0;
+  margin-bottom: var(--space-md);
+}
+.dashboard-section-header h2 {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.dashboard-section-header h2 svg {
+  flex: none;
+  width: 1.125rem;
+  height: 1.125rem;
+}
+.dashboard-section-help {
+  margin: calc(-1 * var(--space-sm)) 0 var(--space-md);
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+/* ── Attention tiles ── */
+.dashboard-tiles {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: var(--space-md);
+}
+.dashboard-tiles > li {
+  display: flex;
+  min-width: 0;
+}
+.dashboard-tile {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  padding: var(--space-md) var(--space-lg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+.dashboard-tile:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+.dashboard-tile:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+/* The label reads first visually; the link's accessible name still leads
+   with the count, which keeps every word of the visible label. */
+.dashboard-tile-label {
+  order: -1;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.dashboard-tile-value {
+  margin-top: var(--space-xs);
+  font-size: 1.75rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.15;
+}
+.dashboard-tile-context {
+  display: flex;
+  min-width: 0;
+  margin-top: var(--space-xs);
+  color: var(--muted);
+  font-size: 0.75rem;
+  line-height: 1.35;
+}
+.dashboard-tile-context .dashboard-truncate {
+  flex: 0 1 auto;
+  margin-right: 0.25em;
+}
+.dashboard-tile--zero .dashboard-tile-value {
+  color: var(--muted);
+}
+.dashboard-tile--overdue:not(.dashboard-tile--zero) .dashboard-tile-value,
+.dashboard-tile--missing:not(.dashboard-tile--zero) .dashboard-tile-value {
+  color: var(--danger);
+}
+.dashboard-tile--today:not(.dashboard-tile--zero) .dashboard-tile-value {
+  color: var(--accent);
+}
+/* Needs a date is the page's primary call to action: the thick leading rule
+   distinguishes it by shape as well as by the violet warning colour. */
+.dashboard-tile--emphasis {
+  border-color: rgba(167, 139, 250, 0.45);
+  border-left: 4px solid var(--warning);
+  background: rgba(167, 139, 250, 0.08);
+}
+.dashboard-tile--emphasis:hover {
+  border-color: rgba(167, 139, 250, 0.7);
+  border-left-color: var(--warning);
+  background: rgba(167, 139, 250, 0.14);
+}
+.dashboard-tile--emphasis .dashboard-tile-label {
+  color: var(--warning);
+}
+.dashboard-tile--emphasis:not(.dashboard-tile--zero) .dashboard-tile-value {
+  color: var(--warning);
+}
+
+/* ── Two-week strip ── */
+.dashboard-strip-days {
+  display: grid;
+  grid-template-columns: repeat(14, minmax(0, 1fr));
+  gap: var(--space-xs);
+}
+.dashboard-strip-day {
+  min-width: 0;
+}
+.dashboard-strip-day-link {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.125rem;
+  height: 100%;
+  min-width: 0;
+  padding: var(--space-sm) var(--space-xs);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text);
+  text-decoration: none;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+.dashboard-strip-day-link:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+.dashboard-strip-day-link:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.dashboard-strip-weekday {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+.dashboard-strip-day-number {
+  font-family: var(--mono);
+  font-size: 1.125rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.2;
+}
+.dashboard-strip-indicators {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 0.1875rem;
+  min-height: 0.625rem;
+}
+.dashboard-strip-day--past .dashboard-strip-day-link {
+  background: var(--bg);
+}
+.dashboard-strip-day--past .dashboard-strip-day-number {
+  color: var(--muted);
+  font-weight: 400;
+}
+.dashboard-strip-day--open .dashboard-strip-day-link {
+  border: 1px dashed var(--warning);
+  background: rgba(167, 139, 250, 0.06);
+}
+.dashboard-strip-day--open .dashboard-strip-day-link:hover {
+  border-color: var(--warning);
+  background: rgba(167, 139, 250, 0.12);
+}
+.dashboard-strip-day--today .dashboard-strip-day-link {
+  border-color: var(--accent);
+  background: radial-gradient(circle at top left, rgba(34, 211, 238, 0.16), transparent 70%), var(--surface);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.dashboard-strip-day--today .dashboard-strip-weekday,
+.dashboard-strip-day--today .dashboard-strip-day-number {
+  color: var(--accent);
+  font-weight: 700;
+}
+/* Indicator shapes differ as well as colours: overdue is a diamond,
+   scheduled a filled dot, and published a ring. */
+.dashboard-strip-dot {
+  display: inline-block;
+  flex: none;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+}
+.dashboard-strip-dot--overdue {
+  border-radius: 1px;
+  background: var(--danger);
+  transform: rotate(45deg) scale(0.85);
+}
+.dashboard-strip-dot--scheduled {
+  background: var(--accent);
+}
+.dashboard-strip-dot--published {
+  box-shadow: inset 0 0 0 2px var(--success);
+}
+.dashboard-strip-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs) var(--space-lg);
+  margin-top: var(--space-sm);
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.dashboard-strip-legend > li {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+}
+.dashboard-strip-open-swatch {
+  display: inline-block;
+  flex: none;
+  width: 0.75rem;
+  height: 0.75rem;
+  border: 1px dashed var(--warning);
+  border-radius: 2px;
+  background: rgba(167, 139, 250, 0.06);
+}
+
+/* ── Primary columns ── */
+.dashboard-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-xl);
+  align-items: start;
+  min-width: 0;
+}
+.dashboard-primary-column {
+  display: grid;
+  gap: var(--space-xl);
+  min-width: 0;
+}
+
+/* ── Needs a release date ── */
+.dashboard-needs-date {
+  --dashboard-thumb-size: 3rem;
+  border-color: rgba(167, 139, 250, 0.55);
+  background: linear-gradient(rgba(167, 139, 250, 0.07), rgba(167, 139, 250, 0.02) 12rem), var(--surface);
+  scroll-margin-top: calc(var(--shell-header-height) + var(--space-lg));
+}
+.dashboard-needs-date .dashboard-section-header h2 svg {
+  color: var(--warning);
+}
+.dashboard-count-badge {
+  background: rgba(167, 139, 250, 0.18);
+  color: var(--warning);
+}
+.dashboard-needs-date-item {
+  display: grid;
+  grid-template-columns: var(--dashboard-thumb-size) minmax(0, 1fr);
+  gap: var(--space-md);
+  padding: var(--space-md) 0;
+  border-top: 1px solid var(--border);
+}
+.dashboard-needs-date-item:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+.dashboard-needs-date-body {
+  display: grid;
+  align-content: start;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+.dashboard-needs-date .dashboard-view-all {
+  margin-top: var(--space-sm);
+}
+.dashboard-age {
+  justify-self: start;
+  padding: 0.0625rem var(--space-sm);
+  border-radius: var(--radius-sm);
+  background: rgba(136, 136, 136, 0.16);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+.dashboard-age--warning {
+  background: rgba(167, 139, 250, 0.18);
+  color: var(--warning);
+}
+.dashboard-age--danger {
+  background: rgba(251, 113, 133, 0.18);
+  color: var(--badge-danger-fg);
+}
+.dashboard-readiness {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+.dashboard-chip {
+  display: inline-block;
+  max-width: 100%;
+  padding: 0.0625rem var(--space-sm);
+  border-radius: var(--radius-sm);
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.dashboard-chip--ok {
+  background: rgba(52, 211, 153, 0.18);
+  color: var(--success);
+}
+.dashboard-chip--danger {
+  background: rgba(251, 113, 133, 0.18);
+  color: var(--badge-danger-fg);
+}
+.dashboard-chip--muted {
+  background: rgba(136, 136, 136, 0.2);
+  color: var(--muted);
+}
+.dashboard .release-social-prep-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  min-width: 0;
+  max-width: 100%;
+}
+.dashboard .release-social-prep-summary .status-badge {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+/* Quick schedule. Every control, including the custom-date Set button,
+   stays visible unless the scheduling enhancement changes it. */
+.dashboard-schedule {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs) var(--space-sm);
+  min-width: 0;
+  margin-top: var(--space-xs);
+}
+.dashboard-schedule-form {
+  min-width: 0;
+  max-width: 100%;
+  margin: 0;
+}
+.dashboard-schedule-fieldset {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-xs);
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.dashboard-schedule-form--custom .dashboard-schedule-fieldset {
+  flex-wrap: nowrap;
+}
+.dashboard-schedule .button {
+  min-height: 2rem;
+  font-size: 0.8125rem;
+}
+.dashboard-schedule-pick {
+  border-style: dashed;
+  border-color: var(--warning);
+  color: var(--text);
+  font-family: var(--mono);
+}
+.dashboard-schedule-pick--beyond-strip {
+  border-style: solid;
+  border-color: var(--border-strong);
+}
+.dashboard-schedule-date {
+  min-width: 0;
+  max-width: 100%;
+  min-height: 2rem;
+  padding: 0.25rem var(--space-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  color-scheme: dark;
+  font: inherit;
+  font-size: 0.8125rem;
+}
+.dashboard .dashboard-schedule-date:focus-visible {
+  outline-offset: -2px;
+}
+/* Disabled until the scheduling enhancement initializes: dimmed rather than
+   struck through like other disabled buttons, since each date is still a
+   valid choice. */
+.dashboard-schedule-fieldset:disabled .button,
+.dashboard-schedule-fieldset:disabled .dashboard-schedule-date {
+  opacity: 0.6;
+  text-decoration: none;
+  cursor: not-allowed;
+}
+.dashboard-schedule-error {
+  flex-basis: 100%;
+  color: var(--danger);
+  font-size: 0.8125rem;
+}
+.dashboard-schedule-status {
+  flex-basis: 100%;
+  color: var(--success);
+  font-size: 0.8125rem;
+}
+.dashboard-schedule-status .button {
+  margin-left: var(--space-sm);
+}
+
+/* ── Scheduled releases ── */
+.dashboard-schedule-group + .dashboard-schedule-group {
+  margin-top: var(--space-lg);
+}
+.dashboard-schedule-group-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-xs);
+  padding-bottom: var(--space-xs);
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.dashboard-schedule-group-count {
+  padding: 0 0.375rem;
+  border-radius: var(--radius-sm);
+  background: rgba(136, 136, 136, 0.2);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0;
+}
+.dashboard-schedule-group--overdue .dashboard-schedule-group-heading {
+  border-bottom-color: rgba(251, 113, 133, 0.45);
+  color: var(--badge-danger-fg);
+}
+.dashboard-schedule-group--overdue .dashboard-schedule-group-count {
+  background: rgba(251, 113, 133, 0.18);
+}
+.dashboard-schedule-group--today .dashboard-schedule-group-heading {
+  border-bottom-color: rgba(34, 211, 238, 0.45);
+  color: var(--accent);
+}
+.dashboard-schedule-group--today .dashboard-schedule-group-count {
+  background: rgba(34, 211, 238, 0.16);
+}
+.dashboard-schedule-group .dashboard-view-all {
+  margin-top: var(--space-xs);
+}
+.dashboard-release-row {
+  display: grid;
+  grid-template-columns: 4.25rem var(--dashboard-thumb-size) minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--space-md);
+  padding: var(--space-sm) 0;
+  border-bottom: 1px solid var(--border);
+}
+.dashboard-release-row:last-child {
+  border-bottom: 0;
+}
+.dashboard-date-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--space-xs) 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-card);
+  font-family: var(--mono);
+  line-height: 1.2;
+  text-align: center;
+}
+.dashboard-date-block time {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.dashboard-date-block-month {
+  color: var(--muted);
+  font-size: 0.6875rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.dashboard-date-block-day {
+  font-size: 1.125rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.dashboard-date-block-time {
+  margin-top: 0.125rem;
+  color: var(--muted);
+  font-size: 0.6875rem;
+  white-space: nowrap;
+}
+.dashboard-release-row--overdue .dashboard-date-block {
+  border-color: rgba(251, 113, 133, 0.45);
+}
+.dashboard-release-row--overdue .dashboard-date-block-day {
+  color: var(--badge-danger-fg);
+}
+.dashboard-release-row--today .dashboard-date-block {
+  border-color: rgba(34, 211, 238, 0.45);
+}
+.dashboard-release-row--today .dashboard-date-block-day {
+  color: var(--accent);
+}
+.dashboard-release-row-body {
+  display: grid;
+  align-content: start;
+  gap: var(--space-xs);
+  min-width: 0;
+}
+.dashboard-release-row-flags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+}
+.dashboard-release-row-action {
+  align-self: center;
+}
+
+/* ── Recently published ── */
+.dashboard-recent {
+  --dashboard-thumb-size: 2.25rem;
+}
+.dashboard-recent-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(15rem, 100%), 1fr));
+  gap: var(--space-sm);
+}
+.dashboard-recent-item {
+  display: grid;
+  grid-template-columns: var(--dashboard-thumb-size) minmax(0, 1fr);
+  gap: var(--space-sm);
+  min-width: 0;
+  padding: var(--space-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+}
+.dashboard-recent-body {
+  display: grid;
+  align-content: start;
+  gap: 0.125rem;
+  min-width: 0;
+}
+.dashboard-recent .dashboard-item-title {
+  font-size: 0.875rem;
+}
+.dashboard-recent-social {
+  min-width: 0;
+  margin-top: 0.125rem;
+  font-size: 0.75rem;
+}
+
+/* ── Projects table ── */
+.dashboard-projects {
+  --dashboard-thumb-size: 2rem;
+}
+.dashboard-status-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
+  margin-bottom: var(--space-md);
+}
+.dashboard-status-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  min-height: 2rem;
+  padding: var(--space-xs) var(--space-sm);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.8125rem;
+  line-height: 1.2;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+.dashboard-status-tab:hover {
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+.dashboard-status-tab:disabled {
+  cursor: default;
+}
+.dashboard-status-tab:disabled:hover {
+  border-color: var(--border);
+  color: var(--muted);
+}
+.dashboard-status-tab:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.dashboard-status-tab[aria-pressed="true"],
+.dashboard-status-tab[aria-pressed="true"]:disabled:hover {
+  border-color: var(--accent);
+  background: rgba(34, 211, 238, 0.1);
+  color: var(--text);
+  font-weight: 600;
+}
+/* Badge tabs drop the tab chrome so the badge itself is the visible control;
+   a transparent border keeps their height aligned with the bordered All tab. */
+.dashboard-status-tab:has(> .status-badge) {
+  padding-inline: 0 var(--space-xs);
+  border-color: transparent;
+  background: transparent;
+}
+.dashboard-status-tab:has(> .status-badge):hover,
+.dashboard-status-tab:has(> .status-badge):disabled:hover {
+  border-color: transparent;
+}
+.dashboard-status-tab:has(> .status-badge)[aria-pressed="true"],
+.dashboard-status-tab:has(> .status-badge)[aria-pressed="true"]:disabled:hover {
+  padding-inline: var(--space-xs);
+  border-color: var(--accent);
+  background: rgba(34, 211, 238, 0.1);
+}
+.dashboard-status-tab .status-badge {
+  padding: 0 var(--space-xs);
+}
+.dashboard-status-tab-count {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+.dashboard-table-scroll {
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  contain: inline-size;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+.dashboard-table-scroll:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.dashboard-projects-table {
+  width: 100%;
+  min-width: 48rem;
+  border-collapse: collapse;
+}
+.dashboard-projects-table th,
+.dashboard-projects-table td {
+  padding: var(--space-sm) 0.625rem;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: middle;
+}
+.dashboard-projects-table th {
+  background: var(--surface-card);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.dashboard-projects-table td {
+  font-size: 0.875rem;
+  white-space: nowrap;
+}
+.dashboard-projects-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.dashboard-projects-table tbody tr:hover,
+.dashboard-projects-table tbody tr:focus-within {
+  background: var(--surface-hover);
+}
+.dashboard .dashboard-projects-table a:focus-visible {
+  outline-offset: 1px;
+}
+.dashboard-project-cell .dashboard-thumb {
+  margin-right: var(--space-sm);
+}
+.dashboard-project-cell .dashboard-title-info {
+  display: inline-block;
+  max-width: 14rem;
+  vertical-align: middle;
+}
+.dashboard-project-cell .dashboard-truncate {
+  display: inline-block;
+  max-width: 14rem;
+  font-weight: 600;
+  vertical-align: middle;
+}
+.dashboard-number-cell {
+  font-variant-numeric: tabular-nums;
+}
+.dashboard-missing-count {
+  color: var(--badge-danger-fg);
+  font-size: 0.8125rem;
+}
+.dashboard .dashboard-next-release--today {
+  color: var(--accent);
+  font-weight: 600;
+}
+.dashboard .dashboard-next-release--overdue {
+  color: var(--badge-danger-fg);
+  font-weight: 600;
+}
+.dashboard-next-release--undated {
+  color: var(--warning);
+}
+.dashboard-next-release--none {
+  color: var(--muted);
+}
+.dashboard a.dashboard-next-release:hover {
+  text-decoration: underline;
+}
+.dashboard-next-release-extra {
+  display: block;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+.dashboard-projects-footer {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-xs) var(--space-md);
+  margin-top: var(--space-md);
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+/* ── Responsive layout ── */
+@media (min-width: 1024px) {
+  .dashboard-columns {
+    grid-template-columns: minmax(0, 1.35fr) minmax(20rem, 1fr);
+  }
+  .dashboard-columns > .dashboard-needs-date {
+    grid-column: 2;
+    grid-row: 1;
+  }
+  .dashboard-columns > .dashboard-primary-column {
+    grid-column: 1;
+    grid-row: 1;
+  }
+}
+@media (max-width: 1023px) {
+  .dashboard-strip-days {
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+  }
+}
+@media (max-width: 767px) {
+  .dashboard {
+    gap: var(--space-lg);
+  }
+  .dashboard-tiles {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .dashboard-panel {
+    padding: var(--space-md);
+  }
+  .dashboard-schedule .button,
+  .dashboard-schedule-date,
+  .dashboard-release-row-action,
+  .dashboard-status-tab {
+    min-height: var(--control-height);
+  }
+}
+@media (max-width: 540px) {
+  .dashboard-today {
+    margin-top: calc(-1 * var(--space-sm));
+  }
+  .dashboard-tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-sm);
+  }
+  .dashboard-tiles > li:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+  .dashboard-tile {
+    padding: var(--space-sm) var(--space-md);
+  }
+  .dashboard-tile-value {
+    font-size: 1.375rem;
+  }
+  .dashboard-strip-day-link {
+    padding: var(--space-xs) 0;
+  }
+  .dashboard-strip-weekday {
+    font-size: 0.625rem;
+    letter-spacing: 0.02em;
+  }
+  .dashboard-strip-day-number {
+    font-size: 1rem;
+  }
+  /* The thumbnail is decorative; the title and date carry the row. */
+  .dashboard-release-row {
+    grid-template-columns: 3.75rem minmax(0, 1fr);
+    gap: var(--space-xs) var(--space-sm);
+  }
+  .dashboard-release-row > .dashboard-thumb {
+    display: none;
+  }
+  .dashboard-release-row-action {
+    grid-column: 2;
+    justify-self: start;
+  }
+  .dashboard-schedule-form--quick {
+    flex-basis: 100%;
   }
 }

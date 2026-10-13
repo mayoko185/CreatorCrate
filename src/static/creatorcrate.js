@@ -65,6 +65,7 @@ import { enhanceAssetEditDialog } from './client/asset-edit-dialog.js';
 import {
   enhanceAssetViewerInfoCards,
   enhanceCalendarInfoCards,
+  enhanceDashboardTitleInfoCards,
   enhanceProjectInfoCards,
 } from './client/info-cards.js';
 import {
@@ -144,6 +145,7 @@ export {
   noteDialogIsDirty,
   enhanceAssetViewerInfoCards,
   enhanceCalendarInfoCards,
+  enhanceDashboardTitleInfoCards,
   enhanceProjectInfoCards,
   enhanceDatePickers,
   enhanceTimePickers,
@@ -312,6 +314,7 @@ if (typeof document !== 'undefined') {
     enhanceAssetLibraryLiveFiltering(document);
     enhanceAssetViewerInfoCards(document);
     enhanceCalendarInfoCards(document);
+    enhanceDashboardTitleInfoCards(document);
     enhanceProjectInfoCards(document);
     enhanceDatePickers(document);
     enhanceTimePickers(document);

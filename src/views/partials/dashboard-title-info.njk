@@ -1,0 +1,29 @@
+{#
+  Dashboard title link paired with its Calendar information card. The link
+  keeps its navigation; hover and focus reveal the card through
+  enhanceDashboardTitleInfoCards. The card carries the full title, so the
+  link has no native title tooltip competing with it.
+
+  `surface` and `key` keep card ids unique when one record appears in more
+  than one row.
+
+  Usage:
+    {% import "partials/dashboard-title-info.njk" as titleInfo %}
+    {{ titleInfo.release(release, 'scheduled', clockFormat) }}
+    {{ titleInfo.project(project, 'table', project.id, clockFormat) }}
+#}
+{% import "partials/calendar-info-card.njk" as infoCard %}
+
+{% macro release(release, surface, clockFormat) %}
+  <div class="dashboard-title-info" data-dashboard-title-info>
+    <a class="dashboard-truncate" href="/releases/{{ release.id }}">{{ release.title }}</a>
+    {{ infoCard.release(release.infoCard, 'dashboard-release-info-' ~ surface ~ '-' ~ release.id, clockFormat) }}
+  </div>
+{% endmacro %}
+
+{% macro project(project, surface, key, clockFormat) %}
+  <div class="dashboard-title-info" data-dashboard-title-info>
+    <a class="dashboard-truncate" href="/projects/{{ project.id }}">{{ project.title }}</a>
+    {{ infoCard.project(project, 'dashboard-project-info-' ~ surface ~ '-' ~ key, clockFormat) }}
+  </div>
+{% endmacro %}

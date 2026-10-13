@@ -495,14 +495,15 @@ describe('project HTTP workflow', () => {
     return asset;
   }
 
-  it('dashboard renders the four summary concepts and a new project action', async () => {
+  it('dashboard renders the attention tiles, the projects table, and a new project action', async () => {
     const res = await agent.get('/').expect(200);
     expect(res.text).toContain('CreatorCrate');
-    expect(res.text).toContain('New Project');
-    expect(res.text).toContain('<span class="summary-card-label">Projects</span>');
-    expect(res.text).toContain('<span class="summary-card-label">Assets</span>');
-    expect(res.text).toContain('<span class="summary-card-label">Missing assets</span>');
-    expect(res.text).toContain('<span class="summary-card-label">Releases</span>');
+    expect(res.text).toContain('data-dialog-open="project-create-dialog">New Project</a>');
+    for (const tile of ['Overdue', 'Needs a date', 'Due today', 'Next 7 days', 'Missing assets']) {
+      expect(res.text).toContain(`<span class="dashboard-tile-label">${tile}</span>`);
+    }
+    expect(res.text).toContain('id="dashboard-projects-heading"');
+    expect(res.text).not.toContain('summary-card');
     expect(res.text).not.toContain('TBD');
     expect(res.text).not.toContain('View All Projects');
     expect(res.text).not.toContain('View All Releases');
