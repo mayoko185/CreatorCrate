@@ -171,3 +171,85 @@ test('a stale Undo is refused with 409, reconciled from the server and never ove
     await expect(page.locator(`[data-dashboard-release-row][data-release-id="${releaseId}"] .dashboard-date-block time`)).toHaveAttribute('datetime', '2027-01-05');
   });
 });
+
+test('a suggested date clicked over an unsent typed date saves the suggested date only', async ({ page }) => {
+  await withDashboardApp(async ({ origin, releaseId, readSchedule }) => {
+    await openDashboard(page, origin);
+    const posts = [];
+    page.on('request', (request) => { if (request.method() === 'POST') posts.push(request.postDataJSON()); });
+    const row = page.locator(`[data-dashboard-schedule][data-release-id="${releaseId}"]`);
+    const dateInput = row.locator('[data-dashboard-schedule-date]');
+    const pick = row.locator('[data-dashboard-schedule-pick]').nth(1);
+    const pickedDate = await pick.getAttribute('data-planned-date');
+    expect(pickedDate).not.toBe('2027-02-15');
+
+    await dateInput.focus();
+    await page.keyboard.type('02152027');
+    await expect(dateInput).toHaveValue('2027-02-15');
+    expect(posts).toEqual([]);
+
+    // A double click must still produce a single write.
+    await pick.dblclick();
+    const undo = row.locator('[data-dashboard-schedule-undo]');
+    await expect(undo).toBeFocused();
+    expect(posts).toEqual([{ plannedDate: pickedDate, plannedTime: null, expectedPlannedDate: null, expectedPlannedTime: null }]);
+    expect(readSchedule()).toEqual({ planned_date: pickedDate, planned_time: null });
+    const [year, month, day] = pickedDate.split('-').map(Number);
+    const label = new Intl.DateTimeFormat('en-US', { weekday: 'short', month: 'short', day: 'numeric', timeZone: 'UTC' })
+      .format(new Date(Date.UTC(year, month - 1, day)));
+    await expect(row.locator('[data-dashboard-schedule-status]')).toContainText(`Scheduled for ${label}`);
+    // The authoritative refresh lists the release under its new date.
+    await expect(page.locator(`[data-dashboard-release-row][data-release-id="${releaseId}"] .dashboard-date-block time`)).toHaveAttribute('datetime', pickedDate);
+
+    await undo.click();
+    await expect(row.locator('[data-dashboard-schedule-pick]').first()).toBeFocused();
+    expect(readSchedule()).toEqual({ planned_date: null, planned_time: null });
+
+    // Scheduling keeps working, and an ordinary blur still commits a typed date.
+    await dateInput.focus();
+    await page.keyboard.type('03012027');
+    // Pressing anything other than a suggested date is an ordinary blur.
+    await page.locator('#needs-date h2').click();
+    await expect(row.locator('[data-dashboard-schedule-undo]')).toBeFocused();
+    expect(posts.map(({ plannedDate }) => plannedDate)).toEqual([pickedDate, null, '2027-03-01']);
+    expect(readSchedule()).toEqual({ planned_date: '2027-03-01', planned_time: null });
+  });
+});
+
+test('a suggested date chosen by touch or keyboard is not preempted by a typed draft', async ({ browser }) => {
+  const context = await browser.newContext({ hasTouch: true });
+  const page = await context.newPage();
+  try {
+    await withDashboardApp(async ({ origin, releaseId, readSchedule }) => {
+      await openDashboard(page, origin);
+      const posts = [];
+      page.on('request', (request) => { if (request.method() === 'POST') posts.push(request.postDataJSON()); });
+      const row = page.locator(`[data-dashboard-schedule][data-release-id="${releaseId}"]`);
+      const dateInput = row.locator('[data-dashboard-schedule-date]');
+      const pick = row.locator('[data-dashboard-schedule-pick]').nth(1);
+      const pickedDate = await pick.getAttribute('data-planned-date');
+
+      await dateInput.focus();
+      await page.keyboard.type('02152027');
+      await expect(dateInput).toHaveValue('2027-02-15');
+      await pick.tap();
+      await expect(row.locator('[data-dashboard-schedule-undo]')).toBeFocused();
+      expect(posts.map(({ plannedDate }) => plannedDate)).toEqual([pickedDate]);
+      expect(readSchedule()).toEqual({ planned_date: pickedDate, planned_time: null });
+
+      await page.keyboard.press('Enter');
+      const first = row.locator('[data-dashboard-schedule-pick]').first();
+      await expect(first).toBeFocused();
+      expect(readSchedule()).toEqual({ planned_date: null, planned_time: null });
+
+      // Keyboard activation targets the focused suggestion.
+      const firstDate = await first.getAttribute('data-planned-date');
+      await page.keyboard.press('Space');
+      await expect(row.locator('[data-dashboard-schedule-undo]')).toBeFocused();
+      expect(posts.map(({ plannedDate }) => plannedDate)).toEqual([pickedDate, null, firstDate]);
+      expect(readSchedule()).toEqual({ planned_date: firstDate, planned_time: null });
+    });
+  } finally {
+    await context.close();
+  }
+});

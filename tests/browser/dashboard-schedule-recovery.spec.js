@@ -296,6 +296,120 @@ test('a successful Retry refresh clears paused errors on retained confirmations 
   });
 });
 
+test('a successful Retry refresh keeps genuine validation errors on undated rows and drops ones that no longer apply', async ({ page }) => {
+  await withDashboardApp(async ({ origin, db, ids, readSchedule }) => {
+    const { project_id: projectId } = db.prepare('SELECT project_id FROM releases WHERE id = ?').get(ids.first);
+    const fifth = Number(db.prepare(`
+      INSERT INTO releases (project_id, title, description, notes, planned_date, planned_time, patreon_url, published_date, archived_at, created_at)
+      VALUES (?, 'Fifth Undated', '', '', NULL, NULL, NULL, NULL, NULL, '2026-01-05 00:00:00')
+    `).run(projectId).lastInsertRowid);
+    const traffic = await openDashboard(page, origin);
+    const error = (id) => scheduleRow(page, id).locator('[data-dashboard-schedule-error]');
+    const dateInput = (id) => scheduleRow(page, id).locator('[data-dashboard-schedule-date]');
+    const scheduleUrl = (id) => `${origin}/releases/${id}/schedule`;
+    const announcer = page.locator('[data-dashboard-announcer]');
+
+    // A local validation error on an empty custom date.
+    await dateInput(ids.first).focus();
+    await page.keyboard.press('Enter');
+    await expect(error(ids.first)).toHaveText('Choose a date first.');
+    await expect(dateInput(ids.first)).toHaveAttribute('aria-invalid', 'true');
+
+    // An actionable server validation error, alongside its unsent date.
+    const serverMessage = 'Choose a date after the project starts.';
+    await page.route(`**/releases/${ids.third}/schedule`, (route) => route.fulfill({
+      status: 422, contentType: 'application/json', body: JSON.stringify({ status: 'error', message: serverMessage }),
+    }), { times: 1 });
+    await dateInput(ids.third).fill('2027-03-04');
+    await expect(error(ids.third)).toHaveText(serverMessage);
+    await expect(dateInput(ids.third)).toHaveAttribute('aria-invalid', 'true');
+
+    // A real server validation error on a release that is then no longer undated.
+    db.prepare('UPDATE releases SET published_date = ? WHERE id = ?').run(localDate(-1), ids.fourth);
+    await dateInput(ids.fourth).fill('2027-04-05');
+    await expect(error(ids.fourth)).toHaveText('Published releases cannot be rescheduled here.');
+
+    // B's write commits but its refresh fails; a pick made meanwhile is busy.
+    let releasePost;
+    const held = new Promise((resolve) => { releasePost = resolve; });
+    await page.route(`**/releases/${ids.second}/schedule`, async (route) => { await held; await route.continue(); }, { times: 1 });
+    await routeDashboardGet(page, (route) => route.fulfill({ status: 503, contentType: 'text/html', body: 'Unavailable' }));
+    await firstPick(page, ids.second).click();
+    await firstPick(page, fifth).click();
+    await expect(error(fifth)).toContainText('Another schedule change is still being saved');
+    releasePost();
+    const sync = syncState(page);
+    await expect(sync).toHaveAttribute('data-state', 'blocked');
+    expect(readSchedule(ids.second).planned_date).not.toBeNull();
+
+    // The failed refresh replaced nothing, so every live error is intact.
+    await expect(error(ids.first)).toHaveText('Choose a date first.');
+    await expect(dateInput(ids.first)).toHaveAttribute('aria-invalid', 'true');
+    await expect(error(ids.third)).toHaveText(serverMessage);
+    const postsBefore = [ids.third, ids.fourth, ids.second].map(scheduleUrl);
+    expect(traffic.posts).toEqual(postsBefore);
+
+    const getsBefore = traffic.dashboardGets;
+    await markRegion(page);
+    await sync.locator('[data-dashboard-sync-retry]').focus();
+    await page.keyboard.press('Enter');
+    await waitForReplacement(page);
+    const available = 'Dashboard refreshed. Scheduling is available again.';
+    await expect(sync).toHaveAttribute('data-state', 'notice');
+    await expect(syncMessage(page)).toHaveText(available);
+    await expect(announcer).toHaveText(available);
+    await expect(sync.locator('[data-dashboard-sync-dismiss]')).toBeFocused();
+    expect(traffic.dashboardGets - getsBefore).toBe(1);
+    expect(traffic.posts).toEqual(postsBefore);
+    expect(traffic.navigations).toBe(0);
+    expect(await page.evaluate(async () => {
+      const { getDashboardMutationGate } = await import('/client/dashboard.js');
+      return getDashboardMutationGate(document).busy;
+    })).toBe(false);
+
+    // A keeps its error and invalid state on its fresh row, still described
+    // by the error it shows.
+    expect(await page.evaluate(() => document.querySelector('[data-dashboard]').dataset.testStale)).toBeUndefined();
+    await expect(error(ids.first)).toBeVisible();
+    await expect(error(ids.first)).toHaveText('Choose a date first.');
+    await expect(dateInput(ids.first)).toHaveAttribute('aria-invalid', 'true');
+    await expect(dateInput(ids.first)).toHaveValue('');
+    await expect(error(ids.first)).toHaveAttribute('id', `dashboard-schedule-error-${ids.first}`);
+    await expect(scheduleRow(page, ids.first).locator(`[data-dashboard-schedule-controls][aria-describedby="dashboard-schedule-error-${ids.first}"]`)).toHaveCount(2);
+    // The server error stays with its own release and draft.
+    await expect(error(ids.third)).toHaveText(serverMessage);
+    await expect(dateInput(ids.third)).toHaveAttribute('aria-invalid', 'true');
+    await expect(dateInput(ids.third)).toHaveValue('2027-03-04');
+    // The published release left the queue with its error; the busy error ended.
+    expect(await needsDateIds(page)).toEqual([ids.first, ids.second, ids.third, fifth]);
+    await expect(page.locator(`#dashboard-schedule-error-${ids.fourth}`)).toHaveCount(0);
+    await expect(error(fifth)).toBeHidden();
+    await expect(error(fifth)).toHaveText('');
+    await expect(dateInput(fifth)).not.toHaveAttribute('aria-invalid', 'true');
+    await expect(page.locator('[data-dashboard-schedule-error]:visible')).toHaveCount(2);
+
+    // B's confirmation and Undo stay functional.
+    const undo = scheduleRow(page, ids.second).locator('[data-dashboard-schedule-undo]');
+    await expect(scheduleRow(page, ids.second).locator('[data-dashboard-schedule-status]')).toContainText('Scheduled for');
+    await page.keyboard.press('Enter');
+    await expect(sync).toBeHidden();
+    await expect(undo).toBeFocused();
+    await markRegion(page);
+    await page.keyboard.press('Enter');
+    await waitForReplacement(page);
+    expect(readSchedule(ids.second)).toEqual(UNDATED);
+    await expect(scheduleRow(page, ids.second).locator(':focus')).toHaveCount(1);
+    expect(traffic.posts).toEqual([...postsBefore, scheduleUrl(ids.second)]);
+    // A further refresh keeps both errors where they were.
+    await expect(error(ids.first)).toHaveText('Choose a date first.');
+    await expect(dateInput(ids.first)).toHaveAttribute('aria-invalid', 'true');
+    await expect(error(ids.third)).toHaveText(serverMessage);
+    await expect(dateInput(ids.third)).toHaveValue('2027-03-04');
+    await expect(page.locator('[data-dashboard-schedule-error]:visible')).toHaveCount(2);
+    await expect(announcer).toContainText('Undid scheduling');
+  });
+});
+
 test('a refresh that replaced the dashboard but did not finish loading stays blocked and reports Undo truthfully', async ({ page }) => {
   await withDashboardApp(async ({ origin, ids, readSchedule }) => {
     const traffic = await openDashboard(page, origin);

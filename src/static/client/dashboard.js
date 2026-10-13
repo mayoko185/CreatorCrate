@@ -167,6 +167,28 @@ export function getDashboardMutationGate(doc = globalThis.document) {
   return gate;
 }
 
+const schedulePickPresses = new WeakMap();
+
+/**
+ * Records a primary-button press on a suggested date anywhere on the page.
+ * Pressing a button moves focus before its click fires, so without this a
+ * custom-date input's blur would commit its unsent typed date first and take
+ * the mutation gate from the date the user actually chose. Any later press
+ * or key replaces the record, so a press that never becomes a click cannot
+ * suppress a later ordinary blur.
+ */
+function getSchedulePickPress(doc) {
+  let press = schedulePickPresses.get(doc);
+  if (press) return press;
+  press = { pick: null };
+  doc.addEventListener?.('pointerdown', (event) => {
+    press.pick = event.button === 0 ? event.target?.closest?.(SCHEDULE_PICK_SELECTOR) || null : null;
+  }, true);
+  doc.addEventListener?.('keydown', () => { press.pick = null; }, true);
+  schedulePickPresses.set(doc, press);
+  return press;
+}
+
 function isIsoDate(value) {
   const match = typeof value === 'string' ? ISO_DATE_PATTERN.exec(value) : null;
   if (!match) return false;
@@ -287,12 +309,14 @@ function bindScheduleRow(container, options) {
     else container.removeAttribute('aria-busy');
   }
 
-  // Whether the visible error only reports the page-level pause, which the
-  // gate reopening makes obsolete; every other error stays until replaced.
-  let pausedError = false;
+  // Why the visible error is shown. `paused` reports the page-level pause,
+  // which the gate reopening makes obsolete. Only `validation` errors describe
+  // the row's own input and stay true across a dashboard refresh; busy,
+  // rejected and unresolved outcomes describe a moment the refresh ends.
+  let shownError = null;
 
-  function showError(message, { invalidDate = false, paused = false } = {}) {
-    pausedError = Boolean(message) && paused;
+  function showError(message, { invalidDate = false, kind = 'transient' } = {}) {
+    shownError = message ? { kind, message, invalidDate } : null;
     errorRegion.textContent = message || '';
     setHidden(errorRegion, !message);
     if (invalidDate) dateInput.setAttribute('aria-invalid', 'true');
@@ -372,7 +396,8 @@ function bindScheduleRow(container, options) {
     setBusy(false);
     const message = outcome.kind === 'validation' ? outcome.message || SCHEDULE_MESSAGES.validation
       : outcome.kind === 'csrf' ? SCHEDULE_MESSAGES.csrf : SCHEDULE_MESSAGES.failed;
-    showError(message, { invalidDate: outcome.kind === 'validation' && trigger === dateInput });
+    const validation = outcome.kind === 'validation';
+    showError(message, { invalidDate: validation && trigger === dateInput, kind: validation ? 'validation' : 'rejected' });
     trigger?.focus?.();
     announce(message);
   }
@@ -388,7 +413,7 @@ function bindScheduleRow(container, options) {
       const message = outcome.kind === 'not-found' ? SCHEDULE_MESSAGES.notFound
         : outcome.kind === 'conflict' ? (action === 'undo' ? SCHEDULE_MESSAGES.undoConflict : SCHEDULE_MESSAGES.conflict)
           : SCHEDULE_MESSAGES.unconfirmed;
-      showError(message);
+      showError(message, { kind: 'unresolved' });
     }
     await notify(options.onReconcileRequired, {
       action,
@@ -437,7 +462,7 @@ function bindScheduleRow(container, options) {
     if (!releaseGate) {
       const paused = options.gate.held;
       const message = paused ? SCHEDULE_MESSAGES.paused : SCHEDULE_MESSAGES.busy;
-      showError(message, { paused });
+      showError(message, { kind: paused ? 'paused' : 'busy' });
       announce(message);
       return;
     }
@@ -493,8 +518,8 @@ function bindScheduleRow(container, options) {
     typedDate = false;
     if (state.phase !== 'idle') return;
     const { value } = dateInput;
-    if (!value) showError(SCHEDULE_MESSAGES.emptyDate, { invalidDate: true });
-    else if (!isIsoDate(value)) showError(SCHEDULE_MESSAGES.invalidDate, { invalidDate: true });
+    if (!value) showError(SCHEDULE_MESSAGES.emptyDate, { invalidDate: true, kind: 'validation' });
+    else if (!isIsoDate(value)) showError(SCHEDULE_MESSAGES.invalidDate, { invalidDate: true, kind: 'validation' });
     else scheduleDate(value, dateInput);
   }
 
@@ -520,7 +545,17 @@ function bindScheduleRow(container, options) {
     }
   });
 
+  const pickPress = getSchedulePickPress(doc);
+
+  dateInput.addEventListener('focus', () => { pickPress.pick = null; });
+
   dateInput.addEventListener('blur', () => {
+    // A blur caused by pressing a suggested date defers to that date. The
+    // draft stays typed, so Enter or a later blur can still commit it.
+    if (pickPress.pick) {
+      pickPress.pick = null;
+      return;
+    }
     if (typedDate && connected()) commitDate();
   });
 
@@ -546,7 +581,7 @@ function bindScheduleRow(container, options) {
   // retired row must dispose it or the gate keeps its subtree alive.
   let stopReopen = options.gate.onReopen?.(() => {
     if (!connected()) dispose();
-    else if (pausedError) showError('');
+    else if (shownError?.kind === 'paused') showError('');
   }) || null;
 
   function dispose() {
@@ -562,6 +597,16 @@ function bindScheduleRow(container, options) {
   return {
     releaseId,
     dispose,
+    // The error a refreshed copy of this idle row should keep showing.
+    retainableError: () => (state.phase === 'idle' && shownError?.kind === 'validation'
+      ? { message: shownError.message, invalidDate: shownError.invalidDate }
+      : null),
+    // Shows an error the user already heard on the row this one replaced,
+    // so it is not announced again.
+    restoreError({ message, invalidDate }) {
+      if (state.phase !== 'idle' || !message) return;
+      showError(message, { invalidDate, kind: 'validation' });
+    },
     getState: () => ({
       phase: state.phase,
       current: { ...state.current },
@@ -756,13 +801,15 @@ function captureDashboardState(state) {
   const order = [];
   const retained = new Map();
   const drafts = new Map();
+  const errors = new Map();
   const rows = controllers
     ? [...region.querySelectorAll(SCHEDULE_SELECTOR)].filter((container) => controllers.has(container))
     : [];
   for (const item of region.querySelectorAll(NEEDS_DATE_ITEM_SELECTOR)) {
     const releaseId = item.getAttribute('data-release-id');
     order.push(releaseId);
-    const row = controllers?.get(item.querySelector(SCHEDULE_SELECTOR))?.getState();
+    const controller = controllers?.get(item.querySelector(SCHEDULE_SELECTOR));
+    const row = controller?.getState();
     // The row's own scheduling state is the only record of a confirmed write
     // the server no longer lists as undated.
     if (row?.phase === 'scheduled' && row.confirmation) {
@@ -772,6 +819,8 @@ function captureDashboardState(state) {
     if (row && row.phase !== 'idle') continue;
     const value = item.querySelector(SCHEDULE_DATE_SELECTOR)?.value;
     if (value) drafts.set(releaseId, value);
+    const error = controller?.retainableError();
+    if (error) errors.set(releaseId, error);
   }
 
   const filters = region.querySelector(STATUS_FILTERS_SELECTOR);
@@ -784,6 +833,7 @@ function captureDashboardState(state) {
     order,
     retained,
     drafts,
+    errors,
     rows,
     projectStatus: pressed?.getAttribute('data-dashboard-status-filter') ?? undefined,
     focus: active && region.contains(active) ? describeFocus(active) : null,
@@ -872,6 +922,21 @@ function restoreDrafts(region, drafts, retainedItems) {
   }
 }
 
+/**
+ * Re-shows validation errors on the fresh, still-undated rows of the releases
+ * they belong to. A release the server no longer lists as undated has no
+ * fresh row, so its error is dropped with it.
+ */
+function restoreRowErrors(state, region, errors, retainedItems) {
+  const controllers = state.dashboardScheduling?.controllers;
+  if (!controllers || !errors.size) return;
+  for (const item of region.querySelectorAll(NEEDS_DATE_ITEM_SELECTOR)) {
+    if (retainedItems.has(item)) continue;
+    const error = errors.get(item.getAttribute('data-release-id'));
+    if (error) controllers.get(item.querySelector(SCHEDULE_SELECTOR))?.restoreError(error);
+  }
+}
+
 function restoreDashboardState(state, region) {
   const { snapshot, nextToday } = state.dashboardRefresh;
   const doc = state.document;
@@ -884,6 +949,7 @@ function restoreDashboardState(state, region) {
   enhanceDashboardTitleInfoCards(region);
   enhanceDashboardProjectTable(region, { initialStatus: snapshot.projectStatus });
   state.dashboardScheduling?.bind(region);
+  restoreRowErrors(state, region, snapshot.errors, retainedItems);
 }
 
 function canFocus(element) {
@@ -994,7 +1060,8 @@ function dashboardState(scope) {
  * Replaces the Dashboard region with freshly rendered `GET /` markup, keeping
  * the page shell, header actions and dialogs. Counts and rows come only from
  * the server; the client carries over retained scheduling confirmations,
- * unsent custom dates, the Projects status filter and focus. Retained
+ * unsent custom dates, validation errors on rows still undated, the Projects
+ * status filter and focus. Retained
  * confirmations are named in `?retain=` so the response carries their
  * current title popovers.
  *

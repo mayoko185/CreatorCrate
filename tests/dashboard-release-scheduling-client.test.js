@@ -79,7 +79,12 @@ class FakeElement {
 }
 
 function createDocument() {
-  const doc = { nodeType: 9, activeElement: null };
+  const doc = { nodeType: 9, activeElement: null, listeners: new Map() };
+  doc.addEventListener = (type, listener) => {
+    if (!doc.listeners.has(type)) doc.listeners.set(type, []);
+    doc.listeners.get(type).push(listener);
+  };
+  doc.dispatch = (type, init) => { for (const listener of doc.listeners.get(type) || []) listener({ type, ...init }); };
   doc.createElement = (tag) => new FakeElement(doc, tag);
   doc.body = new FakeElement(doc, 'body');
   doc.querySelectorAll = (selector) => doc.body.querySelectorAll(selector);
@@ -124,6 +129,21 @@ function renderRow(doc, { id, picks = ['2026-10-13', '2026-10-14', '2026-10-16']
     pick(date) {
       const submitter = pickButtons.find((button) => button.getAttribute('data-planned-date') === date);
       return quickForm.dispatch('submit', { submitter });
+    },
+    // A press moves focus out of the field before the click submits.
+    press(date, { button = 0, click = true } = {}) {
+      const target = pickButtons.find((candidate) => candidate.getAttribute('data-planned-date') === date);
+      doc.dispatch('pointerdown', { target, button });
+      doc.activeElement?.dispatch('blur');
+      target.focus();
+      return click ? row.pick(date) : null;
+    },
+    type(value) {
+      dateInput.focus();
+      dateInput.dispatch('focus');
+      dateInput.dispatch('keydown', { key: value.at(-1) });
+      dateInput.value = value;
+      dateInput.dispatch('change');
     },
     choose(value) {
       dateInput.value = value;
@@ -544,6 +564,65 @@ describe('enhanceDashboardReleaseScheduling', () => {
     expect(calls[0]).toMatchObject({ url: '/releases/8/schedule', body: { plannedDate: '2026-12-02' } });
   });
 
+  it('lets a pressed suggested date take precedence over an unsent typed date, once', () => {
+    const { views: [row], calls } = setup();
+    row.type('2027-02-15');
+    row.press('2026-10-14');
+    row.pick('2026-10-14');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      url: '/releases/7/schedule',
+      body: { plannedDate: '2026-10-14', plannedTime: null, expectedPlannedDate: null, expectedPlannedTime: null },
+    });
+  });
+
+  it('never sends another release’s typed draft when a suggested date is pressed', async () => {
+    const { views: [first, second], calls } = setup([{ id: 7 }, { id: 8 }]);
+    second.type('2027-02-15');
+    first.press('2026-10-16');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ url: '/releases/7/schedule', body: { plannedDate: '2026-10-16' } });
+    calls[0].resolve(success(7, NO_DATE, { plannedDate: '2026-10-16', plannedTime: null }));
+    await flush();
+
+    // The draft stays with its own release and still commits on a later blur.
+    second.dateInput.focus();
+    second.dateInput.dispatch('focus');
+    second.dateInput.dispatch('blur');
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toMatchObject({ url: '/releases/8/schedule', body: { plannedDate: '2027-02-15' } });
+  });
+
+  it('commits the draft on ordinary blurs once a suggested-date press is abandoned', () => {
+    const { views: [row], calls } = setup();
+    row.type('2027-02-15');
+    row.press('2026-10-14', { click: false });
+    expect(calls).toHaveLength(0);
+
+    row.dateInput.focus();
+    row.dateInput.dispatch('focus');
+    row.dateInput.dispatch('blur');
+    expect(calls).toHaveLength(1);
+    expect(calls[0].body.plannedDate).toBe('2027-02-15');
+  });
+
+  it('treats a non-primary press on a suggested date as an ordinary blur', () => {
+    const { views: [row], calls } = setup();
+    row.type('2027-02-15');
+    row.press('2026-10-14', { button: 2, click: false });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].body.plannedDate).toBe('2027-02-15');
+  });
+
+  it('keeps a suggested-date press behind the mutation gate', () => {
+    const { views: [first, second], calls } = setup([{ id: 7 }, { id: 8 }]);
+    first.pick('2026-10-13');
+    second.type('2027-02-15');
+    second.press('2026-10-14');
+    expect(calls).toHaveLength(1);
+    expect(second.error.textContent).toBe('Another schedule change is still being saved. Try again when it finishes.');
+  });
+
   it('explains an empty date on Enter without sending anything', () => {
     const { views: [row], calls } = setup();
     const event = row.dateInput.dispatch('keydown', { key: 'Enter' });
@@ -676,6 +755,80 @@ describe('enhanceDashboardReleaseScheduling', () => {
     expect(row.undoButton()).toBeNull();
     expect(row.status.textContent).toBe('Scheduling…');
     expect(confirmed).toHaveLength(1);
+  });
+
+  it('offers only validation errors on idle rows for a refresh to keep', async () => {
+    const { views: [local, server, rejected, busy], calls, controllers } = setup([{ id: 7 }, { id: 8 }, { id: 9 }, { id: 10 }]);
+    local.dateInput.value = '';
+    local.submitCustom();
+    expect(controllers[0].retainableError()).toEqual({ message: 'Choose a date first.', invalidDate: true });
+
+    server.choose('2026-10-20');
+    calls[0].resolve(jsonResponse(422, { status: 'error', message: 'Published releases cannot be rescheduled here.' }));
+    await flush();
+    expect(controllers[1].retainableError()).toEqual({ message: 'Published releases cannot be rescheduled here.', invalidDate: true });
+
+    rejected.pick('2026-10-13');
+    calls[1].resolve(jsonResponse(403, { status: 'error' }));
+    await flush();
+    expect(rejected.error.textContent).toMatch(/security check failed/);
+    expect(controllers[2].retainableError()).toBeNull();
+
+    rejected.pick('2026-10-13');
+    busy.pick('2026-10-13');
+    expect(busy.error.textContent).toMatch(/still being saved/);
+    expect(controllers[3].retainableError()).toBeNull();
+    // A pending row is not idle, and its error was cleared by the request.
+    expect(controllers[2].retainableError()).toBeNull();
+
+    calls[2].reject(new TypeError('Failed to fetch'));
+    await flush();
+    expect(controllers[2].getState().phase).toBe('locked');
+    expect(controllers[2].retainableError()).toBeNull();
+  });
+
+  it('never offers a pause error, and a newer error replaces an older validation error', () => {
+    const { gate } = countingGate();
+    const { views: [row], controllers } = setup([{ id: 7 }], { gate });
+    row.dateInput.value = '';
+    row.submitCustom();
+    const release = gate.hold();
+    row.pick('2026-10-13');
+    expect(row.error.textContent).toMatch(/Scheduling is paused/);
+    expect(row.dateInput.hasAttribute('aria-invalid')).toBe(false);
+    expect(controllers[0].retainableError()).toBeNull();
+    release();
+    expect(row.error.textContent).toBe('');
+  });
+
+  it('restores a validation error onto a replacement row silently, keeping it until corrected', async () => {
+    const { doc, views: [row], calls, announced, controllers, options } = setup();
+    row.dateInput.value = '';
+    row.submitCustom();
+    const error = controllers[0].retainableError();
+    const announcements = announced.length;
+
+    row.item.remove();
+    controllers[0].dispose();
+    const replacement = renderRow(doc, { id: 7 });
+    const [next] = enhanceDashboardReleaseScheduling(doc, options);
+    next.restoreError(error);
+    expect(replacement.error.textContent).toBe('Choose a date first.');
+    expect(replacement.error.hasAttribute('hidden')).toBe(false);
+    expect(replacement.error.getAttribute('id')).toBe('dashboard-schedule-error-7');
+    expect(replacement.dateInput.getAttribute('aria-invalid')).toBe('true');
+    expect(announced).toHaveLength(announcements);
+    // A restored error is itself retainable through a further refresh.
+    expect(next.retainableError()).toEqual(error);
+
+    replacement.choose('2026-10-20');
+    expect(calls).toHaveLength(1);
+    expect(replacement.error.hasAttribute('hidden')).toBe(true);
+    expect(replacement.dateInput.hasAttribute('aria-invalid')).toBe(false);
+    expect(next.retainableError()).toBeNull();
+    // A row no longer idle never takes an old error.
+    next.restoreError(error);
+    expect(replacement.error.textContent).toBe('');
   });
 });
 

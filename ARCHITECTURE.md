@@ -2544,7 +2544,7 @@ the `[data-dashboard]` region. The page shell and New Project dialog are left
 in place, and a response missing any required Dashboard region is rejected
 rather than partially installed. The client never adjusts counts itself and
 carries over only page-session state (retained confirmations with Undo, unsent
-dates, the Projects status filter,
+dates and validation errors on rows still undated, the Projects status filter,
 focus), then re-runs the Dashboard enhancers on the new region. Each scheduling
 row controller subscribes to the mutation gate, so rows the refresh removes
 are explicitly disposed rather than left for garbage collection. A retained confirmation's release is usually no

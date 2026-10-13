@@ -45,7 +45,7 @@ async function withDashboardApp(run) {
     const readSchedule = (id) => db.prepare('SELECT planned_date, planned_time FROM releases WHERE id = ?').get(id);
     server = app.listen(0, '127.0.0.1');
     await new Promise(resolve => server.once('listening', resolve));
-    await run({ origin: `http://127.0.0.1:${server.address().port}`, ids, readSchedule, firstStatus, secondStatus });
+    await run({ origin: `http://127.0.0.1:${server.address().port}`, db, ids, readSchedule, firstStatus, secondStatus });
   } finally {
     if (server) await new Promise(resolve => server.close(resolve));
     closeDatabase(db);
@@ -199,6 +199,76 @@ test('a confirmed schedule refreshes every server region in place and keeps page
     expect(await page.locator('[data-dashboard]').count()).toBe(1);
     expect(await duplicateIds(page)).toEqual([]);
     expect(await hasHorizontalScroll(page)).toBe(false);
+  });
+});
+
+test('refreshes keep validation errors on rows still undated until they are corrected', async ({ page }) => {
+  await withDashboardApp(async ({ origin, db, ids, readSchedule, secondStatus }) => {
+    const traffic = await openDashboard(page, origin);
+    const error = (id) => scheduleRow(page, id).locator('[data-dashboard-schedule-error]');
+    const dateInput = (id) => scheduleRow(page, id).locator('[data-dashboard-schedule-date]');
+    const announcer = page.locator('[data-dashboard-announcer]');
+    await page.locator(`[data-dashboard-status-filter="${secondStatus}"]`).click();
+
+    await dateInput(ids.first).focus();
+    await page.keyboard.press('Enter');
+    await expect(error(ids.first)).toHaveText('Choose a date first.');
+    await expect(dateInput(ids.first)).toHaveAttribute('aria-invalid', 'true');
+
+    const serverMessage = 'Choose a date after the project starts.';
+    await page.route(`**/releases/${ids.third}/schedule`, (route) => route.fulfill({
+      status: 422, contentType: 'application/json', body: JSON.stringify({ status: 'error', message: serverMessage }),
+    }), { times: 1 });
+    await dateInput(ids.third).focus();
+    await page.keyboard.type('02152027');
+    await page.keyboard.press('Enter');
+    await expect(error(ids.third)).toHaveText(serverMessage);
+    await expect(dateInput(ids.third)).toHaveAttribute('aria-invalid', 'true');
+
+    // An ordinary confirmed schedule on another row.
+    await markRegion(page);
+    await scheduleRow(page, ids.second).locator('[data-dashboard-schedule-pick]').first().click();
+    await waitForReplacement(page);
+    const undo = scheduleRow(page, ids.second).locator('[data-dashboard-schedule-undo]');
+    await expect(undo).toBeFocused();
+    await expect(announcer).toContainText('Scheduled for');
+    for (const [id, message, value] of [[ids.first, 'Choose a date first.', ''], [ids.third, serverMessage, '2027-02-15']]) {
+      await expect(error(id)).toBeVisible();
+      await expect(error(id)).toHaveText(message);
+      await expect(dateInput(id)).toHaveAttribute('aria-invalid', 'true');
+      await expect(dateInput(id)).toHaveValue(value);
+    }
+    await expect(page.locator(`[data-dashboard-status-filter="${secondStatus}"]`)).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('[data-dashboard-project-row]:visible')).toHaveCount(1);
+    expect(await duplicateIds(page)).toEqual([]);
+
+    // Undo refreshes again; both errors stay put.
+    await markRegion(page);
+    await page.keyboard.press('Enter');
+    await waitForReplacement(page);
+    expect(readSchedule(ids.second)).toEqual({ planned_date: null, planned_time: null });
+    await expect(error(ids.first)).toHaveText('Choose a date first.');
+    await expect(error(ids.third)).toHaveText(serverMessage);
+    await expect(page.locator('[data-dashboard-schedule-error]:visible')).toHaveCount(2);
+
+    // Correcting A clears its error; C, scheduled elsewhere meanwhile, leaves
+    // the queue and takes its error with it.
+    db.prepare('UPDATE releases SET planned_date = ? WHERE id = ?').run('2027-06-01', ids.third);
+    await markRegion(page);
+    await dateInput(ids.first).focus();
+    await page.keyboard.type('03012027');
+    await page.keyboard.press('Enter');
+    await waitForReplacement(page);
+    expect(readSchedule(ids.first)).toEqual({ planned_date: '2027-03-01', planned_time: null });
+    await expect(scheduleRow(page, ids.first).locator('[data-dashboard-schedule-undo]')).toBeFocused();
+    await expect(error(ids.first)).toBeHidden();
+    await expect(dateInput(ids.first)).not.toHaveAttribute('aria-invalid', 'true');
+    expect(await needsDateIds(page)).toEqual([ids.first, ids.second]);
+    await expect(page.locator(`#dashboard-schedule-error-${ids.third}`)).toHaveCount(0);
+    await expect(page.locator('[data-dashboard-schedule-error]:visible')).toHaveCount(0);
+    await expect(page.locator(`[data-dashboard-status-filter="${secondStatus}"]`)).toHaveAttribute('aria-pressed', 'true');
+    expect(traffic.posts).toEqual([ids.third, ids.second, ids.second, ids.first].map((id) => `${origin}/releases/${id}/schedule`));
+    expect(traffic.navigations).toBe(0);
   });
 });
 
