@@ -31,7 +31,6 @@ import {
   enhanceBookHierarchyReorder,
   enhanceBookReorder,
   enhanceChapterPageReorder,
-  enhanceDashboardDefaultsDialog,
 } from './client/dedicated-reorder.js';
 import { enhanceCategoryDetails } from './client/category-details.js';
 import {
@@ -163,7 +162,6 @@ export {
   enhanceBookDefaultsFetchSave,
   enhanceBookTransfer,
   enhanceChapterPageReorder,
-  enhanceDashboardDefaultsDialog,
   enhanceDashboardProjectTable,
   enhanceDashboardScheduling,
   enhanceCategoryDetails,
@@ -310,7 +308,6 @@ if (typeof document !== 'undefined') {
     enhanceProjectOwnershipRecovery(document);
     enhanceProcessingRecoveryDetails(document);
     enhanceBookCoverUploads(document);
-    enhanceDashboardDefaultsDialog(document);
     enhanceProjectAssetCategoryManagement(document);
     enhanceProjectsLiveFiltering(document);
     enhanceReleasesLiveFiltering(document);

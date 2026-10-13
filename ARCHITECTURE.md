@@ -332,6 +332,74 @@ maps the type to an HTTP status. Two consequences worth preserving:
   **Absolute host paths are never leaked to a client**, and the storage and
   service layers are written to preserve that.
 
+### The release-first Dashboard
+
+`GET /` is a read-only composition across these layers. Its regions are five
+attention tiles (Overdue, Needs a date, Due today, Next 7 days, Missing assets),
+a two-week calendar strip with open-day quick picks, Needs a release date,
+Scheduled releases (Overdue, Today, Next 7 days, Later), Recently published, and
+a Projects table with status filters.
+
+- **Repositories** own dedicated Dashboard projections in
+  [`release-repository.js`](src/data/release-repository.js) and
+  [`asset-repository.js`](src/data/asset-repository.js): aggregate schedule
+  totals, the dated/undated/recently-published row lists, per-day strip counts,
+  open days, missing-asset counts, and batched per-project asset and release
+  summaries.
+- **`workflowQueryService.getDashboardData()`** composes them for one `today`.
+  It is the only Dashboard read source; the router never queries directly.
+- **[`dashboard-render.js`](src/routes/dashboard-render.js)** turns that model
+  into a request-scoped view model (date labels, NSFW blur, catalogue
+  presentation, info-card shapes). The Projects router reuses it for New
+  Project validation rerenders.
+- Thumbnails, Social Preparation summaries and Project Status/Type badges come
+  from the existing primary-image, social-preparation and catalogue presenters,
+  not Dashboard-specific copies. Release and Project title popovers render the
+  Calendar information-card partial
+  ([`calendar-info-card.njk`](src/views/partials/calendar-info-card.njk)).
+
+Data rules the projections and composition preserve:
+
+- Release lists and tiles count only active releases (unpublished, not
+  archived) whose parent Project is not archived; Recently published applies
+  the same Project exclusion to published releases. Missing assets count only
+  in active Projects. Archived Projects are absent from the Projects table and
+  its status counts.
+- Overdue/Today/Next 7 days/Later are classified against one
+  application-local calendar date (`getLocalTodayIso`), not the browser's.
+  The strip's first day follows the saved Calendar week-start page default,
+  so the strip and the Calendar page share one preference.
+- Every total comes from an aggregate query, independently of the rows
+  displayed. Needs a date, Later, Recently published, open days and the
+  Projects table are display-capped (capped lists link to their full listing
+  where one exists); Overdue, Today and Next 7 days are never capped.
+- Project image, tag, asset-count and release-summary enrichment, and Social
+  Preparation, each run once over the deduplicated union of every displayed
+  Project and release, so statement count does not grow with row count.
+- Page load performs no filesystem probes and no Social Preparation
+  initialization; missing-asset counts read the persisted `is_present` scan
+  state.
+
+The Dashboard has no persisted layout or section configuration. A
+`page_defaults.dashboard` value left in `app_meta` by an earlier version is
+never read and needs no migration.
+
+**`POST /releases/:id/schedule`** is the narrow write the Dashboard uses to
+schedule an undated release and to Undo it. It is JSON-only (there is no
+form-redirect variant) and date-only: a non-empty `plannedTime` is rejected.
+The request must carry `expectedPlannedDate` and `expectedPlannedTime` (each
+may be `null`), the schedule the client rendered. `releaseService.scheduleRelease()`
+rejects missing, archived, archived-parent and published releases, then compares
+the expected schedule with the stored one. The repository `UPDATE` repeats the
+expected values and the active-release/active-parent conditions in its `WHERE`
+clause, so a concurrent edit, publication or archive makes it affect no row and
+the request fails as a conflict instead of overwriting. Responses: `200` with
+the previous and new schedule (`changed: false` for a no-op), `409`
+`SCHEDULE_CONFLICT` with the current schedule, `404`, or `422` for validation
+and lifecycle refusals. A changed write logs the normal
+`release.updated` activity and updates release notification state like any
+other release edit. The client side is described in §16.
+
 ---
 
 ## 7. Request and middleware lifecycle
@@ -465,7 +533,7 @@ active-default scopes, sessions, and a generic `app_meta` key/value table.
 accessed exclusively through
 [`app-meta-repository.js`](src/data/app-meta-repository.js) and wrapped by
 narrow settings services (preview category, NSFW filter, Open-locally root,
-dashboard and page defaults, default watermark, automatic-scan timing).
+page defaults, default watermark, automatic-scan timing).
 Adding a new global setting means adding a key and a small service, not a
 migration.
 
@@ -490,7 +558,7 @@ Project Status and Project Type catalogue documents in `app_meta`; each entry
 owns a stable value, an immutable label, a color, and its catalogue order. The
 Project-option catalogue service is the membership and mutation authority, and
 the presenter supplies that metadata to Project forms, filters, cards, detail,
-and Dashboard cards. Catalogue reads are live, so accepted changes do not
+and the Dashboard Projects table and status filters. Catalogue reads are live, so accepted changes do not
 require an application restart.
 
 Existing option labels cannot be renamed. The `tbd` Status value and `images` Type
@@ -499,8 +567,7 @@ default references them. Settings supports adding,
 reordering, recoloring, and deleting entries. A deletion is blocked while the value
 is selected by an applicable persisted default, including the New Project Status or
 Type default and global or Project-scoped Projects Status/Type filter defaults; saved
-defaults are never silently remapped. Dashboard section state is not a deletion
-blocker. If Projects reference an otherwise deletable value, the operator selects a
+defaults are never silently remapped. If Projects reference an otherwise deletable value, the operator selects a
 valid replacement from the same catalogue, and the catalogue service bulk-reassigns
 all affected Projects and deletes the source atomically. A saved-default blocker is
 checked before reassignment, so the combined case cannot partially update Projects
@@ -518,14 +585,13 @@ creation to recreate or silently reuse it.
 It is absent from the Status catalogue, reserved against ordinary addition, excluded
 from New/Edit selectors and reassignment targets, and cannot be the New Project
 Status default. The dedicated archive transition writes the operational state, while
-Projects filtering and Dashboard retain system Archived views. Compatibility reads
+Projects filtering retains a system Archived view; the Dashboard excludes archived
+Projects entirely. Compatibility reads
 treat a Project as operationally Archived when either `archived_at` is present or
 the stored Status is the legacy literal `archived`.
 
-Catalogue order controls editable Status option ordering. Dashboard section order
-is persisted independently: normalization preserves surviving section order, removes
-deleted workflow Status sections, incorporates newly introduced ones, and keeps the
-system Archived section independently of catalogue membership.
+Catalogue order controls editable Status option ordering, including the order of
+the Dashboard's Projects status filters.
 
 Migration 033 rebuilt `projects` without the former fixed Status and Type enumeration
 checks while preserving existing Project values and data. Migration 034 first
@@ -2473,10 +2539,15 @@ rendered schedule as the expected value so a stale write is refused with `409`
 rather than overwriting. Only a well-formed success echoing the request is
 treated as confirmed; a lost, malformed or `5xx` response is *unconfirmed* and
 is never retried. Every confirmed write, conflict, missing release or
-unconfirmed outcome is followed by an authoritative `GET /` that replaces the
-`[data-dashboard]` region; the client never adjusts counts itself and carries
-over only page-session state (retained confirmations with Undo, unsent dates,
-the Projects filter, focus). A retained confirmation's release is usually no
+unconfirmed outcome is followed by an authoritative `GET /` that replaces only
+the `[data-dashboard]` region. The page shell and New Project dialog are left
+in place, and a response missing any required Dashboard region is rejected
+rather than partially installed. The client never adjusts counts itself and
+carries over only page-session state (retained confirmations with Undo, unsent
+dates, the Projects status filter,
+focus), then re-runs the Dashboard enhancers on the new region. Each scheduling
+row controller subscribes to the mutation gate, so rows the refresh removes
+are explicitly disposed rather than left for garbage collection. A retained confirmation's release is usually no
 longer in any capped list, so the refresh names those releases in
 `GET /?retain=<ids>` and the server renders their current title popovers in an
 inert `<template>`, which the client swaps into the retained rows; a release the
@@ -2487,6 +2558,14 @@ values, and a status outside the region offers Retry refresh (a GET only) and
 a plain reload link; only a successful refresh releases it. The scheduling
 forms render disabled and are enabled only once this whole lifecycle is wired,
 so a native submit never reaches the JSON endpoint.
+
+The Dashboard's Projects status filters filter table rows in the page only when
+the table lists every active Project; otherwise they remain links to the
+filtered Projects page. Dashboard title and Due-today tile popovers are the
+Calendar information cards: [`info-cards.js`](src/static/client/info-cards.js)
+binds them through the same grid info-card lifecycle as Calendar, with a
+Dashboard configuration that opens on hover/focus because Dashboard titles are
+navigation links rather than pin-on-click triggers.
 
 **Three asset modes**, resolved once by `resolveAssetMode(nodeEnv)` and
 exposed to templates as `assetMode`:

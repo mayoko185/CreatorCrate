@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import slugify from '@sindresorhus/slugify';
 import { openDatabase, runMigrations, closeDatabase } from '../src/db.js';
-import { createProjectRepository, DASHBOARD_SORTS } from '../src/data/project-repository.js';
+import { createProjectRepository } from '../src/data/project-repository.js';
 import { createTagRepository } from '../src/data/tag-repository.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
@@ -313,9 +313,7 @@ describe('project repository', () => {
     expect(composed.rows[0].id).toBe(match.id);
   });
 
-  it('exposes only retained Project sorts and falls back from obsolete date sort keys', () => {
-    expect(Object.keys(DASHBOARD_SORTS)).toEqual(['updated', 'created', 'title']);
-
+  it('supports the retained Project sorts and falls back from obsolete date sort keys', () => {
     const older = repository.create(sampleProject({ title: 'Zulu' }));
     const newer = repository.create(sampleProject({ title: 'Alpha' }));
     db.prepare('UPDATE projects SET updated_at = ? WHERE id = ?').run('2025-01-01 00:00:00', older.id);
@@ -668,111 +666,6 @@ describe('project repository', () => {
       expect(repository.findById(project.id).project_dir).toBe('000001-dir-archive');
     });
   });
-
-  describe('findDashboardProjectsByStatus', () => {
-    it('returns every requested canonical status with its effective status', () => {
-      const projects = ['tbd', 'planned', 'in-progress', 'ready', 'completed', 'archived']
-        .map((status) => repository.create(sampleProject({ title: `Status ${status}`, status })));
-
-      const rows = repository.findDashboardProjectsByStatus({
-        tbd: 1,
-        planned: 1,
-        'in-progress': 1,
-        ready: 1,
-        completed: 1,
-        archived: 1,
-      });
-
-      for (const project of projects) {
-        const matching = rows.filter((row) => row.effective_status === project.status);
-        expect(matching.map((row) => row.id)).toEqual([project.id]);
-      }
-    });
-
-    it('uses effective archived status and excludes archived projects from workflow sections', () => {
-      const archivedByTimestamp = repository.create(sampleProject({
-        title: 'Timestamp Archived', status: 'planned',
-      }));
-      db.prepare(`UPDATE projects SET archived_at = ? WHERE id = ?`)
-        .run('2025-06-20 12:00:00', archivedByTimestamp.id);
-      const archivedByStatus = repository.create(sampleProject({
-        title: 'Status Archived', status: 'archived',
-      }));
-      const activePlanned = repository.create(sampleProject({
-        title: 'Active Planned', status: 'planned',
-      }));
-
-      const rows = repository.findDashboardProjectsByStatus({ planned: 5, archived: 5 });
-
-      expect(rows.filter((row) => row.effective_status === 'planned').map((row) => row.id))
-        .toEqual([activePlanned.id]);
-      expect(rows.filter((row) => row.effective_status === 'archived').map((row) => row.id).sort((a, b) => a - b))
-        .toEqual([archivedByTimestamp.id, archivedByStatus.id].sort((a, b) => a - b));
-    });
-
-    it('orders each status by recently updated and breaks updated_at ties by descending id', () => {
-      const older = repository.create(sampleProject({ title: 'Older', status: 'ready' }));
-      const tiedLowerId = repository.create(sampleProject({ title: 'Tied Lower ID', status: 'ready' }));
-      const tiedHigherId = repository.create(sampleProject({ title: 'Tied Higher ID', status: 'ready' }));
-      db.prepare(`UPDATE projects SET updated_at = ? WHERE id = ?`).run('2025-06-01 10:00:00', older.id);
-      db.prepare(`UPDATE projects SET updated_at = ? WHERE id = ?`).run('2025-06-02 10:00:00', tiedLowerId.id);
-      db.prepare(`UPDATE projects SET updated_at = ? WHERE id = ?`).run('2025-06-02 10:00:00', tiedHigherId.id);
-
-      const rows = repository.findDashboardProjectsByStatus({ ready: 3 });
-
-      expect(rows.map((row) => row.id)).toEqual([tiedHigherId.id, tiedLowerId.id, older.id]);
-    });
-
-    it('enforces each requested status limit independently', () => {
-      for (const [status, count] of Object.entries({ tbd: 3, planned: 4, ready: 5 })) {
-        for (let index = 0; index < count; index += 1) {
-          repository.create(sampleProject({ title: `${status}-${index}`, status }));
-        }
-      }
-
-      const rows = repository.findDashboardProjectsByStatus({ tbd: 1, planned: 2, ready: 3 });
-
-      expect(rows.filter((row) => row.effective_status === 'tbd')).toHaveLength(1);
-      expect(rows.filter((row) => row.effective_status === 'planned')).toHaveLength(2);
-      expect(rows.filter((row) => row.effective_status === 'ready')).toHaveLength(3);
-    });
-
-    it('prepares one statement regardless of requested status count or project count', () => {
-      for (let index = 0; index < 30; index += 1) {
-        repository.create(sampleProject({ title: `Project ${index}`, status: index % 2 === 0 ? 'tbd' : 'planned' }));
-      }
-      const prepareSpy = vi.spyOn(db, 'prepare');
-
-      try {
-        for (const limits of [
-          { tbd: 1 },
-          { tbd: 1, planned: 2, 'in-progress': 3, ready: 4, completed: 5, archived: 6 },
-          { tbd: 25, planned: 25 },
-        ]) {
-          prepareSpy.mockClear();
-          repository.findDashboardProjectsByStatus(limits);
-          expect(prepareSpy).toHaveBeenCalledTimes(1);
-        }
-      } finally {
-        prepareSpy.mockRestore();
-      }
-    });
-
-    it('returns no rows without a statement for empty, unsupported, or malformed requests', () => {
-      const prepareSpy = vi.spyOn(db, 'prepare');
-
-      try {
-        for (const limits of [{}, { 'unsupported status!': 3 }, { tbd: 0 }, { planned: 26 }, { ready: '3' }, null]) {
-          prepareSpy.mockClear();
-          expect(repository.findDashboardProjectsByStatus(limits)).toEqual([]);
-          expect(prepareSpy).not.toHaveBeenCalled();
-        }
-      } finally {
-        prepareSpy.mockRestore();
-      }
-    });
-  });
-
 });
 
 function sampleProject(overrides = {}) {

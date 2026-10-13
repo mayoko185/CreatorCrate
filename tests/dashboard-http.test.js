@@ -105,26 +105,6 @@ function insertRelease(db, projectId, {
   return Number(lastInsertRowid);
 }
 
-function buildDashboardDefaultsForm(app, {
-  order = app.locals.dashboardDefaultsService.getDefaults().order,
-  sections = {},
-} = {}) {
-  const defaults = app.locals.dashboardDefaultsService.getDefaults();
-  return {
-    _csrf: app.testCsrfToken,
-    orderedSectionIds: order.join(','),
-    sections: Object.fromEntries(Object.keys(defaults.sections).map((sectionId) => {
-      const section = { ...defaults.sections[sectionId], ...sections[sectionId] };
-      return [sectionId, {
-        visible: section.visible ? ['0', '1'] : '0',
-        itemCount: String(section.itemCount),
-        sort: section.sort,
-        order: section.order,
-      }];
-    })),
-  };
-}
-
 describe('dashboard HTTP composition', () => {
   let db;
   let app;
@@ -848,257 +828,65 @@ describe('dashboard HTTP composition', () => {
     });
   });
 
-  describe('dashboard defaults save endpoint', () => {
-    it('accepts a current custom status and rejects the same submitted section after catalogue deletion', async () => {
-      const catalogue = app.locals.projectOptionCatalogueService;
-      catalogue.addOption('status', { name: 'Quality Review', color: '#123456' });
-      const currentForm = buildDashboardDefaultsForm(app);
-
-      await app.testAgent
-        .post('/dashboard/defaults')
-        .set('Accept', 'application/json')
-        .type('form')
-        .send(currentForm)
-        .expect(200);
-      expect(app.locals.dashboardDefaultsService.getDefaults().sections)
-        .toHaveProperty('status:quality-review');
-
-      catalogue.deleteOption('status', 'quality-review');
-      expect(app.locals.dashboardDefaultsService.getDefaults().sections)
-        .not.toHaveProperty('status:quality-review');
-      const rejected = await app.testAgent
-        .post('/dashboard/defaults')
-        .set('Accept', 'application/json')
-        .type('form')
-        .send(currentForm)
-        .expect(422);
-
-      expect(rejected.body.errors.order).toMatch(/unsupported section/i);
-      expect(app.locals.dashboardDefaultsService.getDefaults().sections)
-        .not.toHaveProperty('status:quality-review');
+  describe('retired section configuration', () => {
+    const LEGACY_DASHBOARD_DEFAULTS_KEY = 'page_defaults.dashboard';
+    const LEGACY_DASHBOARD_DEFAULTS = JSON.stringify({
+      version: 1,
+      order: ['status:archived', 'recently-updated', 'status:tbd'],
+      sections: {
+        'recently-updated': { visible: false, itemCount: 1, sort: 'title', order: 'asc' },
+        'status:tbd': { visible: false, itemCount: 1, sort: 'created', order: 'asc' },
+      },
     });
 
-    it('saves a complete custom configuration through the native form and redirects to the Dashboard notice destination', async () => {
-      const defaults = app.locals.dashboardDefaultsService.getDefaults();
-      const order = [...defaults.order].reverse();
-      const sections = Object.fromEntries(order.map((sectionId, index) => [sectionId, {
-        visible: sectionId !== 'status:archived',
-        itemCount: index + 1,
-      }]));
+    function stripCsrf(html) {
+      return html.replace(/name="_csrf" value="[^"]*"/g, '').replace(/<meta name="csrf-token" content="[^"]*">/g, '');
+    }
 
+    it('no longer serves POST /dashboard/defaults and writes no section configuration', async () => {
       await app.testAgent
         .post('/dashboard/defaults')
         .type('form')
-        .send(buildDashboardDefaultsForm(app, { order, sections }))
-        .expect('Location', '/?notice=dashboard_defaults_saved')
-        .expect(302);
+        .send({ _csrf: app.testCsrfToken, orderedSectionIds: 'recently-updated', sections: {} })
+        .expect(404);
 
-      expect(app.locals.dashboardDefaultsService.getDefaults()).toMatchObject({
-        version: 1,
-        order,
-        sections,
-      });
+      expect(app.locals.appMetaRepository.getValue(LEGACY_DASHBOARD_DEFAULTS_KEY)).toBeFalsy();
     });
 
-    it('returns the established JSON success shape and persists independent counts and hidden states', async () => {
-      const defaults = app.locals.dashboardDefaultsService.getDefaults();
-      const order = [...defaults.order.slice(3), ...defaults.order.slice(0, 3)];
-      const sections = Object.fromEntries(order.map((sectionId, index) => [sectionId, {
-        visible: sectionId !== 'status:completed',
-        itemCount: 25 - index,
-      }]));
+    it('leaves a stored legacy Dashboard configuration intact and inert', async () => {
+      const projectId = await createProject(app, { title: 'Legacy Visible', status: 'tbd' });
+      insertRelease(db, projectId, { title: 'Undated Legacy Release' });
+      const before = await app.testAgent.get('/').expect(200);
 
-      const res = await app.testAgent
-        .post('/dashboard/defaults')
-        .set('Accept', 'application/json')
-        .type('form')
-        .send(buildDashboardDefaultsForm(app, { order, sections }))
-        .expect(200);
+      app.locals.appMetaRepository.setValue(LEGACY_DASHBOARD_DEFAULTS_KEY, LEGACY_DASHBOARD_DEFAULTS);
+      const after = await app.testAgent.get('/').expect(200);
 
-      expect(res.body).toEqual({
-        status: 'success',
-        message: 'Dashboard defaults saved successfully.',
-        values: {},
-      });
-      expect(app.locals.dashboardDefaultsService.getDefaults()).toMatchObject({ version: 1, order, sections });
+      expect(stripCsrf(after.text)).toBe(stripCsrf(before.text));
+      expect(extractProjectRow(after.text, projectId)).toContain('Legacy Visible');
+      expect(app.locals.appMetaRepository.getValue(LEGACY_DASHBOARD_DEFAULTS_KEY)).toBe(LEGACY_DASHBOARD_DEFAULTS);
     });
 
-    it.each([
-      ['duplicate section', (order) => [order[0], order[0], ...order.slice(2)]],
-      ['missing section', (order) => order.slice(1)],
-      ['unknown section', (order) => [...order.slice(0, -1), 'projects']],
-    ])('rejects a %s order without changing saved defaults', async (_label, changeOrder) => {
-      const previous = app.locals.dashboardDefaultsService.getDefaults();
-      const res = await app.testAgent
-        .post('/dashboard/defaults')
-        .set('Accept', 'application/json')
-        .type('form')
-        .send(buildDashboardDefaultsForm(app, { order: changeOrder(previous.order) }))
-        .expect(422);
+    it('starts an app over a database that still stores legacy Dashboard defaults', () => {
+      app.locals.appMetaRepository.setValue(LEGACY_DASHBOARD_DEFAULTS_KEY, '{not json');
+      const appDataRoot = path.join(tmpDir, 'upgrade-app');
+      fs.mkdirSync(appDataRoot, { recursive: true });
+      const { csrfPepper } = ensureAuthEnablement(appDataRoot);
 
-      expect(res.body.status).toBe('error');
-      expect(res.body.errors.order).toBeTruthy();
-      expect(app.locals.dashboardDefaultsService.getDefaults()).toEqual(previous);
+      const upgraded = createApp({ appName: 'CreatorCrate', db, projectsRoot }, { appDataRoot, authState: { csrfPepper } });
+
+      expect(upgraded.locals).not.toHaveProperty('dashboardDefaultsService');
+      expect(app.locals.appMetaRepository.getValue(LEGACY_DASHBOARD_DEFAULTS_KEY)).toBe('{not json');
     });
 
-    it('persists valid per-section sort and order values', async () => {
-      const form = buildDashboardDefaultsForm(app, {
-        sections: {
-          'recently-updated': { sort: 'title', order: 'desc' },
-          'status:ready': { sort: 'created', order: 'asc' },
-        },
-      });
+    it('starts the calendar strip on the saved Calendar week start', async () => {
+      for (const [weekStart, weekday] of [['sunday', 0], ['monday', 1]]) {
+        app.locals.pageDefaultsService.saveDefault('calendar', 'weekStart', weekStart);
+        const res = await app.testAgent.get('/').expect(200);
+        const firstDate = res.text.match(/<li class="dashboard-strip-day[^"]*" data-date="(\d{4}-\d{2}-\d{2})">/)?.[1];
 
-      await app.testAgent
-        .post('/dashboard/defaults')
-        .type('form')
-        .send(form)
-        .expect(302);
-
-      const saved = app.locals.dashboardDefaultsService.getDefaults();
-      expect(saved.sections['recently-updated']).toMatchObject({ sort: 'title', order: 'desc' });
-      expect(saved.sections['status:ready']).toMatchObject({ sort: 'created', order: 'asc' });
-    });
-
-    it.each([
-      ['sort', 'unexpected'],
-      ['order', 'sideways'],
-    ])('rejects an unsupported section %s without changing saved defaults', async (field, value) => {
-      const previous = app.locals.dashboardDefaultsService.getDefaults();
-      const form = buildDashboardDefaultsForm(app);
-      form.sections['recently-updated'][field] = value;
-
-      const res = await app.testAgent
-        .post('/dashboard/defaults')
-        .set('Accept', 'application/json')
-        .type('form')
-        .send(form)
-        .expect(422);
-
-      expect(res.body.errors[`sections[recently-updated][${field}]`]).toBeTruthy();
-      expect(app.locals.dashboardDefaultsService.getDefaults()).toEqual(previous);
-    });
-
-    it.each([
-      ['zero', '0'],
-      ['above maximum', '26'],
-      ['non-integer', '1.5'],
-      ['non-numeric', 'many'],
-      ['missing', undefined],
-    ])('rejects a %s item count without changing saved defaults', async (_label, itemCount) => {
-      const previous = app.locals.dashboardDefaultsService.getDefaults();
-      const form = buildDashboardDefaultsForm(app);
-      if (itemCount === undefined) delete form.sections['recently-updated'].itemCount;
-      else form.sections['recently-updated'].itemCount = itemCount;
-
-      const res = await app.testAgent
-        .post('/dashboard/defaults')
-        .set('Accept', 'application/json')
-        .type('form')
-        .send(form)
-        .expect(422);
-
-      expect(res.body.errors['sections[recently-updated][itemCount]']).toBeTruthy();
-      expect(app.locals.dashboardDefaultsService.getDefaults()).toEqual(previous);
-    });
-
-    it('returns independent field-name errors for multiple invalid counts, including status sections', async () => {
-      const previous = app.locals.dashboardDefaultsService.getDefaults();
-      const form = buildDashboardDefaultsForm(app);
-      form.sections['recently-updated'].itemCount = '0';
-      form.sections['status:ready'].itemCount = 'many';
-
-      const res = await app.testAgent
-        .post('/dashboard/defaults')
-        .set('Accept', 'application/json')
-        .type('form')
-        .send(form)
-        .expect(422);
-
-      expect(res.body).toMatchObject({
-        status: 'error',
-        errors: {
-          'sections[recently-updated][itemCount]': 'Items to show must be between 1 and 25.',
-          'sections[status:ready][itemCount]': 'Items to show must be an integer.',
-        },
-        values: {
-          orderedSectionIds: form.orderedSectionIds,
-          sections: {
-            'recently-updated': { visible: true, itemCount: '0' },
-            'status:ready': { visible: true, itemCount: 'many' },
-          },
-        },
-      });
-      expect(Object.values(res.body.errors).every((error) => typeof error === 'string')).toBe(true);
-      expect(app.locals.dashboardDefaultsService.getDefaults()).toEqual(previous);
-    });
-
-    it('parses the hidden-plus-checkbox visibility contract into explicit booleans', async () => {
-      const form = buildDashboardDefaultsForm(app);
-      form.sections['recently-updated'].visible = ['0', '1'];
-      form.sections['status:archived'].visible = '0';
-
-      await app.testAgent
-        .post('/dashboard/defaults')
-        .set('Accept', 'application/json')
-        .type('form')
-        .send(form)
-        .expect(200);
-
-      const saved = app.locals.dashboardDefaultsService.getDefaults();
-      expect(saved.sections['recently-updated'].visible).toBe(true);
-      expect(saved.sections['status:archived'].visible).toBe(false);
-    });
-
-    it('rejects summary-card tampering without persisting an unknown Dashboard section', async () => {
-      const previous = app.locals.dashboardDefaultsService.getDefaults();
-      const form = buildDashboardDefaultsForm(app, {
-        order: [...previous.order.slice(0, -1), 'projects'],
-      });
-      form.sections.projects = { visible: ['0', '1'], itemCount: '8' };
-
-      const res = await app.testAgent
-        .post('/dashboard/defaults')
-        .set('Accept', 'application/json')
-        .type('form')
-        .send(form)
-        .expect(422);
-
-      expect(res.body.errors.order).toBeTruthy();
-      expect(app.locals.dashboardDefaultsService.getDefaults()).toEqual(previous);
-    });
-
-    it('keeps the app-level CSRF protection on the save endpoint', async () => {
-      const form = buildDashboardDefaultsForm(app);
-      delete form._csrf;
-
-      await app.testAgent
-        .post('/dashboard/defaults')
-        .set('Accept', 'application/json')
-        .type('form')
-        .send(form)
-        .expect(403);
-    });
-
-
-    // The save endpoint stays until the section-defaults system is retired;
-    // the Dashboard no longer hosts its dialog, so a native invalid post
-    // re-renders the plain Dashboard without persisting anything.
-    it('rejects native invalid posts with a 422 Dashboard render without persisting', async () => {
-      const previous = app.locals.dashboardDefaultsService.getDefaults();
-      const form = buildDashboardDefaultsForm(app);
-      form.sections['recently-updated'].itemCount = '0';
-      form.sections['status:ready'].visible = 'invalid';
-
-      const res = await app.testAgent
-        .post('/dashboard/defaults')
-        .type('form')
-        .send(form)
-        .expect(422);
-
-      expect(res.text).toContain('<h1 class="app-section-title">Dashboard</h1>');
-      expect(res.text).not.toContain('dashboard-defaults-dialog');
-      expect(app.locals.dashboardDefaultsService.getDefaults()).toEqual(previous);
+        expect(firstDate).toBeTruthy();
+        expect(new Date(`${firstDate}T00:00:00Z`).getUTCDay()).toBe(weekday);
+      }
     });
   });
 });

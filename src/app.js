@@ -75,7 +75,6 @@ import { createMarkdownRenderer } from './services/markdown-renderer.js';
 import { createPageDefaultsService } from './services/page-defaults-service.js';
 import { createProjectOptionCatalogueService } from './services/project-option-catalogue-service.js';
 import { createReleaseSignatureSettingsService } from './services/release-signature-settings-service.js';
-import { createDashboardDefaultsService } from './services/dashboard-defaults-service.js';
 import { createOpenLocallySettingsService } from './services/open-locally-settings-service.js';
 import { createSocialPrepSettingsService } from './services/social-prep-settings-service.js';
 import { createNoteRevisionSettingsService } from './services/note-revision-settings-service.js';
@@ -393,13 +392,6 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     projectOptionCatalogueService,
   });
   app.locals.pageDefaultsService = pageDefaultsService;
-
-  const dashboardDefaultsService =
-    opts.dashboardDefaultsService || createDashboardDefaultsService({
-      appMetaRepository,
-      projectOptionCatalogueService,
-    });
-  app.locals.dashboardDefaultsService = dashboardDefaultsService;
 
   // Phase: Open locally v2 — one app-scoped settings service over the shared
   // app-meta repository. Owns the configured Windows projects root used to
@@ -880,7 +872,6 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     assetBrowserPreferenceService,
     tagRepository,
     pageDefaultsService,
-    dashboardSectionRegistryProvider: () => dashboardDefaultsService.getSectionRegistry(),
   });
 
   // Phase 10.1C: media service reuses the exact preview service instance

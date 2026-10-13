@@ -10,11 +10,6 @@ export const ARCHIVED_PROJECT_STATUS = 'archived';
 export const DEFAULT_PROJECT_STATUS = 'tbd';
 export const DEFAULT_PROJECT_TYPE = 'images';
 const PROJECT_OPTION_VALUE_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-export const DASHBOARD_SORTS = Object.freeze({
-  updated: Object.freeze({ column: 'updated_at' }),
-  created: Object.freeze({ column: 'created_at' }),
-  title: Object.freeze({ column: 'title COLLATE NOCASE' }),
-});
 
 const COLUMNS = [
   'id',
@@ -345,65 +340,6 @@ export function createProjectRepository(db) {
     },
 
     /**
-     * Find independently bounded project collections for requested Dashboard
-     * statuses with one windowed SQL statement.
-     *
-     * Invalid or unsupported status limits are ignored. A valid limit is a
-     * safe integer from 1 through 25, so malformed input can never create an
-     * unbounded query.
-     *
-     * @param {Object.<string, {limit: number, sort?: string, order?: string}>} configurationByStatus
-     * @returns {Array<ProjectRecord & {effective_status: string}>}
-     */
-    findDashboardProjectsByStatus(configurationByStatus) {
-      const requested = normalizeDashboardStatusConfigurations(configurationByStatus);
-      if (requested.length === 0) return [];
-
-      const requestedStatusCte = requested.map(() => '(?, ?, ?, ?)').join(', ');
-      const params = requested.flatMap(({ status, limit, sort, order }) => [status, limit, sort, order]);
-      const projectColumns = COLUMNS.map((column) => `projects.${column}`).join(', ');
-
-      const rows = db.prepare(`
-        WITH requested_statuses(status, item_limit, sort_by, sort_order) AS (
-          VALUES ${requestedStatusCte}
-        ),
-        effective_projects AS (
-          SELECT ${projectColumns},
-            CASE
-              WHEN projects.archived_at IS NOT NULL OR projects.status = 'archived'
-                THEN 'archived'
-              ELSE projects.status
-            END AS effective_status
-          FROM projects
-        ),
-        ranked_projects AS (
-          SELECT effective_projects.*, requested_statuses.item_limit,
-            ROW_NUMBER() OVER (
-              PARTITION BY effective_projects.effective_status
-              ORDER BY
-                CASE WHEN requested_statuses.sort_by = 'updated' AND requested_statuses.sort_order = 'asc' THEN effective_projects.updated_at END ASC,
-                CASE WHEN requested_statuses.sort_by = 'updated' AND requested_statuses.sort_order = 'desc' THEN effective_projects.updated_at END DESC,
-                CASE WHEN requested_statuses.sort_by = 'created' AND requested_statuses.sort_order = 'asc' THEN effective_projects.created_at END ASC,
-                CASE WHEN requested_statuses.sort_by = 'created' AND requested_statuses.sort_order = 'desc' THEN effective_projects.created_at END DESC,
-                CASE WHEN requested_statuses.sort_by = 'title' AND requested_statuses.sort_order = 'asc' THEN effective_projects.title END COLLATE NOCASE ASC,
-                CASE WHEN requested_statuses.sort_by = 'title' AND requested_statuses.sort_order = 'desc' THEN effective_projects.title END COLLATE NOCASE DESC,
-                CASE WHEN requested_statuses.sort_order = 'asc' THEN effective_projects.id END ASC,
-                CASE WHEN requested_statuses.sort_order = 'desc' THEN effective_projects.id END DESC
-            ) AS status_rank
-          FROM effective_projects
-          INNER JOIN requested_statuses
-            ON requested_statuses.status = effective_projects.effective_status
-        )
-        SELECT ${COLUMNS.join(', ')}, effective_status
-        FROM ranked_projects
-        WHERE status_rank <= item_limit
-        ORDER BY effective_status ASC, status_rank ASC
-      `).all(...params);
-
-      return rows;
-    },
-
-    /**
      * @param {Object} [options]
      * @param {string|string[]} [options.status]
      * @param {string[]} [options.statuses]
@@ -541,25 +477,6 @@ function normalizeProjectOptionSelection(value) {
   )))];
 }
 
-function normalizeDashboardStatusConfigurations(configurationByStatus) {
-  if (!configurationByStatus || typeof configurationByStatus !== 'object' || Array.isArray(configurationByStatus)) {
-    return [];
-  }
-
-  return Object.entries(configurationByStatus).flatMap(([status, configuration]) => {
-    if (!PROJECT_OPTION_VALUE_PATTERN.test(status)) return [];
-    const limit = typeof configuration === 'number' ? configuration : configuration?.limit;
-    return Number.isSafeInteger(limit) && limit >= 1 && limit <= 25
-      ? [{
-        status,
-        limit,
-        sort: DASHBOARD_SORTS[configuration?.sort] ? configuration.sort : 'updated',
-        order: configuration?.order === 'asc' ? 'asc' : 'desc',
-      }]
-      : [];
-  });
-}
-
 function normalizeTagSelection(value) {
   const values = Array.isArray(value) ? value : [value];
   return [...new Set(values.filter((tagId) => Number.isSafeInteger(tagId) && tagId > 0))]
@@ -567,9 +484,9 @@ function normalizeTagSelection(value) {
 }
 
 const ALLOWED_SORTS = Object.freeze({
-  updated: DASHBOARD_SORTS.updated,
-  created: DASHBOARD_SORTS.created,
-  title: DASHBOARD_SORTS.title,
+  updated: Object.freeze({ column: 'updated_at' }),
+  created: Object.freeze({ column: 'created_at' }),
+  title: Object.freeze({ column: 'title COLLATE NOCASE' }),
 });
 
 // Equal sort keys are common (timestamps written in the same second). The
