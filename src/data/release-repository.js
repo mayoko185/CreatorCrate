@@ -270,6 +270,15 @@ export function createReleaseRepository(db) {
     LIMIT ?
   `);
 
+  const dashboardReleasesByIdsStmt = db.prepare(`
+    SELECT ${DASHBOARD_RELEASE_SELECT}
+    FROM releases
+    JOIN projects ON projects.id = releases.project_id
+    WHERE ${DASHBOARD_ACTIVE}
+      AND releases.id IN (SELECT value FROM json_each(?))
+    ORDER BY releases.id ASC
+  `);
+
   const recentlyPublishedStmt = db.prepare(`
     SELECT ${DASHBOARD_RELEASE_SELECT}
     FROM releases
@@ -1113,6 +1122,21 @@ export function createReleaseRepository(db) {
      */
     findDashboardUndatedReleases(limit = 10) {
       return dashboardUndatedStmt.all(normalizeLimit(limit, 10));
+    },
+
+    /**
+     * Named active unpublished releases of non-archived projects, in the
+     * Dashboard row shape and regardless of any Dashboard list cap. IDs that
+     * do not name such a release are omitted.
+     *
+     * @param {number[]} ids
+     * @returns {Array<ReleaseRecord & {project_title: string, project_status: string,
+     *   selected_asset_count: number, missing_asset_count: number}>}
+     */
+    findDashboardReleasesByIds(ids) {
+      const validIds = [...new Set((Array.isArray(ids) ? ids : []).filter((id) => Number.isSafeInteger(id) && id > 0))];
+      if (!validIds.length) return [];
+      return dashboardReleasesByIdsStmt.all(JSON.stringify(validIds));
     },
 
     /**

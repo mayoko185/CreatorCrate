@@ -199,6 +199,23 @@ describe('dashboard HTTP composition', () => {
       expect(res.text).not.toMatch(/<input[^>]*type="search"/);
     });
 
+    it('renders the scheduling recovery status and announcer outside the refreshed Dashboard region', async () => {
+      const res = await app.testAgent.get('/').expect(200);
+      const sync = res.text.match(/<div class="notice notice--warning dashboard-sync" data-dashboard-sync hidden>[\s\S]*?<\/div>/)?.[0] || '';
+      const syncAt = res.text.indexOf('data-dashboard-sync ');
+      const regionAt = res.text.indexOf('<div class="dashboard" data-dashboard ');
+
+      expect(sync).toContain('<p data-dashboard-sync-message></p>');
+      expect(sync).toContain('<button class="button button-small button-secondary" type="button" data-dashboard-sync-retry>Retry refresh</button>');
+      // A plain link, so recovery by reload is a GET even without scripts.
+      expect(sync).toContain('<a class="button button-small button-secondary" href="/" data-dashboard-sync-reload>Reload page</a>');
+      expect(sync).toContain('data-dashboard-sync-dismiss hidden>Dismiss</button>');
+      expect(res.text).toContain('<p class="sr-only" role="status" data-dashboard-announcer></p>');
+      expect(syncAt).toBeGreaterThan(res.text.indexOf('<p class="dashboard-today">'));
+      expect(syncAt).toBeLessThan(regionAt);
+      expect(res.text.indexOf('data-dashboard-announcer')).toBeLessThan(regionAt);
+    });
+
     it('ignores the retired ?defaults=1 dialog entry point', async () => {
       const res = await app.testAgent.get('/?defaults=1').expect(200);
       expect(res.text).not.toContain('dashboard-defaults-dialog');
@@ -256,6 +273,8 @@ describe('dashboard HTTP composition', () => {
       expect(panel).toContain('data-dashboard-status-filter="all"');
       expect(panel).not.toContain('id="dashboard-projects-table"');
       expect(panel).not.toContain('aria-controls=');
+      expect(panel).not.toContain('data-dashboard-projects-filter-empty');
+      expect(panel).not.toContain('aria-live=');
     });
   });
 
@@ -434,7 +453,9 @@ describe('dashboard HTTP composition', () => {
       expect(item).toContain(`id="dashboard-schedule-date-${releaseId}" type="date" name="plannedDate" required data-dashboard-schedule-date`);
       expect(item).toContain('data-dashboard-schedule-set>Set</button>');
       expect(item).toContain(`id="dashboard-schedule-error-${releaseId}" data-dashboard-schedule-error hidden`);
-      expect(item).toContain('role="status" data-dashboard-schedule-status');
+      // The row shows its confirmation; the page-level announcer speaks it.
+      expect(item).toContain('<div class="dashboard-schedule-status" data-dashboard-schedule-status></div>');
+      expect(item).not.toContain('role="status"');
     });
 
     it('caps the list at ten items oldest first and links to all undated releases', async () => {
@@ -449,6 +470,7 @@ describe('dashboard HTTP composition', () => {
       const rendered = [...panel.matchAll(/data-dashboard-needs-date-item data-release-id="(\d+)"/g)].map((match) => Number(match[1]));
 
       expect(rendered).toEqual(ids.slice(0, 10));
+      expect(panel).toContain('<ul class="dashboard-needs-date-list" data-dashboard-needs-date-list>');
       expect(panel).toContain('12 waiting');
       expect(panel).toContain('<a class="dashboard-view-all" href="/releases?schedule=unscheduled">View all 12');
     });
@@ -552,8 +574,11 @@ describe('dashboard HTTP composition', () => {
       const panel = extractProjectsPanel(res.text);
       const table = extractById(panel, 'table', 'dashboard-projects-table');
 
-      expect(panel).toContain('<div class="dashboard-table-scroll" role="region" aria-labelledby="dashboard-projects-heading" tabindex="0">');
+      expect(panel).toContain('<div class="dashboard-table-scroll" role="region" aria-labelledby="dashboard-projects-heading" tabindex="0" data-dashboard-projects-table-region>');
       expect(table).toContain('data-complete="true"');
+      expect(res.text).toContain('aria-labelledby="dashboard-projects-heading" data-dashboard-projects>');
+      expect(panel).toContain('<p class="dashboard-empty-line" data-dashboard-projects-filter-empty hidden>No projects match this status.</p>');
+      expect(panel).toContain('<span data-dashboard-projects-count aria-live="polite">3 of 3 active projects');
       expect(table).toContain('<caption class="sr-only">');
       expect([...table.matchAll(/<th scope="col"[^>]*>([^<]+)<\/th>/g)].map((match) => match[1]))
         .toEqual(['Project', 'Status', 'Type', 'Assets', 'Next release', 'Last published', 'Updated']);
@@ -622,6 +647,8 @@ describe('dashboard HTTP composition', () => {
       expect(new Set(rowIds).size).toBe(50);
       expect(panel).toContain('data-complete="false"');
       expect(panel).toContain('50 of 52 active projects · archived hidden');
+      expect(panel).not.toContain('data-dashboard-projects-filter-empty');
+      expect(panel).toContain('<span data-dashboard-projects-count>50 of 52');
       expect(panel).not.toContain('Archived Bulk');
       expect(nav).toContain('aria-label="Project status filters"');
       expect(nav).toContain('href="/projects?status=all"');
@@ -685,6 +712,69 @@ describe('dashboard HTTP composition', () => {
         expect(card).toContain('<dt>Next release</dt>');
       }
       expect(rowCard.replace(/id="[^"]+"/, '')).toBe(tableCard.replace(/id="[^"]+"/, ''));
+    });
+
+    it('renders current titles for retained releases outside every capped list, and only on request', async () => {
+      const projectId = await createProject(app, { title: 'Retained Project' });
+      // Five earlier Later releases push the retained one past the Later cap.
+      for (let index = 0; index < 5; index += 1) {
+        insertRelease(db, projectId, { title: `Later ${index}`, plannedDate: addDays(today, 30 + index) });
+      }
+      const retainedId = insertRelease(db, projectId, { title: 'Retained Release', plannedDate: addDays(today, 60) });
+      const undatedId = insertRelease(db, projectId, { title: 'Still Undated' });
+      const archivedProjectId = await createProject(app, { title: 'Gone Project' });
+      const goneId = insertRelease(db, archivedProjectId, { title: 'Gone Release', plannedDate: addDays(today, 5) });
+      db.prepare("UPDATE projects SET archived_at = datetime('now') WHERE id = ?").run(archivedProjectId);
+
+      const plain = await app.testAgent.get('/').expect(200);
+      expect(plain.text).not.toContain('data-dashboard-retained-titles');
+      expect(extractReleaseRow(plain.text, retainedId)).toBe('');
+
+      const res = await app.testAgent.get(`/?retain=${retainedId},${goneId},bogus,-3`).expect(200);
+      const template = res.text.match(/<template data-dashboard-retained-titles>[\s\S]*?<\/template>/)?.[0] || '';
+      expect(extractNeedsDatePanel(res.text)).toContain(template);
+      expect(template).toContain(`data-dashboard-retained-release data-release-id="${retainedId}"`);
+      expect(template).not.toContain(`data-release-id="${goneId}"`);
+      expect(template).toContain(`id="dashboard-release-info-needs-date-${retainedId}"`);
+      expect(template).toContain(`<time datetime="${addDays(today, 60)}">${addDays(today, 60)}</time>`);
+      expect(template).toContain(`id="dashboard-project-info-needs-date-${retainedId}"`);
+      // The project summary comes from the server's own projection, so it
+      // matches the Projects table row for the same project.
+      const tableCard = extractProjectRow(res.text, projectId).match(/<dl[\s\S]*?<\/dl>/)?.[0] || '';
+      const retainedCard = template.match(/<div id="dashboard-project-info-needs-date-\d+"[\s\S]*?<\/dl>/)?.[0].match(/<dl[\s\S]*?<\/dl>/)?.[0] || '';
+      expect(retainedCard).toContain('<dt>Next release</dt>');
+      expect(retainedCard).toBe(tableCard);
+      // Retaining a release changes no other server-owned region.
+      expect(extractNeedsDateItem(res.text, undatedId)).toBe(extractNeedsDateItem(plain.text, undatedId));
+      expect(extractScheduledPanel(res.text)).toBe(extractScheduledPanel(plain.text));
+    });
+
+    it('renders titles for every retained release beyond the Needs-a-date cap while that list stays capped', async () => {
+      const projectId = await createProject(app, { title: 'Many Project' });
+      const retainedIds = Array.from({ length: 14 }, (_, index) => insertRelease(db, projectId, {
+        title: `Scheduled ${index}`,
+        plannedDate: addDays(today, 40 + index),
+      }));
+      const undatedIds = Array.from({ length: 12 }, (_, index) => insertRelease(db, projectId, { title: `Undated ${index}` }));
+
+      const plain = await app.testAgent.get('/').expect(200);
+      const retain = [...retainedIds, retainedIds[0], 'bogus', '0', '-3', '1.5', '', '99999999999999999'].join(',');
+      const res = await app.testAgent.get(`/?retain=${retain}`).expect(200);
+      const template = res.text.match(/<template data-dashboard-retained-titles>[\s\S]*?<\/template>/)?.[0] || '';
+      const renderedIds = [...template.matchAll(/data-dashboard-retained-release data-release-id="(\d+)"/g)]
+        .map(([, id]) => Number(id));
+      expect(renderedIds).toEqual(retainedIds);
+      for (const id of retainedIds) {
+        expect(template).toContain(`id="dashboard-release-info-needs-date-${id}"`);
+        expect(template).toContain(`id="dashboard-project-info-needs-date-${id}"`);
+      }
+      // Retaining releases neither lifts the undated display cap nor changes
+      // the authoritative undated total.
+      const collapse = (html) => html.replace(/\s+/g, ' ');
+      const panel = extractNeedsDatePanel(res.text).replace(template, '');
+      expect(collapse(panel)).toBe(collapse(extractNeedsDatePanel(plain.text)));
+      expect(undatedIds.filter((id) => extractNeedsDateItem(res.text, id))).toHaveLength(10);
+      expect(panel).toContain('href="/releases?schedule=unscheduled"');
     });
   });
 

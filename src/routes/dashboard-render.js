@@ -255,6 +255,23 @@ function buildStatusTabs(projectTable, statusOptions) {
   ];
 }
 
+/**
+ * Release IDs from `?retain=1,2`, sent by the Dashboard refresh for the
+ * scheduling confirmations it keeps on screen. Malformed values are ignored.
+ * There is deliberately no count cap: confirmations accumulate for the whole
+ * page session and each one needs its titles, so dropping IDs would drop
+ * confirmations. The request-line size bounds the input, and the repository
+ * resolves every ID in one query.
+ */
+export function parseRetainedReleaseIds(value) {
+  if (typeof value !== 'string' || !value) return [];
+  const ids = value.split(',')
+    .filter((part) => /^[1-9]\d{0,15}$/.test(part))
+    .map(Number)
+    .filter(Number.isSafeInteger);
+  return [...new Set(ids)];
+}
+
 export function renderDashboardPage(req, res, next, {
   appName,
   workflowQueryService,
@@ -263,13 +280,16 @@ export function renderDashboardPage(req, res, next, {
   status = 200,
   projectCreateDialogOpen = false,
   projectCreateForm,
+  retainedReleaseIds = [],
 } = {}) {
   try {
     const effectivePageDefaultsService = pageDefaultsService || req.app?.locals?.pageDefaultsService;
     if (!effectivePageDefaultsService) {
       throw new Error('Dashboard requires a pageDefaultsService.');
     }
-    const dashboard = workflowQueryService.getDashboardData();
+    const dashboard = retainedReleaseIds.length
+      ? workflowQueryService.getDashboardData({ retainedReleaseIds })
+      : workflowQueryService.getDashboardData();
     const { today } = dashboard;
     const nsfwFilterEnabled = getNsfwFilterSettingsService(req).isEnabled();
     const optionPresentation = buildProjectOptionPresentation({
@@ -361,6 +381,9 @@ export function renderDashboardPage(req, res, next, {
         },
         scheduled: { groups: scheduledGroups },
         recentlyPublished,
+        retained: retainedReleaseIds.length
+          ? { releases: (dashboard.retainedReleases ?? []).map(presentRelease) }
+          : null,
         projectTable: {
           complete: projectTable.complete,
           total: projectTable.total,

@@ -7,7 +7,7 @@ import {
   DASHBOARD_SORT_VALUES,
   getDashboardSectionDefaultSorting,
 } from '../services/dashboard-defaults-service.js';
-import { renderDashboardPage } from './dashboard-render.js';
+import { parseRetainedReleaseIds, renderDashboardPage } from './dashboard-render.js';
 
 const DASHBOARD_DEFAULTS_SAVED_NOTICE = 'dashboard_defaults_saved';
 const DASHBOARD_DEFAULTS_SAVED_MESSAGE = 'Dashboard defaults saved successfully.';
@@ -173,6 +173,7 @@ export function createIndexRouter({
       workflowQueryService,
       pageDefaultsService,
       tagService,
+      retainedReleaseIds: parseRetainedReleaseIds(req.query.retain),
     });
   });
 

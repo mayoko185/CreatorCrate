@@ -54,7 +54,7 @@
   {% endif %}
 
   {% if table.rows.length %}
-    <div class="dashboard-table-scroll" role="region" aria-labelledby="dashboard-projects-heading" tabindex="0">
+    <div class="dashboard-table-scroll" role="region" aria-labelledby="dashboard-projects-heading" tabindex="0" data-dashboard-projects-table-region>
       <table class="dashboard-projects-table" id="dashboard-projects-table" data-dashboard-projects-table data-complete="{{ 'true' if table.complete else 'false' }}">
         <caption class="sr-only">Active projects, most recently updated first</caption>
         <thead>
@@ -107,12 +107,15 @@
         </tbody>
       </table>
     </div>
+    {% if table.complete %}
+      <p class="dashboard-empty-line" data-dashboard-projects-filter-empty hidden>No projects match this status.</p>
+    {% endif %}
   {% else %}
     <p class="dashboard-empty-line">No active projects.</p>
   {% endif %}
 
   <p class="dashboard-projects-footer">
-    <span data-dashboard-projects-count>{{ table.shown }} of {{ table.total }} active {{ "project" if table.total == 1 else "projects" }} · archived hidden</span>
+    <span data-dashboard-projects-count{% if table.complete and table.rows.length %} aria-live="polite"{% endif %}>{{ table.shown }} of {{ table.total }} active {{ "project" if table.total == 1 else "projects" }} · archived hidden</span>
     <a class="dashboard-view-all" href="/projects">Open in Projects<span aria-hidden="true"> →</span></a>
   </p>
 {% endmacro %}

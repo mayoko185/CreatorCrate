@@ -8,6 +8,7 @@
   Usage:
     {% import "partials/dashboard-needs-date-item.njk" as needsDateItem %}
     {{ needsDateItem.render(release, quickPicks, _csrf, clockFormat) }}
+    {{ needsDateItem.retainedTitles(releases, clockFormat) }}
 #}
 {% import "partials/dashboard-thumbnail.njk" as dashboardThumbnail %}
 {% import "partials/dashboard-title-info.njk" as titleInfo %}
@@ -20,6 +21,32 @@
   <input type="hidden" name="plannedTime" value="">
 {% endmacro %}
 
+{# Title links and their popovers. The item and its refreshed titles render
+   through these, so a retained confirmation's titles match a fresh item. #}
+{% macro releaseTitle(release, clockFormat) %}
+  {{ titleInfo.release(release, 'needs-date', clockFormat) }}
+{% endmacro %}
+
+{% macro projectTitle(release, clockFormat) %}
+  {{ titleInfo.project(release.project, 'needs-date', release.id, clockFormat) }}
+{% endmacro %}
+
+{#
+  Current titles for releases the client keeps on screen as scheduling
+  confirmations after they leave the list. Inert inside a template, so the
+  popover ids never duplicate until the client swaps them into their item.
+#}
+{% macro retainedTitles(releases, clockFormat) %}
+  <template data-dashboard-retained-titles>
+    {% for release in releases %}
+      <div data-dashboard-retained-release data-release-id="{{ release.id }}">
+        <div data-dashboard-retained-title="release">{{ releaseTitle(release, clockFormat) }}</div>
+        <div data-dashboard-retained-title="project">{{ projectTitle(release, clockFormat) }}</div>
+      </div>
+    {% endfor %}
+  </template>
+{% endmacro %}
+
 {% macro render(release, quickPicks, csrfToken, clockFormat) %}
   {% set scheduleUrl = "/releases/" + release.id + "/schedule" %}
   {% set errorId = "dashboard-schedule-error-" + release.id %}
@@ -27,10 +54,10 @@
     {{ dashboardThumbnail.render(release.thumbnail) }}
     <div class="dashboard-needs-date-body">
       <div class="dashboard-item-title">
-        {{ titleInfo.release(release, 'needs-date', clockFormat) }}
+        {{ releaseTitle(release, clockFormat) }}
       </div>
       <div class="dashboard-item-meta">
-        {{ titleInfo.project(release.project, 'needs-date', release.id, clockFormat) }}
+        {{ projectTitle(release, clockFormat) }}
         <span class="dashboard-item-meta-separator" aria-hidden="true">·</span>
         <span>{{ release.selected_asset_count }} {{ "asset" if release.selected_asset_count == 1 else "assets" }} selected</span>
       </div>
@@ -73,7 +100,9 @@
           </fieldset>
         </form>
         <p class="dashboard-schedule-error field-error" id="{{ errorId }}" data-dashboard-schedule-error hidden></p>
-        <div class="dashboard-schedule-status" role="status" data-dashboard-schedule-status></div>
+        {# Visible confirmation only: outcomes are announced by the page-level
+           announcer, which survives the dashboard refresh that follows. #}
+        <div class="dashboard-schedule-status" data-dashboard-schedule-status></div>
       </div>
     </div>
   </li>

@@ -34,6 +34,10 @@ import {
   enhanceDashboardDefaultsDialog,
 } from './client/dedicated-reorder.js';
 import { enhanceCategoryDetails } from './client/category-details.js';
+import {
+  enhanceDashboardProjectTable,
+  enhanceDashboardScheduling,
+} from './client/dashboard.js';
 import { enhanceDefaultsFetchSave } from './client/settings-defaults-fetch-save.js';
 import { enhanceAssetCategoryPreferencesFetchSave } from './client/settings-asset-category-preferences-fetch-save.js';
 import { enhanceNsfwFilterFetchSave } from './client/settings-nsfw-filter-fetch-save.js';
@@ -160,6 +164,8 @@ export {
   enhanceBookTransfer,
   enhanceChapterPageReorder,
   enhanceDashboardDefaultsDialog,
+  enhanceDashboardProjectTable,
+  enhanceDashboardScheduling,
   enhanceCategoryDetails,
   enhanceProjectOptionMutations,
   enhanceProjectOptionReorder,
@@ -315,6 +321,8 @@ if (typeof document !== 'undefined') {
     enhanceAssetViewerInfoCards(document);
     enhanceCalendarInfoCards(document);
     enhanceDashboardTitleInfoCards(document);
+    enhanceDashboardProjectTable(document);
+    enhanceDashboardScheduling(document);
     enhanceProjectInfoCards(document);
     enhanceDatePickers(document);
     enhanceTimePickers(document);

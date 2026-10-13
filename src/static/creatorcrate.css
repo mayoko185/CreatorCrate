@@ -11817,6 +11817,25 @@
   color: var(--muted);
   font-size: 0.875rem;
 }
+/* Scheduling recovery status. Sticky below the header so it stays in view
+   while the user works further down the dashboard. */
+.dashboard-sync {
+  position: sticky;
+  top: calc(var(--shell-header-height) + var(--space-sm));
+  z-index: calc(var(--shell-z-header) - 1);
+  box-shadow: var(--shadow-md);
+  overflow-wrap: anywhere;
+}
+/* Content scrolls beneath it, so the translucent notice tint needs an
+   opaque base. */
+.dashboard-sync.notice--warning {
+  background: linear-gradient(rgba(167, 139, 250, 0.14), rgba(167, 139, 250, 0.14)), var(--surface);
+}
+.dashboard-sync-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+}
 /* Zero-specificity resets so component rules below always win. */
 :where(.dashboard) :where(h2, h3, p) {
   margin: 0;

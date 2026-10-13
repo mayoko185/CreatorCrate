@@ -21,6 +21,18 @@
   {% endcall %}
   <p class="dashboard-today"><time datetime="{{ dashboard.today }}">{{ dashboard.todayLabel }}</time></p>
 
+  {# Scheduling recovery status and announcements live outside the dashboard
+     region so a refresh that replaces the region cannot remove them. #}
+  <div class="notice notice--warning dashboard-sync" data-dashboard-sync hidden>
+    <p data-dashboard-sync-message></p>
+    <p class="dashboard-sync-actions">
+      <button class="button button-small button-secondary" type="button" data-dashboard-sync-retry>Retry refresh</button>
+      <a class="button button-small button-secondary" href="/" data-dashboard-sync-reload>Reload page</a>
+      <button class="button button-small button-secondary" type="button" data-dashboard-sync-dismiss hidden>Dismiss</button>
+    </p>
+  </div>
+  <p class="sr-only" role="status" data-dashboard-announcer></p>
+
   <div class="dashboard" data-dashboard data-today="{{ dashboard.today }}">
     <section class="dashboard-attention" aria-labelledby="dashboard-attention-heading">
       <h2 class="sr-only" id="dashboard-attention-heading">Needs attention</h2>
@@ -111,7 +123,7 @@
         </div>
         {% if dashboard.needsDate.items.length %}
           <p class="dashboard-section-help">Oldest first. Pick an open day, or choose any date.</p>
-          <ul class="dashboard-needs-date-list">
+          <ul class="dashboard-needs-date-list" data-dashboard-needs-date-list>
             {% for release in dashboard.needsDate.items %}
               {{ needsDateItem.render(release, dashboard.quickPicks, _csrf, clockFormat) }}
             {% endfor %}
@@ -121,6 +133,9 @@
           {% endif %}
         {% else %}
           <p class="dashboard-empty-line">Every active release has a date.</p>
+        {% endif %}
+        {% if dashboard.retained %}
+          {{ needsDateItem.retainedTitles(dashboard.retained.releases, clockFormat) }}
         {% endif %}
       </section>
 
@@ -181,7 +196,7 @@
       </div>
     </div>
 
-    <section class="dashboard-panel dashboard-projects" aria-labelledby="dashboard-projects-heading">
+    <section class="dashboard-panel dashboard-projects" aria-labelledby="dashboard-projects-heading" data-dashboard-projects>
       <div class="dashboard-section-header">
         <h2 id="dashboard-projects-heading">Projects</h2>
       </div>

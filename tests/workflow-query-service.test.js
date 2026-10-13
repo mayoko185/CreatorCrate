@@ -4814,6 +4814,39 @@ describe('workflow query service', () => {
       expect(counter.count()).toBe(smallCount);
     });
 
+    it('returns every requested retained release, beyond the Needs-a-date cap, in a fixed number of statements', () => {
+      const project = insertProject(db, { title: 'Retained dashboard' });
+      const retained = Array.from({ length: 15 }, (_, index) => insertRelease(db, {
+        projectId: project.id, title: `Retained ${index}`, plannedDate: `2026-08-${String(index + 1).padStart(2, '0')}`,
+      }));
+      for (let index = 0; index < 12; index++) insertRelease(db, { projectId: project.id, title: `Undated ${index}` });
+      const archived = insertRelease(db, { projectId: project.id, title: 'Archived', plannedDate: '2026-08-20' });
+      db.prepare("UPDATE releases SET archived_at = '2026-06-01 00:00:00' WHERE id = ?").run(archived.id);
+
+      const counter = instrumentStatementExecution(db);
+      const query = createWorkflowQueryService({ db });
+      counter.reset();
+      query.getDashboardData({ today: TODAY, weekStart: 'monday', retainedReleaseIds: ids(retained.slice(0, 2)) });
+      const fewCount = counter.count();
+      const changes = db.prepare('SELECT total_changes() AS n').get().n;
+      counter.reset();
+      const data = query.getDashboardData({
+        today: TODAY,
+        weekStart: 'monday',
+        retainedReleaseIds: [...ids(retained), archived.id, 999999],
+      });
+
+      expect(counter.count()).toBe(fewCount);
+      expect(db.prepare('SELECT total_changes() AS n').get().n).toBe(changes);
+      expect(ids(data.retainedReleases)).toEqual(ids(retained));
+      for (const release of data.retainedReleases) {
+        expect(release.project).toMatchObject({ id: project.id, undatedReleaseCount: 12 });
+      }
+      expect(data.needsDate.items).toHaveLength(10);
+      expect(data.needsDate.total).toBe(12);
+      expect(data.tiles.needsDate.count).toBe(12);
+    });
+
     it('batches selected-only Social Preparation once over every displayed release', () => {
       const project = insertProject(db, { title: 'Social dashboard' });
       const scheduled = insertRelease(db, { projectId: project.id, title: 'Scheduled', plannedDate: TODAY });

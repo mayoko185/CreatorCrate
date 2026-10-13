@@ -643,6 +643,10 @@ export function createWorkflowQueryService({
    * @param {string} [options.today] application-local YYYY-MM-DD override
    * @param {'monday'|'sunday'} [options.weekStart] strip week start; defaults
    *   to the saved Calendar preference
+   * @param {number[]} [options.retainedReleaseIds] releases the client still
+   *   shows after scheduling them out of Needs a date. They are returned as
+   *   `retainedReleases`, presented like every other row, so their title
+   *   popovers can be refreshed even when no capped list includes them.
    */
   function getDashboardData(options = {}) {
     const today = options.today || defaultToday();
@@ -660,6 +664,14 @@ export function createWorkflowQueryService({
     });
     const undatedRows = releaseRepository.findDashboardUndatedReleases(DASHBOARD_LIMITS.needsDate);
     const publishedRows = releaseRepository.findRecentlyPublished(DASHBOARD_LIMITS.recentlyPublished);
+    // Not capped by `needsDate`: confirmations accumulate beyond the list
+    // they were scheduled from, and every one needs current titles.
+    const retainedReleaseIds = Array.isArray(options.retainedReleaseIds)
+      ? options.retainedReleaseIds
+      : [];
+    const retainedRows = retainedReleaseIds.length
+      ? releaseRepository.findDashboardReleasesByIds(retainedReleaseIds)
+      : [];
     const calendarCounts = releaseRepository.countDashboardCalendarDays({
       startDate: stripStart,
       endDate: stripEndExclusive,
@@ -684,7 +696,7 @@ export function createWorkflowQueryService({
         .filter(([status]) => status !== ARCHIVED_PROJECT_STATUS)
     );
     const tableProjectIds = projectRows.map((project) => project.id);
-    const releaseRows = [...scheduledRows, ...undatedRows, ...publishedRows];
+    const releaseRows = [...scheduledRows, ...undatedRows, ...publishedRows, ...retainedRows];
     // Every displayed project, table row or release parent, gets the same
     // summary so its title popover reads identically wherever it appears.
     const enrichmentProjectIds = [...new Set([
@@ -839,6 +851,7 @@ export function createWorkflowQueryService({
       },
       scheduled: { groups },
       recentlyPublished: { items: publishedRows.map(presentRelease) },
+      retainedReleases: retainedRows.map(presentRelease),
       projectTable: {
         total: projectTotal,
         shown: rows.length,

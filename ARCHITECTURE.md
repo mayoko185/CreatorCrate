@@ -2467,6 +2467,27 @@ makes the initial queued-cancellation attempt; a `409` means the job started in
 the race, so it is retained and polling resumes when the dialog reopens. No
 SSE/WebSocket transport is used for processing progress.
 
+Dashboard Needs-a-date scheduling ([`dashboard.js`](src/static/client/dashboard.js))
+writes through the JSON-only `POST /releases/:id/schedule`, sending the
+rendered schedule as the expected value so a stale write is refused with `409`
+rather than overwriting. Only a well-formed success echoing the request is
+treated as confirmed; a lost, malformed or `5xx` response is *unconfirmed* and
+is never retried. Every confirmed write, conflict, missing release or
+unconfirmed outcome is followed by an authoritative `GET /` that replaces the
+`[data-dashboard]` region; the client never adjusts counts itself and carries
+over only page-session state (retained confirmations with Undo, unsent dates,
+the Projects filter, focus). A retained confirmation's release is usually no
+longer in any capped list, so the refresh names those releases in
+`GET /?retain=<ids>` and the server renders their current title popovers in an
+inert `<template>`, which the client swaps into the retained rows; a release the
+server no longer renders is not retained. A page-level mutation gate admits one
+write-and-refresh lifecycle at a time. When that refresh fails, a recovery
+controller holds the gate so no row can write with possibly stale expected
+values, and a status outside the region offers Retry refresh (a GET only) and
+a plain reload link; only a successful refresh releases it. The scheduling
+forms render disabled and are enabled only once this whole lifecycle is wired,
+so a native submit never reaches the JSON endpoint.
+
 **Three asset modes**, resolved once by `resolveAssetMode(nodeEnv)` and
 exposed to templates as `assetMode`:
 
