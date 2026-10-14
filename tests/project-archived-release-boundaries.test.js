@@ -153,7 +153,7 @@ describe('legacy status-only Archived release boundaries', () => {
         { date: '2025-06-16', published: 1, scheduled: 0, overdue: 0 },
         { date: '2025-06-17', published: 0, scheduled: 1, overdue: 0 },
       ]);
-    expect(releaseRepository.countActiveReleasesWithMissingSelectedAssets()).toBe(1);
+    expect(projectIdsOf(releaseRepository.findReleasesWithMissingSelectedAssets(10))).toEqual(new Set([activeProject.id]));
     expect(assetRepository.countMissingInActiveProjects()).toBe(1);
     expect(releaseRepository.findReleaseScheduleSummaryByProjectIds([archivedProject.id]))
       .toEqual([expect.objectContaining({ next_release_id: null, undated_count: 0 })]);

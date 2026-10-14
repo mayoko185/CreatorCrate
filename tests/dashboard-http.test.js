@@ -64,6 +64,14 @@ function extractTile(html, tile) {
   return html.match(new RegExp(`<a class="dashboard-tile[^"]*"[^>]*data-dashboard-tile="${tile}">[\\s\\S]*?<\\/a>`))?.[0] || '';
 }
 
+function extractAttentionRegion(html) {
+  return extractRegion(html, 'dashboard-attention-heading');
+}
+
+function visibleText(html) {
+  return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
 function extractNeedsDateItem(html, releaseId) {
   return html.match(new RegExp(`<li class="dashboard-needs-date-item" data-dashboard-needs-date-item data-release-id="${releaseId}">[\\s\\S]*?data-dashboard-schedule-status></div>\\s*</div>\\s*</div>\\s*</li>`))?.[0] || '';
 }
@@ -230,12 +238,11 @@ describe('dashboard HTTP composition', () => {
     it('renders zero tiles and compact one-line empty states', async () => {
       const res = await app.testAgent.get('/').expect(200);
 
-      expect(extractTile(res.text, 'overdue')).toContain('dashboard-tile--zero');
-      expect(extractTile(res.text, 'overdue')).toContain('Nothing overdue');
-      expect(extractTile(res.text, 'needs-date')).toContain('All releases have dates');
-      expect(extractTile(res.text, 'today')).toContain('Nothing today');
-      expect(extractTile(res.text, 'next7')).toContain('Through ');
-      expect(extractTile(res.text, 'missing-assets')).toContain('No missing files');
+      for (const tile of ['overdue', 'needs-date', 'today', 'next7', 'missing-assets']) {
+        expect(extractTile(res.text, tile)).toContain('dashboard-tile--zero');
+        expect(extractTile(res.text, tile)).toContain('data-dashboard-tile-count>0</span>');
+      }
+      expect(extractAttentionRegion(res.text)).not.toContain('dashboard-tile-context');
       expect(extractNeedsDatePanel(res.text)).toContain('<p class="dashboard-empty-line">Every active release has a date.</p>');
       expect(extractScheduledPanel(res.text)).toContain('<p class="dashboard-empty-line">Nothing scheduled.</p>');
       expect(extractRecentPanel(res.text)).toContain('<p class="dashboard-empty-line">Nothing published yet.</p>');
@@ -259,7 +266,7 @@ describe('dashboard HTTP composition', () => {
   });
 
   describe('attention tiles', () => {
-    it('links all five tiles, emphasizes Needs a date, and shows service counts with context', async () => {
+    it('links all five tiles, emphasizes Needs a date, and shows only each label and count', async () => {
       const projectId = await createProject(app, { title: 'Tile Project', status: 'ready' });
       insertRelease(db, projectId, { title: 'Late One', plannedDate: addDays(today, -3) });
       insertRelease(db, projectId, { title: 'Due Now', plannedDate: today, plannedTime: '18:05' });
@@ -268,69 +275,54 @@ describe('dashboard HTTP composition', () => {
       const undatedId = insertRelease(db, projectId, { title: 'Undated', createdAt: '2020-01-01 12:00:00' });
       addMissingSelectedAsset(projectId, undatedId, 'lost.txt');
 
-      app.locals.clockFormatSettingsService.setClockFormat('12h');
       const res = await app.testAgent.get('/').expect(200);
 
-      const overdue = extractTile(res.text, 'overdue');
-      expect(overdue).toContain('href="/releases?schedule=overdue"');
-      expect(overdue).toContain('<span class="dashboard-tile-value" data-dashboard-tile-count>1</span>');
-      expect(overdue).toContain('Unpublished, date passed');
+      const expected = [
+        ['overdue', '/releases?schedule=overdue', 'Overdue'],
+        ['needs-date', '#needs-date', 'Needs a date'],
+        ['today', '/releases?schedule=today', 'Due today'],
+        ['next7', '/releases?schedule=upcoming', 'Next 7 days'],
+        ['missing-assets', '/asset-viewer?presence=missing', 'Missing assets'],
+      ];
+      for (const [key, href, label] of expected) {
+        const tile = extractTile(res.text, key);
+        expect(tile).toContain(`href="${href}"`);
+        expect(tile).toContain('<span class="dashboard-tile-value" data-dashboard-tile-count>1</span>');
+        expect(tile).toContain(`<span class="dashboard-tile-label">${label}</span>`);
+        expect(tile).not.toContain('dashboard-tile--zero');
+        expect(countTags(tile, 'span')).toBe(2);
+        expect(visibleText(tile)).toBe(`1 ${label}`);
+      }
+      expect(extractTile(res.text, 'needs-date'))
+        .toContain('class="dashboard-tile dashboard-tile--needs-date dashboard-tile--emphasis"');
 
-      const needsDate = extractTile(res.text, 'needs-date');
-      expect(needsDate).toContain('class="dashboard-tile dashboard-tile--needs-date dashboard-tile--emphasis"');
-      expect(needsDate).toContain('href="#needs-date"');
-      expect(needsDate).toMatch(/Oldest waiting \d+ days/);
-
-      const dueToday = extractTile(res.text, 'today');
-      expect(dueToday).toContain('href="/releases?schedule=today"');
-      expect(dueToday).toContain('data-dashboard-tile-info-title>Due Now</span> · 6:05 PM');
-
-      const next7 = extractTile(res.text, 'next7');
-      expect(next7).toContain('href="/releases?schedule=upcoming"');
-      expect(next7).toContain('<span class="dashboard-tile-value" data-dashboard-tile-count>1</span>');
-
-      const missing = extractTile(res.text, 'missing-assets');
-      expect(missing).toContain('href="/asset-viewer?presence=missing"');
-      expect(missing).toContain('<span class="dashboard-tile-value" data-dashboard-tile-count>1</span>');
-      expect(missing).toContain('1 release affected');
+      const attention = extractAttentionRegion(res.text);
+      expect(countTags(attention, 'li')).toBe(5);
+      expect(attention).not.toContain('dashboard-tile-context');
+      expect(attention).not.toContain('Due Now');
     });
 
-    it('pairs the Due today title with its release card beside the tile link', async () => {
+    it('renders no release card in the Due today tile while Today rows keep their title cards', async () => {
       const projectId = await createProject(app, { title: 'Tile Card Project' });
-      const shownId = insertRelease(db, projectId, { title: 'Morning Drop', plannedDate: today, plannedTime: '09:00' });
-      const laterId = insertRelease(db, projectId, { title: 'Evening Drop', plannedDate: today, plannedTime: '20:00' });
+      const morningId = insertRelease(db, projectId, { title: 'Morning Drop', plannedDate: today, plannedTime: '09:00' });
+      const eveningId = insertRelease(db, projectId, { title: 'Evening Drop', plannedDate: today, plannedTime: '20:00' });
 
       const res = await app.testAgent.get('/').expect(200);
-      const item = res.text.match(/<li class="dashboard-tile-info" data-dashboard-tile-info>[\s\S]*?<\/li>/)?.[0] || '';
-      const tile = extractTile(item, 'today');
-      const cardId = `dashboard-release-info-today-tile-${shownId}`;
-      const card = extractById(item, 'div', cardId);
+      const attention = extractAttentionRegion(res.text);
 
-      expect(tile).toContain('href="/releases?schedule=today"');
-      expect(tile).toContain('data-dashboard-tile-info-title>Morning Drop</span>');
-      expect(tile).not.toContain(' title=');
-      // The card follows the tile link; nothing interactive nests inside it.
-      expect(countTags(tile, 'a')).toBe(1);
-      expect(tile).not.toContain('<button');
-      expect(tile).not.toContain('data-calendar-info-card');
-      expect(item.indexOf(cardId)).toBeGreaterThan(item.indexOf('</a>'));
-      expect(card).toContain('data-calendar-info-card popover="manual"');
-      expect(card).toContain('aria-label="Details for Morning Drop"');
-      expect(item).toContain(`href="/releases/${shownId}">Open release</a>`);
-      expect(item).toContain(`href="/releases/${shownId}/edit">Edit release</a>`);
-      expect(item).toContain(`href="/projects/${projectId}">Open project</a>`);
-      expect(item).not.toContain(`/releases/${laterId}`);
-      expect(item).not.toContain('Evening Drop');
-    });
-
-    it('keeps the empty Due today tile without a release card', async () => {
-      const res = await app.testAgent.get('/').expect(200);
-      const tile = extractTile(res.text, 'today');
-
-      expect(tile).toContain('Nothing today');
-      expect(tile).toContain('dashboard-tile--zero');
-      expect(res.text).not.toContain('data-dashboard-tile-info');
+      expect(extractTile(res.text, 'today')).toContain('data-dashboard-tile-count>2</span>');
+      expect(attention).not.toContain('data-dashboard-tile-info');
+      expect(attention).not.toContain('data-calendar-info-card');
+      expect(attention).not.toContain('Morning Drop');
       expect(res.text).not.toContain('dashboard-release-info-today-tile-');
+
+      const scheduled = extractScheduledPanel(res.text);
+      for (const [releaseId, title] of [[morningId, 'Morning Drop'], [eveningId, 'Evening Drop']]) {
+        const card = extractById(scheduled, 'div', `dashboard-release-info-scheduled-${releaseId}`);
+        expect(card).toContain('data-calendar-info-card popover="manual"');
+        expect(card).toContain(`aria-label="Details for ${title}"`);
+        expect(scheduled).toContain(`<a class="dashboard-truncate" href="/releases/${releaseId}">${title}</a>`);
+      }
     });
 
     it('excludes archived projects from missing-asset and release counts', async () => {

@@ -4365,10 +4365,10 @@ describe('workflow query service', () => {
       expect(data.weekStart).toBe('monday');
       expect(data.tiles).toEqual({
         overdue: { count: 0, href: '/releases?schedule=overdue' },
-        needsDate: { count: 0, oldestAgeDays: null, href: '#needs-date' },
-        dueToday: { count: 0, firstRelease: null, href: '/releases?schedule=today' },
-        next7Days: { count: 0, throughDate: '2026-06-17', href: '/releases?schedule=upcoming' },
-        missingAssets: { count: 0, affectedReleaseCount: 0, href: '/asset-viewer?presence=missing' },
+        needsDate: { count: 0, href: '#needs-date' },
+        dueToday: { count: 0, href: '/releases?schedule=today' },
+        next7Days: { count: 0, href: '/releases?schedule=upcoming' },
+        missingAssets: { count: 0, href: '/asset-viewer?presence=missing' },
       });
       expect(data.scheduled.groups).toEqual([]);
       expect(data.needsDate).toEqual({ total: 0, items: [], viewAllHref: null });
@@ -4419,8 +4419,7 @@ describe('workflow query service', () => {
 
       expect(data.tiles.overdue.count).toBe(2);
       expect(data.tiles.dueToday.count).toBe(3);
-      expect(data.tiles.dueToday.firstRelease.id).toBe(todayTimed.id);
-      expect(data.tiles.next7Days).toMatchObject({ count: 2, throughDate: '2026-06-17' });
+      expect(data.tiles.next7Days.count).toBe(2);
       expect(data.tiles.needsDate.count).toBe(1);
     });
 
@@ -4468,7 +4467,6 @@ describe('workflow query service', () => {
       expect(ids(data.needsDate.items)).toEqual(ids(undated.slice(0, 10)));
       expect(data.needsDate.items.map(({ ageDays }) => ageDays)).toEqual([40, 39, 38, 37, 36, 35, 34, 33, 32, 31]);
       expect(data.needsDate.viewAllHref).toBe('/releases?schedule=unscheduled');
-      expect(data.tiles.needsDate.oldestAgeDays).toBe(40);
 
       expect(ids(data.recentlyPublished.items)).toEqual(ids(published.slice(2).reverse()));
     });
@@ -4488,7 +4486,6 @@ describe('workflow query service', () => {
 
         expect(ids(data.needsDate.items)).toEqual([beforeDst.id, nearMidnight.id]);
         expect(data.needsDate.items.map(({ ageDays }) => ageDays)).toEqual([3, 1]);
-        expect(data.tiles.needsDate.oldestAgeDays).toBe(3);
         expect(data.scheduled.groups[0].items.map(({ id, daysLate }) => [id, daysLate])).toEqual([[overdue.id, 3]]);
         expect(data.strip.days.map(({ date }) => date)).toEqual([
           '2026-03-08', '2026-03-09', '2026-03-10', '2026-03-11', '2026-03-12', '2026-03-13', '2026-03-14',
@@ -4626,7 +4623,7 @@ describe('workflow query service', () => {
       expect(data.tiles.needsDate.count).toBe(0);
       expect(data.needsDate.items).toEqual([]);
       expect(data.recentlyPublished.items).toEqual([]);
-      expect(data.tiles.missingAssets).toMatchObject({ count: 0, affectedReleaseCount: 0 });
+      expect(data.tiles.missingAssets.count).toBe(0);
       expect(dayByDate(data, '2026-06-09').counts).toEqual({ overdue: 1, scheduled: 0, published: 0 });
       expect(dayByDate(data, '2026-06-08').counts).toEqual({ overdue: 0, scheduled: 0, published: 0 });
       expect(dayByDate(data, '2026-06-12').isOpen).toBe(true);
@@ -4634,7 +4631,7 @@ describe('workflow query service', () => {
       expect(ids(data.projectTable.rows)).toEqual([active.id]);
     });
 
-    it('counts missing assets in active projects and distinct active releases selecting them', () => {
+    it('counts missing assets in active projects and the missing selections of each active release', () => {
       const project = insertProject(db, { title: 'Missing assets' });
       const missingA = insertAsset(db, { projectId: project.id, relativePath: 'a.png', filename: 'a.png', isPresent: 0 });
       const missingB = insertAsset(db, { projectId: project.id, relativePath: 'b.png', filename: 'b.png', isPresent: 0 });
@@ -4653,9 +4650,7 @@ describe('workflow query service', () => {
 
       const data = compose();
 
-      expect(data.tiles.missingAssets).toEqual({
-        count: 2, affectedReleaseCount: 2, href: '/asset-viewer?presence=missing',
-      });
+      expect(data.tiles.missingAssets).toEqual({ count: 2, href: '/asset-viewer?presence=missing' });
       const todayItem = data.scheduled.groups.find(({ id }) => id === 'today').items[0];
       expect(todayItem).toMatchObject({ id: one.id, selected_asset_count: 1, missing_asset_count: 1 });
       expect(data.needsDate.items.find(({ id }) => id === both.id))
@@ -4867,7 +4862,6 @@ describe('workflow query service', () => {
       expect(single).not.toHaveBeenCalled();
       const todayItem = data.scheduled.groups[0].items[0];
       expect(todayItem.socialPreparation.targets.map(({ platform }) => platform)).toEqual(['x']);
-      expect(data.tiles.dueToday.firstRelease.socialPreparation).toEqual(todayItem.socialPreparation);
       expect(data.needsDate.items[0].socialPreparation.targets).toEqual([]);
       expect(data.recentlyPublished.items[0].socialPreparation.targets.map(({ platform }) => platform))
         .toEqual(['patreon']);

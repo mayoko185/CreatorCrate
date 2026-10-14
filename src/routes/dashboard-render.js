@@ -57,8 +57,6 @@ function formatDate(isoDate, style, today) {
   switch (style) {
     case 'weekday-day':
       return `${WEEKDAYS_SHORT[date.weekday]} ${date.day}`;
-    case 'weekday-short':
-      return `${WEEKDAYS_SHORT[date.weekday]}, ${MONTHS_SHORT[date.month - 1]} ${date.day}`;
     case 'long':
       return `${MONTHS_LONG[date.month - 1]} ${date.day}${otherYear ? `, ${date.year}` : ''}`;
     case 'full':
@@ -202,40 +200,6 @@ function presentQuickPick(openDay, today) {
   };
 }
 
-function buildTileContexts(tiles, today, presentInfoCard) {
-  const { overdue, needsDate, dueToday, next7Days, missingAssets } = tiles;
-  let needsDateContext = 'All releases have dates';
-  if (needsDate.count > 0 && needsDate.oldestAgeDays != null) {
-    needsDateContext = needsDate.oldestAgeDays === 0
-      ? 'Oldest added today'
-      : `Oldest waiting ${pluralize(needsDate.oldestAgeDays, 'day')}`;
-  }
-  let missingAssetsContext = 'No missing files';
-  if (missingAssets.count > 0) {
-    missingAssetsContext = missingAssets.affectedReleaseCount > 0
-      ? `${pluralize(missingAssets.affectedReleaseCount, 'release')} affected`
-      : 'No releases affected';
-  }
-  return {
-    overdue: { ...overdue, context: overdue.count > 0 ? 'Unpublished, date passed' : 'Nothing overdue' },
-    needsDate: { ...needsDate, context: needsDateContext },
-    dueToday: {
-      ...dueToday,
-      context: dueToday.count > 0 ? null : 'Nothing today',
-      firstRelease: dueToday.firstRelease
-        ? {
-          id: dueToday.firstRelease.id,
-          title: dueToday.firstRelease.title,
-          plannedTime: dueToday.firstRelease.planned_time,
-          infoCard: presentInfoCard(dueToday.firstRelease),
-        }
-        : null,
-    },
-    next7Days: { ...next7Days, context: `Through ${formatDate(next7Days.throughDate, 'weekday-short', today)}` },
-    missingAssets: { ...missingAssets, context: missingAssetsContext },
-  };
-}
-
 function buildStatusTabs(projectTable, statusOptions) {
   return [
     {
@@ -311,10 +275,8 @@ export function renderDashboardPage(req, res, next, {
       };
     };
 
-    const releaseNsfwBlur = (release) => Boolean(nsfwFilterEnabled && hasNsfwTag(release.tags));
-
     const presentRelease = (release) => {
-      const nsfwBlur = releaseNsfwBlur(release);
+      const nsfwBlur = Boolean(nsfwFilterEnabled && hasNsfwTag(release.tags));
       return {
         ...release,
         nsfwBlur,
@@ -365,11 +327,7 @@ export function renderDashboardPage(req, res, next, {
       dashboard: {
         today,
         todayLabel: formatDate(today, 'full'),
-        tiles: buildTileContexts(
-          dashboard.tiles,
-          today,
-          (release) => presentReleaseInfoCard(release, releaseNsfwBlur(release)),
-        ),
+        tiles: dashboard.tiles,
         strip: {
           days: dashboard.strip.days.map((day) => presentStripDay(day, today)),
         },

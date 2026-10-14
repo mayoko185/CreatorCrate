@@ -90,59 +90,13 @@ function moveFocus(env, wrapper, target) {
   if (wrapper.contains(target)) wrapper.dispatch('focusin', { target, relatedTarget: previous });
 }
 
-function scope(env, items, tiles = []) {
+function scope(env, items) {
   return {
     ownerDocument: env.document,
     querySelectorAll(selector) {
-      if (selector === '[data-dashboard-title-info]') return items.map((item) => item.wrapper);
-      if (selector === '[data-dashboard-tile-info]') return tiles.map((tile) => tile.wrapper);
-      return [];
+      return selector === '[data-dashboard-title-info]' ? items.map((item) => item.wrapper) : [];
     },
   };
-}
-
-function listenable(base) {
-  return {
-    ...base,
-    listeners: new Map(),
-    addEventListener(type, listener) {
-      expect(this.listeners.has(type)).toBe(false);
-      this.listeners.set(type, listener);
-    },
-    dispatch(type, event = {}) { this.listeners.get(type)?.(event); },
-  };
-}
-
-// An attention tile: the list item holds the tile link and, beside it, the
-// card. Only the release title inside the link is the hover target.
-function tileInfo(env) {
-  const item = titleInfo(env);
-  const info = listenable(item.info);
-  const tileLink = { isConnected: true };
-  const title = listenable({
-    getBoundingClientRect() { return { left: 100, top: 60, width: 80, height: 16, bottom: 76 }; },
-    closest(selector) { return selector === 'a[href]' ? tileLink : null; },
-  });
-  const wrapper = listenable({
-    ownerDocument: env.document,
-    isConnected: true,
-    dataset: {},
-    contains(target) {
-      return target === this || target === info || target === title || target === tileLink || target === item.action;
-    },
-    getBoundingClientRect() { return { left: 0, top: 0, width: 320, height: 90, bottom: 90 }; },
-    querySelector(selector) {
-      if (selector === '[data-calendar-info-card]') return info;
-      if (selector === '[data-dashboard-tile-info-title]') return title;
-      return null;
-    },
-  });
-  let open = false;
-  info.showPopover = () => { open = true; };
-  info.hidePopover = () => { open = false; };
-  info.matches = (selector) => selector === ':popover-open' && open;
-  tileLink.focus = () => moveFocus(env, wrapper, tileLink);
-  return { wrapper, title, tileLink, info, action: item.action, styles: item.styles, isOpen: () => open };
 }
 
 afterEach(() => dismissActiveGridInfoCard());
@@ -307,77 +261,5 @@ describe('Dashboard title information cards', () => {
     env.keydown('Escape');
     expect(item.isOpen()).toBe(false);
     expect(env.pendingTimers()).toBe(0);
-  });
-});
-
-describe('Dashboard Due today tile information card', () => {
-  it('binds once alongside title cards and leaves Calendar enhancement untouched', () => {
-    const env = environment();
-    const region = scope(env, [titleInfo(env)], [tileInfo(env)]);
-    expect(enhanceDashboardTitleInfoCards(region)).toBe(2);
-    expect(enhanceDashboardTitleInfoCards(region)).toBe(0);
-    expect(enhanceCalendarInfoCards(region)).toBe(0);
-  });
-
-  it('opens only from the release title, flush below it, and ignores the rest of the tile', () => {
-    const env = environment();
-    const tile = tileInfo(env);
-    enhanceDashboardTitleInfoCards(scope(env, [], [tile]));
-
-    expect(tile.wrapper.listeners.has('pointerenter')).toBe(false);
-    tile.title.dispatch('pointerenter', { pointerType: 'touch' });
-    expect(tile.isOpen()).toBe(false);
-
-    tile.title.dispatch('pointerenter', { pointerType: 'mouse', clientX: 120, clientY: 66 });
-    expect(tile.isOpen()).toBe(true);
-    // Centered on the 80px title at 100, clamped inside the 320px viewport.
-    expect(tile.styles.get('--asset-info-left')).toBe('50px');
-    expect(tile.styles.get('--asset-info-top')).toBe('76px');
-  });
-
-  it('stays open while the pointer crosses from the title into the card, then dismisses after leaving both', () => {
-    const env = environment();
-    const tile = tileInfo(env);
-    enhanceDashboardTitleInfoCards(scope(env, [], [tile]));
-
-    tile.title.dispatch('pointerenter', { pointerType: 'mouse', clientX: 120, clientY: 66 });
-    tile.title.dispatch('pointerleave', { pointerType: 'mouse' });
-    tile.info.dispatch('pointerenter', { pointerType: 'mouse', clientX: 120, clientY: 90 });
-    expect(env.pendingTimers()).toBe(0);
-    env.runTimers();
-    expect(tile.isOpen()).toBe(true);
-
-    tile.info.dispatch('pointerleave', { pointerType: 'mouse' });
-    expect(tile.isOpen()).toBe(true);
-    env.runTimers();
-    expect(tile.isOpen()).toBe(false);
-  });
-
-  it('opens on keyboard focus of the tile link and keeps focus moves into the card open', () => {
-    const env = environment();
-    const tile = tileInfo(env);
-    enhanceDashboardTitleInfoCards(scope(env, [], [tile]));
-
-    tile.wrapper.dispatch('focusin');
-    expect(tile.isOpen()).toBe(true);
-    expect(tile.styles.get('--asset-info-top')).toBe('76px');
-    tile.wrapper.dispatch('focusout', { relatedTarget: tile.info });
-    expect(tile.isOpen()).toBe(true);
-    env.keydown('Escape');
-    expect(tile.isOpen()).toBe(false);
-  });
-
-  it('returns focus from a card action to the tile link on Escape without reopening the card', () => {
-    const env = environment();
-    const tile = tileInfo(env);
-    enhanceDashboardTitleInfoCards(scope(env, [], [tile]));
-
-    tile.tileLink.focus();
-    moveFocus(env, tile.wrapper, tile.action);
-    expect(tile.isOpen()).toBe(true);
-
-    env.keydown('Escape');
-    expect(tile.isOpen()).toBe(false);
-    expect(env.document.activeElement).toBe(tile.tileLink);
   });
 });

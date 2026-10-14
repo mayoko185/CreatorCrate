@@ -2561,7 +2561,7 @@ so a native submit never reaches the JSON endpoint.
 
 The Dashboard's Projects status filters filter table rows in the page only when
 the table lists every active Project; otherwise they remain links to the
-filtered Projects page. Dashboard title and Due-today tile popovers are the
+filtered Projects page. Dashboard title popovers are the
 Calendar information cards: [`info-cards.js`](src/static/client/info-cards.js)
 binds them through the same grid info-card lifecycle as Calendar, with a
 Dashboard configuration that opens on hover/focus because Dashboard titles are

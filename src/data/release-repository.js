@@ -227,8 +227,7 @@ export function createReleaseRepository(db) {
       COALESCE(SUM(releases.planned_date = @today), 0) AS today,
       COALESCE(SUM(releases.planned_date > @today AND releases.planned_date <= @weekEnd), 0) AS next7,
       COALESCE(SUM(releases.planned_date > @weekEnd), 0) AS later,
-      COALESCE(SUM(releases.planned_date IS NULL), 0) AS undated,
-      MIN(CASE WHEN releases.planned_date IS NULL THEN releases.created_at END) AS oldest_undated_created_at
+      COALESCE(SUM(releases.planned_date IS NULL), 0) AS undated
     FROM releases
     WHERE ${DASHBOARD_ACTIVE}
   `);
@@ -329,15 +328,6 @@ export function createReleaseRepository(db) {
     WHERE day NOT IN (SELECT day FROM occupied)
     ORDER BY day ASC
     LIMIT @count
-  `);
-
-  const countActiveReleasesWithMissingSelectedAssetsStmt = db.prepare(`
-    SELECT COUNT(DISTINCT releases.id) AS c
-    FROM releases
-    JOIN release_assets ra ON ra.release_id = releases.id
-    JOIN assets a ON a.id = ra.asset_id AND a.project_id = releases.project_id
-    WHERE ${DASHBOARD_ACTIVE}
-      AND a.is_present = 0
   `);
 
   // ─── Release Asset Selection ───────────────────────────────────────────
@@ -1074,7 +1064,7 @@ export function createReleaseRepository(db) {
      * @param {{ today: string, weekEnd: string }} boundaries application-local
      *   ISO dates; `weekEnd` is normally today + 7 days
      * @returns {{ overdue: number, today: number, next7: number, later: number,
-     *   undated: number, oldestUndatedCreatedAt: string|null }}
+     *   undated: number }}
      */
     getDashboardScheduleSummary({ today, weekEnd } = {}) {
       const row = dashboardScheduleSummaryStmt.get({
@@ -1087,7 +1077,6 @@ export function createReleaseRepository(db) {
         next7: row.next7,
         later: row.later,
         undated: row.undated,
-        oldestUndatedCreatedAt: row.oldest_undated_created_at,
       };
     },
 
@@ -1185,17 +1174,6 @@ export function createReleaseRepository(db) {
         startDate: requireIsoDate(startDate, 'startDate'),
         count: normalizeLimit(count, 3),
       });
-    },
-
-    /**
-     * Distinct active releases that select at least one missing asset of
-     * their own project. Same predicate as
-     * {@link findReleasesWithMissingSelectedAssets}, without a limit.
-     *
-     * @returns {number}
-     */
-    countActiveReleasesWithMissingSelectedAssets() {
-      return countActiveReleasesWithMissingSelectedAssetsStmt.get().c;
     },
 
     /**

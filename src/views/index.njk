@@ -7,7 +7,6 @@
 {% import "partials/dashboard-release-row.njk" as releaseRow %}
 {% import "partials/dashboard-project-table.njk" as projectTable %}
 {% import "partials/dashboard-title-info.njk" as titleInfo %}
-{% import "partials/calendar-info-card.njk" as infoCard %}
 {% import "partials/release-social-prep-summary.njk" as socialPrepSummary %}
 
 {% set page_title = "Dashboard" %}
@@ -41,46 +40,30 @@
           <a class="dashboard-tile dashboard-tile--overdue{% if tiles.overdue.count == 0 %} dashboard-tile--zero{% endif %}" href="{{ tiles.overdue.href }}" data-dashboard-tile="overdue">
             <span class="dashboard-tile-value" data-dashboard-tile-count>{{ tiles.overdue.count }}</span>
             <span class="dashboard-tile-label">Overdue</span>
-            <span class="dashboard-tile-context">{{ tiles.overdue.context }}</span>
           </a>
         </li>
         <li>
           <a class="dashboard-tile dashboard-tile--needs-date dashboard-tile--emphasis{% if tiles.needsDate.count == 0 %} dashboard-tile--zero{% endif %}" href="{{ tiles.needsDate.href }}" data-dashboard-tile="needs-date">
             <span class="dashboard-tile-value" data-dashboard-tile-count>{{ tiles.needsDate.count }}</span>
             <span class="dashboard-tile-label">Needs a date</span>
-            <span class="dashboard-tile-context">{{ tiles.needsDate.context }}</span>
           </a>
         </li>
-        {% set dueTodayRelease = tiles.dueToday.firstRelease %}
-        {# The release card holds links, so it sits beside the tile link rather than inside it. #}
-        <li{% if dueTodayRelease %} class="dashboard-tile-info" data-dashboard-tile-info{% endif %}>
+        <li>
           <a class="dashboard-tile dashboard-tile--today{% if tiles.dueToday.count == 0 %} dashboard-tile--zero{% endif %}" href="{{ tiles.dueToday.href }}" data-dashboard-tile="today">
             <span class="dashboard-tile-value" data-dashboard-tile-count>{{ tiles.dueToday.count }}</span>
             <span class="dashboard-tile-label">Due today</span>
-            <span class="dashboard-tile-context">
-              {%- if dueTodayRelease -%}
-                <span class="dashboard-truncate" data-dashboard-tile-info-title>{{ dueTodayRelease.title }}</span> · {% if dueTodayRelease.plannedTime %}{{ dueTodayRelease.plannedTime | formatStoredTime(clockFormat) }}{% else %}Any time{% endif %}
-              {%- else -%}
-                {{ tiles.dueToday.context }}
-              {%- endif -%}
-            </span>
           </a>
-          {%- if dueTodayRelease %}
-            {{ infoCard.release(dueTodayRelease.infoCard, 'dashboard-release-info-today-tile-' ~ dueTodayRelease.id, clockFormat) }}
-          {%- endif %}
         </li>
         <li>
           <a class="dashboard-tile dashboard-tile--next7{% if tiles.next7Days.count == 0 %} dashboard-tile--zero{% endif %}" href="{{ tiles.next7Days.href }}" data-dashboard-tile="next7">
             <span class="dashboard-tile-value" data-dashboard-tile-count>{{ tiles.next7Days.count }}</span>
             <span class="dashboard-tile-label">Next 7 days</span>
-            <span class="dashboard-tile-context">{{ tiles.next7Days.context }}</span>
           </a>
         </li>
         <li>
           <a class="dashboard-tile dashboard-tile--missing{% if tiles.missingAssets.count == 0 %} dashboard-tile--zero{% endif %}" href="{{ tiles.missingAssets.href }}" data-dashboard-tile="missing-assets">
             <span class="dashboard-tile-value" data-dashboard-tile-count>{{ tiles.missingAssets.count }}</span>
             <span class="dashboard-tile-label">Missing assets</span>
-            <span class="dashboard-tile-context">{{ tiles.missingAssets.context }}</span>
           </a>
         </li>
       </ul>

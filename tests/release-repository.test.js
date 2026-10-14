@@ -2971,7 +2971,6 @@ describe('release repository dashboard projections', () => {
         next7: 520,
         later: 520,
         undated: 520,
-        oldestUndatedCreatedAt: '2026-02-01 00:00:00',
       });
 
       const rows = releaseRepo.findDashboardScheduledReleases({ today: TODAY, weekEnd: WEEK_END });
@@ -2992,7 +2991,6 @@ describe('release repository dashboard projections', () => {
         next7: 1,
         later: 0,
         undated: 1,
-        oldestUndatedCreatedAt: expect.any(String),
       });
       expect(releaseRepo.findDashboardScheduledReleases({ today: TODAY, weekEnd: WEEK_END }).map((row) => row.id))
         .toEqual([visible.id]);
@@ -3001,7 +2999,7 @@ describe('release repository dashboard projections', () => {
 
     it('returns zero counts and no rows for an empty schedule', () => {
       expect(releaseRepo.getDashboardScheduleSummary({ today: TODAY, weekEnd: WEEK_END })).toEqual({
-        overdue: 0, today: 0, next7: 0, later: 0, undated: 0, oldestUndatedCreatedAt: null,
+        overdue: 0, today: 0, next7: 0, later: 0, undated: 0,
       });
       expect(releaseRepo.findDashboardScheduledReleases({ today: TODAY, weekEnd: WEEK_END })).toEqual([]);
       expect(releaseRepo.findDashboardUndatedReleases()).toEqual([]);
@@ -3016,7 +3014,7 @@ describe('release repository dashboard projections', () => {
   });
 
   describe('undated releases', () => {
-    it('orders oldest first with an id tie-breaker and reports the oldest timestamp beyond the cap', () => {
+    it('orders oldest first with an id tie-breaker and counts every undated release beyond the cap', () => {
       const ids = [];
       for (let i = 0; i < 12; i += 1) {
         ids.push(createRelease({ title: `Undated ${i}`, createdAt: `2026-09-${String(20 - i).padStart(2, '0')} 00:00:00` }).id);
@@ -3032,7 +3030,6 @@ describe('release repository dashboard projections', () => {
 
       const summary = releaseRepo.getDashboardScheduleSummary({ today: TODAY, weekEnd: WEEK_END });
       expect(summary.undated).toBe(14);
-      expect(summary.oldestUndatedCreatedAt).toBe('2026-08-01 00:00:00');
       expect(releaseRepo.findDashboardUndatedReleases(1).map((row) => row.id)).toEqual([tiedFirst.id]);
     });
 
@@ -3140,8 +3137,8 @@ describe('release repository dashboard projections', () => {
     });
   });
 
-  describe('missing-asset tile counts', () => {
-    it('counts distinct affected active releases separately from all missing active-project assets', () => {
+  describe('missing-asset counts', () => {
+    it('lists affected active releases separately from all missing active-project assets', () => {
       const sharedMissing = createAsset(projectId, 'shared-missing.png', { missing: true });
       const secondMissing = createAsset(projectId, 'second-missing.png', { missing: true });
       createAsset(projectId, 'unselected-missing.png', { missing: true });
@@ -3168,7 +3165,6 @@ describe('release repository dashboard projections', () => {
         archiveProject(owner);
       }
 
-      expect(releaseRepo.countActiveReleasesWithMissingSelectedAssets()).toBe(2);
       expect(releaseRepo.findReleasesWithMissingSelectedAssets(100).map((row) => row.id).sort((a, b) => a - b))
         .toEqual([twoMissing.id, sharing.id].sort((a, b) => a - b));
       expect(assetRepo.countMissingInActiveProjects()).toBe(3);
@@ -3179,7 +3175,7 @@ describe('release repository dashboard projections', () => {
       createAsset(projectId, 'missing.png', { missing: true });
       createRelease({ title: 'Nothing selected' });
 
-      expect(releaseRepo.countActiveReleasesWithMissingSelectedAssets()).toBe(0);
+      expect(releaseRepo.findReleasesWithMissingSelectedAssets(100)).toEqual([]);
       expect(assetRepo.countMissingInActiveProjects()).toBe(1);
     });
   });

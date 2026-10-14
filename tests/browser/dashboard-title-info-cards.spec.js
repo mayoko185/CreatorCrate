@@ -230,7 +230,7 @@ test('Escape from a dashboard card action returns focus to its trigger without r
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
   await page.setViewportSize({ width: 1280, height: 900 });
-  await withDashboardApp(async ({ origin, projectId, undatedId, todayId }) => {
+  await withDashboardApp(async ({ origin, projectId, undatedId }) => {
     await gotoEnhanced(page, `${origin}/`, DASHBOARD_BOUND);
     const cardId = `dashboard-release-info-needs-date-${undatedId}`;
     const { card, title } = titleParts(page, cardId);
@@ -283,34 +283,6 @@ test('Escape from a dashboard card action returns focus to its trigger without r
       trigger: projectParts.title,
       editName: 'Edit project',
       expectedPath: `/projects/${projectId}`,
-    });
-
-    // And for the Due today tile, whose trigger is the tile link around the title.
-    await gotoEnhanced(page, `${origin}/`, '[data-dashboard-tile-info-bound="true"]');
-    const tileCardId = `dashboard-release-info-today-tile-${todayId}`;
-    const wrapper = page.locator('[data-dashboard-tile-info]');
-    const tile = wrapper.locator(':scope > a[data-dashboard-tile="today"]');
-    const tileCard = wrapper.locator(`:scope > #${tileCardId}`);
-    await tile.focus();
-    await page.keyboard.press('Tab');
-    await recordStateAfterEscape(page, tileCardId);
-    await page.keyboard.press('Escape');
-    expect(await page.evaluate(() => window.__afterEscape)).toEqual({
-      cardOpen: false,
-      focusInCard: false,
-      activeTag: 'A',
-      activeHref: '/releases?schedule=today',
-    });
-    await expect(tileCard).toBeHidden();
-    await expect(tile).toBeFocused();
-
-    await gotoEnhanced(page, `${origin}/`, '[data-dashboard-tile-info-bound="true"]');
-    await escapeThenEnterFromEditAction(page, {
-      card: tileCard,
-      cardId: tileCardId,
-      trigger: tile,
-      editName: 'Edit release',
-      expectedPath: '/releases?schedule=today',
     });
   });
   expect(pageErrors).toEqual([]);
@@ -386,58 +358,42 @@ test('Calendar entries keep pointer-following hover and click-to-pin', async ({ 
   });
 });
 
-test('Due today tile title opens its release card without changing tile navigation', async ({ page }) => {
+test('Due today tile is a plain listing link while Today rows keep their release cards', async ({ page }) => {
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
   await page.setViewportSize({ width: 1280, height: 900 });
   await withDashboardApp(async ({ origin, todayId }) => {
-    await gotoEnhanced(page, `${origin}/`, '[data-dashboard-tile-info-bound="true"]');
-    // Repeated enhancement must not double-bind the tile or the titles.
+    await gotoEnhanced(page, `${origin}/`, DASHBOARD_BOUND);
+    // Repeated enhancement must not double-bind the titles.
     expect(await page.evaluate(async () => {
       const { enhanceDashboardTitleInfoCards } = await import('/client/info-cards.js');
       return enhanceDashboardTitleInfoCards(document);
     })).toBe(0);
 
-    const wrapper = page.locator('[data-dashboard-tile-info]');
-    const tile = wrapper.locator(':scope > a[data-dashboard-tile="today"]');
-    const title = tile.locator('[data-dashboard-tile-info-title]');
-    const card = wrapper.locator(`:scope > #dashboard-release-info-today-tile-${todayId}`);
-    const parts = { card, title };
+    const attention = page.locator('.dashboard-attention');
+    const tile = attention.locator('a[data-dashboard-tile="today"]');
+    const openCards = page.locator('[data-calendar-info-card][data-info-card-open="true"]');
+    await expect(tile).toHaveText(/^\s*1\s+Due today\s*$/);
+    await expect(attention.locator('.dashboard-tile-context, [data-dashboard-tile-info], [data-calendar-info-card]'))
+      .toHaveCount(0);
 
-    await expect(title).toHaveText('Today Release');
-    await expect(title).not.toHaveAttribute('title', /.*/);
-    expect(await tile.evaluate((link) => link.querySelectorAll('a, button, [data-calendar-info-card]').length)).toBe(0);
-    await expect(card.locator('.asset-viewer-grid-card-info-heading')).toHaveText('Today Release');
-
-    // Only the release title opens the card; the rest of the tile does not.
+    // Neither hover nor focus on the tile opens a release card.
     await moveAway(page);
-    await hover(page, tile.locator('[data-dashboard-tile-count]'));
-    await expect(card).toBeHidden();
-    await hover(page, title);
-    await expect(card).toBeVisible();
-    await expect(page.locator('[data-calendar-info-card][data-info-card-open="true"]')).toHaveCount(1);
-    await moveAway(page);
-    await expect(card).toBeHidden();
-
-    // Keyboard focus on the tile link opens the card and Tab reaches its actions.
+    await hover(page, tile);
+    await expect(openCards).toHaveCount(0);
     await tile.focus();
-    await expect(card).toBeVisible();
-    await page.keyboard.press('Tab');
-    await expect(card.getByRole('link', { name: 'Open release' })).toBeFocused();
-    await page.keyboard.press('Escape');
-    await expect(card).toBeHidden();
+    await expect(openCards).toHaveCount(0);
     await page.evaluate(() => document.activeElement?.blur());
 
-    await moveIntoCardAndClick(page, parts, 'Edit release', `/releases/${todayId}?edit=1`);
-    await gotoEnhanced(page, `${origin}/`, '[data-dashboard-tile-info-bound="true"]');
-    await moveIntoCardAndClick(page, parts, 'Open release', `/releases/${todayId}`);
+    // The Today schedule row still carries the release title card.
+    const todayRow = titleParts(page, `dashboard-release-info-scheduled-${todayId}`);
+    await expect(todayRow.title).toHaveText('Today Release');
+    await expect(todayRow.card.locator('.asset-viewer-grid-card-info-heading')).toHaveText('Today Release');
+    await moveIntoCardAndClick(page, todayRow, 'Open release', `/releases/${todayId}`);
 
-    // Clicking the title inside the tile still follows the tile's listing link.
-    await gotoEnhanced(page, `${origin}/`, '[data-dashboard-tile-info-bound="true"]');
-    await hover(page, title);
-    await page.mouse.down();
-    await page.mouse.up();
-    await expect.poll(() => { const url = new URL(page.url()); return url.pathname + url.search; }).toBe('/releases?schedule=today');
+    await gotoEnhanced(page, `${origin}/`, DASHBOARD_BOUND);
+    await tile.click();
+    await expect.poll(() => currentPath(page)).toBe('/releases?schedule=today');
   });
   expect(pageErrors).toEqual([]);
 });

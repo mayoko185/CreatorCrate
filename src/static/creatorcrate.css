@@ -11719,7 +11719,7 @@
    technology and narrow screens (Needs a release date precedes Scheduled
    releases); the desktop placement uses grid lines only. */
 .dashboard {
-  --dashboard-thumb-size: 2.5rem;
+  --dashboard-thumb-size: 3.75rem;
   display: grid;
   gap: var(--space-xl);
   min-width: 0;
@@ -11817,8 +11817,7 @@
 }
 /* The card is a DOM child of compact title text, so it restores the
    typography it inherits on the Calendar instead of the row's. */
-.dashboard-title-info > .asset-viewer-grid-card-info,
-.dashboard-tile-info > .asset-viewer-grid-card-info {
+.dashboard-title-info > .asset-viewer-grid-card-info {
   font-size: 0.75rem;
   font-weight: 400;
   line-height: 1.6;
@@ -11872,7 +11871,9 @@
   height: 100%;
   color: var(--muted);
   font-family: var(--mono);
-  font-size: 0.75rem;
+  /* Scales with the region's thumbnail size so the initials keep one
+     proportion across Dashboard regions. */
+  font-size: calc(var(--dashboard-thumb-size) * 0.3);
   font-weight: 700;
   letter-spacing: 0.04em;
 }
@@ -11972,18 +11973,6 @@
   font-variant-numeric: tabular-nums;
   line-height: 1.15;
 }
-.dashboard-tile-context {
-  display: flex;
-  min-width: 0;
-  margin-top: var(--space-xs);
-  color: var(--muted);
-  font-size: 0.75rem;
-  line-height: 1.35;
-}
-.dashboard-tile-context .dashboard-truncate {
-  flex: 0 1 auto;
-  margin-right: 0.25em;
-}
 .dashboard-tile--zero .dashboard-tile-value {
   color: var(--muted);
 }
@@ -11994,16 +11983,14 @@
 .dashboard-tile--today:not(.dashboard-tile--zero) .dashboard-tile-value {
   color: var(--accent);
 }
-/* Needs a date is the page's primary call to action: the thick leading rule
-   distinguishes it by shape as well as by the violet warning colour. */
+/* Needs a date is the page's primary call to action, tinted with the violet
+   warning colour. */
 .dashboard-tile--emphasis {
   border-color: rgba(167, 139, 250, 0.45);
-  border-left: 4px solid var(--warning);
   background: rgba(167, 139, 250, 0.08);
 }
 .dashboard-tile--emphasis:hover {
   border-color: rgba(167, 139, 250, 0.7);
-  border-left-color: var(--warning);
   background: rgba(167, 139, 250, 0.14);
 }
 .dashboard-tile--emphasis .dashboard-tile-label {
@@ -12152,7 +12139,7 @@
 
 /* ── Needs a release date ── */
 .dashboard-needs-date {
-  --dashboard-thumb-size: 3rem;
+  --dashboard-thumb-size: 4.5rem;
   border-color: rgba(167, 139, 250, 0.55);
   background: linear-gradient(rgba(167, 139, 250, 0.07), rgba(167, 139, 250, 0.02) 12rem), var(--surface);
   scroll-margin-top: calc(var(--shell-header-height) + var(--space-lg));
@@ -12440,7 +12427,7 @@
 
 /* ── Recently published ── */
 .dashboard-recent {
-  --dashboard-thumb-size: 2.25rem;
+  --dashboard-thumb-size: 3.375rem;
 }
 .dashboard-recent-list {
   display: grid;
@@ -12455,7 +12442,7 @@
   padding: var(--space-sm);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: var(--bg);
+  background: var(--surface-card);
 }
 .dashboard-recent-body {
   display: grid;
@@ -12474,7 +12461,7 @@
 
 /* ── Projects table ── */
 .dashboard-projects {
-  --dashboard-thumb-size: 2rem;
+  --dashboard-thumb-size: 3rem;
 }
 .dashboard-status-tabs {
   display: flex;

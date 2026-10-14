@@ -13,8 +13,6 @@ const CALENDAR_INFO_SELECTOR = '[data-calendar-info-card]';
 const CALENDAR_EVENT_SELECTOR = '[data-calendar-event]';
 const CALENDAR_TRIGGER_SELECTOR = '[data-calendar-info-trigger]';
 const DASHBOARD_TITLE_SELECTOR = '[data-dashboard-title-info]';
-const DASHBOARD_TILE_SELECTOR = '[data-dashboard-tile-info]';
-const DASHBOARD_TILE_TITLE_SELECTOR = '[data-dashboard-tile-info-title]';
 const DIALOG_TRIGGER_SELECTOR = '[data-dialog-open]';
 
 const ASSET_VIEWER_INFO_CONFIG = Object.freeze({
@@ -66,17 +64,6 @@ const DASHBOARD_TITLE_INFO_CONFIG = Object.freeze({
   leftProperty: '--asset-info-left',
   topProperty: '--asset-info-top',
   boundKey: 'dashboardTitleInfoBound',
-});
-// An attention tile names one release inside a link to a whole listing. Only
-// that release title opens its card, so hovering the rest of the tile does
-// not imply the card describes every release the tile counts. The card cannot
-// live inside the tile link, so it joins the title as the hover region.
-const DASHBOARD_TILE_INFO_CONFIG = Object.freeze({
-  ...DASHBOARD_TITLE_INFO_CONFIG,
-  previewSelector: DASHBOARD_TILE_SELECTOR,
-  placementSelector: DASHBOARD_TILE_TITLE_SELECTOR,
-  hoverSelector: DASHBOARD_TILE_TITLE_SELECTOR,
-  boundKey: 'dashboardTileInfoBound',
 });
 
 let activeGridInfoPlacement = null;
@@ -362,8 +349,6 @@ function enhanceGridInfoCards(scope, config) {
     const ignoresTouchHover = hybrid || link;
     const trigger = hybrid ? preview.querySelector?.(config.triggerSelector) : null;
     if (hybrid && !trigger) return;
-    const hoverTarget = link && config.hoverSelector ? preview.querySelector?.(config.hoverSelector) : null;
-    if (config.hoverSelector && !hoverTarget) return;
 
     markEnhancementBound(preview, config.boundKey);
     boundCount += 1;
@@ -371,11 +356,9 @@ function enhanceGridInfoCards(scope, config) {
       info.addEventListener?.('load', scheduleActiveGridInfoPosition, true);
       info.addEventListener?.('error', scheduleActiveGridInfoPosition, true);
     }
-    const pointerTarget = hoverTarget || trigger || preview;
     // The card is a DOM descendant of a link-mode preview, so pointer
-    // boundary events treat the card as part of the hover region. A narrower
-    // hover target does not contain the card, so the card listens as well.
-    const pointerTargets = hoverTarget ? [hoverTarget, info] : [pointerTarget];
+    // boundary events treat the card as part of the hover region.
+    const pointerTarget = trigger || preview;
     const placementTarget = (config.placementSelector
       && preview.querySelector?.(config.placementSelector)) || preview;
     const state = {
@@ -383,8 +366,7 @@ function enhanceGridInfoCards(scope, config) {
       pointerInside: false,
       pointer: null,
       suppressHover: false,
-      // A tile title is a span inside the tile link; focus returns to the link.
-      returnFocus: link ? (placementTarget.closest?.('a[href]') || placementTarget) : null,
+      returnFocus: link ? placementTarget : null,
       restoringFocus: false,
     };
     const pointerAnchor = (event) => (link ? { type: 'focus' } : {
@@ -428,11 +410,9 @@ function enhanceGridInfoCards(scope, config) {
       else if (link) scheduleGridInfoDismissal(info, LINK_INFO_DISMISS_DELAY_MS);
       else dismissActiveGridInfoCard();
     };
-    pointerTargets.forEach((target) => {
-      target.addEventListener?.('pointerenter', onPointerEnter);
-      target.addEventListener?.('pointermove', onPointerMove);
-      target.addEventListener?.('pointerleave', onPointerLeave);
-    });
+    pointerTarget.addEventListener?.('pointerenter', onPointerEnter);
+    pointerTarget.addEventListener?.('pointermove', onPointerMove);
+    pointerTarget.addEventListener?.('pointerleave', onPointerLeave);
     if (hybrid) {
       trigger.addEventListener?.('click', () => {
         if (activeGridInfoPlacement?.info === info) {
@@ -484,6 +464,5 @@ export function enhanceCalendarInfoCards(scope = globalThis.document) {
 }
 
 export function enhanceDashboardTitleInfoCards(scope = globalThis.document) {
-  return enhanceGridInfoCards(scope, DASHBOARD_TITLE_INFO_CONFIG)
-    + enhanceGridInfoCards(scope, DASHBOARD_TILE_INFO_CONFIG);
+  return enhanceGridInfoCards(scope, DASHBOARD_TITLE_INFO_CONFIG);
 }

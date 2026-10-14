@@ -95,10 +95,10 @@ function buildDashboard(overrides = {}) {
     weekStart: 'monday',
     tiles: {
       overdue: { count: 0, href: '/releases?schedule=overdue' },
-      needsDate: { count: 0, oldestAgeDays: null, href: '#needs-date' },
-      dueToday: { count: 0, firstRelease: null, href: '/releases?schedule=today' },
-      next7Days: { count: 0, throughDate: '2026-10-19', href: '/releases?schedule=upcoming' },
-      missingAssets: { count: 0, affectedReleaseCount: 0, href: '/asset-viewer?presence=missing' },
+      needsDate: { count: 0, href: '#needs-date' },
+      dueToday: { count: 0, href: '/releases?schedule=today' },
+      next7Days: { count: 0, href: '/releases?schedule=upcoming' },
+      missingAssets: { count: 0, href: '/asset-viewer?presence=missing' },
     },
     strip: {
       startDate: '2026-10-12',
@@ -235,66 +235,19 @@ describe('dashboard route wiring', () => {
 });
 
 describe('dashboard attention tile presentation', () => {
-  it('describes zero-value tiles', async () => {
-    const { tiles } = (await renderLocals()).dashboard;
-
-    expect(tiles.overdue).toMatchObject({ count: 0, context: 'Nothing overdue', href: '/releases?schedule=overdue' });
-    expect(tiles.needsDate).toMatchObject({ count: 0, context: 'All releases have dates', href: '#needs-date' });
-    expect(tiles.dueToday).toMatchObject({ count: 0, context: 'Nothing today', firstRelease: null });
-    expect(tiles.next7Days).toMatchObject({ count: 0, context: 'Through Mon, Oct 19' });
-    expect(tiles.missingAssets).toMatchObject({ count: 0, context: 'No missing files', href: '/asset-viewer?presence=missing' });
-  });
-
-  it('carries counts and secondary context from the service model', async () => {
+  it('passes tile counts and destinations through without secondary context', async () => {
     const dashboard = buildDashboard();
     dashboard.tiles = {
       overdue: { count: 2, href: '/releases?schedule=overdue' },
-      needsDate: { count: 14, oldestAgeDays: 23, href: '#needs-date' },
-      dueToday: {
-        count: 1,
-        firstRelease: buildRelease({ title: 'Evening drop', planned_date: '2026-10-12', planned_time: '18:00' }),
-        href: '/releases?schedule=today',
-      },
-      next7Days: { count: 5, throughDate: '2026-10-19', href: '/releases?schedule=upcoming' },
-      missingAssets: { count: 7, affectedReleaseCount: 1, href: '/asset-viewer?presence=missing' },
+      needsDate: { count: 14, href: '#needs-date' },
+      dueToday: { count: 1, href: '/releases?schedule=today' },
+      next7Days: { count: 5, href: '/releases?schedule=upcoming' },
+      missingAssets: { count: 7, href: '/asset-viewer?presence=missing' },
     };
 
     const { tiles } = (await renderLocals({ dashboard })).dashboard;
 
-    expect(tiles.overdue).toMatchObject({ count: 2, context: 'Unpublished, date passed' });
-    expect(tiles.needsDate).toMatchObject({ count: 14, context: 'Oldest waiting 23 days' });
-    expect(tiles.dueToday).toMatchObject({
-      count: 1,
-      context: null,
-      firstRelease: {
-        id: 1,
-        title: 'Evening drop',
-        plannedTime: '18:00',
-        infoCard: { id: 1, title: 'Evening drop', planned_date: '2026-10-12', planned_time: '18:00', editUrl: '/releases/1/edit' },
-      },
-    });
-    expect(tiles.next7Days).toMatchObject({ count: 5, context: 'Through Mon, Oct 19' });
-    expect(tiles.missingAssets).toMatchObject({ count: 7, context: '1 release affected' });
-  });
-
-  it('presents the Due today release card from the shown release with NSFW blur', async () => {
-    const dashboard = buildDashboard();
-    dashboard.tiles.dueToday = {
-      count: 2,
-      firstRelease: buildRelease({
-        id: 42, title: 'Shown first', planned_date: '2026-10-12', primaryImage: AVAILABLE_IMAGE, tags: NSFW_TAGS,
-      }),
-      href: '/releases?schedule=today',
-    };
-
-    const enabled = (await renderLocals({ dashboard, nsfwEnabled: true })).dashboard.tiles.dueToday;
-    expect(enabled.firstRelease).toMatchObject({ id: 42, title: 'Shown first', plannedTime: null });
-    expect(enabled.firstRelease.infoCard).toMatchObject({
-      id: 42, title: 'Shown first', primaryImage: AVAILABLE_IMAGE, nsfwBlur: true, status: 'planned',
-    });
-
-    const disabled = (await renderLocals({ dashboard, nsfwEnabled: false })).dashboard.tiles.dueToday;
-    expect(disabled.firstRelease.infoCard.nsfwBlur).toBe(false);
+    expect(tiles).toEqual(dashboard.tiles);
   });
 });
 

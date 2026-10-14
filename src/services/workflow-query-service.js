@@ -679,7 +679,6 @@ export function createWorkflowQueryService({
     });
     const openDates = releaseRepository.findOpenDays(tomorrow, DASHBOARD_LIMITS.openDays);
     const missingAssetCount = assetRepository.countMissingInActiveProjects();
-    const affectedReleaseCount = releaseRepository.countActiveReleasesWithMissingSelectedAssets();
 
     // `list` and `countByStatus` both exclude projects archived by either
     // archived_at or the legacy status; only the separate archived bucket of
@@ -799,8 +798,6 @@ export function createWorkflowQueryService({
 
     const rows = projectRows.map(presentProjectSummary);
 
-    const todayGroup = groups.find((group) => group.id === 'today');
-
     return {
       today,
       weekStart,
@@ -811,24 +808,18 @@ export function createWorkflowQueryService({
         },
         needsDate: {
           count: scheduleSummary.undated,
-          oldestAgeDays: scheduleSummary.undated > 0
-            ? ageInCalendarDays(scheduleSummary.oldestUndatedCreatedAt, today)
-            : null,
           href: '#needs-date',
         },
         dueToday: {
           count: scheduleSummary.today,
-          firstRelease: todayGroup?.items[0] ?? null,
           href: '/releases?schedule=today',
         },
         next7Days: {
           count: scheduleSummary.next7,
-          throughDate: weekEnd,
           href: '/releases?schedule=upcoming',
         },
         missingAssets: {
           count: missingAssetCount,
-          affectedReleaseCount,
           href: buildAssetLibraryUrl({}, { presence: 'missing' }),
         },
       },
