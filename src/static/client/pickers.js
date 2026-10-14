@@ -5,6 +5,13 @@ const DATE_PICKER_INPUT_SELECTOR = '[data-date-picker-input]';
 const DATE_PICKER_TRIGGER_SELECTOR = '.date-picker-trigger';
 const DATE_PICKER_PANEL_SELECTOR = '[data-date-picker-panel]';
 const DATE_PICKER_BOUND_KEY = 'datePickerBound';
+/**
+ * Dispatched on the input, after its input and change events, when a day is
+ * chosen from the calendar. The synthetic change cannot be told apart from a
+ * keystroke-driven one, so callers that defer typed changes listen for this
+ * to learn that the value is a deliberate, complete choice.
+ */
+export const DATE_PICKER_SELECT_EVENT = 'date-picker-select';
 const TIME_PICKER_FIELD_SELECTOR = '[data-time-picker-field]';
 const TIME_PICKER_INPUT_SELECTOR = '[data-time-picker-input]';
 const TIME_PICKER_TRIGGER_SELECTOR = '[data-time-picker-trigger]';
@@ -90,6 +97,24 @@ function findDatePickerParts(field) {
   const trigger = field.querySelector(DATE_PICKER_TRIGGER_SELECTOR)
     || (panel && field.querySelector(`button[aria-controls="${panel.id}"]`));
   return { input, trigger, panel };
+}
+
+// Every enhanced date picker, across all enhanceDatePickers() scopes. As for
+// time pickers, the one document-level listener pair reads this registry at
+// event time, and states whose field left the DOM are pruned.
+const datePickerStates = new Set();
+const datePickerStateByField = new WeakMap();
+const datePickerDocuments = new WeakSet();
+
+function pruneDetachedDatePickerStates() {
+  for (const state of datePickerStates) {
+    if (state.field.isConnected === false) datePickerStates.delete(state);
+  }
+}
+
+function liveDatePickerStates() {
+  pruneDetachedDatePickerStates();
+  return Array.from(datePickerStates);
 }
 
 function datePickerState(field) {
@@ -212,6 +237,7 @@ function renderDatePickerGrid(state) {
           input.value = iso;
           input.dispatchEvent(new Event('input', { bubbles: true }));
           input.dispatchEvent(new Event('change', { bubbles: true }));
+          input.dispatchEvent(new CustomEvent(DATE_PICKER_SELECT_EVENT, { bubbles: true, detail: { value: iso } }));
         }
         closeDatePicker(state, true);
       });
@@ -451,9 +477,9 @@ function closeDatePicker(state, restoreFocus = false) {
   if (restoreFocus) state.trigger?.focus?.();
 }
 
-function openDatePicker(state, allStates) {
+function openDatePicker(state) {
   if (state.open || state.input?.disabled || state.trigger?.disabled) return;
-  for (const other of allStates) {
+  for (const other of liveDatePickerStates()) {
     if (other !== state) closeDatePicker(other);
   }
   setViewFromValue(state);
@@ -472,7 +498,7 @@ function openDatePicker(state, allStates) {
   (selected || firstDay)?.focus?.();
 }
 
-function bindDatePickerState(state, allStates) {
+function bindDatePickerState(state) {
   if (!state.trigger || !state.panel || !state.input) return;
 
   state.trigger.addEventListener('click', (event) => {
@@ -480,7 +506,7 @@ function bindDatePickerState(state, allStates) {
     if (state.open) {
       closeDatePicker(state, true);
     } else {
-      openDatePicker(state, allStates);
+      openDatePicker(state);
     }
   });
 
@@ -495,52 +521,50 @@ function bindDatePickerState(state, allStates) {
   });
 }
 
-const datePickerStateByField = new WeakMap();
+// Registered once per document, however often pickers are (re-)enhanced.
+function bindDatePickerDocument(doc) {
+  if (!doc || datePickerDocuments.has(doc)) return;
+  datePickerDocuments.add(doc);
 
-function getDatePickerFields(scope) {
-  return Array.from(scope?.querySelectorAll?.(DATE_PICKER_FIELD_SELECTOR) || []);
+  doc.addEventListener?.('click', (event) => {
+    const target = event.target;
+    for (const active of liveDatePickerStates().filter((state) => state.open)) {
+      if (target && (active.field.contains(target) || active.panel.contains(target))) continue;
+      closeDatePicker(active);
+    }
+  });
+
+  doc.addEventListener?.('keydown', (event) => {
+    if (event.key !== 'Escape') return;
+    for (const active of liveDatePickerStates().filter((state) => state.open)) {
+      // Escape inside the panel is handled by the panel, which refocuses the
+      // trigger; handling it here too would close and refocus twice.
+      if (active.panel.contains(doc.activeElement)) continue;
+      event.preventDefault?.();
+      closeDatePicker(active, true);
+    }
+  });
 }
 
 export function enhanceDatePickers(scope = globalThis.document) {
   if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
 
-  const fields = getDatePickerFields(scope);
+  const fields = Array.from(scope.querySelectorAll(DATE_PICKER_FIELD_SELECTOR) || []);
   if (fields.length === 0) return 0;
 
-  const states = fields.map(datePickerState);
-
-  // Bind per-field interactions once.
-  states.forEach((state) => {
-    if (isEnhancementBound(state.field, DATE_PICKER_BOUND_KEY)) return;
-    markEnhancementBound(state.field, DATE_PICKER_BOUND_KEY);
-    datePickerStateByField.set(state.field, state);
-    bindDatePickerState(state, states);
+  // Drop pickers removed by earlier region replacements now, so the registry
+  // stays bounded even when no click, Escape, or open happens between them.
+  pruneDetachedDatePickerStates();
+  fields.forEach((field) => {
+    if (isEnhancementBound(field, DATE_PICKER_BOUND_KEY) && datePickerStateByField.has(field)) return;
+    markEnhancementBound(field, DATE_PICKER_BOUND_KEY);
+    const state = datePickerState(field);
+    datePickerStateByField.set(field, state);
+    datePickerStates.add(state);
+    bindDatePickerState(state);
   });
 
-  // Bind singleton document-level dismissal only once per scope.
-  if (!isEnhancementBound(scope, 'datePickerDocumentBound')) {
-    markEnhancementBound(scope, 'datePickerDocumentBound');
-
-    document.addEventListener?.('click', (event) => {
-      const target = event.target;
-      const active = states.find((state) => state.open);
-      if (!active) return;
-      if (target && (active.field.contains(target) || active.panel.contains(target))) return;
-      closeDatePicker(active);
-    });
-
-    document.addEventListener?.('keydown', (event) => {
-      if (event.key !== 'Escape') return;
-      const active = states.find((state) => state.open);
-      if (!active) return;
-      // If focus is inside the active panel, the panel handler will close and
-      // refocus the trigger. Only handle Escape when focus is outside the panel
-      // to avoid double-preventDefault and inconsistent focus behavior.
-      if (active.panel.contains(document.activeElement)) return;
-      event.preventDefault?.();
-      closeDatePicker(active, true);
-    });
-  }
+  bindDatePickerDocument(globalThis.document);
 
   return fields.length;
 }

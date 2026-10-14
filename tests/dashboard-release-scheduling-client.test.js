@@ -56,6 +56,10 @@ class FakeElement {
     if (attribute && !this.attributes.has(attribute)) return false;
     return value === undefined || this.attributes.get(attribute) === value;
   }
+  contains(node) {
+    for (let current = node; current; current = current.parent) if (current === this) return true;
+    return false;
+  }
   descendants() { return this.children.flatMap((child) => [child, ...child.descendants()]); }
   querySelectorAll(selector) { return this.descendants().filter((node) => node.matches(selector)); }
   querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
@@ -115,8 +119,13 @@ function renderRow(doc, { id, picks = ['2026-10-13', '2026-10-14', '2026-10-16']
   const quickForm = el('form', { method: 'post', action: url, 'data-dashboard-schedule-quick-form': '' })
     .append(...hiddenFields(doc, hidden), quickFieldset);
   const dateInput = el('input', { type: 'date', name: 'plannedDate', required: '', 'data-dashboard-schedule-date': '' });
+  const calendarButton = el('button', {
+    type: 'button', 'aria-expanded': 'false', 'aria-controls': `dashboard-schedule-date-${id}-calendar`, 'data-dashboard-schedule-calendar': '',
+  });
+  const calendarPanel = el('div', { id: `dashboard-schedule-date-${id}-calendar`, 'data-date-picker-panel': '', hidden: '' });
+  const dateField = el('div', { 'data-date-picker-field': '' }).append(dateInput, calendarButton, calendarPanel);
   const setButton = el('button', { type: 'submit', 'data-dashboard-schedule-set': '' });
-  const customFieldset = el('fieldset', { disabled: '', 'data-dashboard-schedule-controls': '' }).append(dateInput, setButton);
+  const customFieldset = el('fieldset', { disabled: '', 'data-dashboard-schedule-controls': '' }).append(dateField, setButton);
   const customForm = el('form', { method: 'post', action: url, 'data-dashboard-schedule-custom-form': '' })
     .append(...hiddenFields(doc, hidden), customFieldset);
   const error = el('p', { id: `dashboard-schedule-error-${id}`, 'data-dashboard-schedule-error': '', hidden: '' });
@@ -126,6 +135,21 @@ function renderRow(doc, { id, picks = ['2026-10-13', '2026-10-14', '2026-10-16']
   doc.body.append(item);
   const row = {
     item, container, quickForm, customForm, quickFieldset, customFieldset, pickButtons, dateInput, setButton, error, status,
+    calendarButton, calendarPanel,
+    // Presses the calendar button, as a pointer does: the press is recorded,
+    // then the input blurs and focus moves to the button.
+    pressCalendar({ button = 0 } = {}) {
+      doc.dispatch('pointerdown', { target: calendarButton, button });
+      doc.activeElement?.dispatch('blur', { relatedTarget: calendarButton });
+      calendarButton.focus();
+    },
+    // What the shared picker does when a day is chosen.
+    pickFromCalendar(value) {
+      dateInput.value = value;
+      dateInput.dispatch('input');
+      dateInput.dispatch('change');
+      dateInput.dispatch('date-picker-select', { detail: { value } });
+    },
     pick(date) {
       const submitter = pickButtons.find((button) => button.getAttribute('data-planned-date') === date);
       return quickForm.dispatch('submit', { submitter });
@@ -621,6 +645,77 @@ describe('enhanceDashboardReleaseScheduling', () => {
     second.press('2026-10-14');
     expect(calls).toHaveLength(1);
     expect(second.error.textContent).toBe('Another schedule change is still being saved. Try again when it finishes.');
+  });
+
+  it('opens the calendar over a typed draft without writing it', () => {
+    const { views: [row], calls } = setup();
+    row.type('2027-02-15');
+    row.pressCalendar();
+    expect(calls).toHaveLength(0);
+
+    // Opening moves focus into the calendar; that is not leaving the field.
+    row.calendarButton.setAttribute('aria-expanded', 'true');
+    const day = new FakeElement(row.calendarPanel.ownerDocument, 'button');
+    row.calendarPanel.append(day);
+    row.calendarButton.dispatch('blur', { relatedTarget: day });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('lets a calendar day chosen over a typed draft win, with exactly one write', () => {
+    const { views: [row], calls } = setup();
+    row.type('2027-02-15');
+    row.pressCalendar();
+    row.pickFromCalendar('2027-03-09');
+    expect(calls).toHaveLength(1);
+    expect(calls[0].body).toEqual({
+      plannedDate: '2027-03-09', plannedTime: null, expectedPlannedDate: null, expectedPlannedTime: null,
+    });
+  });
+
+  it('commits a calendar day chosen without a draft once, despite change and selection both firing', () => {
+    const { views: [row], calls } = setup();
+    row.pickFromCalendar('2027-03-09');
+    expect(calls).toHaveLength(1);
+    expect(calls[0].body.plannedDate).toBe('2027-03-09');
+  });
+
+  it('keeps a draft while keyboard focus moves to the calendar button, and commits it on leaving the field', () => {
+    const { views: [row], calls } = setup();
+    row.type('2027-02-15');
+    row.dateInput.dispatch('keydown', { key: 'Tab' });
+    row.dateInput.dispatch('blur', { relatedTarget: row.calendarButton });
+    row.calendarButton.focus();
+    expect(calls).toHaveLength(0);
+
+    // Back into the input is still inside the field.
+    row.calendarButton.dispatch('blur', { relatedTarget: row.dateInput });
+    expect(calls).toHaveLength(0);
+
+    row.calendarButton.dispatch('blur', { relatedTarget: row.pickButtons[0] });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].body.plannedDate).toBe('2027-02-15');
+  });
+
+  it('does not let an abandoned calendar-button press suppress a later ordinary blur', () => {
+    const { views: [row], calls } = setup();
+    row.type('2027-02-15');
+    // A press that never became a click: no calendar opened.
+    row.pressCalendar();
+    expect(calls).toHaveLength(0);
+
+    row.dateInput.focus();
+    row.dateInput.dispatch('focus');
+    row.dateInput.dispatch('blur');
+    expect(calls).toHaveLength(1);
+    expect(calls[0].body.plannedDate).toBe('2027-02-15');
+  });
+
+  it('treats another release’s calendar button press as an ordinary blur', () => {
+    const { views: [first, second], calls } = setup([{ id: 7 }, { id: 8 }]);
+    first.type('2027-02-15');
+    second.pressCalendar();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ url: '/releases/7/schedule', body: { plannedDate: '2027-02-15' } });
   });
 
   it('explains an empty date on Enter without sending anything', () => {

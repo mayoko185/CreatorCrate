@@ -9194,6 +9194,14 @@ describe('Release form date picker enhancement', () => {
         makeTimeField({ inputValue: timeValue, format: clockFormat, ...options });
         return timeFields[timeFields.length - 1];
       },
+      // Simulates a Dashboard refresh replacing the planned-date field.
+      replaceDateField() {
+        const index = fields.findIndex((entry) => entry.input.id === 'plannedDate');
+        const [previous] = fields.splice(index, 1);
+        previous.field.isConnected = false;
+        makeField({ id: 'plannedDate', inputValue: plannedValue });
+        return fields[fields.length - 1];
+      },
       // A new region element, as the autosave passes to enhanceTimePickers().
       regionScope() {
         return { dataset: {}, querySelectorAll: scope.querySelectorAll };
@@ -9391,6 +9399,58 @@ describe('Release form date picker enhancement', () => {
     }
   });
 
+  it('keeps one document listener pair for date pickers replaced by region refreshes', () => {
+    const fixture = makeDatePickerScope();
+    const documentListeners = () => fixture.listeners
+      .filter((entry) => entry.target === fixture.documentStub)
+      .map((entry) => entry.type);
+    try {
+      enhanceDatePickers(fixture.scope);
+      expect(documentListeners()).toEqual(['click', 'keydown']);
+
+      const stale = fixture.planned;
+      stale.trigger.dispatch('click');
+      expect(stale.panel.hidden).toBe(false);
+
+      let current;
+      for (let swap = 0; swap < 3; swap += 1) {
+        current = fixture.replaceDateField();
+        expect(enhanceDatePickers(fixture.regionScope())).toBe(2);
+      }
+      expect(documentListeners()).toEqual(['click', 'keydown']);
+      expect(fixture.listeners.filter((entry) => entry.target === current.trigger && entry.type === 'click')).toHaveLength(1);
+      expect(fixture.listeners.filter((entry) => entry.target === fixture.published.trigger && entry.type === 'click')).toHaveLength(1);
+
+      // The replacement opens and dismisses through the document listeners
+      // installed before it existed; the detached picker is never touched.
+      current.trigger.dispatch('click');
+      expect(current.panel.hidden).toBe(false);
+      const outside = { parentElement: null, parentNode: null };
+      fixture.documentStub.activeElement = outside;
+      fixture.documentStub.dispatch('click', outside);
+      expect(current.panel.hidden).toBe(true);
+      expect(current.trigger.focused).toBeUndefined();
+      expect(stale.panel.hidden).toBe(false);
+
+      current.trigger.dispatch('click');
+      fixture.documentStub.activeElement = outside;
+      const escape = fixture.documentStub.dispatch('keydown', outside, { key: 'Escape' });
+      expect(escape.defaultPrevented).toBe(true);
+      expect(current.panel.hidden).toBe(true);
+      expect(current.trigger.focused.value).toBe(true);
+      expect(stale.trigger.focused).toBeUndefined();
+
+      // Opening another live calendar closes the replacement, not the detached one.
+      current.trigger.dispatch('click');
+      fixture.published.trigger.dispatch('click');
+      expect(current.panel.hidden).toBe(true);
+      expect(fixture.published.panel.hidden).toBe(false);
+      expect(stale.panel.hidden).toBe(false);
+    } finally {
+      fixture.restoreDocument();
+    }
+  });
+
   it('opens the intended calendar and closes the previous calendar when another opens', () => {
     const fixture = makeDatePickerScope();
     try {
@@ -9487,7 +9547,10 @@ describe('Release form date picker enhancement', () => {
 
       expect(fixture.published.input.value).toBe(selectedIso);
       expect(fixture.planned.input.value).toBe('');
-      expect(fixture.published.input.dispatched.map((e) => e.type)).toEqual(['input', 'change']);
+      expect(fixture.published.input.dispatched.map((e) => e.type)).toEqual(['input', 'change', 'date-picker-select']);
+      const selection = fixture.published.input.dispatched[2];
+      expect(selection.bubbles).toBe(true);
+      expect(selection.detail).toEqual({ value: selectedIso });
       expect(fixture.published.panel.hidden).toBe(true);
     } finally {
       fixture.restoreDocument();
@@ -9639,7 +9702,10 @@ describe('Release form date picker enhancement', () => {
         .map((rule) => `${rule}}`)
         .filter((rule) => rule.includes(`::${pseudo}`));
       expect(rules.length).toBeGreaterThan(0);
-      expect(rules.every((rule) => rule.includes('.scheduling-section'))).toBe(true);
+      const selectors = rules.flatMap((rule) => rule.slice(0, rule.indexOf('{')).replace(/\/\*[\s\S]*?\*\//g, '')
+        .split(',').map((selector) => selector.trim()));
+      expect(selectors.every((selector) => /^\.(scheduling-section|dashboard-schedule) \.picker-input::/.test(selector))).toBe(true);
+      expect(selectors.some((selector) => selector.startsWith('.dashboard-schedule '))).toBe(true);
       expect(rules.every((rule) => /display:\s*none/.test(rule))).toBe(true);
     }
   });

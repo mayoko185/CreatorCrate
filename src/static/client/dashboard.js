@@ -9,6 +9,7 @@ import {
   enhanceDashboardTitleInfoCards,
 } from './info-cards.js';
 import { createLiveRegionEngine } from './live-regions.js';
+import { DATE_PICKER_SELECT_EVENT, enhanceDatePickers } from './pickers.js';
 import { enhancePreviewMedia } from './preview.js';
 
 const STATUS_FILTERS_SELECTOR = '[data-dashboard-status-filters]';
@@ -96,6 +97,9 @@ const SCHEDULE_CUSTOM_FORM_SELECTOR = '[data-dashboard-schedule-custom-form]';
 const SCHEDULE_CONTROLS_SELECTOR = '[data-dashboard-schedule-controls]';
 const SCHEDULE_PICK_SELECTOR = '[data-dashboard-schedule-pick]';
 const SCHEDULE_DATE_SELECTOR = '[data-dashboard-schedule-date]';
+const SCHEDULE_CALENDAR_SELECTOR = '[data-dashboard-schedule-calendar]';
+const DATE_PICKER_FIELD_SELECTOR = '[data-date-picker-field]';
+const DATE_PICKER_PANEL_SELECTOR = '[data-date-picker-panel]';
 const SCHEDULE_SET_SELECTOR = '[data-dashboard-schedule-set]';
 const SCHEDULE_ERROR_SELECTOR = '[data-dashboard-schedule-error]';
 const SCHEDULE_STATUS_SELECTOR = '[data-dashboard-schedule-status]';
@@ -167,25 +171,27 @@ export function getDashboardMutationGate(doc = globalThis.document) {
   return gate;
 }
 
-const schedulePickPresses = new WeakMap();
+const schedulePresses = new WeakMap();
 
 /**
- * Records a primary-button press on a suggested date anywhere on the page.
- * Pressing a button moves focus before its click fires, so without this a
- * custom-date input's blur would commit its unsent typed date first and take
- * the mutation gate from the date the user actually chose. Any later press
- * or key replaces the record, so a press that never becomes a click cannot
- * suppress a later ordinary blur.
+ * Records a primary-button press on a suggested date or a custom-date
+ * calendar button anywhere on the page. Pressing a button moves focus before
+ * its click fires, so without this a custom-date input's blur would commit
+ * its unsent typed date first: taking the mutation gate from the suggested
+ * date the user actually chose, or writing the draft when they only meant to
+ * open the calendar. Any later press or key replaces the record, so a press
+ * that never becomes a click cannot suppress a later ordinary blur.
  */
-function getSchedulePickPress(doc) {
-  let press = schedulePickPresses.get(doc);
+function getSchedulePress(doc) {
+  let press = schedulePresses.get(doc);
   if (press) return press;
-  press = { pick: null };
+  press = { control: null };
   doc.addEventListener?.('pointerdown', (event) => {
-    press.pick = event.button === 0 ? event.target?.closest?.(SCHEDULE_PICK_SELECTOR) || null : null;
+    const target = event.button === 0 ? event.target : null;
+    press.control = target?.closest?.(SCHEDULE_PICK_SELECTOR) || target?.closest?.(SCHEDULE_CALENDAR_SELECTOR) || null;
   }, true);
-  doc.addEventListener?.('keydown', () => { press.pick = null; }, true);
-  schedulePickPresses.set(doc, press);
+  doc.addEventListener?.('keydown', () => { press.control = null; }, true);
+  schedulePresses.set(doc, press);
   return press;
 }
 
@@ -284,6 +290,8 @@ function bindScheduleRow(container, options) {
   const quickForm = container.querySelector(SCHEDULE_QUICK_FORM_SELECTOR);
   const customForm = container.querySelector(SCHEDULE_CUSTOM_FORM_SELECTOR);
   const dateInput = customForm?.querySelector(SCHEDULE_DATE_SELECTOR);
+  const calendarButton = customForm?.querySelector(SCHEDULE_CALENDAR_SELECTOR) || null;
+  const dateField = dateInput?.closest?.(DATE_PICKER_FIELD_SELECTOR) || null;
   const setButton = customForm?.querySelector(SCHEDULE_SET_SELECTOR);
   const errorRegion = container.querySelector(SCHEDULE_ERROR_SELECTOR);
   const statusRegion = container.querySelector(SCHEDULE_STATUS_SELECTOR);
@@ -510,8 +518,9 @@ function bindScheduleRow(container, options) {
 
   // Once every segment of a native date input holds a value, each keystroke
   // fires change: typing 15 into the day reports the 1st first. Typed dates
-  // therefore commit on Enter or when focus leaves the field; picker choices
-  // commit on change.
+  // therefore commit on Enter or when focus leaves the date field (the input,
+  // its calendar button and calendar); picker choices commit on change, or on
+  // the calendar's selection event when a typed draft deferred that change.
   let typedDate = false;
 
   function submitCustomDate() {
@@ -545,22 +554,47 @@ function bindScheduleRow(container, options) {
     }
   });
 
-  const pickPress = getSchedulePickPress(doc);
+  const press = getSchedulePress(doc);
 
-  dateInput.addEventListener('focus', () => { pickPress.pick = null; });
+  // A press on any suggested date defers to that date; a press on this
+  // field's own calendar button opens the calendar instead of writing. Either
+  // way the draft stays typed, so Enter or a later blur can still commit it.
+  function pressDefersDraft() {
+    const pressed = press.control;
+    press.control = null;
+    return Boolean(pressed) && (pressed === calendarButton || pressed.matches?.(SCHEDULE_PICK_SELECTOR) === true);
+  }
 
-  dateInput.addEventListener('blur', () => {
-    // A blur caused by pressing a suggested date defers to that date. The
-    // draft stays typed, so Enter or a later blur can still commit it.
-    if (pickPress.pick) {
-      pickPress.pick = null;
-      return;
-    }
+  // Focus moving between the input, its calendar button and the open calendar
+  // stays within the date field, so it is not a reason to commit.
+  function staysInDateField(event) {
+    const next = event?.relatedTarget;
+    return Boolean(next && dateField?.contains?.(next));
+  }
+
+  function leaveDateField(event) {
+    if (pressDefersDraft() || staysInDateField(event)) return;
     if (typedDate && connected()) commitDate();
+  }
+
+  dateInput.addEventListener('focus', () => { press.control = null; });
+  dateInput.addEventListener('blur', leaveDateField);
+  // Leaving through the calendar button is still leaving the field; while
+  // its calendar is open, focus belongs to the calendar, not to a commit.
+  calendarButton?.addEventListener('blur', (event) => {
+    if (calendarButton.getAttribute('aria-expanded') === 'true') return;
+    leaveDateField(event);
   });
 
   dateInput.addEventListener('change', () => {
     if (!typedDate) commitDate();
+  });
+
+  // The calendar dispatches change before this event. Without a typed draft
+  // that change has already committed the choice; with one, it was deferred
+  // as a typed change, so the calendar's choice commits here instead.
+  dateInput.addEventListener(DATE_PICKER_SELECT_EVENT, () => {
+    if (typedDate) commitDate();
   });
 
   statusRegion.addEventListener('click', (event) => {
@@ -793,6 +827,9 @@ function describeFocus(active) {
     // Focus inside a title card returns to the card's trigger: the fresh card
     // renders closed, so none of its actions can take focus.
     titleCard: active.getAttribute('aria-controls') ?? active.closest(TITLE_CARD_SELECTOR)?.id ?? null,
+    // Likewise, focus inside a custom-date calendar returns to its button.
+    calendar: active.closest(DATE_PICKER_PANEL_SELECTOR)?.id
+      ?? (active.matches(SCHEDULE_CALENDAR_SELECTOR) ? active.getAttribute('aria-controls') : null),
     href: active.getAttribute('href'),
     owner: owner ? { attribute: ownerAttribute, value: owner.getAttribute(ownerAttribute) } : null,
     sectionHeadingId: active.closest('section[aria-labelledby]')?.getAttribute('aria-labelledby') ?? null,
@@ -975,6 +1012,7 @@ function findEquivalentFocus(region, focus) {
     focus.statusFilter ? findByAttribute(region, '[data-dashboard-status-link]', 'data-dashboard-status-link', focus.statusFilter) : null,
     focus.plannedDate ? findByAttribute(owner, SCHEDULE_PICK_SELECTOR, 'data-planned-date', focus.plannedDate) : null,
     focus.titleCard ? findByAttribute(region, TITLE_TRIGGER_SELECTOR, 'aria-controls', focus.titleCard) : null,
+    focus.calendar ? findByAttribute(region, SCHEDULE_CALENDAR_SELECTOR, 'aria-controls', focus.calendar) : null,
     // The first link with this href may sit in a closed title popover.
     focus.href ? findFocusableByAttribute(owner || section, 'a[href]', 'href', focus.href) : null,
   ];
@@ -1036,8 +1074,10 @@ const dashboardLiveEngine = createLiveRegionEngine({
       restoreDashboardState(state, nextRegion);
     } finally {
       // Runs even when restoration fails part way, so rows already detached
-      // never stay reachable through the gate.
+      // never stay reachable through the gate or the shared date-picker
+      // registry, which prunes detached pickers whenever it enhances.
       state.dashboardScheduling?.retire(state.dashboardRefresh.snapshot.rows, nextRegion);
+      enhanceDatePickers(nextRegion);
     }
   },
   onLoadComplete(state, _generation, region) {

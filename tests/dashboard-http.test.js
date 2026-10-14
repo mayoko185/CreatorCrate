@@ -422,7 +422,17 @@ describe('dashboard HTTP composition', () => {
         expect(pick.match(/value="([^"]+)"/)[1] > today).toBe(true);
       }
       expect(item).toContain(`<label class="sr-only" for="dashboard-schedule-date-${releaseId}">Release date</label>`);
-      expect(item).toContain(`id="dashboard-schedule-date-${releaseId}" type="date" name="plannedDate" required data-dashboard-schedule-date`);
+      expect(item).toContain(`id="dashboard-schedule-date-${releaseId}" type="date" name="plannedDate" required data-date-picker-input data-dashboard-schedule-date`);
+      // The established CreatorCrate date picker, with release-specific ids.
+      const calendarId = `dashboard-schedule-date-${releaseId}-calendar`;
+      expect(item).toMatch(/<div class="dashboard-schedule-date-field scheduling-field" data-date-picker-field>/);
+      const trigger = item.match(/<button[^>]*data-dashboard-schedule-calendar[^>]*>/)?.[0];
+      expect(trigger).toContain('type="button"');
+      expect(trigger).toContain('class="picker-trigger date-picker-trigger"');
+      expect(trigger).toContain(`aria-controls="${calendarId}"`);
+      expect(trigger).toContain('aria-expanded="false"');
+      expect(trigger).toContain('aria-label="Open calendar for Waiting Release"');
+      expect(item).toContain(`<div id="${calendarId}" class="date-picker-panel" role="dialog" aria-label="Release date calendar for Waiting Release" hidden data-date-picker-panel data-date-picker-for="dashboard-schedule-date-${releaseId}"></div>`);
       expect(item).toContain('data-dashboard-schedule-set>Set</button>');
       expect(item).toContain(`id="dashboard-schedule-error-${releaseId}" data-dashboard-schedule-error hidden`);
       // The row shows its confirmation; the page-level announcer speaks it.

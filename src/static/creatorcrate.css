@@ -630,10 +630,14 @@
       /* Keep the native inputs usable while removing duplicate scheduling affordances. */
       .scheduling-section .picker-input::-webkit-calendar-picker-indicator,
       .scheduling-section .picker-input::-webkit-clear-button,
-      .scheduling-section .picker-input::-webkit-inner-spin-button {
+      .scheduling-section .picker-input::-webkit-inner-spin-button,
+      .dashboard-schedule .picker-input::-webkit-calendar-picker-indicator,
+      .dashboard-schedule .picker-input::-webkit-clear-button,
+      .dashboard-schedule .picker-input::-webkit-inner-spin-button {
         display: none;
       }
-      .scheduling-section .picker-input::-moz-calendar-picker-indicator {
+      .scheduling-section .picker-input::-moz-calendar-picker-indicator,
+      .dashboard-schedule .picker-input::-moz-calendar-picker-indicator {
         display: none;
       }
       @media (max-width: 767px) {
@@ -12287,27 +12291,43 @@
   border-style: solid;
   border-color: var(--border-strong);
 }
-.dashboard-schedule-date {
+.dashboard-schedule-date-field.scheduling-field {
+  flex: 0 1 10.5rem;
   min-width: 0;
   max-width: 100%;
-  min-height: 2rem;
-  padding: 0.25rem var(--space-sm);
-  border: 1px solid var(--border);
+}
+.dashboard-schedule-date-field .picker-input-row {
+  border-color: var(--border);
   border-radius: var(--radius-sm);
-  background: var(--bg);
-  color: var(--text);
+}
+.dashboard-schedule-date-field .picker-input-row:has(.picker-input[aria-invalid="true"]) {
+  border-color: var(--danger);
+}
+.dashboard-schedule-date-field .picker-input {
+  min-height: 2rem;
+  padding: 0.25rem calc(1.625rem + 2 * var(--space-xs)) 0.25rem var(--space-sm);
   color-scheme: dark;
   font: inherit;
   font-size: 0.8125rem;
 }
-.dashboard .dashboard-schedule-date:focus-visible {
-  outline-offset: -2px;
+.dashboard-schedule-date-field .picker-trigger {
+  width: 1.625rem;
+  height: 1.625rem;
+}
+/* On wide screens Needs-a-date fills the right-hand column, so its calendar
+   opens from the control's right edge, toward the page, instead of past the
+   viewport. Narrow screens use the shared viewport-pinned panel. */
+@media (min-width: 768px) {
+  .dashboard-schedule .date-picker-panel {
+    left: auto;
+    right: 0;
+  }
 }
 /* Disabled until the scheduling enhancement initializes: dimmed rather than
    struck through like other disabled buttons, since each date is still a
    valid choice. */
 .dashboard-schedule-fieldset:disabled .button,
-.dashboard-schedule-fieldset:disabled .dashboard-schedule-date {
+.dashboard-schedule-fieldset:disabled .picker-input-row {
   opacity: 0.6;
   text-decoration: none;
   cursor: not-allowed;
@@ -12684,7 +12704,7 @@
     padding: var(--space-md);
   }
   .dashboard-schedule .button,
-  .dashboard-schedule-date,
+  .dashboard-schedule-date-field .picker-input,
   .dashboard-release-row-action,
   .dashboard-status-tab {
     min-height: var(--control-height);
