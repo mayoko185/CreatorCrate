@@ -9451,6 +9451,75 @@ describe('Release form date picker enhancement', () => {
     }
   });
 
+  it('prunes detached date pickers when enhancing a replacement region that has no pickers', () => {
+    const fixture = makeDatePickerScope();
+    // Count how often the registry checks each field's connection; a pruned
+    // state is never checked again, so the counts show what is still retained.
+    const reads = new Map();
+    const instrument = (entry, connected) => {
+      const counter = { count: 0, connected };
+      Object.defineProperty(entry.field, 'isConnected', {
+        configurable: true,
+        get() { counter.count += 1; return counter.connected; },
+      });
+      reads.set(entry, counter);
+      return counter;
+    };
+    const emptyRegion = () => ({ dataset: {}, querySelectorAll: () => [] });
+    const documentListeners = () => fixture.listeners
+      .filter((entry) => entry.target === fixture.documentStub)
+      .map((entry) => entry.type);
+    try {
+      expect(enhanceDatePickers(fixture.scope)).toBe(2);
+      const planned = instrument(fixture.planned, true);
+      const published = instrument(fixture.published, true);
+      fixture.planned.trigger.dispatch('click');
+      expect(fixture.planned.panel.hidden).toBe(false);
+
+      // Only the planned picker leaves the DOM; the replacement has no pickers.
+      planned.connected = false;
+      planned.count = 0;
+      published.count = 0;
+      expect(enhanceDatePickers(emptyRegion())).toBe(0);
+      expect(planned.count).toBe(1);
+      expect(published.count).toBe(1);
+
+      // Repeated empty enhancement no longer visits the pruned state, while
+      // the connected picker stays registered.
+      for (let pass = 0; pass < 3; pass += 1) {
+        expect(enhanceDatePickers(emptyRegion())).toBe(0);
+      }
+      expect(planned.count).toBe(1);
+      expect(published.count).toBe(4);
+      expect(documentListeners()).toEqual(['click', 'keydown']);
+
+      // The connected picker still opens and dismisses through the shared
+      // document listeners; the pruned picker is never consulted or touched.
+      fixture.published.trigger.dispatch('click');
+      expect(fixture.published.panel.hidden).toBe(false);
+      const outside = { parentElement: null, parentNode: null };
+      fixture.documentStub.activeElement = outside;
+      fixture.documentStub.dispatch('click', outside);
+      expect(fixture.published.panel.hidden).toBe(true);
+      fixture.published.trigger.dispatch('click');
+      fixture.documentStub.activeElement = outside;
+      const escape = fixture.documentStub.dispatch('keydown', outside, { key: 'Escape' });
+      expect(escape.defaultPrevented).toBe(true);
+      expect(fixture.published.panel.hidden).toBe(true);
+      expect(fixture.published.trigger.focused.value).toBe(true);
+      expect(planned.count).toBe(1);
+      expect(fixture.planned.panel.hidden).toBe(false);
+
+      // Re-enhancing the original scope neither duplicates the connected
+      // picker's bindings nor re-registers anything twice.
+      expect(enhanceDatePickers(fixture.scope)).toBe(2);
+      expect(fixture.listeners.filter((entry) => entry.target === fixture.published.trigger && entry.type === 'click')).toHaveLength(1);
+      expect(documentListeners()).toEqual(['click', 'keydown']);
+    } finally {
+      fixture.restoreDocument();
+    }
+  });
+
   it('opens the intended calendar and closes the previous calendar when another opens', () => {
     const fixture = makeDatePickerScope();
     try {

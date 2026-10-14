@@ -827,3 +827,99 @@ test('failed refreshes keep active rows subscribed and release rows a partial re
     expect(await subscriptionCounts(page)).toEqual({ live: 3, bound: 3 });
   });
 });
+
+function trackDatePickerFields(page) {
+  return page.evaluate(() => {
+    window.testDatePickerFields ??= [];
+    for (const field of document.querySelectorAll('[data-dashboard] [data-date-picker-field]')) {
+      window.testDatePickerFields.push(new WeakRef(field));
+    }
+  });
+}
+
+async function reachableDetachedDatePickers(page) {
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('HeapProfiler.collectGarbage');
+  await cdp.detach();
+  return page.evaluate(() => window.testDatePickerFields
+    .map((ref) => ref.deref()).filter((field) => field && !field.isConnected).length);
+}
+
+async function documentListenerCounts(page) {
+  const cdp = await page.context().newCDPSession(page);
+  const { result } = await cdp.send('Runtime.evaluate', { expression: 'document' });
+  const { listeners } = await cdp.send('DOMDebugger.getEventListeners', { objectId: result.objectId });
+  await cdp.detach();
+  return {
+    click: listeners.filter(({ type }) => type === 'click').length,
+    keydown: listeners.filter(({ type }) => type === 'keydown').length,
+  };
+}
+
+test('a partial replacement with no date pickers releases the detached pickers at once, and Retry restores working ones', async ({ page }) => {
+  await withDashboardApp(async ({ origin, db, ids, readSchedule }) => {
+    // Only the fourth release is left undated.
+    db.prepare('UPDATE releases SET planned_date = ? WHERE id IN (?, ?, ?)')
+      .run(localDate(40), ids.first, ids.second, ids.third);
+    const traffic = await openDashboard(page, origin);
+    expect(await needsDateIds(page)).toEqual([ids.fourth]);
+    await trackDatePickerFields(page);
+    const listenersBefore = await documentListenerCounts(page);
+    const sync = syncState(page);
+
+    // Scheduling the last undated release replaces the region with one that
+    // has no date pickers; restoring the confirmation into it then fails.
+    await page.evaluate(() => {
+      const today = document.querySelector('.dashboard-today');
+      today.replaceChildren = () => { delete today.replaceChildren; throw new Error('restore failed'); };
+    });
+    await markRegion(page);
+    // Activated from the keyboard: the page's pointer-press record would
+    // otherwise keep the pressed button, and so its old subtree, reachable
+    // until the next press.
+    await firstPick(page, ids.fourth).focus();
+    await page.keyboard.press('Enter');
+    await expect(sync).toHaveAttribute('data-state', 'blocked');
+    expect(readSchedule(ids.fourth).planned_date).not.toBeNull();
+    expect(await page.locator('[data-dashboard] [data-date-picker-field]').count()).toBe(0);
+    // No click, Escape or open has happened since the replacement.
+    expect(await reachableDetachedDatePickers(page)).toBe(0);
+
+    // The retried refresh renders a release that became undated meanwhile.
+    db.prepare('UPDATE releases SET planned_date = NULL WHERE id = ?').run(ids.third);
+    await sync.locator('[data-dashboard-sync-retry]').click();
+    await expect(sync).toHaveAttribute('data-state', 'notice');
+    expect(await needsDateIds(page)).toEqual([ids.third]);
+    await trackDatePickerFields(page);
+
+    const row = scheduleRow(page, ids.third);
+    const trigger = row.locator('[data-dashboard-schedule-calendar]');
+    const panel = row.locator('[data-date-picker-panel]');
+    await trigger.click();
+    await expect(panel).toBeVisible();
+    await syncMessage(page).click();
+    await expect(panel).toBeHidden();
+    await expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    await trigger.click();
+    await expect(panel).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(panel).toBeHidden();
+    await expect(trigger).toBeFocused();
+    expect(await documentListenerCounts(page)).toEqual(listenersBefore);
+
+    await trigger.click();
+    await panel.locator('.date-picker-next').click();
+    const picked = await panel.locator('.date-picker-day:not([disabled])').nth(14).getAttribute('data-date');
+    await panel.locator(`.date-picker-day[data-date="${picked}"]`).click();
+    await expect(row.locator('[data-dashboard-schedule-undo]')).toBeFocused();
+    await waitForReplacement(page);
+    expect(readSchedule(ids.third)).toEqual({ planned_date: picked, planned_time: null });
+    await row.locator('[data-dashboard-schedule-undo]').click();
+    await expect(firstPick(page, ids.third)).toBeFocused();
+    expect(readSchedule(ids.third)).toEqual(UNDATED);
+    expect(traffic.posts).toHaveLength(3);
+    expect(traffic.navigations).toBe(0);
+    expect(await documentListenerCounts(page)).toEqual(listenersBefore);
+    expect(await reachableDetachedDatePickers(page)).toBe(0);
+  });
+});

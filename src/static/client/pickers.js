@@ -549,12 +549,15 @@ function bindDatePickerDocument(doc) {
 export function enhanceDatePickers(scope = globalThis.document) {
   if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
 
+  // Drop pickers removed by earlier region replacements now, so the registry
+  // stays bounded even when no click, Escape, or open happens between them.
+  // This runs before the empty-scope return: a replacement region with no
+  // pickers is exactly when the previous region's pickers became detached.
+  pruneDetachedDatePickerStates();
+
   const fields = Array.from(scope.querySelectorAll(DATE_PICKER_FIELD_SELECTOR) || []);
   if (fields.length === 0) return 0;
 
-  // Drop pickers removed by earlier region replacements now, so the registry
-  // stays bounded even when no click, Escape, or open happens between them.
-  pruneDetachedDatePickerStates();
   fields.forEach((field) => {
     if (isEnhancementBound(field, DATE_PICKER_BOUND_KEY) && datePickerStateByField.has(field)) return;
     markEnhancementBound(field, DATE_PICKER_BOUND_KEY);
