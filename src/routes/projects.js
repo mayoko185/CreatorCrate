@@ -61,7 +61,10 @@ function readProjectEditReturnLocation(candidate, projectId) {
 
   try {
     const url = new URL(candidate, 'http://creatorcrate.local');
-    if (url.origin !== 'http://creatorcrate.local' || url.pathname !== `/projects/${projectId}/assets`) return '';
+    // Project Assets and the Projects page (whose List information cards
+    // invoke Edit Project) are the only hosts the dialog returns to.
+    if (url.origin !== 'http://creatorcrate.local'
+      || (url.pathname !== `/projects/${projectId}/assets` && url.pathname !== '/projects')) return '';
     return `${url.pathname}${url.search}${url.hash}`;
   } catch {
     return '';
@@ -584,7 +587,7 @@ function renderProjectsPage(req, res, {
     offset,
     limit: PAGE_SIZE,
     knownTotal: total,
-    includeGridInformation: parsedQuery.view === 'grid',
+    includeGridInformation: true,
   });
   const optionPresentation = getProjectOptionPresentation(req);
   const pageUrl = buildPageUrl(req, parsedQuery, currentPage, pageDefaultsService, listQuery);

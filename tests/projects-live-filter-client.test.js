@@ -664,6 +664,56 @@ describe('Projects live filtering enhancement', () => {
     expect(next.grid.getAttribute('data-grid-size')).toBe('compact');
   });
 
+  it('binds List title information cards after replacement without letting card clicks navigate the row', async () => {
+    const initial = makePage({ view: 'grid' });
+    const next = makePage({ view: 'list' });
+    const row = makeNode({ tagName: 'tr', attrs: { class: 'projects-list-row', 'data-project-card': '', 'data-project-id': '9' } });
+    const projectCell = makeNode({ tagName: 'td' });
+    const titleInfo = makeNode({ attrs: { class: 'dashboard-title-info', 'data-dashboard-title-info': '' } });
+    const trigger = makeNode({
+      tagName: 'button',
+      attrs: { type: 'button', 'data-calendar-info-trigger': '', 'aria-controls': 'projects-list-info-9', 'aria-expanded': 'false' },
+    });
+    const card = makeNode({ attrs: { id: 'projects-list-info-9', 'data-calendar-info-card': '', popover: 'manual' } });
+    const cardDetails = makeNode({ tagName: 'dl' });
+    const actionsCell = makeNode({ tagName: 'td' });
+    const openLink = makeNode({ tagName: 'a', attrs: { 'data-project-card-link': '', href: '/projects/9' } });
+    openLink.click = vi.fn();
+    card.appendChild(cardDetails);
+    titleInfo.appendChild(trigger);
+    titleInfo.appendChild(card);
+    projectCell.appendChild(titleInfo);
+    actionsCell.appendChild(openLink);
+    row.appendChild(projectCell);
+    row.appendChild(actionsCell);
+    next.region.appendChild(row);
+
+    const windowObject = makeWindow(initial.document, new Map([['list', next.document]]));
+    windowObject.fetch.mockResolvedValue(responseFor(next, 'list', 'http://creatorcrate.test/projects?view=list'));
+    const link = addLiveLink(initial, 'view', '/projects?view=list');
+    enhanceProjectsLiveFiltering(initial.document);
+
+    link.dispatch('click', { button: 0 });
+    await flush();
+
+    expect(initial.document.querySelector('[data-calendar-info-trigger]')).toBe(trigger);
+    trigger.dispatch('click', { button: 0 });
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    expect(card.getAttribute('data-info-card-open')).toBe('true');
+
+    cardDetails.dispatch('click', { button: 0 });
+    expect(openLink.click).not.toHaveBeenCalled();
+    expect(card.getAttribute('data-info-card-open')).toBe('true');
+
+    trigger.dispatch('click', { button: 0 });
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(card.getAttribute('data-info-card-open')).toBeNull();
+    expect(openLink.click).not.toHaveBeenCalled();
+
+    projectCell.dispatch('click', { button: 0 });
+    expect(openLink.click).toHaveBeenCalledTimes(1);
+  });
+
   it('uses the existing live Reset path for the Filter dialog button without navigation and keeps the dialog open', async () => {
     const initial = makePage({
       project: 7,

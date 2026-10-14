@@ -1164,7 +1164,7 @@ export function createWorkflowQueryService({
     const projectIds = projects.map((project) => project.id);
     const assetCountsByProjectId = new Map(
       assetRepository.countByProjectIds(projectIds)
-        .map((row) => [row.project_id, row.asset_count])
+        .map((row) => [row.project_id, row])
     );
     const recentReleasesByProjectId = new Map();
 
@@ -1177,7 +1177,8 @@ export function createWorkflowQueryService({
 
     return projects.map((project) => ({
       ...project,
-      assetCount: assetCountsByProjectId.get(project.id) ?? 0,
+      assetCount: assetCountsByProjectId.get(project.id)?.asset_count ?? 0,
+      missingAssetCount: assetCountsByProjectId.get(project.id)?.missing_asset_count ?? 0,
       recentReleases: recentReleasesByProjectId.get(project.id) ?? [],
     }));
   }
@@ -1189,7 +1190,7 @@ export function createWorkflowQueryService({
    *
    * @param {object} [options] - project repository list options
    * @param {boolean} [options.includeGridInformation=false] - attach batched
-   *   asset totals and recent releases to the already-paged rows
+   *   asset and missing-asset totals and recent releases to the already-paged rows
    * @returns {{ rows: Array, total: number }}
    */
   function getProjectList(options = {}) {

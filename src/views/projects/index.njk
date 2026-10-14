@@ -84,11 +84,38 @@
     <p class="results-meta">{{ total }} project{% if total != 1 %}s{% endif %} found</p>
 
     {% if projects.length > 0 %}
-        <ul class="{% if view == 'list' %}project-list{% else %}project-grid{% endif %}">
+      {% if view == 'list' %}
+        {# The Dashboard Projects panel and table, inside a Dashboard scope so the
+           table, title-trigger focus and card typography rules apply unchanged. #}
+        <div class="dashboard dashboard-panel dashboard-projects projects-list-panel">
+          <div class="dashboard-table-scroll projects-list-scroll" role="region" aria-label="Projects" tabindex="0">
+            <table class="dashboard-projects-table projects-list-table" data-projects-list-table>
+              <caption class="sr-only">Projects</caption>
+              <thead>
+                <tr>
+                  {% set sortDirection = 'ascending' if query.order == 'asc' else 'descending' %}
+                  <th scope="col"{% if query.sort == 'title' %} aria-sort="{{ sortDirection }}"{% endif %}>Project</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Type</th>
+                  <th scope="col">Assets</th>
+                  <th scope="col"{% if query.sort == 'updated' %} aria-sort="{{ sortDirection }}"{% endif %}>Updated</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for project in projects %}
+                {{ projectCard.listRow(project, clockFormat) }}
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      {% else %}
+        <ul class="project-grid">
           {% for project in projects %}
           {{ projectCard.render(project, view, 'h2', clockFormat) }}
           {% endfor %}
         </ul>
+      {% endif %}
 
       {% if pageCount > 1 %}
         <nav class="pagination" aria-label="Project list pages">

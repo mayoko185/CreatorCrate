@@ -2513,6 +2513,8 @@ it through the host redirect and native form. A validated hidden
 `data-dialog-return-location` field lets `appDialogRequestClose()` navigate
 only after the existing close guard accepts a terminal cancellation; ordinary
 dialog close lifecycles do not navigate. Project Assets -> Edit Project,
+Projects List information card -> Edit Project (the route owner also accepts
+the canonical `/projects` path, any query),
 Calendar -> Edit Release, Books -> Edit Book, and Project Assets -> selected-assets
 New Release adopt this contract. Projects-list New Project and Releases-list
 New Release also retain exact list context through create validation/error
@@ -2578,7 +2580,11 @@ Calendar information cards: [`info-cards.js`](src/static/client/info-cards.js)
 binds them through Calendar's hybrid lifecycle: Dashboard titles are
 Calendar-style button triggers, so hover shows the card at the pointer, a
 click pins it, and an outside click or Escape dismisses it. Navigation goes
-through the card's Open/Edit actions rather than the title itself.
+through the card's Open/Edit actions rather than the title itself. The
+Projects List view reuses the same title trigger, card shell and enhancer
+(re-applied after Projects live-region replacement) inside the Dashboard
+Projects panel and table styles. Its Open/Edit actions live only in the card;
+the row background navigates through the card's Open action.
 
 **Three asset modes**, resolved once by `resolveAssetMode(nodeEnv)` and
 exposed to templates as `assetMode`:

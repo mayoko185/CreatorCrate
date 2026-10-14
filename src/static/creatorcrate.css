@@ -5483,8 +5483,40 @@
         flex-direction: column;
         gap: var(--space-sm);
       }
-      .project-list-item {
+      /* Projects List: the Dashboard Projects panel and table rendered in a
+         .dashboard scope, so only the Projects page's own spacing, row
+         navigation, thumbnail icons and card release list are added here. */
+      .projects-list-panel {
+        margin: var(--space-lg) 0;
+      }
+      .projects-list-row {
+        cursor: pointer;
+      }
+      .projects-list-thumb-placeholder svg {
+        width: 1.25rem;
+        height: 1.25rem;
+      }
+      .projects-list-thumb--unavailable .projects-list-thumb-placeholder,
+      .projects-list-thumb[data-preview-state="failed"] .projects-list-thumb-placeholder {
+        color: var(--warning);
+      }
+      .projects-list-info-release-meta,
+      .projects-list-info-release-date {
+        color: var(--muted);
+      }
+      .projects-list-info-releases {
+        display: grid;
+        gap: var(--space-xs);
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      .projects-list-info-releases li {
         min-width: 0;
+        overflow-wrap: anywhere;
+      }
+      .projects-list-info-release-date {
+        display: block;
       }
       .project-card {
         display: flex;
@@ -5813,232 +5845,6 @@
       .project-card .project-card-link:focus-visible {
         color: var(--accent);
       }
-      .project-list-card {
-        display: grid;
-        grid-template-columns: clamp(7rem, 20%, 15rem) minmax(0, 1fr);
-        gap: var(--space-md);
-        align-items: stretch;
-        padding: var(--space-sm);
-      }
-      .project-list-card-media {
-        grid-column: 1;
-        grid-row: 1;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        align-self: stretch;
-        width: 100%;
-        min-width: 0;
-        min-height: 10rem;
-        margin: 0;
-        background: var(--bg);
-        border: 1px solid var(--border);
-        border-radius: var(--radius-md);
-        overflow: hidden;
-      }
-      .project-list-card .project-list-card-media-link {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 100%;
-        height: 100%;
-        color: inherit;
-        font-weight: normal;
-        text-decoration: none;
-      }
-      .project-list-card .project-list-card-media-link:visited {
-        color: inherit;
-      }
-      .project-list-card .project-list-card-media-link:focus-visible {
-        outline: 2px solid var(--focus-ring);
-        outline-offset: -2px;
-      }
-      .project-list-card-media-image {
-        display: block;
-        width: 100%;
-        height: 100%;
-        object-fit: contain;
-        opacity: 1;
-        transition: opacity var(--transition-base);
-      }
-      .project-list-card-media[data-preview-state="loading"] .project-list-card-media-image {
-        opacity: 0.65;
-      }
-      .project-list-card .project-list-card-media-fallback,
-      .project-list-card .project-list-card-media-placeholder {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 100%;
-        height: 100%;
-        min-height: 10rem;
-        padding: var(--space-sm);
-        color: var(--muted);
-        font-weight: normal;
-        font-size: 0.75rem;
-        text-align: center;
-        overflow-wrap: anywhere;
-        word-break: break-word;
-      }
-      .project-list-card-media-fallback[hidden] { display: none; }
-      .project-list-card .project-list-card-media-link--fallback,
-      .project-list-card .project-list-card-media-link--fallback:visited {
-        min-height: 10rem;
-        padding: var(--space-xl) var(--space-lg);
-        color: var(--muted);
-        font-weight: normal;
-        text-align: center;
-        overflow-wrap: anywhere;
-        word-break: break-word;
-      }
-      .project-list-card-media--fallback[data-primary-image-state="none"] {
-        background: var(--bg);
-        border-left: 3px solid var(--muted);
-      }
-      .project-list-card-media--fallback[data-primary-image-state="unavailable"] {
-        background: var(--surface-card);
-        border-left: 3px solid var(--warning);
-      }
-      .project-list-card-body {
-        grid-column: 2;
-        grid-row: 1;
-        display: flex;
-        flex-direction: column;
-        gap: var(--space-sm);
-        width: 100%;
-        min-width: 0;
-        padding: 0;
-      }
-      .project-list-card-header {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: flex-start;
-        justify-content: space-between;
-        gap: var(--space-md);
-        min-width: 0;
-      }
-      .project-list-card-heading {
-        flex: 1 1 20rem;
-        min-width: 0;
-      }
-      .project-list-card-title {
-        margin: 0;
-        min-width: 0;
-        font-size: 1.125rem;
-        line-height: 1.3;
-      }
-      .project-list-card .project-list-card-link,
-      .project-list-card .project-list-card-link:visited {
-        display: block;
-        color: #fff;
-        overflow-wrap: anywhere;
-        word-break: break-word;
-      }
-      .project-list-card .project-list-card-link:hover,
-      .project-list-card .project-list-card-link:focus-visible {
-        color: var(--accent);
-      }
-      .project-list-card-indicators {
-        display: flex;
-        flex: 0 1 auto;
-        flex-wrap: wrap;
-        align-items: center;
-        justify-content: flex-end;
-        gap: var(--space-sm);
-        min-width: 0;
-        max-width: 100%;
-        margin-left: auto;
-      }
-      .project-list-card-status {
-        display: inline-flex;
-        align-items: center;
-        min-width: 0;
-        max-width: 100%;
-      }
-      .project-list-card-metadata {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: flex-start;
-        gap: var(--space-sm) var(--space-lg);
-        margin: 0;
-        min-width: 0;
-        padding-top: var(--space-sm);
-        border-top: 1px solid var(--border);
-      }
-      .project-list-card-meta {
-        display: flex;
-        flex: 1 1 8rem;
-        flex-direction: column;
-        gap: var(--space-xs);
-        align-items: start;
-        min-width: 0;
-      }
-      .project-list-card-meta dt {
-        color: var(--muted);
-        font-size: 0.75rem;
-        font-weight: 600;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-      }
-      .project-list-card-meta dd {
-        min-width: 0;
-        margin: 0;
-        overflow-wrap: anywhere;
-        word-break: break-word;
-        font-variant-numeric: tabular-nums;
-      }
-      .project-list-card-associations {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--space-md) var(--space-lg);
-        min-width: 0;
-      }
-      .project-list-card-association {
-        flex: 1 1 18rem;
-        min-width: min(100%, 16rem);
-        max-width: 100%;
-        min-height: 0;
-        padding-top: var(--space-sm);
-        border-top: 1px solid var(--border);
-      }
-      .project-list-card-association-label {
-        margin: 0 0 var(--space-xs);
-        color: var(--muted);
-        font-size: 0.75rem;
-        font-weight: 600;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-      }
-      .project-list-card-association-content {
-        min-width: 0;
-      }
-      .project-list-card-tags {
-        display: flex;
-        flex-wrap: wrap;
-        gap: var(--space-xs);
-        list-style: none;
-        min-width: 0;
-        margin: 0;
-        padding: 0;
-      }
-      .project-list-card-tags li {
-        display: inline-flex;
-        align-items: center;
-        max-width: 100%;
-        padding: 0.2rem 0.45rem;
-        border: 1px solid var(--border);
-        border-radius: var(--radius-sm);
-        background: var(--surface-card);
-        font-size: 0.8125rem;
-        overflow-wrap: anywhere;
-        word-break: break-word;
-      }
-      .project-list-card-empty {
-        color: var(--muted);
-        font-size: 0.8125rem;
-        overflow-wrap: anywhere;
-        word-break: break-word;
-      }
       .project-card-metadata {
         display: grid;
         gap: var(--space-sm);
@@ -6070,34 +5876,6 @@
         .project-grid {
           --project-card-min: 9rem;
           gap: var(--space-md);
-        }
-        .project-list-card {
-          gap: var(--space-sm);
-          padding: var(--space-sm);
-        }
-        .project-list-card-media {
-          align-self: start;
-          height: 9rem;
-          min-height: 9rem;
-        }
-        .project-list-card-media-link--fallback,
-        .project-list-card-media-fallback,
-        .project-list-card-media-placeholder {
-          min-height: 9rem;
-        }
-        .project-list-card-header {
-          gap: var(--space-sm);
-        }
-        .project-list-card-indicators {
-          margin-left: 0;
-          justify-content: flex-start;
-        }
-        .project-list-card-meta {
-          flex-basis: 100%;
-        }
-        .project-list-card-association {
-          flex-basis: 100%;
-          min-width: 0;
         }
         .project-grid-card-info-row {
           grid-template-columns: minmax(5rem, auto) minmax(0, 1fr);

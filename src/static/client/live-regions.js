@@ -22,6 +22,7 @@ import { enhanceAppConfirmationControls } from './confirm-dialog.js';
 import {
   enhanceAssetViewerInfoCards,
   enhanceCalendarInfoCards,
+  enhanceDashboardTitleInfoCards,
   enhanceProjectInfoCards,
   dismissActiveGridInfoCard,
 } from './info-cards.js';
@@ -170,6 +171,7 @@ function enhanceProjectsLiveRegion(region) {
   enhanceProjectGridSize(region);
   enhanceDropdowns(liveRegionDocument(region));
   enhanceProjectInfoCards(region);
+  enhanceDashboardTitleInfoCards(region);
 }
 
 export function createLiveRegionEngine(config) {

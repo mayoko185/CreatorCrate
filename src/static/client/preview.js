@@ -12,7 +12,10 @@ const PREVIEW_LOADING_SELECTOR = '[data-preview-loading]';
 const PREVIEW_FALLBACK_SELECTOR = '[data-preview-fallback]';
 const PROJECT_CARD_SELECTOR = '[data-project-card]';
 const PROJECT_CARD_LINK_SELECTOR = '[data-project-card-link]';
+// The Projects List information card is a DOM descendant of its row even
+// while shown in the top layer, so clicks inside it must not navigate the row.
 const PROJECT_CARD_INTERACTIVE_SELECTOR = [
+  '[data-calendar-info-card]',
   'a',
   'button',
   'form',

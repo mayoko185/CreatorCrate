@@ -1,85 +1,25 @@
+{#
+  Projects page entries. `render` is the Grid card; `listRow` is one row of
+  the List table rendered by projects/index.njk.
+
+  The List title reuses the Dashboard title trigger and the Calendar
+  information-card shell, so enhanceDashboardTitleInfoCards binds it to the
+  shared hover/pin lifecycle. The card holds the row's Open and Edit actions;
+  row-background clicks follow its Open action (data-project-card-link)
+  through enhanceProjectCards. Edit is a data-dialog-invocation link, so the
+  hosted Edit Project dialog returns to the current Projects location.
+#}
+{% import "partials/dashboard-title-info.njk" as titleInfo %}
+{% import "partials/calendar-info-card.njk" as infoCard %}
+{% import "partials/icons.njk" as icons %}
+
 {% macro render(project, variant, headingLevel, clockFormat) %}
   {% set projectStatusOption = project.projectStatusOption %}
   {% set projectTypeOption = project.projectTypeOption %}
   {% set imageUrl = project.primaryImage.previewUrl %}
-  {% if variant == 'list' %}
-    {% set imageUrl = project.primaryImage.thumbnailUrl %}
-  {% endif %}
 
-  <li class="{% if variant == 'list' %}project-list-item{% else %}project-grid-item{% endif %}">
-    <article class="project-card project-card--{{ variant }}{% if variant == 'grid' %} project-grid-card{% else %} project-list-card{% endif %}{% if project.isArchived %} project-card--archived{% endif %}" data-project-card>
-      {% if variant == 'list' %}
-        {% if project.primaryImage.state == 'available' %}
-          <div class="project-list-card-media project-card-media project-card-media--image{% if project.primaryImage.mediaModifier %} project-card-media--{{ project.primaryImage.mediaModifier }}{% endif %}" data-preview-enhancement data-preview-state="loading">
-            <a class="project-list-card-media-link" href="/projects/{{ project.id }}" aria-label="View preview of {{ project.title }}">
-              <img class="project-list-card-media-image project-card-media-image project-card-media-image--list{% if project.nsfwBlur %} project-image--nsfw-blurred{% endif %}{% if project.primaryImage.mediaModifier %} project-card-media-image--{{ project.primaryImage.mediaModifier }}{% endif %}" data-preview-image src="{{ imageUrl }}" alt="{{ project.primaryImage.alt }}" loading="lazy" decoding="async">
-              <span class="project-list-card-media-fallback project-card-media-fallback" data-preview-fallback hidden>Image unavailable</span>
-            </a>
-          </div>
-        {% elif project.primaryImage.state == 'unavailable' %}
-          <div class="project-list-card-media project-card-media project-card-media--fallback" data-primary-image-state="unavailable">
-            <a class="project-list-card-media-link project-list-card-media-link--fallback" href="/projects/{{ project.id }}" aria-label="View project {{ project.title }}">
-              <span>Image unavailable</span>
-            </a>
-          </div>
-        {% else %}
-          <div class="project-list-card-media project-card-media project-card-media--fallback" data-primary-image-state="none">
-            <a class="project-list-card-media-link project-list-card-media-link--fallback" href="/projects/{{ project.id }}" aria-label="View project {{ project.title }}">
-              <span>No image</span>
-            </a>
-          </div>
-        {% endif %}
-
-        <div class="project-list-card-body project-card-body">
-          <div class="project-list-card-header">
-            <div class="project-list-card-heading">
-              <{{ headingLevel }} class="project-list-card-title project-card-title">
-                <a class="project-list-card-link project-card-link" data-project-card-link href="/projects/{{ project.id }}">{{ project.title }}</a>
-              </{{ headingLevel }}>
-            </div>
-            <div class="project-list-card-indicators" aria-label="Project badges">
-              <span class="project-list-card-type">
-                {% set projectType = project.project_type %}{% include "partials/project-type-badge.njk" %}
-              </span>
-              <span class="project-list-card-status">
-                {% set status = project.status %}{% include "partials/status-badge.njk" %}
-              </span>
-            </div>
-          </div>
-
-          <dl class="project-list-card-metadata">
-            <div class="project-list-card-meta">
-              <dt>Status</dt>
-              <dd>{% set status = project.status %}{% include "partials/status-badge.njk" %}</dd>
-            </div>
-            <div class="project-list-card-meta">
-              <dt>Type</dt>
-              <dd>{% set projectType = project.project_type %}{% include "partials/project-type-badge.njk" %}</dd>
-            </div>
-            <div class="project-list-card-meta project-list-card-meta--date">
-              <dt>Updated</dt>
-              <dd>{{ project.updated_at | formatSqliteTimestamp(clockFormat) }}</dd>
-            </div>
-          </dl>
-
-          <div class="project-list-card-associations">
-            <section class="project-list-card-association project-list-card-association--tags">
-              <h3 class="project-list-card-association-label">Tags</h3>
-              <div class="project-list-card-association-content">
-                {% if project.tags and project.tags.length > 0 %}
-                  <ul class="project-list-card-tags" aria-label="Assigned tags">
-                    {% for tag in project.tags %}
-                      <li>{{ tag.displayName }}</li>
-                    {% endfor %}
-                  </ul>
-                {% else %}
-                  <span class="project-list-card-empty">No tags assigned</span>
-                {% endif %}
-              </div>
-            </section>
-          </div>
-        </div>
-      {% else %}
+  <li class="project-grid-item">
+    <article class="project-card project-card--{{ variant }} project-grid-card{% if project.isArchived %} project-card--archived{% endif %}" data-project-card>
         <div class="project-grid-card-status" aria-label="Project badges">
           {% set status = project.status %}{% include "partials/status-badge.njk" %}
           {% set projectType = project.project_type %}{% include "partials/project-type-badge.njk" %}
@@ -166,7 +106,106 @@
             </div>
           </div>
         </div>
-      {% endif %}
     </article>
   </li>
+{% endmacro %}
+
+{#
+  48px List thumbnail with the Dashboard thumbnail styling. It is decorative
+  beside the title, so the no-image and unavailable states differ by icon and
+  data-primary-image-state; the information card states unavailability.
+#}
+{% macro listThumbnail(project) %}
+  {% set primaryImage = project.primaryImage %}
+  {% if primaryImage.state == 'available' and primaryImage.thumbnailUrl %}
+    <span class="dashboard-thumb dashboard-thumb--image{% if primaryImage.mediaModifier %} dashboard-thumb--{{ primaryImage.mediaModifier }}{% endif %} projects-list-thumb" data-preview-enhancement data-preview-state="loading" aria-hidden="true">
+      <img class="dashboard-thumb-image{% if project.nsfwBlur %} project-image--nsfw-blurred{% endif %}" data-preview-image src="{{ primaryImage.thumbnailUrl }}" alt="" loading="lazy" decoding="async">
+      <span class="dashboard-thumb-initials projects-list-thumb-placeholder" data-preview-fallback>{{ icons.icon('warning') }}</span>
+    </span>
+  {% elif primaryImage.state == 'unavailable' %}
+    <span class="dashboard-thumb projects-list-thumb projects-list-thumb--unavailable" data-primary-image-state="unavailable" title="Image unavailable" aria-hidden="true">
+      <span class="dashboard-thumb-initials projects-list-thumb-placeholder">{{ icons.icon('warning') }}</span>
+    </span>
+  {% else %}
+    <span class="dashboard-thumb projects-list-thumb projects-list-thumb--none" data-primary-image-state="none" title="No image" aria-hidden="true">
+      <span class="dashboard-thumb-initials projects-list-thumb-placeholder">{{ icons.icon('assets') }}</span>
+    </span>
+  {% endif %}
+{% endmacro %}
+
+{% macro listInfoCard(project, detailId, clockFormat) %}
+  {% call infoCard.shell(detailId, project.title, project.primaryImage, project.nsfwBlur) %}
+    <div class="calendar-release-info-actions">
+      <a class="button button-small button-secondary" data-project-card-link href="/projects/{{ project.id }}">Open project</a>
+      {% if not project.isArchived %}
+        <a class="button button-small button-secondary" href="/projects/{{ project.id }}/edit" data-dialog-invocation>Edit project</a>
+      {% endif %}
+    </div>
+    <h3 class="asset-viewer-grid-card-info-heading">{{ project.title }}</h3>
+    <dl class="asset-viewer-grid-card-info-list">
+      <div class="asset-viewer-grid-card-info-row"><dt>Status</dt><dd>{% set status = project.status %}{% set projectStatusOption = project.projectStatusOption %}{% include "partials/status-badge.njk" %}</dd></div>
+      <div class="asset-viewer-grid-card-info-row"><dt>Type</dt><dd>{% if project.project_type %}{% set projectType = project.project_type %}{% set projectTypeOption = project.projectTypeOption %}{% include "partials/project-type-badge.njk" %}{% else %}—{% endif %}</dd></div>
+      <div class="asset-viewer-grid-card-info-row"><dt>Assets</dt><dd>{{ project.assetCount }}{% if project.missingAssetCount > 0 %} ({{ project.missingAssetCount }} missing){% endif %}</dd></div>
+      {% if project.primaryImage.state == 'unavailable' %}<div class="asset-viewer-grid-card-info-row"><dt>Image</dt><dd>Image unavailable</dd></div>{% endif %}
+      <div class="asset-viewer-grid-card-info-row"><dt>Created</dt><dd>{{ project.created_at | formatSqliteTimestamp(clockFormat) }}</dd></div>
+      <div class="asset-viewer-grid-card-info-row"><dt>Updated</dt><dd>{{ project.updated_at | formatSqliteTimestamp(clockFormat) }}</dd></div>
+    </dl>
+    <div class="asset-viewer-grid-card-info-section">
+      <span class="asset-viewer-grid-card-info-section-label">Tags</span>
+      {% if project.tags and project.tags.length > 0 %}
+        <ul class="asset-viewer-grid-card-info-tags" aria-label="Assigned tags">
+          {% for tag in project.tags %}<li>{{ tag.displayName }}</li>{% endfor %}
+        </ul>
+      {% else %}
+        <span class="asset-viewer-grid-card-info-empty">No tags assigned</span>
+      {% endif %}
+    </div>
+    <div class="asset-viewer-grid-card-info-section">
+      <span class="asset-viewer-grid-card-info-section-label">Releases</span>
+      {% if project.recentReleases and project.recentReleases.length > 0 %}
+        <ul class="projects-list-info-releases" aria-label="Recent release records">
+          {% for release in project.recentReleases %}
+            <li>
+              <a href="/releases/{{ release.id }}">{{ release.title }}</a>{% if release.archived_at %} <span class="projects-list-info-release-meta">(archived)</span>{% endif %}
+              <span class="projects-list-info-release-date">{% if release.published_date %}Published {{ release.published_date }}{% elif release.planned_date %}Planned {{ release.planned_date }}{% if release.planned_time %} {{ release.planned_time | formatStoredTime(clockFormat) }}{% endif %}{% else %}No date{% endif %}</span>
+            </li>
+          {% endfor %}
+        </ul>
+      {% else %}
+        <span class="asset-viewer-grid-card-info-empty">No release records</span>
+      {% endif %}
+    </div>
+  {% endcall %}
+{% endmacro %}
+
+{% macro listRow(project, clockFormat) %}
+  {% set detailId = 'projects-list-info-' ~ project.id %}
+  <tr class="projects-list-row{% if project.isArchived %} projects-list-row--archived{% endif %}" data-project-card data-project-id="{{ project.id }}">
+    <td class="dashboard-project-cell">
+      {{ listThumbnail(project) }}
+      <div class="dashboard-title-info" data-dashboard-title-info>
+        {{ titleInfo.trigger(project.title, detailId) }}
+        {{ listInfoCard(project, detailId, clockFormat) }}
+      </div>
+    </td>
+    <td>
+      {% set status = project.status %}
+      {% set projectStatusOption = project.projectStatusOption %}
+      {% include "partials/status-badge.njk" %}
+    </td>
+    <td>
+      {% set projectType = project.project_type %}
+      {% set projectTypeOption = project.projectTypeOption %}
+      {% if projectType %}{% include "partials/project-type-badge.njk" %}{% else %}<span class="dashboard-muted">—</span>{% endif %}
+    </td>
+    <td class="dashboard-number-cell">
+      {{ project.assetCount }}
+      {% if project.missingAssetCount > 0 %}
+        <span class="dashboard-missing-count">({{ project.missingAssetCount }} missing)</span>
+      {% endif %}
+    </td>
+    <td>
+      <time datetime="{{ project.updated_at }}">{{ project.updated_at | formatSqliteTimestamp(clockFormat) }}</time>
+    </td>
+  </tr>
 {% endmacro %}
