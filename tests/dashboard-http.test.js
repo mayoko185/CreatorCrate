@@ -413,7 +413,7 @@ describe('dashboard HTTP composition', () => {
   });
 
   describe('Needs a release date panel', () => {
-    it('renders release/project links, readiness, age, quick picks, and the disabled scheduling contract', async () => {
+    it('renders release/project links, readiness, quick picks, and the disabled scheduling contract', async () => {
       const projectId = await createProject(app, { title: 'Needs Date Project', status: 'ready' });
       const releaseId = insertRelease(db, projectId, { title: 'Waiting Release', createdAt: '2020-01-01 12:00:00' });
       addMissingSelectedAsset(projectId, releaseId, 'gone.txt');
@@ -424,7 +424,8 @@ describe('dashboard HTTP composition', () => {
 
       expect(panel).toContain('id="needs-date"');
       expect(panel).toContain('1 waiting');
-      expect(panel).toContain('Oldest first. Pick an open day, or choose any date.');
+      expect(panel).not.toContain('Oldest first');
+      expect(panel).not.toContain('dashboard-section-help');
       expect(panel).not.toContain('View all');
       expect(item).toContain(`<button class="dashboard-title-trigger dashboard-truncate" type="button" data-calendar-info-trigger aria-controls="dashboard-release-info-needs-date-${releaseId}" aria-expanded="false">Waiting Release</button>`);
       expect(item).toContain(`<button class="dashboard-title-trigger dashboard-truncate" type="button" data-calendar-info-trigger aria-controls="dashboard-project-info-needs-date-${releaseId}" aria-expanded="false">Needs Date Project</button>`);
@@ -432,7 +433,8 @@ describe('dashboard HTTP composition', () => {
       expect(item).toContain(`id="dashboard-release-info-needs-date-${releaseId}"`);
       expect(item).toContain(`id="dashboard-project-info-needs-date-${releaseId}"`);
       expect(item).toContain('1 asset selected');
-      expect(item).toContain('dashboard-age dashboard-age--danger');
+      expect(item).not.toContain('No date ·');
+      expect(item).not.toContain('dashboard-age');
       expect(item).toContain('dashboard-chip dashboard-chip--danger">1 missing');
       expect(item).toContain('No platforms chosen');
       expect(item).toContain('dashboard-thumb--initials');

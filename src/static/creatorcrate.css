@@ -11937,11 +11937,6 @@
   width: 1.125rem;
   height: 1.125rem;
 }
-.dashboard-section-help {
-  margin: calc(-1 * var(--space-sm)) 0 var(--space-md);
-  color: var(--muted);
-  font-size: 0.8125rem;
-}
 
 /* ── Attention tiles ── */
 .dashboard-tiles {
@@ -12189,24 +12184,6 @@
 }
 .dashboard-needs-date .dashboard-view-all {
   margin-top: var(--space-sm);
-}
-.dashboard-age {
-  justify-self: start;
-  padding: 0.0625rem var(--space-sm);
-  border-radius: var(--radius-sm);
-  background: rgba(136, 136, 136, 0.16);
-  color: var(--muted);
-  font-family: var(--mono);
-  font-size: 0.75rem;
-  line-height: 1.5;
-}
-.dashboard-age--warning {
-  background: rgba(167, 139, 250, 0.18);
-  color: var(--warning);
-}
-.dashboard-age--danger {
-  background: rgba(251, 113, 133, 0.18);
-  color: var(--badge-danger-fg);
 }
 .dashboard-readiness {
   display: flex;

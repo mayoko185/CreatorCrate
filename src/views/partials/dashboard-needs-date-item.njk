@@ -63,7 +63,6 @@
         <span class="dashboard-item-meta-separator" aria-hidden="true">·</span>
         <span>{{ release.selected_asset_count }} {{ "asset" if release.selected_asset_count == 1 else "assets" }} selected</span>
       </div>
-      <p class="dashboard-age dashboard-age--{{ release.ageTone }}">{{ release.ageLabel }}</p>
       <div class="dashboard-readiness" role="group" aria-label="Readiness">
         <span class="dashboard-chip dashboard-chip--{{ release.assetReadiness.tone }}">{{ release.assetReadiness.label }}</span>
         {% if release.socialPreparation and release.socialPreparation.targets.length %}

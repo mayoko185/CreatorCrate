@@ -318,7 +318,7 @@ describe('dashboard strip and quick-pick presentation', () => {
 });
 
 describe('dashboard release presentation', () => {
-  it('classifies needs-date age and readiness without inventing social states', async () => {
+  it('classifies needs-date readiness without inventing social states', async () => {
     const items = [
       buildRelease({ id: 1, ageDays: 0 }),
       buildRelease({ id: 2, ageDays: 6 }),
@@ -334,13 +334,6 @@ describe('dashboard release presentation', () => {
 
     expect(needsDate.total).toBe(12);
     expect(needsDate.viewAllHref).toBe('/releases?schedule=unscheduled');
-    expect(needsDate.items.map(({ ageTone, ageLabel }) => [ageTone, ageLabel])).toEqual([
-      ['neutral', 'No date · added today'],
-      ['neutral', 'No date · 6 days'],
-      ['warning', 'No date · 7 days'],
-      ['warning', 'No date · 20 days'],
-      ['danger', 'No date · 21 days'],
-    ]);
     expect(needsDate.items.map(({ assetReadiness }) => assetReadiness)).toEqual([
       { tone: 'ok', label: 'Assets selected' },
       { tone: 'ok', label: 'Assets selected' },

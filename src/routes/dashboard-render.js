@@ -19,10 +19,6 @@ const MONTHS_LONG = ['January', 'February', 'March', 'April', 'May', 'June', 'Ju
 const WEEKDAYS_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const WEEKDAYS_LONG = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-// Waiting-age thresholds for undated releases, in whole calendar days.
-const NEEDS_DATE_WARNING_AGE_DAYS = 7;
-const NEEDS_DATE_DANGER_AGE_DAYS = 21;
-
 const PUBLISH_ACTION_GROUPS = new Set(['overdue', 'today']);
 
 function getNsfwFilterSettingsService(req) {
@@ -41,10 +37,6 @@ function isNsfwTag(tag) {
 
 function hasNsfwTag(tags) {
   return Array.isArray(tags) && tags.some(isNsfwTag);
-}
-
-function pluralize(count, singular, plural = `${singular}s`) {
-  return `${count} ${count === 1 ? singular : plural}`;
 }
 
 // ISO calendar dates are presented without a timezone conversion: they are
@@ -94,19 +86,6 @@ function presentThumbnail(primaryImage, title, nsfwBlur) {
     initials: buildInitials(title),
     nsfwBlur,
   };
-}
-
-function presentAgeTone(ageDays) {
-  if (ageDays == null) return 'neutral';
-  if (ageDays >= NEEDS_DATE_DANGER_AGE_DAYS) return 'danger';
-  if (ageDays >= NEEDS_DATE_WARNING_AGE_DAYS) return 'warning';
-  return 'neutral';
-}
-
-function presentAgeLabel(ageDays) {
-  if (ageDays == null) return 'No date';
-  if (ageDays === 0) return 'No date · added today';
-  return `No date · ${pluralize(ageDays, 'day')}`;
 }
 
 function presentAssetReadiness(release) {
@@ -299,11 +278,7 @@ export function renderDashboardPage(req, res, next, {
       };
     };
 
-    const needsDateItems = dashboard.needsDate.items.map((release) => ({
-      ...presentRelease(release),
-      ageTone: presentAgeTone(release.ageDays),
-      ageLabel: presentAgeLabel(release.ageDays),
-    }));
+    const needsDateItems = dashboard.needsDate.items.map(presentRelease);
 
     const scheduledGroups = dashboard.scheduled.groups.map((group) => ({
       ...group,

@@ -107,7 +107,6 @@
           {% endif %}
         </div>
         {% if dashboard.needsDate.items.length %}
-          <p class="dashboard-section-help">Oldest first. Pick an open day, or choose any date.</p>
           <ul class="dashboard-needs-date-list" data-dashboard-needs-date-list>
             {% for release in dashboard.needsDate.items %}
               {{ needsDateItem.render(release, dashboard.quickPicks, _csrf, clockFormat) }}
