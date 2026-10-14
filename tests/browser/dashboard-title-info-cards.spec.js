@@ -70,8 +70,15 @@ function center(box) {
 function titleParts(page, cardId) {
   const card = page.locator(`#${cardId}`);
   const wrapper = page.locator('[data-dashboard-title-info]').filter({ has: card });
-  return { card, title: wrapper.locator(':scope > a[href]') };
+  return { card, title: wrapper.locator(':scope > [data-calendar-info-trigger]') };
 }
+
+function currentPath(page) {
+  const url = new URL(page.url());
+  return url.pathname + url.search;
+}
+
+const openCards = (page) => page.locator('[data-calendar-info-card][data-info-card-open="true"]');
 
 // Real mouse input: Playwright's mouse drives the browser's input pipeline, so
 // hit testing and pointer boundary events come from the browser itself.
@@ -82,29 +89,50 @@ async function hover(page, locator) {
   return point;
 }
 
-async function moveIntoCardAndClick(page, { card, title }, actionName, expectedPath) {
+function withinViewport(page, box) {
+  const { width, height } = page.viewportSize();
+  return box.x >= 0 && box.y >= 0 && box.x + box.width <= width && box.y + box.height <= height;
+}
+
+// Hover follows the pointer, a click pins the card where it is, the pinned
+// card ignores the pointer leaving, and its action navigates.
+async function pinAndOpenAction(page, { card, title }, actionName, expectedPath) {
   await moveAway(page);
   await expect(card).toBeHidden();
-  await hover(page, title);
-  await expect(card).toBeVisible();
-  const openedBox = await card.boundingBox();
-
-  // A small move within the title must not drag the card along.
+  await title.scrollIntoViewIfNeeded();
   const titleBox = await title.boundingBox();
-  await page.mouse.move(titleBox.x + 2, titleBox.y + (titleBox.height / 2), { steps: 3 });
-  expect(await card.boundingBox()).toEqual(openedBox);
+  await page.mouse.move(titleBox.x + 4, titleBox.y + 3, { steps: 4 });
+  await expect(card).toBeVisible();
+  await expect(title).toHaveAttribute('aria-expanded', 'true');
+  const hoverBox = await card.boundingBox();
+  await page.mouse.move(titleBox.x + titleBox.width - 4, titleBox.y + titleBox.height - 3, { steps: 6 });
+  await expect.poll(async () => {
+    const box = await card.boundingBox();
+    return box.x !== hoverBox.x || box.y !== hoverBox.y;
+  }).toBe(true);
+
+  await page.mouse.down();
+  await page.mouse.up();
+  await expect(card).toBeVisible();
+  const pinnedBox = await card.boundingBox();
+  expect(withinViewport(page, pinnedBox)).toBe(true);
+  await moveAway(page);
+  await expect(card).toBeVisible();
+  expect(await card.boundingBox()).toEqual(pinnedBox);
+  expect(currentPath(page)).toBe('/');
 
   const action = card.getByRole('link', { name: actionName });
   const target = center(await action.boundingBox());
   await page.mouse.move(target.x, target.y, { steps: 25 });
   await expect(card).toBeVisible();
+  expect(await card.boundingBox()).toEqual(pinnedBox);
   await page.mouse.down();
   await page.mouse.up();
-  await expect.poll(() => { const url = new URL(page.url()); return url.pathname + url.search; }).toBe(expectedPath);
+  await expect.poll(() => currentPath(page)).toBe(expectedPath);
 }
 
 for (const viewport of [{ width: 1280, height: 900 }, { width: 375, height: 740 }]) {
-  test(`dashboard title cards accept a real mouse moving into their actions at ${viewport.width}px`, async ({ page }) => {
+  test(`dashboard title cards follow the mouse, pin on click, and navigate through card actions at ${viewport.width}px`, async ({ page }) => {
     const pageErrors = [];
     page.on('pageerror', (error) => pageErrors.push(error.message));
     await page.setViewportSize(viewport);
@@ -113,21 +141,39 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 375, height: 740 
       const cases = [
         [`dashboard-release-info-needs-date-${undatedId}`, 'Edit release', `/releases/${undatedId}?edit=1`],
         [`dashboard-release-info-needs-date-${undatedId}`, 'Open release', `/releases/${undatedId}`],
+        [`dashboard-project-info-needs-date-${undatedId}`, 'Open project', `/projects/${projectId}`],
         [`dashboard-release-info-scheduled-${scheduledId}`, 'Open release', `/releases/${scheduledId}`],
         [`dashboard-project-info-table-${projectId}`, 'Edit project', `/projects/${projectId}?edit=1`],
         [`dashboard-project-info-table-${projectId}`, 'Open project', `/projects/${projectId}`],
       ];
       for (const [cardId, actionName, expectedPath] of cases) {
         await gotoEnhanced(page, `${origin}/`, DASHBOARD_BOUND);
-        const parts = titleParts(page, cardId);
-        await moveIntoCardAndClick(page, parts, actionName, expectedPath);
+        await pinAndOpenAction(page, titleParts(page, cardId), actionName, expectedPath);
       }
     });
     expect(pageErrors).toEqual([]);
   });
 }
 
-test('dashboard title cards dismiss on leave, switch between titles, and keep title navigation', async ({ page }) => {
+test('a Next 7 days row opens through its pinned title card without a separate Open button', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await withDashboardApp(async ({ origin, scheduledId }) => {
+    await gotoEnhanced(page, `${origin}/`, DASHBOARD_BOUND);
+    const row = page.locator(`.dashboard-release-row--next7[data-release-id="${scheduledId}"]`);
+    await expect(row).toHaveCount(1);
+    await expect(row.locator('.dashboard-release-row-action')).toHaveCount(0);
+
+    const parts = titleParts(page, `dashboard-release-info-scheduled-${scheduledId}`);
+    await expect(parts.title).toHaveText('Scheduled Release');
+    await parts.title.click();
+    await expect(parts.card).toBeVisible();
+    expect(currentPath(page)).toBe('/');
+    await parts.card.getByRole('link', { name: 'Open release' }).click();
+    await expect.poll(() => currentPath(page)).toBe(`/releases/${scheduledId}`);
+  });
+});
+
+test('dashboard title pins dismiss on outside click, ignore other hovers, and switch on another click', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await withDashboardApp(async ({ origin, projectId, undatedId, scheduledId }) => {
     await gotoEnhanced(page, `${origin}/`, DASHBOARD_BOUND);
@@ -135,61 +181,49 @@ test('dashboard title cards dismiss on leave, switch between titles, and keep ti
     const scheduled = titleParts(page, `dashboard-release-info-scheduled-${scheduledId}`);
     const projectRow = titleParts(page, `dashboard-project-info-table-${projectId}`);
 
-    // Leaving both the title and the card dismisses it.
+    // Transient hover closes as soon as the pointer leaves the title.
     await hover(page, undated.title);
     await expect(undated.card).toBeVisible();
-    const cardBox = await undated.card.boundingBox();
-    await page.mouse.move(cardBox.x + 20, cardBox.y + 20, { steps: 10 });
     await moveAway(page);
     await expect(undated.card).toBeHidden();
 
-    // Rapid movement between titles keeps exactly one card open.
+    // Moving between titles keeps exactly one transient card.
     await hover(page, undated.title);
     await hover(page, scheduled.title);
     await expect(scheduled.card).toBeVisible();
     await expect(undated.card).toBeHidden();
-    await hover(page, projectRow.title);
-    await expect(projectRow.card).toBeVisible();
-    await expect(scheduled.card).toBeHidden();
-    await expect(page.locator('[data-calendar-info-card][data-info-card-open="true"]')).toHaveCount(1);
+    await expect(openCards(page)).toHaveCount(1);
 
-    // Clicking the title itself still navigates to the title's destination.
+    // While a card is pinned, hovering another title leaves the pin alone.
+    await undated.title.click();
+    await expect(undated.title).toHaveAttribute('aria-expanded', 'true');
     await hover(page, scheduled.title);
-    await page.mouse.down();
-    await page.mouse.up();
-    await expect(page).toHaveURL(new RegExp(`/releases/${scheduledId}$`));
+    await expect(undated.card).toBeVisible();
+    await expect(scheduled.card).toBeHidden();
+    await expect(openCards(page)).toHaveCount(1);
+
+    // Clicking another title moves the pin there.
+    await projectRow.title.click();
+    await expect(projectRow.card).toBeVisible();
+    await expect(undated.card).toBeHidden();
+    await expect(undated.title).toHaveAttribute('aria-expanded', 'false');
+    await expect(projectRow.title).toHaveAttribute('aria-expanded', 'true');
+    await expect(openCards(page)).toHaveCount(1);
+
+    // Clicking the pinned title again unpins it.
+    await projectRow.title.click();
+    await expect(projectRow.card).toBeHidden();
+    await expect(projectRow.title).toHaveAttribute('aria-expanded', 'false');
+
+    // An outside click dismisses a pinned card without navigating.
+    await scheduled.title.click();
+    await expect(scheduled.card).toBeVisible();
+    await page.locator('h1').first().click();
+    await expect(scheduled.card).toBeHidden();
+    await expect(openCards(page)).toHaveCount(0);
+    expect(currentPath(page)).toBe('/');
   });
 });
-
-test('dashboard title cards keep keyboard focus, Tab, and Escape behavior', async ({ page }) => {
-  await page.setViewportSize({ width: 1280, height: 900 });
-  await withDashboardApp(async ({ origin, undatedId }) => {
-    await gotoEnhanced(page, `${origin}/`, DASHBOARD_BOUND);
-    const { card, title } = titleParts(page, `dashboard-release-info-needs-date-${undatedId}`);
-
-    await title.focus();
-    await expect(card).toBeVisible();
-    await page.keyboard.press('Tab');
-    await expect(card.getByRole('link', { name: 'Open release' })).toBeFocused();
-    await expect(card).toBeVisible();
-    await page.keyboard.press('Escape');
-    await expect(card).toBeHidden();
-    await expect(title).toBeFocused();
-
-    // Focus already rests on the title, so reopening takes a fresh focus move.
-    await page.keyboard.press('Shift+Tab');
-    await page.keyboard.press('Tab');
-    await expect(title).toBeFocused();
-    await expect(card).toBeVisible();
-    await page.keyboard.press('Shift+Tab');
-    await expect(card).toBeHidden();
-  });
-});
-
-function currentPath(page) {
-  const url = new URL(page.url());
-  return url.pathname + url.search;
-}
 
 // Records focus and card state from a window keydown listener, which runs
 // synchronously after the document-level Escape handler and before any
@@ -204,29 +238,13 @@ async function recordStateAfterEscape(page, cardId) {
       window.__afterEscape = {
         cardOpen: card.matches(':popover-open') || card.hasAttribute('data-info-card-open'),
         focusInCard: card.contains(active),
-        activeTag: active?.tagName,
-        activeHref: active?.getAttribute('href') ?? null,
+        activeControls: active?.getAttribute('aria-controls') ?? null,
       };
     }, { once: true });
   }, cardId);
 }
 
-// Tab to the card's Edit action, press Escape, then Enter at once. Enter must
-// follow the focused trigger link, never the hidden Edit action.
-async function escapeThenEnterFromEditAction(page, { card, cardId, trigger, editName, expectedPath }) {
-  await trigger.focus();
-  await expect(card).toBeVisible();
-  await page.keyboard.press('Tab');
-  await page.keyboard.press('Tab');
-  await expect(card.getByRole('link', { name: editName })).toBeFocused();
-
-  await recordStateAfterEscape(page, cardId);
-  await page.keyboard.press('Escape');
-  await page.keyboard.press('Enter');
-  await expect.poll(() => currentPath(page)).toBe(expectedPath);
-}
-
-test('Escape from a dashboard card action returns focus to its trigger without reopening it', async ({ page }) => {
+test('dashboard title cards pin from Enter and Space and return focus safely on Escape', async ({ page }) => {
   const pageErrors = [];
   page.on('pageerror', (error) => pageErrors.push(error.message));
   await page.setViewportSize({ width: 1280, height: 900 });
@@ -234,67 +252,114 @@ test('Escape from a dashboard card action returns focus to its trigger without r
     await gotoEnhanced(page, `${origin}/`, DASHBOARD_BOUND);
     const cardId = `dashboard-release-info-needs-date-${undatedId}`;
     const { card, title } = titleParts(page, cardId);
+    await expect(title).toHaveAttribute('type', 'button');
+    await expect(title).toHaveAttribute('aria-controls', cardId);
+    await expect(title).toHaveAccessibleName('Undated Release');
 
-    // Immediately after Escape, focus sits on the title and the card stays closed.
+    // As on the Calendar, focus alone leaves the card closed; activation pins it.
     await title.focus();
+    await expect(card).toBeHidden();
+    await page.keyboard.press('Enter');
+    await expect(card).toBeVisible();
+    await expect(title).toHaveAttribute('aria-expanded', 'true');
     await page.keyboard.press('Tab');
     await expect(card.getByRole('link', { name: 'Open release' })).toBeFocused();
+
+    // Escape from a card action closes it and puts focus back on the title
+    // before any further key could reach the hidden action.
     await recordStateAfterEscape(page, cardId);
     await page.keyboard.press('Escape');
     expect(await page.evaluate(() => window.__afterEscape)).toEqual({
       cardOpen: false,
       focusInCard: false,
-      activeTag: 'A',
-      activeHref: `/releases/${undatedId}`,
+      activeControls: cardId,
     });
     await expect(title).toBeFocused();
-    await page.waitForTimeout(300);
-    await expect(card).toBeHidden();
-    await expect(title).toBeFocused();
+    await expect(title).toHaveAttribute('aria-expanded', 'false');
 
-    // Intentional keyboard focus afterwards opens the card normally.
-    await page.keyboard.press('Shift+Tab');
-    await expect(card).toBeHidden();
-    await page.keyboard.press('Tab');
-    await expect(title).toBeFocused();
+    // Enter straight after Escape pins the card again instead of following
+    // the hidden Edit action.
+    await page.keyboard.press('Enter');
     await expect(card).toBeVisible();
-    await page.keyboard.press('Escape');
+    expect(currentPath(page)).toBe('/');
+    await page.keyboard.press('Enter');
     await expect(card).toBeHidden();
-    await expect(title).toBeFocused();
 
-    // Rapid Escape -> Enter follows the release title, not the hidden Edit action.
-    await gotoEnhanced(page, `${origin}/`, DASHBOARD_BOUND);
-    const releaseParts = titleParts(page, cardId);
-    await escapeThenEnterFromEditAction(page, {
-      card: releaseParts.card,
-      cardId,
-      trigger: releaseParts.title,
-      editName: 'Edit release',
-      expectedPath: `/releases/${undatedId}`,
-    });
-
-    // The same holds for a project title.
-    await gotoEnhanced(page, `${origin}/`, DASHBOARD_BOUND);
-    const projectCardId = `dashboard-project-info-table-${projectId}`;
-    const projectParts = titleParts(page, projectCardId);
-    await escapeThenEnterFromEditAction(page, {
-      card: projectParts.card,
-      cardId: projectCardId,
-      trigger: projectParts.title,
-      editName: 'Edit project',
-      expectedPath: `/projects/${projectId}`,
-    });
+    // Space pins a project title the same way.
+    const project = titleParts(page, `dashboard-project-info-table-${projectId}`);
+    await project.title.focus();
+    await page.keyboard.press('Space');
+    await expect(project.card).toBeVisible();
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Tab');
+    await expect(project.card.getByRole('link', { name: 'Edit project' })).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(project.card).toBeHidden();
+    await expect(project.title).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(project.card).toBeVisible();
+    expect(currentPath(page)).toBe('/');
   });
   expect(pageErrors).toEqual([]);
 });
 
-test('Escape does not pull focus back to a dashboard title once focus has moved elsewhere', async ({ page }) => {
+test('Escape from inside a hovered, unpinned card returns focus to its title', async ({ page }) => {
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await withDashboardApp(async ({ origin, projectId, undatedId }) => {
+    const cases = [
+      [`dashboard-release-info-needs-date-${undatedId}`, 'Open release'],
+      [`dashboard-project-info-table-${projectId}`, 'Open project'],
+    ];
+    for (const [cardId, actionName] of cases) {
+      await gotoEnhanced(page, `${origin}/`, DASHBOARD_BOUND);
+      const { card, title } = titleParts(page, cardId);
+
+      // Hover opens the card transiently; focusing the title does not pin it.
+      await moveAway(page);
+      await hover(page, title);
+      await expect(card).toBeVisible();
+      await title.focus();
+      await page.keyboard.press('Tab');
+      await expect(card.getByRole('link', { name: actionName })).toBeFocused();
+
+      await recordStateAfterEscape(page, cardId);
+      await page.keyboard.press('Escape');
+      expect(await page.evaluate(() => window.__afterEscape)).toEqual({
+        cardOpen: false,
+        focusInCard: false,
+        activeControls: cardId,
+      });
+      await expect(title).toBeFocused();
+      await expect(title).toHaveAttribute('aria-expanded', 'false');
+
+      // Enter now reaches the title and pins its card instead of following
+      // the hidden action.
+      await page.keyboard.press('Enter');
+      await expect(card).toBeVisible();
+      await expect(title).toHaveAttribute('aria-expanded', 'true');
+      await expect(openCards(page)).toHaveCount(1);
+      expect(currentPath(page)).toBe('/');
+
+      // Keyboard navigation keeps working from the re-pinned card.
+      await page.keyboard.press('Tab');
+      await expect(card.getByRole('link', { name: actionName })).toBeFocused();
+      await page.keyboard.press('Escape');
+      await expect(card).toBeHidden();
+      await expect(title).toBeFocused();
+      expect(currentPath(page)).toBe('/');
+    }
+  });
+  expect(pageErrors).toEqual([]);
+});
+
+test('Escape on a hovered card leaves focus where the user put it', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await withDashboardApp(async ({ origin, undatedId }) => {
     await gotoEnhanced(page, `${origin}/`, DASHBOARD_BOUND);
     const undated = titleParts(page, `dashboard-release-info-needs-date-${undatedId}`);
 
-    // A hovered card closes on Escape while focus stays where the user put it.
     await hover(page, undated.title);
     await expect(undated.card).toBeVisible();
     const elsewhere = page.locator('a[data-dashboard-tile="overdue"]');
@@ -304,6 +369,66 @@ test('Escape does not pull focus back to a dashboard title once focus has moved 
     await expect(elsewhere).toBeFocused();
   });
 });
+
+test('touch taps pin dashboard title cards and reach their actions', async ({ browser }) => {
+  const context = await browser.newContext({ viewport: { width: 375, height: 740 }, hasTouch: true, isMobile: true });
+  const page = await context.newPage();
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  try {
+    await withDashboardApp(async ({ origin, scheduledId, projectId }) => {
+      await gotoEnhanced(page, `${origin}/`, DASHBOARD_BOUND);
+      const scheduled = titleParts(page, `dashboard-release-info-scheduled-${scheduledId}`);
+      const projectRow = titleParts(page, `dashboard-project-info-table-${projectId}`);
+
+      await scheduled.title.tap();
+      await expect(scheduled.card).toBeVisible();
+      await expect(scheduled.title).toHaveAttribute('aria-expanded', 'true');
+      await page.locator('.dashboard-today').tap();
+      await expect(scheduled.card).toBeHidden();
+
+      await projectRow.title.tap();
+      await expect(projectRow.card).toBeVisible();
+      expect(withinViewport(page, await projectRow.card.boundingBox())).toBe(true);
+      await projectRow.card.getByRole('link', { name: 'Open project' }).tap();
+      await expect.poll(() => currentPath(page)).toBe(`/projects/${projectId}`);
+    });
+  } finally {
+    await context.close();
+  }
+  expect(pageErrors).toEqual([]);
+});
+
+for (const viewport of [{ width: 1280, height: 600 }, { width: 375, height: 640 }]) {
+  test(`Projects table cards escape the table and stay inside a ${viewport.width}px viewport`, async ({ page }) => {
+    await page.setViewportSize(viewport);
+    await withDashboardApp(async ({ origin, projectId }) => {
+      await gotoEnhanced(page, `${origin}/`, DASHBOARD_BOUND);
+      const { card, title } = titleParts(page, `dashboard-project-info-table-${projectId}`);
+
+      // Put the title against the bottom edge so the card has to flip and clamp.
+      await moveAway(page);
+      await title.evaluate((node) => node.scrollIntoView({ block: 'end' }));
+      const titleBox = await title.boundingBox();
+      expect(titleBox.y + titleBox.height).toBeGreaterThan(viewport.height - 60);
+      await page.mouse.move(titleBox.x + titleBox.width - 2, titleBox.y + (titleBox.height / 2), { steps: 4 });
+      await expect(card).toBeVisible();
+      await expect.poll(async () => withinViewport(page, await card.boundingBox())).toBe(true);
+
+      await page.mouse.down();
+      await page.mouse.up();
+      await moveAway(page);
+      await expect(card).toBeVisible();
+      expect(withinViewport(page, await card.boundingBox())).toBe(true);
+      // Nothing in the table clips or covers the card: its own action is the
+      // topmost element where it is drawn.
+      const action = card.getByRole('link', { name: 'Open project' });
+      const point = center(await action.boundingBox());
+      expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.textContent.trim(), point)).toBe('Open project');
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+    });
+  });
+}
 
 test('Calendar keyboard pinning still returns focus to its trigger on Escape', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
@@ -389,7 +514,7 @@ test('Due today tile is a plain listing link while Today rows keep their release
     const todayRow = titleParts(page, `dashboard-release-info-scheduled-${todayId}`);
     await expect(todayRow.title).toHaveText('Today Release');
     await expect(todayRow.card.locator('.asset-viewer-grid-card-info-heading')).toHaveText('Today Release');
-    await moveIntoCardAndClick(page, todayRow, 'Open release', `/releases/${todayId}`);
+    await pinAndOpenAction(page, todayRow, 'Open release', `/releases/${todayId}`);
 
     await gotoEnhanced(page, `${origin}/`, DASHBOARD_BOUND);
     await tile.click();

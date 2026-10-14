@@ -373,9 +373,14 @@ test('title popovers, preview fallbacks and an invalid saved filter are handled 
 
     const scheduledTitle = (scope) => scope.locator('[data-dashboard-title-info]')
       .filter({ has: page.locator(`#dashboard-release-info-scheduled-${ids.scheduled}`) })
-      .locator(':scope > a[href]');
+      .locator(':scope > [data-calendar-info-trigger]');
+    const scheduledCard = page.locator(`#dashboard-release-info-scheduled-${ids.scheduled}`);
+    // Pin the card from the keyboard and leave focus on one of its actions.
     await scheduledTitle(page).focus();
-    await expect(page.locator(`#dashboard-release-info-scheduled-${ids.scheduled}`)).toBeVisible();
+    await page.keyboard.press('Enter');
+    await expect(scheduledCard).toBeVisible();
+    await page.keyboard.press('Tab');
+    await expect(scheduledCard.getByRole('link', { name: 'Open release' })).toBeFocused();
     await page.evaluate((id) => { window.oldCard = document.getElementById(`dashboard-release-info-scheduled-${id}`); }, ids.scheduled);
 
     // The next response drops the selected status tab and gives the first
@@ -397,14 +402,18 @@ test('title popovers, preview fallbacks and an invalid saved filter are handled 
     expect(outcome).toEqual({ status: 'refreshed' });
     await waitForReplacement(page);
 
+    // The pinned card closed with its region; focus that was on a card action
+    // returns to the replacement title rather than a hidden action.
     expect(await page.evaluate(() => window.oldCard.isConnected)).toBe(false);
-    expect(await page.evaluate(() => [...document.querySelectorAll('[data-info-card-open]')]
-      .every((card) => card.isConnected && document.querySelector('[data-dashboard]').contains(card)))).toBe(true);
+    await expect(page.locator('[data-info-card-open]')).toHaveCount(0);
     await expect(scheduledTitle(page)).toBeFocused();
+    await expect(scheduledTitle(page)).toHaveAttribute('aria-expanded', 'false');
+    await expect(scheduledCard).toBeHidden();
+    await page.keyboard.press('Enter');
+    await expect(scheduledCard).toBeVisible();
+    await expect(scheduledTitle(page)).toHaveAttribute('aria-expanded', 'true');
     await page.locator('h1').first().click();
-    await expect(page.locator(`#dashboard-release-info-scheduled-${ids.scheduled}`)).toBeHidden();
-    await scheduledTitle(page).focus();
-    await expect(page.locator(`#dashboard-release-info-scheduled-${ids.scheduled}`)).toBeVisible();
+    await expect(scheduledCard).toBeHidden();
 
     await expect(page.locator('[data-test-preview]')).toHaveAttribute('data-preview-state', 'failed');
     await expect(page.locator('[data-test-preview] [data-preview-fallback]')).toBeVisible();

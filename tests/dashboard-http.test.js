@@ -321,7 +321,7 @@ describe('dashboard HTTP composition', () => {
         const card = extractById(scheduled, 'div', `dashboard-release-info-scheduled-${releaseId}`);
         expect(card).toContain('data-calendar-info-card popover="manual"');
         expect(card).toContain(`aria-label="Details for ${title}"`);
-        expect(scheduled).toContain(`<a class="dashboard-truncate" href="/releases/${releaseId}">${title}</a>`);
+        expect(scheduled).toContain(`<button class="dashboard-title-trigger dashboard-truncate" type="button" data-calendar-info-trigger aria-controls="dashboard-release-info-scheduled-${releaseId}" aria-expanded="false">${title}</button>`);
       }
     });
 
@@ -386,9 +386,9 @@ describe('dashboard HTTP composition', () => {
       expect(panel).toContain('1 waiting');
       expect(panel).toContain('Oldest first. Pick an open day, or choose any date.');
       expect(panel).not.toContain('View all');
-      expect(item).toContain(`<a class="dashboard-truncate" href="/releases/${releaseId}">Waiting Release</a>`);
-      expect(item).toContain(`<a class="dashboard-truncate" href="/projects/${projectId}">Needs Date Project</a>`);
-      expect(item).not.toMatch(/<a class="dashboard-truncate"[^>]*\stitle=/);
+      expect(item).toContain(`<button class="dashboard-title-trigger dashboard-truncate" type="button" data-calendar-info-trigger aria-controls="dashboard-release-info-needs-date-${releaseId}" aria-expanded="false">Waiting Release</button>`);
+      expect(item).toContain(`<button class="dashboard-title-trigger dashboard-truncate" type="button" data-calendar-info-trigger aria-controls="dashboard-project-info-needs-date-${releaseId}" aria-expanded="false">Needs Date Project</button>`);
+      expect(item).not.toMatch(/<button class="dashboard-title-trigger[^>]*\stitle=/);
       expect(item).toContain(`id="dashboard-release-info-needs-date-${releaseId}"`);
       expect(item).toContain(`id="dashboard-project-info-needs-date-${releaseId}"`);
       expect(item).toContain('1 asset selected');
@@ -473,7 +473,8 @@ describe('dashboard HTTP composition', () => {
       expect(late).toContain('Any time');
       expect(late).toContain(`href="/releases/${lateId}/publish" aria-label="Publish Late Release">Publish</a>`);
       expect(extractReleaseRow(res.text, todayId)).toContain(`href="/releases/${todayId}/publish"`);
-      expect(soon).toContain(`<a class="dashboard-truncate" href="/releases/${soonId}">Soon Release</a>`);
+      expect(soon).toContain(`<button class="dashboard-title-trigger dashboard-truncate" type="button" data-calendar-info-trigger aria-controls="dashboard-release-info-scheduled-${soonId}" aria-expanded="false">Soon Release</button>`);
+      expect(soon).toContain(`href="/releases/${soonId}">Open release</a>`);
       expect(soon).not.toContain('dashboard-release-row-action');
       expect(soon).toContain('1 missing');
       expect(soon).toContain(`href="/projects/${projectId}"`);
@@ -504,7 +505,7 @@ describe('dashboard HTTP composition', () => {
       const escaped = longTitle.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
       const row = extractReleaseRow(res.text, releaseId);
-      expect(row).toContain(`<a class="dashboard-truncate" href="/releases/${releaseId}">${escaped}</a>`);
+      expect(row).toContain(`<button class="dashboard-title-trigger dashboard-truncate" type="button" data-calendar-info-trigger aria-controls="dashboard-release-info-scheduled-${releaseId}" aria-expanded="false">${escaped}</button>`);
       expect(row).toContain(`<h3 class="asset-viewer-grid-card-info-heading">${escaped}</h3>`);
       expect(row).toContain(`aria-label="Details for ${escaped}"`);
       expect(res.text).not.toContain('<finale>');
@@ -672,7 +673,7 @@ describe('dashboard HTTP composition', () => {
       const tableCard = tableRow.match(/<div id="dashboard-project-info-table-\d+"[\s\S]*?<\/dl>/)?.[0] || '';
       const rowCard = releaseRow.match(/<div id="dashboard-project-info-scheduled-\d+"[\s\S]*?<\/dl>/)?.[0] || '';
 
-      expect(tableRow).toContain(`<a class="dashboard-truncate" href="/projects/${projectId}">Card Project</a>`);
+      expect(tableRow).toContain(`<button class="dashboard-title-trigger dashboard-truncate" type="button" data-calendar-info-trigger aria-controls="dashboard-project-info-table-${projectId}" aria-expanded="false">Card Project</button>`);
       for (const card of [tableCard, rowCard]) {
         expect(card).toContain('data-calendar-info-card popover="manual"');
         expect(card).toContain(`href="/projects/${projectId}">Open project</a>`);

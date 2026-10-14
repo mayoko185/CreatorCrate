@@ -107,17 +107,19 @@ function needsDateItem(page, id) {
 const releaseCardId = (id) => `dashboard-release-info-needs-date-${id}`;
 const projectCardId = (id) => `dashboard-project-info-needs-date-${id}`;
 
-function titleLink(page, cardId) {
-  return page.locator('[data-dashboard-title-info]').filter({ has: page.locator(`#${cardId}`) }).locator(':scope > a[href]');
+function titleTrigger(page, cardId) {
+  return page.locator('[data-dashboard-title-info]').filter({ has: page.locator(`#${cardId}`) })
+    .locator(':scope > [data-calendar-info-trigger]');
 }
 
-// Opens a title popover through keyboard focus, as a user would, and reads
-// the card's facts.
+// Pins a title popover with a real click, as a user would, after an outside
+// click has dismissed any card already pinned.
 async function openCard(page, cardId) {
   await page.locator('h1').first().click();
-  await titleLink(page, cardId).focus();
+  await titleTrigger(page, cardId).click();
   const card = page.locator(`#${cardId}`);
   await expect(card).toBeVisible();
+  await expect(titleTrigger(page, cardId)).toHaveAttribute('aria-expanded', 'true');
   return card;
 }
 
@@ -211,12 +213,16 @@ test('several confirmations in one project stay current across repeated refreshe
     expect(await cardFact(card, 'Planned')).toBe(secondDate);
     await expect(page.locator('[data-dashboard-schedule-undo]')).toHaveCount(2);
 
-    // Keyboard focus on a retained title survives a refresh on its new node,
-    // and the popover it reopens describes the refreshed state.
-    await titleLink(page, projectCardId(ids.sharedA)).focus();
+    // Keyboard focus on a retained title survives a refresh on its new node
+    // without pinning it, and the card it then pins is the refreshed one.
+    await page.locator('h1').first().click();
+    await titleTrigger(page, projectCardId(ids.sharedA)).focus();
     await refreshNow(page);
     await refreshNow(page);
-    await expect(titleLink(page, projectCardId(ids.sharedA))).toBeFocused();
+    await expect(titleTrigger(page, projectCardId(ids.sharedA))).toBeFocused();
+    await expect(page.locator(`#${projectCardId(ids.sharedA)}`)).toBeHidden();
+    expect(await openCardCount(page)).toBe(0);
+    await page.keyboard.press('Enter');
     await expect(page.locator(`#${projectCardId(ids.sharedA)}`)).toBeVisible();
     expect(await openCardCount(page)).toBe(1);
 

@@ -1,8 +1,11 @@
 {#
-  Dashboard title link paired with its Calendar information card. The link
-  keeps its navigation; hover and focus reveal the card through
-  enhanceDashboardTitleInfoCards. The card carries the full title, so the
-  link has no native title tooltip competing with it.
+  Dashboard title trigger paired with its Calendar information card. The
+  trigger follows the Calendar convention (data-calendar-info-trigger with
+  aria-controls/aria-expanded), so enhanceDashboardTitleInfoCards binds it to
+  the Calendar hybrid lifecycle: hover shows the card at the pointer, a click
+  pins it, and navigation goes through the card's Open/Edit actions. The card
+  carries the full title, so the trigger has no native title tooltip
+  competing with it.
 
   `surface` and `key` keep card ids unique when one record appears in more
   than one row.
@@ -14,16 +17,22 @@
 #}
 {% import "partials/calendar-info-card.njk" as infoCard %}
 
+{% macro trigger(title, detailId) %}
+  <button class="dashboard-title-trigger dashboard-truncate" type="button" data-calendar-info-trigger aria-controls="{{ detailId }}" aria-expanded="false">{{ title }}</button>
+{% endmacro %}
+
 {% macro release(release, surface, clockFormat) %}
+  {% set detailId = 'dashboard-release-info-' ~ surface ~ '-' ~ release.id %}
   <div class="dashboard-title-info" data-dashboard-title-info>
-    <a class="dashboard-truncate" href="/releases/{{ release.id }}">{{ release.title }}</a>
-    {{ infoCard.release(release.infoCard, 'dashboard-release-info-' ~ surface ~ '-' ~ release.id, clockFormat) }}
+    {{ trigger(release.title, detailId) }}
+    {{ infoCard.release(release.infoCard, detailId, clockFormat) }}
   </div>
 {% endmacro %}
 
 {% macro project(project, surface, key, clockFormat) %}
+  {% set detailId = 'dashboard-project-info-' ~ surface ~ '-' ~ key %}
   <div class="dashboard-title-info" data-dashboard-title-info>
-    <a class="dashboard-truncate" href="/projects/{{ project.id }}">{{ project.title }}</a>
-    {{ infoCard.project(project, 'dashboard-project-info-' ~ surface ~ '-' ~ key, clockFormat) }}
+    {{ trigger(project.title, detailId) }}
+    {{ infoCard.project(project, detailId, clockFormat) }}
   </div>
 {% endmacro %}

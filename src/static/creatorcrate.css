@@ -11815,6 +11815,21 @@
 .dashboard-item-meta > .dashboard-title-info {
   flex: 0 1 auto;
 }
+/* Title triggers are buttons for the Calendar pin-on-click interaction but
+   keep the plain title-text treatment Dashboard links use. */
+.dashboard-title-trigger {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.dashboard-title-trigger:hover,
+.dashboard-title-trigger[aria-expanded="true"] {
+  color: var(--link);
+}
 /* The card is a DOM child of compact title text, so it restores the
    typography it inherits on the Calendar instead of the row's. */
 .dashboard-title-info > .asset-viewer-grid-card-info {
@@ -12581,7 +12596,8 @@
 .dashboard-projects-table tbody tr:focus-within {
   background: var(--surface-hover);
 }
-.dashboard .dashboard-projects-table a:focus-visible {
+.dashboard .dashboard-projects-table a:focus-visible,
+.dashboard .dashboard-projects-table .dashboard-title-trigger:focus-visible {
   outline-offset: 1px;
 }
 .dashboard-project-cell .dashboard-thumb {

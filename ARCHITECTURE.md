@@ -2563,9 +2563,10 @@ The Dashboard's Projects status filters filter table rows in the page only when
 the table lists every active Project; otherwise they remain links to the
 filtered Projects page. Dashboard title popovers are the
 Calendar information cards: [`info-cards.js`](src/static/client/info-cards.js)
-binds them through the same grid info-card lifecycle as Calendar, with a
-Dashboard configuration that opens on hover/focus because Dashboard titles are
-navigation links rather than pin-on-click triggers.
+binds them through Calendar's hybrid lifecycle: Dashboard titles are
+Calendar-style button triggers, so hover shows the card at the pointer, a
+click pins it, and an outside click or Escape dismisses it. Navigation goes
+through the card's Open/Edit actions rather than the title itself.
 
 **Three asset modes**, resolved once by `resolveAssetMode(nodeEnv)` and
 exposed to templates as `assetMode`:

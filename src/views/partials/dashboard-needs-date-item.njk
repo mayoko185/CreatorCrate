@@ -21,7 +21,7 @@
   <input type="hidden" name="plannedTime" value="">
 {% endmacro %}
 
-{# Title links and their popovers. The item and its refreshed titles render
+{# Title triggers and their popovers. The item and its refreshed titles render
    through these, so a retained confirmation's titles match a fresh item. #}
 {% macro releaseTitle(release, clockFormat) %}
   {{ titleInfo.release(release, 'needs-date', clockFormat) }}

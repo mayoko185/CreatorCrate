@@ -679,6 +679,8 @@ const NEEDS_DATE_ITEM_SELECTOR = '[data-dashboard-needs-date-item]';
 const RETAINED_TITLES_SELECTOR = 'template[data-dashboard-retained-titles]';
 const RETAINED_RELEASE_SELECTOR = '[data-dashboard-retained-release]';
 const TITLE_INFO_SELECTOR = '[data-dashboard-title-info]';
+const TITLE_TRIGGER_SELECTOR = `${TITLE_INFO_SELECTOR} > [data-calendar-info-trigger]`;
+const TITLE_CARD_SELECTOR = `${TITLE_INFO_SELECTOR} > [data-calendar-info-card]`;
 // Where each refreshed title belongs inside a Needs-a-date item.
 const RETAINED_TITLE_TARGETS = Object.freeze({
   release: `.dashboard-item-title > ${TITLE_INFO_SELECTOR}`,
@@ -788,6 +790,9 @@ function describeFocus(active) {
     statusFilter: active.getAttribute('data-dashboard-status-filter') ?? active.getAttribute('data-dashboard-status-link'),
     releaseId: active.closest(NEEDS_DATE_ITEM_SELECTOR)?.getAttribute('data-release-id') ?? null,
     plannedDate: active.getAttribute('data-planned-date'),
+    // Focus inside a title card returns to the card's trigger: the fresh card
+    // renders closed, so none of its actions can take focus.
+    titleCard: active.getAttribute('aria-controls') ?? active.closest(TITLE_CARD_SELECTOR)?.id ?? null,
     href: active.getAttribute('href'),
     owner: owner ? { attribute: ownerAttribute, value: owner.getAttribute(ownerAttribute) } : null,
     sectionHeadingId: active.closest('section[aria-labelledby]')?.getAttribute('aria-labelledby') ?? null,
@@ -969,6 +974,7 @@ function findEquivalentFocus(region, focus) {
     focus.statusFilter ? findByAttribute(region, STATUS_FILTER_SELECTOR, 'data-dashboard-status-filter', focus.statusFilter) : null,
     focus.statusFilter ? findByAttribute(region, '[data-dashboard-status-link]', 'data-dashboard-status-link', focus.statusFilter) : null,
     focus.plannedDate ? findByAttribute(owner, SCHEDULE_PICK_SELECTOR, 'data-planned-date', focus.plannedDate) : null,
+    focus.titleCard ? findByAttribute(region, TITLE_TRIGGER_SELECTOR, 'aria-controls', focus.titleCard) : null,
     // The first link with this href may sit in a closed title popover.
     focus.href ? findFocusableByAttribute(owner || section, 'a[href]', 'href', focus.href) : null,
   ];
@@ -1406,7 +1412,7 @@ function createScheduleRecovery(doc, ui) {
     async reconcile(detail) {
       const region = dashboardLiveEngine.getRegion(doc);
       const item = region && findByAttribute(region, NEEDS_DATE_ITEM_SELECTOR, 'data-release-id', String(detail.releaseId));
-      const title = item?.querySelector('[data-dashboard-title-info] > a')?.textContent.trim() || null;
+      const title = item?.querySelector(TITLE_TRIGGER_SELECTOR)?.textContent.trim() || null;
       const followUp = { kind: 'reconcile', detail, title, releaseId: detail.releaseId };
       const outcome = await refreshDashboard(doc, { releaseId: detail.releaseId });
       if (outcome.status === 'refreshed') settle(followUp);

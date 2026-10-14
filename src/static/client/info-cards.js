@@ -4,9 +4,6 @@ const ASSET_VIEWER_INFO_SELECTOR = '[data-asset-info-card]';
 const ASSET_VIEWER_PREVIEW_SELECTOR = '[data-asset-viewer-preview]';
 const GRID_INFO_GUTTER = 8;
 const GRID_INFO_POINTER_OFFSET = 12;
-// Long enough for a mouse that briefly overshoots a title to reach its card,
-// short enough that a card left behind still feels transient.
-const LINK_INFO_DISMISS_DELAY_MS = 200;
 const PROJECT_INFO_SELECTOR = '[data-project-info-card]';
 const PROJECT_PREVIEW_SELECTOR = '[data-project-grid-preview]';
 const CALENDAR_INFO_SELECTOR = '[data-calendar-info-card]';
@@ -44,31 +41,21 @@ const CALENDAR_INFO_CONFIG = Object.freeze({
   topProperty: '--asset-info-top',
   boundKey: 'calendarInfoBound',
 });
-// Dashboard titles are navigation links, so a click cannot pin the card the
-// way a Calendar trigger does. Hover and focus open it instead, and Escape
-// dismisses it, returning focus to the title link only when focus was inside
-// the card being hidden. The card holds actions,
-// so it stays anchored to the title link rather than following the pointer.
-// It sits flush against the link because dashboard rows stack other titles
-// directly below, and any gap would let the pointer cross one of them on the
-// way into the card. Leaving the title only dismisses it after a short grace
-// period, so a pointer that overshoots on the way in can still reach it.
+// Dashboard titles are Calendar triggers rendered in Dashboard rows, so they
+// share the Calendar hybrid lifecycle: hover follows the pointer, a click pins
+// the card, and an outside click or Escape dismisses it. A hover-opened
+// Dashboard card is reachable by Tab from its focused title, so Escape also
+// returns focus from inside an unpinned card; otherwise focus would stay on a
+// hidden Open/Edit action that the next Enter would follow.
 const DASHBOARD_TITLE_INFO_CONFIG = Object.freeze({
-  infoSelector: CALENDAR_INFO_SELECTOR,
+  ...CALENDAR_INFO_CONFIG,
   previewSelector: DASHBOARD_TITLE_SELECTOR,
-  placementSelector: ':scope > a[href]',
-  interaction: 'link',
-  gutter: GRID_INFO_GUTTER,
-  anchorGap: 0,
-  pointerOffset: GRID_INFO_POINTER_OFFSET,
-  leftProperty: '--asset-info-left',
-  topProperty: '--asset-info-top',
+  escapeReturnsContainedFocus: true,
   boundKey: 'dashboardTitleInfoBound',
 });
 
 let activeGridInfoPlacement = null;
 let pendingGridInfoFrame = null;
-let pendingGridInfoDismissal = null;
 const gridInfoBoundDocuments = new WeakSet();
 const gridInfoBoundWindows = new WeakSet();
 
@@ -130,31 +117,8 @@ function cancelPendingGridInfoFrame() {
   pendingGridInfoFrame = null;
 }
 
-function cancelPendingGridInfoDismissal() {
-  if (!pendingGridInfoDismissal) return;
-  pendingGridInfoDismissal.windowObject.clearTimeout(pendingGridInfoDismissal.id);
-  pendingGridInfoDismissal = null;
-}
-
-function scheduleGridInfoDismissal(info, delay) {
-  cancelPendingGridInfoDismissal();
-  const windowObject = gridInfoWindow(activeGridInfoPlacement?.document);
-  if (typeof windowObject?.setTimeout !== 'function') {
-    dismissActiveGridInfoCard();
-    return;
-  }
-  const dismissal = { windowObject, id: null };
-  pendingGridInfoDismissal = dismissal;
-  dismissal.id = windowObject.setTimeout(() => {
-    if (pendingGridInfoDismissal !== dismissal) return;
-    pendingGridInfoDismissal = null;
-    if (activeGridInfoPlacement?.info === info) dismissActiveGridInfoCard();
-  }, delay);
-}
-
 export function dismissActiveGridInfoCard() {
   cancelPendingGridInfoFrame();
-  cancelPendingGridInfoDismissal();
   if (activeGridInfoPlacement?.config.interaction === 'hybrid') {
     activeGridInfoPlacement.trigger?.setAttribute?.('aria-expanded', 'false');
   }
@@ -203,10 +167,9 @@ export function positionGridInfo(preview, info, config, anchor = { type: 'focus'
       top = anchor.clientY - config.pointerOffset - infoHeight;
     }
   } else {
-    const anchorGap = config.anchorGap ?? config.gutter;
     left = previewRect.left + ((previewRect.width - infoWidth) / 2);
-    const belowTop = previewRect.bottom + anchorGap;
-    const aboveTop = previewRect.top - anchorGap - infoHeight;
+    const belowTop = previewRect.bottom + config.gutter;
+    const aboveTop = previewRect.top - config.gutter - infoHeight;
     top = belowTop;
     if (belowTop + infoHeight > viewport.height - config.gutter && aboveTop >= config.gutter) {
       top = aboveTop;
@@ -251,7 +214,6 @@ function scheduleActiveGridInfoPosition() {
 }
 
 function activateGridInfo(preview, info, config, state, anchor, trigger = null, pinned = false) {
-  cancelPendingGridInfoDismissal();
   if (activeGridInfoPlacement?.info !== info) dismissActiveGridInfoCard();
   showGridInfo(info);
   if (config.interaction === 'hybrid') trigger?.setAttribute?.('aria-expanded', 'true');
@@ -268,24 +230,6 @@ function activateGridInfo(preview, info, config, state, anchor, trigger = null, 
   scheduleActiveGridInfoPosition();
 }
 
-// Hiding a popover leaves focus on its descendant until the next rendering
-// update, so a key pressed in between would activate a hidden card action.
-// Focus moves synchronously to the link the card describes instead, without
-// letting that focus reopen the card just dismissed.
-function restoreLinkInfoFocus(info, state) {
-  const returnFocus = state?.returnFocus;
-  if (returnFocus && gridInfoIsConnected(returnFocus) && typeof returnFocus.focus === 'function') {
-    state.restoringFocus = true;
-    try {
-      returnFocus.focus();
-    } finally {
-      state.restoringFocus = false;
-    }
-    if (!info.contains?.(gridInfoDocument(null, info)?.activeElement)) return;
-  }
-  gridInfoDocument(null, info)?.activeElement?.blur?.();
-}
-
 function bindGridInfoLifecycle(document) {
   if (!document || (typeof document !== 'object' && typeof document !== 'function')) return;
   if (!gridInfoBoundDocuments.has(document)) {
@@ -298,14 +242,12 @@ function bindGridInfoLifecycle(document) {
       dismissActiveGridInfoCard();
     }, true);
     document.addEventListener?.('keydown', (event) => {
-      const interaction = activeGridInfoPlacement?.config.interaction;
-      if (event.key !== 'Escape' || (interaction !== 'hybrid' && interaction !== 'link')) return;
-      const { trigger, pinned, info, state } = activeGridInfoPlacement;
-      const focusInCard = interaction === 'link'
-        && info.contains?.(gridInfoDocument(null, info)?.activeElement);
+      if (event.key !== 'Escape' || activeGridInfoPlacement?.config.interaction !== 'hybrid') return;
+      const { trigger, pinned, info, config } = activeGridInfoPlacement;
+      const focusInCard = config.escapeReturnsContainedFocus === true
+        && info.contains?.(document.activeElement) === true;
       dismissActiveGridInfoCard();
-      if (pinned && gridInfoIsConnected(trigger)) trigger?.focus?.();
-      if (focusInCard) restoreLinkInfoFocus(info, state);
+      if ((pinned || focusInCard) && gridInfoIsConnected(trigger)) trigger?.focus?.();
     });
 
     const MutationObserverClass = gridInfoWindow(document)?.MutationObserver;
@@ -345,8 +287,6 @@ function enhanceGridInfoCards(scope, config) {
     if (!info || isEnhancementBound(preview, config.boundKey)) return;
 
     const hybrid = config.interaction === 'hybrid';
-    const link = config.interaction === 'link';
-    const ignoresTouchHover = hybrid || link;
     const trigger = hybrid ? preview.querySelector?.(config.triggerSelector) : null;
     if (hybrid && !trigger) return;
 
@@ -356,46 +296,34 @@ function enhanceGridInfoCards(scope, config) {
       info.addEventListener?.('load', scheduleActiveGridInfoPosition, true);
       info.addEventListener?.('error', scheduleActiveGridInfoPosition, true);
     }
-    // The card is a DOM descendant of a link-mode preview, so pointer
-    // boundary events treat the card as part of the hover region.
     const pointerTarget = trigger || preview;
-    const placementTarget = (config.placementSelector
-      && preview.querySelector?.(config.placementSelector)) || preview;
     const state = {
       focusInside: false,
       pointerInside: false,
       pointer: null,
       suppressHover: false,
-      returnFocus: link ? placementTarget : null,
-      restoringFocus: false,
     };
-    const pointerAnchor = (event) => (link ? { type: 'focus' } : {
+    const pointerAnchor = (event) => ({
       type: 'pointer',
       clientX: Number(event?.clientX),
       clientY: Number(event?.clientY),
     });
-    const hoverPlacementTarget = link ? placementTarget : pointerTarget;
     const onPointerEnter = (event) => {
-      if (ignoresTouchHover && event.pointerType === 'touch') return;
+      if (hybrid && event.pointerType === 'touch') return;
       if (hybrid && (state.suppressHover || activeGridInfoPlacement?.pinned)) return;
       state.pointerInside = true;
       state.pointer = pointerAnchor(event);
-      if (link && activeGridInfoPlacement?.info === info) {
-        cancelPendingGridInfoDismissal();
-        return;
-      }
-      activateGridInfo(hoverPlacementTarget, info, config, state, state.pointer, trigger);
+      activateGridInfo(pointerTarget, info, config, state, state.pointer, trigger);
     };
     const onPointerMove = (event) => {
-      if (ignoresTouchHover && event.pointerType === 'touch') return;
+      if (hybrid && event.pointerType === 'touch') return;
       if (hybrid && (state.suppressHover || activeGridInfoPlacement?.pinned)) return;
       if (!state.pointerInside) return;
       if (activeGridInfoPlacement?.info !== info) {
         state.pointer = pointerAnchor(event);
-        activateGridInfo(hoverPlacementTarget, info, config, state, state.pointer, trigger);
+        activateGridInfo(pointerTarget, info, config, state, state.pointer, trigger);
         return;
       }
-      if (link) return;
       state.pointer = pointerAnchor(event);
       activeGridInfoPlacement.anchor = state.pointer;
       scheduleActiveGridInfoPosition();
@@ -406,8 +334,7 @@ function enhanceGridInfoCards(scope, config) {
       state.pointer = null;
       if (activeGridInfoPlacement?.info !== info) return;
       if (activeGridInfoPlacement.pinned) return;
-      if (state.focusInside) activateGridInfo(placementTarget, info, config, state, { type: 'focus' });
-      else if (link) scheduleGridInfoDismissal(info, LINK_INFO_DISMISS_DELAY_MS);
+      if (state.focusInside) activateGridInfo(preview, info, config, state, { type: 'focus' });
       else dismissActiveGridInfoCard();
     };
     pointerTarget.addEventListener?.('pointerenter', onPointerEnter);
@@ -432,15 +359,14 @@ function enhanceGridInfoCards(scope, config) {
     }
     preview.addEventListener?.('focusin', () => {
       state.focusInside = true;
-      if (state.restoringFocus) return;
-      if (!state.pointerInside) activateGridInfo(placementTarget, info, config, state, { type: 'focus' });
+      if (!state.pointerInside) activateGridInfo(preview, info, config, state, { type: 'focus' });
     });
     preview.addEventListener?.('focusout', (event) => {
       if (preview.contains?.(event.relatedTarget)) return;
       state.focusInside = false;
       if (activeGridInfoPlacement?.info !== info) return;
       if (state.pointerInside && state.pointer) {
-        activateGridInfo(hoverPlacementTarget, info, config, state, state.pointer);
+        activateGridInfo(preview, info, config, state, state.pointer);
       } else {
         dismissActiveGridInfoCard();
       }
