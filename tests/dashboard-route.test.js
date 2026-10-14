@@ -131,6 +131,10 @@ function createTestApp({
   if (withNsfwService) {
     app.locals.nsfwFilterSettingsService = { isEnabled: () => nsfwEnabled };
   }
+  app.locals.releaseSignatureSettingsService = {
+    getConfiguration: vi.fn(() => ({ entries: [], defaultSignatureId: null })),
+  };
+  app.locals.socialPrepSettingsService = { getPlatforms: vi.fn(() => ['x', 'bluesky']) };
   const pageDefaultsService = {
     resolve: vi.fn((_page, _field, value) => value || 'tbd'),
     getSavedDefault: vi.fn((_page, field) => (field === 'status' ? 'tbd' : 'images')),
@@ -144,6 +148,10 @@ function createTestApp({
     }),
   };
   const tagService = { listTags: vi.fn(() => []) };
+  const projectService = {
+    list: vi.fn(() => ({ rows: [{ id: 4, title: 'Active Project', status: 'tbd' }] })),
+    findById: vi.fn(),
+  };
 
   app.use((req, res, next) => {
     res.render = (view, locals) => {
@@ -159,12 +167,14 @@ function createTestApp({
     workflowQueryService,
     pageDefaultsService,
     tagService,
+    projectService,
   }));
 
   return {
     app,
     getCaptured: () => captured,
     pageDefaultsService,
+    projectService,
     tagService,
     workflowQueryService,
   };
@@ -211,15 +221,43 @@ describe('dashboard route wiring', () => {
     expect(locals.dashboard).toMatchObject({ today: '2026-10-12', todayLabel: 'Monday, October 12, 2026' });
   });
 
+  it('builds the hosted New Release form with the shared release-create form model', async () => {
+    const { app, getCaptured, projectService } = createTestApp();
+
+    await request(app).get('/').expect(200);
+
+    const { locals } = getCaptured();
+    expect(projectService.list).toHaveBeenCalledOnce();
+    expect(projectService.list).toHaveBeenCalledWith({ includeArchived: false, limit: 100 });
+    expect(locals.releaseCreateDialogOpen).toBe(false);
+    expect(locals.releaseCreateForm).toMatchObject({
+      projects: [{ id: 4, title: 'Active Project' }],
+      selectedProjectId: null,
+      isFreshCreate: true,
+      scheduleDefaulted: true,
+      invocationReturnTo: '',
+      errors: {},
+    });
+    expect(locals.platformChoices).toEqual([
+      { value: 'x', label: 'X' },
+      { value: 'bluesky', label: 'Bluesky' },
+    ]);
+    expect(locals.releaseSignatureConfiguration).toEqual({ entries: [], defaultSignatureId: null });
+  });
+
   it('declares the New Project form services at router composition time', () => {
     const workflowQueryService = { getDashboardData: vi.fn() };
     const pageDefaultsService = { resolve: vi.fn() };
     const tagService = { listTags: vi.fn() };
 
-    expect(() => createIndexRouter({ appName: 'Test App', workflowQueryService, tagService }))
+    const projectService = { list: vi.fn() };
+
+    expect(() => createIndexRouter({ appName: 'Test App', workflowQueryService, tagService, projectService }))
       .toThrow('createIndexRouter requires a pageDefaultsService dependency.');
-    expect(() => createIndexRouter({ appName: 'Test App', workflowQueryService, pageDefaultsService }))
+    expect(() => createIndexRouter({ appName: 'Test App', workflowQueryService, pageDefaultsService, projectService }))
       .toThrow('createIndexRouter requires a tagService dependency.');
+    expect(() => createIndexRouter({ appName: 'Test App', workflowQueryService, pageDefaultsService, tagService }))
+      .toThrow('createIndexRouter requires a projectService dependency.');
   });
 
   it('does not depend on the retired Dashboard defaults service', async () => {

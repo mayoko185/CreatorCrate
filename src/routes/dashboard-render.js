@@ -2,6 +2,11 @@ import { NSFW_TAG_NAME } from '../services/nsfw-filter-settings-service.js';
 import { isProjectArchived } from '../services/project-state.js';
 import { buildNewProjectFormModel } from './project-create-form.js';
 import {
+  buildCreateReleaseFormModel,
+  getReleasePlatformChoices,
+  getReleaseSignatureConfiguration,
+} from './release-create-form.js';
+import {
   buildProjectOptionPresentation,
   presentProjectOptions,
 } from '../services/project-option-presenter.js';
@@ -241,15 +246,21 @@ export function renderDashboardPage(req, res, next, {
   workflowQueryService,
   pageDefaultsService,
   tagService,
+  projectService,
   status = 200,
   projectCreateDialogOpen = false,
   projectCreateForm,
+  releaseCreateDialogOpen = false,
+  releaseCreateForm,
   retainedReleaseIds = [],
 } = {}) {
   try {
     const effectivePageDefaultsService = pageDefaultsService || req.app?.locals?.pageDefaultsService;
     if (!effectivePageDefaultsService) {
       throw new Error('Dashboard requires a pageDefaultsService.');
+    }
+    if (!projectService) {
+      throw new Error('Dashboard requires a projectService.');
     }
     const dashboard = retainedReleaseIds.length
       ? workflowQueryService.getDashboardData({ retainedReleaseIds })
@@ -321,9 +332,13 @@ export function renderDashboardPage(req, res, next, {
       nsfwFilterEnabled,
       projectCreateDialogOpen: Boolean(projectCreateDialogOpen),
       projectCreateForm: projectCreateForm || buildNewProjectFormModel({
-        tagService,
+        tagService: tagService || req.app?.locals?.tagService,
         pageDefaultsService: effectivePageDefaultsService,
       }),
+      releaseCreateDialogOpen: Boolean(releaseCreateDialogOpen),
+      releaseCreateForm: releaseCreateForm || buildCreateReleaseFormModel({ appName, projectService }),
+      releaseSignatureConfiguration: getReleaseSignatureConfiguration(req),
+      platformChoices: getReleasePlatformChoices(req),
       dashboard: {
         today,
         todayLabel: formatDate(today, 'full'),

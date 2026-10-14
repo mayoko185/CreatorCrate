@@ -504,6 +504,7 @@ function renderProjectCreateError(req, res, next, {
       renderDashboardPage(req, res, next, {
         appName,
         workflowQueryService,
+        projectService,
         status,
         projectCreateDialogOpen: true,
         projectCreateForm,

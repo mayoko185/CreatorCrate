@@ -304,7 +304,8 @@ this codebase.
   internals. Route-support modules that grew too large live beside their
   router with an explicit name — [`asset-library-query.js`](src/routes/asset-library-query.js),
   [`dashboard-render.js`](src/routes/dashboard-render.js),
-  [`project-assets-shared.js`](src/routes/project-assets-shared.js).
+  [`project-assets-shared.js`](src/routes/project-assets-shared.js),
+  [`release-create-form.js`](src/routes/release-create-form.js).
 - One `createXRouter({ deps })` factory per file, returning an
   `express.Router`. Routers validate their required dependencies at
   construction time (`createProcessingRouter` throws `TypeError` for a
@@ -350,8 +351,12 @@ a Projects table with status filters.
   It is the only Dashboard read source; the router never queries directly.
 - **[`dashboard-render.js`](src/routes/dashboard-render.js)** turns that model
   into a request-scoped view model (date labels, NSFW blur, catalogue
-  presentation, info-card shapes). The Projects router reuses it for New
-  Project validation rerenders.
+  presentation, info-card shapes). The Dashboard hosts the New Project and
+  New Release dialogs; the Projects and Releases routers reuse the renderer
+  for their Dashboard-originated validation rerenders. The New Release form
+  model comes from [`release-create-form.js`](src/routes/release-create-form.js),
+  the same builder the Releases routes use, so project options, schedule
+  defaults, platforms and signatures match every other release host.
 - Thumbnails, Social Preparation summaries and Project Status/Type badges come
   from the existing primary-image, social-preparation and catalogue presenters,
   not Dashboard-specific copies. Release and Project title popovers render the
@@ -2512,7 +2517,13 @@ Calendar -> Edit Release, Books -> Edit Book, and Project Assets -> selected-ass
 New Release adopt this contract. Projects-list New Project and Releases-list
 New Release also retain exact list context through create validation/error
 rerenders; their route owners accept only canonical `/projects` and `/releases`
-paths and keep their established post-create detail destinations. The edit flows may also use the validated
+paths and keep their established post-create detail destinations. The Dashboard
+hosts both create dialogs with a fixed `returnTo=/`; each route owner accepts
+exactly `/` to rerender the Dashboard (`422`) with only its own dialog open,
+and any other value falls back to its established host or standalone form.
+Because both dialogs share field names, the Dashboard renders the New Release
+fields with a `fieldIdPrefix`, which prefixes every field id and the label,
+ARIA and picker references to it; other release hosts keep unprefixed ids. The edit flows may also use the validated
 destination after a successful mutation; selected-assets Release creation
 deliberately retains its canonical `/releases/:id/assets` success destination.
 
@@ -2540,8 +2551,9 @@ rather than overwriting. Only a well-formed success echoing the request is
 treated as confirmed; a lost, malformed or `5xx` response is *unconfirmed* and
 is never retried. Every confirmed write, conflict, missing release or
 unconfirmed outcome is followed by an authoritative `GET /` that replaces only
-the `[data-dashboard]` region. The page shell and New Project dialog are left
-in place, and a response missing any required Dashboard region is rejected
+the `[data-dashboard]` region. The page shell and the hosted creation dialogs
+(New Project, New Release, Manage signatures) are left in place, with their
+listeners and unsent values, and a response missing any required Dashboard region is rejected
 rather than partially installed. The client never adjusts counts itself and
 carries over only page-session state (retained confirmations with Undo, unsent
 dates and validation errors on rows still undated, the Projects status filter,

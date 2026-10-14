@@ -68,6 +68,11 @@ function extractAttentionRegion(html) {
   return extractRegion(html, 'dashboard-attention-heading');
 }
 
+function findDuplicateIds(html) {
+  const ids = [...html.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
+  return [...new Set(ids.filter((id, index) => ids.indexOf(id) !== index))];
+}
+
 function visibleText(html) {
   return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
 }
@@ -86,6 +91,38 @@ function extractProjectRow(html, projectId) {
 
 function extractProjectCreateDialog(html) {
   return html.match(/<dialog id="project-create-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+}
+
+function extractReleaseCreateDialog(html) {
+  return html.match(/<dialog id="release-create-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+}
+
+function isDialogOpen(dialog) {
+  return /^<dialog\b[^>]*\bopen(?:\s|>|=)/.test(dialog);
+}
+
+const ID_REFERENCE_ATTRIBUTES = ['for', 'aria-describedby', 'aria-controls', 'aria-labelledby',
+  'data-date-picker-for', 'data-time-picker-for', 'form'];
+
+// Every id referenced from `scope` (labels, ARIA relationships, picker
+// panels, external submit buttons) that does not resolve within `target`.
+function findUnresolvedIdReferences(scope, target = scope) {
+  const ids = new Set([...target.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]));
+  const unresolved = [];
+  for (const attribute of ID_REFERENCE_ATTRIBUTES) {
+    for (const match of scope.matchAll(new RegExp(`\\s${attribute}="([^"]*)"`, 'g'))) {
+      for (const id of match[1].split(/\s+/).filter(Boolean)) {
+        if (!ids.has(id)) unresolved.push(`${attribute}=${id}`);
+      }
+    }
+  }
+  return unresolved;
+}
+
+// The control a visible label is associated with through its `for` id.
+function labelTarget(dialog, labelText) {
+  const forId = dialog.match(new RegExp(`<label[^>]*\\sfor="([^"]+)"[^>]*>\\s*${labelText}\\b`))?.[1];
+  return forId ? dialog.match(new RegExp(`<(?:input|textarea|select)\\b[^>]*\\sid="${forId}"[^>]*>`))?.[0] || '' : '';
 }
 
 async function createProject(app, { title, status = 'tbd', projectType = 'images' }) {
@@ -175,7 +212,7 @@ describe('dashboard HTTP composition', () => {
       expect(countTags(res.text, 'h1')).toBe(1);
       expect(res.text).toContain('<h1 class="app-section-title">Dashboard</h1>');
       expect(res.text).toContain(`<p class="dashboard-today"><time datetime="${today}">`);
-      expect(heading).toContain('<a class="button button-secondary" href="/releases/new">New Release</a>');
+      expect(heading).toContain('<a class="button button-secondary" href="/releases/new" data-dialog-open="release-create-dialog">New Release</a>');
       expect(heading).toContain('<a class="button button-primary" href="/projects/new" data-dialog-open="project-create-dialog">New Project</a>');
       for (const retired of [
         'data-dashboard-defaults-link', 'dashboard-defaults-dialog', 'href="/?defaults=1"',
@@ -184,7 +221,9 @@ describe('dashboard HTTP composition', () => {
       ]) {
         expect(res.text).not.toContain(retired);
       }
-      expect(res.text).not.toMatch(/<input[^>]*type="search"/);
+      // The hosted New Release dialog's project picker is searchable; the
+      // Dashboard page itself has no search control.
+      expect(res.text.slice(0, res.text.indexOf('</main>'))).not.toMatch(/<input[^>]*type="search"/);
     });
 
     it('renders the scheduling recovery status and announcer outside the refreshed Dashboard region', async () => {
@@ -226,8 +265,7 @@ describe('dashboard HTTP composition', () => {
         'dashboard-scheduled-heading', 'dashboard-recent-heading', 'dashboard-projects-heading']) {
         expect(res.text).toMatch(new RegExp(`<section\\b[^>]*aria-labelledby="${id}"`));
       }
-      const ids = [...res.text.matchAll(/\bid="([^"]+)"/g)].map((match) => match[1]);
-      expect(new Set(ids).size).toBe(ids.length);
+      expect(findDuplicateIds(res.text)).toEqual([]);
       const dashboardMarkup = res.text.slice(res.text.indexOf('<div class="dashboard" data-dashboard'));
       const styledElements = dashboardMarkup.match(/<[a-z]+\b[^>]*\sstyle="[^"]*"[^>]*>/g) || [];
       expect(styledElements.every((element) => element.includes('project-option-badge'))).toBe(true);
@@ -249,7 +287,9 @@ describe('dashboard HTTP composition', () => {
       expect(extractRecentPanel(res.text)).toContain('href="/releases">History');
       expect(extractProjectsPanel(res.text)).toContain('No active projects.');
       expect(extractProjectsPanel(res.text)).toContain('0 of 0 active projects · archived hidden');
-      expect(res.text).not.toContain('empty-state-heading');
+      // The hosted Manage signatures dialog keeps its own empty state; only the
+      // Dashboard page content uses compact one-line empty states.
+      expect(res.text.slice(0, res.text.indexOf('</main>'))).not.toContain('empty-state-heading');
     });
 
     it('omits aria-controls from status filter toggles when no projects table is rendered', async () => {
@@ -828,6 +868,215 @@ describe('dashboard HTTP composition', () => {
       expect(dialog).toMatch(/name="status"[^>]*value="ready"[^>]*checked/);
       expect(dialog).toContain('Keep these notes');
       expect(dialog).toMatch(/aria-invalid="true"/);
+    });
+  });
+
+  describe('New Release dialog hosting', () => {
+    const PREFIX = 'release-create-field-';
+
+    function countReleases(title) {
+      return db.prepare('SELECT COUNT(*) AS count FROM releases WHERE title = ?').get(title).count;
+    }
+
+    function postRelease(fields) {
+      return app.testAgent.post('/releases').type('form').send({ _csrf: app.testCsrfToken, ...fields });
+    }
+
+    // The fresh create form with the host-specific parts (field-id prefix,
+    // host returnTo, CSRF token and the clock-derived schedule placeholders)
+    // normalized away, so two hosts can be compared field for field.
+    function normalizedCreateForm(html) {
+      const form = html.match(/<form id="release-create-form"[\s\S]*?<\/form>/)?.[0] || '';
+      return form
+        .replaceAll(PREFIX, '')
+        .replace(/name="returnTo" value="[^"]*"/, 'name="returnTo"')
+        .replace(/name="_csrf" value="[^"]*"/, 'name="_csrf"')
+        .replace(/(name="planned(?:Date|Time)" value=")[^"]*"/g, '$1"');
+    }
+
+    it('renders the established New Release dialog closed beside New Project with the header action opening it', async () => {
+      const res = await app.testAgent.get('/').expect(200);
+      const heading = res.text.match(/<header class="page-heading">[\s\S]*?<\/header>/)?.[0] || '';
+      const dialog = extractReleaseCreateDialog(res.text);
+
+      expect(heading).toContain('data-dialog-open="release-create-dialog">New Release</a>');
+      expect((res.text.match(/<dialog id="release-create-dialog"/g) || [])).toHaveLength(1);
+      expect((res.text.match(/<dialog id="project-create-dialog"/g) || [])).toHaveLength(1);
+      expect((res.text.match(/<dialog id="release-signatures-dialog"/g) || [])).toHaveLength(1);
+      expect(isDialogOpen(dialog)).toBe(false);
+      expect(isDialogOpen(extractProjectCreateDialog(res.text))).toBe(false);
+      // Both dialogs live in the overlay, outside the region a scheduling refresh replaces.
+      expect(res.text.indexOf('<dialog id="release-create-dialog"')).toBeGreaterThan(res.text.indexOf('</main>'));
+      expect(dialog).toContain('<form id="release-create-form" method="post" action="/releases"');
+      expect(dialog).toContain('data-dialog-form data-dialog-async="false" data-dialog-reset-on-close');
+      expect(dialog).toContain('data-release-create-fresh="true" data-release-schedule-defaults="fresh"');
+      expect(dialog).toContain('<input type="hidden" name="returnTo" value="/">');
+      expect(dialog).not.toContain('data-dialog-return-location');
+      expect(dialog).toContain('form="release-create-form" data-dialog-submit>Create release</button>');
+    });
+
+    it('keeps every id unique and every label and ARIA reference resolved to the right dialog', async () => {
+      const projectId = await createProject(app, { title: 'Dialog Id Project' });
+      const res = await app.testAgent.get('/').expect(200);
+      const releaseDialog = extractReleaseCreateDialog(res.text);
+      const projectDialog = extractProjectCreateDialog(res.text);
+
+      expect(findDuplicateIds(res.text)).toEqual([]);
+      // Only Manage signatures points outside the dialog, to its own hosted dialog.
+      expect(findUnresolvedIdReferences(releaseDialog)).toEqual(['aria-controls=release-signatures-dialog']);
+      expect(findUnresolvedIdReferences(releaseDialog, res.text)).toEqual([]);
+      expect(findUnresolvedIdReferences(projectDialog)).toEqual([]);
+
+      for (const [label, name] of [['Title', 'title'], ['Description', 'description'], ['Notes', 'notes'],
+        ['Scheduled date', 'plannedDate'], ['Scheduled time', 'plannedTime'], ['Release link', 'patreonUrl']]) {
+        expect(labelTarget(releaseDialog, label)).toMatch(new RegExp(`\\sid="${PREFIX}${name}" name="${name}"`));
+      }
+      for (const [label, name] of [['Title', 'title'], ['Description', 'description'], ['Notes', 'notes']]) {
+        expect(labelTarget(projectDialog, label)).toMatch(new RegExp(`\\sid="${name}" name="${name}"`));
+      }
+      expect(releaseDialog).toContain(`for="${PREFIX}noSetReleaseDate"`);
+      expect(releaseDialog).toContain(`aria-controls="${PREFIX}plannedDate ${PREFIX}plannedTime"`);
+      expect(releaseDialog).toContain(`data-date-picker-for="${PREFIX}plannedDate"`);
+      expect(releaseDialog).toContain(`data-time-picker-for="${PREFIX}plannedTime"`);
+      expect(releaseDialog).toContain(`value="${projectId}"`);
+    });
+
+    it('renders the same project, platform and signature options as the Releases-hosted dialog', async () => {
+      await createProject(app, { title: 'Option Project One' });
+      await createProject(app, { title: 'Option Project Two' });
+      const archivedId = await createProject(app, { title: 'Option Archived Project' });
+      db.prepare("UPDATE projects SET status = 'archived', archived_at = datetime('now') WHERE id = ?").run(archivedId);
+      app.locals.socialPrepSettingsService.setPlatforms(['x', 'bluesky']);
+      app.locals.releaseSignatureSettingsService.add({ name: 'Dashboard Signature', body: 'Thanks!' });
+
+      const [dashboard, releases] = await Promise.all([
+        app.testAgent.get('/').expect(200),
+        app.testAgent.get('/releases').expect(200),
+      ]);
+      const form = normalizedCreateForm(dashboard.text);
+
+      expect(form).not.toBe('');
+      expect(form).toBe(normalizedCreateForm(releases.text));
+      expect(form).toContain('Option Project One');
+      expect(form).toContain('Option Project Two');
+      expect(form).not.toContain('Option Archived Project');
+      expect(form).toContain('Dashboard Signature');
+      expect(form).toMatch(/name="selectedPlatforms"[^>]*value="x"/);
+      expect(form).toMatch(/name="selectedPlatforms"[^>]*value="bluesky"/);
+      expect(form).not.toMatch(/name="selectedPlatforms"[^>]*value="patreon"/);
+    });
+
+    it('creates exactly one release from a valid Dashboard submission and opens its detail page', async () => {
+      const projectId = await createProject(app, { title: 'Dashboard Create Project' });
+      app.locals.socialPrepSettingsService.setPlatforms(['x', 'bluesky']);
+
+      const res = await postRelease({
+        projectId: String(projectId),
+        title: 'Dashboard Created Release',
+        plannedDate: '2026-11-20',
+        plannedTime: '09:30',
+        selectedPlatformsPresent: '1',
+        selectedPlatforms: 'x',
+        returnTo: '/',
+      }).expect(302);
+
+      const release = db.prepare('SELECT id, project_id, planned_date, planned_time, published_date FROM releases WHERE title = ?')
+        .all('Dashboard Created Release');
+      expect(release).toHaveLength(1);
+      expect(res.headers.location).toBe(`/releases/${release[0].id}`);
+      expect(release[0]).toMatchObject({ project_id: projectId, planned_date: '2026-11-20', planned_time: '09:30', published_date: null });
+    });
+
+    it('re-renders the Dashboard with only the New Release dialog open, keeping the draft and field errors', async () => {
+      const projectId = await createProject(app, { title: 'Dashboard Draft Project' });
+      app.locals.socialPrepSettingsService.setPlatforms(['x', 'bluesky']);
+
+      const res = await postRelease({
+        projectId: String(projectId),
+        title: '',
+        description: 'Draft description kept',
+        notes: 'Draft notes kept',
+        noSetReleaseDate: '1',
+        retainedPlannedDate: '2026-12-01',
+        retainedPlannedTime: '18:45',
+        selectedPlatformsPresent: '1',
+        selectedPlatforms: ['bluesky'],
+        returnTo: '/',
+      }).expect(422);
+      const dialog = extractReleaseCreateDialog(res.text);
+      const titleInput = dialog.match(/<input type="text" id="[^"]*title"[^>]*>/)?.[0] || '';
+
+      expect(countReleases('')).toBe(0);
+      expect(res.text).toContain('<h1 class="app-section-title">Dashboard</h1>');
+      expect(res.text).toContain('<div class="dashboard" data-dashboard ');
+      expect(res.text).not.toContain('Create Release</h1>');
+      expect(isDialogOpen(dialog)).toBe(true);
+      expect(isDialogOpen(extractProjectCreateDialog(res.text))).toBe(false);
+      expect(findDuplicateIds(res.text)).toEqual([]);
+      expect(findUnresolvedIdReferences(dialog, res.text)).toEqual([]);
+
+      expect(dialog).toContain('<input type="hidden" name="returnTo" value="/">');
+      expect(dialog).toContain('data-release-create-fresh="false" data-release-schedule-defaults="keep"');
+      expect(dialog).toContain('data-dialog-reset-values=');
+      expect(titleInput).toContain(`id="${PREFIX}title"`);
+      expect(titleInput).toContain(`aria-describedby="${PREFIX}title-error" aria-invalid="true"`);
+      expect(dialog).toMatch(new RegExp(`<span class="field-error-message" id="${PREFIX}title-error">[^<]+</span>`));
+      expect(dialog).toContain('Draft description kept</textarea>');
+      expect(dialog).toContain('Draft notes kept</textarea>');
+      expect(dialog).toMatch(new RegExp(`id="${PREFIX}noSetReleaseDate"[^>]*checked`));
+      expect(dialog).toContain('name="retainedPlannedDate" value="2026-12-01"');
+      expect(dialog).toContain('name="retainedPlannedTime" value="18:45"');
+      expect(dialog).toMatch(/name="selectedPlatforms"[^>]*value="bluesky"[^>]*checked/);
+      expect(dialog).not.toMatch(/name="selectedPlatforms"[^>]*value="x"[^>]*checked/);
+      expect(dialog).toMatch(new RegExp(`name="projectId"[^>]*value="${projectId}"[^>]*(?:checked|selected)|value="${projectId}"[^>]*selected`));
+    });
+
+    it('keeps New Release closed when New Project validation re-renders the Dashboard', async () => {
+      const res = await app.testAgent
+        .post('/projects')
+        .type('form')
+        .send({ title: '', status: 'tbd', projectType: 'images', priority: 'normal', returnTo: '/', _csrf: app.testCsrfToken })
+        .expect(422);
+
+      expect(isDialogOpen(extractProjectCreateDialog(res.text))).toBe(true);
+      expect(isDialogOpen(extractReleaseCreateDialog(res.text))).toBe(false);
+      expect(extractReleaseCreateDialog(res.text)).toContain('data-release-create-fresh="true"');
+      expect(findDuplicateIds(res.text)).toEqual([]);
+    });
+
+    it('leaves the Releases-hosted dialog on its unprefixed ids and /releases return path', async () => {
+      const res = await app.testAgent.get('/releases').expect(200);
+      const dialog = extractReleaseCreateDialog(res.text);
+
+      expect(dialog).toContain('<input type="hidden" name="returnTo" value="/releases">');
+      expect(dialog).toContain('<input type="text" id="title" name="title"');
+      expect(dialog).toContain('data-date-picker-for="plannedDate"');
+      expect(dialog).not.toContain(PREFIX);
+    });
+
+    it('does not treat look-alike or external returnTo values as the Dashboard host', async () => {
+      const projectId = await createProject(app, { title: 'Return Guard Project' });
+
+      for (const returnTo of ['https://evil.example/', '//evil.example/', '/?retain=1', '/projects', '/\\evil.example']) {
+        const res = await postRelease({ projectId: String(projectId), title: '', returnTo }).expect(422);
+        expect(res.text, returnTo).not.toContain('<div class="dashboard" data-dashboard ');
+        expect(res.text, returnTo).not.toContain('<dialog id="release-create-dialog"');
+        expect(res.text, returnTo).not.toContain('evil.example');
+      }
+      expect(countReleases('')).toBe(0);
+    });
+
+    it('rejects a Dashboard submission without a valid CSRF token', async () => {
+      const projectId = await createProject(app, { title: 'Csrf Project' });
+
+      await app.testAgent.post('/releases').type('form')
+        .send({ projectId: String(projectId), title: 'Csrf Release', returnTo: '/' })
+        .expect(403);
+      await app.testAgent.post('/releases').type('form')
+        .send({ _csrf: 'not-the-token', projectId: String(projectId), title: 'Csrf Release', returnTo: '/' })
+        .expect(403);
+
+      expect(countReleases('Csrf Release')).toBe(0);
     });
   });
 

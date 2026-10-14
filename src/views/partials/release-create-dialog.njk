@@ -1,6 +1,6 @@
 {% import "partials/dialog.njk" as dialog %}
 
-{% macro render(releaseCreateForm, csrfToken, configuration, platformOptions, open=false, clockFormat='24h') %}
+{% macro render(releaseCreateForm, csrfToken, configuration, platformOptions, open=false, clockFormat='24h', returnTo='/releases', fieldIdPrefix='') %}
   {% set values = releaseCreateForm.values %}
   {% set errors = releaseCreateForm.errors %}
   {% set projects = releaseCreateForm.projects %}
@@ -18,7 +18,7 @@
       <form id="release-create-form" method="post" action="/releases" class="app-dialog-form project-form project-edit-dialog-form"
             data-dialog-form data-dialog-async="false" data-dialog-reset-on-close{% if releaseCreateForm.resetValues %} data-dialog-reset-values="{{ releaseCreateForm.resetValues | dump }}"{% endif %} data-release-create-fresh="{{ 'true' if releaseCreateForm.isFreshCreate else 'false' }}" data-release-schedule-defaults="{{ 'fresh' if releaseCreateForm.scheduleDefaulted else 'keep' }}" novalidate>
         <input type="hidden" name="_csrf" value="{{ csrfToken }}">
-        <input type="hidden" name="returnTo" value="{{ releaseCreateForm.selectedAssetsReturnTo or releaseCreateForm.invocationReturnTo or '/releases' }}"{% if releaseCreateForm.selectedAssetsReturnTo or releaseCreateForm.invocationReturnTo %} data-dialog-return-location{% endif %}>
+        <input type="hidden" name="returnTo" value="{{ releaseCreateForm.selectedAssetsReturnTo or releaseCreateForm.invocationReturnTo or returnTo }}"{% if releaseCreateForm.selectedAssetsReturnTo or releaseCreateForm.invocationReturnTo %} data-dialog-return-location{% endif %}>
         {% if releaseCreateForm.selectedAssetsFlow %}
           <input type="hidden" name="releaseCreateFlow" value="selected-assets">
         {% endif %}

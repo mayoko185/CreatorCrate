@@ -14,7 +14,7 @@ import { createReleaseRepository } from '../src/data/release-repository.js';
 import { createReleaseService } from '../src/services/release-service.js';
 import { getLocalTodayIso } from '../src/util/date.js';
 import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
-import { buildCreateReleaseFormModel } from '../src/routes/releases.js';
+import { buildCreateReleaseFormModel } from '../src/routes/release-create-form.js';
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 

@@ -6,12 +6,16 @@ export function createIndexRouter({
   workflowQueryService,
   pageDefaultsService,
   tagService,
+  projectService,
 } = {}) {
   if (!pageDefaultsService) {
     throw new Error('createIndexRouter requires a pageDefaultsService dependency.');
   }
   if (!tagService) {
     throw new Error('createIndexRouter requires a tagService dependency.');
+  }
+  if (!projectService) {
+    throw new Error('createIndexRouter requires a projectService dependency.');
   }
 
   const router = express.Router();
@@ -22,6 +26,7 @@ export function createIndexRouter({
       workflowQueryService,
       pageDefaultsService,
       tagService,
+      projectService,
       retainedReleaseIds: parseRetainedReleaseIds(req.query.retain),
     });
   });

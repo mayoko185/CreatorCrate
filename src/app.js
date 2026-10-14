@@ -1054,6 +1054,7 @@ export function createApp({ appName, db, projectsRoot, previewRoot }, opts = {})
     workflowQueryService,
     pageDefaultsService,
     tagService,
+    projectService,
   }));
   app.use('/health', healthRouter);
   app.use('/projects', createProjectsRouter({

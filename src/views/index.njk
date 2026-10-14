@@ -2,6 +2,8 @@
 {% import "partials/page-heading.njk" as pageHeading %}
 {% import "partials/icons.njk" as icons %}
 {% import "partials/project-create-dialog.njk" as projectCreateDialog %}
+{% import "partials/release-create-dialog.njk" as releaseCreateDialog %}
+{% import "partials/release-signatures-dialog.njk" as releaseSignaturesDialog %}
 {% import "partials/dashboard-thumbnail.njk" as dashboardThumbnail %}
 {% import "partials/dashboard-needs-date-item.njk" as needsDateItem %}
 {% import "partials/dashboard-release-row.njk" as releaseRow %}
@@ -15,7 +17,7 @@
   {% set tiles = dashboard.tiles %}
 
   {% call pageHeading.render() %}
-    <a class="button button-secondary" href="/releases/new">New Release</a>
+    <a class="button button-secondary" href="/releases/new" data-dialog-open="release-create-dialog">New Release</a>
     <a class="button button-primary" href="/projects/new" data-dialog-open="project-create-dialog">New Project</a>
   {% endcall %}
   <p class="dashboard-today"><time datetime="{{ dashboard.today }}">{{ dashboard.todayLabel }}</time></p>
@@ -190,4 +192,6 @@
 
 {% block overlay %}
   {{ projectCreateDialog.render(projectCreateForm, '/', _csrf, projectCreateDialogOpen) }}
+  {{ releaseCreateDialog.render(releaseCreateForm, _csrf, releaseSignatureConfiguration, platformChoices, releaseCreateDialogOpen, clockFormat, '/', 'release-create-field-') }}
+  {{ releaseSignaturesDialog.render(releaseSignatureConfiguration, _csrf) }}
 {% endblock %}
