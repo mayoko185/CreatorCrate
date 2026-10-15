@@ -34,10 +34,26 @@
   {% endcall %}
 {% endmacro %}
 
-{% macro releaseListCard(asset, clockFormat) %}
-  {% call(slot) assetCards.listCard(asset, { cardClass: 'asset-list-card--release', headerStatusDetails: true, hideActions: true, clockFormat: clockFormat }) %}
-    {% if slot == 'associations' %}
-      {{ releaseAssetMetadata(asset, false) }}
+{# List row — the shared column List, read-only: Order and Role come from
+   the release selection. The title opens the shared list information card,
+   which adds the release Role and stored Order; navigation stays on the
+   thumbnail, the Details action and the card's Open asset action. #}
+{% macro releaseListCard(asset, clockFormat, columns) %}
+  {% set detailId = 'release-asset-list-info-' ~ asset.id %}
+  {% call(slot) assetCards.listCard(asset, { columns: columns, cardClass: 'asset-list-card--release', clockFormat: clockFormat, titleInfoId: detailId }) %}
+    {% if slot == 'order' and asset.releaseContext.sortOrder is not none %}
+      {{ asset.releaseContext.sortOrder }}
+    {% elif slot == 'role' %}
+      {{ (asset.releaseContext.role or 'attachment') | title }}
+    {% elif slot == 'title-info' %}
+      {% call(cardSlot) assetCards.listInfoCard(asset, detailId) %}
+        {% if cardSlot == 'facts' %}
+          <div class="asset-viewer-grid-card-info-row"><dt>Role</dt><dd>{{ (asset.releaseContext.role or 'attachment') | title }}</dd></div>
+          <div class="asset-viewer-grid-card-info-row"><dt>Order</dt><dd>{{ asset.releaseContext.sortOrder if asset.releaseContext.sortOrder is not none else '—' }}</dd></div>
+        {% endif %}
+      {% endcall %}
+    {% elif slot == 'asset' and asset.relative_path %}
+      <code class="asset-list-card-path" title="{{ asset.relative_path }}">{{ asset.relative_path }}</code>
     {% endif %}
   {% endcall %}
 {% endmacro %}
@@ -190,13 +206,16 @@
             {% endfor %}
           </ul>
         {% else %}
+          {% set listColumns = ['order', 'asset', 'category', 'role', 'type', 'presence', 'size', 'modified', 'actions'] %}
+          {% call assetCards.listTable(listColumns, 'Selected release asset table') %}
           <ul class="asset-list asset-list--release" role="list" aria-label="Selected release assets">
             {% for asset in selectedAssets %}
               <li class="asset-list-item{% if not asset.is_present %} is-missing{% endif %}">
-                {{ releaseListCard(asset, clockFormat) }}
+                {{ releaseListCard(asset, clockFormat, listColumns) }}
               </li>
             {% endfor %}
           </ul>
+          {% endcall %}
         {% endif %}
       {% else %}
         {% set emptyHeading = "No assets selected" %}

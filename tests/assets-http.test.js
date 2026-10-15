@@ -22,6 +22,15 @@ import { AssetActionError, UNCATEGORIZED } from '../src/services/asset-action-se
 import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
 import { getDisabledModeCsrf } from './helpers/auth.js';
 import { makeZip } from './helpers/zip-fixture.js';
+import { formatLocalDate, formatLocalTime } from '../src/util/date.js';
+
+// One column List row's markup, from its article to the next row's.
+function listCardHtml(html, assetId) {
+  const start = html.indexOf(`data-asset-id="${assetId}"`);
+  if (start < 0) return '';
+  const next = html.indexOf('<article class="asset-list-card', start);
+  return html.slice(start, next < 0 ? undefined : next);
+}
 import slugify from '@sindresorhus/slugify';
 import { createPngChunk } from '../src/services/workflow-prompt-editor.js';
 
@@ -872,11 +881,90 @@ describe('asset browser HTTP workflow', () => {
     const taggedCard = assetListCardHtml(page.text, tagged.id);
     const untaggedCard = assetListCardHtml(page.text, untagged.id);
 
-    expect(assetTagListHtml(taggedCard, 'asset-tag-list')).toContain('Assigned &lt;Alpha&gt;');
-    expect(assetTagListHtml(taggedCard, 'asset-tag-list')).toContain('Assigned Zebra');
+    // Tags live in the title information card, not under the row title.
+    expect(taggedCard).not.toContain('asset-list-card-tags');
+    const taggedInfo = taggedCard.match(/<div id="project-asset-list-info-\d+"[\s\S]*$/)?.[0] || '';
+    expect(assetTagListHtml(taggedInfo, 'asset-viewer-grid-card-info-tags')).toContain('aria-label="Assigned tags"');
+    expect(assetTagListHtml(taggedInfo, 'asset-viewer-grid-card-info-tags')).toContain('Assigned &lt;Alpha&gt;');
+    expect(assetTagListHtml(taggedInfo, 'asset-viewer-grid-card-info-tags')).toContain('Assigned Zebra');
+    expect(untaggedCard).toContain('No tags assigned');
     expect(taggedCard).not.toContain('Assigned <Alpha>');
     expect(untaggedCard).not.toContain('Assigned &lt;Alpha&gt;');
     expect(untaggedCard).not.toContain('Assigned Zebra');
+  });
+
+  it('renders the List title as a Dashboard trigger paired with the asset information card', async () => {
+    const res = await createProject('Asset List Info Card');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Asset List Info Card');
+    fs.mkdirSync(path.join(projectDir, 'art'), { recursive: true });
+    const image = writeIndexedAsset(id, projectDir, 'art/cover.png', await makePng());
+    const video = writeIndexedAsset(id, projectDir, 'clip.mp4', Buffer.from('video'), {
+      extension: 'mp4', mimeType: 'video/mp4',
+    });
+    const assignedTag = app.locals.tagService.createTag({ name: 'Card Assigned' });
+    const inheritedTag = app.locals.tagService.createTag({ name: 'Card Inherited' });
+    app.locals.projectTagService.replaceProjectTags(id, [inheritedTag.id]);
+    app.locals.assetTagService.replaceAssetTags(image.id, [assignedTag.id]);
+    const releaseId = await createReleaseUsingAsset(id, image.id, 'Card Release');
+
+    const page = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
+    const imageCard = assetListCardHtml(page.text, image.id);
+    const videoCard = assetListCardHtml(page.text, video.id);
+    const detailId = `project-asset-list-info-${image.id}`;
+
+    expect(imageCard).toMatch(new RegExp(`<div class="dashboard-title-info asset-list-card-title-info" data-dashboard-title-info>\\s*<h2 class="asset-list-card-title">\\s*<button class="dashboard-title-trigger dashboard-truncate" type="button" data-calendar-info-trigger aria-controls="${detailId}" aria-expanded="false">cover</button>\\s*</h2>`));
+    const info = imageCard.match(new RegExp(`<div id="${detailId}"[\\s\\S]*$`))?.[0] || '';
+    expect(info).toContain('data-calendar-info-card popover="manual"');
+    expect(info).toContain('calendar-release-info--with-media');
+    expect(info).toMatch(new RegExp(`<a class="button button-small button-secondary" href="/projects/${id}/assets/${image.id}[?"][^>]*>Open asset</a>`));
+    expect(info).toContain('<h3 class="asset-viewer-grid-card-info-heading asset-list-info-filename">cover.png</h3>');
+    expect(info).toContain('<dd class="asset-list-info-path">art/cover.png</dd>');
+    expect(info).toContain('<dt>Presence</dt><dd>Present</dd>');
+    expect(info).toContain('<dt>Type</dt><dd>PNG (.png)</dd>');
+    expect(info).toMatch(/<dt>Modified<\/dt><dd>(?!—)[^<]+<\/dd>/);
+    expect(info).toMatch(/aria-label="Assigned tags">\s*<li>Card Assigned<\/li>/);
+    expect(info).toMatch(/aria-label="Tags inherited from the project">\s*<li>Card Inherited <span class="asset-tag-origin"><span class="sr-only">Inherited from <\/span>Project<\/span><\/li>/);
+    expect(info).toMatch(new RegExp(`<a href="/releases/${releaseId}">Card Release</a>\\s*<span class="release-role">Attachment</span>`));
+
+    // Videos keep their row playback trigger; the card states the preview
+    // and never loads the video itself.
+    const videoInfo = videoCard.match(/<div id="project-asset-list-info-\d+"[\s\S]*$/)?.[0] || '';
+    expect(videoCard).toContain('data-asset-video-preview-trigger');
+    expect(videoInfo).not.toContain('calendar-release-info--with-media');
+    expect(videoInfo).not.toMatch(/<(?:video|img)\b/);
+    expect(videoInfo).toContain('<dt>Preview</dt><dd>MP4 video — play it from the row thumbnail</dd>');
+    expect(videoInfo).toContain('No tags assigned');
+    expect(videoInfo).toContain('Not used by a release');
+
+    // Grid cards keep their own asset information popover.
+    const grid = await agent.get(`/projects/${id}/assets?view=grid`).expect(200);
+    expect(grid.text).not.toContain('data-dashboard-title-info');
+    expect(grid.text).toContain('data-asset-info-card');
+  });
+
+  it('keeps the List information card for missing and archived Project Assets', async () => {
+    const res = await createProject('Asset List Info Archived');
+    const id = Number(res.headers.location.replace('/projects/', ''));
+    const projectDir = getProjectDir('Asset List Info Archived');
+    const present = writeIndexedAsset(id, projectDir, 'kept.png', await makePng());
+    const missing = writeIndexedAsset(id, projectDir, 'gone.png', await makePng());
+    db.prepare('UPDATE assets SET is_present = 0 WHERE id = ?').run(missing.id);
+
+    const live = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
+    const missingInfo = assetListCardHtml(live.text, missing.id).match(/<div id="project-asset-list-info-\d+"[\s\S]*$/)?.[0] || '';
+    expect(missingInfo).not.toContain('calendar-release-info--with-media');
+    expect(missingInfo).toContain('<dt>Preview</dt><dd>File missing at last scan</dd>');
+    expect(missingInfo).toContain('<dt>Presence</dt><dd>Missing at last scan</dd>');
+
+    await agent.post(`/projects/${id}/archive`).send('_csrf=' + encodeURIComponent(csrfToken)).expect(302);
+    const archived = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
+    const archivedCard = assetListCardHtml(archived.text, present.id);
+    expect(archivedCard).toContain('data-calendar-info-trigger');
+    expect(archivedCard).toContain('>Open asset</a>');
+    expect(archivedCard).not.toContain('data-asset-selectable-card');
+    expect(archivedCard).not.toContain('data-asset-rename-trigger');
+    expect(archived.text).not.toContain('name="selectedAssetIds"');
   });
 
   it('filters project assets by one reusable tag, preserves uniqueness and pagination, and renders catalog options', async () => {
@@ -2777,8 +2865,25 @@ describe('asset browser HTTP workflow', () => {
     const viewer = await agent.get(`/projects/${id}/assets/${asset.id}`).expect(200);
     expect(library.text).toContain('2026-08-01T1:05:42.000 PM Z');
     expect(library.text).toContain('2026-08-02 1:05:42 PM');
-    expect(projectAssets.text).toContain('2026-08-01T1:05:42.000 PM Z');
-    expect(projectAssets.text).toContain('2026-08-02 1:05:42 PM');
+    // The Project Assets List Modified column shows the same formatted value
+    // as the row's information card; a missing timestamp keeps the muted dash.
+    const undatedAsset = writeIndexedAsset(id, projectDir, 'undated.png', 'png');
+    db.prepare('UPDATE assets SET modified_at = NULL WHERE id = ?').run(undatedAsset.id);
+    for (const preference of ['12h', '24h']) {
+      app.locals.clockFormatSettingsService.setClockFormat(preference);
+      const listed = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
+      for (const [row, stored] of [[asset, modifiedAt], [legacyAsset, '2026-08-02 13:05:42']]) {
+        const date = new Date(stored);
+        const expected = `${formatLocalDate(date)} ${formatLocalTime(date, preference)}`;
+        const card = listCardHtml(listed.text, row.id);
+        expect(card).toMatch(new RegExp(`asset-list-cell--modified[^"]*">\\s*<dt>Modified</dt>\\s*<dd>${expected}</dd>`));
+        expect(card).toContain(`<dt>Modified</dt><dd>${expected}</dd>`);
+        expect(card).not.toContain(stored);
+      }
+      expect(listCardHtml(listed.text, undatedAsset.id)).toMatch(
+        /asset-list-cell--modified[^"]*">\s*<dt>Modified<\/dt>\s*<dd><span class="dashboard-muted">—<\/span><\/dd>/);
+    }
+    app.locals.clockFormatSettingsService.setClockFormat('12h');
     expect(viewer.text).toContain('<dt>Last seen</dt>');
     expect(viewer.text).toMatch(/<dt>Last seen<\/dt>\s*<dd>2026-08-01 1:05:42 PM<\/dd>/);
     expect(viewer.text).toMatch(/<dt>Missing since<\/dt>\s*<dd>2026-08-01 1:05:42 PM<\/dd>/);
@@ -3823,11 +3928,14 @@ describe('asset browser HTTP workflow', () => {
 
     const res2 = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
 
-    expect(res2.text).toContain('class="asset-list-card-media" data-preview-enhancement data-preview-state="loading"');
+    expect(res2.text).toContain('class="asset-list-card-media dashboard-thumb" data-preview-enhancement data-preview-state="loading"');
     expect(res2.text).toContain('data-preview-image');
     expect(res2.text).toContain('data-preview-fallback hidden>');
-    expect((res2.text.match(/data-preview-image/g) || []).length).toBe(1);
-    expect((res2.text.match(/data-preview-fallback/g) || []).length).toBe(1);
+    // One hook set for the row thumbnail and one for the information card's
+    // larger preview.
+    expect((res2.text.match(/data-preview-image/g) || []).length).toBe(2);
+    expect((res2.text.match(/data-preview-fallback/g) || []).length).toBe(2);
+    expect(res2.text).toMatch(/class="calendar-release-info-media" data-preview-enhancement data-preview-state="loading">\s*<img class="calendar-release-info-image"[^>]*data-preview-image src="[^"]+"[^>]*loading="lazy"/);
   });
 
   it('does not add image-loading behavior for unsupported binary assets in project list cards', async () => {
@@ -4043,8 +4151,8 @@ describe('asset browser HTTP workflow', () => {
     expect(res.headers['content-type']).toMatch(/text\/css/);
     expect(style).toMatch(/\.sr-only\s*\{[^}]*position:\s*absolute[^}]*width:\s*1px[^}]*height:\s*1px[^}]*overflow:\s*hidden/);
     expect(style).toMatch(/\.pagination-prev:focus-visible,\s*\.pagination-next:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--focus-ring\)/);
-    expect(style).toMatch(/\.asset-list-card--project\s+\.asset-list-card-top\s*\{[^}]*pointer-events:\s*none/);
-    expect(style).toMatch(/\.asset-list-card--project\s+\.asset-list-card-top\s+\.asset-selection-control\s*\{[^}]*pointer-events:\s*auto/);
+    expect(style).toMatch(/\.asset-list-table \.asset-list \.asset-list-card\[data-asset-selectable-card\]\s*\{[^}]*cursor:\s*pointer/);
+    expect(style).toMatch(/\.asset-list-table \.asset-list-item\[data-auto-rename-asset\]:focus-visible,[^{]*\{[^}]*outline-offset:\s*-2px/);
   });
 
   it('renders viewer preview frame with contained image and responsive max-height', async () => {
@@ -4229,7 +4337,8 @@ describe('asset browser HTTP workflow', () => {
     expect(card).toContain('value="bad/name"');
     expect(card).toContain('aria-label="New basename for scene.v2.kra"');
     expect(card).not.toContain('row-rename-form');
-    expect(card).not.toContain('asset-list-card-actions');
+    expect(card).toContain('data-asset-rename-scope');
+    expect(card).toMatch(/<div class="asset-list-card-actions">[\s\S]*?data-asset-rename-trigger/);
     expect(fs.existsSync(path.join(projectDir, 'scene.v2.kra'))).toBe(true);
     expect(fs.existsSync(path.join(projectDir, 'bad', 'name.kra'))).toBe(false);
   });
@@ -5348,8 +5457,16 @@ describe('asset browser HTTP workflow', () => {
     expect(singleCard).toContain('>Solo Release</a>');
     expect(singleCard).toContain('aria-label="Used in release Solo Release (Attachment)"');
 
-    expect(multiCard).toContain('data-asset-release-membership');
+    // The Releases column keeps the compact indicator and count; titles and
+    // roles are in the title information card.
+    expect(multiCard).not.toContain('data-asset-release-membership');
     expect(multiCard).toContain('aria-label="Used in 2 releases"');
+    expect(multiCard).toContain('<span class="asset-list-card-release-count" aria-hidden="true">2</span>');
+    expect(noneCard).not.toContain('asset-list-card-release-count');
+    const multiInfo = multiCard.match(/<ul class="asset-list-info-releases"[\s\S]*?<\/ul>/)?.[0] || '';
+    expect(multiInfo).toMatch(/>Release One<\/a>\s*<span class="release-role">Attachment<\/span>/);
+    expect(multiInfo).toMatch(/>Release Two<\/a>\s*<span class="release-role">Attachment<\/span>/);
+    expect(noneCard).toContain('Not used by a release');
     expect(multiCard).toContain(`href="/releases/${firstMultiReleaseId}"`);
     expect(multiCard).toContain(`href="/releases/${secondMultiReleaseId}"`);
     expect(multiCard).toContain('>Release One</a>');

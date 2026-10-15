@@ -233,7 +233,60 @@
   </li>
 {% endmacro %}
 
-{% macro assetListCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, canReorderCategory, autoRenameInitialIndex, autoRenameTotal, clockFormat) %}
+{#
+  Project Assets title information card: the shared list information card
+  (assetPresentation.listInfoCard) plus the project's tag and release
+  sections.
+#}
+{% macro assetListInfoCard(asset, detailId) %}
+  {% set effectiveTags = asset.effectiveTags if asset.effectiveTags is defined else asset.tags %}
+  {% set inheritedTags = [] %}
+  {% for tag in effectiveTags or [] %}
+    {% if tag.origin == 'inherited' %}{% set _ = inheritedTags.push(tag) %}{% endif %}
+  {% endfor %}
+  {% set releases = asset.releaseSummary.releases if asset.releaseSummary else [] %}
+  {% call(slot) assetPresentation.listInfoCard(asset, detailId) %}
+    {% if slot == 'sections' %}
+      <div class="asset-viewer-grid-card-info-section">
+        <span class="asset-viewer-grid-card-info-section-label">Tags</span>
+        {% if asset.tags and asset.tags.length > 0 %}
+          <ul class="asset-viewer-grid-card-info-tags" aria-label="Assigned tags">
+            {% for tag in asset.tags %}<li>{{ tag.displayName }}</li>{% endfor %}
+          </ul>
+        {% else %}
+          <span class="asset-viewer-grid-card-info-empty">No tags assigned</span>
+        {% endif %}
+      </div>
+      <div class="asset-viewer-grid-card-info-section">
+        <span class="asset-viewer-grid-card-info-section-label">Inherited tags</span>
+        {% if inheritedTags.length > 0 %}
+          <ul class="asset-viewer-grid-card-info-tags" aria-label="Tags inherited from the project">
+            {% for tag in inheritedTags %}<li>{{ tag.displayName }} <span class="asset-tag-origin"><span class="sr-only">Inherited from </span>Project</span></li>{% endfor %}
+          </ul>
+        {% else %}
+          <span class="asset-viewer-grid-card-info-empty">No inherited tags</span>
+        {% endif %}
+      </div>
+      <div class="asset-viewer-grid-card-info-section">
+        <span class="asset-viewer-grid-card-info-section-label">Releases</span>
+        {% if releases.length > 0 %}
+          <ul class="asset-list-info-releases" aria-label="Associated releases">
+            {% for usage in releases %}
+              <li>
+                <a href="/releases/{{ usage.release_id }}">{{ usage.title }}</a>{% if usage.release_archived_at %} <span class="asset-list-info-release-meta">(archived)</span>{% endif %}
+                <span class="release-role">{{ usage.role | title }}</span>
+              </li>
+            {% endfor %}
+          </ul>
+        {% else %}
+          <span class="asset-viewer-grid-card-info-empty">Not used by a release</span>
+        {% endif %}
+      </div>
+    {% endif %}
+  {% endcall %}
+{% endmacro %}
+
+{% macro assetListCard(asset, isArchived,submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, canReorderCategory, autoRenameInitialIndex, autoRenameTotal, clockFormat, columns) %}
   {% set renameAttempt = renameFailure and renameFailure.assetId == asset.id %}
   {% set selectionLabel = asset.relative_path or asset.filename %}
   {% set selected = not isArchived and asset.is_present and (asset.id ~ '') in submittedSelectedAssetIds %}
@@ -249,22 +302,21 @@
       aria-label="Reorder {{ asset.filename }}"
       aria-describedby="auto-rename-instructions"{% endif %}>
     {% call(slot) assetPresentation.listCard(asset, {
+      columns: columns,
       clockFormat: clockFormat,
       cardClass: 'asset-list-card--project',
-      projectLayout: true,
-      headerStatusDetails: true,
       titleControls: true,
       filenameLink: false,
       titleRowHidden: renameAttempt,
-      hideActions: true,
       selected: selected,
       selectable: not isArchived and asset.is_present,
       mediaContextLabel: project.title,
       nsfwBlur: asset.nsfwBlur,
       previewSlideshowAssetId: asset.id,
-      detailsPresenceStatus: true
+      detailsPresenceStatus: true,
+      titleInfoId: 'project-asset-list-info-' ~ asset.id
     }) %}
-      {% if slot == 'top' %}
+      {% if slot == 'select' %}
         {% if not isArchived %}
           {% if asset.is_present %}
             <label class="asset-selection-control{% if selected %} is-selected{% endif %}" for="asset-list-card-select-{{ asset.id }}">
@@ -282,45 +334,25 @@
             </label>
           {% endif %}
         {% endif %}
-        {% if canReorderCategory %}
-          <span class="auto-rename-order-indicator" data-auto-rename-order-indicator>{{ autoRenameInitialIndex + 1 }} of {{ autoRenameTotal }}</span>
-        {% endif %}
-      {% elif slot == 'status' %}
-        <span class="asset-list-card-release-usage">{{ releaseUsageInline(asset, false) }}</span>
-      {% elif slot == 'title-row' %}
-        {% if not isArchived and asset.is_present %}
-          <a class="button button-small asset-rename-trigger" data-asset-rename-trigger
-             href="{{ asset.viewerUrl }}" aria-label="Rename {{ asset.filename }}">Rename</a>
-        {% endif %}
+      {% elif slot == 'order' %}
+        <span class="auto-rename-order-indicator" data-auto-rename-order-indicator>{{ autoRenameInitialIndex + 1 }} of {{ autoRenameTotal }}</span>
       {% elif slot == 'title-controls' %}
         {% if not isArchived and asset.is_present %}
           {{ renderAssetRenameEditor(project, asset, context, contextFields, renameAttempt, renameFailure, _csrf) }}
         {% endif %}
-      {% elif slot == 'associations' %}
-        <div class="asset-list-card-associations">
-          {% if asset.releaseSummary and asset.releaseSummary.releases and asset.releaseSummary.releases.length > 0 %}
-            <section class="asset-list-card-association asset-list-card-association--releases">
-               <h3 class="asset-list-card-association-label">Releases</h3>
-              <div class="asset-list-card-association-content">
-                {{ releaseMembership(asset) }}
-              </div>
-            </section>
-          {% endif %}
-          <section class="asset-list-card-association asset-list-card-association--tags">
-            <h3 class="asset-list-card-association-label">Tags</h3>
-            <div class="asset-list-card-association-content">
-              {% if asset.tags and asset.tags.length > 0 %}
-                <ul class="asset-tag-list asset-list-card-tags" aria-label="Assigned tags">
-                  {% for tag in asset.tags %}
-                    <li>{{ tag.displayName }}</li>
-                  {% endfor %}
-                </ul>
-              {% else %}
-                <span class="asset-list-card-empty">None assigned</span>
-              {% endif %}
-            </div>
-          </section>
-        </div>
+      {% elif slot == 'title-info' %}
+        {{ assetListInfoCard(asset, 'project-asset-list-info-' ~ asset.id) }}
+      {% elif slot == 'releases' %}
+        {# Release titles and roles are in the title information card. #}
+        <span class="asset-list-card-release-usage">{{ releaseUsageInline(asset, false) }}</span>
+        {% if asset.releaseSummary and asset.releaseSummary.count > 0 %}
+          <span class="asset-list-card-release-count" aria-hidden="true">{{ asset.releaseSummary.count }}</span>
+        {% endif %}
+      {% elif slot == 'actions' %}
+        {% if not isArchived and asset.is_present %}
+          <a class="button button-small button-secondary asset-rename-trigger" data-asset-rename-trigger
+             href="{{ asset.viewerUrl }}" aria-label="Rename {{ asset.filename }}">Rename</a>
+        {% endif %}
       {% endif %}
     {% endcall %}
   </li>
@@ -838,11 +870,18 @@
             {% endfor %}
           </ul>
         {% elif filters.view == 'list' %}
+          {# Select and Order appear only where selection (not archived) and
+             category ordering are available. #}
+          {% set listColumns = ([] if isArchived else ['select'])
+            .concat(['order'] if categoryCapabilities.canReorderCategory else [])
+            .concat(['asset', 'category', 'type', 'presence', 'releases', 'size', 'modified', 'actions']) %}
+          {% call assetPresentation.listTable(listColumns, 'Project asset table') %}
           <ul class="asset-list asset-list--project" role="list" aria-label="Project assets" data-list-size="large">
             {% for asset in assets %}
-              {{ assetListCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, categoryCapabilities.canReorderCategory, loop.index0, assets.length, clockFormat) }}
+              {{ assetListCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, categoryCapabilities.canReorderCategory, loop.index0, assets.length, clockFormat, listColumns) }}
             {% endfor %}
           </ul>
+          {% endcall %}
         {% endif %}
       {% endif %}
 

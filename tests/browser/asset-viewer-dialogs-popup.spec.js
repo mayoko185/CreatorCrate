@@ -523,7 +523,9 @@ test('Release detail aligns selected grid, list, and empty states with the share
 
       await page.getByRole('link', { name: 'List view' }).click();
       await expect(page).toHaveURL(new RegExp(`/releases/${fixture.releaseId}\\?view=list$`));
-      await expectReleaseDetailAssetAlignment(page, '.asset-list-item');
+      // The List rows sit inside the Dashboard panel; the panel is the
+      // surface aligned with the content anchor.
+      await expectReleaseDetailAssetAlignment(page, '.asset-list-panel');
 
       await page.goto(`${fixture.baseURL}/releases/${fixture.emptyReleaseId}`, { waitUntil: 'domcontentloaded' });
       await expect(page.locator('[data-selected-assets] .empty-state-heading')).toHaveText('No assets selected');

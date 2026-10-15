@@ -682,7 +682,7 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       const css = STYLESHEET;
       expect(css).toMatch(/\.asset-select-checkbox\s*\{[^}]*position:\s*absolute[\s\S]*?inset:\s*0[\s\S]*?width:\s*100%[\s\S]*?height:\s*100%/);
       expect(css).toMatch(/\.asset-card\.is-selected\s*\{[^}]*box-shadow:/);
-      expect(css).toMatch(/\.asset-list-card--release \.asset-list-card-top\s*\{[^}]*position:\s*absolute/);
+      expect(css).toMatch(/\.asset-list-table \.asset-list \.asset-list-card\.is-selected\s*\{[^}]*box-shadow:\s*inset/);
       expect(css).toMatch(/\.release-asset-card-detail\s*\{[^}]*overflow-wrap/);
     });
 

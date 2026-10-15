@@ -1348,6 +1348,29 @@ function releaseAssetsResultingMembership(selectionState) {
   return selected;
 }
 
+// List information cards render the server's membership. Rewrite each from
+// the draft: a pending change is marked unsaved, stored Role/Order are hidden
+// for an unsaved addition (they belong to no saved membership) and relabelled
+// as saved values while a saved selection is pending removal.
+function syncReleaseAssetsMembershipInfo(region, selectionState) {
+  const selected = releaseAssetsResultingMembership(selectionState);
+  region.querySelectorAll?.('[data-release-asset-membership-info]')?.forEach?.((info) => {
+    const assetId = String(info.getAttribute?.('data-release-asset-id') ?? '');
+    const status = info.querySelector?.('[data-release-asset-membership-status]');
+    if (!/^[1-9]\d*$/.test(assetId) || !status) return;
+    const draftSelected = selected.has(assetId);
+    const savedSelected = selectionState.authoritativeSelected.has(assetId);
+    const pending = draftSelected !== savedSelected;
+    status.textContent = `${draftSelected ? 'Selected' : 'Not selected'}${pending ? ' (unsaved)' : ''}`;
+    info.parentElement?.querySelectorAll?.('[data-release-asset-stored-fact]')?.forEach?.((fact) => {
+      fact.hidden = !savedSelected;
+      const label = fact.querySelector?.('[data-release-asset-stored-fact-label]');
+      const name = label?.getAttribute?.('data-release-asset-stored-fact-label');
+      if (label && name) label.textContent = pending ? `Saved ${name.toLowerCase()}` : name;
+    });
+  });
+}
+
 function reconcileReleaseAssetsSelection(state, region = releaseAssetsLiveEngine.getRegion(state.document)) {
   const selectionState = state.releaseAssetsSelection;
   if (!selectionState) return;
@@ -1374,6 +1397,7 @@ function reconcileReleaseAssetsSelection(state, region = releaseAssetsLiveEngine
       return input;
     });
   hiddenContainer.replaceChildren(...hiddenInputs);
+  syncReleaseAssetsMembershipInfo(region, selectionState);
 
   // Keep the reviewed checkbox/card path responsible for styling, aria state,
   // and idempotent interaction binding after every replacement.
@@ -1428,6 +1452,7 @@ function updateReleaseAssetsAuthoritativeMembership(state, parsed, nextRegion) {
 function enhanceReleaseAssetsLiveRegion(region) {
   enhancePreviewMedia(region);
   enhanceAssetViewerInfoCards(region);
+  enhanceDashboardTitleInfoCards(region);
   enhanceNumberInputs(region);
   enhanceAssetSelection(liveRegionDocument(region));
   enhanceAssetGridSize(region);
@@ -1695,6 +1720,7 @@ function reconcileProjectAssetsManualScanContext(state, parsed) {
 function enhanceProjectAssetsLiveRegion(region) {
   enhancePreviewMedia(region);
   enhanceAssetViewerInfoCards(region);
+  enhanceDashboardTitleInfoCards(region);
   enhanceNumberInputs(region);
   enhanceAssetSelection(region);
   enhanceAssetRenames(region);

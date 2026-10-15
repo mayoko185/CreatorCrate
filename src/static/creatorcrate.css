@@ -3502,140 +3502,7 @@
         }
       }
 
-      /* ── Project asset list-card modifiers ── */
-      .asset-list--project {
-        min-width: 0;
-        max-width: 100%;
-      }
-      .asset-list-card--project {
-        position: relative;
-      }
-      .asset-list-card--release {
-        position: relative;
-      }
-      .asset-list-card--release.is-selected {
-        border-color: var(--accent);
-        box-shadow: inset 0 0 0 2px var(--accent), var(--shadow-md);
-      }
-      .asset-list-card--release[data-asset-selectable-card] {
-        cursor: pointer;
-      }
-      .asset-list-card--release .asset-list-card-top {
-        position: absolute;
-        inset-block-start: var(--space-sm);
-        inset-inline-start: var(--space-sm);
-        z-index: 1;
-        display: flex;
-        align-items: flex-start;
-        min-width: 0;
-        pointer-events: none;
-      }
-      .asset-list-card--release .asset-list-card-top .asset-selection-control {
-        pointer-events: auto;
-      }
-      .asset-list-card--project.is-selected {
-        border-color: var(--accent);
-        box-shadow: inset 0 0 0 2px var(--accent), var(--shadow-md);
-      }
-      .asset-list-card--project[data-asset-selectable-card] {
-        cursor: pointer;
-      }
-      .asset-list-card--project[data-asset-card-navigation] {
-        cursor: pointer;
-      }
-      .asset-list-card--project .asset-list-card-top {
-        position: absolute;
-        inset-block-start: var(--space-sm);
-        inset-inline: var(--space-sm);
-        z-index: 2;
-        display: flex;
-        align-items: flex-start;
-        justify-content: space-between;
-        gap: var(--space-sm);
-        min-width: 0;
-        pointer-events: none;
-      }
-      .asset-list-card--project .asset-list-card-top-selection {
-        display: flex;
-        align-items: center;
-        gap: var(--space-xs);
-        min-width: 0;
-        pointer-events: none;
-      }
-      .asset-list-card--project .asset-list-card-top .asset-selection-control {
-        pointer-events: auto;
-      }
-      .asset-list-card--project .asset-list-card-body {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr);
-        grid-template-areas:
-          "identity"
-          "metadata"
-          "associations";
-        align-content: start;
-        gap: var(--space-md);
-        min-width: 0;
-      }
-      .asset-list-card--project .asset-list-card-identity {
-        grid-area: identity;
-        min-width: 0;
-      }
-      .asset-list-card--project .asset-list-card-header {
-        column-gap: var(--space-md);
-      }
-      .asset-list-card--project .asset-list-card-heading {
-        flex: 1 1 auto;
-      }
-      .asset-list-card--project .asset-list-card-status {
-        flex: 0 0 auto;
-        align-items: center;
-        max-width: 100%;
-        margin-inline-start: auto;
-        flex-wrap: nowrap;
-      }
-      .asset-list-card--project .asset-card-title-controls {
-        min-width: 0;
-      }
-      .asset-list-card--project .asset-card-title-row {
-        align-items: center;
-      }
-      .asset-list-card--project .asset-list-card-title-control-row {
-        display: flex;
-        align-items: center;
-        gap: var(--space-md);
-        width: 100%;
-        min-width: 0;
-        max-width: 100%;
-      }
-      .asset-list-card--project .asset-card-title-row {
-        flex: 1 1 auto;
-        min-width: 0;
-      }
-      .asset-list-card--project .asset-card-title-row .asset-rename-trigger {
-        flex: 0 0 auto;
-        height: 1.75rem;
-        min-height: 1.75rem;
-        line-height: 1;
-      }
-      .asset-list-card--project .asset-list-card-status .asset-indicator,
-      .asset-list-card--project .asset-list-card-status .asset-details-link {
-        flex: 0 0 1.75rem;
-        width: 1.75rem;
-        height: 1.75rem;
-        min-height: 1.75rem;
-        line-height: 1;
-      }
-      .asset-list-card--project .asset-list-card-status > .asset-list-card-presence,
-      .asset-list-card--project .asset-list-card-status > .asset-list-card-release-usage {
-        display: flex;
-        flex: 0 0 1.75rem;
-        align-items: center;
-        justify-content: center;
-        width: 1.75rem;
-        height: 1.75rem;
-        min-height: 1.75rem;
-        line-height: 1;
-      }
+      /* ── Project asset Grid details link ── */
       .asset-card--project .asset-details-link,
       .asset-list-card--project .asset-list-card-status .asset-details-link {
         flex-basis: 2rem;
@@ -3648,228 +3515,335 @@
         width: 1.25rem;
         height: 1.25rem;
       }
-      .asset-list-card--project .asset-card-title-row .asset-list-card-title {
-        flex: 1 1 auto;
-        min-width: 0;
-        overflow-wrap: anywhere;
-        word-break: break-word;
+
+      /* ── Column-aligned asset List (Project Assets, Release assets) ──
+         The shared listTable/listCard rows sit in the Dashboard Projects panel
+         and table-scroll surfaces; header and cell typography, separators,
+         padding and row hover come from the Dashboard table rules, which list
+         these selectors beside their own. Rows stay ul/li/article for
+         selection, ordering and per-row forms, so each level is a column
+         subgrid of .asset-list-table and every cell is placed on its named
+         column. A column a context omits keeps an empty zero-width track. */
+      .asset-list-panel {
+        margin: var(--space-lg) 0;
       }
-      .asset-list-card--project .asset-rename-trigger {
-        flex: 0 0 auto;
-      }
-      .asset-list-card--project .asset-list-card-primary-metadata {
+      /* Positioned so visually hidden cell labels stay inside the scroll
+         region instead of widening the page. */
+      .asset-list-table {
+        position: relative;
         display: grid;
-        grid-area: metadata;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        grid-template-areas:
-          "category type"
-          "size modified";
-        gap: var(--space-sm) var(--space-lg);
-        min-width: 0;
+        grid-template-columns:
+          [select-start] auto [select-end order-start] auto
+          [order-end asset-start] minmax(18rem, 1fr) [asset-end category-start] auto
+          [category-end role-start] auto [role-end type-start] auto
+          [type-end presence-start] auto [presence-end releases-start] auto
+          [releases-end size-start] auto [size-end modified-start] auto
+          [modified-end actions-start] auto [actions-end];
+        min-width: 56rem;
+      }
+      /* Release Manage Assets: Select | Asset | Category | Role | Order | … */
+      .asset-list-table--trailing-order {
+        grid-template-columns:
+          [select-start] auto [select-end asset-start] minmax(18rem, 1fr)
+          [asset-end category-start] auto [category-end role-start] auto
+          [role-end order-start] auto [order-end type-start] auto
+          [type-end presence-start] auto [presence-end releases-start] auto
+          [releases-end size-start] auto [size-end modified-start] auto
+          [modified-end actions-start] auto [actions-end];
+      }
+      .asset-list-header,
+      .asset-list-table .asset-list,
+      .asset-list-table .asset-list-item,
+      .asset-list-table .asset-list .asset-list-card {
+        display: grid;
+        grid-column: 1 / -1;
+        grid-template-columns: subgrid;
+      }
+      .asset-list-table .asset-list {
+        --dashboard-thumb-size: 3rem;
+        gap: 0;
         margin: 0;
-        padding: var(--space-md);
-        border: 1px solid var(--border);
-        border-radius: var(--radius-md);
-        background: var(--surface);
       }
-      .asset-list-card--project .asset-list-card-primary-metadata .asset-list-card-meta {
-        display: grid;
-        grid-template-rows: auto auto;
-        align-content: start;
-        gap: var(--space-xs);
-        min-width: 0;
+      .asset-list-table .asset-list[data-list-size="large"] {
+        --dashboard-thumb-size: 4.5rem;
       }
-      .asset-list-card--project .asset-list-card-primary-metadata .asset-list-card-meta--category { grid-area: category; }
-      .asset-list-card--project .asset-list-card-primary-metadata .asset-list-card-meta--type { grid-area: type; }
-      .asset-list-card--project .asset-list-card-primary-metadata .asset-list-card-meta--size { grid-area: size; }
-      .asset-list-card--project .asset-list-card-primary-metadata .asset-list-card-meta--modified { grid-area: modified; }
-      .asset-list-card--project .asset-list-card-associations-region {
-        display: grid;
-        grid-area: associations;
-        align-content: start;
-        gap: var(--space-sm);
-        min-width: 0;
-        padding: var(--space-md);
-        border: 1px solid var(--border);
-        border-radius: var(--radius-md);
-        background: var(--surface);
-      }
-      .asset-list-card--project .asset-list-card-associations-heading {
-        margin: 0;
-        color: var(--muted);
-        font-size: 0.75rem;
-        font-weight: 600;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-      }
-      .asset-list-card--project .asset-list-card-associations {
-        display: grid;
-        grid-template-columns: minmax(0, 0.85fr) minmax(0, 1.15fr);
-        gap: var(--space-md) var(--space-lg);
-        min-width: 0;
-      }
-      .asset-list-card--project .asset-list-card-association {
-        display: block;
-        min-width: 0;
+      .asset-list-table .asset-list .asset-list-card {
+        gap: 0;
+        align-items: stretch;
         padding: 0;
         border: 0;
+        border-radius: 0;
+        background: transparent;
+        box-shadow: none;
+        overflow: visible;
+        transform: none;
+        transition: background var(--transition-fast);
       }
-      .asset-list-card--project .asset-action-error {
-        flex: 1 1 100%;
+      .asset-list-table .asset-list .asset-list-card:hover,
+      .asset-list-table .asset-list .asset-list-card:focus-within {
+        box-shadow: none;
+        outline: none;
+        transform: none;
+      }
+      .asset-list-table .asset-list .asset-list-card[data-asset-selectable-card] {
+        cursor: pointer;
+      }
+      .asset-list-table .asset-list .asset-list-card.is-selected {
+        background: color-mix(in srgb, var(--accent) 10%, transparent);
+        box-shadow: inset 3px 0 0 var(--accent);
+      }
+      .asset-list-table .asset-list-item[data-auto-rename-asset]:focus-visible,
+      .asset-list-table .asset-list-item[data-auto-rename-asset].auto-rename-asset--dragging,
+      .asset-list-table .asset-list-item[data-auto-rename-asset].auto-rename-asset--grabbed {
+        outline-offset: -2px;
+      }
+      .asset-list-cell--select { grid-column: select; }
+      .asset-list-cell--order { grid-column: order; }
+      .asset-list-cell--asset { grid-column: asset; }
+      .asset-list-cell--category { grid-column: category; }
+      .asset-list-cell--role { grid-column: role; }
+      .asset-list-cell--type { grid-column: type; }
+      .asset-list-cell--presence { grid-column: presence; }
+      .asset-list-cell--releases { grid-column: releases; }
+      .asset-list-cell--size { grid-column: size; }
+      .asset-list-cell--modified { grid-column: modified; }
+      .asset-list-cell--actions { grid-column: actions; }
+      .asset-list-table .asset-list-cell {
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        gap: var(--space-xs);
         min-width: 0;
-        max-width: 100%;
+        margin: 0;
       }
-      .asset-list-card--project .asset-list-card-association-content,
-      .asset-list-card--project .release-usage-details,
-      .asset-list-card--project .release-detail-list,
-      .asset-list-card--project .release-detail-list li,
-      .asset-list-card--project .release-detail-list a {
+      /* Each data cell is a one-term <dl>; the visible header names it. */
+      .asset-list-table .asset-list-card .asset-list-cell > dt {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
+      }
+      .asset-list-table .asset-list-card .asset-list-cell > dd {
         min-width: 0;
-        max-width: 100%;
-        overflow-wrap: anywhere;
-        word-break: break-word;
+        margin: 0;
+        overflow-wrap: normal;
+        word-break: normal;
       }
-
-      @media (max-width: 767px) {
-        .asset-list-card--project {
-          grid-template-columns: minmax(0, 1fr);
-        }
-        .asset-list-card--project .asset-list-card-body {
-          grid-column: 1;
-          grid-row: 2;
-        }
-        .asset-list-card--project .asset-list-card-primary-metadata {
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-        }
-        .asset-list-card--project .asset-list-card-associations {
-          grid-template-columns: minmax(0, 1fr);
-        }
-      }
-
-      /* Compact keeps the canonical card structure while tightening facts and
-         associations without constraining preview images to a fixed frame. */
-      .asset-list--project[data-list-size="compact"] .asset-list-card {
-        grid-template-columns: clamp(4rem, 7%, 5rem) minmax(0, 1fr);
+      .asset-list-table .asset-list-cell--asset {
         gap: var(--space-sm);
-        padding: var(--space-xs);
       }
-      .asset-list--project[data-list-size="compact"] .asset-list-card-media {
-        width: 100%;
-        max-width: 5rem;
-        height: auto;
+      .asset-list-table .asset-list-cell--releases {
+        max-width: 16rem;
+      }
+      .asset-list-table .asset-list-cell--releases > dd {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--space-xs);
+        white-space: normal;
+      }
+
+      /* Thumbnail: the Dashboard thumbnail box at the List size (48px
+         Compact / Release detail, 72px Large); artwork stays fully visible. */
+      .asset-list-table .asset-list .asset-list-card-media {
+        position: relative;
+        align-self: center;
         min-height: 0;
-        margin-block-start: calc(var(--space-2xl) + var(--space-sm));
+        margin: 0;
       }
-      .asset-list--project[data-list-size="compact"] .asset-list-card-media-link {
+      .asset-list-table .asset-list .asset-list-card-media > * {
+        grid-area: 1 / 1;
+      }
+      .asset-list-table .asset-list .asset-list-card-media-link {
+        position: relative;
         display: block;
         width: 100%;
-        height: auto;
+        height: 100%;
       }
-      .asset-list--project[data-list-size="compact"] .asset-video-frame--list,
-      .asset-list--project[data-list-size="compact"] .asset-video-frame--list .asset-video-frame-media {
-        height: auto;
-      }
-      .asset-list--project[data-list-size="compact"] .asset-list-card-media-image {
+      .asset-list-table .asset-list .asset-list-card-media-image {
         width: 100%;
-        max-width: 100%;
-        height: auto;
-        object-fit: initial;
+        height: 100%;
+        object-fit: contain;
       }
-      .asset-list--project[data-list-size="compact"] .asset-list-card-media-fallback,
-      .asset-list--project[data-list-size="compact"] .asset-list-card-media-placeholder {
-        height: auto;
-        min-height: 5rem;
-        padding: var(--space-xs);
-        font-size: 0.6875rem;
+      .asset-list-table .asset-list .asset-list-card-media-fallback,
+      .asset-list-table .asset-list .asset-list-card-media-placeholder {
+        min-height: 0;
+        padding: 2px;
+        font-size: 0.625rem;
+        line-height: 1.2;
       }
-      .asset-list--project[data-list-size="compact"] .asset-list-card-body {
-        grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
-        grid-template-areas:
-          "identity identity"
-          "metadata associations";
-        gap: var(--space-xs) var(--space-sm);
+      .asset-list-table .asset-list .asset-list-card-media-placeholder svg {
+        flex: none;
+        width: 1.25rem;
+        height: 1.25rem;
       }
-      .asset-list--project[data-list-size="compact"] .asset-list-card-header {
-        row-gap: var(--space-sm);
-        column-gap: var(--space-md);
+      .asset-list-table .asset-list .asset-video-frame--list,
+      .asset-list-table .asset-list .asset-video-frame--list .asset-video-frame-media {
+        height: 100%;
       }
-      .asset-list--project[data-list-size="compact"] .asset-list-card-title {
-        font-size: 1rem;
+      .asset-list-table .asset-list .asset-video-badge {
+        left: 2px;
+        bottom: 2px;
+        padding: 1px 2px;
       }
-      .asset-list--project[data-list-size="compact"] .asset-list-card-location {
-        margin-top: 0;
-        font-size: 0.75rem;
+      .asset-list-table .asset-list .asset-video-badge > span {
+        display: none;
       }
-      .asset-list--project[data-list-size="compact"] .asset-list-card-metadata {
-        gap: var(--space-xs) var(--space-sm);
-      }
-      .asset-list--project[data-list-size="compact"] .asset-list-card-primary-metadata {
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-        grid-template-areas: "category type size modified";
-        gap: var(--space-xs) var(--space-sm);
-        padding: var(--space-sm);
-      }
-      .asset-list--project[data-list-size="compact"] .asset-list-card-meta {
-        flex-basis: 6rem;
-        gap: 2px;
-      }
-      .asset-list--project[data-list-size="compact"] .asset-list-card-meta dt,
-      .asset-list--project[data-list-size="compact"] .asset-list-card-association-label {
-        font-size: 0.6875rem;
-      }
-      .asset-list--project[data-list-size="compact"] .asset-list-card-meta dd {
-        font-size: 0.8125rem;
-      }
-      .asset-list--project[data-list-size="compact"] .asset-list-card-associations {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: var(--space-xs) var(--space-sm);
-      }
-      .asset-list--project[data-list-size="compact"] .asset-list-card-associations-region {
-        padding: var(--space-sm);
-      }
-      .asset-list--project[data-list-size="compact"] .asset-list-card-association {
-        min-width: 0;
-        padding-top: 0;
-      }
-      .asset-list--project[data-list-size="compact"] .asset-list-card-tags li {
-        padding: 0.15rem 0.35rem;
-        font-size: 0.75rem;
-      }
-      @media (max-width: 540px) {
-        .asset-list--project[data-list-size="compact"] .asset-list-card-primary-metadata {
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-          grid-template-areas:
-            "category type"
-            "size modified";
-        }
-        .asset-list--project[data-list-size="compact"] .asset-list-card-associations {
-          grid-template-columns: minmax(0, 1fr);
-        }
+      .asset-list-table .asset-list .asset-video-placeholder > span {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        overflow: hidden;
+        clip: rect(0 0 0 0);
+        white-space: nowrap;
       }
 
-      @media (max-width: 767px) {
-        .asset-list--project[data-list-size="compact"] .asset-list-card {
-          grid-template-columns: minmax(0, 1fr);
-        }
-        .asset-list--project[data-list-size="compact"] .asset-list-card-body {
-          grid-template-columns: minmax(0, 1fr);
-          grid-template-areas:
-            "identity"
-            "metadata"
-            "associations";
-        }
-        .asset-list--project[data-list-size="compact"] .asset-list-card-identity {
-          padding-top: 0;
-        }
-        .asset-list--project[data-list-size="compact"] .asset-list-card-primary-metadata {
-          grid-template-columns: repeat(2, minmax(0, 1fr));
-          grid-template-areas:
-            "category type"
-            "size modified";
-        }
-        .asset-list--project[data-list-size="compact"] .asset-list-card-media {
-          width: 5rem;
-        }
+      /* Asset cell: Dashboard title weight and truncation, muted details. */
+      .asset-list-table .asset-list-card-heading {
+        display: grid;
+        flex: 1 1 auto;
+        gap: 2px;
+        min-width: 0;
+      }
+      .asset-list-table .asset-card-title-row h2 {
+        flex: 1 1 auto;
+      }
+      .asset-list-table .asset-list-card-title {
+        min-width: 0;
+        margin: 0;
+        overflow: hidden;
+        font-size: inherit;
+        font-weight: 600;
+        line-height: 1.35;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .asset-list-table .asset-list-card-title .asset-file-link,
+      .asset-list-table .asset-list-card-title .asset-file-link:visited {
+        display: inline;
+      }
+      /* Project Assets titles are Dashboard title triggers paired with their
+         information card; the trigger keeps the title's weight and
+         truncation, and its focus ring stays inside the clipped title. */
+      .asset-list-table .asset-card-title-row > .asset-list-card-title-info {
+        flex: 1 1 auto;
+      }
+      /* The shared pointer placement puts the card 12px above or below the
+         pointer inside an 8px gutter, and clamps it over the pointer when it
+         fits neither side; the card then takes the hover from its title and
+         flickers. Capping it below half the viewport always leaves one side
+         that fits (with a few pixels of rounding slack); the base rule's
+         overflow keeps the full card scrollable. */
+      .asset-list-card-title-info > .asset-viewer-grid-card-info {
+        max-height: calc(50vh - 1.5rem);
+        max-height: calc(50svh - 1.5rem);
+      }
+      /* Until its first placement frame the open card sits at the viewport
+         origin, where it can cover a title near the top-left and briefly
+         take its hover. */
+      .asset-list-card-title-info > .asset-viewer-grid-card-info:not([data-positioned]) {
+        visibility: hidden;
+        pointer-events: none;
+      }
+      .asset-list-table .asset-list-card-title .dashboard-title-trigger:focus-visible {
+        outline-offset: -2px;
+      }
+      .asset-list-info-filename,
+      .asset-list-info-path {
+        overflow-wrap: anywhere;
+      }
+      .asset-list-info-releases {
+        display: grid;
+        gap: var(--space-xs);
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      .asset-list-info-releases li {
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+      .asset-list-info-release-meta {
+        color: var(--muted);
+      }
+      .asset-list-table .asset-list-card-release-count {
+        color: var(--muted);
+        font-size: 0.75rem;
+        font-variant-numeric: tabular-nums;
+      }
+      .asset-list-table .asset-list-card-details {
+        display: flex;
+        align-items: center;
+        gap: var(--space-sm);
+        min-width: 0;
+        overflow: hidden;
+        color: var(--muted);
+        font-size: 0.75rem;
+      }
+      .asset-list-table .asset-list-card-location,
+      .asset-list-table .asset-list-card-path {
+        flex: 0 1 auto;
+        min-width: 0;
+        margin: 0;
+        overflow: hidden;
+        font-size: inherit;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .asset-list-table .asset-list-card-path {
+        color: inherit;
+      }
+      .asset-list-table .asset-list-card-tags {
+        flex-wrap: nowrap;
+        min-width: 0;
+        overflow: hidden;
+      }
+      .asset-list-table .asset-list-card-tags li {
+        flex: none;
+        padding: 0 0.3rem;
+        font-size: 0.6875rem;
+      }
+      .asset-list-table .asset-card-rename-editor {
+        flex-wrap: wrap;
+        white-space: normal;
+      }
+      .asset-list-table .asset-action-error {
+        font-size: 0.75rem;
+        white-space: normal;
+      }
+
+      /* Releases, Role and Actions controls at row density. */
+      .asset-list-table .asset-list-card-releases li {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .asset-list-table .release-usage-details summary {
+        font-size: inherit;
+        white-space: nowrap;
+      }
+      .asset-list-table .release-asset-role-form select {
+        min-height: 1.75rem;
+        padding-block: 0;
+        font-size: 0.8125rem;
+      }
+      .asset-list-table .asset-list-card-actions {
+        display: flex;
+        align-items: center;
+        gap: var(--space-xs);
+      }
+      .asset-list-table .asset-rename-trigger {
+        height: 1.75rem;
+        min-height: 1.75rem;
+        line-height: 1;
+      }
+      /* The table scroll region clips below its last row, so that row's
+         tooltips open upward. */
+      .asset-list-table .asset-list-item:last-child .asset-tooltip[data-tooltip]::after {
+        top: auto;
+        bottom: calc(100% + var(--space-xs));
       }
 
       /* ── Pagination ── */
@@ -6307,16 +6281,6 @@
       }
       .release-asset-grid-role-value {
         overflow-wrap: anywhere;
-      }
-      .asset-list-card--release .asset-list-card-actions {
-        display: flex;
-        align-items: flex-start;
-        flex-wrap: wrap;
-        gap: var(--space-sm) var(--space-md);
-        min-width: 0;
-        max-width: 100%;
-        padding-top: var(--space-sm);
-        border-top: 1px solid var(--border);
       }
 
       @media (max-width: 767px) {
@@ -12344,13 +12308,15 @@
   border-collapse: collapse;
 }
 .dashboard-projects-table th,
-.dashboard-projects-table td {
+.dashboard-projects-table td,
+.asset-list-table .asset-list-cell {
   padding: var(--space-sm) 0.625rem;
   border-bottom: 1px solid var(--border);
   text-align: left;
   vertical-align: middle;
 }
-.dashboard-projects-table th {
+.dashboard-projects-table th,
+.asset-list-header .asset-list-cell {
   background: var(--surface-card);
   color: var(--muted);
   font-family: var(--mono);
@@ -12360,15 +12326,19 @@
   text-transform: uppercase;
   white-space: nowrap;
 }
-.dashboard-projects-table td {
+.dashboard-projects-table td,
+.asset-list-table .asset-list-card .asset-list-cell {
   font-size: 0.875rem;
   white-space: nowrap;
 }
-.dashboard-projects-table tbody tr:last-child td {
+.dashboard-projects-table tbody tr:last-child td,
+.asset-list-table .asset-list-item:last-child .asset-list-cell {
   border-bottom: 0;
 }
 .dashboard-projects-table tbody tr:hover,
-.dashboard-projects-table tbody tr:focus-within {
+.dashboard-projects-table tbody tr:focus-within,
+.asset-list-table .asset-list .asset-list-card:hover,
+.asset-list-table .asset-list .asset-list-card:focus-within {
   background: var(--surface-hover);
 }
 .dashboard .dashboard-projects-table a:focus-visible,

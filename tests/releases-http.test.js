@@ -12,6 +12,7 @@ import { formatProjectDirName } from '../src/storage/project-storage.js';
 import { createAssetRepository } from '../src/data/asset-repository.js';
 import { createReleaseRepository } from '../src/data/release-repository.js';
 import { createReleaseService } from '../src/services/release-service.js';
+import { formatLocalDate, formatLocalTime } from '../src/util/date.js';
 import { getLocalTodayIso } from '../src/util/date.js';
 import { PAGE_DEFAULT_DEFINITIONS } from '../src/services/page-defaults-service.js';
 import { buildCreateReleaseFormModel } from '../src/routes/release-create-form.js';
@@ -2625,13 +2626,30 @@ describe('release HTTP workflow', () => {
       const { releaseLocation, assetId } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
       db.prepare('UPDATE assets SET modified_at = ?, last_seen_at = ? WHERE id = ?')
         .run('2026-08-01T13:05:42.000Z', '2026-08-01 13:05:42', assetId);
-      app.locals.clockFormatSettingsService.setClockFormat('12h');
+      // Both release List contexts show the formatted Modified value that the
+      // row's information card shows, never the stored ISO string.
+      const date = new Date('2026-08-01T13:05:42.000Z');
+      for (const preference of ['12h', '24h']) {
+        app.locals.clockFormatSettingsService.setClockFormat(preference);
+        const expected = `${formatLocalDate(date)} ${formatLocalTime(date, preference)}`;
+        const detail = await agent.get(`${releaseLocation}?view=list&publish=1`).expect(200);
+        const assets = await agent.get(`${releaseLocation}/assets?view=list`).expect(200);
+        for (const html of [detail.text, assets.text]) {
+          expect(html).toMatch(new RegExp(`asset-list-cell--modified[^"]*">\\s*<dt>Modified</dt>\\s*<dd>${expected}</dd>`));
+          expect(html).toContain(`<dt>Modified</dt><dd>${expected}</dd>`);
+          expect(html).not.toMatch(/asset-list-cell--modified[^"]*">\s*<dt>Modified<\/dt>\s*<dd>2026-08-01T/);
+        }
+      }
 
-      const detail = await agent.get(`${releaseLocation}?view=list&publish=1`).expect(200);
-      const assets = await agent.get(`${releaseLocation}/assets?view=list`).expect(200);
+      // A missing timestamp keeps the muted dash in both contexts.
+      db.prepare('UPDATE assets SET modified_at = NULL WHERE id = ?').run(assetId);
+      for (const url of [`${releaseLocation}?view=list`, `${releaseLocation}/assets?view=list`]) {
+        const res = await agent.get(url).expect(200);
+        expect(res.text).toMatch(/asset-list-cell--modified[^"]*">\s*<dt>Modified<\/dt>\s*<dd><span class="dashboard-muted">—<\/span><\/dd>/);
+      }
+      db.prepare('UPDATE assets SET modified_at = ? WHERE id = ?').run('2026-08-01T13:05:42.000Z', assetId);
+
       const publish = await agent.get(`${releaseLocation}/publish`).expect(302);
-      expect(detail.text).toContain('2026-08-01T1:05:42.000 PM Z');
-      expect(assets.text).toContain('2026-08-01T1:05:42.000 PM Z');
       expect(publish.headers.location).toBe(`${releaseLocation}?publish=1`);
       expect(db.prepare('SELECT modified_at, last_seen_at FROM assets WHERE id = ?').get(assetId))
         .toEqual({ modified_at: '2026-08-01T13:05:42.000Z', last_seen_at: '2026-08-01 13:05:42' });
@@ -8143,12 +8161,37 @@ describe('release HTTP workflow', () => {
       expect(listSection).not.toContain('asset-list-card--release is-selected');
       expect(listSection).not.toContain('aria-selected="true"');
       expect(listSection).not.toContain('<ul class="asset-grid"');
-      expect(listSection).toMatch(/<div class="asset-list-card-status"[^>]*>[\s\S]*?<a class="asset-details-link asset-tooltip asset-tooltip--right" href="\/projects\/\d+\/assets\/\d+"\s+aria-label="View details for [^"]+" data-tooltip="View asset details">/);
-      expect(listSection).not.toContain('<div class="asset-list-card-actions">');
+      expect(listSection).toContain('data-asset-list-columns="order asset category role type presence size modified actions"');
+      expect(listSection).toMatch(/<div class="asset-list-cell asset-list-cell--actions">\s*<div class="asset-list-card-actions">\s*<a class="asset-details-link asset-tooltip asset-tooltip--right" href="\/projects\/\d+\/assets\/\d+"\s+aria-label="View details for [^"]+" data-tooltip="View asset details">/);
+      expect(listSection).not.toContain('asset-list-cell--select');
       expect(listSection).toMatch(/aria-current="page"[\s\S]*aria-label="List view"/);
       expect(listSection.indexOf('<p class="results-meta">')).toBeLessThan(listSection.indexOf('<ul class="asset-list'));
       expect(switcherUrl(listSection, 'Grid').searchParams.has('view')).toBe(false);
       expect(managedList.text).toContain('<article class="asset-list-card asset-list-card--project asset-list-card--release is-selected"');
+
+      // Release titles carry the shared list information card with the
+      // release Role and stored Order; Grid does not.
+      const alpha = fixture.allAssets.find((asset) => asset.filename === 'alpha.txt');
+      const info = listSection.match(new RegExp(`<div id="release-asset-list-info-${alpha.id}"[\\s\\S]*?</dl>`))?.[0] || '';
+      expect(listSection).toContain('<div class="dashboard-title-info asset-list-card-title-info" data-dashboard-title-info>');
+      expect(info).toContain('data-calendar-info-card popover="manual"');
+      expect(info).toContain('aria-label="Details for alpha.txt"');
+      expect(info).toContain(`<a class="button button-small button-secondary" href="/projects/${fixture.projectId}/assets/${alpha.id}">Open asset</a>`);
+      expect(info).toContain('<h3 class="asset-viewer-grid-card-info-heading asset-list-info-filename">alpha.txt</h3>');
+      expect(info).toMatch(/<dt>Path<\/dt><dd class="asset-list-info-path">[^<]*alpha\.txt<\/dd>/);
+      expect(info).toContain('<dt>Preview</dt><dd>TXT — preview not supported</dd>');
+      expect(info).toContain('<dt>Presence</dt><dd>Present</dd>');
+      expect(info).toMatch(/<dt>Category<\/dt><dd>\s*\S/);
+      expect(info).toContain('<dt>Role</dt><dd>Primary</dd>');
+      expect(info).toContain('<dt>Order</dt><dd>0</dd>');
+      expect(info).toContain('<dt>Type</dt><dd>TXT (.txt)</dd>');
+      expect(info).toMatch(/<dt>Size<\/dt><dd>[^<—]+<\/dd>/);
+      expect(info).toMatch(/<dt>Modified<\/dt><dd>\d{4}-\d{2}-\d{2} \d{1,2}:\d{2}/);
+      expect(info.indexOf('<dt>Category</dt>')).toBeLessThan(info.indexOf('<dt>Role</dt>'));
+      expect(listSection).not.toContain('Associated releases');
+      expect(gridSection).not.toContain('data-calendar-info-trigger');
+      // Manage Assets uses its own card ids, never the Selected Assets ones.
+      expect(managedList.text).not.toContain('release-asset-list-info-');
     });
 
     it('read-only grid and list cards link filenames and revisioned previews correctly', async () => {
@@ -8172,7 +8215,12 @@ describe('release HTTP workflow', () => {
       const list = await agent.get(`${fixture.releaseLocation}?view=list`).expect(200);
       const listSection = readOnlyDetailSection(list.text);
       expect(listSection.indexOf('alpha.txt')).toBeLessThan(listSection.indexOf('beta.png'));
-      expect(listSection).toContain(`class="asset-file-link" href="${viewerUrl}">beta</a>`);
+      // List titles open the information card; navigation stays on the
+      // thumbnail, the Details action and the card's Open asset action.
+      expect(listSection).not.toContain('class="asset-file-link"');
+      expect(listSection).toContain(`<button class="dashboard-title-trigger dashboard-truncate" type="button" data-calendar-info-trigger aria-controls="release-asset-list-info-${secondAsset.id}" aria-expanded="false">beta</button>`);
+      expect(listSection).toContain(`class="asset-list-card-media-link" href="${viewerUrl}"`);
+      expect(listSection).toMatch(new RegExp(`<a class="button button-small button-secondary" href="${viewerUrl}">Open asset</a>`));
       expect(listSection).toMatch(new RegExp(`src="${viewerUrl}/preview\\?v=[^"]+"`));
       expect(listSection).not.toContain('src=""');
       expect(listSection).not.toContain('href=""');
@@ -8189,6 +8237,10 @@ describe('release HTTP workflow', () => {
       const missingSection = readOnlyDetailSection(missing.text);
       expect(missingSection).toContain('Missing at last scan');
       expect(missingSection).not.toContain('src=""');
+      const missingInfo = missingSection.match(new RegExp(`<div id="release-asset-list-info-${alphaAsset.id}"[\\s\\S]*?</dl>`))?.[0] || '';
+      expect(missingInfo).toContain('<dt>Preview</dt><dd>File missing at last scan</dd>');
+      expect(missingInfo).toContain('<dt>Presence</dt><dd>Missing at last scan</dd>');
+      expect(missingInfo).not.toContain('<img');
     });
 
     // Cards carry one inert, metadata-only frame for intrinsic geometry: never controls or autoplay.
@@ -8292,8 +8344,13 @@ describe('release HTTP workflow', () => {
 
         expect(releaseCard, view).toContain('MP4 video');
         expect(releaseCard, view).toContain('clip.mp4');
-        expect(releaseCard, view).toContain('<strong>Role</strong> Primary');
-        expect(releaseCard, view).toContain(`<strong>Order</strong> ${mp4Row.sort_order}`);
+        if (view === 'grid') {
+          expect(releaseCard, view).toContain('<strong>Role</strong> Primary');
+          expect(releaseCard, view).toContain(`<strong>Order</strong> ${mp4Row.sort_order}`);
+        } else {
+          expect(releaseCard, view).toMatch(/<dt>Role<\/dt>\s*<dd>Primary<\/dd>/);
+          expect(releaseCard, view).toMatch(new RegExp(`<dt>Order</dt>\\s*<dd>${mp4Row.sort_order}</dd>`));
+        }
         expect(releaseCard, view).not.toMatch(/<img\b/);
         expectInertVideoFrame(releaseCard, `/projects/${fixture.projectId}/assets/${mp4.id}/original`);
         // Release and Project Assets cards share the same video preview trigger.
@@ -8317,7 +8374,7 @@ describe('release HTTP workflow', () => {
       for (const view of ['grid', 'list']) {
         const card = assetCard((await agent.get(`${fixture.releaseLocation}?view=${view}`).expect(200)).text, mp4.id);
         expect(card, view).toContain('Missing at last scan');
-        expect(card, view).toContain('<strong>Role</strong> Primary');
+        expect(card, view).toMatch(view === 'grid' ? /<strong>Role<\/strong> Primary/ : /<dt>Role<\/dt>\s*<dd>Primary<\/dd>/);
         expect(card, view).not.toContain('data-asset-video-placeholder');
         expect(card, view).not.toMatch(/<(?:img|video)\b/);
       }
@@ -8347,8 +8404,8 @@ describe('release HTTP workflow', () => {
 
         const res = await agent.get(`${fixture.releaseLocation}?view=list`).expect(200);
         const section = readOnlyDetailSection(res.text);
-        expect(section).toContain('<strong>Role</strong> Primary');
-        expect(section).toContain('<strong>Role</strong> Attachment');
+        expect(section).toMatch(/<dt>Role<\/dt>\s*<dd>Primary<\/dd>/);
+        expect(section).toMatch(/<dt>Role<\/dt>\s*<dd>Attachment<\/dd>/);
         expect(res.text).not.toContain('release-asset-filters');
         expect(res.text).not.toMatch(/name="(?:category|extension|tag)"/);
       }
@@ -8761,10 +8818,68 @@ describe('release HTTP workflow', () => {
       const res = await agent.get(`${fixture.releaseLocation}/assets?view=list`).expect(200);
       const card = assetCard(selectedSection(res.text), fixture.allAssets.find((asset) => asset.filename === 'alpha.txt').id);
 
-      expect(card).toContain('class="asset-list-card-association asset-list-card-association--role"');
+      expect(card).toContain('class="asset-list-cell asset-list-cell--role asset-list-card-meta asset-list-card-meta--role"');
       expect(card).toContain('class="inline-form release-asset-role-form"');
       expect(card).toContain('name="role" data-autosubmit');
       expect(card).not.toContain('release-asset-grid-role');
+    });
+
+    it('gives Manage Assets list titles the shared information card with membership state', async () => {
+      const fixture = await setupReleaseWithAssets();
+      const alpha = fixture.allAssets.find((asset) => asset.filename === 'alpha.txt');
+      const gamma = fixture.allAssets.find((asset) => asset.filename === 'gamma.txt');
+      const infoFor = (section, assetId) => section
+        .match(new RegExp(`<div id="release-manage-asset-list-info-${assetId}"[\\s\\S]*?</dl>`))?.[0] || '';
+
+      const res = await agent.get(`${fixture.releaseLocation}/assets?view=list`).expect(200);
+      const section = selectedSection(res.text);
+      expect(section).toContain('data-asset-list-columns="select asset category role order type presence size modified actions"');
+
+      // Selected: the checkbox and Role form stay in their row columns; the
+      // title is the shared trigger and the card adds membership, Role, Order.
+      const selected = assetCard(section, alpha.id);
+      expect(selected).toContain(`<button class="dashboard-title-trigger dashboard-truncate" type="button" data-calendar-info-trigger aria-controls="release-manage-asset-list-info-${alpha.id}" aria-expanded="false">`);
+      expect(selected).toMatch(/asset-list-cell--select">\s*<label class="asset-selection-control is-selected"/);
+      expect(selected).toMatch(/asset-list-cell--role[\s\S]*?<dd>\s*<form method="post"[^>]*class="inline-form release-asset-role-form"/);
+      const selectedInfo = infoFor(selected, alpha.id);
+      expect(selectedInfo).toContain('data-calendar-info-card popover="manual"');
+      expect(selectedInfo).toContain(`<a class="button button-small button-secondary" href="/projects/${fixture.projectId}/assets/${alpha.id}">Open asset</a>`);
+      expect(selectedInfo).toContain('<h3 class="asset-viewer-grid-card-info-heading asset-list-info-filename">alpha.txt</h3>');
+      expect(selectedInfo).toMatch(/<dt>Path<\/dt><dd class="asset-list-info-path">[^<]*alpha\.txt<\/dd>/);
+      // Membership and stored Role/Order carry the hooks the client draft
+      // reconciliation rewrites from unsaved selection changes.
+      expect(selectedInfo).toContain(`<div class="asset-viewer-grid-card-info-row" data-release-asset-membership-info data-release-asset-id="${alpha.id}"><dt>Release</dt><dd data-release-asset-membership-status>Selected</dd></div>`);
+      expect(selectedInfo).toContain('<div class="asset-viewer-grid-card-info-row" data-release-asset-stored-fact><dt data-release-asset-stored-fact-label="Role">Role</dt><dd>Primary</dd></div>');
+      expect(selectedInfo).toContain('<div class="asset-viewer-grid-card-info-row" data-release-asset-stored-fact><dt data-release-asset-stored-fact-label="Order">Order</dt><dd>0</dd></div>');
+      expect(selectedInfo).toContain('<dt>Type</dt><dd>TXT (.txt)</dd>');
+      expect(selectedInfo).toMatch(/<dt>Modified<\/dt><dd>\d{4}-\d{2}-\d{2} \d{1,2}:\d{2}/);
+      // No controls move into the card, and no nested forms.
+      expect(selectedInfo).not.toMatch(/<(?:form|input|select)\b/);
+
+      // Unselected: dashes in the row, and the card has no Role or Order.
+      const unselected = assetCard(section, gamma.id);
+      expect(unselected).toMatch(/asset-list-cell--role[\s\S]*?<dd><span class="dashboard-muted">—<\/span><\/dd>/);
+      expect(unselected).toMatch(/asset-list-cell--order[\s\S]*?<dd><span class="dashboard-muted">—<\/span><\/dd>/);
+      const unselectedInfo = infoFor(unselected, gamma.id);
+      expect(unselectedInfo).toContain('<dt>Release</dt><dd data-release-asset-membership-status>Not selected</dd>');
+      expect(unselectedInfo).not.toContain('>Role</dt>');
+      expect(unselectedInfo).not.toContain('>Order</dt>');
+      expect(unselectedInfo).not.toContain('data-release-asset-stored-fact');
+
+      // Grid keeps its own cards.
+      const grid = selectedSection((await agent.get(`${fixture.releaseLocation}/assets`).expect(200)).text);
+      expect(grid).not.toContain('data-calendar-info-trigger');
+
+      // Read-only: no Select column or controls, but titles keep their cards.
+      db.prepare('UPDATE releases SET archived_at = CURRENT_TIMESTAMP WHERE id = ?').run(fixture.releaseId);
+      const archived = selectedSection((await agent.get(`${fixture.releaseLocation}/assets?view=list`).expect(200)).text);
+      expect(archived).toContain('data-asset-list-columns="asset category role order type presence size modified actions"');
+      expect(archived).not.toMatch(/<(?:form|select)\b/);
+      expect(archived).not.toContain('selectedAssetIds');
+      expect(archived).not.toContain('asset-selection-control');
+      expect(archived).not.toContain('data-asset-selectable-card');
+      expect(infoFor(archived, alpha.id)).toContain('<dd data-release-asset-membership-status>Selected</dd>');
+      expect(infoFor(archived, alpha.id)).toContain('Role</dt><dd>Primary</dd>');
     });
 
     it('saves membership by ID while preserving existing role/order and appending new assets', async () => {

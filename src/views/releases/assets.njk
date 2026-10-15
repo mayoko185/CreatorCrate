@@ -51,38 +51,6 @@
   {% endif %}
 {% endmacro %}
 
-{# Release-specific role/order/path content inside the shared list hierarchy. #}
-{% macro releaseAssetInfo(asset, readOnly, roles, _csrf, assetActionUrl) %}
-  <div class="asset-list-card-associations">
-    {% if asset.releaseContext.selected %}
-      <div class="asset-list-card-association asset-list-card-association--role">
-        <h3 class="asset-list-card-association-label">Role</h3>
-        <div class="asset-list-card-association-content">
-          {% if readOnly %}
-            <span>{{ (asset.releaseContext.role or 'attachment') | title }}</span>
-          {% else %}
-            {{ releaseRoleControl(asset, roles, _csrf, assetActionUrl) }}
-          {% endif %}
-        </div>
-      </div>
-      <div class="asset-list-card-association asset-list-card-association--order">
-        <h3 class="asset-list-card-association-label">Order</h3>
-        <div class="asset-list-card-association-content">
-          <span>{{ asset.releaseContext.sortOrder }}</span>
-        </div>
-      </div>
-    {% endif %}
-    {% if asset.relative_path %}
-      <div class="asset-list-card-association asset-list-card-association--path">
-        <h3 class="asset-list-card-association-label">Path</h3>
-        <div class="asset-list-card-association-content">
-          <code>{{ asset.relative_path }}</code>
-        </div>
-      </div>
-    {% endif %}
-  </div>
-{% endmacro %}
-
 {# Grid card — Project Assets preview-only geometry with Release selection and
    role state in the compact top action row. #}
 {% macro releaseGridCard(asset, readOnly, roles, _csrf, assetActionUrl, clockFormat) %}
@@ -113,24 +81,49 @@
   {% endcall %}
 {% endmacro %}
 
-{# List card — Project Assets hierarchy/sizing with Release associations. #}
-{% macro releaseListCard(asset, readOnly, roles, _csrf, assetActionUrl, clockFormat) %}
+{# List row — the shared column List with Release membership, Role and
+   server-owned Order. Unselected candidates show a dash for Role and Order.
+   The title opens the shared list information card, which adds the rendered
+   membership state and, for selected assets, Role and stored Order; the
+   checkbox and Role control stay in their row columns. #}
+{% macro releaseListCard(asset, readOnly, roles, _csrf, assetActionUrl, clockFormat, columns) %}
+  {% set detailId = 'release-manage-asset-list-info-' ~ asset.id %}
   {% call(slot) assetCards.listCard(asset, {
+    titleInfoId: detailId,
+    columns: columns,
     clockFormat: clockFormat,
     cardClass: 'asset-list-card--project asset-list-card--release',
-    projectLayout: true,
-    headerStatusDetails: true,
     titleControls: true,
     filenameLink: false,
-    hideActions: true,
     detailsPresenceStatus: true,
     selected: asset.releaseContext.selected,
     selectable: not readOnly and (asset.is_present or asset.releaseContext.selected)
   }) %}
-    {% if slot == 'top' %}
+    {% if slot == 'select' %}
       {{ releaseAssetSelectionControl(asset, readOnly) }}
-    {% elif slot == 'associations' %}
-      {{ releaseAssetInfo(asset, readOnly, roles, _csrf, assetActionUrl) }}
+    {% elif slot == 'role' and asset.releaseContext.selected %}
+      {% if readOnly %}
+        {{ (asset.releaseContext.role or 'attachment') | title }}
+      {% else %}
+        {{ releaseRoleControl(asset, roles, _csrf, assetActionUrl) }}
+      {% endif %}
+    {% elif slot == 'order' and asset.releaseContext.selected %}
+      {{ asset.releaseContext.sortOrder }}
+    {% elif slot == 'title-info' %}
+      {% call(cardSlot) assetCards.listInfoCard(asset, detailId) %}
+        {% if cardSlot == 'facts' %}
+          {# The rendered membership is the server's view; on the editable page
+             the draft reconciliation in live-regions.js rewrites the status
+             and the stored Role/Order labels from the current draft. #}
+          <div class="asset-viewer-grid-card-info-row" data-release-asset-membership-info data-release-asset-id="{{ asset.id }}"><dt>Release</dt><dd data-release-asset-membership-status>{{ 'Selected' if asset.releaseContext.selected else 'Not selected' }}</dd></div>
+          {% if asset.releaseContext.selected %}
+            <div class="asset-viewer-grid-card-info-row" data-release-asset-stored-fact><dt data-release-asset-stored-fact-label="Role">Role</dt><dd>{{ (asset.releaseContext.role or 'attachment') | title }}</dd></div>
+            <div class="asset-viewer-grid-card-info-row" data-release-asset-stored-fact><dt data-release-asset-stored-fact-label="Order">Order</dt><dd>{{ asset.releaseContext.sortOrder if asset.releaseContext.sortOrder is not none else '—' }}</dd></div>
+          {% endif %}
+        {% endif %}
+      {% endcall %}
+    {% elif slot == 'asset' and asset.relative_path %}
+      <code class="asset-list-card-path" title="{{ asset.relative_path }}">{{ asset.relative_path }}</code>
     {% endif %}
   {% endcall %}
 {% endmacro %}
@@ -261,13 +254,18 @@
               {% endfor %}
             </ul>
           {% else %}
+            {# Select is omitted when the release is read-only. #}
+            {% set listColumns = ([] if readOnly else ['select'])
+              .concat(['asset', 'category', 'role', 'order', 'type', 'presence', 'size', 'modified', 'actions']) %}
+            {% call assetCards.listTable(listColumns, 'Release asset table') %}
             <ul class="asset-list asset-list--project asset-list--release" role="list" aria-label="Release assets" data-list-size="large">
               {% for asset in displayAssets %}
                 <li class="asset-list-item{% if not asset.is_present %} is-missing{% endif %}">
-                  {{ releaseListCard(asset, readOnly, roles, _csrf, releaseAssetActionUrl, clockFormat) }}
+                  {{ releaseListCard(asset, readOnly, roles, _csrf, releaseAssetActionUrl, clockFormat, listColumns) }}
                 </li>
               {% endfor %}
             </ul>
+            {% endcall %}
           {% endif %}
 
         {% else %}

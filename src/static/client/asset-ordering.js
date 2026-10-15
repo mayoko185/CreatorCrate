@@ -9,7 +9,13 @@ const AUTO_RENAME_SUBMIT_SELECTOR = '[data-auto-rename-submit]';
 const AUTO_RENAME_INDICATOR_SELECTOR = '[data-auto-rename-order-indicator]';
 const AUTO_RENAME_LIVE_SELECTOR = '[data-auto-rename-live]';
 const AUTO_RENAME_ROW_TOLERANCE = 4;
+// A List title trigger and its information card share a wrapper inside the
+// row. The card is a DOM descendant of the row even while shown in the top
+// layer, so drags, clicks and text selection inside it must not reorder or
+// toggle the asset; a press that starts on the card and ends on the title
+// clicks the wrapper itself, which must not count as the row background.
 const AUTO_RENAME_DRAG_BLOCK_SELECTOR = [
+  '[data-dashboard-title-info]',
   'button',
   'input',
   'select',
@@ -26,6 +32,7 @@ export const ASSET_SELECTION_FORM_SELECTOR = '[data-asset-selection-form]';
 const ASSET_SELECTION_CHECKBOX_SELECTOR = 'input[type="checkbox"][name="selectedAssetIds"]:not(:disabled)';
 const ASSET_CARD_SELECTOR = '[data-asset-selectable-card]';
 const ASSET_CARD_INTERACTIVE_SELECTOR = [
+  '[data-dashboard-title-info]',
   'a',
   'button',
   'form',
@@ -1014,7 +1021,9 @@ export function enhanceAssetRenames(scope = globalThis.document) {
 
   const triggers = scope.querySelectorAll(ASSET_RENAME_TRIGGER_SELECTOR);
   triggers.forEach((trigger) => {
-    const region = trigger.closest?.('.asset-card-title-controls');
+    // Column List rows place Rename in the Actions cell, so the row itself
+    // (data-asset-rename-scope) holds the title row and editor.
+    const region = trigger.closest?.('.asset-card-title-controls, [data-asset-rename-scope]');
     const titleRow = region?.querySelector?.('[data-asset-title-row]');
     const editor = region?.querySelector?.(ASSET_RENAME_EDITOR_SELECTOR);
     if (!titleRow || !editor) return;

@@ -787,6 +787,35 @@ describe('Assets-page Auto Rename ordering enhancement', () => {
     expect(page.assets[0].previewLink.navigationCount).toBe(1);
   });
 
+  it('neither toggles selection nor starts ordering from inside a title information card', () => {
+    const page = makeAssetPage({ view: 'grid', ids: [1, 2] });
+    enhanceAssetAutoRenameOrdering(page.document);
+    enhanceAssetSelection(page.document);
+    const card = page.assets[0].item.querySelector('[data-asset-selectable-card]');
+    const titleInfo = makeNode({ attrs: { 'data-dashboard-title-info': '' } });
+    const trigger = makeNode({ tagName: 'button', attrs: { type: 'button', 'data-calendar-info-trigger': '' } });
+    const infoCard = makeNode({ attrs: { 'data-calendar-info-card': '', popover: 'manual' } });
+    const infoText = makeNode({ tagName: 'dd' });
+    infoCard.appendChild(infoText);
+    titleInfo.appendChild(trigger);
+    titleInfo.appendChild(infoCard);
+    page.assets[0].body.appendChild(titleInfo);
+
+    // The wrapper itself is the target of a press split between card and title.
+    for (const target of [titleInfo, trigger, infoCard, infoText]) {
+      target.dispatch('click');
+      expect(page.assets[0].checkbox.checked).toBeFalsy();
+      const dragStart = target.dispatch('dragstart', { dataTransfer: dataTransfer() });
+      expect(dragStart.defaultPrevented).toBe(true);
+      expect(page.assets[0].item.getAttribute('aria-grabbed')).toBe('false');
+    }
+    expect(page.selectionInput.value).toBe('[]');
+
+    // Row background clicks keep toggling selection.
+    card.dispatch('click', { target: { closest: () => null } });
+    expect(page.assets[0].checkbox.checked).toBe(true);
+  });
+
   it('enhances once and supports keyboard grab, movement, commit, and Escape restore', () => {
     const page = makeAssetPage();
     enhanceAssetAutoRenameOrdering(page.document);

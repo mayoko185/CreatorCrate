@@ -227,13 +227,13 @@ describe('intentional asset-browser parity: releases vs projects', () => {
     const sharedMarkers = [
       'asset-list-card--project',
       'data-asset-selectable-card',
+      'data-asset-rename-scope',
       'class="asset-select-checkbox"',
-      'class="asset-list-card-top"',
+      'class="asset-list-cell asset-list-cell--select"',
+      'class="asset-list-cell asset-list-cell--asset"',
       'class="asset-list-card-media',
-      'class="asset-list-card-body"',
-      'asset-list-card-identity',
-      'asset-list-card-primary-metadata',
-      'asset-list-card-associations-region',
+      'asset-list-cell--category',
+      'asset-list-cell--actions',
       'data-asset-title-row',
       'class="asset-details-link',
       fixtureFilenames.canonicalOrder[0],
@@ -243,13 +243,16 @@ describe('intentional asset-browser parity: releases vs projects', () => {
     for (const card of [projectCard, releaseCard]) {
       for (const marker of sharedMarkers) expect(card).toContain(marker);
       const positions = markerOrder(card, [
-        'class="asset-list-card-top"',
-        'class="asset-list-card-media',
-        'class="asset-list-card-body"',
+        'class="asset-list-cell asset-list-cell--select"',
+        'class="asset-list-cell asset-list-cell--asset"',
+        'asset-list-cell--category',
+        'asset-list-cell--actions',
       ]);
       expect(positions).toEqual([...positions].sort((a, b) => a - b));
-      expect(extractRegionBefore(card, 'class="asset-list-card-top"', 'class="asset-list-card-media')).toContain('class="asset-select-checkbox"');
+      expect(extractRegionBefore(card, 'class="asset-list-cell asset-list-cell--select"', 'class="asset-list-cell asset-list-cell--asset"')).toContain('class="asset-select-checkbox"');
     }
+    expect(pages.projectList).toContain('data-asset-list-columns="select asset category type presence releases size modified actions"');
+    expect(pages.releaseList).toContain('data-asset-list-columns="select asset category role order type presence size modified actions"');
     expect(projectCard).toContain('data-asset-rename-trigger');
     expect(projectCard).toContain('data-project-assets-preview-id');
     expect(projectCard).not.toContain('release-asset-role-form');
