@@ -165,9 +165,10 @@
   listCard row, so headers and cells always agree.
 
   Columns: select, order, asset, category, role, type, presence, releases,
-  size, modified, actions. Slots for caller-owned content are named after
-  their column (select, order, role, releases, actions) plus title-controls
-  (the inline rename editor) and asset (secondary details under the title).
+  size, modified. Slots for caller-owned content are named after their
+  column (select, order, role, releases) plus asset (secondary details under
+  the title). Navigation stays on the thumbnail and the information card's
+  Open asset action; rows carry no Actions column.
   An empty data slot renders a muted dash (SafeString output is checked by
   length, since an empty SafeString is truthy).
 
@@ -190,7 +191,7 @@
 {% macro listTable(columns, ariaLabel) %}
   {% set labels = {
     select: 'Select', order: 'Order', asset: 'Asset', category: 'Category', role: 'Role', type: 'Type',
-    presence: 'Presence', releases: 'Releases', size: 'Size', modified: 'Modified', actions: 'Actions'
+    presence: 'Presence', releases: 'Releases', size: 'Size', modified: 'Modified'
   } %}
   {% set trailingOrder = ('order' in columns) and columns.indexOf('order') > columns.indexOf('asset') %}
   <div class="dashboard dashboard-panel asset-list-panel">
@@ -251,15 +252,15 @@
 {% endmacro %}
 
 {% macro listCard(asset, options={}) %}
-  {% set columns = options.columns or ['asset', 'category', 'type', 'presence', 'size', 'modified', 'actions'] %}
+  {% set columns = options.columns or ['asset', 'category', 'type', 'presence', 'size', 'modified'] %}
   {% set filenameLabel = asset.filename or asset.displayFilename or 'Unnamed asset' %}
   {% set displayName = asset.displayFilename or asset.filename or 'Unnamed asset' %}
   {% set previewUrl = asset.preview_url or asset.thumbnail_url %}
   {% set previewAvailable = asset.is_present and previewUrl and asset.preview_state != 'unsupported' and asset.preview_state != 'missing' %}
   {% set typeLabel = asset.typeLabel or 'File' %}
-  <article class="asset-list-card{% if options.cardClass %} {{ options.cardClass }}{% endif %}{% if options.selected %} is-selected{% endif %}" data-asset-id="{{ asset.id }}"{% if options.selectable %} data-asset-selectable-card aria-selected="{% if options.selected %}true{% else %}false{% endif %}"{% endif %}{% if options.titleControls %} data-asset-rename-scope{% endif %}>
+  <article class="asset-list-card{% if options.cardClass %} {{ options.cardClass }}{% endif %}{% if options.selected %} is-selected{% endif %}" data-asset-id="{{ asset.id }}"{% if options.selectable %} data-asset-selectable-card aria-selected="{% if options.selected %}true{% else %}false{% endif %}"{% endif %}>
     {% for column in columns %}
-      {% set slotContent = (caller(column) | trim) if caller and column in ['select', 'order', 'role', 'releases', 'actions'] else '' %}
+      {% set slotContent = (caller(column) | trim) if caller and column in ['select', 'order', 'role', 'releases'] else '' %}
       {% if column == 'select' %}
         <div class="asset-list-cell asset-list-cell--select">{{ slotContent | safe }}</div>
       {% elif column == 'asset' %}
@@ -296,29 +297,19 @@
           </div>
           <div class="asset-list-card-heading">
             {% set titleInfoCard = (caller('title-info') | trim) if caller and options.titleInfoId else '' %}
-            {% set titleMarkup %}
-              {% if titleInfoCard | length %}
-                <div class="dashboard-title-info asset-list-card-title-info" data-dashboard-title-info>
-                  <h2 class="asset-list-card-title">{{ titleInfo.trigger(displayName, options.titleInfoId) }}</h2>
-                  {{ titleInfoCard | safe }}
-                </div>
-              {% else %}
-                <h2 class="asset-list-card-title">
-                  {% if (options.filenameLink is not defined or options.filenameLink) and asset.viewerUrl %}
-                    <a class="asset-file-link" href="{{ asset.viewerUrl }}">{{ displayName }}</a>
-                  {% else %}
-                    {{ displayName }}
-                  {% endif %}
-                </h2>
-              {% endif %}
-            {% endset %}
-            {% if options.titleControls %}
-              <div class="asset-card-title-controls">
-                <div class="asset-card-title-row" data-asset-title-row{% if options.titleRowHidden %} hidden{% endif %}>{{ titleMarkup | safe }}</div>
-                {% if caller %}{{ caller('title-controls') }}{% endif %}
+            {% if titleInfoCard | length %}
+              <div class="dashboard-title-info asset-list-card-title-info" data-dashboard-title-info>
+                <h2 class="asset-list-card-title">{{ titleInfo.trigger(displayName, options.titleInfoId) }}</h2>
+                {{ titleInfoCard | safe }}
               </div>
             {% else %}
-              {{ titleMarkup | safe }}
+              <h2 class="asset-list-card-title">
+                {% if (options.filenameLink is not defined or options.filenameLink) and asset.viewerUrl %}
+                  <a class="asset-file-link" href="{{ asset.viewerUrl }}">{{ displayName }}</a>
+                {% else %}
+                  {{ displayName }}
+                {% endif %}
+              </h2>
             {% endif %}
             {% set assetDetails = (caller('asset') | trim) if caller else '' %}
             {% if asset.locationLabel or assetDetails | length %}
@@ -334,18 +325,6 @@
           <dt>Presence</dt>
           <dd class="asset-list-card-presence">{{ presenceIndicator(asset, 'left') }}</dd>
         </dl>
-      {% elif column == 'actions' %}
-        <div class="asset-list-cell asset-list-cell--actions">
-          <div class="asset-list-card-actions">
-            {% if asset.viewerUrl %}
-              <a class="asset-details-link{% if options.detailsPresenceStatus %} asset-details-link--{{ 'present' if asset.is_present else 'missing' }}{% endif %} asset-tooltip asset-tooltip--right" href="{{ asset.viewerUrl }}"
-                 aria-label="{% if options.detailsPresenceStatus %}Asset details | File {{ 'present' if asset.is_present else 'missing!' }}{% else %}View details for {{ filenameLabel }}{% endif %}" data-tooltip="{% if options.detailsPresenceStatus %}Asset details | File {{ 'present' if asset.is_present else 'missing!' }}{% else %}View asset details{% endif %}">
-                {{ icons.icon('details') }}<span class="sr-only">View details</span>
-              </a>
-            {% endif %}
-            {{ slotContent | safe }}
-          </div>
-        </div>
       {% else %}
         {% if column == 'category' %}
           {% set label = 'Category' %}

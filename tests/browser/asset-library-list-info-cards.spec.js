@@ -12,14 +12,14 @@ import { ensureAuthEnablement } from '../../src/auth/auth-state.js';
 import { closeDatabase, openDatabase, runMigrations } from '../../src/db.js';
 import { createReleaseService } from '../../src/services/release-service.js';
 
-// Asset Library List in real Chromium: the nine Dashboard-style columns, the
+// Asset Library List in real Chromium: the eight Dashboard-style columns, the
 // shared Dashboard title information card lifecycle on asset titles, and the
 // navigation, slideshow, paging and live replacement around them. All data
 // lives in a temporary root that is removed afterward.
 const IMAGES = ['01-alpha.png', '02-beta.png', '03-gamma.png', '04-delta.png'];
 // Extra images so the 10-per-page minimum leaves a second page.
 const PAGING_IMAGES = ['10-epsilon.png', '11-zeta.png', '12-eta.png'];
-const COLUMNS = ['Asset', 'Project', 'Category', 'Type', 'Presence', 'Releases', 'Size', 'Modified', 'Actions'];
+const COLUMNS = ['Asset', 'Project', 'Category', 'Type', 'Presence', 'Releases', 'Size', 'Modified'];
 
 let server;
 let db;
@@ -145,7 +145,7 @@ const currentPath = (page) => {
 // Canonical query order, so the redirect-free URL compares exactly.
 const LIST_PATH = '/asset-viewer?sort=filename&order=asc&pageSize=all&view=list';
 
-test('List renders nine aligned Dashboard columns with 48px thumbnails and Dashboard table styling', async ({ page }) => {
+test('List renders eight aligned Dashboard columns with 48px thumbnails and Dashboard table styling', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto(baseURL + '/');
   const dashboardHeader = page.locator('.dashboard-projects-table th').first();
@@ -169,6 +169,7 @@ test('List renders nine aligned Dashboard columns with 48px thumbnails and Dashb
   expect(await styleOf(header.first())).toBe(dashboardHeaderStyle);
   expect(await panelOf(page.locator('.asset-list-scroll'))).toBe(dashboardPanel);
   await expect(page.locator('.asset-list--library input[type="checkbox"]')).toHaveCount(0);
+  await expect(page.locator('.asset-list--library .asset-list-cell--actions, .asset-list--library .asset-details-link')).toHaveCount(0);
 
   // Every row cell starts on its header's column.
   const headerX = await header.evaluateAll((nodes) => nodes.map((node) => Math.round(node.getBoundingClientRect().x)));
@@ -298,15 +299,14 @@ test('Titles hover, pin and dismiss through the shared lifecycle without navigat
   await expect.poll(() => new URL(page.url()).pathname).toBe(`/projects/${fixture.alphaId}/assets/${fixture.ids['01-alpha.png']}`);
   await page.goBack();
 
-  // Project column and Details keep their navigation; modified clicks on
-  // real links stay native (no same-tab navigation).
+  // The Project column keeps its navigation; modified clicks on real links
+  // stay native (no same-tab navigation).
   await card.locator('.asset-list-cell--project a').click({ modifiers: ['Control'] });
   expect(currentPath(page)).toBe(LIST_PATH);
   await card.locator('.asset-list-cell--project a').click();
   await expect.poll(() => new URL(page.url()).pathname).toBe(`/projects/${fixture.alphaId}`);
   await page.goBack();
-  await rowParts(page, fixture.ids['01-alpha.png']).card.locator('.asset-details-link').click();
-  await expect.poll(() => new URL(page.url()).pathname).toBe(`/projects/${fixture.alphaId}/assets/${fixture.ids['01-alpha.png']}`);
+  await expect(page.locator('.asset-list--library')).toBeVisible();
   expect(pageErrors).toEqual([]);
 });
 

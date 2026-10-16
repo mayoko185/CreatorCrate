@@ -139,7 +139,8 @@ test('Titles hover, pin and dismiss without touching membership, Role or navigat
   await page.goto(baseURL + listPath);
 
   const header = page.locator('.asset-list-header .asset-list-cell');
-  await expect(header).toHaveText(['', 'Asset', 'Category', 'Role', 'Order', 'Type', 'Presence', 'Size', 'Modified', 'Actions']);
+  await expect(header).toHaveText(['', 'Asset', 'Category', 'Role', 'Order', 'Type', 'Presence', 'Size', 'Modified']);
+  await expect(page.locator('.asset-list-cell--actions, .asset-details-link')).toHaveCount(0);
   const initial = sorted(SELECTED.map((name) => f.ids[name]));
   expect(await draftMembership(page)).toEqual(initial);
 
@@ -340,7 +341,7 @@ test('Role autosubmit still works and read-only releases keep cards without cont
     }
     await page.goto(baseURL + listPath);
     await expect(page.locator('.asset-list-header .asset-list-cell')).toHaveText(
-      ['Asset', 'Category', 'Role', 'Order', 'Type', 'Presence', 'Size', 'Modified', 'Actions']);
+      ['Asset', 'Category', 'Role', 'Order', 'Type', 'Presence', 'Size', 'Modified']);
     await expect(page.locator('[data-release-assets-live-region] input[name="selectedAssetIds"], [data-release-assets-live-region] select, [data-release-assets-live-region] form')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Save Selection' })).toHaveCount(0);
     const locked = rowParts(page, f.ids['02-image.png']);

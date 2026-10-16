@@ -255,12 +255,12 @@
         Column List in the Dashboard panel and table-scroll surfaces, on the
         column-aligned asset List rules (see "Column-aligned asset List" in
         creatorcrate.css) with an Asset Library grid that adds the Project
-        column. The title opens its information card; the thumbnail, Details
-        and the card's Open asset action navigate to the asset.
+        column. The title opens its information card, whose Open asset and
+        Open project actions navigate; the thumbnail opens its preview.
       #}
       {% set listColumns = [
         ['asset', 'Asset'], ['project', 'Project'], ['category', 'Category'], ['type', 'Type'], ['presence', 'Presence'],
-        ['releases', 'Releases'], ['size', 'Size'], ['modified', 'Modified'], ['actions', 'Actions']
+        ['releases', 'Releases'], ['size', 'Size'], ['modified', 'Modified']
       ] %}
       <div class="dashboard dashboard-panel asset-list-panel">
         <div class="dashboard-table-scroll asset-list-scroll" role="region" aria-label="Asset table" tabindex="0">
@@ -328,15 +328,6 @@
                       <dt>Modified</dt>
                       <dd>{% if asset.modified_at and asset.formattedModified %}{{ asset.formattedModified }}{% else %}<span class="dashboard-muted">—</span>{% endif %}</dd>
                     </dl>
-                    <div class="asset-list-cell asset-list-cell--actions">
-                      <div class="asset-list-card-actions">
-                        <a class="asset-details-link asset-details-link--{{ 'present' if asset.is_present else 'missing' }} asset-tooltip asset-tooltip--right" href="{{ detailUrl }}"
-                           aria-label="Asset details | File {{ 'present' if asset.is_present else 'missing!' }}"
-                           data-tooltip="Asset details | File {{ 'present' if asset.is_present else 'missing!' }}">
-                          {{ icons.icon('details') }}<span class="sr-only">View details</span>
-                        </a>
-                      </div>
-                    </div>
                   </article>
                 </li>
               {% endfor %}

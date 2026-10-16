@@ -222,6 +222,13 @@ describe('asset browser HTTP workflow', () => {
     return match ? decodeHtmlHref(match[1]) : null;
   }
 
+  // List rows have no Actions column; the title information card's Open asset
+  // action is the row's viewer link.
+  function openAssetHref(html) {
+    const match = html.match(/<a class="button button-small button-secondary" href="([^"]+)">Open asset<\/a>/);
+    return match ? decodeHtmlHref(match[1]) : null;
+  }
+
   function expectProjectReturnLead(html, { href, title, extraClass = '' }) {
     const heading = html.match(/<header class="page-heading">[\s\S]*?<\/header>/)?.[0] || '';
     const classSuffix = extraClass ? ` ${extraClass}` : '';
@@ -1785,13 +1792,13 @@ describe('asset browser HTTP workflow', () => {
     expect(presentCard).toContain('asset-indicator--present');
     expect(presentCard).toContain('aria-label="Present"');
     expect(presentCard).not.toContain('asset-indicator--missing');
-    expect(presentCard).toContain(`class="asset-details-link asset-details-link--present asset-tooltip asset-tooltip--right" href="/projects/${id}/assets/${presentAsset.id}?view=list"`);
-    expect(presentCard).toContain('aria-label="Asset details | File present" data-tooltip="Asset details | File present"');
+    expect(presentCard).not.toContain('asset-details-link');
+    expect(openAssetHref(presentCard)).toBe(`/projects/${id}/assets/${presentAsset.id}?view=list`);
     expect(missingCard).toContain('asset-indicator--missing');
     expect(missingCard).toContain('aria-label="Missing at last scan"');
     expect(missingCard).not.toContain('asset-indicator--present');
-    expect(missingCard).toContain(`class="asset-details-link asset-details-link--missing asset-tooltip asset-tooltip--right" href="/projects/${id}/assets/${missingAsset.id}?view=list"`);
-    expect(missingCard).toContain('aria-label="Asset details | File missing!" data-tooltip="Asset details | File missing!"');
+    expect(missingCard).not.toContain('asset-details-link');
+    expect(openAssetHref(missingCard)).toBe(`/projects/${id}/assets/${missingAsset.id}?view=list`);
   });
 
   // ─── Pagination ──────────────────────────────────────────────────
@@ -1905,7 +1912,7 @@ describe('asset browser HTTP workflow', () => {
     expect(nextUrl.searchParams.get('category')).toBe('all');
     expect(nextUrl.searchParams.get('page')).toBe('2');
 
-    const rowHref = anchorHref(response.text, 'asset-details-link');
+    const rowHref = openAssetHref(response.text);
     expect(rowHref).not.toBeNull();
     expect(new URL(rowHref, 'http://localhost').searchParams.get('category')).toBe('all');
 
@@ -2481,7 +2488,7 @@ describe('asset browser HTTP workflow', () => {
     expect(card).not.toBe('');
     expect(title.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()).toBe('file');
     expect(title).not.toMatch(/<a\b/);
-    expect(anchorHref(card, 'asset-details-link')).not.toBeNull();
+    expect(openAssetHref(card)).not.toBeNull();
     expect(card).toContain('unknown/deep');
     expect(res2.text).toContain('aria-label="Select unknown/deep/file.txt"');
   });
@@ -2501,7 +2508,7 @@ describe('asset browser HTTP workflow', () => {
     expect(card).not.toBe('');
     expect(title.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()).toBe('notes');
     expect(title).not.toMatch(/<a\b/);
-    expect(anchorHref(card, 'asset-details-link')).not.toBeNull();
+    expect(openAssetHref(card)).not.toBeNull();
     expect(card).toContain('Project root');
     expect(card).toContain('Uncategorized');
   });
@@ -3050,7 +3057,11 @@ describe('asset browser HTTP workflow', () => {
     expect(videoCard).toContain('data-asset-video-placeholder hidden');
     expect(videoCard).toContain(`${extension.toUpperCase()} video`);
     expect(videoCard).toMatch(new RegExp(`class="asset-(?:list-)?card-media-link asset-video-link" href="/projects/${id}/assets/${video.id}[?"][^>]*data-asset-video-preview-trigger data-video-src="${originalUrl}"`));
-    expect(videoCard).toMatch(new RegExp(`class="asset-details-link[^"]*" href="/projects/${id}/assets/${video.id}[?"]`));
+    // Grid keeps its Details link; List rows reach the viewer from the
+    // information card's Open asset action.
+    expect(videoCard).toMatch(view === 'grid'
+      ? new RegExp(`class="asset-details-link[^"]*" href="/projects/${id}/assets/${video.id}[?"]`)
+      : new RegExp(`<a class="button button-small button-secondary" href="/projects/${id}/assets/${video.id}[?"][^>]*>Open asset</a>`));
     expect(videoCard).not.toMatch(/<img\b/);
     const frames = videoCard.match(/<video\b[^>]*>/g) || [];
     expect(frames).toHaveLength(1);
@@ -3098,7 +3109,7 @@ describe('asset browser HTTP workflow', () => {
     // Non-default search/order values use the ordinary browser surface and
     // retain the normalized filter context on the card viewer target.
     const rowCard = assetListCardHtml(res2.text, heroTwo.id);
-    const rowHref = anchorHref(rowCard, 'asset-details-link');
+    const rowHref = openAssetHref(rowCard);
     expect(rowHref).not.toBeNull();
     const rowUrl = new URL(rowHref, 'http://localhost');
 
@@ -3145,7 +3156,7 @@ describe('asset browser HTTP workflow', () => {
     const asset = writeIndexedAsset(id, projectDir, 'only.png', await makePng());
 
     const res2 = await agent.get(`/projects/${id}/assets?page=99&view=list`).expect(200);
-    const rowHref = anchorHref(res2.text, 'asset-details-link');
+    const rowHref = openAssetHref(res2.text);
     expect(rowHref).not.toBeNull();
 
     // Only one asset -> pageCount 1 -> clamped to page 1 -> 'page' is the
@@ -4179,7 +4190,7 @@ describe('asset browser HTTP workflow', () => {
 
   // ─── Project list-card markup ───────────────────────────────────
 
-  it('renders Project List selection, rename, preview, and association contracts', async () => {
+  it('renders Project List selection, preview, and association contracts without row Rename', async () => {
     const res = await createProject('Project List Contracts');
     const id = Number(res.headers.location.replace('/projects/', ''));
     const projectDir = getProjectDir('Project List Contracts');
@@ -4193,24 +4204,20 @@ describe('asset browser HTTP workflow', () => {
     expect(card).not.toBe('');
     expect(response.text).toContain('<ul class="asset-list asset-list--project" role="list" aria-label="Project assets"');
     expect(card).toContain(`data-project-assets-preview-id="${asset.id}"`);
-    expect(card).toContain(`class="asset-details-link asset-details-link--present asset-tooltip asset-tooltip--right" href="/projects/${id}/assets/${asset.id}?view=list"`);
+    expect(openAssetHref(card)).toBe(`/projects/${id}/assets/${asset.id}?view=list`);
     expect(card).toContain(`name="selectedAssetIds" value="${asset.id}"`);
     expect(card).toContain('form="bulk-select-form"');
     expect(card).toContain('aria-label="Select renders/archive.final.png"');
 
-    const renameTrigger = card.match(/<a\b(?=[^>]*data-asset-rename-trigger)[^>]*>/)?.[0] || '';
-    expect(renameTrigger).toContain(`href="/projects/${id}/assets/${asset.id}?view=list"`);
-    expect(renameTrigger).toContain('aria-label="Rename archive.final.png"');
-    const renameEditor = card.match(/<form method="post" action="\/projects\/\d+\/assets\/\d+\/rename"\s+class="asset-card-rename-editor" data-asset-rename-editor hidden inert>[\s\S]*?<\/form>/)?.[0] || '';
-    expect(renameEditor).not.toBe('');
-    expect(renameEditor).toContain(`action="/projects/${id}/assets/${asset.id}/rename"`);
-    expect(renameEditor).toContain('name="origin" value="assets"');
-    expect(renameEditor).toContain('value="archive.final"');
-    expect(renameEditor).toContain('class="asset-rename-extension" aria-hidden="true">.png</span>');
-    expect(renameEditor).toMatch(/<input type="hidden" name="_csrf"[^>]*\bdisabled\b/);
-    expect(renameEditor).toMatch(/<input type="text"[^>]*data-asset-rename-input[^>]*\bdisabled\b/);
-    expect(renameEditor).toMatch(/<button[^>]*data-asset-rename-confirm[^>]*\bdisabled\b/);
-    expect(renameEditor).toMatch(/<button[^>]*data-asset-rename-cancel[^>]*\bdisabled\b/);
+    // Rename moved to File Processing: the List has no Actions column, row
+    // Rename button or inline editor.
+    expect(response.text).toContain('data-asset-list-columns="select asset category type presence releases size modified"');
+    expect(card).not.toContain('asset-list-cell--actions');
+    expect(card).not.toContain('asset-details-link');
+    expect(card).not.toContain('data-asset-rename-trigger');
+    expect(card).not.toContain('data-asset-rename-editor');
+    expect(card).not.toContain('data-asset-rename-scope');
+    expect(card).not.toContain(`/projects/${id}/assets/${asset.id}/rename`);
 
     expect(card).toContain(`href="/releases/${releaseId}"`);
     expect(card).toContain('Project List Release');
@@ -4312,7 +4319,7 @@ describe('asset browser HTTP workflow', () => {
     expect(fs.existsSync(path.join(projectDir, 'bad', 'name.kra'))).toBe(false);
   });
 
-  it('reopens the list Rename editor in the shared title area after a controlled failure', async () => {
+  it('does not restore the removed list Rename editor after a controlled failure', async () => {
     const res = await createProject('List Rename Failure');
     const id = Number(res.headers.location.replace('/projects/', ''));
     const projectDir = getProjectDir('List Rename Failure');
@@ -4327,18 +4334,13 @@ describe('asset browser HTTP workflow', () => {
       .expect(422);
 
     const card = assetListCardHtml(failed.text, asset.id);
-    expect(card).toBeDefined();
-    expect(card).toContain('data-asset-title-row hidden');
-    expect(card).toContain('data-asset-rename-trigger');
-    expect(card).toMatch(/class="asset-card-rename-editor" data-asset-rename-editor>/);
-    expect(card).not.toMatch(/class="asset-card-rename-editor"[^>]*\bhidden\b/);
-    expect(card).not.toMatch(/class="asset-card-rename-editor"[^>]*\binert\b/);
-    expect(card).not.toMatch(/class="asset-card-rename-input"[^>]*\bdisabled\b/);
-    expect(card).toContain('value="bad/name"');
-    expect(card).toContain('aria-label="New basename for scene.v2.kra"');
-    expect(card).not.toContain('row-rename-form');
-    expect(card).toContain('data-asset-rename-scope');
-    expect(card).toMatch(/<div class="asset-list-card-actions">[\s\S]*?data-asset-rename-trigger/);
+    expect(card).not.toBe('');
+    expect(card).toContain('data-dashboard-title-info');
+    expect(card).not.toContain('data-asset-title-row');
+    expect(card).not.toContain('data-asset-rename-trigger');
+    expect(card).not.toContain('data-asset-rename-editor');
+    expect(card).not.toContain('data-asset-rename-scope');
+    expect(card).not.toContain('asset-list-cell--actions');
     expect(fs.existsSync(path.join(projectDir, 'scene.v2.kra'))).toBe(true);
     expect(fs.existsSync(path.join(projectDir, 'bad', 'name.kra'))).toBe(false);
   });
@@ -4691,8 +4693,8 @@ describe('asset browser HTTP workflow', () => {
     const listCard = assetListCardHtml(list.text, inCategory.id);
     expect(listCard).toContain(`name="selectedAssetIds" value="${inCategory.id}"`);
     expect(listCard).toContain('form="bulk-select-form"');
-    expect(listCard).toContain(`action="/projects/${id}/assets/${inCategory.id}/rename"`);
-    expect(listCard).toContain('data-asset-rename-trigger');
+    expect(listCard).not.toContain(`action="/projects/${id}/assets/${inCategory.id}/rename"`);
+    expect(listCard).not.toContain('data-asset-rename-trigger');
 
     const ordinary = await agent.get(`/projects/${id}/assets?view=list`).expect(200);
     const ordinaryActionPanel = assetActionsPanelHtml(ordinary.text);
@@ -5407,7 +5409,7 @@ describe('asset browser HTTP workflow', () => {
       expect(card).not.toBe('');
       const title = card.match(/<h2 class="asset-list-card-title">([\s\S]*?)<\/h2>/)?.[1] || '';
       expect(title.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()).toBe(basename);
-      expect(anchorHref(card, 'asset-details-link')).not.toBeNull();
+      expect(openAssetHref(card)).not.toBeNull();
       if (location) expect(card).toContain(location);
       else expect(card).not.toContain('data-asset-containing-location');
       expect(card).toContain(category);
@@ -7619,30 +7621,24 @@ describe('asset browser HTTP workflow', () => {
 
     // ─── Main browser action integration ─────────────────────────────────
     describe('main assets-page rename and move-selected', () => {
-      it('renders an eligible list Rename form with the basename and complete canonical context', async () => {
+      it('omits list Rename while the row viewer link keeps the canonical context', async () => {
         const { id, asset } = await setupProjectWithAsset('Main List Rename', 'old.png');
 
         const res = await agent
           .get(`/projects/${id}/assets?search=old&extension=.png&presence=present&usage=unused&sort=size&order=desc&page=1&pageSize=50&view=list&unknown=strip-me`)
           .expect(200);
-        const match = res.text.match(new RegExp(`<form method="post" action="/projects/${id}/assets/${asset.id}/rename"[\\s\\S]*?<\\/form>`));
+        expect(res.text).not.toContain(`/projects/${id}/assets/${asset.id}/rename`);
+        expect(res.text).not.toContain('data-asset-rename-trigger');
+        expect(res.text).not.toContain('data-asset-rename-editor');
 
-        expect(match).not.toBeNull();
-        const form = match[0];
-        expect(form).toContain('name="origin" value="assets"');
-        expect(form).toContain('name="category" value="all"');
-        expect(form).toContain('name="search" value="old"');
-        expect(form).toContain('name="extension" value="png"');
-        expect(form).toContain('name="presence" value="present"');
-        expect(form).toContain('name="usage" value="unused"');
-        expect(form).toContain('name="sort" value="size"');
-        expect(form).toContain('name="order" value="desc"');
-        expect(form).toContain('name="page" value="1"');
-        expect(form).toContain('name="pageSize" value="50"');
-        expect(form).toContain('name="view" value="list"');
-        expect(form).toContain('value="old"');
-        expect(form).toContain('class="asset-rename-extension" aria-hidden="true">.png</span>');
-        expect(form).not.toContain('unknown');
+        const card = assetListCardHtml(res.text, asset.id);
+        const href = new URL(openAssetHref(card), 'http://localhost');
+        expect(href.pathname).toBe(`/projects/${id}/assets/${asset.id}`);
+        expect(href.searchParams.get('search')).toBe('old');
+        expect(href.searchParams.get('extension')).toBe('png');
+        expect(href.searchParams.get('sort')).toBe('size');
+        expect(href.searchParams.get('view')).toBe('list');
+        expect(href.searchParams.has('unknown')).toBe(false);
       });
 
       it('omits grid Rename while keeping bulk-selection form ownership valid', async () => {

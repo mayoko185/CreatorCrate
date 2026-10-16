@@ -8161,8 +8161,10 @@ describe('release HTTP workflow', () => {
       expect(listSection).not.toContain('asset-list-card--release is-selected');
       expect(listSection).not.toContain('aria-selected="true"');
       expect(listSection).not.toContain('<ul class="asset-grid"');
-      expect(listSection).toContain('data-asset-list-columns="order asset category role type presence size modified actions"');
-      expect(listSection).toMatch(/<div class="asset-list-cell asset-list-cell--actions">\s*<div class="asset-list-card-actions">\s*<a class="asset-details-link asset-tooltip asset-tooltip--right" href="\/projects\/\d+\/assets\/\d+"\s+aria-label="View details for [^"]+" data-tooltip="View asset details">/);
+      expect(listSection).toContain('data-asset-list-columns="order asset category role type presence size modified"');
+      expect(listSection).not.toContain('asset-list-cell--actions');
+      expect(listSection).not.toContain('asset-details-link');
+      expect(listSection).toMatch(/<a class="button button-small button-secondary" href="\/projects\/\d+\/assets\/\d+">Open asset<\/a>/);
       expect(listSection).not.toContain('asset-list-cell--select');
       expect(listSection).toMatch(/aria-current="page"[\s\S]*aria-label="List view"/);
       expect(listSection.indexOf('<p class="results-meta">')).toBeLessThan(listSection.indexOf('<ul class="asset-list'));
@@ -8705,7 +8707,8 @@ describe('release HTTP workflow', () => {
       const listSection = selectedSection(list.text);
       expect(listSection).toContain('<h2 class="asset-list-card-title">');
       expect(listSection).toContain('beta');
-      expect(listSection).toContain(`class="asset-details-link asset-details-link--present asset-tooltip asset-tooltip--right" href="${viewerUrl}"`);
+      expect(listSection).not.toContain('asset-details-link');
+      expect(listSection).toContain(`<a class="button button-small button-secondary" href="${viewerUrl}">Open asset</a>`);
       expect(listSection).toMatch(new RegExp(`src="${viewerUrl}/preview\\?v=[^"]+"`));
       expect(listSection).toContain(`beta.png`);
     });
@@ -8833,7 +8836,8 @@ describe('release HTTP workflow', () => {
 
       const res = await agent.get(`${fixture.releaseLocation}/assets?view=list`).expect(200);
       const section = selectedSection(res.text);
-      expect(section).toContain('data-asset-list-columns="select asset category role order type presence size modified actions"');
+      expect(section).toContain('data-asset-list-columns="select asset category role order type presence size modified"');
+      expect(section).not.toContain('asset-list-cell--actions');
 
       // Selected: the checkbox and Role form stay in their row columns; the
       // title is the shared trigger and the card adds membership, Role, Order.
@@ -8873,7 +8877,7 @@ describe('release HTTP workflow', () => {
       // Read-only: no Select column or controls, but titles keep their cards.
       db.prepare('UPDATE releases SET archived_at = CURRENT_TIMESTAMP WHERE id = ?').run(fixture.releaseId);
       const archived = selectedSection((await agent.get(`${fixture.releaseLocation}/assets?view=list`).expect(200)).text);
-      expect(archived).toContain('data-asset-list-columns="asset category role order type presence size modified actions"');
+      expect(archived).toContain('data-asset-list-columns="asset category role order type presence size modified"');
       expect(archived).not.toMatch(/<(?:form|select)\b/);
       expect(archived).not.toContain('selectedAssetIds');
       expect(archived).not.toContain('asset-selection-control');

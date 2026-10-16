@@ -1021,9 +1021,7 @@ export function enhanceAssetRenames(scope = globalThis.document) {
 
   const triggers = scope.querySelectorAll(ASSET_RENAME_TRIGGER_SELECTOR);
   triggers.forEach((trigger) => {
-    // Column List rows place Rename in the Actions cell, so the row itself
-    // (data-asset-rename-scope) holds the title row and editor.
-    const region = trigger.closest?.('.asset-card-title-controls, [data-asset-rename-scope]');
+    const region = trigger.closest?.('.asset-card-title-controls');
     const titleRow = region?.querySelector?.('[data-asset-title-row]');
     const editor = region?.querySelector?.(ASSET_RENAME_EDITOR_SELECTOR);
     if (!titleRow || !editor) return;

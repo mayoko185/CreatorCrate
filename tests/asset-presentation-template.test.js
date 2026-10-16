@@ -159,8 +159,10 @@ describe('reusable asset presentation macros', () => {
     expect(missingGrid).toContain('data-tooltip="Asset details | File missing!"');
     expect(presentList).toContain('asset-indicator--present');
     expect(missingList).toContain('asset-indicator--missing');
-    expect(presentList).toContain('asset-details-link--present');
-    expect(missingList).toContain('asset-details-link--missing');
+    // List rows carry no Actions column, so no Details control.
+    expect(presentList).not.toContain('asset-details-link');
+    expect(missingList).not.toContain('asset-details-link');
+    expect(presentList).not.toContain('asset-list-cell--actions');
   });
 
   it('uses the normalized preview derivative and keeps list filename navigation', () => {

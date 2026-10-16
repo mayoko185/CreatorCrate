@@ -93,9 +93,7 @@
     columns: columns,
     clockFormat: clockFormat,
     cardClass: 'asset-list-card--project asset-list-card--release',
-    titleControls: true,
     filenameLink: false,
-    detailsPresenceStatus: true,
     selected: asset.releaseContext.selected,
     selectable: not readOnly and (asset.is_present or asset.releaseContext.selected)
   }) %}
@@ -256,7 +254,7 @@
           {% else %}
             {# Select is omitted when the release is read-only. #}
             {% set listColumns = ([] if readOnly else ['select'])
-              .concat(['asset', 'category', 'role', 'order', 'type', 'presence', 'size', 'modified', 'actions']) %}
+              .concat(['asset', 'category', 'role', 'order', 'type', 'presence', 'size', 'modified']) %}
             {% call assetCards.listTable(listColumns, 'Release asset table') %}
             <ul class="asset-list asset-list--project asset-list--release" role="list" aria-label="Release assets" data-list-size="large">
               {% for asset in displayAssets %}

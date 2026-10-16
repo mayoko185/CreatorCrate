@@ -117,9 +117,10 @@ test('Selected asset titles hover, pin, dismiss and open the asset without navig
   const listPath = `/releases/${f.releaseId}?view=list`;
   await page.goto(baseURL + listPath);
 
-  // The read-only nine-column layout in the Dashboard panel.
+  // The read-only eight-column layout in the Dashboard panel; Modified is last.
   const header = page.locator('[data-selected-assets] .asset-list-header .asset-list-cell');
-  await expect(header).toHaveText(['Order', 'Asset', 'Category', 'Role', 'Type', 'Presence', 'Size', 'Modified', 'Actions']);
+  await expect(header).toHaveText(['Order', 'Asset', 'Category', 'Role', 'Type', 'Presence', 'Size', 'Modified']);
+  await expect(page.locator('[data-selected-assets] .asset-list-cell--actions')).toHaveCount(0);
   await expect(page.locator('[data-selected-assets] .dashboard-panel .dashboard-table-scroll')).toHaveCount(1);
   await expect(page.locator('[data-selected-assets] input, [data-selected-assets] select, [data-selected-assets] [draggable="true"]')).toHaveCount(0);
 
@@ -202,8 +203,8 @@ test('Selected asset titles hover, pin, dismiss and open the asset without navig
   await expect(title).toBeFocused();
   expect(currentPath(page)).toBe(listPath);
 
-  // The Details action still navigates to the Asset Viewer.
-  await expect(card.locator('.asset-details-link')).toHaveAttribute('href', `/projects/${f.projectId}/assets/${assetId}`);
+  // No Actions column: the row has no Details link.
+  await expect(card.locator('.asset-details-link')).toHaveCount(0);
 
   // The pinned card's Open asset action navigates to the Asset Viewer.
   await title.click();

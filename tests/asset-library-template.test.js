@@ -594,7 +594,7 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).not.toContain('Untagged');
   });
 
-  it('renders the nine-column Dashboard List with thumbnail, title trigger, project link and compact cells', () => {
+  it('renders the eight-column Dashboard List with thumbnail, title trigger, project link and compact cells', () => {
     const html = renderPage({
       filters: { view: 'list' },
       presentation: { view: 'list' },
@@ -602,7 +602,7 @@ describe('cross-project Asset Viewer template', () => {
     const cards = html.match(/<article class="asset-list-card"[\s\S]*?<\/article>/g) || [];
     const alphaCard = cards.find((card) => card.includes('data-asset-id="101"'));
     const betaCard = cards.find((card) => card.includes('data-asset-id="202"'));
-    const columns = ['asset', 'project', 'category', 'type', 'presence', 'releases', 'size', 'modified', 'actions'];
+    const columns = ['asset', 'project', 'category', 'type', 'presence', 'releases', 'size', 'modified'];
 
     expect(html).toContain('<div class="dashboard dashboard-panel asset-list-panel">');
     expect(html).toContain('<div class="dashboard-table-scroll asset-list-scroll" role="region" aria-label="Asset table" tabindex="0">');
@@ -610,7 +610,7 @@ describe('cross-project Asset Viewer template', () => {
     const header = html.match(/<div class="asset-list-header" aria-hidden="true">([\s\S]*?)<\/div>/)?.[1] || '';
     expect([...header.matchAll(/asset-list-cell--(\w+)">([^<]*)</g)].map((match) => [match[1], match[2]])).toEqual([
       ['asset', 'Asset'], ['project', 'Project'], ['category', 'Category'], ['type', 'Type'], ['presence', 'Presence'],
-      ['releases', 'Releases'], ['size', 'Size'], ['modified', 'Modified'], ['actions', 'Actions'],
+      ['releases', 'Releases'], ['size', 'Size'], ['modified', 'Modified'],
     ]);
     expect(html).toMatch(/<ul class="asset-list asset-list--library" role="list" aria-label="Assets across active projects">/);
     expect(html).not.toContain('<table class="data-table asset-table">');
@@ -651,9 +651,13 @@ describe('cross-project Asset Viewer template', () => {
     expect(cell(alphaCard, 'size')).toContain('<dd>1 KB</dd>');
     expect(cell(alphaCard, 'modified')).toContain('<dd>August 1, 2026 at 10:00 AM</dd>');
     expect(cell(betaCard, 'modified')).toContain('<span class="dashboard-muted">—</span>');
-    expect(alphaCard).toContain('class="asset-details-link asset-details-link--present asset-tooltip asset-tooltip--right" href="/projects/1/assets/101"');
-    expect(alphaCard).toMatch(/aria-label="Asset details \| File present"\s+data-tooltip="Asset details \| File present"/);
-    expect(betaCard).toContain('class="asset-details-link asset-details-link--missing asset-tooltip asset-tooltip--right" href="/projects/2/assets/202"');
+    // No Actions column: navigation lives in the title information card.
+    for (const card of [alphaCard, betaCard]) {
+      expect(card).not.toContain('asset-list-cell--actions');
+      expect(card).not.toContain('asset-list-card-actions');
+      expect(card).not.toContain('asset-details-link');
+    }
+    expect(header).not.toContain('Actions');
   });
 
   it('fills each List information card with actions, identity, project, file facts, tags and releases', () => {
@@ -1229,7 +1233,8 @@ describe('cross-project Asset Viewer template', () => {
     });
 
     expect(html).toContain('class="asset-list-card-media-link" href="/projects/1/assets/73" aria-label="View preview of table-preview.png from Test Project" data-project-assets-preview-id="73"');
-    expect(html).toContain('class="asset-details-link asset-details-link--present asset-tooltip asset-tooltip--right" href="/projects/1/assets/73"');
+    expect(html).toMatch(/class="calendar-release-info-actions">\s*<a class="button button-small button-secondary" href="\/projects\/1\/assets\/73">Open asset<\/a>/);
+    expect(html).not.toContain('asset-details-link');
   });
 
   it('renders the Asset Viewer defaults dialog in the overlay block', () => {
@@ -1534,7 +1539,7 @@ describe('Project Assets Asset Information popup', () => {
     expect(listCard).toContain('asset-indicator--missing');
     expect(listCard).toContain('class="asset-list-card-release-usage"');
     expect(listCard).toContain('Alpha Release');
-    expect(listCard).toContain('asset-details-link--missing');
+    expect(listCard).not.toContain('asset-details-link');
   });
 
   it('does not render the Project Assets Details control', () => {

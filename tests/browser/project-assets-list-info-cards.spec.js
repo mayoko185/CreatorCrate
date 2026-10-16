@@ -11,7 +11,7 @@ import { ensureAuthEnablement } from '../../src/auth/auth-state.js';
 import { closeDatabase, openDatabase, runMigrations } from '../../src/db.js';
 
 // Project Assets List title information cards in real Chromium: the shared
-// Dashboard hover/pin lifecycle, and the row selection, Rename and ordering
+// Dashboard hover/pin lifecycle, and the row selection and ordering
 // interactions around it. All data lives in a temporary root that is removed
 // afterward.
 const FILES = ['01-alpha.png', '02-beta.png', '03-gamma.png', '04-delta.png'];
@@ -213,33 +213,26 @@ test('List titles hover, pin and dismiss without selecting, reordering or naviga
   expect(pageErrors).toEqual([]);
 });
 
-test('Inline Rename, live filtering and List size keep working beside the information cards', async ({ page }) => {
+test('Columns end at Modified without row Rename; live filtering and List size keep working beside the information cards', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
-  const f = await createProject('Info Card Rename');
+  const f = await createProject('Info Card Columns');
   await page.goto(`${baseURL}/projects/${f.id}/assets?view=list`);
-  const row = rowParts(page, f.ids['01-alpha.png']);
 
-  // Rename opens the editor, Escape restores the title row and focus.
-  const rename = row.card.locator('[data-asset-rename-trigger]');
-  await rename.click();
-  const input = row.card.locator('[data-asset-rename-input]');
-  await expect(input).toBeFocused();
-  await expect(row.title).toBeHidden();
-  await expect(row.checkbox).not.toBeChecked();
-  await page.keyboard.press('Escape');
-  await expect(row.title).toBeVisible();
-  await expect(rename).toBeFocused();
-
-  // Rename submits and the renamed row keeps a working card.
-  await rename.click();
-  await input.fill('01-renamed');
-  await row.card.locator('[data-asset-rename-confirm]').click();
-  await expect(page.locator(`article.asset-list-card[data-asset-id="${f.ids['01-alpha.png']}"] [data-calendar-info-trigger]`))
-    .toHaveText('01-renamed');
-  const renamed = rowParts(page, f.ids['01-alpha.png']);
-  await renamed.title.click();
-  await expect(renamed.info.locator('.asset-list-info-filename')).toHaveText('01-renamed.png');
-  await page.keyboard.press('Escape');
+  // Rename lives in File Processing: no Actions column, Details link or row
+  // Rename, and every header cell sits over its row cell.
+  await expect(page.locator('.asset-list-header .asset-list-cell')).toHaveText(
+    ['', 'Asset', 'Category', 'Type', 'Presence', 'Releases', 'Size', 'Modified']);
+  await expect(page.locator('.asset-list-cell--actions, .asset-details-link, [data-asset-rename-trigger], [data-asset-rename-editor]')).toHaveCount(0);
+  const firstCard = page.locator('article.asset-list-card').first();
+  for (const column of ['asset', 'category', 'releases', 'modified']) {
+    const headerBox = await page.locator(`.asset-list-header .asset-list-cell--${column}`).boundingBox();
+    const cellBox = await firstCard.locator(`.asset-list-cell--${column}`).boundingBox();
+    expect(Math.abs(headerBox.x - cellBox.x)).toBeLessThan(1);
+    expect(Math.abs(headerBox.width - cellBox.width)).toBeLessThan(1);
+  }
+  const tableBox = await page.locator('.asset-list-table').boundingBox();
+  const modifiedBox = await page.locator('.asset-list-header .asset-list-cell--modified').boundingBox();
+  expect(Math.abs(tableBox.x + tableBox.width - (modifiedBox.x + modifiedBox.width))).toBeLessThan(1);
 
   // Live filtering replaces the rows and the new titles are bound.
   await page.evaluate(() => { window.__assetListMarker = true; });

@@ -287,7 +287,6 @@
 {% endmacro %}
 
 {% macro assetListCard(asset, isArchived,submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, canReorderCategory, autoRenameInitialIndex, autoRenameTotal, clockFormat, columns) %}
-  {% set renameAttempt = renameFailure and renameFailure.assetId == asset.id %}
   {% set selectionLabel = asset.relative_path or asset.filename %}
   {% set selected = not isArchived and asset.is_present and (asset.id ~ '') in submittedSelectedAssetIds %}
   <li class="asset-list-item{% if not asset.is_present %} is-missing{% endif %}"{% if canReorderCategory %}
@@ -305,15 +304,12 @@
       columns: columns,
       clockFormat: clockFormat,
       cardClass: 'asset-list-card--project',
-      titleControls: true,
       filenameLink: false,
-      titleRowHidden: renameAttempt,
       selected: selected,
       selectable: not isArchived and asset.is_present,
       mediaContextLabel: project.title,
       nsfwBlur: asset.nsfwBlur,
       previewSlideshowAssetId: asset.id,
-      detailsPresenceStatus: true,
       titleInfoId: 'project-asset-list-info-' ~ asset.id
     }) %}
       {% if slot == 'select' %}
@@ -336,10 +332,6 @@
         {% endif %}
       {% elif slot == 'order' %}
         <span class="auto-rename-order-indicator" data-auto-rename-order-indicator>{{ autoRenameInitialIndex + 1 }} of {{ autoRenameTotal }}</span>
-      {% elif slot == 'title-controls' %}
-        {% if not isArchived and asset.is_present %}
-          {{ renderAssetRenameEditor(project, asset, context, contextFields, renameAttempt, renameFailure, _csrf) }}
-        {% endif %}
       {% elif slot == 'title-info' %}
         {{ assetListInfoCard(asset, 'project-asset-list-info-' ~ asset.id) }}
       {% elif slot == 'releases' %}
@@ -347,11 +339,6 @@
         <span class="asset-list-card-release-usage">{{ releaseUsageInline(asset, false) }}</span>
         {% if asset.releaseSummary and asset.releaseSummary.count > 0 %}
           <span class="asset-list-card-release-count" aria-hidden="true">{{ asset.releaseSummary.count }}</span>
-        {% endif %}
-      {% elif slot == 'actions' %}
-        {% if not isArchived and asset.is_present %}
-          <a class="button button-small button-secondary asset-rename-trigger" data-asset-rename-trigger
-             href="{{ asset.viewerUrl }}" aria-label="Rename {{ asset.filename }}">Rename</a>
         {% endif %}
       {% endif %}
     {% endcall %}
@@ -874,7 +861,7 @@
              category ordering are available. #}
           {% set listColumns = ([] if isArchived else ['select'])
             .concat(['order'] if categoryCapabilities.canReorderCategory else [])
-            .concat(['asset', 'category', 'type', 'presence', 'releases', 'size', 'modified', 'actions']) %}
+            .concat(['asset', 'category', 'type', 'presence', 'releases', 'size', 'modified']) %}
           {% call assetPresentation.listTable(listColumns, 'Project asset table') %}
           <ul class="asset-list asset-list--project" role="list" aria-label="Project assets" data-list-size="large">
             {% for asset in assets %}

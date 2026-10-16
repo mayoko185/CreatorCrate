@@ -3538,7 +3538,7 @@
           [category-end role-start] auto [role-end type-start] auto
           [type-end presence-start] auto [presence-end releases-start] auto
           [releases-end size-start] auto [size-end modified-start] auto
-          [modified-end actions-start] auto [actions-end];
+          [modified-end];
         min-width: 56rem;
       }
       /* Release Manage Assets: Select | Asset | Category | Role | Order | … */
@@ -3549,7 +3549,7 @@
           [role-end order-start] auto [order-end type-start] auto
           [type-end presence-start] auto [presence-end releases-start] auto
           [releases-end size-start] auto [size-end modified-start] auto
-          [modified-end actions-start] auto [actions-end];
+          [modified-end];
       }
       .asset-list-header,
       .asset-list-table .asset-list,
@@ -3607,7 +3607,6 @@
       .asset-list-cell--releases { grid-column: releases; }
       .asset-list-cell--size { grid-column: size; }
       .asset-list-cell--modified { grid-column: modified; }
-      .asset-list-cell--actions { grid-column: actions; }
       .asset-list-table .asset-list-cell {
         display: flex;
         flex-direction: row;
@@ -3707,9 +3706,6 @@
         gap: 2px;
         min-width: 0;
       }
-      .asset-list-table .asset-card-title-row h2 {
-        flex: 1 1 auto;
-      }
       .asset-list-table .asset-list-card-title {
         min-width: 0;
         margin: 0;
@@ -3723,12 +3719,6 @@
       .asset-list-table .asset-list-card-title .asset-file-link,
       .asset-list-table .asset-list-card-title .asset-file-link:visited {
         display: inline;
-      }
-      /* Project Assets titles are Dashboard title triggers paired with their
-         information card; the trigger keeps the title's weight and
-         truncation, and its focus ring stays inside the clipped title. */
-      .asset-list-table .asset-card-title-row > .asset-list-card-title-info {
-        flex: 1 1 auto;
       }
       /* The shared pointer placement puts the card 12px above or below the
          pointer inside an 8px gutter, and clamps it over the pointer when it
@@ -3805,16 +3795,8 @@
         padding: 0 0.3rem;
         font-size: 0.6875rem;
       }
-      .asset-list-table .asset-card-rename-editor {
-        flex-wrap: wrap;
-        white-space: normal;
-      }
-      .asset-list-table .asset-action-error {
-        font-size: 0.75rem;
-        white-space: normal;
-      }
 
-      /* Releases, Role and Actions controls at row density. */
+      /* Releases and Role controls at row density. */
       .asset-list-table .asset-list-card-releases li {
         overflow: hidden;
         text-overflow: ellipsis;
@@ -3828,16 +3810,6 @@
         min-height: 1.75rem;
         padding-block: 0;
         font-size: 0.8125rem;
-      }
-      .asset-list-table .asset-list-card-actions {
-        display: flex;
-        align-items: center;
-        gap: var(--space-xs);
-      }
-      .asset-list-table .asset-rename-trigger {
-        height: 1.75rem;
-        min-height: 1.75rem;
-        line-height: 1;
       }
       /* The table scroll region clips below its last row, so that row's
          tooltips open upward. */
@@ -3854,7 +3826,7 @@
           [project-end category-start] auto [category-end type-start] auto
           [type-end presence-start] auto [presence-end releases-start] auto
           [releases-end size-start] auto [size-end modified-start] auto
-          [modified-end actions-start] auto [actions-end];
+          [modified-end];
         min-width: 64rem;
       }
       .asset-list-table--library .asset-list-cell--project {
