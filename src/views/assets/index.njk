@@ -6,6 +6,8 @@
 {% import "partials/dropdown.njk" as dropdown %}
 {% import "partials/asset-information.njk" as assetInformation %}
 {% import "partials/asset-presentation.njk" as assetPresentation %}
+{% import "partials/dashboard-title-info.njk" as titleInfo %}
+{% import "partials/calendar-info-card.njk" as infoCard %}
 
 {% set page_title = "Asset Viewer" %}
 {% set assetVideoPreview = true %}
@@ -49,15 +51,6 @@
   {% endfor %}
 {% endif %}
 
-{% macro renderPresence(asset) %}
-  {% if asset.is_present %}
-    {% set status = 'present-at-last-scan' %}
-  {% else %}
-    {% set status = 'missing-at-last-scan' %}
-  {% endif %}
-  {% include "partials/status-badge.njk" %}
-{% endmacro %}
-
 {% macro renderListLocation(asset) %}
   {% if asset.category_directory_slug %}
     {{ asset.category_directory_slug }}{% if asset.nested_path %}/{{ asset.nested_path }}{% endif %}
@@ -67,18 +60,6 @@
     {{ asset.relative_path | replace('/' ~ asset.filename, '') }}
   {% else %}
     Project root
-  {% endif %}
-{% endmacro %}
-
-{% macro renderReleaseTitles(asset, listClass, emptyClass, linkClass) %}
-  {% if asset.release_titles and asset.release_titles.length > 0 %}
-    <ul class="{{ listClass }}" aria-label="Associated releases">
-      {% for release in asset.release_titles %}
-        <li><a class="{{ linkClass or 'asset-viewer-grid-card-release-link' }}" href="/releases/{{ release.id }}">{{ release.title }}</a></li>
-      {% endfor %}
-    </ul>
-  {% else %}
-    <span class="{{ emptyClass }}">Not in any release</span>
   {% endif %}
 {% endmacro %}
 
@@ -109,10 +90,14 @@
   </div>
 {% endmacro %}
 
+{# List thumbnail in the Dashboard thumbnail box. Placeholders are icons or
+   the short type label with the full state in their title and sr-only text,
+   since the 48px box cannot hold a sentence. #}
 {% macro renderListPreview(asset, detailUrl, displayName) %}
   {% set previewUrl = asset.preview_url or asset.thumbnail_url %}
   {% set previewAvailable = asset.is_present and previewUrl and asset.preview_state != 'unsupported' and asset.preview_state != 'missing' %}
-  <div class="asset-list-card-media"{% if previewAvailable %} data-preview-enhancement data-preview-state="loading"{% endif %}>
+  {% set typeLabel = (asset.extension | upper) or 'File' %}
+  <div class="asset-list-card-media dashboard-thumb{% if asset.preview and asset.preview.kind == 'krita' %} asset-media--krita{% endif %}"{% if previewAvailable %} data-preview-enhancement data-preview-state="loading"{% endif %}>
     {% if previewAvailable %}
       <a class="asset-list-card-media-link" href="{{ detailUrl }}" aria-label="View preview of {{ displayName }} from {{ asset.project_title }}" data-project-assets-preview-id="{{ asset.id }}">
         <img class="asset-list-card-media-image{% if asset.nsfwBlur %} asset-image--nsfw-blurred{% endif %}"
@@ -122,17 +107,70 @@
              decoding="async"
              data-preview-image>
       </a>
-      <span class="asset-list-card-media-fallback" data-preview-fallback hidden>{{ asset.extension or 'Preview unavailable' }}</span>
+      <span class="asset-list-card-media-fallback" data-preview-fallback hidden>{{ typeLabel }}</span>
     {% elif not asset.is_present %}
-      <span class="asset-list-card-media-placeholder asset-list-card-media-placeholder--missing">Missing at last scan</span>
+      <span class="asset-list-card-media-placeholder asset-list-card-media-placeholder--missing" title="Missing at last scan">{{ icons.icon('warning') }}<span class="sr-only">Missing at last scan</span></span>
     {% elif asset.preview_state == 'video' %}
       {{ assetPresentation.videoPlaceholder(asset, 'list', detailUrl, 'Play video ' ~ displayName ~ ' from ' ~ asset.project_title, { nsfwBlur: asset.nsfwBlur, title: displayName }) }}
     {% elif asset.preview_state == 'unsupported' %}
-      <span class="asset-list-card-media-placeholder">{{ asset.extension or 'Asset' }} — preview not supported</span>
+      <span class="asset-list-card-media-placeholder" title="{{ typeLabel }} — preview not supported">{{ typeLabel }}<span class="sr-only"> — preview not supported</span></span>
     {% else %}
-      <span class="asset-list-card-media-placeholder">Preview unavailable</span>
+      <span class="asset-list-card-media-placeholder" title="Preview unavailable">{{ icons.icon('assets') }}<span class="sr-only">Preview unavailable</span></span>
     {% endif %}
   </div>
+{% endmacro %}
+
+{#
+  List title information card on the Calendar card shell, bound by
+  enhanceDashboardTitleInfoCards through the title trigger. Only an image
+  preview is shown: videos and other files state their preview instead, so
+  hovering never loads or plays media.
+#}
+{% macro renderListInfoCard(asset, detailId, detailUrl, projectUrl, displayName) %}
+  {% set previewUrl = asset.preview_url or asset.thumbnail_url %}
+  {% set previewAvailable = asset.is_present and previewUrl and asset.preview_state != 'unsupported' and asset.preview_state != 'missing' and asset.preview_state != 'video' %}
+  {% set cardImage = { state: 'available', previewUrl: previewUrl, alt: asset.previewAltText or ('Preview of ' ~ displayName) } if previewAvailable else null %}
+  {% set typeLabel = (asset.extension | upper) or 'File' %}
+  {% call infoCard.shell(detailId, displayName, cardImage, asset.nsfwBlur) %}
+    <div class="calendar-release-info-actions">
+      <a class="button button-small button-secondary" href="{{ detailUrl }}">Open asset</a>
+      <a class="button button-small button-secondary" href="{{ projectUrl }}">Open project</a>
+    </div>
+    <h3 class="asset-viewer-grid-card-info-heading asset-list-info-filename">{{ displayName }}</h3>
+    <dl class="asset-viewer-grid-card-info-list">
+      <div class="asset-viewer-grid-card-info-row"><dt>Path</dt><dd class="asset-list-info-path">{{ asset.relative_path or '—' }}</dd></div>
+      {% if not previewAvailable %}
+        <div class="asset-viewer-grid-card-info-row"><dt>Preview</dt><dd>
+          {%- if not asset.is_present %}File missing at last scan
+          {%- elif asset.preview_state == 'video' %}{{ typeLabel }} video — play it from the row thumbnail
+          {%- elif asset.preview_state == 'unsupported' %}{{ typeLabel }} — preview not supported
+          {%- else %}Preview unavailable{% endif -%}
+        </dd></div>
+      {% endif %}
+      <div class="asset-viewer-grid-card-info-row"><dt>Project</dt><dd>{{ asset.project_title or '—' }}</dd></div>
+      <div class="asset-viewer-grid-card-info-row"><dt>Project status</dt><dd>{% set status = asset.project_status %}{% set projectStatusOption = asset.projectStatusOption %}{% include "partials/status-badge.njk" %}</dd></div>
+      <div class="asset-viewer-grid-card-info-row"><dt>Project type</dt><dd>{% if asset.project_type %}{% set projectType = asset.project_type %}{% set projectTypeOption = asset.projectTypeOption %}{% include "partials/project-type-badge.njk" %}{% else %}—{% endif %}</dd></div>
+      <div class="asset-viewer-grid-card-info-row"><dt>Category</dt><dd>{{ assetInformation.renderCategory(asset) }}</dd></div>
+      <div class="asset-viewer-grid-card-info-row"><dt>Type</dt><dd>{{ typeLabel }}{% if asset.extension %} (.{{ asset.extension }}){% endif %}</dd></div>
+      <div class="asset-viewer-grid-card-info-row"><dt>Presence</dt><dd>{{ 'Present' if asset.is_present else 'Missing at last scan' }}</dd></div>
+      <div class="asset-viewer-grid-card-info-row"><dt>Size</dt><dd>{{ asset.formattedSize or '—' }}{% if asset.size_bytes == 0 or asset.size_bytes %} ({{ asset.size_bytes }} bytes){% endif %}</dd></div>
+      <div class="asset-viewer-grid-card-info-row"><dt>Modified</dt><dd>{{ asset.formattedModified or '—' }}</dd></div>
+    </dl>
+    <div class="asset-viewer-grid-card-info-section">
+      <span class="asset-viewer-grid-card-info-section-label">Effective tags</span>
+      {{ assetInformation.renderEffectiveTags(asset, 'asset-viewer-grid-card-info-tags', 'asset-viewer-grid-card-info-empty') }}
+    </div>
+    <div class="asset-viewer-grid-card-info-section">
+      <span class="asset-viewer-grid-card-info-section-label">Releases</span>
+      {% if asset.release_titles and asset.release_titles.length > 0 %}
+        <ul class="asset-list-info-releases" aria-label="Associated releases">
+          {% for release in asset.release_titles %}<li><a href="/releases/{{ release.id }}">{{ release.title }}</a></li>{% endfor %}
+        </ul>
+      {% else %}
+        <span class="asset-viewer-grid-card-info-empty">Not used by a release</span>
+      {% endif %}
+    </div>
+  {% endcall %}
 {% endmacro %}
 
 {% block content %}
@@ -213,76 +251,99 @@
         {% endfor %}
       </ul>
     {% else %}
-      <ul class="asset-list" role="list" aria-label="Assets across active projects">
-        {% for asset in assets %}
-          {% set detailUrl = asset.detailUrl or ("/projects/" ~ asset.project_id ~ "/assets/" ~ asset.id) %}
-          {% set projectUrl = "/projects/" ~ asset.project_id %}
-          {% set displayName = asset.filename or asset.relative_path or 'Unnamed asset' %}
-          <li class="asset-list-item{% if not asset.is_present %} is-missing{% endif %}">
-            <article class="asset-list-card" data-asset-id="{{ asset.id }}">
-              {{ renderListPreview(asset, detailUrl, displayName) }}
-
-              <div class="asset-list-card-body">
-                <div class="asset-list-card-header">
-                  <div class="asset-list-card-heading">
-                    <h2 class="asset-list-card-title">
-                      <a class="asset-file-link" href="{{ detailUrl }}"
-                         aria-label="View details for {{ displayName }} from {{ asset.project_title }}">{{ displayName }}</a>
-                    </h2>
-                    <span class="asset-list-card-location" data-asset-containing-location>{{ renderListLocation(asset) }}</span>
-                  </div>
-                  <div class="asset-list-card-status" role="group" aria-label="Asset status">
-                    <span class="asset-list-card-presence">{{ renderPresence(asset) }}</span>
-                    <a class="asset-details-link asset-details-link--{{ 'present' if asset.is_present else 'missing' }} asset-tooltip asset-tooltip--right" href="{{ detailUrl }}"
-                       aria-label="Asset details | File {{ 'present' if asset.is_present else 'missing!' }}"
-                       data-tooltip="Asset details | File {{ 'present' if asset.is_present else 'missing!' }}">
-                      {{ icons.icon('details') }}<span class="sr-only">View details</span>
-                    </a>
-                  </div>
-                </div>
-
-                <dl class="asset-list-card-metadata">
-                  <div class="asset-list-card-meta asset-list-card-meta--project">
-                    <dt>Project</dt>
-                    <dd><a class="asset-project-link" href="{{ projectUrl }}" aria-label="View project {{ asset.project_title }}">{{ asset.project_title }}</a></dd>
-                  </div>
-                  <div class="asset-list-card-meta asset-list-card-meta--category">
-                    <dt>Category</dt>
-                    <dd>{{ assetInformation.renderCategory(asset) }}</dd>
-                  </div>
-                  <div class="asset-list-card-meta asset-list-card-meta--extension">
-                    <dt>Extension</dt>
-                    <dd><span class="asset-type-label">{{ asset.extension or '—' }}</span></dd>
-                  </div>
-                  <div class="asset-list-card-meta asset-list-card-meta--size">
-                    <dt>Size</dt>
-                    <dd>{% if asset.size_bytes == 0 or asset.size_bytes %}{{ asset.size_bytes }} bytes{% else %}—{% endif %}</dd>
-                  </div>
-                  <div class="asset-list-card-meta asset-list-card-meta--modified">
-                    <dt>Modified</dt>
-                    <dd>{{ asset.modified_at | formatSqliteTimestamp(clockFormat) | formatIsoTimestamp(clockFormat) or '—' }}</dd>
-                  </div>
-                </dl>
-
-                <div class="asset-list-card-associations">
-                  <section class="asset-list-card-association asset-list-card-association--tags">
-                    <h3 class="asset-list-card-association-label">Effective tags</h3>
-                    <div class="asset-list-card-association-content">
-                      {{ assetInformation.renderEffectiveTags(asset, 'asset-list-card-tags', 'asset-list-card-empty') }}
+      {#
+        Column List in the Dashboard panel and table-scroll surfaces, on the
+        column-aligned asset List rules (see "Column-aligned asset List" in
+        creatorcrate.css) with an Asset Library grid that adds the Project
+        column. The title opens its information card; the thumbnail, Details
+        and the card's Open asset action navigate to the asset.
+      #}
+      {% set listColumns = [
+        ['asset', 'Asset'], ['project', 'Project'], ['category', 'Category'], ['type', 'Type'], ['presence', 'Presence'],
+        ['releases', 'Releases'], ['size', 'Size'], ['modified', 'Modified'], ['actions', 'Actions']
+      ] %}
+      <div class="dashboard dashboard-panel asset-list-panel">
+        <div class="dashboard-table-scroll asset-list-scroll" role="region" aria-label="Asset table" tabindex="0">
+          <div class="asset-list-table asset-list-table--library" data-asset-list-columns="{% for column in listColumns %}{{ column[0] }}{% if not loop.last %} {% endif %}{% endfor %}">
+            <div class="asset-list-header" aria-hidden="true">
+              {% for column in listColumns %}<span class="asset-list-cell asset-list-cell--{{ column[0] }}">{{ column[1] }}</span>{% endfor %}
+            </div>
+            <ul class="asset-list asset-list--library" role="list" aria-label="Assets across active projects">
+              {% for asset in assets %}
+                {% set detailUrl = asset.detailUrl or ("/projects/" ~ asset.project_id ~ "/assets/" ~ asset.id) %}
+                {% set projectUrl = "/projects/" ~ asset.project_id %}
+                {% set displayName = asset.filename or asset.relative_path or 'Unnamed asset' %}
+                {% set detailId = 'asset-library-list-info-' ~ asset.id %}
+                {% set releaseCount = asset.release_titles.length if asset.release_titles else 0 %}
+                <li class="asset-list-item{% if not asset.is_present %} is-missing{% endif %}">
+                  <article class="asset-list-card" data-asset-id="{{ asset.id }}">
+                    <div class="asset-list-cell asset-list-cell--asset">
+                      {{ renderListPreview(asset, detailUrl, displayName) }}
+                      <div class="asset-list-card-heading">
+                        <div class="dashboard-title-info asset-list-card-title-info" data-dashboard-title-info>
+                          <h2 class="asset-list-card-title">{{ titleInfo.trigger(displayName, detailId) }}</h2>
+                          {{ renderListInfoCard(asset, detailId, detailUrl, projectUrl, displayName) }}
+                        </div>
+                        <div class="asset-list-card-details">
+                          <span class="asset-list-card-location" data-asset-containing-location>{{ renderListLocation(asset) }}</span>
+                        </div>
+                      </div>
                     </div>
-                  </section>
-                  <section class="asset-list-card-association asset-list-card-association--releases">
-                    <h3 class="asset-list-card-association-label">Releases</h3>
-                    <div class="asset-list-card-association-content">
-                      {{ renderReleaseTitles(asset, 'asset-list-card-releases', 'asset-list-card-empty', 'asset-list-card-release-link') }}
+                    <dl class="asset-list-cell asset-list-cell--project asset-list-card-meta asset-list-card-meta--project">
+                      <dt>Project</dt>
+                      <dd>{% if asset.project_title %}<a class="asset-project-link" href="{{ projectUrl }}" aria-label="View project {{ asset.project_title }}">{{ asset.project_title }}</a>{% else %}<span class="dashboard-muted">—</span>{% endif %}</dd>
+                    </dl>
+                    <dl class="asset-list-cell asset-list-cell--category asset-list-card-meta asset-list-card-meta--category">
+                      <dt>Category</dt>
+                      <dd>{{ assetInformation.renderCategory(asset) }}</dd>
+                    </dl>
+                    <dl class="asset-list-cell asset-list-cell--type asset-list-card-meta asset-list-card-meta--type">
+                      <dt>Type</dt>
+                      <dd>{% if asset.extension %}<span class="asset-type-label">{{ asset.extension | upper }}</span>{% else %}<span class="dashboard-muted">—</span>{% endif %}</dd>
+                    </dl>
+                    <dl class="asset-list-cell asset-list-cell--presence asset-list-card-meta asset-list-card-meta--presence">
+                      <dt>Presence</dt>
+                      <dd class="asset-list-card-presence">{{ assetPresentation.presenceIndicator(asset, 'left') }}</dd>
+                    </dl>
+                    <dl class="asset-list-cell asset-list-cell--releases asset-list-card-meta asset-list-card-meta--releases">
+                      <dt>Releases</dt>
+                      <dd>
+                        {#- Release titles are in the title information card. -#}
+                        {% if releaseCount > 0 %}
+                          {% set releaseUsageLabel = 'Used in ' ~ releaseCount ~ (' release' if releaseCount == 1 else ' releases') %}
+                          <span class="asset-indicator asset-icon-control asset-tooltip asset-indicator--used" role="img" tabindex="0"
+                                aria-label="{{ releaseUsageLabel }}" data-tooltip="{{ releaseUsageLabel }}">R</span>
+                          <span class="asset-list-card-release-count" aria-hidden="true">{{ releaseCount }}</span>
+                        {% else %}
+                          <span class="asset-indicator asset-icon-control asset-tooltip asset-indicator--unused" role="img" tabindex="0"
+                                aria-label="Not used by a release" data-tooltip="Not used by a release">U</span>
+                        {% endif %}
+                      </dd>
+                    </dl>
+                    <dl class="asset-list-cell asset-list-cell--size asset-list-card-meta asset-list-card-meta--size">
+                      <dt>Size</dt>
+                      <dd>{% if asset.formattedSize %}{{ asset.formattedSize }}{% else %}<span class="dashboard-muted">—</span>{% endif %}</dd>
+                    </dl>
+                    <dl class="asset-list-cell asset-list-cell--modified asset-list-card-meta asset-list-card-meta--modified">
+                      <dt>Modified</dt>
+                      <dd>{% if asset.modified_at and asset.formattedModified %}{{ asset.formattedModified }}{% else %}<span class="dashboard-muted">—</span>{% endif %}</dd>
+                    </dl>
+                    <div class="asset-list-cell asset-list-cell--actions">
+                      <div class="asset-list-card-actions">
+                        <a class="asset-details-link asset-details-link--{{ 'present' if asset.is_present else 'missing' }} asset-tooltip asset-tooltip--right" href="{{ detailUrl }}"
+                           aria-label="Asset details | File {{ 'present' if asset.is_present else 'missing!' }}"
+                           data-tooltip="Asset details | File {{ 'present' if asset.is_present else 'missing!' }}">
+                          {{ icons.icon('details') }}<span class="sr-only">View details</span>
+                        </a>
+                      </div>
                     </div>
-                  </section>
-                </div>
-              </div>
-            </article>
-          </li>
-        {% endfor %}
-      </ul>
+                  </article>
+                </li>
+              {% endfor %}
+            </ul>
+          </div>
+        </div>
+      </div>
     {% endif %}
 
     {% if pageCount > 1 %}

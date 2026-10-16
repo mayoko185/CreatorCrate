@@ -553,10 +553,10 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(grid.text).not.toContain('<select id="asset-tag"');
 
     const list = await request(app).get('/asset-viewer?view=list').expect(200);
-    expect(list.text).toContain('<ul class="asset-list" role="list" aria-label="Assets across active projects">');
+    expect(list.text).toContain('<ul class="asset-list asset-list--library" role="list" aria-label="Assets across active projects">');
     expect(list.text).not.toContain('<table class="data-table asset-table">');
     expect((list.text.match(/<article class="asset-list-card"/g) || [])).toHaveLength(2);
-    expect(list.text).toContain('<ul class="asset-list-card-tags" aria-label="Effective tags">');
+    expect((list.text.match(/<ul class="asset-viewer-grid-card-info-tags" aria-label="Effective tags">/g) || [])).toHaveLength(2);
     expect(list.text).toMatch(new RegExp(`name="tag"[^>]+value="${shared.id}"`));
     expect((list.text.match(/<span class="asset-tag-origin">/g) || [])).toHaveLength(2);
     expect((list.text.match(/<span class="asset-tag-origin"><span class="sr-only">Inherited from <\/span>Project<\/span>/g) || [])).toHaveLength(2);
@@ -580,7 +580,8 @@ describe('cross-project Asset Viewer HTTP route', () => {
       expect(card).toMatch(new RegExp(`src="/projects/${project.id}/assets/${asset.id}/preview\\?v=`));
       expect(card).not.toContain(`/projects/${project.id}/assets/${asset.id}/thumbnail`);
       expect(card).toContain(`class="asset-list-card-media-link" href="/projects/${project.id}/assets/${asset.id}"`);
-      expect(card).toContain(`class="asset-file-link" href="/projects/${project.id}/assets/${asset.id}"`);
+      expect(card).toContain(`data-calendar-info-trigger aria-controls="asset-library-list-info-${asset.id}"`);
+      expect(card).toContain(`<a class="button button-small button-secondary" href="/projects/${project.id}/assets/${asset.id}">Open asset</a>`);
     }
   });
 
@@ -605,7 +606,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     const response = await request(app).get(`/asset-viewer?tag=${shared.id}&view=list`).expect(200);
 
     expect(response.headers.location).toBeUndefined();
-    expect(response.text).toContain('<ul class="asset-list" role="list" aria-label="Assets across active projects">');
+    expect(response.text).toContain('<ul class="asset-list asset-list--library" role="list" aria-label="Assets across active projects">');
     expect(response.text).not.toContain('<table class="data-table asset-table">');
     expect((response.text.match(/<article class="asset-list-card"/g) || [])).toHaveLength(3);
     expect(response.text).toContain('alpha-first.png');
@@ -617,7 +618,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(response.text).toContain('3 assets found');
 
     const inheritedResponse = await request(app).get(`/asset-viewer?tag=${projectOnly.id}&view=list`).expect(200);
-    expect(inheritedResponse.text).toContain('<ul class="asset-list" role="list" aria-label="Assets across active projects">');
+    expect(inheritedResponse.text).toContain('<ul class="asset-list asset-list--library" role="list" aria-label="Assets across active projects">');
     expect(inheritedResponse.text).not.toContain('<table class="data-table asset-table">');
     expect((inheritedResponse.text.match(/<article class="asset-list-card"/g) || [])).toHaveLength(2);
     expect(inheritedResponse.text).toContain('alpha-first.png');
@@ -729,7 +730,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
 
     const response = await request(app).get(redirect.headers.location).expect(200);
     expect(response.headers.location).toBeUndefined();
-    expect(response.text).toContain('<ul class="asset-list" role="list" aria-label="Assets across active projects">');
+    expect(response.text).toContain('<ul class="asset-list asset-list--library" role="list" aria-label="Assets across active projects">');
     expect(response.text).not.toContain('<table class="data-table asset-table">');
     expect(response.text).toContain('shared.png');
     expect(response.text).toContain(`href="/projects/${alpha.id}/assets/${selected.id}"`);

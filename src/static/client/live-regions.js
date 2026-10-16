@@ -2252,6 +2252,7 @@ function enhanceAssetLibraryLiveRegion(region) {
   enhanceDropdowns(liveRegionDocument(region));
   enhanceAssetViewerFilterDisclosures(liveRegionDocument(region));
   enhanceAssetViewerInfoCards(region);
+  enhanceDashboardTitleInfoCards(region);
   enhanceSlideshow(liveRegionDocument(region));
   enhanceProjectAssetsPreviewSlideshow(region);
 }

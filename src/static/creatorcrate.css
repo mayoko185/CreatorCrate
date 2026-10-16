@@ -3845,6 +3845,30 @@
         top: auto;
         bottom: calc(100% + var(--space-xs));
       }
+      /* Asset Library List: the same column-aligned List with a Project
+         column after Asset. Project and Category truncate so one long name
+         cannot widen every row. */
+      .asset-list-table--library {
+        grid-template-columns:
+          [asset-start] minmax(16rem, 1fr) [asset-end project-start] auto
+          [project-end category-start] auto [category-end type-start] auto
+          [type-end presence-start] auto [presence-end releases-start] auto
+          [releases-end size-start] auto [size-end modified-start] auto
+          [modified-end actions-start] auto [actions-end];
+        min-width: 64rem;
+      }
+      .asset-list-table--library .asset-list-cell--project {
+        grid-column: project;
+      }
+      .asset-list-table--library .asset-list-card .asset-list-cell--project,
+      .asset-list-table--library .asset-list-card .asset-list-cell--category {
+        max-width: 12rem;
+      }
+      .asset-list-table--library .asset-list-card .asset-list-cell--project > dd,
+      .asset-list-table--library .asset-list-card .asset-list-cell--category > dd {
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
 
       /* ── Pagination ── */
       .pagination {

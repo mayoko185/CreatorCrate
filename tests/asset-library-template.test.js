@@ -594,76 +594,74 @@ describe('cross-project Asset Viewer template', () => {
     expect(html).not.toContain('Untagged');
   });
 
-  it('renders compact Projects-style List cards with detail, preview, metadata, release, and fallback links', () => {
+  it('renders the nine-column Dashboard List with thumbnail, title trigger, project link and compact cells', () => {
     const html = renderPage({
       filters: { view: 'list' },
       presentation: { view: 'list' },
     });
-    const source = fs.readFileSync(TEMPLATE_PATH, 'utf8');
     const cards = html.match(/<article class="asset-list-card"[\s\S]*?<\/article>/g) || [];
-    const alphaCard = cards.find((card) => card.includes('Alpha Project'));
-    const betaCard = cards.find((card) => card.includes('Beta Project'));
+    const alphaCard = cards.find((card) => card.includes('data-asset-id="101"'));
+    const betaCard = cards.find((card) => card.includes('data-asset-id="202"'));
+    const columns = ['asset', 'project', 'category', 'type', 'presence', 'releases', 'size', 'modified', 'actions'];
 
-    expect(html).toMatch(/<ul class="asset-list" role="list" aria-label="Assets across active projects">/);
+    expect(html).toContain('<div class="dashboard dashboard-panel asset-list-panel">');
+    expect(html).toContain('<div class="dashboard-table-scroll asset-list-scroll" role="region" aria-label="Asset table" tabindex="0">');
+    expect(html).toContain(`<div class="asset-list-table asset-list-table--library" data-asset-list-columns="${columns.join(' ')}">`);
+    const header = html.match(/<div class="asset-list-header" aria-hidden="true">([\s\S]*?)<\/div>/)?.[1] || '';
+    expect([...header.matchAll(/asset-list-cell--(\w+)">([^<]*)</g)].map((match) => [match[1], match[2]])).toEqual([
+      ['asset', 'Asset'], ['project', 'Project'], ['category', 'Category'], ['type', 'Type'], ['presence', 'Presence'],
+      ['releases', 'Releases'], ['size', 'Size'], ['modified', 'Modified'], ['actions', 'Actions'],
+    ]);
+    expect(html).toMatch(/<ul class="asset-list asset-list--library" role="list" aria-label="Assets across active projects">/);
     expect(html).not.toContain('<table class="data-table asset-table">');
     expect((html.match(/<li class="asset-list-item/g) || []).length).toBe(2);
     expect(cards).toHaveLength(2);
-    expect(alphaCard).toBeDefined();
-    expect(source).toMatch(/<article class="asset-list-card"[\s\S]*?>\s*\{\{ renderListPreview\(asset, detailUrl, displayName\) \}\}\s*<div class="asset-list-card-body">[\s\S]*?<\/div>\s*<\/article>/);
-    expect(source).not.toContain('asset-list-card-actions');
-    expect(html).toContain('>Alpha Project</a>');
-    expect(html).toContain('>Beta Project</a>');
-    expect(html).toContain('href="/projects/1/assets/101"');
-    expect(html).toContain('href="/projects/2/assets/202"');
-    expect(html).toContain('class="asset-list-card-media-link" href="/projects/1/assets/101"');
-    expect(html).toContain('class="asset-list-card-media-image"');
-    expect(html).toContain('src="/projects/1/assets/101/preview?v=alpha"');
-    expect(html).not.toContain('src="/projects/1/assets/101/thumbnail?v=alpha"');
-    expect(html).toContain('alt=""');
-    expect(html).toContain('class="asset-file-link" href="/projects/1/assets/101"');
-    expect(html).toContain('class="asset-file-link" href="/projects/2/assets/202"');
-    expect(html).toMatch(/data-asset-containing-location[\s\S]*?renders[\s\S]*?<\/span>/);
-    expect(html).toMatch(/data-asset-containing-location[\s\S]*?source[\s\S]*?<\/span>/);
-    expect(html).not.toContain('renders/shared.png');
-    expect(html).not.toContain('source/shared.png');
-    expect(html).toContain('<dt>Project</dt>');
-    expect(html).toContain('<dt>Category</dt>');
-    expect(html).toContain('<div class="asset-list-card-associations">');
-    expect(html).toContain('<section class="asset-list-card-association asset-list-card-association--tags">');
-    expect(html).toContain('<h3 class="asset-list-card-association-label">Effective tags</h3>');
-    expect(html).toContain('<section class="asset-list-card-association asset-list-card-association--releases">');
-    expect(html).toContain('<h3 class="asset-list-card-association-label">Releases</h3>');
-    expect(html).toContain('Renders');
-    expect(html).toContain('Uncategorized');
-    expect(html).toContain('Present at last scan');
-    expect(html).toContain('Missing at last scan');
+    for (const card of cards) {
+      const cardCells = [...card.matchAll(/class="asset-list-cell asset-list-cell--(\w+)/g)].map((match) => match[1]);
+      expect(cardCells).toEqual(columns);
+    }
+    expect(html).not.toContain('asset-list-cell--select');
+    expect(html).not.toContain('selectedAssetIds');
+    expect(html).not.toContain('data-asset-grid-size-controls');
+
+    // Asset: Dashboard thumbnail box with the slideshow preview link, and a
+    // title that opens the information card instead of navigating.
+    expect(alphaCard).toContain('class="asset-list-card-media dashboard-thumb" data-preview-enhancement data-preview-state="loading"');
+    expect(alphaCard).toContain('class="asset-list-card-media-link" href="/projects/1/assets/101" aria-label="View preview of shared.png from Alpha Project" data-project-assets-preview-id="101"');
+    expect(alphaCard).toContain('src="/projects/1/assets/101/preview?v=alpha"');
+    expect(alphaCard).not.toContain('src="/projects/1/assets/101/thumbnail?v=alpha"');
+    expect(alphaCard).toMatch(/<div class="dashboard-title-info asset-list-card-title-info" data-dashboard-title-info>\s*<h2 class="asset-list-card-title">\s*<button class="dashboard-title-trigger dashboard-truncate" type="button" data-calendar-info-trigger aria-controls="asset-library-list-info-101" aria-expanded="false">shared\.png<\/button>\s*<\/h2>/);
+    expect(html).not.toContain('class="asset-file-link"');
+    expect(alphaCard).toMatch(/data-asset-containing-location>\s*renders\s*<\/span>/);
+    expect(betaCard).toMatch(/data-asset-containing-location>\s*source\s*<\/span>/);
+    expect(betaCard).toContain('class="asset-list-card-media-placeholder asset-list-card-media-placeholder--missing" title="Missing at last scan"');
+
+    const cell = (card, column) => card?.match(new RegExp(`class="asset-list-cell asset-list-cell--${column}[\\s\\S]*?</(?:dl|div)>`))?.[0] || '';
+    expect(cell(alphaCard, 'project')).toContain('<a class="asset-project-link" href="/projects/1" aria-label="View project Alpha Project">Alpha Project</a>');
+    expect(cell(betaCard, 'project')).toContain('href="/projects/2"');
+    expect(cell(alphaCard, 'category')).toContain('Renders');
+    expect(cell(betaCard, 'category')).toContain('Uncategorized');
+    expect(cell(alphaCard, 'type')).toContain('<span class="asset-type-label">PNG</span>');
+    expect(cell(alphaCard, 'presence')).toContain('asset-indicator--present');
+    expect(cell(betaCard, 'presence')).toContain('asset-indicator--missing');
+    expect(cell(alphaCard, 'releases')).toContain('aria-label="Used in 2 releases"');
+    expect(cell(alphaCard, 'releases')).toContain('<span class="asset-list-card-release-count" aria-hidden="true">2</span>');
+    expect(cell(alphaCard, 'releases')).not.toContain('Alpha Release');
+    expect(cell(betaCard, 'releases')).toContain('aria-label="Not used by a release"');
+    expect(cell(alphaCard, 'size')).toContain('<dd>1 KB</dd>');
+    expect(cell(alphaCard, 'modified')).toContain('<dd>August 1, 2026 at 10:00 AM</dd>');
+    expect(cell(betaCard, 'modified')).toContain('<span class="dashboard-muted">—</span>');
     expect(alphaCard).toContain('class="asset-details-link asset-details-link--present asset-tooltip asset-tooltip--right" href="/projects/1/assets/101"');
     expect(alphaCard).toMatch(/aria-label="Asset details \| File present"\s+data-tooltip="Asset details \| File present"/);
     expect(betaCard).toContain('class="asset-details-link asset-details-link--missing asset-tooltip asset-tooltip--right" href="/projects/2/assets/202"');
-    expect(betaCard).toMatch(/aria-label="Asset details \| File missing!"\s+data-tooltip="Asset details \| File missing!"/);
-    for (const field of ['Project', 'Category', 'Extension', 'Size', 'Modified']) {
-      expect((alphaCard?.match(new RegExp(`<dt>${field}</dt>`, 'g')) || [])).toHaveLength(1);
-    }
-    expect(alphaCard).toContain('.png');
-    expect(alphaCard).toContain('1024 bytes');
-    expect(alphaCard).toContain('2026-08-01 10:00:00');
-    expect(html).toContain('class="asset-list-card-release-link" href="/releases/301">Alpha Release</a>');
-    expect(html).toContain('Not in any release');
-    expect(html).not.toContain('data-asset-grid-size-controls');
-
-    const title = alphaCard?.match(/<h2 class="asset-list-card-title">[\s\S]*?<\/h2>/)?.[0];
-    const location = alphaCard?.match(/<span class="asset-list-card-location"[\s\S]*?<\/span>/)?.[0];
-    expect(title).toBeDefined();
-    expect(location).toBeDefined();
-    expect((title?.match(/>shared\.png<\/a>/g) || [])).toHaveLength(1);
-    expect(location).not.toContain('shared.png');
   });
 
-  it('renders direct and inherited effective tags with a subtle project-origin indicator', () => {
+  it('fills each List information card with actions, identity, project, file facts, tags and releases', () => {
     const html = renderPage({
       assets: [
         {
           ...alphaAsset,
+          previewAltText: 'Alpha render',
           tags: [
             { displayName: 'Direct List Tag', origin: 'direct' },
             { displayName: 'Inherited List Tag', origin: 'inherited' },
@@ -674,13 +672,62 @@ describe('cross-project Asset Viewer template', () => {
       filters: { view: 'list' },
       presentation: { view: 'list' },
     });
+    const info = (id) => html.match(new RegExp(`<div id="asset-library-list-info-${id}"[\\s\\S]*?<\\/article>`))?.[0] || '';
+    const alpha = info(101);
+    const beta = info(202);
+    const fact = (card, label) => card.match(new RegExp(`<dt>${label}</dt><dd[^>]*>([\\s\\S]*?)</dd>`))?.[1]?.replace(/\s+/g, ' ').trim();
 
-    expect(html).toContain('<ul class="asset-list-card-tags" aria-label="Effective tags">');
-    expect(html).toContain('Direct List Tag');
-    expect(html).toContain('Inherited List Tag');
-    expect(html).toContain('<span class="asset-tag-origin"><span class="sr-only">Inherited from </span>Project</span>');
-    expect(html).toContain('No effective tags');
-    expect(html).not.toContain('shared-list-secret');
+    expect(alpha).toContain('data-calendar-info-card popover="manual"');
+    expect(alpha).toContain('aria-label="Details for shared.png"');
+    expect(alpha).toContain('<a class="button button-small button-secondary" href="/projects/1/assets/101">Open asset</a>');
+    expect(alpha).toContain('<a class="button button-small button-secondary" href="/projects/1">Open project</a>');
+    expect(alpha).toContain('<h3 class="asset-viewer-grid-card-info-heading asset-list-info-filename">shared.png</h3>');
+    expect(alpha).toMatch(/<img class="calendar-release-info-image"\s+data-preview-image src="\/projects\/1\/assets\/101\/preview\?v=alpha" alt="Alpha render"/);
+    expect(fact(alpha, 'Path')).toBe('renders/shared.png');
+    expect(fact(alpha, 'Preview')).toBeUndefined();
+    expect(fact(alpha, 'Project')).toBe('Alpha Project');
+    expect(fact(alpha, 'Project status')).toContain('In Progress');
+    expect(fact(alpha, 'Project type')).toContain('Illustration');
+    expect(fact(alpha, 'Category')).toBe('Renders');
+    expect(fact(alpha, 'Type')).toBe('PNG (.png)');
+    expect(fact(alpha, 'Presence')).toBe('Present');
+    expect(fact(alpha, 'Size')).toBe('1 KB (1024 bytes)');
+    expect(fact(alpha, 'Modified')).toBe('August 1, 2026 at 10:00 AM');
+    expect(alpha).toContain('<ul class="asset-viewer-grid-card-info-tags" aria-label="Effective tags">');
+    expect(alpha).toContain('<li>Direct List Tag</li>');
+    expect(alpha).toContain('<li>Inherited List Tag <span class="asset-tag-origin"><span class="sr-only">Inherited from </span>Project</span></li>');
+    expect(alpha).toContain('<li><a href="/releases/301">Alpha Release</a></li>');
+    expect(alpha).toContain('<li><a href="/releases/302">Zeta Release</a></li>');
+
+    expect(beta).not.toContain('<img');
+    expect(fact(beta, 'Preview')).toBe('File missing at last scan');
+    expect(fact(beta, 'Presence')).toBe('Missing at last scan');
+    expect(fact(beta, 'Category')).toBe('Uncategorized');
+    expect(fact(beta, 'Modified')).toBe('—');
+    expect(beta).toContain('<a class="button button-small button-secondary" href="/projects/2">Open project</a>');
+    expect(beta).toContain('No effective tags');
+    expect(beta).toContain('Not used by a release');
+  });
+
+  it('marks unsupported and video List previews without loading media in the information card', () => {
+    const html = renderPage({
+      assets: [
+        { ...alphaAsset, id: 505, filename: 'notes.txt', extension: 'txt', preview: { kind: null, previewable: false }, preview_state: 'unsupported', thumbnail_url: null, preview_url: null },
+        { ...alphaAsset, id: 606, filename: 'clip.mp4', extension: 'mp4', preview: { kind: 'video', previewable: false, playbackUrl: '/projects/1/assets/606/original' }, preview_state: 'video', thumbnail_url: null, preview_url: null },
+        { ...alphaAsset, id: 707, filename: 'nsfw.png', nsfwBlur: true },
+      ],
+      filters: { view: 'list' },
+      presentation: { view: 'list' },
+    });
+    const info = (id) => html.match(new RegExp(`<div id="asset-library-list-info-${id}"[\\s\\S]*?<\\/article>`))?.[0] || '';
+
+    expect(html).toContain('<span class="asset-list-card-media-placeholder" title="TXT — preview not supported">TXT<span class="sr-only"> — preview not supported</span></span>');
+    expect(info(505)).toContain('TXT — preview not supported');
+    expect(info(505)).not.toContain('<img');
+    expect(info(606)).toContain('MP4 video — play it from the row thumbnail');
+    expect(info(606)).not.toMatch(/<img|<video/);
+    expect(html).toContain('class="asset-list-card-media-image asset-image--nsfw-blurred"');
+    expect(info(707)).toContain('class="calendar-release-info-image project-image--nsfw-blurred"');
   });
 
   it('styles List cards with a non-square stretched media region and a full-width content region', () => {
@@ -1784,7 +1831,9 @@ describe('Asset Library supported video presentation', () => {
     expect(card).toBeDefined();
     expect(card).not.toMatch(/<img/);
     expect(card).toMatch(/<video class="asset-video-frame-media" src="\/projects\/1\/assets\/303\/original"\s+preload="metadata" playsinline disablepictureinpicture aria-hidden="true" data-asset-video-frame><\/video>/);
-    expect(card).not.toMatch(/autoplay|\bcontrols\b/);
+    // The List title trigger's aria-controls is not a <video controls>.
+    expect(card).not.toMatch(/autoplay|(?<!aria-)\bcontrols\b/);
+    expect((card.match(/<video\b/g) || [])).toHaveLength(1);
     expect(card).not.toContain('data-project-assets-preview-id');
     // Unmodified clicks open the shared preview dialog; the href keeps library viewer navigation.
     expect(card).toContain('data-asset-video-preview-trigger data-video-src="/projects/1/assets/303/original" data-video-title="clip.mp4"');

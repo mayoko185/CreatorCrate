@@ -2584,7 +2584,11 @@ through the card's Open/Edit actions rather than the title itself. The
 Projects List view reuses the same title trigger, card shell and enhancer
 (re-applied after Projects live-region replacement) inside the Dashboard
 Projects panel and table styles. Its Open/Edit actions live only in the card;
-the row background navigates through the card's Open action.
+the row background navigates through the card's Open action. The column asset
+Lists (Project Assets, Release assets and the Asset Library) use the same
+trigger, card shell and enhancer on asset titles, re-applied after each
+live-region replacement; asset navigation stays on the thumbnail, Details and
+the card's Open asset action.
 
 **Three asset modes**, resolved once by `resolveAssetMode(nodeEnv)` and
 exposed to templates as `assetMode`:
