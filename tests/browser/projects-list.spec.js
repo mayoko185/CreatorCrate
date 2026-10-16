@@ -6,27 +6,31 @@ import { fileURLToPath } from 'node:url';
 import { createApp } from '../../src/app.js';
 import { openDatabase, closeDatabase, runMigrations } from '../../src/db.js';
 import { ensureAuthEnablement } from '../../src/auth/auth-state.js';
+import { resolveProjectDir } from '../../src/storage/project-storage.js';
+import sharp from 'sharp';
 
-async function withProjectsApp(run) {
+async function withProjectsApp(run, setup) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-projects-list-'));
   const projectsRoot = path.join(root, 'projects');
   const appDataRoot = path.join(root, 'app');
-  fs.mkdirSync(projectsRoot); fs.mkdirSync(appDataRoot);
+  const previewRoot = path.join(root, 'previews');
+  fs.mkdirSync(projectsRoot); fs.mkdirSync(appDataRoot); fs.mkdirSync(previewRoot);
   const db = openDatabase(path.join(root, 'test.db'));
   let server;
   try {
     runMigrations(db, fileURLToPath(new URL('../../migrations', import.meta.url)));
     const { csrfPepper } = ensureAuthEnablement(appDataRoot);
-    const app = createApp({ appName: 'CreatorCrate', db, projectsRoot }, { appDataRoot, authState: { csrfPepper } });
+    const app = createApp({ appName: 'CreatorCrate', db, projectsRoot, previewRoot }, { appDataRoot, authState: { csrfPepper } });
     const active = app.locals.projectService.create({
       title: 'Active List Project With A Deliberately Long Title For Truncation',
       status: 'ready',
     });
     const archived = app.locals.projectService.create({ title: 'Archived List Project', status: 'ready' });
     db.prepare("UPDATE projects SET status = 'archived', archived_at = '2026-01-02 00:00:00' WHERE id = ?").run(archived.id);
+    const extra = setup ? await setup({ app, db, projectsRoot }) : {};
     server = app.listen(0, '127.0.0.1');
     await new Promise(resolve => server.once('listening', resolve));
-    await run({ origin: `http://127.0.0.1:${server.address().port}`, activeId: active.id, archivedId: archived.id });
+    await run({ origin: `http://127.0.0.1:${server.address().port}`, activeId: active.id, archivedId: archived.id, ...extra });
   } finally {
     if (server) await new Promise(resolve => server.close(resolve));
     closeDatabase(db);
@@ -246,4 +250,120 @@ test('Projects List keeps aligned columns with horizontal scrolling at phone wid
     const box = await card.boundingBox();
     expect(box.x >= 0 && box.x + box.width <= 375).toBe(true);
   });
+});
+
+async function seedGridStyleImages({ app, db, projectsRoot }) {
+  const seed = async (title, width, height) => {
+    const project = app.locals.projectService.create({ title, status: 'ready' });
+    const { project_dir: projectDir } = db.prepare('SELECT project_dir FROM projects WHERE id = ?').get(project.id);
+    const categories = app.locals.projectAssetCategoryService;
+    if (!categories.list(project.id).some((candidate) => candidate.directory_slug === 'wip')) {
+      categories.add(project.id, { displayName: 'WIP', directorySlug: 'wip' });
+    }
+    const categoryDir = path.join(resolveProjectDir(projectsRoot, projectDir), 'wip');
+    fs.mkdirSync(categoryDir, { recursive: true });
+    await sharp({ create: { width, height, channels: 3, background: '#3366cc' } }).png()
+      .toFile(path.join(categoryDir, 'cover.png'));
+    app.locals.assetScanner.scanProjectAssets(project.id);
+    const asset = app.locals.assetScanner.repository.findByProjectId(project.id)[0];
+    app.locals.projectPrimaryImageService.setPrimaryImage(project.id, asset.id);
+    return project.id;
+  };
+  return { wideId: await seed('Wide Cover Project', 640, 160), tallId: await seed('Tall Cover Project', 160, 640) };
+}
+
+function gridPreview(page, projectId) {
+  const card = page.locator('[data-project-card]', { has: page.locator(`a[href="/projects/${projectId}"]`) });
+  return {
+    link: card.locator('.project-grid-card-preview-link'),
+    image: card.locator('[data-preview-image]'),
+    info: card.locator('[data-project-info-card]'),
+  };
+}
+
+async function linkSize(link) {
+  return link.evaluate((node) => {
+    const box = node.getBoundingClientRect();
+    return { width: Math.round(box.width), height: Math.round(box.height) };
+  });
+}
+
+test('Projects Grid style crops previews to squares only when Cropped is saved', async ({ page }) => {
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await page.setViewportSize({ width: 1280, height: 900 });
+
+  await withProjectsApp(async ({ origin, wideId, tallId, activeId }) => {
+    // Uncropped (default): previews keep their source aspect ratios.
+    await page.goto(`${origin}/projects?view=grid`);
+    await expect(page.locator('.project-grid')).toHaveAttribute('data-grid-style', 'uncropped');
+    const wide = gridPreview(page, wideId);
+    const tall = gridPreview(page, tallId);
+    await expect(wide.image).toBeVisible();
+    await expect(tall.image).toBeVisible();
+    const uncroppedWide = await linkSize(wide.link);
+    const uncroppedTall = await linkSize(tall.link);
+    expect(uncroppedWide.width).toBeGreaterThan(uncroppedWide.height * 3);
+    expect(uncroppedTall.height).toBeGreaterThan(uncroppedTall.width * 3);
+
+    // Save Cropped through the Projects defaults dialog autosave.
+    await page.getByRole('link', { name: 'Projects defaults' }).click();
+    await page.locator('#projects-default-gridStyle').selectOption('cropped', { force: true });
+    await expect(page.locator('.project-grid')).toHaveAttribute('data-grid-style', 'cropped');
+    await page.keyboard.press('Escape');
+
+    for (const preview of [gridPreview(page, wideId), gridPreview(page, tallId)]) {
+      await expect(preview.image).toBeVisible();
+      const size = await linkSize(preview.link);
+      expect(Math.abs(size.width - size.height)).toBeLessThanOrEqual(1);
+      const styles = await preview.image.evaluate((node) => {
+        const box = node.getBoundingClientRect();
+        const link = node.parentElement.getBoundingClientRect();
+        const computed = getComputedStyle(node);
+        return {
+          objectFit: computed.objectFit,
+          objectPosition: computed.objectPosition,
+          fills: Math.abs(box.width - link.width) <= 1 && Math.abs(box.height - link.height) <= 1,
+          overflow: getComputedStyle(node.parentElement).overflow,
+        };
+      });
+      expect(styles).toEqual({ objectFit: 'cover', objectPosition: '50% 50%', fills: true, overflow: 'hidden' });
+    }
+
+    // Missing-image cards share the square viewport and keep their message.
+    const missing = gridPreview(page, activeId);
+    await expect(missing.link).toHaveText('No image');
+    const missingSize = await linkSize(missing.link);
+    expect(Math.abs(missingSize.width - missingSize.height)).toBeLessThanOrEqual(1);
+
+    // Hover information cards are not clipped by the square viewport.
+    const croppedWide = gridPreview(page, wideId);
+    await croppedWide.link.hover();
+    await expect(croppedWide.info).toBeVisible();
+    const infoBox = await croppedWide.info.boundingBox();
+    const linkBox = await croppedWide.link.boundingBox();
+    expect(infoBox.height).toBeGreaterThan(0);
+    const hit = await page.evaluate(({ x, y }) => (
+      document.elementFromPoint(x, y)?.closest('[data-project-info-card]') !== null
+    ), { x: infoBox.x + infoBox.width / 2, y: infoBox.y + infoBox.height - 4 });
+    expect(hit).toBe(true);
+    expect(infoBox.y + infoBox.height > linkBox.y + linkBox.height
+      || infoBox.x + infoBox.width > linkBox.x + linkBox.width
+      || infoBox.x < linkBox.x).toBe(true);
+    await moveAway(page);
+
+    // Card navigation still follows the preview link.
+    await croppedWide.link.click();
+    await expect.poll(() => currentPath(page)).toBe(`/projects/${wideId}`);
+
+    // List is unaffected, and returning to Grid keeps Cropped.
+    await page.goto(`${origin}/projects?view=list`);
+    await expect(page.locator('[data-projects-list-table]')).toBeVisible();
+    await expect(page.locator('[data-grid-style]')).toHaveCount(0);
+    await page.getByRole('link', { name: 'Grid view' }).click();
+    await expect(page.locator('.project-grid')).toHaveAttribute('data-grid-style', 'cropped');
+    await page.reload();
+    await expect(page.locator('.project-grid')).toHaveAttribute('data-grid-style', 'cropped');
+  }, seedGridStyleImages);
+  expect(pageErrors).toEqual([]);
 });

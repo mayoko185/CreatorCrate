@@ -584,8 +584,8 @@ describe('project HTTP workflow', () => {
     const defaultsGrid = defaultsGridStart >= 0 ? extractHtmlElement(defaultsDialog, defaultsGridStart) : '';
 
     expect(defaultsGrid).toContain('<div class="page-defaults-grid">');
-    expect((defaultsGrid.match(/class="field app-dialog-field/g) || [])).toHaveLength(6);
-    expect((defaultsGrid.match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(6);
+    expect((defaultsGrid.match(/class="field app-dialog-field/g) || [])).toHaveLength(7);
+    expect((defaultsGrid.match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(7);
     expect(defaultsGrid).not.toContain('app-dialog-error');
     expect(defaultsGrid).not.toContain('app-dialog-status');
     expect(defaultsGrid).not.toContain('app-dialog-footer');
@@ -599,6 +599,14 @@ describe('project HTTP workflow', () => {
 
     for (const field of [
       { name: 'view', label: 'View', id: 'projects-default-view', values: ['grid', 'list'], selected: 'grid', summary: 'Grid' },
+      {
+        name: 'gridStyle',
+        label: 'Grid style',
+        id: 'projects-default-gridStyle',
+        values: ['uncropped', 'cropped'],
+        selected: 'uncropped',
+        summary: 'Uncropped',
+      },
       {
         name: 'sort',
         label: 'Sort',
@@ -763,6 +771,7 @@ describe('project HTTP workflow', () => {
       .type('form')
       .send({
         view: 'list',
+        gridStyle: 'cropped',
         sort: 'updated',
         order: 'asc',
         status: 'archived',
@@ -775,12 +784,116 @@ describe('project HTTP workflow', () => {
     expect(response.body.status).toBe('success');
     expect(response.body.values).toMatchObject({
       view: 'list',
+      gridStyle: 'cropped',
       sort: 'updated',
       order: 'asc',
       status: 'archived',
       projectType: 'comic',
       tag: 'all',
     });
+  });
+
+  it('renders Grid style immediately after View in the Projects defaults dialog', async () => {
+    const response = await agent.get('/projects?defaults=1').expect(200);
+    const dialog = response.text.match(/<dialog id="projects-defaults-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    const fieldOrder = [...dialog.matchAll(/data-dialog-field="([^"]+)"/g)].map((match) => match[1]);
+
+    expect(fieldOrder.slice(0, 2)).toEqual(['view', 'gridStyle']);
+    expect(dialog).toMatch(/name="gridStyle"[^>]*>[\s\S]*?value="uncropped" selected/);
+    expect(dialog).toContain('>Grid style<');
+    expect(dialog).toContain('Uncropped');
+    expect(dialog).toContain('Cropped');
+  });
+
+  it('defaults the Projects grid to Uncropped without writing the preference', async () => {
+    await createProject({ title: 'Uncropped Default Project' });
+    const key = PAGE_DEFAULT_DEFINITIONS.projects.gridStyle.key;
+
+    const grid = await agent.get('/projects').expect(200);
+
+    expect(grid.text).toContain('<ul class="project-grid" data-grid-style="uncropped">');
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(key)).toBeUndefined();
+
+    writeStoredProjectDefault('gridStyle', 'retired');
+    const stale = await agent.get('/projects').expect(200);
+    expect(stale.text).toContain('<ul class="project-grid" data-grid-style="uncropped">');
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?').get(key).value).toBe('retired');
+  });
+
+  it('persists a Cropped Grid style and keeps it across Grid and List switching', async () => {
+    const projectId = await createProject({ title: 'Cropped Style Project' });
+    const response = await agent
+      .post('/projects/defaults')
+      .set('Accept', 'application/json')
+      .type('form')
+      .send({
+        view: 'grid',
+        gridStyle: 'cropped',
+        sort: 'created',
+        order: 'desc',
+        status: 'all',
+        projectType: 'all',
+        tag: 'all',
+        _csrf: csrfToken,
+      })
+      .expect(200);
+
+    expect(response.body.values.gridStyle).toBe('cropped');
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
+      .get(PAGE_DEFAULT_DEFINITIONS.projects.gridStyle.key).value).toBe('cropped');
+
+    const grid = await agent.get('/projects').expect(200);
+    expect(grid.text).toContain('<ul class="project-grid" data-grid-style="cropped">');
+    expect(extractProjectCard(grid.text, projectId)).toContain('data-project-grid-preview');
+
+    const list = await agent.get('/projects?view=list').expect(200);
+    expect(list.text).not.toContain('<ul class="project-grid"');
+    expect(list.text).not.toContain('data-grid-style');
+    expect(list.text).toContain('<table class="dashboard-projects-table projects-list-table" data-projects-list-table>');
+    expect(extractProjectListRow(list.text, projectId)).not.toBe('');
+
+    const backToGrid = await agent.get('/projects?view=grid').expect(200);
+    expect(backToGrid.text).toContain('<ul class="project-grid" data-grid-style="cropped">');
+    expect(app.locals.pageDefaultsService.resolve('projects', 'gridStyle')).toBe('cropped');
+  });
+
+  it('rejects an unsupported Projects Grid style without changing the saved value', async () => {
+    saveProjectDefault('gridStyle', 'cropped');
+    const response = await agent
+      .post('/projects/defaults')
+      .set('Accept', 'application/json')
+      .type('form')
+      .send({
+        view: 'grid',
+        gridStyle: 'stretched',
+        sort: 'created',
+        order: 'desc',
+        status: 'all',
+        projectType: 'all',
+        tag: 'all',
+        _csrf: csrfToken,
+      })
+      .expect(422);
+
+    expect(response.body.errors.gridStyle).toContain('stretched');
+    expect(app.locals.pageDefaultsService.resolve('projects', 'gridStyle')).toBe('cropped');
+  });
+
+  it('scopes Cropped square previews to the media link without clipping information cards', async () => {
+    const css = await fetchProjectCss(app);
+    const linkRule = css.match(
+      /\.project-grid\[data-grid-style="cropped"\] \.project-grid-card-preview-link \{([^}]*)\}/,
+    )?.[1] || '';
+    const imageRule = css.match(
+      /\.project-grid\[data-grid-style="cropped"\] \.project-grid-card-preview \.project-card-media-image \{([^}]*)\}/,
+    )?.[1] || '';
+
+    expect(linkRule).toContain('aspect-ratio: 1 / 1');
+    expect(linkRule).toContain('overflow: hidden');
+    expect(imageRule).toContain('object-fit: cover');
+    expect(imageRule).toContain('object-position: center');
+    expect(css).not.toMatch(/data-grid-style="cropped"\][^{]*\.project-grid-card-preview \{/);
+    expect(css).not.toMatch(/data-grid-style="cropped"\][^{]*\.project-grid-card-info/);
   });
 
   it('rejects unsupported Projects defaults through the enhanced JSON contract', async () => {
@@ -810,6 +923,7 @@ describe('project HTTP workflow', () => {
       .type('form')
       .send({
         view: 'list',
+        gridStyle: 'uncropped',
         sort: 'title',
         order: 'asc',
         status: 'ready',
@@ -1068,7 +1182,7 @@ describe('project HTTP workflow', () => {
     expect(grid.text).toMatch(
       /<div class="asset-viewer-display-controls" data-project-grid-size-controls>\s*<nav class="view-switcher" aria-label="Project display">[\s\S]*?<\/nav>\s*<div class="asset-grid-size-controls asset-viewer-grid-size-controls" data-asset-grid-size-controls/
     );
-    expect(grid.text).toContain('<ul class="project-grid">');
+    expect(grid.text).toContain('<ul class="project-grid" data-grid-style="uncropped">');
     expect(grid.text).toContain('data-grid-size-slider');
     expect(grid.text).toContain('data-grid-size-option-label="compact"');
 
@@ -1227,7 +1341,7 @@ describe('project HTTP workflow', () => {
     const unavailableCard = extractProjectCard(res.text, unavailableId);
     const projectsTemplate = fs.readFileSync(PROJECTS_TEMPLATE_PATH, 'utf8');
 
-    expect(res.text).toContain('<ul class="project-grid">');
+    expect(res.text).toContain('<ul class="project-grid" data-grid-style="uncropped">');
     expect(res.text).not.toContain('<table class="data-table">');
     expect(extractProjectCards(res.text)).toHaveLength(3);
     expect(res.text.match(/<li class="project-grid-item">/g)).toHaveLength(3);
@@ -1295,7 +1409,7 @@ describe('project HTTP workflow', () => {
     const unavailableListRow = extractProjectListRow(list.text, unavailableId);
     const header = list.text.match(/<thead>[\s\S]*?<\/thead>/)?.[0] || '';
     expect(list.text).toContain('<table class="dashboard-projects-table projects-list-table" data-projects-list-table>');
-    expect(list.text).not.toContain('<ul class="project-grid">');
+    expect(list.text).not.toContain('<ul class="project-grid"');
     expect(list.text).not.toContain('<ul class="project-list">');
     expect(extractProjectCards(list.text)).toHaveLength(0);
     expect([...header.matchAll(/<th scope="col"[^>]*>([^<]+)<\/th>/g)].map((match) => match[1]))
@@ -1519,8 +1633,10 @@ describe('project HTTP workflow', () => {
     expect(css).not.toMatch(/\.project-list\s+li\s*\{[^}]*border-bottom:\s*1px solid var\(--border\)/);
     expect(css).toMatch(/@media\s*\(max-width:\s*540px\)[\s\S]*?\.project-list\s*>\s*li:not\(\.project-list-item\)\s*\{[^}]*padding:\s*var\(--space-sm\) 0;/);
     expect(css).toMatch(/\.project-card-media-image\s*\{[^}]*width:\s*100%;[^}]*height:\s*auto;/);
-    expect(css).not.toMatch(/\.project-card[^{}]*\{[^}]*aspect-ratio\s*:/);
-    expect(css).not.toMatch(/\.project-card[^{}]*\{[^}]*object-fit\s*:\s*cover/);
+    // Only the opt-in Cropped grid style may square or cover project previews.
+    const uncroppedCss = css.replace(/[^{}]*data-grid-style="cropped"[^{}]*\{[^}]*\}/g, '');
+    expect(uncroppedCss).not.toMatch(/\.project-card[^{}]*\{[^}]*aspect-ratio\s*:/);
+    expect(uncroppedCss).not.toMatch(/\.project-card[^{}]*\{[^}]*object-fit\s*:\s*cover/);
     expect(css).toMatch(/\.project-card-link\s*\{[^}]*overflow-wrap:\s*anywhere/);
     expect(css).toMatch(/\.project-card \.project-card-link,\s*\.project-card \.project-card-link:visited\s*\{[^}]*color:\s*#fff;/);
     expect(css).not.toMatch(/\.project-card--archived \.project-card-link\s*\{[^}]*color:\s*var\(--muted\)/);
@@ -1741,7 +1857,7 @@ describe('project HTTP workflow', () => {
       expect(list.text).not.toContain('unknown=discarded');
 
     const invalid = await agent.get('/projects?view=invalid&unknown=discarded').expect(200);
-    expect(invalid.text).toContain('<ul class="project-grid">');
+    expect(invalid.text).toContain('<ul class="project-grid" data-grid-style="uncropped">');
     expect(invalid.text).not.toContain('view=invalid');
     expect(invalid.text).not.toContain('unknown=discarded');
     expect(invalid.text).toContain('href="/projects?view=list"');

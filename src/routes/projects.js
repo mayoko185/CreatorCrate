@@ -35,6 +35,7 @@ const NOTICES = {
 const PROJECTS_DEFAULT_LABELS = Object.freeze({
   fields: Object.freeze({
     view: 'View',
+    gridStyle: 'Grid style',
     sort: 'Sort',
     order: 'Order',
     status: 'Status',
@@ -43,6 +44,7 @@ const PROJECTS_DEFAULT_LABELS = Object.freeze({
   }),
   options: Object.freeze({
     view: Object.freeze({ grid: 'Grid', list: 'List' }),
+    gridStyle: Object.freeze({ uncropped: 'Uncropped', cropped: 'Cropped' }),
     sort: Object.freeze({
       updated: 'Recently updated',
       created: 'Recently created',
@@ -624,6 +626,7 @@ function renderProjectsPage(req, res, {
       view: parsedQuery.view,
     },
     view: parsedQuery.view,
+    gridStyle: pageDefaultsService.resolve('projects', 'gridStyle'),
     statuses: projectsDefaultOptionCatalogues.status
       .map(({ value }) => value)
       .filter((value) => value !== 'all'),

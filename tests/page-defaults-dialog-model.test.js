@@ -98,6 +98,7 @@ describe('page defaults dialog model', () => {
     const optionCatalogues = { tag: [{ value: '42', label: 'Featured projects' }] };
     const values = {
       view: 'grid',
+      gridStyle: 'cropped',
       sort: 'created',
       order: 'desc',
       status: 'all',
@@ -128,6 +129,7 @@ describe('page defaults dialog model', () => {
     expect(validationCalls).toEqual([['projects', values, optionCatalogues]]);
     expect(saveCalls).toEqual([
       ['projects', 'view', 'grid'],
+      ['projects', 'gridStyle', 'cropped'],
       ['projects', 'sort', 'created'],
       ['projects', 'order', 'desc'],
       ['projects', 'status', 'all'],

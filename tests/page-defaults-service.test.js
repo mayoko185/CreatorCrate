@@ -92,6 +92,7 @@ describe('page defaults service', () => {
 
   it('uses the exact existing fallback when no saved value exists', () => {
     expect(service.resolve('projects', 'view')).toBe('grid');
+    expect(service.resolve('projects', 'gridStyle')).toBe('uncropped');
     expect(service.resolve('projects', 'sort')).toBe('created');
     expect(service.resolve('projects', 'order')).toBe('desc');
     expect(service.resolve('releases', 'sort')).toBe('planned');
@@ -259,6 +260,11 @@ describe('page defaults service', () => {
         values: ['grid', 'list'],
         fallback: 'grid',
       },
+      gridStyle: {
+        key: 'page_defaults.projects.grid_style',
+        values: ['uncropped', 'cropped'],
+        fallback: 'uncropped',
+      },
       sort: {
         key: 'page_defaults.projects.sort',
         values: ['updated', 'created', 'title'],
@@ -287,6 +293,25 @@ describe('page defaults service', () => {
     });
   });
 
+  it('resolves the Projects Grid style to Uncropped until Cropped is saved, without writing on read', () => {
+    const key = PAGE_DEFAULT_DEFINITIONS.projects.gridStyle.key;
+
+    expect(service.resolve('projects', 'gridStyle')).toBe('uncropped');
+    expect(service.getSavedDefault('projects', 'gridStyle')).toBeUndefined();
+    expect(repository.getValue(key)).toBeUndefined();
+
+    repository.setValue(key, 'square');
+    expect(service.resolve('projects', 'gridStyle')).toBe('uncropped');
+    expect(repository.getValue(key)).toBe('square');
+
+    expect(service.saveDefault('projects', 'gridStyle', 'cropped')).toBe('cropped');
+    expect(repository.getValue(key)).toBe('cropped');
+    expect(service.resolve('projects', 'gridStyle')).toBe('cropped');
+    expect(() => service.saveDefault('projects', 'gridStyle', 'stretched'))
+      .toThrow(PageDefaultValidationError);
+    expect(repository.getValue(key)).toBe('cropped');
+  });
+
   it.each(['published', 'planned'])(
     'uses the Projects fallback for obsolete stored %s sorting without rewriting unrelated preferences',
     (obsoleteSort) => {
@@ -298,6 +323,7 @@ describe('page defaults service', () => {
       expect(service.getSavedDefault('projects', 'sort')).toBeUndefined();
       expect(service.resolvePageDefaults('projects')).toEqual({
         view: 'list',
+        gridStyle: 'uncropped',
         sort: 'created',
         order: 'desc',
         status: 'all',
@@ -664,6 +690,7 @@ describe('page defaults service', () => {
 
     expect(service.resolvePageDefaults('projects', { view: 'grid' })).toEqual({
       view: 'grid',
+      gridStyle: 'uncropped',
       sort: 'title',
       order: 'desc',
       status: 'all',
@@ -769,6 +796,7 @@ describe('page defaults service', () => {
     ];
     const values = {
       view: 'grid',
+      gridStyle: 'uncropped',
       sort: 'recent',
       order: 'desc',
       status: 'all',
@@ -996,6 +1024,7 @@ describe('page defaults service', () => {
     expect(service.resolve('projects', 'view')).toBe('list');
     expect(service.validatePageDefaults('projects', {
       view: 'grid',
+      gridStyle: 'uncropped',
       sort: 'created',
       order: 'desc',
       status: 'all',
@@ -1010,6 +1039,7 @@ describe('page defaults service', () => {
     expect(service.resolve('projects', 'sort')).toBe('title');
     expect(service.validatePageDefaults('projects', {
       view: 'grid',
+      gridStyle: 'uncropped',
       sort: 'updated',
       order: 'desc',
       status: 'all',
@@ -1017,6 +1047,7 @@ describe('page defaults service', () => {
       tag: 'all',
     })).toEqual({
       view: 'grid',
+      gridStyle: 'uncropped',
       sort: 'updated',
       order: 'desc',
       status: 'all',
@@ -1030,6 +1061,7 @@ describe('page defaults service', () => {
 
     expect(globalOnlyService.resolvePageDefaults('projects')).toEqual({
       view: 'grid',
+      gridStyle: 'uncropped',
       sort: 'created',
       order: 'desc',
       status: 'all',

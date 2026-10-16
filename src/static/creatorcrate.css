@@ -5631,6 +5631,23 @@
         width: 100%;
         height: auto;
       }
+      /* Cropped grid style: each preview link becomes a square viewport that
+         clips its centered, covering image. The information card is the
+         link's sibling (and fixed-positioned), so it is never clipped. */
+      .project-grid[data-grid-style="cropped"] .project-grid-card-preview-link {
+        aspect-ratio: 1 / 1;
+        overflow: hidden;
+      }
+      .project-grid[data-grid-style="cropped"] .project-card-media--fallback {
+        padding: 0;
+      }
+      .project-grid[data-grid-style="cropped"] .project-grid-card-preview .project-card-media-image {
+        width: 100%;
+        height: 100%;
+        max-width: none;
+        object-fit: cover;
+        object-position: center;
+      }
       .project-grid-card-info {
         display: none;
         position: fixed;

@@ -110,7 +110,7 @@
           </div>
         </div>
       {% else %}
-        <ul class="project-grid">
+        <ul class="project-grid" data-grid-style="{{ gridStyle }}">
           {% for project in projects %}
           {{ projectCard.render(project, view, 'h2', clockFormat) }}
           {% endfor %}
