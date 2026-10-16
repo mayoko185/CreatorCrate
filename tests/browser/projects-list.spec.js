@@ -119,6 +119,34 @@ test('Projects List renders aligned columns and the shared hover/pin information
   expect(pageErrors).toEqual([]);
 });
 
+test('Projects List text selection from a pinned card onto its title does not navigate the row', async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await withProjectsApp(async ({ origin, activeId }) => {
+    await page.goto(`${origin}/projects?view=list`);
+    await page.locator(TITLE_BOUND).first().waitFor({ state: 'attached' });
+    const { row, title, card } = listParts(page, activeId);
+    await title.click();
+    await expect(card).toBeVisible();
+    await moveAway(page);
+    await expect(card).toBeVisible();
+
+    // A press on the card heading released over the title clicks their shared wrapper.
+    const heading = await card.locator('.asset-viewer-grid-card-info-heading').boundingBox();
+    const titleBox = await title.boundingBox();
+    await page.mouse.move(heading.x + heading.width - 4, heading.y + heading.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(titleBox.x + titleBox.width / 2, titleBox.y + titleBox.height / 2, { steps: 8 });
+    await page.mouse.up();
+    await page.waitForTimeout(300);
+    expect(currentPath(page)).toBe('/projects?view=list');
+
+    await page.keyboard.press('Escape');
+    await expect(card).toBeHidden();
+    await row.locator('td').nth(1).click();
+    await expect.poll(() => currentPath(page)).toBe(`/projects/${activeId}`);
+  });
+});
+
 test('Projects List rows navigate from the background and offer Edit only for non-archived projects', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await withProjectsApp(async ({ origin, activeId, archivedId }) => {
