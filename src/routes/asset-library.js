@@ -33,6 +33,7 @@ const NSFW_TAG_NORMALIZED_NAME = NSFW_TAG_NAME.toLowerCase();
 const ASSET_VIEWER_DEFAULT_LABELS = Object.freeze({
   fields: Object.freeze({
     view: 'View',
+    gridStyle: 'Grid style',
     sort: 'Sort',
     order: 'Order',
     pageSize: 'Page size',
@@ -43,6 +44,7 @@ const ASSET_VIEWER_DEFAULT_LABELS = Object.freeze({
   }),
   options: Object.freeze({
     view: Object.freeze({ grid: 'Grid', list: 'List' }),
+    gridStyle: Object.freeze({ uncropped: 'Uncropped', cropped: 'Cropped' }),
     sort: Object.freeze({
       filename: 'Filename',
       modified: 'Modified',
@@ -404,6 +406,7 @@ async function renderAssetLibraryPage(req, res, {
       assetViewerNsfwError,
       assetViewerDefaultsNotice,
     }),
+    gridStyle: pageDefaultsService.resolve(ASSET_VIEWER_PAGE_DEFAULTS, 'gridStyle'),
   });
 }
 

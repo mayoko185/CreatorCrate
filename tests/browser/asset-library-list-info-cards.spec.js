@@ -95,13 +95,15 @@ test.beforeAll(async () => {
   projectsRoot = path.join(root, 'projects');
   const appDataRoot = path.join(root, 'app');
   const viteDistRoot = path.join(root, 'client');
+  const previewRoot = path.join(root, 'previews');
   fs.mkdirSync(projectsRoot);
   fs.mkdirSync(appDataRoot);
+  fs.mkdirSync(previewRoot);
   await build({ build: { outDir: viteDistRoot }, logLevel: 'silent' });
   db = openDatabase(path.join(root, 'test.db'));
   runMigrations(db, fileURLToPath(new URL('../../migrations', import.meta.url)));
   const { csrfPepper } = ensureAuthEnablement(appDataRoot);
-  app = createApp({ appName: 'CreatorCrate', db, projectsRoot }, {
+  app = createApp({ appName: 'CreatorCrate', db, projectsRoot, previewRoot }, {
     appDataRoot, authState: { csrfPepper }, useViteAssets: true, viteDistRoot,
     assetManifest: createAssetManifest({ distRoot: viteDistRoot,
       manifestPath: path.join(viteDistRoot, '.vite', 'manifest.json') }),
@@ -518,5 +520,144 @@ test('Modified uses the server-formatted value under the 12h and 24h clock prefe
     }
   } finally {
     clock.setClockFormat(original);
+  }
+});
+
+// Grid style: Uncropped keeps intrinsic previews; Cropped (saved through the
+// Asset Viewer defaults autosave) squares each media viewport only in Grid,
+// and survives live pagination, grid sizes and Grid/List switching.
+test('Grid style Cropped squares Grid media viewports without touching List or information cards', async ({ page }) => {
+  const pageErrors = [];
+  page.on('pageerror', (error) => pageErrors.push(error.message));
+  await page.setViewportSize({ width: 1280, height: 900 });
+  const gridCard = (filename) => page.locator(`.asset-grid article.asset-card[data-asset-id="${fixture.ids[filename]}"]`);
+  const sizeOf = (locator) => locator.evaluate((node) => {
+    const box = node.getBoundingClientRect();
+    return { width: Math.round(box.width), height: Math.round(box.height) };
+  });
+  const expectSquare = async (locator) => {
+    const size = await sizeOf(locator);
+    expect(size.width).toBeGreaterThan(0);
+    expect(Math.abs(size.width - size.height)).toBeLessThanOrEqual(1);
+  };
+  const GRID_ALL = '/asset-viewer?pageSize=all';
+
+  try {
+    await page.goto(baseURL + GRID_ALL);
+    await expect(page.locator('.asset-grid')).toHaveAttribute('data-grid-style', 'uncropped');
+    const alphaLink = gridCard('01-alpha.png').locator('.asset-card-media-link');
+    await expect(gridCard('01-alpha.png').locator('[data-preview-image]')).toBeVisible();
+    const uncropped = await sizeOf(alphaLink);
+    expect(uncropped.width).toBeGreaterThan(uncropped.height * 1.5);
+
+    await page.getByRole('link', { name: 'Asset Viewer defaults' }).click();
+    const fieldOrder = await page.locator('#asset-viewer-defaults-form [data-dialog-field]')
+      .evaluateAll((nodes) => nodes.map((node) => node.dataset.dialogField));
+    expect(fieldOrder.slice(0, 3)).toEqual(['view', 'gridStyle', 'sort']);
+    await page.locator('#assetViewer-default-gridStyle').selectOption('cropped', { force: true });
+    await expect(page.locator('.asset-grid')).toHaveAttribute('data-grid-style', 'cropped');
+    await page.keyboard.press('Escape');
+
+    // Image: square viewport, covering centered image, clipped by the link only.
+    const alphaImage = gridCard('01-alpha.png').locator('[data-preview-image]');
+    await expect(alphaImage).toBeVisible();
+    await expectSquare(alphaLink);
+    expect(await alphaImage.evaluate((node) => {
+      const box = node.getBoundingClientRect();
+      const link = node.parentElement.getBoundingClientRect();
+      const computed = getComputedStyle(node);
+      return {
+        objectFit: computed.objectFit,
+        objectPosition: computed.objectPosition,
+        fills: Math.abs(box.width - link.width) <= 1 && Math.abs(box.height - link.height) <= 1,
+        linkOverflow: getComputedStyle(node.parentElement).overflow,
+        mediaOverflow: getComputedStyle(node.closest('.asset-card-media')).overflow,
+      };
+    })).toEqual({ objectFit: 'cover', objectPosition: '50% 50%', fills: true, linkOverflow: 'hidden', mediaOverflow: 'visible' });
+
+    // Krita overrides its intrinsic sizing and fills the square.
+    const krita = gridCard('05-sketch.kra');
+    await expect(krita.locator('.asset-card-media')).toHaveClass(/asset-media--krita/);
+    await expect(krita.locator('[data-preview-image]')).toBeVisible();
+    await expectSquare(krita.locator('.asset-card-media-link'));
+    expect(await sizeOf(krita.locator('[data-preview-image]')))
+      .toEqual(await sizeOf(krita.locator('.asset-card-media-link')));
+
+    // Video (unplayable fixture): the click-to-play link is the square and
+    // shows exactly one media region, whether frame or placeholder.
+    const video = gridCard('06-clip.mp4');
+    await expect(video.locator('.asset-video-link')).toHaveAttribute('data-asset-video-preview-trigger', '');
+    await expectSquare(video.locator('.asset-video-link'));
+    await expect(video.locator('.asset-video-frame:visible, .asset-video-placeholder:visible')).toHaveCount(1);
+
+    // Broken image: only the fallback remains, filling the square.
+    const broken = gridCard('07-broken.png');
+    await expect(broken.locator('.asset-card-media')).toHaveAttribute('data-preview-state', 'failed');
+    await expect(broken.locator('.asset-card-media-link')).toBeHidden();
+    await expect(broken.locator('[data-preview-fallback]')).toBeVisible();
+    await expectSquare(broken.locator('[data-preview-fallback]'));
+
+    // Missing file placeholder fills the square.
+    await expectSquare(gridCard('08-gone.png').locator('.asset-card-placeholder-missing'));
+
+    // Information cards stay visible outside the clipped viewport.
+    await alphaLink.hover();
+    const info = gridCard('01-alpha.png').locator('[data-asset-info-card]');
+    await expect(info).toBeVisible();
+    const infoBox = await info.boundingBox();
+    const linkBox = await alphaLink.boundingBox();
+    expect(infoBox.height).toBeGreaterThan(0);
+    expect(infoBox.y + infoBox.height > linkBox.y + linkBox.height
+      || infoBox.x + infoBox.width > linkBox.x + linkBox.width
+      || infoBox.x < linkBox.x).toBe(true);
+    const hit = await page.evaluate(({ x, y }) => (
+      document.elementFromPoint(x, y)?.closest('[data-asset-info-card]') !== null
+    ), { x: infoBox.x + infoBox.width / 2, y: infoBox.y + infoBox.height - 4 });
+    expect(hit).toBe(true);
+    await moveAway(page);
+
+    // The preview still opens the slideshow.
+    await gridCard('02-beta.png').locator('a[data-project-assets-preview-id]').click();
+    await expect(page.locator('[data-slideshow-scaffold]')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('[data-slideshow-scaffold]')).toBeHidden();
+
+    // Grid size stays independent.
+    const sizeLabel = (size) => page.locator(`[data-asset-grid-size-controls] [data-grid-size-option-label="${size}"]`);
+    await sizeLabel('large').click();
+    await expect(page.locator('.asset-grid')).toHaveAttribute('data-grid-size', 'large');
+    await expect(page.locator('.asset-grid')).toHaveAttribute('data-grid-style', 'cropped');
+    await expectSquare(alphaLink);
+    await sizeLabel('default').click();
+
+    // Live pagination keeps the style.
+    await page.goto(`${baseURL}/asset-viewer?pageSize=10`);
+    await page.evaluate(() => { window.__assetLibraryMarker = true; });
+    await page.locator('nav.pagination a[rel="next"]').click();
+    await expect(page).toHaveURL(/page=2/);
+    expect(await page.evaluate(() => window.__assetLibraryMarker)).toBe(true);
+    await expect(page.locator('.asset-grid')).toHaveAttribute('data-grid-style', 'cropped');
+    await expect(gridCard('12-eta.png').locator('[data-preview-image]')).toBeVisible();
+    await expectSquare(gridCard('12-eta.png').locator('.asset-card-media-link'));
+
+    // List is unchanged; switching back to Grid restores Cropped.
+    await page.locator('nav.view-switcher a[aria-label$="List view"]').click();
+    await expect(page.locator('.asset-list--library')).toBeVisible();
+    await expect(page.locator('[data-grid-style]')).toHaveCount(0);
+    const listThumb = rowParts(page, fixture.ids['12-eta.png']).card.locator('.asset-list-card-media');
+    expect(await sizeOf(listThumb)).toEqual({ width: 48, height: 48 });
+    expect(await listThumb.locator('.asset-list-card-media-image').evaluate((node) => getComputedStyle(node).objectFit)).toBe('contain');
+    await page.locator('nav.view-switcher a[aria-label$="Grid view"]').click();
+    await expect(page.locator('.asset-grid')).toHaveAttribute('data-grid-style', 'cropped');
+
+    // No horizontal overflow at phone width.
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.goto(baseURL + GRID_ALL);
+    await expect(page.locator('.asset-grid')).toHaveAttribute('data-grid-style', 'cropped');
+    await expectSquare(alphaLink);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    expect(pageErrors).toEqual([]);
+  } finally {
+    db.prepare("DELETE FROM app_meta WHERE key = 'page_defaults.asset_viewer.grid_style'").run();
   }
 });

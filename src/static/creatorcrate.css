@@ -2119,6 +2119,36 @@
         width: 1.75rem;
         height: 1.75rem;
       }
+      /* Cropped grid style (opt-in per asset grid via data-grid-style): the
+         media's in-flow viewport (its link, or a direct placeholder) becomes
+         a square that clips a centered, covering image or video frame. The
+         .asset-card-media wrapper is left unclipped because it can hold an
+         information card. A failed image hides its now-empty link so only
+         the fallback fills the square. */
+      .asset-grid[data-grid-style="cropped"] .asset-card-media > .asset-card-media-link,
+      .asset-grid[data-grid-style="cropped"] .asset-card-media > .asset-card-placeholder {
+        box-sizing: border-box;
+        width: 100%;
+        min-height: 0;
+        aspect-ratio: 1 / 1;
+        overflow: hidden;
+      }
+      .asset-grid[data-grid-style="cropped"] .asset-card-media[data-preview-state="failed"] > .asset-card-media-link {
+        display: none;
+      }
+      .asset-grid[data-grid-style="cropped"] .asset-card-media > .asset-card-media-link > .asset-card-thumb,
+      .asset-grid[data-grid-style="cropped"] .asset-video-frame-media {
+        width: 100%;
+        height: 100%;
+        max-width: none;
+        object-fit: cover;
+        object-position: center;
+      }
+      .asset-grid[data-grid-style="cropped"] .asset-video-frame,
+      .asset-grid[data-grid-style="cropped"] .asset-video-link > .asset-card-placeholder {
+        height: 100%;
+        min-height: 0;
+      }
       .asset-card-body {
         display: flex;
         flex-direction: column;

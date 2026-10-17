@@ -16,6 +16,7 @@ const SCOPES = Object.freeze(['global', 'project']);
 const states = new WeakMap();
 const VALUE_KEYS = Object.freeze([
   'view',
+  'gridStyle',
   'gridSize',
   'listSize',
   'sort',
@@ -270,6 +271,42 @@ export function reconcileProjectAssetsDefaultsAcknowledgement(
   return true;
 }
 
+function effectiveValues(state) {
+  const scope = validScope(state.committedScope);
+  return scope ? state.committed[scope] : null;
+}
+
+/**
+ * The acknowledged effective grid style when it is the only effective default
+ * that differs from what the live region last rendered; otherwise null, so
+ * scope switches or any other changed default keep the full refresh.
+ */
+export function projectAssetsDefaultsGridStyleOnlyChange(form) {
+  const state = states.get(form);
+  const effective = state ? effectiveValues(state) : null;
+  if (!effective || !state.rendered || effective.gridStyle === state.rendered.gridStyle) return null;
+  const othersUnchanged = VALUE_KEYS.every((key) => key === 'gridStyle'
+    || JSON.stringify(effective[key]) === JSON.stringify(state.rendered[key]));
+  return othersUnchanged ? effective.gridStyle : null;
+}
+
+/** A copy of the acknowledged effective defaults, for a later rendered mark. */
+export function projectAssetsDefaultsEffectiveSnapshot(form) {
+  const state = states.get(form);
+  const effective = state ? effectiveValues(state) : null;
+  return effective ? { ...effective } : null;
+}
+
+/**
+ * Records what the live region now displays. Callers mark only after an
+ * in-place restyle or an installed refresh, never when a refresh merely
+ * starts, so a failed or superseded refresh keeps the older baseline.
+ */
+export function markProjectAssetsDefaultsRendered(form, values = projectAssetsDefaultsEffectiveSnapshot(form)) {
+  const state = states.get(form);
+  if (state && values) state.rendered = { ...values };
+}
+
 function restoreCommittedStateOnOpen(state) {
   const loadedScope = validScope(state.committedScope);
   state.pendingSubmission = null;
@@ -380,6 +417,7 @@ export function enhanceProjectAssetsDefaultsScope(scope = globalThis.document) {
     pendingSubmission: null,
     dialogState: null,
     committedScope: currentScope,
+    rendered: { ...values[currentScope] },
     userRevision: 0,
     submissionRevision: null,
     reopenRevision: null,

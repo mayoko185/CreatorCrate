@@ -34,6 +34,7 @@ export const ASSET_BROWSER_CONTEXT_FIELDS = ASSET_BROWSER_QUERY_KEYS;
 
 const PROJECT_ASSETS_DEFAULT_VALUE_KEYS = Object.freeze([
   'view',
+  'gridStyle',
   'gridSize',
   'listSize',
   'sort',
@@ -46,6 +47,7 @@ const PROJECT_ASSETS_DEFAULT_VALUE_KEYS = Object.freeze([
 const PROJECT_ASSETS_DEFAULT_LABELS = Object.freeze({
   fields: Object.freeze({
     view: 'View',
+    gridStyle: 'Grid style',
     gridSize: 'Grid size',
     listSize: 'List size',
     sort: 'Sort',
@@ -56,6 +58,7 @@ const PROJECT_ASSETS_DEFAULT_LABELS = Object.freeze({
   }),
   options: Object.freeze({
     view: Object.freeze({ grid: 'Grid', list: 'List' }),
+    gridStyle: Object.freeze({ uncropped: 'Uncropped', cropped: 'Cropped' }),
     gridSize: Object.freeze({ compact: 'Compact', default: 'Default', large: 'Large' }),
     listSize: Object.freeze({ compact: 'Compact', large: 'Large' }),
     sort: Object.freeze({
@@ -846,6 +849,7 @@ export function buildBrowserRenderModel(
     projectAssetsEffectiveDefaults: projectAssetsScopedDefaults.effective,
     projectAssetsGridSizeDefault,
     projectAssetsListSizeDefault,
+    gridStyle: projectAssetsScopedDefaults.effective.gridStyle,
     inheritedProjectAssetsFilterDefaults: inheritedFilterDefaults.join(','),
     projectAssetsDefaultsDialogOpen: false,
     projectAssetsDefaultsReturnUrl: pageUrl({}),

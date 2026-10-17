@@ -1,8 +1,10 @@
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import {
+  beginProjectAssetsDefaultsLiveRefresh,
   enhanceAssetGridSize,
   enhanceAssetListSize,
   enhanceProjectAssetsLiveFiltering,
+  refreshProjectAssetsDefaultsLiveRegion,
 } from '../src/static/creatorcrate.js';
 
 function makeNode({ tagName = 'div', attrs = {}, value = '', checked = false } = {}) {
@@ -1456,5 +1458,99 @@ describe('Project Assets live filtering enhancement', () => {
     expect(next.nsfwToggle.getAttribute('aria-pressed')).toBe('true');
     expect(next.nsfwValue.value).toBe('0');
     expect(next.nsfwForm.listeners.filter(({ type }) => type === 'submit')).toHaveLength(1);
+  });
+  describe('in-place Grid style recovery after a failed Defaults refresh', () => {
+    const DEFAULTS_ERROR = 'Defaults were saved, but Project Assets could not refresh. Refresh the page to see the saved defaults.';
+    const NSFW_ERROR = 'NSFW filter changed, but Project Assets could not refresh. Refresh the page to see updated previews.';
+    const restyle = (document) => refreshProjectAssetsDefaultsLiveRegion(
+      document,
+      '/projects/1/assets?view=grid',
+      beginProjectAssetsDefaultsLiveRefresh(document),
+      { gridStyle: 'cropped' },
+    );
+    const failDefaultsRefresh = async (document) => {
+      const onError = vi.fn();
+      expect(refreshProjectAssetsDefaultsLiveRegion(
+        document,
+        '/projects/1/assets?view=grid',
+        beginProjectAssetsDefaultsLiveRefresh(document),
+        { onError },
+      )).toBe('started');
+      await flush();
+      expect(onError).toHaveBeenCalledOnce();
+    };
+
+    it('clears the obsolete Defaults-refresh error once the style is applied in place', async () => {
+      const initial = makePage({ view: 'grid' });
+      const { windowObject } = makeWindow(initial.document);
+      windowObject.fetch.mockRejectedValue(new Error('offline'));
+      enhanceProjectAssetsLiveFiltering(initial.document);
+
+      await failDefaultsRefresh(initial.document);
+      expect(initial.status.textContent).toBe(DEFAULTS_ERROR);
+      expect(initial.region.getAttribute('data-project-assets-live-state')).toBe('error');
+
+      expect(restyle(initial.document)).toBe('applied');
+      expect(windowObject.fetch).toHaveBeenCalledOnce();
+      expect(initial.document.querySelector('[data-project-assets-live-region]')).toBe(initial.region);
+      expect(initial.grid.getAttribute('data-grid-style')).toBe('cropped');
+      expect(initial.status.textContent).toBe('');
+      expect(initial.region.hasAttribute('data-project-assets-live-state')).toBe(false);
+    });
+
+    it('keeps NSFW and unrelated live-region errors', async () => {
+      const nsfw = makePage({ view: 'grid', nsfwEnabled: false });
+      const { windowObject: nsfwWindow } = makeWindow(nsfw.document);
+      nsfwWindow.fetch
+        .mockResolvedValueOnce(jsonResponse({ status: 'success', enabled: true }))
+        .mockRejectedValueOnce(new Error('offline'));
+      enhanceProjectAssetsLiveFiltering(nsfw.document);
+      nsfw.nsfwForm.dispatch('submit', { target: nsfw.nsfwToggle });
+      await flush();
+      expect(nsfw.status.textContent).toBe(NSFW_ERROR);
+
+      expect(restyle(nsfw.document)).toBe('applied');
+      expect(nsfw.grid.getAttribute('data-grid-style')).toBe('cropped');
+      expect(nsfw.status.textContent).toBe(NSFW_ERROR);
+      expect(nsfw.region.getAttribute('data-project-assets-live-state')).toBe('error');
+
+      const unrelated = makePage({ view: 'grid' });
+      const { windowObject } = makeWindow(unrelated.document);
+      windowObject.fetch.mockRejectedValue(new Error('offline'));
+      enhanceProjectAssetsLiveFiltering(unrelated.document);
+      unrelated.presenceAll.checked = false;
+      unrelated.presenceMissing.checked = true;
+      unrelated.presenceMissing.dispatch('change');
+      await flush();
+      const unrelatedMessage = unrelated.status.textContent;
+      expect(unrelatedMessage).not.toBe('');
+
+      restyle(unrelated.document);
+      expect(unrelated.status.textContent).toBe(unrelatedMessage);
+      expect(unrelated.region.getAttribute('data-project-assets-live-state')).toBe('error');
+    });
+
+    it('keeps the Defaults-refresh error when the failed load also owed an NSFW refresh', async () => {
+      const initial = makePage({ view: 'grid', nsfwEnabled: false });
+      const nsfwRefresh = deferred();
+      const { windowObject } = makeWindow(initial.document);
+      windowObject.fetch
+        .mockResolvedValueOnce(jsonResponse({ status: 'success', enabled: true }))
+        .mockImplementationOnce(() => nsfwRefresh.promise)
+        .mockRejectedValueOnce(new Error('offline'));
+      enhanceProjectAssetsLiveFiltering(initial.document);
+      initial.nsfwForm.dispatch('submit', { target: initial.nsfwToggle });
+      await flush();
+      expect(windowObject.fetch).toHaveBeenCalledTimes(2);
+
+      // The Defaults refresh supersedes the NSFW refresh and carries it.
+      await failDefaultsRefresh(initial.document);
+      expect(initial.status.textContent).toBe(DEFAULTS_ERROR);
+
+      // The previews still predate the NSFW change, so the prompt stays.
+      expect(restyle(initial.document)).toBe('applied');
+      expect(initial.status.textContent).toBe(DEFAULTS_ERROR);
+      expect(initial.region.getAttribute('data-project-assets-live-state')).toBe('error');
+    });
   });
 });

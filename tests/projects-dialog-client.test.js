@@ -16,6 +16,10 @@ import {
   enhanceReleasesLiveFiltering,
   openAppDialogById,
 } from '../src/static/creatorcrate.js';
+import {
+  markProjectAssetsDefaultsRendered,
+  projectAssetsDefaultsGridStyleOnlyChange,
+} from '../src/static/client/project-assets-defaults-scope.js';
 
 function makeElement(tagName = 'div', attrs = {}) {
   const attributes = new Map();
@@ -262,7 +266,7 @@ function addStandardDropdown(
 }
 
 const PROJECT_ASSETS_DEFAULT_KEYS = [
-  'view', 'gridSize', 'listSize', 'sort', 'order', 'pageSize', 'extension', 'tag',
+  'view', 'gridStyle', 'gridSize', 'listSize', 'sort', 'order', 'pageSize', 'extension', 'tag',
 ];
 
 function projectAssetsDefaultValues(fields) {
@@ -418,6 +422,7 @@ function makeDialogPage({
   const defaultFields = projectAssetsDefaults
     ? (projectAssetsScope ? [
       ['view', 'grid', ['grid', 'list']],
+      ['gridStyle', 'uncropped', ['uncropped', 'cropped']],
       ['gridSize', 'default', ['compact', 'default', 'large']],
       ['listSize', 'large', ['compact', 'large']],
       ['sort', 'filename', ['filename', 'modified', 'size', 'category']],
@@ -427,6 +432,7 @@ function makeDialogPage({
       ['tag', '1', [{ value: '1', label: 'Landscape' }, { value: '2', label: 'Portrait' }]],
     ] : [
       ['view', 'grid', ['grid', 'list']],
+      ['gridStyle', 'uncropped', ['uncropped', 'cropped']],
       ['gridSize', 'default', ['compact', 'default', 'large']],
       ['listSize', 'large', ['compact', 'large']],
       ['sort', 'filename', ['filename', 'modified', 'size', 'category']],
@@ -472,8 +478,8 @@ function makeDialogPage({
   }
   if (projectAssetsScope) {
     const values = projectAssetsScopeValues || {
-      global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
-      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'png', tag: '2' },
+      global: { view: 'grid', gridStyle: 'uncropped', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
+      project: { view: 'list', gridStyle: 'cropped', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'png', tag: '2' },
     };
     const serializedValues = makeElement('script', { type: 'application/json', 'data-project-assets-default-values': '' });
     serializedValues.textContent = JSON.stringify(values);
@@ -1433,8 +1439,8 @@ describe('Reusable app dialog enhancement', () => {
       projectAssetsDefaults: true,
       projectAssetsScope: true,
       projectAssetsScopeValues: {
-        global: { view: 'grid', gridSize: 'default', listSize: 'large', gridDetails: 'shown', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
-        project: { view: 'list', gridSize: 'large', listSize: 'compact', gridDetails: 'hidden', sort: 'category', order: 'desc', pageSize: '50', extension: 'png', tag: '2' },
+        global: { view: 'grid', gridStyle: 'uncropped', gridSize: 'default', listSize: 'large', gridDetails: 'shown', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
+        project: { view: 'list', gridStyle: 'cropped', gridSize: 'large', listSize: 'compact', gridDetails: 'hidden', sort: 'category', order: 'desc', pageSize: '50', extension: 'png', tag: '2' },
       },
     });
     enhanceDropdowns(page.document);
@@ -1449,7 +1455,7 @@ describe('Reusable app dialog enhancement', () => {
     changeProjectAssetsScope(page, 'project');
 
     expect(projectAssetsDefaultValues(page.fields)).toEqual({
-      view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc',
+      view: 'list', gridStyle: 'cropped', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc',
       pageSize: '50', extension: 'png', tag: '2',
     });
     expect(page.form.querySelector('input[name="loadedScope"]').value).toBe('project');
@@ -1525,8 +1531,8 @@ describe('Reusable app dialog enhancement', () => {
     expect(malformed.form.querySelector('input[name="loadedScope"]').value).toBe('global');
 
     const values = {
-      global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
-      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'gif', tag: '2' },
+      global: { view: 'grid', gridStyle: 'uncropped', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
+      project: { view: 'list', gridStyle: 'cropped', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'gif', tag: '2' },
     };
     const invalidTarget = makeDialogPage({
       standardDropdowns: true,
@@ -2055,7 +2061,7 @@ describe('Projects defaults autosave enhancement', () => {
     installFetchGlobals(page, fetch);
 
     try {
-      expect(enhanceProjectAssetsAutosavePage(page)).toBe(8);
+      expect(enhanceProjectAssetsAutosavePage(page)).toBe(9);
       expect(enhanceProjectAssetsDefaultsFetchSave(
         page.document,
         page.projectAssetsDefaultsRefreshOptions,
@@ -2072,6 +2078,7 @@ describe('Projects defaults autosave enhancement', () => {
         scope: 'project',
         loadedScope: 'project',
         view: 'list',
+        gridStyle: 'cropped',
         gridSize: 'large',
         listSize: 'compact',
         sort: 'category',
@@ -2085,7 +2092,12 @@ describe('Projects defaults autosave enhancement', () => {
         page.document,
         destination,
         17,
-        { onError: expect.any(Function), acknowledgedControls: new Set(['view']) },
+        {
+          onError: expect.any(Function),
+          acknowledgedControls: new Set(['view']),
+          form: page.form,
+          acknowledgementFailed: false,
+        },
       );
       expect(page.dialog.open).toBe(true);
       expect(page.form.getAttribute('data-settings-fetch-save-state')).toBe('saved');
@@ -2094,10 +2106,71 @@ describe('Projects defaults autosave enhancement', () => {
     }
   });
 
+  it('reports a Grid style-only change only from the acknowledged effective values', async () => {
+    const values = {
+      global: { view: 'grid', gridStyle: 'uncropped', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
+      project: { view: 'grid', gridStyle: 'uncropped', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
+    };
+    const page = makeDialogPage({
+      standardDropdowns: true,
+      projectAssetsDefaults: true,
+      projectAssetsScope: true,
+      projectAssetsScopeValues: values,
+      projectAssetsDefaultsAutosave: true,
+    });
+    setProjectAssetsDefaultValues(page.fields, values.global);
+    let acknowledged = { ...values, global: { ...values.global, gridStyle: 'cropped' } };
+    const fetch = vi.fn().mockImplementation(() => Promise.resolve(response({
+      url: 'http://creatorcrate.test/projects/1/assets?notice=project_assets_defaults_saved',
+      html: acknowledged ? projectAssetsDefaultsHtml(acknowledged, 'global') : '<p>unreadable</p>',
+    })));
+    installFetchGlobals(page, fetch);
+    const seen = [];
+    const refresh = vi.fn((_document, _destination, _generation, options) => {
+      seen.push({
+        gridStyle: projectAssetsDefaultsGridStyleOnlyChange(options.form),
+        acknowledgementFailed: options.acknowledgementFailed,
+      });
+      markProjectAssetsDefaultsRendered(options.form);
+      return 'applied';
+    });
+    const save = async (name, value) => {
+      page.fields[name].value = value;
+      page.fields[name].dispatch('change');
+      await flush();
+      await flush();
+    };
+
+    try {
+      enhanceProjectAssetsAutosavePage(page, { refresh });
+      page.document.dispatch('click', { target: page.trigger });
+      await flush();
+
+      // The server-confirmed style, not the submitted one, is reported.
+      await save('gridStyle', 'cropped');
+      // Once rendered, a same-style acknowledgement is no longer a style change.
+      expect(projectAssetsDefaultsGridStyleOnlyChange(page.form)).toBeNull();
+      // Any other changed effective default keeps the full refresh.
+      acknowledged = { ...values, global: { ...values.global, gridStyle: 'uncropped', sort: 'modified' } };
+      await save('gridStyle', 'uncropped');
+      // An unreadable acknowledgement never restyles in place.
+      acknowledged = null;
+      await save('gridStyle', 'cropped');
+
+      expect(seen).toEqual([
+        { gridStyle: 'cropped', acknowledgementFailed: false },
+        { gridStyle: null, acknowledgementFailed: false },
+        { gridStyle: null, acknowledgementFailed: true },
+      ]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('saves a Global scope switch once after hydrating its complete paired snapshot', async () => {
     const values = {
-      global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
-      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'png', tag: '2' },
+      global: { view: 'grid', gridStyle: 'uncropped', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
+      project: { view: 'list', gridStyle: 'cropped', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'png', tag: '2' },
     };
     const page = makeDialogPage({
       standardDropdowns: true,
@@ -2136,6 +2209,7 @@ describe('Projects defaults autosave enhancement', () => {
         scope: 'global',
         loadedScope: 'global',
         view: 'grid',
+        gridStyle: 'uncropped',
         gridSize: 'default',
         listSize: 'large',
         sort: 'modified',
@@ -2148,7 +2222,12 @@ describe('Projects defaults autosave enhancement', () => {
         page.document,
         destination,
         17,
-        { onError: expect.any(Function), acknowledgedControls: new Set(['view', 'sort']) },
+        {
+          onError: expect.any(Function),
+          acknowledgedControls: new Set(['view', 'sort']),
+          form: page.form,
+          acknowledgementFailed: false,
+        },
       );
       closeAppDialogById(page.document, page.dialog.id);
       page.document.dispatch('click', { target: page.trigger });
@@ -2207,7 +2286,12 @@ describe('Projects defaults autosave enhancement', () => {
         ? { ...values.project, sort: 'size' } : values.global);
       expect(page.projectAssetsDefaultsRefreshOptions.refresh).toHaveBeenCalledWith(
         page.document, destination, 17,
-        { onError: expect.any(Function), acknowledgedControls: new Set(['view']) },
+        {
+          onError: expect.any(Function),
+          acknowledgedControls: new Set(['view']),
+          form: page.form,
+          acknowledgementFailed: false,
+        },
       );
       expect(page.status.textContent).toBe('Settings saved.');
       expect(fetch).toHaveBeenCalledOnce();
@@ -2316,7 +2400,7 @@ describe('Projects defaults autosave enhancement', () => {
   });
 
   it('persists a scope-only change even when both scopes have identical values', async () => {
-    const shared = { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' };
+    const shared = { view: 'grid', gridStyle: 'uncropped', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' };
     const page = makeDialogPage({
       standardDropdowns: true,
       projectAssetsDefaults: true,
@@ -2352,8 +2436,8 @@ describe('Projects defaults autosave enhancement', () => {
 
   it('reconciles a Project-only acknowledgement from both authoritative server snapshots', async () => {
     const values = {
-      global: { view: 'grid', gridSize: 'compact', listSize: 'large', sort: 'filename', order: 'desc', pageSize: '25', extension: 'jpg', tag: '1' },
-      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'modified', order: 'asc', pageSize: '50', extension: 'png', tag: '2' },
+      global: { view: 'grid', gridStyle: 'uncropped', gridSize: 'compact', listSize: 'large', sort: 'filename', order: 'desc', pageSize: '25', extension: 'jpg', tag: '1' },
+      project: { view: 'list', gridStyle: 'cropped', gridSize: 'large', listSize: 'compact', sort: 'modified', order: 'asc', pageSize: '50', extension: 'png', tag: '2' },
     };
     const page = makeDialogPage({
       standardDropdowns: true,
@@ -2463,7 +2547,12 @@ describe('Projects defaults autosave enhancement', () => {
         page.document,
         finalUrl,
         17,
-        { onError: expect.any(Function), acknowledgedControls: new Set(['gridSize']) },
+        {
+          onError: expect.any(Function),
+          acknowledgedControls: new Set(['gridSize']),
+          form: page.form,
+          acknowledgementFailed: false,
+        },
       );
       expect(storage.get('creatorcrate-asset-grid-size')).toBe(finalAuthoritative.global.gridSize);
       expect(storage.get('creatorcrate-asset-list-size')).toBe(finalAuthoritative.global.listSize);
@@ -2607,8 +2696,8 @@ describe('Projects defaults autosave enhancement', () => {
 
   it('does not queue a scope save when the target draft cannot be hydrated', async () => {
     const values = {
-      global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
-      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'gif', tag: '2' },
+      global: { view: 'grid', gridStyle: 'uncropped', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: 'jpg', tag: '1' },
+      project: { view: 'list', gridStyle: 'cropped', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'gif', tag: '2' },
     };
     const page = makeDialogPage({
       standardDropdowns: true,
@@ -3036,6 +3125,8 @@ describe('Projects defaults autosave enhancement', () => {
       expect(refresh).toHaveBeenCalledWith(page.document, successUrl, 7, {
         onError: expect.any(Function),
         acknowledgedControls: new Set(['view', 'sort']),
+        form: page.form,
+        acknowledgementFailed: false,
       });
       expect(mountedFormsAtRefresh).toHaveLength(1);
       expect(mountedFormsAtRefresh[0]).toBe(page.form);
@@ -3398,8 +3489,8 @@ describe('Project Assets multi-select defaults scope', () => {
 
   it('preserves independent Extension and Tag drafts for each scope', () => {
     const values = {
-      global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: ['jpg', 'png'], tag: ['1', '2'] },
-      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: ['png'], tag: ['2'] },
+      global: { view: 'grid', gridStyle: 'uncropped', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: ['jpg', 'png'], tag: ['1', '2'] },
+      project: { view: 'list', gridStyle: 'cropped', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: ['png'], tag: ['2'] },
     };
     const page = makeDialogPage({ projectAssetsDefaults: true, projectAssetsScope: true, projectAssetsScopeValues: values });
     page.fields.extension.multiple = true;
@@ -3429,8 +3520,8 @@ describe('Project Assets multi-select defaults scope', () => {
 
   it('fails closed when a committed multi-select member is unavailable', () => {
     const values = {
-      global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: ['jpg'], tag: 'all' },
-      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: ['gif', 'png'], tag: ['2'] },
+      global: { view: 'grid', gridStyle: 'uncropped', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: ['jpg'], tag: 'all' },
+      project: { view: 'list', gridStyle: 'cropped', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: ['gif', 'png'], tag: ['2'] },
     };
     const page = makeDialogPage({ projectAssetsDefaults: true, projectAssetsScope: true, projectAssetsScopeValues: values });
     page.fields.extension.multiple = true;
@@ -3449,8 +3540,8 @@ describe('Project Assets multi-select defaults scope', () => {
 
   it('restores committed neutral all values after discarding concrete drafts', () => {
     const values = {
-      global: { view: 'grid', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: ['jpg', 'png'], tag: ['1', '2'] },
-      project: { view: 'list', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'all', tag: 'all' },
+      global: { view: 'grid', gridStyle: 'uncropped', gridSize: 'default', listSize: 'large', sort: 'filename', order: 'asc', pageSize: '25', extension: ['jpg', 'png'], tag: ['1', '2'] },
+      project: { view: 'list', gridStyle: 'cropped', gridSize: 'large', listSize: 'compact', sort: 'category', order: 'desc', pageSize: '50', extension: 'all', tag: 'all' },
     };
     const page = makeDialogPage({ projectAssetsDefaults: true, projectAssetsScope: true, projectAssetsScopeValues: values });
     page.fields.extension.multiple = true;

@@ -209,6 +209,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
       .send({
         returnTo: '/asset-viewer?sort=modified',
         view: 'grid',
+        gridStyle: 'uncropped',
         sort: 'filename',
         order: 'asc',
         pageSize: '25',
@@ -507,7 +508,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
         .post('/asset-viewer/defaults')
         .type('form')
         .send({
-          view: 'grid', sort: 'filename', order: 'asc', pageSize,
+          view: 'grid', gridStyle: 'uncropped', sort: 'filename', order: 'asc', pageSize,
           extension: 'all', category: 'all', presence: 'all', tag: 'all',
         })
         .expect(302);
@@ -805,7 +806,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     await agent
       .post('/asset-viewer/defaults')
       .type('form')
-      .send({ _csrf: defaultsToken, view: 'list', sort: 'project', order: 'desc', pageSize: '50', extension: 'all', category: 'all', presence: 'all', tag: 'all' })
+      .send({ _csrf: defaultsToken, view: 'list', gridStyle: 'uncropped', sort: 'project', order: 'desc', pageSize: '50', extension: 'all', category: 'all', presence: 'all', tag: 'all' })
       .expect(302);
   });
 
@@ -813,7 +814,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     const save = await request(app)
       .post('/asset-viewer/defaults')
       .type('form')
-      .send({ view: 'list', sort: 'project', order: 'desc', pageSize: '50', extension: 'all', category: 'all', presence: 'all', tag: 'all' })
+      .send({ view: 'list', gridStyle: 'uncropped', sort: 'project', order: 'desc', pageSize: '50', extension: 'all', category: 'all', presence: 'all', tag: 'all' })
       .expect(302);
 
     expect(save.headers.location).toBe(
@@ -873,6 +874,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
       .type('form')
       .send({
         view: 'grid',
+        gridStyle: 'uncropped',
         sort: 'filename',
         order: 'asc',
         pageSize: '25',
@@ -908,6 +910,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
       .type('form')
       .send({
         view: 'grid',
+        gridStyle: 'uncropped',
         sort: 'filename',
         order: 'asc',
         pageSize: '25',
@@ -965,6 +968,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
       .type('form')
       .send({
         view: 'grid',
+        gridStyle: 'uncropped',
         sort: 'filename',
         order: 'asc',
         pageSize: '25',
@@ -1003,7 +1007,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     await request(app)
       .post('/asset-viewer/defaults')
       .type('form')
-      .send({ view: 'grid', sort: 'filename', order: 'asc', pageSize: '25', category: 'all', presence: 'all' })
+      .send({ view: 'grid', gridStyle: 'uncropped', sort: 'filename', order: 'asc', pageSize: '25', category: 'all', presence: 'all' })
       .expect(302);
 
     expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
@@ -1035,6 +1039,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
       .send({
         returnTo,
         view: 'grid',
+        gridStyle: 'uncropped',
         sort: 'filename',
         order: 'asc',
         pageSize: '25',
@@ -1054,6 +1059,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
       .type('form')
       .send({
         view: 'grid',
+        gridStyle: 'uncropped',
         sort: 'filename',
         order: 'asc',
         pageSize: '25',
@@ -1087,7 +1093,7 @@ describe('cross-project Asset Viewer HTTP route', () => {
     await request(app)
       .post('/asset-viewer/defaults')
       .type('form')
-      .send({ view: 'list', sort: 'project', order: 'desc', pageSize: '50', extension: 'all', category: 'all', presence: 'all', tag: 'all' })
+      .send({ view: 'list', gridStyle: 'uncropped', sort: 'project', order: 'desc', pageSize: '50', extension: 'all', category: 'all', presence: 'all', tag: 'all' })
       .expect(302);
 
     const bare = await request(app).get('/asset-viewer').expect(302);
@@ -1099,6 +1105,52 @@ describe('cross-project Asset Viewer HTTP route', () => {
     expect(rendered.text).toMatch(/name="order"[^>]+value="desc" checked/);
     expect(rendered.text).toMatch(/name="pageSize"[^>]+value="50" checked/);
     expect(rendered.text).toContain('<input type="hidden" name="view" value="list">');
+  });
+
+  it('renders the saved Grid style on the Asset Viewer grid only, defaulting to Uncropped', async () => {
+    const project = createProject('Grid Style Project');
+    createAsset(project.id, 'cover.png');
+    createAsset(project.id, 'page-two.png');
+    const gridStyleOf = (html) => html.match(/<ul class="asset-grid"[^>]*data-grid-style="([^"]*)"/)?.[1];
+    const getRendered = async (url) => {
+      const response = await request(app).get(url);
+      if (response.status !== 302) return response;
+      return request(app).get(response.headers.location).expect(200);
+    };
+
+    const initial = await request(app).get('/asset-viewer').expect(200);
+    expect(gridStyleOf(initial.text)).toBe('uncropped');
+    const viewField = initial.text.indexOf('data-dialog-field="view"');
+    const gridStyleField = initial.text.indexOf('data-dialog-field="gridStyle"');
+    const sortField = initial.text.indexOf('data-dialog-field="sort"');
+    expect(viewField).toBeGreaterThan(-1);
+    expect(gridStyleField).toBeGreaterThan(viewField);
+    expect(sortField).toBeGreaterThan(gridStyleField);
+    expect(initial.text).toContain('Grid style');
+    expect(initial.text).toMatch(/id="assetViewer-default-gridStyle"[\s\S]*?<option value="uncropped" selected>/);
+
+    const save = await request(app)
+      .post('/asset-viewer/defaults')
+      .type('form')
+      .send({ view: 'grid', gridStyle: 'cropped', sort: 'filename', order: 'asc', pageSize: '25', extension: 'all', category: 'all', presence: 'all', tag: 'all' })
+      .expect(302);
+    expect(save.headers.location).not.toContain('gridStyle');
+    expect(db.prepare('SELECT value FROM app_meta WHERE key = ?')
+      .get(PAGE_DEFAULT_DEFINITIONS.assetViewer.gridStyle.key)?.value).toBe('cropped');
+
+    const cropped = await request(app).get('/asset-viewer').expect(200);
+    expect(gridStyleOf(cropped.text)).toBe('cropped');
+    expect(cropped.text).toMatch(/id="assetViewer-default-gridStyle"[\s\S]*?<option value="cropped" selected>/);
+
+    const filtered = await getRendered('/asset-viewer?search=cover&pageSize=10&page=1');
+    expect(filtered.text).toContain('1 asset found');
+    expect(gridStyleOf(filtered.text)).toBe('cropped');
+    const gridStyleQuery = await getRendered('/asset-viewer?gridStyle=uncropped');
+    expect(gridStyleOf(gridStyleQuery.text)).toBe('cropped');
+
+    const list = await getRendered('/asset-viewer?view=list');
+    expect(list.text).not.toContain('data-grid-style');
+    expect(list.text).toContain('asset-list-table--library');
   });
 
   it('ignores arbitrary Asset Viewer notice values during canonicalization and rendering', async () => {

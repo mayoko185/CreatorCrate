@@ -98,6 +98,7 @@ describe('page defaults service', () => {
     expect(service.resolve('releases', 'sort')).toBe('planned');
     expect(service.resolve('releases', 'order')).toBe('asc');
     expect(service.resolve('projectAssets', 'view')).toBe('grid');
+    expect(service.resolve('projectAssets', 'gridStyle')).toBe('uncropped');
     expect(service.resolve('projectAssets', 'gridSize')).toBe('default');
     expect(service.resolve('projectAssets', 'listSize')).toBe('large');
     expect(service.resolve('projectAssets', 'sort')).toBe('filename');
@@ -147,6 +148,11 @@ describe('page defaults service', () => {
         values: ['grid', 'list'],
         fallback: 'grid',
       },
+      gridStyle: {
+        key: 'page_defaults.project_assets.grid_style',
+        values: ['uncropped', 'cropped'],
+        fallback: 'uncropped',
+      },
       gridSize: {
         key: 'page_defaults.project_assets.grid_size',
         values: ['compact', 'default', 'large'],
@@ -193,6 +199,11 @@ describe('page defaults service', () => {
         key: 'page_defaults.asset_viewer.view',
         values: ['grid', 'list'],
         fallback: 'grid',
+      },
+      gridStyle: {
+        key: 'page_defaults.asset_viewer.grid_style',
+        values: ['uncropped', 'cropped'],
+        fallback: 'uncropped',
       },
       sort: {
         key: 'page_defaults.asset_viewer.sort',
@@ -312,6 +323,26 @@ describe('page defaults service', () => {
     expect(repository.getValue(key)).toBe('cropped');
   });
 
+  it('resolves the Asset Viewer Grid style to Uncropped until Cropped is saved, without writing on read', () => {
+    const key = PAGE_DEFAULT_DEFINITIONS.assetViewer.gridStyle.key;
+
+    expect(key).toBe('page_defaults.asset_viewer.grid_style');
+    expect(service.resolve('assetViewer', 'gridStyle')).toBe('uncropped');
+    expect(repository.getValue(key)).toBeUndefined();
+
+    repository.setValue(key, 'square');
+    expect(service.resolve('assetViewer', 'gridStyle')).toBe('uncropped');
+    expect(repository.getValue(key)).toBe('square');
+
+    expect(service.saveDefault('assetViewer', 'gridStyle', 'cropped')).toBe('cropped');
+    expect(repository.getValue(key)).toBe('cropped');
+    expect(service.resolve('assetViewer', 'gridStyle')).toBe('cropped');
+    expect(service.resolve('projects', 'gridStyle')).toBe('uncropped');
+    expect(() => service.saveDefault('assetViewer', 'gridStyle', 'stretched'))
+      .toThrow(PageDefaultValidationError);
+    expect(repository.getValue(key)).toBe('cropped');
+  });
+
   it.each(['published', 'planned'])(
     'uses the Projects fallback for obsolete stored %s sorting without rewriting unrelated preferences',
     (obsoleteSort) => {
@@ -400,12 +431,14 @@ describe('page defaults service', () => {
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.gridSize.key, 'large');
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.listSize.key, 'compact');
     repository.setValue(obsoleteGridDetailsKey, 'hidden');
+    repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.gridStyle.key, 'cropped');
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.sort.key, 'category');
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.order.key, 'desc');
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.pageSize.key, '100');
 
     expect(service.resolvePageDefaults('projectAssets')).toEqual({
       view: 'list',
+      gridStyle: 'cropped',
       gridSize: 'large',
       listSize: 'compact',
       sort: 'category',
@@ -423,9 +456,11 @@ describe('page defaults service', () => {
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.assetViewer.sort.key, 'project');
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.assetViewer.order.key, 'desc');
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.assetViewer.pageSize.key, '100');
+    repository.setValue(PAGE_DEFAULT_DEFINITIONS.assetViewer.gridStyle.key, 'cropped');
 
     expect(service.resolvePageDefaults('assetViewer')).toEqual({
       view: 'list',
+      gridStyle: 'cropped',
       sort: 'project',
       order: 'desc',
       pageSize: '100',
@@ -556,6 +591,7 @@ describe('page defaults service', () => {
   it('uses Project Assets fallbacks for invalid stored values without rewriting them', () => {
     const invalidValues = {
       view: 'board',
+      gridStyle: 'square',
       gridSize: 'extra-large',
       listSize: 'default',
       sort: 'published',
@@ -568,6 +604,7 @@ describe('page defaults service', () => {
 
     expect(service.resolvePageDefaults('projectAssets')).toEqual({
       view: 'grid',
+      gridStyle: 'uncropped',
       gridSize: 'default',
       listSize: 'large',
       sort: 'filename',
@@ -585,6 +622,7 @@ describe('page defaults service', () => {
   it('uses Asset Viewer fallbacks for invalid stored values without rewriting them', () => {
     const invalidValues = {
       view: 'board',
+      gridStyle: 'square',
       sort: 'title',
       order: 'forwards',
       pageSize: '20',
@@ -599,6 +637,7 @@ describe('page defaults service', () => {
 
     expect(service.resolvePageDefaults('assetViewer')).toEqual({
       view: 'grid',
+      gridStyle: 'uncropped',
       sort: 'filename',
       order: 'asc',
       pageSize: '25',
@@ -669,6 +708,41 @@ describe('page defaults service', () => {
     expect(service.resolvePageDefaults('projectAssets', {}, {}, { projectId: 2 }).pageSize).toBe(pageSize);
   });
 
+  it('scopes the Project Assets Grid style per project with Global inheritance', () => {
+    const key = PAGE_DEFAULT_DEFINITIONS.projectAssets.gridStyle.key;
+    const effective = (projectId) => service.resolvePageDefaults(
+      'projectAssets', {}, {}, { projectId },
+    ).gridStyle;
+
+    expect(effective(1)).toBe('uncropped');
+    expect(() => service.saveProjectDefault('projectAssets', 'gridStyle', 'square', undefined, { projectId: 1 }))
+      .toThrow(PageDefaultValidationError);
+
+    expect(service.saveProjectDefault('projectAssets', 'gridStyle', 'cropped', undefined, { projectId: 1 }))
+      .toBe('cropped');
+    expect(repository.getValue(key)).toBeUndefined();
+    // Stored Project-only values stay dormant until that project selects its scope.
+    expect(effective(1)).toBe('uncropped');
+    service.setPageDefaultScope('projectAssets', 'project', { projectId: 1 });
+    service.setPageDefaultScope('projectAssets', 'project', { projectId: 2 });
+    expect(effective(1)).toBe('cropped');
+    expect(effective(2)).toBe('uncropped');
+
+    // Project 2 has no Project-only value, so it follows the Global value;
+    // the Global save leaves project 1's Project-only value intact.
+    service.saveDefault('projectAssets', 'gridStyle', 'cropped');
+    service.saveProjectDefault('projectAssets', 'gridStyle', 'uncropped', undefined, { projectId: 1 });
+    expect(effective(1)).toBe('uncropped');
+    expect(effective(2)).toBe('cropped');
+    expect(service.resolveGlobalPageDefaults('projectAssets').gridStyle).toBe('cropped');
+
+    projectPageDefaultRepository.setOption(2, 'projectAssets', 'gridStyle', 'stretched');
+    expect(effective(2)).toBe('cropped');
+    service.setPageDefaultScope('projectAssets', 'global', { projectId: 1 });
+    expect(effective(1)).toBe('cropped');
+    expect(projectPageDefaultRepository.getOption(1, 'projectAssets', 'gridStyle')).toBe('uncropped');
+  });
+
   it('keeps a Project-only all page size ahead of a finite Global value', () => {
     service.saveDefault('projectAssets', 'pageSize', '150');
     service.saveProjectDefault('projectAssets', 'pageSize', 'all', undefined, { projectId: 1 });
@@ -702,6 +776,7 @@ describe('page defaults service', () => {
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.gridSize.key, 'large');
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.listSize.key, 'compact');
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.sort.key, 'size');
+    repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.gridStyle.key, 'cropped');
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.order.key, 'desc');
     repository.setValue(PAGE_DEFAULT_DEFINITIONS.projectAssets.pageSize.key, '100');
 
@@ -712,6 +787,7 @@ describe('page defaults service', () => {
       pageSize: '10',
     })).toEqual({
       view: 'grid',
+      gridStyle: 'cropped',
       gridSize: 'compact',
       listSize: 'large',
       sort: 'size',
@@ -749,6 +825,7 @@ describe('page defaults service', () => {
 
     expect(service.validatePageDefaults('projectAssets', {
       view: 'grid',
+      gridStyle: 'cropped',
       gridSize: 'large',
       listSize: 'compact',
       sort: 'modified',
@@ -758,6 +835,7 @@ describe('page defaults service', () => {
       tag: 'all',
     })).toEqual({
       view: 'grid',
+      gridStyle: 'cropped',
       gridSize: 'large',
       listSize: 'compact',
       sort: 'modified',
@@ -769,6 +847,7 @@ describe('page defaults service', () => {
 
     expect(service.validatePageDefaults('assetViewer', {
       view: 'list',
+      gridStyle: 'cropped',
       sort: 'project',
       order: 'desc',
       pageSize: '100',
@@ -778,6 +857,7 @@ describe('page defaults service', () => {
       tag: 'all',
     })).toEqual({
       view: 'list',
+      gridStyle: 'cropped',
       sort: 'project',
       order: 'desc',
       pageSize: '100',
@@ -841,6 +921,7 @@ describe('page defaults service', () => {
     expect(repository.getValue(tagKey)).toBe('99');
     expect(service.validatePageDefaults('projectAssets', {
       view: 'grid',
+      gridStyle: 'uncropped',
       gridSize: 'default',
       listSize: 'large',
       sort: 'filename',
@@ -851,6 +932,7 @@ describe('page defaults service', () => {
     }, optionCatalogues)).toMatchObject({ extension: ['png'], tag: ['42'] });
     expect(() => service.validatePageDefaults('projectAssets', {
       view: 'grid',
+      gridStyle: 'uncropped',
       gridSize: 'default',
       listSize: 'large',
       sort: 'filename',
@@ -876,6 +958,7 @@ describe('page defaults service', () => {
     };
     const values = {
       view: 'grid',
+      gridStyle: 'uncropped',
       gridSize: 'default',
       listSize: 'large',
       sort: 'filename',

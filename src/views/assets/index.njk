@@ -231,7 +231,7 @@
 
   {% if assets.length > 0 %}
     {% if currentView == 'grid' %}
-      <ul class="asset-grid" role="list" aria-label="Assets across active projects">
+      <ul class="asset-grid" data-grid-style="{{ gridStyle }}" role="list" aria-label="Assets across active projects">
         {% for asset in assets %}
           {% set detailUrl = asset.detailUrl or ("/projects/" ~ asset.project_id ~ "/assets/" ~ asset.id) %}
           {% set displayName = asset.filename or asset.relative_path or 'Unnamed asset' %}

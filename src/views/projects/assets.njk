@@ -851,7 +851,7 @@
 
       {% if assets.length > 0 %}
         {% if filters.view == 'grid' %}
-          <ul class="asset-grid" role="listbox" aria-label="Assets">
+          <ul class="asset-grid" data-grid-style="{{ gridStyle }}" role="listbox" aria-label="Assets">
             {% for asset in assets %}
              {{ assetCard(asset, isArchived, submittedSelectedAssetIds, project, context, contextFields, renameFailure, _csrf, categoryCapabilities.canReorderCategory, loop.index0, assets.length, clockFormat) }}
             {% endfor %}

@@ -1552,6 +1552,7 @@ describe('asset browser HTTP workflow', () => {
 
       const rejected = await agent.post('/projects/' + id + '/assets/defaults').type('form').send({
         view: 'list',
+        gridStyle: 'cropped',
         gridSize: 'large',
         listSize: 'compact',
         sort: 'modified',
@@ -1578,6 +1579,7 @@ describe('asset browser HTTP workflow', () => {
 
       const saved = await agent.post('/projects/' + id + '/assets/defaults').type('form').send({
         view: 'list',
+        gridStyle: 'cropped',
         gridSize: 'large',
         listSize: 'compact',
         sort: 'modified',
@@ -1603,12 +1605,80 @@ describe('asset browser HTTP workflow', () => {
       expect(values.global).toMatchObject({ view: 'grid', sort: 'filename' });
       expect(values.project).toMatchObject({
         view: 'list',
+        gridStyle: 'cropped',
         gridSize: 'large',
         listSize: 'compact',
         sort: 'modified',
         order: 'desc',
         pageSize: '50',
       });
+    });
+
+    it('renders the scoped Grid style on the Project Assets grid only', async () => {
+      const gridTag = (html) => html.match(/<ul class="asset-grid"[^>]*>/)?.[0] || '';
+      const first = await createProject('Grid Style Scope First');
+      const second = await createProject('Grid Style Scope Second');
+      const firstId = Number(first.headers.location.replace('/projects/', ''));
+      const secondId = Number(second.headers.location.replace('/projects/', ''));
+      for (const [id, title] of [[firstId, 'Grid Style Scope First'], [secondId, 'Grid Style Scope Second']]) {
+        const projectDir = getProjectDir(title);
+        for (let index = 0; index < 12; index += 1) writeIndexedAsset(id, projectDir, `grid-${index}.png`, 'png');
+      }
+
+      // Existing installations keep the intrinsic-ratio grid.
+      const fallback = await agent.get(`/projects/${firstId}/assets?view=grid`).redirects(2).expect(200);
+      expect(gridTag(fallback.text)).toContain('data-grid-style="uncropped"');
+
+      writeStoredAssetDefault('gridStyle', 'square');
+      const invalid = await agent.get(`/projects/${firstId}/assets?view=grid`).redirects(2).expect(200);
+      expect(gridTag(invalid.text)).toContain('data-grid-style="uncropped"');
+
+      const submit = (id, scope, gridStyle) => agent.post(`/projects/${id}/assets/defaults`).type('form').send({
+        view: 'grid',
+        gridStyle,
+        gridSize: 'default',
+        listSize: 'large',
+        sort: 'filename',
+        order: 'asc',
+        pageSize: '25',
+        extension: 'all',
+        tag: 'all',
+        scope,
+        loadedScope: scope,
+        returnTo: `/projects/${id}/assets`,
+        _csrf: csrfToken,
+      }).expect(302);
+
+      await submit(firstId, 'project', 'cropped');
+      const scoped = await agent.get(`/projects/${firstId}/assets?view=grid`).redirects(2).expect(200);
+      const unscoped = await agent.get(`/projects/${secondId}/assets?view=grid`).redirects(2).expect(200);
+      expect(gridTag(scoped.text)).toContain('data-grid-style="cropped"');
+      expect(gridTag(unscoped.text)).toContain('data-grid-style="uncropped"');
+
+      // A Global save reaches projects without Project-only values and keeps
+      // the dormant Project-only value of the other project.
+      await submit(secondId, 'global', 'cropped');
+      await submit(firstId, 'project', 'uncropped');
+      app.locals.pageDefaultsService.setPageDefaultScope('projectAssets', 'global', { projectId: firstId });
+      expect(app.locals.projectPageDefaultRepository.getPageOptions(firstId, 'projectAssets').gridStyle)
+        .toBe('uncropped');
+      const globalFirst = await agent.get(`/projects/${firstId}/assets?view=grid`).redirects(2).expect(200);
+      expect(gridTag(globalFirst.text)).toContain('data-grid-style="cropped"');
+      app.locals.pageDefaultsService.setPageDefaultScope('projectAssets', 'project', { projectId: firstId });
+      const projectFirst = await agent.get(`/projects/${firstId}/assets?view=grid`).redirects(2).expect(200);
+      expect(gridTag(projectFirst.text)).toContain('data-grid-style="uncropped"');
+
+      // Pagination, filtering, and Reset Filters keep the saved style; List is unchanged.
+      const paged = await agent.get(`/projects/${secondId}/assets?view=grid&pageSize=10&page=2&extension=png`)
+        .redirects(2).expect(200);
+      expect(gridTag(paged.text)).toContain('data-grid-style="cropped"');
+      const reset = await agent.get(`/projects/${secondId}/assets?resetFilters=1&view=grid`).redirects(2).expect(200);
+      expect(gridTag(reset.text)).toContain('data-grid-style="cropped"');
+      const list = await agent.get(`/projects/${secondId}/assets?view=list`).redirects(2).expect(200);
+      expect(gridTag(list.text)).toBe('');
+      expect(list.text).toContain('asset-list asset-list--project');
+      expect(list.text).not.toContain('data-grid-style=');
+      expect(app.locals.pageDefaultsService.resolveGlobalPageDefaults('projectAssets').gridStyle).toBe('cropped');
     });
   });
 
@@ -2578,6 +2648,7 @@ describe('asset browser HTTP workflow', () => {
     const res = await createProject('Project Assets Dropdown Audit');
     const id = res.headers.location.replace('/projects/', '');
     saveAssetDefault('view', 'list');
+    saveAssetDefault('gridStyle', 'cropped');
     saveAssetDefault('gridSize', 'large');
     saveAssetDefault('listSize', 'compact');
     saveAssetDefault('sort', 'category');
@@ -2622,7 +2693,7 @@ describe('asset browser HTTP workflow', () => {
     const defaultsGrid = defaultsGridMatch?.[1] || '';
     const gridStart = defaultsGridMatch?.index ?? -1;
     const statusIndex = defaultsDialog.indexOf('<div class="app-dialog-status"', gridStart);
-    expect((defaultsGrid.match(/data-dialog-field="/g) || [])).toHaveLength(8);
+    expect((defaultsGrid.match(/data-dialog-field="/g) || [])).toHaveLength(9);
     expect(defaultsDialog.indexOf('data-dialog-error')).toBeLessThan(gridStart);
     expect(defaultsDialog.indexOf('name="_csrf"')).toBeLessThan(gridStart);
     expect(statusIndex).toBeGreaterThan(gridStart);
@@ -2638,6 +2709,13 @@ describe('asset browser HTTP workflow', () => {
         id: 'projectAssets-default-view',
         selected: 'list',
         options: [['grid', 'Grid'], ['list', 'List']],
+      },
+      {
+        name: 'gridStyle',
+        label: 'Grid style',
+        id: 'projectAssets-default-gridStyle',
+        selected: 'cropped',
+        options: [['uncropped', 'Uncropped'], ['cropped', 'Cropped']],
       },
       {
         name: 'gridSize',
@@ -2740,14 +2818,14 @@ describe('asset browser HTTP workflow', () => {
       expect(defaultsGrid.indexOf(`data-dialog-field="${defaultFields[index - 1].name}"`))
         .toBeLessThan(defaultsGrid.indexOf(`data-dialog-field="${defaultFields[index].name}"`));
     }
-    expect((defaultsGrid.match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(6);
+    expect((defaultsGrid.match(/data-cc-dropdown data-cc-dropdown-mode="single"/g) || [])).toHaveLength(7);
     expect((defaultsGrid.match(/data-cc-dropdown data-cc-dropdown-mode="multiple"/g) || [])).toHaveLength(2);
     const defaultsFooter = defaultsDialog.match(/<footer class="app-dialog-footer">[\s\S]*?<\/footer>/)?.[0] || '';
     expect(defaultsFooter).toBe('');
     expect(defaultsDialog).not.toContain('>Save defaults</button>');
     expect(defaultsDialog).toContain('data-dialog-async="false"');
     expect(defaultsDialog).toContain('data-project-assets-defaults-autosave');
-    expect((defaultsGrid.match(/data-autosubmit="fetch"/g) || [])).toHaveLength(8);
+    expect((defaultsGrid.match(/data-autosubmit="fetch"/g) || [])).toHaveLength(9);
     expect(defaultsDialog).toContain('data-settings-fetch-save-status');
 
     const invalidDefaults = await agent
@@ -2755,6 +2833,7 @@ describe('asset browser HTTP workflow', () => {
       .type('form')
       .send({
         view: 'list',
+        gridStyle: 'uncropped',
         gridSize: 'large',
         listSize: 'default',
         sort: 'category',
@@ -2774,7 +2853,7 @@ describe('asset browser HTTP workflow', () => {
     )?.[0] || '';
     expect(invalidListSize).not.toContain('data-dialog-submitted-value');
     expect(invalidListSize).not.toContain('value="default"');
-    expect((invalidDefaultsDialog.match(/data-autosubmit="fetch"/g) || [])).toHaveLength(8);
+    expect((invalidDefaultsDialog.match(/data-autosubmit="fetch"/g) || [])).toHaveLength(9);
     expect(invalidDefaultsDialog).not.toContain('>Save defaults</button>');
 
     const speedSelect = response.text.match(/<select[^>]*data-slideshow-speed[^>]*>/)?.[0] || '';

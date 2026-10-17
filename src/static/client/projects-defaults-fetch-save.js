@@ -9,6 +9,9 @@ import {
 } from './live-regions.js';
 import {
   beginProjectAssetsDefaultsAcknowledgement,
+  markProjectAssetsDefaultsRendered,
+  projectAssetsDefaultsEffectiveSnapshot,
+  projectAssetsDefaultsGridStyleOnlyChange,
   reconcileProjectAssetsDefaultsAcknowledgement,
 } from './project-assets-defaults-scope.js';
 
@@ -102,15 +105,18 @@ export function enhancePageDefaultsFetchSave(scope = globalThis.document, option
         onSuccess: ({ form: currentForm, response }) => {
           const session = refreshSessions.get(currentForm);
           refreshSessions.delete(currentForm);
+          const acknowledgementFailed = acknowledgementFailures.delete(currentForm);
           const outcome = refresh(
             currentForm.ownerDocument,
             response?.url,
             session?.authorityGeneration,
             { onError: () => markDefaultsRefreshFailed(currentForm, refreshFailureMessage),
-              acknowledgedControls: session?.acknowledgedControls },
+              acknowledgedControls: session?.acknowledgedControls,
+              form: currentForm,
+              acknowledgementFailed },
           );
           if (outcome === 'unavailable') markDefaultsRefreshFailed(currentForm, refreshFailureMessage);
-          if (acknowledgementFailures.delete(currentForm)) {
+          if (acknowledgementFailed) {
             markDefaultsRefreshFailed(
               currentForm,
               'Settings saved, but the returned Project Assets defaults could not be read. Refresh the page before editing them again.',
@@ -131,13 +137,34 @@ export function enhancePageDefaultsFetchSave(scope = globalThis.document, option
   );
 }
 
+// Only a successfully reconciled acknowledgement may restyle the grid in place.
+// The rendered baseline advances only once the region shows the acknowledged
+// values: immediately for an in-place restyle, or when a full refresh installs.
+function refreshProjectAssetsDefaults(document, destination, authorityGeneration, options = {}) {
+  const { form, acknowledgementFailed = false } = options;
+  const gridStyle = acknowledgementFailed ? null : projectAssetsDefaultsGridStyleOnlyChange(form);
+  const acknowledged = acknowledgementFailed ? null : projectAssetsDefaultsEffectiveSnapshot(form);
+  const outcome = refreshProjectAssetsDefaultsLiveRegion(
+    document,
+    destination,
+    authorityGeneration,
+    {
+      ...options,
+      gridStyle,
+      onComplete: acknowledged ? () => markProjectAssetsDefaultsRendered(form, acknowledged) : null,
+    },
+  );
+  if (outcome === 'applied' && acknowledged) markProjectAssetsDefaultsRendered(form, acknowledged);
+  return outcome;
+}
+
 export function enhanceProjectAssetsDefaultsFetchSave(scope = globalThis.document, options = {}) {
   return enhancePageDefaultsFetchSave(scope, {
     formSelector: PROJECT_ASSETS_DEFAULTS_FORM_SELECTOR,
     markerAttribute: 'data-project-assets-defaults-autosave',
     onStart: beginProjectAssetsDefaultsAcknowledgement,
     beginRefresh: options.beginRefresh || beginProjectAssetsDefaultsLiveRefresh,
-    refresh: options.refresh || refreshProjectAssetsDefaultsLiveRegion,
+    refresh: options.refresh || refreshProjectAssetsDefaults,
     refreshFailureMessage: 'Settings saved, but Project Assets could not refresh. Refresh the page to see the saved defaults.',
     onAcknowledged: options.onAcknowledged || ((detail) => (
       reconcileProjectAssetsDefaultsAcknowledgement(

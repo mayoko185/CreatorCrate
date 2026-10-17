@@ -1717,6 +1717,20 @@ function reconcileProjectAssetsManualScanContext(state, parsed) {
   else currentForm.prepend?.(...nextInputs);
 }
 
+const PROJECT_ASSETS_DEFAULTS_REFRESH_ERROR_MESSAGE = 'Defaults were saved, but Project Assets could not refresh. Refresh the page to see the saved defaults.';
+
+// An in-place restyle reconciles the presentation, so a Defaults-refresh error
+// it supersedes is obsolete. Any other status (NSFW or filter failures) and any
+// content change the failed load still owed (NSFW, categories) keep the error.
+function clearResolvedProjectAssetsDefaultsRefreshError(state, region) {
+  const statusElement = region.querySelector?.(PROJECT_ASSETS_LIVE_STATUS_SELECTOR);
+  if (region.getAttribute?.(PROJECT_ASSETS_LIVE_STATE_ATTRIBUTE) !== 'error'
+    || statusElement?.textContent !== PROJECT_ASSETS_DEFAULTS_REFRESH_ERROR_MESSAGE) return;
+  if (state.assetNsfwSubmitting || state.assetNsfwNeedsRefresh || state.assetNsfwRefreshGeneration !== null
+    || state.projectAssetCategoriesNeedSync) return;
+  projectAssetsLiveEngine.status(region, '', null);
+}
+
 function enhanceProjectAssetsLiveRegion(region) {
   enhancePreviewMedia(region);
   enhanceAssetViewerInfoCards(region);
@@ -1786,6 +1800,7 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
   onCreate(state, region) {
     state.projectAssetsDefaultsRefreshGeneration = null;
     state.projectAssetsDefaultsRefreshError = null;
+    state.projectAssetsDefaultsRefreshComplete = null;
     state.assetNsfwController = null;
     state.assetNsfwGeneration = 0;
     state.assetNsfwSubmitting = false;
@@ -1803,6 +1818,7 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
     if (state.projectAssetsDefaultsRefreshGeneration !== null) {
       state.projectAssetsDefaultsRefreshGeneration = null;
       state.projectAssetsDefaultsRefreshError = null;
+      state.projectAssetsDefaultsRefreshComplete = null;
     }
     if (state.assetNsfwPostPending) {
       state.assetNsfwGeneration += 1;
@@ -1840,8 +1856,11 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
       state.projectAssetCategoriesNeedSync = false;
     }
     if (state.projectAssetsDefaultsRefreshGeneration === generation) {
+      const notifyRefreshComplete = state.projectAssetsDefaultsRefreshComplete;
       state.projectAssetsDefaultsRefreshGeneration = null;
       state.projectAssetsDefaultsRefreshError = null;
+      state.projectAssetsDefaultsRefreshComplete = null;
+      notifyRefreshComplete?.();
     }
     if (state.assetNsfwRefreshGeneration !== generation) return;
     state.assetNsfwRefreshGeneration = null;
@@ -1855,13 +1874,10 @@ const projectAssetsLiveEngine = createLiveRegionEngine({
       const notifyRefreshError = state.projectAssetsDefaultsRefreshError;
       state.projectAssetsDefaultsRefreshGeneration = null;
       state.projectAssetsDefaultsRefreshError = null;
+      state.projectAssetsDefaultsRefreshComplete = null;
       const region = projectAssetsLiveEngine.getRegion(state.document);
       region?.removeAttribute?.('aria-busy');
-      projectAssetsLiveEngine.status(
-        region,
-        'Defaults were saved, but Project Assets could not refresh. Refresh the page to see the saved defaults.',
-        'error',
-      );
+      projectAssetsLiveEngine.status(region, PROJECT_ASSETS_DEFAULTS_REFRESH_ERROR_MESSAGE, 'error');
       notifyRefreshError?.();
       return true;
     }
@@ -1945,13 +1961,22 @@ export function refreshProjectAssetsDefaultsLiveRegion(
   scope = globalThis.document,
   destination,
   authorityGeneration,
-  { onError = null } = {},
+  { onComplete = null, onError = null, gridStyle = null } = {},
 ) {
   const document = liveRegionDocument(scope);
   const region = projectAssetsLiveEngine.getRegion(document);
   const state = document?.__creatorCrateProjectAssetsLiveFiltering;
   if (!document || !region || !state || !projectAssetsLiveEngine.capabilities(state.window)) return 'unavailable';
   if (state.generation !== authorityGeneration) return 'superseded';
+
+  // A save that changed only the acknowledged grid style restyles the rendered
+  // grid in place so selection, pending reorder, and card state survive. An
+  // in-flight load may predate the save, so it still takes the full refresh.
+  if ((gridStyle === 'uncropped' || gridStyle === 'cropped') && !state.controller) {
+    region.querySelector?.('.asset-grid')?.setAttribute?.('data-grid-style', gridStyle);
+    clearResolvedProjectAssetsDefaultsRefreshError(state, region);
+    return 'applied';
+  }
 
   let url;
   try {
@@ -1967,6 +1992,9 @@ export function refreshProjectAssetsDefaultsLiveRegion(
   projectAssetsLiveEngine.invalidate(state);
   state.projectAssetsDefaultsRefreshGeneration = state.generation;
   state.projectAssetsDefaultsRefreshError = typeof onError === 'function' ? onError : null;
+  // Fires only once this refresh's region is installed; failure or a newer
+  // load clears it, so 'started' never implies the content was rendered.
+  state.projectAssetsDefaultsRefreshComplete = typeof onComplete === 'function' ? onComplete : null;
   projectAssetsLiveEngine.load(
     state,
     url,

@@ -234,7 +234,7 @@ describe('page defaults dialog model', () => {
       options: [{ value: '1', label: 'First tag' }, { value: '2', label: 'Second tag' }],
     });
     expect(model.fields.filter((field) => !field.multi).map((field) => field.name))
-      .toEqual(['view', 'sort', 'order', 'pageSize', 'category', 'presence']);
+      .toEqual(['view', 'gridStyle', 'sort', 'order', 'pageSize', 'category', 'presence']);
   });
 
   it('maps omitted Asset Viewer multi-select controls to neutral all', () => {

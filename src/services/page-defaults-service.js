@@ -64,6 +64,7 @@ export const PAGE_DEFAULT_DEFINITIONS = Object.freeze({
   }),
   [PROJECT_ASSETS]: Object.freeze({
     view: definition('page_defaults.project_assets.view', ['grid', 'list'], 'grid'),
+    gridStyle: definition('page_defaults.project_assets.grid_style', ['uncropped', 'cropped'], 'uncropped'),
     gridSize: definition('page_defaults.project_assets.grid_size', ['compact', 'default', 'large'], 'default'),
     listSize: definition('page_defaults.project_assets.list_size', ['compact', 'large'], 'large'),
     sort: definition('page_defaults.project_assets.sort', ['filename', 'modified', 'size', 'category'], 'filename'),
@@ -78,6 +79,7 @@ export const PAGE_DEFAULT_DEFINITIONS = Object.freeze({
   }),
   [ASSET_VIEWER]: Object.freeze({
     view: definition('page_defaults.asset_viewer.view', ['grid', 'list'], ASSET_LIBRARY_DEFAULTS.view),
+    gridStyle: definition('page_defaults.asset_viewer.grid_style', ['uncropped', 'cropped'], 'uncropped'),
     sort: definition(
       'page_defaults.asset_viewer.sort',
       ['filename', 'modified', 'size', 'category', 'project'],
