@@ -92,6 +92,7 @@ import {
 
 import {
   enhanceAssetGridSize,
+  enhanceAssetGridStyle,
   enhanceAssetListSize,
   enhanceProjectGridSize,
 } from './client/size-preferences.js';
@@ -190,6 +191,7 @@ export {
   enhanceLogViewerAutoRefresh,
   formatLogTimestamp,
   enhanceAssetGridSize,
+  enhanceAssetGridStyle,
   enhanceAssetListSize,
   enhanceProjectGridSize,
   closeAppDialogById,
@@ -277,6 +279,7 @@ if (typeof document !== 'undefined') {
     enhanceProjectGridSize(document);
     enhanceProjectAssetCategoryFilter(document);
     enhanceDropdowns(document);
+    enhanceAssetGridStyle(document);
     enhanceReleaseSignatures(document);
     enhanceProjectsDefaultsFetchSave(document);
     enhanceReleasesDefaultsFetchSave(document);

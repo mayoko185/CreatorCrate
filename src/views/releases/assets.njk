@@ -224,6 +224,8 @@
             {% set assetSizeControlMode = 'list' %}
             {% include "partials/asset-grid-size-control.njk" %}
           {% endif %}
+          {% set assetGridStyleScreen = 'release-assets' %}
+          {% include "partials/asset-grid-style-control.njk" %}
 
           {% if not readOnly %}
             <div class="project-filter-actions project-filter-actions--projects">

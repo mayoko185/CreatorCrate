@@ -1,0 +1,21 @@
+{# Inline Grid style control for asset grids without a Page Defaults dialog.
+   Set assetGridStyleScreen to a screen listed in size-preferences.js; the
+   client restores the browser-stored style and applies it to the rendered
+   grid in place. Uncropped is rendered until the client restores. #}
+{% import "partials/dropdown.njk" as dropdown %}
+{{ dropdown.singleSelect({
+  id: "asset-grid-style-dropdown",
+  label: "Grid style",
+  fieldClasses: "asset-grid-style-field",
+  dispatchNativeChange: true,
+  selected: "uncropped",
+  options: [
+    { value: "uncropped", label: "Uncropped" },
+    { value: "cropped", label: "Cropped" }
+  ],
+  panelLabel: "Grid style options",
+  nativeSelect: {
+    id: "asset-grid-style",
+    attributes: [["data-asset-grid-style-control", assetGridStyleScreen]]
+  }
+}) }}

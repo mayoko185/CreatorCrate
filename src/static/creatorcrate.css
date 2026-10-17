@@ -2438,6 +2438,11 @@
         top: var(--space-xs);
         z-index: 70;
       }
+      /* When the toolbar wraps, the Filter row sits under the open Grid style
+         panel; lift the open dropdown above it, as in dialogs. */
+      .asset-viewer-display-controls .asset-grid-style-field .cc-dropdown[open] {
+        z-index: 75;
+      }
       [data-releases-live-region] {
         position: relative;
         z-index: 20;

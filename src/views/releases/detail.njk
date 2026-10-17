@@ -194,6 +194,8 @@
       {% set selectedAssets = assetPresentation.selected or [] %}
       <div class="asset-viewer-display-controls">
         {{ viewSwitcher.render(view, pageUrl, "Asset display", true) }}
+        {% set assetGridStyleScreen = 'release-detail' %}
+        {% include "partials/asset-grid-style-control.njk" %}
       </div>
       <p class="results-meta">{{ assetCount }} selected asset{% if assetCount != 1 %}s{% endif %}</p>
       {% if selectedAssets.length > 0 %}

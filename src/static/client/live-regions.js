@@ -35,6 +35,7 @@ import {
 } from './dropdowns.js';
 import {
   enhanceAssetGridSize,
+  enhanceAssetGridStyle,
   enhanceAssetListSize,
   enhanceProjectGridSize,
 } from './size-preferences.js';
@@ -1460,6 +1461,7 @@ function enhanceReleaseAssetsLiveRegion(region) {
   enhanceAutoSubmit(region);
   enhanceAssetViewerFilterDisclosures(region);
   enhanceDropdowns(liveRegionDocument(region));
+  enhanceAssetGridStyle(region);
 }
 
 const releaseAssetsLiveEngine = createLiveRegionEngine({

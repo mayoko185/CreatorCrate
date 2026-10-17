@@ -342,7 +342,8 @@ test('Role autosubmit still works and read-only releases keep cards without cont
     await page.goto(baseURL + listPath);
     await expect(page.locator('.asset-list-header .asset-list-cell')).toHaveText(
       ['Asset', 'Category', 'Role', 'Order', 'Type', 'Presence', 'Size', 'Modified']);
-    await expect(page.locator('[data-release-assets-live-region] input[name="selectedAssetIds"], [data-release-assets-live-region] select, [data-release-assets-live-region] form')).toHaveCount(0);
+    // The inline Grid style dropdown is presentation-only and is excluded.
+    await expect(page.locator('[data-release-assets-live-region] input[name="selectedAssetIds"], [data-release-assets-live-region] select:not(.asset-grid-style-field *), [data-release-assets-live-region] form')).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Save Selection' })).toHaveCount(0);
     const locked = rowParts(page, f.ids['02-image.png']);
     await expect(locked.card.locator('.asset-list-cell--role')).toContainText('Preview');

@@ -3,6 +3,7 @@ import {
   liveRegionDocument,
   markEnhancementBound,
 } from './dom.js';
+import { syncCreatorCrateDropdownFromNative } from './dropdowns.js';
 
 const ASSET_GRID_SIZE_CONTROL_SELECTOR = '[data-asset-grid-size-controls]';
 const ASSET_GRID_SELECTOR = '.asset-grid';
@@ -232,4 +233,61 @@ export function enhanceAssetListSize(scope = globalThis.document, fallbackSize) 
 
 export function enhanceProjectGridSize(scope = globalThis.document) {
   return enhanceGridSize(scope, PROJECT_GRID_SIZE_CONFIG);
+}
+
+// Grid style (uncropped/cropped) for asset grids without a Page Defaults
+// dialog. Each control names its screen; only listed screens get a storage
+// key, so markup cannot select arbitrary keys. The style is presentation
+// only: it is applied to the grid currently rendered beside the control and
+// never triggers navigation or a live-region refresh.
+const ASSET_GRID_STYLE_CONTROL_SELECTOR = 'select[data-asset-grid-style-control]';
+const ASSET_GRID_STYLE_SCOPE_SELECTOR = '.asset-browser-content';
+const ASSET_GRID_STYLES = Object.freeze(['uncropped', 'cropped']);
+const ASSET_GRID_STYLE_DEFAULT = 'uncropped';
+export const ASSET_GRID_STYLE_STORAGE_KEYS = Object.freeze({
+  'release-detail': 'creatorcrate-release-detail-grid-style',
+  'release-assets': 'creatorcrate-release-assets-grid-style',
+});
+
+export function gridStyleIsValid(style) {
+  return typeof style === 'string' && ASSET_GRID_STYLES.includes(style);
+}
+
+export function readGridStyle(storageKey) {
+  try {
+    const stored = globalThis.localStorage?.getItem(storageKey);
+    return gridStyleIsValid(stored) ? stored : ASSET_GRID_STYLE_DEFAULT;
+  } catch {
+    return ASSET_GRID_STYLE_DEFAULT;
+  }
+}
+
+function applyGridStyle(control, style) {
+  const scope = control.closest?.(ASSET_GRID_STYLE_SCOPE_SELECTOR);
+  scope?.querySelectorAll?.(ASSET_GRID_SELECTOR).forEach((grid) => {
+    grid.setAttribute('data-grid-style', style);
+  });
+  if (control.value !== style) {
+    control.value = style;
+    syncCreatorCrateDropdownFromNative(control);
+  }
+}
+
+export function enhanceAssetGridStyle(scope = globalThis.document) {
+  if (!scope || typeof scope.querySelectorAll !== 'function') return 0;
+  let count = 0;
+  scope.querySelectorAll(ASSET_GRID_STYLE_CONTROL_SELECTOR).forEach((control) => {
+    const storageKey = ASSET_GRID_STYLE_STORAGE_KEYS[control.getAttribute('data-asset-grid-style-control')];
+    if (!storageKey) return;
+    count += 1;
+    applyGridStyle(control, readGridStyle(storageKey));
+    if (isEnhancementBound(control, 'assetGridStyleBound')) return;
+    markEnhancementBound(control, 'assetGridStyleBound');
+    control.addEventListener('change', () => {
+      const style = gridStyleIsValid(control.value) ? control.value : ASSET_GRID_STYLE_DEFAULT;
+      writeGridSize(style, storageKey);
+      applyGridStyle(control, style);
+    });
+  });
+  return count;
 }

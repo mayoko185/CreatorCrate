@@ -122,7 +122,8 @@ test('Selected asset titles hover, pin, dismiss and open the asset without navig
   await expect(header).toHaveText(['Order', 'Asset', 'Category', 'Role', 'Type', 'Presence', 'Size', 'Modified']);
   await expect(page.locator('[data-selected-assets] .asset-list-cell--actions')).toHaveCount(0);
   await expect(page.locator('[data-selected-assets] .dashboard-panel .dashboard-table-scroll')).toHaveCount(1);
-  await expect(page.locator('[data-selected-assets] input, [data-selected-assets] select, [data-selected-assets] [draggable="true"]')).toHaveCount(0);
+  // The inline Grid style dropdown is presentation-only and is excluded.
+  await expect(page.locator('[data-selected-assets] input:not(.asset-grid-style-field *), [data-selected-assets] select:not(.asset-grid-style-field *), [data-selected-assets] [draggable="true"]')).toHaveCount(0);
 
   const assetId = f.ids['09-image.png'];
   const { card, title, info } = rowParts(page, assetId);
@@ -257,7 +258,7 @@ test('Missing, broken and video assets show placeholders, video keeps its previe
   releaseService.archiveRelease(f.releaseId);
   await page.goto(`${baseURL}/releases/${f.releaseId}?view=list`);
   await expect(page.getByRole('link', { name: 'Manage Assets' })).toHaveCount(0);
-  await expect(page.locator('[data-selected-assets] input, [data-selected-assets] form')).toHaveCount(0);
+  await expect(page.locator('[data-selected-assets] input:not(.asset-grid-style-field *), [data-selected-assets] form')).toHaveCount(0);
   await image.title.click();
   await expect(image.info.getByRole('link', { name: 'Open asset' })).toBeVisible();
   await page.keyboard.press('Escape');

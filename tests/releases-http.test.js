@@ -8058,6 +8058,16 @@ describe('release HTTP workflow', () => {
       return new URL(match[1].replace(/&amp;/g, '&'), 'http://localhost');
     }
 
+    // The inline Grid style dropdown is a presentation-only control; read-only
+    // assertions about edit controls apply to everything else in the section.
+    const GRID_STYLE_CONTROL = /<fieldset class="field asset-filter-multiselect-field asset-grid-style-field">[\s\S]*?<\/fieldset>/g;
+    function withoutGridStyleControl(section, screen) {
+      const controls = section.match(GRID_STYLE_CONTROL) || [];
+      expect(controls).toHaveLength(1);
+      expect(controls[0]).toContain(`data-asset-grid-style-control="${screen}"`);
+      return section.replace(GRID_STYLE_CONTROL, '');
+    }
+
     function hasNestedForms(html) {
       const tags = html.match(/<\/?form\b[^>]*>/gi) || [];
       let depth = 0;
@@ -8073,7 +8083,7 @@ describe('release HTTP workflow', () => {
     }
 
     function readOnlyDetailSection(html) {
-      const section = selectedSection(html);
+      const section = withoutGridStyleControl(selectedSection(html), 'release-detail');
       expect(section).toMatch(/^<section class="asset-browser-layout" aria-label="Selected assets" data-selected-assets>\s*<div class="asset-browser-content">/);
       expect(section).not.toContain('project-detail-section-body');
       expect(section).not.toMatch(/<h[1-6]\b[^>]*>\s*(?:Selected Assets|Release Assets)\s*<\/h[1-6]>/i);
@@ -8135,6 +8145,33 @@ describe('release HTTP workflow', () => {
       expect(manage.text).toContain('data-asset-viewer-preview');
       expect(manage.text).toContain('data-asset-info-card');
       expect(manage.text).not.toContain('asset-card-body');
+    });
+
+    it('renders an inline presentation-only Grid style dropdown on Release Detail and Manage Assets', async () => {
+      const fixture = await setupReleaseWithAssets();
+      const pages = [
+        { path: fixture.releaseLocation, screen: 'release-detail' },
+        { path: `${fixture.releaseLocation}?view=list`, screen: 'release-detail' },
+        { path: `${fixture.releaseLocation}/assets`, screen: 'release-assets' },
+        { path: `${fixture.releaseLocation}/assets?view=list`, screen: 'release-assets' },
+      ];
+      for (const { path: pagePath, screen } of pages) {
+        const section = selectedSection((await agent.get(pagePath).expect(200)).text);
+        const controls = section.match(/<div class="asset-viewer-display-controls">[\s\S]*?<fieldset class="field asset-filter-multiselect-field asset-grid-style-field">[\s\S]*?<\/fieldset>/);
+        expect(controls).not.toBeNull();
+        const field = controls[0].slice(controls[0].indexOf('<fieldset'));
+        expect(controls[0].indexOf('<nav class="view-switcher"')).toBeGreaterThan(-1);
+        expect(field).toContain('<legend>Grid style</legend>');
+        expect(field).toMatch(new RegExp(`<select id="asset-grid-style" class="cc-dropdown-native-select" data-cc-dropdown-native-select aria-label="Grid style" data-asset-grid-style-control="${screen}">`));
+        expect([...field.matchAll(/<option value="([^"]+)"( selected)?>([^<]+)<\/option>/g)].map(([, value, selected, label]) => [value, Boolean(selected), label]))
+          .toEqual([['uncropped', true, 'Uncropped'], ['cropped', false, 'Cropped']]);
+        // Presentation only: no form submission, autosubmit or live-filter hooks,
+        // and the grid is not cropped by the server.
+        expect(field).not.toMatch(/\bname="|data-autosubmit|data-release-assets-live/);
+        expect(section).not.toContain('data-grid-style="cropped"');
+      }
+      expect(withoutGridStyleControl(selectedSection((await agent.get(fixture.releaseLocation).expect(200)).text), 'release-detail'))
+        .not.toContain('asset-grid-style');
     });
 
     it('read-only detail supports list view and preserves only its view query context', async () => {
@@ -8876,7 +8913,10 @@ describe('release HTTP workflow', () => {
 
       // Read-only: no Select column or controls, but titles keep their cards.
       db.prepare('UPDATE releases SET archived_at = CURRENT_TIMESTAMP WHERE id = ?').run(fixture.releaseId);
-      const archived = selectedSection((await agent.get(`${fixture.releaseLocation}/assets?view=list`).expect(200)).text);
+      const archived = withoutGridStyleControl(
+        selectedSection((await agent.get(`${fixture.releaseLocation}/assets?view=list`).expect(200)).text),
+        'release-assets',
+      );
       expect(archived).toContain('data-asset-list-columns="asset category role order type presence size modified"');
       expect(archived).not.toMatch(/<(?:form|select)\b/);
       expect(archived).not.toContain('selectedAssetIds');
