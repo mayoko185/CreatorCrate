@@ -843,6 +843,12 @@ describe('dashboard HTTP composition', () => {
       expect((dashboard.text.match(/<dialog id="project-create-dialog"/g) || [])).toHaveLength(1);
       expect(dialog).not.toBe('');
       expect(dialog).not.toMatch(/<dialog\b[^>]*\bopen(?:\s|>|=)/);
+      expect(dialog).toContain('class="app-dialog project-form-dialog app-dialog--refined"');
+      expect(dialog).toMatch(/<textarea id="description"[^>]*rows="3"/);
+      expect(dialog).toMatch(/<textarea id="notes"[^>]*rows="3"/);
+      expect((dialog.match(/<h3>[^<]*<\/h3>/g) || [])).toEqual(['<h3>Project details</h3>', '<h3>Project link</h3>']);
+      expect(dialog).toContain('<label for="patreonUrl" class="sr-only">Project link</label>');
+      expect(dialog).toContain('aria-describedby="patreonUrl-help"');
       const footer = dialog.match(/<footer class="app-dialog-footer">[\s\S]*?<\/footer>/)?.[0] || '';
       expect(footer).toContain('Create project');
       expect(footer).not.toContain('Cancel');

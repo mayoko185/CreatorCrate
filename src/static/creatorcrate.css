@@ -12526,3 +12526,409 @@
     flex-basis: 100%;
   }
 }
+
+/* ═══ Refined dialog (pilot) ═══
+   Compact form-dialog treatment, opted into with .app-dialog--refined.
+   Sections follow the Dashboard panel language: a surface card with an
+   inline heading instead of a header bar. Controls share one 2.25rem
+   height so inputs, dropdown triggers, and buttons line up in rows.
+   Scoped to the dialog until the design is promoted app-wide. */
+.app-dialog--refined {
+  --refined-control-height: 2.25rem;
+  --refined-control-radius: var(--radius-md);
+  --refined-focus-shadow: 0 0 0 3px rgba(34, 211, 238, 0.22);
+  --refined-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+}
+
+/* ── Header, body, footer ── */
+.app-dialog--refined .app-dialog-header {
+  padding: var(--space-sm) var(--space-sm) var(--space-sm) var(--space-lg);
+}
+.app-dialog--refined .app-dialog-header h2 {
+  font-size: 1rem;
+  font-weight: 600;
+}
+/* The dialog title already says what the form is for; the description stays
+   available to assistive technology through aria-describedby. */
+.app-dialog--refined .app-dialog-description {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+.app-dialog--refined.project-form-dialog .app-dialog-body {
+  gap: var(--space-md);
+  margin-top: var(--space-md);
+  padding-bottom: var(--space-md);
+  /* Reserve the scrollbar track so a tall dropdown panel that briefly makes
+     the body overflow cannot shift the trigger before it is measured. */
+  scrollbar-gutter: stable;
+}
+.app-dialog--refined.project-form-dialog .project-edit-dialog-form {
+  gap: var(--space-md);
+}
+/* These forms submit with a full page load, so an idle status line need not
+   reserve space above the footer. */
+.app-dialog--refined .app-dialog-card > .app-dialog-status:empty {
+  min-height: 0;
+  margin-top: 0;
+}
+.app-dialog--refined .app-dialog-footer {
+  gap: var(--space-sm);
+  margin-top: 0;
+  padding: var(--space-sm) var(--space-lg);
+  background: var(--surface);
+}
+
+/* ── Sections ── */
+.app-dialog--refined.project-form-dialog .project-edit-dialog-section {
+  gap: 0.625rem;
+  padding: var(--space-md) var(--space-lg) var(--space-lg);
+  background: var(--surface);
+  border-color: var(--border);
+}
+.app-dialog--refined.project-form-dialog .project-edit-dialog-section > h3 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.3;
+  text-transform: none;
+}
+.app-dialog--refined.project-form-dialog .project-edit-dialog-section > h3::before {
+  flex: none;
+  width: 0.1875rem;
+  height: 0.875rem;
+  border-radius: 999px;
+  background: var(--accent-gradient);
+  content: '';
+}
+.app-dialog--refined.project-form-dialog .project-edit-dialog-section-body {
+  gap: var(--space-md);
+  padding: 0;
+}
+/* Description and Notes sit side by side under a full-width Title. */
+.app-dialog--refined .project-edit-dialog-section-body:has(> .field > #description) {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.app-dialog--refined .project-edit-dialog-section-body:has(> .field > #description) > .field:has(> #title) {
+  grid-column: 1 / -1;
+}
+.app-dialog--refined.project-form-dialog .status-row {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-md);
+}
+/* Status, Project type, and Tags close the merged Project details section. */
+.app-dialog--refined .project-edit-dialog-section-body:has(> .field > #description) > .status-row {
+  grid-column: 1 / -1;
+}
+
+/* ── Fields ── */
+.app-dialog--refined .field {
+  gap: 0.3125rem;
+}
+.app-dialog--refined .field > label:not(.sr-only),
+.app-dialog--refined .asset-filter-multiselect-field > legend {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.3;
+}
+.app-dialog--refined .asset-filter-multiselect-field > legend {
+  margin-bottom: 0.3125rem;
+}
+.app-dialog--refined .settings-section .help-text {
+  margin: 0;
+  padding: 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+.app-dialog--refined .field input:not([type='checkbox']):not([type='radio']),
+.app-dialog--refined .field textarea {
+  min-height: var(--refined-control-height);
+  padding: 0.375rem 0.625rem;
+  border: 1px solid var(--border);
+  border-radius: var(--refined-control-radius);
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.app-dialog--refined .field textarea {
+  min-height: 4.75rem;
+  resize: vertical;
+}
+/* Three times the three-row height (3 lines at 0.875rem/1.5, padding, and
+   border); the 4.75rem minimum still lets people resize them back down. */
+.app-dialog--refined.project-form-dialog .field > textarea:is(#description, #notes) {
+  height: calc(3 * (3 * 1.5 * 0.875rem + 0.75rem + 2px));
+}
+.app-dialog--refined .field input::placeholder,
+.app-dialog--refined .field textarea::placeholder {
+  color: var(--muted);
+  opacity: 0.7;
+}
+.app-dialog--refined .field input:not([type='checkbox']):not([type='radio']):hover,
+.app-dialog--refined .field textarea:hover {
+  border-color: var(--border-strong);
+}
+.app-dialog--refined .field input:focus-visible,
+.app-dialog--refined .field textarea:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--refined-focus-shadow);
+}
+.app-dialog--refined .field-error input:not([type='checkbox']):not([type='radio']),
+.app-dialog--refined .field-error textarea,
+.app-dialog--refined .field-error .asset-filter-multiselect summary {
+  border-color: var(--danger);
+}
+.app-dialog--refined .field-error-message {
+  font-size: 0.75rem;
+}
+
+/* ── Dropdowns ── */
+.app-dialog--refined .asset-filter-multiselect summary {
+  min-height: var(--refined-control-height);
+  padding: 0.375rem 0.625rem;
+  border-radius: var(--refined-control-radius);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast);
+}
+.app-dialog--refined .asset-filter-multiselect summary:hover {
+  border-color: var(--border-strong);
+  background: var(--bg);
+}
+.app-dialog--refined .asset-filter-multiselect summary::after,
+.app-dialog--refined .asset-filter-multiselect[open] summary::after {
+  width: 1rem;
+  height: 1rem;
+  background-color: var(--muted);
+  content: '';
+  -webkit-mask: var(--refined-chevron) center / contain no-repeat;
+  mask: var(--refined-chevron) center / contain no-repeat;
+  transition: transform var(--transition-fast), background-color var(--transition-fast);
+}
+.app-dialog--refined .asset-filter-multiselect[open] summary::after {
+  background-color: var(--accent);
+  transform: rotate(180deg);
+}
+.app-dialog--refined .asset-filter-multiselect summary:focus-visible,
+.app-dialog--refined .asset-filter-multiselect[open] summary {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--refined-focus-shadow);
+}
+.app-dialog--refined .asset-filter-multiselect-panel {
+  top: calc(100% + 0.3125rem);
+  gap: 1px;
+  padding: var(--space-xs);
+  border-color: var(--border-strong);
+  border-radius: var(--refined-control-radius);
+  background: var(--surface-card);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+.app-dialog--refined .asset-filter-multiselect-option {
+  border-radius: var(--radius-sm);
+  transition: background var(--transition-fast);
+}
+.app-dialog--refined .asset-filter-multiselect--sized .asset-filter-multiselect-option > label {
+  align-items: center;
+  gap: var(--space-sm);
+  padding: 0.375rem var(--space-sm);
+  font-size: 0.875rem;
+  line-height: 1.4;
+}
+.app-dialog--refined .asset-filter-multiselect-option > label > span {
+  flex: 1 1 auto;
+}
+.app-dialog--refined .asset-filter-multiselect-option:has(input:checked) {
+  background: rgba(34, 211, 238, 0.08);
+}
+.app-dialog--refined .asset-filter-multiselect-option:has(input:checked):hover {
+  background: rgba(34, 211, 238, 0.14);
+}
+.app-dialog--refined .asset-filter-multiselect-option:has(input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+.app-dialog--refined .asset-filter-multiselect-option input {
+  flex: none;
+  width: 1rem;
+  height: 1rem;
+  margin: 0;
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent center / 0.75rem no-repeat;
+  cursor: pointer;
+}
+.app-dialog--refined .asset-filter-multiselect-option input:focus-visible {
+  outline: none;
+}
+/* Single- and multi-select options share one look: no radio dot or checkbox
+   square; each chosen row gets a trailing check. Option text keeps the same
+   typography and color whether or not it is selected. */
+.app-dialog--refined .asset-filter-multiselect-option input {
+  order: 1;
+}
+.app-dialog--refined .asset-filter-multiselect-option input:checked {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2322d3ee' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
+  background-size: 0.875rem;
+}
+.app-dialog--refined .asset-filter-multiselect-empty {
+  font-size: 0.8125rem;
+}
+
+/* ── Buttons ── */
+.app-dialog--refined .button {
+  gap: 0.375rem;
+  min-height: var(--refined-control-height);
+  padding: 0 0.875rem;
+  border-radius: var(--refined-control-radius);
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), filter var(--transition-fast), box-shadow var(--transition-fast);
+}
+.app-dialog--refined .button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.app-dialog--refined .button:active:not(:disabled):not([aria-disabled="true"]) {
+  transform: translateY(1px);
+}
+.app-dialog--refined .button-primary {
+  font-weight: 600;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 4px 14px rgba(34, 211, 238, 0.16);
+}
+/* Trial: New Project's submit is a dark outlined button led by a cyan plus
+   square. Disabled styling, hover brightness, focus ring, and pressed
+   movement come from the rules around it. */
+#project-create-dialog button[form="project-create-form"][data-dialog-submit] {
+  gap: var(--space-sm);
+  min-height: 2.25rem;
+  padding: 0 var(--space-md) 0 var(--space-sm);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+#project-create-dialog button[form="project-create-form"][data-dialog-submit]:not(:disabled):not([aria-disabled="true"]) {
+  border: 1px solid var(--border-strong);
+  background: var(--bg);
+  color: var(--text);
+  box-shadow: none;
+}
+#project-create-dialog button[form="project-create-form"][data-dialog-submit]:hover:not(:disabled):not([aria-disabled="true"]) {
+  border-color: var(--accent);
+}
+.project-create-submit-icon {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 0.25rem;
+  background: var(--accent);
+  color: var(--bg);
+}
+.project-create-submit-icon svg {
+  width: 0.875rem;
+  height: 0.875rem;
+  stroke-width: 2.5;
+}
+button:disabled > .project-create-submit-icon,
+button[aria-disabled="true"] > .project-create-submit-icon {
+  background: var(--border-strong);
+  color: var(--muted);
+}
+.app-dialog--refined .button-secondary {
+  border-color: var(--border-strong);
+  background: transparent;
+  color: var(--text);
+}
+.app-dialog--refined .button-secondary:hover:not(:disabled):not([aria-disabled="true"]) {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.app-dialog--refined .button-danger {
+  border-color: rgba(251, 113, 133, 0.45);
+  background: rgba(251, 113, 133, 0.1);
+  color: var(--badge-danger-fg);
+}
+.app-dialog--refined .button-danger:hover:not(:disabled):not([aria-disabled="true"]) {
+  border-color: var(--danger);
+  background: rgba(251, 113, 133, 0.18);
+}
+.app-dialog--refined .button-small {
+  min-height: 1.875rem;
+  padding: 0 0.625rem;
+  font-size: 0.8125rem;
+}
+/* The close control is a quiet icon button rather than an outlined one. */
+.app-dialog--refined .app-dialog-close {
+  width: 2rem;
+  min-width: 2rem;
+  min-height: 2rem;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+}
+.app-dialog--refined .app-dialog-close:hover {
+  border-color: transparent;
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+/* ── Project actions (Edit Project) ── */
+.app-dialog--refined .project-edit-dialog-actions-body {
+  gap: 0;
+}
+.app-dialog--refined .project-edit-dialog-actions .notes-workspace-disclosure:first-child {
+  border-top: 0;
+}
+.app-dialog--refined .project-edit-dialog-actions .notes-workspace-disclosure summary {
+  min-height: 2rem;
+  font-size: 0.875rem;
+}
+.app-dialog--refined .project-edit-dialog-actions .notes-workspace-disclosure--delete summary {
+  color: var(--badge-danger-fg);
+}
+.app-dialog--refined .project-edit-dialog-actions .notes-workspace-disclosure-content form {
+  justify-items: start;
+}
+
+@media (max-width: 640px) {
+  .app-dialog--refined .project-edit-dialog-section-body:has(> .field > #description),
+  .app-dialog--refined.project-form-dialog .status-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (max-width: 540px) {
+  .app-dialog--refined .app-dialog-header {
+    padding-left: var(--space-md);
+  }
+  .app-dialog--refined.project-form-dialog .project-edit-dialog-section {
+    padding: var(--space-md);
+  }
+}

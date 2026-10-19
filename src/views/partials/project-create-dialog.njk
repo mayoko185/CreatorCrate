@@ -1,4 +1,5 @@
 {% import "partials/dialog.njk" as dialog %}
+{% import "partials/icons.njk" as icons %}
 
 {% macro render(projectCreateForm, returnTo, csrfToken, open=false) %}
   {% set values = projectCreateForm.values %}
@@ -7,7 +8,7 @@
   {% set projectTypes = projectCreateForm.projectTypes %}
   {% set tags = projectCreateForm.tags %}
   {% set selectedTagIds = projectCreateForm.selectedTagIds %}
-  {% call dialog.render('project-create-dialog', 'New Project', open, 'project-create-description', 'project-create-form', 'project-form-dialog') %}
+  {% call dialog.render('project-create-dialog', 'New Project', open, 'project-create-description', 'project-create-form', 'project-form-dialog app-dialog--refined') %}
     <p id="project-create-description" class="app-dialog-description">
       Create a tracked project record.
     </p>
@@ -32,7 +33,7 @@
     <div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>
 
     <footer class="app-dialog-footer">
-      <button class="button button-primary" type="submit" form="project-create-form" data-dialog-submit>Create project</button>
+      <button class="button button-primary" type="submit" form="project-create-form" data-dialog-submit><span class="project-create-submit-icon" aria-hidden="true">{{ icons.icon('plus') }}</span>Create project</button>
     </footer>
   {% endcall %}
 {% endmacro %}

@@ -85,8 +85,12 @@ function cleanupScrollableDropdownPositioning(dropdown, { restoreScroll = true }
     delete dropdown.__creatorCrateDropdownRecordScroll;
   }
 
-  const panel = dropdown?.querySelector?.(CC_DROPDOWN_PANEL_SELECTOR);
+  resetDropdownPanelOverlay(dropdown?.querySelector?.(CC_DROPDOWN_PANEL_SELECTOR));
+}
+
+function resetDropdownPanelOverlay(panel) {
   if (!panel) return;
+  delete panel.__creatorCrateDropdownTriggerWidth;
   panel.removeAttribute?.(CC_DROPDOWN_OVERLAY_ATTRIBUTE);
   ['position', 'left', 'top', 'width', 'min-width', 'max-height'].forEach((property) => {
     dropdownPanelStyleRemove(panel, property);
@@ -107,6 +111,13 @@ function positionScrollableCategoryDropdown(dropdown, dialogBody) {
 
   const summary = dropdown.querySelector?.('summary');
   const panel = dropdown.querySelector?.(CC_DROPDOWN_PANEL_SELECTOR);
+  // A trigger resized since the last placement (e.g. across a breakpoint) needs the in-flow
+  // panel width again; the previous fixed width would otherwise outlive a wider trigger.
+  const placedTriggerWidth = panel?.__creatorCrateDropdownTriggerWidth;
+  const remeasure = placedTriggerWidth !== undefined
+    && placedTriggerWidth !== Number(summary?.getBoundingClientRect?.()?.width);
+  const panelScrollTop = remeasure ? panel.scrollTop : 0;
+  if (remeasure) resetDropdownPanelOverlay(panel);
   const summaryRect = summary?.getBoundingClientRect?.();
   const panelRect = panel?.getBoundingClientRect?.();
   const { width: viewportWidth, height: viewportHeight } = dropdownViewport(dropdown);
@@ -154,6 +165,7 @@ function positionScrollableCategoryDropdown(dropdown, dialogBody) {
   const availableHeight = opensAbove ? spaceAbove : spaceBelow;
   const maxPanelHeight = Math.max(1, Math.min(naturalPanelHeight || availableHeight, availableHeight));
   dropdownPanelStyleSet(panel, 'max-height', `${maxPanelHeight}px`);
+  if (panelScrollTop) panel.scrollTop = panelScrollTop;
 
   const finalPanelRect = panel.getBoundingClientRect?.() || positionedPanelRect;
   const renderedPanelHeight = Number(finalPanelRect.height) || maxPanelHeight;
@@ -170,6 +182,7 @@ function positionScrollableCategoryDropdown(dropdown, dialogBody) {
   );
   dropdownPanelStyleSet(panel, 'left', `${left}px`);
   dropdownPanelStyleSet(panel, 'top', `${top}px`);
+  panel.__creatorCrateDropdownTriggerWidth = triggerWidth;
   return true;
 }
 

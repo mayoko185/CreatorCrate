@@ -190,8 +190,18 @@ function extractDirectHtmlChildren(html) {
 }
 
 function expectProjectFormStructure(html, { statusError = false, tagError = false } = {}) {
-  const statusSection = extractProjectSettingsSection(html, 'Status');
+  // Project dialogs keep the status row in the merged Project details section.
+  const isDialog = html.startsWith('<dialog');
+  const statusSection = extractProjectSettingsSection(html, isDialog ? 'Project details' : 'Status');
   expect(statusSection).not.toBe('');
+  if (isDialog) {
+    expect(html).not.toContain('>Status</h3>');
+    expect(html).not.toContain('>Basic information</h3>');
+    const order = ['id="title"', 'id="description"', 'id="notes"', 'class="field-row status-row"']
+      .map((marker) => statusSection.indexOf(marker));
+    expect(order.every((index) => index >= 0)).toBe(true);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+  }
 
   const statusRow = extractProjectFormRow(statusSection, 'status-row');
   expect(statusRow).not.toBe('');
@@ -2005,6 +2015,17 @@ describe('project HTTP workflow', () => {
     expect(new Set(ids).size).toBe(ids.length);
     expectProjectFormStructure(dialog);
     expectProjectFormStructure(standalone.text);
+    expect(dialog).toContain('class="app-dialog project-form-dialog app-dialog--refined"');
+    expect(dialog).toContain('<label for="patreonUrl" class="sr-only">Project link</label>');
+    // The standalone form keeps its own sections, rows, and visible link label.
+    expect(standalone.text).not.toContain('app-dialog--refined');
+    expect(standalone.text).toContain('<h3>Basic information</h3>');
+    expect(standalone.text).toContain('<h3>Status</h3>');
+    expect(standalone.text).toContain('<h3>Links</h3>');
+    expect(standalone.text).not.toContain('<h3>Project details</h3>');
+    expect(standalone.text).toMatch(/<textarea id="description"[^>]*rows="6"/);
+    expect(standalone.text).toMatch(/<textarea id="notes"[^>]*rows="4"/);
+    expect(standalone.text).toContain('<label for="patreonUrl">Project link</label>');
   });
 
   it('does not render a filtered-empty-state Reset action', async () => {
@@ -2238,6 +2259,8 @@ describe('project HTTP workflow', () => {
     const dialog = extractProjectCreateDialog(res.text);
     expect(dialog).toMatch(/<dialog id="project-create-dialog"[^>]*\bopen\b/);
     expect(dialog).toContain('Project link must be a valid absolute HTTP or HTTPS URL.');
+    expect(dialog).toContain('<label for="patreonUrl" class="sr-only">Project link</label>');
+    expect(dialog).toMatch(/<input type="url" id="patreonUrl"[^>]*aria-describedby="patreonUrl-help patreonUrl-error" aria-invalid="true"/);
     expect(dialog).toMatch(/<input[^>]*name="title"[^>]*value="Projects Preserves"/);
     const resetValues = JSON.parse(dialog.match(/data-dialog-reset-values="([^"]+)"/)?.[1].replaceAll('&quot;', '"'));
     expect(resetValues.title).toBeUndefined();
@@ -2334,7 +2357,7 @@ describe('project HTTP workflow', () => {
     expect(toolbar).not.toContain('aria-label="Open locally"');
     expect((toolbar.match(/<a\b/g) || [])).toHaveLength(2);
     expect(dialog).not.toBe('');
-    expect(dialog).toContain('<dialog id="project-edit-dialog" class="app-dialog project-form-dialog"');
+    expect(dialog).toContain('<dialog id="project-edit-dialog" class="app-dialog project-form-dialog app-dialog--refined"');
     expect(dialog).toContain('<h2 id="project-edit-dialog-title">Edit Project</h2>');
     expect(dialog).toContain('Edit project details, status, and links.');
     expect(dialog).not.toContain('Update project metadata and planning fields.');
@@ -2354,28 +2377,26 @@ describe('project HTTP workflow', () => {
     expect(dialog).toContain('class="app-dialog-body project-edit-dialog-body"');
     expect(dialog).toContain('class="app-dialog-footer"');
     expect(dialog.indexOf('app-dialog-body project-edit-dialog-body')).toBeLessThan(dialog.indexOf('app-dialog-footer'));
-    expect(dialog).toContain('Basic information');
-    expect(dialog).toContain('>Status</h3>');
+    expect(dialog).not.toContain('>Basic information</h3>');
+    expect(dialog).not.toContain('>Status</h3>');
     expect(dialog).not.toContain('>Scheduling</h3>');
-    expect(dialog).toContain('Links');
-    const basicInformation = extractProjectSettingsSection(dialog, 'Basic information');
-    expect(basicInformation).not.toBe('');
-    expect(basicInformation).toContain('<label for="title">Title');
-    expect(basicInformation).toContain('name="title"');
-    expect(basicInformation).toContain('name="description"');
-    expect(basicInformation).toContain('name="notes"');
-    expect(basicInformation).toMatch(/<textarea id="description"[^>]*rows="6"/);
-    expect(basicInformation).toMatch(/<textarea id="notes"[^>]*rows="4"/);
-    const status = extractProjectSettingsSection(dialog, 'Status');
-    expect(status).not.toBe('');
-    expect(status).toContain('name="status"');
-    expect(status).toContain('id="project-tags-form"');
+    expect(dialog).not.toContain('>Links</h3>');
+    const projectDetails = extractProjectSettingsSection(dialog, 'Project details');
+    expect(projectDetails).not.toBe('');
+    expect(projectDetails).toContain('<label for="title">Title');
+    expect(projectDetails).toContain('name="title"');
+    expect(projectDetails).toContain('name="description"');
+    expect(projectDetails).toContain('name="notes"');
+    expect(projectDetails).toMatch(/<textarea id="description"[^>]*rows="3"/);
+    expect(projectDetails).toMatch(/<textarea id="notes"[^>]*rows="3"/);
+    expect(projectDetails).toContain('name="status"');
+    expect(projectDetails).toContain('id="project-tags-form"');
     expectProjectFormStructure(dialog);
-    const links = extractProjectSettingsSection(dialog, 'Links');
+    const links = extractProjectSettingsSection(dialog, 'Project link');
     expect(links).not.toBe('');
-    expect(links).toContain('id="patreonUrl"');
-    expect(links).toContain('name="patreonUrl"');
-    expect(links).toContain('Optional absolute HTTP or HTTPS URL for this project.');
+    expect(links).toContain('<label for="patreonUrl" class="sr-only">Project link</label>');
+    expect(links).toMatch(/<input type="url" id="patreonUrl" name="patreonUrl"[^>]*aria-describedby="patreonUrl-help"/);
+    expect(links).toContain('<span class="help-text" id="patreonUrl-help">Optional absolute HTTP or HTTPS URL for this project.</span>');
     expect(dialog).not.toContain('data-dialog-close>Cancel</button>');
     expect(dialog).not.toMatch(/<button[^>]*>\s*Cancel\s*<\/button>/);
     expect(dialog).toContain('data-dialog-submit>Save changes</button>');

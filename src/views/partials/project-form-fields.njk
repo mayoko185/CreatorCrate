@@ -1,7 +1,7 @@
 {% import "partials/dropdown.njk" as dropdown %}
 
 <section class="settings-section project-form-section{% if projectFormDialog %} project-edit-dialog-section{% endif %}">
-  <h3>Basic information</h3>
+  <h3>{{ 'Project details' if projectFormDialog else 'Basic information' }}</h3>
   <div class="project-form-section-body{% if projectFormDialog %} project-edit-dialog-section-body{% endif %}">
 
   <div class="field {% if errors.title %}field-error{% endif %}">
@@ -12,21 +12,24 @@
 
   <div class="field {% if errors.description %}field-error{% endif %}">
     <label for="description">Description</label>
-    <textarea id="description" name="description" rows="6" maxlength="4000"{% if errors.description %} aria-describedby="description-error" aria-invalid="true"{% endif %}>{{ values.description or '' }}</textarea>
+    <textarea id="description" name="description" rows="{{ 3 if projectFormDialog else 6 }}" maxlength="4000"{% if errors.description %} aria-describedby="description-error" aria-invalid="true"{% endif %}>{{ values.description or '' }}</textarea>
     {% if errors.description %}<span class="field-error-message" id="description-error">{{ errors.description }}</span>{% endif %}
   </div>
 
   <div class="field {% if errors.notes %}field-error{% endif %}">
     <label for="notes">Notes</label>
-    <textarea id="notes" name="notes" rows="4" maxlength="10000"{% if errors.notes %} aria-describedby="notes-error" aria-invalid="true"{% endif %}>{{ values.notes or '' }}</textarea>
+    <textarea id="notes" name="notes" rows="{{ 3 if projectFormDialog else 4 }}" maxlength="10000"{% if errors.notes %} aria-describedby="notes-error" aria-invalid="true"{% endif %}>{{ values.notes or '' }}</textarea>
     {% if errors.notes %}<span class="field-error-message" id="notes-error">{{ errors.notes }}</span>{% endif %}
   </div>
+{# Dialogs keep these controls in the same "Project details" section. #}
+{% if not projectFormDialog %}
   </div>
 </section>
 
-<section class="settings-section status-section project-form-section{% if projectFormDialog %} project-edit-dialog-section{% endif %}">
+<section class="settings-section status-section project-form-section">
   <h3>Status</h3>
-  <div class="project-form-section-body{% if projectFormDialog %} project-edit-dialog-section-body{% endif %}">
+  <div class="project-form-section-body">
+{% endif %}
 
   {% set statusSummary = '' %}
   {% for statusOption in statuses %}
@@ -151,11 +154,11 @@
 </section>
 
 <section class="settings-section project-form-section{% if projectFormDialog %} project-edit-dialog-section{% endif %}">
-  <h3>Links</h3>
+  <h3>{{ 'Project link' if projectFormDialog else 'Links' }}</h3>
   <div class="project-form-section-body{% if projectFormDialog %} project-edit-dialog-section-body{% endif %}">
 
   <div class="field {% if errors.patreonUrl %}field-error{% endif %}">
-    <label for="patreonUrl">Project link</label>
+    <label for="patreonUrl"{% if projectFormDialog %} class="sr-only"{% endif %}>Project link</label>
     <input type="url" id="patreonUrl" name="patreonUrl" value="{{ values.patreonUrl or '' }}" aria-describedby="patreonUrl-help{% if errors.patreonUrl %} patreonUrl-error{% endif %}"{% if errors.patreonUrl %} aria-invalid="true"{% endif %}>
     <span class="help-text" id="patreonUrl-help">Optional absolute HTTP or HTTPS URL for this project.</span>
     {% if errors.patreonUrl %}<span class="field-error-message" id="patreonUrl-error">{{ errors.patreonUrl }}</span>{% endif %}
