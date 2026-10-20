@@ -102,6 +102,7 @@ import {
   enhanceAutoSubmit,
   enhanceProjectAssetCategoryManagement,
   openAppDialogById,
+  setAppDialogBaseline,
 } from './client/app-dialogs.js';
 import {
   enhanceAppConfirmationControls,
@@ -200,6 +201,7 @@ export {
   enhanceAutoSubmit,
   enhanceProjectAssetCategoryManagement,
   openAppDialogById,
+  setAppDialogBaseline,
   requestAppConfirmation,
   enhanceSlideshow,
   enhanceProjectAssetsPreviewSlideshow,

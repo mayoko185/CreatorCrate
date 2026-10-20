@@ -15,6 +15,7 @@ import {
   enhanceReleasesDefaultsFetchSave,
   enhanceReleasesLiveFiltering,
   openAppDialogById,
+  setAppDialogBaseline,
 } from '../src/static/creatorcrate.js';
 import {
   markProjectAssetsDefaultsRendered,
@@ -198,6 +199,13 @@ function makeElement(tagName = 'div', attrs = {}) {
   };
 
   if (tagName.toUpperCase() === 'SELECT') node.options = [];
+  // Keep className and classList in step so class selectors find elements the
+  // code under test creates with `element.className = ...`.
+  Object.defineProperty(node, 'className', {
+    get() { return [...this.classList.values].join(' '); },
+    set(value) { this.classList.values = new Set(String(value).split(/\s+/).filter(Boolean)); },
+    enumerable: true,
+  });
   Object.entries(attrs).forEach(([name, value]) => node.setAttribute(name, value));
   return node;
 }
@@ -3569,5 +3577,383 @@ describe('Project Assets multi-select defaults scope', () => {
     changeProjectAssetsScope(page, 'project');
     expect(selectedValues(page.fields.extension)).toEqual([]);
     expect(selectedValues(page.fields.tag)).toEqual([]);
+  });
+});
+
+describe('Release Edit async dialog submission', () => {
+  const PREFIX = 'release-edit-field-';
+
+  function makeReleaseEditPage({ selected = ['x'], saveDisabled = false, platformError = null } = {}) {
+    const page = makeDialogPage();
+    const { document, dialog, form } = page;
+    dialog.setAttribute('id', 'release-edit-dialog');
+    page.trigger.setAttribute('data-dialog-open', 'release-edit-dialog');
+    page.region.appendChild(page.trigger);
+    form.setAttribute('id', 'release-edit-form');
+    form.setAttribute('action', '/releases/7');
+    form.setAttribute('data-dialog-reset-on-close', '');
+    form.setAttribute('data-dialog-pending-message', 'Saving release…');
+    form.setAttribute('data-dialog-success-message', 'Release updated.');
+    form.setAttribute('data-dialog-error-message', 'Release could not be saved.');
+    form.setAttribute('data-dialog-network-error-message', 'Could not save the release. Check your connection and try again.');
+    // The generic page's own fields and in-form Save are replaced by Release's.
+    Object.values(page.fields).forEach((select) => select.parentNode.remove());
+    page.save.remove();
+
+    const titleField = makeElement('div', { class: 'field', 'data-dialog-field': 'title' });
+    const title = makeElement('input', { type: 'text', id: `${PREFIX}title`, name: 'title', value: 'Release' });
+    titleField.appendChild(title);
+    form.appendChild(titleField);
+
+    const dateField = makeElement('div', { class: 'field', 'data-dialog-field': 'plannedDate' });
+    const plannedDate = makeElement('input', {
+      type: 'date', id: `${PREFIX}plannedDate`, name: 'plannedDate', value: '2031-01-02',
+      'aria-describedby': `${PREFIX}plannedDate-help`,
+    });
+    dateField.appendChild(plannedDate);
+    form.appendChild(dateField);
+
+    const platformsField = makeElement('div', {
+      class: 'field release-platforms-field',
+      'data-dialog-field': 'selectedPlatforms',
+      'data-dialog-error-ref': `${PREFIX}selectedPlatforms-error`,
+    });
+    platformsField.appendChild(makeElement('input', { type: 'hidden', name: 'selectedPlatformsPresent', value: '1' }));
+    const details = makeElement('details', {
+      id: `${PREFIX}platforms`, 'data-cc-dropdown': '', 'data-cc-dropdown-mode': 'multiple',
+      'data-cc-dropdown-empty-summary': 'No platforms selected', 'data-cc-dropdown-count-label': 'platforms',
+    });
+    const summary = makeElement('summary', { id: `${PREFIX}platforms-trigger` });
+    const current = makeElement('span', { 'data-cc-dropdown-summary-current': '' });
+    summary.appendChild(current);
+    details.appendChild(summary);
+    const checkboxes = {};
+    for (const [index, platform] of ['x', 'bluesky'].entries()) {
+      const label = makeElement('label');
+      const checkbox = makeElement('input', {
+        type: 'checkbox', id: `${PREFIX}platforms-option-${index + 1}`, name: 'selectedPlatforms', value: platform,
+      });
+      checkbox.checked = selected.includes(platform);
+      label.appendChild(checkbox);
+      const text = makeElement('span');
+      text.textContent = platform;
+      label.appendChild(text);
+      details.appendChild(label);
+      checkboxes[platform] = checkbox;
+    }
+    // The multi-select macro wraps the dropdown in its own fieldset, which the
+    // server marks with field-error alongside the summary and checkboxes.
+    const platformsFieldset = makeElement('fieldset', {
+      class: `field asset-filter-multiselect-field asset-viewer-filter-field${platformError ? ' field-error' : ''}`,
+    });
+    platformsFieldset.appendChild(details);
+    platformsField.appendChild(platformsFieldset);
+    if (platformError) {
+      for (const element of [summary, ...Object.values(checkboxes)]) {
+        element.setAttribute('aria-describedby', `${PREFIX}selectedPlatforms-error`);
+        element.setAttribute('aria-invalid', 'true');
+      }
+      const message = makeElement('span', { class: 'field-error-message', id: `${PREFIX}selectedPlatforms-error` });
+      message.textContent = platformError;
+      platformsField.appendChild(message);
+    }
+    form.appendChild(platformsField);
+
+    const initial = form.querySelectorAll('input').map((control) => ({ control, value: control.value, checked: control.checked }));
+    form.reset = vi.fn(() => {
+      initial.forEach(({ control, value, checked }) => {
+        control.value = value;
+        control.checked = checked;
+      });
+    });
+
+    // Release's Save sits in the dialog footer, associated through form="…".
+    const footer = makeElement('footer');
+    const save = makeElement('button', { type: 'submit', form: 'release-edit-form', 'data-dialog-submit': '' });
+    save.form = form;
+    if (saveDisabled) save.disabled = true;
+    footer.appendChild(save);
+    dialog.querySelector('.app-dialog-card, div').appendChild(footer);
+    document.body.appendChild(dialog);
+
+    return { ...page, title, plannedDate, platformsField, platformsFieldset, details, summary, current, checkboxes, save };
+  }
+
+  function checkedPlatforms(page) {
+    return Object.values(page.checkboxes).filter((checkbox) => checkbox.checked).map((checkbox) => checkbox.value);
+  }
+
+  function submittedBody(page, call = 0) {
+    return new URLSearchParams(page.windowObject.fetch.mock.calls[call][1].body);
+  }
+
+  it('submits a repeated platform group and keeps the draft through structured validation errors', async () => {
+    const page = makeReleaseEditPage({ selected: ['x'] });
+    page.windowObject.fetch.mockResolvedValue({
+      ok: false,
+      status: 422,
+      json: async () => ({
+        status: 'error',
+        code: 'VALIDATION_FAILED',
+        message: 'Fix the highlighted fields and try again.',
+        errors: { title: 'Title is required.', selectedPlatforms: 'Cannot deselect a platform while its preparation session is active.' },
+        values: { title: '', selectedPlatforms: ['bluesky'] },
+      }),
+    });
+    enhanceAppDialogs(page.document);
+    page.document.dispatch('click', { target: page.trigger });
+
+    page.title.value = '';
+    page.checkboxes.x.checked = false;
+    page.checkboxes.bluesky.checked = true;
+    page.form.dispatch('submit', { submitter: page.save });
+    await flush();
+
+    const body = submittedBody(page);
+    expect(body.getAll('selectedPlatforms')).toEqual(['bluesky']);
+    expect(body.get('selectedPlatformsPresent')).toBe('1');
+    expect(page.windowObject.fetch.mock.calls[0][1].headers).toEqual({ Accept: 'application/json' });
+
+    expect(page.dialog.open).toBe(true);
+    expect(page.title.value).toBe('');
+    expect(checkedPlatforms(page)).toEqual(['bluesky']);
+    expect(page.title.getAttribute('aria-invalid')).toBe('true');
+    expect(page.title.getAttribute('aria-describedby')).toBe(`${PREFIX}title-error`);
+    expect(page.platformsField.querySelectorAll('.field-error-message')).toHaveLength(1);
+    const platformError = page.platformsField.querySelector('.field-error-message');
+    expect(platformError.id).toBe(`${PREFIX}selectedPlatforms-error`);
+    expect(platformError.textContent).toBe('Cannot deselect a platform while its preparation session is active.');
+    for (const element of [...Object.values(page.checkboxes), page.summary]) {
+      expect(element.getAttribute('aria-invalid')).toBe('true');
+      expect(element.getAttribute('aria-describedby')).toBe(`${PREFIX}selectedPlatforms-error`);
+    }
+    expect(page.platformsField.classList.contains('field-error')).toBe(true);
+    expect(page.dialog.querySelector('[data-dialog-error]').hidden).toBe(false);
+    expect(page.dialog.querySelector('[data-dialog-error-text]').textContent).toBe('Fix the highlighted fields and try again.');
+    expect(page.dialog.querySelector('[data-dialog-status]').textContent).toBe('Fix the highlighted fields and try again.');
+  });
+
+  it('keeps help-text references while showing and clearing errors, then adopts the saved model as its baseline', async () => {
+    const page = makeReleaseEditPage({ selected: ['x'] });
+    page.windowObject.fetch
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 422,
+        json: async () => ({
+          status: 'error',
+          message: 'Fix the highlighted fields and try again.',
+          errors: { plannedDate: 'Enter a valid date.' },
+          values: { plannedDate: '2031-02-30', selectedPlatforms: ['x', 'bluesky'] },
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          status: 'success',
+          message: 'Release updated.',
+          values: { title: 'Saved release', plannedDate: '2031-03-01', selectedPlatforms: ['x', 'bluesky'] },
+        }),
+      });
+    enhanceAppDialogs(page.document);
+    page.document.dispatch('click', { target: page.trigger });
+    page.checkboxes.bluesky.checked = true;
+    page.form.dispatch('submit', { submitter: page.save });
+    await flush();
+
+    expect(page.plannedDate.getAttribute('aria-describedby')).toBe(`${PREFIX}plannedDate-help ${PREFIX}plannedDate-error`);
+    expect(page.dialog.querySelectorAll('.field-error-message').map((message) => message.id)).toEqual([`${PREFIX}plannedDate-error`]);
+    expect(checkedPlatforms(page)).toEqual(['x', 'bluesky']);
+
+    page.form.dispatch('submit', { submitter: page.save });
+    await flush();
+
+    expect(page.dialog.open).toBe(false);
+    expect(page.plannedDate.getAttribute('aria-describedby')).toBe(`${PREFIX}plannedDate-help`);
+    expect(page.plannedDate.getAttribute('aria-invalid')).toBeNull();
+    expect(page.dialog.querySelector('.field-error-message')).toBeNull();
+    expect(page.document.querySelector('[data-dialog-feedback-text]').textContent).toBe('Release updated.');
+    // Closing reset the form to its server-rendered markup; reopening restores the confirmed save.
+    expect(page.form.reset).toHaveBeenCalled();
+    page.document.dispatch('click', { target: page.trigger });
+    expect(page.title.value).toBe('Saved release');
+    expect(page.plannedDate.value).toBe('2031-03-01');
+    expect(checkedPlatforms(page)).toEqual(['x', 'bluesky']);
+  });
+
+  it('disables the external Save while pending, ignores duplicate submits, and restores prior disabled states', async () => {
+    const page = makeReleaseEditPage();
+    const alreadyDisabled = makeElement('button', { type: 'submit', form: 'release-edit-form', 'data-dialog-submit': '' });
+    alreadyDisabled.form = page.form;
+    alreadyDisabled.disabled = true;
+    page.save.parentNode.appendChild(alreadyDisabled);
+    const unrelated = makeElement('button', { type: 'submit', form: 'other-form', 'data-dialog-submit': '' });
+    page.save.parentNode.appendChild(unrelated);
+    let resolveRequest;
+    page.windowObject.fetch.mockImplementation(() => new Promise((resolve) => { resolveRequest = resolve; }));
+    enhanceAppDialogs(page.document);
+    page.document.dispatch('click', { target: page.trigger });
+
+    page.form.dispatch('submit', { submitter: page.save });
+    await flush();
+    page.form.dispatch('submit', { submitter: page.save });
+    await flush();
+
+    expect(page.windowObject.fetch).toHaveBeenCalledOnce();
+    expect(page.save.disabled).toBe(true);
+    expect(page.save.hasAttribute('disabled')).toBe(true);
+    expect(unrelated.disabled).toBe(false);
+    expect(page.form.getAttribute('aria-busy')).toBe('true');
+    expect(page.dialog.querySelector('[data-dialog-status]').textContent).toBe('Saving release…');
+
+    resolveRequest({ ok: false, status: 500, json: async () => ({ status: 'error', code: 'SERVER_ERROR', message: 'Release update failed. Please try again.' }) });
+    await flush();
+
+    expect(page.save.disabled).toBe(false);
+    expect(page.save.hasAttribute('disabled')).toBe(false);
+    expect(alreadyDisabled.disabled).toBe(true);
+    expect(page.dialog.open).toBe(true);
+    expect(page.dialog.querySelector('[data-dialog-status]').textContent).toBe('Release update failed. Please try again.');
+    expect(page.dialog.querySelector('.field-error-message')).toBeNull();
+  });
+
+  it('keeps the draft and reports Release wording when the request fails', async () => {
+    const page = makeReleaseEditPage({ selected: [] });
+    page.windowObject.fetch.mockRejectedValue(new Error('offline'));
+    enhanceAppDialogs(page.document);
+    page.document.dispatch('click', { target: page.trigger });
+    page.title.value = 'Unsaved draft';
+    page.checkboxes.bluesky.checked = true;
+    page.form.dispatch('submit', { submitter: page.save });
+    await flush();
+
+    expect(page.dialog.open).toBe(true);
+    expect(page.title.value).toBe('Unsaved draft');
+    expect(checkedPlatforms(page)).toEqual(['bluesky']);
+    expect(page.save.disabled).toBe(false);
+    expect(page.dialog.querySelector('[data-dialog-status]').textContent)
+      .toBe('Could not save the release. Check your connection and try again.');
+    expect(page.dialog.querySelector('[data-dialog-error-text]').textContent)
+      .toBe('Release could not be saved. Your selections were kept.');
+  });
+
+  it('adopts an authoritative loaded model as the baseline for later opens and dismissals', () => {
+    const page = makeReleaseEditPage({ selected: ['x'] });
+    enhanceAppDialogs(page.document);
+
+    expect(setAppDialogBaseline(page.document, 'release-edit-dialog', {
+      title: 'Loaded release', plannedDate: '', selectedPlatforms: ['bluesky'],
+    })).toBe(true);
+    expect(page.title.value).toBe('Loaded release');
+    expect(checkedPlatforms(page)).toEqual(['bluesky']);
+
+    page.document.dispatch('click', { target: page.trigger });
+    page.title.value = 'Abandoned draft';
+    page.checkboxes.x.checked = true;
+    page.close.dispatch('click');
+    page.document.dispatch('click', { target: page.trigger });
+
+    expect(page.title.value).toBe('Loaded release');
+    expect(page.plannedDate.value).toBe('');
+    expect(checkedPlatforms(page)).toEqual(['bluesky']);
+    expect(setAppDialogBaseline(page.document, 'missing-dialog', {})).toBe(false);
+  });
+
+  it('clears a server-rendered Platforms fieldset error on hydration and restores field styling on a new error', async () => {
+    const page = makeReleaseEditPage({ selected: ['x'], platformError: 'Choose a supported platform.' });
+    page.windowObject.fetch.mockResolvedValue({
+      ok: false,
+      status: 422,
+      json: async () => ({
+        status: 'error',
+        message: 'Fix the highlighted fields and try again.',
+        errors: { selectedPlatforms: 'Cannot deselect a platform while its preparation session is active.' },
+        values: { selectedPlatforms: [] },
+      }),
+    });
+    enhanceAppDialogs(page.document);
+    expect(page.platformsFieldset.classList.contains('field-error')).toBe(true);
+
+    // Invalid -> valid: every obsolete error presentation clears.
+    setAppDialogBaseline(page.document, 'release-edit-dialog', { title: 'Loaded release', selectedPlatforms: ['bluesky'] });
+    expect(page.platformsFieldset.classList.contains('field-error')).toBe(false);
+    expect(page.platformsFieldset.classList.contains('asset-filter-multiselect-field')).toBe(true);
+    expect(page.platformsFieldset.classList.contains('asset-viewer-filter-field')).toBe(true);
+    expect(page.platformsField.classList.contains('field-error')).toBe(false);
+    expect(page.platformsField.classList.contains('release-platforms-field')).toBe(true);
+    expect(page.platformsField.querySelector('.field-error-message')).toBeNull();
+    for (const element of [...Object.values(page.checkboxes), page.summary]) {
+      expect(element.getAttribute('aria-invalid')).toBeNull();
+      expect(element.getAttribute('aria-describedby')).toBeNull();
+    }
+    expect(checkedPlatforms(page)).toEqual(['bluesky']);
+
+    // Valid -> invalid: the field wrapper's error class and associations return.
+    page.document.dispatch('click', { target: page.trigger });
+    page.checkboxes.bluesky.checked = false;
+    page.form.dispatch('submit', { submitter: page.save });
+    await flush();
+    expect(page.platformsField.classList.contains('field-error')).toBe(true);
+    expect(page.platformsField.querySelectorAll('.field-error-message').map((message) => message.id))
+      .toEqual([`${PREFIX}selectedPlatforms-error`]);
+    for (const element of [...Object.values(page.checkboxes), page.summary]) {
+      expect(element.getAttribute('aria-invalid')).toBe('true');
+      expect(element.getAttribute('aria-describedby')).toBe(`${PREFIX}selectedPlatforms-error`);
+    }
+  });
+
+  it('restores the hydrated baseline immediately on dismissal and adopts each newly loaded release', async () => {
+    const page = makeReleaseEditPage({ selected: ['x'] });
+    page.windowObject.fetch.mockResolvedValue({
+      ok: false,
+      status: 422,
+      json: async () => ({
+        status: 'error',
+        message: 'Fix the highlighted fields and try again.',
+        errors: { title: 'Title is required.' },
+        values: { title: '', selectedPlatforms: ['x', 'bluesky'] },
+      }),
+    });
+    enhanceAppDialogs(page.document);
+    // The page markup holds Release A (title "Release", platform x).
+
+    setAppDialogBaseline(page.document, 'release-edit-dialog', {
+      title: 'Loaded release', plannedDate: '2031-05-06', selectedPlatforms: ['bluesky'],
+    });
+    page.document.dispatch('click', { target: page.trigger });
+    page.title.value = '';
+    page.checkboxes.x.checked = true;
+    page.form.dispatch('submit', { submitter: page.save });
+    await flush();
+    // A failed save keeps the draft while the dialog stays open.
+    expect(page.dialog.open).toBe(true);
+    expect(page.title.value).toBe('');
+    expect(checkedPlatforms(page)).toEqual(['x', 'bluesky']);
+    expect(page.title.getAttribute('aria-invalid')).toBe('true');
+
+    page.close.dispatch('click');
+    // Checked right after dismissal, without reopening.
+    expect(page.dialog.open).toBe(false);
+    expect(page.form.reset).toHaveBeenCalled();
+    expect(page.title.value).toBe('Loaded release');
+    expect(page.plannedDate.value).toBe('2031-05-06');
+    expect(checkedPlatforms(page)).toEqual(['bluesky']);
+    expect(page.current.textContent).toBe('bluesky');
+    expect(page.title.getAttribute('aria-invalid')).toBeNull();
+    expect(page.dialog.querySelector('.field-error-message')).toBeNull();
+    expect(page.dialog.querySelector('[data-dialog-error]').hidden).toBe(true);
+    expect(page.dialog.querySelector('[data-dialog-status]').textContent).toBe('');
+
+    // Loading another release replaces the baseline; nothing of the first survives.
+    const loaded = { title: 'Second release', plannedDate: '', selectedPlatforms: ['x'] };
+    setAppDialogBaseline(page.document, 'release-edit-dialog', loaded);
+    loaded.selectedPlatforms.push('bluesky');
+    page.document.dispatch('click', { target: page.trigger });
+    page.title.value = 'Abandoned draft';
+    page.checkboxes.bluesky.checked = true;
+    page.close.dispatch('click');
+    expect(page.title.value).toBe('Second release');
+    expect(page.plannedDate.value).toBe('');
+    expect(checkedPlatforms(page)).toEqual(['x']);
+    expect(page.current.textContent).toBe('x');
   });
 });

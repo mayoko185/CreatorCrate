@@ -213,7 +213,13 @@ function appDialogFinishClose(state) {
   if (state.form?.hasAttribute?.('data-dialog-reset-on-close')) {
     state.form.reset?.();
     const resetValues = state.form.getAttribute?.('data-dialog-reset-values');
-    if (resetValues) {
+    if (state.authoritativeBaseline) {
+      // A loaded record's confirmed values (setAppDialogBaseline, then each
+      // successful save) replace the page markup and its reset values.
+      appDialogClearErrors(state);
+      appDialogStatus(state, '');
+      appDialogApplyValues(state.form, state.savedValues || {});
+    } else if (resetValues) {
       const values = JSON.parse(resetValues);
       state.form.querySelectorAll?.('[name]').forEach((control) => {
         if (control.type === 'file' || control.type === 'hidden') return;
@@ -296,8 +302,23 @@ function appDialogRequestClose(state, opener = null) {
 
 function appDialogValues(form) {
   const values = {};
-  Array.from(form?.querySelectorAll?.('select, input, textarea') || []).forEach((control) => {
+  const controls = Array.from(form?.querySelectorAll?.('select, input, textarea') || []);
+  controls.forEach((control) => {
     if (!control.name || Object.hasOwn(values, control.name)) return;
+    // Repeated checkboxes (and radios) share one name; the group's value is
+    // its checked members, not whichever control happens to come first.
+    const group = controls.filter((candidate) => candidate.name === control.name);
+    const checkboxes = group.filter((candidate) => candidate.type === 'checkbox');
+    if (checkboxes.length > 0) {
+      values[control.name] = checkboxes.filter((candidate) => candidate.checked)
+        .map((candidate) => String(candidate.value));
+      return;
+    }
+    const radios = group.filter((candidate) => candidate.type === 'radio');
+    if (radios.length > 0) {
+      values[control.name] = String(radios.find((candidate) => candidate.checked)?.value ?? '');
+      return;
+    }
     if (control.tagName === 'SELECT' && control.multiple) {
       values[control.name] = Array.from(control.options || [])
         .filter((option) => option.selected)
@@ -333,6 +354,19 @@ function appDialogApplyValues(form, values = {}) {
     .forEach((option) => option.remove?.());
   Object.entries(values).forEach(([name, value]) => {
     if (name === '_csrf') return;
+    const choices = Array.from(form?.querySelectorAll?.(`[name="${name}"]`) || [])
+      .filter((candidate) => candidate.type === 'checkbox' || candidate.type === 'radio');
+    if (choices.length > 0) {
+      const selected = new Set((Array.isArray(value) ? value : [value]).map((member) => String(member ?? '')));
+      const dropdowns = new Set();
+      choices.forEach((choice) => {
+        choice.checked = selected.has(String(choice.value));
+        const dropdown = choice.closest?.(CC_DROPDOWN_SELECTOR);
+        if (dropdown) dropdowns.add(dropdown);
+      });
+      dropdowns.forEach(initializeCreatorCrateDropdown);
+      return;
+    }
     const control = form?.querySelector?.(`[name="${name}"]`);
     if (!control) return;
     const stringValue = String(value ?? '');
@@ -368,16 +402,49 @@ function appDialogApplyValues(form, values = {}) {
   });
 }
 
+// A field's error targets: its control (every member of a repeated checkbox
+// or radio group), the custom dropdown summary that stands in for it, and the
+// error id, which a field may name explicitly when its first control's id
+// would not match the server-rendered message.
+function appDialogFieldErrorTargets(field, name) {
+  const controls = Array.from(field?.querySelectorAll?.('select, input:not([type="hidden"]), textarea') || []);
+  const control = controls[0];
+  if (!control) return { elements: [], errorId: null };
+  const group = control.name ? controls.filter((candidate) => candidate.name === control.name) : [control];
+  const dropdown = creatorCrateDropdownForNativeSelect(control) || control.closest?.(CC_DROPDOWN_SELECTOR);
+  const summary = dropdown?.querySelector?.('summary');
+  return {
+    elements: summary ? [...group, summary] : group,
+    errorId: field.getAttribute?.('data-dialog-error-ref') || `${control.id || `dialog-${name}`}-error`,
+  };
+}
+
+// Error ids are added to and removed from aria-describedby rather than
+// replacing it, so help-text references survive validation round trips.
+function appDialogSetDescribedBy(element, addId, removeIds = []) {
+  const tokens = String(element?.getAttribute?.('aria-describedby') || '').split(/\s+/)
+    .filter((token) => token && !removeIds.includes(token));
+  if (addId && !tokens.includes(addId)) tokens.push(addId);
+  if (tokens.length > 0) element?.setAttribute?.('aria-describedby', tokens.join(' '));
+  else element?.removeAttribute?.('aria-describedby');
+}
+
 function appDialogClearErrors(state) {
-  state.form?.querySelectorAll?.('[data-dialog-field]').forEach((field) => {
+  const fields = Array.from(state.form?.querySelectorAll?.('[data-dialog-field]') || []);
+  const targets = fields.map((field) => appDialogFieldErrorTargets(field, field.getAttribute?.('data-dialog-field')));
+  // Server-rendered errors may reference a sibling field's message (Scheduled
+  // date also points at the time error), so strip every field's error id.
+  const errorIds = targets.map(({ errorId }) => errorId).filter(Boolean);
+  fields.forEach((field, index) => {
     field.classList?.remove('field-error');
-    const control = field.querySelector?.('select, input:not([type="hidden"]), textarea');
-    control?.removeAttribute?.('aria-invalid');
-    control?.removeAttribute?.('aria-describedby');
-    const summary = creatorCrateDropdownForNativeSelect(control)?.querySelector?.('summary');
-    summary?.removeAttribute?.('aria-invalid');
-    summary?.removeAttribute?.('aria-describedby');
-    field.querySelector?.('.field-error-message')?.remove?.();
+    // Server-rendered markup may also mark a nested control wrapper (the
+    // Platforms multi-select fieldset), which would keep its invalid border.
+    field.querySelectorAll?.('.field-error').forEach((element) => element.classList?.remove('field-error'));
+    targets[index].elements.forEach((element) => {
+      element.removeAttribute?.('aria-invalid');
+      appDialogSetDescribedBy(element, null, errorIds);
+    });
+    field.querySelectorAll?.('.field-error-message').forEach((message) => message.remove?.());
   });
   const error = state.dialog.querySelector?.('[data-dialog-error]');
   if (error) {
@@ -406,15 +473,13 @@ function appDialogShowErrors(state, errors = {}, message = 'Fix the highlighted 
       .find((candidate) => candidate.getAttribute?.('data-dialog-field') === name);
     if (!field) return;
     field.classList?.add('field-error');
-    const control = field.querySelector?.('select, input:not([type="hidden"]), textarea');
-    if (!control) return;
-    control.setAttribute?.('aria-invalid', 'true');
-    const errorId = `${control.id || `dialog-${name}`}-error`;
-    control.setAttribute?.('aria-describedby', errorId);
-    const summary = creatorCrateDropdownForNativeSelect(control)?.querySelector?.('summary');
-    summary?.setAttribute?.('aria-invalid', 'true');
-    summary?.setAttribute?.('aria-describedby', errorId);
-    const messageElement = control.ownerDocument?.createElement?.('span');
+    const { elements, errorId } = appDialogFieldErrorTargets(field, name);
+    if (elements.length === 0) return;
+    elements.forEach((element) => {
+      element.setAttribute?.('aria-invalid', 'true');
+      appDialogSetDescribedBy(element, errorId);
+    });
+    const messageElement = elements[0].ownerDocument?.createElement?.('span');
     if (!messageElement) return;
     messageElement.className = 'field-error-message';
     messageElement.id = errorId;
@@ -861,6 +926,27 @@ export function enhanceProjectAssetCategoryManagement(scope = globalThis.documen
   return dialogs.length;
 }
 
+// Submit controls may sit outside the form (a dialog footer button associated
+// through its form attribute); all of them stay disabled while a save is
+// pending, and each returns to its own prior disabled state afterwards.
+function appDialogDisableSubmitControls(state) {
+  const form = state.form;
+  const formId = form?.id || form?.getAttribute?.('id');
+  const controls = Array.from(state.dialog.querySelectorAll?.('[data-dialog-submit]') || [])
+    .filter((control) => control.form === form
+      || (formId && control.getAttribute?.('form') === formId)
+      || form?.contains?.(control));
+  const previous = controls.map((control) => Boolean(control.disabled));
+  controls.forEach((control) => {
+    control.disabled = true;
+    control.setAttribute?.('disabled', '');
+  });
+  return () => controls.forEach((control, index) => {
+    control.disabled = previous[index];
+    if (!previous[index]) control.removeAttribute?.('disabled');
+  });
+}
+
 function appDialogBindForm(state) {
   const form = state.form;
   if (!form || form.getAttribute?.('data-dialog-async') === 'false'
@@ -887,8 +973,7 @@ function appDialogBindForm(state) {
     appDialogClearErrors(state);
     appDialogStatus(state, appDialogPendingMessage(state));
     form.setAttribute?.('aria-busy', 'true');
-    const submitButton = form.querySelector?.('[data-dialog-submit]');
-    if (submitButton) submitButton.disabled = true;
+    const restoreSubmitControls = appDialogDisableSubmitControls(state);
     const action = form.action || form.getAttribute?.('action');
     const method = String(form.method || form.getAttribute?.('method') || 'POST').toUpperCase();
 
@@ -902,7 +987,7 @@ function appDialogBindForm(state) {
       .then(({ response, payload }) => {
         state.submitting = false;
         form.removeAttribute?.('aria-busy');
-        if (submitButton) submitButton.disabled = false;
+        restoreSubmitControls();
         if (response?.ok === false || payload?.status !== 'success') {
           if (!state.preserveValuesOnError) {
             appDialogApplyValues(form, payload?.values || appDialogValues(form));
@@ -922,7 +1007,7 @@ function appDialogBindForm(state) {
       .catch(() => {
         state.submitting = false;
         form.removeAttribute?.('aria-busy');
-        if (submitButton) submitButton.disabled = false;
+        restoreSubmitControls();
         appDialogShowErrors(state, {}, `${appDialogSaveErrorMessage(state)} Your selections were kept.`);
         appDialogStatus(state, appDialogNetworkFailureMessage(state), true);
       });
@@ -1065,6 +1150,26 @@ export function closeAppDialogById(document, id) {
   return true;
 }
 
+/**
+ * Replace a dialog form's confirmed values with an authoritative model (for
+ * example a freshly loaded record) and show them. Later opens and dismissals
+ * restore to this baseline instead of the values rendered with the page, and
+ * a successful save replaces it with the saved model.
+ */
+export function setAppDialogBaseline(document, id, values) {
+  const dialog = document?.getElementById?.(id);
+  const state = dialog?.__creatorCrateAppDialogState;
+  if (!state?.form || !values || typeof values !== 'object') return false;
+  // Replaced wholesale (arrays copied) so no earlier record's values linger.
+  state.savedValues = Object.fromEntries(Object.entries(values)
+    .map(([name, value]) => [name, Array.isArray(value) ? [...value] : value]));
+  state.authoritativeBaseline = true;
+  appDialogClearErrors(state);
+  appDialogStatus(state, '');
+  appDialogApplyValues(state.form, state.savedValues);
+  return true;
+}
+
 export function enhanceAppDialogs(scope = globalThis.document) {
   const document = appDialogDocument(scope);
   if (!document || typeof document.querySelectorAll !== 'function') return 0;
@@ -1078,6 +1183,7 @@ export function enhanceAppDialogs(scope = globalThis.document) {
       opener: null,
       openerAllowsFallback: true,
       savedValues: null,
+      authoritativeBaseline: false,
       open: false,
       reshowing: false,
       submitting: false,
