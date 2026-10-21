@@ -979,6 +979,49 @@ describe('Calendar shared live region', () => {
     expect(windowObject.location.href).toBe(requests[1].href);
   });
 
+  it('refreshes the exact active Calendar after a saved release edit and retries only the GET', async () => {
+    const activeUrl = 'http://creatorcrate.test/calendar?month=2026-11&status=planned&weekStart=sunday&view=list&project=7';
+    const { initial, windowObject, requests } = environment({
+      month: '2026-11', status: 'planned', project: '7', weekStart: 'sunday',
+      explicit: { month: '2026-11', status: 'planned', weekStart: 'sunday', view: 'list', project: '7' },
+    });
+    windowObject.setLocation(activeUrl);
+    initial.document.documentElement = makeNode({ tagName: 'html' });
+    const notice = makeNode({ attrs: { 'data-dialog-feedback': '' } });
+    notice.classList = { toggle: vi.fn() };
+    const noticeText = makeNode({ tagName: 'p', attrs: { 'data-dialog-feedback-text': '' } });
+    notice.appendChild(noticeText);
+    initial.document.appendChild(notice);
+    initial.document.createElement = (tagName) => makeNode({ tagName });
+    enhanceCalendarLiveFiltering(initial.document);
+    enhanceCalendarLiveFiltering(initial.document);
+
+    windowObject.fetch.mockImplementationOnce((url) => {
+      requests.push(new URL(url));
+      return Promise.resolve({ ok: false, status: 500, url, text: async () => '' });
+    });
+    initial.document.dispatch('release-edit-saved', { detail: { releaseId: '4' } });
+    await flush();
+    expect(requests).toHaveLength(1);
+    expect(requests[0].href).toBe(activeUrl);
+    expect(windowObject.location.href).toBe(activeUrl);
+    expect(noticeText.textContent).toBe('Release saved, but Calendar could not refresh. The calendar shown may be out of date.');
+    const retry = notice.querySelector('[data-calendar-edit-refresh-retry]');
+    expect(retry).not.toBeNull();
+    expect(windowObject.fetch.mock.calls.every(([, options]) => options.method === 'GET')).toBe(true);
+
+    retry.dispatch('click');
+    await flush();
+    expect(requests).toHaveLength(2);
+    expect(requests[1].href).toBe(activeUrl);
+    expect(windowObject.fetch.mock.calls.every(([, options]) => options.method === 'GET')).toBe(true);
+    expect(windowObject.location.href).toBe(activeUrl);
+    expect(windowObject.history.pushes).toEqual([]);
+    expect(windowObject.history.replaces).toEqual([]);
+    expect(noticeText.textContent).toBe('Release updated.');
+    expect(initial.document.__creatorCrateCalendarLiveFiltering.calendarEditRetryButton).toBeNull();
+  });
+
   it('lets Back supersede a pending navigation response', async () => {
     const { initial, windowObject, requests } = environment();
     let resolveNavigation;

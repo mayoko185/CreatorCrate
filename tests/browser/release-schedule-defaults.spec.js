@@ -612,7 +612,7 @@ test('standalone New Release supports 12h display with canonical values; Edit Re
     }
 
     await page.goto(`${origin}/releases/${existing.id}`);
-    await page.locator('[data-dialog-open="release-edit-dialog"]').first().click();
+    await page.locator(`[data-release-edit-id="${existing.id}"]`).first().click();
     const editForm = page.locator('#release-edit-form');
     await expect(editForm.locator('input[name="noSetReleaseDate"]')).toHaveCount(0);
     await expect(editForm.locator('input[name="plannedDate"]')).toHaveValue('2026-05-05');
@@ -622,7 +622,7 @@ test('standalone New Release supports 12h display with canonical values; Edit Re
     await editForm.locator('input[name="plannedDate"]').fill('2026-09-09');
     await page.locator('#release-edit-dialog [data-dialog-close]').first().click();
     await expect(page.locator('#release-edit-dialog')).not.toHaveAttribute('open', '');
-    await page.locator('[data-dialog-open="release-edit-dialog"]').first().click();
+    await page.locator(`[data-release-edit-id="${existing.id}"]`).first().click();
     await expect(editForm.locator('input[name="plannedDate"]')).toHaveValue('2026-05-05');
     expect(pageErrors).toEqual([]);
   });

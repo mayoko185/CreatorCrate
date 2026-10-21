@@ -4,6 +4,8 @@ import { enhanceProjectOptionReorder } from './client/settings-project-option-re
 import { enhanceReleaseSignatureManagers } from './client/release-signature-manager.js';
 import { enhanceReleaseSignatures } from './client/release-signatures.js';
 import { enhanceReleaseScheduleDefaults } from './client/release-schedule-defaults.js';
+import { enhanceReleaseEditDialog } from './client/release-edit-dialog.js';
+import { enhanceReleaseDetailRefresh } from './client/release-detail-refresh.js';
 import {
   enhancePreview,
   enhancePreviewMedia,
@@ -305,6 +307,8 @@ if (typeof document !== 'undefined') {
     enhanceAppDialogs(document);
     enhanceAssetEditDialog(document);
     enhanceReleaseScheduleDefaults(document);
+    enhanceReleaseEditDialog(document);
+    enhanceReleaseDetailRefresh(document);
     enhanceNoteDialogUnsavedChanges(document);
     enhanceBookHierarchyReorder(document);
     enhanceLogViewerAutoRefresh(document);

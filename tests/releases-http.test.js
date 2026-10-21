@@ -147,6 +147,11 @@ function expectReleaseFormSectionCards(html) {
   expect(html).not.toContain('class="form-section"');
 }
 
+function expectReleaseDialogSections(dialog, headings) {
+  const found = [...dialog.matchAll(/<div class="settings-section[^"]*\bproject-edit-dialog-section\b[^"]*">\s*<h3>([^<]+)<\/h3>/g)].map(([, heading]) => heading);
+  expect(found).toEqual(headings);
+}
+
 function extractReleaseProjectField(html) {
   return html.match(/<fieldset class="[^"]*asset-viewer-project-filter[^"]*">[\s\S]*?<\/fieldset>(?:\s*<span class="field-error-message" id="projectId-error">[\s\S]*?<\/span>)?/)?.[0] || '';
 }
@@ -358,14 +363,15 @@ describe('release HTTP workflow', () => {
         expectSiblingManager(response.text, formId);
         expect(dialog).toContain('No signatures yet');
         expect(dialog).toContain('data-release-signature-add-form');
-        expect(dialog).toContain('data-release-signature-add>Add</button>');
+        expect(dialog).toMatch(/data-release-signature-add><span class="project-create-submit-icon" aria-hidden="true">[\s\S]*?<\/span>Add<\/button>/);
+        expect(dialog).toMatch(/<dialog id="release-signatures-dialog" class="app-dialog project-form-dialog app-dialog--refined"/);
         expect(dialog).toContain('id="release-signatures-default-option-all"');
         expect(dialog).toMatch(/<option value="" selected>No default<\/option>/);
         expect(dialog).not.toContain('data-release-signature-item');
       }
     });
 
-    it('renders ordered escaped entries and the saved default on New and Edit, including validation rerenders', async () => {
+    it('renders ordered escaped entries and the saved default on New and Edit, including New Release validation rerenders', async () => {
       const projectId = await createTestProject('Signature Manager Edit');
       const service = app.locals.releaseSignatureSettingsService;
       const first = service.add({ name: 'First "<&>', body: 'line one\n</textarea><script>&' }).entries[0];
@@ -389,8 +395,6 @@ describe('release HTTP workflow', () => {
         [await agent.post('/releases').send('_csrf=' + encodeURIComponent(csrfToken))
           .send(`projectId=${projectId}`).send('title=')
           .set('Content-Type', 'application/x-www-form-urlencoded').expect(422), 'release-form'],
-        [await agent.post(detailUrl).send('_csrf=' + encodeURIComponent(csrfToken))
-          .send('title=').set('Content-Type', 'application/x-www-form-urlencoded').expect(422), 'release-edit-form'],
       ];
       for (const [response, formId] of cases) {
         const dialog = manager(response.text);
@@ -582,7 +586,7 @@ describe('release HTTP workflow', () => {
         app.locals.clockFormatSettingsService.setClockFormat(preference);
         for (const path of [`/releases/new?projectId=${projectId}`, '/releases', `/releases/${release.id}`]) {
           const html = (await agent.get(path).expect(200)).text;
-          expect(html).toMatch(new RegExp(`<div class="field scheduling-field [^"]*" data-time-picker-field data-clock-format="${preference}">`));
+          expect(html).toMatch(new RegExp(`<div class="field scheduling-field [^"]*" data-dialog-field="plannedTime" data-time-picker-field data-clock-format="${preference}">`));
           expect(html).toMatch(/<input class="picker-input" type="time" id="plannedTime" name="plannedTime"/);
           if (path === `/releases/${release.id}`) expect(html).toContain('value="13:05"');
         }
@@ -656,13 +660,14 @@ describe('release HTTP workflow', () => {
         .expect(302);
       const releaseLocation = createRes.headers.location;
       await agent.post(releaseLocation)
+        .set('Accept', 'application/json')
         .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Detail+Wording+Release')
         .send('plannedDate=2025-12-01')
         .send('publishedDate=2025-12-15')
         .send('patreonUrl=https://patreon.com/release')
         .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
+        .expect(200);
 
       const res = await agent.get(releaseLocation).expect(200);
 
@@ -722,11 +727,12 @@ describe('release HTTP workflow', () => {
 
     await agent
       .post(releaseOne.headers.location)
+      .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Release+One')
       .send('publishedDate=2026-12-02')
       .set('Content-Type', 'application/x-www-form-urlencoded')
-      .expect(302);
+      .expect(200);
 
     await agent
       .post('/releases')
@@ -1116,6 +1122,294 @@ describe('release HTTP workflow', () => {
     expect(css).not.toContain('#release-project-filter .asset-project-filter-option-list');
   });
 
+  describe('Edit Release JSON transport', () => {
+    let projectCount;
+
+    beforeEach(() => {
+      projectCount = 0;
+    });
+
+    async function createEditableRelease(fields = {}) {
+      projectCount += 1;
+      const projectId = await createTestProject(projectCount === 1 ? 'Edit Transport Project' : `Edit Transport Project ${projectCount}`);
+      const created = await agent.post('/releases').type('form')
+        .send({ _csrf: csrfToken, projectId, title: 'Transport Release', ...fields })
+        .expect(302);
+      return { projectId, releaseId: Number(created.headers.location.split('/').at(-1)) };
+    }
+
+    function getEditModel(releaseId) {
+      return agent.get(`/releases/${releaseId}/edit`).set('Accept', 'application/json');
+    }
+
+    function postEdit(releaseId, fields) {
+      return agent.post(`/releases/${releaseId}`).set('Accept', 'application/json').type('form')
+        .send({ _csrf: csrfToken, ...fields });
+    }
+
+    function selectedPlatforms(releaseId) {
+      return app.locals.socialPrepRepository.listPlatformsByReleaseId(releaseId)
+        .filter((row) => row.is_selected === 1).map((row) => row.platform);
+    }
+
+    it('loads the authoritative editable model, keeping saved unconfigured platforms, without applying the default signature', async () => {
+      app.locals.socialPrepSettingsService.setPlatforms(['x', 'bluesky']);
+      const signatures = app.locals.releaseSignatureSettingsService;
+      signatures.setDefault(signatures.add({ name: 'Default', body: 'Default signature body' }).entries[0].id);
+      const { projectId, releaseId } = await createEditableRelease({
+        plannedDate: '2031-05-06', plannedTime: '09:30', patreonUrl: 'https://example.com/r',
+        selectedPlatformsPresent: '1', selectedPlatforms: 'x',
+      });
+      app.locals.socialPrepSettingsService.setPlatforms(['bluesky']);
+
+      const res = await getEditModel(releaseId).expect(200).expect('Content-Type', /json/);
+      expect(res.headers.vary).toMatch(/Accept/);
+      expect(res.headers['cache-control']).toBe('no-store');
+      expect(res.body).toEqual({
+        status: 'success',
+        release: {
+          id: releaseId,
+          projectId,
+          projectTitle: 'Edit Transport Project',
+          title: 'Transport Release',
+          plannedDate: '2031-05-06',
+          plannedTime: '09:30',
+          publishedDate: null,
+          published: false,
+          updatedAt: expect.any(String),
+        },
+        values: {
+          title: 'Transport Release',
+          description: '',
+          notes: '',
+          plannedDate: '2031-05-06',
+          plannedTime: '09:30',
+          publishedDate: '',
+          patreonUrl: 'https://example.com/r',
+          selectedPlatforms: ['x'],
+        },
+        platformOptions: [
+          { value: 'x', label: 'X', configured: false },
+          { value: 'bluesky', label: 'Bluesky', configured: true },
+        ],
+        unconfiguredSelectedPlatforms: ['x'],
+        eligibility: { editable: true, archivable: true, deletable: true },
+        actions: {
+          update: `/releases/${releaseId}`,
+          detail: `/releases/${releaseId}`,
+          archive: `/releases/${releaseId}/archive`,
+          delete: `/releases/${releaseId}/delete`,
+        },
+      });
+
+      // Bookmarked /edit links redirect to the canonical Release Detail deep link.
+      const html = await agent.get(`/releases/${releaseId}/edit`).expect(302);
+      expect(html.headers.location).toBe(`/releases/${releaseId}?edit=1`);
+    });
+
+    it('reports published state and withholds the archive action for published releases', async () => {
+      const { releaseId } = await createEditableRelease();
+      db.prepare("UPDATE releases SET published_date = '2030-01-02' WHERE id = ?").run(releaseId);
+
+      const res = await getEditModel(releaseId).expect(200);
+      expect(res.body.release).toMatchObject({ published: true, publishedDate: '2030-01-02' });
+      expect(res.body.values.publishedDate).toBe('2030-01-02');
+      expect(res.body.eligibility).toEqual({ editable: true, archivable: false, deletable: true });
+      expect(res.body.actions.archive).toBeNull();
+    });
+
+    it('returns JSON errors for missing, archived, and archived-project releases on load and save', async () => {
+      for (const missing of ['999999', 'not-a-number']) {
+        const load = await agent.get(`/releases/${missing}/edit`).set('Accept', 'application/json').expect(404);
+        expect(load.body).toEqual({ status: 'error', code: 'RELEASE_NOT_FOUND', message: 'Release not found.' });
+        const save = await postEdit(missing, { title: 'Nope' }).expect(404);
+        expect(save.body.code).toBe('RELEASE_NOT_FOUND');
+      }
+
+      const archived = await createEditableRelease();
+      db.prepare('UPDATE releases SET archived_at = CURRENT_TIMESTAMP WHERE id = ?').run(archived.releaseId);
+      expect((await getEditModel(archived.releaseId).expect(409)).body)
+        .toMatchObject({ status: 'error', code: 'RELEASE_ARCHIVED' });
+      const archivedSave = await postEdit(archived.releaseId, { title: 'Changed' }).expect(422);
+      expect(archivedSave.body).toMatchObject({ status: 'error', code: 'RELEASE_ARCHIVED', errors: { general: expect.any(String) } });
+      expect(releaseRepository.findById(archived.releaseId).title).toBe('Transport Release');
+
+      const parentArchived = await createEditableRelease();
+      db.prepare("UPDATE projects SET status = 'archived', archived_at = NULL WHERE id = ?").run(parentArchived.projectId);
+      expect((await getEditModel(parentArchived.releaseId).expect(409)).body)
+        .toMatchObject({ status: 'error', code: 'PROJECT_ARCHIVED' });
+      expect((await postEdit(parentArchived.releaseId, { title: 'Changed' }).expect(422)).body.code)
+        .toBe('PROJECT_ARCHIVED');
+      expect(releaseRepository.findById(parentArchived.releaseId).title).toBe('Transport Release');
+    });
+
+    it('saves through the existing update path and returns the authoritative saved model without navigating', async () => {
+      app.locals.socialPrepSettingsService.setPlatforms(['x', 'bluesky']);
+      const { releaseId } = await createEditableRelease();
+
+      const res = await postEdit(releaseId, {
+        returnTo: '/calendar',
+        title: '  Saved Title  ',
+        description: 'Body',
+        notes: 'Notes',
+        plannedDate: '2031-07-08',
+        plannedTime: '18:45',
+        patreonUrl: '',
+        selectedPlatformsPresent: '1',
+        selectedPlatforms: ['bluesky', 'x'],
+      }).expect(200);
+
+      const stored = releaseRepository.findById(releaseId);
+      expect(res.body).toMatchObject({
+        status: 'success',
+        message: 'Release updated.',
+        release: { id: releaseId, title: stored.title, plannedDate: '2031-07-08', plannedTime: '18:45' },
+        values: {
+          title: stored.title,
+          description: 'Body',
+          notes: 'Notes',
+          plannedDate: '2031-07-08',
+          plannedTime: '18:45',
+          patreonUrl: '',
+          selectedPlatforms: ['bluesky', 'x'],
+        },
+      });
+      expect(res.headers.location).toBeUndefined();
+      expect(selectedPlatforms(releaseId)).toEqual(['bluesky', 'x']);
+    });
+
+    it('returns structured field errors with the submitted draft and leaves the release unchanged', async () => {
+      app.locals.socialPrepSettingsService.setPlatforms(['x', 'bluesky']);
+      const { releaseId } = await createEditableRelease({ selectedPlatformsPresent: '1', selectedPlatforms: 'x' });
+
+      const invalid = await postEdit(releaseId, {
+        title: '', notes: 'Draft notes', patreonUrl: 'not a url', selectedPlatformsPresent: '1', selectedPlatforms: ['bluesky'],
+      }).expect(422);
+      expect(invalid.body).toMatchObject({
+        status: 'error',
+        code: 'VALIDATION_FAILED',
+        message: 'Fix the highlighted fields and try again.',
+        errors: { title: expect.any(String), patreonUrl: expect.any(String) },
+        values: { title: '', notes: 'Draft notes', patreonUrl: 'not a url', selectedPlatforms: ['bluesky'] },
+      });
+      // Fields the request did not carry are not reported as blank.
+      expect(invalid.body.values).not.toHaveProperty('description');
+      expect(releaseRepository.findById(releaseId).title).toBe('Transport Release');
+      expect(selectedPlatforms(releaseId)).toEqual(['x']);
+
+      const badPlatform = await postEdit(releaseId, {
+        title: 'Valid', selectedPlatformsPresent: '1', selectedPlatforms: ['bluesky', 'invalid'],
+      }).expect(422);
+      expect(badPlatform.body.errors).toEqual({ selectedPlatforms: 'Select valid configured platforms.' });
+      expect(badPlatform.body.values.selectedPlatforms).toEqual(['bluesky', 'invalid']);
+      expect(releaseRepository.findById(releaseId).title).toBe('Transport Release');
+    });
+
+    it('rejects deselecting a platform under active preparation atomically and echoes the draft selection', async () => {
+      app.locals.socialPrepSettingsService.setPlatforms(['x', 'bluesky']);
+      const { releaseId } = await createEditableRelease({ selectedPlatformsPresent: '1', selectedPlatforms: ['x', 'bluesky'] });
+      const platformRepository = app.locals.socialPrepRepository;
+      platformRepository.insertSession({ id: 'json-active-edit', releaseId, kind: 'initial', expiresAt: new Date('2030-01-01') });
+      platformRepository.reassignPlatformsToSession('json-active-edit', ['x']);
+
+      const blocked = await postEdit(releaseId, {
+        title: 'Blocked Title', selectedPlatformsPresent: '1', selectedPlatforms: 'bluesky',
+      }).expect(422);
+      expect(blocked.body).toMatchObject({
+        code: 'VALIDATION_FAILED',
+        errors: { selectedPlatforms: 'Cannot deselect a platform while its preparation session is active.' },
+        values: { title: 'Blocked Title', selectedPlatforms: ['bluesky'] },
+      });
+      expect(releaseRepository.findById(releaseId).title).toBe('Transport Release');
+      expect(selectedPlatforms(releaseId)).toEqual(['bluesky', 'x']);
+    });
+
+    it('preserves a saved unconfigured platform on save and when the platform group is omitted', async () => {
+      app.locals.socialPrepSettingsService.setPlatforms(['x']);
+      const { releaseId } = await createEditableRelease({ selectedPlatformsPresent: '1', selectedPlatforms: 'x' });
+      app.locals.socialPrepSettingsService.setPlatforms(['bluesky']);
+
+      const kept = await postEdit(releaseId, { title: 'Kept', selectedPlatformsPresent: '1', selectedPlatforms: 'x' }).expect(200);
+      expect(kept.body.values.selectedPlatforms).toEqual(['x']);
+      expect(kept.body.unconfiguredSelectedPlatforms).toEqual(['x']);
+
+      const omitted = await postEdit(releaseId, { title: '' }).expect(422);
+      expect(omitted.body.values.selectedPlatforms).toEqual(['x']);
+      await postEdit(releaseId, { title: 'Omitted' }).expect(200);
+      expect(selectedPlatforms(releaseId)).toEqual(['x']);
+    });
+
+    it('distinguishes server failures from validation failures', async () => {
+      const { releaseId } = await createEditableRelease();
+      db.exec("CREATE TRIGGER fail_release_update BEFORE UPDATE ON releases BEGIN SELECT RAISE(ABORT, 'forced failure'); END;");
+
+      const res = await postEdit(releaseId, { title: 'Will fail' }).expect(500);
+      expect(res.body).toEqual({ status: 'error', code: 'SERVER_ERROR', message: 'Release update failed. Please try again.' });
+    });
+
+    it('requires a valid CSRF token for JSON saves', async () => {
+      const { releaseId } = await createEditableRelease();
+
+      const res = await agent.post(`/releases/${releaseId}`).set('Accept', 'application/json').type('form')
+        .send({ title: 'No token' }).expect(403);
+      expect(res.body).toEqual({ status: 'error', message: 'Invalid or missing CSRF token.' });
+      const forged = await agent.post(`/releases/${releaseId}`).set('Accept', 'application/json').type('form')
+        .send({ _csrf: 'forged', title: 'Forged token' }).expect(403);
+      expect(forged.body.status).toBe('error');
+      expect(releaseRepository.findById(releaseId).title).toBe('Transport Release');
+    });
+
+    it('refuses HTML form submissions before updating, redirecting or re-rendering an Edit dialog', async () => {
+      const { releaseId } = await createEditableRelease();
+
+      for (const fields of [
+        { title: 'HTML Save', returnTo: '/calendar?month=2031-07' },
+        { title: '' },
+        { title: 'Platform change', selectedPlatformsPresent: '1', selectedPlatforms: 'x' },
+      ]) {
+        for (const accept of [null, 'text/html']) {
+          const request = agent.post(`/releases/${releaseId}`).type('form');
+          if (accept) request.set('Accept', accept);
+          const res = await request.send({ _csrf: csrfToken, ...fields }).expect(406);
+          expect(res.headers.location).toBeUndefined();
+          expect(res.text).not.toContain('<form id="release-edit-form"');
+          expect(res.text).not.toContain('<dialog id="release-edit-dialog"');
+        }
+      }
+      expect(releaseRepository.findById(releaseId).title).toBe('Transport Release');
+      expect(selectedPlatforms(releaseId)).toEqual([]);
+
+      // The JSON save ignores a submitted returnTo and never redirects.
+      const saved = await postEdit(releaseId, { title: 'JSON Save', returnTo: '/calendar?month=2031-07' }).expect(200);
+      expect(saved.headers.location).toBeUndefined();
+      expect(saved.body).toMatchObject({ status: 'success', release: { id: releaseId, title: 'JSON Save' } });
+      expect(saved.body).not.toHaveProperty('returnTo');
+    });
+
+    it('renders the detail-hosted Edit dialog as the shared async dialog with field, error and message hooks in place', async () => {
+      const { releaseId } = await createEditableRelease();
+      const res = await agent.get(`/releases/${releaseId}?edit=1`).expect(200);
+      const dialog = res.text.match(/<dialog id="release-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+
+      // The deep link renders the dialog closed and marked for the async
+      // controller, which loads and opens the release through JSON.
+      expect(dialog).toContain(`data-dialog-async="true" data-release-edit-deep-link="${releaseId}"`);
+      expect(dialog).not.toMatch(/<dialog id="release-edit-dialog"[^>]*open/);
+      expect(dialog).toContain('data-dialog-pending-message="Saving release…"');
+      expect(dialog).toContain('data-dialog-success-message="Release updated."');
+      expect(dialog).toContain('data-dialog-error-message="Release could not be saved."');
+      expect(dialog).toMatch(/<div class="error-summary" role="alert" data-dialog-error hidden><p data-dialog-error-text><\/p><\/div>/);
+      for (const name of ['title', 'description', 'notes', 'plannedDate', 'plannedTime', 'publishedDate', 'patreonUrl', 'selectedPlatforms']) {
+        expect(dialog).toContain(`data-dialog-field="${name}"`);
+      }
+      expect(dialog).toContain('data-dialog-error-ref="selectedPlatforms-error"');
+      expect(dialog).toContain('id="release-description-signature"');
+      expect(dialog).toContain('id="release-platforms"');
+      expect(dialog).toMatch(/<button[^>]*type="submit" form="release-edit-form" data-dialog-submit>/);
+      expect(dialog).not.toContain('data-release-create-fresh');
+    });
+  });
+
   describe('New Release dialog', () => {
     it('keeps a saved unconfigured platform available only in its Edit dialog', async () => {
       app.locals.socialPrepSettingsService.setPlatforms(['x', 'bluesky']);
@@ -1133,15 +1427,13 @@ describe('release HTTP workflow', () => {
       const newForm = newPage.text.match(/<form id="release-create-form"[\s\S]*?<\/form>/)?.[0] || '';
       expect(newForm).not.toMatch(/name="selectedPlatforms"[^>]*value="x"/);
 
-      const invalid = await agent.post(`/releases/${releaseId}`)
-        .send({ _csrf: csrfToken, title: '', selectedPlatformsPresent: '1', selectedPlatforms: 'x' })
-        .set('Content-Type', 'application/x-www-form-urlencoded').expect(422);
-      const invalidForm = invalid.text.match(/<form id="release-edit-form"[\s\S]*?<\/form>/)?.[0] || '';
-      expect(invalidForm).toMatch(/name="selectedPlatforms"[^>]*value="x"[^>]*checked/);
+      const saveEdit = (fields) => agent.post(`/releases/${releaseId}`).set('Accept', 'application/json')
+        .type('form').send({ _csrf: csrfToken, ...fields });
+      const invalid = await saveEdit({ title: '', selectedPlatformsPresent: '1', selectedPlatforms: 'x' }).expect(422);
+      expect(invalid.body.values.selectedPlatforms).toEqual(['x']);
 
-      await agent.post(`/releases/${releaseId}`)
-        .send({ _csrf: csrfToken, title: 'Edited Legacy Release', selectedPlatformsPresent: '1', selectedPlatforms: 'x' })
-        .set('Content-Type', 'application/x-www-form-urlencoded').expect(302);
+      const edited = await saveEdit({ title: 'Edited Legacy Release', selectedPlatformsPresent: '1', selectedPlatforms: 'x' }).expect(200);
+      expect(edited.body.platformOptions).toContainEqual(expect.objectContaining({ value: 'x', configured: false }));
       const platformRepository = app.locals.socialPrepRepository;
       expect(platformRepository.listPlatformsByReleaseId(releaseId).find((row) => row.platform === 'x').is_selected).toBe(1);
 
@@ -1149,17 +1441,17 @@ describe('release HTTP workflow', () => {
         id: 'active-legacy-platform-edit', releaseId, kind: 'initial', expiresAt: new Date('2030-01-01'),
       });
       platformRepository.reassignPlatformsToSession('active-legacy-platform-edit', ['x']);
-      const blocked = await agent.post(`/releases/${releaseId}`)
-        .send({ _csrf: csrfToken, title: 'Blocked Legacy Edit', selectedPlatformsPresent: '1' })
-        .set('Content-Type', 'application/x-www-form-urlencoded').expect(422);
-      const blockedForm = blocked.text.match(/<form id="release-edit-form"[\s\S]*?<\/form>/)?.[0] || '';
-      expect(blockedForm).toMatch(/name="selectedPlatforms"[^>]*value="x"/);
+      const blocked = await saveEdit({ title: 'Blocked Legacy Edit', selectedPlatformsPresent: '1' }).expect(422);
+      expect(blocked.body).toMatchObject({ code: 'VALIDATION_FAILED', values: { title: 'Blocked Legacy Edit', selectedPlatforms: [] } });
+      expect(blocked.body.errors.selectedPlatforms).toBeTruthy();
+      // The binder reports the error inside the Platforms field group, so the release link keeps its grid cell.
+      const blockedForm = (await agent.get(`/releases/${releaseId}`).expect(200)).text
+        .match(/<form id="release-edit-form"[\s\S]*?<\/form>/)?.[0] || '';
+      expect(blockedForm).toMatch(/<div class="field-row release-distribution-row">\s*[\s\S]*?<div class="field release-platforms-field" data-dialog-field="selectedPlatforms" data-dialog-error-ref="selectedPlatforms-error">\s*<input type="hidden" name="selectedPlatformsPresent"[\s\S]*?<\/div>\s*<div class="field " data-dialog-field="patreonUrl">\s*<label for="patreonUrl">Release link<\/label>/);
       expect(releaseRepository.findById(releaseId).title).toBe('Edited Legacy Release');
       platformRepository.expireSession('active-legacy-platform-edit');
 
-      await agent.post(`/releases/${releaseId}`)
-        .send({ _csrf: csrfToken, title: 'Removed Legacy Platform', selectedPlatformsPresent: '1' })
-        .set('Content-Type', 'application/x-www-form-urlencoded').expect(302);
+      await saveEdit({ title: 'Removed Legacy Platform', selectedPlatformsPresent: '1' }).expect(200);
       expect(platformRepository.listPlatformsByReleaseId(releaseId).find((row) => row.platform === 'x').is_selected).toBe(0);
       const afterRemoval = await agent.get(`/releases/${releaseId}?edit=1`).expect(200);
       const afterRemovalForm = afterRemoval.text.match(/<form id="release-edit-form"[\s\S]*?<\/form>/)?.[0] || '';
@@ -1171,7 +1463,7 @@ describe('release HTTP workflow', () => {
       const projectId = await createTestProject('Platform Form Project');
       const newPage = await agent.get('/releases').expect(200);
       const newForm = newPage.text.match(/<form id="release-create-form"[\s\S]*?<\/form>/)?.[0] || '';
-      expect(newForm).toMatch(/<h3>Scheduling<\/h3>[\s\S]*?<h3>Platforms<\/h3>[\s\S]*?<h3>Links<\/h3>/);
+      expect(newForm).toMatch(/<h3>Scheduling<\/h3>[\s\S]*?<legend>Platforms<\/legend>[\s\S]*?<label for="patreonUrl">Release link<\/label>/);
       expect(newForm).toContain('name="selectedPlatformsPresent" value="1"');
       expect(newForm).toContain('data-cc-dropdown-mode="multiple"');
       expect(newForm.match(/name="selectedPlatforms"/g)).toHaveLength(3);
@@ -1191,17 +1483,14 @@ describe('release HTTP workflow', () => {
       const editForm = edit.text.match(/<form id="release-edit-form"[\s\S]*?<\/form>/)?.[0] || '';
       expect(editForm.match(/name="selectedPlatforms"[^>]*checked/g)).toHaveLength(2);
 
-      const invalid = await agent.post(`/releases/${releaseId}`)
-        .send({ _csrf: csrfToken, title: 'Attempted', selectedPlatformsPresent: '1', selectedPlatforms: ['bluesky', 'invalid'] })
-        .set('Content-Type', 'application/x-www-form-urlencoded').expect(422);
-      const invalidForm = invalid.text.match(/<form id="release-edit-form"[\s\S]*?<\/form>/)?.[0] || '';
-      expect(invalidForm).toContain('value="Attempted"');
-      expect(invalidForm).toMatch(/name="selectedPlatforms"[^>]*value="bluesky"[^>]*checked/);
+      const saveEdit = (fields) => agent.post(`/releases/${releaseId}`).set('Accept', 'application/json')
+        .type('form').send({ _csrf: csrfToken, ...fields });
+      const invalid = await saveEdit({ title: 'Attempted', selectedPlatformsPresent: '1', selectedPlatforms: ['bluesky', 'invalid'] }).expect(422);
+      expect(invalid.body.values).toMatchObject({ title: 'Attempted', selectedPlatforms: ['bluesky', 'invalid'] });
+      expect(invalid.body.errors.selectedPlatforms).toBeTruthy();
       expect(releaseRepository.findById(releaseId).title).toBe('Selected Release');
 
-      await agent.post(`/releases/${releaseId}`)
-        .send({ _csrf: csrfToken, title: 'Changed', selectedPlatformsPresent: '1', selectedPlatforms: 'bluesky' })
-        .set('Content-Type', 'application/x-www-form-urlencoded').expect(302);
+      await saveEdit({ title: 'Changed', selectedPlatformsPresent: '1', selectedPlatforms: 'bluesky' }).expect(200);
       let rows = app.locals.socialPrepRepository.listPlatformsByReleaseId(releaseId);
       expect(rows.filter((row) => row.is_selected).map((row) => row.platform)).toEqual(['bluesky']);
       const historical = await agent.get(`/releases/${releaseId}?edit=1`).expect(200);
@@ -1214,23 +1503,16 @@ describe('release HTTP workflow', () => {
         id: 'active-platform-edit', releaseId, kind: 'initial', expiresAt: new Date('2030-01-01'),
       });
       platformRepository.reassignPlatformsToSession('active-platform-edit', ['bluesky']);
-      const blocked = await agent.post(`/releases/${releaseId}`)
-        .send({ _csrf: csrfToken, title: 'Blocked metadata', selectedPlatformsPresent: '1' })
-        .set('Content-Type', 'application/x-www-form-urlencoded').expect(422);
-      const blockedForm = blocked.text.match(/<form id="release-edit-form"[\s\S]*?<\/form>/)?.[0] || '';
-      expect(blockedForm).toContain('Cannot deselect a platform while its preparation session is active.');
-      expect(blockedForm).toContain('value="Blocked metadata"');
+      const blocked = await saveEdit({ title: 'Blocked metadata', selectedPlatformsPresent: '1' }).expect(422);
+      expect(blocked.body.errors.selectedPlatforms).toBe('Cannot deselect a platform while its preparation session is active.');
+      expect(blocked.body.values.title).toBe('Blocked metadata');
       expect(releaseRepository.findById(releaseId).title).toBe('Changed');
       platformRepository.expireSession('active-platform-edit');
 
-      await agent.post(`/releases/${releaseId}`)
-        .send({ _csrf: csrfToken, title: 'Cleared', selectedPlatformsPresent: '1' })
-        .set('Content-Type', 'application/x-www-form-urlencoded').expect(302);
+      await saveEdit({ title: 'Cleared', selectedPlatformsPresent: '1' }).expect(200);
       rows = app.locals.socialPrepRepository.listPlatformsByReleaseId(releaseId);
       expect(rows.filter((row) => row.is_selected)).toEqual([]);
-      await agent.post(`/releases/${releaseId}`)
-        .send({ _csrf: csrfToken, title: 'Omitted platform fields' })
-        .set('Content-Type', 'application/x-www-form-urlencoded').expect(302);
+      await saveEdit({ title: 'Omitted platform fields' }).expect(200);
       expect(app.locals.socialPrepRepository.listPlatformsByReleaseId(releaseId)).toEqual(rows);
 
       const noSelection = await agent.post('/releases')
@@ -1495,28 +1777,36 @@ describe('release HTTP workflow', () => {
       expect(fallbackRes.text).not.toContain('name="publishedDate"');
       expect(dialog).toContain('data-release-create-fresh="true"');
       expect(fallbackRes.text).toContain('data-release-create-fresh="true"');
-      expect(dialog).toMatch(/<h3>Project<\/h3>[\s\S]*?<legend class="sr-only">Project /);
-      expect(dialog).not.toContain('<legend>Project ');
+      // Project moves into Release details, so its legend becomes the visible label.
+      expect(dialog).not.toContain('<h3>Project</h3>');
+      expect(dialog).toMatch(/<h3>Release details<\/h3>\s*<div class="[^"]*release-details-section-body">\s*<div class="release-details-project">[\s\S]*?<legend>Project <span class="required" aria-label="required">\*<\/span><\/legend>/);
+      expect(dialog).not.toContain('<legend class="sr-only">Project ');
       expect(dialog).toMatch(/<textarea id="description"[^>]*rows="6"/);
       expect(dialog).toMatch(/<textarea id="notes"[^>]*rows="6"/);
-      expect(dialog).toContain('<label class="sr-only" for="patreonUrl">Release link</label>');
+      expect(dialog).toContain('<label for="patreonUrl">Release link</label>');
+      expect(fallbackRes.text).toContain('<label class="sr-only" for="patreonUrl">Release link</label>');
+      expect(fallbackRes.text).toContain('<legend class="sr-only">Project <span class="required" aria-label="required">*</span></legend>');
+      expectReleaseFormSectionCards(fallbackRes.text);
 
-      expect(dialog).toContain('class="app-dialog project-form-dialog"');
+      expect(dialog).toContain('class="app-dialog project-form-dialog app-dialog--refined"');
+      expect(dialog).not.toContain('aria-describedby="release-create-description"');
+      expect(dialog).not.toContain('Create a tracked release record.');
+      expect(dialog).not.toContain('id="release-create-description"');
       expect(dialog).toContain('class="app-dialog-body project-edit-dialog-body"');
       expect(dialog).toContain('class="app-dialog-form project-form project-edit-dialog-form"');
       expect(dialog).toContain('id="release-create-project-trigger" aria-controls="release-create-project-options"');
-      expect(dialog.match(/data-release-dialog-compact-section/g)).toHaveLength(5);
-      expect(dialog).toMatch(/<div class="settings-section project-form-section project-edit-dialog-section" data-release-dialog-compact-section>\s*<h3>Basic information<\/h3>/);
-      expect(dialog).toMatch(/<div class="settings-section scheduling-section project-form-section project-edit-dialog-section" data-release-dialog-compact-section>\s*<h3>Scheduling<\/h3>/);
-      expect(dialog).toMatch(/<div class="settings-section project-form-section project-edit-dialog-section" data-release-dialog-compact-section>\s*<h3>Links<\/h3>/);
-      expect(dialog).toContain('<div class="settings-section release-project-section project-form-section project-edit-dialog-section" data-release-dialog-compact-section>');
+      expect(dialog).not.toContain('data-release-dialog-compact-section');
       expect(fallbackRes.text).not.toContain('data-release-dialog-compact-section');
+      expectReleaseDialogSections(dialog, ['Release details', 'Scheduling']);
+      expect(dialog).not.toMatch(/<h3>(?:Project|Basic information|Platforms|Links)<\/h3>/);
+      // Description keeps its signature controls; Platforms and the release link close Scheduling.
+      expect(dialog).toMatch(/<div class="release-description-group">\s*<div class="field " data-dialog-field="description">\s*<label for="description">[\s\S]*?data-release-signature-field[\s\S]*?data-release-signature-status[^>]*><\/p>\s*<\/div>\s*<div class="field " data-dialog-field="notes">\s*<label for="notes">/);
+      expect(dialog).toMatch(/<h3>Scheduling<\/h3>[\s\S]*?id="noSetReleaseDate"[\s\S]*?<div class="field-row release-distribution-row">[\s\S]*?name="selectedPlatformsPresent"[\s\S]*?<legend>Platforms<\/legend>[\s\S]*?<label for="patreonUrl">Release link<\/label>/);
       expectUniqueValidIdReferences(dialogRes.text);
 
       const css = (await agent.get('/creatorcrate.css').expect(200)).text;
-      expect(css).toMatch(/\.project-form-dialog \.project-form \[data-release-dialog-compact-section\]\s*\{[^}]*gap:\s*0;[^}]*padding:\s*0;/);
-      expect(css).toMatch(/\.project-form-dialog \.project-form \[data-release-dialog-compact-section\] > h3\s*\{[^}]*margin-inline:\s*0;/);
-      expect(css).toMatch(/\.project-form-dialog \[data-release-dialog-compact-section\] > \.project-edit-dialog-section-body\s*\{[^}]*gap:\s*var\(--space-md\);[^}]*padding:\s*var\(--space-sm\) var\(--space-md\) var\(--space-md\);/);
+      // Picker rows are the visible control; the native input inside stays borderless.
+      expect(css).toMatch(/\.app-dialog--refined \.scheduling-field \.picker-input-row input\.picker-input\s*\{[^}]*border:\s*0;[^}]*box-shadow:\s*none;/);
     });
 
     it('re-renders a filtered Releases list with the exact invocation URL and submitted values after validation', async () => {
@@ -2255,7 +2545,7 @@ describe('release HTTP workflow', () => {
 
       const list = await agent.get('/releases').expect(200);
       const createForm = list.text.match(/<form id="release-create-form"[\s\S]*?<\/form>/)?.[0] || '';
-      const scheduling = createForm.match(/<h3>Scheduling<\/h3>[\s\S]*?<h3>Platforms<\/h3>/)?.[0] || '';
+      const scheduling = createForm.match(/<h3>Scheduling<\/h3>[\s\S]*?<div class="field-row release-distribution-row">/)?.[0] || '';
       expect(noSetDateCheckbox(scheduling)).toContain('name="noSetReleaseDate" value="1"');
       expect(noSetDateCheckbox(scheduling)).not.toContain('checked');
       expect(scheduling).toMatch(/<label class="field field--checkbox release-no-set-date-field" for="noSetReleaseDate">[\s\S]*?<span>No set release date<\/span>\s*<\/label>/);
@@ -2566,7 +2856,8 @@ describe('release HTTP workflow', () => {
       iconPath: '<circle cx="18" cy="5" r="3"/>',
     });
     expect(actionsMatch[0]).toContain('href="/releases/' + releaseId + '/assets" aria-label="Manage Assets" data-tooltip="Manage Assets"');
-    expect(actionsMatch[0]).toContain('href="/releases/' + releaseId + '/edit" data-dialog-open="release-edit-dialog" aria-label="Edit release" data-tooltip="Edit release"');
+    expect(actionsMatch[0]).toContain('href="/releases/' + releaseId + '?edit=1" data-release-edit-id="' + releaseId + '" aria-label="Edit release" data-tooltip="Edit release"');
+    expect(res.text).not.toContain('data-dialog-open="release-edit-dialog"');
     expect(actionsMatch.index).toBeGreaterThan(headingMatch.index + headingMatch[0].length);
   });
 
@@ -2582,7 +2873,7 @@ describe('release HTTP workflow', () => {
     const published = await agent.get(releaseLocation).expect(200);
     const publishedActions = published.text.match(/<nav class="project-detail-action-toolbar" aria-label="Release actions">[\s\S]*?<\/nav>/)?.[0] || '';
     expect(publishedActions).not.toContain('Manage Assets');
-    expect(publishedActions).toContain('/edit');
+    expect(publishedActions).toContain('?edit=1');
 
     const projRes = await agent
       .post('/projects')
@@ -3315,17 +3606,22 @@ describe('release HTTP workflow', () => {
 
     const res = await agent.get(redirect.headers.location).expect(200);
     const editDialog = res.text.match(/<dialog id="release-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
-    expect(editDialog).toMatch(/<dialog id="release-edit-dialog"[^>]*open/);
-    expect(editDialog).toContain('<dialog id="release-edit-dialog" class="app-dialog project-form-dialog"');
+    expect(editDialog).not.toMatch(/<dialog id="release-edit-dialog"[^>]*open/);
+    expect(editDialog).toContain(`data-release-edit-deep-link="${releaseLocation.split('/').at(-1)}"`);
+    expect(editDialog).toContain('<dialog id="release-edit-dialog" class="app-dialog project-form-dialog app-dialog--refined"');
     expect(editDialog).toContain('class="app-dialog-body project-edit-dialog-body"');
     expect(editDialog).toContain(`<form id="release-edit-form" method="post" action="${releaseLocation}" class="app-dialog-form project-form project-edit-dialog-form"`);
-    expect(editDialog).toContain('class="settings-section project-form-section project-edit-dialog-section"');
-    expect(editDialog).toContain('class="release-form-section-body project-form-section-body project-edit-dialog-section-body"');
+    expect(editDialog).toContain('class="settings-section project-form-section project-edit-dialog-section release-details-section"');
+    expect(editDialog).toContain('class="release-form-section-body project-form-section-body project-edit-dialog-section-body release-details-section-body"');
     expect(editDialog).toContain('class="field-row scheduling-row"');
-    expect(editDialog.match(/data-release-dialog-compact-section/g)).toHaveLength(3);
-    expect(editDialog).toMatch(/<div class="settings-section project-form-section project-edit-dialog-section" data-release-dialog-compact-section>\s*<h3>Basic information<\/h3>/);
-    expect(editDialog).toMatch(/<div class="settings-section scheduling-section project-form-section project-edit-dialog-section" data-release-dialog-compact-section>\s*<h3>Scheduling<\/h3>/);
-    expect(editDialog).toMatch(/<div class="settings-section project-form-section project-edit-dialog-section" data-release-dialog-compact-section>\s*<h3>Links<\/h3>/);
+    expect(editDialog).not.toContain('data-release-dialog-compact-section');
+    expectReleaseDialogSections(editDialog, ['Release details', 'Scheduling']);
+    expect(editDialog).not.toMatch(/<h3>(?:Project|Basic information|Platforms|Links)<\/h3>/);
+    expect(editDialog).not.toContain('name="projectId"');
+    expect(editDialog).not.toContain('release-details-project');
+    expect(editDialog).toMatch(/<h3>Scheduling<\/h3>[\s\S]*?id="plannedDate"[\s\S]*?id="plannedTime"[\s\S]*?id="publishedDate"[\s\S]*?<legend>Platforms<\/legend>[\s\S]*?<label for="patreonUrl">Release link<\/label>/);
+    expect(editDialog).not.toContain('name="noSetReleaseDate"');
+    expect(editDialog).toContain('aria-describedby="release-edit-description"');
     expect(editDialog).toContain('<section class="settings-section project-edit-dialog-section project-actions project-edit-dialog-actions" aria-labelledby="release-actions-heading">');
     const css = (await agent.get('/creatorcrate.css').expect(200)).text;
     expect(css).toMatch(/#release-edit-dialog,\s*#release-publish-dialog\s*\{[^}]*width:\s*min\(51rem,\s*calc\(100vw - 2rem\)\)/);
@@ -3340,7 +3636,7 @@ describe('release HTTP workflow', () => {
     expect(res.text).not.toMatch(/<dialog id="release-publish-dialog"[^>]*open/);
   });
 
-  it('threads a validated Calendar invocation through the Release edit host', async () => {
+  it('redirects a legacy Calendar-invoked /edit link to the canonical deep link without returnTo', async () => {
     const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
     const returnTo = '/calendar?month=2026-07&filter=planned#release-19';
 
@@ -3350,56 +3646,76 @@ describe('release HTTP workflow', () => {
     const hosted = new URL(entry.headers.location, 'http://creatorcrate.local');
     expect(hosted.pathname).toBe(releaseLocation);
     expect(hosted.searchParams.get('edit')).toBe('1');
-    expect(hosted.searchParams.get('returnTo')).toBe(returnTo);
+    expect(hosted.searchParams.has('returnTo')).toBe(false);
+    expect(entry.headers.location).toBe(`${releaseLocation}?edit=1`);
 
-    const res = await agent.get(entry.headers.location).expect(200);
-    expect(res.text).toContain('name="returnTo" value="/calendar?month=2026-07&amp;filter=planned#release-19" data-dialog-return-location');
+    // Editing stays on Release Detail; nothing returns to Calendar.
+    const res = await agent.get(`${releaseLocation}?edit=1&returnTo=${encodeURIComponent(returnTo)}`).expect(200);
+    expect(res.text).not.toMatch(/<dialog id="release-edit-dialog"[^>]*open/);
+    expect(res.text).toContain('data-release-edit-deep-link=');
+    expect(res.text).not.toContain('data-dialog-return-location');
   });
 
-  it('returns a successful Calendar-invoked Release edit to its exact destination', async () => {
+  it('keeps a Calendar-originated JSON Release save local, ignoring a submitted returnTo', async () => {
     const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
     const returnTo = '/calendar?month=2026-07&filter=planned#release-19';
 
     const res = await agent
       .post(releaseLocation)
+      .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Updated+from+Calendar')
       .send('returnTo=' + encodeURIComponent(returnTo))
       .set('Content-Type', 'application/x-www-form-urlencoded')
-      .expect(302);
+      .expect(200)
+      .expect('Content-Type', /json/);
 
-    expect(res.headers.location).toBe(returnTo);
+    expect(res.headers.location).toBeUndefined();
+    expect(res.body).toMatchObject({ status: 'success', message: 'Release updated.', values: { title: 'Updated from Calendar' } });
+    expect(JSON.stringify(res.body)).not.toContain('/calendar');
   });
 
-  it('retains Calendar invocation metadata on Release edit validation rerender', async () => {
+  it('answers a Calendar-originated Release edit validation failure with structured JSON, not a rerendered dialog', async () => {
     const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
+    const releaseId = Number(releaseLocation.replace('/releases/', ''));
+    const before = releaseRepository.findById(releaseId);
     const returnTo = '/calendar?month=2026-07&filter=planned#release-19';
 
     const res = await agent
       .post(releaseLocation)
+      .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=')
       .send('description=Submitted+description')
       .send('returnTo=' + encodeURIComponent(returnTo))
       .set('Content-Type', 'application/x-www-form-urlencoded')
-      .expect(422);
+      .expect(422)
+      .expect('Content-Type', /json/);
 
-    const editDialog = res.text.match(/<dialog id="release-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
-    expect(editDialog).toMatch(/<dialog id="release-edit-dialog"[^>]*open/);
-    expect(editDialog).toContain('Submitted description');
-    expect(editDialog).toContain('name="returnTo" value="/calendar?month=2026-07&amp;filter=planned#release-19" data-dialog-return-location');
+    expect(res.headers.location).toBeUndefined();
+    expect(res.body).toMatchObject({
+      status: 'error',
+      code: 'VALIDATION_FAILED',
+      errors: { title: expect.any(String) },
+      values: { title: '', description: 'Submitted description' },
+    });
+    expect(res.body.values).not.toHaveProperty('returnTo');
+    expect(releaseRepository.findById(releaseId).title).toBe(before.title);
   });
 
-  it('retains submitted values and Calendar invocation metadata after a Release edit server error', async () => {
+  it('answers a Release edit server error with JSON only, and refuses an HTML post before updating', async () => {
     const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
-    const returnTo = '/calendar?month=2026-07&filter=planned#release-19';
+    const releaseId = Number(releaseLocation.replace('/releases/', ''));
+    const before = releaseRepository.findById(releaseId);
     const baseReleaseService = createReleaseService({ db });
+    let updateCalls = 0;
     const stubbedApp = createApp(
       { appName: 'CreatorCrate', db, projectsRoot },
       {
         releaseService: {
           ...baseReleaseService,
           updateRelease() {
+            updateCalls += 1;
             throw new Error('simulated update failure');
           },
         },
@@ -3408,29 +3724,30 @@ describe('release HTTP workflow', () => {
       },
     );
     const { agent: stubbedAgent, csrfToken: stubbedCsrfToken } = await getDisabledModeCsrf(stubbedApp, appDataRoot);
-
-    const res = await stubbedAgent
+    const submit = () => stubbedAgent
       .post(releaseLocation)
       .send('_csrf=' + encodeURIComponent(stubbedCsrfToken))
       .send('title=Still+submitted')
       .send('description=Submitted+after+failure')
-      .send('returnTo=' + encodeURIComponent(returnTo))
-      .set('Content-Type', 'application/x-www-form-urlencoded')
-      .expect(500);
+      .send('returnTo=' + encodeURIComponent('/calendar?month=2026-07'))
+      .set('Content-Type', 'application/x-www-form-urlencoded');
 
-    const editDialog = res.text.match(/<dialog id="release-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
-    expect(editDialog).toMatch(/<dialog id="release-edit-dialog"[^>]*open/);
-    expect(editDialog).toContain('value="Still submitted"');
-    expect(editDialog).toContain('Submitted after failure');
-    expect(editDialog).toContain('Release update failed. Please try again.');
-    expect(editDialog).toContain('name="returnTo" value="/calendar?month=2026-07&amp;filter=planned#release-19" data-dialog-return-location');
+    const res = await submit().set('Accept', 'application/json').expect(500).expect('Content-Type', /json/);
+    expect(res.body).toEqual({ status: 'error', code: 'SERVER_ERROR', message: 'Release update failed. Please try again.' });
+    expect(updateCalls).toBe(1);
+
+    const html = await submit().expect(406);
+    expect(html.headers.location).toBeUndefined();
+    expect(html.text).not.toContain('<dialog id="release-edit-dialog"');
+    expect(updateCalls).toBe(1);
+    expect(releaseRepository.findById(releaseId).title).toBe(before.title);
   });
 
   it.each([
     ['external', 'https://example.com/calendar?month=2026-07'],
     ['protocol-relative', '//example.com/calendar?month=2026-07'],
     ['unrelated local path', '/releases?month=2026-07'],
-  ])('rejects an %s Release edit return destination', async (_label, returnTo) => {
+  ])('ignores an %s Release edit return destination', async (_label, returnTo) => {
     const { releaseLocation } = await setupPublishableRelease(agent, projectsRoot, db, csrfToken);
 
     const entry = await agent
@@ -3443,12 +3760,14 @@ describe('release HTTP workflow', () => {
 
     const saved = await agent
       .post(releaseLocation)
+      .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Safely+Updated')
       .send('returnTo=' + encodeURIComponent(returnTo))
       .set('Content-Type', 'application/x-www-form-urlencoded')
-      .expect(302);
-    expect(saved.headers.location).toBe(releaseLocation);
+      .expect(200);
+    expect(saved.headers.location).toBeUndefined();
+    expect(saved.body.values.title).toBe('Safely Updated');
   });
 
   it('normal release detail includes but does not open the Edit dialog', async () => {
@@ -3508,29 +3827,33 @@ describe('release HTTP workflow', () => {
 
     const res = await agent
       .post(`/releases/${releaseId}`)
+      .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=')
       .send('status=ready')
       .set('Content-Type', 'application/x-www-form-urlencoded')
       .expect(422);
 
-    const editDialog = res.text.match(/<dialog id="release-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
+    expect(res.body).toMatchObject({ code: 'VALIDATION_FAILED', errors: { title: expect.stringContaining('Title is required') }, values: { title: '' } });
+    expect(res.body.values).not.toHaveProperty('status');
+
+    // The page keeps the one closed Edit dialog with its Archive/Delete actions.
+    const detail = await agent.get(`/releases/${releaseId}`).expect(200);
+    const editDialog = detail.text.match(/<dialog id="release-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
     const editForm = editDialog.match(/<form id="release-edit-form"[\s\S]*?<\/form>/)?.[0] || '';
-    expect(editDialog).toMatch(/<dialog id="release-edit-dialog"[^>]*open/);
-    expect(editDialog).toContain('<dialog id="release-edit-dialog" class="app-dialog project-form-dialog"');
+    expect(editDialog).not.toMatch(/<dialog id="release-edit-dialog"[^>]*open/);
+    expect(editDialog).toContain('<dialog id="release-edit-dialog" class="app-dialog project-form-dialog app-dialog--refined"');
     expect(editDialog).toContain('class="app-dialog-body project-edit-dialog-body"');
     expect(editForm).toContain('class="app-dialog-form project-form project-edit-dialog-form"');
     expect(editForm).toContain('class="field-row scheduling-row"');
-    expect(editDialog).toContain('Title is required');
-    expect(editDialog).toContain('value=""');
     expect(editDialog).toMatch(new RegExp(`action="/releases/${releaseId}/archive"`));
     expect(editDialog).toMatch(new RegExp(`action="/releases/${releaseId}/delete"`));
     expect(editForm).not.toMatch(/action="\/releases\/\d+\/(?:archive|delete)"/);
-    expect(res.text).not.toContain('id="status"');
+    expect(detail.text).not.toContain('id="status"');
     expect(releaseRepository.findById(Number(releaseId))).not.toHaveProperty('status');
   });
 
-  it('valid update redirects to detail', async () => {
+  it('valid update saves through JSON and stays on the requesting page', async () => {
     const projRes = await agent
       .post('/projects')
       .send('_csrf=' + encodeURIComponent(csrfToken))
@@ -3551,12 +3874,14 @@ describe('release HTTP workflow', () => {
 
     const res = await agent
       .post(createRes.headers.location)
+      .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=New+Title')
       .send('status=planned')
       .set('Content-Type', 'application/x-www-form-urlencoded')
-      .expect(302);
-    expect(res.headers.location).toBe(createRes.headers.location);
+      .expect(200);
+    expect(res.headers.location).toBeUndefined();
+    expect(res.body).toMatchObject({ status: 'success', release: { title: 'New Title' } });
     expect(releaseRepository.findById(Number(createRes.headers.location.replace('/releases/', ''))))
       .not.toHaveProperty('status');
 
@@ -5442,11 +5767,12 @@ describe('release HTTP workflow', () => {
 
     await agent
       .post(releaseLocation)
+      .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Publishable+Release')
       .send('publishedDate=2025-08-20')
       .set('Content-Type', 'application/x-www-form-urlencoded')
-      .expect(302);
+      .expect(200);
 
     const releaseId = Number(releaseLocation.replace('/releases/', ''));
     expect(db.prepare('SELECT published_date FROM releases WHERE id = ?').get(releaseId)).toEqual({
@@ -5604,7 +5930,7 @@ describe('release HTTP workflow', () => {
 
       const detail = await agent.get(releaseLocation).expect(200);
       // Mutation controls are visible.
-      expect(detail.text).toMatch(/href="\/releases\/\d+\/edit"/);
+      expect(detail.text).toMatch(/href="\/releases\/\d+\?edit=1"/);
       expect(detail.text).toMatch(/action="\/releases\/\d+\/archive"/);
       expect(detail.text).toMatch(/href="\/releases\/\d+\/assets"/);
     });
@@ -5635,6 +5961,7 @@ describe('release HTTP workflow', () => {
 
       await agent
         .post(releaseLocation)
+        .set('Accept', 'application/json')
         .type('form')
         .send({ title: 'Must Not Change', _csrf: csrfToken })
         .expect(422);
@@ -5784,12 +6111,14 @@ describe('release HTTP workflow', () => {
       // is archived. The error page must surface the rejection reason.
       const res = await agent
         .post(createRes.headers.location)
+        .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=New+Title')
         .send('status=planned')
         .set('Content-Type', 'application/x-www-form-urlencoded');
       expect(res.status).toBe(422);
-      expect(res.text).toMatch(/archived/i);
+      expect(res.body).toMatchObject({ status: 'error', code: expect.stringMatching(/^(?:RELEASE|PROJECT)_ARCHIVED$/) });
+      expect(res.body.message).toMatch(/archived/i);
     });
 
     it('POST /releases/:id/publish renders release detail when parent project is archived', async () => {
@@ -6419,6 +6748,7 @@ describe('release HTTP workflow', () => {
       const { releaseLocation } = await setupPublishedRelease();
       const res = await agent
         .post(releaseLocation)
+        .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Updated+Published+Title')
         .send('description=Updated+description')
@@ -6428,8 +6758,8 @@ describe('release HTTP workflow', () => {
         .send('publishedDate=2025-06-20')
         .send('patreonUrl=https://patreon.com/updated')
         .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      expect(res.headers.location).toBe(releaseLocation);
+        .expect(200);
+      expect(res.headers.location).toBeUndefined();
 
       const detail = await agent.get(releaseLocation).expect(200);
       expect(detail.text).toContain('Updated Published Title');
@@ -6444,12 +6774,13 @@ describe('release HTTP workflow', () => {
       const { releaseLocation } = await setupPublishedRelease();
       await agent
         .post(releaseLocation)
+        .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Status+Check')
         .send('status=published')
         .send('publishedDate=2025-06-15')
         .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
+        .expect(200);
 
       const detail = await agent.get(releaseLocation).expect(200);
       expect(detail.text).toMatch(/Published/);
@@ -6459,13 +6790,14 @@ describe('release HTTP workflow', () => {
       const { releaseLocation } = await setupPublishedRelease();
       const res = await agent
         .post(releaseLocation)
+        .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
       .send('title=Status+Change+Attempt')
       .send('status=ready')
         .send('publishedDate=2025-06-15')
         .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
-      expect(res.headers.location).toBe(releaseLocation);
+        .expect(200);
+      expect(res.headers.location).toBeUndefined();
       const releaseId = Number(releaseLocation.replace('/releases/', ''));
       expect(db.prepare('SELECT published_date, title FROM releases WHERE id = ?').get(releaseId)).toEqual({
         published_date: '2025-06-15',
@@ -6490,8 +6822,8 @@ describe('release HTTP workflow', () => {
       const { releaseLocation } = await setupPublishedRelease();
       const res = await agent.get(`${releaseLocation}?edit=1`).expect(200);
       const editDialog = res.text.match(/<dialog id="release-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
-      expect(res.text).toMatch(/\/releases\/\d+\/edit/);
-      expect(editDialog).toMatch(/<dialog id="release-edit-dialog"[^>]*open/);
+      expect(res.text).toMatch(/\/releases\/\d+\?edit=1/);
+      expect(editDialog).toContain('data-release-edit-deep-link=');
       expect(editDialog).not.toMatch(/action="\/releases\/\d+\/archive"/);
       expect(editDialog).toMatch(new RegExp(`action="${releaseLocation}/delete"`));
     });
@@ -6646,13 +6978,15 @@ describe('release HTTP workflow', () => {
 
       const res = await agent
         .post(releaseLocation)
+        .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Should+Not+Change')
         .send('status=ready')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
 
-      expect(res.text).toMatch(/archived/);
+      expect(res.body).toMatchObject({ status: 'error', code: expect.stringMatching(/^(?:RELEASE|PROJECT)_ARCHIVED$/) });
+      expect(res.body.message).toMatch(/archived/i);
       const after = releaseRepository.findById(releaseId);
       expect(after.title).toBe(before.title);
     });
@@ -6751,13 +7085,15 @@ describe('release HTTP workflow', () => {
 
       const res = await agent
         .post(releaseLocation)
+        .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Should+Not+Change')
         .send('status=ready')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
 
-      expect(res.text).toMatch(/archived/);
+      expect(res.body).toMatchObject({ status: 'error', code: expect.stringMatching(/^(?:RELEASE|PROJECT)_ARCHIVED$/) });
+      expect(res.body.message).toMatch(/archived/i);
       const after = releaseRepository.findById(releaseId);
       expect(after.title).toBe(before.title);
     });
@@ -7642,13 +7978,15 @@ describe('release HTTP workflow', () => {
 
       const res = await agent
         .post(releaseLocation)
+        .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Should+Not+Change')
         .send('status=ready')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
 
-      expect(res.text).toMatch(/archived/);
+      expect(res.body).toMatchObject({ status: 'error', code: expect.stringMatching(/^(?:RELEASE|PROJECT)_ARCHIVED$/) });
+      expect(res.body.message).toMatch(/archived/i);
       expect(snapshotRelease(releaseId)).toEqual(beforeRelease);
       expect(snapshotJunction(releaseId)).toEqual(beforeJunction);
     });
@@ -7660,13 +7998,15 @@ describe('release HTTP workflow', () => {
 
       const res = await agent
         .post(releaseLocation)
+        .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Should+Not+Change')
         .send('status=ready')
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
 
-      expect(res.text).toMatch(/archived/);
+      expect(res.body).toMatchObject({ status: 'error', code: expect.stringMatching(/^(?:RELEASE|PROJECT)_ARCHIVED$/) });
+      expect(res.body.message).toMatch(/archived/i);
       expect(snapshotRelease(releaseId)).toEqual(beforeRelease);
       expect(snapshotJunction(releaseId)).toEqual(beforeJunction);
     });
@@ -7836,6 +8176,7 @@ describe('release HTTP workflow', () => {
       // Edit metadata: title, description, notes, plannedDate, publishedDate, patreonUrl
       await agent
         .post(releaseLocation)
+        .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
         .send('title=Updated+Published+Title')
         .send('description=Updated+description')
@@ -7845,7 +8186,7 @@ describe('release HTTP workflow', () => {
         .send('publishedDate=2025-06-20')
         .send('patreonUrl=https://patreon.com/updated')
         .set('Content-Type', 'application/x-www-form-urlencoded')
-        .expect(302);
+        .expect(200);
 
       const afterRelease = snapshotRelease(releaseId);
       const afterJunction = snapshotJunction(releaseId);
@@ -11963,7 +12304,7 @@ describe('release HTTP workflow', () => {
       expect(headingMatch).not.toBeNull();
       expect(headingMatch[0]).not.toContain('/archive');
       expect(actionMatch).not.toBeNull();
-      expect(actionMatch[0]).toContain('/edit');
+      expect(actionMatch[0]).toContain('?edit=1');
     });
 
     it('published release has no archive form', async () => {
@@ -12049,7 +12390,7 @@ describe('release HTTP workflow', () => {
       const editDialog = res.text.match(/<dialog id="release-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
       const editForm = editDialog.match(/<form id="release-edit-form"[\s\S]*?<\/form>/)?.[0] || '';
 
-      expect(editDialog).toMatch(/<dialog id="release-edit-dialog"[^>]*open/);
+      expect(editDialog).toContain('data-release-edit-deep-link=');
       expect(editDialog).toContain('settings-section project-edit-dialog-section project-actions project-edit-dialog-actions');
       expect(editDialog).toContain('notes-workspace-disclosure--archive');
       expect(editDialog).toContain('notes-workspace-disclosure--delete');

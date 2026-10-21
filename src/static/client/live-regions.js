@@ -46,6 +46,8 @@ import {
   SLIDESHOW_SEQUENCE_SELECTOR,
 } from './slideshow.js';
 import { enhanceNotesCodeBlocks } from './notes-editor.js';
+import { RELEASE_EDIT_SAVED_EVENT } from './release-edit-dialog.js';
+import { removeStatusRetry, showStatusRetry } from './status-retry.js';
 const PROJECTS_LIVE_REGION_SELECTOR = '[data-projects-live-region]';
 const PROJECTS_FILTER_SELECTOR = '#project-filters';
 const PROJECTS_LIVE_STATUS_SELECTOR = '[data-projects-live-status]';
@@ -600,6 +602,54 @@ function enhanceCalendarLiveRegion(region) {
   enhanceDropdowns(liveRegionDocument(region));
 }
 
+const CALENDAR_DEFAULTS_REFRESH_FAILURE = 'Defaults were saved, but Calendar could not refresh. Refresh the page to see the saved defaults.';
+const CALENDAR_SCROLLER_SELECTORS = ['.calendar-scroll', '.calendar-agenda'];
+
+function resetCalendarRefresh(state) {
+  state.calendarDefaultsRefreshGeneration = null;
+  state.calendarDefaultsRefreshError = null;
+  state.calendarDefaultsRefreshSuccess = null;
+  state.calendarDefaultsRefreshMessage = null;
+  state.calendarRefreshPreservesView = false;
+  state.calendarViewSnapshot = null;
+}
+
+// A refresh that keeps the active Calendar (a saved release edit) also keeps
+// where the user was: page and grid scroll, and focus on the same release.
+function captureCalendarView(state) {
+  const region = calendarLiveEngine.getRegion(state.document);
+  const active = state.document.activeElement;
+  const trigger = region?.contains?.(active) ? active.closest?.('[data-calendar-info-trigger]') : null;
+  return {
+    focusControls: trigger?.getAttribute?.('aria-controls') || null,
+    scrollX: state.window.scrollX,
+    scrollY: state.window.scrollY,
+    scrollers: CALENDAR_SCROLLER_SELECTORS.map((selector) => {
+      const element = region?.querySelector?.(selector);
+      return { selector, left: element?.scrollLeft ?? 0, top: element?.scrollTop ?? 0 };
+    }),
+  };
+}
+
+function restoreCalendarView(state, nextRegion, snapshot) {
+  snapshot.scrollers.forEach(({ selector, left, top }) => {
+    const element = nextRegion.querySelector?.(selector);
+    if (!element) return;
+    element.scrollLeft = left;
+    element.scrollTop = top;
+  });
+  if (state.calendarFocusWasInRegion) {
+    // The edited release keeps focus where it is still shown; otherwise the
+    // month heading takes it, as after any other Calendar refresh.
+    const trigger = snapshot.focusControls
+      ? Array.from(nextRegion.querySelectorAll?.('[data-calendar-info-trigger]') || [])
+        .find((candidate) => candidate.getAttribute?.('aria-controls') === snapshot.focusControls)
+      : null;
+    (trigger || nextRegion.querySelector?.('[data-calendar-month-heading]'))?.focus?.({ preventScroll: true });
+  }
+  state.window.scrollTo?.(snapshot.scrollX, snapshot.scrollY);
+}
+
 const calendarLiveEngine = createLiveRegionEngine({
   regionSelector: CALENDAR_LIVE_REGION_SELECTOR,
   formSelector: CALENDAR_FILTER_SELECTOR,
@@ -617,12 +667,15 @@ const calendarLiveEngine = createLiveRegionEngine({
   missingRegionMessage: 'Calendar response did not contain the live region.',
   enhanceRegion: enhanceCalendarLiveRegion,
   onCreate(state) {
-    state.calendarDefaultsRefreshGeneration = null;
-    state.calendarDefaultsRefreshError = null;
+    resetCalendarRefresh(state);
+    state.calendarHistoryMode = null;
+    state.calendarStaleNoticeClear = null;
   },
   onInvalidate(state) {
-    state.calendarDefaultsRefreshGeneration = null;
-    state.calendarDefaultsRefreshError = null;
+    resetCalendarRefresh(state);
+  },
+  onLoadStart(state, _generation, _url, historyMode) {
+    state.calendarHistoryMode = historyMode;
   },
   onResponseParsed(state, parsed) {
     reconcileExternalFilterForm(state, parsed, CALENDAR_FILTER_SELECTOR);
@@ -631,25 +684,32 @@ const calendarLiveEngine = createLiveRegionEngine({
     if (resetForm && nextResetForm) resetForm.setAttribute('action', nextResetForm.getAttribute('action'));
     state.calendarFocusWasInRegion = calendarLiveEngine.getRegion(state.document)
       ?.contains?.(state.document.activeElement) || false;
+    if (state.calendarRefreshPreservesView) state.calendarViewSnapshot = captureCalendarView(state);
     dismissActiveGridInfoCard();
   },
   onRegionReplaced(state, nextRegion) {
-    if (state.calendarFocusWasInRegion) nextRegion.querySelector?.('[data-calendar-month-heading]')?.focus?.({ preventScroll: true });
+    if (state.calendarViewSnapshot) restoreCalendarView(state, nextRegion, state.calendarViewSnapshot);
+    else if (state.calendarFocusWasInRegion) nextRegion.querySelector?.('[data-calendar-month-heading]')?.focus?.({ preventScroll: true });
     state.calendarFocusWasInRegion = false;
   },
   onLoadComplete(state, generation) {
+    // Any completed load shows current data, so a stale-data notice ends.
+    const clearStaleNotice = state.calendarStaleNoticeClear;
+    state.calendarStaleNoticeClear = null;
+    clearStaleNotice?.();
     if (state.calendarDefaultsRefreshGeneration !== generation) return;
-    state.calendarDefaultsRefreshGeneration = null;
-    state.calendarDefaultsRefreshError = null;
+    const notifyRefreshed = state.calendarDefaultsRefreshSuccess;
+    resetCalendarRefresh(state);
+    notifyRefreshed?.();
   },
   onLoadError(state, generation) {
     if (state.calendarDefaultsRefreshGeneration !== generation) return false;
     const notifyRefreshError = state.calendarDefaultsRefreshError;
-    state.calendarDefaultsRefreshGeneration = null;
-    state.calendarDefaultsRefreshError = null;
+    const message = state.calendarDefaultsRefreshMessage ?? CALENDAR_DEFAULTS_REFRESH_FAILURE;
+    resetCalendarRefresh(state);
     const region = calendarLiveEngine.getRegion(state.document);
     region?.removeAttribute?.('aria-busy');
-    calendarLiveEngine.status(region, 'Defaults were saved, but Calendar could not refresh. Refresh the page to see the saved defaults.', 'error');
+    calendarLiveEngine.status(region, message, 'error');
     notifyRefreshError?.();
     return true;
   },
@@ -661,6 +721,7 @@ const calendarLiveEngine = createLiveRegionEngine({
 export function enhanceCalendarLiveFiltering(scope = globalThis.document) {
   const count = calendarLiveEngine.enhance(scope);
   const document = liveRegionDocument(scope);
+  if (count > 0) enhanceCalendarReleaseEditRefresh(document);
   const dialog = document?.getElementById?.(CALENDAR_MONTH_DIALOG_ID);
   const dialogState = dialog?.__creatorCrateAppDialogState;
   const pickerForm = dialog?.querySelector?.('#calendar-month-form');
@@ -737,11 +798,21 @@ export function beginCalendarDefaultsLiveRefresh(scope = globalThis.document) {
   return state.generation;
 }
 
+// Defaults refreshes drop the status and weekStart overrides (and view when
+// Desktop view changed) so the saved defaults apply. preserveFilters keeps the
+// active Calendar exactly as shown instead: every query parameter, a pending
+// navigation's history mode, scroll and focus.
 export function refreshCalendarLiveRegion(
   scope = globalThis.document,
   _destination,
   authorityGeneration,
-  { onError = null, acknowledgedControls = null } = {},
+  {
+    onError = null,
+    onSuccess = null,
+    failureMessage = null,
+    acknowledgedControls = null,
+    preserveFilters = false,
+  } = {},
 ) {
   const document = liveRegionDocument(scope);
   const region = calendarLiveEngine.getRegion(document);
@@ -749,20 +820,98 @@ export function refreshCalendarLiveRegion(
   if (!region || !state || !calendarLiveEngine.capabilities(state.window)) return 'unavailable';
   if (state.generation !== authorityGeneration) return 'superseded';
 
-  const url = state.controller && state.requestedUrl
+  const inFlight = Boolean(state.controller && state.requestedUrl);
+  const url = inFlight
     ? new URL(state.requestedUrl.href)
     : new URL(state.window.location.href);
   if (url.pathname !== '/calendar') return 'unavailable';
-  url.searchParams.delete('status');
-  url.searchParams.delete('weekStart');
-  if (acknowledgedControls?.has('calendarView')) url.searchParams.delete('view');
+  if (!preserveFilters) {
+    url.searchParams.delete('status');
+    url.searchParams.delete('weekStart');
+    if (acknowledgedControls?.has('calendarView')) url.searchParams.delete('view');
+  }
+  // Taking over a pending month or filter navigation keeps its history entry.
+  const historyMode = preserveFilters && inFlight ? state.calendarHistoryMode || 'replace' : 'replace';
   if (state.timer) state.window.clearTimeout?.(state.timer);
   state.timer = null;
   calendarLiveEngine.invalidate(state);
   state.calendarDefaultsRefreshGeneration = state.generation;
   state.calendarDefaultsRefreshError = typeof onError === 'function' ? onError : null;
-  calendarLiveEngine.load(state, url, 'replace', calendarLiveEngine.getForm(region));
+  state.calendarDefaultsRefreshSuccess = typeof onSuccess === 'function' ? onSuccess : null;
+  state.calendarDefaultsRefreshMessage = failureMessage;
+  state.calendarRefreshPreservesView = preserveFilters;
+  calendarLiveEngine.load(state, url, historyMode, calendarLiveEngine.getForm(region));
   return 'started';
+}
+
+const CALENDAR_EDIT_SAVED_MESSAGE = 'Release updated.';
+const CALENDAR_EDIT_STALE_MESSAGE = 'Release saved, but Calendar could not refresh. The calendar shown may be out of date.';
+const CALENDAR_EDIT_REFRESHING_MESSAGE = 'Release saved. Refreshing Calendar…';
+
+// Edit Release save feedback uses the page's dialog feedback notice, which
+// sits outside the live region so it survives refreshes.
+function setCalendarEditFeedback(document, message, error) {
+  const notice = document.querySelector?.('[data-dialog-feedback]');
+  const text = notice?.querySelector?.('[data-dialog-feedback-text]');
+  if (!notice || !text) return null;
+  notice.classList.toggle('notice--error', error);
+  notice.classList.toggle('notice--success', !error);
+  text.textContent = message;
+  notice.hidden = false;
+  return notice;
+}
+
+/**
+ * Refreshes Calendar with a GET after an acknowledged Edit Release save,
+ * keeping the month, view, filters, week start, scroll and focus. The save is
+ * never repeated: a failed refresh reports a saved release on a possibly
+ * stale Calendar and offers Retry refresh, which only refreshes again. A
+ * newer refresh or navigation supersedes an older one through the live
+ * engine's generation, and any later completed load clears the stale notice.
+ */
+function refreshCalendarAfterReleaseEdit(document, { focusResult = false } = {}) {
+  // A stale notice from an earlier failure stays armed: this refresh, or any
+  // later completed load, clears it.
+  removeStatusRetry(document.__creatorCrateCalendarLiveFiltering, 'calendarEditRetryButton');
+  const fail = () => {
+    const current = document.__creatorCrateCalendarLiveFiltering;
+    const notice = setCalendarEditFeedback(document, CALENDAR_EDIT_STALE_MESSAGE, true);
+    if (!current || !notice) return;
+    current.calendarStaleNoticeClear = () => {
+      removeStatusRetry(current, 'calendarEditRetryButton');
+      setCalendarEditFeedback(document, CALENDAR_EDIT_SAVED_MESSAGE, false);
+    };
+    const retry = showStatusRetry({
+      state: current,
+      status: notice,
+      attribute: 'data-calendar-edit-refresh-retry',
+      key: 'calendarEditRetryButton',
+      onRetry: ({ wasFocused }) => {
+        setCalendarEditFeedback(document, CALENDAR_EDIT_REFRESHING_MESSAGE, false);
+        refreshCalendarAfterReleaseEdit(document, { focusResult: wasFocused });
+      },
+    });
+    if (focusResult) retry?.focus?.();
+  };
+  const generation = beginCalendarDefaultsLiveRefresh(document);
+  const result = generation === null ? 'unavailable' : refreshCalendarLiveRegion(document, null, generation, {
+    preserveFilters: true,
+    // The visible save notice reports the outcome; the region stays quiet.
+    failureMessage: '',
+    onError: fail,
+    onSuccess: () => {
+      if (!focusResult) return;
+      calendarLiveEngine.getRegion(document)?.querySelector?.('[data-calendar-month-heading]')?.focus?.();
+    },
+  });
+  if (result !== 'started') fail();
+}
+
+function enhanceCalendarReleaseEditRefresh(document) {
+  const root = document?.documentElement;
+  if (!root || isEnhancementBound(root, 'calendarReleaseEditRefreshBound')) return;
+  markEnhancementBound(root, 'calendarReleaseEditRefreshBound');
+  document.addEventListener?.(RELEASE_EDIT_SAVED_EVENT, () => refreshCalendarAfterReleaseEdit(document));
 }
 
 function submitProjectsNsfwToggle(state, form, event) {

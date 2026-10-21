@@ -73,7 +73,7 @@ test('release signature controls stay on one row in New and Edit dialogs at 360p
     await expectSignatureControlRowFitsDialog(createForm);
 
     await page.goto(`${url}/${release.id}`);
-    await page.locator('[data-dialog-open="release-edit-dialog"]').first().click();
+    await page.locator(`[data-release-edit-id="${release.id}"]`).first().click();
     const editForm = page.locator('#release-edit-form');
     await expectSignatureControlRow(editForm);
     await expectSignatureControlRowFitsDialog(editForm);
@@ -308,6 +308,72 @@ test('release signatures follow fresh draft, ownership, configuration, and limit
     await page.goto(`${url}/new?description=Alpha%20body`);
     await expect(page.locator('#release-form textarea[name="description"]')).toHaveValue('Alpha body');
     await expect(page.locator('#release-form [data-release-signature-field] select')).toHaveValue('');
+  } finally {
+    if (server) await new Promise(resolve => server.close(resolve));
+    closeDatabase(db);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Manage signatures uses the refined layout for rendered and added cards without sideways scrolling', async ({ page }) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-release-signatures-'));
+  const projectsRoot = path.join(root, 'projects');
+  const appDataRoot = path.join(root, 'app');
+  fs.mkdirSync(projectsRoot); fs.mkdirSync(appDataRoot);
+  const db = openDatabase(path.join(root, 'test.db'));
+  let server;
+  try {
+    runMigrations(db, fileURLToPath(new URL('../../migrations', import.meta.url)));
+    const { csrfPepper } = ensureAuthEnablement(appDataRoot);
+    const app = createApp({ appName: 'CreatorCrate', db, projectsRoot }, { appDataRoot, authState: { csrfPepper } });
+    app.locals.releaseSignatureSettingsService.add({ name: 'Rendered', body: 'Rendered body' });
+    app.locals.projectService.create({ title: 'Signature dialog project' });
+    server = app.listen(0, '127.0.0.1');
+    await new Promise(resolve => server.once('listening', resolve));
+    const url = `http://127.0.0.1:${server.address().port}/releases`;
+    const manager = page.locator('#release-signatures-dialog');
+    const cardLayout = (card) => card.evaluate((element) => {
+      const name = element.querySelector('[name="name"]').getBoundingClientRect();
+      const handle = element.querySelector('[data-release-signature-handle]').getBoundingClientRect();
+      const remove = element.querySelector('[data-release-signature-delete]').getBoundingClientRect();
+      const body = element.closest('.app-dialog-body').getBoundingClientRect();
+      return {
+        nameHeight: Math.round(name.height),
+        removeSize: [Math.round(remove.width), Math.round(remove.height)],
+        handleCentredOnName: Math.abs((handle.top + handle.bottom) / 2 - (name.top + name.bottom) / 2) < 2,
+        withinBody: remove.right <= body.right + 0.5 && handle.left >= body.left - 0.5,
+      };
+    });
+    const bodyOverflow = () => manager.locator('.app-dialog-body').evaluate((body) => body.scrollWidth - body.clientWidth);
+
+    for (const width of [1280, 360]) {
+      await page.setViewportSize({ width, height: 800 });
+      await page.goto(url);
+      await page.locator('[data-dialog-open="release-create-dialog"]').first().click();
+      await page.locator('#release-create-form').getByRole('button', { name: 'Manage signatures' }).click();
+      await expect(manager).toHaveClass(/app-dialog--refined/);
+      await expect(manager.locator('#release-signatures-add-heading')).toBeVisible();
+      expect(await bodyOverflow()).toBe(0);
+
+      await manager.locator('#release-signatures-add-name').fill(`Added ${width}`);
+      await manager.locator('#release-signatures-add-body').fill('Added body');
+      await manager.getByRole('button', { name: 'Add', exact: true }).click();
+      const cards = manager.locator('[data-release-signature-item]');
+      await expect(cards).toHaveCount(width === 1280 ? 2 : 3);
+      const added = cards.last();
+      await expect(added.locator('[name="name"]')).toHaveValue(`Added ${width}`);
+      const rendered = await cardLayout(cards.first());
+      expect(rendered.nameHeight).toBe(36);
+      expect(rendered.removeSize).toEqual([36, 36]);
+      expect(await cardLayout(added)).toEqual(rendered);
+      expect(rendered.withinBody).toBe(true);
+      if (width === 1280) expect(rendered.handleCentredOnName).toBe(true);
+
+      await added.locator('[data-release-signature-delete]').hover();
+      expect(await bodyOverflow()).toBe(0);
+      await page.keyboard.press('Escape');
+      await expect(manager).not.toBeVisible();
+    }
   } finally {
     if (server) await new Promise(resolve => server.close(resolve));
     closeDatabase(db);

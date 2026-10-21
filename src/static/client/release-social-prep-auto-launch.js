@@ -3,7 +3,11 @@ import { isEnhancementBound, markEnhancementBound } from './dom.js';
 const COMPANION_SELECTOR = '[data-release-social-prep-companion]';
 const ACTION_SELECTOR = '[data-release-social-prep-companion-action]';
 const STATUS_SELECTOR = '[data-release-social-prep-companion-status]';
+// Present on the companion element only while its request is in flight.
+export const RELEASE_SOCIAL_PREP_COMPANION_IN_FLIGHT_ATTRIBUTE = 'data-release-social-prep-companion-in-flight';
 const BOUND_KEY = 'releaseSocialPrepCompanionBound';
+// Dispatched (bubbling) from the companion element once a request settles.
+export const RELEASE_SOCIAL_PREP_COMPANION_SETTLED_EVENT = 'release-social-prep-companion-settled';
 const OPENING_MESSAGE = 'Opening publishing companion…';
 const FAILURE_MESSAGE = 'Could not open publishing companion.';
 const ACTIVE_MESSAGE = 'Publishing companion preparation is already active.';
@@ -123,6 +127,7 @@ function enhanceCompanionElement(element, scope, options) {
   const openCompanion = async () => {
     if (inFlight || reloadRequired) return;
     inFlight = true;
+    element.setAttribute?.(RELEASE_SOCIAL_PREP_COMPANION_IN_FLIGHT_ATTRIBUTE, '');
     action.disabled = true;
     setStatus(element, OPENING_MESSAGE);
 
@@ -172,7 +177,12 @@ function enhanceCompanionElement(element, scope, options) {
       setStatus(element, FAILURE_MESSAGE, true);
     } finally {
       inFlight = false;
+      element.removeAttribute?.(RELEASE_SOCIAL_PREP_COMPANION_IN_FLIGHT_ATTRIBUTE);
       action.disabled = reloadRequired;
+      const EventConstructor = document?.defaultView?.CustomEvent || globalThis.CustomEvent;
+      if (typeof EventConstructor === 'function') {
+        element.dispatchEvent?.(new EventConstructor(RELEASE_SOCIAL_PREP_COMPANION_SETTLED_EVENT, { bubbles: true }));
+      }
     }
   };
 

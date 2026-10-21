@@ -11,6 +11,7 @@ import {
 import { createLiveRegionEngine } from './live-regions.js';
 import { DATE_PICKER_SELECT_EVENT, enhanceDatePickers } from './pickers.js';
 import { enhancePreviewMedia } from './preview.js';
+import { RELEASE_EDIT_SAVED_EVENT } from './release-edit-dialog.js';
 
 const STATUS_FILTERS_SELECTOR = '[data-dashboard-status-filters]';
 const STATUS_FILTER_SELECTOR = '[data-dashboard-status-filter]';
@@ -715,10 +716,12 @@ const RETAINED_RELEASE_SELECTOR = '[data-dashboard-retained-release]';
 const TITLE_INFO_SELECTOR = '[data-dashboard-title-info]';
 const TITLE_TRIGGER_SELECTOR = `${TITLE_INFO_SELECTOR} > [data-calendar-info-trigger]`;
 const TITLE_CARD_SELECTOR = `${TITLE_INFO_SELECTOR} > [data-calendar-info-card]`;
-// Where each refreshed title belongs inside a Needs-a-date item.
+// Where each refreshed subtree belongs inside a Needs-a-date item, and the
+// element the server renders for it under its retained-title wrapper.
 const RETAINED_TITLE_TARGETS = Object.freeze({
-  release: `.dashboard-item-title > ${TITLE_INFO_SELECTOR}`,
-  project: `.dashboard-item-meta > ${TITLE_INFO_SELECTOR}`,
+  release: [`.dashboard-item-title > ${TITLE_INFO_SELECTOR}`, TITLE_INFO_SELECTOR],
+  project: [`.dashboard-item-meta > ${TITLE_INFO_SELECTOR}`, TITLE_INFO_SELECTOR],
+  readiness: ['.dashboard-needs-date-body > .dashboard-readiness', '.dashboard-readiness'],
 });
 const DASHBOARD_RESPONSE_ERROR = 'Dashboard response failed.';
 const DASHBOARD_MISSING_REGION = 'Dashboard response did not contain the dashboard.';
@@ -885,17 +888,18 @@ function captureDashboardState(state) {
 
 /**
  * Replaces a retained item's release and project titles, with their
- * popovers, by the server's current rendering. The titles describe the
- * release's schedule and its project's next release, both of which the
- * confirmed write changed. Returns false when the server did not render
- * titles for the release because it is no longer an active unpublished
- * release.
+ * popovers, and its readiness (asset readiness and Social Posts) by the
+ * server's current rendering. The titles describe the release's schedule and
+ * its project's next release, both of which the confirmed write changed; a
+ * later Edit Release can change any of them. Returns false when the server
+ * did not render them for the release because it is no longer an active
+ * unpublished release.
  */
 function refreshRetainedTitles(item, freshTitles) {
   if (!freshTitles) return false;
-  const swaps = Object.entries(RETAINED_TITLE_TARGETS).map(([kind, selector]) => [
-    item.querySelector(selector),
-    freshTitles.querySelector(`[data-dashboard-retained-title="${kind}"] > ${TITLE_INFO_SELECTOR}`),
+  const swaps = Object.entries(RETAINED_TITLE_TARGETS).map(([kind, [target, source]]) => [
+    item.querySelector(target),
+    freshTitles.querySelector(`[data-dashboard-retained-title="${kind}"] > ${source}`),
   ]);
   if (swaps.some(([current, next]) => !current || !next)) return false;
   for (const [current, next] of swaps) current.replaceWith(next);
@@ -1217,6 +1221,7 @@ const SYNC_DISMISS_SELECTOR = '[data-dashboard-sync-dismiss]';
 const ANNOUNCER_SELECTOR = '[data-dashboard-announcer]';
 const RELEASE_ROW_SELECTOR = '[data-dashboard-release-row]';
 const SYNC_BOUND_KEY = 'dashboardSyncBound';
+const EDIT_SAVED_BOUND_KEY = 'dashboardReleaseEditSavedBound';
 // Long enough for assistive technology to notice the cleared region, so an
 // identical message is announced again.
 const ANNOUNCE_DELAY_MS = 100;
@@ -1292,6 +1297,9 @@ function reconciledMessage(followUp, region) {
 
 function blockedMessage(followUp, outcome) {
   const problem = refreshProblem(outcome);
+  if (followUp.kind === 'edited') {
+    return `The release was saved, but ${problem}, so counts and lists may be out of date. ${RECOVERY_MESSAGES.paused}`;
+  }
   if (followUp.kind === 'saved') {
     const change = followUp.mutation.action === 'undo' ? 'Undo was saved' : 'The schedule change was saved';
     return `${change}, but ${problem}, so counts and lists may be out of date. ${RECOVERY_MESSAGES.paused}`;
@@ -1390,6 +1398,7 @@ function createScheduleRecovery(doc, ui) {
   function settledMessage(followUp) {
     const region = dashboardLiveEngine.getRegion(doc);
     if (followUp.kind === 'reconcile') return reconciledMessage(followUp, region);
+    if (followUp.kind === 'edited') return RECOVERY_MESSAGES.refreshed;
     const { mutation } = followUp;
     // A replacement that failed part-way can drop the confirmation holding
     // Undo; say so rather than imply it is still available.
@@ -1449,6 +1458,20 @@ function createScheduleRecovery(doc, ui) {
     async refreshFailed({ mutation, ...outcome }) {
       block({ kind: 'saved', mutation, releaseId: mutation.releaseId }, outcome);
     },
+    // A saved Edit Release refreshes the dashboard with a GET only. A
+    // superseded refresh is left to the refresh that replaced it, which
+    // already reflects the saved release and reports its own outcome. A
+    // refresh that settles the dashboard also settles a pending recovery,
+    // including one this refresh interrupted.
+    async editSaved(detail) {
+      const releaseId = detail?.releaseId ?? null;
+      const outcome = await refreshDashboard(doc, { releaseId });
+      if (outcome.status === 'refreshed') {
+        if (pending) settle(pending.followUp);
+      } else if (outcome.status !== 'superseded') {
+        block({ kind: 'edited', releaseId }, outcome);
+      }
+    },
     async reconcile(detail) {
       const region = dashboardLiveEngine.getRegion(doc);
       const item = region && findByAttribute(region, NEEDS_DATE_ITEM_SELECTOR, 'data-release-id', String(detail.releaseId));
@@ -1468,7 +1491,9 @@ const scheduleRecoveries = new WeakMap();
  * dates and Undo write through `POST /releases/:id/schedule`, every confirmed
  * write refreshes the dashboard from `GET /`, and outcomes that leave it
  * unverified are recovered through a page-level status offering Retry
- * refresh (a GET only) and a full reload.
+ * refresh (a GET only) and a full reload. A saved Edit Release
+ * (`release-edit-saved`) refreshes the dashboard the same way, and a refresh
+ * that fails after it is reported as a saved release on a stale dashboard.
  *
  * Controls stay disabled unless every part of the lifecycle can run, so a
  * native submit can never reach the JSON-only endpoint. Repeated calls bind
@@ -1495,6 +1520,12 @@ export function enhanceDashboardScheduling(scope = globalThis.document, { reques
   } catch {
     return null;
   }
-  if (handle) recovery.bindControls();
+  if (handle) {
+    recovery.bindControls();
+    if (!isEnhancementBound(doc.documentElement, EDIT_SAVED_BOUND_KEY)) {
+      markEnhancementBound(doc.documentElement, EDIT_SAVED_BOUND_KEY);
+      doc.addEventListener(RELEASE_EDIT_SAVED_EVENT, (event) => { void recovery.editSaved(event.detail); });
+    }
+  }
   return handle;
 }

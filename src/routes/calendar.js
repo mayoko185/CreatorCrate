@@ -1,6 +1,7 @@
 import express from 'express';
 import { buildPageUrl } from './releases.js';
 import { buildPageDefaultsDialogModel } from './page-defaults.js';
+import { getReleasePlatformChoices, getReleaseSignatureConfiguration } from './release-create-form.js';
 import { NSFW_TAG_NAME } from '../services/nsfw-filter-settings-service.js';
 
 const CALENDAR_DEFAULT_LABELS = Object.freeze({
@@ -68,15 +69,14 @@ export function createCalendarRouter({ appName, workflowQueryService, pageDefaul
       if (view !== undefined) query.view = view;
       if (projectId !== null) query.project = String(projectId);
       const pageUrl = buildPageUrl(req, query);
-      const returnTo = pageUrl({});
       const days = filteredDays.map((day) => ({
         ...day,
         entries: day.entries.map((entry) => ({
           ...entry,
           nsfwBlur: nsfwProjectIds.has(entry.project_id),
-          editUrl: entry.canEdit
-            ? `/releases/${entry.id}/edit?${new URLSearchParams({ returnTo })}`
-            : null,
+          // The canonical Release Detail deep link, for modified clicks and
+          // copied links; a plain click edits in place (release-edit-dialog.js).
+          editUrl: entry.canEdit ? `/releases/${entry.id}?edit=1` : null,
         })),
       }));
       const isCurrentMonth = validatedMonth === today.slice(0, 7);
@@ -107,6 +107,10 @@ export function createCalendarRouter({ appName, workflowQueryService, pageDefaul
           page: 'calendar',
           labels: CALENDAR_DEFAULT_LABELS,
         }),
+        // For the shared Edit Release dialog, which loads each release's own
+        // values and platform choices when an Edit action opens it.
+        releaseSignatureConfiguration: getReleaseSignatureConfiguration(req),
+        platformChoices: getReleasePlatformChoices(req),
       });
     } catch (err) {
       next(err);

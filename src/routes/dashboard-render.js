@@ -153,7 +153,8 @@ function presentReleaseInfoCard(release, nsfwBlur) {
     platforms: (release.socialPreparation?.targets ?? []).map((target) => target.platformName),
     primaryImage: release.primaryImage,
     nsfwBlur,
-    editUrl: release.published_date ? null : `/releases/${release.id}/edit`,
+    // The canonical Release Detail deep link; a plain click edits in place.
+    editUrl: release.published_date ? null : `/releases/${release.id}?edit=1`,
   };
 }
 

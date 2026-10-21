@@ -1534,6 +1534,9 @@
         outline-offset: 2px;
       }
       .release-usage-details[open] summary { margin-bottom: var(--space-xs); }
+      /* Release Detail refresh regions only mark what a saved edit replaces;
+         they take no part in layout. */
+      .release-detail-region { display: contents; }
       .release-usage-details .release-detail-list {
         list-style: none;
         margin: 0;
@@ -12818,10 +12821,15 @@
   font-weight: 600;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 4px 14px rgba(34, 211, 238, 0.16);
 }
-/* Trial: New Project's submit is a dark outlined button led by a cyan plus
-   square. Disabled styling, hover brightness, focus ring, and pressed
+/* Trial: New Project's (and New Release's) submit is a dark outlined button led by a cyan plus
+   square; the Edit dialogs' Save changes buttons share the treatment without
+   the plus. Disabled styling, hover brightness, focus ring, and pressed
    movement come from the rules around it. */
-#project-create-dialog button[form="project-create-form"][data-dialog-submit] {
+#project-create-dialog button[form="project-create-form"][data-dialog-submit],
+#release-create-dialog button[form="release-create-form"][data-dialog-submit],
+#project-edit-dialog button[form="project-edit-form"][data-dialog-submit],
+#release-edit-dialog button[form="release-edit-form"][data-dialog-submit],
+#release-signatures-dialog.app-dialog--refined [data-release-signature-add] {
   gap: var(--space-sm);
   min-height: 2.25rem;
   padding: 0 var(--space-md) 0 var(--space-sm);
@@ -12830,14 +12838,27 @@
   font-size: 0.875rem;
   font-weight: 600;
 }
-#project-create-dialog button[form="project-create-form"][data-dialog-submit]:not(:disabled):not([aria-disabled="true"]) {
+#project-create-dialog button[form="project-create-form"][data-dialog-submit]:not(:disabled):not([aria-disabled="true"]),
+#release-create-dialog button[form="release-create-form"][data-dialog-submit]:not(:disabled):not([aria-disabled="true"]),
+#project-edit-dialog button[form="project-edit-form"][data-dialog-submit]:not(:disabled):not([aria-disabled="true"]),
+#release-edit-dialog button[form="release-edit-form"][data-dialog-submit]:not(:disabled):not([aria-disabled="true"]),
+#release-signatures-dialog.app-dialog--refined [data-release-signature-add]:not(:disabled):not([aria-disabled="true"]) {
   border: 1px solid var(--border-strong);
   background: var(--bg);
   color: var(--text);
   box-shadow: none;
 }
-#project-create-dialog button[form="project-create-form"][data-dialog-submit]:hover:not(:disabled):not([aria-disabled="true"]) {
+#project-create-dialog button[form="project-create-form"][data-dialog-submit]:hover:not(:disabled):not([aria-disabled="true"]),
+#release-create-dialog button[form="release-create-form"][data-dialog-submit]:hover:not(:disabled):not([aria-disabled="true"]),
+#project-edit-dialog button[form="project-edit-form"][data-dialog-submit]:hover:not(:disabled):not([aria-disabled="true"]),
+#release-edit-dialog button[form="release-edit-form"][data-dialog-submit]:hover:not(:disabled):not([aria-disabled="true"]),
+#release-signatures-dialog.app-dialog--refined [data-release-signature-add]:hover:not(:disabled):not([aria-disabled="true"]) {
   border-color: var(--accent);
+}
+/* Save changes has no leading icon, so its padding is symmetric. */
+#project-edit-dialog button[form="project-edit-form"][data-dialog-submit],
+#release-edit-dialog button[form="release-edit-form"][data-dialog-submit] {
+  padding: 0 var(--space-md);
 }
 .project-create-submit-icon {
   display: inline-flex;
@@ -12918,10 +12939,251 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   justify-items: start;
 }
 
+/* ── Release details and Scheduling (New/Edit Release) ──
+   Field ids carry a host prefix on the Dashboard, so these rules key off
+   classes and field names rather than the Project form's ids. */
+.app-dialog--refined .release-details-section-body {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+}
+.app-dialog--refined .release-details-section-body > :is(.release-details-project, .field:has(> input[name='title'])) {
+  grid-column: 1 / -1;
+}
+/* Signature controls stay with Description in the left column. */
+.app-dialog--refined .release-description-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+.app-dialog--refined .release-description-group > [data-release-signature-status]:empty {
+  margin-top: calc(-1 * var(--space-sm));
+}
+.app-dialog--refined .release-details-section-body .field > textarea {
+  height: calc(3 * (3 * 1.5 * 0.875rem + 0.75rem + 2px));
+}
+.app-dialog--refined :is(.release-details-project, .release-distribution-row) .asset-viewer-filter-field {
+  min-width: 0;
+  max-width: none;
+}
+.app-dialog--refined .release-signature-row .release-signature-manage {
+  flex: 0 0 var(--refined-control-height);
+  width: var(--refined-control-height);
+  min-height: var(--refined-control-height);
+  padding: 0;
+}
+.app-dialog--refined .release-signature-manage svg {
+  width: 1rem;
+  height: 1rem;
+}
+/* The button ends its row, so its tooltip grows leftward instead of past
+   the dialog body's edge (which would make the body scroll sideways). */
+.app-dialog--refined .release-signature-manage[data-tooltip]::after {
+  left: auto;
+  right: 0;
+  transform: translate(0, 0.25rem);
+}
+.app-dialog--refined .release-signature-manage[data-tooltip]:is(:hover, :focus-visible)::after {
+  transform: translate(0, 0);
+}
+.app-dialog--refined .scheduling-section .scheduling-row {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 12rem), 1fr));
+}
+.app-dialog--refined .release-distribution-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-md);
+  align-items: start;
+}
+.app-dialog--refined .release-distribution-row > .field {
+  min-width: 0;
+}
+.app-dialog--refined .release-no-set-date-field {
+  gap: var(--space-sm);
+  min-height: 0;
+  font-size: 0.875rem;
+}
+/* The picker row is the visible control; its native input sits inside it
+   borderless, so the shared refined input treatment must not double up. */
+.app-dialog--refined .scheduling-field .picker-input-row {
+  border-color: var(--border);
+  border-radius: var(--refined-control-radius);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.app-dialog--refined .scheduling-field .picker-input-row:hover {
+  border-color: var(--border-strong);
+}
+.app-dialog--refined .scheduling-field .picker-input-row:focus-within {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--refined-focus-shadow);
+}
+.app-dialog--refined .scheduling-field.field-error .picker-input-row {
+  border-color: var(--danger);
+}
+.app-dialog--refined .scheduling-field .picker-input-row input.picker-input {
+  min-height: calc(var(--refined-control-height) - 2px);
+  padding: 0.375rem calc(1.75rem + 2 * var(--space-xs)) 0.375rem 0.625rem;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+.app-dialog--refined .scheduling-field .picker-trigger {
+  width: 1.75rem;
+  height: 1.75rem;
+  border-color: transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+}
+.app-dialog--refined .scheduling-field .picker-trigger:hover:not(:disabled),
+.app-dialog--refined .scheduling-field .picker-trigger[aria-expanded="true"] {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+/* ── Manage signatures ──
+   Signature cards autosave, so the dialog has no footer. Cards are rebuilt
+   client-side with the same markup, so these rules key off the shared card
+   classes and apply to added and reordered cards alike. Handles and delete
+   buttons drop below the field labels to line up with the Name input. */
+#release-signatures-dialog.app-dialog--refined {
+  --signature-label-offset: calc(0.8125rem * 1.3 + 0.3125rem);
+}
+/* The sections sit directly in the dialog body rather than in one form, so
+   they need the column layout that .project-form gives the other dialogs. */
+#release-signatures-dialog.app-dialog--refined .project-edit-dialog-section {
+  display: flex;
+  flex-direction: column;
+}
+#release-signatures-dialog.app-dialog--refined .app-dialog-body {
+  padding-bottom: var(--space-sm);
+}
+#release-signatures-dialog.app-dialog--refined .category-reorder-list {
+  gap: var(--space-sm);
+}
+#release-signatures-dialog.app-dialog--refined .category-management-card {
+  grid-template-columns: 2rem minmax(0, 1fr);
+  gap: var(--space-sm);
+  padding: var(--space-sm) var(--space-md) var(--space-md) var(--space-sm);
+  border-color: var(--border);
+  border-radius: var(--refined-control-radius);
+  background: var(--surface-card);
+}
+#release-signatures-dialog.app-dialog--refined .category-management-card:hover {
+  background: var(--surface-hover);
+}
+#release-signatures-dialog.app-dialog--refined .category-management-card:focus-within {
+  border-color: var(--border-strong);
+}
+#release-signatures-dialog.app-dialog--refined .category-management-card:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+#release-signatures-dialog.app-dialog--refined .category-reorder-handle {
+  margin-top: calc(var(--signature-label-offset) + (var(--refined-control-height) - 2rem) / 2);
+  border-radius: var(--radius-sm);
+  font-size: 1.125rem;
+}
+#release-signatures-dialog.app-dialog--refined .category-details-form {
+  grid-template-columns: minmax(0, 1fr) var(--refined-control-height);
+  align-items: start;
+  gap: var(--space-sm);
+}
+#release-signatures-dialog.app-dialog--refined :is(.category-management-card-fields, .release-signature-add-fields) {
+  display: grid;
+  grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.6fr);
+  align-items: start;
+  gap: var(--space-md);
+}
+#release-signatures-dialog.app-dialog--refined .release-signature-add-fields > .field {
+  min-width: 0;
+}
+#release-signatures-dialog.app-dialog--refined .release-signature-add-fields input {
+  width: 100%;
+  min-width: 0;
+}
+#release-signatures-dialog.app-dialog--refined .release-signature-delete {
+  width: var(--refined-control-height);
+  min-width: var(--refined-control-height);
+  height: var(--refined-control-height);
+  min-height: var(--refined-control-height);
+  margin-top: var(--signature-label-offset);
+  padding: 0;
+}
+#release-signatures-dialog.app-dialog--refined .release-signature-delete svg {
+  width: 1rem;
+  height: 1rem;
+}
+/* The delete button ends its card, so its tooltip grows leftward instead of
+   past the dialog body's edge (which would make the body scroll sideways). */
+#release-signatures-dialog.app-dialog--refined .release-signature-delete[data-tooltip]::after {
+  left: auto;
+  right: 0;
+  transform: translate(0, 0.25rem);
+}
+#release-signatures-dialog.app-dialog--refined .release-signature-delete[data-tooltip]:is(:hover, :focus-visible)::after {
+  transform: translate(0, 0);
+}
+#release-signatures-dialog.app-dialog--refined .empty-state {
+  padding: 0;
+  font-size: 0.875rem;
+  text-align: left;
+}
+#release-signatures-dialog.app-dialog--refined .empty-state .empty-state-heading {
+  margin-bottom: var(--space-xs);
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+#release-signatures-dialog.app-dialog--refined .empty-state p {
+  max-width: none;
+  margin: 0;
+}
+#release-signatures-dialog.app-dialog--refined .release-signature-default-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-md);
+}
+#release-signatures-dialog.app-dialog--refined .release-signature-add-form {
+  gap: var(--space-md);
+}
+#release-signatures-dialog.app-dialog--refined .release-signature-add-actions {
+  justify-content: flex-end;
+  margin: 0;
+}
+/* Saves report here as they settle; the line keeps its height while idle so
+   the first autosave does not shift the dialog. */
+#release-signatures-dialog.app-dialog--refined .app-dialog-card > .app-dialog-status {
+  min-height: calc(0.8125rem * 1.4);
+  margin-top: 0;
+  margin-bottom: var(--space-sm);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+#release-signatures-dialog.app-dialog--refined .app-dialog-card > .app-dialog-status[role="alert"] {
+  color: var(--danger);
+}
+
 @media (max-width: 640px) {
   .app-dialog--refined .project-edit-dialog-section-body:has(> .field > #description),
-  .app-dialog--refined.project-form-dialog .status-row {
+  .app-dialog--refined.project-form-dialog .status-row,
+  .app-dialog--refined .release-details-section-body,
+  .app-dialog--refined .release-distribution-row {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+/* Signature cards keep Name, body, and delete on one row down to 521px. */
+@media (max-width: 520px) {
+  #release-signatures-dialog.app-dialog--refined :is(.category-management-card-fields, .release-signature-add-fields, .release-signature-default-form, .category-details-form) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  #release-signatures-dialog.app-dialog--refined .release-signature-delete {
+    justify-self: end;
+    margin-top: 0;
   }
 }
 @media (max-width: 540px) {

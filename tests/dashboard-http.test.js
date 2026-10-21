@@ -701,7 +701,7 @@ describe('dashboard HTTP composition', () => {
       expect(planned).toContain(`id="dashboard-release-info-scheduled-${plannedId}" class="asset-viewer-grid-card-info calendar-release-info calendar-release-info--glass" data-calendar-info-card popover="manual"`);
       expect(planned).toContain('aria-label="Details for Planned &lt;One&gt;"');
       expect(planned).toContain(`href="/releases/${plannedId}">Open release</a>`);
-      expect(planned).toContain(`href="/releases/${plannedId}/edit">Edit release</a>`);
+      expect(planned).toContain(`href="/releases/${plannedId}?edit=1" data-release-edit-id="${plannedId}">Edit release</a>`);
       expect(planned).toContain(`href="/projects/${projectId}">Open project</a>`);
       expect(planned).toContain('<dt>Status</dt><dd>Planned</dd>');
       expect(planned).toContain(`${addDays(today, 2)} 6:05 PM</time>`);
@@ -710,6 +710,7 @@ describe('dashboard HTTP composition', () => {
 
       expect(published).toContain(`id="dashboard-release-info-recent-${publishedId}"`);
       expect(published).toContain('<dt>Status</dt><dd>Published</dd>');
+      expect(published).not.toContain(`/releases/${publishedId}?edit=1`);
       expect(published).not.toContain(`/releases/${publishedId}/edit`);
     });
 
@@ -920,7 +921,7 @@ describe('dashboard HTTP composition', () => {
       expect(dialog).toContain('data-release-create-fresh="true" data-release-schedule-defaults="fresh"');
       expect(dialog).toContain('<input type="hidden" name="returnTo" value="/">');
       expect(dialog).not.toContain('data-dialog-return-location');
-      expect(dialog).toContain('form="release-create-form" data-dialog-submit>Create release</button>');
+      expect(dialog).toMatch(/form="release-create-form" data-dialog-submit><span class="project-create-submit-icon" aria-hidden="true">[\s\S]*?<\/span>Create release<\/button>/);
     });
 
     it('keeps every id unique and every label and ARIA reference resolved to the right dialog', async () => {
@@ -947,6 +948,29 @@ describe('dashboard HTTP composition', () => {
       expect(releaseDialog).toContain(`data-date-picker-for="${PREFIX}plannedDate"`);
       expect(releaseDialog).toContain(`data-time-picker-for="${PREFIX}plannedTime"`);
       expect(releaseDialog).toContain(`value="${projectId}"`);
+    });
+
+    it('hosts one async Edit Release dialog with its own namespaced ids', async () => {
+      await createProject(app, { title: 'Edit Dialog Project' });
+      const res = await app.testAgent.get('/').expect(200);
+      const editDialogs = [...res.text.matchAll(/<dialog id="release-edit-dialog"[\s\S]*?<\/dialog>/g)].map((match) => match[0]);
+
+      expect(editDialogs).toHaveLength(1);
+      expect(res.text.match(/<dialog id="release-signatures-dialog"/g)).toHaveLength(1);
+      const editDialog = editDialogs[0];
+      expect(isDialogOpen(editDialog)).toBe(false);
+      expect(editDialog).toContain('data-dialog-async="true"');
+      expect(editDialog).toContain('<input type="hidden" name="selectedPlatformsPresent" value="1">');
+      expect(editDialog).not.toContain('name="returnTo"');
+      expect(editDialog).toContain('data-release-edit-action="archive"');
+      expect(editDialog).toContain('data-release-edit-action="delete"');
+      expect(findDuplicateIds(res.text)).toEqual([]);
+      expect(findUnresolvedIdReferences(editDialog, res.text)).toEqual([]);
+      for (const [label, name] of [['Title', 'title'], ['Description', 'description'], ['Notes', 'notes'],
+        ['Scheduled date', 'plannedDate'], ['Scheduled time', 'plannedTime'], ['Published date', 'publishedDate'],
+        ['Release link', 'patreonUrl']]) {
+        expect(labelTarget(editDialog, label)).toMatch(new RegExp(`\\sid="release-edit-field-${name}" name="${name}"`));
+      }
     });
 
     it('renders the same project, platform and signature options as the Releases-hosted dialog', async () => {

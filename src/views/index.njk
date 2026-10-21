@@ -4,6 +4,7 @@
 {% import "partials/project-create-dialog.njk" as projectCreateDialog %}
 {% import "partials/release-create-dialog.njk" as releaseCreateDialog %}
 {% import "partials/release-signatures-dialog.njk" as releaseSignaturesDialog %}
+{% import "partials/release-edit-dialog.njk" as releaseEditDialog %}
 {% import "partials/dashboard-thumbnail.njk" as dashboardThumbnail %}
 {% import "partials/dashboard-needs-date-item.njk" as needsDateItem %}
 {% import "partials/dashboard-release-row.njk" as releaseRow %}
@@ -33,6 +34,9 @@
     </p>
   </div>
   <p class="sr-only" role="status" data-dashboard-announcer></p>
+  <div class="notice notice--success app-dialog-feedback" data-dialog-feedback role="status" hidden>
+    <p data-dialog-feedback-text></p>
+  </div>
 
   <div class="dashboard" data-dashboard data-today="{{ dashboard.today }}">
     <section class="dashboard-attention" aria-labelledby="dashboard-attention-heading">
@@ -119,7 +123,7 @@
           <p class="dashboard-empty-line">Every active release has a date.</p>
         {% endif %}
         {% if dashboard.retained %}
-          {{ needsDateItem.retainedTitles(dashboard.retained.releases, clockFormat) }}
+          {{ needsDateItem.retainedTitles(dashboard.retained.releases, clockFormat, _csrf) }}
         {% endif %}
       </section>
 
@@ -192,5 +196,8 @@
 {% block overlay %}
   {{ projectCreateDialog.render(projectCreateForm, '/', _csrf, projectCreateDialogOpen) }}
   {{ releaseCreateDialog.render(releaseCreateForm, _csrf, releaseSignatureConfiguration, platformChoices, releaseCreateDialogOpen, clockFormat, '/', 'release-create-field-') }}
+  {# One Edit Release dialog for every Dashboard release; release-edit-dialog.js
+     loads the chosen release into it, so it renders without a release. #}
+  {{ releaseEditDialog.render({ id: '', published_date: none }, { values: {}, errors: {} }, _csrf, releaseSignatureConfiguration, platformChoices, clockFormat, 'release-edit-field-') }}
   {{ releaseSignaturesDialog.render(releaseSignatureConfiguration, _csrf) }}
 {% endblock %}

@@ -33,7 +33,7 @@
   {% call shell(detailId, entry.title, entry.primaryImage, entry.nsfwBlur) %}
     <div class="calendar-release-info-actions">
       <a class="button button-small button-secondary" href="/releases/{{ entry.id }}">Open release</a>
-      {% if entry.editUrl %}<a class="button button-small button-secondary" href="{{ entry.editUrl }}">Edit release</a>{% endif %}
+      {% if entry.editUrl %}<a class="button button-small button-secondary" href="{{ entry.editUrl }}" data-release-edit-id="{{ entry.id }}">Edit release</a>{% endif %}
       <a class="button button-small button-secondary" href="/projects/{{ entry.project_id }}">Open project</a>
     </div>
     <h3 class="asset-viewer-grid-card-info-heading">{{ entry.title }}</h3>

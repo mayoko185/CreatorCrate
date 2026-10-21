@@ -359,11 +359,29 @@ test('Create project button is an outlined button with a cyan plus square, scope
     await expect(dialog.locator('.field-error-message')).toContainText('Title is required.');
     expect(await buttonLook(button)).toMatchObject({ background: bg, color: text, radius: '6px' });
 
-    // Edit Project keeps the shared primary treatment.
+    // Edit Project's Save changes shares the outlined treatment, without the plus.
     const project = app.locals.projectService.create({ title: 'Untouched', status: 'ready' });
     await page.goto(`${origin}/projects/${project.id}`);
-    const editSubmit = page.locator('#project-edit-dialog button[data-dialog-submit]');
-    expect(await editSubmit.evaluate((element) => getComputedStyle(element).backgroundImage)).toContain('gradient');
+    await page.locator('[data-dialog-open="project-edit-dialog"]').first().click();
+    const editDialog = page.locator('#project-edit-dialog');
+    await expect(editDialog).toBeVisible();
+    await expect(editDialog.getByRole('button', { name: 'Save changes', exact: true })).toHaveCount(1);
+    const editSubmit = editDialog.locator('button[form="project-edit-form"][data-dialog-submit]');
+    await expect(editSubmit.locator('.project-create-submit-icon')).toHaveCount(0);
+    expect(await buttonLook(editSubmit)).toMatchObject({
+      background: bg,
+      backgroundImage: 'none',
+      border: `1px solid ${borderStrong}`,
+      color: text,
+      font: '14px 600',
+      height: 36,
+      radius: '6px',
+      padding: '12px 12px',
+      shadow: 'none',
+    });
+    await editSubmit.hover();
+    await expect.poll(async () => (await buttonLook(editSubmit)).border).toBe(`1px solid ${accent}`);
+    await page.mouse.move(0, 0);
 
     // A successful creation keeps its selected tag.
     await page.goto(origin + '/');

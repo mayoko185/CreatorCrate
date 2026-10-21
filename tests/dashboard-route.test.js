@@ -406,7 +406,7 @@ describe('dashboard release presentation', () => {
     expect(enabled.scheduled.groups[0].items[0].thumbnail.nsfwBlur).toBe(true);
     expect(enabled.recentlyPublished[0].thumbnail.nsfwBlur).toBe(true);
     expect(enabled.projectTable.rows.map(({ thumbnail }) => thumbnail.nsfwBlur)).toEqual([true, false]);
-    expect(enabled.needsDate.items[0].infoCard).toMatchObject({ nsfwBlur: true, status: 'planned', editUrl: '/releases/1/edit' });
+    expect(enabled.needsDate.items[0].infoCard).toMatchObject({ nsfwBlur: true, status: 'planned', editUrl: '/releases/1?edit=1' });
     expect(enabled.needsDate.items[0].project).toMatchObject({ id: 10, nsfwBlur: true });
     expect(enabled.recentlyPublished[0].infoCard).toMatchObject({ nsfwBlur: true, status: 'published', editUrl: null });
 

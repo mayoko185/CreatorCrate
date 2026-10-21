@@ -2,6 +2,8 @@
 {% import "partials/icons.njk" as icons %}
 {% set releaseFormDialog = releaseFormDialog or false %}
 {% set releaseProjectDropdownId = releaseProjectDropdownId or 'release-project-filter' %}
+{% set releaseSignatureDropdownId = releaseSignatureDropdownId or 'release-description-signature' %}
+{% set releasePlatformsDropdownId = releasePlatformsDropdownId or 'release-platforms' %}
 {# Hosts that render this form beside another form with the same field names
    (the Dashboard also hosts New Project) pass fieldIdPrefix so ids, labels
    and ARIA references stay unique; other hosts keep the unprefixed ids. #}
@@ -17,14 +19,14 @@
     {% endif %}
   {% endfor %}
 
-  <div class="settings-section release-project-section{% if releaseFormDialog %} project-form-section project-edit-dialog-section{% endif %}"{% if releaseFormDialog %} data-release-dialog-compact-section{% endif %}>
-    <h3>Project</h3>
-    <div class="release-form-section-body{% if releaseFormDialog %} project-form-section-body project-edit-dialog-section-body{% endif %}">
+  {# Dialogs show the selector inside Release details with a visible label; the
+     standalone page keeps it in its own card, where the heading labels it. #}
+  {% set releaseProjectField %}
     {{ dropdown.searchableSingleSelect({
       id: releaseProjectDropdownId,
       name: "projectId",
       label: "Project",
-      visuallyHiddenLabel: true,
+      visuallyHiddenLabel: not releaseFormDialog,
       required: true,
       options: releaseProjectOptions,
       valueKey: "value",
@@ -51,19 +53,33 @@
       classes: "asset-project-filter-disclosure"
     }) }}
     {% if errors.projectId %}<span class="field-error-message" id="{{ idPrefix }}projectId-error">{{ errors.projectId }}</span>{% endif %}
+  {% endset %}
+
+  {% if not releaseFormDialog %}
+  <div class="settings-section release-project-section">
+    <h3>Project</h3>
+    <div class="release-form-section-body">
+    {{ releaseProjectField | safe }}
     </div>
   </div>
+  {% endif %}
 {% endif %}
 
-<div class="settings-section{% if releaseFormDialog %} project-form-section project-edit-dialog-section{% endif %}"{% if releaseFormDialog %} data-release-dialog-compact-section{% endif %}>
-  <h3>Basic information</h3>
-  <div class="release-form-section-body{% if releaseFormDialog %} project-form-section-body project-edit-dialog-section-body{% endif %}">
-  <div class="field {% if errors.title %}field-error{% endif %}">
+<div class="settings-section{% if releaseFormDialog %} project-form-section project-edit-dialog-section release-details-section{% endif %}">
+  <h3>{{ 'Release details' if releaseFormDialog else 'Basic information' }}</h3>
+  <div class="release-form-section-body{% if releaseFormDialog %} project-form-section-body project-edit-dialog-section-body release-details-section-body{% endif %}">
+  {% if releaseFormDialog and not release %}
+  <div class="release-details-project">
+    {{ releaseProjectField | safe }}
+  </div>
+  {% endif %}
+  <div class="field {% if errors.title %}field-error{% endif %}" data-dialog-field="title">
     <label for="{{ idPrefix }}title">Title <span class="required" aria-label="required">*</span></label>
     <input type="text" id="{{ idPrefix }}title" name="title" value="{{ values.title or '' }}" maxlength="200" required{% if errors.title %} aria-describedby="{{ idPrefix }}title-error" aria-invalid="true"{% endif %}>
     {% if errors.title %}<span class="field-error-message" id="{{ idPrefix }}title-error">{{ errors.title }}</span>{% endif %}
   </div>
-  <div class="field {% if errors.description %}field-error{% endif %}">
+  {% if releaseFormDialog %}<div class="release-description-group">{% endif %}
+  <div class="field {% if errors.description %}field-error{% endif %}" data-dialog-field="description">
     <label for="{{ idPrefix }}description">Description</label>
     <textarea id="{{ idPrefix }}description" name="description" rows="6" maxlength="4000"{% if errors.description %} aria-describedby="{{ idPrefix }}description-error" aria-invalid="true"{% endif %}>{{ values.description or '' }}</textarea>
     {% if errors.description %}<span class="field-error-message" id="{{ idPrefix }}description-error">{{ errors.description }}</span>{% endif %}
@@ -74,7 +90,7 @@
       {% set _ = releaseSignatureOptions.push({ value: signature.id, label: signature.name }) %}
     {% endfor %}
     {{ dropdown.singleSelect({
-      id: 'release-description-signature',
+      id: releaseSignatureDropdownId,
       label: 'Signature',
       placeholder: 'No signature',
       options: releaseSignatureOptions,
@@ -87,7 +103,8 @@
             aria-haspopup="dialog" aria-controls="release-signatures-dialog">{{ icons.icon('settings') }}</button>
   </div>
   <p class="help-text" data-release-signature-status role="status" aria-live="polite"></p>
-  <div class="field {% if errors.notes %}field-error{% endif %}">
+  {% if releaseFormDialog %}</div>{% endif %}
+  <div class="field {% if errors.notes %}field-error{% endif %}" data-dialog-field="notes">
     <label for="{{ idPrefix }}notes">Notes</label>
     <textarea id="{{ idPrefix }}notes" name="notes" rows="6" maxlength="10000"{% if errors.notes %} aria-describedby="{{ idPrefix }}notes-error" aria-invalid="true"{% endif %}>{{ values.notes or '' }}</textarea>
     {% if errors.notes %}<span class="field-error-message" id="{{ idPrefix }}notes-error">{{ errors.notes }}</span>{% endif %}
@@ -95,11 +112,11 @@
   </div>
 </div>
 
-<div class="settings-section scheduling-section{% if releaseFormDialog %} project-form-section project-edit-dialog-section{% endif %}"{% if releaseFormDialog %} data-release-dialog-compact-section{% endif %}>
+<div class="settings-section scheduling-section{% if releaseFormDialog %} project-form-section project-edit-dialog-section{% endif %}">
   <h3>Scheduling</h3>
   <div class="release-form-section-body{% if releaseFormDialog %} project-form-section-body project-edit-dialog-section-body{% endif %}">
   <div class="field-row scheduling-row">
-    <div class="field scheduling-field {% if errors.plannedDate or errors.plannedTime %}field-error{% endif %}" data-date-picker-field>
+    <div class="field scheduling-field {% if errors.plannedDate or errors.plannedTime %}field-error{% endif %}" data-date-picker-field data-dialog-field="plannedDate">
       <label for="{{ idPrefix }}plannedDate">Scheduled date</label>
       <div class="picker-control"><div class="picker-input-row">
         <input class="picker-input" type="date" id="{{ idPrefix }}plannedDate" name="plannedDate" value="{{ values.plannedDate or '' }}" aria-describedby="{{ idPrefix }}plannedDate-help{% if errors.plannedDate %} {{ idPrefix }}plannedDate-error{% endif %}{% if errors.plannedTime %} {{ idPrefix }}plannedTime-error{% endif %}"{% if errors.plannedDate or errors.plannedTime %} aria-invalid="true"{% endif %} data-date-picker-input>
@@ -108,7 +125,7 @@
       <span class="help-text" id="{{ idPrefix }}plannedDate-help">Target publication date for this release</span>
       {% if errors.plannedDate %}<span class="field-error-message" id="{{ idPrefix }}plannedDate-error">{{ errors.plannedDate }}</span>{% endif %}
     </div>
-    <div class="field scheduling-field {% if errors.plannedTime %}field-error{% endif %}" data-time-picker-field data-clock-format="{{ clockFormat }}">
+    <div class="field scheduling-field {% if errors.plannedTime %}field-error{% endif %}" data-dialog-field="plannedTime" data-time-picker-field data-clock-format="{{ clockFormat }}">
       <label for="{{ idPrefix }}plannedTime">Scheduled time</label>
       <div class="picker-control"><div class="picker-input-row">
         <input class="picker-input" type="time" id="{{ idPrefix }}plannedTime" name="plannedTime" value="{{ values.plannedTime or '' }}" aria-describedby="{{ idPrefix }}plannedTime-help{% if errors.plannedTime %} {{ idPrefix }}plannedTime-error{% endif %}"{% if errors.plannedTime %} aria-invalid="true"{% endif %} data-time-picker-input>
@@ -118,7 +135,7 @@
       {% if errors.plannedTime %}<span class="field-error-message" id="{{ idPrefix }}plannedTime-error">{{ errors.plannedTime }}</span>{% endif %}
     </div>
     {% if release %}
-    <div class="field scheduling-field {% if errors.publishedDate %}field-error{% endif %}" data-date-picker-field>
+    <div class="field scheduling-field {% if errors.publishedDate %}field-error{% endif %}" data-date-picker-field data-dialog-field="publishedDate">
       <label for="{{ idPrefix }}publishedDate">Published date</label>
       <div class="picker-control"><div class="picker-input-row">
         <input class="picker-input" type="date" id="{{ idPrefix }}publishedDate" name="publishedDate" value="{{ values.publishedDate or '' }}" aria-describedby="{{ idPrefix }}publishedDate-help{% if errors.publishedDate %} {{ idPrefix }}publishedDate-error{% endif %}"{% if errors.publishedDate %} aria-invalid="true"{% endif %} data-date-picker-input>
@@ -139,15 +156,23 @@
   <input type="hidden" name="retainedPlannedDate" value="{{ retainedSchedule.plannedDate if retainedSchedule else '' }}" data-release-schedule-retained{% if not retainedSchedule %} disabled{% endif %}>
   <input type="hidden" name="retainedPlannedTime" value="{{ retainedSchedule.plannedTime if retainedSchedule else '' }}" data-release-schedule-retained{% if not retainedSchedule %} disabled{% endif %}>
   {% endif %}
+{# Dialogs keep Platforms and the release link in the same "Scheduling" section. #}
+{% if releaseFormDialog %}
+  <div class="field-row release-distribution-row">
+{% else %}
   </div>
 </div>
 
-<div class="settings-section{% if releaseFormDialog %} project-form-section project-edit-dialog-section{% endif %}"{% if releaseFormDialog %} data-release-dialog-compact-section{% endif %}>
+<div class="settings-section">
   <h3>Platforms</h3>
-  <div class="release-form-section-body{% if releaseFormDialog %} project-form-section-body project-edit-dialog-section-body{% endif %}">
+  <div class="release-form-section-body">
+{% endif %}
+    {# In the dialog's two-column row, Platforms and its error form one grid item. #}
+    {# The group's error id names the field, not its first checkbox. #}
+    {% if releaseFormDialog %}<div class="field release-platforms-field" data-dialog-field="selectedPlatforms" data-dialog-error-ref="{{ idPrefix }}selectedPlatforms-error">{% endif %}
     <input type="hidden" name="selectedPlatformsPresent" value="1">
     {{ dropdown.multiSelect({
-      id: 'release-platforms',
+      id: releasePlatformsDropdownId,
       name: 'selectedPlatforms',
       label: 'Platforms',
       options: platformChoices,
@@ -166,17 +191,23 @@
       ]
     }) }}
     {% if errors.selectedPlatforms %}<span class="field-error-message" id="{{ idPrefix }}selectedPlatforms-error">{{ errors.selectedPlatforms }}</span>{% endif %}
+    {% if releaseFormDialog %}</div>{% endif %}
+{% if not releaseFormDialog %}
   </div>
 </div>
 
-<div class="settings-section{% if releaseFormDialog %} project-form-section project-edit-dialog-section{% endif %}"{% if releaseFormDialog %} data-release-dialog-compact-section{% endif %}>
+<div class="settings-section">
   <h3>Links</h3>
-  <div class="release-form-section-body{% if releaseFormDialog %} project-form-section-body project-edit-dialog-section-body{% endif %}">
-  <div class="field {% if errors.patreonUrl %}field-error{% endif %}">
-    <label class="sr-only" for="{{ idPrefix }}patreonUrl">Release link</label>
+  <div class="release-form-section-body">
+{% endif %}
+  <div class="field {% if errors.patreonUrl %}field-error{% endif %}" data-dialog-field="patreonUrl">
+    <label{% if not releaseFormDialog %} class="sr-only"{% endif %} for="{{ idPrefix }}patreonUrl">Release link</label>
     <input type="url" id="{{ idPrefix }}patreonUrl" name="patreonUrl" value="{{ values.patreonUrl or '' }}" aria-describedby="{{ idPrefix }}patreonUrl-help{% if errors.patreonUrl %} {{ idPrefix }}patreonUrl-error{% endif %}"{% if errors.patreonUrl %} aria-invalid="true"{% endif %}>
     <span class="help-text" id="{{ idPrefix }}patreonUrl-help">Optional absolute HTTP or HTTPS URL for this release.</span>
     {% if errors.patreonUrl %}<span class="field-error-message" id="{{ idPrefix }}patreonUrl-error">{{ errors.patreonUrl }}</span>{% endif %}
   </div>
+{% if releaseFormDialog %}
+  </div>
+{% endif %}
   </div>
 </div>

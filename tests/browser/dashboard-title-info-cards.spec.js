@@ -139,7 +139,8 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 375, height: 740 
 
     await withDashboardApp(async ({ origin, projectId, undatedId, scheduledId }) => {
       const cases = [
-        [`dashboard-release-info-needs-date-${undatedId}`, 'Edit release', `/releases/${undatedId}?edit=1`],
+        // Edit opens the shared Edit Release dialog in place.
+        [`dashboard-release-info-needs-date-${undatedId}`, 'Edit release', '/'],
         [`dashboard-release-info-needs-date-${undatedId}`, 'Open release', `/releases/${undatedId}`],
         [`dashboard-project-info-needs-date-${undatedId}`, 'Open project', `/projects/${projectId}`],
         [`dashboard-release-info-scheduled-${scheduledId}`, 'Open release', `/releases/${scheduledId}`],
@@ -149,6 +150,11 @@ for (const viewport of [{ width: 1280, height: 900 }, { width: 375, height: 740 
       for (const [cardId, actionName, expectedPath] of cases) {
         await gotoEnhanced(page, `${origin}/`, DASHBOARD_BOUND);
         await pinAndOpenAction(page, titleParts(page, cardId), actionName, expectedPath);
+        if (actionName === 'Edit release') {
+          await expect(page.locator('#release-edit-dialog')).toBeVisible();
+          await expect(page.locator('#release-edit-form')).toHaveAttribute('action', `/releases/${undatedId}`);
+          expect(currentPath(page)).toBe('/');
+        }
       }
     });
     expect(pageErrors).toEqual([]);

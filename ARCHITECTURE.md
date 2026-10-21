@@ -405,6 +405,57 @@ and lifecycle refusals. A changed write logs the normal
 `release.updated` activity and updates release notification state like any
 other release edit. The client side is described in §16.
 
+**Edit Release JSON transport.** Releases are edited only through JSON.
+`GET /releases/:id/edit` answers `Accept: application/json` with the edit
+model; a browser (HTML) request is only redirected to the canonical
+`/releases/:id?edit=1` deep link. `POST /releases/:id` accepts the complete
+Edit form (form-encoded, as the dialog submits it) with
+`Accept: application/json` and answers JSON; an HTML form post is refused with
+`406` before any update — there is no redirect, `returnTo` navigation or Edit
+dialog rerender. The save uses `parseReleaseInput()` and
+`releaseService.updateRelease()` (one transaction for fields and platform
+selection) behind the global CSRF and auth middleware. The load returns the
+authoritative edit model: release identity and state, form values (no default
+signature is applied), the selected platforms, platform options with a
+`configured` flag, saved-but-unconfigured platforms, eligibility and action
+URLs; archived releases and releases in archived Projects answer `409`
+`RELEASE_ARCHIVED`/`PROJECT_ARCHIVED`. A save answers `200` with the same
+model rebuilt from the saved record, `422` `VALIDATION_FAILED` with field
+`errors` and the submitted draft `values` (rejected platform deselection
+included, nothing persisted), `422` for lifecycle refusals, `404`, or `500`
+`SERVER_ERROR`, which carries no field errors. The shared async dialog binder
+in [`app-dialogs.js`](src/static/client/app-dialogs.js) submits such forms;
+the Edit Release dialog always submits through it and namespaces its ids with
+`fieldIdPrefix` when it shares a page with New Release.
+
+**Shared Edit Release controller.**
+[`release-edit-dialog.js`](src/static/client/release-edit-dialog.js) is the one
+client for that transport. A host renders a single async Edit Release dialog
+(Dashboard and Calendar render it without a release; Release Detail renders
+its own release); Edit actions name their release with `data-release-edit-id`,
+which the controller intercepts through one delegated document listener, and
+keep an `href` to the canonical deep link `/releases/:id?edit=1` for modified
+clicks and copied links. That deep link renders the dialog closed with
+`data-release-edit-deep-link`, and the controller opens it once through the
+same load as a clicked Edit action; legacy `/releases/:id/edit` links redirect
+there without any `returnTo`. Each open hides
+the form, loads the JSON model, and only then rebuilds the platform choices,
+retargets the form and the Archive/Delete forms, and installs the complete
+field model with `setAppDialogBaseline()` — so every save sends every field and
+the `selectedPlatformsPresent` marker. A load superseded by dismissal or by a
+later open is dropped, the form cannot submit until hydrated, and no open is
+accepted while a save is pending. After an acknowledged save the controller
+dispatches `release-edit-saved` on the document with the release id and saved
+model; hosts refresh from it and report their own refresh failures. Release
+Detail ([`release-detail-refresh.js`](src/static/client/release-detail-refresh.js))
+fetches its own page again with a GET (one-shot `edit`/`publish`/`prep`/`returnTo`
+markers dropped) and replaces only the regions marked
+`data-release-detail-region` — heading, notices, Manage Assets action, details,
+Social Posts, description/notes, publication summary and the closed Review &
+Publish dialog — leaving the Edit action, Edit and Signatures dialogs and the
+selected assets in place; a failed refresh reports a saved release on a
+possibly stale page and offers Retry refresh, which only refetches.
+
 ---
 
 ## 7. Request and middleware lifecycle
@@ -2515,7 +2566,7 @@ only after the existing close guard accepts a terminal cancellation; ordinary
 dialog close lifecycles do not navigate. Project Assets -> Edit Project,
 Projects List information card -> Edit Project (the route owner also accepts
 the canonical `/projects` path, any query),
-Calendar -> Edit Release, Books -> Edit Book, and Project Assets -> selected-assets
+Books -> Edit Book, and Project Assets -> selected-assets
 New Release adopt this contract. Projects-list New Project and Releases-list
 New Release also retain exact list context through create validation/error
 rerenders; their route owners accept only canonical `/projects` and `/releases`

@@ -487,6 +487,14 @@ describe('authenticated app — login/logout/CSRF/routes', () => {
       expect(res.body).toEqual({ status: 'error', message: 'Authentication required.' });
     });
 
+    it('rejects unauthenticated Edit Release JSON loads and saves with 401 JSON', async () => {
+      const load = await request(app).get('/releases/1/edit').set('Accept', 'application/json').expect(401);
+      expect(load.body).toEqual({ status: 'error', message: 'Authentication required.' });
+      const save = await request(app).post('/releases/1').set('Accept', 'application/json')
+        .type('form').send({ title: 'Test' }).expect(401);
+      expect(save.body).toEqual({ status: 'error', message: 'Authentication required.' });
+    });
+
     it('leaves /health reachable without authentication', async () => {
       const res = await request(app).get('/health').expect(200);
       expect(res.body).toEqual({ status: 'ok', database: 'ok' });

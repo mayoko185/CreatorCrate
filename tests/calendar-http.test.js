@@ -240,11 +240,13 @@ describe('Calendar presentation', () => {
     const datedReadOnly = release(db, archivedByDate.id, 'Dated archived parent release');
     const returnTo = `/calendar?month=2025-06&status=all&weekStart=sunday&view=list&project=${active.id}`;
     const filtered = (await agent.get(returnTo).expect(200)).text;
-    const expectedUrl = `/releases/${editable.id}/edit?returnTo=${encodeURIComponent(returnTo)}`;
+    // The canonical Release Detail deep link, without Calendar return context.
+    const expectedUrl = `/releases/${editable.id}?edit=1`;
 
     for (const surface of ['grid', 'agenda']) {
       const card = infoCard(filtered, surface, editable.id);
-      expect(card).toContain(`href="${expectedUrl.replaceAll('&', '&amp;')}">Edit release</a>`);
+      expect(card).not.toContain('returnTo');
+      expect(card).toContain(`href="${expectedUrl}" data-release-edit-id="${editable.id}">Edit release</a>`);
       expect([...card.matchAll(/>(Open release|Edit release|Open project)<\/a>/g)].map((match) => match[1]))
         .toEqual(['Open release', 'Edit release', 'Open project']);
       expect(infoCard(filtered, surface, published.id)).not.toContain('Edit release');
@@ -255,6 +257,28 @@ describe('Calendar presentation', () => {
       expect(infoCard(all, surface, readOnly.id)).not.toContain('Edit release');
       expect(infoCard(all, surface, datedReadOnly.id)).not.toContain('Edit release');
     }
+  });
+
+  it('hosts one shared async Edit Release dialog outside the live region', async () => {
+    const active = project(db, 'Dialog host project');
+    release(db, active.id, 'Dialog host release');
+    const html = (await agent.get('/calendar?month=2025-06').expect(200)).text;
+    const region = html.indexOf('data-calendar-live-region');
+    const dialogs = html.match(/<dialog id="release-edit-dialog"/g) || [];
+    expect(dialogs).toHaveLength(1);
+    const dialog = html.match(/<dialog id="release-edit-dialog"[\s\S]*?<\/dialog>/)[0];
+    expect(dialog).not.toMatch(/<dialog id="release-edit-dialog"[^>]*open/);
+    expect(dialog).toContain('data-dialog-async="true"');
+    expect(dialog).not.toContain('data-release-edit-deep-link');
+    expect(dialog).not.toContain('data-dialog-return-location');
+    expect(dialog).toContain('id="release-edit-field-title"');
+    expect(dialog).toContain('id="release-edit-field-platforms"');
+    expect(dialog).toContain('name="selectedPlatformsPresent" value="1"');
+    expect(dialog).toContain('data-release-edit-action="archive"');
+    expect(html.match(/<dialog id="release-signatures-dialog"/g) || []).toHaveLength(1);
+    expect(html.indexOf('data-dialog-feedback')).toBeLessThan(region);
+    const ids = [...html.matchAll(/\sid="([^"]+)"/g)].map((match) => match[1]);
+    expect(ids.filter((id, index) => ids.indexOf(id) !== index)).toEqual([]);
   });
 
   it('shows only saved selected platforms in supported order on grid and agenda', async () => {

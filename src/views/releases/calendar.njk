@@ -3,11 +3,17 @@
 {% import "partials/dialog.njk" as dialog %}
 {% import "partials/dropdown.njk" as dropdown %}
 {% import "partials/icons.njk" as icons %}
+{% import "partials/release-edit-dialog.njk" as releaseEditDialog %}
+{% import "partials/release-signatures-dialog.njk" as releaseSignaturesDialog %}
 {% import "partials/view-switcher.njk" as viewSwitcher %}
 
 {% set page_title = "Calendar" %}
 
 {% block content %}
+  {# Outside the live region so Calendar refreshes never replace it. #}
+  <div class="notice notice--success app-dialog-feedback" data-dialog-feedback role="status" hidden>
+    <p data-dialog-feedback-text></p>
+  </div>
   <div class="calendar-view-{{ view }}" data-calendar-live-region data-calendar-month="{{ month }}">
   <span class="sr-only" data-calendar-live-status aria-live="polite" aria-atomic="true"></span>
   <div class="calendar-nav" aria-label="Calendar navigation">
@@ -197,4 +203,9 @@
       <div class="app-dialog-status" data-settings-fetch-save-status role="status" aria-live="polite" aria-atomic="true"></div>
     </form>
   {% endcall %}
+
+  {# One Edit Release dialog for every Calendar release; release-edit-dialog.js
+     loads the chosen release into it, so it renders without a release. #}
+  {{ releaseEditDialog.render({ id: '', published_date: none }, { values: {}, errors: {} }, _csrf, releaseSignatureConfiguration, platformChoices, clockFormat, 'release-edit-field-') }}
+  {{ releaseSignaturesDialog.render(releaseSignatureConfiguration, _csrf) }}
 {% endblock %}

@@ -37,6 +37,9 @@ function createHarness(saved = {}) {
     ],
   };
   const app = express();
+  // The shared Edit Release dialog reads signatures and platforms from these.
+  app.locals.releaseSignatureSettingsService = { getConfiguration: () => ({ entries: [], defaultId: null }) };
+  app.locals.socialPrepSettingsService = { getPlatforms: () => [] };
   app.engine('njk', (_file, locals, callback) => callback(null, JSON.stringify({
     month: locals.month,
     status: locals.status,

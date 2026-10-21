@@ -3,7 +3,7 @@
 {% import "partials/icons.njk" as icons %}
 
 {% macro render(configuration, csrfToken) %}
-  {% call dialog.render('release-signatures-dialog', 'Manage signatures', false, 'release-signatures-description', '', 'project-form-dialog') %}
+  {% call dialog.render('release-signatures-dialog', 'Manage signatures', false, 'release-signatures-description', '', 'project-form-dialog app-dialog--refined') %}
     <p id="release-signatures-description" class="app-dialog-description">
       Manage the signatures available for release descriptions.
     </p>
@@ -51,7 +51,7 @@
       <section class="settings-section project-form-section project-edit-dialog-section" aria-labelledby="release-signatures-default-heading">
         <h3 id="release-signatures-default-heading">Default signature</h3>
         <div class="project-edit-dialog-section-body">
-          <form method="dialog" class="project-form" data-release-signature-default-form>
+          <form method="dialog" class="project-form release-signature-default-form" data-release-signature-default-form>
             <input type="hidden" name="_csrf" value="{{ csrfToken }}">
             {{ dropdown.singleSelect({
               id: 'release-signatures-default',
@@ -74,18 +74,20 @@
       <section class="settings-section project-form-section project-edit-dialog-section" aria-labelledby="release-signatures-add-heading">
         <h3 id="release-signatures-add-heading">Add signature</h3>
         <div class="project-edit-dialog-section-body">
-          <form method="dialog" class="project-form" data-release-signature-add-form>
+          <form method="dialog" class="project-form release-signature-add-form" data-release-signature-add-form>
             <input type="hidden" name="_csrf" value="{{ csrfToken }}">
-            <div class="field">
-              <label for="release-signatures-add-name">Name</label>
-              <input id="release-signatures-add-name" name="name" type="text" maxlength="100" required>
-            </div>
-            <div class="field">
-              <label for="release-signatures-add-body">Signature body</label>
-              <textarea id="release-signatures-add-body" name="body" rows="4" maxlength="4000"></textarea>
+            <div class="release-signature-add-fields">
+              <div class="field">
+                <label for="release-signatures-add-name">Name</label>
+                <input id="release-signatures-add-name" name="name" type="text" maxlength="100" required>
+              </div>
+              <div class="field">
+                <label for="release-signatures-add-body">Signature body</label>
+                <textarea id="release-signatures-add-body" name="body" rows="4" maxlength="4000"></textarea>
+              </div>
             </div>
             <div class="form-actions release-signature-add-actions">
-              <button type="button" class="button button-primary" data-release-signature-add>Add</button>
+              <button type="button" class="button button-primary" data-release-signature-add><span class="project-create-submit-icon" aria-hidden="true">{{ icons.icon('plus') }}</span>Add</button>
             </div>
           </form>
         </div>

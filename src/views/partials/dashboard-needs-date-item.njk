@@ -8,7 +8,7 @@
   Usage:
     {% import "partials/dashboard-needs-date-item.njk" as needsDateItem %}
     {{ needsDateItem.render(release, quickPicks, _csrf, clockFormat) }}
-    {{ needsDateItem.retainedTitles(releases, clockFormat) }}
+    {{ needsDateItem.retainedTitles(releases, clockFormat, _csrf) }}
 #}
 {% import "partials/dashboard-thumbnail.njk" as dashboardThumbnail %}
 {% import "partials/dashboard-title-info.njk" as titleInfo %}
@@ -31,17 +31,31 @@
   {{ titleInfo.project(release.project, 'needs-date', release.id, clockFormat) }}
 {% endmacro %}
 
+{# Asset readiness and Social Posts. Rendered for the item and its retained
+   refresh alike, so a retained confirmation's metadata matches the server. #}
+{% macro readiness(release, csrfToken) %}
+  <div class="dashboard-readiness" role="group" aria-label="Readiness">
+    <span class="dashboard-chip dashboard-chip--{{ release.assetReadiness.tone }}">{{ release.assetReadiness.label }}</span>
+    {% if release.socialPreparation and release.socialPreparation.targets.length %}
+      {{ socialPrepSummary.render(release.socialPreparation, release.id, csrfToken, false, true) }}
+    {% else %}
+      <span class="dashboard-chip dashboard-chip--muted">No platforms chosen</span>
+    {% endif %}
+  </div>
+{% endmacro %}
+
 {#
-  Current titles for releases the client keeps on screen as scheduling
+  Current titles and readiness for releases the client keeps on screen as scheduling
   confirmations after they leave the list. Inert inside a template, so the
   popover ids never duplicate until the client swaps them into their item.
 #}
-{% macro retainedTitles(releases, clockFormat) %}
+{% macro retainedTitles(releases, clockFormat, csrfToken) %}
   <template data-dashboard-retained-titles>
     {% for release in releases %}
       <div data-dashboard-retained-release data-release-id="{{ release.id }}">
         <div data-dashboard-retained-title="release">{{ releaseTitle(release, clockFormat) }}</div>
         <div data-dashboard-retained-title="project">{{ projectTitle(release, clockFormat) }}</div>
+        <div data-dashboard-retained-title="readiness">{{ readiness(release, csrfToken) }}</div>
       </div>
     {% endfor %}
   </template>
@@ -63,14 +77,7 @@
         <span class="dashboard-item-meta-separator" aria-hidden="true">·</span>
         <span>{{ release.selected_asset_count }} {{ "asset" if release.selected_asset_count == 1 else "assets" }} selected</span>
       </div>
-      <div class="dashboard-readiness" role="group" aria-label="Readiness">
-        <span class="dashboard-chip dashboard-chip--{{ release.assetReadiness.tone }}">{{ release.assetReadiness.label }}</span>
-        {% if release.socialPreparation and release.socialPreparation.targets.length %}
-          {{ socialPrepSummary.render(release.socialPreparation, release.id, csrfToken, false, true) }}
-        {% else %}
-          <span class="dashboard-chip dashboard-chip--muted">No platforms chosen</span>
-        {% endif %}
-      </div>
+      {{ readiness(release, csrfToken) }}
 
       <div class="dashboard-schedule" data-dashboard-schedule
            data-release-id="{{ release.id }}"
