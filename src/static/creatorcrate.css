@@ -5142,8 +5142,6 @@
         min-width: 0;
       }
       .page-defaults-grid > .app-dialog-field { min-width: 0; }
-      .calendar-month-year .cc-number-stepper { min-height: 2.5rem; }
-      #calendar-month-dialog .app-dialog-body { padding-bottom: var(--space-lg); }
       #calendar-filter-dialog .page-defaults-grid > .asset-viewer-filter-field,
       #projects-filter-dialog .page-defaults-grid > .asset-viewer-filter-field {
         width: 100%;
@@ -5159,13 +5157,6 @@
       #projects-filter-dialog .asset-filter-multiselect--sized summary {
         width: 100%;
       }
-      #calendar-filter-dialog .projects-filter-reset,
-      #projects-filter-dialog .projects-filter-reset,
-      #project-assets-filter-dialog .projects-filter-reset {
-        display: flex;
-        justify-content: center;
-        margin: var(--space-lg);
-      }
       #asset-viewer-filter-dialog .page-defaults-grid > .asset-viewer-filter-field {
         width: 100%;
         max-width: none;
@@ -5176,11 +5167,6 @@
       #asset-viewer-filter-dialog .asset-filter-multiselect--sized,
       #asset-viewer-filter-dialog .asset-filter-multiselect--sized summary {
         width: 100%;
-      }
-      #asset-viewer-filter-dialog .asset-viewer-filter-reset {
-        display: flex;
-        justify-content: center;
-        margin: var(--space-lg);
       }
       #releases-filter-dialog .page-defaults-grid > .asset-viewer-filter-field {
         width: 100%;
@@ -5193,14 +5179,6 @@
       #releases-filter-dialog .asset-filter-multiselect--sized,
       #releases-filter-dialog .asset-filter-multiselect--sized summary {
         width: 100%;
-      }
-      #releases-filter-dialog .releases-filter-reset {
-        display: flex;
-        justify-content: center;
-        margin: var(--space-lg);
-      }
-      #release-assets-filter-dialog .release-assets-filter-dialog-form {
-        padding-bottom: var(--space-lg);
       }
       #project-assets-defaults-dialog .page-defaults-scope {
         min-width: 0;
@@ -5273,24 +5251,6 @@
         font-size: 0.875rem;
       }
       .app-dialog[data-dialog-state="error"] .app-dialog-status { color: var(--danger); }
-      #calendar-defaults-form,
-      #projects-defaults-form {
-        gap: 0;
-      }
-      #calendar-defaults-form > .app-dialog-body,
-      #projects-defaults-form > .app-dialog-body {
-        margin-bottom: var(--space-lg);
-      }
-      #calendar-defaults-form > .app-dialog-status,
-      #projects-defaults-form > .projects-defaults-save-status {
-        min-height: 0;
-        margin-top: calc(-1 * var(--space-md));
-        margin-bottom: var(--space-lg);
-      }
-      #calendar-defaults-form > .app-dialog-status:empty,
-      #projects-defaults-form > .projects-defaults-save-status:empty {
-        display: none;
-      }
       #calendar-defaults-form[data-settings-fetch-save-state="error"] > .app-dialog-status,
       #projects-defaults-form[data-settings-fetch-save-state="error"] > .projects-defaults-save-status {
         color: var(--danger);
@@ -5323,20 +5283,6 @@
         .app-dialog-card > .app-dialog-status {
           margin-left: var(--space-md);
           margin-right: var(--space-md);
-        }
-        #calendar-filter-dialog .projects-filter-reset,
-        #projects-filter-dialog .projects-filter-reset,
-        #project-assets-filter-dialog .projects-filter-reset {
-          margin-right: var(--space-md);
-          margin-left: var(--space-md);
-        }
-        #asset-viewer-filter-dialog .asset-viewer-filter-reset {
-          margin-right: var(--space-md);
-          margin-left: var(--space-md);
-        }
-        #releases-filter-dialog .releases-filter-reset {
-          margin-right: var(--space-md);
-          margin-left: var(--space-md);
         }
         #auto-rename-confirmation-dialog {
           width: calc(100vw - 1rem);
@@ -12530,13 +12476,18 @@
   }
 }
 
-/* ═══ Refined dialog (pilot) ═══
-   Compact form-dialog treatment, opted into with .app-dialog--refined.
-   Sections follow the Dashboard panel language: a surface card with an
-   inline heading instead of a header bar. Controls share one 2.25rem
-   height so inputs, dropdown triggers, and buttons line up in rows.
-   Scoped to the dialog until the design is promoted app-wide. */
-.app-dialog--refined {
+/* ═══ Shared dialog foundation ═══
+   The compact treatment piloted by New/Edit Project, New/Edit Release, and
+   Manage signatures. Shell, field, dropdown, and footer-action rules apply
+   to every .app-dialog; they keep the pilot's selector shapes with .app-dialog
+   in place of .app-dialog--refined, so the pilot dialogs resolve exactly as
+   before. Controls share one 2.25rem height so inputs, dropdown triggers, and
+   buttons line up in rows.
+   .app-dialog--refined remains the opt-in for the section-card layout and
+   the pilot dialogs' form spacing, which dialog families adopt one at a time.
+   Specialized surfaces (processing grids, media, hierarchy editors) keep
+   their own layout rules. */
+.app-dialog {
   --refined-control-height: 2.25rem;
   --refined-control-radius: var(--radius-md);
   --refined-focus-shadow: 0 0 0 3px rgba(34, 211, 238, 0.22);
@@ -12544,16 +12495,18 @@
 }
 
 /* ── Header, body, footer ── */
-.app-dialog--refined .app-dialog-header {
+.app-dialog .app-dialog-header {
   padding: var(--space-sm) var(--space-sm) var(--space-sm) var(--space-lg);
 }
-.app-dialog--refined .app-dialog-header h2 {
+.app-dialog .app-dialog-header h2 {
   font-size: 1rem;
   font-weight: 600;
 }
-/* The dialog title already says what the form is for; the description stays
-   available to assistive technology through aria-describedby. */
-.app-dialog--refined .app-dialog-description {
+/* In these dialogs the title already says what the form is for; the
+   description stays available to assistive technology through
+   aria-describedby. Other dialogs keep their descriptions visible, since
+   they carry confirmations, instructions, and scope. */
+:is(#project-create-dialog, #project-edit-dialog, #release-edit-dialog, #release-signatures-dialog) .app-dialog-description {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -12581,11 +12534,103 @@
   min-height: 0;
   margin-top: 0;
 }
-.app-dialog--refined .app-dialog-footer {
+.app-dialog .app-dialog-footer {
   gap: var(--space-sm);
-  margin-top: 0;
   padding: var(--space-sm) var(--space-lg);
   background: var(--surface);
+}
+/* The pilot dialog bodies end with their own bottom padding. */
+.app-dialog--refined .app-dialog-footer {
+  margin-top: 0;
+}
+/* The shared confirmation's message is its content, so it stays visible and
+   reads at body size; a replacement dropdown, when present, follows it. */
+#app-confirmation-dialog .app-dialog-body {
+  gap: var(--space-md);
+  margin-top: var(--space-md);
+  padding-bottom: var(--space-md);
+}
+#app-confirmation-dialog .app-dialog-body > .app-dialog-description {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+#app-confirmation-dialog .app-dialog-footer {
+  margin-top: 0;
+}
+
+/* ── Utility dialogs ──
+   Filter, Page Defaults, Calendar month, and Logs dialogs opt in with
+   .app-dialog--utility. They share the pilot dialogs' spacing without the
+   section cards, keep their descriptions and status lines visible, and lay
+   fields out in the shared two-column grid. A Reset or Clear row is the
+   dialog footer. Margins carry the vertical rhythm, so the form drops the
+   .project-form gap that would also space empty status slots. */
+.app-dialog--utility .app-dialog-form {
+  gap: 0;
+}
+.app-dialog--utility .app-dialog-description {
+  margin-top: var(--space-md);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+.app-dialog--utility .app-dialog-body {
+  gap: var(--space-md);
+  margin-top: var(--space-md);
+  padding-bottom: var(--space-md);
+}
+.app-dialog--utility .app-dialog-error {
+  margin-top: var(--space-md);
+}
+.app-dialog--utility .page-defaults-grid {
+  gap: var(--space-md);
+}
+.app-dialog--utility .field {
+  gap: 0.3125rem;
+}
+/* A lone checkbox option (Releases' Archived) lines up with the controls
+   beside it rather than with their labels. */
+.app-dialog--utility .page-defaults-grid > .field:has(> .asset-filter-multiselect-option:only-child) {
+  align-self: end;
+  justify-content: center;
+  min-height: var(--refined-control-height);
+}
+/* Outside a dropdown panel the box is the control, so it leads its label
+   and keeps a visible edge while unchecked. */
+.app-dialog--utility .page-defaults-grid > .field > .asset-filter-multiselect-option:only-child input[type='checkbox'] {
+  order: 0;
+  border-color: var(--border-strong);
+}
+/* Autosave and async status lines reserve no space while idle; a message
+   sits between the fields and the footer. */
+.app-dialog--utility .app-dialog-form > .app-dialog-status {
+  min-height: 0;
+  margin-top: 0;
+  margin-bottom: var(--space-md);
+  font-size: 0.8125rem;
+}
+.app-dialog--utility .app-dialog-form > .app-dialog-status:empty {
+  margin-bottom: 0;
+}
+/* Clear logs has no field body: its explanation leads straight into the
+   status line and footer. */
+.app-dialog--utility .app-dialog-form > .app-dialog-description + .app-dialog-status {
+  margin-top: var(--space-md);
+}
+/* As in the shared confirmation, a confirmation's message is its content. */
+.app-dialog--utility.app-confirmation-dialog .app-dialog-description {
+  color: var(--text);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+.app-dialog--utility .app-dialog-footer {
+  margin-top: 0;
+}
+/* Project Assets' filter search matches the shared control height. */
+.app-dialog--utility #asset-filters .field input[type='search'] {
+  height: var(--refined-control-height);
 }
 
 /* ── Sections ── */
@@ -12640,19 +12685,22 @@
   grid-column: 1 / -1;
 }
 
-/* ── Fields ── */
+/* ── Fields ──
+   The field gap stays with the pilot dialogs: other families lay fields out
+   as rows, switches, and checkbox labels. Rich-text editor internals are not
+   dialog fields and keep the editor's own styling. */
 .app-dialog--refined .field {
   gap: 0.3125rem;
 }
-.app-dialog--refined .field > label:not(.sr-only),
-.app-dialog--refined .asset-filter-multiselect-field > legend {
+.app-dialog .field > label:not(.sr-only),
+.app-dialog .asset-filter-multiselect-field > legend {
   margin: 0;
   color: var(--muted);
   font-size: 0.8125rem;
   font-weight: 500;
   line-height: 1.3;
 }
-.app-dialog--refined .asset-filter-multiselect-field > legend {
+.app-dialog .asset-filter-multiselect-field > legend {
   margin-bottom: 0.3125rem;
 }
 .app-dialog--refined .settings-section .help-text {
@@ -12661,8 +12709,8 @@
   font-size: 0.75rem;
   line-height: 1.4;
 }
-.app-dialog--refined .field input:not([type='checkbox']):not([type='radio']),
-.app-dialog--refined .field textarea {
+.app-dialog .field input:not([type='checkbox']):not([type='radio'], [type='file']):not(:where(.toastui-editor-defaultUI *, [data-notes-editor-source])),
+.app-dialog .field textarea:not(:where(.toastui-editor-defaultUI *, [data-notes-editor-source])) {
   min-height: var(--refined-control-height);
   padding: 0.375rem 0.625rem;
   border: 1px solid var(--border);
@@ -12674,7 +12722,7 @@
   line-height: 1.5;
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
-.app-dialog--refined .field textarea {
+.app-dialog .field textarea:not(:where(.toastui-editor-defaultUI *, [data-notes-editor-source])) {
   min-height: 4.75rem;
   resize: vertical;
 }
@@ -12683,32 +12731,44 @@
 .app-dialog--refined.project-form-dialog .field > textarea:is(#description, #notes) {
   height: calc(3 * (3 * 1.5 * 0.875rem + 0.75rem + 2px));
 }
-.app-dialog--refined .field input::placeholder,
-.app-dialog--refined .field textarea::placeholder {
+.app-dialog .field input::placeholder,
+.app-dialog .field textarea::placeholder {
   color: var(--muted);
   opacity: 0.7;
 }
-.app-dialog--refined .field input:not([type='checkbox']):not([type='radio']):hover,
-.app-dialog--refined .field textarea:hover {
+.app-dialog .field input:not([type='checkbox']):not([type='radio'], [type='file']):not(:where(.toastui-editor-defaultUI *, [data-notes-editor-source])):hover,
+.app-dialog .field textarea:not(:where(.toastui-editor-defaultUI *, [data-notes-editor-source])):hover {
   border-color: var(--border-strong);
 }
-.app-dialog--refined .field input:focus-visible,
-.app-dialog--refined .field textarea:focus-visible {
+.app-dialog .field input:focus-visible,
+.app-dialog .field textarea:focus-visible {
   outline: none;
   border-color: var(--accent);
   box-shadow: var(--refined-focus-shadow);
 }
-.app-dialog--refined .field-error input:not([type='checkbox']):not([type='radio']),
-.app-dialog--refined .field-error textarea,
-.app-dialog--refined .field-error .asset-filter-multiselect summary {
+.app-dialog .field-error input:not([type='checkbox']):not([type='radio'], [type='file']),
+.app-dialog .field-error textarea,
+.app-dialog .field-error .asset-filter-multiselect summary {
   border-color: var(--danger);
 }
-.app-dialog--refined .field-error-message {
+/* Number steppers join the input to their buttons, so the shared input
+   treatment keeps the stepper's open inline end. */
+.app-dialog .field .cc-number-stepper > input[type='number'] {
+  border-inline-end: 0;
+  border-radius: var(--refined-control-radius) 0 0 var(--refined-control-radius);
+}
+.app-dialog .field .cc-number-stepper-button {
+  min-height: var(--refined-control-height);
+}
+.app-dialog .field .cc-number-stepper-button--increment {
+  border-radius: 0 var(--refined-control-radius) var(--refined-control-radius) 0;
+}
+.app-dialog .field-error-message {
   font-size: 0.75rem;
 }
 
 /* ── Dropdowns ── */
-.app-dialog--refined .asset-filter-multiselect summary {
+.app-dialog .asset-filter-multiselect summary {
   min-height: var(--refined-control-height);
   padding: 0.375rem 0.625rem;
   border-radius: var(--refined-control-radius);
@@ -12716,12 +12776,12 @@
   line-height: 1.5;
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast);
 }
-.app-dialog--refined .asset-filter-multiselect summary:hover {
+.app-dialog .asset-filter-multiselect summary:hover {
   border-color: var(--border-strong);
   background: var(--bg);
 }
-.app-dialog--refined .asset-filter-multiselect summary::after,
-.app-dialog--refined .asset-filter-multiselect[open] summary::after {
+.app-dialog .asset-filter-multiselect summary::after,
+.app-dialog .asset-filter-multiselect[open] summary::after {
   width: 1rem;
   height: 1rem;
   background-color: var(--muted);
@@ -12730,17 +12790,17 @@
   mask: var(--refined-chevron) center / contain no-repeat;
   transition: transform var(--transition-fast), background-color var(--transition-fast);
 }
-.app-dialog--refined .asset-filter-multiselect[open] summary::after {
+.app-dialog .asset-filter-multiselect[open] summary::after {
   background-color: var(--accent);
   transform: rotate(180deg);
 }
-.app-dialog--refined .asset-filter-multiselect summary:focus-visible,
-.app-dialog--refined .asset-filter-multiselect[open] summary {
+.app-dialog .asset-filter-multiselect summary:focus-visible,
+.app-dialog .asset-filter-multiselect[open] summary {
   outline: none;
   border-color: var(--accent);
   box-shadow: var(--refined-focus-shadow);
 }
-.app-dialog--refined .asset-filter-multiselect-panel {
+.app-dialog .asset-filter-multiselect-panel {
   top: calc(100% + 0.3125rem);
   gap: 1px;
   padding: var(--space-xs);
@@ -12749,31 +12809,31 @@
   background: var(--surface-card);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
 }
-.app-dialog--refined .asset-filter-multiselect-option {
+.app-dialog .asset-filter-multiselect-option {
   border-radius: var(--radius-sm);
   transition: background var(--transition-fast);
 }
-.app-dialog--refined .asset-filter-multiselect--sized .asset-filter-multiselect-option > label {
+.app-dialog .asset-filter-multiselect--sized .asset-filter-multiselect-option > label {
   align-items: center;
   gap: var(--space-sm);
   padding: 0.375rem var(--space-sm);
   font-size: 0.875rem;
   line-height: 1.4;
 }
-.app-dialog--refined .asset-filter-multiselect-option > label > span {
+.app-dialog .asset-filter-multiselect-option > label > span {
   flex: 1 1 auto;
 }
-.app-dialog--refined .asset-filter-multiselect-option:has(input:checked) {
+.app-dialog .asset-filter-multiselect-option:has(input:checked) {
   background: rgba(34, 211, 238, 0.08);
 }
-.app-dialog--refined .asset-filter-multiselect-option:has(input:checked):hover {
+.app-dialog .asset-filter-multiselect-option:has(input:checked):hover {
   background: rgba(34, 211, 238, 0.14);
 }
-.app-dialog--refined .asset-filter-multiselect-option:has(input:focus-visible) {
+.app-dialog .asset-filter-multiselect-option:has(input:focus-visible) {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
 }
-.app-dialog--refined .asset-filter-multiselect-option input {
+.app-dialog .asset-filter-multiselect-option input {
   flex: none;
   width: 1rem;
   height: 1rem;
@@ -12783,25 +12843,29 @@
   background: transparent center / 0.75rem no-repeat;
   cursor: pointer;
 }
-.app-dialog--refined .asset-filter-multiselect-option input:focus-visible {
+.app-dialog .asset-filter-multiselect-option input:focus-visible {
   outline: none;
 }
 /* Single- and multi-select options share one look: no radio dot or checkbox
    square; each chosen row gets a trailing check. Option text keeps the same
    typography and color whether or not it is selected. */
-.app-dialog--refined .asset-filter-multiselect-option input {
+.app-dialog .asset-filter-multiselect-option input {
   order: 1;
 }
-.app-dialog--refined .asset-filter-multiselect-option input:checked {
+.app-dialog .asset-filter-multiselect-option input:checked {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2322d3ee' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
   background-size: 0.875rem;
 }
-.app-dialog--refined .asset-filter-multiselect-empty {
+.app-dialog .asset-filter-multiselect-empty {
   font-size: 0.8125rem;
 }
 
-/* ── Buttons ── */
+/* ── Buttons ──
+   Footer actions share the treatment in every dialog; inside the pilot
+   dialogs it also covers in-body buttons. Elsewhere, in-body buttons keep
+   their family's sizing (icon buttons, reorder handles, processing rows). */
 .app-dialog--refined .button,
+:where(.app-dialog) .app-dialog-footer .button,
 .button.dashboard-create-action {
   gap: 0.375rem;
   min-height: var(--refined-control-height);
@@ -12811,42 +12875,45 @@
   font-weight: 500;
   transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), filter var(--transition-fast), box-shadow var(--transition-fast);
 }
-.app-dialog--refined .button:focus-visible {
+.app-dialog--refined .button:focus-visible,
+:where(.app-dialog) .app-dialog-footer .button:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 .app-dialog--refined .button:active:not(:disabled):not([aria-disabled="true"]),
+:where(.app-dialog) .app-dialog-footer .button:active:not(:disabled):not([aria-disabled="true"]),
 .button.dashboard-create-action:active:not(:disabled):not([aria-disabled="true"]) {
   transform: translateY(1px);
 }
-.app-dialog--refined .button-primary {
+.app-dialog--refined .button-primary,
+:where(.app-dialog) .app-dialog-footer .button-primary {
   font-weight: 600;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25), 0 4px 14px rgba(34, 211, 238, 0.16);
 }
-/* Trial: New Project's (and New Release's) submit is a dark outlined button led by a cyan plus
-   square; the Edit dialogs' Save changes buttons share the treatment without
-   the plus, and the Dashboard's New Release/New Project header links share it
-   with the plus. Disabled styling, hover brightness, focus ring, and pressed
-   movement come from the rules around it. */
+/* A dialog's primary footer action is a dark outlined button. New Project's
+   and New Release's submits lead with a cyan plus square, as do the
+   Dashboard's New Release/New Project header links and Manage signatures'
+   Add button; actions without the icon keep symmetric padding. Disabled
+   styling, hover brightness, focus ring, and pressed movement come from the
+   rules around it. */
 .button.dashboard-create-action,
-#project-create-dialog button[form="project-create-form"][data-dialog-submit],
-#release-create-dialog button[form="release-create-form"][data-dialog-submit],
-#project-edit-dialog button[form="project-edit-form"][data-dialog-submit],
-#release-edit-dialog button[form="release-edit-form"][data-dialog-submit],
+.app-dialog .app-dialog-footer > .button-primary,
 #release-signatures-dialog.app-dialog--refined [data-release-signature-add] {
   gap: var(--space-sm);
   min-height: 2.25rem;
-  padding: 0 var(--space-md) 0 var(--space-sm);
+  padding: 0 var(--space-md);
   border-radius: var(--radius-sm);
   font-family: inherit;
   font-size: 0.875rem;
   font-weight: 600;
 }
+.button.dashboard-create-action,
+.app-dialog .app-dialog-footer > .button-primary:has(> .project-create-submit-icon),
+#release-signatures-dialog.app-dialog--refined [data-release-signature-add] {
+  padding: 0 var(--space-md) 0 var(--space-sm);
+}
 .button.dashboard-create-action:not(:disabled):not([aria-disabled="true"]),
-#project-create-dialog button[form="project-create-form"][data-dialog-submit]:not(:disabled):not([aria-disabled="true"]),
-#release-create-dialog button[form="release-create-form"][data-dialog-submit]:not(:disabled):not([aria-disabled="true"]),
-#project-edit-dialog button[form="project-edit-form"][data-dialog-submit]:not(:disabled):not([aria-disabled="true"]),
-#release-edit-dialog button[form="release-edit-form"][data-dialog-submit]:not(:disabled):not([aria-disabled="true"]),
+.app-dialog .app-dialog-footer > .button-primary:not(:disabled):not([aria-disabled="true"]),
 #release-signatures-dialog.app-dialog--refined [data-release-signature-add]:not(:disabled):not([aria-disabled="true"]) {
   border: 1px solid var(--border-strong);
   background: var(--bg);
@@ -12854,17 +12921,9 @@
   box-shadow: none;
 }
 .button.dashboard-create-action:hover:not(:disabled):not([aria-disabled="true"]),
-#project-create-dialog button[form="project-create-form"][data-dialog-submit]:hover:not(:disabled):not([aria-disabled="true"]),
-#release-create-dialog button[form="release-create-form"][data-dialog-submit]:hover:not(:disabled):not([aria-disabled="true"]),
-#project-edit-dialog button[form="project-edit-form"][data-dialog-submit]:hover:not(:disabled):not([aria-disabled="true"]),
-#release-edit-dialog button[form="release-edit-form"][data-dialog-submit]:hover:not(:disabled):not([aria-disabled="true"]),
+.app-dialog .app-dialog-footer > .button-primary:hover:not(:disabled):not([aria-disabled="true"]),
 #release-signatures-dialog.app-dialog--refined [data-release-signature-add]:hover:not(:disabled):not([aria-disabled="true"]) {
   border-color: var(--accent);
-}
-/* Save changes has no leading icon, so its padding is symmetric. */
-#project-edit-dialog button[form="project-edit-form"][data-dialog-submit],
-#release-edit-dialog button[form="release-edit-form"][data-dialog-submit] {
-  padding: 0 var(--space-md);
 }
 .project-create-submit-icon {
   display: inline-flex;
@@ -12887,41 +12946,49 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   background: var(--border-strong);
   color: var(--muted);
 }
-.app-dialog--refined .button-secondary {
+.app-dialog--refined .button-secondary,
+:where(.app-dialog) .app-dialog-footer .button-secondary {
   border-color: var(--border-strong);
   background: transparent;
   color: var(--text);
 }
-.app-dialog--refined .button-secondary:hover:not(:disabled):not([aria-disabled="true"]) {
+.app-dialog--refined .button-secondary:hover:not(:disabled):not([aria-disabled="true"]),
+:where(.app-dialog) .app-dialog-footer .button-secondary:hover:not(:disabled):not([aria-disabled="true"]) {
   border-color: var(--border-strong);
   background: var(--surface-hover);
   color: var(--text);
 }
-.app-dialog--refined .button-danger {
+/* Destructive actions stay tinted so they never read as the primary. */
+.app-dialog--refined .button-danger,
+:where(.app-dialog) .app-dialog-footer .button-danger {
   border-color: rgba(251, 113, 133, 0.45);
   background: rgba(251, 113, 133, 0.1);
   color: var(--badge-danger-fg);
 }
-.app-dialog--refined .button-danger:hover:not(:disabled):not([aria-disabled="true"]) {
+.app-dialog--refined .button-danger:hover:not(:disabled):not([aria-disabled="true"]),
+:where(.app-dialog) .app-dialog-footer .button-danger:hover:not(:disabled):not([aria-disabled="true"]) {
   border-color: var(--danger);
   background: rgba(251, 113, 133, 0.18);
 }
-.app-dialog--refined .button-small {
+.app-dialog--refined .button-small,
+:where(.app-dialog) .app-dialog-footer .button-small {
   min-height: 1.875rem;
   padding: 0 0.625rem;
   font-size: 0.8125rem;
 }
 /* The close control is a quiet icon button rather than an outlined one. */
-.app-dialog--refined .app-dialog-close {
+.app-dialog .app-dialog-close {
   width: 2rem;
   min-width: 2rem;
   min-height: 2rem;
   padding: 0;
   border-color: transparent;
+  border-radius: var(--refined-control-radius);
   background: transparent;
   color: var(--muted);
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), filter var(--transition-fast), box-shadow var(--transition-fast);
 }
-.app-dialog--refined .app-dialog-close:hover {
+.app-dialog .app-dialog-close:hover {
   border-color: transparent;
   background: var(--surface-hover);
   color: var(--text);
@@ -13011,24 +13078,25 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   font-size: 0.875rem;
 }
 /* The picker row is the visible control; its native input sits inside it
-   borderless, so the shared refined input treatment must not double up. */
-.app-dialog--refined .scheduling-field .picker-input-row {
+   borderless, so the shared dialog input treatment must not double up.
+   These apply to date/time pickers in every dialog. */
+.app-dialog .scheduling-field .picker-input-row {
   border-color: var(--border);
   border-radius: var(--refined-control-radius);
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
-.app-dialog--refined .scheduling-field .picker-input-row:hover {
+.app-dialog .scheduling-field .picker-input-row:hover {
   border-color: var(--border-strong);
 }
-.app-dialog--refined .scheduling-field .picker-input-row:focus-within {
+.app-dialog .scheduling-field .picker-input-row:focus-within {
   outline: none;
   border-color: var(--accent);
   box-shadow: var(--refined-focus-shadow);
 }
-.app-dialog--refined .scheduling-field.field-error .picker-input-row {
+.app-dialog .scheduling-field.field-error .picker-input-row {
   border-color: var(--danger);
 }
-.app-dialog--refined .scheduling-field .picker-input-row input.picker-input {
+.app-dialog .scheduling-field .picker-input-row input.picker-input {
   min-height: calc(var(--refined-control-height) - 2px);
   padding: 0.375rem calc(1.75rem + 2 * var(--space-xs)) 0.375rem 0.625rem;
   border: 0;
@@ -13038,7 +13106,7 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   font-size: 0.875rem;
   line-height: 1.5;
 }
-.app-dialog--refined .scheduling-field .picker-trigger {
+.app-dialog .scheduling-field .picker-trigger {
   width: 1.75rem;
   height: 1.75rem;
   border-color: transparent;
@@ -13046,8 +13114,8 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   background: transparent;
   color: var(--muted);
 }
-.app-dialog--refined .scheduling-field .picker-trigger:hover:not(:disabled),
-.app-dialog--refined .scheduling-field .picker-trigger[aria-expanded="true"] {
+.app-dialog .scheduling-field .picker-trigger:hover:not(:disabled),
+.app-dialog .scheduling-field .picker-trigger[aria-expanded="true"] {
   background: var(--surface-hover);
   color: var(--text);
 }
@@ -13193,7 +13261,7 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   }
 }
 @media (max-width: 540px) {
-  .app-dialog--refined .app-dialog-header {
+  .app-dialog .app-dialog-header {
     padding-left: var(--space-md);
   }
   .app-dialog--refined.project-form-dialog .project-edit-dialog-section {

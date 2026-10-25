@@ -388,7 +388,7 @@ test('Release Assets shared dropdowns remain visible, hit-testable, and reusable
     await expect(extension).toHaveAttribute('data-cc-dropdown-mode', 'single');
     await expect(category).toHaveAttribute('data-cc-dropdown-mode', 'single');
     await expect(dialog.locator('#release-asset-page-size-dropdown')).toHaveAttribute('data-cc-dropdown-mode', 'single');
-    await expect(dialog.locator('.release-assets-filter-dialog-form')).toHaveCSS('padding-bottom', '16px');
+    await expect(dialog.locator('.release-assets-filter-dialog-form > .app-dialog-body')).toHaveCSS('padding-bottom', '12px');
 
     await extension.locator('summary').click();
     await expectDropdownPanelHitTestable(page, extension);
@@ -410,7 +410,7 @@ test('Release Assets shared dropdowns remain visible, hit-testable, and reusable
     await categoryResponse;
     await expect(dialog).toBeVisible();
     await expect(dialog.locator('[data-release-assets-reset]')).toBeVisible();
-    await expect(dialog.locator('.release-assets-filter-dialog-form')).toHaveCSS('padding-bottom', '16px');
+    await expect(dialog.locator('.release-assets-filter-dialog-form > .app-dialog-body')).toHaveCSS('padding-bottom', '12px');
 
     await page.setViewportSize({ width: 390, height: 360 });
     const scrollState = await body.evaluate((element) => {

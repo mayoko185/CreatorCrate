@@ -1066,7 +1066,7 @@ describe('asset browser HTTP workflow', () => {
     const multipleNextMatch = multiple.text.match(/<a href="([^"]+)" class="pagination-next">Next/);
     const multipleNextUrl = new URL(decodeHtmlHref(multipleNextMatch[1]), 'http://localhost');
     const multiplePageSizeForm = multiple.text.match(/<form class="page-size-form"[\s\S]*?<\/form>/)?.[0] || '';
-    const resetForm = multiple.text.match(/<form class="projects-filter-reset"[^>]*>/)?.[0] || '';
+    const resetForm = multiple.text.match(/<form class="projects-filter-reset app-dialog-footer"[^>]*>/)?.[0] || '';
     const resetHref = resetForm.match(/\baction="([^"]+)"/)?.[1];
 
     expect((multiple.text.match(/<li class="asset-list-item/g) || [])).toHaveLength(2);
@@ -2919,7 +2919,7 @@ describe('asset browser HTTP workflow', () => {
     expect(gridUrl.searchParams.get('order')).toBe('desc');
     expect(gridUrl.searchParams.get('pageSize')).toBe('10');
 
-    const resetForm = response.text.match(/<form class="projects-filter-reset"[^>]*>/)?.[0] || '';
+    const resetForm = response.text.match(/<form class="projects-filter-reset app-dialog-footer"[^>]*>/)?.[0] || '';
     const resetHref = resetForm.match(/\baction="([^"]+)"/)?.[1];
     expect(resetHref).toBeDefined();
     const resetUrl = new URL(decodeHtmlHref(resetHref), 'http://localhost');
@@ -4536,10 +4536,10 @@ describe('asset browser HTTP workflow', () => {
     expect((res2.text.match(/id="project-assets-filter-dialog"/g) || [])).toHaveLength(1);
     expect((res2.text.match(/id="asset-filters"/g) || [])).toHaveLength(1);
     expect((res2.text.match(/id="search"/g) || [])).toHaveLength(1);
-    const resetForm = filterDialog.match(/<form class="projects-filter-reset" method="get" action="[^"]+">[\s\S]*?<\/form>/)?.[0];
+    const resetForm = filterDialog.match(/<form class="projects-filter-reset app-dialog-footer" method="get" action="[^"]+">[\s\S]*?<\/form>/)?.[0];
     expect(resetForm).toBeDefined();
     expect(resetForm).toContain(`action="/projects/${id}/assets?resetFilters=1&amp;view=grid"`);
-    expect(resetForm).toContain('<button class="button" type="submit" data-project-assets-reset>Reset filters</button>');
+    expect(resetForm).toContain('<button class="button button-secondary" type="submit" data-project-assets-reset>Reset filters</button>');
     const categoryPosition = filterForm.indexOf('data-asset-category-filter');
     const searchPosition = filterForm.indexOf('<label for="search">Search</label>');
     expect(categoryPosition).toBeGreaterThanOrEqual(0);

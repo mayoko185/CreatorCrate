@@ -184,7 +184,7 @@ describe('intentional asset-browser parity: releases vs projects', () => {
       expect(positions.every((position) => position >= 0)).toBe(true);
       expect(positions).toEqual([...positions].sort((a, b) => a - b));
       expect(html).toContain(`href="#${dialogId}" aria-label="Filter assets"`);
-      expect(extractDialog(html, dialogId)).toContain('class="app-dialog" data-app-dialog');
+      expect(extractDialog(html, dialogId)).toContain('class="app-dialog app-dialog--utility" data-app-dialog');
     }
   });
 

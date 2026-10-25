@@ -565,8 +565,8 @@ describe('project HTTP workflow', () => {
     expect(filterDialog).toContain('projects-filter-field--project');
     expect((filterDialog.match(/class="field asset-filter-multiselect-field[^\"]*app-dialog-field/g) || [])).toHaveLength(6);
     expect(filterDialog).not.toMatch(/<button[^>]*>\s*(?:Save|Cancel)/);
-    expect(filterDialog).toContain('<form class="projects-filter-reset" method="get" action="/projects">');
-    expect(filterDialog).toContain('<button class="button" type="submit" data-projects-reset>Reset filters</button>');
+    expect(filterDialog).toContain('<form class="projects-filter-reset app-dialog-footer" method="get" action="/projects">');
+    expect(filterDialog).toContain('<button class="button button-secondary" type="submit" data-projects-reset>Reset filters</button>');
     expect((response.text.match(/>Reset filters<\/button>/g) || [])).toHaveLength(1);
     expect(filterDialog.match(/data-dialog-close/g)).toHaveLength(1);
     expect(filterDialog).toContain('aria-label="Close Filter"');
@@ -604,8 +604,6 @@ describe('project HTTP workflow', () => {
     expect(defaultsDialog).toContain('data-settings-fetch-save-status');
     expect(defaultsDialog).toContain('role="status" aria-live="polite" aria-atomic="true"');
 
-    const css = await fetchProjectCss(app);
-    expect(css).toMatch(/#projects-filter-dialog\s+\.projects-filter-reset,\s*#project-assets-filter-dialog\s+\.projects-filter-reset\s*\{[^}]*display:\s*flex;[^}]*justify-content:\s*center;[^}]*margin:\s*var\(--space-lg\);/);
 
     for (const field of [
       { name: 'view', label: 'View', id: 'projects-default-view', values: ['grid', 'list'], selected: 'grid', summary: 'Grid' },
@@ -993,8 +991,8 @@ describe('project HTTP workflow', () => {
     expect(res.text.indexOf('<div data-projects-live-region>')).toBeLessThan(res.text.indexOf('<form id="project-filters"'));
     expect(filterActions).not.toContain('data-projects-reset');
     const filterDialog = res.text.match(/<dialog id="projects-filter-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
-    expect(filterDialog).toContain('<form class="projects-filter-reset" method="get" action="/projects">');
-    expect(filterDialog).toContain('<button class="button" type="submit" data-projects-reset>Reset filters</button>');
+    expect(filterDialog).toContain('<form class="projects-filter-reset app-dialog-footer" method="get" action="/projects">');
+    expect(filterDialog).toContain('<button class="button button-secondary" type="submit" data-projects-reset>Reset filters</button>');
     expect((res.text.match(/data-asset-viewer-filter-disclosure/g) || [])).toHaveLength(0);
 
     const statusFilter = extractStatusFilter(res.text);
@@ -1071,8 +1069,6 @@ describe('project HTTP workflow', () => {
     }
 
     const css = (await agent.get('/creatorcrate.css').expect(200)).text;
-    expect(css).toMatch(/#projects-defaults-form\s*>\s*\.projects-defaults-save-status:empty\s*\{[^}]*display:\s*none;/);
-    expect(css).toMatch(/#projects-defaults-form\s*>\s*\.app-dialog-body\s*\{[^}]*margin-bottom:\s*var\(--space-lg\);/);
     expect(sortFilter).not.toMatch(/name="sort"[^>]*value="(?:published|planned)"/);
     expect((sortFilter.match(/name="sort"/g) || [])).toHaveLength(3);
     expect(sortFilter).not.toContain('<select');
@@ -1117,7 +1113,7 @@ describe('project HTTP workflow', () => {
     expect(resetControls).toHaveLength(1);
     expect(filterDialog).toContain(resetControls[0][0]);
     expect(resetControls[0][0]).toContain('>Reset filters</button>');
-    expect(filterDialog).toContain('<form class="projects-filter-reset" method="get" action="/projects">');
+    expect(filterDialog).toContain('<form class="projects-filter-reset app-dialog-footer" method="get" action="/projects">');
     expect(selected.text).toContain('<h2 class="empty-state-heading">No projects found</h2>');
     expect(selected.text).toContain('<p>No projects match the current filters.</p>');
     expect(selected.text).not.toContain('>Reset</a>');
@@ -1165,8 +1161,8 @@ describe('project HTTP workflow', () => {
     const selectedFilterActions = selected.text.match(/<div class="project-filter-actions(?: [^"]*)?">[\s\S]*?<\/div>/)?.[0] || '';
     const selectedFilterDialog = selected.text.match(/<dialog id="projects-filter-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
     expect(selectedFilterActions).not.toContain('data-projects-reset');
-    expect(selectedFilterDialog).toContain('<form class="projects-filter-reset" method="get" action="/projects">');
-    expect(selectedFilterDialog).toContain('<button class="button" type="submit" data-projects-reset>Reset filters</button>');
+    expect(selectedFilterDialog).toContain('<form class="projects-filter-reset app-dialog-footer" method="get" action="/projects">');
+    expect(selectedFilterDialog).toContain('<button class="button button-secondary" type="submit" data-projects-reset>Reset filters</button>');
     expect(selected.text).not.toContain('Reset Filters');
     expect(extractProjectFilter(selected.text)).toContain(`value="${projectId}" checked`);
 
@@ -1994,15 +1990,12 @@ describe('project HTTP workflow', () => {
     const emptyState = projects.text.match(/<div class="empty-state">[\s\S]*?<\/div>\s*<\/div>/)?.[0] || '';
 
     expect((projects.text.match(/<dialog id="project-create-dialog"/g) || [])).toHaveLength(1);
-    expect(headingNewProject).toContain('class="button button-small button-primary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--left"');
-    expect(headingNewProject).toContain('href="/projects/new"');
-    expect(headingNewProject).toContain('data-dialog-open="project-create-dialog"');
-    expect(headingNewProject).toContain('data-dialog-invocation');
-    expect(headingNewProject).toContain('aria-label="New Project"');
-    expect(headingNewProject).toContain('data-tooltip="New Project"');
-    expect(headingNewProjectContent).toContain('<svg');
+    expect(headingNewProject).toMatch(/^<a class="button button-primary dashboard-create-action" href="\/projects\/new" data-dialog-open="project-create-dialog" data-dialog-invocation><span class="project-create-submit-icon" aria-hidden="true">/);
+    expect(headingNewProject).not.toContain('project-assets-heading-action');
+    expect(headingNewProject).not.toContain('aria-label=');
+    expect(headingNewProject).not.toContain('data-tooltip=');
     expect(headingNewProjectContent).toContain('<path d="M12 5v14M5 12h14"/>');
-    expect(headingNewProjectContent).not.toContain('New Project');
+    expect(headingNewProjectContent).toMatch(/<\/span>New Project$/);
     expect(emptyState).toContain('<a class="button button-primary" href="/projects/new" data-dialog-open="project-create-dialog" data-dialog-invocation>New Project</a>');
     expect(dialog).not.toBe('');
     expect(dialog).not.toMatch(/<dialog\b[^>]*\bopen(?:\s|>|=)/);

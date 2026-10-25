@@ -128,7 +128,7 @@
 {% endblock %}
 
 {% block overlay %}
-  {% call dialog.render('calendar-month-dialog', 'Choose month') %}
+  {% call dialog.render('calendar-month-dialog', 'Choose month', dialogClass='app-dialog--utility') %}
     <form id="calendar-month-form" class="app-dialog-form project-form" data-dialog-async="false">
       <div class="app-dialog-body">
         <div class="page-defaults-grid">
@@ -147,7 +147,7 @@
     </form>
   {% endcall %}
 
-  {% call dialog.render('calendar-filter-dialog', 'Filters') %}
+  {% call dialog.render('calendar-filter-dialog', 'Filters', dialogClass='app-dialog--utility') %}
     <form id="calendar-filters" class="app-dialog-form project-form" method="get" action="/calendar" data-calendar-filters>
       <div class="app-dialog-body">
         <div class="page-defaults-grid">
@@ -171,12 +171,12 @@
         </div>
       </div>
     </form>
-    <form class="projects-filter-reset" method="get" action="{{ resetFiltersUrl }}">
-      <button class="button" type="submit" data-calendar-reset>Reset filters</button>
+    <form class="projects-filter-reset app-dialog-footer" method="get" action="{{ resetFiltersUrl }}">
+      <button class="button button-secondary" type="submit" data-calendar-reset>Reset filters</button>
     </form>
   {% endcall %}
 
-  {% call dialog.render('calendar-defaults-dialog', 'Calendar defaults', false, 'calendar-defaults-description', 'calendar-defaults-form') %}
+  {% call dialog.render('calendar-defaults-dialog', 'Calendar defaults', false, 'calendar-defaults-description', 'calendar-defaults-form', 'app-dialog--utility') %}
     <form id="calendar-defaults-form" class="app-dialog-form project-form" method="post" action="/settings/defaults"
           data-dialog-form data-dialog-async="false" data-calendar-defaults-fetch-save novalidate>
       <p id="calendar-defaults-description" class="app-dialog-description">Choose the default desktop view, release status, and week start for Calendar.</p>

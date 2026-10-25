@@ -204,7 +204,7 @@
 {% endblock %}
 
 {% block overlay %}
-  {% call dialog.render('logs-defaults-dialog', 'Logs defaults', logsDefaultsDialogOpen, 'logs-defaults-description', 'logs-defaults-form') %}
+  {% call dialog.render('logs-defaults-dialog', 'Logs defaults', logsDefaultsDialogOpen, 'logs-defaults-description', 'logs-defaults-form', 'app-dialog--utility') %}
     <form id="logs-defaults-form" method="post" action="/settings/logs/defaults" class="app-dialog-form project-form"
           data-dialog-form data-dialog-async novalidate>
       <p id="logs-defaults-description" class="app-dialog-description">
@@ -266,7 +266,7 @@
     </form>
   {% endcall %}
 
-  {% call dialog.render('logs-clear-dialog', 'Clear logs', false, 'logs-clear-description', 'logs-clear-form', 'app-confirmation-dialog') %}
+  {% call dialog.render('logs-clear-dialog', 'Clear logs', false, 'logs-clear-description', 'logs-clear-form', 'app-confirmation-dialog app-dialog--utility') %}
     <form id="logs-clear-form" method="post" action="/settings/logs/clear" class="app-dialog-form"
           data-dialog-form data-dialog-async data-dialog-pending-message="Clearing logs…"
           data-dialog-error-message="Logs could not be cleared."

@@ -81,7 +81,7 @@
   {% include "notes/books/order.njk" %}
   {% include "notes/create-dialog.njk" %}
 
-  {% call dialog.render('book-defaults-dialog', 'Book defaults', bookDefaultsDialogOpen, 'book-defaults-description', 'book-defaults-form') %}
+  {% call dialog.render('book-defaults-dialog', 'Book defaults', bookDefaultsDialogOpen, 'book-defaults-description', 'book-defaults-form', 'app-dialog--utility') %}
     <form id="book-defaults-form" method="post" action="/notes/books/{{ book.id }}/defaults" class="app-dialog-form project-form"
           data-dialog-form data-dialog-async="false" data-book-defaults-autosave novalidate>
       <p id="book-defaults-description" class="app-dialog-description">

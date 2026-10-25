@@ -73,7 +73,6 @@ describe('Calendar presentation', () => {
     expect(picker).not.toContain('class="app-dialog-footer"');
     expect(picker).toContain('data-dialog-close aria-label="Close Choose month"');
     expect(picker).toContain('class="field app-dialog-field calendar-month-year"');
-    expect(css).toMatch(/\.calendar-month-year \.cc-number-stepper\s*\{\s*min-height:\s*2\.5rem/);
     expect(html).toContain('data-calendar-live-region');
     expect(html).toContain('data-calendar-live-status');
     expect(html).toContain('data-calendar-navigation');
@@ -174,7 +173,7 @@ describe('Calendar presentation', () => {
     expect(filters).toContain('asset-viewer-project-filter projects-filter-field--project');
     expect(filters).toContain('data-cc-dropdown-searchable');
     expect(filters).toContain('data-cc-dropdown-search');
-    expect(filters).toContain('<form class="projects-filter-reset" method="get" action="/calendar?month=2025-06">');
+    expect(filters).toContain('<form class="projects-filter-reset app-dialog-footer" method="get" action="/calendar?month=2025-06">');
     expect(filters).toContain('data-calendar-reset>Reset filters</button>');
     expect(filters).not.toContain('Apply filters');
 

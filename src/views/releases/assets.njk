@@ -385,7 +385,7 @@
       }) %}
     {% endfor %}
 
-    {% call dialog.render('release-assets-filter-dialog', 'Filter') %}
+    {% call dialog.render('release-assets-filter-dialog', 'Filter', dialogClass='app-dialog--utility') %}
       <form id="release-assets-filter" class="app-dialog-form project-form release-assets-filter-dialog-form" method="get" action="/releases/{{ release.id }}/assets" data-release-assets-live-filter>
         <div class="app-dialog-body">
           <div class="page-defaults-grid">
@@ -442,7 +442,9 @@
           </div>
         </div>
         {% if activeFilters.search or activeFilters.extension or activeCategoryId != null %}
-          <a class="button button-secondary" href="{{ pageUrl({ search: '', extension: '', category: '', page: 1 }) }}" data-release-assets-reset>Clear</a>
+          <footer class="app-dialog-footer">
+            <a class="button button-secondary" href="{{ pageUrl({ search: '', extension: '', category: '', page: 1 }) }}" data-release-assets-reset>Clear</a>
+          </footer>
         {% endif %}
       </form>
     {% endcall %}

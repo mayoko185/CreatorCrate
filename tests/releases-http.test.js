@@ -992,7 +992,7 @@ describe('release HTTP workflow', () => {
   it('builds Reset Filters as the canonical Releases URL without explicit filter overrides', async () => {
     const res = await agent.get('/releases?search=needle&project=1&schedule=today&sort=title&order=desc&includeArchived=1&page=4&pageSize=50').expect(200);
     const filterDialog = res.text.match(/<dialog id="releases-filter-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
-    const resetUrl = filterDialog.match(/<form class="releases-filter-reset" method="get" action="([^"]+)">/)?.[1];
+    const resetUrl = filterDialog.match(/<form class="releases-filter-reset app-dialog-footer" method="get" action="([^"]+)">/)?.[1];
 
     expect(resetUrl).toBe('/releases?pageSize=50');
     expect(filterDialog).not.toContain('form.reset');
@@ -1565,12 +1565,12 @@ describe('release HTTP workflow', () => {
       const res = await agent.get('/releases').expect(200);
       const dialog = res.text.match(/<dialog id="release-create-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
 
-      expectHeadingIconAction(res.text, {
-        href: '/releases/new',
-        label: 'New Release',
-        dialogId: 'release-create-dialog',
-        iconPath: '<path d="M12 5v14M5 12h14"/>',
-      });
+      const headingNewRelease = extractPageHeading(res.text).match(/<a\b[^>]*href="\/releases\/new"[^>]*>[\s\S]*?<\/a>/)?.[0] || '';
+      expect(headingNewRelease).toMatch(/^<a class="button button-primary dashboard-create-action" href="\/releases\/new" data-dialog-open="release-create-dialog" data-dialog-invocation><span class="project-create-submit-icon" aria-hidden="true">/);
+      expect(headingNewRelease).toContain('<path d="M12 5v14M5 12h14"/>');
+      expect(headingNewRelease).toMatch(/<\/span>New Release<\/a>$/);
+      expect(headingNewRelease).not.toContain('project-assets-heading-action');
+      expect(headingNewRelease).not.toContain('aria-label=');
       expect(dialog).not.toMatch(/<button[^>]*>\s*Cancel\s*<\/button>/);
       expect(dialog.match(/data-dialog-close/g)).toHaveLength(1);
       expect(dialog).toContain('<form id="release-create-form" method="post" action="/releases"');
@@ -1806,7 +1806,7 @@ describe('release HTTP workflow', () => {
 
       const css = (await agent.get('/creatorcrate.css').expect(200)).text;
       // Picker rows are the visible control; the native input inside stays borderless.
-      expect(css).toMatch(/\.app-dialog--refined \.scheduling-field \.picker-input-row input\.picker-input\s*\{[^}]*border:\s*0;[^}]*box-shadow:\s*none;/);
+      expect(css).toMatch(/\.app-dialog \.scheduling-field \.picker-input-row input\.picker-input\s*\{[^}]*border:\s*0;[^}]*box-shadow:\s*none;/);
     });
 
     it('re-renders a filtered Releases list with the exact invocation URL and submitted values after validation', async () => {
@@ -1958,7 +1958,7 @@ describe('release HTTP workflow', () => {
       expect(displayControls).toContain('href="#releases-filter-dialog" aria-label="Filter releases"');
       expect(displayControls).toContain('data-dialog-open="releases-filter-dialog"');
       expect(displayControls).not.toContain('data-releases-reset');
-      expect(filterDialog).toContain('class="app-dialog" data-app-dialog');
+      expect(filterDialog).toContain('class="app-dialog app-dialog--utility" data-app-dialog');
       expect(filterDialog).toContain('aria-labelledby="releases-filter-dialog-title"');
       expect(filterDialog).toContain('data-dialog-close aria-label="Close Filter"');
       expect(filterForm).toContain('class="app-dialog-form project-form"');
@@ -1968,7 +1968,7 @@ describe('release HTTP workflow', () => {
       for (const name of ['project', 'schedule', 'sort', 'order', 'includeArchived']) {
         expect(filterForm).toMatch(new RegExp(`name="${name}"`));
       }
-      expect(filterDialog).toContain('<form class="releases-filter-reset" method="get" action="/releases">');
+      expect(filterDialog).toContain('<form class="releases-filter-reset app-dialog-footer" method="get" action="/releases">');
       expect(filterDialog).toContain('type="submit" aria-label="Reset filters" data-tooltip="Reset filters" data-releases-reset>Reset filters</button>');
       expect(filterDialog).not.toContain('class="filters asset-viewer-filters asset-viewer-filters--releases"');
       expect(createDialog).not.toBe('');
@@ -2023,7 +2023,6 @@ describe('release HTTP workflow', () => {
 
       const css = (await agent.get('/creatorcrate.css').expect(200)).text;
       expect(css).toMatch(/#releases-filter-dialog \.page-defaults-grid > \.asset-viewer-filter-field\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*none;/);
-      expect(css).toMatch(/#releases-filter-dialog \.releases-filter-reset\s*\{[^}]*display:\s*flex;[^}]*justify-content:\s*center;[^}]*margin:\s*var\(--space-lg\);/);
       expect(css).not.toMatch(/\.asset-viewer-filters--releases\s*[,\{]/);
     });
 

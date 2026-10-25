@@ -616,7 +616,7 @@ describe('settings — logs HTTP', () => {
 
     expect(response.text).toContain('href="/settings/logs/clear?pageSize=50"');
     expect(response.text).toContain('data-dialog-open="logs-clear-dialog"');
-    expect(response.text).toContain('id="logs-clear-dialog" class="app-dialog app-confirmation-dialog" data-app-dialog');
+    expect(response.text).toContain('id="logs-clear-dialog" class="app-dialog app-confirmation-dialog app-dialog--utility" data-app-dialog');
     expect(response.text).toContain('<form id="logs-clear-form" method="post" action="/settings/logs/clear" class="app-dialog-form"');
     expect(response.text).toContain('data-dialog-form data-dialog-async');
     expect(response.text).toContain('name="_csrf" value="');

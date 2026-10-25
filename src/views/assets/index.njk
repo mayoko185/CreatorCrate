@@ -378,7 +378,7 @@
 
 {% endblock %}
 {% block overlay %}
-  {% call dialog.render('asset-viewer-filter-dialog', 'Filter') %}
+  {% call dialog.render('asset-viewer-filter-dialog', 'Filter', dialogClass='app-dialog--utility') %}
     <form id="asset-filters" class="app-dialog-form project-form" method="get" action="/asset-viewer">
       <div class="app-dialog-body">
         <div class="page-defaults-grid">
@@ -562,12 +562,12 @@
         </div>
       </div>
     </form>
-    <form class="asset-viewer-filter-reset" method="get" action="{{ clearFiltersUrl }}">
-      <button class="button" type="submit" data-asset-library-reset>Reset filters</button>
+    <form class="asset-viewer-filter-reset app-dialog-footer" method="get" action="{{ clearFiltersUrl }}">
+      <button class="button button-secondary" type="submit" data-asset-library-reset>Reset filters</button>
     </form>
   {% endcall %}
 
-  {% call dialog.render('asset-viewer-defaults-dialog', 'Asset Viewer defaults', assetViewerDefaultsDialogOpen, 'asset-viewer-defaults-description', 'asset-viewer-defaults-form') %}
+  {% call dialog.render('asset-viewer-defaults-dialog', 'Asset Viewer defaults', assetViewerDefaultsDialogOpen, 'asset-viewer-defaults-description', 'asset-viewer-defaults-form', 'app-dialog--utility') %}
     <form id="asset-viewer-defaults-form" method="post" action="/asset-viewer/defaults" class="app-dialog-form project-form"
           data-dialog-form data-dialog-async="false" data-asset-viewer-defaults-autosave novalidate>
       <p id="asset-viewer-defaults-description" class="app-dialog-description">

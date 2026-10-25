@@ -988,7 +988,7 @@
     {% endfor %}
   {% endif %}
 
-  {% call dialog.render('project-assets-filter-dialog', 'Filter') %}
+  {% call dialog.render('project-assets-filter-dialog', 'Filter', dialogClass='app-dialog--utility') %}
     <form id="asset-filters" class="app-dialog-form project-form" method="get" action="/projects/{{ project.id }}/assets">
       <div class="app-dialog-body">
         <div class="page-defaults-grid">
@@ -1139,8 +1139,8 @@
         </div>
       </div>
     </form>
-    <form class="projects-filter-reset" method="get" action="{{ resetFiltersUrl }}">
-      <button class="button" type="submit" data-project-assets-reset>Reset filters</button>
+    <form class="projects-filter-reset app-dialog-footer" method="get" action="{{ resetFiltersUrl }}">
+      <button class="button button-secondary" type="submit" data-project-assets-reset>Reset filters</button>
     </form>
   {% endcall %}
   {% set currentCategoryId = '' %}
@@ -1163,7 +1163,7 @@
     </p>
     {% include "partials/project-asset-category-management.njk" %}
   {% endcall %}
-  {% call dialog.render('project-assets-defaults-dialog', 'Project Assets defaults', projectAssetsDefaultsDialogOpen, 'project-assets-defaults-description', 'project-assets-defaults-form') %}
+  {% call dialog.render('project-assets-defaults-dialog', 'Project Assets defaults', projectAssetsDefaultsDialogOpen, 'project-assets-defaults-description', 'project-assets-defaults-form', 'app-dialog--utility') %}
     <form id="project-assets-defaults-form" method="post" action="/projects/{{ project.id }}/assets/defaults" class="app-dialog-form project-form"
           data-dialog-form data-dialog-async="false" data-project-assets-defaults-autosave novalidate>
       <p id="project-assets-defaults-description" class="app-dialog-description">

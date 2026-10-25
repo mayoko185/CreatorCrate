@@ -322,7 +322,7 @@ describe('cross-project Asset Viewer template', () => {
       expect(disclosure).not.toContain('data-asset-viewer-filter-disclosure');
     }
     expect(html).toContain('data-asset-library-reset');
-    expect(html).toContain('<button class="button" type="submit" data-asset-library-reset>Reset filters</button>');
+    expect(html).toContain('<button class="button button-secondary" type="submit" data-asset-library-reset>Reset filters</button>');
   });
 
   it('renders the Asset Viewer defaults link with dialog-open and accessibility text', () => {
@@ -357,7 +357,7 @@ describe('cross-project Asset Viewer template', () => {
     expect(toolbar.indexOf('data-dialog-open="asset-viewer-filter-dialog"'))
       .toBeLessThan(toolbar.indexOf('data-dialog-open="asset-viewer-defaults-dialog"'));
     expect(dialogHtml).toMatch(/<div class="app-dialog-body">\s*<div class="page-defaults-grid">/);
-    expect(dialogHtml).toContain('class="asset-viewer-filter-reset"');
+    expect(dialogHtml).toContain('class="asset-viewer-filter-reset app-dialog-footer"');
     expect(toolbar).not.toContain('data-asset-library-reset');
   });
 
@@ -889,7 +889,6 @@ describe('cross-project Asset Viewer template', () => {
 
     expect(css).toMatch(/#asset-viewer-filter-dialog \.page-defaults-grid > \.asset-viewer-filter-field\s*\{[^}]*width:\s*100%;[^}]*max-width:\s*none/);
     expect(css).toMatch(/#asset-viewer-filter-dialog \.page-defaults-grid > \.asset-viewer-filter-field--project\s*\{[^}]*grid-column:\s*1 \/ -1/);
-    expect(css).toMatch(/#asset-viewer-filter-dialog \.asset-viewer-filter-reset\s*\{[^}]*display:\s*flex;[^}]*justify-content:\s*center/);
     expect(css).toMatch(/\.asset-filter-multiselect-panel\s*\{[\s\S]*?max-height:\s*20rem[\s\S]*?overflow-y:\s*auto/);
     expect(css).toMatch(/\.asset-filter-multiselect-panel\s*\{[\s\S]*?scrollbar-width:\s*thin/);
     expect(css).toMatch(/\.asset-filter-multiselect summary:focus-visible\s*\{[\s\S]*?outline:\s*2px solid var\(--focus-ring\)/);
@@ -951,7 +950,7 @@ describe('cross-project Asset Viewer template', () => {
   it.each(['grid', 'list'])('both Asset Viewer Reset controls use supplied %s intent', (view) => {
     const clearFiltersUrl = '/asset-viewer?resetFilters=1&view=' + view;
     const html = renderPage({ assets: [], hasAnyAssets: true, filters: { view, search: 'missing' }, clearFiltersUrl });
-    const resetForm = html.match(/<form class="asset-viewer-filter-reset"[^>]*>/)?.[0] ?? '';
+    const resetForm = html.match(/<form class="asset-viewer-filter-reset app-dialog-footer"[^>]*>/)?.[0] ?? '';
     const emptyReset = html.match(/<a\b[^>]*data-asset-library-reset[^>]*>/)?.[0] ?? '';
     expect(resetForm).toContain('action="' + href(clearFiltersUrl) + '"');
     expect(emptyReset).toContain('href="' + href(clearFiltersUrl) + '"');
@@ -1703,7 +1702,7 @@ describe('slideshow scaffold — static UI', () => {
       emptyState: { kind: 'filtered', title: 'No matches' },
     });
     const filterDialog = html.match(/<dialog id="project-assets-filter-dialog"[\s\S]*?<\/dialog>/)?.[0] ?? '';
-    const resetForm = filterDialog.match(/<form class="projects-filter-reset"[^>]*>[\s\S]*?<\/form>/)?.[0] ?? '';
+    const resetForm = filterDialog.match(/<form class="projects-filter-reset app-dialog-footer"[^>]*>[\s\S]*?<\/form>/)?.[0] ?? '';
 
     expect(resetForm).toContain(`method="get" action="/projects/1/assets?resetFilters=1&amp;view=${view}"`);
     expect(resetForm).toContain('type="submit" data-project-assets-reset>Reset filters</button>');
@@ -1717,10 +1716,8 @@ describe('slideshow scaffold — static UI', () => {
     expect(filterControl).toContain('href="#project-assets-filter-dialog"');
     expect(filterControl).toContain('aria-label="Filter assets"');
     expect(filterDialog).toContain('<form id="asset-filters" class="app-dialog-form project-form" method="get" action="/projects/1/assets">');
-    expect(filterDialog).toContain('<form class="projects-filter-reset" method="get" action="/projects/1/assets?resetFilters=1&amp;view=grid">');
+    expect(filterDialog).toContain('<form class="projects-filter-reset app-dialog-footer" method="get" action="/projects/1/assets?resetFilters=1&amp;view=grid">');
     expect(filterDialog).toContain('type="submit" data-project-assets-reset>Reset filters</button>');
-    expect(css).toMatch(/#projects-filter-dialog\s+\.projects-filter-reset,\s*#project-assets-filter-dialog\s+\.projects-filter-reset\s*\{[^}]*display:\s*flex;[^}]*justify-content:\s*center;[^}]*margin:\s*var\(--space-lg\);/);
-    expect(css).toMatch(/#projects-filter-dialog\s+\.projects-filter-reset,\s*#project-assets-filter-dialog\s+\.projects-filter-reset\s*\{[^}]*margin-right:\s*var\(--space-md\);[^}]*margin-left:\s*var\(--space-md\);/);
     expect(html.match(/id="project-assets-filter-dialog"/g)).toHaveLength(1);
     expect(html.match(/id="asset-filters"/g)).toHaveLength(1);
     expect(html.match(/data-project-assets-reset/g)).toHaveLength(1);

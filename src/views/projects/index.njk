@@ -25,11 +25,7 @@
 
 {% block content %}
   {% call pageHeading.render("Browse active and archived project records.") %}
-    <a class="button button-small button-primary project-detail-action project-assets-heading-action asset-tooltip asset-tooltip--left"
-       href="/projects/new" data-dialog-open="project-create-dialog" data-dialog-invocation
-       aria-label="New Project" data-tooltip="New Project">
-      {{ icons.icon('plus') }}
-    </a>
+    <a class="button button-primary dashboard-create-action" href="/projects/new" data-dialog-open="project-create-dialog" data-dialog-invocation><span class="project-create-submit-icon" aria-hidden="true">{{ icons.icon('plus') }}</span>New Project</a>
   {% endcall %}
 
   {% if notice %}
@@ -153,7 +149,7 @@
 {% block overlay %}
   {{ projectCreateDialog.render(projectCreateForm, '/projects', _csrf, projectCreateDialogOpen) }}
 
-  {% call dialog.render('projects-filter-dialog', 'Filter') %}
+  {% call dialog.render('projects-filter-dialog', 'Filter', dialogClass='app-dialog--utility') %}
     <form id="project-filters" class="app-dialog-form project-form" method="get" action="/projects">
       <div class="app-dialog-body">
         <div class="page-defaults-grid">
@@ -268,12 +264,12 @@
         </div>
       </div>
     </form>
-    <form class="projects-filter-reset" method="get" action="{{ resetFiltersUrl }}">
-      <button class="button" type="submit" data-projects-reset>Reset filters</button>
+    <form class="projects-filter-reset app-dialog-footer" method="get" action="{{ resetFiltersUrl }}">
+      <button class="button button-secondary" type="submit" data-projects-reset>Reset filters</button>
     </form>
   {% endcall %}
 
-  {% call dialog.render('projects-defaults-dialog', 'Projects defaults', projectsDefaultsDialogOpen, 'projects-defaults-description', 'projects-defaults-form') %}
+  {% call dialog.render('projects-defaults-dialog', 'Projects defaults', projectsDefaultsDialogOpen, 'projects-defaults-description', 'projects-defaults-form', 'app-dialog--utility') %}
     <form id="projects-defaults-form" method="post" action="/projects/defaults" class="app-dialog-form project-form"
           data-dialog-form data-dialog-async="false" data-projects-defaults-autosave novalidate>
       <p id="projects-defaults-description" class="app-dialog-description">
