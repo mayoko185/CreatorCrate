@@ -10877,7 +10877,7 @@
   padding: var(--space-xs);
   border: 1px solid var(--border);
   border-radius: var(--refined-control-radius);
-  background: var(--bg);
+  background: var(--surface-card);
 }
 .app-dialog--processing-workflow .processing-rule-type {
   flex: 0 0 8rem;
