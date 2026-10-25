@@ -69,7 +69,7 @@
   {% set values = bookCreateForm.values %}
   {% set errors = bookCreateForm.errors %}
   {% set bookCoverSource = none %}
-  {% call dialog.render('book-create-dialog', 'New Book', bookCreateDialogOpen, '', '', 'project-form-dialog') %}
+  {% call dialog.render('book-create-dialog', 'New Book', bookCreateDialogOpen, '', '', 'project-form-dialog app-dialog--refined') %}
     <form id="book-form" method="post" action="{{ bookCreateForm.submitUrl }}" enctype="multipart/form-data" class="app-dialog-form project-form project-edit-dialog-form"
           data-dialog-form data-dialog-async="false" data-dialog-reset-on-close{% if errors.title or errors.general %} data-dialog-reset-values="{{ { title: '' } | dump }}"{% endif %} novalidate>
       <input type="hidden" name="_csrf" value="{{ _csrf }}">
@@ -80,7 +80,7 @@
         {% include "notes/books/form-fields.njk" %}
       </div>
       <footer class="app-dialog-footer">
-        <button class="button button-primary" type="submit" data-dialog-submit>Create</button>
+        <button class="button button-primary" type="submit" data-dialog-submit><span class="project-create-submit-icon" aria-hidden="true">{{ icons.icon('plus') }}</span>Create</button>
       </footer>
     </form>
   {% endcall %}

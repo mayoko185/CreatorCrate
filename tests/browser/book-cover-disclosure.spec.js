@@ -66,12 +66,11 @@ test('actual New/Edit Book cover disclosures preserve create submission and imme
           headingMargins: getComputedStyle(detailsSection.querySelector('h3')).marginInline,
         };
       });
-      expect(spacing.detailsSection).toEqual(['0px', '0px', '0px', '0px']);
-      expect(spacing.detailsBody).toEqual(['12px', '12px', '12px', '12px']);
-      expect(spacing.actionsSection[2]).toBe('0px');
-      expect(spacing.actionsBody[2]).toBe('8px');
+      expect(spacing.actionsSection).toEqual(spacing.detailsSection);
+      expect(spacing.detailsBody).toEqual(['0px', '0px', '0px', '0px']);
+      expect(spacing.actionsBody).toEqual(['0px', '0px', '0px', '0px']);
       expect(spacing.disclosureContentBottom).toBe('0px');
-      expect(spacing.dialogBodyBottom).toBe('8px');
+      expect(spacing.dialogBodyBottom).toBe(hasFooter ? '12px' : '16px');
       expect(spacing.headingMargins).toBe('0px');
       await expect(bookDialog.locator('.app-dialog-footer')).toHaveCount(hasFooter ? 1 : 0);
       if (hasFooter) await expect(bookDialog.locator('.app-dialog-footer').getByRole('button')).toBeVisible();
@@ -96,7 +95,18 @@ test('actual New/Edit Book cover disclosures preserve create submission and imme
       return [read(node), read(node.querySelector('summary')), read(node.querySelector('.notes-workspace-disclosure-content')),
         getComputedStyle(node.querySelector('summary'), '::after').content];
     });
-    expect(await disclosureStyle(disclosure)).toEqual(await disclosureStyle(deletion));
+    // Both rows share the disclosure treatment: the first row drops its top
+    // divider, and only Delete's summary takes the danger tint.
+    const [coverStyle, deletionStyle] = [await disclosureStyle(disclosure), await disclosureStyle(deletion)];
+    expect(coverStyle[0].borderTop).toMatch(/^0px/);
+    expect(deletionStyle[0].borderTop).toMatch(/^1px solid/);
+    expect(deletionStyle[1].color).not.toBe(coverStyle[1].color);
+    for (const style of [coverStyle, deletionStyle]) {
+      delete style[0].borderTop;
+      delete style[1].color;
+      delete style[1].borderTop;
+    }
+    expect(coverStyle).toEqual(deletionStyle);
     await expect(disclosure.locator('img')).toHaveCount(1);
     await expect(disclosure.locator('img')).not.toBeVisible();
     await toggle(disclosure);

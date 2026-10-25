@@ -191,7 +191,7 @@ describe('Notes workspace layout contract', () => {
     expect(createTemplate).toContain('noteFormModel.action');
     expect(notesCss).toContain('#note-edit-dialog .notes-workspace,');
     expect(notesCss).toContain('#note-edit-dialog .notes-workspace-context,');
-    expect(createTemplate).toContain("'project-form-dialog'");
+    expect(createTemplate).toContain("'project-form-dialog app-dialog--refined'");
     expect(createTemplate).toContain('app-dialog-body project-edit-dialog-body');
     expect(createTemplate).toContain('project-edit-dialog-form');
     expect(createTemplate.match(/<section class="settings-section project-form-section project-edit-dialog-section"/g)).toHaveLength(2);
@@ -287,7 +287,8 @@ describe('Notes workspace layout contract', () => {
     const moveFormStart = formTemplate.indexOf('<form id="note-move-form"');
     const deleteFormStart = formTemplate.indexOf('<form id="note-delete-form"');
 
-    expect(formTemplate).toContain("{{ 'Save' if noteFormModel.action == 'Edit' else 'Create' }}");
+    expect(formTemplate).toContain("{% if noteFormModel.action == 'Edit' %}Save{% else %}");
+    expect(formTemplate).toContain("{{ icons.icon('plus') }}</span>Create{% endif %}");
     expect(formTemplate).toContain('form="note-form" data-dialog-submit');
     expect(formTemplate).toContain('class="notes-workspace-disclosure notes-workspace-disclosure--move"');
     expect(formTemplate).toContain('class="notes-workspace-disclosure notes-workspace-disclosure--delete"');

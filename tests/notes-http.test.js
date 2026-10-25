@@ -41,7 +41,7 @@ function expectClosedBookContentsDisclosure(dialog) {
 
 function expectNewNoteDialog(html, open) {
   const dialog = getNewNoteDialog(html);
-  expect(dialog).toContain('class="app-dialog project-form-dialog"');
+  expect(dialog).toContain('class="app-dialog project-form-dialog app-dialog--refined"');
   expect(dialog).toContain('data-app-dialog');
   expect(dialog).toContain('aria-labelledby="note-create-dialog-title"');
   expect(dialog).toContain('data-dialog-close aria-label="Close New Page"');
@@ -78,7 +78,7 @@ function getEditNoteDialog(html) {
 
 function expectEditNoteDialog(html, noteId, open) {
   const dialog = getEditNoteDialog(html);
-  expect(dialog).toContain('class="app-dialog project-form-dialog"');
+  expect(dialog).toContain('class="app-dialog project-form-dialog app-dialog--refined"');
   expect(dialog).toContain('data-app-dialog');
   expect(dialog).toContain('aria-labelledby="note-edit-dialog-title"');
   expect(dialog).toContain('data-dialog-close aria-label="Close Edit Page"');
@@ -192,7 +192,7 @@ function extractNoteProjectsField(html) {
 
 function expectEditChapterDialog(html, chapterId, open) {
   const dialog = html.match(/<dialog\b[^>]*id="chapter-edit-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
-  expect(dialog).toContain('class="app-dialog project-form-dialog"');
+  expect(dialog).toContain('class="app-dialog project-form-dialog app-dialog--refined"');
   expect(dialog).toContain('class="app-dialog-form project-form project-edit-dialog-form"');
   const sections = [...dialog.matchAll(/<section class="settings-section project-form-section project-edit-dialog-section"[^>]*>([\s\S]*?)<\/section>/g)];
   expect(sections).toHaveLength(2);
@@ -214,7 +214,7 @@ function expectEditChapterDialog(html, chapterId, open) {
   expect(/<dialog\b[^>]*\sopen(?:\s|>)/.test(dialog)).toBe(open);
   expect(dialog).not.toContain('data-dialog-backdrop-static');
   expect(dialog).toContain('data-dialog-form data-dialog-async="false" novalidate');
-  expect(dialog).toContain('type="submit" data-dialog-submit>Save</button>');
+  expect(dialog).toContain('type="submit" form="chapter-form" data-dialog-submit>Save</button>');
   expect(dialog).toContain('<form id="chapter-form" method="post" action="/notes/chapters/' + chapterId + '"');
   expect(dialog).toMatch(/<form id="chapter-form"[\s\S]*?name="_csrf"[^>]+value="[^"]+"/);
   expect(dialog.match(/<form\b/g)).toHaveLength(2);
@@ -322,7 +322,7 @@ describe('top-level Notes HTTP slice', () => {
     expectNewNoteDialog(response.text, true);
     expect(response.text).toContain(`<h1 class="app-section-title">Notes — ${chapter.title}</h1>`);
     expect(response.text).toContain('<header class="page-heading">');
-    expect(response.text).toContain('<button class="button button-primary" type="submit" form="note-form" data-dialog-submit>Create</button>');
+    expect(response.text).toMatch(/<button class="button button-primary" type="submit" form="note-form" data-dialog-submit><span class="project-create-submit-icon" aria-hidden="true">[\s\S]*?<\/span>Create<\/button>/);
     expect(response.text).toContain('data-dialog-close aria-label="Close New Page"');
     expect(response.text).toContain('<form id="note-form" method="post" action="/notes"');
     expect(response.text).toContain(`<input type="hidden" name="chapterId" value="${chapter.id}">`);
@@ -537,7 +537,7 @@ describe('top-level Notes HTTP slice', () => {
     expect(getNewNoteDialog(response.text)).not.toContain('<nav class="notes-page-nav"');
     expect(response.text).toContain(`<input type="hidden" name="chapterId" value="${chapter.id}">`);
     expect(response.text).toContain('data-notes-editor-form');
-    expect(response.text).toContain('<button class="button button-primary" type="submit" form="note-form" data-dialog-submit>Create</button>');
+    expect(response.text).toMatch(/<button class="button button-primary" type="submit" form="note-form" data-dialog-submit><span class="project-create-submit-icon" aria-hidden="true">[\s\S]*?<\/span>Create<\/button>/);
     expect(response.text).toContain('>Connections</h3>');
     expect(response.text).not.toContain('Move Page');
     expect(response.text).not.toContain('Delete Page');

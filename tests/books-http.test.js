@@ -14,7 +14,7 @@ import { getDisabledModeCsrf } from './helpers/auth.js';
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
 function expectBookSections(dialog, { edit = false, hasCover = false } = {}) {
-  expect(dialog).toContain('class="app-dialog project-form-dialog"');
+  expect(dialog).toContain('class="app-dialog project-form-dialog app-dialog--refined"');
   const sections = [...dialog.matchAll(/<section class="settings-section project-form-section project-edit-dialog-section"[^>]*>[\s\S]*?<\/section>/g)].map(([section]) => section);
   expect(sections).toHaveLength(2);
   expect(sections[0]).toContain('data-notes-dialog-compact-section data-notes-book-details-section');
@@ -114,7 +114,7 @@ function expectEditBookDialog(html, bookId, open, hasCover = false) {
 
 function expectNewChapterDialog(html, bookId, open, hasBookCover = false) {
   const dialog = html.match(/<dialog\b[^>]*id="chapter-create-dialog"[\s\S]*?<\/dialog>/)?.[0] || '';
-  expect(dialog).toContain('class="app-dialog project-form-dialog"');
+  expect(dialog).toContain('class="app-dialog project-form-dialog app-dialog--refined"');
   expect(dialog).toContain('class="app-dialog-form project-form project-edit-dialog-form"');
   const sections = [...dialog.matchAll(/<section class="settings-section project-form-section project-edit-dialog-section"[^>]*>([\s\S]*?)<\/section>/g)];
   expect(sections).toHaveLength(1);

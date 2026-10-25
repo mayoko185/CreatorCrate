@@ -4727,15 +4727,6 @@
       .project-form-dialog .project-form [data-notes-dialog-compact-section] > h3 {
         margin-inline: 0;
       }
-      #book-order-dialog [data-notes-book-order-page] > h3 {
-        padding: var(--space-sm) var(--space-md);
-        font-size: 0.75rem;
-        font-family: var(--mono);
-        text-transform: uppercase;
-        letter-spacing: 0.06em;
-        color: var(--muted);
-        border-bottom: 1px solid var(--border);
-      }
       .project-form-dialog .project-form [data-notes-book-actions-section] {
         padding-bottom: 0;
       }
@@ -4744,10 +4735,6 @@
       }
       .project-form-dialog [data-notes-book-actions-section] .notes-workspace-disclosure-content {
         padding-bottom: 0;
-      }
-      #book-create-dialog .app-dialog-body,
-      #book-edit-dialog .app-dialog-body {
-        padding-bottom: var(--space-sm);
       }
       .book-transfer-dialog .app-dialog-card {
         inline-size: min(42rem, calc(100vw - (2 * var(--space-md))));
@@ -9633,8 +9620,10 @@
         color: var(--muted);
         font-size: 0.75rem;
       }
+      /* Chapter cards take the raised card surface, so their Pages step back
+         to the section surface. */
       #book-order-dialog [data-book-hierarchy-container^="chapter:"] > [data-book-hierarchy-item] {
-        background: var(--surface-card);
+        background: var(--surface);
       }
       #book-order-dialog [data-book-hierarchy-container^="chapter:"] > [data-book-hierarchy-item]:hover {
         background: rgba(34, 211, 238, 0.14);
@@ -9670,7 +9659,7 @@
           width: calc(67vw - 0.67rem);
           max-width: calc(67vw - 0.67rem);
         }
-        #book-order-dialog .project-edit-dialog-section-body {
+        #book-order-dialog .project-edit-dialog-section {
           padding-inline: var(--space-sm);
         }
         #book-order-dialog [data-book-hierarchy-container^="chapter:"] {
@@ -13059,15 +13048,16 @@
    and New Release's submits lead with a cyan plus square, as do the
    Dashboard's New Release/New Project header links and Manage signatures'
    Add button; actions without the icon keep symmetric padding. Manage
-   Categories' Add and Edit Asset's per-section submits take the same dark
-   treatment. Disabled styling, hover
-   brightness, focus ring, and pressed movement come from the rules around
-   it. */
+   Categories' Add, Edit Asset's per-section submits, and Import/Export Books'
+   Export and Import submits take the same dark treatment. Disabled styling,
+   hover brightness, focus ring, and pressed movement come from the rules
+   around it. */
 .button.dashboard-create-action,
 .app-dialog .app-dialog-footer > .button-primary,
 #release-signatures-dialog.app-dialog--refined [data-release-signature-add],
 #project-asset-category-management-dialog .project-category-management-add-submit > .button-primary,
-#asset-edit-dialog .asset-action-form .button-primary {
+#asset-edit-dialog .asset-action-form .button-primary,
+#book-transfer-dialog .book-transfer-section .button-primary {
   gap: var(--space-sm);
   min-height: 2.25rem;
   padding: 0 var(--space-md);
@@ -13085,7 +13075,8 @@
 .app-dialog .app-dialog-footer > .button-primary:not(:disabled):not([aria-disabled="true"]),
 #release-signatures-dialog.app-dialog--refined [data-release-signature-add]:not(:disabled):not([aria-disabled="true"]),
 #project-asset-category-management-dialog .project-category-management-add-submit > .button-primary:not(:disabled):not([aria-disabled="true"]),
-#asset-edit-dialog .asset-action-form .button-primary:not(:disabled):not([aria-disabled="true"]) {
+#asset-edit-dialog .asset-action-form .button-primary:not(:disabled):not([aria-disabled="true"]),
+#book-transfer-dialog .book-transfer-section .button-primary:not(:disabled):not([aria-disabled="true"]) {
   border: 1px solid var(--border-strong);
   background: var(--bg);
   color: var(--text);
@@ -13095,7 +13086,8 @@
 .app-dialog .app-dialog-footer > .button-primary:hover:not(:disabled):not([aria-disabled="true"]),
 #release-signatures-dialog.app-dialog--refined [data-release-signature-add]:hover:not(:disabled):not([aria-disabled="true"]),
 #project-asset-category-management-dialog .project-category-management-add-submit > .button-primary:hover:not(:disabled):not([aria-disabled="true"]),
-#asset-edit-dialog .asset-action-form .button-primary:hover:not(:disabled):not([aria-disabled="true"]) {
+#asset-edit-dialog .asset-action-form .button-primary:hover:not(:disabled):not([aria-disabled="true"]),
+#book-transfer-dialog .book-transfer-section .button-primary:hover:not(:disabled):not([aria-disabled="true"]) {
   border-color: var(--accent);
 }
 .project-create-submit-icon {
@@ -13168,22 +13160,326 @@ button[aria-disabled="true"] > .project-create-submit-icon {
 }
 
 /* ── Project actions (Edit Project) ── */
-/* Edit Asset's File actions use the same disclosure rows. */
-.app-dialog--refined :is(.project-edit-dialog-actions-body, .asset-edit-dialog-actions-body) {
+/* Edit Asset's File actions and the Book, Chapter, and Page actions use the
+   same disclosure rows. */
+.app-dialog--refined :is(.project-edit-dialog-actions-body, .asset-edit-dialog-actions-body),
+.app-dialog--refined :is([data-notes-book-actions-section], [data-notes-chapter-actions-section], [data-notes-page-actions-section]) > .project-edit-dialog-section-body {
   gap: 0;
 }
-.app-dialog--refined :is(.project-edit-dialog-actions, .asset-actions-section) .notes-workspace-disclosure:first-child {
+.app-dialog--refined :is(.project-edit-dialog-actions, .asset-actions-section) .notes-workspace-disclosure:first-child,
+.app-dialog--refined :is([data-notes-book-actions-section], [data-notes-chapter-actions-section], [data-notes-page-actions-section]) .notes-workspace-disclosure:first-child {
   border-top: 0;
 }
-.app-dialog--refined :is(.project-edit-dialog-actions, .asset-actions-section) .notes-workspace-disclosure summary {
+.app-dialog--refined :is(.project-edit-dialog-actions, .asset-actions-section) .notes-workspace-disclosure summary,
+.app-dialog--refined :is([data-notes-book-actions-section], [data-notes-chapter-actions-section], [data-notes-page-actions-section]) .notes-workspace-disclosure summary {
   min-height: 2rem;
   font-size: 0.875rem;
 }
-.app-dialog--refined :is(.project-edit-dialog-actions, .asset-actions-section) .notes-workspace-disclosure--delete summary {
+.app-dialog--refined :is(.project-edit-dialog-actions, .asset-actions-section) .notes-workspace-disclosure--delete summary,
+.app-dialog--refined :is([data-notes-book-actions-section], [data-notes-chapter-actions-section], [data-notes-page-actions-section]) .notes-workspace-disclosure--delete summary {
   color: var(--badge-danger-fg);
 }
-.app-dialog--refined .project-edit-dialog-actions .notes-workspace-disclosure-content form {
+.app-dialog--refined .project-edit-dialog-actions .notes-workspace-disclosure-content form,
+.app-dialog--refined [data-notes-chapter-actions-section] .notes-workspace-disclosure-content form {
   justify-items: start;
+}
+
+/* ── New/Edit Book and New/Edit Chapter ──
+   Book forms wrap the dialog body (Edit Book's autosave controller mounts
+   errors, status, and retry controls there), and the create forms also
+   wrap their footer, so the form adds no gap of its own; the body supplies
+   the section rhythm. Edit Book autosaves and has no footer, so its body
+   keeps the side inset at the bottom. */
+.app-dialog--refined.project-form-dialog .app-dialog-card > .project-edit-dialog-form {
+  gap: 0;
+}
+.app-dialog--refined.project-form-dialog .app-dialog-body > .error-summary {
+  margin: 0;
+}
+#book-edit-dialog.app-dialog--refined .app-dialog-body {
+  padding-bottom: var(--space-lg);
+}
+#book-edit-dialog.app-dialog--refined .app-dialog-body > .button {
+  align-self: flex-start;
+}
+/* The autosave status is Edit Book's visible save feedback; it reserves no
+   space while idle and reads in the danger tone after a failed save. */
+#book-edit-dialog.app-dialog--refined [data-book-edit-save-status] {
+  color: var(--muted);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+#book-edit-dialog.app-dialog--refined [data-book-edit-save-status]:empty {
+  margin-top: calc(-1 * var(--space-md));
+}
+#book-edit-dialog.app-dialog--refined [data-book-edit-save-state$='error'] [data-book-edit-save-status] {
+  color: var(--badge-danger-fg);
+}
+.app-dialog--refined [data-notes-book-actions-section] .notes-workspace-disclosure-content > .button {
+  justify-self: start;
+}
+/* The cover upload and the Books ZIP import stay native file inputs; only
+   their button follows the secondary button treatment. */
+.app-dialog--refined [data-notes-book-actions-section] .field input[type='file'],
+#book-transfer-dialog.app-dialog--refined .field input[type='file'] {
+  min-width: 0;
+  max-width: 100%;
+  color: var(--muted);
+  font: inherit;
+  font-size: 0.8125rem;
+}
+.app-dialog--refined [data-notes-book-actions-section] .field input[type='file']::file-selector-button,
+#book-transfer-dialog.app-dialog--refined .field input[type='file']::file-selector-button {
+  min-height: 1.875rem;
+  margin-right: var(--space-sm);
+  padding: 0 0.625rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--refined-control-radius);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+.app-dialog--refined [data-notes-book-actions-section] .field input[type='file']:hover::file-selector-button,
+#book-transfer-dialog.app-dialog--refined .field input[type='file']:hover::file-selector-button {
+  background: var(--surface-hover);
+}
+.app-dialog--refined [data-notes-book-actions-section] .field input[type='file']:focus-visible,
+#book-transfer-dialog.app-dialog--refined .field input[type='file']:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+  border-radius: var(--refined-control-radius);
+}
+
+/* ── Book, Book hierarchy, and Chapter ordering ──
+   Change book order and Reorder book contents save each move as it lands;
+   a Chapter's Change order keeps its moves as a draft until Save. The lists
+   keep their reorder cards, handles, and drop indicators, and these rules
+   only bring the cards onto the raised card surface and the dialog type
+   scale. Change book order has no section heading, so its list sits directly
+   in the dialog body. The ids sit in :where() so the hierarchy's own Page
+   and drag-state rules keep precedence. */
+:where(#books-order-dialog, #book-order-dialog, #chapter-order-dialog).app-dialog--refined .help-text {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+#books-order-dialog.app-dialog--refined .notes-books-order {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+}
+/* The hierarchy and Pages sections are not settings sections, so they take
+   the column layout that spaces the heading from the section body. */
+:where(#book-order-dialog, #chapter-order-dialog).app-dialog--refined .project-edit-dialog-section {
+  display: flex;
+  flex-direction: column;
+}
+:where(#books-order-dialog, #book-order-dialog, #chapter-order-dialog).app-dialog--refined .notes-reorder-row {
+  border-color: var(--border);
+  border-radius: var(--refined-control-radius);
+  background: var(--surface-card);
+}
+:where(#books-order-dialog, #book-order-dialog, #chapter-order-dialog).app-dialog--refined .notes-reorder-row:hover {
+  background: var(--surface-hover);
+}
+:where(#books-order-dialog, #book-order-dialog, #chapter-order-dialog).app-dialog--refined .notes-reorder-row:focus-within {
+  border-color: var(--border-strong);
+}
+:where(#books-order-dialog, #book-order-dialog, #chapter-order-dialog).app-dialog--refined :is(.notes-book-content-title, .notes-chapter-page-title) {
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.4;
+}
+:where(#books-order-dialog, #book-order-dialog, #chapter-order-dialog).app-dialog--refined .notes-reorder-handle {
+  font-size: 1.125rem;
+}
+:where(#books-order-dialog, #book-order-dialog, #chapter-order-dialog).app-dialog--refined .notes-reorder-handle:hover {
+  border-color: var(--border-strong);
+}
+/* Saves report on the status line as they settle; it keeps its height while
+   idle so the first move does not shift the list, and reads in the danger
+   tone when a save or reconciliation fails. */
+:where(#books-order-dialog, #book-order-dialog).app-dialog--refined .app-dialog-form > .app-dialog-status {
+  min-height: calc(0.8125rem * 1.4);
+  margin-top: 0;
+  margin-bottom: var(--space-sm);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+:where(#books-order-dialog, #book-order-dialog).app-dialog--refined .app-dialog-form > .app-dialog-status[role="alert"] {
+  color: var(--danger);
+}
+:where(#books-order-dialog, #book-order-dialog).app-dialog--refined .app-dialog-status > .button {
+  margin-left: var(--space-sm);
+}
+:where(#books-order-dialog, #chapter-order-dialog).app-dialog--refined .empty-state {
+  padding: 0;
+  font-size: 0.875rem;
+  text-align: left;
+}
+:where(#books-order-dialog, #chapter-order-dialog).app-dialog--refined .empty-state .empty-state-heading {
+  margin-bottom: var(--space-xs);
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+:where(#books-order-dialog, #chapter-order-dialog).app-dialog--refined .empty-state p {
+  max-width: none;
+  margin: 0;
+}
+:where(#books-order-dialog, #chapter-order-dialog).app-dialog--refined .empty-state .empty-state-actions {
+  justify-content: flex-start;
+}
+/* A Chapter without Pages has nothing to save, so its footer stays empty. */
+#chapter-order-dialog.app-dialog--refined .app-dialog-footer:not(:has(> *)) {
+  display: none;
+}
+
+/* ── Import/Export Books ──
+   Export and Import stay separate forms in their own section cards; each
+   keeps its instructions, its submit, and its status line. The Book list
+   scrolls on its own so a long shelf leaves the Import section in reach. */
+#book-transfer-dialog.app-dialog--refined .book-transfer-section {
+  display: flex;
+  flex-direction: column;
+}
+#book-transfer-dialog.app-dialog--refined .book-transfer-section form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  min-width: 0;
+}
+#book-transfer-dialog.app-dialog--refined .book-transfer-section form > .button {
+  align-self: flex-start;
+}
+#book-transfer-dialog.app-dialog--refined :is(.book-transfer-selection-heading, .book-transfer-book-list, .book-transfer-status, .book-transfer-result) {
+  margin: 0;
+}
+#book-transfer-dialog.app-dialog--refined .book-transfer-selection-heading p {
+  color: var(--muted);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+#book-transfer-dialog.app-dialog--refined .book-transfer-book-list {
+  gap: 0;
+  padding: var(--space-xs);
+  border: 1px solid var(--border);
+  border-radius: var(--refined-control-radius);
+  background: var(--bg);
+}
+#book-transfer-dialog.app-dialog--refined .book-transfer-book-option {
+  min-height: 2rem;
+  font-size: 0.875rem;
+  line-height: 1.4;
+  cursor: pointer;
+}
+#book-transfer-dialog.app-dialog--refined .book-transfer-book-option input[type='checkbox'] {
+  flex: none;
+  accent-color: var(--accent);
+}
+#book-transfer-dialog.app-dialog--refined .book-transfer-book-option:focus-within {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+#book-transfer-dialog.app-dialog--refined .book-transfer-status {
+  color: var(--muted);
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+#book-transfer-dialog.app-dialog--refined .book-transfer-status[data-status-kind='error'] {
+  color: var(--danger);
+}
+/* The import result is rendered client-side after a confirmed import. Its
+   heading is a summary title, not another section header. */
+#book-transfer-dialog.app-dialog--refined .book-transfer-result:not([hidden]) {
+  display: grid;
+  gap: var(--space-sm);
+  padding: var(--space-md);
+  border: 1px solid var(--border);
+  border-radius: var(--refined-control-radius);
+  background: var(--surface-card);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+#book-transfer-dialog.app-dialog--refined .book-transfer-result:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+#book-transfer-dialog.app-dialog--refined .book-transfer-result h3 {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+#book-transfer-dialog.app-dialog--refined .book-transfer-result :is(p, ul) {
+  margin: 0;
+}
+#book-transfer-dialog.app-dialog--refined .book-transfer-result ul {
+  padding-left: var(--space-lg);
+}
+#book-transfer-dialog.app-dialog--refined .book-transfer-warning {
+  display: grid;
+  gap: var(--space-xs);
+  color: var(--badge-danger-fg);
+}
+
+/* ── New/Edit Page ──
+   The Page form shares the section cards, so these rules only fit its own
+   pieces into them: the Book contents card with its attached Expand tab,
+   the Connections picker body, and Page actions, which sits outside the
+   form and so lacks the form's section layout. The Toast UI editor and the
+   Markdown source keep the workspace editor rules. */
+.app-dialog--refined.project-form-dialog .project-edit-dialog-section[aria-labelledby="notes-book-contents-heading"] {
+  padding-bottom: 0;
+}
+/* Collapsed, the card closes the heading with the same inset the other
+   cards end with; open, the navigator runs to the card edge so the tab
+   stays attached below it. */
+.app-dialog--refined .notes-book-contents-disclosure {
+  min-height: calc(var(--space-lg) - 0.625rem);
+}
+.app-dialog--refined.project-form-dialog [data-notes-dialog-compact-section] > .notes-book-contents-disclosure > .project-edit-dialog-section-body {
+  padding: 0 0 var(--space-lg);
+}
+.app-dialog--refined [data-notes-page-actions-section] {
+  display: flex;
+  flex-direction: column;
+}
+.app-dialog--refined [data-notes-page-actions-section] .notes-workspace-disclosure-content > .button {
+  justify-self: start;
+}
+/* Move Page's destination dropdown sits inside a disclosure row, so its
+   trigger sheds the row summary's link styling and height. */
+.app-dialog--refined [data-notes-page-actions-section] .asset-filter-multiselect summary {
+  justify-content: normal;
+  min-height: var(--refined-control-height);
+  color: var(--text);
+  font-weight: 400;
+}
+.app-dialog--refined.project-form-dialog .notes-connections [data-note-connections] {
+  gap: var(--space-md);
+}
+.app-dialog--refined .notes-connections-description,
+.app-dialog--refined [data-note-retained-assets] > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+.app-dialog--refined [data-note-assets-status] {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
 }
 
 /* ── Release details and Scheduling (New/Edit Release) ──

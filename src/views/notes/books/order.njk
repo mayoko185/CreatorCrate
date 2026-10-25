@@ -1,6 +1,6 @@
 {% import "partials/dialog.njk" as dialog %}
 
-{% call dialog.render('book-order-dialog', 'Reorder book contents', bookOrderDialogOpen, '', '', 'project-form-dialog') %}
+{% call dialog.render('book-order-dialog', 'Reorder book contents', bookOrderDialogOpen, '', '', 'project-form-dialog app-dialog--refined') %}
   <form id="notes-book-order-form" method="post" action="/notes/books/{{ book.id }}/hierarchy/reorder" data-book-hierarchy-form
         class="app-dialog-form project-form project-edit-dialog-form" data-dialog-form data-dialog-async="false">
     <input type="hidden" name="_csrf" value="{{ _csrf }}">

@@ -1,13 +1,13 @@
 {% import "partials/dialog.njk" as dialog %}
-{% call dialog.render('chapter-order-dialog', 'Change order', chapterOrderDialogOpen, '', '', 'project-form-dialog') %}
+{% call dialog.render('chapter-order-dialog', 'Change order', chapterOrderDialogOpen, '', '', 'project-form-dialog app-dialog--refined') %}
   <form id="notes-chapter-order-form" method="post" action="/notes/chapters/{{ chapter.id }}/notes/reorder" data-chapter-page-reorder-form
         class="app-dialog-form project-form project-edit-dialog-form" data-dialog-form data-dialog-async="false">
     <input type="hidden" name="_csrf" value="{{ _csrf }}">
     <div class="app-dialog-body">
       {% if chapterOrderNotice %}<div class="error-summary" role="alert"><p>{{ chapterOrderNotice.text }}</p></div>{% endif %}
-      <section class="notes-chapter-order" data-notes-chapter-order-page aria-labelledby="notes-order-heading">
+      <section class="notes-chapter-order project-edit-dialog-section" data-notes-chapter-order-page aria-labelledby="notes-order-heading">
         <h3 id="notes-order-heading">Pages</h3>
-
+        <div class="project-edit-dialog-section-body">
         {% if notes.length > 0 %}
           <p class="help-text" id="notes-chapter-order-instructions">
             Drag a Page card to move it, or focus its handle and use Arrow Up, Arrow Down, Home, or End. Select Save to keep the new order.
@@ -61,6 +61,7 @@
           {% set emptyActionLabel = "New Page" %}
           {% include "partials/empty-state.njk" %}
         {% endif %}
+        </div>
       </section>
     </div>
     <footer class="app-dialog-footer">

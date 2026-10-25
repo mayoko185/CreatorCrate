@@ -232,7 +232,7 @@
   {% set values = chapterCreateForm.values %}
   {% set errors = chapterCreateForm.errors %}
   {% set chapterTitleId = 'chapter-create-title' %}
-  {% call dialog.render('chapter-create-dialog', 'New Chapter', chapterCreateDialogOpen, '', '', 'project-form-dialog') %}
+  {% call dialog.render('chapter-create-dialog', 'New Chapter', chapterCreateDialogOpen, '', '', 'project-form-dialog app-dialog--refined') %}
     <form id="chapter-form" method="post" action="{{ chapterCreateForm.submitUrl }}" class="app-dialog-form project-form project-edit-dialog-form"
           data-dialog-form data-dialog-async="false" data-dialog-reset-on-close{% if errors.title or errors.general %} data-dialog-reset-values="{{ { title: '' } | dump }}"{% endif %} novalidate>
       <input type="hidden" name="_csrf" value="{{ _csrf }}">
@@ -243,7 +243,7 @@
         {% include "notes/chapters/form-fields.njk" %}
       </div>
       <footer class="app-dialog-footer">
-        <button class="button button-primary" type="submit" data-dialog-submit>Create</button>
+        <button class="button button-primary" type="submit" data-dialog-submit><span class="project-create-submit-icon" aria-hidden="true">{{ icons.icon('plus') }}</span>Create</button>
       </footer>
     </form>
   {% endcall %}
@@ -251,7 +251,7 @@
   {% set values = bookEditForm.values %}
   {% set errors = bookEditForm.errors %}
   {% set bookCoverSource = bookEditForm.book.primaryImage.selectedSource %}
-  {% call dialog.render('book-edit-dialog', 'Edit Book', bookEditDialogOpen, '', '', 'project-form-dialog') %}
+  {% call dialog.render('book-edit-dialog', 'Edit Book', bookEditDialogOpen, '', '', 'project-form-dialog app-dialog--refined') %}
     <form id="book-form" method="post" action="{{ bookEditForm.submitUrl }}" enctype="multipart/form-data" class="app-dialog-form project-form project-edit-dialog-form"
           data-dialog-form data-dialog-async="false" data-book-edit-autosave novalidate>
       <input type="hidden" name="_csrf" value="{{ _csrf }}">

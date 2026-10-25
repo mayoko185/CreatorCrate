@@ -79,11 +79,12 @@ test('New and Edit Page primary sections have compact overall padding', async ({
           expect(Math.abs(geometry.centerOffset)).toBeLessThanOrEqual(1);
           expect(Math.abs(geometry.attachment - 1)).toBeLessThanOrEqual(0.5);
           expect(geometry.following.top - geometry.tab.bottom).toBeGreaterThanOrEqual(8);
-          expect(geometry.tab.top - geometry.heading.bottom).toBeGreaterThanOrEqual(23);
+          // The refined card closes the heading with its bottom inset.
+          expect(geometry.tab.top - geometry.heading.bottom).toBeGreaterThanOrEqual(15);
           if (state === 'expanded') {
             expect(Math.abs(geometry.body.bottom - geometry.tab.top)).toBeLessThanOrEqual(1);
           }
-          expect(geometry).toMatchObject({ display: 'flex', topBorder: '0px', headingBorder: '1px', disclosureBorder: '0px' });
+          expect(geometry).toMatchObject({ display: 'flex', topBorder: '0px', headingBorder: '0px', disclosureBorder: '0px' });
           return geometry;
         };
         const collapsedGeometry = await checkTabGeometry('collapsed');
@@ -153,13 +154,20 @@ test('New and Edit Page primary sections have compact overall padding', async ({
           };
         });
         expect(result.sectionPadding).toHaveLength(3);
-        expect(result.sectionPadding.every(value => value.every(side => side === '0px'))).toBe(true);
-        expect(result.bodyPadding).toEqual([
-          ['12px', '12px', '12px', '12px'],
-          ['12px', '12px', '12px', '12px'],
-          ['12px', '12px', '12px', '12px'],
+        // Refined section cards carry the inset; Book contents' navigator
+        // body supplies the card's bottom inset so the tab stays attached.
+        const sectionInset = viewport.width <= 540 ? ['12px', '12px', '12px', '12px'] : ['12px', '16px', '16px', '16px'];
+        expect(result.sectionPadding).toEqual([
+          [...sectionInset.slice(0, 2), '0px', sectionInset[3]],
+          sectionInset,
+          sectionInset,
         ]);
-        expect(result.actionPadding).toEqual(route.endsWith('/edit') ? ['12px', '16px', '16px', '16px'] : null);
+        expect(result.bodyPadding).toEqual([
+          ['0px', '0px', '16px', '0px'],
+          ['0px', '0px', '0px', '0px'],
+          ['0px', '0px', '0px', '0px'],
+        ]);
+        expect(result.actionPadding).toEqual(route.endsWith('/edit') ? ['0px', '0px', '0px', '0px'] : null);
         expect(result.editorFits).toBe(true);
         expect(result.headingContained).toBe(true);
         expect(result.connectionsUsable).toBe(true);

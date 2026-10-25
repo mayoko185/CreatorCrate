@@ -1,5 +1,6 @@
 {% import "partials/dialog.njk" as noteDialog %}
 {% import "partials/dropdown.njk" as dropdown %}
+{% import "partials/icons.njk" as icons %}
 
 {% if noteFormModel %}
   {% set noteTitleId = 'note-edit-title' if noteFormModel.action == 'Edit' else 'note-create-title' %}
@@ -9,7 +10,7 @@
   {% set selectedProjectIds = noteFormModel.selectedProjectIds %}
   {% set selectedAssetIds = noteFormModel.selectedAssetIds %}
   {% set selectedAssets = noteFormModel.selectedAssets %}
-  {% call noteDialog.render(noteDialogId, noteDialogTitle, noteDialogOpen, '', 'note-form', 'project-form-dialog') %}
+  {% call noteDialog.render(noteDialogId, noteDialogTitle, noteDialogOpen, '', 'note-form', 'project-form-dialog app-dialog--refined') %}
     <div class="app-dialog-body project-edit-dialog-body">
       <form id="note-form" method="post" action="{{ noteFormModel.submitUrl }}" class="app-dialog-form project-form project-edit-dialog-form notes-form notes-workspace"
             data-notes-editor-form data-note-dialog-dirty data-dialog-form data-dialog-async="false" novalidate>
@@ -57,7 +58,7 @@
       </form>
       {% if noteFormModel.action == 'Edit' %}
         {% set moveTargets = noteFormModel.moveTargets %}
-        <section class="settings-section project-form-section project-edit-dialog-section notes-workspace-secondary" aria-labelledby="notes-page-actions-heading">
+        <section class="settings-section project-form-section project-edit-dialog-section notes-workspace-secondary" data-notes-page-actions-section aria-labelledby="notes-page-actions-heading">
           <h3 id="notes-page-actions-heading">Page actions</h3>
           <div class="project-form-section-body project-edit-dialog-section-body">
 
@@ -101,7 +102,7 @@
     </div>
     <div class="app-dialog-status" data-dialog-status role="status" aria-live="polite"></div>
     <footer class="app-dialog-footer">
-      <button class="button button-primary" type="submit" form="note-form" data-dialog-submit>{{ 'Save' if noteFormModel.action == 'Edit' else 'Create' }}</button>
+      <button class="button button-primary" type="submit" form="note-form" data-dialog-submit>{% if noteFormModel.action == 'Edit' %}Save{% else %}<span class="project-create-submit-icon" aria-hidden="true">{{ icons.icon('plus') }}</span>Create{% endif %}</button>
     </footer>
   {% endcall %}
 {% endif %}

@@ -57,23 +57,18 @@
   {% set values = chapterEditForm.values %}
   {% set errors = chapterEditForm.errors %}
   {% set chapterTitleId = 'chapter-edit-title' %}
-  {% call dialog.render('chapter-edit-dialog', 'Edit Chapter', chapterEditDialogOpen, '', '', 'project-form-dialog') %}
-    <form id="chapter-form" method="post" action="{{ chapterEditForm.submitUrl }}" class="app-dialog-form project-form project-edit-dialog-form"
-          data-dialog-form data-dialog-async="false" data-dialog-reset-on-close{% if errors.title or errors.general %} data-dialog-reset-values="{{ { title: chapter.title } | dump }}"{% endif %} novalidate>
-      <input type="hidden" name="_csrf" value="{{ _csrf }}">
-      <div class="app-dialog-body">
+  {% call dialog.render('chapter-edit-dialog', 'Edit Chapter', chapterEditDialogOpen, '', '', 'project-form-dialog app-dialog--refined') %}
+    <div class="app-dialog-body project-form">
+      <form id="chapter-form" method="post" action="{{ chapterEditForm.submitUrl }}" class="app-dialog-form project-form project-edit-dialog-form"
+            data-dialog-form data-dialog-async="false" data-dialog-reset-on-close{% if errors.title or errors.general %} data-dialog-reset-values="{{ { title: chapter.title } | dump }}"{% endif %} novalidate>
+        <input type="hidden" name="_csrf" value="{{ _csrf }}">
         {% if errors.general %}
           <div class="error-summary" role="alert"><p>{{ errors.general }}</p></div>
         {% endif %}
         {% include "notes/chapters/form-fields.njk" %}
-      </div>
-      <footer class="app-dialog-footer">
-        <button class="button button-primary" type="submit" data-dialog-submit>Save</button>
-      </footer>
-    </form>
+      </form>
 
-    <div class="app-dialog-body project-form">
-      <section class="settings-section project-form-section project-edit-dialog-section" aria-labelledby="chapter-actions-heading">
+      <section class="settings-section project-form-section project-edit-dialog-section" data-notes-chapter-actions-section aria-labelledby="chapter-actions-heading">
         <h3 id="chapter-actions-heading">Chapter Actions</h3>
         <div class="project-form-section-body project-edit-dialog-section-body">
         <details class="notes-workspace-disclosure notes-workspace-disclosure--delete">
@@ -89,5 +84,8 @@
         </div>
       </section>
     </div>
+    <footer class="app-dialog-footer">
+      <button class="button button-primary" type="submit" form="chapter-form" data-dialog-submit>Save</button>
+    </footer>
   {% endcall %}
 {% endblock %}

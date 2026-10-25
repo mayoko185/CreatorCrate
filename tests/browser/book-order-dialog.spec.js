@@ -60,7 +60,6 @@ for (const kind of ['books', 'contents', 'pages']) {
         const body = section.querySelector(':scope > .project-edit-dialog-section-body');
         const rowHeading = body?.querySelector('.notes-book-content-title');
         const sectionStyle = getComputedStyle(section);
-        const bodyStyle = getComputedStyle(body);
         const rowHeadingStyle = getComputedStyle(rowHeading);
         return {
           directChildren: [heading?.tagName, body?.className],
@@ -71,7 +70,7 @@ for (const kind of ['books', 'contents', 'pages']) {
             sectionStyle.borderBottomWidth,
             sectionStyle.borderLeftWidth,
           ],
-          bodyPadding: [bodyStyle.paddingTop, bodyStyle.paddingRight, bodyStyle.paddingBottom, bodyStyle.paddingLeft],
+          sectionPadding: [sectionStyle.paddingTop, sectionStyle.paddingRight, sectionStyle.paddingBottom, sectionStyle.paddingLeft],
           headingPadding: getComputedStyle(heading).padding,
           headingSize: getComputedStyle(heading).fontSize,
           headingTransform: getComputedStyle(heading).textTransform,
@@ -82,10 +81,12 @@ for (const kind of ['books', 'contents', 'pages']) {
       expect(structure.directChildren).toEqual(['H3', 'project-edit-dialog-section-body']);
       expect(structure.hasSettingsSectionClass).toBe(false);
       expect(structure.borderWidths).toEqual(['1px', '1px', '1px', '1px']);
-      expect(structure.bodyPadding.every(value => value !== '0px')).toBe(true);
-      expect(structure.headingPadding).toBe('8px 12px');
-      expect(structure.headingSize).toBe('12px');
-      expect(structure.headingTransform).toBe('uppercase');
+      // The refined section card supplies the inset, and its heading is the
+      // compact accent heading rather than a mono header bar.
+      expect(structure.sectionPadding.every(value => value !== '0px')).toBe(true);
+      expect(structure.headingPadding).toBe('0px');
+      expect(structure.headingSize).toBe('14px');
+      expect(structure.headingTransform).toBe('none');
       expect(structure.footerOutsideBody).toBe(true);
       expect(structure.rowHeadingPadding).toEqual(['0px', '0px', '0px', '0px']);
 

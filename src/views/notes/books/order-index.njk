@@ -1,5 +1,5 @@
 {% import "partials/dialog.njk" as dialog %}
-{% call dialog.render('books-order-dialog', 'Change book order', booksOrderDialogOpen, '', '', 'project-form-dialog') %}
+{% call dialog.render('books-order-dialog', 'Change book order', booksOrderDialogOpen, '', '', 'project-form-dialog app-dialog--refined') %}
   <form id="notes-books-order-form" method="post" action="/notes/books/reorder" data-book-reorder-form
         class="app-dialog-form project-form project-edit-dialog-form" data-dialog-form data-dialog-async="false">
     <input type="hidden" name="_csrf" value="{{ _csrf }}">

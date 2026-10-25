@@ -344,13 +344,19 @@ describe('Notes Page detail hierarchy and layout contract', () => {
       expect(dialog).toContain('data-dialog-close aria-label="Close ' + mode + ' Chapter"');
       expect(/<dialog\b[^>]*\sopen(?:\s|>)/.test(dialog)).toBe(open);
       expect(dialog).not.toContain('data-dialog-backdrop-static');
-      for (const part of ['header', 'body', 'footer']) expect(dialog).toContain('class="app-dialog-' + part + '"');
+      for (const part of ['header', 'footer']) expect(dialog).toContain('class="app-dialog-' + part + '"');
+      expect(dialog).toMatch(/class="app-dialog-body(?: project-form)?"/);
       const forms = [...dialog.matchAll(/<form\b[^>]*>[\s\S]*?<\/form>/g)].map(([value]) => value);
       expect(forms).toHaveLength(edit ? 2 : 1);
       expect(classes(forms[0])).toEqual(expect.arrayContaining(['app-dialog-form', 'project-form', 'project-edit-dialog-form']));
       expect(forms[0]).toContain('id="chapter-form" method="post" action="' + submitUrl + '"');
       expect(forms[0]).toContain('data-dialog-form data-dialog-async="false" novalidate');
-      expect(forms[0]).toContain('type="submit" data-dialog-submit>' + (edit ? 'Save' : 'Create') + '</button>');
+      if (edit) {
+        expect(dialog).toContain('type="submit" form="chapter-form" data-dialog-submit>Save</button>');
+        expect(forms[0]).not.toContain('data-dialog-submit');
+      } else {
+        expect(forms[0]).toMatch(/type="submit" data-dialog-submit><span class="project-create-submit-icon" aria-hidden="true">[\s\S]*?<\/span>Create<\/button>/);
+      }
       const sections = [...forms[0].matchAll(/<section\b[^>]*>([\s\S]*?)<\/section>/g)];
       expect(sections).toHaveLength(1);
       expect(classes(sections[0][0])).toEqual(expect.arrayContaining([
