@@ -578,7 +578,7 @@ describe('Phase 10.6B: Visual-polish hardening', () => {
       expect(css).toMatch(/\.settings-asset-categories-content \.category-management-add-row\s*\{[^}]*align-items:\s*flex-start;/);
       expect(css).toMatch(/\.settings-asset-categories-content \.category-management-add-submit\s*\{[^}]*display:\s*flex;[^}]*flex:\s*0\s+0\s+auto;[^}]*align-self:\s*flex-start;[^}]*margin:\s*0;[^}]*padding-top:\s*calc\(1\.4rem\s*\+\s*var\(--space-xs\)\);/);
       expect(css).not.toMatch(/\.settings-asset-categories-content \.category-management-add-submit\s*\{[^}]*align-self:\s*flex-end;/);
-      expect(css).toMatch(/#project-asset-category-management-dialog \.project-category-management-add-submit\s*\{[^}]*align-self:\s*start;[^}]*padding-top:\s*calc\(1\.4rem\s*\+\s*var\(--space-xs\)\);/);
+      expect(css).toMatch(/#project-asset-category-management-dialog \.project-category-management-add-submit\s*\{[^}]*align-self:\s*start;[^}]*padding-top:\s*calc\(0\.8125rem \* 1\.3 \+ 0\.3125rem\);/);
       expect(css).toMatch(/@media \(max-width: 767px\)\s*\{[\s\S]*?\.settings-asset-categories-content \.category-management-add > \.category-management-form,[\s\S]*?padding:\s*var\(--space-sm\);/);
       expect(css).toMatch(/@media \(max-width: 540px\)\s*\{[\s\S]*?\.settings-asset-categories-content \.category-management-add-submit\s*\{[^}]*padding-top:\s*0;/);
       expect(css).not.toMatch(/\.settings-asset-categories-content\s*>\s*\*\s*\{[^}]*margin-bottom:\s*0;/);

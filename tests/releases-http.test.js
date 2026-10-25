@@ -2955,7 +2955,7 @@ describe('release HTTP workflow', () => {
         dialogId: 'release-publish-dialog',
         iconPath: '<circle cx="18" cy="5" r="3"/>',
       });
-      expect(res.text).toContain('<dialog id="release-publish-dialog" class="app-dialog project-form-dialog"');
+      expect(res.text).toContain('<dialog id="release-publish-dialog" class="app-dialog project-form-dialog app-dialog--refined"');
       expect(res.text).toContain('<div class="app-dialog-body project-edit-dialog-body">');
       expect(res.text).toContain('<form id="release-publish-form" method="post" action="' + releaseLocation + '/publish" class="app-dialog-form project-form project-edit-dialog-form"');
       expect(res.text).toMatch(/<form id="release-publish-form"[^>]*data-dialog-reset-on-close/);
@@ -3006,7 +3006,7 @@ describe('release HTTP workflow', () => {
         .set('Content-Type', 'application/x-www-form-urlencoded')
         .expect(422);
 
-      expect(res.text).toMatch(/<dialog id="release-publish-dialog" class="app-dialog project-form-dialog"[^>]*open/);
+      expect(res.text).toMatch(/<dialog id="release-publish-dialog" class="app-dialog project-form-dialog app-dialog--refined"[^>]*open/);
       expect(res.text).toContain('<div class="app-dialog-body project-edit-dialog-body">');
       expect(res.text).toContain('<section class="settings-section project-edit-dialog-section" data-release-dialog-compact-section aria-labelledby="release-publish-assets-heading">');
       expect(res.text).toContain('<section class="settings-section project-edit-dialog-section" data-release-dialog-compact-section aria-labelledby="release-publish-publication-heading">');

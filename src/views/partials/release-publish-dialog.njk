@@ -3,7 +3,7 @@
 
 {% macro render(release, project, releaseAssets, publishDialogForm, socialPrepPublish, csrfToken, open=false, publishProjectStatus=none) %}
   {% set errors = publishDialogForm.errors %}
-  {% call dialog.render('release-publish-dialog', 'Review & Publish', open, 'release-publish-description', 'release-publish-form', 'project-form-dialog') %}
+  {% call dialog.render('release-publish-dialog', 'Review & Publish', open, 'release-publish-description', 'release-publish-form', 'project-form-dialog app-dialog--refined') %}
     <p id="release-publish-description" class="app-dialog-description">
       Review the selected assets and choose the publication date.
     </p>

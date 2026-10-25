@@ -7,7 +7,7 @@
   close. Loop is transient: it starts unchecked for every opened video.
 #}
 {% import "partials/dialog.njk" as dialog %}
-{% call dialog.render('asset-video-preview-dialog', 'Video preview', false, '', '', 'asset-video-preview-dialog') %}
+{% call dialog.render('asset-video-preview-dialog', 'Video preview', false, '', '', 'asset-video-preview-dialog app-dialog--refined') %}
   <div class="app-dialog-body">
     <figure class="asset-video-preview" data-asset-video-playback data-asset-video-preview>
       <div class="asset-video-preview-stage" data-asset-video-preview-slot></div>

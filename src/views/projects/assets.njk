@@ -1157,7 +1157,7 @@
     {% include "partials/processing-dialogs.njk" %}
   {% endif %}
   {{ recoveryDetails.render(project, _csrf, isArchived) }}
-  {% call dialog.render('project-asset-category-management-dialog', 'Manage Categories', categoryManagementDialogOpen, 'project-asset-category-management-description') %}
+  {% call dialog.render('project-asset-category-management-dialog', 'Manage Categories', categoryManagementDialogOpen, 'project-asset-category-management-description', '', 'app-dialog--refined') %}
     <p id="project-asset-category-management-description" class="app-dialog-description">
       Manage categories and asset browser defaults for {{ project.title }}. Changes here apply only to this project.
     </p>
@@ -1263,13 +1263,15 @@
     {% call dialog.render('remove-missing-assets-dialog', 'Remove missing assets', removeMissingAssetsDialogOpen, 'remove-missing-assets-description', 'remove-missing-assets-form') %}
       <form id="remove-missing-assets-form" method="post" action="/projects/{{ project.id }}/assets/remove-missing"
             class="app-dialog-form" data-dialog-form data-dialog-async="false">
-        <p id="remove-missing-assets-description" class="app-dialog-description">
-          Only asset records currently marked missing will be removed. Files that are present will not be deleted.
-        </p>
-        <ul>
-          <li>Missing assets protected by published-release rules will remain.</li>
-          <li>This permanently removes eligible missing records and their associations. No files are deleted.</li>
-        </ul>
+        <div class="app-dialog-body">
+          <p id="remove-missing-assets-description" class="app-dialog-description">
+            Only asset records currently marked missing will be removed. Files that are present will not be deleted.
+          </p>
+          <ul class="remove-missing-assets-scope">
+            <li>Missing assets protected by published-release rules will remain.</li>
+            <li>This permanently removes eligible missing records and their associations. No files are deleted.</li>
+          </ul>
+        </div>
 
         <input type="hidden" name="_csrf" value="{{ _csrf }}">
         <input type="hidden" name="returnTo" value="{{ removeMissingAssetsReturnUrl }}">

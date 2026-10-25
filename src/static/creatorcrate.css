@@ -4713,14 +4713,6 @@
       #release-publish-dialog .scheduling-field {
         flex: 0 1 auto;
       }
-      /* Release details moved inside the publish form; keep its prior spacing. */
-      #release-publish-dialog .project-form > .release-publish-summary-section {
-        gap: 0;
-        padding: 0;
-      }
-      #release-publish-dialog .project-form > .release-publish-summary-section > h3 {
-        margin-inline: 0;
-      }
 
 
       /* Notes Book/Page dialog sections intentionally override later generic project-form spacing. */
@@ -4881,50 +4873,53 @@
       #project-asset-category-management-dialog .project-asset-category-management-dialog-body {
         gap: var(--space-md);
       }
+      /* Panels are this dialog's section cards (see the shared dialog
+         foundation). Their content sits directly in the padded card, so the
+         settings-section insets used elsewhere are reset here. */
       #project-asset-category-management-dialog .project-category-management-panel {
+        display: flex;
         flex: 0 0 auto;
+        flex-direction: column;
         min-width: 0;
         margin: 0;
-        background: var(--surface);
-        border: 1px solid var(--border);
         border-radius: var(--radius-lg);
         overflow: visible;
       }
-      #project-asset-category-management-dialog .project-category-management-panel > h3 {
-        background: var(--surface-hover);
-      }
-      #project-asset-category-management-dialog .project-category-management-panel > .error-summary {
-        margin: var(--space-md) var(--space-lg) 0;
-        padding: var(--space-sm) var(--space-md);
-      }
-      #project-asset-category-management-dialog .project-category-management-default-section > .asset-browser-default-description {
+      #project-asset-category-management-dialog .project-category-management-panel > :is(.error-summary, .notice, .asset-browser-default-description, .asset-browser-default-readonly, .category-management-section-note) {
         margin: 0;
-        padding: var(--space-sm) var(--space-lg) 0;
       }
-      #project-asset-category-management-dialog .project-category-management-default-section > .notice {
-        margin: var(--space-md) var(--space-lg) 0;
+      #project-asset-category-management-dialog .project-category-management-panel > :is(.error-summary, .notice) {
+        padding: var(--space-sm) var(--space-md);
+        font-size: 0.875rem;
       }
-      #project-asset-category-management-dialog .project-category-management-default-section > .asset-browser-default-readonly {
-        margin: var(--space-md) 0 var(--space-lg);
-        padding: 0 var(--space-lg);
+      #project-asset-category-management-dialog .project-category-management-panel > :is(.asset-browser-default-description, .asset-browser-default-readonly, .category-management-section-note) {
+        padding: 0;
+        color: var(--muted);
+        font-size: 0.8125rem;
+        line-height: 1.45;
       }
       #project-asset-category-management-dialog .project-category-management-default-section .asset-browser-default-form {
         gap: var(--space-sm);
-        padding: var(--space-md) var(--space-lg) 0;
+        padding: 0;
       }
       #project-asset-category-management-dialog .asset-browser-default-field-row {
         width: 100%;
       }
       #project-asset-category-management-dialog .project-category-management-default-section .asset-browser-default-form > .app-dialog-status {
         min-height: 0;
-        margin-top: 0;
+        margin: 0;
+        font-size: 0.8125rem;
+      }
+      /* The idle autosave status reserves no space below the dropdown. */
+      #project-asset-category-management-dialog .project-category-management-default-section .asset-browser-default-form > .app-dialog-status:empty {
+        margin-top: calc(-1 * var(--space-sm));
       }
       #project-asset-category-management-dialog .project-category-management-default-section .asset-browser-default-action-row {
         margin: 0;
       }
       #project-asset-category-management-dialog .project-category-management-add > .project-category-management-form {
         gap: 0;
-        padding: var(--space-md) var(--space-lg) var(--space-lg);
+        padding: 0;
       }
       #project-asset-category-management-dialog .project-category-management-add-row {
         display: grid;
@@ -4938,24 +4933,121 @@
         min-width: 0;
       }
       #project-asset-category-management-dialog .project-category-management-add-row .field--switch {
+        gap: 0.3125rem;
         min-width: 7rem;
+      }
+      /* The switch's text label reads like the dialog's other field labels. */
+      #project-asset-category-management-dialog .project-category-management-add-row .field--switch > .field-label {
+        color: var(--muted);
+        font-size: 0.8125rem;
+        font-weight: 500;
+        line-height: 1.3;
+      }
+      #project-asset-category-management-dialog .form-switch-label {
+        min-height: var(--refined-control-height);
+        font-size: 0.875rem;
       }
       #project-asset-category-management-dialog .project-category-management-add-row input {
         min-width: 0;
       }
+      /* Line Add up with the inputs below their labels. */
       #project-asset-category-management-dialog .project-category-management-add-submit {
         align-items: flex-end;
         align-self: start;
         min-width: 0;
         margin: 0;
-        padding-top: calc(1.4rem + var(--space-xs));
+        padding-top: calc(0.8125rem * 1.3 + 0.3125rem);
       }
       #project-asset-category-management-dialog .project-category-management-add-submit > .button {
         flex: 0 0 auto;
         width: auto;
       }
       #project-asset-category-management-dialog .project-category-management-list-section .category-reorder-list {
-        padding: var(--space-md) var(--space-lg) var(--space-lg);
+        gap: var(--space-sm);
+        padding: 0;
+      }
+      /* Category cards follow Manage signatures' cards. Handles and controls
+         drop below the field labels to line up with the Display name input. */
+      #project-asset-category-management-dialog .category-management-card {
+        --category-label-offset: calc(0.8125rem * 1.3 + 0.3125rem);
+        padding: var(--space-sm) var(--space-md) var(--space-sm) var(--space-sm);
+        border-color: var(--border);
+        border-radius: var(--refined-control-radius);
+        background: var(--surface-card);
+      }
+      #project-asset-category-management-dialog .category-management-card:hover {
+        background: var(--surface-hover);
+      }
+      #project-asset-category-management-dialog .category-management-card:focus-visible {
+        outline: 2px solid var(--focus-ring);
+        outline-offset: 2px;
+      }
+      #project-asset-category-management-dialog .category-management-card.is-dragging {
+        border-color: var(--border-strong);
+      }
+      #project-asset-category-management-dialog .category-reorder-handle {
+        margin-top: calc(var(--category-label-offset) + (var(--refined-control-height) - 2rem) / 2);
+        font-size: 1.125rem;
+      }
+      #project-asset-category-management-dialog .category-management-card-label {
+        margin-bottom: 0.3125rem;
+        color: var(--muted);
+        font-size: 0.8125rem;
+        font-weight: 500;
+        letter-spacing: 0;
+        line-height: 1.3;
+        text-transform: none;
+      }
+      #project-asset-category-management-dialog .category-management-slug code {
+        display: flex;
+        align-items: center;
+        min-height: var(--refined-control-height);
+        font-size: 0.8125rem;
+      }
+      #project-asset-category-management-dialog .category-management-name-value {
+        display: flex;
+        align-items: center;
+        min-height: var(--refined-control-height);
+        font-size: 0.875rem;
+      }
+      #project-asset-category-management-dialog .category-name-form {
+        align-items: flex-start;
+        gap: var(--space-sm);
+      }
+      /* Cards stack below 768px, where controls follow the fields instead. */
+      @media (min-width: 768px) {
+        #project-asset-category-management-dialog .category-management-card-body {
+          align-items: flex-start;
+        }
+        #project-asset-category-management-dialog .category-management-card-controls {
+          margin-top: var(--category-label-offset);
+        }
+      }
+      #project-asset-category-management-dialog .category-management-card .button-small {
+        min-height: var(--refined-control-height);
+      }
+      /* Row name inputs sit outside .field, so they take the dialog field
+         treatment here. */
+      #project-asset-category-management-dialog .category-name-form input[type='text'] {
+        min-height: var(--refined-control-height);
+        padding: 0.375rem 0.625rem;
+        border: 1px solid var(--border);
+        border-radius: var(--refined-control-radius);
+        background: var(--bg);
+        font-size: 0.875rem;
+        line-height: 1.5;
+        transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+      }
+      #project-asset-category-management-dialog .category-name-form input[type='text']:hover {
+        border-color: var(--border-strong);
+      }
+      #project-asset-category-management-dialog .category-name-form input[type='text']:focus-visible {
+        outline: none;
+        border-color: var(--accent);
+        box-shadow: var(--refined-focus-shadow);
+      }
+      #project-asset-category-management-dialog .category-name-form input[aria-invalid='true'] {
+        border-color: var(--danger);
       }
       @media (max-width: 767px) {
         #project-asset-category-management-dialog .project-category-management-add-row {
@@ -8403,23 +8495,77 @@
          cursor: pointer;
          font-size: 0.875rem;
          line-height: 1;
+         transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), opacity var(--transition-fast);
       }
       .slideshow-nav-btn:hover:not(:disabled),
       .slideshow-play-pause:hover:not(:disabled),
       .slideshow-fullscreen:hover:not(:disabled),
       .slideshow-original-size:hover:not(:disabled),
-      .slideshow-close:hover:not(:disabled) {
+      .slideshow-close:hover:not(:disabled),
+      .slideshow-controls .cc-dropdown summary:hover {
          background: rgba(35 42 56 / 0.9);
          border-color: var(--border-strong);
+      }
+      .slideshow-nav-btn:active:not(:disabled),
+      .slideshow-play-pause:active:not(:disabled),
+      .slideshow-fullscreen:active:not(:disabled),
+      .slideshow-original-size:active:not(:disabled),
+      .slideshow-close:active:not(:disabled) {
+         transform: translateY(1px);
+      }
+      /* Nav buttons are centred with a transform, so pressing keeps it. */
+      .slideshow-controls > .slideshow-nav-btn:active:not(:disabled) {
+         transform: translateY(calc(-50% + 1px));
+      }
+      /* Fullscreen and Original size are toggles; the on state takes the
+         dialogs' selected-option tint. */
+      .slideshow-fullscreen[aria-pressed="true"],
+      .slideshow-original-size[aria-pressed="true"] {
+         border-color: var(--accent);
+         background: rgba(13 15 19 / 0.72) linear-gradient(rgba(34 211 238 / 0.16), rgba(34 211 238 / 0.16));
+         color: var(--accent);
+      }
+      .slideshow-nav-btn:disabled,
+      .slideshow-play-pause:disabled,
+      .slideshow-fullscreen:disabled,
+      .slideshow-original-size:disabled,
+      .slideshow-close:disabled {
+         color: var(--muted);
+         cursor: not-allowed;
+         opacity: 0.6;
       }
       .slideshow-nav-btn:focus-visible,
       .slideshow-play-pause:focus-visible,
       .slideshow-fullscreen:focus-visible,
       .slideshow-original-size:focus-visible,
       .slideshow-close:focus-visible,
-      .slideshow-speed:focus-visible {
+      .slideshow-speed:focus-visible,
+      .slideshow-controls .cc-dropdown summary:focus-visible {
          outline: 2px solid var(--focus-ring);
          outline-offset: 2px;
+      }
+      /* The speed picker is the shared compact dropdown; its trigger and
+         panel take the slideshow's translucent chrome so the bottom bar
+         reads as one set of controls over the image. */
+      .slideshow-controls .cc-dropdown summary {
+         min-height: 2rem;
+         padding: 0.3rem 0.5rem;
+         border: 1px solid rgba(232 236 241 / 0.28);
+         border-radius: var(--radius-md);
+         background: rgba(13 15 19 / 0.72);
+         color: var(--text);
+         font-size: 0.875rem;
+         transition: background var(--transition-fast), border-color var(--transition-fast);
+      }
+      .slideshow-controls .cc-dropdown[open] summary {
+         border-color: var(--accent);
+      }
+      .slideshow-controls .cc-dropdown .asset-filter-multiselect-panel {
+         padding: var(--space-xs);
+         border-color: var(--border-strong);
+         border-radius: var(--radius-md);
+         background: var(--surface-card);
+         box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
       }
       .slideshow-nav-btn svg,
       .slideshow-play-pause svg,
@@ -12506,7 +12652,7 @@
    description stays available to assistive technology through
    aria-describedby. Other dialogs keep their descriptions visible, since
    they carry confirmations, instructions, and scope. */
-:is(#project-create-dialog, #project-edit-dialog, #release-edit-dialog, #release-signatures-dialog) .app-dialog-description {
+:is(#project-create-dialog, #project-edit-dialog, #release-edit-dialog, #release-signatures-dialog, #asset-edit-dialog) .app-dialog-description {
   position: absolute;
   width: 1px;
   height: 1px;
@@ -12634,13 +12780,17 @@
 }
 
 /* ── Sections ── */
-.app-dialog--refined.project-form-dialog .project-edit-dialog-section {
+.app-dialog--refined.project-form-dialog .project-edit-dialog-section,
+.app-dialog--refined.asset-form-dialog .asset-edit-dialog-section,
+#project-asset-category-management-dialog.app-dialog--refined .project-category-management-panel {
   gap: 0.625rem;
   padding: var(--space-md) var(--space-lg) var(--space-lg);
   background: var(--surface);
   border-color: var(--border);
 }
-.app-dialog--refined.project-form-dialog .project-edit-dialog-section > h3 {
+.app-dialog--refined.project-form-dialog .project-edit-dialog-section > h3,
+.app-dialog--refined.asset-form-dialog .asset-edit-dialog-section > h3,
+#project-asset-category-management-dialog.app-dialog--refined .project-category-management-panel > h3 {
   display: flex;
   align-items: center;
   gap: var(--space-sm);
@@ -12656,7 +12806,9 @@
   line-height: 1.3;
   text-transform: none;
 }
-.app-dialog--refined.project-form-dialog .project-edit-dialog-section > h3::before {
+.app-dialog--refined.project-form-dialog .project-edit-dialog-section > h3::before,
+.app-dialog--refined.asset-form-dialog .asset-edit-dialog-section > h3::before,
+#project-asset-category-management-dialog.app-dialog--refined .project-category-management-panel > h3::before {
   flex: none;
   width: 0.1875rem;
   height: 0.875rem;
@@ -12664,7 +12816,8 @@
   background: var(--accent-gradient);
   content: '';
 }
-.app-dialog--refined.project-form-dialog .project-edit-dialog-section-body {
+.app-dialog--refined.project-form-dialog .project-edit-dialog-section-body,
+.app-dialog--refined.asset-form-dialog .asset-edit-dialog-section-body {
   gap: var(--space-md);
   padding: 0;
 }
@@ -12767,7 +12920,9 @@
   font-size: 0.75rem;
 }
 
-/* ── Dropdowns ── */
+/* ── Dropdowns ──
+   Option rows also cover the slideshow speed picker, the one dropdown on
+   the fullscreen media surfaces. */
 .app-dialog .asset-filter-multiselect summary {
   min-height: var(--refined-control-height);
   padding: 0.375rem 0.625rem;
@@ -12809,31 +12964,38 @@
   background: var(--surface-card);
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
 }
-.app-dialog .asset-filter-multiselect-option {
+.app-dialog .asset-filter-multiselect-option,
+.slideshow-controls .asset-filter-multiselect-option {
   border-radius: var(--radius-sm);
   transition: background var(--transition-fast);
 }
-.app-dialog .asset-filter-multiselect--sized .asset-filter-multiselect-option > label {
+.app-dialog .asset-filter-multiselect--sized .asset-filter-multiselect-option > label,
+.slideshow-controls .asset-filter-multiselect--sized .asset-filter-multiselect-option > label {
   align-items: center;
   gap: var(--space-sm);
   padding: 0.375rem var(--space-sm);
   font-size: 0.875rem;
   line-height: 1.4;
 }
-.app-dialog .asset-filter-multiselect-option > label > span {
+.app-dialog .asset-filter-multiselect-option > label > span,
+.slideshow-controls .asset-filter-multiselect-option > label > span {
   flex: 1 1 auto;
 }
-.app-dialog .asset-filter-multiselect-option:has(input:checked) {
+.app-dialog .asset-filter-multiselect-option:has(input:checked),
+.slideshow-controls .asset-filter-multiselect-option:has(input:checked) {
   background: rgba(34, 211, 238, 0.08);
 }
-.app-dialog .asset-filter-multiselect-option:has(input:checked):hover {
+.app-dialog .asset-filter-multiselect-option:has(input:checked):hover,
+.slideshow-controls .asset-filter-multiselect-option:has(input:checked):hover {
   background: rgba(34, 211, 238, 0.14);
 }
-.app-dialog .asset-filter-multiselect-option:has(input:focus-visible) {
+.app-dialog .asset-filter-multiselect-option:has(input:focus-visible),
+.slideshow-controls .asset-filter-multiselect-option:has(input:focus-visible) {
   outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
 }
-.app-dialog .asset-filter-multiselect-option input {
+.app-dialog .asset-filter-multiselect-option input,
+.slideshow-controls .asset-filter-multiselect-option input {
   flex: none;
   width: 1rem;
   height: 1rem;
@@ -12843,16 +13005,19 @@
   background: transparent center / 0.75rem no-repeat;
   cursor: pointer;
 }
-.app-dialog .asset-filter-multiselect-option input:focus-visible {
+.app-dialog .asset-filter-multiselect-option input:focus-visible,
+.slideshow-controls .asset-filter-multiselect-option input:focus-visible {
   outline: none;
 }
 /* Single- and multi-select options share one look: no radio dot or checkbox
    square; each chosen row gets a trailing check. Option text keeps the same
    typography and color whether or not it is selected. */
-.app-dialog .asset-filter-multiselect-option input {
+.app-dialog .asset-filter-multiselect-option input,
+.slideshow-controls .asset-filter-multiselect-option input {
   order: 1;
 }
-.app-dialog .asset-filter-multiselect-option input:checked {
+.app-dialog .asset-filter-multiselect-option input:checked,
+.slideshow-controls .asset-filter-multiselect-option input:checked {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2322d3ee' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E");
   background-size: 0.875rem;
 }
@@ -12893,12 +13058,16 @@
 /* A dialog's primary footer action is a dark outlined button. New Project's
    and New Release's submits lead with a cyan plus square, as do the
    Dashboard's New Release/New Project header links and Manage signatures'
-   Add button; actions without the icon keep symmetric padding. Disabled
-   styling, hover brightness, focus ring, and pressed movement come from the
-   rules around it. */
+   Add button; actions without the icon keep symmetric padding. Manage
+   Categories' Add and Edit Asset's per-section submits take the same dark
+   treatment. Disabled styling, hover
+   brightness, focus ring, and pressed movement come from the rules around
+   it. */
 .button.dashboard-create-action,
 .app-dialog .app-dialog-footer > .button-primary,
-#release-signatures-dialog.app-dialog--refined [data-release-signature-add] {
+#release-signatures-dialog.app-dialog--refined [data-release-signature-add],
+#project-asset-category-management-dialog .project-category-management-add-submit > .button-primary,
+#asset-edit-dialog .asset-action-form .button-primary {
   gap: var(--space-sm);
   min-height: 2.25rem;
   padding: 0 var(--space-md);
@@ -12914,7 +13083,9 @@
 }
 .button.dashboard-create-action:not(:disabled):not([aria-disabled="true"]),
 .app-dialog .app-dialog-footer > .button-primary:not(:disabled):not([aria-disabled="true"]),
-#release-signatures-dialog.app-dialog--refined [data-release-signature-add]:not(:disabled):not([aria-disabled="true"]) {
+#release-signatures-dialog.app-dialog--refined [data-release-signature-add]:not(:disabled):not([aria-disabled="true"]),
+#project-asset-category-management-dialog .project-category-management-add-submit > .button-primary:not(:disabled):not([aria-disabled="true"]),
+#asset-edit-dialog .asset-action-form .button-primary:not(:disabled):not([aria-disabled="true"]) {
   border: 1px solid var(--border-strong);
   background: var(--bg);
   color: var(--text);
@@ -12922,7 +13093,9 @@
 }
 .button.dashboard-create-action:hover:not(:disabled):not([aria-disabled="true"]),
 .app-dialog .app-dialog-footer > .button-primary:hover:not(:disabled):not([aria-disabled="true"]),
-#release-signatures-dialog.app-dialog--refined [data-release-signature-add]:hover:not(:disabled):not([aria-disabled="true"]) {
+#release-signatures-dialog.app-dialog--refined [data-release-signature-add]:hover:not(:disabled):not([aria-disabled="true"]),
+#project-asset-category-management-dialog .project-category-management-add-submit > .button-primary:hover:not(:disabled):not([aria-disabled="true"]),
+#asset-edit-dialog .asset-action-form .button-primary:hover:not(:disabled):not([aria-disabled="true"]) {
   border-color: var(--accent);
 }
 .project-create-submit-icon {
@@ -12995,17 +13168,18 @@ button[aria-disabled="true"] > .project-create-submit-icon {
 }
 
 /* ── Project actions (Edit Project) ── */
-.app-dialog--refined .project-edit-dialog-actions-body {
+/* Edit Asset's File actions use the same disclosure rows. */
+.app-dialog--refined :is(.project-edit-dialog-actions-body, .asset-edit-dialog-actions-body) {
   gap: 0;
 }
-.app-dialog--refined .project-edit-dialog-actions .notes-workspace-disclosure:first-child {
+.app-dialog--refined :is(.project-edit-dialog-actions, .asset-actions-section) .notes-workspace-disclosure:first-child {
   border-top: 0;
 }
-.app-dialog--refined .project-edit-dialog-actions .notes-workspace-disclosure summary {
+.app-dialog--refined :is(.project-edit-dialog-actions, .asset-actions-section) .notes-workspace-disclosure summary {
   min-height: 2rem;
   font-size: 0.875rem;
 }
-.app-dialog--refined .project-edit-dialog-actions .notes-workspace-disclosure--delete summary {
+.app-dialog--refined :is(.project-edit-dialog-actions, .asset-actions-section) .notes-workspace-disclosure--delete summary {
   color: var(--badge-danger-fg);
 }
 .app-dialog--refined .project-edit-dialog-actions .notes-workspace-disclosure-content form {
@@ -13118,6 +13292,110 @@ button[aria-disabled="true"] > .project-create-submit-icon {
 .app-dialog .scheduling-field .picker-trigger[aria-expanded="true"] {
   background: var(--surface-hover);
   color: var(--text);
+}
+
+/* ── Review & Publish ──
+   Uses the section cards. Its description stays visible because it says
+   what to check before publishing. Release details, the asset table, and
+   Social Preparation's text, warnings, and blocking errors keep their
+   content and read at the dialog's compact sizes. */
+#release-publish-dialog.app-dialog--refined .app-dialog-description {
+  margin-top: var(--space-md);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+#release-publish-dialog.app-dialog--refined .detail-list {
+  gap: 0.375rem var(--space-md);
+  margin: 0;
+  font-size: 0.875rem;
+  line-height: 1.45;
+}
+#release-publish-dialog.app-dialog--refined .detail-list dt {
+  font-size: 0.8125rem;
+}
+#release-publish-dialog.app-dialog--refined .status-field .asset-viewer-filter-field {
+  max-width: 16rem;
+}
+#release-publish-dialog.app-dialog--refined .table-scroll {
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--refined-control-radius);
+  background: var(--bg);
+}
+#release-publish-dialog.app-dialog--refined .data-table :is(th, td) {
+  padding: 0.4375rem 0.75rem;
+}
+#release-publish-dialog.app-dialog--refined .data-table th {
+  font-size: 0.75rem;
+}
+#release-publish-dialog.app-dialog--refined .data-table td {
+  font-size: 0.875rem;
+}
+#release-publish-dialog.app-dialog--refined .data-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+/* Only the filename wraps; #, Role, and Order stay on one line. On narrow
+   screens the filename keeps a readable width and the table scrolls
+   sideways inside .table-scroll. */
+#release-publish-dialog.app-dialog--refined .data-table td:not(.asset-filename) {
+  white-space: nowrap;
+  overflow-wrap: normal;
+  word-break: normal;
+}
+#release-publish-dialog.app-dialog--refined .data-table td.asset-filename {
+  min-width: 10rem;
+}
+/* As in New/Edit Release's Scheduling, the picker trigger is the date
+   field's only calendar affordance. */
+#release-publish-dialog.app-dialog--refined .picker-input::-webkit-calendar-picker-indicator,
+#release-publish-dialog.app-dialog--refined .picker-input::-webkit-clear-button,
+#release-publish-dialog.app-dialog--refined .picker-input::-webkit-inner-spin-button {
+  display: none;
+}
+#release-publish-dialog.app-dialog--refined .picker-input::-moz-calendar-picker-indicator {
+  display: none;
+}
+#release-publish-dialog.app-dialog--refined .empty-state {
+  padding: 0;
+  font-size: 0.875rem;
+  text-align: left;
+}
+#release-publish-dialog.app-dialog--refined .empty-state .empty-state-heading {
+  margin-bottom: var(--space-xs);
+  font-size: 0.9375rem;
+  font-weight: 600;
+}
+#release-publish-dialog.app-dialog--refined .empty-state p {
+  max-width: none;
+  margin: 0;
+}
+#release-publish-dialog.app-dialog--refined .project-edit-dialog-section-body > :is(p, ul) {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+#release-publish-dialog.app-dialog--refined .project-edit-dialog-section-body > ul {
+  padding-left: 1.25rem;
+  overflow-wrap: anywhere;
+}
+#release-publish-dialog.app-dialog--refined .project-edit-dialog-section-body > h4 {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+#release-publish-dialog.app-dialog--refined .project-edit-dialog-section-body > h4 + ul {
+  margin-top: calc(-1 * var(--space-sm));
+}
+#release-publish-dialog.app-dialog--refined .project-edit-dialog-section-body > :is(.notice, .error-summary) {
+  margin: 0;
+  padding: var(--space-sm) var(--space-md);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+#release-publish-dialog.app-dialog--refined .project-edit-dialog-section-body > .error-summary p {
+  margin: 0;
 }
 
 /* ── Manage signatures ──
@@ -13242,6 +13520,207 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   color: var(--danger);
 }
 
+/* ── Project management dialogs ──
+   Project folder ownership, Manage Categories, Remove missing assets, and
+   the Auto Rename confirmation keep their descriptions visible: they carry
+   scope, warnings, and recovery instructions. They share the pilot dialogs'
+   body rhythm and keep their own widths and specialized content. */
+:is(#project-ownership-dialog, #project-asset-category-management-dialog, #remove-missing-assets-dialog, #auto-rename-confirmation-dialog) .app-dialog-description {
+  margin-top: var(--space-md);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+:is(#project-ownership-dialog, #project-asset-category-management-dialog, #remove-missing-assets-dialog, #auto-rename-confirmation-dialog) .app-dialog-body {
+  gap: var(--space-md);
+  margin-top: var(--space-md);
+  padding-bottom: var(--space-md);
+}
+:is(#project-ownership-dialog, #project-asset-category-management-dialog, #remove-missing-assets-dialog, #auto-rename-confirmation-dialog) .app-dialog-footer {
+  margin-top: 0;
+}
+/* Ownership and Remove missing assets lead their scrolling body with the
+   description, so the body already supplies its inset. */
+:is(#project-ownership-dialog, #remove-missing-assets-dialog) .app-dialog-body > .app-dialog-description {
+  margin: 0;
+}
+/* The ownership status line reserves no space while idle. */
+#project-ownership-dialog .app-dialog-body > .app-dialog-status {
+  min-height: 0;
+  margin-top: 0;
+  font-size: 0.8125rem;
+}
+#project-ownership-dialog .app-dialog-body > .app-dialog-status:empty {
+  margin-top: calc(-1 * var(--space-md));
+}
+/* As in the shared confirmation, a confirmation's explanation is its
+   content, so Remove missing assets reads it at body size. */
+#remove-missing-assets-dialog .app-dialog-body > .app-dialog-description,
+#remove-missing-assets-dialog .remove-missing-assets-scope {
+  color: var(--text);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+#remove-missing-assets-dialog .remove-missing-assets-scope {
+  display: grid;
+  gap: var(--space-xs);
+  margin: 0;
+  padding-left: var(--space-lg);
+}
+#remove-missing-assets-dialog .remove-missing-assets-scope > li::marker {
+  color: var(--badge-danger-fg);
+}
+#auto-rename-confirmation-dialog .auto-rename-confirmation-summary {
+  font-weight: 600;
+}
+#auto-rename-confirmation-dialog .auto-rename-confirmation-item {
+  border-radius: var(--refined-control-radius);
+  background: var(--surface);
+}
+
+/* ── Edit Asset ──
+   Each section card owns its own form and submits independently, so the
+   dialog has no footer: the body keeps its larger bottom inset, and a
+   status message gets its own inset above the card edge. */
+.app-dialog--refined.asset-form-dialog .app-dialog-body {
+  gap: var(--space-md);
+  margin-top: var(--space-md);
+  scrollbar-gutter: stable;
+}
+/* The sections sit directly in the dialog body rather than in one form, so
+   they need the column layout that .project-form gives the other dialogs. */
+.app-dialog--refined.asset-form-dialog .asset-edit-dialog-section {
+  display: flex;
+  flex-direction: column;
+}
+#asset-edit-dialog .app-dialog-card > .app-dialog-status:not(:empty) {
+  min-height: 0;
+  margin-top: 0;
+  margin-bottom: var(--space-md);
+  font-size: 0.8125rem;
+}
+#asset-edit-dialog .asset-edit-dialog-body > .error-summary {
+  margin: 0;
+}
+#asset-edit-dialog :is(.asset-action-description, .asset-primary-image-status) {
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
+#asset-edit-dialog .asset-action-form {
+  gap: var(--space-md);
+}
+#asset-edit-dialog .notes-workspace-disclosure-content .asset-action-form {
+  justify-items: start;
+}
+#asset-edit-dialog .notes-workspace-disclosure-content .asset-action-form > .field {
+  justify-self: stretch;
+}
+#asset-edit-dialog .asset-filter-multiselect-empty {
+  padding: 0;
+}
+#asset-edit-dialog .asset-book-primary-image-usage-list {
+  gap: var(--space-sm);
+}
+#asset-edit-dialog .asset-book-primary-image-usage-list > li {
+  padding: var(--space-sm) var(--space-sm) var(--space-sm) var(--space-md);
+  border: 1px solid var(--border);
+  border-radius: var(--refined-control-radius);
+  background: var(--bg);
+  font-size: 0.875rem;
+}
+/* Move's destination stays a native select (the reset-on-close baseline
+   reads it directly), drawn to match the shared control row. */
+#asset-edit-dialog .field select {
+  min-height: var(--refined-control-height);
+  padding: 0.375rem 2rem 0.375rem 0.625rem;
+  border: 1px solid var(--border);
+  border-radius: var(--refined-control-radius);
+  background: var(--bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%238b93a3' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") right 0.625rem center / 1rem no-repeat;
+  color: var(--text);
+  font: inherit;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  -webkit-appearance: none;
+  appearance: none;
+  cursor: pointer;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+#asset-edit-dialog .field select:hover {
+  border-color: var(--border-strong);
+}
+#asset-edit-dialog .field select:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--refined-focus-shadow);
+}
+#asset-edit-dialog .field select option {
+  background-color: var(--surface-card);
+  color: var(--text);
+}
+
+/* ── Video preview ──
+   The dialog stays content-sized around the player (see
+   .asset-video-preview-dialog and .asset-preview-video); only the chrome
+   around the native controls follows the refined treatment. */
+#asset-video-preview-dialog .app-dialog-body {
+  margin-top: var(--space-md);
+  padding-bottom: var(--space-md);
+}
+#asset-video-preview-dialog .asset-video-preview {
+  margin: 0;
+}
+#asset-video-preview-dialog .asset-video-preview-title {
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+#asset-video-preview-dialog .asset-video-preview-actions {
+  gap: var(--space-sm);
+}
+/* Loop reads as a quiet toggle the same size as View details; the native
+   checkbox stays the control. */
+#asset-video-preview-dialog .asset-video-loop-control {
+  gap: 0.375rem;
+  min-height: 1.875rem;
+  padding: 0 0.625rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--refined-control-radius);
+  color: var(--text);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+#asset-video-preview-dialog .asset-video-loop-control[hidden] {
+  display: none;
+}
+#asset-video-preview-dialog .asset-video-loop-control:hover {
+  background: var(--surface-hover);
+}
+#asset-video-preview-dialog .asset-video-loop-control:has(input:checked) {
+  border-color: var(--accent);
+  background: rgba(34, 211, 238, 0.08);
+}
+#asset-video-preview-dialog .asset-video-loop-control:has(input:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+#asset-video-preview-dialog .asset-video-loop-control input {
+  width: 0.875rem;
+  height: 0.875rem;
+  accent-color: var(--accent);
+}
+#asset-video-preview-dialog .asset-video-loop-control input:focus-visible {
+  outline: none;
+}
+#asset-video-preview-dialog .asset-video-error {
+  padding: var(--space-md);
+  border: 1px solid rgba(251, 113, 133, 0.45);
+  border-radius: var(--refined-control-radius);
+  background: rgba(251, 113, 133, 0.1);
+  color: var(--badge-danger-fg);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
 @media (max-width: 640px) {
   .app-dialog--refined .project-edit-dialog-section-body:has(> .field > #description),
   .app-dialog--refined.project-form-dialog .status-row,
@@ -13264,7 +13743,9 @@ button[aria-disabled="true"] > .project-create-submit-icon {
   .app-dialog .app-dialog-header {
     padding-left: var(--space-md);
   }
-  .app-dialog--refined.project-form-dialog .project-edit-dialog-section {
+  .app-dialog--refined.project-form-dialog .project-edit-dialog-section,
+  .app-dialog--refined.asset-form-dialog .asset-edit-dialog-section,
+  #project-asset-category-management-dialog.app-dialog--refined .project-category-management-panel {
     padding: var(--space-md);
   }
 }

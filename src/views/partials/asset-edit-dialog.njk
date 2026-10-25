@@ -1,7 +1,7 @@
 {% import "partials/dialog.njk" as dialog %}
 {% import "partials/dropdown.njk" as dropdown %}
 
-{% call dialog.render('asset-edit-dialog', 'Edit Asset', assetEditDialogOpen, 'asset-edit-description', '', 'asset-edit-dialog asset-form-dialog') %}
+{% call dialog.render('asset-edit-dialog', 'Edit Asset', assetEditDialogOpen, 'asset-edit-description', '', 'asset-edit-dialog asset-form-dialog app-dialog--refined') %}
   <p id="asset-edit-description" class="app-dialog-description">
     Update this asset's primary-image selection or file details.
   </p>
