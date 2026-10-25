@@ -568,7 +568,7 @@ describe('Processing dialog preset-management markup', () => {
     expect(css).toContain('.app-dialog--processing .processing-watermark-scope-row {');
     expect(css).toContain('.app-dialog--processing .processing-watermark-choice-control {');
     expect(css).toMatch(/\.app-dialog--processing \.processing-watermark-compact-grid--offsets\s*\{[\s\S]*?grid-template-columns:\s*repeat\(3,\s*minmax\(0,\s*10rem\)\)/);
-    expect(css).toMatch(/\.app-dialog--processing \.processing-dialog-section-body:has\(\.processing-watermark-compact-grid\)[\s\S]*?gap:\s*var\(--space-sm\)[\s\S]*?padding:\s*var\(--space-sm\) var\(--space-md\) var\(--space-md\)/);
+    expect(css).toMatch(/\.app-dialog--processing \.processing-dialog-section-body:has\(\.processing-watermark-compact-grid\)[^{]*\{[^}]*gap:\s*var\(--space-sm\);/);
     expect(css).toMatch(/@media \(max-width: 767px\)[\s\S]*?\.app-dialog--processing \.processing-watermark-compact-grid--offsets\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\)/);
     expect(css).toMatch(/\.processing-watermark-thumb\s*\{[\s\S]*?width:\s*8\.25rem;[\s\S]*?height:\s*4\.125rem;/);
     expect(css).toMatch(/\.processing-watermark-option-thumbnail\s*\{[\s\S]*?width:\s*5\.5rem;[\s\S]*?height:\s*2\.75rem;/);

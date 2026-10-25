@@ -10296,36 +10296,105 @@
   gap: var(--space-md);
   min-width: 0;
 }
+/* The five execution dialogs (Rename, Convert, Workflow, Watermark, Archives)
+   follow the refined dialogs' rhythm and section cards while keeping their
+   own widths and grids. Their descriptions stay visible: they say what the
+   operation changes. */
+.app-dialog--processing .app-dialog-description {
+  margin-top: var(--space-md);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
 .app-dialog--processing .processing-dialog-body {
-  padding-bottom: var(--space-lg);
+  gap: var(--space-md);
+  margin-top: var(--space-md);
+  padding-bottom: var(--space-md);
+  scrollbar-gutter: stable;
 }
 .app-dialog--processing .processing-dialog-body > * {
   flex-shrink: 0;
 }
+.app-dialog--processing .processing-dialog-body > .help-text {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
 .app-dialog--processing .processing-dialog-section {
+  display: flex;
   flex: 0 0 auto;
+  flex-direction: column;
+  gap: 0.625rem;
   min-width: 0;
   margin: 0;
-  padding: 0;
+  padding: var(--space-md) var(--space-lg) var(--space-lg);
+  border-color: var(--border);
   background: var(--surface);
   overflow: visible;
 }
 .app-dialog--processing .processing-dialog-section > h3 {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
   margin: 0;
-  background: var(--surface-hover);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 1.3;
+  text-transform: none;
+}
+.app-dialog--processing .processing-dialog-section > h3::before {
+  flex: none;
+  width: 0.1875rem;
+  height: 0.875rem;
+  border-radius: 999px;
+  background: var(--accent-gradient);
+  content: '';
 }
 .app-dialog--processing .processing-dialog-section-body {
   display: flex;
   flex-direction: column;
-  gap: var(--space-lg);
+  gap: var(--space-md);
   min-width: 0;
-  padding: var(--space-md) var(--space-lg) var(--space-lg);
+  padding: 0;
 }
 .app-dialog--processing .processing-dialog-section-body:has(.processing-watermark-compact-grid),
 .app-dialog--processing .processing-watermark-scope-body,
 .app-dialog--processing-workflow .processing-rule-section .processing-dialog-section-body {
   gap: var(--space-sm);
-  padding: var(--space-sm) var(--space-md) var(--space-md);
+  padding: 0;
+}
+.app-dialog--processing .field:not(.field--checkbox) {
+  gap: 0.3125rem;
+}
+/* Convert and Archives scope options stack as compact radio rows. */
+.app-dialog--processing .processing-scope-body:not(.processing-watermark-scope-body) {
+  gap: var(--space-xs);
+}
+.app-dialog--processing .processing-scope-body:not(.processing-watermark-scope-body) > .processing-scope-option {
+  min-height: 2rem;
+}
+.app-dialog--processing .processing-scope-body:not(.processing-watermark-scope-body) > .processing-scope-category-field {
+  max-width: 18rem;
+}
+.app-dialog--processing .processing-convert-options {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: start;
+  gap: var(--space-sm) var(--space-md);
+  min-width: 0;
+}
+.app-dialog--processing .processing-convert-options > .field {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.app-dialog--processing .processing-convert-quality-field {
+  inline-size: 14rem;
+  max-inline-size: 100%;
 }
 .app-dialog--processing .processing-watermark-compact-grid {
   display: flex;
@@ -10376,10 +10445,17 @@
   margin-block-start: 1.5rem;
 }
 .app-dialog--processing .processing-watermark-compact-row--output-naming-options > .processing-watermark-choice-control {
+  flex-shrink: 0;
   margin-block-start: 0;
+}
+/* The Delete source warning takes the remaining width rather than
+   squeezing the option beside it. */
+.app-dialog--processing .processing-watermark-compact-row--output-naming-options > [data-processing-delete-source-toggle] {
+  flex: 1 1 0;
 }
 .app-dialog--processing .processing-watermark-choice-control input[type='checkbox'],
 .app-dialog--processing .processing-watermark-choice-control input[type='radio'],
+.app-dialog--processing :is(.processing-scope-option, .processing-checkbox-label) input:is([type='checkbox'], [type='radio']),
 .release-notification-channel-choice input[type='checkbox'],
 .release-no-set-date-field input[type='checkbox'] {
   appearance: none;
@@ -10392,11 +10468,30 @@
   background: var(--surface);
 }
 .app-dialog--processing .processing-watermark-choice-control input:is([type='checkbox'], [type='radio']):checked,
+.app-dialog--processing :is(.processing-scope-option, .processing-checkbox-label) input:is([type='checkbox'], [type='radio']):checked,
 .release-notification-channel-choice input[type='checkbox']:checked,
 .release-no-set-date-field input[type='checkbox']:checked {
   border-color: var(--accent);
   background: var(--accent);
   box-shadow: inset 0 0 0 0.2rem var(--surface);
+}
+.app-dialog--processing :is(.processing-watermark-choice-control, .processing-scope-option, .processing-checkbox-label) input[type='radio'] {
+  border-radius: 50%;
+}
+.app-dialog--processing :is(.processing-watermark-choice-control, .processing-scope-option, .processing-checkbox-label) input:is([type='checkbox'], [type='radio']) {
+  border-color: var(--border-strong);
+  cursor: pointer;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+.app-dialog--processing :is(.processing-watermark-choice-control, .processing-scope-option, .processing-checkbox-label):hover input:is([type='checkbox'], [type='radio']):not(:checked) {
+  border-color: var(--muted);
+}
+.app-dialog--processing :is(.processing-watermark-choice-control, .processing-scope-option, .processing-checkbox-label) input:is([type='checkbox'], [type='radio']):focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.app-dialog--processing :is(.processing-watermark-choice-control, .processing-scope-option, .processing-checkbox-label) {
+  font-size: 0.875rem;
 }
 .app-dialog--processing .processing-watermark-scope-row {
   display: flex;
@@ -10455,11 +10550,25 @@
     max-inline-size: none;
   }
 }
+@media (max-width: 540px) {
+  .app-dialog--processing .processing-dialog-section,
+  .app-dialog--processing .processing-section {
+    padding: var(--space-md);
+  }
+  .app-dialog--processing .processing-recovery-entry-point--dialog {
+    padding-inline: var(--space-md);
+  }
+}
 .app-dialog--processing .processing-dialog-section-body .help-text {
+  margin: 0;
   padding: 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
 }
 .app-dialog--processing .processing-dialog-section-body .form-actions {
   flex-wrap: wrap;
+  gap: var(--space-sm);
+  margin: 0;
 }
 .app-dialog--processing .processing-dialog-section-body h3 {
   margin: 0;
@@ -10467,10 +10576,107 @@
   background: transparent;
   border: 0;
   font-family: inherit;
-  font-size: 1rem;
+  font-size: 0.8125rem;
+  font-weight: 600;
   letter-spacing: normal;
+  line-height: 1.3;
   text-transform: none;
   color: var(--text);
+}
+.app-dialog--processing .processing-dialog-section-body .notice {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+/* In-body actions take the refined button sizing and variants; the footer
+   already has them from the shared foundation. */
+.app-dialog--processing .processing-dialog-body .button,
+.app-dialog--processing .processing-recovery-entry-point--dialog .button {
+  gap: 0.375rem;
+  min-height: var(--refined-control-height);
+  padding: 0 0.875rem;
+  border-radius: var(--refined-control-radius);
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.app-dialog--processing .processing-dialog-body .button-small,
+.app-dialog--processing .processing-recovery-entry-point--dialog .button-small {
+  min-height: 1.875rem;
+  padding: 0 0.625rem;
+  font-size: 0.8125rem;
+}
+.app-dialog--processing .processing-dialog-body .button:not(.button-secondary, .button-danger):not(:disabled):not([aria-disabled="true"]) {
+  border: 1px solid var(--border-strong);
+  background: var(--bg);
+  color: var(--text);
+  box-shadow: none;
+  filter: none;
+}
+.app-dialog--processing .processing-dialog-body .button:not(.button-secondary, .button-danger):hover:not(:disabled):not([aria-disabled="true"]) {
+  border-color: var(--accent);
+}
+.app-dialog--processing :is(.processing-dialog-body, .processing-recovery-entry-point--dialog) .button-secondary:not(:disabled):not([aria-disabled="true"]) {
+  border-color: var(--border-strong);
+  background: transparent;
+  color: var(--text);
+}
+.app-dialog--processing :is(.processing-dialog-body, .processing-recovery-entry-point--dialog) .button-secondary:hover:not(:disabled):not([aria-disabled="true"]) {
+  background: var(--surface-hover);
+}
+.app-dialog--processing .processing-dialog-body .button-danger:not(:disabled):not([aria-disabled="true"]) {
+  border-color: rgba(251, 113, 133, 0.45);
+  background: rgba(251, 113, 133, 0.1);
+  color: var(--badge-danger-fg);
+}
+.app-dialog--processing .processing-dialog-body .button-danger:hover:not(:disabled):not([aria-disabled="true"]) {
+  border-color: var(--danger);
+  background: rgba(251, 113, 133, 0.18);
+}
+.app-dialog--processing :is(.processing-dialog-body, .processing-recovery-entry-point--dialog) .button:active:not(:disabled):not([aria-disabled="true"]) {
+  transform: translateY(1px);
+}
+/* processing.js marks Apply destructive after a Preview that deletes or
+   moves files; the tint keeps it from reading as the routine dark primary. */
+.app-dialog--processing .app-dialog-footer > .button-primary.button-danger:not(:disabled):not([aria-disabled="true"]) {
+  border-color: rgba(251, 113, 133, 0.45);
+  background: rgba(251, 113, 133, 0.1);
+  color: var(--badge-danger-fg);
+}
+.app-dialog--processing .app-dialog-footer > .button-primary.button-danger:hover:not(:disabled):not([aria-disabled="true"]) {
+  border-color: var(--danger);
+  background: rgba(251, 113, 133, 0.18);
+}
+/* Error, status, and the recovery entry point sit between the body and the
+   footer and reserve no space while idle. */
+.app-dialog--processing .app-dialog-card > .app-dialog-error {
+  margin-top: 0;
+  margin-bottom: var(--space-md);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.app-dialog--processing .app-dialog-card > .app-dialog-status {
+  min-height: 0;
+  margin-top: 0;
+  margin-bottom: var(--space-md);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.app-dialog--processing .app-dialog-card > .app-dialog-status:empty {
+  margin-bottom: 0;
+}
+.app-dialog--processing .processing-recovery-entry-point--dialog {
+  margin-bottom: var(--space-md);
+  font-size: 0.8125rem;
+}
+.app-dialog--processing .processing-recovery-entry-point--dialog p {
+  margin: 0;
+}
+.app-dialog--processing .app-dialog-footer {
+  margin-top: 0;
 }
 .processing-select-field { min-width: 0; }
 .app-dialog--processing .asset-filter-multiselect-field {
@@ -10496,6 +10702,7 @@
 }
 .processing-resource-field .processing-select-field { flex: 0 1 auto; min-width: 0; }
 .processing-resource-field .button { width: auto; flex: 0 0 auto; }
+.app-dialog--processing [data-processing-set-default-watermark] { align-self: flex-start; }
 
 .processing-scope-hint { margin: 0; }
 .processing-scope-category-field {
@@ -10514,6 +10721,24 @@
   gap: var(--space-sm);
 }
 .processing-preset-name-form-actions { display: flex; gap: var(--space-sm); }
+.app-dialog--processing .processing-preset-name-form {
+  gap: var(--space-md);
+  padding: var(--space-md);
+  border-radius: var(--refined-control-radius);
+  background: var(--bg);
+}
+.app-dialog--processing .processing-preset-name-form .field {
+  max-width: 26rem;
+}
+/* Preset settings is a quiet disclosure row, as in the refined action
+   sections. */
+.app-dialog--processing [data-processing-preset-actions] + .processing-preset-name-form + .notes-workspace-disclosure summary {
+  min-height: 2rem;
+  font-size: 0.8125rem;
+}
+.app-dialog--processing [data-processing-preset-actions] + .processing-preset-name-form + .notes-workspace-disclosure .notes-workspace-disclosure-content {
+  padding-bottom: 0;
+}
 
 .processing-section {
   border: 1px solid var(--border);
@@ -10524,6 +10749,73 @@
 .processing-section > summary { font-weight: 600; cursor: pointer; }
 .processing-section .field.app-dialog-field { margin-top: var(--space-sm); }
 .processing-section--nested { margin-top: var(--space-sm); background: var(--bg); }
+/* Archives' collapsible groups read as the same section cards, with the
+   heading as the disclosure toggle. */
+.app-dialog--processing .processing-section {
+  min-width: 0;
+  padding: var(--space-md) var(--space-lg);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+.app-dialog--processing .processing-section + .processing-section { margin-top: 0; }
+.app-dialog--processing .processing-section[open] {
+  padding-bottom: var(--space-lg);
+}
+.app-dialog--processing .processing-section > summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  font-size: 0.875rem;
+  line-height: 1.3;
+  list-style: none;
+}
+.app-dialog--processing .processing-section > summary::-webkit-details-marker { display: none; }
+.app-dialog--processing .processing-section > summary::before {
+  flex: none;
+  width: 0.1875rem;
+  height: 0.875rem;
+  border-radius: 999px;
+  background: var(--accent-gradient);
+  content: '';
+}
+.app-dialog--processing .processing-section > summary::after {
+  width: 1rem;
+  height: 1rem;
+  margin-left: auto;
+  background-color: var(--muted);
+  content: '';
+  -webkit-mask: var(--refined-chevron) center / contain no-repeat;
+  mask: var(--refined-chevron) center / contain no-repeat;
+  transition: transform var(--transition-fast), background-color var(--transition-fast);
+}
+.app-dialog--processing .processing-section[open] > summary::after {
+  transform: rotate(180deg);
+}
+.app-dialog--processing .processing-section > summary:hover::after {
+  background-color: var(--text);
+}
+.app-dialog--processing .processing-section > summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+.app-dialog--processing .processing-section > :not(summary) {
+  margin-top: var(--space-md);
+}
+.app-dialog--processing .processing-section .field.app-dialog-field {
+  max-width: 26rem;
+}
+.app-dialog--processing .processing-section .help-text {
+  margin-bottom: 0;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+.app-dialog--processing .processing-checkbox-label {
+  gap: var(--space-sm);
+  min-height: 1.5rem;
+  cursor: pointer;
+}
 
 .processing-watermark-thumb {
   width: 8.25rem;
@@ -10537,6 +10829,11 @@
   background: var(--bg);
 }
 .processing-watermark-thumb img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.app-dialog--processing .processing-watermark-thumb,
+.app-dialog--processing .processing-watermark-rendered-preview {
+  border-radius: var(--refined-control-radius);
+  background: var(--bg);
+}
 .processing-watermark-option-content {
   display: flex;
   align-items: center;
@@ -10557,11 +10854,6 @@
 .processing-delete-source-warning { margin: var(--space-xs) 0; }
 
 /* Rule rows (Workflow Prompt Editor) */
-.app-dialog--processing-workflow .processing-rule-section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-xs);
-}
 .app-dialog--processing-workflow .processing-rule-list {
   display: flex;
   flex-direction: column;
@@ -10569,6 +10861,9 @@
   margin: 0;
   padding: 0;
   list-style: none;
+}
+.app-dialog--processing-workflow .processing-rule-list:empty {
+  display: none;
 }
 .app-dialog--processing-workflow [data-processing-add-rule] {
   align-self: flex-start;
@@ -10579,9 +10874,10 @@
   align-items: end;
   gap: var(--space-sm);
   min-width: 0;
-  padding: var(--space-xs) var(--space-sm);
+  padding: var(--space-xs);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
+  border-radius: var(--refined-control-radius);
+  background: var(--bg);
 }
 .app-dialog--processing-workflow .processing-rule-type {
   flex: 0 0 8rem;
@@ -10606,17 +10902,48 @@
   flex: 1 1 12rem;
   width: auto;
   min-width: 0;
-  padding: 0.375rem;
+  min-height: var(--refined-control-height);
+  padding: 0.375rem 0.625rem;
   border: 1px solid var(--border);
-  border-radius: 0.375rem;
-  background: var(--bg);
+  border-radius: var(--refined-control-radius);
+  background: var(--surface);
   color: var(--text);
+  font: inherit;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.app-dialog--processing-workflow .processing-rule-row input[type="text"]::placeholder {
+  color: var(--muted);
+  opacity: 0.7;
+}
+.app-dialog--processing-workflow .processing-rule-row input[type="text"]:hover {
+  border-color: var(--border-strong);
+}
+.app-dialog--processing-workflow .processing-rule-row input[type="text"]:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--refined-focus-shadow);
 }
 .app-dialog--processing-workflow [data-processing-remove-rule] {
   flex: 0 0 auto;
-  min-inline-size: 2rem;
-  min-block-size: 2rem;
+  min-inline-size: var(--refined-control-height);
+  min-block-size: var(--refined-control-height);
   padding: var(--space-xs);
+}
+.app-dialog--processing-workflow .processing-dialog-body [data-processing-remove-rule] {
+  min-width: var(--refined-control-height);
+  min-height: var(--refined-control-height);
+  padding: 0 var(--space-sm);
+}
+.app-dialog--processing-workflow .processing-dialog-body [data-processing-remove-rule]:not(:disabled):not([aria-disabled="true"]) {
+  border-color: transparent;
+  color: var(--muted);
+}
+.app-dialog--processing-workflow .processing-dialog-body [data-processing-remove-rule]:hover:not(:disabled):not([aria-disabled="true"]) {
+  border-color: rgba(251, 113, 133, 0.45);
+  background: rgba(251, 113, 133, 0.1);
+  color: var(--badge-danger-fg);
 }
 
 /* Plan / result internals; their outer cards use the shared settings-section primitive. */
@@ -10678,6 +11005,87 @@
 .app-dialog--processing-rename .processing-rename-list {
   overflow-x: hidden;
 }
+/* Refined Plan, Result, and Rename lists: compact rows on the field
+   background, with long names wrapping inside the scrolling list. */
+.app-dialog--processing .processing-plan-counts {
+  gap: var(--space-xs) var(--space-lg);
+  margin: 0;
+}
+.app-dialog--processing .processing-plan-counts dd {
+  font-size: 0.9375rem;
+  font-variant-numeric: tabular-nums;
+}
+.app-dialog--processing .processing-plan-items {
+  border-radius: var(--refined-control-radius);
+  background: var(--bg);
+}
+.app-dialog--processing .processing-plan-item {
+  padding: 0.375rem var(--space-sm);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.app-dialog--processing .processing-plan-item-name {
+  font-family: var(--mono);
+  font-size: 0.75rem;
+}
+.app-dialog--processing [data-processing-result-body] {
+  font-size: 0.875rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.app-dialog--processing [data-processing-result-body] > p {
+  margin: 0;
+}
+.app-dialog--processing [data-processing-result-body] > p + p {
+  margin-top: var(--space-xs);
+}
+.app-dialog--processing [data-processing-result-body]:empty {
+  display: none;
+}
+.app-dialog--processing .processing-archive-plan-details {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+}
+.app-dialog--processing-rename .processing-rename-item {
+  gap: 0.3125rem;
+  padding: var(--space-sm);
+}
+.app-dialog--processing-rename .processing-rename-item > label {
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1.4;
+}
+.app-dialog--processing-rename .processing-rename-item .asset-card-rename-input {
+  min-height: var(--refined-control-height);
+  padding: 0.375rem 0.625rem;
+  border-radius: var(--refined-control-radius);
+  background: var(--surface);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.app-dialog--processing-rename .asset-card-rename-field.has-extension .asset-card-rename-input {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.app-dialog--processing-rename .processing-rename-item .asset-card-rename-input:hover {
+  border-color: var(--border-strong);
+}
+.app-dialog--processing-rename .processing-rename-item .asset-card-rename-input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--refined-focus-shadow);
+}
+.app-dialog--processing-rename .asset-card-rename-field .asset-rename-extension {
+  display: inline-flex;
+  align-items: center;
+  align-self: stretch;
+  padding: 0 0.625rem;
+  border-radius: 0 var(--refined-control-radius) var(--refined-control-radius) 0;
+}
 
 @media (max-width: 540px) {
   .asset-results-metadata > .results-meta {
@@ -10719,27 +11127,92 @@
   }
 }
 
-/* Managed watermark / scale-map resource dialogs */
+/* Managed watermark / scale-map resource dialogs
+   Manage watermarks and Manage Scale Map keep the default dialog width and
+   follow the refined dialogs' rhythm without the execution dialogs'
+   .app-dialog--processing layout. Their descriptions and folder
+   instructions stay visible: they say where resources come from. */
+:is(#processing-manage-watermarks-dialog, #processing-manage-scale-map-dialog) .app-dialog-description {
+  margin-top: var(--space-md);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+:is(#processing-manage-watermarks-dialog, #processing-manage-scale-map-dialog) .processing-manage-body {
+  margin-top: var(--space-md);
+  padding-bottom: var(--space-md);
+  scrollbar-gutter: stable;
+}
+.processing-manage-body > * {
+  flex-shrink: 0;
+}
+.processing-manage-body > .help-text {
+  margin: 0;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+/* Error and status sit between the body and the footer and reserve no
+   space while idle, as in the execution dialogs. */
+:is(#processing-manage-watermarks-dialog, #processing-manage-scale-map-dialog) .app-dialog-card > .app-dialog-error {
+  margin-top: 0;
+  margin-bottom: var(--space-md);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+:is(#processing-manage-watermarks-dialog, #processing-manage-scale-map-dialog) .app-dialog-card > .app-dialog-status {
+  min-height: 0;
+  margin-top: 0;
+  margin-bottom: var(--space-md);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+:is(#processing-manage-watermarks-dialog, #processing-manage-scale-map-dialog) .app-dialog-card > .app-dialog-status:empty {
+  margin-bottom: 0;
+}
+:is(#processing-manage-watermarks-dialog, #processing-manage-scale-map-dialog) .app-dialog-footer {
+  margin-top: 0;
+}
 .processing-resource-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--space-sm); }
 .processing-resource-row {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-sm);
+  gap: var(--space-md);
+  min-width: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  padding: var(--space-sm);
+  padding: var(--space-sm) var(--space-md) var(--space-sm) var(--space-sm);
+  background: var(--surface);
 }
 .processing-resource-thumb {
   width: 3rem;
   height: 3rem;
   object-fit: contain;
   border: 1px solid var(--border);
-  border-radius: 0.375rem;
+  border-radius: var(--refined-control-radius);
   background: var(--bg);
   flex-shrink: 0;
 }
-.processing-resource-meta { flex: 1 1 12rem; min-width: 0; font-size: 0.875rem; }
+/* Filenames and relative paths have no break points of their own. */
+.processing-resource-meta {
+  flex: 1 1 12rem;
+  min-width: 0;
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.processing-resource-empty.help-text {
+  margin: 0;
+  padding: var(--space-md);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+  text-align: center;
+  overflow-wrap: anywhere;
+}
 .processing-rename-form { display: flex; align-items: center; gap: var(--space-xs); }
 .processing-rename-form input[type="text"] {
   padding: 0.375rem;
@@ -10751,34 +11224,169 @@
 }
 .processing-add-form { border-top: 1px solid var(--border); padding-top: var(--space-md); display: flex; flex-direction: column; gap: var(--space-sm); }
 
-.processing-scale-map-grid { display: flex; flex-direction: column; gap: var(--space-xs); }
+/* Three steppers and Remove per row need a little more than the default
+   width to show four-digit resolutions at the shared control size. */
+#processing-manage-scale-map-dialog {
+  width: min(36rem, calc(100vw - 2rem));
+}
+@media (max-width: 540px) {
+  #processing-manage-scale-map-dialog {
+    width: calc(100vw - 1rem);
+  }
+}
+.processing-scale-map-grid { display: flex; flex-direction: column; gap: var(--space-sm); }
 .processing-scale-map-grid-header,
 .processing-scale-map-grid-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1fr) auto;
-  gap: var(--space-xs);
+  gap: var(--space-sm);
   align-items: center;
 }
-.processing-scale-map-grid-header { font-size: 0.75rem; color: var(--muted); }
-.processing-scale-map-grid-row input {
-  min-width: 0;
-  padding: 0.375rem;
-  background: var(--bg);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 0.375rem;
-}
-.processing-scale-map-editor {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: var(--space-md);
+.processing-scale-map-grid > [data-processing-scale-map-rows] {
   display: flex;
   flex-direction: column;
   gap: var(--space-sm);
+  min-width: 0;
+}
+.processing-scale-map-grid-header {
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.3;
+}
+/* processing.js inserts each row and wraps its inputs in the shared number
+   stepper after the dialog opens; the input joins the stepper buttons at the
+   shared control height, as number fields do in .field. */
+.processing-scale-map-grid-row .cc-number-stepper {
+  width: 100%;
+}
+.processing-scale-map-grid-row input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: var(--refined-control-height);
+  padding: 0.375rem 0.625rem;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--refined-control-radius);
+  font: inherit;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.processing-scale-map-grid-row .cc-number-stepper > input[type='number'] {
+  border-inline-end: 0;
+  border-radius: var(--refined-control-radius) 0 0 var(--refined-control-radius);
+}
+.processing-scale-map-grid-row input:hover {
+  border-color: var(--border-strong);
+}
+.processing-scale-map-grid-row input:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+}
+.processing-scale-map-grid-row .cc-number-stepper-button {
+  min-height: var(--refined-control-height);
+}
+.processing-scale-map-grid-row .cc-number-stepper-button--increment {
+  border-radius: 0 var(--refined-control-radius) var(--refined-control-radius) 0;
+}
+.processing-scale-map-editor {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-md) var(--space-lg) var(--space-lg);
+  background: var(--surface);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-md);
+  min-width: 0;
+}
+.processing-scale-map-editor > [data-processing-scale-map-add-row] {
+  align-self: flex-start;
+}
+.processing-scale-map-editor > .field {
+  gap: 0.3125rem;
+  max-width: 12rem;
+}
+.processing-scale-map-editor > .field > input {
+  width: 100%;
+}
+/* In-body actions take the refined button sizing and variants; the footer
+   already has them from the shared foundation. */
+:is(.processing-scale-map-editor, .processing-recovery-details-body) .button {
+  gap: 0.375rem;
+  min-height: var(--refined-control-height);
+  padding: 0 0.875rem;
+  border-radius: var(--refined-control-radius);
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast);
+}
+:is(.processing-scale-map-editor, .processing-recovery-details-body) .button-small {
+  min-height: 1.875rem;
+  padding: 0 0.625rem;
+  font-size: 0.8125rem;
+}
+/* Rows keep the shared control height, so their Remove matches the steppers. */
+.processing-scale-map-grid-row > .button-small {
+  min-height: var(--refined-control-height);
+}
+:is(.processing-scale-map-editor, .processing-recovery-details-body) .button:not(.button-secondary, .button-danger):not(:disabled):not([aria-disabled="true"]) {
+  border: 1px solid var(--border-strong);
+  background: var(--bg);
+  color: var(--text);
+  box-shadow: none;
+  filter: none;
+}
+:is(.processing-scale-map-editor, .processing-recovery-details-body) .button:not(.button-secondary, .button-danger):hover:not(:disabled):not([aria-disabled="true"]) {
+  border-color: var(--accent);
+}
+:is(.processing-scale-map-editor, .processing-recovery-details-body) .button-secondary:not(:disabled):not([aria-disabled="true"]) {
+  border-color: var(--border-strong);
+  background: transparent;
+  color: var(--text);
+}
+:is(.processing-scale-map-editor, .processing-recovery-details-body) .button-secondary:hover:not(:disabled):not([aria-disabled="true"]) {
+  background: var(--surface-hover);
+}
+:is(.processing-scale-map-editor, .processing-recovery-details-body) .button:active:not(:disabled):not([aria-disabled="true"]) {
+  transform: translateY(1px);
+}
+/* Narrow dialogs: the Remove action drops below its row so the three
+   steppers keep room for their values. */
+@media (max-width: 40rem) {
+  .processing-scale-map-editor {
+    padding: var(--space-md) var(--space-sm);
+  }
+  .processing-scale-map-grid-header,
+  .processing-scale-map-grid-row {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: var(--space-xs);
+  }
+  .processing-scale-map-grid-header > span:last-child {
+    display: none;
+  }
+  .processing-scale-map-grid-row > .button {
+    grid-column: 1 / -1;
+    justify-self: end;
+  }
+  .processing-scale-map-grid-row + .processing-scale-map-grid-row {
+    padding-top: var(--space-sm);
+    border-top: 1px solid var(--border);
+  }
+  .processing-scale-map-grid-row input {
+    padding-inline: 0.375rem;
+    font-size: 0.8125rem;
+  }
+  .processing-scale-map-grid-row .cc-number-stepper-button {
+    width: 1.5rem;
+    min-width: 1.5rem;
+  }
+  .processing-resource-row {
+    align-items: flex-start;
+  }
 }
 @media (max-width: 40rem) {
-  .processing-scale-map-grid-header,
-  .processing-scale-map-grid-row { grid-template-columns: 1fr 1fr 1fr auto; }
   .app-dialog--processing-workflow .processing-rule-row {
     flex-direction: column;
     align-items: stretch;
@@ -10793,7 +11401,6 @@
     max-width: none;
   }
   .app-dialog--processing-workflow [data-processing-remove-rule] { align-self: flex-end; }
-  .processing-resource-row { flex-direction: column; align-items: flex-start; }
 }
 /* Watermark Processing renders this separately from the small source thumbnail. */
 .processing-watermark-rendered-preview {
@@ -11455,18 +12062,44 @@
 .app-dialog--recovery-details {
   width: min(44rem, calc(100vw - 2rem));
 }
+/* Recovery Details follows the refined rhythm at its own technical width.
+   Its description, summary, and instructions stay visible and full size:
+   they say what is blocked and what to do. */
+.app-dialog--recovery-details .app-dialog-description {
+  margin-top: var(--space-md);
+  font-size: 0.8125rem;
+  line-height: 1.45;
+}
 .processing-recovery-details-body {
   display: flex;
   flex-direction: column;
   gap: var(--space-md);
   min-width: 0;
 }
+.app-dialog--recovery-details .processing-recovery-details-body {
+  margin-top: var(--space-md);
+  padding-bottom: var(--space-md);
+  scrollbar-gutter: stable;
+}
+.processing-recovery-details-body > * {
+  flex-shrink: 0;
+}
 .processing-recovery-details-body > .notice,
+.processing-recovery-details-body > .app-dialog-error,
 .processing-recovery-details-body > .app-dialog-status {
   margin: 0;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.processing-recovery-details-body > .app-dialog-status {
+  min-height: 0;
+  font-size: 0.8125rem;
 }
 .processing-recovery-details-body > .app-dialog-status:empty {
   display: none;
+}
+.app-dialog--recovery-details .app-dialog-footer {
+  margin-top: 0;
 }
 .processing-recovery-manual-scan,
 .processing-recovery-entry {
@@ -11476,15 +12109,35 @@
   border-radius: var(--radius-md);
   background: var(--surface);
 }
+.processing-recovery-manual-scan {
+  padding: var(--space-md) var(--space-lg) var(--space-lg);
+  border-radius: var(--radius-lg);
+}
 .processing-recovery-manual-scan h3,
 .processing-recovery-list-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
   margin: 0;
+  color: var(--text);
   font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.processing-recovery-manual-scan h3::before,
+.processing-recovery-list-heading::before {
+  flex: none;
+  width: 0.1875rem;
+  height: 0.875rem;
+  border-radius: 999px;
+  background: var(--accent-gradient);
+  content: '';
 }
 .processing-recovery-manual-scan p {
-  margin: var(--space-xs) 0 var(--space-sm);
+  margin: 0.625rem 0 var(--space-md);
   color: var(--muted);
   font-size: 0.875rem;
+  line-height: 1.45;
 }
 .processing-recovery-toolbar,
 .processing-recovery-actions,
@@ -11519,21 +12172,25 @@
 .processing-recovery-entry-title {
   display: flex;
   flex-direction: column;
+  gap: 0.125rem;
   min-width: 0;
   margin: 0;
-  font-size: 0.9375rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.3;
 }
 .processing-recovery-entry-operation {
   color: var(--muted);
   font-size: 0.75rem;
-  font-weight: 600;
+  font-weight: 500;
 }
 .processing-recovery-entry-facts {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
   gap: var(--space-xs) var(--space-md);
-  margin: var(--space-sm) 0 0;
-  font-size: 0.875rem;
+  margin: var(--space-md) 0 0;
+  font-size: 0.8125rem;
+  line-height: 1.45;
 }
 .processing-recovery-entry-facts dt {
   color: var(--muted);
@@ -11549,29 +12206,44 @@
   word-break: break-word;
 }
 .processing-recovery-entry-recommendation {
-  margin: var(--space-sm) 0 0;
+  margin: var(--space-md) 0 0;
   font-size: 0.875rem;
+  line-height: 1.45;
 }
 .processing-recovery-entry-actions {
-  margin-top: var(--space-sm);
+  margin-top: var(--space-md);
 }
 .processing-recovery-entry-technical {
-  margin-top: var(--space-sm);
+  margin-top: var(--space-md);
+  padding-top: var(--space-sm);
+  border-top: 1px solid var(--border);
   color: var(--muted);
   font-size: 0.8125rem;
+  line-height: 1.45;
 }
 .processing-recovery-entry-technical summary {
+  width: fit-content;
+  border-radius: 0.25rem;
+  font-weight: 500;
   cursor: pointer;
+}
+.processing-recovery-entry-technical summary:hover {
+  color: var(--text);
+}
+.processing-recovery-entry-technical summary:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 .processing-recovery-entry-technical dl {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
   gap: var(--space-xs) var(--space-md);
-  margin: var(--space-xs) 0 0;
+  margin: var(--space-sm) 0 0;
 }
 .processing-recovery-entry-technical dd {
   min-width: 0;
   margin: 0;
+  color: var(--text);
   font-family: var(--mono);
   overflow-wrap: anywhere;
 }
@@ -11586,6 +12258,9 @@
   }
   .processing-recovery-entry-facts dd + dt {
     margin-top: var(--space-xs);
+  }
+  .processing-recovery-manual-scan {
+    padding: var(--space-md);
   }
   .processing-recovery-entry-point--dialog {
     padding: 0 var(--space-md);

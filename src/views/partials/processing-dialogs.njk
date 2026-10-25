@@ -246,26 +246,33 @@
     {{ presetSection('convert') }}
     {{ scopeSection('convert', processingCategoryOptions) }}
 
-    {{ processingSelect('convert-format', 'format', 'string', 'Format', [
-      { value: 'png', label: 'PNG' },
-      { value: 'jpg', label: 'JPG' },
-      { value: 'jpeg', label: 'JPEG' },
-      { value: 'bmp', label: 'BMP' },
-      { value: 'gif', label: 'GIF' },
-      { value: 'webp', label: 'WebP', selected: true }
-    ]) }}
-    <div class="field app-dialog-field">
-      <label for="convert-quality">Quality</label>
-      <input id="convert-quality" type="number" min="1" max="95" placeholder="85"
-             data-processing-field="quality" data-processing-type="int" data-processing-omit-if-empty="true">
-      <p class="help-text">Only affects JPEG/WebP output. 1–95, default 85.</p>
-    </div>
-    {{ processingSelect('convert-original-handling', 'originalHandling', 'string', 'Original handling', [
-      { value: 'keep', label: 'Keep originals', selected: true },
-      { value: 'move', label: 'Move originals (file-changing)' },
-      { value: 'delete', label: 'Delete originals (file-changing)' }
-    ]) }}
-    <p class="help-text">Converting to the same extension requires Keep originals.</p>
+    <section class="settings-section processing-dialog-section">
+      <h3>Conversion</h3>
+      <div class="processing-dialog-section-body">
+        <div class="processing-convert-options">
+          {{ processingSelect('convert-format', 'format', 'string', 'Format', [
+            { value: 'png', label: 'PNG' },
+            { value: 'jpg', label: 'JPG' },
+            { value: 'jpeg', label: 'JPEG' },
+            { value: 'bmp', label: 'BMP' },
+            { value: 'gif', label: 'GIF' },
+            { value: 'webp', label: 'WebP', selected: true }
+          ]) }}
+          <div class="field app-dialog-field processing-convert-quality-field">
+            <label for="convert-quality">Quality</label>
+            <input id="convert-quality" type="number" min="1" max="95" placeholder="85"
+                   data-processing-field="quality" data-processing-type="int" data-processing-omit-if-empty="true">
+            <p class="help-text">Only affects JPEG/WebP output. 1–95, default 85.</p>
+          </div>
+          {{ processingSelect('convert-original-handling', 'originalHandling', 'string', 'Original handling', [
+            { value: 'keep', label: 'Keep originals', selected: true },
+            { value: 'move', label: 'Move originals (file-changing)' },
+            { value: 'delete', label: 'Delete originals (file-changing)' }
+          ]) }}
+        </div>
+        <p class="help-text">Converting to the same extension requires Keep originals.</p>
+      </div>
+    </section>
 
     {{ processingOutputSections() }}
   </div>
