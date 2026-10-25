@@ -12801,7 +12801,8 @@
 }
 
 /* ── Buttons ── */
-.app-dialog--refined .button {
+.app-dialog--refined .button,
+.button.dashboard-create-action {
   gap: 0.375rem;
   min-height: var(--refined-control-height);
   padding: 0 0.875rem;
@@ -12814,7 +12815,8 @@
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
-.app-dialog--refined .button:active:not(:disabled):not([aria-disabled="true"]) {
+.app-dialog--refined .button:active:not(:disabled):not([aria-disabled="true"]),
+.button.dashboard-create-action:active:not(:disabled):not([aria-disabled="true"]) {
   transform: translateY(1px);
 }
 .app-dialog--refined .button-primary {
@@ -12823,8 +12825,10 @@
 }
 /* Trial: New Project's (and New Release's) submit is a dark outlined button led by a cyan plus
    square; the Edit dialogs' Save changes buttons share the treatment without
-   the plus. Disabled styling, hover brightness, focus ring, and pressed
+   the plus, and the Dashboard's New Release/New Project header links share it
+   with the plus. Disabled styling, hover brightness, focus ring, and pressed
    movement come from the rules around it. */
+.button.dashboard-create-action,
 #project-create-dialog button[form="project-create-form"][data-dialog-submit],
 #release-create-dialog button[form="release-create-form"][data-dialog-submit],
 #project-edit-dialog button[form="project-edit-form"][data-dialog-submit],
@@ -12838,6 +12842,7 @@
   font-size: 0.875rem;
   font-weight: 600;
 }
+.button.dashboard-create-action:not(:disabled):not([aria-disabled="true"]),
 #project-create-dialog button[form="project-create-form"][data-dialog-submit]:not(:disabled):not([aria-disabled="true"]),
 #release-create-dialog button[form="release-create-form"][data-dialog-submit]:not(:disabled):not([aria-disabled="true"]),
 #project-edit-dialog button[form="project-edit-form"][data-dialog-submit]:not(:disabled):not([aria-disabled="true"]),
@@ -12848,6 +12853,7 @@
   color: var(--text);
   box-shadow: none;
 }
+.button.dashboard-create-action:hover:not(:disabled):not([aria-disabled="true"]),
 #project-create-dialog button[form="project-create-form"][data-dialog-submit]:hover:not(:disabled):not([aria-disabled="true"]),
 #release-create-dialog button[form="release-create-form"][data-dialog-submit]:hover:not(:disabled):not([aria-disabled="true"]),
 #project-edit-dialog button[form="project-edit-form"][data-dialog-submit]:hover:not(:disabled):not([aria-disabled="true"]),

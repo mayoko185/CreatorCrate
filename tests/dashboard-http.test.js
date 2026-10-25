@@ -212,8 +212,8 @@ describe('dashboard HTTP composition', () => {
       expect(countTags(res.text, 'h1')).toBe(1);
       expect(res.text).toContain('<h1 class="app-section-title">Dashboard</h1>');
       expect(res.text).toContain(`<p class="dashboard-today"><time datetime="${today}">`);
-      expect(heading).toContain('<a class="button button-secondary" href="/releases/new" data-dialog-open="release-create-dialog">New Release</a>');
-      expect(heading).toContain('<a class="button button-primary" href="/projects/new" data-dialog-open="project-create-dialog">New Project</a>');
+      expect(heading).toMatch(/<a class="button button-primary dashboard-create-action" href="\/releases\/new" data-dialog-open="release-create-dialog"><span class="project-create-submit-icon" aria-hidden="true">[\s\S]*?<\/span>New Release<\/a>/);
+      expect(heading).toMatch(/<a class="button button-primary dashboard-create-action" href="\/projects\/new" data-dialog-open="project-create-dialog"><span class="project-create-submit-icon" aria-hidden="true">[\s\S]*?<\/span>New Project<\/a>/);
       for (const retired of [
         'data-dashboard-defaults-link', 'dashboard-defaults-dialog', 'href="/?defaults=1"',
         'id="projects-nsfw-toggle"', 'data-projects-nsfw-filter', 'data-asset-grid-size-controls',
@@ -908,7 +908,7 @@ describe('dashboard HTTP composition', () => {
       const heading = res.text.match(/<header class="page-heading">[\s\S]*?<\/header>/)?.[0] || '';
       const dialog = extractReleaseCreateDialog(res.text);
 
-      expect(heading).toContain('data-dialog-open="release-create-dialog">New Release</a>');
+      expect(heading).toMatch(/data-dialog-open="release-create-dialog"><span class="project-create-submit-icon" aria-hidden="true">[\s\S]*?<\/span>New Release<\/a>/);
       expect((res.text.match(/<dialog id="release-create-dialog"/g) || [])).toHaveLength(1);
       expect((res.text.match(/<dialog id="project-create-dialog"/g) || [])).toHaveLength(1);
       expect((res.text.match(/<dialog id="release-signatures-dialog"/g) || [])).toHaveLength(1);

@@ -514,7 +514,7 @@ describe('project HTTP workflow', () => {
   it('dashboard renders the attention tiles, the projects table, and a new project action', async () => {
     const res = await agent.get('/').expect(200);
     expect(res.text).toContain('CreatorCrate');
-    expect(res.text).toContain('data-dialog-open="project-create-dialog">New Project</a>');
+    expect(res.text).toMatch(/data-dialog-open="project-create-dialog"><span class="project-create-submit-icon" aria-hidden="true">[\s\S]*?<\/span>New Project<\/a>/);
     for (const tile of ['Overdue', 'Needs a date', 'Due today', 'Next 7 days', 'Missing assets']) {
       expect(res.text).toContain(`<span class="dashboard-tile-label">${tile}</span>`);
     }

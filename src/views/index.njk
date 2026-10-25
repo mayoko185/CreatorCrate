@@ -18,8 +18,8 @@
   {% set tiles = dashboard.tiles %}
 
   {% call pageHeading.render() %}
-    <a class="button button-secondary" href="/releases/new" data-dialog-open="release-create-dialog">New Release</a>
-    <a class="button button-primary" href="/projects/new" data-dialog-open="project-create-dialog">New Project</a>
+    <a class="button button-primary dashboard-create-action" href="/releases/new" data-dialog-open="release-create-dialog"><span class="project-create-submit-icon" aria-hidden="true">{{ icons.icon('plus') }}</span>New Release</a>
+    <a class="button button-primary dashboard-create-action" href="/projects/new" data-dialog-open="project-create-dialog"><span class="project-create-submit-icon" aria-hidden="true">{{ icons.icon('plus') }}</span>New Project</a>
   {% endcall %}
   <p class="dashboard-today"><time datetime="{{ dashboard.today }}">{{ dashboard.todayLabel }}</time></p>
 
