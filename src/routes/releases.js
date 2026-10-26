@@ -4,6 +4,7 @@ import {
   AssetNotFoundError,
   createReleaseService,
   ReleaseArchivedError,
+  ReleaseLinkConflictError,
   ReleaseParentArchivedError,
   ReleasePublishedError,
   ReleaseScheduleConflictError,
@@ -422,7 +423,9 @@ export function createReleasesRouter({ appName, db, releaseService, projectServi
 
   // POST /releases/:id — Update a release. Only the shared async Edit Release
   // dialog edits releases: it submits the complete form with
-  // Accept: application/json and receives the authoritative edit model.
+  // Accept: application/json and receives the authoritative edit model. Every
+  // save names the Release link the form loaded (expectedPatreonUrl); a save
+  // without it, or one whose link is no longer stored, changes nothing.
   router.post('/:id', (req, res, next) => {
     if (!wantsJson(req)) {
       return next(createReleaseEditNotAcceptable());
@@ -1710,6 +1713,9 @@ function parseListQuery(raw) {
 
 function parseReleaseInput(body) {
   const input = {
+    // Always forwarded, exactly as sent, so a missing or malformed value is
+    // rejected rather than silently skipping the Release link guard.
+    expectedPatreonUrl: Object.hasOwn(body, 'expectedPatreonUrl') ? body.expectedPatreonUrl : undefined,
     title: body.title,
     description: body.description,
     notes: body.notes,
@@ -1857,6 +1863,13 @@ function sendReleaseUpdateJsonError(req, res, releaseId, err) {
     return sendReleaseEditJsonError(res, 422,
       err instanceof ReleaseArchivedError ? 'RELEASE_ARCHIVED' : 'PROJECT_ARCHIVED',
       err.message, { errors: { general: err.message } });
+  }
+  // No submitted values are echoed: the client keeps its whole draft and
+  // resolves the newer saved link explicitly.
+  if (err instanceof ReleaseLinkConflictError) {
+    return sendReleaseEditJsonError(res, 409, err.code,
+      'Not saved. The saved Release link changed after this form was loaded.',
+      { currentReleaseLink: err.currentReleaseLink });
   }
   return sendReleaseEditJsonError(res, 500, 'SERVER_ERROR', 'Release update failed. Please try again.');
 }

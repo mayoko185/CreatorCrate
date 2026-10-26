@@ -66,31 +66,42 @@ export function createSocialPrepCapabilityService({ socialPrepRepository, now = 
     return session;
   }
 
-  function authenticateConfirmation({ authorization, sessionId }) {
+  // Manual-session authority: the same bearer as media access, but bounded by
+  // the fixed manual_confirmation_expires_at window (never renewed here) and
+  // usable by redeemed or finished attempts. `kind` only names the error codes.
+  function authenticateManualSession({ authorization, sessionId }, kind, label, notEligible) {
     if (typeof authorization !== 'string' || authorization.length === 0) {
-      throw confirmationError('confirmation_token_missing', 401, 'A confirmation token is required.');
+      throw confirmationError(`${kind}_token_missing`, 401, `A ${label} token is required.`);
     }
     const match = BEARER_TOKEN.exec(authorization);
-    if (!match) throw confirmationError('confirmation_token_malformed', 401, 'The confirmation token is malformed.');
+    if (!match) throw confirmationError(`${kind}_token_malformed`, 401, `The ${label} token is malformed.`);
 
     const suppliedDigest = digestToken(match[1]);
     const session = socialPrepRepository.findSessionById(sessionId);
     const expectedDigest = session?.media_token_hash ?? DUMMY_DIGEST;
     if (!sameDigest(suppliedDigest, expectedDigest) || !session) {
-      throw confirmationError('confirmation_token_invalid', 403, 'The confirmation token is invalid.');
+      throw confirmationError(`${kind}_token_invalid`, 403, `The ${label} token is invalid.`);
     }
     if (!session.manual_confirmation_expires_at
       || timestampAtOrAfter(now(), session.manual_confirmation_expires_at)) {
-      throw confirmationError('confirmation_token_expired', 401, 'The confirmation token has expired.');
+      throw confirmationError(`${kind}_token_expired`, 401, `The ${label} token has expired.`);
     }
     if (session.state === 'superseded' || session.state === 'expired') {
       throw confirmationError('attempt_superseded', 409, 'The preparation attempt was superseded.');
     }
-    if (!['redeemed', 'finished'].includes(session.state)) {
-      throw confirmationError('attempt_not_confirmable', 409, 'The preparation attempt cannot confirm posting.');
-    }
+    if (!['redeemed', 'finished'].includes(session.state)) throw confirmationError(...notEligible);
     return session;
   }
 
-  return Object.freeze({ authenticate, authenticateConfirmation });
+  function authenticateConfirmation(input) {
+    return authenticateManualSession(input, 'confirmation', 'confirmation',
+      ['attempt_not_confirmable', 409, 'The preparation attempt cannot confirm posting.']);
+  }
+
+  function authenticateReleaseLink(input) {
+    return authenticateManualSession(input, 'release_link', 'release link',
+      ['attempt_not_link_editable', 409, 'The preparation attempt cannot edit the release link.']);
+  }
+
+  return Object.freeze({ authenticate, authenticateConfirmation, authenticateReleaseLink });
 }

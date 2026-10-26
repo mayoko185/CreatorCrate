@@ -82,6 +82,22 @@ export class ReleaseScheduleConflictError extends Error {
   }
 }
 
+/**
+ * Thrown when a Release link change names an expected current link that no
+ * longer matches the stored one, so a newer link is never overwritten.
+ * `currentReleaseLink` is the stored link observed when the conflict was
+ * detected (null when there is none).
+ */
+export class ReleaseLinkConflictError extends Error {
+  constructor(id, currentReleaseLink) {
+    super(`Release ${id} link changed since it was loaded.`);
+    this.name = 'ReleaseLinkConflictError';
+    this.status = 409;
+    this.code = 'RELEASE_LINK_CONFLICT';
+    this.currentReleaseLink = currentReleaseLink;
+  }
+}
+
 export class AssetNotFoundError extends Error {
   constructor(id) {
     super(`Asset ${id} not found`);
@@ -94,6 +110,9 @@ const TITLE_MIN = 1;
 const TITLE_MAX = 200;
 const DESCRIPTION_MAX = 4000;
 const NOTES_MAX = 10000;
+
+const RELEASE_LINK_MESSAGE = 'Release link must be a valid absolute HTTP or HTTPS URL.';
+const RELEASE_LINK_EXPECTATION_MESSAGE = 'This form could not confirm which Release link it loaded. Close and reopen Edit Release, then try again.';
 
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const TIME_RE = /^\d{2}:\d{2}$/;
@@ -440,7 +459,7 @@ export function createReleaseService({
 
     const patreonUrl = input.patreonUrl || null;
     if (!isValidWebUrl(patreonUrl)) {
-      errors.patreonUrl = 'Release link must be a valid absolute HTTP or HTTPS URL.';
+      errors.patreonUrl = RELEASE_LINK_MESSAGE;
     }
 
     if (Object.keys(errors).length > 0) {
@@ -550,6 +569,16 @@ export function createReleaseService({
     if (isProjectArchived(parent)) {
       throw new ReleaseParentArchivedError(projectId);
     }
+  }
+
+  /**
+   * Release-link guard: the release exists, is not archived, and its parent
+   * project is not archived. Publication does not lock the link.
+   */
+  function guardReleaseLinkEditable(release, id) {
+    if (!release) throw new ReleaseNotFoundError(id);
+    guardParentProjectNotArchived(release.project_id);
+    guardReleaseNotArchived(release);
   }
 
   /**
@@ -727,9 +756,17 @@ export function createReleaseService({
     },
 
     /**
+     * When `input` carries `expectedPatreonUrl` (the Release link the editor
+     * loaded), the whole update applies only while the stored link still
+     * equals it, so a newer link saved elsewhere (for example by the Posting
+     * Helper) is never overwritten. The value is compared exactly; only an
+     * empty string is equivalent to no link.
+     *
      * @param {number} id
      * @param {Object} input
      * @returns {ReleaseRecord}
+     * @throws {ReleaseLinkConflictError} when the expected link is stale;
+     *   nothing is written
      */
     updateRelease(id, input) {
       const release = repository.findById(id);
@@ -746,6 +783,16 @@ export function createReleaseService({
 
       // Validate project still exists and is not archived
       validateProjectExists(release.project_id);
+
+      const { expectedPatreonUrl } = input;
+      const guardLink = Object.hasOwn(input, 'expectedPatreonUrl');
+      if (guardLink && expectedPatreonUrl !== null && typeof expectedPatreonUrl !== 'string') {
+        throw new ReleaseValidationError({ general: RELEASE_LINK_EXPECTATION_MESSAGE });
+      }
+      const expectedLink = guardLink ? expectedPatreonUrl || null : undefined;
+      if (guardLink && (release.patreon_url || null) !== expectedLink) {
+        throw new ReleaseLinkConflictError(id, release.patreon_url || null);
+      }
 
       // Default missing metadata and scheduling values to the existing release
       // values so the edit form can omit those fields without clearing them.
@@ -768,13 +815,26 @@ export function createReleaseService({
         || release.planned_time !== normalized.plannedTime
         || release.published_date !== normalized.publishedDate
         || release.patreon_url !== normalized.patreonUrl;
-      const save = () => repository.update(id, normalized);
+      // The link guard is part of the UPDATE's WHERE clause, and platform
+      // selection is replaced only after that row write succeeded inside the
+      // same transaction, so a stale link changes nothing.
+      const save = () => repository.update(id, normalized,
+        guardLink ? { expectedPatreonUrl: expectedLink } : undefined);
       const updated = selectedPlatforms === null ? save() : db.transaction(() => {
         const result = save();
         if (result) replacePlatformSelection(id, selectedPlatforms);
         return result;
       }).immediate();
       if (!updated) {
+        // The row changed after the read above; report the current reason
+        // rather than treating the unapplied write as success.
+        const current = repository.findById(id);
+        if (!current) throw new ReleaseNotFoundError(id);
+        guardParentProjectNotArchived(current.project_id);
+        guardReleaseNotArchived(current);
+        if (guardLink && (current.patreon_url || null) !== expectedLink) {
+          throw new ReleaseLinkConflictError(id, current.patreon_url || null);
+        }
         throw new ReleaseNotFoundError(id);
       }
       if (changed) logActivity('release.updated', updated);
@@ -835,6 +895,62 @@ export function createReleaseService({
       logActivity('release.updated', updated);
       notifyReleaseNotificationState(id);
       return { release: updated, changed: true, previousSchedule, schedule: readSchedule(updated) };
+    },
+
+    /**
+     * Read the stored Release link of a release whose link may be edited
+     * (active release inside a non-archived project). Blank is reported as null.
+     *
+     * @param {number} id
+     * @returns {string|null}
+     * @throws {ReleaseNotFoundError|ReleaseParentArchivedError|ReleaseArchivedError}
+     */
+    getEditableReleaseLink(id) {
+      const release = repository.findById(id);
+      guardReleaseLinkEditable(release, id);
+      return release.patreon_url || null;
+    },
+
+    /**
+     * Release link change guarded by the caller's view of the current link.
+     * Only patreon_url and updated_at change; scheduling, publication, assets,
+     * and platform selection are untouched. A blank link clears it. When the
+     * stored link already equals the requested one the call is an idempotent
+     * no-op, whatever the expected value was.
+     *
+     * @param {number} id
+     * @param {{ releaseLink: string|null, expectedReleaseLink: string|null }} input
+     *   null/blank means no link
+     * @returns {{ release: ReleaseRecord, changed: boolean, releaseLink: string|null }}
+     * @throws {ReleaseNotFoundError|ReleaseParentArchivedError|ReleaseArchivedError|
+     *   ReleaseValidationError|ReleaseLinkConflictError}
+     */
+    updateReleaseLink(id, { releaseLink, expectedReleaseLink }) {
+      const normalize = (value) => (typeof value === 'string' ? value.trim() : value) || null;
+
+      const release = repository.findById(id);
+      guardReleaseLinkEditable(release, id);
+      const nextLink = normalize(releaseLink);
+      if (!isValidWebUrl(nextLink)) throw new ReleaseValidationError({ patreonUrl: RELEASE_LINK_MESSAGE });
+      // The expected value is an opaque snapshot of the stored link: compare it
+      // exactly. Only an empty string is equivalent to no link.
+      const expected = expectedReleaseLink || null;
+
+      const currentLink = release.patreon_url || null;
+      if (currentLink === nextLink) return { release, changed: false, releaseLink: currentLink };
+      if (currentLink !== expected) throw new ReleaseLinkConflictError(id, currentLink);
+
+      const updated = repository.updateReleaseLink(id, nextLink, expected);
+      if (!updated) {
+        // The row changed after the read above; report the current reason
+        // rather than treating the unapplied write as success.
+        const current = repository.findById(id);
+        guardReleaseLinkEditable(current, id);
+        throw new ReleaseLinkConflictError(id, current.patreon_url || null);
+      }
+
+      logActivity('release.updated', updated);
+      return { release: updated, changed: true, releaseLink: updated.patreon_url || null };
     },
 
     /**

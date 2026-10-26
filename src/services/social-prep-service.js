@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import { buildSocialContent } from './social-content-builder.js';
 import { formatSocialPrepTimestamp } from '../data/social-prep-repository.js';
+import {
+  ReleaseArchivedError, ReleaseLinkConflictError, ReleaseNotFoundError, ReleaseParentArchivedError, ReleaseValidationError,
+} from './release-service.js';
 
 export const ATTEMPT_STALE_MINUTES = 15;
 export const ATTEMPT_MAX_MINUTES = 30;
@@ -313,9 +316,53 @@ export function createSocialPrepService({ db, socialPrepRepository, socialPrepSe
     }).immediate();
   }
 
+  // A session may touch the release-level link only while it still owns a
+  // selected platform it brought to ready or posted.
+  function guardReleaseLinkEligible(session) {
+    const eligible = socialPrepRepository.listPlatformsByReleaseId(session.release_id)
+      .some((row) => row.session_id === session.id && row.is_selected === 1 && ['ready', 'posted'].includes(row.status));
+    if (!eligible) throw new SocialPrepServiceError('release_link_not_eligible', { status: 409 });
+  }
+
+  function releaseLinkError(error) {
+    if (error instanceof ReleaseLinkConflictError) {
+      const conflict = new SocialPrepServiceError('release_link_conflict', { status: 409 });
+      conflict.currentReleaseLink = error.currentReleaseLink;
+      return conflict;
+    }
+    if (error instanceof ReleaseArchivedError || error instanceof ReleaseParentArchivedError) {
+      return new SocialPrepServiceError('release_not_editable', { status: 409 });
+    }
+    if (error instanceof ReleaseNotFoundError) return new SocialPrepServiceError('release_not_found', { status: 404 });
+    if (error instanceof ReleaseValidationError) {
+      return new SocialPrepServiceError('validation_failed', { issues: [{ code: 'invalid_release_link', severity: 'blocking' }] });
+    }
+    return error;
+  }
+
+  function readReleaseLink({ authenticate }) {
+    try {
+      const session = authenticate();
+      guardReleaseLinkEligible(session);
+      return { releaseLink: releaseService.getEditableReleaseLink(session.release_id) };
+    } catch (error) { throw releaseLinkError(error); }
+  }
+
+  function updateReleaseLink({ releaseLink, expectedReleaseLink, authenticate }) {
+    try {
+      // Authority, eligibility, and the compare-and-set link write commit together.
+      return db.transaction(() => {
+        const session = authenticate();
+        guardReleaseLinkEligible(session);
+        const result = releaseService.updateReleaseLink(session.release_id, { releaseLink, expectedReleaseLink });
+        return { releaseLink: result.releaseLink, changed: result.changed };
+      }).immediate();
+    } catch (error) { throw releaseLinkError(error); }
+  }
+
   return Object.freeze({
     initializePlatformState, getCompanionAction, activate, reissue, computeRetryablePlatforms, isRedeemedSessionStale, redeem,
-    recordPlatformStatus, getPostingCompletion, readPostingConfirmation, confirmPlatformPosted,
+    recordPlatformStatus, getPostingCompletion, readPostingConfirmation, confirmPlatformPosted, readReleaseLink, updateReleaseLink,
     get intentTtlMinutes() { return staleMinutes; },
   });
 }

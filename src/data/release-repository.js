@@ -160,6 +160,17 @@ export function createReleaseRepository(db) {
     WHERE id = ? AND archived_at IS NULL
     RETURNING ${COLUMNS.join(', ')}
   `);
+  // The same full update, applied only while the stored Release link still
+  // equals the editor's expected one (blank stored values compare as NULL),
+  // so the link comparison and every field write are one statement.
+  const updateIfReleaseLink = db.prepare(`
+    UPDATE releases
+    SET title = ?, description = ?, notes = ?,
+        planned_date = ?, planned_time = ?, patreon_url = ?, published_date = ?, updated_at = datetime('now')
+    WHERE id = ? AND archived_at IS NULL
+      AND NULLIF(patreon_url, '') IS ?
+    RETURNING ${COLUMNS.join(', ')}
+  `);
   const archive = db.prepare(`
     UPDATE releases
     SET archived_at = datetime('now'), updated_at = datetime('now')
@@ -188,6 +199,18 @@ export function createReleaseRepository(db) {
       AND ${ACTIVE_PARENT_PROJECT}
       AND NULLIF(planned_date, '') IS @expectedPlannedDate
       AND NULLIF(planned_time, '') IS @expectedPlannedTime
+    RETURNING ${COLUMNS.join(', ')}
+  `);
+  // Compare-and-set for the Release link alone. Publication state is not a
+  // guard: published releases keep an editable link. Blank stored values are
+  // treated as NULL so an empty link always compares as "no link".
+  const updateReleaseLinkStmt = db.prepare(`
+    UPDATE releases
+    SET patreon_url = @patreonUrl, updated_at = datetime('now')
+    WHERE id = @id
+      AND releases.archived_at IS NULL
+      AND ${ACTIVE_PARENT_PROJECT}
+      AND NULLIF(patreon_url, '') IS @expectedPatreonUrl
     RETURNING ${COLUMNS.join(', ')}
   `);
 
@@ -711,9 +734,13 @@ export function createReleaseRepository(db) {
     /**
      * @param {number} id
      * @param {Object} input
-     * @returns {ReleaseRecord|undefined}
+     * @param {{ expectedPatreonUrl?: string|null }} [guard] when
+     *   expectedPatreonUrl is present the update applies only if the stored
+     *   link still equals it (a blank stored value matches null)
+     * @returns {ReleaseRecord|undefined} undefined when the release is
+     *   missing, archived, or its link no longer matches the guard
      */
-    update(id, input) {
+    update(id, input, guard = {}) {
       const plannedDate = input.plannedDate;
       const plannedTime = input.plannedTime;
       const values = [
@@ -726,6 +753,9 @@ export function createReleaseRepository(db) {
         input.publishedDate ?? null,
         id,
       ];
+      if (Object.hasOwn(guard, 'expectedPatreonUrl')) {
+        return updateIfReleaseLink.get(...values, guard.expectedPatreonUrl ?? null);
+      }
       return update.get(...values);
     },
 
@@ -778,6 +808,27 @@ export function createReleaseRepository(db) {
         plannedTime: schedule.plannedTime ?? null,
         expectedPlannedDate: expected.plannedDate ?? null,
         expectedPlannedTime: expected.plannedTime ?? null,
+      });
+    },
+
+    /**
+     * Set only patreon_url (the Release link) and updated_at, provided the
+     * stored link still equals the expected one and the release is active
+     * inside a non-archived project. No other release column or associated
+     * row is touched.
+     *
+     * @param {number} id
+     * @param {string|null} patreonUrl
+     * @param {string|null} expectedPatreonUrl stored link the caller observed;
+     *   a blank stored value matches null
+     * @returns {ReleaseRecord|undefined} the updated row, or undefined when the
+     *   release is missing, ineligible, or its link no longer matches
+     */
+    updateReleaseLink(id, patreonUrl, expectedPatreonUrl) {
+      return updateReleaseLinkStmt.get({
+        id,
+        patreonUrl: patreonUrl ?? null,
+        expectedPatreonUrl: expectedPatreonUrl ?? null,
       });
     },
 

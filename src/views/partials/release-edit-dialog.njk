@@ -26,7 +26,21 @@
             data-dialog-error-message="Release could not be saved."
             data-dialog-network-error-message="Could not save the release. Check your connection and try again." novalidate>
         <input type="hidden" name="_csrf" value="{{ csrfToken }}">
+        {# The saved Release link this form loaded, sent unchanged with every
+           save so the server refuses to replace a newer one. Set by the async
+           controller; editing the Release link field never changes it. #}
+        <input type="hidden" name="expectedPatreonUrl" value="" data-release-edit-expected-link>
         <div class="error-summary" role="alert" data-dialog-error hidden><p data-dialog-error-text></p></div>
+        {# Shown when the saved Release link changes after this form loaded
+           (the Posting Helper saves it too), or when that could not be
+           checked; saving waits until it is resolved. #}
+        <div class="notice notice--warning" role="alert" data-release-edit-link-conflict hidden>
+          <p data-release-edit-link-conflict-text></p>
+          <p>
+            <button class="button button-small button-secondary" type="button" data-release-edit-link-conflict-resolve>Use saved Release link</button>
+            <button class="button button-small button-secondary" type="button" data-release-edit-link-recheck hidden>Check Release link again</button>
+          </p>
+        </div>
         {% set releaseFormDialog = true %}
         {% include "partials/release-form-fields.njk" %}
       </form>

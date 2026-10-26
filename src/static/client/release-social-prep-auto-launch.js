@@ -7,6 +7,8 @@ const STATUS_SELECTOR = '[data-release-social-prep-companion-status]';
 export const RELEASE_SOCIAL_PREP_COMPANION_IN_FLIGHT_ATTRIBUTE = 'data-release-social-prep-companion-in-flight';
 const BOUND_KEY = 'releaseSocialPrepCompanionBound';
 // Dispatched (bubbling) from the companion element once a request settles.
+// detail.launchAttempted is true only when the helper URI was handed to the
+// browser; it never means the helper opened, saved or posted anything.
 export const RELEASE_SOCIAL_PREP_COMPANION_SETTLED_EVENT = 'release-social-prep-companion-settled';
 const OPENING_MESSAGE = 'Opening publishing companion…';
 const FAILURE_MESSAGE = 'Could not open publishing companion.';
@@ -131,6 +133,7 @@ function enhanceCompanionElement(element, scope, options) {
     action.disabled = true;
     setStatus(element, OPENING_MESSAGE);
 
+    let launchAttempted = false;
     const requestMode = mode;
     const requestSessionId = sessionId;
     const url = requestMode === 'reissue' ? reissueUrl : activationUrl;
@@ -169,6 +172,7 @@ function enhanceCompanionElement(element, scope, options) {
       action.removeAttribute?.('aria-label');
       action.removeAttribute?.('title');
       try {
+        launchAttempted = true;
         launchProtocol(responseBody.uri);
       } catch {
         setStatus(element, FAILURE_MESSAGE, true);
@@ -181,7 +185,10 @@ function enhanceCompanionElement(element, scope, options) {
       action.disabled = reloadRequired;
       const EventConstructor = document?.defaultView?.CustomEvent || globalThis.CustomEvent;
       if (typeof EventConstructor === 'function') {
-        element.dispatchEvent?.(new EventConstructor(RELEASE_SOCIAL_PREP_COMPANION_SETTLED_EVENT, { bubbles: true }));
+        element.dispatchEvent?.(new EventConstructor(RELEASE_SOCIAL_PREP_COMPANION_SETTLED_EVENT, {
+          bubbles: true,
+          detail: { launchAttempted },
+        }));
       }
     }
   };

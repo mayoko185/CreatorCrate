@@ -994,6 +994,8 @@ function appDialogBindForm(state) {
           }
           appDialogShowErrors(state, payload?.errors || {}, payload?.message || appDialogSaveErrorMessage(state));
           appDialogStatus(state, payload?.message || appDialogFailureMessage(state), true);
+          // Hosts may explain a refused save further; the draft stays as kept above.
+          state.onFailedSubmit?.(payload, response);
           return;
         }
         // A successful-submit hook that begins navigation owns the terminal lifecycle.
@@ -1196,6 +1198,7 @@ export function enhanceAppDialogs(scope = globalThis.document) {
       onOpen: null,
       onClose: null,
       onSuccessfulSubmit: null,
+      onFailedSubmit: null,
     };
     dialog.__creatorCrateAppDialogState = state;
     appDialogBind(state);

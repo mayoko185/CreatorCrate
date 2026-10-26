@@ -471,4 +471,22 @@ describe('Release publishing companion handoff', () => {
     expect(page.action.disabled).toBe(true);
     expect(page.status.textContent).toBe('Could not open publishing companion.');
   });
+
+  it.each([
+    ['a dispatched launch', [{ status: 200, body: { ok: true, sessionId: SESSION_2, uri: activationUri() } }], true],
+    ['an HTTP failure', [{ status: 500, body: { ok: false } }], false],
+    ['an active attempt', [{ status: 409, body: { ok: false, error: { code: 'attempt_in_progress' } } }], false],
+  ])('reports launchAttempted only for %s when the request settles', async (_label, responses, launchAttempted) => {
+    const page = makeHarness({ responses });
+    const settled = [];
+    page.element.dispatchEvent = (event) => settled.push(event);
+    enhanceReleaseSocialPrepAutoLaunch(page.document, { fetchRequest: page.fetchRequest });
+    page.action.click();
+    await settleLaunch();
+    expect(settled).toHaveLength(1);
+    expect(settled[0].type).toBe('release-social-prep-companion-settled');
+    expect(settled[0].bubbles).toBe(true);
+    expect(settled[0].detail).toEqual({ launchAttempted });
+    expect(page.windowObject.protocolAttempts).toHaveLength(launchAttempted ? 1 : 0);
+  });
 });

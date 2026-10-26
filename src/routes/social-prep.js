@@ -247,6 +247,26 @@ function readPlatformStatusInput(body) {
   return { status: body.status, detailCode: body.detailCode ?? null, message: body.message ?? null };
 }
 
+const RELEASE_LINK_KEYS = ['releaseLink', 'expectedReleaseLink'];
+
+function readReleaseLinkInput(req) {
+  const body = req.body;
+  if (!req.is('application/json') || !body || typeof body !== 'object' || Array.isArray(body)
+    || Object.keys(body).length !== RELEASE_LINK_KEYS.length || !RELEASE_LINK_KEYS.every((key) => Object.hasOwn(body, key))
+    || !RELEASE_LINK_KEYS.every((key) => body[key] === null || typeof body[key] === 'string')) return null;
+  return { releaseLink: body.releaseLink, expectedReleaseLink: body.expectedReleaseLink };
+}
+
+function releaseLinkError(res, error) {
+  if (error instanceof SocialPrepCapabilityError) return capabilityError(res, error);
+  if (!(error instanceof SocialPrepServiceError)) throw error;
+  if (error.code === 'validation_failed') return invalidActivationInput(res, error.issues);
+  if (error.code !== 'release_link_conflict') return activationError(res, error);
+  return res.status(409).json({
+    ok: false, error: { code: error.code, message: error.message, currentReleaseLink: error.currentReleaseLink },
+  });
+}
+
 function assetPayload(asset, windowsPath) {
   return {
     assetId: asset.assetId,
@@ -428,6 +448,35 @@ export function createSocialPrepCapabilityRouter({ socialPrepService, socialPrep
       if (error instanceof SocialPrepCapabilityError) return capabilityError(res, error);
       if (error instanceof SocialPrepServiceError) return activationError(res, error);
       return next(error);
+    }
+  });
+  // The release is always derived from the authorized session; the manual
+  // window bounds this authority and a link write never extends it.
+  router.get('/social-prep/:sessionId/release-link', (req, res, next) => {
+    try {
+      const result = socialPrepService.readReleaseLink({
+        authenticate: () => capabilityService.authenticateReleaseLink({
+          authorization: req.get('authorization'), sessionId: req.params.sessionId,
+        }),
+      });
+      return res.json({ ok: true, sessionId: req.params.sessionId, releaseLink: result.releaseLink });
+    } catch (error) {
+      try { return releaseLinkError(res, error); } catch (unhandled) { return next(unhandled); }
+    }
+  });
+  router.patch('/social-prep/:sessionId/release-link', (req, res, next) => {
+    const input = readReleaseLinkInput(req);
+    if (!input) return invalidActivationInput(res, [{ code: 'invalid_input', severity: 'blocking' }]);
+    try {
+      const result = socialPrepService.updateReleaseLink({
+        ...input,
+        authenticate: () => capabilityService.authenticateReleaseLink({
+          authorization: req.get('authorization'), sessionId: req.params.sessionId,
+        }),
+      });
+      return res.json({ ok: true, sessionId: req.params.sessionId, releaseLink: result.releaseLink, changed: result.changed });
+    } catch (error) {
+      try { return releaseLinkError(res, error); } catch (unhandled) { return next(unhandled); }
     }
   });
   router.patch('/social-prep/:sessionId/platforms/:platform', (req, res, next) => {

@@ -138,7 +138,9 @@
     {% endif %}
 
   {# ─── Release details ───────────────────────────────────────────── #}
-  <div class="release-detail-region" data-release-detail-region="details">
+  {# data-release-link is the saved Release link this render shows; a refresh
+     compares it with an open Edit Release dialog's loaded value. #}
+  <div class="release-detail-region" data-release-detail-region="details" data-release-link="{{ release.patreon_url or '' }}">
   <section class="project-detail-info project-detail-section">
     <h2>Release details</h2>
     <div class="project-detail-section-body">

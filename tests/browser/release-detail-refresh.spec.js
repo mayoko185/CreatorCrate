@@ -34,7 +34,7 @@ async function withRelease(run) {
     socialPrepSettingsService.setPlatforms(['x', 'bluesky']);
     server = app.listen(0, '127.0.0.1');
     await new Promise((resolve) => server.once('listening', resolve));
-    await run({ origin: `http://127.0.0.1:${server.address().port}`, release, releaseService, app });
+    await run({ origin: `http://127.0.0.1:${server.address().port}`, release, releaseService, app, db });
   } finally {
     if (server) await new Promise((resolve) => server.close(resolve));
     closeDatabase(db);
@@ -767,6 +767,423 @@ test('A failed deferred reconciliation reports stale data, retries with a GET, a
     expect(await page.locator('[data-release-detail-region]').count()).toBe(8);
     expect(await duplicateIds(page)).toEqual([]);
     expect(await page.evaluate(() => window.__notReloaded)).toBe(true);
+    expect(navigations).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+});
+
+// ─── Returning from the Posting Helper ──────────────────────────────────
+
+// The page cannot really lose focus to a native app under test, so leaving and
+// returning dispatch the window and document events a browser would.
+async function leavePage(page) {
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+}
+
+async function returnToPage(page) {
+  // One return announces itself through both focus and visibilitychange.
+  await page.evaluate(() => {
+    window.dispatchEvent(new Event('focus'));
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+}
+
+// What the Posting Helper does through its capability-protected PATCH.
+function helperSavesLink({ releaseService, release }, releaseLink, expectedReleaseLink = 'https://example.com/alpha') {
+  return releaseService.updateReleaseLink(release.id, { releaseLink, expectedReleaseLink });
+}
+
+async function launchCompanion(page, context) {
+  const { activations, settle } = await holdSuccessfulActivation(page, context);
+  settle();
+  return activations;
+}
+
+const RETURN_FAILED_TEXT = 'Release Detail could not check for changes made in the Posting Helper.';
+const CHECKING_TEXT = 'Checking whether the Release link changed in the Posting Helper…';
+
+test('Returning from a launched Posting Helper refreshes Release Detail once per return, GET only', async ({ page }) => {
+  test.setTimeout(120_000);
+  await withRelease(async (context) => {
+    const { origin, release, db } = context;
+    const activations = await launchCompanion(page, context);
+    const { errors, navigations, posts, refreshes } = watchPage(page, release.id);
+    await page.goto(`${origin}/releases/${release.id}`);
+    navigations.length = 0;
+    await markDocument(page);
+    const details = page.locator('[data-release-detail-region="details"]');
+    const social = page.locator('[data-release-detail-region="social-preparation"]');
+    const companion = page.locator('[data-release-social-prep-companion-action]').first();
+    const feedback = page.locator('[data-dialog-feedback]');
+
+    // Nothing is armed before a launch attempt.
+    await leavePage(page);
+    await returnToPage(page);
+    await page.waitForTimeout(300);
+    expect(refreshes).toHaveLength(0);
+
+    await companion.click();
+    await expect(companion).toHaveText('Retry opening companion');
+    expect(activations).toEqual(['POST']);
+    await expect(details).not.toContainText('https://example.com/helper');
+
+    // The helper saves the link and records a posted platform meanwhile.
+    await leavePage(page);
+    helperSavesLink(context, 'https://example.com/helper');
+    db.prepare(`UPDATE release_social_platforms SET status = 'posted', posted_at = datetime('now')
+      WHERE release_id = ? AND platform = 'x'`).run(release.id);
+    await returnToPage(page);
+    await expect(details).toContainText('https://example.com/helper');
+    await expect(details).toHaveAttribute('data-release-link', 'https://example.com/helper');
+    await expect(social).toContainText('1 of 1 platforms marked as posted.');
+    await page.waitForTimeout(300);
+    expect(refreshes).toHaveLength(1);
+    // A refresh is no save: no success notice, no POST.
+    await expect(feedback).toBeHidden();
+    expect(await regionsMatchServer(page, release.id)).toEqual([]);
+
+    // An unchanged return keeps the same content and stays quiet.
+    await leavePage(page);
+    await returnToPage(page);
+    await expect.poll(() => refreshes.length).toBe(2);
+    await expect(details).toHaveAttribute('data-release-link', 'https://example.com/helper');
+    await expect(feedback).toBeHidden();
+
+    // Returning again without leaving first is not a return.
+    await returnToPage(page);
+    await page.waitForTimeout(300);
+    expect(refreshes).toHaveLength(2);
+
+    // A repeated launch reuses the same listeners: still one refresh per return.
+    await page.locator('[data-release-social-prep-companion-action]').first().click();
+    await expect.poll(() => activations.length).toBe(2);
+    await leavePage(page);
+    await returnToPage(page);
+    await expect.poll(() => refreshes.length).toBe(3);
+    await page.waitForTimeout(300);
+    expect(refreshes).toHaveLength(3);
+
+    // Returns never relaunch, prepare or post anything.
+    expect(activations).toHaveLength(2);
+    expect(posts).toHaveLength(0);
+    expect(refreshes.every((request) => request.method() === 'GET')).toBe(true);
+    expect(await duplicateIds(page)).toEqual([]);
+    expect(await page.evaluate(() => window.__notReloaded)).toBe(true);
+    expect(navigations).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+});
+
+test('A failed companion launch arms no return refresh', async ({ page }) => {
+  test.setTimeout(120_000);
+  await withRelease(async (context) => {
+    const { origin, release, app, releaseService } = context;
+    app.locals.socialPrepSettingsService.setEnabled(true);
+    releaseService.updateRelease(release.id, {
+      title: 'Alpha release', description: 'Alpha description', notes: 'Alpha notes',
+      plannedDate: '2031-07-10', plannedTime: '09:30', publishedDate: '2031-07-11',
+      patreonUrl: 'https://example.com/alpha', selectedPlatforms: ['x'],
+    });
+    await page.route(`**/releases/${release.id}/social-prep/**`, (route) => route.fulfill({
+      status: 500, contentType: 'application/json', body: JSON.stringify({ ok: false }),
+    }));
+    const { errors, refreshes } = watchPage(page, release.id);
+    await page.goto(`${origin}/releases/${release.id}`);
+    const status = page.locator('[data-release-social-prep-companion-status]').first();
+    await page.locator('[data-release-social-prep-companion-action]').first().click();
+    await expect(status).toHaveText('Could not open publishing companion.');
+    await leavePage(page);
+    await returnToPage(page);
+    await page.waitForTimeout(300);
+    expect(refreshes).toHaveLength(0);
+    await expect(status).toHaveText('Could not open publishing companion.');
+    expect(errors).toEqual([]);
+  });
+});
+
+test('An open Edit Release draft survives a return refresh and cannot save over a helper-saved link', async ({ page }) => {
+  test.setTimeout(120_000);
+  await withRelease(async (context) => {
+    const { origin, release, releaseService } = context;
+    await launchCompanion(page, context);
+    const { errors, navigations, posts, refreshes } = watchPage(page, release.id);
+    await page.goto(`${origin}/releases/${release.id}`);
+    navigations.length = 0;
+    await markDocument(page);
+    const dialog = page.locator('#release-edit-dialog');
+    const form = page.locator('#release-edit-form');
+    const conflict = form.locator('[data-release-edit-link-conflict]');
+    const resolve = conflict.locator('[data-release-edit-link-conflict-resolve]');
+    const status = dialog.locator('[data-dialog-status]');
+    const save = dialog.locator('footer [data-dialog-submit]');
+    const companion = page.locator('[data-release-social-prep-companion-action]').first();
+
+    await companion.click();
+    await expect(companion).toHaveText('Retry opening companion');
+    await page.locator(`[data-release-edit-id="${release.id}"]`).click();
+    await expect(form.locator('[name="patreonUrl"]')).toHaveValue('https://example.com/alpha');
+    await form.locator('[name="title"]').fill('Draft title');
+    await form.locator('[name="notes"]').fill('Draft notes');
+
+    await leavePage(page);
+    helperSavesLink(context, 'https://example.com/helper');
+    await returnToPage(page);
+    await expect(conflict).toBeVisible();
+    await expect(conflict).toHaveAttribute('role', 'alert');
+    await expect(conflict).toContainText('It is now https://example.com/helper.');
+    await expect(conflict).toContainText('keeps your other unsaved changes');
+    // The draft is untouched by the background refresh.
+    await expect(dialog).toBeVisible();
+    await expect(form.locator('[name="title"]')).toHaveValue('Draft title');
+    await expect(form.locator('[name="notes"]')).toHaveValue('Draft notes');
+    await expect(form.locator('[name="patreonUrl"]')).toHaveValue('https://example.com/alpha');
+    await expect(page.locator('[data-release-detail-region="details"]')).toContainText('https://example.com/helper');
+
+    // Neither the Save button nor implicit submission can send the stale link.
+    await save.click();
+    await expect(status).toContainText('Not saved. The saved Release link changed');
+    await expect(resolve).toBeFocused();
+    await form.locator('[name="title"]').press('Enter');
+    await page.waitForTimeout(300);
+    expect(posts).toHaveLength(0);
+    expect(releaseService.findRelease(release.id).patreon_url).toBe('https://example.com/helper');
+
+    // Explicit resolution adopts the saved link and keeps the rest of the draft.
+    await resolve.click();
+    await expect(conflict).toBeHidden();
+    await expect(form.locator('[name="patreonUrl"]')).toHaveValue('https://example.com/helper');
+    await expect(form.locator('[name="patreonUrl"]')).toBeFocused();
+    await expect(form.locator('[name="title"]')).toHaveValue('Draft title');
+    await expect(status).toContainText('The form now uses the saved Release link.');
+    await save.click();
+    await expect(dialog).toBeHidden();
+    await expect(page.locator('[data-dialog-feedback]')).toContainText('Release updated.');
+    expect(posts).toHaveLength(1);
+    const saved = releaseService.findRelease(release.id);
+    expect(saved.patreon_url).toBe('https://example.com/helper');
+    expect(saved.title).toBe('Draft title');
+    expect(saved.notes).toBe('Draft notes');
+
+    // A later dialog opens current and unflagged.
+    await page.locator(`[data-release-edit-id="${release.id}"]`).click();
+    await expect(form.locator('[name="patreonUrl"]')).toHaveValue('https://example.com/helper');
+    await expect(conflict).toBeHidden();
+    await page.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
+
+    expect(refreshes.every((request) => request.method() === 'GET')).toBe(true);
+    expect(await duplicateIds(page)).toEqual([]);
+    expect(await page.evaluate(() => window.__notReloaded)).toBe(true);
+    expect(navigations).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+});
+
+test('A save made while a return refresh is in flight waits for it, and continues only when the link is unchanged', async ({ page }) => {
+  test.setTimeout(120_000);
+  await withRelease(async (context) => {
+    const { origin, release, releaseService } = context;
+    await launchCompanion(page, context);
+    const { errors, posts } = watchPage(page, release.id);
+    await page.goto(`${origin}/releases/${release.id}`);
+    const companion = page.locator('[data-release-social-prep-companion-action]').first();
+    await companion.click();
+    await expect(companion).toHaveText('Retry opening companion');
+    const held = await holdRefreshes(page, release.id);
+    const dialog = page.locator('#release-edit-dialog');
+    const form = page.locator('#release-edit-form');
+    const conflict = form.locator('[data-release-edit-link-conflict]');
+    const status = dialog.locator('[data-dialog-status]');
+    const save = dialog.locator('footer [data-dialog-submit]');
+
+    await page.locator(`[data-release-edit-id="${release.id}"]`).click();
+    await expect(form.locator('[name="patreonUrl"]')).toHaveValue('https://example.com/alpha');
+    await form.locator('[name="title"]').fill('Raced title');
+
+    // The stale save is attempted before the return refresh answers.
+    await leavePage(page);
+    helperSavesLink(context, 'https://example.com/helper');
+    await returnToPage(page);
+    await expect.poll(() => held.count()).toBe(1);
+    await save.click();
+    await expect(status).toHaveText(CHECKING_TEXT);
+    await page.waitForTimeout(300);
+    expect(posts).toHaveLength(0);
+    held.answer(0);
+    await expect(conflict).toBeVisible();
+    await expect(status).toContainText('Not saved. The saved Release link changed');
+    await page.waitForTimeout(300);
+    expect(posts).toHaveLength(0);
+    expect(releaseService.findRelease(release.id).patreon_url).toBe('https://example.com/helper');
+
+    // Resolved, then another return with no change: the held save goes through.
+    await conflict.locator('[data-release-edit-link-conflict-resolve]').click();
+    await leavePage(page);
+    await returnToPage(page);
+    await expect.poll(() => held.count()).toBe(2);
+    await save.click();
+    await expect(status).toHaveText(CHECKING_TEXT);
+    expect(posts).toHaveLength(0);
+    held.passThrough = true;
+    held.answer(1);
+    await expect(dialog).toBeHidden();
+    expect(posts).toHaveLength(1);
+    const saved = releaseService.findRelease(release.id);
+    expect(saved.patreon_url).toBe('https://example.com/helper');
+    expect(saved.title).toBe('Raced title');
+    expect(errors).toEqual([]);
+  });
+});
+
+test('A failed or signed-out return refresh keeps the draft, reports it and retries with a GET only', async ({ page }) => {
+  test.setTimeout(120_000);
+  await withRelease(async (context) => {
+    const { origin, release } = context;
+    await launchCompanion(page, context);
+    const { errors, navigations, posts, refreshes } = watchPage(page, release.id);
+    await page.goto(`${origin}/releases/${release.id}`);
+    navigations.length = 0;
+    await markDocument(page);
+    const companion = page.locator('[data-release-social-prep-companion-action]').first();
+    await companion.click();
+    await expect(companion).toHaveText('Retry opening companion');
+    const held = await holdRefreshes(page, release.id);
+    const dialog = page.locator('#release-edit-dialog');
+    const form = page.locator('#release-edit-form');
+    const feedback = page.locator('[data-dialog-feedback]');
+    const retry = page.locator('[data-release-detail-refresh-retry]');
+
+    await page.locator(`[data-release-edit-id="${release.id}"]`).click();
+    await form.locator('[name="title"]').fill('Kept draft');
+    await leavePage(page);
+    await returnToPage(page);
+    await expect.poll(() => held.count()).toBe(1);
+    held.fail(0);
+    await expect(feedback).toContainText(RETURN_FAILED_TEXT);
+    await expect(feedback).toHaveClass(/notice--error/);
+    await expect(dialog).toBeVisible();
+    await expect(form.locator('[name="title"]')).toHaveValue('Kept draft');
+
+    // The form cannot be shown to be current, so saving stays blocked.
+    const notice = form.locator('[data-release-edit-link-conflict]');
+    const recheck = notice.locator('[data-release-edit-link-recheck]');
+    const status = dialog.locator('[data-dialog-status]');
+    await expect(notice).toBeVisible();
+    await expect(notice).toContainText('Saving is paused until it is checked');
+    await expect(notice.locator('[data-release-edit-link-conflict-resolve]')).toBeHidden();
+    await dialog.locator('footer [data-dialog-submit]').click();
+    await expect(status).toContainText('Not saved. Could not check whether the Release link changed');
+    await expect(recheck).toBeFocused();
+    await form.locator('[name="title"]').press('Enter');
+    await page.waitForTimeout(300);
+    expect(posts).toHaveLength(0);
+
+    // A failed recheck keeps it blocked; a working one releases it.
+    let failEdit = true;
+    await page.route(`**/releases/${release.id}/edit`, (route) => (failEdit ? route.abort() : route.continue()));
+    await recheck.click();
+    await expect(status).toContainText('Not saved. Could not check');
+    await expect(notice).toBeVisible();
+    failEdit = false;
+    await recheck.click();
+    await expect(notice).toBeHidden();
+    await expect(form.locator('[name="title"]')).toHaveValue('Kept draft');
+    await page.unroute(`**/releases/${release.id}/edit`);
+    await page.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
+
+    // Retry is a GET; once it works the failure notice is withdrawn.
+    await retry.click();
+    await expect.poll(() => held.count()).toBe(2);
+    held.answer(1);
+    await expect(feedback).toBeHidden();
+    await expect(page.locator('#main-content')).toBeFocused();
+
+    // An expired sign-in says so instead of reporting a generic failure.
+    held.passThrough = true;
+    await page.route(`**/releases/${release.id}`, (route) => (route.request().resourceType() === 'fetch'
+      ? route.fulfill({ status: 401, contentType: 'application/json', body: '{"status":"error"}' })
+      : route.continue()));
+    await leavePage(page);
+    await returnToPage(page);
+    await expect(feedback).toContainText('Your CreatorCrate sign-in has expired');
+    await expect(retry).toBeVisible();
+
+    expect(posts).toHaveLength(0);
+    expect(refreshes.every((request) => request.method() === 'GET')).toBe(true);
+    expect(await page.evaluate(() => window.__notReloaded)).toBe(true);
+    expect(navigations).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+});
+
+test('A save sent after the helper changed the link is refused by the server and keeps the whole draft', async ({ page }) => {
+  test.setTimeout(120_000);
+  await withRelease(async (context) => {
+    const { origin, release, releaseService } = context;
+    const { errors, navigations, posts } = watchPage(page, release.id);
+    await page.goto(`${origin}/releases/${release.id}`);
+    navigations.length = 0;
+    await markDocument(page);
+    const dialog = page.locator('#release-edit-dialog');
+    const form = page.locator('#release-edit-form');
+    const conflict = form.locator('[data-release-edit-link-conflict]');
+    const resolve = conflict.locator('[data-release-edit-link-conflict-resolve]');
+    const status = dialog.locator('[data-dialog-status]');
+    const save = dialog.locator('footer [data-dialog-submit]');
+    const link = form.locator('[name="patreonUrl"]');
+    const expected = form.locator('[name="expectedPatreonUrl"]');
+    const sentToken = (request) => new URLSearchParams(request.postData()).get('expectedPatreonUrl');
+
+    await page.locator(`[data-release-edit-id="${release.id}"]`).click();
+    await expect(link).toHaveValue('https://example.com/alpha');
+    await expect(expected).toHaveValue('https://example.com/alpha');
+    await form.locator('[name="title"]').fill('Draft title');
+    await form.locator('[name="notes"]').fill('Draft notes');
+    await link.fill('https://example.com/typed');
+    // Editing the link never moves the baseline.
+    await expect(expected).toHaveValue('https://example.com/alpha');
+
+    // No return refresh runs: only the server can catch this one.
+    helperSavesLink(context, 'https://example.com/helper');
+    await save.click();
+    await expect(conflict).toBeVisible();
+    expect(posts).toHaveLength(1);
+    expect(sentToken(posts[0])).toBe('https://example.com/alpha');
+    await expect(conflict).toContainText('It is now https://example.com/helper.');
+    await expect(conflict).toContainText('replaces the link you entered');
+    await expect(status).toContainText('Not saved. The saved Release link changed');
+    await expect(resolve).toBeFocused();
+    await expect(dialog).toBeVisible();
+    await expect(form.locator('[name="title"]')).toHaveValue('Draft title');
+    await expect(form.locator('[name="notes"]')).toHaveValue('Draft notes');
+    await expect(link).toHaveValue('https://example.com/typed');
+    await expect(expected).toHaveValue('https://example.com/alpha');
+    let stored = releaseService.findRelease(release.id);
+    expect(stored.patreon_url).toBe('https://example.com/helper');
+    expect(stored.title).toBe('Alpha release');
+    expect(stored.notes).toBe('Alpha notes');
+
+    // Neither Save nor Enter resends the stale form.
+    await save.click();
+    await form.locator('[name="title"]').press('Enter');
+    await page.waitForTimeout(300);
+    expect(posts).toHaveLength(1);
+
+    // Explicit resolution adopts the saved link and advances the baseline.
+    await resolve.click();
+    await expect(conflict).toBeHidden();
+    await expect(link).toHaveValue('https://example.com/helper');
+    await expect(expected).toHaveValue('https://example.com/helper');
+    await expect(form.locator('[name="title"]')).toHaveValue('Draft title');
+    await save.click();
+    await expect(dialog).toBeHidden();
+    expect(posts).toHaveLength(2);
+    expect(sentToken(posts[1])).toBe('https://example.com/helper');
+    stored = releaseService.findRelease(release.id);
+    expect(stored.patreon_url).toBe('https://example.com/helper');
+    expect(stored.title).toBe('Draft title');
+    expect(stored.notes).toBe('Draft notes');
     expect(navigations).toEqual([]);
     expect(errors).toEqual([]);
   });

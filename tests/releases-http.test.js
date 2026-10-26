@@ -326,6 +326,17 @@ describe('release HTTP workflow', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  // Edit Release saves name the Release link the form loaded: here, the one
+  // stored when the request is built.
+  function loadedReleaseLink(releaseIdOrUrl) {
+    const id = Number(String(releaseIdOrUrl).split('?')[0].split('/').at(-1));
+    return releaseRepository.findById(id)?.patreon_url ?? '';
+  }
+
+  function loadedReleaseLinkField(releaseUrl) {
+    return 'expectedPatreonUrl=' + encodeURIComponent(loadedReleaseLink(releaseUrl));
+  }
+
   async function createTestProject(title) {
     const res = await agent
       .post('/projects')
@@ -662,6 +673,7 @@ describe('release HTTP workflow', () => {
       await agent.post(releaseLocation)
         .set('Accept', 'application/json')
         .send('_csrf=' + encodeURIComponent(csrfToken))
+        .send(loadedReleaseLinkField(releaseLocation))
         .send('title=Detail+Wording+Release')
         .send('plannedDate=2025-12-01')
         .send('publishedDate=2025-12-15')
@@ -729,6 +741,7 @@ describe('release HTTP workflow', () => {
       .post(releaseOne.headers.location)
       .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send(loadedReleaseLinkField(releaseOne.headers.location))
       .send('title=Release+One')
       .send('publishedDate=2026-12-02')
       .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -1144,7 +1157,7 @@ describe('release HTTP workflow', () => {
 
     function postEdit(releaseId, fields) {
       return agent.post(`/releases/${releaseId}`).set('Accept', 'application/json').type('form')
-        .send({ _csrf: csrfToken, ...fields });
+        .send({ _csrf: csrfToken, expectedPatreonUrl: loadedReleaseLink(releaseId), ...fields });
     }
 
     function selectedPlatforms(releaseId) {
@@ -1428,7 +1441,7 @@ describe('release HTTP workflow', () => {
       expect(newForm).not.toMatch(/name="selectedPlatforms"[^>]*value="x"/);
 
       const saveEdit = (fields) => agent.post(`/releases/${releaseId}`).set('Accept', 'application/json')
-        .type('form').send({ _csrf: csrfToken, ...fields });
+        .type('form').send({ _csrf: csrfToken, expectedPatreonUrl: loadedReleaseLink(releaseId), ...fields });
       const invalid = await saveEdit({ title: '', selectedPlatformsPresent: '1', selectedPlatforms: 'x' }).expect(422);
       expect(invalid.body.values.selectedPlatforms).toEqual(['x']);
 
@@ -1484,7 +1497,7 @@ describe('release HTTP workflow', () => {
       expect(editForm.match(/name="selectedPlatforms"[^>]*checked/g)).toHaveLength(2);
 
       const saveEdit = (fields) => agent.post(`/releases/${releaseId}`).set('Accept', 'application/json')
-        .type('form').send({ _csrf: csrfToken, ...fields });
+        .type('form').send({ _csrf: csrfToken, expectedPatreonUrl: loadedReleaseLink(releaseId), ...fields });
       const invalid = await saveEdit({ title: 'Attempted', selectedPlatformsPresent: '1', selectedPlatforms: ['bluesky', 'invalid'] }).expect(422);
       expect(invalid.body.values).toMatchObject({ title: 'Attempted', selectedPlatforms: ['bluesky', 'invalid'] });
       expect(invalid.body.errors.selectedPlatforms).toBeTruthy();
@@ -3663,6 +3676,7 @@ describe('release HTTP workflow', () => {
       .post(releaseLocation)
       .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send(loadedReleaseLinkField(releaseLocation))
       .send('title=Updated+from+Calendar')
       .send('returnTo=' + encodeURIComponent(returnTo))
       .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -3684,6 +3698,7 @@ describe('release HTTP workflow', () => {
       .post(releaseLocation)
       .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send(loadedReleaseLinkField(releaseLocation))
       .send('title=')
       .send('description=Submitted+description')
       .send('returnTo=' + encodeURIComponent(returnTo))
@@ -3761,6 +3776,7 @@ describe('release HTTP workflow', () => {
       .post(releaseLocation)
       .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send(loadedReleaseLinkField(releaseLocation))
       .send('title=Safely+Updated')
       .send('returnTo=' + encodeURIComponent(returnTo))
       .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -3828,6 +3844,7 @@ describe('release HTTP workflow', () => {
       .post(`/releases/${releaseId}`)
       .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send(loadedReleaseLinkField(`/releases/${releaseId}`))
       .send('title=')
       .send('status=ready')
       .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -3875,6 +3892,7 @@ describe('release HTTP workflow', () => {
       .post(createRes.headers.location)
       .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send(loadedReleaseLinkField(createRes.headers.location))
       .send('title=New+Title')
       .send('status=planned')
       .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -5768,6 +5786,7 @@ describe('release HTTP workflow', () => {
       .post(releaseLocation)
       .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send(loadedReleaseLinkField(releaseLocation))
       .send('title=Publishable+Release')
       .send('publishedDate=2025-08-20')
       .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -6112,6 +6131,7 @@ describe('release HTTP workflow', () => {
         .post(createRes.headers.location)
         .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send(loadedReleaseLinkField(createRes.headers.location))
         .send('title=New+Title')
         .send('status=planned')
         .set('Content-Type', 'application/x-www-form-urlencoded');
@@ -6749,6 +6769,7 @@ describe('release HTTP workflow', () => {
         .post(releaseLocation)
         .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send(loadedReleaseLinkField(releaseLocation))
         .send('title=Updated+Published+Title')
         .send('description=Updated+description')
         .send('notes=Updated+notes')
@@ -6775,6 +6796,7 @@ describe('release HTTP workflow', () => {
         .post(releaseLocation)
         .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send(loadedReleaseLinkField(releaseLocation))
         .send('title=Status+Check')
         .send('status=published')
         .send('publishedDate=2025-06-15')
@@ -6791,6 +6813,7 @@ describe('release HTTP workflow', () => {
         .post(releaseLocation)
         .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send(loadedReleaseLinkField(releaseLocation))
       .send('title=Status+Change+Attempt')
       .send('status=ready')
         .send('publishedDate=2025-06-15')
@@ -6979,6 +7002,7 @@ describe('release HTTP workflow', () => {
         .post(releaseLocation)
         .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send(loadedReleaseLinkField(releaseLocation))
         .send('title=Should+Not+Change')
         .send('status=ready')
         .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -7086,6 +7110,7 @@ describe('release HTTP workflow', () => {
         .post(releaseLocation)
         .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send(loadedReleaseLinkField(releaseLocation))
         .send('title=Should+Not+Change')
         .send('status=ready')
         .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -7979,6 +8004,7 @@ describe('release HTTP workflow', () => {
         .post(releaseLocation)
         .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send(loadedReleaseLinkField(releaseLocation))
         .send('title=Should+Not+Change')
         .send('status=ready')
         .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -7999,6 +8025,7 @@ describe('release HTTP workflow', () => {
         .post(releaseLocation)
         .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send(loadedReleaseLinkField(releaseLocation))
         .send('title=Should+Not+Change')
         .send('status=ready')
         .set('Content-Type', 'application/x-www-form-urlencoded')
@@ -8177,6 +8204,7 @@ describe('release HTTP workflow', () => {
         .post(releaseLocation)
         .set('Accept', 'application/json')
       .send('_csrf=' + encodeURIComponent(csrfToken))
+      .send(loadedReleaseLinkField(releaseLocation))
         .send('title=Updated+Published+Title')
         .send('description=Updated+description')
         .send('notes=Updated+notes')

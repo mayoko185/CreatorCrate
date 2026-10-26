@@ -2,7 +2,11 @@ import { isEnhancementBound, markEnhancementBound, liveRegionWindow } from './do
 import { enhanceAppDialogs } from './app-dialogs.js';
 import { enhanceDropdowns } from './dropdowns.js';
 import { closePickersWithin, enhanceDatePickers } from './pickers.js';
-import { RELEASE_EDIT_SAVED_EVENT } from './release-edit-dialog.js';
+import {
+  beginReleaseLinkCheck,
+  finishReleaseLinkCheck,
+  RELEASE_EDIT_SAVED_EVENT,
+} from './release-edit-dialog.js';
 import {
   enhanceReleaseSocialPrepAutoLaunch,
   RELEASE_SOCIAL_PREP_COMPANION_IN_FLIGHT_ATTRIBUTE,
@@ -18,6 +22,12 @@ import { removeStatusRetry, showStatusRetry } from './status-retry.js';
 // are never replaced. A region holding an open dialog or a companion request
 // in flight is left alone and marked stale (data-release-detail-stale); once
 // that dialog closes or that request settles, Release Detail is fetched again.
+//
+// Once the publishing companion (the native Posting Helper) has been launched,
+// returning to this page (window focus, or the tab becoming visible, after it
+// was left) refreshes the same regions once more, because the helper saves the
+// Release link and posting state outside the browser. It is one GET per
+// return, never a poll, and it reports nothing unless it fails.
 const PAGE_SELECTOR = '[data-release-detail]';
 const REGION_SELECTOR = '[data-release-detail-region]';
 const STALE_ATTRIBUTE = 'data-release-detail-stale';
@@ -36,6 +46,12 @@ const REFRESHING_MESSAGE = 'Release saved. Refreshing Release Detail…';
 const STALE_MESSAGE = 'Release saved, but Release Detail could not refresh. The information shown may be out of date.';
 const DEFERRED_MESSAGE = 'Release saved. Some Release Detail sections will refresh when the open dialog closes or the publishing companion request finishes.';
 const STALE_DIALOG_MESSAGE = 'This release has changed. Close this dialog to load its current details.';
+// A return refresh does not know whether anything changed.
+const RETURN_STALE_DIALOG_MESSAGE = 'Release Detail is being updated. Close this dialog to load its current details.';
+const RETURN_CHECKING_MESSAGE = 'Checking Release Detail for changes made in the Posting Helper…';
+const RETURN_FAILED_MESSAGE = 'Release Detail could not check for changes made in the Posting Helper. The information shown may be out of date.';
+const RETURN_SIGNED_OUT_MESSAGE = 'Your CreatorCrate sign-in has expired, so Release Detail could not check for changes made in the Posting Helper. Sign in again, then retry.';
+const RELEASE_LINK_ATTRIBUTE = 'data-release-link';
 
 // tone: 'success', 'error' or 'pending' (neither).
 function setFeedback(document, message, tone = 'success') {
@@ -79,11 +95,11 @@ function regionIsBusy(region) {
 
 // A deferred region keeps its content but stops offering actions on the
 // superseded state; its replacement brings current controls back.
-function markStale(region) {
+function markStale(region, staleDialogMessage) {
   region.setAttribute(STALE_ATTRIBUTE, '');
   region.querySelectorAll(STALE_ACTION_SELECTOR).forEach((control) => { control.disabled = true; });
   region.querySelectorAll('dialog [data-dialog-status]').forEach((status) => {
-    status.textContent = STALE_DIALOG_MESSAGE;
+    status.textContent = staleDialogMessage;
   });
 }
 
@@ -103,7 +119,7 @@ function focusCounterpart(oldRegion, newRegion, active) {
   return target;
 }
 
-function applyRefresh(document, parsed, releaseId) {
+function applyRefresh(document, parsed, releaseId, staleDialogMessage) {
   const page = document.querySelector(PAGE_SELECTOR);
   const nextPage = parsed.querySelector(PAGE_SELECTOR);
   if (!page || nextPage?.getAttribute('data-release-detail') !== releaseId) return false;
@@ -123,7 +139,7 @@ function applyRefresh(document, parsed, releaseId) {
 
   current.forEach((region, name) => {
     if (regionIsBusy(region)) {
-      markStale(region);
+      markStale(region, staleDialogMessage);
       deferred = true;
       return;
     }
@@ -155,7 +171,11 @@ function applyRefresh(document, parsed, releaseId) {
 }
 
 function refreshState(document) {
-  document[STATE_KEY] ||= { generation: 0, abort: null, loading: false, deferred: false, [RETRY_KEY]: null };
+  // deferred: false, 'save' or 'return' (whichever refresh left regions stale).
+  document[STATE_KEY] ||= {
+    generation: 0, abort: null, loading: false, current: null, deferred: false, [RETRY_KEY]: null,
+    releaseLink: null, returnListeners: null, away: false, returnRefresh: null, returnNotice: false,
+  };
   return document[STATE_KEY];
 }
 
@@ -164,9 +184,26 @@ function refreshState(document) {
  * ever sent, so the save is never repeated. Each refresh supersedes any older
  * one still in flight, so a late response can never overwrite a newer save.
  * Resolves to 'refreshed', 'deferred' (some regions are busy and were marked
- * stale instead), 'failed' or 'superseded'.
+ * stale instead), 'failed', 'signed-out' or 'superseded'. The Release link
+ * shown by the adopted render is kept as state.releaseLink.
  */
-export async function refreshReleaseDetail(document, releaseId) {
+export function refreshReleaseDetail(document, releaseId, { staleDialogMessage = STALE_DIALOG_MESSAGE } = {}) {
+  const state = refreshState(document);
+  state.current = fetchReleaseDetail(document, releaseId, staleDialogMessage);
+  return state.current;
+}
+
+function signedOut(windowObject, response) {
+  if (response.status === 401) return true;
+  // An expired session answers an HTML GET with a redirect to sign-in.
+  try {
+    return response.redirected && new URL(response.url, windowObject.location.href).pathname === '/login';
+  } catch {
+    return false;
+  }
+}
+
+async function fetchReleaseDetail(document, releaseId, staleDialogMessage) {
   const state = refreshState(document);
   state.generation += 1;
   const generation = state.generation;
@@ -183,11 +220,17 @@ export async function refreshReleaseDetail(document, releaseId) {
       headers: { Accept: 'text/html' },
       signal: abort?.signal,
     });
-    const html = response.ok ? await response.text() : '';
+    const unauthenticated = signedOut(windowObject, response);
+    const html = response.ok && !unauthenticated ? await response.text() : '';
     if (generation !== state.generation) return 'superseded';
+    if (unauthenticated) outcome = 'signed-out';
     if (html) {
       const parsed = new windowObject.DOMParser().parseFromString(html, 'text/html');
-      outcome = applyRefresh(document, parsed, releaseId) || 'failed';
+      outcome = applyRefresh(document, parsed, releaseId, staleDialogMessage) || 'failed';
+      if (outcome !== 'failed') {
+        state.releaseLink = parsed.querySelector(`[data-release-detail-region="details"][${RELEASE_LINK_ATTRIBUTE}]`)
+          ?.getAttribute(RELEASE_LINK_ATTRIBUTE) ?? null;
+      }
     }
   } catch {
     if (generation !== state.generation) return 'superseded';
@@ -205,7 +248,8 @@ async function refreshAfterSave(document, releaseId, { focusResult = false } = {
   if (outcome === 'superseded') return;
   // Stale regions wait for their dialog or companion request; until then the
   // page says it is not fully refreshed.
-  state.deferred = outcome === 'deferred';
+  state.deferred = outcome === 'deferred' ? 'save' : false;
+  state.returnNotice = false;
   if (outcome === 'deferred') {
     setFeedback(document, DEFERRED_MESSAGE, 'pending');
     return;
@@ -241,9 +285,128 @@ function reconcileDeferred(document, releaseId) {
     region.querySelectorAll(STALE_ACTION_SELECTOR).forEach((control) => { control.disabled = true; });
   });
   if (state.loading || stale.some(regionIsBusy)) return;
+  const reason = state.deferred;
   state.deferred = false;
+  // Only a deferred save says so; a deferred return refresh stays quiet.
+  if (reason === 'return') {
+    void refreshOnReturn(document, releaseId);
+    return;
+  }
   setFeedback(document, REFRESHING_MESSAGE);
   void refreshAfterSave(document, releaseId);
+}
+
+// Waits for whichever refresh is newest: a superseded one hands over to its
+// successor, which was requested later and so is at least as current.
+async function settledRefresh(state, outcome) {
+  let result = outcome;
+  while ((result === 'superseded' || state.loading) && state.current) result = await state.current;
+  return result;
+}
+
+/**
+ * Refreshes Release Detail after the user returns from the publishing
+ * companion (GET only: nothing is launched, prepared or marked posted).
+ * Returns that arrive while it runs fold into one more refresh. An open Edit
+ * Release dialog holds its save until the refreshed Release link has been
+ * compared with the link the dialog loaded.
+ */
+async function refreshOnReturn(document, releaseId, { focusResult = false } = {}) {
+  const state = refreshState(document);
+  if (state.returnRefresh) {
+    state.returnRefresh.again = true;
+    return;
+  }
+  const run = { again: true };
+  state.returnRefresh = run;
+  let linkCheck = null;
+  let outcome = 'failed';
+  let owned = false;
+  try {
+    while (run.again) {
+      run.again = false;
+      // A save's refresh in flight keeps its own outcome and feedback.
+      if (state.loading) await settledRefresh(state, 'superseded');
+      linkCheck = beginReleaseLinkCheck(document, releaseId);
+      outcome = await refreshReleaseDetail(document, releaseId, { staleDialogMessage: RETURN_STALE_DIALOG_MESSAGE });
+      owned = outcome !== 'superseded';
+      outcome = await settledRefresh(state, outcome);
+    }
+  } finally {
+    state.returnRefresh = null;
+  }
+
+  const adopted = outcome === 'refreshed' || outcome === 'deferred';
+  finishReleaseLinkCheck(document, linkCheck, adopted ? { releaseLink: state.releaseLink ?? '' } : { failed: true });
+  // A newer save took this refresh over and reports its own outcome.
+  if (!owned) return;
+  if (adopted) {
+    if (outcome === 'deferred') {
+      state.deferred ||= 'return';
+    } else if (state.deferred === 'save') {
+      // Every region a save left stale has now been replaced.
+      state.deferred = false;
+      setFeedback(document, SAVED_MESSAGE);
+    } else {
+      state.deferred = false;
+    }
+    // Only this path's own failure notice is withdrawn once a refresh works.
+    if (state.returnNotice) {
+      state.returnNotice = false;
+      removeStatusRetry(state, RETRY_KEY);
+      const notice = document.querySelector('[data-dialog-feedback]');
+      if (notice) notice.hidden = true;
+    }
+    if (focusResult) document.getElementById('main-content')?.focus?.({ preventScroll: true });
+    return;
+  }
+  const notice = setFeedback(document, outcome === 'signed-out' ? RETURN_SIGNED_OUT_MESSAGE : RETURN_FAILED_MESSAGE, 'error');
+  state.returnNotice = Boolean(notice);
+  const retry = notice ? showStatusRetry({
+    state,
+    status: notice,
+    attribute: 'data-release-detail-refresh-retry',
+    key: RETRY_KEY,
+    onRetry: ({ wasFocused }) => {
+      setFeedback(document, RETURN_CHECKING_MESSAGE, 'pending');
+      return refreshOnReturn(document, releaseId, { focusResult: wasFocused });
+    },
+  }) : null;
+  if (focusResult) retry?.focus?.();
+}
+
+// Listens for the user coming back to this page once a companion launch has
+// been attempted. One set of listeners serves every later launch; it is
+// removed when the page is left (navigation, reload or bfcache).
+function armReturnRefresh(document, releaseId) {
+  const state = refreshState(document);
+  if (state.returnListeners) return;
+  const windowObject = liveRegionWindow(document);
+  const listeners = new windowObject.AbortController();
+  const { signal } = listeners;
+  state.returnListeners = listeners;
+  // The helper normally takes focus after the launch, but the page may
+  // already be in the background when it is armed.
+  state.away = document.visibilityState === 'hidden' || document.hasFocus?.() === false;
+  const leave = () => { state.away = true; };
+  // focus and visibilitychange both announce one return; only the first of
+  // them after the page was left starts a refresh.
+  const back = () => {
+    if (!state.away || document.visibilityState === 'hidden') return;
+    state.away = false;
+    void refreshOnReturn(document, releaseId);
+  };
+  windowObject.addEventListener('blur', leave, { signal });
+  windowObject.addEventListener('focus', back, { signal });
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') leave();
+    else back();
+  }, { signal });
+  windowObject.addEventListener('pagehide', () => {
+    listeners.abort();
+    state.returnListeners = null;
+    state.away = false;
+  }, { signal });
 }
 
 /**
@@ -266,6 +429,7 @@ export function enhanceReleaseDetailRefresh(scope = globalThis.document) {
     liveRegionWindow(document).setTimeout(() => reconcileDeferred(document, releaseId), 0);
   }, true);
   document.addEventListener(RELEASE_SOCIAL_PREP_COMPANION_SETTLED_EVENT, (event) => {
+    if (event.detail?.launchAttempted === true) armReturnRefresh(document, releaseId);
     if (!event.target?.closest?.(`[${STALE_ATTRIBUTE}]`)) return;
     reconcileDeferred(document, releaseId);
   });
