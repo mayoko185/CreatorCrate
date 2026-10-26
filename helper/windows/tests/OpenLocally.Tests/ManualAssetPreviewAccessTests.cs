@@ -275,6 +275,110 @@ public sealed class ManualAssetPreviewAccessTests : IDisposable
         fixture.Stager.Cleanup(fixture.Capability);
     }
 
+    [Theory]
+    [InlineData(@"\\?\C:\media\a.png", @"C:\media\a.png")]
+    [InlineData(@"\\?\z:\", @"z:\")]
+    [InlineData(@"\\?\UNC\server\share\project\image.png", @"\\server\share\project\image.png")]
+    [InlineData(@"\\?\unc\server\share\", @"\\server\share")]
+    [InlineData(@"\\?\Volume{0b4b6a2c-0000-0000-0000-100000000000}\media\a.png", null)]
+    [InlineData(@"\\?\GLOBALROOT\Device\HarddiskVolume3\a.png", null)]
+    [InlineData(@"\\.\C:\a.png", null)]
+    [InlineData(@"UNC\server\share\a.png", null)]
+    [InlineData(@"C:\media\a.png", null)]
+    [InlineData(@"media\a.png", null)]
+    [InlineData(@"\\?\UNC\server", null)]
+    [InlineData(@"\\?\UNC\server\\share", null)]
+    [InlineData(@"\\?\UNC\\share\a.png", null)]
+    [InlineData(@"\\?\UNC\server\share\..\other\a.png", null)]
+    [InlineData(@"\\?\C:\media\.\a.png", null)]
+    [InlineData(@"\\?\C:media\a.png", null)]
+    [InlineData(@"\\?\C:\media/a.png", null)]
+    [InlineData(@"\\?\", null)]
+    [InlineData("", null)]
+    public void NormalizeFinalPath_AcceptsOnlyExtendedDriveAndUncForms(string raw, string? expected) =>
+        Assert.Equal(expected, ManualAssetPreviewAccess.NormalizeFinalPath(raw));
+
+    [Fact]
+    public void RootVerification_AcceptsOnlyTheMappedDriveConnection()
+    {
+        static string? Mapped(char drive) => drive is 'Z' or 'z' ? @"\\nas\Media" : null;
+        const string root = @"Z:\Projects\Show";
+
+        Assert.NotNull(ManualAssetPreviewAccess.FinalPathRoot.Verify(root, @"\\?\UNC\nas\Media\Projects\Show", Mapped));
+        Assert.NotNull(ManualAssetPreviewAccess.FinalPathRoot.Verify(@"z:\projects\show\", @"\\?\UNC\NAS\media\PROJECTS\show", Mapped));
+        Assert.NotNull(ManualAssetPreviewAccess.FinalPathRoot.Verify(
+            root, @"\\?\UNC\nas\Media\sub\Projects\Show", _ => @"\\nas\Media\sub"));
+
+        Assert.Null(ManualAssetPreviewAccess.FinalPathRoot.Verify(root, @"\\?\UNC\other\Media\Projects\Show", Mapped));
+        Assert.Null(ManualAssetPreviewAccess.FinalPathRoot.Verify(root, @"\\?\UNC\nas\Other\Projects\Show", Mapped));
+        Assert.Null(ManualAssetPreviewAccess.FinalPathRoot.Verify(root, @"\\?\UNC\nas\MediaX\Projects\Show", Mapped));
+        Assert.Null(ManualAssetPreviewAccess.FinalPathRoot.Verify(root, @"\\?\UNC\nas\Media\Projects\ShowX", Mapped));
+        Assert.Null(ManualAssetPreviewAccess.FinalPathRoot.Verify(root, @"\\?\UNC\nas\Media\Projects", Mapped));
+        Assert.Null(ManualAssetPreviewAccess.FinalPathRoot.Verify(root, @"\\?\UNC\nas\Media\Projects\Show\Nested", Mapped));
+        Assert.Null(ManualAssetPreviewAccess.FinalPathRoot.Verify(root, @"UNC\nas\Media\Projects\Show", Mapped));
+        Assert.Null(ManualAssetPreviewAccess.FinalPathRoot.Verify(root, @"\\?\Volume{0b4b6a2c-0000-0000-0000-100000000000}\Projects\Show", Mapped));
+
+        // Failed, unresolved, or invalid mapping lookups fail closed.
+        Assert.Null(ManualAssetPreviewAccess.FinalPathRoot.Verify(root, @"\\?\UNC\nas\Media\Projects\Show", _ => null));
+        Assert.Null(ManualAssetPreviewAccess.FinalPathRoot.Verify(
+            root, @"\\?\UNC\nas\Media\Projects\Show", _ => throw new System.ComponentModel.Win32Exception(1201)));
+        Assert.Null(ManualAssetPreviewAccess.FinalPathRoot.Verify(root, @"\\?\UNC\nas\Media\Projects\Show", _ => @"\\nas"));
+        Assert.Null(ManualAssetPreviewAccess.FinalPathRoot.Verify(root, @"\\?\UNC\nas\Media\Projects\Show", _ => @"C:\Media"));
+        Assert.Null(ManualAssetPreviewAccess.FinalPathRoot.Verify(root, @"\\?\UNC\nas\Media\Projects\Show", _ => @"\\?\UNC\nas\Media"));
+
+        // A local (nonremote) drive never accepts a UNC substitution; local roots must resolve to themselves.
+        Assert.Null(ManualAssetPreviewAccess.FinalPathRoot.Verify(@"C:\Media", @"\\?\UNC\nas\Media", Mapped));
+        Assert.NotNull(ManualAssetPreviewAccess.FinalPathRoot.Verify(@"C:\Media", @"\\?\c:\MEDIA", Mapped));
+        Assert.Null(ManualAssetPreviewAccess.FinalPathRoot.Verify(@"C:\Media", @"\\?\D:\Media", Mapped));
+        Assert.Null(ManualAssetPreviewAccess.FinalPathRoot.Verify(@"C:\Media", @"\\?\C:\MediaX", Mapped));
+
+        // Raw UNC trusted roots remain unsupported.
+        Assert.Null(ManualAssetPreviewAccess.FinalPathRoot.Verify(@"\\nas\Media", @"\\?\UNC\nas\Media", Mapped));
+    }
+
+    [Fact]
+    public void DescendantValidation_RequiresExactRelativeLocationUnderVerifiedRoot()
+    {
+        ManualAssetPreviewAccess.FinalPathRoot root = Assert.IsType<ManualAssetPreviewAccess.FinalPathRoot>(
+            ManualAssetPreviewAccess.FinalPathRoot.Verify(
+                @"Z:\Projects\Show", @"\\?\UNC\nas\Media\Projects\Show", _ => @"\\nas\Media"));
+
+        Assert.True(root.Matches(@"Z:\Projects\Show", @"\\?\UNC\nas\Media\Projects\Show\"));
+        Assert.True(root.Matches(@"Z:\Projects\Show\final", @"\\?\UNC\nas\Media\Projects\Show\final"));
+        Assert.True(root.Matches(@"Z:\Projects\Show\final\a.png", @"\\?\UNC\NAS\MEDIA\projects\show\FINAL\A.PNG"));
+
+        Assert.False(root.Matches(@"Z:\Projects\Show\final\a.png", @"\\?\UNC\nas\Media\Projects\Show\final\b.png"));
+        Assert.False(root.Matches(@"Z:\Projects\Show\final\a.png", @"\\?\UNC\nas\Media\Projects\Show\other\a.png"));
+        Assert.False(root.Matches(@"Z:\Projects\Show\final\a.png", @"\\?\UNC\nas\Media\Projects\ShowX\final\a.png"));
+        Assert.False(root.Matches(@"Z:\Projects\Show\final\a.png", @"\\?\UNC\nas\Media\Projects\Show\finalX\a.png"));
+        Assert.False(root.Matches(@"Z:\Projects\Show\final\a.png", @"\\?\UNC\nas\Media\Projects\Show\final\a.png.bak"));
+        Assert.False(root.Matches(@"Z:\Projects\Show\final\a.png", @"\\?\UNC\nas\Media\Projects\Show\final\a.png\x"));
+        Assert.False(root.Matches(@"Z:\Projects\Show\final\a.png", @"\\?\UNC\other\Media\Projects\Show\final\a.png"));
+        Assert.False(root.Matches(@"Z:\Projects\Show\final\a.png", @"\\?\UNC\nas\Other\Projects\Show\final\a.png"));
+        Assert.False(root.Matches(@"Z:\Projects\Show\final\a.png", @"\\?\Z:\Projects\Show\final\a.png"));
+        Assert.False(root.Matches(@"Z:\Projects\Show\final\a.png", @"\\?\C:\Projects\Show\final\a.png"));
+        Assert.False(root.Matches(@"Z:\Projects\Show\final\a.png", @"UNC\nas\Media\Projects\Show\final\a.png"));
+        Assert.False(root.Matches(@"Z:\Projects\ShowX\final\a.png", @"\\?\UNC\nas\Media\Projects\ShowX\final\a.png"));
+        Assert.False(root.Matches(@"Z:\Projects\a.png", @"\\?\UNC\nas\Media\Projects\a.png"));
+        Assert.False(root.Matches(@"Y:\Projects\Show\final\a.png", @"\\?\UNC\nas\Media\Projects\Show\final\a.png"));
+
+        ManualAssetPreviewAccess.FinalPathRoot local = Assert.IsType<ManualAssetPreviewAccess.FinalPathRoot>(
+            ManualAssetPreviewAccess.FinalPathRoot.Verify(@"C:\Media", @"\\?\C:\Media", _ => null));
+        Assert.True(local.Matches(@"C:\Media\final\a.png", @"\\?\C:\media\FINAL\a.png"));
+        Assert.False(local.Matches(@"C:\Media\final\a.png", @"\\?\UNC\nas\Media\final\a.png"));
+        Assert.False(local.Matches(@"C:\Media\final\a.png", @"\\?\C:\MediaX\final\a.png"));
+    }
+
+    [Fact]
+    public void MappedDriveConnection_RejectsNonRemoteAndInvalidDrives()
+    {
+        string systemDrive = Path.GetPathRoot(Environment.SystemDirectory)!;
+        Assert.Null(ManualAssetPreviewAccess.MappedDriveConnection(systemDrive[0]));
+        Assert.Null(ManualAssetPreviewAccess.MappedDriveConnection(Path.GetPathRoot(_root)![0]));
+        Assert.Null(ManualAssetPreviewAccess.MappedDriveConnection('1'));
+        Assert.Null(ManualAssetPreviewAccess.MappedDriveConnection('\\'));
+    }
+
     public void Dispose()
     {
         if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
