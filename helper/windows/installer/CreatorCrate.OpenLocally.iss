@@ -11,7 +11,7 @@
 ; step compiles this source; its output is kept outside the publish input.
 
 #define MyAppName "CreatorCrate Open Locally"
-#define MyAppVersion "1.2.0"
+#define MyAppVersion "1.3.1"
 #define MyAppPublisher "CreatorCrate"
 #define MyAppExeName "OpenLocally.exe"
 #define MyAppId "{{8F1D5C4E-6A2B-4E9D-9C3F-7B0A2E5D1C84}"

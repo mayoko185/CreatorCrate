@@ -463,9 +463,9 @@ Assert-Condition ((Get-InnoSetting $setup 'UninstallDisplayIcon') -ieq '{app}\{#
     'Installed Apps icon uses the installed OpenLocally.exe' `
     'Expected UninstallDisplayIcon={app}\{#MyAppExeName}.'
 
-Assert-Condition ((Get-InnoDefine $iss 'MyAppVersion') -eq '1.2.0') `
-    'Installer version is 1.2.0' `
-    'D3 requires the 1.2.0 installer version.'
+Assert-Condition ((Get-InnoDefine $iss 'MyAppVersion') -eq '1.3.1') `
+    'Installer version is 1.3.1' `
+    'C8 requires the 1.3.1 installer version.'
 $appVersion = Get-InnoSetting $setup 'AppVersion'
 $versionInfoVersion = Get-InnoSetting $setup 'VersionInfoVersion'
 Assert-Condition ($appVersion -eq '{#MyAppVersion}') `
