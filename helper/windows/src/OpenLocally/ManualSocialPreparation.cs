@@ -99,6 +99,23 @@ internal interface IManualPostingConfirmationProvider
         SocialCapability capability, IReadOnlyList<string> platforms);
 }
 
+/// <summary>
+/// Borrowed release-link controller seam for WP4. The orchestrator owns and disposes
+/// both controllers; confirmation is null when the runtime does not provide one.
+/// </summary>
+internal interface IManualReleaseLinkCompanion
+{
+    IManualSocialCompanionLifetime OpenWithReleaseLink(
+        ManualSocialSession session, IDisposable mediaLease, IManualAssetAvailability availability,
+        IManualAssetPreviewAccess? previewAccess, ManualPostingConfirmationController? confirmation,
+        ManualReleaseLinkController releaseLink);
+}
+
+internal interface IManualReleaseLinkProvider
+{
+    ManualReleaseLinkController CreateReleaseLink(SocialCapability capability);
+}
+
 public sealed record ManualDragAsset(ManualPreparedAsset Prepared, int Ordinal);
 
 public sealed record ManualDragPreparation(
@@ -173,6 +190,7 @@ public sealed class ManualSocialPreparationOrchestrator
         int currentPlatform = 0;
         IManualSocialCompanionLifetime? companion = null;
         ManualPostingConfirmationController? postingConfirmation = null;
+        ManualReleaseLinkController? releaseLink = null;
         bool readyReported = false;
         try
         {
@@ -272,11 +290,25 @@ public sealed class ManualSocialPreparationOrchestrator
                 if (runtime is IManualPostingConfirmationProvider confirmationProvider)
                     postingConfirmation = confirmationProvider.CreatePostingConfirmation(
                         capability, platforms.Select(platform => platform.Platform).ToArray());
+                if (runtime is IManualReleaseLinkProvider releaseLinkProvider && _companion is IManualReleaseLinkCompanion)
+                {
+                    // Release-link editing is optional: it must never prevent the companion from opening.
+                    try { releaseLink = releaseLinkProvider.CreateReleaseLink(capability); }
+                    catch (Exception ex) when (ex is not OperationCanceledException) { releaseLink = null; }
+                }
                 if (runtime is IManualAssetPreviewAccessProvider previewProvider &&
-                    (_companion is IManualSocialPreviewCompanion || _companion is IManualPostingConfirmationCompanion))
+                    (_companion is IManualSocialPreviewCompanion || _companion is IManualPostingConfirmationCompanion ||
+                     _companion is IManualReleaseLinkCompanion))
                     previewAccess = previewProvider.CreatePreviewAccess(capability);
 
-                if (_companion is IManualPostingConfirmationCompanion confirmationCompanion && postingConfirmation is not null)
+                if (_companion is IManualReleaseLinkCompanion releaseLinkCompanion && releaseLink is not null)
+                {
+                    // Borrowed like the confirmation controller; disposed here after Closed.
+                    companion = releaseLinkCompanion.OpenWithReleaseLink(
+                        session, lease, availability, previewAccess, postingConfirmation, releaseLink);
+                    previewAccess = null; // ownership moved to the native companion lifetime
+                }
+                else if (_companion is IManualPostingConfirmationCompanion confirmationCompanion && postingConfirmation is not null)
                 {
                     // The companion borrows this controller through its window lifetime.
                     // Ownership stays here so the orchestrator disposes it exactly once after Closed.
@@ -330,6 +362,11 @@ public sealed class ManualSocialPreparationOrchestrator
             }
             readyReported = true;
 
+            // The server only authorizes link reads once this session's platforms are ready.
+            // The load is fire-and-forget: a failure becomes controller state, never a posting failure.
+            if (releaseLink is not null)
+                try { _ = releaseLink.LoadAsync(); } catch (ObjectDisposedException) { }
+
             // Server state remains ready. The narrow availability service retains
             // the capability only for WP4 revalidation/restaging until window close.
             try { await companion.Closed.ConfigureAwait(false); } catch { }
@@ -352,6 +389,7 @@ public sealed class ManualSocialPreparationOrchestrator
             try { companion?.Dispose(); } catch { }
             if (companion is not null) try { await companion.Closed.ConfigureAwait(false); } catch { }
             try { postingConfirmation?.Dispose(); } catch { }
+            try { releaseLink?.Dispose(); } catch { }
             if (runtime is not null)
             {
                 if (capability is not null)
@@ -433,7 +471,8 @@ public static class ProductionManualSocialPreparationComposition
 }
 
 public sealed class ProductionManualSocialPreparationRuntime :
-    IManualSocialPreparationRuntime, IManualAssetPreviewAccessProvider, IManualPostingConfirmationProvider
+    IManualSocialPreparationRuntime, IManualAssetPreviewAccessProvider, IManualPostingConfirmationProvider,
+    IManualReleaseLinkProvider
 {
     private readonly SocialHttpClient _http;
     private readonly OriginTrustService _trust;
@@ -488,6 +527,9 @@ public sealed class ProductionManualSocialPreparationRuntime :
     ManualPostingConfirmationController IManualPostingConfirmationProvider.CreatePostingConfirmation(
         SocialCapability capability, IReadOnlyList<string> platforms) =>
         new(new ManualPostingConfirmationClient(_http, _trust, Origin(), capability, confirmationExpiresAt: null), platforms);
+
+    ManualReleaseLinkController IManualReleaseLinkProvider.CreateReleaseLink(SocialCapability capability) =>
+        new(new ManualReleaseLinkClient(_http, _trust, Origin(), capability));
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 

@@ -117,7 +117,7 @@ internal static class ProductionUiaProbe
         Console.WriteLine("platform-switch-with-posting-ui=passed; action-state=platform-local; rich-edit-enter-safe=true");
         if (uiaFailure is not null)
             throw new InvalidOperationException("The required production posting action failed UI Automation.", uiaFailure);
-        Console.WriteLine($"production-uia-check=passed; mode={(interactiveDesktop ? "interactive-desktop" : "deterministic")}; client-process=Windows-PowerShell; control-type=Edit,Button,ComboBox; class=RichEditBox,Button,ComboBox; text-pattern=available; read-only=true; selection=available; keyboard-focusable=true; expand-collapse-pattern=available; posting-enabled-state=verified; hidden-title=absent");
+        Console.WriteLine($"production-uia-check=passed; mode={(interactiveDesktop ? "interactive-desktop" : "deterministic")}; client-process=Windows-PowerShell; control-type=Edit,Button,Tab; class=RichEditBox,Button,SysTabControl32; text-pattern=available; read-only=true; selection=available; keyboard-focusable=true; tab-item-pattern=available; posting-enabled-state=verified; hidden-title=absent");
     }
 
     private static void CaptureFailure(ref Exception? firstFailure, Action action)

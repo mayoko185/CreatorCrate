@@ -1,10 +1,16 @@
 CreatorCrate integrated manual visual proof
 
-Run from the repository root:
+Scripted proof versus live verification
+
+Everything in the "Scripted" sections below runs the actual production NativeManualPublishingCompanion against local fixtures. It needs no CreatorCrate server, account, network, SMB share, or installed helper, and it does not exercise real mapped drives, real destinations, real Release link persistence, the browser, or the installer. Those are covered only by "Live integrated verification" and the consolidated acceptance checklist at the end, which run after WP8 packages an installable helper. A scripted pass is not evidence of live acceptance.
+
+Run every command from the repository root.
+
+Scripted launch: posting states and themes
 
 powershell -NoProfile -ExecutionPolicy Bypass -File .\helper\windows\tests\OpenLocally.WinUiHost.Proof\run-manual-visual-proof.ps1 -PostingState Ready -Theme Dark
 
-PostingState accepts Ready, Confirming, Unknown, or Posted. Theme accepts Dark or Light. Recommended visual-gate launches:
+PostingState accepts Ready, Confirming, Unknown, or Posted. Theme accepts Dark or Light. Recommended launches:
 
 -PostingState Ready -Theme Dark
 -PostingState Confirming -Theme Dark
@@ -12,59 +18,110 @@ PostingState accepts Ready, Confirming, Unknown, or Posted. Theme accepts Dark o
 -PostingState Posted -Theme Dark
 -PostingState Ready -Theme Light
 
-Each launch opens the actual NativeManualPublishingCompanion with the production WinUI RichEditBoxes, native Buttons, Platform ComboBox, Assets ListView/Header, and footer. Use the real Platform ComboBox to inspect Patreon, X, and Bluesky. The fixture is fully local and does not use a server or network.
+Each launch opens the production window with its WinUI RichEditBoxes, native Buttons, native platform tabs (Patreon, X, Bluesky in fixture order), Assets ListView/Header, the Release link card below Assets, scrolling body, and pinned footer. Like production, every launch attaches a Release link controller; by default it uses the scripted "ready" scenario below. -NoReleaseLink launches the legacy card-less layout for comparison only; production never looks like that.
 
-The Assets table contains representative production-model data: two available images with real Shell thumbnails, one available text attachment, and one actually unavailable image. The available rows begin selected (3 of 4 selected). Use the real ListView with click, Ctrl+click, and Shift+click to inspect row selection, count changes, unavailable guidance, responsive columns, and the one intentionally long filename/path.
+The Assets table holds representative production-model data: two available images with real Shell thumbnails, one available text attachment, and one unavailable image. The available rows start selected (3 of 4). Use click, Ctrl+click, and Shift+click to inspect selection, count changes, unavailable guidance, responsive columns, and the one intentionally long filename/path.
 
-F6 is not implemented. Theme is selected at launch and applies through the production whole-window refresh path to native chrome and both WinUI islands together.
+Scripted launch: Release link scenarios
 
-Genuine Windows High Contrast acceptance uses this sequence:
+powershell -NoProfile -ExecutionPolicy Bypass -File .\helper\windows\tests\OpenLocally.WinUiHost.Proof\run-manual-visual-proof.ps1 -Theme Dark -ReleaseLink conflict
 
-1. Launch the production manual proof normally, preferably with -Theme Dark.
-2. Keep that production companion window open.
+-ReleaseLink accepts the scenario names below (default ready) and combines with -PostingState, -Theme, and -TextScale. Direct proof-host launches take the same options as --release-link=<scenario>, --posting-state=..., --theme=..., --text-scale=..., and --no-release-link; an unknown scenario name is rejected before the window opens.
+
+dotnet run --project .\helper\windows\tests\OpenLocally.WinUiHost.Proof\OpenLocally.WinUiHost.Proof.csproj --configuration Release --no-restore -- --manual-visual-proof --theme=Dark --release-link=ready
+
+The scenario attaches the production ManualReleaseLinkController to a scripted in-memory transport. That transport holds one stored link (initially https://creatorcrate.example/releases/autumn-creator-launch), so interactive saves, Reload, and conflict resolution behave like a server. Only the first request of a scripted failure fails. The console prints "release-link-scenario=<name>; phase=<phase>" once the script finishes, then "release-link-presentation=passed; ..." once the proof has confirmed the intended controller phase and that the card renders its status below Assets. A wrong phase or status ends the run with "release-link-proof=failed" and passed=False. This is scripted controller evidence only; it is not evidence of server integration.
+
+ready        Existing link loaded; up to date. Edit, Save link, clear, and Discard edits interactively.
+none         No stored link: "No Release link is set..." with an empty field.
+loading      The load never answers: "Loading the Release link...", field read-only, Save disabled.
+draft        Unsaved draft against the existing link: "Unsaved change: saving replaces..." plus Discard edits.
+saved        Draft saved: "Release link saved."
+invalid      First save rejected: "Enter a valid web address, or leave it blank to clear it." The draft is kept. (Later saves are accepted without validation.)
+conflict     First save hits a newer server link (a deliberately long URL): wrapped warning, Save disabled, "Use server link" and "Keep my link" shown.
+uncertain    Save response lost and readback fails: "Couldn't confirm whether the Release link was saved. Reload to check." plus Reload.
+failed       First load fails: "Couldn't load the Release link. Try again." plus Reload; Reload then succeeds.
+expired      Authority expired: "Release link editing expired. Reopen from CreatorCrate." Field read-only, no actions.
+unsupported  Older server: "Release link editing isn't available on this CreatorCrate server." Field read-only, no actions.
+
+Automatic Assets layout checks
+
+At 980x920 with the Release link card the Assets list shows only some rows at once; that is expected. When the window opens, every manual launch checks: all four rows are present, at least two complete rows stay visible, clipped rows are reachable through the list's own scroll bar, the last row scrolls into view, outer content scrolling neither moves nor resizes the list's rows, relayouts at the current size and at 640x600 after the list has scrolled itself never collapse it (the C3 guard), the selection stays 0,1,2, the footer stays pinned, and the Release link field is fully revealed by outer scrolling and reached by Shift+Tab from Close before Assets. It prints "asset-viewport=passed; ..." and restores the scroll positions and platform-tab focus; any failure ends the run with passed=False. Thumbnail settlement ("fixture-thumbnails=settled") is still checked afterwards.
+
+Narrow window and native text scaling
+
+Add -TextScale <100..225> to a launcher run, or --text-scale=<100..225> to a direct launch. About 1.5 seconds after the window opens, the proof applies that native text-size percentage, resizes the client to the approved 640x600 logical minimum, and prints "text-scale=N; client=640x600; content=<height>; scrollable=<True|False>". Use --text-scale=100 for the plain narrow-window check. This option scales the native layout and text only. The WinUI editors follow the real Windows Text size setting, so genuine text enlargement still needs the manual Windows setting below.
+
+Theme and High Contrast
+
+Theme is chosen at launch and applies through the production whole-window refresh path to native chrome and both WinUI islands. There is no HighContrast launch argument; Dark and Light do not substitute for genuine Windows High Contrast. To check High Contrast:
+
+1. Launch any scripted proof (preferably -Theme Dark or a Release link scenario).
+2. Keep that window open.
 3. Enable a genuine Windows Contrast Theme in Windows Settings.
-4. Wait for the real Windows settings-change notification.
-5. Inspect the SAME live production companion window for High Contrast readability.
-6. Optionally disable the Contrast Theme while the window remains open and verify that production refreshes again.
+4. Wait for the real settings-change notification.
+5. Inspect the SAME live window for readability: system colors, system tab painting, visible focus, Release link status text.
+6. Optionally disable the Contrast Theme and verify the window refreshes again.
 
-There is no launcher -Theme HighContrast argument. The -Theme Dark and -Theme Light arguments select proof presentation only; neither substitutes for genuine Windows High Contrast. High Contrast acceptance depends on the real Windows settings-change path after launch. Do not simulate High Contrast through proof arguments.
+A. Initial layout (scripted; the default launcher run)
 
-Manual visual checklist:
+- Header: release title (wraps to at most three lines) above Release ID / Server metadata, then a divider.
+- Content card: platform tabs, then Patreon Title/Body (or X/Bluesky Post text) editors with Copy buttons in the field headers, then posting status, helper text, and Mark as posted.
+- Assets card: heading, "N of M selected", drag guidance, thumbnails/placeholders, File/Role/Size/Status/Path columns. Not every row fits at once; the list scrolls itself.
+- Release link card after Assets and outside the platform tabs, reached by scrolling the content: "Release link" heading, field, Save link, status line.
+- Footer pinned to the bottom: posting aggregate at the left, Close at the right; transient feedback adds a bounded second line.
+- Keyboard focus starts on the platform tabs.
 
-- Overall CreatorCrate feel; release title versus metadata; Content hierarchy.
-- Platform selector; Patreon title/body; X and Bluesky post editors; emoji and Unicode.
-- Copy versus Mark-as-posted hierarchy; posting status, helper, action, and footer aggregate.
-- Assets heading; all four fixture rows visible without vertical scrolling; populated thumbnails; File, Role, Size, Status, and Path / staged name columns. More than five rows may use the native vertical scrollbar.
-- Selected-row appearance; initial 3 of 4 count; count and guidance after click/Ctrl+click/Shift+click, including selecting the unavailable row.
-- Responsive columns and long-value clipping/scroll behavior; footer; no bright native patches.
-- Dark and Light whole-window consistency.
-- Ready, Confirming, Unknown/Retry, and Posted production presentations.
+B. Platform navigation (scripted)
 
-Additional manual accessibility gates (not completed by automated proof):
+- Tabs read Patreon, X, Bluesky (server order); Patreon starts selected.
+- Switch by mouse click, and with the tabs focused by Left/Right and Home/End.
+- Patreon shows Title and Body with Copy title/Copy body; X and Bluesky show Post text with Copy post text.
+- Change the asset selection on one platform, switch away and back: each platform keeps its own selection.
+- Switching never copies, posts, changes the posting status, or changes the Release link card.
+- Enter on the tabs or in the Release link field does nothing; only a focused push button responds to Enter.
 
-- With the proof already open, enable a genuine Windows Contrast Theme and repeat the visual/readability checks on that same live window.
-- Test Windows Text Size at 100%, 125%, 150%, 200%, and the highest practical setting.
-- At 96, 144, and 192 DPI, repeat default and elevated Text Size checks. If available, move the window between physical mixed-DPI monitors and verify crisp text, stable bounds, focus, and selection.
-- With Narrator, verify platform content, read-only state, control names, and focus movement.
-- Verify Tab/Shift+Tab, text selection/copy/navigation, scrolling, Escape, and non-editability.
+C. Release link states (scripted; one launch per scenario above)
 
-Important scope boundary: the production multi-file drag path is proven by a real physical drop into a browser/web destination: all three initially selected available assets arrived in Release/list order regardless of which selected row began the drag. The original one-file result is not reproducible as a generalized CreatorCrate source defect. Individual social-site acceptance remains destination-specific.
+- Loading, existing link, no link, unsaved draft, saved, invalid, conflict, uncertain, failed, expired, and unsupported each show the text listed above, with the matching tone (busy, neutral, unsaved, success, warning, or error) also stated in words.
+- In ready: edit and Save link shows "Release link saved."; clear the field and save shows "Release link cleared."; saving an unchanged value is not offered (Save is enabled only for a changed draft); Discard edits restores the stored value.
+- In conflict: "Use server link" replaces the draft with the newer link (Ready). Alternatively, "Keep my link" then Save link deliberately replaces it ("Release link saved.").
+- In uncertain: Reload settles it as "Release link wasn't saved. Try again."; Save link then saves.
+- In failed: Reload loads the link.
+- When a used action disappears or disables, focus returns to the Release link field.
+
+D. Visual and layout checks (scripted plus Windows settings)
+
+- Default Dark, Light (--theme=Light), and genuine Windows Contrast Theme, each with a Release link scenario.
+- 640x600 (--text-scale=100): no overlap or clipping; the body scrolls with its own vertical scrollbar and the mouse wheel, and the footer stays pinned.
+- Long values: the conflict scenario's long link is truncated with an ellipsis in the status text and wraps; the long asset path stays within its column or uses native horizontal scrolling.
+- Tab/Shift+Tab through every control at 640x600: focus that lands outside the viewport scrolls into view; clicking never scrolls the page.
+- Windows display scaling at 100%, 150%, and 200% (and moving between mixed-DPI monitors if available): crisp text, stable bounds, layout recalculated.
+- Windows Text size at 100%, 150%, and the highest practical setting with the window open or reopened: native text and the WinUI editors enlarge, and the body scrolls instead of clipping.
+- Narrator: the platform tabs read as a tab list with Patreon/X/Bluesky items and selection; the field reads "Release link"; save outcomes, conflicts, and failures are announced from the status line (loading and typing are not); editors read their names and are read-only.
+
+E. Live integrated verification (requires a packaged helper and a real CreatorCrate server; not performed by any scripted proof)
+
+- Mapped SMB thumbnails: assets under a trusted project root on a mapped network drive show real thumbnails. A raw UNC root (\\server\share), disconnected drive, or SUBST alias shows the preview placeholder without changing Status, selection, or drag.
+- Drag and drop of the selected set, in Release/list order, into the actual posting destinations (destination-specific).
+- Release link persistence: a save in the helper appears on Release Detail and in Edit Release; clearing removes it; posting state and other release fields are unchanged.
+- Browser return refresh: returning to Release Detail after using the helper updates the page once, without a manual reload.
+- Concurrent edit protection: an Edit Release form opened before a helper save does not overwrite the newer link.
+- Installed helper upgrade over the previous release and creatorcrate-social:// protocol activation from CreatorCrate.
+
+Existing proofs kept from earlier packages
 
 Package B local OLE drop-target proof
 
-Run from the repository root:
-
 powershell -NoProfile -ExecutionPolicy Bypass -File .\helper\windows\tests\OpenLocally.WinUiHost.Proof\run-manual-visual-proof.ps1 -DragProof
 
-This opens the actual production NativeManualPublishingCompanion and a separate test-only local IDropTarget. The fixture creates these available paths in stable Release/list order:
+This opens the production companion and a separate test-only local IDropTarget. The fixture creates these available paths in stable Release/list order:
 
 0. campaign-cover.bmp
 1. launch-assets\final-approved-media\creatorcrate-autumn-product-launch-behind-the-scenes-wide-preview.bmp
 2. posting-notes.txt
 
 The fourth row, missing-community-photo.png, is genuinely unavailable. The console prints the full generated absolute paths for the current run.
-
-Primary interactive proof:
 
 1. Confirm rows A+B+C (ordinals 0+1+2) are selected; do not select unavailable row D.
 2. Click-hold and drag ANY one selected row from the production ListView onto the local target.
@@ -73,33 +130,45 @@ Primary interactive proof:
 
 Expected for origins A, B, or C: count=3 and paths 0,1,2 in Release/list order. The target requests COPY and only inspects the received CF_HDROP; it does not copy, move, or write files.
 
-Secondary cases:
-
-- Ordinary single-click B intentionally collapses selection to B. Drag B and expect one received path: ordinal 1.
+- Ordinary single-click B collapses selection to B. Drag B and expect one received path: ordinal 1.
 - Starting with A+B selected and C unselected, drag C and expect C only.
-- If unavailable D is selected with available rows, production rejects the whole selection before OLE delivery. The target receives no Drop.
-- Ctrl/Shift selection remains native Windows ListView behavior.
+- If unavailable D is selected with available rows, production rejects the whole selection before OLE delivery; the target receives no Drop.
 
-Use a real mouse pointer. First click the local target and confirm it displays CLICK RECEIVED, then perform the drag; clicking does not simulate a drop. Do not invoke a test command or synthesize LVN_BEGINDRAG. Close the production companion to end the proof; the target registration, both windows, fixture files, controller, and process are then cleaned up. This local harness is diagnostic infrastructure, not a prerequisite for the already proven generic browser/OLE contract. Patreon, X, and Bluesky acceptance remains destination-specific.
+Use a real mouse pointer. First click the local target and confirm CLICK RECEIVED, then drag; clicking does not simulate a drop. Close the production companion to end the proof and clean up. This harness is diagnostic; the generic multi-file browser drop was already proven, and Patreon, X, and Bluesky acceptance remains destination-specific.
 
 WP10C interactive UIA proof
 
-From the repository root, run:
-
 powershell -NoProfile -ExecutionPolicy Bypass -File .\helper\windows\tests\OpenLocally.WinUiHost.Proof\run-interactive-uia-proof.ps1
 
-Keep the desktop unlocked and do not switch windows while it runs. The UIA proof uses local production companion fixtures and the Windows inbox client-side provider table. It does not replace the manual visual, High Contrast, Text Size, or mixed-DPI gates.
+Keep the desktop unlocked and do not switch windows while it runs. It uses local production companion fixtures and the Windows inbox client-side provider table. It does not replace the manual visual, High Contrast, Text Size, or mixed-DPI gates.
 
-WP10D interactive desktop test set
-
-The deterministic Windows-helper gate is:
+WP10D deterministic and interactive desktop tests
 
 powershell -NoProfile -ExecutionPolicy Bypass -File .\helper\windows\tests\run-deterministic-gate.ps1
 
-It runs the normal helper suite, including deterministic UIA contracts, and excludes tests explicitly marked Category=InteractiveDesktop or Category=DiagnosticStress. InteractiveDesktop proofs require foreground interaction; DiagnosticStress tests are excluded separately because they are intentionally long-running diagnostics.
+This runs the normal helper suite, including deterministic UIA contracts (platform Tab/TabItem order, SelectionPattern and SelectionItemPattern), and excludes Category=InteractiveDesktop and Category=DiagnosticStress tests.
 
-From the repository root, run on an unlocked foreground-capable Windows desktop:
+On an unlocked foreground-capable desktop:
 
 dotnet test .\helper\windows\tests\OpenLocally.Tests\OpenLocally.Tests.csproj -c Release --no-restore --filter "Category=InteractiveDesktop"
 
-This explicitly classified test exercises physical UIA focus, SendKeys input rejection, InvokePattern.Invoke(), and ComboBox ExpandCollapse transitions/item enumeration. It is excluded from the deterministic helper gate because those operations depend on foreground desktop access. All UIA provider, control type, name, enabled, focusable, Text/Selection/Invoke/ExpandCollapse pattern, read-only, current selection, and production-structure assertions remain in the deterministic test.
+This exercises physical UIA focus, typing/paste rejection in the read-only editors, InvokePattern.Invoke() on Mark as posted, and the platform tab items with SelectionItemPattern.
+
+Consolidated manual acceptance checklist (run after WP8 packages the helper)
+
+Run on an installed helper against a real CreatorCrate server. Focused automated tests already cover Release link state transitions, request shapes, conflict/uncertain reconciliation, server compare-and-set and eligibility, Edit Release conflict handling, refresh coalescing, tab UIA structure, theme roles, and layout rectangles; these checks confirm the real experience end to end.
+
+[ ] Upgrade: install over the previous helper; setup reports no downgrade or registration error; creatorcrate-open:// and creatorcrate-social:// both still launch the installed executable.
+[ ] Launch: publish a Release with Social Preparation targets (or use the Release Detail companion action); the helper opens once, shows the correct release title/ID/server, and Release Detail does not report the helper as posted.
+[ ] Shared-drive thumbnails: assets on a mapped SMB drive show real thumbnails; staged (downloaded) assets also preview.
+[ ] Assets and drag: available rows start selected in Release order; drag the selected set into a real destination and confirm all files arrive in order; an unavailable selected row blocks the drag with guidance.
+[ ] Platform tabs: switch Patreon/X/Bluesky by mouse and keyboard; content, Copy labels, and each platform's own asset selection follow the tab; no copy or posting happens on a switch.
+[ ] Prepared text and Copy: each Copy button places the exact prepared text on the clipboard (paste to confirm, including emoji and line breaks).
+[ ] Release link save and clear: save a new link; Release Detail shows it after returning; clear it and confirm it is removed; posting status and other release fields are unchanged.
+[ ] Release link conflict: with the helper open, change the link in Edit Release and save; then save a different link in the helper; the helper shows the conflict, and both Use server link and Keep my link (then Save) behave as described.
+[ ] Browser return refresh: after a helper save, return to the Release Detail tab or window; the details update once, with no message unless the refresh fails.
+[ ] Stale Edit Release protection: open Edit Release, change another field, save a new link in the helper, return to the browser; Edit Release shows the newer-link notice and pauses saving; Use saved Release link keeps your other edits and the save then succeeds. Repeat with the form left open on Dashboard or Calendar: the save is refused with the conflict notice instead of overwriting.
+[ ] Responsive layout: resize to the minimum (640x600 client) and maximize; nothing overlaps; the body scrolls and the footer stays pinned.
+[ ] Dark, light, and contrast: Windows dark and light app modes and a genuine Contrast Theme switched while the helper is open are all readable, with visible focus.
+[ ] Keyboard and screen reader: Tab order follows the visual order; Enter never triggers Mark as posted from the field or tabs; Escape closes; Narrator reads the tabs, the Release link field, and save/conflict/failure outcomes.
+[ ] Posting confirmation unchanged: Mark as posted reaches Posted only after server acknowledgment; Close, Copy, drag, tab switching, and Release link saves never mark anything posted; the footer aggregate matches Release Detail.

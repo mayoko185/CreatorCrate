@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.InteropServices;
 using OpenLocally;
 using OpenLocally.ManualVisualProof;
@@ -31,6 +32,35 @@ bool manualVisualProof = args.Contains("--manual-visual-proof", StringComparer.O
     ArgumentString("--posting-state") is not null || ArgumentString("--theme") is not null;
 ProofPostingState postingState = ManualVisualProofFixture.ParsePostingState(ArgumentString("--posting-state"));
 ProofTheme proofTheme = ManualVisualProofFixture.ParseTheme(ArgumentString("--theme"));
+// Production companions always carry the Release link card, so the manual proof attaches the scripted
+// "ready" scenario unless another scenario is named. --no-release-link keeps the legacy card-less layout.
+bool noReleaseLink = args.Contains("--no-release-link", StringComparer.Ordinal);
+string? releaseLinkScenario = ArgumentString("--release-link");
+if (noReleaseLink && releaseLinkScenario is not null)
+{
+    Console.Error.WriteLine("--no-release-link cannot be combined with --release-link=<scenario>.");
+    return 64;
+}
+if (releaseLinkScenario is not null && ProofReleaseLinkTransport.ExpectedPhase(releaseLinkScenario) is null)
+{
+    Console.Error.WriteLine(
+        $"Unknown --release-link scenario '{releaseLinkScenario}'. Use one of: {string.Join(", ", ProofReleaseLinkTransport.Scenarios)}.");
+    return 64;
+}
+if (manualVisualProof && !noReleaseLink) releaseLinkScenario ??= "ready";
+// An explicitly supplied --text-scale must be a whole percentage the native theme supports; reject it
+// here, before any fixture or window exists, instead of silently running unscaled.
+int proofTextScale = 0;
+string? textScaleArgument = ArgumentString("--text-scale") ??
+    (args.Contains("--text-scale", StringComparer.Ordinal) ? "" : null);
+if (textScaleArgument is not null &&
+    (!int.TryParse(textScaleArgument, NumberStyles.None, CultureInfo.InvariantCulture, out proofTextScale) ||
+     proofTextScale is < 100 or > 225))
+{
+    Console.Error.WriteLine(
+        $"Invalid --text-scale value '{textScaleArgument}'. Use a whole-number percentage from 100 through 225 (for example --text-scale=150), or omit the option.");
+    return 64;
+}
 bool resizeCheck = args.Contains("--resize-check", StringComparer.Ordinal);
 bool productionSurfaceCheck = args.Contains("--production-surface-check", StringComparer.Ordinal);
 bool productionTextCheck = args.Contains("--production-text-check", StringComparer.Ordinal);
@@ -77,6 +107,8 @@ for (int cycle = 0; cycle < cycles; cycle++)
     var lifecycle = new ManualCompanionLifecycle();
     ControlledPostingTransport? postingTransport = manualVisualProof ? null : new ControlledPostingTransport();
     FixturePostingTransport? fixturePostingTransport = null;
+    using ManualReleaseLinkController? proofReleaseLink = releaseLinkScenario is null
+        ? null : new ManualReleaseLinkController(new ProofReleaseLinkTransport(releaseLinkScenario));
     using ManualPostingConfirmationController postingController = manualVisualProof
         ? ManualVisualProofFixture.CreatePostingController(
             postingState, session.Platforms.Select(platform => platform.Platform), out fixturePostingTransport)
@@ -174,14 +206,9 @@ for (int cycle = 0; cycle < cycles; cycle++)
                         NativeProductionThemeProbe themed = productionWindow.ApplyThemeAndCapturePresentationForTesting(
                             ManualVisualProofFixture.Palette(proofTheme), checked((int)GetDpiForWindow(handle)));
                         NativeProductionTextSurfaceProbe text = productionWindow.CaptureTextSurfacesForTesting(0);
-                        NativeAssetViewportProbe assets = productionWindow.CaptureAssetViewportForTesting();
-                        if (assets.DisplayedAssetCount != 4 || assets.VisibleRowTarget != 4 ||
-                            assets.Items.Any(item => item.Bottom > assets.ListClient.Bottom) ||
-                            assets.ScrollMaximum - assets.ScrollMinimum + 1 > assets.ScrollPage)
-                            throw new InvalidOperationException(
-                                "The four-asset production fixture requires vertical ListView scrolling.");
                         Console.WriteLine($"whole-window-theme={themed.Mode}; native={themed.Mode}; winui={text.Theme}; hwnd-preserved=true");
-                        Console.WriteLine($"asset-viewport=passed; rows={assets.DisplayedAssetCount}; visible={assets.VisibleRowTarget}; list-height={assets.ListWindow.Height}; header-height={assets.Header.Height}; row-height={assets.Items[0].Height}; vertical-scroll-required=false");
+                        VerifyAssetLayout(productionWindow, session.Platforms[0].Assets,
+                            proofReleaseLink is not null);
                         automationThread = new Thread(() =>
                         {
                             try
@@ -224,7 +251,38 @@ for (int cycle = 0; cycle < cycles; cycle++)
                         window?.RequestClose();
                 }
             }) : null,
-            SurfaceCreated: handle => capturedIslandWindows.Add(handle)));
+            SurfaceCreated: handle => capturedIslandWindows.Add(handle)),
+        releaseLink: proofReleaseLink);
+    // True only when the UI thread really applied the requested scale. A test invocation sent to a window
+    // that has already closed never runs and yields no probe, so a completed task alone is not evidence.
+    // Once closing has begun the scale is not sent at all, since it could only reach a window being torn down.
+    Task<bool>? textScaleProof = proofTextScale == 0 ? null : lifecycle.Ready.ContinueWith(_ =>
+        {
+            Thread.Sleep(1500);
+            NativeProductionLayoutProbe? scaled = lifecycle.State != ManualCompanionLifecycleState.Ready ? null :
+                window.ApplyTextScaleAndCaptureLayoutForTesting(proofTextScale, 0, 640, 600);
+            if (scaled is null) return false;
+            Console.WriteLine($"text-scale={proofTextScale}; client={scaled.Client.Width}x{scaled.Client.Height}; content={scaled.ContentHeight}; scrollable={scaled.ScrollBarVisible}");
+            return true;
+        }, CancellationToken.None, TaskContinuationOptions.OnlyOnRanToCompletion, TaskScheduler.Default);
+    bool textScaleTimedOut = false;
+    Task? releaseLinkProof = proofReleaseLink is null ? null : lifecycle.Ready.ContinueWith(
+            _ => ProofReleaseLinkTransport.DriveAsync(proofReleaseLink, releaseLinkScenario!),
+            CancellationToken.None, TaskContinuationOptions.OnlyOnRanToCompletion, TaskScheduler.Default).Unwrap()
+        .ContinueWith(drive =>
+        {
+            if (drive.IsCanceled) return; // The window never became ready; the cycle reports that itself.
+            try
+            {
+                drive.GetAwaiter().GetResult();
+                ProofReleaseLinkTransport.VerifyPresentation(window, proofReleaseLink, releaseLinkScenario!);
+            }
+            catch (Exception exception)
+            {
+                captureFailure = exception;
+                Console.WriteLine($"release-link-proof=failed; scenario={releaseLinkScenario}; error={exception.Message}");
+            }
+        }, TaskScheduler.Default);
 
     if (closeBeforeReady) window.RequestClose();
     if (autoClose)
@@ -235,7 +293,18 @@ for (int cycle = 0; cycle < cycles; cycle++)
                     Console.WriteLine("window-shown timeout");
                 if (manualVisualProof && !fixtureSettled.Wait(TimeSpan.FromSeconds(12)))
                     Console.WriteLine("fixture-settled timeout");
-                window.RequestClose();
+                if (releaseLinkProof is not null && !releaseLinkProof.Wait(TimeSpan.FromSeconds(10)))
+                    Console.WriteLine("release-link-proof timeout");
+                // WaitAny tolerates a canceled or faulted scaling task; auto-close only must not race its output.
+                // The verdict after the window closes judges how the task ended.
+                if (textScaleProof is not null && Task.WaitAny([textScaleProof], TimeSpan.FromSeconds(10)) < 0)
+                {
+                    textScaleTimedOut = true;
+                    Console.WriteLine("text-scale timeout");
+                }
+                // A second WM_CLOSE posted while an operator's close is still tearing down WinUI leaves the
+                // host without its quit message, so only close a window nobody has started closing.
+                if (lifecycle.State == ManualCompanionLifecycleState.Ready) window.RequestClose();
             },
             CancellationToken.None,
             TaskContinuationOptions.ExecuteSynchronously,
@@ -244,6 +313,19 @@ for (int cycle = 0; cycle < cycles; cycle++)
     NativePresentationResult result = NativeOperatorUiHost.Show(
         proofDesktop ? new VisualProofDesktopNative() : new NativeOperatorUiHost.Native(),
         presentation => window.Run(presentation));
+    if (releaseLinkProof is not null && !releaseLinkProof.Wait(TimeSpan.FromSeconds(10)))
+        captureFailure ??= new TimeoutException("The scripted Release link proof did not finish.");
+    // An explicitly requested scale passes only on positive evidence that it was applied. Auto-close has
+    // already spent the ten-second budget when it timed out; otherwise this is the only, bounded, wait.
+    string? textScaleFailure = textScaleProof is null ? null
+        : textScaleTimedOut || Task.WaitAny([textScaleProof], TimeSpan.FromSeconds(10)) < 0
+            ? "scaling did not finish within ten seconds; check that the proof window stays responsive"
+        : textScaleProof.IsCanceled ? "the proof window closed or failed before it became ready, so scaling never ran"
+        : textScaleProof.IsFaulted ? $"scaling failed: {textScaleProof.Exception!.GetBaseException().Message}"
+        : !textScaleProof.Result ? "the proof window closed before scaling was applied; leave it open until the text-scale line prints"
+        : null;
+    if (textScaleFailure is not null)
+        Console.WriteLine($"text-scale-proof=failed; requested={proofTextScale}; reason={textScaleFailure}");
     if (automationThread is not null && !automationThread.Join(TimeSpan.FromSeconds(30)))
     {
         captureFailure = new TimeoutException("The production UI Automation probe did not finish.");
@@ -276,7 +358,7 @@ for (int cycle = 0; cycle < cycles; cycle++)
     int expectedIslandCount = failAfter is 1 or 2 ? failAfter : 0;
     bool expectedIslandsObserved = !expectInitFailure || capturedIslandWindows.Count == expectedIslandCount;
     cyclePassed &= mainDestroyed && nativeControlsDestroyed && islandsDestroyed &&
-        expectedNativeControlsObserved && expectedIslandsObserved;
+        expectedNativeControlsObserved && expectedIslandsObserved && textScaleFailure is null;
 
     GC.Collect();
     GC.WaitForPendingFinalizers();
@@ -337,7 +419,7 @@ static void VerifyProductionSurfaces(
     if (classicEditFound) throw new InvalidOperationException("A classic social content Edit HWND still exists.");
 
     IntPtr? titleWindow = null, bodyWindow = null;
-    NativeProductionLayoutProbe minimum = window.ResizeAndCaptureLayoutForTesting(0, 820, 754);
+    NativeProductionLayoutProbe minimum = window.ResizeAndCaptureLayoutForTesting(0, 640, 600);
     NativeProductionLayoutProbe normal = window.ResizeAndCaptureLayoutForTesting(0, 980, 920);
     NativeProductionLayoutProbe large = window.ResizeAndCaptureLayoutForTesting(0, 980, 1400);
     NativeProductionLayoutProbe wide = window.ResizeAndCaptureLayoutForTesting(0, 1600, 920);
@@ -410,6 +492,120 @@ static void VerifyProductionSurfaces(
     Console.WriteLine("production-surface-check=passed; shared-surfaces=2; classic-edits=0; minimum-containment=passed; tab-order=passed; enter-safety=passed");
 }
 
+// The scrollable layout never promised that every asset row fits at once; with the Release link card
+// below Assets they do not at 980x920. It does promise a usable list (C3: never collapsed below two
+// complete rows, even after the list scrolls itself and the window relayouts) whose own scrolling
+// reaches every row independently of the outer content scroll, a reachable Release link below
+// Assets, and a pinned footer. Runs on the UI thread, so no presentation refresh interleaves.
+static void VerifyAssetLayout(
+    NativeManualPublishingCompanion.NativeWindow window, IReadOnlyList<ManualPreparedAsset> assets,
+    bool releaseLinkAttached)
+{
+    const uint LVM_ENSUREVISIBLE = 0x1013;
+    int expectedRows = assets.Count;
+    int[] expectedSelection = Enumerable.Range(0, assets.Count)
+        .Where(index => ManualPublishingCompanionModel.IsAvailable(assets[index])).ToArray();
+    IntPtr list = window.AssetListHandleForTesting;
+
+    NativeProductionLayoutProbe top = window.ScrollContentToForTesting(0);
+    NativeAssetViewportProbe initial = window.CaptureAssetViewportForTesting();
+    if (initial.DisplayedAssetCount != expectedRows || initial.Items.Count != expectedRows)
+        throw new InvalidOperationException(
+            $"The Assets list shows {initial.DisplayedAssetCount} rows; the fixture has {expectedRows}.");
+    int rowHeight = initial.Items[0].Height;
+    int twoRows = initial.ListWindow.Height - initial.ListClient.Height + initial.Header.Bottom + rowHeight * 2;
+    AssertAssetsUsable(top, initial, "initial");
+    AssertSelection("initial");
+
+    NativeProductionLayoutProbe bottom = window.ScrollContentToForTesting(int.MaxValue);
+    NativeAssetViewportProbe outerScrolled = window.CaptureAssetViewportForTesting();
+    if (bottom.ScrollOffset != bottom.ScrollMaximum)
+        throw new InvalidOperationException($"Outer scrolling stopped at {bottom.ScrollOffset} of {bottom.ScrollMaximum}.");
+    if (outerScrolled.ScrollPosition != initial.ScrollPosition ||
+        !outerScrolled.Items.SequenceEqual(initial.Items) || bottom.AssetList.Height != top.AssetList.Height)
+        throw new InvalidOperationException("Outer content scrolling moved or resized the Assets list's own rows.");
+    AssertAssetsUsable(bottom, outerScrolled, "outer scrolled");
+    if (bottom.Footer != top.Footer || bottom.Close != top.Close || top.Footer.Bottom > top.Client.Height ||
+        top.Viewport.Bottom > top.Footer.Y || top.Close.Height <= 0 || top.Close.Y < top.Footer.Y ||
+        top.Close.Bottom > top.Footer.Bottom)
+        throw new InvalidOperationException(
+            $"The footer is not pinned below the scrolling content: top {top.Footer}/{top.Close}, scrolled {bottom.Footer}/{bottom.Close}.");
+
+    string releaseLink = "absent";
+    if (releaseLinkAttached)
+    {
+        NativeReleaseLinkProbe link = window.CaptureReleaseLinkForTesting();
+        if (link.Card == default || link.Card.Y < link.AssetsCard.Bottom)
+            throw new InvalidOperationException($"The Release link card {link.Card} is not below Assets {link.AssetsCard}.");
+        NativeVisibleChildProbe? input = bottom.VisibleChildren?
+            .Where(child => child.Handle == link.Input.Handle).Select(child => (NativeVisibleChildProbe?)child).FirstOrDefault();
+        if (input is not { } shown || shown.Visible != shown.Window || !bottom.Viewport.Contains(shown.Window))
+            throw new InvalidOperationException("Outer scrolling does not fully reveal the Release link field.");
+        IReadOnlyList<NativeFocusVisibilityProbe> reverse = window.TraverseFocusAndCaptureVisibilityForTesting(8, previous: true);
+        int inputStep = reverse.ToList().FindIndex(step => step.Handle == link.Input.Handle);
+        if (inputStep < 0 || !reverse[inputStep].FullyVisible ||
+            !reverse.Skip(inputStep + 1).Any(step => step.Handle == list))
+            throw new InvalidOperationException(
+                $"Shift+Tab from Close does not reach the visible Release link field and then Assets: {string.Join(",", reverse.Select(step => step.ControlId))}.");
+        releaseLink = $"below-assets; card-top={link.Card.Y}; assets-bottom={link.AssetsCard.Bottom}; reverse-tab-steps={inputStep + 1}";
+    }
+
+    NativeAssetViewportProbe last = window.EnsureLastAssetVisibleForTesting();
+    NativeLayoutRect lastRow = last.Items[^1];
+    if (lastRow.Y < last.Header.Bottom || lastRow.Bottom > last.ListClient.Bottom ||
+        last.ListWindow.Height != initial.ListWindow.Height)
+        throw new InvalidOperationException($"The Assets list cannot scroll its last row {lastRow} into view.");
+
+    // C3 regression guard: once the list has scrolled itself, every relayout must still measure it unscrolled.
+    int logicalWidth = top.Client.Width * 96 / top.Dpi, logicalHeight = top.Client.Height * 96 / top.Dpi;
+    foreach ((int width, int height) in new[] { (logicalWidth, logicalHeight), (640, 600), (logicalWidth, logicalHeight) })
+    {
+        NativeProductionLayoutProbe resized = window.ResizeKeepingPlatformAndCaptureLayoutForTesting(width, height);
+        NativeAssetViewportProbe viewport = window.CaptureAssetViewportForTesting();
+        AssertAssetsUsable(resized, viewport, $"{width}x{height} after list scrolling");
+        if (viewport.DesiredListHeight != initial.DesiredListHeight && width == logicalWidth)
+            throw new InvalidOperationException(
+                $"{width}x{height}: the scrolled list measured {viewport.DesiredListHeight}, unscrolled {initial.DesiredListHeight}.");
+        NativeProductionLayoutProbe scrolled = window.ScrollContentToForTesting(int.MaxValue);
+        AssertAssetsUsable(scrolled, window.CaptureAssetViewportForTesting(), $"{width}x{height} outer scrolled");
+    }
+    AssertSelection("after scrolling and resizing");
+
+    SendMessage(list, LVM_ENSUREVISIBLE, IntPtr.Zero, IntPtr.Zero);
+    window.ScrollContentToForTesting(0);
+    window.FocusPlatformTabsForTesting();
+    Console.WriteLine(
+        $"asset-viewport=passed; rows={initial.DisplayedAssetCount}; complete-visible={CompleteRows(initial)}; " +
+        $"list-height={initial.ListWindow.Height}; row-height={rowHeight}; " +
+        $"list-scrollable={CompleteRows(initial) < expectedRows}; last-row-reachable=true; " +
+        $"outer-scroll-independent=true; relayout-after-list-scroll=passed; selection={string.Join(',', expectedSelection)}; " +
+        $"footer-pinned=true; release-link={releaseLink}");
+
+    static int CompleteRows(NativeAssetViewportProbe viewport) =>
+        viewport.Items.Count(item => item.Y >= viewport.Header.Bottom && item.Bottom <= viewport.ListClient.Bottom);
+
+    void AssertAssetsUsable(NativeProductionLayoutProbe layout, NativeAssetViewportProbe viewport, string context)
+    {
+        if (viewport.Items.Count != expectedRows)
+            throw new InvalidOperationException($"{context}: the Assets list lost rows ({viewport.Items.Count} of {expectedRows}).");
+        if (!IsWindowVisible(list) || layout.AssetList.Height < twoRows ||
+            viewport.ListWindow.Height != layout.AssetList.Height || CompleteRows(viewport) < Math.Min(2, expectedRows))
+            throw new InvalidOperationException(
+                $"{context}: the Assets list collapsed to {layout.AssetList.Height} with {CompleteRows(viewport)} complete rows (two rows need {twoRows}).");
+        if (CompleteRows(viewport) < expectedRows &&
+            viewport.ScrollMaximum - viewport.ScrollMinimum + 1 <= viewport.ScrollPage)
+            throw new InvalidOperationException($"{context}: Assets rows are clipped but the list cannot scroll to them.");
+    }
+
+    void AssertSelection(string context)
+    {
+        IReadOnlyList<int> selected = NativeManualPublishingCompanion.NativeWindow.SelectedOrdinals(list);
+        if (!selected.SequenceEqual(expectedSelection))
+            throw new InvalidOperationException(
+                $"{context}: Assets selection is {string.Join(',', selected)}, expected {string.Join(',', expectedSelection)}.");
+    }
+}
+
 static void VerifyWholeWindowThemeCycle(NativeManualPublishingCompanion.NativeWindow window)
 {
     NativeProductionThemeProbe dark = window.ApplyThemeAndCapturePresentationForTesting(
@@ -460,19 +656,19 @@ static void VerifyWholeWindowThemeCycle(NativeManualPublishingCompanion.NativeWi
 
     AssertThemeStage("Dark", dark, darkText, NativeCompanionThemeMode.Dark,
         Microsoft.UI.Xaml.ElementTheme.Dark,
-        "#171b22", "#1d222b", "#e8ecf1", "#262c37", "#3a4353", "#58a6ff");
+        "#171b22", "#0d0f13", "#e8ecf1", "#262c37", "#3a4353", "#58a6ff");
     AssertThemeStage("Light", light, lightText, NativeCompanionThemeMode.Light,
         Microsoft.UI.Xaml.ElementTheme.Light,
-        "#ffffff", "#f8fafc", "#17202b", "#d7dee8", "#aab6c5", "#0969da");
+        "#ffffff", "#f5f7fa", "#17202b", "#d7dee8", "#aab6c5", "#0969da");
     AssertHighContrastStage("HighContrast/Default", highContrast, highContrastText);
     AssertThemeStage("Dark restored", restored, restoredText, NativeCompanionThemeMode.Dark,
         Microsoft.UI.Xaml.ElementTheme.Dark,
-        "#171b22", "#1d222b", "#e8ecf1", "#262c37", "#3a4353", "#58a6ff");
+        "#171b22", "#0d0f13", "#e8ecf1", "#262c37", "#3a4353", "#58a6ff");
     AssertHighContrastStage(
         "HighContrast/Default before Light restore", highContrastAgain, highContrastAgainText);
     AssertThemeStage("Light restored", lightRestored, lightRestoredText, NativeCompanionThemeMode.Light,
         Microsoft.UI.Xaml.ElementTheme.Light,
-        "#ffffff", "#f8fafc", "#17202b", "#d7dee8", "#aab6c5", "#0969da");
+        "#ffffff", "#f5f7fa", "#17202b", "#d7dee8", "#aab6c5", "#0969da");
 
     foreach (NativeProductionTextSurfaceProbe stage in new[]
              { lightText, highContrastText, restoredText, highContrastAgainText, lightRestoredText })
@@ -512,7 +708,7 @@ static void VerifyWholeWindowThemeCycle(NativeManualPublishingCompanion.NativeWi
         NativeProductionTextSurfaceProbe repeatedDarkText = window.CaptureCurrentTextSurfacesForTesting();
         AssertThemeStage($"Repeated Dark {cycle + 1}", repeatedDark, repeatedDarkText,
             NativeCompanionThemeMode.Dark, Microsoft.UI.Xaml.ElementTheme.Dark,
-            "#171b22", "#1d222b", "#e8ecf1", "#262c37", "#3a4353", "#58a6ff");
+            "#171b22", "#0d0f13", "#e8ecf1", "#262c37", "#3a4353", "#58a6ff");
         if (!Handles(dark).SequenceEqual(Handles(repeatedDark)))
             throw new InvalidOperationException($"Repeated theme cycle {cycle + 1} recreated a native control or WinUI island.");
         AssertThemeValue($"Repeated Dark {cycle + 1}", "content", "body-selection",
@@ -612,17 +808,17 @@ static void VerifyPresentationThemeCycle(NativeManualPublishingCompanion.NativeW
 {
     NativeProductionTextSurfaceProbe dark = window.CaptureTextSurfacesForTesting(0);
     AssertPresentation(dark.Presentation, Microsoft.UI.Xaml.ElementTheme.Dark,
-        "#171b22", "#1d222b", "#e8ecf1", "#262c37", "#3a4353", "#58a6ff");
+        "#171b22", "#0d0f13", "#e8ecf1", "#262c37", "#3a4353", "#58a6ff");
 
     window.SetTextSurfaceThemeForTesting(Microsoft.UI.Xaml.ElementTheme.Light);
     NativeProductionTextSurfaceProbe light = window.CaptureTextSurfacesForTesting(0);
     AssertPresentation(light.Presentation, Microsoft.UI.Xaml.ElementTheme.Light,
-        "#ffffff", "#f8fafc", "#17202b", "#d7dee8", "#aab6c5", "#0969da");
+        "#ffffff", "#f5f7fa", "#17202b", "#d7dee8", "#aab6c5", "#0969da");
 
     window.SetTextSurfaceThemeForTesting(Microsoft.UI.Xaml.ElementTheme.Dark);
     NativeProductionTextSurfaceProbe darkAgain = window.CaptureTextSurfacesForTesting(0);
     AssertPresentation(darkAgain.Presentation, Microsoft.UI.Xaml.ElementTheme.Dark,
-        "#171b22", "#1d222b", "#e8ecf1", "#262c37", "#3a4353", "#58a6ff");
+        "#171b22", "#0d0f13", "#e8ecf1", "#262c37", "#3a4353", "#58a6ff");
 
     if (dark.TitleWindow != light.TitleWindow || dark.BodyWindow != light.BodyWindow ||
         dark.TitleWindow != darkAgain.TitleWindow || dark.BodyWindow != darkAgain.BodyWindow ||
@@ -689,7 +885,7 @@ static void AssertPresentation(
         presentation.BodyFontWeight != WinUiTextSurfacePresentation.BodyFontWeight ||
         presentation.Padding != new Microsoft.UI.Xaml.Thickness(12, 8, 12, 8) ||
         presentation.BorderThickness != new Microsoft.UI.Xaml.Thickness(1) ||
-        presentation.CornerRadius != new Microsoft.UI.Xaml.CornerRadius(6) ||
+        presentation.CornerRadius != new Microsoft.UI.Xaml.CornerRadius(8) ||
         presentation.TextWrapping != Microsoft.UI.Xaml.TextWrapping.Wrap ||
         presentation.VerticalScrollBarVisibility != Microsoft.UI.Xaml.Controls.ScrollBarVisibility.Auto ||
         presentation.HorizontalScrollBarVisibility != Microsoft.UI.Xaml.Controls.ScrollBarVisibility.Disabled ||
@@ -939,6 +1135,9 @@ static extern bool IsWindowVisible(IntPtr window);
 [DllImport("user32.dll")]
 static extern bool IsWindow(IntPtr window);
 
+[DllImport("user32.dll")]
+static extern IntPtr SendMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+
 [DllImport("user32.dll", SetLastError = true)]
 static extern bool SetWindowPos(IntPtr window, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
 
@@ -1018,4 +1217,139 @@ sealed class VisualProofDesktopNative : NativeOperatorUiHost.Native
     internal override IntPtr OpenInputDesktopHandle() => GetCurrentThreadDesktopHandle();
     internal override bool SetThreadDesktopHandle(IntPtr desktopHandle) => desktopHandle != IntPtr.Zero;
     internal override bool CloseDesktopHandle(IntPtr desktopHandle) => true;
+}
+
+/// <summary>
+/// Scripted, network-free Release link answers for visual proof of each section state. It holds one
+/// in-memory stored link, so later interactive saves, Reload, and conflict resolution behave like a
+/// server. Only the first request of a scripted failure fails; later requests answer normally.
+/// </summary>
+sealed class ProofReleaseLinkTransport(string scenario) : IManualReleaseLinkTransport
+{
+    private const string Current = "https://creatorcrate.example/releases/autumn-creator-launch";
+    private const string Newer = "https://creatorcrate.example/releases/autumn-creator-launch-behind-the-scenes-with-the-studio-team-part-two";
+
+    private readonly object _gate = new();
+    private string? _stored = scenario == "none" ? null : Current;
+    private int _gets, _patches;
+
+    public Task<ManualReleaseLinkTransportResult> GetAsync(CancellationToken cancellationToken)
+    {
+        // Loading stays pending until the window closes and cancels the request.
+        if (scenario == "loading") return Task.Delay(Timeout.Infinite, cancellationToken)
+            .ContinueWith(_ => ManualReleaseLinkTransportResult.Ambiguous(), TaskScheduler.Default);
+        lock (_gate)
+        {
+            int get = ++_gets;
+            return Task.FromResult(scenario switch
+            {
+                "expired" => ManualReleaseLinkTransportResult.Rejected("release_link_token_expired"),
+                "unsupported" => ManualReleaseLinkTransportResult.Unsupported(),
+                "failed" when get == 1 => ManualReleaseLinkTransportResult.Ambiguous(),
+                // The readback after the lost save response fails too, so the result stays uncertain.
+                "uncertain" when get == 2 => ManualReleaseLinkTransportResult.Ambiguous(),
+                _ => ManualReleaseLinkTransportResult.Authoritative(_stored),
+            });
+        }
+    }
+
+    public Task<ManualReleaseLinkTransportResult> PatchAsync(
+        string? releaseLink, string? expectedReleaseLink, CancellationToken cancellationToken)
+    {
+        lock (_gate)
+        {
+            int patch = ++_patches;
+            switch (scenario)
+            {
+                case "conflict" when patch == 1:
+                    _stored = Newer;
+                    return Task.FromResult(ManualReleaseLinkTransportResult.Rejected("release_link_conflict", Newer));
+                case "invalid" when patch == 1:
+                    return Task.FromResult(ManualReleaseLinkTransportResult.Rejected("validation_failed"));
+                case "uncertain" when patch == 1:
+                    // The write never committed; only its response is lost.
+                    return Task.FromResult(ManualReleaseLinkTransportResult.Ambiguous());
+            }
+            if (!string.Equals(_stored, expectedReleaseLink, StringComparison.Ordinal) &&
+                !string.Equals(_stored, releaseLink, StringComparison.Ordinal))
+                return Task.FromResult(ManualReleaseLinkTransportResult.Rejected("release_link_conflict", _stored));
+            bool changed = !string.Equals(_stored, releaseLink, StringComparison.Ordinal);
+            _stored = releaseLink;
+            return Task.FromResult(ManualReleaseLinkTransportResult.Authoritative(releaseLink, changed));
+        }
+    }
+
+    public void Dispose() { }
+
+    internal static async Task DriveAsync(ManualReleaseLinkController controller, string scenario)
+    {
+        if (scenario == "loading")
+        {
+            _ = controller.LoadAsync();
+            Console.WriteLine($"release-link-scenario={scenario}; phase={controller.State.Phase}");
+            return;
+        }
+        await controller.LoadAsync().ConfigureAwait(false);
+        if (scenario is "draft" or "saved" or "conflict" or "uncertain" or "invalid")
+            controller.SetDraft(scenario == "invalid"
+                ? "creatorcrate.example/releases/autumn-creator-launch-final"
+                : "https://creatorcrate.example/releases/autumn-creator-launch-final");
+        if (scenario is "saved" or "conflict" or "uncertain" or "invalid") await controller.SaveAsync().ConfigureAwait(false);
+        Console.WriteLine($"release-link-scenario={scenario}; phase={controller.State.Phase}");
+    }
+
+    internal static readonly string[] Scenarios =
+        ["ready", "none", "loading", "draft", "saved", "invalid", "conflict", "uncertain", "failed", "expired", "unsupported"];
+
+    internal static ManualReleaseLinkPhase? ExpectedPhase(string scenario) => scenario switch
+    {
+        "ready" or "none" or "draft" => ManualReleaseLinkPhase.Ready,
+        "loading" => ManualReleaseLinkPhase.Loading,
+        "saved" => ManualReleaseLinkPhase.Saved,
+        "invalid" => ManualReleaseLinkPhase.Invalid,
+        "conflict" => ManualReleaseLinkPhase.Conflict,
+        "uncertain" => ManualReleaseLinkPhase.Uncertain,
+        "failed" => ManualReleaseLinkPhase.Failed,
+        "expired" or "unsupported" => ManualReleaseLinkPhase.Unavailable,
+        _ => null,
+    };
+
+    /// <summary>
+    /// Proves the script reached its intended controller state and that the production card renders that
+    /// state below Assets. This is scripted controller evidence only, never evidence of server integration.
+    /// </summary>
+    internal static void VerifyPresentation(
+        NativeManualPublishingCompanion.NativeWindow window, ManualReleaseLinkController controller, string scenario)
+    {
+        ManualReleaseLinkState state = controller.State;
+        bool scenarioDetail = scenario switch
+        {
+            "ready" => state.AuthoritativeLink == Current && !state.IsDirty,
+            "none" => state.AuthoritativeLink is null && !state.IsDirty,
+            "draft" or "invalid" or "conflict" or "uncertain" => state.IsDirty,
+            "saved" => !state.IsDirty && state.LastSaveChanged == true,
+            _ => true,
+        };
+        if (state.Phase != ExpectedPhase(scenario) || !scenarioDetail)
+            throw new InvalidOperationException(
+                $"Release link scenario '{scenario}' reached {state.Phase} (dirty={state.IsDirty}, link={state.AuthoritativeLink ?? "none"}); expected {ExpectedPhase(scenario)}.");
+
+        string expected = ManualReleaseLinkPresentationMapper.Map(state).StatusText;
+        NativeReleaseLinkProbe probe = window.CaptureReleaseLinkForTesting();
+        DateTime deadline = DateTime.UtcNow + TimeSpan.FromSeconds(5);
+        while (probe.Status.Text != expected && DateTime.UtcNow < deadline)
+        {
+            Thread.Sleep(25);
+            probe = window.CaptureReleaseLinkForTesting();
+        }
+        if (probe.Status.Text != expected)
+            throw new InvalidOperationException(
+                $"The Release link card shows \"{probe.Status.Text}\" for {state.Phase}; expected \"{expected}\".");
+        if (probe.Card == default || probe.Card.Y < probe.AssetsCard.Bottom || !probe.Input.Visible || !probe.Status.Visible)
+            throw new InvalidOperationException($"The Release link card {probe.Card} is not shown below Assets {probe.AssetsCard}.");
+        Console.WriteLine(
+            $"release-link-presentation=passed; scenario={scenario}; phase={state.Phase}; tone={probe.Tone}; " +
+            $"read-only={probe.InputReadOnly}; save-enabled={probe.Save.Enabled}; reload={probe.Reload.Visible}; " +
+            $"discard={probe.Discard.Visible}; keep={probe.Keep.Visible}; below-assets=true; source=scripted-transport; status=\"{probe.Status.Text}\"");
+    }
 }

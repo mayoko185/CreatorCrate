@@ -193,6 +193,95 @@ public sealed class NativeManualPublishingListViewTests
     }
 
     [Fact]
+    public void RequiredAssetListHeight_IgnoresTheListsOwnScrollPosition()
+    {
+        // Header 0..24, rows of 49 starting at 26; scrolled to top index 3 the first item sits at -121.
+        int unscrolled = NativeManualPublishingCompanion.NativeWindow.RequiredAssetListHeight(
+            4, 24, firstItemTop: 26, rowHeight: 49, topIndex: 0, count: 8, rows: 5, emptyRowHeight: 33);
+        int scrolled = NativeManualPublishingCompanion.NativeWindow.RequiredAssetListHeight(
+            4, 24, firstItemTop: 26 - 3 * 49, rowHeight: 49, topIndex: 3, count: 8, rows: 5, emptyRowHeight: 33);
+        Assert.Equal(4 + 26 + 5 * 49, unscrolled);
+        Assert.Equal(unscrolled, scrolled);
+        Assert.Equal(4 + 26 + 2 * 49, NativeManualPublishingCompanion.NativeWindow.RequiredAssetListHeight(
+            4, 24, firstItemTop: 26 - 6 * 49, rowHeight: 49, topIndex: 6, count: 8, rows: 2, emptyRowHeight: 33));
+        Assert.Equal(4 + 24 + 33, NativeManualPublishingCompanion.NativeWindow.RequiredAssetListHeight(
+            4, 24, firstItemTop: 0, rowHeight: 0, topIndex: 0, count: 0, rows: 5, emptyRowHeight: 33));
+    }
+
+    [Fact]
+    public async Task ScrolledAssetList_KeepsItsRowsThroughVerticalResizeAndOuterScrolling()
+    {
+        var model = Model(Enumerable.Range(1, 8).Select(index => Prepared(index, $"asset-{index}.png", true)).ToArray());
+        await using var harness = await ProductionHeaderHarness.StartAsync(model);
+        IntPtr list = harness.Window.AssetListHandleForTesting;
+
+        harness.Window.ResizeAndCaptureLayoutForTesting(0, 980, 920);
+        NativeAssetViewportProbe unscrolled = harness.Window.CaptureAssetViewportForTesting();
+        IReadOnlyList<int> selection = NativeManualPublishingCompanion.NativeWindow.SelectedOrdinals(list);
+        string guidance = model.DragGuidanceText;
+        Assert.NotEmpty(selection);
+
+        // The defect: with the list scrolled to its last rows the first item's top is negative, and the
+        // next layout pass measured the list down to its header.
+        NativeAssetViewportProbe scrolled = harness.Window.EnsureLastAssetVisibleForTesting();
+        Assert.True(scrolled.Items[0].Y < scrolled.Header.Bottom, "The list itself is scrolled.");
+        Assert.Equal(unscrolled.DesiredListHeight, scrolled.DesiredListHeight);
+
+        foreach ((int width, int height) in new[] { (980, 820), (980, 700), (640, 600), (640, 900), (980, 920) })
+        {
+            NativeProductionLayoutProbe resized = harness.Window.ResizeKeepingPlatformAndCaptureLayoutForTesting(width, height);
+            int desired = AssertRowsRemain(resized, $"{width}x{height}");
+            // At 980 wide no horizontal scroll bar appears, so the scrolled list measures exactly as unscrolled.
+            if (width == 980) Assert.Equal(unscrolled.DesiredListHeight, desired);
+            foreach (int offset in new[] { int.MaxValue, resized.ScrollMaximum / 2, 0 })
+            {
+                NativeProductionLayoutProbe outer = harness.Window.ScrollContentToForTesting(offset);
+                Assert.Equal(desired, AssertRowsRemain(outer, $"{width}x{height} scrolled to {offset}"));
+                Assert.Equal(resized.AssetList.Height, outer.AssetList.Height);
+            }
+            if (resized.ScrollMaximum > 0)
+                Assert.Equal(desired, AssertRowsRemain(
+                    harness.Window.ScrollContentByWheelForTesting(-120), $"{width}x{height} wheel"));
+        }
+
+        Assert.Equal(selection, NativeManualPublishingCompanion.NativeWindow.SelectedOrdinals(list));
+        Assert.Equal(selection, model.SelectedOrdinals);
+        Assert.Equal(guidance, model.DragGuidanceText);
+
+        int AssertRowsRemain(NativeProductionLayoutProbe layout, string context)
+        {
+            NativeAssetViewportProbe viewport = harness.Window.CaptureAssetViewportForTesting();
+            int nonClient = viewport.ListWindow.Height - viewport.ListClient.Height;
+            int rowHeight = viewport.Items[0].Height;
+            Assert.True(viewport.DesiredListHeight >= nonClient + viewport.Header.Bottom + rowHeight * 5,
+                $"{context}: the measured list height {viewport.DesiredListHeight} no longer holds five rows.");
+            int twoRows = nonClient + viewport.Header.Bottom + rowHeight * 2;
+            Assert.True(layout.AssetList.Height >= twoRows,
+                $"{context}: the list collapsed to {layout.AssetList.Height} (two rows need {twoRows}).");
+            Assert.Equal(layout.AssetList.Height, viewport.ListWindow.Height);
+            int complete = viewport.Items.Count(item => item.Y >= viewport.Header.Bottom && item.Bottom <= viewport.ListClient.Bottom);
+            Assert.True(complete >= 2, $"{context}: only {complete} complete rows remain visible in the list.");
+            return viewport.DesiredListHeight;
+        }
+    }
+
+    [Fact]
+    public async Task EmptyAssetList_KeepsOneRowOfSpaceAfterResizeAndOuterScrolling()
+    {
+        await using var harness = await ProductionHeaderHarness.StartAsync(Model());
+        foreach ((int width, int height) in new[] { (980, 920), (640, 600), (980, 920) })
+        {
+            NativeProductionLayoutProbe resized = harness.Window.ResizeKeepingPlatformAndCaptureLayoutForTesting(width, height);
+            NativeAssetViewportProbe before = harness.Window.CaptureAssetViewportForTesting();
+            Assert.Equal(before.DesiredListHeight, resized.AssetList.Height);
+            Assert.True(before.ListClient.Bottom > before.Header.Bottom, $"{width}x{height}: the empty list is header-only.");
+            NativeProductionLayoutProbe end = harness.Window.ScrollContentToForTesting(int.MaxValue);
+            Assert.Equal(before.DesiredListHeight, harness.Window.CaptureAssetViewportForTesting().DesiredListHeight);
+            Assert.Equal(resized.AssetList.Height, end.AssetList.Height);
+        }
+    }
+
+    [Fact]
     public async Task ProductionColumns_UseActualClientWidthAcrossResizeCycleAndPreserveSelection()
     {
         var model = Model(
@@ -561,8 +650,7 @@ public sealed class NativeManualPublishingListViewTests
                 NativeCompanionPalette.Light));
             Assert.Equal(darkButtons, harness.Window.ApplyThemeAndCaptureButtonHandlesForTesting(
                 NativeCompanionPalette.Dark));
-            IntPtr platform = harness.Window.CapturePlatformComboForTesting().Handle;
-            int selectionFieldHeight = harness.Window.CapturePlatformComboForTesting().SelectionFieldHeight;
+            NativePlatformTabsProbe initialTabs = harness.Window.CapturePlatformTabsForTesting();
             foreach ((NativeCompanionPalette palette, int dpi) in new[]
                      {
                          (NativeCompanionPalette.Dark, 96),
@@ -571,13 +659,11 @@ public sealed class NativeManualPublishingListViewTests
                          (NativeCompanionPalette.Dark, 96),
                      })
             {
-                NativePlatformComboProbe themed =
-                    harness.Window.ApplyThemeAndCapturePlatformForTesting(palette, dpi);
-                Assert.Equal(platform, themed.Handle);
-                Assert.Equal(NativeCompanionTheme.ComboItemHeight(dpi), themed.ListItemHeight);
-                Assert.Equal(selectionFieldHeight, themed.SelectionFieldHeight);
-                Assert.True(harness.Window.ShowPlatformDropdownForTesting(show: true).Dropped);
-                Assert.False(harness.Window.ShowPlatformDropdownForTesting(show: false).Dropped);
+                NativePlatformTabsProbe themed =
+                    harness.Window.ApplyThemeAndCapturePlatformTabsForTesting(palette, dpi);
+                Assert.Equal(initialTabs.Handle, themed.Handle);
+                Assert.Equal(initialTabs.Labels, themed.Labels);
+                Assert.Equal(initialTabs.SelectedIndex, themed.SelectedIndex);
             }
         }
 

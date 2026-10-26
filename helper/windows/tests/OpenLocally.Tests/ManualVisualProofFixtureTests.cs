@@ -147,6 +147,7 @@ public sealed class ManualVisualProofFixtureTests
         Assert.Contains("preview-path=ManualAssetPreviewAccess->NativeAssetPreviewPipeline->NativeShellThumbnailExtractor->ListView/ImageList", output, StringComparison.Ordinal);
         Assert.Contains("fixture-thumbnails=settled; real-thumbnails=2", output, StringComparison.Ordinal);
         Assert.Contains(expected, output, StringComparison.Ordinal);
+        Assert.DoesNotContain("text-scale=", output, StringComparison.Ordinal); // No option: unscaled default.
     }
 
     [Fact]
@@ -156,17 +157,29 @@ public sealed class ManualVisualProofFixtureTests
         string instructions = File.ReadAllText(Path.Combine(proofRoot, "INTERACTIVE-PROOF.txt"));
         Assert.Contains("run-manual-visual-proof.ps1 -PostingState Ready -Theme Dark", instructions, StringComparison.Ordinal);
         Assert.Contains("Ready, Confirming, Unknown, or Posted", instructions, StringComparison.Ordinal);
-        int launchFirst = instructions.IndexOf("1. Launch the production manual proof normally", StringComparison.Ordinal);
-        int enableAfterward = instructions.IndexOf("3. Enable a genuine Windows Contrast Theme", StringComparison.Ordinal);
-        Assert.True(launchFirst >= 0 && enableAfterward > launchFirst,
-            "The manual contract must launch the companion before enabling a genuine Windows Contrast Theme.");
-        Assert.Contains("Keep that production companion window open", instructions, StringComparison.Ordinal);
-        Assert.Contains("SAME live production companion window", instructions, StringComparison.Ordinal);
-        Assert.Contains("There is no launcher -Theme HighContrast argument", instructions, StringComparison.Ordinal);
-        Assert.Contains("neither substitutes for genuine Windows High Contrast", instructions, StringComparison.Ordinal);
-        Assert.Contains("depends on the real Windows settings-change path after launch", instructions, StringComparison.Ordinal);
-        Assert.Contains("Do not simulate High Contrast through proof arguments", instructions, StringComparison.Ordinal);
-        Assert.Contains("production multi-file drag path is proven", instructions, StringComparison.OrdinalIgnoreCase);
+        // Check the High Contrast procedure by its numbered steps and their meaning, not by exact prose.
+        int section = instructions.IndexOf("Theme and High Contrast", StringComparison.Ordinal);
+        Assert.True(section >= 0, "The instructions must keep a Theme and High Contrast section.");
+        string[] steps = NumberedSteps(instructions[section..]);
+        int launch = Array.FindIndex(steps, step => step.StartsWith("Launch", StringComparison.Ordinal) &&
+            step.Contains("proof", StringComparison.OrdinalIgnoreCase));
+        int keepOpen = Array.FindIndex(steps, step => step.Contains("open", StringComparison.OrdinalIgnoreCase) &&
+            step.Contains("window", StringComparison.OrdinalIgnoreCase));
+        int enable = Array.FindIndex(steps, step => step.Contains("genuine Windows Contrast Theme", StringComparison.Ordinal) &&
+            step.Contains("Windows Settings", StringComparison.Ordinal));
+        int inspect = Array.FindIndex(steps, step => step.StartsWith("Inspect", StringComparison.Ordinal) &&
+            step.Contains("SAME", StringComparison.Ordinal) && step.Contains("window", StringComparison.OrdinalIgnoreCase));
+        Assert.True(launch >= 0 && keepOpen > launch && enable > keepOpen && inspect > enable,
+            "The manual contract must launch the proof window, keep it open, enable a genuine Windows Contrast Theme, " +
+            $"then inspect that same running window. Steps: {string.Join(" | ", steps)}");
+        Assert.Contains(steps, step => step.Contains("settings-change", StringComparison.OrdinalIgnoreCase));
+
+        string themeSection = instructions[section..instructions.IndexOf("1. Launch", section, StringComparison.Ordinal)];
+        Assert.Matches(@"(?i)\bno\s+High\s?Contrast\s+(launch(er)?\s+)?(argument|option)", themeSection);
+        Assert.Matches(@"(?i)\bDark\b[^.]*\bLight\b[^.]*\bnot\s+substitute\b[^.]*genuine Windows High Contrast", themeSection);
+        Assert.Matches(@"(?i)multi-file[^.]*\bproven\b", instructions);
+        Assert.DoesNotContain("-Theme HighContrast", instructions, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("--theme=HighContrast", instructions, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("F6 switches", instructions, StringComparison.Ordinal);
         Assert.Contains("-Theme Dark", instructions, StringComparison.Ordinal);
         Assert.Contains("-Theme Light", instructions, StringComparison.Ordinal);
@@ -306,6 +319,195 @@ public sealed class ManualVisualProofFixtureTests
         Assert.Contains("drop-target-revoked=True", result.StandardOutput, StringComparison.Ordinal);
         AssertNoNewProofProcesses(result.ProofProcessIdsBefore);
         Assert.False(Directory.Exists(FixtureDirectory()), "The drag proof smoke left its fixture directory behind.");
+    }
+
+    [Theory]
+    [InlineData("not-a-number")]
+    [InlineData("")]
+    [InlineData("99")]
+    [InlineData("226")]
+    [InlineData("-150")]
+    [InlineData("0")]
+    [InlineData("150.5")]
+    [InlineData("+150")]
+    [InlineData(" 150")]
+    public void InvalidTextScale_DirectProofHostRejectsBeforeCreatingCompanionWindow(string value)
+    {
+        ProcessRunResult result = RunProcess(
+            ProofStartInfo("--manual-visual-proof", $"--text-scale={value}", "--auto-close", "--no-module-provenance"),
+            TimeSpan.FromSeconds(20));
+
+        Assert.Equal(64, result.ExitCode);
+        Assert.Contains($"Invalid --text-scale value '{value}'", result.StandardError, StringComparison.Ordinal);
+        Assert.Contains("100 through 225", result.StandardError, StringComparison.Ordinal);
+        Assert.DoesNotContain("text-scale=", result.StandardOutput, StringComparison.Ordinal);
+        Assert.False(result.ObservedProofWindow);
+        AssertRejectedLaunchLeftNoSideEffects(result);
+    }
+
+    [Fact]
+    public void TextScaleWithoutValue_DirectProofHostRejectsBeforeCreatingCompanionWindow()
+    {
+        ProcessRunResult result = RunProcess(
+            ProofStartInfo("--manual-visual-proof", "--text-scale", "--auto-close", "--no-module-provenance"),
+            TimeSpan.FromSeconds(20));
+
+        Assert.Equal(64, result.ExitCode);
+        Assert.Contains("Invalid --text-scale value ''", result.StandardError, StringComparison.Ordinal);
+        Assert.False(result.ObservedProofWindow);
+        AssertRejectedLaunchLeftNoSideEffects(result);
+    }
+
+    [Theory]
+    [InlineData(100)]
+    [InlineData(150)]
+    [InlineData(225)]
+    public void ValidTextScale_DirectProofHostAppliesScaleAtNarrowMinimum(int textScale)
+    {
+        ProcessRunResult result = RunProcess(
+            ProofStartInfo("--manual-visual-proof", $"--text-scale={textScale}", "--auto-close", "--no-module-provenance"),
+            TimeSpan.FromSeconds(60));
+        string diagnostic = result.StandardError + Environment.NewLine + result.StandardOutput;
+
+        Assert.True(result.ExitCode == 0, $"Exit {result.ExitCode}{Environment.NewLine}{diagnostic}");
+        Assert.True(result.ObservedProofWindow);
+        Assert.Contains($"text-scale={textScale}; client=640x600;", result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("cycle=1; passed=True;", result.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("text-scale-proof=failed", result.StandardOutput, StringComparison.Ordinal);
+        AssertNoNewProofProcesses(result.ProofProcessIdsBefore);
+    }
+
+    [Fact]
+    public void TextScale_WindowClosedBeforeReady_FailsInsteadOfPassingUnappliedScale()
+    {
+        // --expect-init-failure passes a cycle whose window closed before it became ready, so the same launch
+        // without --text-scale passes and only the never-run scaling can fail it.
+        string[] closedBeforeReady = ["--close-before-ready", "--expect-init-failure", "--no-module-provenance"];
+        ProcessRunResult unscaled = RunProcess(ProofStartInfo(closedBeforeReady), TimeSpan.FromSeconds(30));
+        Assert.True(unscaled.ExitCode == 0, $"Exit {unscaled.ExitCode}{Environment.NewLine}{unscaled.StandardOutput}");
+
+        ProcessRunResult result = RunProcess(
+            ProofStartInfo([.. closedBeforeReady, "--text-scale=150"]), TimeSpan.FromSeconds(30));
+
+        Assert.Equal(2, result.ExitCode);
+        Assert.Contains(
+            "text-scale-proof=failed; requested=150; reason=the proof window closed or failed before it became ready",
+            result.StandardOutput, StringComparison.Ordinal);
+        Assert.Contains("cycle=1; passed=False;", result.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("passed=True", result.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("text-scale=150;", result.StandardOutput, StringComparison.Ordinal);
+        AssertNoNewProofProcesses(result.ProofProcessIdsBefore);
+    }
+
+    [Fact]
+    public void TextScale_OperatorClosesWindowDuringProof_NeverPassesUnappliedScale()
+    {
+        // Closing as soon as the window is shown races the delayed scaling, so either the scale was applied
+        // first and printed, or the proof names it as unapplied; it never passes without the scale.
+        ProcessRunResult result = RunProcessClosingWindowAfter(
+            ProofStartInfo("--manual-visual-proof", "--text-scale=150", "--auto-close", "--no-module-provenance"),
+            "manual-proof=true", TimeSpan.FromSeconds(60));
+        string diagnostic = result.StandardError + Environment.NewLine + result.StandardOutput;
+
+        bool applied = result.StandardOutput.Contains("text-scale=150; client=640x600;", StringComparison.Ordinal);
+        bool reportedUnapplied = result.StandardOutput.Contains(
+            "text-scale-proof=failed; requested=150;", StringComparison.Ordinal);
+        Assert.True(applied != reportedUnapplied, diagnostic);
+        Assert.True(result.ExitCode != 0, diagnostic);
+        Assert.Contains("cycle=1; passed=False;", result.StandardOutput, StringComparison.Ordinal);
+        Assert.DoesNotContain("passed=True", result.StandardOutput, StringComparison.Ordinal);
+        AssertNoNewProofProcesses(result.ProofProcessIdsBefore);
+    }
+
+    [Theory]
+    [InlineData("button", 0, null)]
+    [InlineData("escape", 0, null)]
+    [InlineData("system", 0, null)]
+    [InlineData("button", 1, null)]
+    [InlineData("escape", 1, null)]
+    [InlineData("system", 3, null)]
+    [InlineData("button", 1, "--release-link=loading")]
+    [InlineData("escape", 1, "--posting-state=Confirming")]
+    public void OperatorClose_SettledProductionWindow_ExitsEvenWhenFurtherClosesOverlapTeardown(
+        string firstClose, int overlappingSystemCloses, string? activeOperation)
+    {
+        // A settled production window with real WinUI surfaces: an ordinary close, then optionally SC_CLOSE
+        // about 300 ms later while WinUI disposal may still be running, must still exit the process.
+        var arguments = new List<string> { "--manual-visual-proof", "--no-module-provenance" };
+        if (activeOperation is not null) arguments.Add(activeOperation);
+        ProcessStartInfo start = ProofStartInfo(arguments.ToArray());
+        HashSet<int> proofProcessIdsBefore = CurrentProofProcessIds();
+        using var process = new Process { StartInfo = start };
+        using var settled = new ManualResetEventSlim();
+        var output = new System.Text.StringBuilder();
+        process.OutputDataReceived += (_, line) =>
+        {
+            if (line.Data is null) return;
+            lock (output) output.AppendLine(line.Data);
+            if (line.Data.StartsWith("fixture-thumbnails=", StringComparison.Ordinal)) settled.Set();
+        };
+        Assert.True(process.Start());
+        process.BeginOutputReadLine();
+        Task<string> errorTask = process.StandardError.ReadToEndAsync();
+        try
+        {
+            Assert.True(settled.Wait(TimeSpan.FromSeconds(60)), $"The proof window did not settle.{Environment.NewLine}{output}");
+            IntPtr window = VisibleTopLevelWindow(process.Id);
+            Assert.True(window != IntPtr.Zero, $"No visible proof window.{Environment.NewLine}{output}");
+            switch (firstClose)
+            {
+                case "button":
+                    IntPtr closeButton = FindWindowEx(window, IntPtr.Zero, "Button", "Close");
+                    Assert.True(closeButton != IntPtr.Zero, "The native Close button was not found.");
+                    Assert.True(PostMessage(closeButton, BM_CLICK, IntPtr.Zero, IntPtr.Zero));
+                    break;
+                case "escape":
+                    Assert.True(PostMessage(window, WM_KEYDOWN, new IntPtr(VK_ESCAPE), IntPtr.Zero));
+                    break;
+                default:
+                    Assert.True(PostMessage(window, WM_SYSCOMMAND, new IntPtr(SC_CLOSE), IntPtr.Zero));
+                    break;
+            }
+            for (int index = 0; index < overlappingSystemCloses; index++)
+            {
+                Thread.Sleep(index == 0 ? 300 : 100);
+                // The window may already be gone; a stale or failed post is part of what is exercised.
+                PostMessage(window, WM_SYSCOMMAND, new IntPtr(SC_CLOSE), IntPtr.Zero);
+            }
+
+            Assert.True(process.WaitForExit(20_000),
+                $"The proof process did not exit after {firstClose} close.{Environment.NewLine}{output}");
+            process.WaitForExit(); // Drains the asynchronous stdout reader.
+            string diagnostic = errorTask.GetAwaiter().GetResult() + Environment.NewLine + output;
+            Assert.True(process.ExitCode == 0, $"Exit {process.ExitCode}{Environment.NewLine}{diagnostic}");
+            Assert.Contains("fixture-thumbnails=settled", diagnostic, StringComparison.Ordinal);
+            Assert.Contains("cycle=1; passed=True; main-destroyed=True", diagnostic, StringComparison.Ordinal);
+            Assert.Contains("native-controls-destroyed=True; islands=2; islands-destroyed=True", diagnostic, StringComparison.Ordinal);
+            AssertNoNewProofProcesses(proofProcessIdsBefore);
+            Assert.False(Directory.Exists(FixtureDirectory()), "The close proof left its fixture directory behind.");
+        }
+        finally
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                process.WaitForExit(10_000);
+            }
+            CleanupNewProofProcesses(proofProcessIdsBefore);
+        }
+    }
+
+    private static string[] NumberedSteps(string text)
+    {
+        var steps = new List<string>();
+        foreach (string line in text.Split(["\r\n", "\n"], StringSplitOptions.None))
+        {
+            System.Text.RegularExpressions.Match step =
+                System.Text.RegularExpressions.Regex.Match(line, @"^\d+\.\s+(.+)$");
+            if (step.Success) steps.Add(step.Groups[1].Value);
+            else if (steps.Count > 0) break;
+        }
+        return steps.ToArray();
     }
 
     private static ManualPreviewFileLease AssertPreviewReady(ManualPreviewAccessResult result)
@@ -479,6 +681,58 @@ public sealed class ManualVisualProofFixtureTests
             proofProcessIdsBefore);
     }
 
+    /// <summary>
+    /// Runs the proof and, once a stdout line starts with <paramref name="marker"/>, closes its visible window
+    /// the way the title-bar Close button does.
+    /// </summary>
+    private static ProcessRunResult RunProcessClosingWindowAfter(ProcessStartInfo start, string marker, TimeSpan timeout)
+    {
+        HashSet<int> proofProcessIdsBefore = CurrentProofProcessIds();
+        bool fixtureExistedBefore = Directory.Exists(FixtureDirectory());
+        using var process = new Process { StartInfo = start };
+        using var markerSeen = new ManualResetEventSlim();
+        var output = new System.Text.StringBuilder();
+        process.OutputDataReceived += (_, line) =>
+        {
+            if (line.Data is null) return;
+            lock (output) output.AppendLine(line.Data);
+            if (line.Data.StartsWith(marker, StringComparison.Ordinal)) markerSeen.Set();
+        };
+        Assert.True(process.Start());
+        process.BeginOutputReadLine();
+        Task<string> errorTask = process.StandardError.ReadToEndAsync();
+
+        bool closed = markerSeen.Wait(timeout) && CloseVisibleWindows(process.Id) > 0;
+        if (!process.WaitForExit((int)timeout.TotalMilliseconds))
+        {
+            process.Kill(entireProcessTree: true);
+            process.WaitForExit(10_000);
+            CleanupNewProofProcesses(proofProcessIdsBefore);
+            Assert.Fail($"Process timed out after {timeout}: {start.FileName}{Environment.NewLine}{output}");
+        }
+        process.WaitForExit(); // Drains the asynchronous stdout reader.
+        Assert.True(closed, $"The proof window was not closed after '{marker}'.{Environment.NewLine}{output}");
+        lock (output)
+            return new ProcessRunResult(process.ExitCode, output.ToString(), errorTask.GetAwaiter().GetResult(),
+                true, true, fixtureExistedBefore, proofProcessIdsBefore);
+    }
+
+    private static int CloseVisibleWindows(int processId)
+    {
+        const uint WM_SYSCOMMAND = 0x0112;
+        const int SC_CLOSE = 0xF060;
+        int closed = 0;
+        EnumWindows((window, _) =>
+        {
+            GetWindowThreadProcessId(window, out uint ownerProcessId);
+            if (ownerProcessId == (uint)processId && IsWindowVisible(window) &&
+                PostMessage(window, WM_SYSCOMMAND, new IntPtr(SC_CLOSE), IntPtr.Zero))
+                closed++;
+            return true;
+        }, IntPtr.Zero);
+        return closed;
+    }
+
     private static void AssertRejectedLaunchLeftNoSideEffects(ProcessRunResult result)
     {
         Assert.Equal(result.FixtureExistedBefore, Directory.Exists(FixtureDirectory()));
@@ -524,6 +778,19 @@ public sealed class ManualVisualProofFixtureTests
             }
             catch (ArgumentException) { }
             catch (InvalidOperationException) { }
+    }
+
+    private static IntPtr VisibleTopLevelWindow(int processId)
+    {
+        IntPtr found = IntPtr.Zero;
+        EnumWindows((window, _) =>
+        {
+            GetWindowThreadProcessId(window, out uint ownerProcessId);
+            if (ownerProcessId != (uint)processId || !IsWindowVisible(window)) return true;
+            found = window;
+            return false;
+        }, IntPtr.Zero);
+        return found;
     }
 
     private static bool HasVisibleTopLevelWindow(int processId)
@@ -578,6 +845,16 @@ public sealed class ManualVisualProofFixtureTests
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool IsWindowVisible(IntPtr window);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
+
+    private const uint BM_CLICK = 0x00F5, WM_KEYDOWN = 0x0100, WM_SYSCOMMAND = 0x0112;
+    private const int VK_ESCAPE = 0x1B, SC_CLOSE = 0xF060;
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr FindWindowEx(IntPtr parent, IntPtr childAfter, string? className, string? windowName);
 }
 
 [CollectionDefinition("Manual visual proof process isolation", DisableParallelization = true)]

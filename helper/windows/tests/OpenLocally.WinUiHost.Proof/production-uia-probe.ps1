@@ -31,39 +31,6 @@ $providerType = $providerAssembly.GetType(
 $providerTable = $providerType.GetField('ClientSideProviderDescriptionTable').GetValue($null)
 [System.Windows.Automation.ClientSettings]::RegisterClientSideProviders($providerTable)
 
-Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-
-public static class NativeComboBoxInfo
-{
-    [StructLayout(LayoutKind.Sequential)]
-    public struct Rect { public int Left, Top, Right, Bottom; }
-
-    [StructLayout(LayoutKind.Sequential)]
-    public struct ComboBoxInfo
-    {
-        public uint Size;
-        public Rect Item;
-        public Rect Button;
-        public uint ButtonState;
-        public IntPtr Combo;
-        public IntPtr Edit;
-        public IntPtr List;
-    }
-
-    [DllImport("user32.dll")]
-    private static extern bool GetComboBoxInfo(IntPtr combo, ref ComboBoxInfo info);
-
-    public static IntPtr GetListHandle(IntPtr combo)
-    {
-        ComboBoxInfo info = new ComboBoxInfo();
-        info.Size = (uint)Marshal.SizeOf(typeof(ComboBoxInfo));
-        return GetComboBoxInfo(combo, ref info) ? info.List : IntPtr.Zero;
-    }
-}
-'@
-
 function Normalize-Text([string]$Value) {
     return $Value.Replace("`r`n", "`n").Replace("`r", "`n")
 }
@@ -224,120 +191,64 @@ function Assert-SharedButton([System.Windows.Automation.AutomationElement]$Eleme
     Write-Output "uia=$Name; type=Button; keyboard-focusable=true; invoke-pattern=true"
 }
 
-function Assert-PlatformCombo(
+function Assert-PlatformTabs(
     [System.Windows.Automation.AutomationElement]$Element,
-    [string]$ExpectedSelection,
-    [bool]$UseInteractiveDesktop) {
-    if ($null -eq $Element) { throw 'UIA did not expose the production Platform ComboBox.' }
+    [string]$ExpectedSelection) {
+    if ($null -eq $Element) { throw 'UIA did not expose the production Platform tabs.' }
     $current = $Element.Current
     if ($current.NativeWindowHandle -ne $PlatformHandle -or
-        $current.ControlType -ne [System.Windows.Automation.ControlType]::ComboBox -or
-        $current.ClassName -ne 'ComboBox' -or [string]::IsNullOrWhiteSpace($current.Name) -or
+        $current.ControlType -ne [System.Windows.Automation.ControlType]::Tab -or
+        $current.ClassName -ne 'SysTabControl32' -or [string]::IsNullOrWhiteSpace($current.Name) -or
         -not $current.IsEnabled -or -not $current.IsKeyboardFocusable -or $current.IsOffscreen) {
-        throw "Invalid Platform ComboBox UIA properties; hwnd=$($current.NativeWindowHandle); type=$($current.ControlType.ProgrammaticName); class=$($current.ClassName); name=$($current.Name); enabled=$($current.IsEnabled); focusable=$($current.IsKeyboardFocusable); offscreen=$($current.IsOffscreen)."
-    }
-    $expand = $null
-    if (-not $Element.TryGetCurrentPattern(
-        [System.Windows.Automation.ExpandCollapsePattern]::Pattern, [ref]$expand)) {
-        throw 'Platform ComboBox does not expose ExpandCollapsePattern.'
+        throw "Invalid Platform tabs UIA properties; hwnd=$($current.NativeWindowHandle); type=$($current.ControlType.ProgrammaticName); class=$($current.ClassName); name=$($current.Name); enabled=$($current.IsEnabled); focusable=$($current.IsKeyboardFocusable); offscreen=$($current.IsOffscreen)."
     }
     $selection = $null
     if (-not $Element.TryGetCurrentPattern(
         [System.Windows.Automation.SelectionPattern]::Pattern, [ref]$selection)) {
-        throw 'Platform ComboBox does not expose SelectionPattern.'
+        throw 'Platform tabs do not expose SelectionPattern.'
     }
-
-    $expandPattern = [System.Windows.Automation.ExpandCollapsePattern]$expand
     $selected = ([System.Windows.Automation.SelectionPattern]$selection).Current.GetSelection()
     if ($selected.Count -ne 1 -or $selected[0].Current.Name -cne $ExpectedSelection) {
         $actual = if ($selected.Count -eq 0) { '<none>' } else { $selected[0].Current.Name }
-        throw "Platform ComboBox selection differs; expected=$ExpectedSelection; actual=$actual; count=$($selected.Count)."
-    }
-    if (-not $UseInteractiveDesktop) {
-        Write-Output "uia=Platform; hwnd=$PlatformHandle; type=ComboBox; class=ComboBox; name=$($current.Name); keyboard-focusable=true; expand-collapse-pattern=true; expand-collapse-state=$($expandPattern.Current.ExpandCollapseState); selection=$ExpectedSelection"
-        return
+        throw "Platform tab selection differs; expected=$ExpectedSelection; actual=$actual; count=$($selected.Count)."
     }
 
-    $provedItems = $false
-    try {
-        $expandPattern.Expand()
-        $expanded = $false
-        for ($attempt = 0; $attempt -lt 80; $attempt++) {
-            if ($expandPattern.Current.ExpandCollapseState -ne
-                [System.Windows.Automation.ExpandCollapseState]::Collapsed) {
-                $expanded = $true
-                break
-            }
-            Start-Sleep -Milliseconds 25
-        }
-        if (-not $expanded) { throw 'Platform ComboBox did not expand through ExpandCollapsePattern.' }
-
-        $listHandle = [NativeComboBoxInfo]::GetListHandle([IntPtr]::new($PlatformHandle))
-        if ($listHandle -eq [IntPtr]::Zero) {
-            throw 'GetComboBoxInfo did not return the live Platform dropdown list.'
-        }
-        $list = [System.Windows.Automation.AutomationElement]::FromHandle($listHandle)
-        if ($null -eq $list -or $list.Current.ClassName -ne 'ComboLBox') {
-            throw 'UIA enumeration did not target the live ComboLBox returned for Platform.'
-        }
-        $itemCondition = New-Object System.Windows.Automation.PropertyCondition(
-            [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
-            [System.Windows.Automation.ControlType]::ListItem)
-        $items = $list.FindAll([System.Windows.Automation.TreeScope]::Descendants, $itemCondition)
-        $expectedNames = @('Patreon', 'X', 'Bluesky')
-        if ($items.Count -ne $expectedNames.Count) {
-            throw "Platform item count differs; expected=3; actual=$($items.Count)."
-        }
-
-        $seen = @{}
-        foreach ($item in $items) {
-            $name = $item.Current.Name
-            if ($expectedNames -cnotcontains $name) { throw "Unexpected Platform item '$name'." }
-            if ($seen.ContainsKey($name)) { throw "Duplicate Platform item '$name'." }
-            $selectionItem = $null
-            if (-not $item.TryGetCurrentPattern(
-                [System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$selectionItem)) {
-                throw "Platform item '$name' does not expose SelectionItemPattern."
-            }
-            $selectionItemPattern = [System.Windows.Automation.SelectionItemPattern]$selectionItem
-            $container = $selectionItemPattern.Current.SelectionContainer
-            if ($null -eq $container -or
-                -not [System.Windows.Automation.Automation]::Compare($container, $list)) {
-                throw "Platform item '$name' belongs to an unrelated selection container."
-            }
-            if ($selectionItemPattern.Current.IsSelected -ne ($name -ceq $ExpectedSelection)) {
-                throw "Platform item '$name' exposed an incorrect selected state."
-            }
-            $seen[$name] = $true
-        }
-        foreach ($name in $expectedNames) {
-            if (-not $seen.ContainsKey($name)) { throw "Missing Platform item '$name'." }
-        }
-        $provedItems = $true
+    $itemCondition = New-Object System.Windows.Automation.PropertyCondition(
+        [System.Windows.Automation.AutomationElement]::ControlTypeProperty,
+        [System.Windows.Automation.ControlType]::TabItem)
+    $items = $Element.FindAll([System.Windows.Automation.TreeScope]::Children, $itemCondition)
+    $expectedNames = @('Patreon', 'X', 'Bluesky')
+    if ($items.Count -ne $expectedNames.Count) {
+        throw "Platform tab count differs; expected=$($expectedNames.Count); actual=$($items.Count)."
     }
-    finally {
-        $expandPattern.Collapse()
-        $collapsed = $false
-        for ($attempt = 0; $attempt -lt 80; $attempt++) {
-            if ($expandPattern.Current.ExpandCollapseState -eq
-                [System.Windows.Automation.ExpandCollapseState]::Collapsed) {
-                $collapsed = $true
-                break
-            }
-            Start-Sleep -Milliseconds 25
+    for ($index = 0; $index -lt $items.Count; $index++) {
+        $item = $items[$index]
+        $name = $item.Current.Name
+        if ($name -cne $expectedNames[$index]) {
+            throw "Platform tab order differs at $index; expected=$($expectedNames[$index]); actual=$name."
         }
-        if (-not $collapsed) { throw 'Platform ComboBox did not collapse after item discovery.' }
+        $selectionItem = $null
+        if (-not $item.TryGetCurrentPattern(
+            [System.Windows.Automation.SelectionItemPattern]::Pattern, [ref]$selectionItem)) {
+            throw "Platform tab '$name' does not expose SelectionItemPattern."
+        }
+        $selectionItemPattern = [System.Windows.Automation.SelectionItemPattern]$selectionItem
+        $container = $selectionItemPattern.Current.SelectionContainer
+        if ($null -eq $container -or
+            -not [System.Windows.Automation.Automation]::Compare($container, $Element)) {
+            throw "Platform tab '$name' belongs to an unrelated selection container."
+        }
+        if ($selectionItemPattern.Current.IsSelected -ne ($name -ceq $ExpectedSelection)) {
+            throw "Platform tab '$name' exposed an incorrect selected state."
+        }
     }
-    if (-not $provedItems) {
-        throw 'Platform item discovery did not complete.'
-    }
-    Write-Output "uia=Platform; hwnd=$PlatformHandle; type=ComboBox; class=ComboBox; name=$($current.Name); keyboard-focusable=true; expand-collapse=true; selection=$ExpectedSelection; selection-items=Patreon,X,Bluesky; selection-item-pattern=true; collapsed-in-finally=true"
+    Write-Output "uia=Platform; hwnd=$PlatformHandle; type=Tab; class=SysTabControl32; name=$($current.Name); keyboard-focusable=true; selection=$ExpectedSelection; tab-items=$($expectedNames -join ','); selection-item-pattern=true"
 }
 
 $root = [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]::new($WindowHandle))
-Assert-PlatformCombo (
+Assert-PlatformTabs (
     [System.Windows.Automation.AutomationElement]::FromHandle([IntPtr]::new($PlatformHandle))) `
-    $PlatformSelection ([bool]::Parse($InteractiveDesktop))
+    $PlatformSelection
 $posting = Find-Button $root $PostingActionName
 $expectsPosting = [bool]::Parse($PostingExpectedVisible)
 if ($expectsPosting) {

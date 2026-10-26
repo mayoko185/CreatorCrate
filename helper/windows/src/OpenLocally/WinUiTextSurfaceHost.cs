@@ -52,7 +52,7 @@ internal static class WinUiTextSurfacePresentation
     internal const double VerticalPadding = 8;
     internal const double BorderWidth = 1;
     internal const double FocusBorderWidth = 2;
-    internal const double CornerRadius = 6;
+    internal const double CornerRadius = 8;
     internal const float LineSpacing = 1.35f;
     internal const string FontFamily = "Segoe UI Variable Text";
     internal static readonly string[] DecorativeResourceKeys =
@@ -71,8 +71,10 @@ internal static class WinUiTextSurfacePresentation
             ElementTheme.Light => NativeCompanionPalette.Light,
             _ => throw new ArgumentOutOfRangeException(nameof(theme)),
         };
+        // Refined dialog inputs: the page-dark field inside a section, a stronger border on hover
+        // rather than a lighter fill, and the shared focus ring.
         return new(
-            palette.Surface, palette.Card, palette.Hover,
+            palette.Surface, palette.Page, palette.Page,
             palette.Text, palette.Border, palette.BorderStrong, palette.Focus);
     }
 }

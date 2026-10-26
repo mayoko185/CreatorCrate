@@ -51,8 +51,8 @@ public sealed class WinUiAccessibilityProcessTests
             output, StringComparison.Ordinal);
         Assert.Contains("theme-resource-stage=HighContrast/Default; surface=title; root=;", output, StringComparison.Ordinal);
         Assert.Contains("theme-resource-stage=HighContrast/Default; surface=body; root=;", output, StringComparison.Ordinal);
-        Assert.Contains("theme-resource-stage=Dark restored; surface=title; root=#171b22; editor=#1d222b;", output, StringComparison.Ordinal);
-        Assert.Contains("theme-resource-stage=Dark restored; surface=body; root=#171b22; editor=#1d222b;", output, StringComparison.Ordinal);
+        Assert.Contains("theme-resource-stage=Dark restored; surface=title; root=#171b22; editor=#0d0f13;", output, StringComparison.Ordinal);
+        Assert.Contains("theme-resource-stage=Dark restored; surface=body; root=#171b22; editor=#0d0f13;", output, StringComparison.Ordinal);
         Assert.Contains(
             "theme-resource-lifetime=passed; repeated-same-island-cycles=5; USER-growth=0; GDI-growth=0",
             output, StringComparison.Ordinal);
@@ -64,7 +64,8 @@ public sealed class WinUiAccessibilityProcessTests
         string output = RunAccessibilityProof("--accessibility-check");
 
         Assert.Contains("production-uia-check=passed; mode=deterministic;", output, StringComparison.Ordinal);
-        Assert.Contains("expand-collapse-pattern=true", output, StringComparison.Ordinal);
+        Assert.Contains("type=Tab; class=SysTabControl32;", output, StringComparison.Ordinal);
+        Assert.Contains("tab-items=Patreon,X,Bluesky; selection-item-pattern=true", output, StringComparison.Ordinal);
         Assert.Contains("high-contrast-contract=passed", output, StringComparison.Ordinal);
         Assert.Contains("winui-scaling-enabled=true", output, StringComparison.Ordinal);
         Assert.Contains("resize-island-bounds=passed; outer=1200x900;", output, StringComparison.Ordinal);
@@ -89,12 +90,12 @@ public sealed class WinUiAccessibilityProcessTests
 
     [Fact]
     [Trait("Category", "InteractiveDesktop")]
-    public void ProductionCompanion_PhysicalUiaFocusInputInvokeAndExpandCollapse()
+    public void ProductionCompanion_PhysicalUiaFocusInputInvokeAndPlatformTabs()
     {
         string output = RunAccessibilityProof("--interactive-accessibility-check");
 
         Assert.Contains("production-uia-check=passed; mode=interactive-desktop;", output, StringComparison.Ordinal);
-        Assert.Contains("selection-items=Patreon,X,Bluesky; selection-item-pattern=true; collapsed-in-finally=true", output, StringComparison.Ordinal);
+        Assert.Contains("tab-items=Patreon,X,Bluesky; selection-item-pattern=true", output, StringComparison.Ordinal);
         Assert.Contains("typing-paste-rejected=true", output, StringComparison.Ordinal);
         Assert.Contains("uia-invoke=Mark as posted; dispatched=true", output, StringComparison.Ordinal);
     }

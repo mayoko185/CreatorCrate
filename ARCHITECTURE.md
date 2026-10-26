@@ -428,6 +428,22 @@ in [`app-dialogs.js`](src/static/client/app-dialogs.js) submits such forms;
 the Edit Release dialog always submits through it and namespaces its ids with
 `fieldIdPrefix` when it shares a page with New Release.
 
+**Release link guard on Edit Release saves.** The Release link
+(`releases.patreon_url`) is also written outside the browser by the Posting
+Helper (§18), and a full-form save would otherwise write back the link the form
+loaded. Every `POST /releases/:id` therefore carries `expectedPatreonUrl`, the
+exact stored link the form loaded or later adopted (empty for none), in a hidden
+field that editing the visible Release link never changes. `parseReleaseInput()`
+always forwards the key; a missing or non-string value is a `422` validation
+refusal ("could not confirm which Release link it loaded"), never an unguarded
+save. `releaseService.updateRelease()` compares it exactly (only empty equals no
+link) and the repository repeats the comparison in the full `UPDATE`'s `WHERE`
+clause (`NULLIF(patreon_url, '') IS ?`), with platform-selection replacement
+running only after that row write succeeds in the same transaction. A stale
+expectation changes nothing and answers `409` `RELEASE_LINK_CONFLICT` with
+`currentReleaseLink`; submitted values are not echoed, so the client keeps its
+whole draft.
+
 **Shared Edit Release controller.**
 [`release-edit-dialog.js`](src/static/client/release-edit-dialog.js) is the one
 client for that transport. A host renders a single async Edit Release dialog
@@ -455,6 +471,35 @@ Social Posts, description/notes, publication summary and the closed Review &
 Publish dialog — leaving the Edit action, Edit and Signatures dialogs and the
 selected assets in place; a failed refresh reports a saved release on a
 possibly stale page and offers Retry refresh, which only refetches.
+
+**Returning from the Posting Helper.** The companion action dispatches its
+settled event with `launchAttempted: true` only when the helper URI was handed
+to the browser (not evidence that the helper opened). From then on Release
+Detail arms one set of `blur`/`focus`/`visibilitychange` listeners (removed on
+`pagehide`). The first focus or visibility signal after the page was left starts
+one region refresh (GET only, never a poll); returns that arrive while it runs
+fold into one more pass, and a save's refresh already in flight keeps its own
+outcome. Busy regions (an open dialog, a companion request in flight) are left
+alone and marked stale exactly as after a save. A successful return refresh is
+silent; failure or an expired sign-in shows a notice with Retry. The details
+region renders `data-release-link`, the stored link that render shows.
+
+Each return refresh begins a Release link check for the page's open Edit
+Release dialog and finishes it with the adopted render's link. A check judges
+only a form loaded before it began. A matching link (or a visible field already
+holding the new link, which is then adopted) clears the guard. A different link
+shows a conflict notice and pauses saving; **Use saved Release link** writes
+that link into the field and the expected value without touching any other
+draft field. A failed check fails closed: saving stays paused with **Check
+Release link again**, which re-reads `GET /releases/:id/edit` and compares only
+its link. A save submitted while a check runs is held and continues only if the
+link is confirmed unchanged. The server `409` remains authoritative for changes
+after the last check: the binder keeps the draft and the controller shows the
+same conflict notice from `currentReleaseLink`. The guard and server check
+apply to every Edit Release entry point (Release Detail action and `?edit=1`
+deep link, Dashboard, Calendar info card) because they share this dialog;
+return-refresh stale detection exists only on Release Detail, where the
+companion is launched.
 
 ---
 
@@ -2976,11 +3021,190 @@ not change the prepared asset, selection, or drag eligibility. This lease is
 the exclusive filesystem boundary for the Shell/ImageList preview pipeline
 described below.
 
+Mapped SMB drives are supported by validating final paths against a pinned
+root rather than comparing them as text. Each boundary-to-parent directory,
+the ownership marker, and the file are opened without following reparse points,
+and `GetFinalPathNameByHandleW` (normalized, DOS volume name) is read from each
+pinned handle. Only `\\?\X:\...` and `\\?\UNC\server\share\...` results are
+accepted. Volume-GUID, device, relative, and malformed results, and `.`/`..`,
+empty, or forward-slash components, are rejected. The boundary root's handle is
+verified first. A local drive root must resolve to itself. A root that resolves
+to UNC is accepted only when its drive letter is a remote mapped drive
+(`GetDriveTypeW` is `DRIVE_REMOTE`) and that drive's `WNetGetConnectionW`
+connection plus the root's relative components equals the final path, compared
+component by component without regard to case. Every later directory, the
+marker, and the file must resolve to their exact relative location beneath that
+verified actual root. Anything else fails closed as `media_file_unsafe` and
+shows the preview-failure placeholder. That includes disconnected or unmapped
+drives, `SUBST` and other aliases whose final path is not the drive's own
+connection, and a link inside the share. A trusted root configured as a raw
+UNC path (`\\server\share\...`) rather than a drive letter is not supported for
+previews and always uses the placeholder. Preview validation stays separate
+from drag and availability: a placeholder never changes Status, selection, or
+drag eligibility, which keep using the availability path described earlier.
+Strategy B downloads land under the local helper staging root and preview
+under the local-root rule. A share that cannot report the complete pinned file
+identity and version still previews, but those pixels are never cached (see the
+preview cache below).
+
 ### Native manual Social Preparation helper
 
 Social Preparation v2 is implemented exclusively as a native manual publishing workflow. The helper supports manual copying of prepared social text, dragging prepared local files, and explicit **Mark as posted** confirmation back to CreatorCrate after the operator manually publishes. Close, Copy, and Drag do not mean Posted. The helper does not post to, control, or automate social websites. It strictly parses and trusts the activation origin, redeems the single-use intent, uses the protected capability APIs, resolves and stages media with the existing containment and reparse protections, and presents the native manual publishing companion. The companion preserves Patreon title/body separation and the exact X and Bluesky post text supplied by the server.
 
 The production helper contains no Chrome discovery or control, remote-debugging support, CDP transport, browser WebSocket connection, DOM evaluation, automated typing or upload, browser readiness/approval bridge, platform adapter, or site-specific composer automation. It never exposes media URLs or bearer tokens as a fallback. The retained native operator-host and failure-dialog infrastructure provide desktop-safe manual UI only; they do not connect to or manipulate a browser.
+
+### Release link editing from the Posting Helper
+
+The Posting Helper can read and change the release-level Release link, stored
+in the existing `releases.patreon_url` column. No column, migration, or token
+type was added. Two capability routes in
+[`social-prep.js`](src/routes/social-prep.js) name only the session. The
+release is always derived from the authorized session:
+
+```
+GET   /social-prep/:sessionId/release-link  -> { ok, sessionId, releaseLink }
+PATCH /social-prep/:sessionId/release-link  { releaseLink, expectedReleaseLink }
+                                            -> { ok, sessionId, releaseLink, changed }
+```
+
+`releaseLink` is `null` when there is none. The PATCH accepts only an
+`application/json` object with exactly those two keys, each a string or `null`.
+Anything else is a `422` invalid-input refusal.
+
+**Authority.** `authenticateReleaseLink` reuses the manual-session check behind
+posting confirmation. It takes the same redeemed bearer, compared by digest
+with the session's media token. The session must be inside its fixed 24-hour
+`manual_confirmation_expires_at` window, which link reads and writes never
+extend, and its state must be `redeemed` or `finished`. Token failures answer
+`release_link_token_missing`, `_malformed`, or `_expired` (`401`) or
+`release_link_token_invalid` (`403`). A superseded or expired attempt answers
+`attempt_superseded` and any other state `attempt_not_link_editable` (both
+`409`). The session must also still own at least one selected platform in
+`ready` or `posted` (`409` `release_link_not_eligible`). The release must be
+active inside a non-archived Project (`409` `release_not_editable`, `404`
+`release_not_found`). Publication does not lock the link.
+
+**Concurrency.** `releaseService.updateReleaseLink()` trims `releaseLink`.
+Blank means clear, which is how the optional link is removed. Any other value
+must be a valid absolute HTTP(S) URL (`422` `validation_failed` with
+`invalid_release_link`). `expectedReleaseLink` is an opaque snapshot compared
+exactly; only an empty string equals no link. If the stored link already equals
+the requested one, the PATCH is an idempotent `changed: false` success whatever
+was expected. Otherwise a mismatch answers `409` `release_link_conflict` with
+`currentReleaseLink`. A match runs
+`releaseRepository.updateReleaseLink()`, one conditional `UPDATE` of
+`patreon_url` and `updated_at` only, guarded by active release and Project and
+`NULLIF(patreon_url, '') IS @expected`. If that affects no row, the service
+re-reads and reports the current conflict or ineligibility. Authentication,
+eligibility, and the compare-and-set run in one `BEGIN IMMEDIATE` transaction.
+A changed write logs `release.updated`. Posting state, platform rows,
+scheduling, publication, assets, and other release fields are untouched.
+
+**Compatibility.** Older helpers never call these routes. The helper's
+`ManualReleaseLinkClient` accepts a rejection only when both its code and HTTP
+status match the contract, with the exact JSON shape. A `404`, login redirect
+(redirects are never followed), HTML fallback, or non-contract `2xx` to GET
+therefore means an older server: the section reports that editing isn't
+available and the rest of the companion is unaffected. Browser full-form saves
+are guarded separately by `expectedPatreonUrl` (§6).
+
+**Helper controller and ownership.** The orchestrator asks the production
+runtime (`IManualReleaseLinkProvider`) for one `ManualReleaseLinkController`
+per companion lifetime. A creation failure never prevents the companion from
+opening. The native companion borrows the controller. The orchestrator disposes
+it once, after the companion has closed, alongside the posting-confirmation
+controller, which it never touches. The first load starts only after `ready`
+has been reported, because the server authorizes link access only then. It is
+fire-and-forget, so a failure becomes section state, never a preparation or
+posting failure. Each request carries the bearer only in `Authorization`
+through the trusted-origin `SocialHttpClient`. One deadline (the client's
+request timeout) also bounds the response body, which is capped at 64 KiB and
+must name the same session.
+
+The controller keeps the exact stored value as the compare-and-set token and
+compares the user's draft through the server's trimming rule. Loads and saves
+are single-flight, and the draft stays editable throughout. Saving happens only
+through the explicit **Save link** button; Enter in the field does nothing. A
+save is confirmed only when the response returns exactly the submitted value.
+States are Loading, Ready (clean or unsaved), Saving, Saved (or "already up to
+date" for `changed: false`, or "cleared"), Invalid, Conflict, Uncertain,
+Failed, and Unavailable:
+
+- **Conflict:** the server's rejection proves nothing was written. The newer
+  value is recorded, the draft is kept, and Save stays disabled until the user
+  chooses **Use server link** (draft replaced) or **Keep my link** (the next
+  explicit save deliberately replaces the newer value). **Discard edits**
+  restores an unsaved draft outside conflicts.
+- **Uncertain:** a lost, timed-out, `5xx`, malformed, or contradictory PATCH
+  response triggers one bounded readback GET, never an automatic re-PATCH. The
+  submitted value means Saved, the prior value means Failed (not saved), and
+  anything else means Conflict. If the readback also fails, the section offers
+  **Reload**, and the next reload or save reconciles through GET before
+  writing.
+- **Unavailable:** token, superseded, or not-editable rejections stop further
+  requests ("Reopen from CreatorCrate"). Ineligible, archived, or missing
+  releases and older servers use their own messages.
+
+Disposal cancels in-flight requests, stops notifications, and waits for a
+subscriber already running on another thread. The controller raises
+`StateChanged` on worker threads. The companion's subscriber only posts one
+coalesced window message (an interlocked latch) and never touches controls or
+waits for the UI thread, so disposal cannot deadlock. The UI thread then
+renders the controller's current state rather than a queued snapshot, and a
+closing flag plus unsubscription precede disposal.
+
+### Posting Helper tabs and refined presentation
+
+The Release link card is release-wide and sits outside the platform tabs. It is
+the last section of the scrolling content: below the platform content and
+Assets, immediately above the pinned footer. Platform selection is a single-row
+native `SysTabControl32` with one tab per prepared platform in authoritative
+server order, starting on the first. The control supplies Left/Right and the
+UIA Tab/TabItem pattern, and the companion maps Home/End to `TCM_SETCURFOCUS`.
+Every switch arrives through `TCN_SELCHANGE`. The model keeps a separate asset
+selection per platform, so switching repopulates Assets with that platform's
+own selection. Switching never copies, posts, changes posting state, or
+redirects a pending confirmation, which stays attached to its captured
+platform. Dark and light owner-paint the tabs as CreatorCrate's view switcher.
+High Contrast leaves painting to the system tab control with system colors.
+
+The window adapts the refined web dialogs: a scrolling body and a pinned
+footer. The release header (title wrapped to three lines, metadata), the
+Content card (tabs, editors, Copy, posting group), Assets, and finally the
+Release link card form one column inside a viewport above the footer, which holds the
+aggregate, transient feedback, and Close. The column is centered and capped at
+1152 logical pixels. The initial client size is 980 by 920 logical pixels. The
+approved narrow target and supported minimum client size is 640 by 600, which
+`WM_GETMINMAXINFO` reduces to the monitor work area if the display is smaller.
+When the content needs more height, the body scrolls with its own vertical
+scrollbar (not a tab stop) and the mouse wheel rather than compressing
+controls. Keyboard focus that lands outside the viewport scrolls its control
+into view; pointer focus never scrolls the page. Native text-bound sizes follow
+both DPI and the Windows Text size setting (`TextScaleFactor`, clamped to
+100–225%). The WinUI editors keep their own text scaling as described below.
+In dark and light, the editors use the page-dark field inside a section, a
+stronger border on hover, and an 8-pixel radius. High Contrast still uses
+system colors everywhere.
+
+Every native button is owner-drawn through one path that follows the refined
+dialog actions in `creatorcrate.css`. Bodies are 36 logical pixels tall (30 for
+the small Release link recovery actions, like the web dialog's conflict
+actions) and align with fields and the column; each window adds a 4-pixel
+margin holding the 2-pixel focus ring at a 2-pixel offset. Mark as posted, the
+primary, is the dark outlined footer action: page fill, strong border, semibold
+label, 6-pixel radius, and an accent border on hover. Copy, Save link, the
+recovery actions, and Close are transparent outlined secondaries with an
+8-pixel radius that take the hover surface. Presses move the body down one
+pixel, and disabled labels are struck through. High Contrast draws the system
+push-button frame with a system-highlight focus ring.
+
+The Release link edit takes its accessible name, "Release link", from the
+preceding heading. Its status line is a native live region that announces only
+outcomes (saved, refused, failed, or needing a decision), never loading or
+typing. When a button the user just activated hides or disables, focus returns
+to the field. Enter activates only a focused push button, so it can never reach
+Mark as posted from the field or tabs. Closing the window with an unsaved
+Release link draft discards it without a prompt.
 
 ### Deferred social-preparation work
 
@@ -3114,9 +3338,12 @@ their High Contrast frame to the Windows system button renderer and use system
 button-face, button-text, disabled-text, and focus cues rather than decorative
 CreatorCrate colors.
 
-The companion's current A1 hierarchy places compact release identity above one
-Content card, then Assets, then the existing footer. Content begins with its
-integrated platform selector. Patreon title and body, or the X/Bluesky post,
+The A1 hierarchy placed compact release identity above one Content card, then
+Assets, then the footer; the refined presentation (see "Posting Helper tabs and
+refined presentation") keeps that order, adds the release-wide Release link card
+after Assets as the last scrolling section before the footer, and replaces the
+A1 sizing below. Content begins with its platform tabs.
+Patreon title and body, or the X/Bluesky post,
 each put the model-backed Copy button in the field header immediately above the
 reusable WinUI editor. The platform posting status, action, and measured helper
 guidance follow the editor as one bounded group; canonical aggregate completion
@@ -3125,8 +3352,8 @@ secondary Close action aligned at the right. The footer background and divider m
 span the full window, while aggregate text, operational feedback, and Close align
 to the bounded A1 content column. The footer normally uses 12 logical pixels of
 vertical and 16 logical pixels of column-relative horizontal padding and adds a measured,
-bounded second line only for transient operational feedback. Native layout keeps
-the supported 820 by 754 logical client minimum, shares normal height growth
+bounded second line only for transient operational feedback. A1 native layout
+kept an 820 by 754 logical client minimum (now 640 by 600 with a scrolling body), shared normal height growth
 between the post editor and Assets, bounds editor and Assets growth on very tall
 windows, and centers a main column capped at 1152 logical pixels on wide windows. A2 removes Select
 All and adds selection count and drag guidance to Assets. B1 owns the ListView
@@ -3142,22 +3369,10 @@ focus cues supplement color changes. The compact footer retains the controller's
 server-authoritative aggregate, may use the existing success role only for the
 readable all-posted message, and does not infer completion from preparation actions.
 
-Package C2A keeps Platform as the production native `ComboBox` with its existing
-selection and platform-change authority. It harmonizes only the closed selector,
-dropdown rows, local arrow chrome, border, hover, and visible focus presentation
-with the companion's dark and light theme roles. Native keyboard navigation,
-dropdown behavior, UI Automation patterns, and selection items remain supplied by
-Windows; High Contrast retains system-owned control chrome and system colors.
-The authoritative theme refresh reapplies the DPI-derived owner-drawn dropdown-row
-height to the live ComboBox, while leaving its separately sized closed selection
-field unchanged. Each legitimate dropdown opening reacquires the current
-`ComboLBox` through `GetComboBoxInfo` and immediately applies the active local
-dark, light, or system-owned High Contrast theme; popup identity is not retained
-as a lifecycle invariant. Per-opening observation records the actual native
-theme-operation result; in High Contrast, success specifically means the native
-reset to system-owned chrome succeeded. Regression coverage proves this supported
-per-opening reacquisition path against the real USER32-owned popup; it does not manufacture
-or require popup replacement while the production ComboBox remains alive.
+Package C2A themed the former Platform `ComboBox` and its dropdown popup. That
+control has been replaced by the native platform tabs described in "Posting
+Helper tabs and refined presentation", so its ComboBox and `ComboLBox` theming no
+longer exists.
 Package C2B completes the code implementation of the whole-window presentation
 system without replacing native controls or changing A1 geometry. Native typography
 has four DPI-aware logical-pixel roles built through one GDI path: a 20-pixel
@@ -3220,7 +3435,7 @@ MSBuild `ApplicationManifest`; no adjacent arbitrarily named manifest controls
 activation. The raw-Win32 window uses DPI-scaled Segoe UI heading, body/control,
 section, and metadata fonts plus one bounded owner for its GDI brushes/fonts.
 Documented control-color, common-control theme, and custom-draw paths theme the
-platform ComboBox, action Buttons, status, and native
+platform tabs, action Buttons, status, and native
 asset ListView/report control without changing its keyboard or multiple-selection
 semantics. Native click, Ctrl, Shift, and keyboard selection retain every valid
 visible row by stable ordinal, including an unavailable row explicitly selected
