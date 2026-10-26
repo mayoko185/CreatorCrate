@@ -23,7 +23,7 @@ function insertRelease(db, projectId, title, { plannedDate = null, publishedDate
 
 const LONG_TITLE = 'An Exceptionally Long Release Title That Must Truncate Or Wrap Without Widening The Page';
 
-async function withDashboardApp(run) {
+async function withDashboardApp(run, seed = null) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'creatorcrate-dashboard-visual-'));
   const projectsRoot = path.join(root, 'projects');
   const appDataRoot = path.join(root, 'app');
@@ -38,6 +38,7 @@ async function withDashboardApp(run) {
     insertRelease(db, project.id, `${LONG_TITLE} Undated`);
     insertRelease(db, project.id, `${LONG_TITLE} Scheduled`, { plannedDate: localDate(2) });
     insertRelease(db, project.id, `${LONG_TITLE} Published`, { publishedDate: localDate(-1) });
+    if (seed) seed(db, project.id);
     server = app.listen(0, '127.0.0.1');
     await new Promise(resolve => server.once('listening', resolve));
     await run({ origin: `http://127.0.0.1:${server.address().port}` });
@@ -151,3 +152,73 @@ for (const width of [1440, 1024, 768, 375, 320]) {
     });
   });
 }
+
+// Dashboard Publish links take the Review & Publish dialog's dark outlined submit.
+const PUBLISH_STYLE_PROPS = [
+  'background-color', 'color', 'border-top-color', 'border-top-width', 'border-top-style',
+  'border-top-left-radius', 'box-shadow', 'font-size', 'font-weight', 'padding-left', 'padding-right',
+];
+const readStyles = (element, props) => {
+  const style = getComputedStyle(element);
+  return Object.fromEntries(props.map((prop) => [prop, style.getPropertyValue(prop)]));
+};
+
+test('Overdue and Today Publish actions match the Publish dialog submit', async ({ page }) => {
+  const seedPublishable = (db, projectId) => {
+    insertRelease(db, projectId, 'Overdue Publish', { plannedDate: localDate(-3) });
+    insertRelease(db, projectId, 'Today Publish', { plannedDate: localDate(0) });
+  };
+  await withDashboardApp(async ({ origin }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(`${origin}/`);
+    const actions = page.locator('.dashboard-release-row-action--publish');
+    await expect(actions).toHaveCount(2);
+    for (const group of ['overdue', 'today']) {
+      await expect(page.locator(`.dashboard-release-row--${group} .dashboard-release-row-action--publish`)).toHaveCount(1);
+    }
+    await expect(page.locator('.dashboard-release-row--next7 .dashboard-release-row-action')).toHaveCount(0);
+
+    const overdue = page.locator('.dashboard-release-row--overdue .dashboard-release-row-action--publish');
+    const rest = await overdue.evaluate(readStyles, PUBLISH_STYLE_PROPS);
+    expect(rest['box-shadow']).toBe('none');
+    expect(rest['padding-left']).toBe(rest['padding-right']);
+    expect(await actions.nth(1).evaluate(readStyles, PUBLISH_STYLE_PROPS)).toEqual(rest);
+
+    // The shared hover accent (--accent), read after the border transition settles.
+    const hoverBorder = 'rgb(34, 211, 238)';
+    expect(rest['border-top-color']).not.toBe(hoverBorder);
+    await overdue.hover();
+    await expect(overdue).toHaveCSS('border-top-color', hoverBorder);
+    await page.mouse.move(0, 0);
+
+    await overdue.focus();
+    await expect(overdue).toHaveCSS('outline-style', 'solid');
+    await expect(overdue).toHaveCSS('outline-width', '2px');
+
+    // Existing behavior: the link opens the release's Review & Publish dialog.
+    await overdue.click();
+    await expect(page).toHaveURL(/\/releases\/\d+\?publish=1$/);
+    const submit = page.locator('#release-publish-dialog [data-dialog-submit]');
+    await expect(submit).toBeVisible();
+    expect(await submit.evaluate(readStyles, PUBLISH_STYLE_PROPS)).toEqual(rest);
+    await submit.hover();
+    await expect(submit).toHaveCSS('border-top-color', hoverBorder);
+
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.goto(`${origin}/`);
+    const metrics = await page.evaluate(() => ({
+      viewport: document.documentElement.clientWidth,
+      scrollWidth: document.documentElement.scrollWidth,
+      actions: [...document.querySelectorAll('.dashboard-release-row-action--publish')].map((action) => {
+        const box = action.getBoundingClientRect();
+        return { height: box.height, right: box.right };
+      }),
+    }));
+    expect(metrics.scrollWidth).toBeLessThanOrEqual(metrics.viewport);
+    expect(metrics.actions).toHaveLength(2);
+    for (const action of metrics.actions) {
+      expect(action.height).toBeGreaterThanOrEqual(40);
+      expect(action.right).toBeLessThanOrEqual(metrics.viewport);
+    }
+  }, seedPublishable);
+});

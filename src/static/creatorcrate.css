@@ -13695,7 +13695,8 @@
    their family's sizing (icon buttons, reorder handles, processing rows). */
 .app-dialog--refined .button,
 :where(.app-dialog) .app-dialog-footer .button,
-.button.dashboard-create-action {
+.button.dashboard-create-action,
+.button.dashboard-release-row-action--publish {
   gap: 0.375rem;
   min-height: var(--refined-control-height);
   padding: 0 0.875rem;
@@ -13711,7 +13712,8 @@
 }
 .app-dialog--refined .button:active:not(:disabled):not([aria-disabled="true"]),
 :where(.app-dialog) .app-dialog-footer .button:active:not(:disabled):not([aria-disabled="true"]),
-.button.dashboard-create-action:active:not(:disabled):not([aria-disabled="true"]) {
+.button.dashboard-create-action:active:not(:disabled):not([aria-disabled="true"]),
+.button.dashboard-release-row-action--publish:active:not(:disabled):not([aria-disabled="true"]) {
   transform: translateY(1px);
 }
 .app-dialog--refined .button-primary,
@@ -13722,12 +13724,14 @@
 /* A dialog's primary footer action is a dark outlined button. New Project's
    and New Release's submits lead with a cyan plus square, as do the
    Dashboard's New Release/New Project header links and Manage signatures'
-   Add button; actions without the icon keep symmetric padding. Manage
-   Categories' Add, Edit Asset's per-section submits, and Import/Export Books'
-   Export and Import submits take the same dark treatment. Disabled styling,
+   Add button; actions without the icon keep symmetric padding, as do the
+   Dashboard's Overdue/Today Publish links, which match the Publish dialog's
+   submit. Manage Categories' Add, Edit Asset's per-section submits, and
+   Import/Export Books' Export and Import submits take the same dark treatment. Disabled styling,
    hover brightness, focus ring, and pressed movement come from the rules
    around it. */
 .button.dashboard-create-action,
+.button.dashboard-release-row-action--publish,
 .app-dialog .app-dialog-footer > .button-primary,
 #release-signatures-dialog.app-dialog--refined [data-release-signature-add],
 #project-asset-category-management-dialog .project-category-management-add-submit > .button-primary,
@@ -13747,6 +13751,7 @@
   padding: 0 var(--space-md) 0 var(--space-sm);
 }
 .button.dashboard-create-action:not(:disabled):not([aria-disabled="true"]),
+.button.dashboard-release-row-action--publish:not(:disabled):not([aria-disabled="true"]),
 .app-dialog .app-dialog-footer > .button-primary:not(:disabled):not([aria-disabled="true"]),
 #release-signatures-dialog.app-dialog--refined [data-release-signature-add]:not(:disabled):not([aria-disabled="true"]),
 #project-asset-category-management-dialog .project-category-management-add-submit > .button-primary:not(:disabled):not([aria-disabled="true"]),
@@ -13758,12 +13763,20 @@
   box-shadow: none;
 }
 .button.dashboard-create-action:hover:not(:disabled):not([aria-disabled="true"]),
+.button.dashboard-release-row-action--publish:hover:not(:disabled):not([aria-disabled="true"]),
 .app-dialog .app-dialog-footer > .button-primary:hover:not(:disabled):not([aria-disabled="true"]),
 #release-signatures-dialog.app-dialog--refined [data-release-signature-add]:hover:not(:disabled):not([aria-disabled="true"]),
 #project-asset-category-management-dialog .project-category-management-add-submit > .button-primary:hover:not(:disabled):not([aria-disabled="true"]),
 #asset-edit-dialog .asset-action-form .button-primary:hover:not(:disabled):not([aria-disabled="true"]),
 #book-transfer-dialog .book-transfer-section .button-primary:hover:not(:disabled):not([aria-disabled="true"]) {
   border-color: var(--accent);
+}
+/* The shared 2.25rem height would otherwise outrank the Dashboard's
+   narrow-viewport hit area for its row actions. */
+@media (max-width: 767px) {
+  .button.dashboard-release-row-action--publish {
+    min-height: var(--control-height);
+  }
 }
 .project-create-submit-icon {
   display: inline-flex;

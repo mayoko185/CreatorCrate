@@ -204,6 +204,14 @@ describe('dashboard HTTP composition', () => {
     return asset;
   }
 
+  function addPresentSelectedAsset(projectId, releaseId, filename) {
+    const asset = createAssetRepository(db).upsert(projectId, filename, {
+      filename, extension: 'txt', mimeType: 'text/plain', sizeBytes: 0, modifiedAt: null,
+    });
+    db.prepare('INSERT INTO release_assets (release_id, asset_id) VALUES (?, ?)').run(releaseId, asset.id);
+    return asset;
+  }
+
   describe('page header', () => {
     it('renders one h1, the local date, New Release, and the hosted New Project action without retired controls', async () => {
       const res = await app.testAgent.get('/').expect(200);
@@ -482,6 +490,26 @@ describe('dashboard HTTP composition', () => {
       expect(item).not.toContain('role="status"');
     });
 
+    it('flags only asset problems in readiness; ready assets show through the selected count', async () => {
+      const projectId = await createProject(app, { title: 'Readiness Project' });
+      const readyId = insertRelease(db, projectId, { title: 'Ready Release', createdAt: '2020-01-01 12:00:00' });
+      const emptyId = insertRelease(db, projectId, { title: 'Empty Release', createdAt: '2020-01-02 12:00:00' });
+      addPresentSelectedAsset(projectId, readyId, 'one.txt');
+      addPresentSelectedAsset(projectId, readyId, 'two.txt');
+
+      const res = await app.testAgent.get('/').expect(200);
+      const ready = extractNeedsDateItem(res.text, readyId);
+      const empty = extractNeedsDateItem(res.text, emptyId);
+
+      expect(ready).toContain('2 assets selected');
+      expect(ready).not.toContain('dashboard-chip--ok');
+      expect(ready).not.toContain('Assets selected');
+      expect(ready).toContain('<div class="dashboard-readiness" role="group" aria-label="Readiness">');
+      expect(ready).toContain('dashboard-chip dashboard-chip--muted">No platforms chosen');
+      expect(empty).toContain('0 assets selected');
+      expect(empty).toContain('dashboard-chip dashboard-chip--danger">No assets selected');
+    });
+
     it('caps the list at ten items oldest first and links to all undated releases', async () => {
       const projectId = await createProject(app, { title: 'Many Undated' });
       const ids = Array.from({ length: 12 }, (_, index) => insertRelease(db, projectId, {
@@ -525,6 +553,9 @@ describe('dashboard HTTP composition', () => {
       expect(late).toContain('Any time');
       expect(late).toContain(`href="/releases/${lateId}/publish" aria-label="Publish Late Release">Publish</a>`);
       expect(extractReleaseRow(res.text, todayId)).toContain(`href="/releases/${todayId}/publish"`);
+      for (const row of [late, extractReleaseRow(res.text, todayId)]) {
+        expect(row).toContain('class="button button-small button-primary dashboard-release-row-action dashboard-release-row-action--publish"');
+      }
       expect(soon).toContain(`<button class="dashboard-title-trigger dashboard-truncate" type="button" data-calendar-info-trigger aria-controls="dashboard-release-info-scheduled-${soonId}" aria-expanded="false">Soon Release</button>`);
       expect(soon).toContain(`href="/releases/${soonId}">Open release</a>`);
       expect(soon).not.toContain('dashboard-release-row-action');

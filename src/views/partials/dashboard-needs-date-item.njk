@@ -32,10 +32,14 @@
 {% endmacro %}
 
 {# Asset readiness and Social Posts. Rendered for the item and its retained
-   refresh alike, so a retained confirmation's metadata matches the server. #}
+   refresh alike, so a retained confirmation's metadata matches the server.
+   The selected count in the item meta already covers ready assets, so only
+   asset problems get a chip. #}
 {% macro readiness(release, csrfToken) %}
   <div class="dashboard-readiness" role="group" aria-label="Readiness">
-    <span class="dashboard-chip dashboard-chip--{{ release.assetReadiness.tone }}">{{ release.assetReadiness.label }}</span>
+    {% if release.assetReadiness.tone != 'ok' %}
+      <span class="dashboard-chip dashboard-chip--{{ release.assetReadiness.tone }}">{{ release.assetReadiness.label }}</span>
+    {% endif %}
     {% if release.socialPreparation and release.socialPreparation.targets.length %}
       {{ socialPrepSummary.render(release.socialPreparation, release.id, csrfToken, false, true) }}
     {% else %}
